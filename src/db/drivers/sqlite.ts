@@ -41,9 +41,12 @@ CREATE INDEX IF NOT EXISTS idx_sessions_thread
   ON sessions (slack_team_id, slack_channel_id, slack_thread_ts);
 
 CREATE TABLE IF NOT EXISTS skill_usage (
-  skill TEXT PRIMARY KEY,
-  uses INTEGER NOT NULL DEFAULT 0,
-  last_used_at INTEGER
+  agent_id      TEXT    NOT NULL,
+  skill         TEXT    NOT NULL,
+  uses          INTEGER NOT NULL DEFAULT 0,
+  last_used_at  INTEGER,
+  first_seen_at INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, skill)
 );
 
 CREATE TABLE IF NOT EXISTS kb_ingest_jobs (
@@ -330,6 +333,16 @@ export function bootstrapSqliteSchema(db: Database): void {
   for (const stmt of SCHEMA.split(";")) {
     const s = stmt.trim();
     if (s) db.run(s);
+  }
+
+  // Migration: skill_usage became agent-scoped (pg 0024). The legacy table
+  // (skill, uses, last_used_at) never had a writer, so it is replaced, not copied.
+  const usageCols = db.query(`PRAGMA table_info(skill_usage)`).all() as Array<{ name: string }>;
+  if (!usageCols.some((c) => c.name === "agent_id")) {
+    db.run(`DROP TABLE skill_usage`);
+    for (const stmt of SCHEMA.split(";")) {
+      if (/CREATE TABLE IF NOT EXISTS skill_usage\b/.test(stmt)) db.run(stmt.trim());
+    }
   }
 
   // Migration: backfill permission_mode column on existing dbs.

@@ -6,7 +6,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { NodeClient } from "../../src/node/client";
-import { makeNodeSkillCheckBudget } from "../../src/node/background";
+import { makeNodeSkillCheckBudget, makeNodeSkillUsageRecorder } from "../../src/node/background";
 import { JOB_HEADER } from "../../src/gateway/api/auth";
 
 type Seen = { url: string; method: string; job: string | null; body: unknown };
@@ -37,7 +37,8 @@ function setup(answer: (s: Seen) => Response) {
       return call("job-t");
     },
   });
-  return { seen, budget, tokens };
+  const recorder = makeNodeSkillUsageRecorder({ client, withToken: (_id, call) => call("job-t") });
+  return { seen, budget, tokens, recorder };
 }
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -79,5 +80,19 @@ describe("node skill-check budget", () => {
   test("a refused finish (409) on the first attempt throws", async () => {
     const { budget } = setup(() => json(409, { error: "no open run" }));
     await expect(budget.finish("S1", "r1", { outcome: "ok", usage: {} })).rejects.toThrow();
+  });
+});
+
+describe("node skill-usage recorder", () => {
+  test("posts the skill name on the job token; the persona is never sent", async () => {
+    const { seen, recorder } = setup(() => json(200, { ok: true }));
+    await recorder("S1", "ana", "greet");
+    expect(seen).toEqual([{ url: "http://gw/v1/background/skill-usage", method: "POST", job: "job-t", body: { skill: "greet" } }]);
+  });
+
+  test("a failure throws (the manager's hook logs it) and is never retried", async () => {
+    const { seen, recorder } = setup(() => json(503, { error: "x" }));
+    await expect(recorder("S1", undefined, "greet")).rejects.toThrow();
+    expect(seen).toHaveLength(1);
   });
 });

@@ -503,6 +503,12 @@ describe("gateway uncovered branches", () => {
       expect(g.sends.length).toBe(1);
       expect(g.sends[0]!).toContain("now please");
       expect(g.sends[0]!).not.toContain("/branchskill now please");
+      // The invocation counts as a use of the skill, for the weekly skill review (best effort, off the turn's path).
+      const SkillUsage = await import("../../../src/db/skill-usage");
+      const { agentIdReady } = await import("../../../src/knowledge/agent-identity");
+      const agentId = await agentIdReady();
+      for (let i = 0; i < 50 && !(await SkillUsage.forAgent(agentId)).get("branchskill"); i++) await new Promise((r) => setTimeout(r, 10));
+      expect((await SkillUsage.forAgent(agentId)).get("branchskill")?.uses).toBeGreaterThanOrEqual(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

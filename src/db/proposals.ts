@@ -4,6 +4,15 @@ import { db } from "./schema";
 export type ProposalKind = "team-fact" | "promote" | "skill-removal" | "lesson-promotion";
 export const PROPOSAL_KINDS: readonly ProposalKind[] = ["team-fact", "promote", "skill-removal", "lesson-promotion"];
 export type ProposalTo = "manager" | "person";
+/**
+ * A skill the weekly skill review retired (Task 8 ruling C): not a proposal
+ * but a settled event in the same table, so the weekly digest reads it beside
+ * the proposals. Stored with status `approved`, to_kind `manager`, decided_by
+ * SKILL_REVIEW_ACTOR; never open, so never carded or expired.
+ */
+export const SKILL_RETIRED_KIND = "skill-retired" as const;
+export const SKILL_REVIEW_ACTOR = "skill-review";
+export type ProposalRowKind = ProposalKind | typeof SKILL_RETIRED_KIND;
 export type ProposalStatus = "open" | "approved" | "rejected" | "expired";
 
 /** Unanswered proposals expire after this long (global constraints: 14 days). */
@@ -12,7 +21,7 @@ export const PROPOSAL_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 export interface Proposal {
   id: string;
   agentId: string;
-  kind: ProposalKind;
+  kind: ProposalRowKind;
   toKind: ProposalTo;
   /** The person's Slack user id when toKind is "person"; null for the manager. */
   toUser: string | null;
@@ -29,7 +38,7 @@ export interface Proposal {
 interface Row {
   id: string;
   agent_id: string;
-  kind: ProposalKind;
+  kind: ProposalRowKind;
   to_kind: ProposalTo;
   to_user: string | null;
   scope: string;
@@ -106,6 +115,38 @@ export async function decide(id: string, status: "approved" | "rejected", by: st
     [status, by, at, id, at],
   );
   return r.changes > 0;
+}
+
+/** Payload of a SKILL_RETIRED_KIND event. */
+export interface SkillRetiredPayload {
+  slug: string;
+  /** The retired copy's id (skillOps.restore takes it). */
+  retiredId: string;
+  /** The persona whose skills root it was retired from. */
+  persona: string;
+  reason: string;
+  uses: number;
+  lastUsedAt: number | null;
+}
+
+/** Record that the skill review retired a skill (an already-settled row). */
+export async function recordSkillRetired(a: { agentId: string; payload: SkillRetiredPayload; at: number }): Promise<string> {
+  const id = randomUUID();
+  await db.run(
+    `INSERT INTO proposals (id, agent_id, kind, to_kind, to_user, scope, payload, created_at, expires_at, status, decided_by, decided_at)
+     VALUES (?, ?, ?, 'manager', NULL, 'agent', ?, ?, ?, 'approved', ?, ?)`,
+    [id, a.agentId, SKILL_RETIRED_KIND, JSON.stringify(a.payload), a.at, a.at, SKILL_REVIEW_ACTOR, a.at],
+  );
+  return id;
+}
+
+/** An agent's skill retirements at or after `since` (epoch ms), oldest first. */
+export async function listSkillRetirements(agentId: string, since: number): Promise<Proposal[]> {
+  const rows = await db.query<Row>(
+    "SELECT * FROM proposals WHERE agent_id = ? AND kind = ? AND created_at >= ? ORDER BY created_at ASC",
+    [agentId, SKILL_RETIRED_KIND, since],
+  );
+  return rows.map(toProposal);
 }
 
 /** Mark every open proposal past its expires_at as expired; returns how many. */

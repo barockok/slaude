@@ -53,6 +53,7 @@ import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, create
 import { injectedTurns, voiceCallActive } from "../voice/turn-flags";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 import { turnModelTokens, type SkillCheckBudget } from "../background/skill-check";
+import { skillUsageHook, type SkillUsageRecorder } from "./skill-usage-hook";
 import { addTokens, PROVISIONAL_OUTPUT_TOKENS, tokensFromUsage, type ModelTokens, type ModelUsageRow, type TokenCounts } from "../background/prices";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
@@ -339,6 +340,7 @@ export class AgentManager extends EventEmitter {
   #memory: MemoryProvider = memory;
   #stopGuard: StopGuard | undefined;
   #backgroundBudget: SkillCheckBudget | undefined;
+  #skillUsage: SkillUsageRecorder | undefined;
   #remoteResolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined;
   #remoteFactory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined;
   /** Per session: the open remote handle and the target it was opened for.
@@ -506,6 +508,13 @@ export class AgentManager extends EventEmitter {
    *  Without one (a bare manager, as in tests) the check runs unbudgeted as before. */
   setBackgroundBudget(budget: SkillCheckBudget | undefined) {
     this.#backgroundBudget = budget;
+  }
+
+  /** Install the skill-usage recorder (spec §9.1): mono over the database, a
+   *  node over /v1. Each successful `Skill` call is counted, best effort. Unset
+   *  (a bare manager, as in tests) counts nothing. */
+  setSkillUsageRecorder(recorder: SkillUsageRecorder | undefined) {
+    this.#skillUsage = recorder;
   }
 
   /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
@@ -1353,7 +1362,7 @@ export class AgentManager extends EventEmitter {
           Stop: [{ hooks: [stopHook] }],
           UserPromptSubmit: [{ hooks: [userPromptHook] }],
           PreToolUse: [{ hooks: [...(remoteHandle ? [denyLocalBuiltins] : []), this.#skillGate.pre(sessionId), denySyntheticProfileWrite(() => this.isSyntheticTurn(sessionId))] }],
-          PostToolUse: [{ hooks: [this.#skillGate.post(sessionId)] }],
+          PostToolUse: [{ hooks: [this.#skillGate.post(sessionId), skillUsageHook(sessionId, personaName, () => this.#skillUsage)] }],
         },
         systemPrompt: {
           type: "preset",

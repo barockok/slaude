@@ -107,7 +107,8 @@ import { parseRef } from "../../secrets";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
-import { ledgerSkillCheckBudget } from "../../background/skill-check";
+import { backgroundAgentId, ledgerSkillCheckBudget } from "../../background/skill-check";
+import { recordSkillUse } from "../../skills/usage";
 import { scrubChildEnv, withoutKeys } from "../../agent/child-env";
 import { providerSelectingNames } from "../../agent/provider-env";
 import { memoryScopeFor, withClaimLock } from "../../memory/scope";
@@ -1016,6 +1017,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return runAsUser ? `user:${runAsUser}` : "agent";
       },
     }),
+  );
+
+  // Skill usage for the weekly skill review (spec §9.1), for turns that run in
+  // THIS process (mono): keyed by the session persona's agent id, best effort.
+  agent.setSkillUsageRecorder(async (_sessionId, personaName, skill) =>
+    recordSkillUse(await backgroundAgentId(personaName ?? "default"), skill),
   );
 
   // Brain tool deps for a context + surface — shared by the per-session MCP
@@ -2866,6 +2873,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const skillHit = matchSkillInvocation(stripped, discoverSkills(session.persona_id));
     if (skillHit) {
       userText = buildSkillInvocation(skillHit.skill, skillHit.args, session.id);
+      // A `/<slug>` invocation is a use too (it never reaches the Skill tool). Best effort, off the turn's path.
+      void backgroundAgentId(session.persona_id ?? "default")
+        .then((agentId) => recordSkillUse(agentId, skillHit.skill.slug))
+        .catch((e) => console.error(`[skills] could not record a use of /${skillHit.skill.slug}: ${e instanceof Error ? e.message : String(e)}`));
     }
 
     // Resolve username and download any file attachments into the session dir.

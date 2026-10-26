@@ -356,9 +356,9 @@ describe("startBackgroundScheduler defaults", () => {
     expect(keys[0]).toContain("background");
   });
 
-  test("defaultSchedulerDeps wires the nightly review, lessons upkeep and quiet-moment pass", () => {
+  test("defaultSchedulerDeps wires the nightly review, lessons upkeep, quiet-moment pass and skill review", () => {
     const d = defaultSchedulerDeps();
-    expect(Object.keys(d.handlers).sort()).toEqual(["lessons-upkeep", "nightly-review", "quiet-moment"]);
+    expect(Object.keys(d.handlers).sort()).toEqual(["lessons-upkeep", "nightly-review", "quiet-moment", "skill-review"]);
     expect(d.now()).toBeInstanceOf(Date);
     expect(typeof d.brainReady()).toBe("boolean");
   });

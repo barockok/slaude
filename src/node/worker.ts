@@ -42,7 +42,7 @@ import { RestSessionStore } from "./session-store";
 import { buildShimServers } from "./shims";
 import { buildBridgeServers } from "./bridge";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-import { makeNodeSkillCheckBudget } from "./background";
+import { makeNodeSkillCheckBudget, makeNodeSkillUsageRecorder } from "./background";
 import { makeNodeMemoryProvider } from "./memory";
 import { makeNodePermissionResolver } from "./shims/permission";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
@@ -506,6 +506,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // The post-turn skill check is budgeted on the gateway's ledger (spec §9.3);
   // a refused or failed start skips it.
   agent.setBackgroundBudget(makeNodeSkillCheckBudget({ client, withToken: (id, call) => store.withToken(id, call) }));
+  // Skill usage for the weekly skill review (spec §9.1), counted on the gateway; best effort.
+  agent.setSkillUsageRecorder(makeNodeSkillUsageRecorder({ client, withToken: (id, call) => store.withToken(id, call) }));
   /**
    * Sessions whose current turn got a label-gate 403 on any gateway call
    * (node labels spec §4.6). The call itself fails (a tool shim returns an

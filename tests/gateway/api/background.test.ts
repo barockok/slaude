@@ -8,7 +8,8 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { db } from "../../../src/db/schema";
 import * as Runs from "../../../src/db/background-runs";
 import * as Sessions from "../../../src/db/sessions";
-import { handleSkillCheck } from "../../../src/gateway/api/background";
+import { handleSkillCheck, handleSkillUsage } from "../../../src/gateway/api/background";
+import * as SkillUsage from "../../../src/db/skill-usage";
 import { createV1Api } from "../../../src/gateway/api";
 import { JOB_HEADER, mintJobToken, type JobClaims } from "../../../src/gateway/api/auth";
 import { InMemoryPendingSource } from "../../../src/gateway/api/pending-source";
@@ -190,5 +191,47 @@ describe("over /v1", () => {
         else process.env[k] = v;
       }
     }
+  });
+});
+
+describe("POST /v1/background/skill-usage", () => {
+  beforeEach(async () => {
+    await db.run("DELETE FROM skill_usage");
+  });
+
+  test("counts one use for the token persona's agent, the name normalised", async () => {
+    const r = await body(await handleSkillUsage({ skill: " /greet " }, claims("S-usage"), () => 1234));
+    expect(r).toEqual({ status: 200, json: { ok: true } });
+    await handleSkillUsage({ skill: "greet" }, claims("S-usage"), () => 2000);
+    expect((await SkillUsage.forAgent("U0AGENT")).get("greet")).toEqual({ skill: "greet", uses: 2, lastUsedAt: 2000, firstSeenAt: 1234 });
+  });
+
+  test("a named persona's use counts for that persona's agent", async () => {
+    const ana: Persona = { name: "ana", slackUserId: "U0ANA", soulMd: "s", config: { slackUserId: "U0ANA", name: "ana" }, outClient: null };
+    setPersonaRegistry({
+      lookupByUserId: () => null,
+      lookupByName: (n) => (n === "ana" ? ana : null),
+      list: () => [ana],
+      isMultiPersonaMode: () => true,
+      isManaged: () => true,
+      tombstonedPersonaFor: () => null,
+      defaultPersona: () => ({ model: null, mcp: null, background: null }),
+    });
+    await handleSkillUsage({ skill: "greet" }, claims("S-usage", { persona: "ana" }));
+    expect((await SkillUsage.forAgent("U0ANA")).get("greet")?.uses).toBe(1);
+    expect((await SkillUsage.forAgent("U0AGENT")).size).toBe(0);
+  });
+
+  test("a bad body is 400 and counts nothing", async () => {
+    for (const b of [{}, { skill: "" }, { skill: "a b" }, { skill: "x".repeat(300) }, { skill: "greet", persona: "ana" }]) {
+      expect((await handleSkillUsage(b, claims("S-usage"))).status).toBe(400);
+    }
+    expect((await SkillUsage.forAgent("U0AGENT")).size).toBe(0);
+  });
+
+  test("a database failure propagates to the router (500), never a silent 200", async () => {
+    const spy = spyOn(SkillUsage, "record").mockRejectedValueOnce(new Error("db gone"));
+    await expect(handleSkillUsage({ skill: "greet" }, claims("S-usage"))).rejects.toThrow("db gone");
+    spy.mockRestore();
   });
 });

@@ -54,7 +54,7 @@ async function seededSqlite() {
   }
   await src.run(`INSERT INTO memory_facts (session_id, scope, ts, fact) VALUES (?, 'global', ?, ?)`, [null, now, "f"]);
   // skill_usage exists in sqlite but is intentionally not exported
-  await src.run(`INSERT INTO skill_usage (skill, uses) VALUES ('x', 1)`);
+  await src.run(`INSERT INTO skill_usage (agent_id, skill, uses, first_seen_at) VALUES ('U0AGENT', 'x', 1, 1)`);
   return { dir, src };
 }
 

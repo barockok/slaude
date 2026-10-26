@@ -543,6 +543,22 @@ export class NodeClient {
   }
 
   /**
+   * One use of a skill (POST /v1/background/skill-usage), counted for the job
+   * token persona's agent. Not retried (a retry could count a use twice);
+   * bounded by BACKGROUND_TIMEOUT_MS. A non-200 throws.
+   */
+  async skillUsage(skill: string, jobToken: string): Promise<void> {
+    const res = await this.request("/v1/background/skill-usage", {
+      method: "POST",
+      body: { skill },
+      jobToken,
+      retry: false,
+      signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS),
+    });
+    await this.#json<unknown>(res);
+  }
+
+  /**
    * Exchange a job's (possibly aging or freshly-expired) token for a new one
    * with identical claims and a full TTL. The original token authenticates
    * the exchange; the gateway enforces the grace window and job binding.

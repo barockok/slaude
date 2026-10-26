@@ -43,6 +43,7 @@ import { budgetConfigFor } from "./config";
 import { runLessonsUpkeep } from "./passes/lessons-upkeep";
 import { runNightlyReview, type NightlyDeps } from "./passes/nightly-review";
 import { dueQuietThreads, quietSlot, runQuietMoment } from "./passes/quiet-moment";
+import { runSkillReview } from "./passes/skill-review";
 import type { ThreadActivity } from "../db/thread-activity";
 import { defaultRunnerDeps } from "./runner";
 import { backgroundAgentId } from "./skill-check";
@@ -332,12 +333,13 @@ async function listBrainSources(): Promise<string[]> {
   return (listed?.sources ?? []).map((s) => s.id);
 }
 
-/** Production handlers: the nightly review, the lessons upkeep and the quiet-moment pass. */
+/** Production handlers: the nightly review, the lessons upkeep, the quiet-moment pass and the weekly skill review. */
 export function passHandlers(deps: NightlyDeps): Partial<Record<PassName, SlotHandler>> {
   return {
     "nightly-review": (r) => runNightlyReview(r, deps),
     "lessons-upkeep": (r) => runLessonsUpkeep(r, deps),
     "quiet-moment": (r) => runQuietMoment(r, deps),
+    "skill-review": (r) => runSkillReview(r, deps),
   };
 }
 

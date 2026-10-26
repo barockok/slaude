@@ -125,7 +125,7 @@ describe("db/client drivers", () => {
         "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'",
       )).map((r) => r.table_name);
       for (const t of EXPECTED_TABLES) expect(tables).toContain(t);
-      expect(tables).not.toContain("skill_usage");
+      expect(tables).toContain("skill_usage");
       expect(await db.one<{ id: string }>("SELECT id FROM tenants WHERE id = ?", ["default"])).toEqual({ id: "default" });
 
       const now = Date.now();

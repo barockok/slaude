@@ -13,6 +13,10 @@
  *   start   {}                                    → { ok: true, runId } | { ok: false, reason }
  *   finish  { runId, outcome, usage: {model: tokens} } → { ok: true }
  *
+ * POST /v1/background/skill-usage {skill} counts one use of a skill by the
+ * token persona's agent (spec §9.1), for the weekly skill review. The node
+ * sends it fire-and-forget after a successful `Skill` call.
+ *
  * `finish` is refused (409) for a run id that is not open, or not this
  * persona's agent's skill-check run. A persona that is not live is refused
  * (PersonaNotLiveError, 409 by the router).
@@ -21,6 +25,8 @@ import { z } from "zod";
 import { parseRunAs } from "../../agent/credential-owner";
 import { backgroundAgentId, finishSkillCheck, skillCheckModel, startSkillCheck, type SkillCheckDeps } from "../../background/skill-check";
 import * as Sessions from "../../db/sessions";
+import * as SkillUsage from "../../db/skill-usage";
+import { SKILL_KEY_MAX, skillUsageKey } from "../../skills/usage";
 import { zodIssueLine } from "../../tools/contracts/types";
 import type { JobClaims } from "./auth";
 import { json, notFound } from "./http";
@@ -65,4 +71,22 @@ export async function handleSkillCheck(op: string, body: unknown, claims: JobCla
     if (e instanceof z.ZodError) return json(400, { error: `invalid input: ${zodIssueLine(e)}` });
     throw e;
   }
+}
+
+const usageBody = z.object({ skill: z.string().min(1).max(SKILL_KEY_MAX + 1) }).strict();
+
+/** POST /v1/background/skill-usage: one use, by the job token persona's agent. */
+export async function handleSkillUsage(body: unknown, claims: JobClaims, now: () => number = Date.now): Promise<Response> {
+  let skill: string;
+  try {
+    skill = usageBody.parse(body).skill;
+  } catch (e) {
+    if (e instanceof z.ZodError) return json(400, { error: `invalid input: ${zodIssueLine(e)}` });
+    throw e;
+  }
+  const key = skillUsageKey(skill);
+  if (!key) return json(400, { error: "invalid input: skill: not a skill name" });
+  const agentId = await backgroundAgentId(personaOf(claims));
+  await SkillUsage.record(agentId, key, now());
+  return json(200, { ok: true });
 }
