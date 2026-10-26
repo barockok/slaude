@@ -66,6 +66,7 @@ const NOTE = "Bob seems stretched thin before the launch";
 const TEAM_FACT = "The launch moved to Friday the 13th.";
 const BOB_SAID = "I keep the deploy runbook in the wiki now.";
 const AGENT_NOTE = "Bob maintains the deploy runbook.";
+const CHANNEL_NOTE = "Deploys in this channel go out on Tuesdays.";
 
 const MODEL = "test-model";
 const TABLE: PriceTable = { [MODEL]: { input: 1, output: 10, cache_read: 0.1, cache_write: 1.25 } };
@@ -404,16 +405,21 @@ describe("/1on1 nightly review, end to end", () => {
     expect(fb.contentOf(SHARED_SOURCE, "team/launch")).toBeUndefined();
 
     // 4. Bob's later channel turn: none of Alice's /1on1-derived pages; the channel pass's note is there.
+    // A channel note Bob may read: the positive control that his block is built at all.
+    await fb.call("put_page", { slug: "shared/channels/c0team", content: CHANNEL_NOTE }, { clientId: "seed", sourceId: SHARED_SOURCE, allowedSources: [SHARED_SOURCE] });
     const later = await turn(mention, "U0BOB", "1630.0", "1630.1", "how is the launch going?");
-    for (const absent of [NOTE, "Call her Al", TEAM_FACT]) expect(later.block).not.toContain(absent);
+    // The block is built (an empty one would pass the absence checks vacuously).
+    expect(later.block.trim().length).toBeGreaterThan(0);
+    expect(later.block).toContain(CHANNEL_NOTE);
+    for (const absent of [NOTE, "Call her Al. Short answers.", TEAM_FACT]) expect(later.block).not.toContain(absent);
     const about = await later.tool("memory_about", { userId: "U0BOB" });
     expect(about.isError).toBeFalsy();
     expect(about.text).toContain(AGENT_NOTE);
     expect(about.text).not.toContain(NOTE);
-    for (const q of ["stretched thin", "Call her Al", "Friday the 13th"]) {
+    for (const [q, distinctive] of [["stretched thin", "stretched thin before the launch"], ["Call her Al", "Call her Al"], ["Friday the 13th", "moved to Friday the 13th"]] as const) {
       const r = await later.tool("kb_search", { query: q });
       expect(r.isError).toBeFalsy();
-      expect(r.text).not.toContain(q.split(" ")[0]!);
+      expect(r.text).not.toContain(distinctive);
     }
     // Positive control: Bob's search finds what he may read.
     expect((await later.tool("kb_search", { query: "deploy runbook" })).text).toContain("people/u0bob-runbook");
