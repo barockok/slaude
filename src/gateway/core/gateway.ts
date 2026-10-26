@@ -107,7 +107,7 @@ import { parseRef } from "../../secrets";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
-import { backgroundAgentId, ledgerSkillCheckBudget } from "../../background/skill-check";
+import { backgroundAgentId, ledgerSkillCheckBudget, warnUnpricedModels } from "../../background/skill-check";
 import { recordSkillUse } from "../../skills/usage";
 import { scrubChildEnv, withoutKeys } from "../../agent/child-env";
 import { providerSelectingNames } from "../../agent/provider-env";
@@ -1022,6 +1022,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       },
     }),
   );
+
+  // One loud line at boot for a configured model the price table lacks (the
+  // gateway prices every check and pass, its nodes' included).
+  warnUnpricedModels();
 
   // The post-turn skill check's budget (spec §9.3), on the ledger for turns
   // that run in THIS process (mono). The run's scope is whom the session's

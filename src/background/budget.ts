@@ -72,3 +72,19 @@ export async function canStart(
   // Tolerate float noise (1 - 0.9 = 0.0999...).
   return remaining + 1e-9 >= estimate ? { ok: true, estimate } : { ok: false, reason: "budget" };
 }
+
+/**
+ * The start rule's second half, once the run's row (with its estimate) is in
+ * the ledger: true when the day's spend, this run and every other open run
+ * included, is over the limit (less the nightly reserve, as in canStart). The
+ * check before the insert alone let near-simultaneous starts each see room for
+ * one and overshoot together; with the row first they see each other.
+ */
+export async function overAfterStart(cfg: BudgetConfig, agentId: string, pass: PassName, now: Date): Promise<boolean> {
+  const day = localDay(now, cfg.timeZone);
+  let remaining = cfg.limitUsd - (await Runs.spentOn(agentId, day));
+  if (BEHIND_NIGHTLY.has(pass) && !(await Runs.ranOn(agentId, "nightly-review", day))) {
+    remaining -= await estimateFor(agentId, "nightly-review");
+  }
+  return remaining < -1e-9;
+}

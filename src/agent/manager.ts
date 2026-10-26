@@ -95,6 +95,9 @@ type LiveSession = {
   /** The last result's `modelUsage` (a running total per CLI process): the
    *  base the check turn's own usage is measured from. */
   lastModelUsage?: Record<string, ModelUsageRow>;
+  /** The model the CLI named on the last assistant message of a user turn:
+   *  the skill check's fallback model when none is configured or priced. */
+  lastAssistantModel?: string;
   /** Set after the SDK query() resolves; lets us call setPermissionMode/setModel live. */
   query?: Query;
   /** Idle TTL timer; cleared/rearmed on every user msg and turn-end. */
@@ -1588,6 +1591,10 @@ export class AgentManager extends EventEmitter {
         type ThinkingBlock = { type: "thinking"; thinking: string };
         const evolve = live?.inAutoEvolve ? { autoEvolve: true } : {};
         if (live?.inAutoEvolve && live.evolveRun) noteEvolveUsage(live.evolveRun, msg.message as { id?: string; model?: string; usage?: unknown });
+        else if (live) {
+          const reported = (msg.message as { model?: unknown }).model;
+          if (typeof reported === "string" && reported) live.lastAssistantModel = reported;
+        }
         const blocks = msg.message.content as Array<
           (typeof msg.message.content)[number] | ThinkingBlock
         >;
@@ -1799,7 +1806,7 @@ export class AgentManager extends EventEmitter {
   async #startBudgetedCheck(sessionId: string, live: LiveSession, budget: SkillCheckBudget, seq: number): Promise<void> {
     let r: { ok: boolean; runId?: string };
     try {
-      r = await budget.start(sessionId, live.personaName ?? "default");
+      r = await budget.start(sessionId, live.personaName ?? "default", live.lastAssistantModel);
     } catch (e) {
       console.warn(`[mgr] skill check skipped session=${sessionId}: its budgeted run could not start: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
       return;

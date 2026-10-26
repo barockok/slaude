@@ -403,6 +403,69 @@ describe("budgeted skill check", () => {
     await shutdown(mgr, row.id);
   });
 
+  it("mono ledger, SLAUDE_MODEL unset: the check still runs, labelled and priced by the model the CLI reported", async () => {
+    setAgentId("U0AGENT");
+    warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    const saved = process.env.SLAUDE_MODEL;
+    delete process.env.SLAUDE_MODEL;
+    try {
+      const mgr = new AgentManager();
+      mgr.setBackgroundBudget(
+        ledgerSkillCheckBudget({ scopeFor: async () => "agent", priceTable: { [MODEL]: { input: 1, output: 10, cache_read: 0, cache_write: 0 } } }),
+      );
+      const row = await mgr.ensureSession(thread());
+      await Sessions.setModel(row.id, "");
+      const fs = plan((s, text) => {
+        if (isCheck(text)) {
+          s.emit(asst([{ type: "text", text: "no skill needed" }], { model: MODEL }));
+          s.emit(res({ usage: usage(300, 40), modelUsage: modelUsage(1300, 140) }));
+          return;
+        }
+        s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), { type: "text", text: "did it" }], { model: MODEL }));
+        s.emit(res({ usage: usage(1000, 100), modelUsage: modelUsage(1000, 100) }));
+      });
+      await mgr.sendMessage(row.id, "do a thing");
+      const day = new Date().toISOString().slice(0, 10);
+      const t0 = Date.now();
+      let rows: Awaited<ReturnType<typeof Runs.listBetween>> = [];
+      while (!(rows[0]?.outcome) && Date.now() - t0 < 3000) {
+        rows = await Runs.listBetween("U0AGENT", day, day);
+        await Bun.sleep(10);
+      }
+      expect(fs.users.map((u) => isCheck(String(u.message.content)))).toEqual([false, true]);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ pass: "skill-check", model: MODEL, outcome: "ok" });
+      expect(rows[0]!.costUsd).toBeCloseTo(0.0007, 9);
+      await shutdown(mgr, row.id);
+    } finally {
+      if (saved === undefined) delete process.env.SLAUDE_MODEL;
+      else process.env.SLAUDE_MODEL = saved;
+    }
+  });
+
+  it("the budget's start gets the model the CLI named on the qualifying turn", async () => {
+    const mgr = new AgentManager();
+    const reported: (string | undefined)[] = [];
+    const finishes: unknown[] = [];
+    mgr.setBackgroundBudget({
+      start: async (_sid, _persona, model) => {
+        reported.push(model);
+        return { ok: true, runId: "run-rm" };
+      },
+      finish: async (...a) => void finishes.push(a),
+    });
+    const row = await mgr.ensureSession(thread());
+    plan((s, text) => {
+      if (isCheck(text)) return void s.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(1001, 101) }));
+      s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), { type: "text", text: "did it" }], { model: "claude-reported-1" }));
+      s.emit(res({ usage: usage(1000, 100), modelUsage: modelUsage(1000, 100) }));
+    });
+    await mgr.sendMessage(row.id, "do a thing");
+    await until(() => finishes.length === 1, 3000, "finish");
+    expect(reported).toEqual(["claude-reported-1"]);
+    await shutdown(mgr, row.id);
+  });
+
   it("no budget installed (a bare manager): the unbudgeted check as before", async () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());

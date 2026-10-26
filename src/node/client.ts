@@ -496,10 +496,10 @@ export class NodeClient {
    * a 409 on a retry counts as recorded. Each attempt is bounded by
    * BACKGROUND_TIMEOUT_MS.
    */
-  async skillCheckStart(jobToken: string): Promise<{ ok: boolean; runId?: string }> {
+  async skillCheckStart(jobToken: string, reportedModel?: string): Promise<{ ok: boolean; runId?: string }> {
     const res = await this.request("/v1/background/skill-check/start", {
       method: "POST",
-      body: {},
+      body: reportedModel ? { model: reportedModel } : {},
       jobToken,
       retry: false,
       signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS),

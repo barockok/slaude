@@ -77,12 +77,29 @@ describe("start", () => {
     expect(rows.map((x) => [x.pass, x.outcome])).toEqual([["skill-check", "skipped-budget"]]);
   });
 
-  test("an unpriced model refuses to start (an error row, never priced at zero)", async () => {
+  test("an unpriced configured model still starts; the node's reported model labels the run", async () => {
     const s = await session("claude-unknown-9");
+    const r = await body(await handleSkillCheck("start", { model: MODEL }, claims(s), deps()));
+    expect(r).toMatchObject({ status: 200, json: { ok: true } });
+    expect(await Runs.get(r.json.runId)).toMatchObject({ outcome: null, model: MODEL });
+  });
+
+  test("an unset model (SLAUDE_MODEL unset, no persona model) still starts; finish prices the reported usage", async () => {
+    const s = await session("");
     const r = await body(await handleSkillCheck("start", {}, claims(s), deps()));
-    expect(r).toEqual({ status: 200, json: { ok: false, reason: "model" } });
-    const rows = await Runs.listBetween("U0AGENT", "2026-10-26", "2026-10-26");
-    expect(rows.map((x) => [x.outcome, x.model])).toEqual([["error", "claude-unknown-9"]]);
+    expect(r).toMatchObject({ status: 200, json: { ok: true } });
+    expect((await Runs.get(r.json.runId))!.model).toBeNull();
+    await handleSkillCheck("finish", { runId: r.json.runId, outcome: "ok", usage: { [MODEL]: M(1000, 100) } }, claims(s), deps());
+    expect(await Runs.get(r.json.runId)).toMatchObject({ outcome: "ok" });
+    expect((await Runs.get(r.json.runId))!.costUsd).toBeCloseTo(0.002, 9);
+  });
+
+  test("a reported model that is not a model id string, or too long, is a 400", async () => {
+    const s = await session();
+    for (const model of ["", "bad model", "x".repeat(201), 7, "a\nb"]) {
+      expect((await handleSkillCheck("start", { model }, claims(s), deps())).status).toBe(400);
+    }
+    expect(await Runs.listBetween("U0AGENT", "2026-10-26", "2026-10-26")).toEqual([]);
   });
 
   test("a body with any field is a 400 (nothing comes from the node but the token)", async () => {

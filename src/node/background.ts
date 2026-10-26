@@ -21,7 +21,8 @@ export function makeNodeSkillCheckBudget(deps: {
 }): SkillCheckBudget {
   return {
     // The persona comes from the job token on the gateway, never from here.
-    start: (sessionId) => deps.withToken(sessionId, (t) => deps.client.skillCheckStart(t)),
+    // The reported model is a label fallback only; the gateway validates it.
+    start: (sessionId, _personaId, reportedModel) => deps.withToken(sessionId, (t) => deps.client.skillCheckStart(t, reportedModel)),
     finish: (sessionId, runId, r) =>
       deps.withToken(sessionId, (t) => deps.client.skillCheckFinish({ runId, outcome: r.outcome, usage: r.usage }, t)),
   };

@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import * as Runs from "../../src/db/background-runs";
-import { finishSkillCheck, SKILL_CHECK_STALE_MS, startSkillCheck, sweepStaleSkillChecks, type SkillCheckDeps } from "../../src/background/skill-check";
+import { finishSkillCheck, SKILL_CHECK_STALE_MS, startSkillCheck, sweepStaleSkillChecks, warnUnpricedModels, type SkillCheckDeps } from "../../src/background/skill-check";
 import { resetAgentId, setAgentId } from "../../src/knowledge/agent-identity";
 import type { PriceTable } from "../../src/background/prices";
 
@@ -60,5 +60,58 @@ describe("skill-check ledger", () => {
     expect(await finishSkillCheck({ runId: lost.runId, agentId: "U0AGENT", usage: {}, outcome: "ok" }, deps(1))).toEqual({ ok: false, reason: "not-open" });
     expect(await sweepStaleSkillChecks(later)).toBe(0);
     expect((await Runs.listBetween("U0AGENT", DAY, DAY)).filter((r) => r.outcome === null)).toHaveLength(2);
+  });
+
+  test("near-simultaneous starts with room for one estimate open at most one run", async () => {
+    // 0.13 − nightly floor 0.10 leaves room for one 0.02 check, not two.
+    const rs = await Promise.all([start(0.13), start(0.13), start(0.13)]);
+    expect(rs.filter((r) => r.ok).length).toBeLessThanOrEqual(1);
+    const rows = await Runs.listBetween("U0AGENT", DAY, DAY);
+    expect(rows.filter((r) => r.outcome === null).length).toBeLessThanOrEqual(1);
+    expect(rows.filter((r) => r.outcome !== null).every((r) => r.outcome === "skipped-budget" && r.costUsd === 0)).toBe(true);
+  });
+
+  test("SLAUDE_MODEL unset: the check starts and is priced by the model the CLI reports", async () => {
+    const r = await startSkillCheck({ personaId: "default", model: "", scope: "agent" }, deps(1));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect((await Runs.get(r.runId))!.model).toBeNull();
+    const done = await finishSkillCheck({ runId: r.runId, agentId: "U0AGENT", usage: { [MODEL]: { input: 1000, output: 100, cache_read: 0, cache_write: 0 } }, outcome: "ok" }, deps(1));
+    expect(done).toEqual({ ok: true, costUsd: expect.closeTo(0.002, 9) });
+    expect((await Runs.get(r.runId))!.outcome).toBe("ok");
+  });
+
+  test("the reported model labels the run when the configured one is unpriced", async () => {
+    const r = await startSkillCheck({ personaId: "default", model: "claude-unknown-9", scope: "agent", reportedModel: MODEL }, deps(1));
+    if (!r.ok) throw new Error("expected a start");
+    expect((await Runs.get(r.runId))!.model).toBe(MODEL);
+  });
+
+  test("a reported model with no price ends the run error and keeps at least its estimate (never zero)", async () => {
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const r = await startSkillCheck({ personaId: "default", model: "", scope: "agent" }, deps(1));
+      if (!r.ok) throw new Error("expected a start");
+      const done = await finishSkillCheck({ runId: r.runId, agentId: "U0AGENT", usage: { "claude-unknown-9": { input: 10, output: 0, cache_read: 0, cache_write: 0 } }, outcome: "ok" }, deps(1));
+      expect(done.ok).toBe(true);
+      expect(await Runs.get(r.runId)).toMatchObject({ outcome: "error", costUsd: 0.02 });
+      expect(String(errSpy.mock.calls[0]?.[0])).toContain("'claude-unknown-9'");
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+});
+
+describe("boot warning", () => {
+  test("one loud line naming each configured model with no price; none when all are priced or unset", () => {
+    warnSpy.mockClear();
+    expect(warnUnpricedModels(TABLE, [MODEL, "", "claude-unknown-9", "claude-unknown-9", `${MODEL}-20260101`])).toEqual(["claude-unknown-9"]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const line = String(warnSpy.mock.calls[0]![0]);
+    expect(line).toContain("'claude-unknown-9'");
+    expect(line).toContain("SLAUDE_PRICE_TABLE");
+    warnSpy.mockClear();
+    expect(warnUnpricedModels(TABLE, [MODEL, ""])).toEqual([]);
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });

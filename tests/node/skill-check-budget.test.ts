@@ -50,6 +50,12 @@ describe("node skill-check budget", () => {
     expect(seen).toEqual([{ url: "http://gw/v1/background/skill-check/start", method: "POST", job: "job-t", body: {} }]);
   });
 
+  test("start sends the model the CLI reported for the qualifying turn, and nothing else", async () => {
+    const { seen, budget } = setup(() => json(200, { ok: true, runId: "r2" }));
+    expect(await budget.start("S1", "ana", "claude-test-1")).toEqual({ ok: true, runId: "r2" });
+    expect(seen[0]!.body).toEqual({ model: "claude-test-1" });
+  });
+
   test("a refusal is ok:false", async () => {
     const { budget } = setup(() => json(200, { ok: false, reason: "budget" }));
     expect(await budget.start("S1", "default")).toEqual({ ok: false });

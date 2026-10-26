@@ -8,9 +8,12 @@
  * token: the persona (and from it the agent id the brain keys `agent-<id>` on),
  * the session (whose row names the model), and the signed `runAs` (the run's
  * scope). The gateway prices with its own price table: a node reports token
- * counts per model, never a cost.
+ * counts per model, never a cost. A start may name the model the CLI reported
+ * for the qualifying turn: only a fallback for the run's label when the
+ * session's configured model is unset or unpriced; finish still prices the
+ * reported usage.
  *
- *   start   {}                                    → { ok: true, runId } | { ok: false, reason }
+ *   start   { model? }                            → { ok: true, runId } | { ok: false, reason }
  *   finish  { runId, outcome, usage: {model: tokens} } → { ok: true }
  *
  * POST /v1/background/skill-usage {skill} counts one use of a skill by the
@@ -39,7 +42,9 @@ export const BACKGROUND_BODY_MAX_BYTES = 16 * 1024;
 
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const tokens = z.object({ input: count, output: count, cache_read: count, cache_write: count }).strict();
-const startBody = z.object({}).strict();
+/** A model id as the CLI reports it (`claude-…`, `anthropic/claude-…`, a dated snapshot). */
+const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,199}$/;
+const startBody = z.object({ model: z.string().regex(MODEL_ID).optional() }).strict();
 const finishBody = z
   .object({
     runId: z.string().min(1).max(64),
@@ -54,12 +59,15 @@ const personaOf = (claims: JobClaims): string => claims.persona || "default";
 export async function handleSkillCheck(op: string, body: unknown, claims: JobClaims, deps: SkillCheckDeps = {}): Promise<Response> {
   try {
     if (op === "start") {
-      startBody.parse(body);
+      const b = startBody.parse(body);
       const row = await Sessions.findById(claims.session);
       if (!row) return notFound("session not found");
       const runAs = parseRunAs(claims.runAs);
       const scope = runAs?.kind === "user" ? `user:${runAs.slackUserId}` : "agent";
-      const r = await startSkillCheck({ personaId: personaOf(claims), model: skillCheckModel(row), scope }, deps);
+      const r = await startSkillCheck(
+        { personaId: personaOf(claims), model: skillCheckModel(row), scope, ...(b.model ? { reportedModel: b.model } : {}) },
+        deps,
+      );
       return json(200, r.ok ? { ok: true, runId: r.runId } : { ok: false, reason: r.reason });
     }
     const b = finishBody.parse(body);

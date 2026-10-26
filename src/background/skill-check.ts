@@ -23,8 +23,8 @@ import * as Sessions from "../db/sessions";
 import { env } from "../config/env";
 import { agentIdReady } from "../knowledge/agent-identity";
 import { m as metric } from "../metrics";
-import { livePersona, personaDefaultModel } from "../persona/registry";
-import { canStart, localDay, type BudgetConfig } from "./budget";
+import { getPersonaRegistry, livePersona, personaDefaultModel } from "../persona/registry";
+import { canStart, localDay, overAfterStart, type BudgetConfig } from "./budget";
 import { budgetConfigFor } from "./config";
 import {
   addTokens,
@@ -38,6 +38,7 @@ import {
   type ModelUsageRow,
   type PriceTable,
   type TokenCounts,
+  unpricedModels,
 } from "./prices";
 import type { ResultUsage } from "../agent/token-budget";
 
@@ -45,8 +46,13 @@ export const SKILL_CHECK = "skill-check" as const;
 
 /** What the manager calls around the post-turn skill check. */
 export interface SkillCheckBudget {
-  /** Open a `skill-check` run. ok=false (budget, unpriced model) means: do not run the check. Throws on failure. */
-  start(sessionId: string, personaId: string): Promise<{ ok: boolean; runId?: string }>;
+  /**
+   * Open a `skill-check` run. ok=false (budget) means: do not run the check.
+   * `reportedModel` is the model the CLI reported for the qualifying turn (the
+   * last assistant message's), a fallback when the configured one is unset or
+   * unpriced. Throws on failure.
+   */
+  start(sessionId: string, personaId: string, reportedModel?: string): Promise<{ ok: boolean; runId?: string }>;
   /** Record the check turn's usage, per model, and end the run. Throws on failure. */
   finish(sessionId: string, runId: string, r: { usage: ModelTokens; outcome: "ok" | "error" }): Promise<void>;
 }
@@ -73,6 +79,33 @@ export function skillCheckModel(row: Pick<SessionRow, "model" | "persona_id">): 
   return personaDefaultModel(named);
 }
 
+/** Every model a background run is configured with: SLAUDE_MODEL and each live persona's default model. */
+export function configuredModels(): string[] {
+  const out = [env.model() ?? ""];
+  try {
+    out.push(personaDefaultModel(undefined));
+    for (const p of getPersonaRegistry().list()) if (p.name && p.name !== "default") out.push(personaDefaultModel(p.name));
+  } catch {
+    /* registry not readable yet: SLAUDE_MODEL alone */
+  }
+  return out;
+}
+
+/**
+ * One loud boot line naming each configured model the price table has no
+ * price for. Such a model still runs checks and passes, priced by the models
+ * the CLI reports; a reported model with no price ends that run `error`.
+ */
+export function warnUnpricedModels(table: PriceTable = envPriceTable(env.priceTableRaw()), models: readonly string[] = configuredModels()): string[] {
+  const missing = unpricedModels(table, models);
+  if (missing.length > 0) {
+    console.warn(
+      `[background] WARNING: model(s) '${missing.join("', '")}' (SLAUDE_MODEL or a persona model) have no price in SLAUDE_PRICE_TABLE or the built-in table. Skill checks and background passes are priced by the model the CLI reports; if that has no price either, each run ends as error after one turn. Add an entry to SLAUDE_PRICE_TABLE.`,
+    );
+  }
+  return missing;
+}
+
 export interface SkillCheckDeps {
   now?: () => Date;
   priceTable?: PriceTable;
@@ -88,43 +121,56 @@ const settleMetrics = (agentId: string, outcome: RunOutcome, cost: number) => {
 };
 
 /**
- * Open a skill-check run, or record why it did not start: `skipped-budget`
- * when canStart refuses (the nightly reserve applies), `error` when the
- * check's model has no price (never priced at zero). Each refusal is one log
- * line and one ledger row.
+ * Open a skill-check run, or record why it did not start (`skipped-budget`
+ * when canStart refuses; the nightly reserve applies). The run's model is the
+ * configured one when it is priced, else the model the CLI reported for the
+ * qualifying turn when that is, else whichever is named (or none): an unset
+ * or unpriced configured model never stops the check, because finish prices
+ * the check turn by the models the CLI reports in its usage (and ends the run
+ * `error` when one of those has no price).
+ *
+ * The row (with its provisional estimate) is inserted first and the day's
+ * spend re-checked after: two checks starting at once each see the other's
+ * estimate, so together they never overshoot the start rule. Over → the row
+ * ends `skipped-budget`.
  */
 export async function startSkillCheck(
-  a: { personaId: string; model: string; scope: string },
+  a: { personaId: string; model: string; scope: string; reportedModel?: string },
   deps: SkillCheckDeps = {},
-): Promise<{ ok: true; runId: string; agentId: string } | { ok: false; reason: "budget" | "model" }> {
+): Promise<{ ok: true; runId: string; agentId: string } | { ok: false; reason: "budget" }> {
   const agentId = await backgroundAgentId(a.personaId);
   const now = (deps.now ?? (() => new Date()))();
   const cfg = (deps.budget ?? budgetConfigFor)(a.personaId);
   const day = localDay(now, cfg.timeZone);
   const row = { agentId, pass: SKILL_CHECK, scope: a.scope, day, startedAt: now.getTime() };
   const tag = `[background] agent=${agentId} pass=${SKILL_CHECK}`;
-  const refuse = async (outcome: RunOutcome, model: string | null) => {
-    await Runs.finish(await Runs.start({ ...row, model }), { tokens: ZERO_TOKENS, costUsd: 0, outcome });
-    settleMetrics(agentId, outcome, 0);
+  const skipped = () => {
+    console.log(`${tag}: skipped, not enough of today's budget left`);
+    settleMetrics(agentId, "skipped-budget", 0);
+    return { ok: false as const, reason: "budget" as const };
   };
   await sweepStaleSkillChecks(now);
   const gate = await canStart(cfg, agentId, SKILL_CHECK, now);
   if (!gate.ok) {
-    console.log(`${tag}: skipped, not enough of today's budget left`);
-    await refuse("skipped-budget", null);
-    return { ok: false, reason: "budget" };
+    await Runs.finish(await Runs.start({ ...row, model: null }), { tokens: ZERO_TOKENS, costUsd: 0, outcome: "skipped-budget" });
+    return skipped();
   }
-  if (!a.model || costUsd(tableOf(deps), a.model, ZERO_TOKENS) === null) {
-    console.error(
-      a.model
-        ? `${tag}: model '${a.model}' has no price: SLAUDE_PRICE_TABLE (or the built-in table) lacks it; not starting`
-        : `${tag}: no model configured (persona model or SLAUDE_MODEL); not starting`,
+  const table = tableOf(deps);
+  const priced = (m: string | undefined): m is string => !!m && costUsd(table, m, ZERO_TOKENS) !== null;
+  const reported = a.reportedModel || undefined;
+  const model = priced(a.model) ? a.model : priced(reported) ? reported : a.model || reported || null;
+  if (!priced(model ?? undefined)) {
+    console.warn(
+      `${tag}: ${a.model ? `model '${a.model}' has no price` : "no model configured"}; the check is priced by the models the CLI reports (SLAUDE_PRICE_TABLE or the built-in table)`,
     );
-    await refuse("error", a.model || null);
-    return { ok: false, reason: "model" };
   }
   // The estimate is the open run's provisional cost until finish replaces it.
-  return { ok: true, runId: await Runs.start({ ...row, model: a.model, costUsd: gate.estimate }), agentId };
+  const runId = await Runs.start({ ...row, model, costUsd: gate.estimate });
+  if (await overAfterStart(cfg, agentId, SKILL_CHECK, now)) {
+    await Runs.finishOpen(runId, { agentId, pass: SKILL_CHECK }, { tokens: ZERO_TOKENS, costUsd: 0, outcome: "skipped-budget" });
+    return skipped();
+  }
+  return { ok: true, runId, agentId };
 }
 
 /** An open skill-check run older than this lost its finish (a check turn is minutes at most). */
@@ -170,13 +216,16 @@ export async function finishSkillCheck(
   let outcome: RunOutcome = a.outcome;
   let total = cost;
   if (unpriced.length > 0) {
-    console.error(
-      `[background] agent=${a.agentId} pass=${SKILL_CHECK}: model '${unpriced.join("', '")}' in the check's usage has no price: SLAUDE_PRICE_TABLE (or the built-in table) lacks it; priced at '${run.model}'`,
-    );
-    outcome = "error";
+    // Never priced at zero: the unpriced tokens at the run's own model when
+    // that has a price, else the run keeps at least its provisional estimate.
     let rest = { ...ZERO_TOKENS };
     for (const m of unpriced) rest = addTokens(rest, usage[m]!);
-    total += (run.model ? costUsd(table, run.model, rest) : null) ?? 0;
+    const atRunModel = run.model ? costUsd(table, run.model, rest) : null;
+    console.error(
+      `[background] agent=${a.agentId} pass=${SKILL_CHECK}: model '${unpriced.map((m) => m || "(none named)").join("', '")}' in the check's usage has no price: SLAUDE_PRICE_TABLE (or the built-in table) lacks it; ${atRunModel !== null ? `priced at '${run.model}'` : "the run keeps its estimate"}`,
+    );
+    outcome = "error";
+    total = atRunModel !== null ? total + atRunModel : Math.max(total, run.costUsd);
   }
   if (!(await Runs.finishOpen(a.runId, { agentId: a.agentId, pass: SKILL_CHECK }, { tokens, costUsd: total, outcome }))) {
     return { ok: false, reason: "not-open" };
@@ -193,10 +242,13 @@ export function ledgerSkillCheckBudget(o: { scopeFor(sessionId: string): Promise
   /** runId → the agent it was opened for (one process: the run never leaves it). */
   const agents = new Map<string, string>();
   return {
-    async start(sessionId, personaId) {
+    async start(sessionId, personaId, reportedModel) {
       const row = await Sessions.findById(sessionId);
       if (!row) throw new Error(`no session row for ${sessionId}`);
-      const r = await startSkillCheck({ personaId, model: skillCheckModel(row), scope: await o.scopeFor(sessionId) }, o);
+      const r = await startSkillCheck(
+        { personaId, model: skillCheckModel(row), scope: await o.scopeFor(sessionId), ...(reportedModel ? { reportedModel } : {}) },
+        o,
+      );
       if (!r.ok) return { ok: false };
       agents.set(r.runId, r.agentId);
       return { ok: true, runId: r.runId };
