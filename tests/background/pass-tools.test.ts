@@ -9,6 +9,10 @@ import {
   passToolId,
   PROFILE_SCOPE_REFUSAL,
   QUOTE_REFUSAL,
+  NO_PROFILE_REFUSAL,
+  CORRECTION_SLUG_REFUSAL,
+  USER_PROPOSAL_KIND_REFUSAL,
+  holdsCredential,
   SHARED_REFUSAL,
   SOURCE_REFUSAL,
   type PassToolContext,
@@ -56,12 +60,21 @@ beforeEach(async () => {
 describe("read sources", () => {
   test("user scope: the person's user- and profile sources plus agent/shared/public/kb; kb list filtered to kb-*", () => {
     expect(passReadSources({ kind: "user", userId: ALICE, teamId: TEAM }, AGENT, [KB, "user-u0bob", BOB_PROFILE])).toEqual([
-      userSourceId(ALICE), ALICE_PROFILE, agentSourceId(AGENT), "shared", "public", KB,
+      userSourceId(ALICE), ALICE_PROFILE, agentSourceId(AGENT), "agent", "shared", "public", KB,
     ]);
   });
-  test("agent scope: no user-* or profile-* source", () => {
-    expect(passReadSources({ kind: "agent" }, AGENT, [KB, "user-u0bob"])).toEqual([agentSourceId(AGENT), "shared", "public", KB]);
+  test("agent scope: no user-* or profile-* source; the legacy agent source is read", () => {
+    expect(passReadSources({ kind: "agent" }, AGENT, [KB, "user-u0bob"])).toEqual([agentSourceId(AGENT), "agent", "shared", "public", KB]);
   });
+  test("an empty team id leaves the profile out of reads and refuses profile writes", async () => {
+    const scope = { kind: "user" as const, userId: ALICE, teamId: "" };
+    expect(passReadSources(scope, AGENT, [])).toEqual([userSourceId(ALICE), agentSourceId(AGENT), "agent", "shared", "public"]);
+    const { ctx, brain } = ctxFor(scope);
+    const r = await passHandlers.memoize({ pages: [{ slug: "profile", type: "profile", content: "x", quote: "call me Ali from now on" }] }, ctx);
+    expect(text(r)).toBe(NO_PROFILE_REFUSAL);
+    expect(brain.calls).toHaveLength(0);
+  });
+
   test("an unusable user id throws", () => {
     expect(() => passReadSources({ kind: "user", userId: "", teamId: TEAM }, AGENT, [])).toThrow();
   });
@@ -150,6 +163,24 @@ describe("pass tools in user scope (U0ALICE)", () => {
     expect(brain.calls).toHaveLength(0);
   });
 
+  test("a quote spanning two of Alice's turns, or only whitespace, is refused", async () => {
+    const { ctx } = ctxFor({ kind: "user", userId: ALICE, teamId: TEAM });
+    ctx.transcripts = [
+      { at: "t1", author: ALICE, text: "Please call me" },
+      { at: "t2", author: ALICE, text: "Ali from now on" },
+    ];
+    for (const quote of ["Please call me Ali from now on", "me Ali", "            ", "\n\t \n"]) {
+      const r = await passHandlers.memoize({ pages: [{ slug: "profile", type: "profile", content: "x", quote }] }, ctx);
+      expect(text(r)).toBe(QUOTE_REFUSAL);
+    }
+  });
+
+  test("a correction page may not use slug profile", async () => {
+    const { ctx } = alice();
+    const r = await passHandlers.memoize({ pages: [{ slug: "profile", type: "correction", content: "x", quote: "call me Ali from now on" }] }, ctx);
+    expect(text(r)).toBe(CORRECTION_SLUG_REFUSAL);
+  });
+
   test("a profile page about someone else is refused", async () => {
     const { ctx } = alice();
     const r = await passHandlers.memoize(
@@ -183,6 +214,29 @@ describe("pass tools in user scope (U0ALICE)", () => {
     expect(text(p)).toBe(CREDENTIAL_REFUSAL);
   });
 
+  test("a proposal payload holding a credential as a JSON key/value, or nested, is refused", async () => {
+    const { ctx } = alice();
+    const payloads: Array<Record<string, unknown>> = [
+      { password: "hunter2hunter2" },
+      { api_key: "abcd1234efgh5678ijkl" },
+      { page: { notes: [{ ok: "fine" }, { client_secret: "zz9plural9zalpha" }] } },
+      { list: ["fine", "token=abcdef0123456789"] },
+    ];
+    for (const payload of payloads) {
+      expect(holdsCredential(payload)).toBe(true);
+      expect(text(await passHandlers.propose({ kind: "promote", payload, to: "person" }, ctx))).toBe(CREDENTIAL_REFUSAL);
+    }
+    expect(holdsCredential({ slug: "people/x", why: "owns billing", count: 3 })).toBe(false);
+    expect(await Proposals.listOpen(AGENT, "person", ALICE)).toEqual([]);
+  });
+
+  test("a pass running as a person proposes only kind promote", async () => {
+    const { ctx } = alice();
+    for (const kind of ["team-fact", "skill-removal", "lesson-promotion"] as const) {
+      expect(text(await passHandlers.propose({ kind, payload: { x: "y" }, to: "person" }, ctx))).toBe(USER_PROPOSAL_KIND_REFUSAL);
+    }
+  });
+
   test("supersede tags the older page in the same memory only", async () => {
     const { ctx, brain } = alice();
     brain.seed(userSourceId(ALICE), "people/old", "---\ntype: person-note\n---\nold");
@@ -207,17 +261,26 @@ describe("pass tools in user scope (U0ALICE)", () => {
 });
 
 describe("pass tools in agent scope", () => {
-  test("a profile or correction write is refused", async () => {
+  test("a profile write is refused", async () => {
     const { ctx, brain } = agent();
     for (const page of [
       { slug: "profile", type: "profile" as const, content: "x", quote: "call me Ali from now on" },
-      { slug: "c", type: "correction" as const, content: "x", quote: "call me Ali from now on" },
+      { slug: "c", type: "correction" as const, content: "x", target: "profile" as const },
       { slug: "c", type: "outcome" as const, content: "x", target: "profile" as const },
     ]) {
       const r = await passHandlers.memoize({ pages: [page] }, ctx);
       expect(text(r)).toBe(PROFILE_SCOPE_REFUSAL);
     }
     expect(brain.calls).toHaveLength(0);
+  });
+
+  test("a correction page is a lesson candidate in the agent's slice, no quote needed", async () => {
+    const { ctx, brain } = agent();
+    const r = await passHandlers.memoize({ pages: [{ slug: "self/lesson-candidates/terse", type: "correction", content: "was told to keep replies short" }] }, ctx);
+    expect(r.isError).toBeUndefined();
+    const put = brain.calls.find((c) => c.name === "put_page")!;
+    expect(put.scope.sourceId).toBe(agentSourceId(AGENT));
+    expect(put.params.content as string).toContain("type: correction");
   });
 
   test("writes land in the agent's slice; reads touch no user-* or profile-* source", async () => {

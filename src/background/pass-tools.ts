@@ -5,16 +5,18 @@
  *
  * Read-only plus auto-pass writes. Every read is limited to the pass scope's
  * read sources, one source per brain call:
- *   agent scope  `agent-<id>`, `shared`, `public`, the persona's `kb-*`;
+ *   agent scope  `agent-<id>`, the legacy `agent`, `shared`, `public`, the persona's `kb-*`;
  *   user scope   that person's `user-<id>` and profile, plus the above, read-only.
  * No other `user-*` or `profile-*` source is ever read, so a pass never sees
  * two people's private slices at once.
  *
  * Writes go to one place only: the agent's slice (agent scope) or the run-as
- * person's `user-<id>` (user scope). Profile and correction pages go to that
- * person's profile, only in user scope, and only with a `quote` that appears
+ * person's `user-<id>` (user scope). In user scope, profile and correction
+ * pages go to that person's profile, and only with a `quote` that appears
  * verbatim in one of that person's OWN turns in the transcripts the pass was
- * given (§8.3a). Anything for `shared` becomes a `propose` row instead.
+ * given (§8.3a); in agent scope a correction is a lesson candidate in the
+ * agent's slice and a profile page is refused. Anything for `shared` becomes a
+ * `propose` row instead (in user scope only kind `promote`, to that person).
  *
  * Tool results pass through redactSecrets, and a page or proposal carrying a
  * credential-like value is refused (CREDENTIAL_REFUSAL), as kb_memoize does.
@@ -26,7 +28,7 @@ import { gather } from "../knowledge/gather";
 import { composePage, CREDENTIAL_REFUSAL, readPageRecord, type TypedPageInput } from "../knowledge/memory-pages";
 import { getPageOrNull, SUPERSEDED_TAG, supersededSlugs, type BrainOpCall } from "../knowledge/memory-trail";
 import { PAGE_TYPES, type PageType } from "../knowledge/page-types";
-import { agentSourceId, PUBLIC_SOURCE, SHARED_SOURCE, speakerProfileSource, userSourceId, type BrainScope } from "../knowledge/scope";
+import { AGENT_SOURCE, agentSourceId, PUBLIC_SOURCE, SHARED_SOURCE, speakerProfileSource, userSourceId, type BrainScope } from "../knowledge/scope";
 import * as Proposals from "../db/proposals";
 
 export type PassScope = { kind: "agent" } | { kind: "user"; userId: string; teamId: string };
@@ -71,9 +73,12 @@ const LIST_LIMIT = 200;
 export const SHARED_REFUSAL =
   'refused: a background pass cannot write to shared; use propose (kind "team-fact" or "promote") so the right person can approve it';
 export const PROFILE_SCOPE_REFUSAL =
-  "refused: profile and correction pages are written only by a pass running as that person, quoting their own words";
+  "refused: a profile is written only by a pass running as that person, quoting their own words";
 export const QUOTE_REFUSAL = "refused: a profile entry must quote that person's own words";
 export const SOURCE_REFUSAL = "refused: that source is outside this pass's scope";
+export const NO_PROFILE_REFUSAL = "refused: this person's profile is unavailable to this pass (no Slack team id)";
+export const CORRECTION_SLUG_REFUSAL = 'refused: a correction page may not use slug "profile"';
+export const USER_PROPOSAL_KIND_REFUSAL = 'refused: a pass running as a person proposes only kind "promote"';
 export const LESSONS_REFUSAL = `refused: a lessons page holds at most ${LESSONS_MAX_LINES} lines; merge or drop lessons before adding`;
 export const PROPOSE_TO_PERSON_REFUSAL = 'refused: an agent-scope pass proposes only to the manager (to: "manager")';
 
@@ -90,11 +95,17 @@ function personSources(scope: Extract<PassScope, { kind: "user" }>): { own: stri
 
 /** Every source a pass in `scope` may read, in read order. */
 export function passReadSources(scope: PassScope, agentId: string, kbSources: readonly string[]): string[] {
-  const common = [agentSourceId(agentId), SHARED_SOURCE, PUBLIC_SOURCE, ...kbSources.filter((s) => s.startsWith("kb-"))];
+  // The legacy single-agent `agent` source rides along read-only, as in resolveBrainScope.
+  const common = [agentSourceId(agentId), AGENT_SOURCE, SHARED_SOURCE, PUBLIC_SOURCE, ...kbSources.filter((s) => s.startsWith("kb-"))];
   if (scope.kind === "agent") return [...new Set(common)];
   const p = personSources(scope);
   if (!p) throw new Error("user-scope pass needs a usable userId");
   return [...new Set([p.own, ...(p.profile ? [p.profile] : []), ...common])];
+}
+
+/** The run-as person's profile source, or null when there is none (an empty or unusable team id). */
+export function passProfileSource(scope: PassScope): string | null {
+  return scope.kind === "user" ? (personSources(scope)?.profile ?? null) : null;
 }
 
 /** Where the pass's ordinary (non-profile) pages are written. */
@@ -153,7 +164,11 @@ interface Composed {
 /** Destination and composed markdown for one page, or the refusal. */
 function composeOne(pg: PassPage, ctx: PassToolContext, now: Date): Composed | { error: string } {
   if (pg.target === "shared" || pg.type === "team-fact") return { error: SHARED_REFUSAL };
-  const toProfile = pg.target === "profile" || pg.type === "profile" || pg.type === "correction";
+  if (pg.type === "correction" && pg.slug === "profile") return { error: CORRECTION_SLUG_REFUSAL };
+  // A correction is about how to treat the run-as person (their profile) in a
+  // user-scope pass; in an agent-scope pass it is a lesson candidate in the
+  // agent's own slice (spec §8.2).
+  const toProfile = pg.target === "profile" || pg.type === "profile" || (pg.type === "correction" && ctx.scope.kind === "user");
   if (!toProfile) {
     if (pg.type === "lessons" && lineCount(pg.content) > LESSONS_MAX_LINES) return { error: LESSONS_REFUSAL };
     const { quote: _q, target: _t, ...page } = pg;
@@ -162,8 +177,8 @@ function composeOne(pg: PassPage, ctx: PassToolContext, now: Date): Composed | {
     return { slug: pg.slug, content: c.content, source: passWriteSource(ctx.scope, ctx.agentId), ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) };
   }
   if (ctx.scope.kind !== "user") return { error: PROFILE_SCOPE_REFUSAL };
-  const profile = personSources(ctx.scope)?.profile ?? null;
-  if (profile === null) return { error: PROFILE_SCOPE_REFUSAL };
+  const profile = passProfileSource(ctx.scope);
+  if (profile === null) return { error: NO_PROFILE_REFUSAL };
   if (pg.type !== "profile" && pg.type !== "correction") return { error: 'refused: the profile takes pages of type profile or correction' };
   if (pg.type === "profile" && pg.slug !== "profile") return { error: 'refused: a profile page uses slug "profile"' };
   const userId = ctx.scope.userId;
@@ -176,6 +191,24 @@ function composeOne(pg: PassPage, ctx: PassToolContext, now: Date): Composed | {
   );
   if ("error" in c) return c;
   return { slug: pg.slug, content: c.content, source: profile, ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) };
+}
+
+/**
+ * True when any string in `v` (recursively, keys included) looks like a
+ * credential: the string alone, and each object entry rendered as `key: value`,
+ * since JSON's `"api_key":"…"` shape is not what redactSecrets matches.
+ */
+export function holdsCredential(v: unknown, key?: string): boolean {
+  if (typeof v === "string") {
+    if (redactSecrets(v) !== v) return true;
+    return key !== undefined && redactSecrets(`${key}: ${v}`) !== `${key}: ${v}`;
+  }
+  if (typeof v === "number" || typeof v === "boolean") return key !== undefined && holdsCredential(String(v), key);
+  if (Array.isArray(v)) return v.some((x) => holdsCredential(x, key));
+  if (v !== null && typeof v === "object") {
+    return Object.entries(v as Record<string, unknown>).some(([k, x]) => holdsCredential(k) || holdsCredential(x, k));
+  }
+  return false;
 }
 
 export const passHandlers = {
@@ -289,7 +322,8 @@ export const passHandlers = {
     if (p.payload === null || typeof p.payload !== "object" || Array.isArray(p.payload)) return err("refused: payload must be an object");
     const json = JSON.stringify(p.payload);
     if (json.length > MAX_PROPOSAL_CHARS) return err(`refused: payload is over ${MAX_PROPOSAL_CHARS} characters`);
-    if (redactSecrets(json) !== json) return err(CREDENTIAL_REFUSAL);
+    if (holdsCredential(p.payload)) return err(CREDENTIAL_REFUSAL);
+    if (ctx.scope.kind === "user" && p.kind !== "promote") return err(USER_PROPOSAL_KIND_REFUSAL);
     let toKind: Proposals.ProposalTo;
     let toUser: string | null;
     if (ctx.scope.kind === "user") {
@@ -330,7 +364,7 @@ export function passTools(ctx: PassToolContext): PassTool[] {
     tool("search", "Search this pass's read sources. Returns ranked hits with slugs and sources.",
       { query: z.string(), source: SOURCE_ARG, limit: z.number().optional() },
       (a) => passHandlers.search(a, ctx)),
-    tool("memoize", `Write typed pages (1..${PASS_MAX_PAGES}). Ordinary pages go to this pass's own slice. Profile and correction pages go to the run-as person's profile and need \`quote\`: their own words, copied verbatim from one of their turns. Nothing can be written to shared: use propose.`,
+    tool("memoize", `Write typed pages (1..${PASS_MAX_PAGES}). Ordinary pages go to this pass's own slice. In a pass running as a person, profile and correction pages go to that person's profile and need \`quote\`: their own words, copied verbatim from one of their turns. In an agent pass a correction is a lesson candidate in the agent's slice. Nothing can be written to shared: use propose.`,
       { pages: z.array(pageSchema).min(1).max(PASS_MAX_PAGES) },
       (a) => passHandlers.memoize(a, ctx)),
     tool("propose", "Queue a proposal that needs someone's approval (a team fact for shared, promoting private content, removing a skill, promoting a lesson into the SOUL). It becomes a card; nothing is written until it is approved, and it expires after 14 days.",
