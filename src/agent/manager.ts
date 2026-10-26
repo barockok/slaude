@@ -54,6 +54,7 @@ import { injectedTurns, voiceCallActive } from "../voice/turn-flags";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 import { turnModelTokens, type SkillCheckBudget } from "../background/skill-check";
 import { skillUsageHook, type SkillUsageRecorder } from "./skill-usage-hook";
+import { passEndsTurnHook } from "./pass-stop-hook";
 import { addTokens, PROVISIONAL_OUTPUT_TOKENS, tokensFromUsage, type ModelTokens, type ModelUsageRow, type TokenCounts } from "../background/prices";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
@@ -1389,7 +1390,7 @@ export class AgentManager extends EventEmitter {
           Stop: [{ hooks: [stopHook] }],
           UserPromptSubmit: [{ hooks: [userPromptHook] }],
           PreToolUse: [{ hooks: [...(remoteHandle ? [denyLocalBuiltins] : []), this.#skillGate.pre(sessionId), denySyntheticProfileWrite(() => this.isSyntheticTurn(sessionId))] }],
-          PostToolUse: [{ hooks: [this.#skillGate.post(sessionId), skillUsageHook(sessionId, personaName, () => this.#skillUsage)] }],
+          PostToolUse: [{ hooks: [this.#skillGate.post(sessionId), skillUsageHook(sessionId, personaName, () => this.#skillUsage), passEndsTurnHook()] }],
         },
         systemPrompt: {
           type: "preset",
