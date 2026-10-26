@@ -28,8 +28,10 @@
  *
  * Leadership can move mid-pass (a missed renewal, a dead pod): a slot is
  * claimed with an INSERT before its pass starts, so a later leader never
- * re-runs it. A demoted leader starts no further slot but finishes the pass it
- * is in (a pass is bounded by its max-turns cap and the budget).
+ * re-runs it. A demoted leader starts no further slot, and the pass it is in
+ * is cut short: the leader loop aborts the term's signal, so that pass ends
+ * after its current turn as `error` (logged as shutting down); its slot stays
+ * claimed and is not re-run.
  */
 import type { Redis } from "ioredis";
 import * as Runs from "../db/background-runs";
@@ -38,7 +40,8 @@ import * as Proposals from "../db/proposals";
 import { registerLoop } from "../gateway/core/running-loops";
 import { brainAdminCall, brainCall, brainReady } from "../knowledge/brain";
 import { m as metric } from "../metrics";
-import { getPersonaRegistry } from "../persona/registry";
+import { getPersonaRegistry, managedPersonaProvider, personaDefaultModel } from "../persona/registry";
+import { personaKbList } from "../knowledge/persona-kb";
 import { leaderLoop } from "../queue/locks";
 import { redactSecrets } from "../gateway/core/status-text";
 import { localDay, type PassName } from "./budget";
@@ -313,10 +316,27 @@ export function startBackgroundScheduler(deps: SchedulerDeps, opts: { elect?: El
   return { stop };
 }
 
+/** What a pass routes on for a persona: its declared provider, its model and its KB filter. */
+function routingKey(personaId: string): string {
+  const named = personaId === "default" ? undefined : personaId;
+  const kbs = personaKbList(named);
+  return JSON.stringify([managedPersonaProvider(named) ?? null, personaDefaultModel(named), kbs ? [...kbs].sort() : null]);
+}
+
+/** Personas already logged as left out of a group (one line each per process). */
+const loggedUngrouped = new Set<string>();
+
 /**
  * The agent groups to schedule: the default persona and every named persona,
  * grouped by the agent id their ledger and brain slice use (backgroundAgentId).
  * A persona that cannot be resolved (retired mid-sync) is left out this tick.
+ *
+ * A group's passes run with its first persona's provider, model and KB filter,
+ * so a persona whose declared provider, model or kbSources differ from the
+ * group's is never merged into it: its people's transcripts would go to
+ * another persona's provider host, and the pass could read KBs its filter
+ * excludes. It is left out (one log line) and has no background passes until
+ * it has its own Slack user id (its own agent id and group).
  */
 export async function defaultAgentGroups(): Promise<AgentGroup[]> {
   let names: string[] = [];
@@ -326,7 +346,7 @@ export async function defaultAgentGroups(): Promise<AgentGroup[]> {
     console.error(`[background] could not read the persona registry; scheduling the default persona only: ${errText(e)}`);
     names = [];
   }
-  const groups = new Map<string, AgentGroup>();
+  const groups = new Map<string, AgentGroup & { key: string | null }>();
   for (const personaId of ["default", ...names.sort()]) {
     let agentId: string;
     try {
@@ -335,11 +355,26 @@ export async function defaultAgentGroups(): Promise<AgentGroup[]> {
       console.warn(`[background] persona=${personaId}: not scheduled: ${errText(e)}`);
       continue;
     }
+    // Unknown (the registry could not say): may lead a group, never joins one.
+    let key: string | null = null;
+    try {
+      key = routingKey(personaId);
+    } catch {
+      /* left null */
+    }
     const g = groups.get(agentId);
-    if (g) g.personaIds.push(personaId);
-    else groups.set(agentId, { agentId, personaId, personaIds: [personaId], timeZone: budgetConfigFor(personaId).timeZone });
+    if (!g) {
+      groups.set(agentId, { agentId, personaId, personaIds: [personaId], timeZone: budgetConfigFor(personaId).timeZone, key });
+    } else if (key !== null && g.key === key) {
+      g.personaIds.push(personaId);
+    } else if (!loggedUngrouped.has(`${agentId}/${personaId}`)) {
+      loggedUngrouped.add(`${agentId}/${personaId}`);
+      console.error(
+        `[background] persona=${personaId}: no background passes: it shares agent id ${agentId} with persona=${g.personaId} but its provider, model or kbSources differ; give it its own slackUserId`,
+      );
+    }
   }
-  return [...groups.values()];
+  return [...groups.values()].map(({ key: _key, ...g }) => g);
 }
 
 /** Brain source ids, through the trusted admin path. */

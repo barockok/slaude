@@ -391,6 +391,37 @@ describe("defaultAgentGroups", () => {
     }
   });
 
+  test("a persona whose provider, model or kbSources differ is never merged into a shared agent id's group (logged once)", async () => {
+    setAgentId("UPROC1");
+    const personas = [
+      { name: "alpha", slackUserId: "", model: "m-alpha" },
+      { name: "gamma", slackUserId: "", kbSources: ["kb-x"] },
+      { name: "delta", slackUserId: "", provider: { baseUrl: "https://llm.example.invalid" } },
+      { name: "same", slackUserId: "" },
+    ];
+    const reg = {
+      list: () => personas,
+      lookupByName: (n: string) => personas.find((p) => p.name === n) ?? null,
+      lookupByUserId: () => null,
+      isMultiPersonaMode: () => true,
+      isManaged: () => true,
+      tombstonedPersonaFor: () => null,
+      defaultPersona: () => ({ model: null, mcp: null, background: null }),
+    } as unknown as PersonaRegistry;
+    setPersonaRegistry(reg);
+    errSpy.mockClear();
+    try {
+      expect(await defaultAgentGroups()).toEqual([{ agentId: "UPROC1", personaId: "default", personaIds: ["default", "same"], timeZone: "UTC" }]);
+      await defaultAgentGroups();
+      const lines = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      expect(lines).toHaveLength(3);
+      for (const n of ["alpha", "gamma", "delta"]) expect(lines.filter((l: string) => l.includes(`persona=${n}:`))).toHaveLength(1);
+    } finally {
+      __resetPersonaRegistry();
+      resetAgentId();
+    }
+  });
+
   test("a registry that cannot be read is logged; the default persona is still scheduled", async () => {
     setAgentId("UPROC1");
     setPersonaRegistry({ list: () => { throw new Error("registry broken"); } } as unknown as PersonaRegistry);

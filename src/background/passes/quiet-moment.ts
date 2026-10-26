@@ -162,6 +162,13 @@ export async function runQuietMoment(r: AgentGroup & { slot: string; signal?: Ab
     return null;
   }
   const session = await Sessions.findById(sessionId);
+  // The thread's own persona (its provider, model and KB filter), never the
+  // group's first: a persona the group does not hold is not this pass's.
+  const personaId = session?.persona_id || r.personaId;
+  if (!r.personaIds.includes(personaId)) {
+    console.warn(`${tag}: session=${sessionId} belongs to persona=${personaId}, which this group does not schedule; not running`);
+    return null;
+  }
   const scope = passScopeOf(act.scope, session?.slack_team_id ?? "");
   if (!scope) {
     console.warn(`${tag}: session=${sessionId} has an unusable scope; not running`);
@@ -200,7 +207,7 @@ export async function runQuietMoment(r: AgentGroup & { slot: string; signal?: Ab
   const res = await (deps.run ?? runPass)(
     {
       pass: QUIET_MOMENT,
-      personaId: r.personaId,
+      personaId,
       agentId: r.agentId,
       scope,
       prompt,

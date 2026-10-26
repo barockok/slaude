@@ -285,6 +285,24 @@ describe("runQuietMoment", () => {
     expect([...brain.touched()].some((s) => s.startsWith("user-") || s.startsWith("profile-"))).toBe(false);
   });
 
+  test("the pass runs as the thread's own persona, not the group's first; a persona the group does not hold is not run", async () => {
+    const brain = fakeBrain();
+    const ana = await session("C0CHAN", "2.8");
+    const bea = await session("C0CHAN", "2.9");
+    await db.run("UPDATE sessions SET persona_id = ? WHERE id = ?", ["ana", ana]);
+    await db.run("UPDATE sessions SET persona_id = ? WHERE id = ?", ["bea", bea]);
+    for (const sid of [ana, bea]) {
+      thread(brain, AGENT_SRC, sid, [row(1, "U0CAROL", "the deploy failed again")]);
+      await activity(sid, "agent", 8, 31);
+    }
+    const { deps, seen } = harness(brain);
+    const g = { ...group, personaIds: ["default", "ana"] };
+    expect(await runQuietMoment({ ...g, slot: quietSlot(bea, (await ThreadActivity.get(bea))!.lastTurnAt) }, deps)).toBeNull();
+    expect(seen).toHaveLength(0);
+    await runQuietMoment({ ...g, slot: quietSlot(ana, (await ThreadActivity.get(ana))!.lastTurnAt) }, deps);
+    expect(seen.map((s) => s.spec.personaId)).toEqual(["ana"]);
+  });
+
   test("the earlier summary is handed to the pass; memoize cannot write the conversation page or its summary", async () => {
     const brain = fakeBrain();
     const sid = await session("C0CHAN", "2.2");
