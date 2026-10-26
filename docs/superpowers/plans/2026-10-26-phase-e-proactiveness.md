@@ -100,7 +100,7 @@
   - `export function proactiveFor(personaId: string, channelId?: string): { enabled: boolean } & Omit<ProactiveConfig, "channels" | "enabled">`. It reads `personaSoulText(personaId)`, memoised by text hash. Any failure reads as disabled.
   - `export function parseClock(s: string): number | null` and `export function inWindow(minutes: number, w: {start: number; end: number}): boolean`, which wraps midnight. Tasks 2 and 6 use both.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - The default (no section) is disabled, cap 1, cooldown 4.
   - `Enabled: yes` turns it on, and `Enabled: maybe` stays off.
   - Quiet hours `21:00–08:00` wrap midnight (`inWindow(23*60)` and `inWindow(7*60)` are true, `inWindow(12*60)` is false).
@@ -111,10 +111,10 @@
     - `SoulDataSchema.shape` has no `proactive` key;
     - `EXTRACTION_PROMPT` does not mention `proactive`;
     - `mutateOverride({field: "proactive" as never, ...})` is refused.
-- [ ] **Step 2:** Run. Expect FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run `tests/soul` and typecheck. Expect PASS.
-- [ ] **Step 5: Commit** `feat(soul): deterministic ## Proactive switch, never overridable`
+- [x] **Step 2:** Run. Expect FAIL.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** Run `tests/soul` and typecheck. Expect PASS.
+- [x] **Step 5: Commit** `feat(soul): deterministic ## Proactive switch, never overridable`
 
 ### Task 2: Profile ping preferences
 
@@ -132,17 +132,17 @@
   - `export async function readPingPrefs(call: BrainOpCall, teamId: string | null, userId: string): Promise<PingPrefs>`. It reads `profile` from that person's profile source only. A superseded page reads as `NO_PREFS`. Any brain failure is `NO_PREFS`, which is the safe direction for opt-ins, while a mute that cannot be read cannot block anything.
   - `export function muted(prefs, topic): boolean` and `export function optedIn(prefs, topic): boolean`, both case-insensitive and trimmed.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - The fields parse.
   - `mutes: all` mutes everything.
   - `topics: "deploys, oncall"` opts in to `Deploys`.
   - A bad `quiet_hours` is ignored.
   - A superseded profile is ignored.
   - Only `profile-<team>-<user>` is read (assert on the fake brain's call log).
-- [ ] **Step 2:** Run. Expect FAIL.
-- [ ] **Step 3:** Implement. Update the memory skill text: the field table, and that a person's "don't ping me about X" is a `mutes` entry written from their own words.
-- [ ] **Step 4:** Run `tests/proactive tests/soul` (the built-in size budget test included) and typecheck. Expect PASS.
-- [ ] **Step 5: Commit** `feat(proactive): profile ping preferences, read only from the person's own profile`
+- [x] **Step 2:** Run. Expect FAIL.
+- [x] **Step 3:** Implement. Update the memory skill text: the field table, and that a person's "don't ping me about X" is a `mutes` entry written from their own words.
+- [x] **Step 4:** Run `tests/proactive tests/soul` (the built-in size budget test included) and typecheck. Expect PASS.
+- [x] **Step 5: Commit** `feat(proactive): profile ping preferences, read only from the person's own profile`
 
 ### Task 3: Commitment index
 
@@ -185,7 +185,7 @@
   - `export async function dueCommitments(agentId: string, now: number, limit = 20)`, open rows with `next_check_at <= now`.
   - `export async function reschedule(...)`, `markExpired(...)`, `markChecked(...)`.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - `parseDue`:
     - a time with an offset;
     - `Z`;
@@ -197,10 +197,10 @@
     - a page in `user-u0alice` has `run_as` `U0ALICE`;
     - a page with no `thread` is ignored.
   - `kb_memoize` of an open commitment through the mono path creates the row with the turn's team and persona. The pass `memoize` does too.
-- [ ] **Step 2:** Run. Expect FAIL.
-- [ ] **Step 3:** Implement. Index after the brain write succeeds. An index failure is logged and never fails the write (the page is the truth). The nightly review's backstop is the re-index: a later `memoize` of the same page upserts it.
-- [ ] **Step 4:** Run `tests/proactive tests/db tests/knowledge tests/background` and typecheck. Expect PASS.
-- [ ] **Step 5: Commit** `feat(proactive): index open commitments with a machine-readable due time`
+- [x] **Step 2:** Run. Expect FAIL.
+- [x] **Step 3:** Implement. Index after the brain write succeeds. An index failure is logged and never fails the write (the page is the truth). The nightly review's backstop is the re-index: a later `memoize` of the same page upserts it.
+- [x] **Step 4:** Run `tests/proactive tests/db tests/knowledge tests/background` and typecheck. Expect PASS.
+- [x] **Step 5: Commit** `feat(proactive): index open commitments with a machine-readable due time`
 
 ### Task 4: Budgeted background turns
 
@@ -219,7 +219,7 @@
   - `export async function openTurnRun(a: { pass: "commitment"; personaId; scope: string; model: string; now: Date }): Promise<{ ok: true; runId; estimate } | { ok: false; reason: "budget" | "unpriced" }>`, in `src/background/turn-runs.ts`, using the start rule. `commitment` is outside `BEHIND_NIGHTLY`.
   - `ledgerTurnBudget()` for mono: `finish` writes the ledger directly.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - Mono: a `sendMessage` with a run, then a scripted result, finishes the run with that input's usage only. A user input queued before it is not counted.
   - Teardown before the result finishes it as `error`.
   - The route:
@@ -227,10 +227,10 @@
     - returns 409 for another run id or a `skill-check` run;
     - prices with the gateway's table.
   - The signed claim survives a round trip, and a token without `bgRun` cannot finish a turn run.
-- [ ] **Step 2:** Run. Expect FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run `tests/agent tests/gateway/api tests/node tests/background` and typecheck. Expect PASS.
-- [ ] **Step 5: Commit** `feat(background): a dispatched turn can carry and close its own ledger run`
+- [x] **Step 2:** Run. Expect FAIL.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** Run `tests/agent tests/gateway/api tests/node tests/background` and typecheck. Expect PASS.
+- [x] **Step 5: Commit** `feat(background): a dispatched turn can carry and close its own ledger run`
 
 ### Task 5: Promise scheduler
 
@@ -264,7 +264,7 @@
     - For `close-in-one-line` it is "say in one line that it's not there yet".
     - `last_rule` on the last check is "This is the last check. If unresolved, say in one line you couldn't confirm it, then write the commitment as dropped."
 
-- [ ] **Step 1: Write failing tests,** with a fake dispatch, the fake brain and a fixed clock.
+- [x] **Step 1: Write failing tests,** with a fake dispatch, the fake brain and a fixed clock.
   - A time promise dispatches once at its time, into its own channel and thread, with `runAs` for a `user-` source.
   - Two schedulers produce one dispatch.
   - The session is live, so nothing is dispatched and the promise is retried next tick.
@@ -274,10 +274,10 @@
   - The beneficiary's quiet hours defer the check.
   - **Proactive off in the SOUL still dispatches** (§10.6).
   - The envelope never contains another person's id.
-- [ ] **Step 2:** Run. Expect FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run `tests/proactive tests/background tests/gateway` and typecheck. Expect PASS.
-- [ ] **Step 5: Commit** `feat(proactive): keep promises with budgeted check turns in their own thread`
+- [x] **Step 2:** Run. Expect FAIL.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** Run `tests/proactive tests/background tests/gateway` and typecheck. Expect PASS.
+- [x] **Step 5: Commit** `feat(proactive): keep promises with budgeted check turns in their own thread`
 
 ### Task 6: Restraint rules and the proactive post ledger
 
@@ -294,7 +294,7 @@
   - `export function textHash(text: string): string`: whitespace collapsed, lowercased, Slack markup stripped, sha256.
   - DB: `recordPost`, `recentFor(agentId, recipient, sinceMs)`, and `findByMessage(channel, ts)`, which Task 8 uses.
 
-- [ ] **Step 1: Write failing tests,** one per ladder row and one per rule.
+- [x] **Step 1: Write failing tests,** one per ladder row and one per rule.
   - manager: enabled is ok, disabled is refused.
   - `audience: "manager"` with a non-manager recipient is refused (`not-manager`).
   - person: `pings: no` is refused; `pings: yes` with an unlisted topic is refused; with a listed topic it is ok.
@@ -305,10 +305,10 @@
   - Daily cap 1: the second post in the same local day is refused, and a post after local midnight is ok.
   - Cooldown.
   - The same text within 7 days is `unchanged`; after 7 days it is ok.
-- [ ] **Step 2:** Run. Expect FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run `tests/proactive tests/db` and typecheck. Expect PASS.
-- [ ] **Step 5: Commit** `feat(proactive): restraint rules enforced in code, and a proactive post ledger`
+- [x] **Step 2:** Run. Expect FAIL.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** Run `tests/proactive tests/db` and typecheck. Expect PASS.
+- [x] **Step 5: Commit** `feat(proactive): restraint rules enforced in code, and a proactive post ledger`
 
 ### Task 7: Heartbeat pass and `proactive_post`
 
@@ -334,7 +334,7 @@
     - unchanged, routine or no-op results stay silent;
     - you may update `self/heartbeat` with memoize (type `heartbeat`).
 
-- [ ] **Step 1: Write failing tests,** with a fake `query` that calls the tool.
+- [x] **Step 1: Write failing tests,** with a fake `query` that calls the tool.
   - Proactive off globally and on no channel: no heartbeat slot is ever due.
   - An absent heartbeat page means no run and no row.
   - A post to the manager when enabled lands in their DM and in `proactive_posts`.
@@ -343,10 +343,10 @@
   - A post without evidence is refused.
   - The pass scope is `agent` (no `user-*` source readable).
   - Two schedulers claim one slot.
-- [ ] **Step 2:** Run. Expect FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run `tests/proactive tests/background tests/soul` and typecheck. Expect PASS.
-- [ ] **Step 5: Commit** `feat(proactive): heartbeat pass speaks only through restraint-checked proactive_post`
+- [x] **Step 2:** Run. Expect FAIL.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** Run `tests/proactive tests/background tests/soul` and typecheck. Expect PASS.
+- [x] **Step 5: Commit** `feat(proactive): heartbeat pass speaks only through restraint-checked proactive_post`
 
 ### Task 8: Feedback loop
 
@@ -364,17 +364,17 @@
     - Any other reply writes an `outcome` page in `agent-<id>` (`outcomes/proactive-<post id>`) and returns `outcome`.
   - `export async function onProactiveReaction(...)`, which writes an `outcome` page only. A reaction never mutes.
 
-- [ ] **Step 1: Write failing tests.**
+- [x] **Step 1: Write failing tests.**
   - "stop" from the addressed person mutes only that topic; their other topics and `pings` remain.
   - "stop" from someone else on a DM post is ignored.
   - "not this" on a channel post mutes that replier's topic only.
   - A plain reply writes an outcome.
   - A reaction writes an outcome and never mutes.
   - A reply to a non-proactive thread is `ignored` and normal handling continues.
-- [ ] **Step 2:** Run. Expect FAIL.
-- [ ] **Step 3:** Implement.
-- [ ] **Step 4:** Run `tests/proactive tests/gateway` and typecheck. Expect PASS.
-- [ ] **Step 5: Commit** `feat(proactive): replies and reactions to proactive posts become outcomes; "stop" mutes that topic`
+- [x] **Step 2:** Run. Expect FAIL.
+- [x] **Step 3:** Implement.
+- [x] **Step 4:** Run `tests/proactive tests/gateway` and typecheck. Expect PASS.
+- [x] **Step 5: Commit** `feat(proactive): replies and reactions to proactive posts become outcomes; "stop" mutes that topic`
 
 ### Task 9: Scenario, field note, phase close
 
@@ -384,7 +384,7 @@
 - Modify: `CLAUDE.md`, adding one Findings Log line at the top.
 - Modify: the spec's Progress section: the E row and the E1–E9 ticks.
 
-- [ ] **Step 1: Write the scenario test.**
+- [x] **Step 1: Write the scenario test.**
   - The SOUL has no `## Proactive`.
   - Alice, in her /1on1, gets a promise: "I'll tell you when the deploy is out". The fake turn writes an open commitment with an event due.
   - The clock advances 15 min. The check turn is dispatched as Alice into her thread, and the fake turn passes.
@@ -396,13 +396,22 @@
     - no heartbeat ran;
     - no proactive post exists;
     - the done page is in `user-u0alice` only.
-- [ ] **Step 2:** Run it. Fix the owning code on failure.
-- [ ] **Step 3:** Write the field note: the mechanism, the rulings, what review found, and what is not verified. The not-verified list must include:
+- [x] **Step 2:** Run it. Fix the owning code on failure.
+- [x] **Step 3:** Write the field note: the mechanism, the rulings, what review found, and what is not verified. The not-verified list must include:
   - a live model deciding "meaningfully new";
   - real Slack `reaction_added` delivery and its scope;
   - HA failover mid-check;
   - DST edge cases in quiet hours.
 
   Add the CLAUDE.md line, and update the Progress table and tasks.
-- [ ] **Step 4:** Run the full `bun test` and typecheck. Every failure must be in the known environment-only set.
-- [ ] **Step 5: Commit** `docs: phase E field note; mark phase E done in the epic`
+- [x] **Step 4:** Run the full `bun test` and typecheck. Every failure must be in the known environment-only set.
+- [x] **Step 5: Commit** `docs: phase E field note; mark phase E done in the epic`
+
+## As built (deviations from this plan)
+
+- **No carried run-as for promise checks.** Task 5 planned `oauthUser = run_as`. Cron's run-as setting persists on a session, so on a real thread every later human turn would have run as that person. The check instead relies on the thread's own /1on1 lock, and the gateway refuses a check whose thread lock no longer matches the promise's scope (`run_as` vs the lock owner). A refused check is retried, then expires with the fixed line.
+- **The check prompt** lives at `src/background/prompts/commitment-check.md`, so it reuses the pass prompt renderer.
+- **The commitment run** reuses `startSkillCheck`/`finishSkillCheck` with a `pass` argument (`TurnPass`), not a separate `turn-runs.ts`. The mono finisher is `ledgerTurnRun`.
+- **Heartbeat guidance** is in the `slaude:memory` built-in skill, not `core.md`. The core is pinned by goldens and a size budget, and the checklist is a procedure, not an every-turn rule.
+- **Outcomes** record only the signal (replied, reacted, asked to stop), never the reply text. A DM's outcome goes to that person's `user-<id>` slice, not the agent slice, because a DM is theirs.
+- **`CardPost`** now returns where a message landed (`channel`, `ts`), which a proactive post records for feedback.
