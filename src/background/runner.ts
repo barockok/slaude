@@ -20,7 +20,9 @@
  *      result's cumulative usage replaces the figure;
  *   5. the result's `modelUsage` is priced per model; a model with no price
  *      ends the run as `error` (the provisional figure is kept, never 0);
- *   6. the row is finished and the metrics counted, whatever happened; a
+ *   6. `spec.signal` (shutdown) aborting ends the query at once: the run is
+ *      `error`, with one log line saying so;
+ *   7. the row is finished and the metrics counted, whatever happened; a
  *      failure before the query (budget config, ledger, model, provider)
  *      still writes an `error` row.
  */
@@ -65,6 +67,8 @@ export interface PassSpec {
   prompt: string;
   transcripts?: TranscriptTurn[];
   extraTools?: PassTool[];
+  /** Shutdown: aborting it stops the pass after the turn in flight (outcome `error`). */
+  signal?: AbortSignal;
 }
 
 export interface RunnerDeps {
@@ -262,6 +266,10 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<{ outco
     }
   }
   const openId = runId;
+  if (spec.signal?.aborted) {
+    console.log(`${tag}: not started: shutting down`);
+    return settle(openId, "error", ZERO, 0);
+  }
 
   // Provisional per-turn figure: per message id, at the message's model when
   // priced (else the run's), output raised to PROVISIONAL_OUTPUT_TOKENS.
@@ -286,6 +294,12 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<{ outco
 
   const abort = new AbortController();
   let outcome: Outcome = "error";
+  let shutdown = false;
+  const onShutdown = () => {
+    shutdown = true;
+    abort.abort();
+  };
+  spec.signal?.addEventListener("abort", onShutdown, { once: true });
   try {
     const it = deps.query({
       prompt: (async function* () {
@@ -304,6 +318,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<{ outco
         t.output = Math.max(t.output, PROVISIONAL_OUTPUT_TOKENS);
         perMessage.set(msg.message.id ?? `anon-${anon++}`, { model: msg.message.model || model, tokens: t });
         await provisional();
+        if (shutdown) break;
         if ((await Runs.spentOn(spec.agentId, day)) > cfg.limitUsd + 1e-9) {
           abort.abort();
           outcome = "stopped-budget";
@@ -344,10 +359,16 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<{ outco
     }
     if (!sawResult && outcome !== "stopped-budget") outcome = "error";
   } catch (e) {
-    if (outcome !== "stopped-budget") {
+    if (outcome !== "stopped-budget" && !shutdown) {
       outcome = "error";
       console.error(`${tag}: failed: ${errMsg(e)}`);
     }
+  } finally {
+    spec.signal?.removeEventListener("abort", onShutdown);
+  }
+  if (shutdown && outcome !== "stopped-budget") {
+    outcome = "error";
+    console.log(`${tag}: stopped: shutting down`);
   }
   return settle(openId, outcome, tokens, cost);
 }

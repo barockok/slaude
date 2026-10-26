@@ -131,6 +131,59 @@ describe("runPass", () => {
     expect(metrics.render()).toMatch(new RegExp(`slaude_background_cost_usd_total\\{[^}]*agent="${s.agentId}"[^}]*\\} 0\\.6`));
   });
 
+  test("shutdown mid-pass: the query is aborted after the turn in flight, the run is an error, one line says why", async () => {
+    const s = spec();
+    const ac = new AbortController();
+    let sdkAborted = false;
+    let taken = 0;
+    const query = ((args: { options: { abortController: AbortController } }) =>
+      (async function* () {
+        args.options.abortController.signal.addEventListener("abort", () => (sdkAborted = true));
+        taken++;
+        ac.abort(); // SIGTERM while turn 1 is in flight
+        yield assistant("m1");
+        taken++;
+        yield assistant("m2");
+        yield result(TURN);
+      })()) as unknown as RunnerDeps["query"];
+    const r = await runPass({ ...s, signal: ac.signal }, deps(query));
+    expect(r.outcome).toBe("error");
+    expect(sdkAborted).toBe(true);
+    expect(taken).toBe(1);
+    // Turn 1 is counted.
+    expect((await rowOf(s.agentId, r.runId))).toMatchObject({ outcome: "error" });
+    expect(r.costUsd).toBeCloseTo(0.3, 9);
+    expect(logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("\n")).toContain("stopped: shutting down");
+    expect(errSpy).not.toHaveBeenCalled();
+    expect(metrics.render()).toMatch(new RegExp(`slaude_background_runs_total\\{[^}]*agent="${s.agentId}"[^}]*outcome="error"[^}]*\\} 1`));
+  });
+
+  test("shutdown mid-pass when the SDK throws on abort: still an error, no failure line", async () => {
+    const s = spec();
+    const ac = new AbortController();
+    const query = (() =>
+      (async function* () {
+        yield assistant("m1");
+        ac.abort();
+        throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      })()) as unknown as RunnerDeps["query"];
+    const r = await runPass({ ...s, signal: ac.signal }, deps(query));
+    expect(r.outcome).toBe("error");
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  test("an already-aborted signal: error row, query never called", async () => {
+    const s = spec();
+    const ac = new AbortController();
+    ac.abort();
+    const { query, state } = fakeQuery([assistant("m1"), result()]);
+    const r = await runPass({ ...s, signal: ac.signal }, deps(query));
+    expect(r.outcome).toBe("error");
+    expect(state.calls).toHaveLength(0);
+    expect((await rowOf(s.agentId, r.runId)).outcome).toBe("error");
+    expect(logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("\n")).toContain("not started: shutting down");
+  });
+
   test("other runs' spend that day counts toward the stop", async () => {
     const s = spec();
     const other = await Runs.start({ agentId: s.agentId, pass: "quiet-moment", scope: "agent", day: DAY });
