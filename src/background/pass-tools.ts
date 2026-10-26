@@ -30,7 +30,7 @@ import { getPageOrNull, SUPERSEDED_TAG, supersededSlugs, type BrainOpCall } from
 import { PAGE_TYPES, type PageType } from "../knowledge/page-types";
 import { AGENT_SOURCE, agentSourceId, PUBLIC_SOURCE, SHARED_SOURCE, speakerProfileSource, userSourceId, type BrainScope } from "../knowledge/scope";
 import * as Proposals from "../db/proposals";
-import { CONVERSATION_REFUSAL, holdsCredential, isConversationSlug, LESSONS_MAX_LINES, LESSONS_REFUSAL, lineCount, proposalPayloadError } from "./proposal-payload";
+import { CONVERSATION_REFUSAL, hasDotSegment, holdsCredential, isConversationSlug, SLUG_SEGMENT_REFUSAL, LESSONS_MAX_LINES, LESSONS_REFUSAL, lineCount, proposalPayloadError } from "./proposal-payload";
 
 export { CONVERSATION_REFUSAL, holdsCredential, LESSONS_MAX_LINES, LESSONS_REFUSAL };
 
@@ -166,6 +166,7 @@ interface Composed {
 /** Destination and composed markdown for one page, or the refusal. */
 function composeOne(pg: PassPage, ctx: PassToolContext, now: Date): Composed | { error: string } {
   if (pg.target === "shared" || pg.type === "team-fact") return { error: SHARED_REFUSAL };
+  if (hasDotSegment(pg.slug)) return { error: SLUG_SEGMENT_REFUSAL };
   // A transcript is appended by memory sync only; its summary is the quiet-moment pass's own tool.
   if (isConversationSlug(pg.slug)) return { error: CONVERSATION_REFUSAL };
   if (pg.type === "correction" && pg.slug === "profile") return { error: CORRECTION_SLUG_REFUSAL };

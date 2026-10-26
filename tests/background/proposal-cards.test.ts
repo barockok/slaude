@@ -37,7 +37,7 @@ import { discoverSkills } from "../../src/skills/loader";
 import { fakeBrain } from "./fake-brain";
 import { runDigest } from "../../src/background/digest";
 import { passHandlers } from "../../src/background/pass-tools";
-import { CONVERSATION_REFUSAL, LESSONS_PAGE_REFUSAL, LESSONS_REFUSAL, PROFILE_PAGE_REFUSAL } from "../../src/background/proposal-payload";
+import { CONVERSATION_REFUSAL, LESSONS_PAGE_REFUSAL, LESSONS_REFUSAL, PROFILE_PAGE_REFUSAL, SLUG_SEGMENT_REFUSAL } from "../../src/background/proposal-payload";
 import { CREDENTIAL_REFUSAL } from "../../src/knowledge/memory-pages";
 
 const AGENT = "U0AGENT";
@@ -406,6 +406,13 @@ describe("the pass's write guards hold for proposals", () => {
     expect(errorOf(w({ pages: [{ slug: "profile", content: "x", type: "profile" }] }))).toBe(PROFILE_PAGE_REFUSAL);
     expect(errorOf(w({ pages: [{ slug: "notes/x", content: "password=hunter2hunter2" }] }))).toBe(CREDENTIAL_REFUSAL);
     expect(errorOf(w({ pages: [{ slug: "notes/x", content: "fine" }] }))).toBeNull();
+  });
+
+  test("a slug with a '.' or '..' segment or a backslash is refused", () => {
+    for (const slug of ["people/../conversations/s2", "x/../self/lessons", "a/./profile", "a\\b"]) {
+      expect(errorOf(w({ target: "agent", pages: [{ slug, content: "x" }] }))).toBe(SLUG_SEGMENT_REFUSAL);
+    }
+    expect(errorOf(w({ pages: [{ slug: "notes/v1.2", content: "x" }] }))).toBeNull();
   });
 
   test("an approval of a stored row carrying one is refused and the row stays open", async () => {

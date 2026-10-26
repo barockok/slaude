@@ -19,6 +19,7 @@ import {
   type TranscriptTurn,
 } from "../../src/background/pass-tools";
 import { CREDENTIAL_REFUSAL } from "../../src/knowledge/memory-pages";
+import { SLUG_SEGMENT_REFUSAL } from "../../src/background/proposal-payload";
 import { agentSourceId, profileSourceId, userSourceId } from "../../src/knowledge/scope";
 import { fakeBrain } from "./fake-brain";
 
@@ -122,6 +123,18 @@ describe("pass tools in user scope (U0ALICE)", () => {
       expect(text(r)).toContain("propose");
     }
     expect(brain.calls.filter((c) => c.name === "put_page")).toHaveLength(0);
+  });
+
+  test("a slug with a '.' or '..' segment or a backslash is refused before anything is written", async () => {
+    const { ctx, brain } = alice();
+    for (const slug of ["people/../conversations/s1", "x/../self/lessons", "./profile", "notes/./x", "notes\\x", ".."]) {
+      const r = await passHandlers.memoize({ pages: [{ slug, content: "x", type: "person-note" }] }, ctx);
+      expect(r.isError).toBe(true);
+      expect(text(r)).toBe(SLUG_SEGMENT_REFUSAL);
+    }
+    expect(brain.calls.filter((c) => c.name === "put_page")).toHaveLength(0);
+    // A dot inside a segment is fine.
+    expect((await passHandlers.memoize({ pages: [{ slug: "people/a.b", content: "x", type: "person-note" }] }, ctx)).isError).toBeUndefined();
   });
 
   test("a profile page quoting Alice's own turn is written to Alice's profile", async () => {

@@ -29,6 +29,15 @@ export const PROFILE_PAGE_REFUSAL = "refused: a profile is written only by that 
 /** Most pages one approved proposal writes. */
 export const MAX_PROPOSAL_PAGES = 5;
 
+export const SLUG_SEGMENT_REFUSAL = "refused: a slug may not hold a '.' or '..' segment or a backslash";
+
+/**
+ * True for a slug with a `.` or `..` path segment or a backslash: if the
+ * brain normalised those, `people/../conversations/<s>` would name a
+ * transcript and `x/../self/lessons` the lessons page past the guards below.
+ */
+export const hasDotSegment = (slug: string): boolean => slug.includes("\\") || slug.trim().split("/").some((seg) => seg === "." || seg === "..");
+
 export const lineCount = (s: string): number => s.replace(/\s+$/, "").split(/\r?\n/).length;
 export const isConversationSlug = (slug: string): boolean => /^[/.]*conversations(\/|$)/i.test(slug.trim());
 const normSlug = (slug: string): string => slug.trim().replace(/^[/.]+/, "").replace(/\/+$/, "").toLowerCase();
@@ -56,6 +65,7 @@ const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim
 
 /** Why one proposed page may not be written, or null. */
 function pageRefusal(pg: PageArg): string | null {
+  if (hasDotSegment(pg.slug)) return SLUG_SEGMENT_REFUSAL;
   if (isConversationSlug(pg.slug)) return CONVERSATION_REFUSAL;
   const slug = normSlug(pg.slug);
   if (slug === LESSONS_PAGE_SLUG || slug === LESSON_PROPOSALS_PAGE_SLUG) return LESSONS_PAGE_REFUSAL;
