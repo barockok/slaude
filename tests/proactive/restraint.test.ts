@@ -102,6 +102,15 @@ describe("rules", () => {
     expect(rule(checkProactive(req(), ctx({ config: loose, history: at(8) })))).toBe("ok");
   });
 
+  test("unchanged: a reworded post resting on the same evidence posts nothing (seen with a live model)", () => {
+    const loose = configFrom("## Proactive\n- Enabled: yes\n- Max per person per day: 9\n- Cooldown: 0 hours\n");
+    const history = [{ postedAt: NOW.getTime() - 26 * H, textHash: textHash("Deploy 42 is stuck."), evidenceHash: textHash("investigations/deploy-42") }];
+    const reworded = req({ text: "Still no movement on deploy 42; it needs a look.", evidence: "investigations/deploy-42" });
+    expect(rule(checkProactive(reworded, ctx({ config: loose, history })))).toBe("unchanged");
+    expect(rule(checkProactive({ ...reworded, evidence: "investigations/other" }, ctx({ config: loose, history })))).toBe("ok");
+    expect(rule(checkProactive({ ...reworded, evidence: undefined }, ctx({ config: loose, history })))).toBe("ok");
+  });
+
   test("textHash ignores Slack markup, case and spacing", () => {
     expect(textHash("See <#C0TEAMCHAN|team-channel> and <@U0ALICE>")).toBe(textHash("see  team-channel and U0ALICE"));
     expect(textHash("a")).not.toBe(textHash("b"));
@@ -114,7 +123,7 @@ describe("proactive post ledger", () => {
   });
 
   test("record, recent by recipient, find by message", async () => {
-    const base = { agentId: "A1", audience: "manager" as const, recipient: MGR, topic: "deploys", textHash: "h", channelId: "D0DM", teamId: "T0TEAM" };
+    const base = { agentId: "A1", audience: "manager" as const, recipient: MGR, topic: "deploys", textHash: "h", evidenceHash: "e", channelId: "D0DM", teamId: "T0TEAM" };
     const id = await Posts.recordPost({ ...base, messageTs: "1.1", postedAt: NOW.getTime() });
     await Posts.recordPost({ ...base, messageTs: "1.2", postedAt: NOW.getTime() - 10 * 24 * H });
     await Posts.recordPost({ ...base, recipient: "U0OTHER", messageTs: "1.3", postedAt: NOW.getTime() });

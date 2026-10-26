@@ -231,6 +231,7 @@ CREATE TABLE IF NOT EXISTS proactive_posts (
   recipient   TEXT    NOT NULL,
   topic       TEXT    NOT NULL,
   text_hash   TEXT    NOT NULL,
+  evidence_hash TEXT,
   channel_id  TEXT    NOT NULL,
   message_ts  TEXT,
   team_id     TEXT,

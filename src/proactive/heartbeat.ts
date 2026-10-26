@@ -78,7 +78,7 @@ export async function proactivePost(a: ProactivePostArgs, ctx: ProactivePostCont
   const prefs = a.audience === "channel" ? NO_PREFS : await readPingPrefs(ctx.call, ctx.app?.teamId ?? null, recipient);
   const history = await Posts.recentFor(ctx.agentId, recipient, now.getTime() - UNCHANGED_WINDOW_MS);
   const verdict = checkProactive(
-    { audience: a.audience, recipient, topic, text },
+    { audience: a.audience, recipient, topic, text, evidence: a.evidence },
     {
       config: ctx.config ?? ((ch) => proactiveFor(ctx.personaId, ch)),
       managerId: ctx.managerId,
@@ -105,6 +105,7 @@ export async function proactivePost(a: ProactivePostArgs, ctx: ProactivePostCont
     recipient,
     topic: topic.toLowerCase(),
     textHash: textHash(text),
+    evidenceHash: textHash(a.evidence),
     channelId: where.channel ?? recipient,
     messageTs: where.ts ?? null,
     teamId: ctx.app?.teamId ?? null,

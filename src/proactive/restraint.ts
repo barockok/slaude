@@ -12,8 +12,8 @@
  * Then, for every audience: SOUL quiet hours (persona timezone), the
  * recipient's own quiet hours and mutes (people only), the per-recipient
  * daily cap and cooldown (a channel counts as one recipient), and
- * "unchanged": the same text to the same recipient within 7 days posts
- * nothing. A refusal names its rule. What is "meaningfully new" and whether
+ * "unchanged": the same text, or a post resting on the same evidence, to the
+ * same recipient within 7 days posts nothing. A refusal names its rule. What is "meaningfully new" and whether
  * content concerns a channel are the model's calls, not checked here.
  */
 import { createHash } from "node:crypto";
@@ -30,6 +30,8 @@ export interface ProactiveRequest {
   recipient: string;
   topic: string;
   text: string;
+  /** What the post rests on (a page slug or link). */
+  evidence?: string;
 }
 
 export type RestraintRule =
@@ -54,7 +56,7 @@ export interface RestraintContext {
   /** The persona's timezone. */
   timeZone: string;
   /** The recipient's proactive posts of the last UNCHANGED_WINDOW_MS at least. */
-  history: ReadonlyArray<{ postedAt: number; textHash: string }>;
+  history: ReadonlyArray<{ postedAt: number; textHash: string; evidenceHash?: string | null }>;
 }
 
 /** "Unchanged" looks back this far. */
@@ -101,7 +103,10 @@ export function checkProactive(req: ProactiveRequest, ctx: RestraintContext): { 
   if (today.length >= cfg.maxPerPersonPerDay) return no("daily-cap");
   const latest = Math.max(-Infinity, ...ctx.history.map((h) => h.postedAt));
   if (t - latest < cfg.cooldownHours * 3_600_000) return no("cooldown");
+  // Unchanged: the same text, or (found with a live model, which rewords a
+  // repeat) the same evidence, to the same recipient within the window.
   const hash = textHash(req.text);
-  if (ctx.history.some((h) => h.textHash === hash && t - h.postedAt < UNCHANGED_WINDOW_MS)) return no("unchanged");
+  const ev = req.evidence?.trim() ? textHash(req.evidence) : null;
+  if (ctx.history.some((h) => t - h.postedAt < UNCHANGED_WINDOW_MS && (h.textHash === hash || (ev !== null && h.evidenceHash === ev)))) return no("unchanged");
   return { ok: true };
 }

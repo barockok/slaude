@@ -26,7 +26,7 @@ function deps() {
 }
 
 async function post(over: Partial<Parameters<typeof Posts.recordPost>[0]> = {}) {
-  const base = { agentId: AGENT, audience: "person" as const, recipient: "U0ALICE", topic: "deploys", textHash: "h", channelId: "D0ALICE", messageTs: "1700000000.000100", teamId: TEAM, postedAt: NOW.getTime() };
+  const base = { agentId: AGENT, audience: "person" as const, recipient: "U0ALICE", topic: "deploys", textHash: "h", evidenceHash: "e", channelId: "D0ALICE", messageTs: "1700000000.000100", teamId: TEAM, postedAt: NOW.getTime() };
   const p = { ...base, ...over };
   return { id: await Posts.recordPost(p), ...p };
 }

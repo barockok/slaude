@@ -15,6 +15,8 @@ export interface ProactivePost {
   recipient: string;
   topic: string;
   textHash: string;
+  /** Hash of the evidence the post rests on, or null for an older row. */
+  evidenceHash: string | null;
   /** Where it was posted: the DM channel or the channel. */
   channelId: string;
   messageTs: string | null;
@@ -29,6 +31,7 @@ interface Row {
   recipient: string;
   topic: string;
   text_hash: string;
+  evidence_hash: string | null;
   channel_id: string;
   message_ts: string | null;
   team_id: string | null;
@@ -42,6 +45,7 @@ const toPost = (r: Row): ProactivePost => ({
   recipient: r.recipient,
   topic: r.topic,
   textHash: r.text_hash,
+  evidenceHash: r.evidence_hash ?? null,
   channelId: r.channel_id,
   messageTs: r.message_ts,
   teamId: r.team_id,
@@ -51,9 +55,9 @@ const toPost = (r: Row): ProactivePost => ({
 export async function recordPost(p: Omit<ProactivePost, "id">): Promise<string> {
   const id = randomUUID();
   await db.run(
-    `INSERT INTO proactive_posts (id, agent_id, audience, recipient, topic, text_hash, channel_id, message_ts, team_id, posted_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, p.agentId, p.audience, p.recipient, p.topic, p.textHash, p.channelId, p.messageTs, p.teamId, p.postedAt],
+    `INSERT INTO proactive_posts (id, agent_id, audience, recipient, topic, text_hash, evidence_hash, channel_id, message_ts, team_id, posted_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, p.agentId, p.audience, p.recipient, p.topic, p.textHash, p.evidenceHash, p.channelId, p.messageTs, p.teamId, p.postedAt],
   );
   return id;
 }
