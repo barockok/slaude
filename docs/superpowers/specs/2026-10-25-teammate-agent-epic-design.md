@@ -15,7 +15,7 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 | B. Decision gate | `docs/superpowers/plans/2026-10-25-phase-b-decision-gate.md` | done, merged (#153; unreleased) | — |
 | R. Runtime prompt as built-in skills | `docs/superpowers/plans/2026-10-25-phase-r-builtin-skills.md` | done, merged (#154; unreleased — ships as RC) | — |
 | C. Memory structure | `docs/superpowers/plans/2026-10-25-phase-c-memory-structure.md` | done, merged (#155; unreleased — ships as RC) | — |
-| D. Background learning and budget | `docs/superpowers/plans/2026-10-26-phase-d-background-learning.md` | in progress | — |
+| D. Background learning and budget | `docs/superpowers/plans/2026-10-26-phase-d-background-learning.md` | done (unreleased — ships as RC) | — |
 | E. Proactiveness | — | not started | — |
 
 **Phase A tasks**
@@ -51,16 +51,16 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 - [x] C7 Containment scenario; field note; phase closed (§8.7)
 
 **Phase D tasks**
-- [ ] D1 Price table and cost (§9.3)
-- [ ] D2 `background_runs` ledger, budget gate, metrics (§9.3)
-- [ ] D3 Persona `background` budget and timezone (§9.3, §11.1)
-- [ ] D4 Pass runner: locked-down, budgeted, scoped tools, proposals (§9.1)
-- [ ] D5 Budgeted post-turn skill check (§9.1, §9.3)
-- [ ] D6 Scheduler, nightly review, lessons upkeep (§9.1, §9.2)
-- [ ] D7 Quiet-moment pass and thread summary (§9.1, §8.5)
-- [ ] D8 Skill provenance, usage, soft retire, weekly review (§9.1)
-- [ ] D9 Proposal cards and weekly digest (§9.1)
-- [ ] D10 /1on1 nightly scenario; field note; phase closed (§9.4)
+- [x] D1 Price table and cost (§9.3)
+- [x] D2 `background_runs` ledger, budget gate, metrics (§9.3)
+- [x] D3 Persona `background` budget and timezone (§9.3, §11.1)
+- [x] D4 Pass runner: locked-down, budgeted, scoped tools, proposals (§9.1)
+- [x] D5 Budgeted post-turn skill check (§9.1, §9.3)
+- [x] D6 Scheduler, nightly review, lessons upkeep (§9.1, §9.2)
+- [x] D7 Quiet-moment pass and thread summary (§9.1, §8.5)
+- [x] D8 Skill provenance, usage, soft retire, weekly review (§9.1)
+- [x] D9 Proposal cards and weekly digest (§9.1)
+- [x] D10 /1on1 nightly scenario; field note; phase closed (§9.4)
 
 ## 1. Goal
 
