@@ -28,18 +28,47 @@
 import * as Proposals from "../db/proposals";
 import type { Proposal } from "../db/proposals";
 import { redactSecrets } from "../gateway/core/status-text";
-import type { AppRef, Transport } from "../gateway/core/transport";
+import { clientForApp, type AppRef, type Transport } from "../gateway/core/transport";
 import type { GateInput } from "../knowledge/gated-dispatch";
 import { brainHandlers, type BrainToolDeps, type KbMemoizeArgs, type MemoizeTarget } from "../knowledge/mcp-tools";
 import type { BrainOpCall } from "../knowledge/memory-trail";
 import { resolveBrainScope } from "../knowledge/scope";
 import { skillOps } from "../skills/mcp-tools";
+import { proposalWrite } from "./proposal-payload";
+
+export { proposalWrite };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type Block = Record<string, any>;
 
 /** Posts one message (a DM when `channel` is a user id) as the agent's bot, as the Slack app `app` names when known. */
 export type CardPost = (msg: { channel: string; app?: AppRef; text: string; blocks: Block[] }) => Promise<void>;
+
+export const NO_APP_REFUSAL = "refused: on a multi-app gateway a card goes out only as a named Slack app (app id and team)";
+
+/**
+ * The CardPost a gateway uses: the bot client of the app the message names
+ * (buttons are interactivity-bound, like the gates). On a multi-app transport
+ * a post must name both the app id and the team; a team id alone could match
+ * another persona's app, and nothing falls back to the oldest one.
+ */
+export function cardPoster(t: Pick<Transport, "client" | "clientFor">): CardPost {
+  return async (msg) => {
+    if (t.clientFor && !(msg.app?.apiAppId && msg.app?.teamId)) throw new Error(NO_APP_REFUSAL);
+    await clientForApp(t, msg.app).chat.postMessage({ channel: msg.channel, text: msg.text, blocks: msg.blocks });
+  };
+}
+
+/** Where a click came from: the interaction's own app and workspace. */
+export type ClickOrigin = { apiAppId?: string; teamId?: string };
+
+/** A card bound to an app answers only clicks through that app and workspace. */
+export function fromCardApp(row: Pick<Proposal, "slackAppId" | "slackTeamId">, from: ClickOrigin | undefined): boolean {
+  if (row.slackAppId && row.slackAppId !== from?.apiAppId) return false;
+  if (row.slackTeamId && row.slackTeamId !== from?.teamId) return false;
+  return true;
+}
+const WRONG_APP = ":no_entry: this card belongs to another Slack app or workspace";
 
 export const PROPOSAL_ACTION = /^slaude_prop:(approve|reject):(.+)$/;
 export const RESTORE_ACTION = /^slaude_skill:restore:(.+)$/;
@@ -49,8 +78,6 @@ export const restoreActionId = (id: string): string => `slaude_skill:restore:${i
 /** block_id of a card's button row: the one block a decision replaces. */
 export const cardActionsBlockId = (id: string): string => `slaude_card:${id}`;
 
-/** Most pages one approved proposal writes. */
-export const MAX_PROPOSAL_PAGES = 5;
 const PREVIEW_CHARS = 400;
 
 /** Slack mrkdwn: `&`, `<` and `>` are markup. Model-written text is shown as text. */
@@ -69,41 +96,13 @@ const KIND_TITLE: Record<string, string> = {
 
 type PageArg = KbMemoizeArgs["pages"][number];
 
-/** The write an approved team-fact or promote proposal makes, or why it cannot be made. */
-export function proposalWrite(p: Pick<Proposal, "kind" | "payload">): { pages: PageArg[]; target: MemoizeTarget } | { error: string } {
-  const pl = p.payload;
-  const raw: unknown[] = Array.isArray(pl.pages) ? pl.pages : pl.page !== undefined ? [pl.page] : str(pl.slug) ? [pl] : [];
-  if (raw.length === 0) return { error: "this proposal carries no page to write" };
-  if (raw.length > MAX_PROPOSAL_PAGES) return { error: `this proposal carries over ${MAX_PROPOSAL_PAGES} pages` };
-  const pages: PageArg[] = [];
-  for (const r of raw) {
-    const g = (r ?? {}) as Record<string, unknown>;
-    const slug = str(g.slug);
-    const content = typeof g.content === "string" ? g.content : undefined;
-    if (!slug || content === undefined) return { error: "a page in this proposal has no slug or content" };
-    const fields = g.fields && typeof g.fields === "object" && !Array.isArray(g.fields)
-      ? Object.fromEntries(Object.entries(g.fields as Record<string, unknown>).filter(([, v]) => typeof v === "string")) as Record<string, string>
-      : undefined;
-    pages.push({
-      slug,
-      content,
-      summary: str(g.summary) ?? str(pl.summary) ?? slug,
-      type: str(g.type) ?? (p.kind === "team-fact" ? "team-fact" : undefined),
-      ...(str(g.confidence) ? { confidence: str(g.confidence)! } : {}),
-      ...(str(g.source) ? { source: str(g.source)! } : {}),
-      ...(str(g.subject) ? { subject: str(g.subject)! } : {}),
-      ...(fields ? { fields } : {}),
-    } as PageArg);
-  }
-  if (p.kind === "team-fact") return { pages, target: "shared" };
-  // A promotion goes to shared unless it names the agent's own slice.
-  return { pages, target: pl.target === "agent" ? "mine" : "shared" };
-}
-
 /** The card body: what is proposed, from the payload (model-written, so escaped and clipped). */
 function proposalText(p: Proposal): string {
   const pl = p.payload;
-  const lines = [`*${KIND_TITLE[p.kind] ?? p.kind}*`];
+  const lines = [`*${p.toKind === "manager" && p.kind === "promote" ? "Add to shared memory" : (KIND_TITLE[p.kind] ?? p.kind)}*`];
+  // Only a forwarded promotion carries a person's scope on a manager row.
+  const consent = p.toKind === "manager" && p.scope.startsWith("user:") ? p.scope.slice("user:".length) : null;
+  if (consent) lines.push(`_${/^[UW][A-Z0-9]+$/.test(consent) ? `<@${consent}>` : escapeMrkdwn(consent)} agreed to share this from a private conversation._`);
   const summary = str(pl.summary) ?? str(pl.reason);
   if (summary) lines.push(shown(summary, 300));
   if (p.kind === "team-fact" || p.kind === "promote") {
@@ -167,7 +166,7 @@ export function retiredSkillBlocks(r: Proposal): Block[] {
  * one message. Only open rows addressed to that very person are posted, so a
  * proposal for anyone else can never reach this DM.
  */
-export async function postPersonProposals(a: { agentId: string; userId: string; teamId?: string; ids: readonly string[]; post: CardPost }): Promise<number> {
+export async function postPersonProposals(a: { agentId: string; userId: string; app?: AppRef; ids: readonly string[]; post: CardPost }): Promise<number> {
   const rows: Proposal[] = [];
   for (const id of a.ids) {
     const p = await Proposals.get(id);
@@ -179,7 +178,9 @@ export async function postPersonProposals(a: { agentId: string; userId: string; 
     : `I'd like to keep ${rows.length} things from our private conversations somewhere beyond your own memory. Nothing is written unless you approve.`;
   const blocks: Block[] = [{ type: "section", text: { type: "mrkdwn", text: intro } }];
   for (const p of rows) blocks.push({ type: "divider" }, ...proposalBlocks(p));
-  await a.post({ channel: a.userId, ...(a.teamId ? { app: { teamId: a.teamId } } : {}), text: intro, blocks });
+  await a.post({ channel: a.userId, ...(a.app ? { app: a.app } : {}), text: intro, blocks });
+  // Bind the cards to the app they went out as: a click must come through it.
+  if (a.app) await Proposals.stampApp(rows.map((p) => p.id), a.app).catch((e) => console.error(`[background] could not record the cards' Slack app: ${redactSecrets(e instanceof Error ? e.message : String(e))}`));
   return rows.length;
 }
 
@@ -204,6 +205,9 @@ export function mayDecide(p: Pick<Proposal, "toKind" | "toUser">, by: string, ma
 async function applyWrite(p: Proposal, w: { pages: PageArg[]; target: MemoizeTarget }, by: string, deps: DecideDeps): Promise<{ ok: true } | { ok: false; reason: string }> {
   const managers = deps.managers();
   const isManager = managers.includes(by);
+  // Shared memory is the team's: only the manager or backup ever writes it
+  // from a card, whatever the gate below would allow.
+  if (w.target === "shared" && !isManager) return { ok: false, reason: "only the manager can add to shared memory" };
   // The approver is the actor; a card is never someone's /1on1 turn, so no
   // lock and no profile: the write lands in shared or the agent's own slice.
   const gate: GateInput = { userId: by, teamId: null, interactive: false, lockedUser: null, channelTrust: "trusted", isManager, agentId: p.agentId, threadKey: null };
@@ -219,10 +223,39 @@ async function applyWrite(p: Proposal, w: { pages: PageArg[]; target: MemoizeTar
   return r.isError ? { ok: false, reason: r.content[0]?.text ?? "the write failed" } : { ok: true };
 }
 
+/**
+ * The person approved sharing a promotion: settle it, then queue the same
+ * write for the manager (scope `user:<person>` marks whose consent it
+ * carries; a pass's own proposal to the manager is always scope `agent`).
+ */
+async function forwardToManager(p: Proposal, by: string, at: number): Promise<ClickResult> {
+  if (!(await Proposals.decide(p.id, "approved", by, at))) return { ok: false, text: ":lock: this proposal was already decided" };
+  try {
+    const { promotedFrom: _f, ...rest } = p.payload;
+    await Proposals.insert({
+      agentId: p.agentId,
+      kind: "promote",
+      toKind: "manager",
+      toUser: null,
+      scope: `user:${by}`,
+      payload: { ...rest, target: "shared", promotedFrom: p.id },
+      createdAt: at,
+      ...(p.slackAppId ? { slackAppId: p.slackAppId } : {}),
+      ...(p.slackTeamId ? { slackTeamId: p.slackTeamId } : {}),
+    });
+  } catch (e) {
+    await Proposals.reopen(p.id, by, at).catch(() => {});
+    console.error(`[background] proposal ${p.id}: approved by ${by} but could not be sent to the manager: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+    return { ok: false, text: ":warning: that did not reach the manager. The proposal is open again; try again." };
+  }
+  return { ok: true, line: `Approved by <@${by}>; sent to the manager, who decides whether it goes into shared memory` };
+}
+
 /** A click on Approve or Reject: authorise, settle once, then apply. */
-export async function decideProposal(a: { id: string; verb: "approve" | "reject"; by: string }, deps: DecideDeps): Promise<ClickResult> {
+export async function decideProposal(a: { id: string; verb: "approve" | "reject"; by: string; from?: ClickOrigin }, deps: DecideDeps): Promise<ClickResult> {
   const p = await Proposals.get(a.id);
   if (!p || p.kind === Proposals.SKILL_RETIRED_KIND) return { ok: false, text: ":grey_question: this proposal no longer exists" };
+  if (!fromCardApp(p, a.from)) return { ok: false, text: WRONG_APP };
   if (!mayDecide(p, a.by, deps.managers())) {
     return { ok: false, text: `:no_entry: <@${a.by}>, only ${p.toKind === "person" ? "the person it is for" : "the manager"} can decide this proposal. It stays open.` };
   }
@@ -238,10 +271,13 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   if (p.kind === "team-fact" || p.kind === "promote") {
     const parsed = proposalWrite(p);
     if ("error" in parsed) return { ok: false, text: `:warning: ${parsed.error}, so it cannot be applied; reject it instead.` };
-    // Never boot the brain from a click: the proposal stays open for a later one.
-    if (deps.ready && !deps.ready()) return { ok: false, text: ":hourglass: memory is not available right now; the proposal stays open, try again later." };
     w = parsed;
   }
+  // A person agreeing to share their content with the team is step one:
+  // shared memory needs the manager, so it becomes a manager proposal.
+  if (w && w.target === "shared" && p.toKind === "person") return forwardToManager(p, a.by, at);
+  // Never boot the brain from a click: the proposal stays open for a later one.
+  if (w && deps.ready && !deps.ready()) return { ok: false, text: ":hourglass: memory is not available right now; the proposal stays open, try again later." };
   if (!(await Proposals.decide(p.id, "approved", a.by, at))) return { ok: false, text: ":lock: this proposal was already decided" };
   if (!w) return { ok: true, line: `Approved by <@${a.by}>; the operator makes the change in git` };
   let res: { ok: true } | { ok: false; reason: string };
@@ -259,10 +295,11 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
 }
 
 /** A click on Restore: the manager or backup moves a retired skill back, once. */
-export async function restoreRetiredSkill(a: { id: string; by: string }, deps: Pick<DecideDeps, "managers" | "now">): Promise<ClickResult> {
+export async function restoreRetiredSkill(a: { id: string; by: string; from?: ClickOrigin }, deps: Pick<DecideDeps, "managers" | "now">): Promise<ClickResult> {
   if (!deps.managers().includes(a.by)) return { ok: false, text: `:no_entry: <@${a.by}>, only the manager can restore a skill.` };
   const r = await Proposals.get(a.id);
   if (!r || r.kind !== Proposals.SKILL_RETIRED_KIND) return { ok: false, text: ":grey_question: this retirement no longer exists" };
+  if (!fromCardApp(r, a.from)) return { ok: false, text: WRONG_APP };
   if (r.status !== "approved") return { ok: false, text: ":lock: this skill was already restored" };
   const pl = r.payload as Partial<Proposals.SkillRetiredPayload>;
   if (typeof pl.retiredId !== "string") return { ok: false, text: ":warning: this retirement does not name its retired copy" };
@@ -287,6 +324,12 @@ export function withDecision(blocks: unknown, id: string, line: string): Block[]
   return blocks.map((b) => ((b as Block)?.block_id === bid ? { type: "context", elements: [{ type: "mrkdwn", text: line }] } : (b as Block)));
 }
 
+const originOf = (body: unknown): ClickOrigin => {
+  const b = (body ?? {}) as { api_app_id?: unknown; team?: { id?: unknown }; user?: { team_id?: unknown } };
+  const teamId = typeof b.team?.id === "string" ? b.team.id : typeof b.user?.team_id === "string" ? b.user.team_id : undefined;
+  return { ...(typeof b.api_app_id === "string" ? { apiAppId: b.api_app_id } : {}), ...(teamId ? { teamId } : {}) };
+};
+
 /**
  * Register the card buttons on the Slack transport. The clicker is the
  * interaction's signed `user.id`, checked as approval cards check it, before
@@ -310,7 +353,7 @@ export function registerProposalActions(t: Pick<Transport, "action">, deps: Deci
     if (!m || !by) return;
     let res: ClickResult;
     try {
-      res = await decideProposal({ id: m[2]!, verb: m[1] as "approve" | "reject", by }, deps);
+      res = await decideProposal({ id: m[2]!, verb: m[1] as "approve" | "reject", by, from: originOf(body) }, deps);
     } catch (e) {
       console.error(`[background] proposal ${m[2]}: click failed: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
       res = { ok: false, text: ":warning: that did not work; try again" };
@@ -324,7 +367,7 @@ export function registerProposalActions(t: Pick<Transport, "action">, deps: Deci
     if (!m || !by) return;
     let res: ClickResult;
     try {
-      res = await restoreRetiredSkill({ id: m[1]!, by }, deps);
+      res = await restoreRetiredSkill({ id: m[1]!, by, from: originOf(body) }, deps);
     } catch (e) {
       console.error(`[background] skill restore ${m[1]}: click failed: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
       res = { ok: false, text: ":warning: that did not work; try again" };

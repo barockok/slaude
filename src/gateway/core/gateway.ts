@@ -145,7 +145,8 @@ import * as MentionOnly from "../../db/mention-only";
 import { CronScheduler } from "../slack/cron-scheduler";
 import { startCronLeader } from "./cron-leader";
 import { defaultSchedulerDeps, leaderElect, startBackgroundScheduler, type SchedulerSlack } from "../../background/scheduler";
-import { registerProposalActions } from "../../background/proposal-cards";
+import { cardPoster, registerProposalActions } from "../../background/proposal-cards";
+import { digestRecipientOf } from "../../background/digest";
 import type { LeaderHandle } from "../../queue/locks";
 import { getNextRun } from "../slack/cron-parser";
 import { clientForApp, type AppRef, type Transport } from "./transport";
@@ -715,10 +716,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
   };
   const backgroundSlack: SchedulerSlack = {
-    post: async (msg) => {
-      await botClientFor(msg.app).chat.postMessage({ channel: msg.channel, text: msg.text, blocks: msg.blocks });
-    },
+    // As the bot of the app the message names; on a multi-app transport a
+    // post that does not name both app id and team is refused (cardPoster).
+    post: cardPoster(t),
     managers: backgroundManagers,
+    digestRecipient: () => digestRecipientOf(soulData()),
   };
   registerProposalActions(t, { managers: backgroundManagers, call: brainCall, now: () => new Date(), ready: brainReady });
   const ignoreGate = new IgnoreGate();

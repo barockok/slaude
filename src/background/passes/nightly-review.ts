@@ -29,6 +29,7 @@ import { renderPassPrompt } from "../prompts";
 import { previousDay } from "../calendar";
 import { LESSONS_SLUG, PROPOSALS_SLUG } from "./lessons-upkeep";
 import type { AgentGroup } from "../scheduler";
+import type { AppRef } from "../../gateway/core/transport";
 
 export interface NightlyDeps {
   runner: RunnerDeps;
@@ -43,7 +44,7 @@ export interface NightlyDeps {
 }
 
 /** Delivery of one pass run's proposals to the person it ran as (proposal-cards.ts postPersonProposals). */
-export type PersonDelivery = (a: { agentId: string; userId: string; teamId?: string; ids: string[] }) => Promise<void>;
+export type PersonDelivery = (a: { agentId: string; userId: string; app?: AppRef; ids: string[] }) => Promise<void>;
 
 /**
  * After a pass that ran as a person: post the proposals it queued to that
@@ -51,14 +52,15 @@ export type PersonDelivery = (a: { agentId: string; userId: string; teamId?: str
  * (the weekly digest), so nothing is posted for them. A failure is logged;
  * the proposals stay open until they expire.
  */
-export async function deliverRunProposals(deliver: PersonDelivery | undefined, a: { agentId: string; scope: PassScope; proposed?: string[]; tag: string }): Promise<void> {
+export async function deliverRunProposals(deliver: PersonDelivery | undefined, a: { agentId: string; scope: PassScope; app?: AppRef; proposed?: string[]; tag: string }): Promise<void> {
   if (a.scope.kind !== "user" || !a.proposed || a.proposed.length === 0) return;
   if (!deliver) {
     console.warn(`${a.tag}: ${a.proposed.length} proposal(s) for ${a.scope.userId} not posted: no Slack to post through`);
     return;
   }
   try {
-    await deliver({ agentId: a.agentId, userId: a.scope.userId, ...(a.scope.teamId ? { teamId: a.scope.teamId } : {}), ids: a.proposed });
+    // The run's own session's app: on a multi-app gateway a team id alone never picks one.
+    await deliver({ agentId: a.agentId, userId: a.scope.userId, ...(a.app ? { app: a.app } : {}), ids: a.proposed });
   } catch (e) {
     console.error(`${a.tag}: could not post ${a.proposed.length} proposal(s) to ${a.scope.userId}: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -153,6 +155,8 @@ export function capped(turns: TranscriptTurn[], tag: string): TranscriptTurn[] {
 export interface PersonDay {
   userId: string;
   teamId: string;
+  /** The Slack app of their most recently touched session here (cards go out as it). */
+  app?: AppRef;
   turns: TranscriptTurn[];
 }
 
@@ -169,6 +173,8 @@ export async function collectDay(group: AgentGroup, day: string, deps: NightlyDe
   if (sessions.length === 0) return { agent: [], users: [] };
   if (sessions.length >= MAX_SESSIONS) console.warn(`${tag}: over ${MAX_SESSIONS} sessions since ${day}; only the ${MAX_SESSIONS} touched most recently are read`);
   const teamOf = new Map(sessions.map((s) => [conversationSlug(s.id), s.slack_team_id ?? ""]));
+  // Sessions come most recently touched first: the first app seen per slug is the thread's own.
+  const appOf = new Map(sessions.map((s) => [conversationSlug(s.id), s.slack_app_id ?? null]));
   const only = (source: string): BrainScope => ({ clientId: group.agentId, sourceId: source, allowedSources: [source] });
   const timeline = async (source: string, slug: string): Promise<DayRow[]> => {
     const rows = await deps.call("get_timeline", { slug }, only(source));
@@ -198,7 +204,9 @@ export async function collectDay(group: AgentGroup, day: string, deps: NightlyDe
       if (own.length < turns.length) console.warn(`${tag}: ${turns.length - own.length} turn(s) by someone else in ${source} are left out`);
       const teamId = teamOf.get(slug)!;
       const key = `${userId}\n${teamId}`;
-      const person = users.get(key) ?? { userId, teamId, turns: [] };
+      const apiAppId = appOf.get(slug) ?? null;
+      const person = users.get(key) ?? { userId, teamId, turns: [], ...(apiAppId ? { app: { apiAppId, teamId } } : teamId ? { app: { teamId } } : {}) };
+      if (!person.app?.apiAppId && apiAppId) person.app = { apiAppId, teamId };
       person.turns.push(...own);
       users.set(key, person);
     }
@@ -257,12 +265,12 @@ export async function runNightlyReview(r: AgentGroup & { slot: string; signal?: 
   const { agent, users } = await collectDay(r, day, deps);
   const run = deps.run ?? runPass;
   const out: NightlyResult[] = [];
-  const queue: Array<{ scope: PassScope; prompt: () => string; transcripts: TranscriptTurn[] }> = [];
+  const queue: Array<{ scope: PassScope; app?: AppRef; prompt: () => string; transcripts: TranscriptTurn[] }> = [];
   if (agent.length > 0) {
     queue.push({ scope: { kind: "agent" }, prompt: () => renderPassPrompt("nightly-review-agent", { DAY: day, PROPOSALS_SLUG, LESSONS_SLUG }), transcripts: agent });
   }
   for (const u of users) {
-    queue.push({ scope: { kind: "user", userId: u.userId, teamId: u.teamId }, prompt: () => renderPassPrompt("nightly-review-user", { DAY: day, USER_ID: u.userId }), transcripts: u.turns });
+    queue.push({ scope: { kind: "user", userId: u.userId, teamId: u.teamId }, ...(u.app ? { app: u.app } : {}), prompt: () => renderPassPrompt("nightly-review-user", { DAY: day, USER_ID: u.userId }), transcripts: u.turns });
   }
   const label = (s: PassScope) => (s.kind === "user" ? `user:${s.userId}` : "agent");
   for (const [i, q] of queue.entries()) {
@@ -281,7 +289,7 @@ export async function runNightlyReview(r: AgentGroup & { slot: string; signal?: 
     };
     const res = await run(spec, deps.runner);
     out.push({ scope: label(q.scope), outcome: res.outcome });
-    await deliverRunProposals(deps.deliver, { agentId: r.agentId, scope: q.scope, proposed: res.proposed, tag });
+    await deliverRunProposals(deps.deliver, { agentId: r.agentId, scope: q.scope, ...(q.app ? { app: q.app } : {}), proposed: res.proposed, tag });
   }
   if (queue.length === 0) console.log(`${tag}: no conversations on ${day}; nothing to review`);
   return out;

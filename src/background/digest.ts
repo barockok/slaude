@@ -1,8 +1,8 @@
 /**
  * The weekly digest (spec §9.1 "Weekly digest", §9.2, §9.3; Task 9 ruling E):
  * Monday 09:00 persona-local (slot = the ISO week), one message to the
- * manager's DM (and the backup manager's, when set) covering the previous
- * Monday to Sunday:
+ * manager's DM (the backup manager's only when no manager is set), posted as
+ * the group persona's own Slack app, covering the previous Monday to Sunday:
  *   - spend against the budget, per day;
  *   - runs by pass and outcome;
  *   - the passes skipped for budget (listed here, never messaged);
@@ -150,6 +150,11 @@ export function renderDigest(input: DigestInput): { text: string; blocks: Block[
   return { text, blocks: blocks.slice(0, MAX_BLOCKS) };
 }
 
+/** The digest's one recipient: the manager, else the backup manager (only when no manager is set), else nobody. */
+export function digestRecipientOf(soul: { manager: { userId?: string }; backupManager: { userId?: string } }): string | null {
+  return soul.manager.userId || soul.backupManager.userId || null;
+}
+
 /** The Monday-to-Sunday week before the persona-local day `today`. */
 export function coveredDays(now: Date, timeZone: string): string[] {
   const t = localParts(now, timeZone);
@@ -175,20 +180,24 @@ export interface DigestDeps {
   call: BrainOpCall;
   /** Absent: there is no Slack to post through; the digest is logged and recorded, not sent. */
   post?: CardPost;
-  /** The manager and the backup manager. */
-  managers: () => string[];
+  /** Whom the digest goes to: the manager, else the backup manager, else nobody. */
+  recipient: () => string | null;
   budget?: (personaId: string) => BudgetConfig;
   /** The persona's own skills. Default: the skill review's view. */
   skills?: (personaId: string) => Skill[];
-  /** The Slack app to post as. Default: the app of the group's most recently touched session. */
+  /** The Slack app to post as. Default: the group persona's own app (personaApp). */
   app?: (g: AgentGroup) => Promise<AppRef | undefined>;
 }
 
-async function latestApp(g: AgentGroup): Promise<AppRef | undefined> {
-  const [s] = await Sessions.updatedSince(g.personaIds, 0, 1);
+/**
+ * The persona's own Slack app: from that persona's sessions only (never
+ * another persona's in the group), preferring one that recorded its app id.
+ * Undefined when the persona has no session yet.
+ */
+export async function personaApp(personaId: string): Promise<AppRef | undefined> {
+  const s = await Sessions.latestAppOf(personaId);
   if (!s) return undefined;
-  const row = s as { slack_team_id?: string | null; slack_app_id?: string | null };
-  return { ...(row.slack_app_id ? { apiAppId: row.slack_app_id } : {}), ...(row.slack_team_id ? { teamId: row.slack_team_id } : {}) };
+  return { ...(s.apiAppId ? { apiAppId: s.apiAppId } : {}), ...(s.teamId ? { teamId: s.teamId } : {}) };
 }
 
 interface Snapshot {
@@ -244,7 +253,8 @@ export async function runDigest(r: AgentGroup & { slot: string; now: Date }, dep
     }
 
     const msg = renderDigest({ week: r.slot, days, limitUsd: cfg.limitUsd, runs, lessons, skillsAdded, retirements, proposals });
-    const recipients = [...new Set(deps.managers().filter((u) => !!u))];
+    const recipient = deps.recipient();
+    const recipients = recipient ? [recipient] : [];
     if (recipients.length === 0) {
       console.log(`${tag}: no manager configured in the SOUL; the digest was not sent`);
       return finish("ok", []);
@@ -253,7 +263,7 @@ export async function runDigest(r: AgentGroup & { slot: string; now: Date }, dep
       console.log(`${tag}: no Slack client to post with; the digest was not sent`);
       return finish("ok", []);
     }
-    const app = await (deps.app ?? latestApp)(r).catch(() => undefined);
+    const app = await (deps.app ?? ((g: AgentGroup) => personaApp(g.personaId)))(r).catch(() => undefined);
     const sentTo: string[] = [];
     for (const u of recipients) {
       try {
@@ -264,6 +274,11 @@ export async function runDigest(r: AgentGroup & { slot: string; now: Date }, dep
       }
     }
     if (sentTo.length === 0) return finish("error", []);
+    // Bind the cards to the app they went out as: a click must come through it.
+    if (app) {
+      const shown = [...proposals.filter((p) => p.status === "open" && p.toKind === "manager"), ...retirements].map((p) => p.id);
+      await Proposals.stampApp(shown, app).catch((e) => console.error(`${tag}: could not record the cards' Slack app: ${errText(e)}`));
+    }
     if (current !== null) {
       await setSlotState(r.agentId, DIGEST, r.slot, JSON.stringify({ lessons: current } satisfies Snapshot)).catch((e) =>
         console.error(`${tag}: sent, but could not store the lessons snapshot: ${errText(e)}`),

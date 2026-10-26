@@ -13,7 +13,10 @@ import * as Proposals from "../../src/db/proposals";
 import {
   approveActionId,
   cardActionsBlockId,
+  cardPoster,
   decideProposal,
+  NO_APP_REFUSAL,
+  proposalBlocks,
   postPersonProposals,
   proposalWrite,
   registerProposalActions,
@@ -32,6 +35,9 @@ import { conversationSlug } from "../../src/memory/brain-provider";
 import { skillOps } from "../../src/skills/mcp-tools";
 import { discoverSkills } from "../../src/skills/loader";
 import { fakeBrain } from "./fake-brain";
+import { passHandlers } from "../../src/background/pass-tools";
+import { CONVERSATION_REFUSAL, LESSONS_PAGE_REFUSAL, LESSONS_REFUSAL, PROFILE_PAGE_REFUSAL } from "../../src/background/proposal-payload";
+import { CREDENTIAL_REFUSAL } from "../../src/knowledge/memory-pages";
 
 const AGENT = "U0AGENT";
 const MANAGER = "U0MANAGER";
@@ -118,11 +124,40 @@ describe("approving and rejecting", () => {
     }
     expect((await Proposals.get(id))!.status).toBe("open");
     expect(puts(SHARED_SOURCE).length).toBe(0);
-    // The person approves: written to shared, as them.
-    expect((await decideProposal({ id, verb: "approve", by: ALICE }, deps)).ok).toBe(true);
-    const w = puts(SHARED_SOURCE);
-    expect(w.map((c) => c.params.slug)).toEqual(["runbooks/db"]);
+    // The person approves: nothing is written; it becomes the manager's proposal.
+    const r = await decideProposal({ id, verb: "approve", by: ALICE }, deps);
+    expect(r).toEqual({ ok: true, line: `Approved by <@${ALICE}>; sent to the manager, who decides whether it goes into shared memory` });
+    expect(puts(SHARED_SOURCE).length).toBe(0);
     expect((await Proposals.get(id))!.decidedBy).toBe(ALICE);
+  });
+
+  test("a person's shared promotion needs the manager too: forwarded with the same pages, written only on the manager's approval", async () => {
+    const { deps, puts } = setup();
+    const id = await promote();
+    expect((await decideProposal({ id, verb: "approve", by: ALICE }, deps)).ok).toBe(true);
+    const [fwd] = await Proposals.listOpen(AGENT, "manager");
+    expect(fwd).toMatchObject({ kind: "promote", toKind: "manager", toUser: null, scope: `user:${ALICE}` });
+    expect(fwd!.payload).toMatchObject({ target: "shared", promotedFrom: id, pages: [{ slug: "runbooks/db", content: "Restart the replica first.", type: "investigation" }] });
+    expect(await Proposals.listOpen(AGENT, "person", ALICE)).toEqual([]);
+    // The person cannot approve the forwarded one; the manager writes shared.
+    expect((await decideProposal({ id: fwd!.id, verb: "approve", by: ALICE }, deps)).ok).toBe(false);
+    expect(puts(SHARED_SOURCE).length).toBe(0);
+    expect((await decideProposal({ id: fwd!.id, verb: "approve", by: MANAGER }, deps)).ok).toBe(true);
+    expect(puts(SHARED_SOURCE).map((c) => c.params.slug)).toEqual(["runbooks/db"]);
+    // A second click on the person's card changes nothing and forwards nothing more.
+    expect((await decideProposal({ id, verb: "approve", by: ALICE }, deps)).ok).toBe(false);
+    expect((await Proposals.listOpen(AGENT, "manager")).length).toBe(0);
+  });
+
+  test("the card names whose consent a forwarded promotion carries", async () => {
+    const { deps } = setup();
+    const id = await promote();
+    await decideProposal({ id, verb: "approve", by: ALICE }, deps);
+    const [fwd] = await Proposals.listOpen(AGENT, "manager");
+    expect(JSON.stringify(proposalBlocks(fwd!))).toContain(`<@${ALICE}> agreed to share this`);
+    // A pass's own manager proposal (scope agent) claims no one's consent.
+    const own = (await Proposals.get(await teamFact()))!;
+    expect(JSON.stringify(proposalBlocks(own))).not.toContain("agreed to share");
   });
 
   test("a promote naming the agent's slice writes there, never a person's slice or profile", async () => {
@@ -201,7 +236,7 @@ describe("a person's proposals go to their DM only", () => {
     const managers = await teamFact();
     const sent: Array<{ channel: string; blocks: Block[] }> = [];
     const post: CardPost = async (m) => void sent.push(m);
-    const n = await postPersonProposals({ agentId: AGENT, userId: ALICE, teamId: "T0TEAM", ids: [mine1, bobs, mine2, managers], post });
+    const n = await postPersonProposals({ agentId: AGENT, userId: ALICE, app: { apiAppId: "A0ONE", teamId: "T0TEAM" }, ids: [mine1, bobs, mine2, managers], post });
     expect(n).toBe(2);
     expect(sent.map((m) => m.channel)).toEqual([ALICE]);
     const all = JSON.stringify(sent[0]!.blocks);
@@ -210,14 +245,17 @@ describe("a person's proposals go to their DM only", () => {
     expect(all).toContain(approveActionId(mine2));
     expect(all).not.toContain(approveActionId(bobs));
     expect(all).not.toContain(approveActionId(managers));
+    // The posted cards are bound to the app they went out as; others are untouched.
+    expect((await Proposals.get(mine1))!.slackAppId).toBe("A0ONE");
+    expect((await Proposals.get(bobs))!.slackAppId).toBeNull();
   });
 
   test("the nightly review delivers each run-as pass's proposals after that pass, never an agent pass's", async () => {
     const delivered: Array<{ userId: string; ids: string[] }> = [];
     await deliverRunProposals(async (a) => void delivered.push(a), { agentId: AGENT, scope: { kind: "agent" }, proposed: ["p1"], tag: "t" });
     await deliverRunProposals(async (a) => void delivered.push(a), { agentId: AGENT, scope: { kind: "user", userId: ALICE, teamId: "T0TEAM" }, proposed: [], tag: "t" });
-    await deliverRunProposals(async (a) => void delivered.push(a), { agentId: AGENT, scope: { kind: "user", userId: ALICE, teamId: "T0TEAM" }, proposed: ["p2", "p3"], tag: "t" });
-    expect(delivered).toEqual([{ agentId: AGENT, userId: ALICE, teamId: "T0TEAM", ids: ["p2", "p3"] } as never]);
+    await deliverRunProposals(async (a) => void delivered.push(a), { agentId: AGENT, scope: { kind: "user", userId: ALICE, teamId: "T0TEAM" }, app: { apiAppId: "A0ONE", teamId: "T0TEAM" }, proposed: ["p2", "p3"], tag: "t" });
+    expect(delivered).toEqual([{ agentId: AGENT, userId: ALICE, app: { apiAppId: "A0ONE", teamId: "T0TEAM" }, ids: ["p2", "p3"] } as never]);
     // A failing delivery is logged, never thrown.
     await deliverRunProposals(async () => { throw new Error("slack down"); }, { agentId: AGENT, scope: { kind: "user", userId: ALICE, teamId: "" }, proposed: ["p4"], tag: "t" });
     expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("\n")).toContain("slack down");
@@ -226,6 +264,8 @@ describe("a person's proposals go to their DM only", () => {
   test("runNightlyReview hands the user pass's proposal ids to deliver", async () => {
     const brain = fakeBrain();
     const s = await Sessions.createForThread({ thread: { team_id: "T0TEAM", channel_id: "D0ALICE", thread_ts: "1.1", persona_id: "default" }, model: "m", working_dir: "/tmp" });
+    await db.run("UPDATE sessions SET updated_at = ? WHERE id = ?", [NOW - DAY, s.id]);
+    await Sessions.setSlackApp(s.id, "A0ONE");
     await db.run("UPDATE sessions SET updated_at = ? WHERE id = ?", [NOW - DAY, s.id]);
     const source = userSourceId(ALICE);
     const slug = conversationSlug(s.id);
@@ -243,7 +283,8 @@ describe("a person's proposals go to their DM only", () => {
     };
     try {
       await runNightlyReview({ agentId: AGENT, personaId: "default", personaIds: ["default"], timeZone: "UTC", slot: "2026-10-26" }, deps);
-      expect(delivered).toEqual([{ agentId: AGENT, userId: ALICE, teamId: "T0TEAM", ids: ["pp"] }]);
+      // Posted as the app of the run's own session.
+      expect(delivered).toEqual([{ agentId: AGENT, userId: ALICE, app: { apiAppId: "A0ONE", teamId: "T0TEAM" }, ids: ["pp"] }]);
     } finally {
       await db.run("DELETE FROM sessions WHERE id = ?", [s.id]);
     }
@@ -255,11 +296,11 @@ function fakeTransport() {
   const handlers: Array<{ id: string | RegExp; h: ActionHandler }> = [];
   return {
     action: (id: string | RegExp, h: ActionHandler) => void handlers.push({ id, h }),
-    async click(actionId: string, by: string, message?: { text: string; blocks: Block[] }) {
+    async click(actionId: string, by: string, message?: { text: string; blocks: Block[] }, extra: Record<string, unknown> = {}) {
       const e = handlers.find((x) => (typeof x.id === "string" ? x.id === actionId : x.id.test(actionId)));
       if (!e) throw new Error(`no handler for ${actionId}`);
       const responses: Array<Record<string, unknown>> = [];
-      await e.h({ ack: async () => {}, action: { action_id: actionId }, body: { user: { id: by }, ...(message ? { message } : {}) }, respond: async (m) => void responses.push(m as Record<string, unknown>) });
+      await e.h({ ack: async () => {}, action: { action_id: actionId }, body: { user: { id: by }, ...extra, ...(message ? { message } : {}) }, respond: async (m) => void responses.push(m as Record<string, unknown>) });
       return responses;
     },
   };
@@ -348,5 +389,86 @@ describe("Restore a retired skill", () => {
     registerProposalActions(t, { ...deps, call: fakeBrain().call });
     const [r] = await t.click(restoreActionId(row), MANAGER);
     expect(String(r!.text)).toContain("Restored");
+  });
+});
+
+describe("the pass's write guards hold for proposals", () => {
+  const w = (payload: Record<string, unknown>, kind: "team-fact" | "promote" = "promote") => proposalWrite({ kind, payload });
+  const errorOf = (r: ReturnType<typeof w>) => ("error" in r ? r.error : null);
+  test("conversation pages, the lessons pages, an over-long lessons page, a profile and a credential are refused", () => {
+    expect(errorOf(w({ pages: [{ slug: "conversations/s2", content: "x" }] }))).toBe(CONVERSATION_REFUSAL);
+    expect(errorOf(w({ pages: [{ slug: "/conversations/s2/summary", content: "x" }] }))).toBe(CONVERSATION_REFUSAL);
+    expect(errorOf(w({ target: "agent", pages: [{ slug: "self/lessons", content: "- a", type: "lessons" }] }))).toBe(LESSONS_PAGE_REFUSAL);
+    expect(errorOf(w({ target: "agent", pages: [{ slug: "self/lesson-proposals", content: "- a" }] }))).toBe(LESSONS_PAGE_REFUSAL);
+    const long = Array.from({ length: 41 }, (_, i) => `- ${i}`).join("\n");
+    expect(errorOf(w({ pages: [{ slug: "notes/lessons-copy", content: long, type: "lessons" }] }))).toBe(LESSONS_REFUSAL);
+    expect(errorOf(w({ pages: [{ slug: "profile", content: "x", type: "profile" }] }))).toBe(PROFILE_PAGE_REFUSAL);
+    expect(errorOf(w({ pages: [{ slug: "notes/x", content: "password=hunter2hunter2" }] }))).toBe(CREDENTIAL_REFUSAL);
+    expect(errorOf(w({ pages: [{ slug: "notes/x", content: "fine" }] }))).toBeNull();
+  });
+
+  test("an approval of a stored row carrying one is refused and the row stays open", async () => {
+    const { deps, brain } = setup();
+    const id = await promote(ALICE, { target: "agent", pages: [{ slug: "self/lessons", content: "- a", type: "lessons" }] });
+    const r = await decideProposal({ id, verb: "approve", by: ALICE }, deps);
+    expect(r.ok).toBe(false);
+    expect((await Proposals.get(id))!.status).toBe("open");
+    expect(brain.calls.filter((c) => c.name === "put_page")).toEqual([]);
+  });
+
+  test("propose refuses it at creation, so it never becomes a card", async () => {
+    const ctx = { scope: { kind: "user" as const, userId: ALICE, teamId: "T0TEAM" }, agentId: AGENT, kbSources: [], transcripts: [], call: fakeBrain().call, now: () => new Date(NOW) };
+    const r = await passHandlers.propose({ kind: "promote", to: "person", payload: { pages: [{ slug: "conversations/s9", content: "x" }] } }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toBe(CONVERSATION_REFUSAL);
+    expect(await Proposals.listOpen(AGENT, "person", ALICE)).toEqual([]);
+  });
+});
+
+describe("posting as the right Slack app", () => {
+  function twoApps() {
+    const posted: Array<{ app: string; channel: string }> = [];
+    const client = (app: string) => ({ chat: { postMessage: async (m: { channel: string }) => void posted.push({ app, channel: m.channel }) } });
+    const t = {
+      client: client("oldest") as never,
+      clientFor: (ref: { apiAppId?: string; teamId?: string }) => {
+        if (ref.apiAppId === "A0ONE" && ref.teamId === "T0TEAM") return client("A0ONE") as never;
+        if (ref.apiAppId === "A0TWO" && ref.teamId === "T0TEAM") return client("A0TWO") as never;
+        throw new Error("no registered Slack app");
+      },
+    };
+    return { t, posted };
+  }
+
+  test("in a two-app workspace a card goes out as the app it names; a team id alone is refused", async () => {
+    const { t, posted } = twoApps();
+    const post = cardPoster(t);
+    await post({ channel: ALICE, app: { apiAppId: "A0TWO", teamId: "T0TEAM" }, text: "x", blocks: [] });
+    expect(posted).toEqual([{ app: "A0TWO", channel: ALICE }]);
+    await expect(post({ channel: ALICE, app: { teamId: "T0TEAM" }, text: "x", blocks: [] })).rejects.toThrow(NO_APP_REFUSAL);
+    await expect(post({ channel: ALICE, text: "x", blocks: [] })).rejects.toThrow(NO_APP_REFUSAL);
+    expect(posted.length).toBe(1);
+  });
+
+  test("a single-app transport posts with its one client", async () => {
+    const posted: string[] = [];
+    const post = cardPoster({ client: { chat: { postMessage: async (m: { channel: string }) => void posted.push(m.channel) } } as never });
+    await post({ channel: MANAGER, text: "x", blocks: [] });
+    expect(posted).toEqual([MANAGER]);
+  });
+
+  test("a click through another app or workspace than the card's is refused", async () => {
+    const { deps } = setup();
+    const t = fakeTransport();
+    registerProposalActions(t, deps);
+    const id = await teamFact();
+    await Proposals.stampApp([id], { apiAppId: "A0ONE", teamId: "T0TEAM" });
+    const wrongApp = await t.click(approveActionId(id), MANAGER, undefined, { api_app_id: "A0TWO", team: { id: "T0TEAM" } });
+    expect(String(wrongApp[0]!.text)).toContain("another Slack app");
+    const wrongTeam = await t.click(approveActionId(id), MANAGER, undefined, { api_app_id: "A0ONE", team: { id: "T0OTHER" } });
+    expect(String(wrongTeam[0]!.text)).toContain("another Slack app");
+    expect((await Proposals.get(id))!.status).toBe("open");
+    const ok = await t.click(approveActionId(id), MANAGER, undefined, { api_app_id: "A0ONE", team: { id: "T0TEAM" } });
+    expect(String(ok[0]!.text)).toContain("Approved");
   });
 });

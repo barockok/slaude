@@ -352,8 +352,10 @@ async function listBrainSources(): Promise<string[]> {
 export interface SchedulerSlack {
   /** Posts as the agent's bot; `channel` is a user id for a DM. */
   post: CardPost;
-  /** The manager and the backup manager. */
+  /** The manager and the backup manager (who may decide manager proposals). */
   managers: () => string[];
+  /** Whom the weekly digest goes to: the manager, else the backup manager. */
+  digestRecipient: () => string | null;
 }
 
 /** Production handlers: the nightly review, the lessons upkeep, the quiet-moment pass, the weekly skill review and the weekly digest. */
@@ -363,7 +365,7 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
     "lessons-upkeep": (r) => runLessonsUpkeep(r, deps),
     "quiet-moment": (r) => runQuietMoment(r, deps),
     "skill-review": (r) => runSkillReview(r, deps),
-    digest: (r) => runDigest(r, { call: deps.call, managers: slack?.managers ?? (() => []), ...(slack ? { post: slack.post } : {}) }),
+    digest: (r) => runDigest(r, { call: deps.call, recipient: slack?.digestRecipient ?? (() => null), ...(slack ? { post: slack.post } : {}) }),
   };
 }
 

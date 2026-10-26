@@ -212,7 +212,8 @@ export async function runQuietMoment(r: AgentGroup & { slot: string; signal?: Ab
     },
     deps.runner,
   );
-  await deliverRunProposals(deps.deliver, { agentId: r.agentId, scope, proposed: res.proposed, tag });
+  const app = session?.slack_app_id ? { apiAppId: session.slack_app_id, teamId: session.slack_team_id ?? "" } : session?.slack_team_id ? { teamId: session.slack_team_id } : undefined;
+  await deliverRunProposals(deps.deliver, { agentId: r.agentId, scope, ...(app ? { app } : {}), proposed: res.proposed, tag });
   if (summarized) await ThreadActivity.markSummarized(sessionId, lastTurnAt);
   else console.log(`${tag}: session=${sessionId} ended ${res.outcome} without a summary`);
   return { outcome: res.outcome, summarized };

@@ -12,7 +12,8 @@ import { db } from "../../src/db/schema";
 import * as Runs from "../../src/db/background-runs";
 import type { BackgroundRun, RunOutcome } from "../../src/db/background-runs";
 import * as Proposals from "../../src/db/proposals";
-import { coveredDays, diffLessons, renderDigest, runDigest, type DigestDeps } from "../../src/background/digest";
+import { coveredDays, diffLessons, digestRecipientOf, personaApp, renderDigest, runDigest, type DigestDeps } from "../../src/background/digest";
+import * as Sessions from "../../src/db/sessions";
 import { approveActionId, rejectActionId, restoreActionId, type Block, type CardPost } from "../../src/background/proposal-cards";
 import { createBackgroundScheduler, type AgentGroup } from "../../src/background/scheduler";
 import { LESSONS_SLUG } from "../../src/background/passes/lessons-upkeep";
@@ -74,6 +75,8 @@ const proposal = (over: Partial<Proposals.Proposal>): Proposals.Proposal => ({
   status: "open",
   decidedBy: null,
   decidedAt: null,
+  slackAppId: null,
+  slackTeamId: null,
   ...over,
 });
 
@@ -162,7 +165,7 @@ function digestDeps(over: Partial<DigestDeps> = {}) {
   const deps: DigestDeps = {
     call: brain.call,
     post,
-    managers: () => [MANAGER, BACKUP],
+    recipient: () => MANAGER,
     budget: () => ({ limitUsd: 1, timeZone: "UTC" }),
     skills: () => [],
     app: async () => ({ teamId: "T0TEAM" }),
@@ -174,15 +177,15 @@ function digestDeps(over: Partial<DigestDeps> = {}) {
 const lessonsPage = (lines: string[]) => `---\ntype: lessons\n---\n${lines.join("\n")}\n`;
 
 describe("runDigest", () => {
-  test("posts only to the manager and the backup, never a person's proposal, and records an ok run", async () => {
+  test("posts only to the manager, never a person's proposal, and records an ok run", async () => {
     await Proposals.insert({ agentId: AGENT, kind: "team-fact", toKind: "manager", toUser: null, scope: "agent", payload: { summary: "MANAGER-FACT", pages: [{ slug: "team/x", content: "x" }] }, createdAt: MONDAY.getTime() - DAY });
     await Proposals.insert({ agentId: AGENT, kind: "promote", toKind: "person", toUser: PERSON, scope: `user:${PERSON}`, payload: { summary: "PRIVATE-PROMOTE" }, createdAt: MONDAY.getTime() - DAY });
     const id = await Runs.start({ agentId: AGENT, pass: "nightly-review", scope: "agent", day: "2026-10-21", startedAt: Date.parse("2026-10-21T02:30:00Z") });
     await Runs.finish(id, { tokens: ZERO, costUsd: 0.2, outcome: "ok" });
     const { deps, sent } = digestDeps();
     const res = await runDigest({ ...group, slot: "2026-W44", now: MONDAY }, deps);
-    expect(res).toEqual({ outcome: "ok", sentTo: [MANAGER, BACKUP] });
-    expect(sent.map((m) => m.channel)).toEqual([MANAGER, BACKUP]);
+    expect(res).toEqual({ outcome: "ok", sentTo: [MANAGER] });
+    expect(sent.map((m) => m.channel)).toEqual([MANAGER]);
     const all = allText(sent[0]!.blocks);
     expect(all).toContain("MANAGER-FACT");
     expect(all).toContain("2026-10-21: $0.2000 of $1.0000");
@@ -192,8 +195,37 @@ describe("runDigest", () => {
     expect(rows.map((r) => [r.pass, r.outcome, r.costUsd])).toEqual([["digest", "ok", 0]]);
   });
 
+  test("the digest goes to the manager; to the backup only when no manager is set", () => {
+    expect(digestRecipientOf({ manager: { userId: MANAGER }, backupManager: { userId: BACKUP } })).toBe(MANAGER);
+    expect(digestRecipientOf({ manager: {}, backupManager: { userId: BACKUP } })).toBe(BACKUP);
+    expect(digestRecipientOf({ manager: {}, backupManager: {} })).toBeNull();
+  });
+
+  test("posts as the group persona's own app, never another persona's in the group, and binds the cards to it", async () => {
+    const mk = async (persona: string, app: string, ts: string, at: number) => {
+      const s = await Sessions.createForThread({ thread: { team_id: "T0TEAM", channel_id: "C0ONE", thread_ts: ts, persona_id: persona }, model: "m", working_dir: "/tmp" });
+      await Sessions.setSlackApp(s.id, app);
+      await db.run("UPDATE sessions SET updated_at = ? WHERE id = ?", [at, s.id]);
+      return s.id;
+    };
+    const ids = [await mk("default", "A0DEFAULT", "1.1", MONDAY.getTime() - 5 * DAY), await mk("helper", "A0HELPER", "1.2", MONDAY.getTime() - DAY)];
+    try {
+      expect(await personaApp("default")).toEqual({ apiAppId: "A0DEFAULT", teamId: "T0TEAM" });
+      const pid = await Proposals.insert({ agentId: AGENT, kind: "team-fact", toKind: "manager", toUser: null, scope: "agent", payload: { pages: [{ slug: "team/x", content: "x" }] }, createdAt: MONDAY.getTime() - DAY });
+      const posts: Array<{ app?: unknown }> = [];
+      const { deps } = digestDeps({ post: async (m) => void posts.push(m) });
+      delete (deps as { app?: unknown }).app;
+      await runDigest({ ...group, personaIds: ["default", "helper"], slot: "2026-W44", now: MONDAY }, deps);
+      expect(posts.map((m) => m.app)).toEqual([{ apiAppId: "A0DEFAULT", teamId: "T0TEAM" }]);
+      const row = (await Proposals.get(pid))!;
+      expect([row.slackAppId, row.slackTeamId]).toEqual(["A0DEFAULT", "T0TEAM"]);
+    } finally {
+      for (const id of ids) await db.run("DELETE FROM sessions WHERE id = ?", [id]);
+    }
+  });
+
   test("with no manager configured nothing is sent; the run is ok and logged", async () => {
-    const { deps, sent } = digestDeps({ managers: () => [] });
+    const { deps, sent } = digestDeps({ recipient: () => null });
     expect(await runDigest({ ...group, slot: "2026-W44", now: MONDAY }, deps)).toEqual({ outcome: "ok", sentTo: [] });
     expect(sent).toEqual([]);
     expect(logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("\n")).toContain("no manager configured");
@@ -219,7 +251,7 @@ describe("runDigest", () => {
     const next = new Date(MONDAY.getTime() + 7 * DAY);
     await db.run("INSERT INTO background_slots (agent_id, pass, slot, claimed_at) VALUES (?, 'digest', '2026-W45', ?)", [AGENT, next.getTime()]);
     await runDigest({ ...group, slot: "2026-W45", now: next }, deps);
-    const all = allText(sent[2]!.blocks);
+    const all = allText(sent[1]!.blocks);
     expect(all).toContain("+ - c");
     expect(all).toContain("− - a");
     expect(all).not.toContain("+ - b");
