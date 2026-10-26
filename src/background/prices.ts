@@ -18,7 +18,11 @@ export const PROVISIONAL_OUTPUT_TOKENS = 1024;
  * stated per model where the reference does (Fable 5.1 0.25, Fable 5 1.00,
  * Opus 5.5 0.20, Sonnet 5.5 0.20) and is 0.1x input elsewhere. cache_write is
  * 1.25x input (5-minute TTL). Haiku 5.5 uses its up-to-100K-token prompt price.
- * Keys are model ids as the SDK reports them in `result.modelUsage`.
+ * Keys are model ids as the SDK reports them in `result.modelUsage`; a dated
+ * snapshot id (`-YYYYMMDD`) is priced as its alias. The reference lists no
+ * prices for retired models (Sonnet 4, Opus 4/4.1, the 3.x line) or for the
+ * legacy Opus 4.5 / deprecated Sonnet 4.5, so those need an entry in
+ * SLAUDE_PRICE_TABLE.
  */
 export const DEFAULT_PRICE_TABLE: PriceTable = {
   "claude-fable-5-1": { input: 10, output: 50, cache_read: 0.25, cache_write: 12.5 },
@@ -83,14 +87,29 @@ export function loadPriceTable(raw: string | undefined): { table: PriceTable; er
   return { table, errors: [] };
 }
 
-/** Strip the one known provider prefix. Exact lookup otherwise, never fuzzy. */
-function normalizeModel(model: string): string {
-  return model.startsWith("anthropic/") ? model.slice("anthropic/".length) : model;
+const DATE_SUFFIX = /-\d{8}$/;
+
+/**
+ * The ids a model is looked up under, in order: as given; without the one
+ * known provider prefix `anthropic/`; then each of those without a trailing
+ * `-YYYYMMDD` snapshot date (`claude-haiku-4-5-20251001` → `claude-haiku-4-5`).
+ * Exact and deterministic, never fuzzy.
+ */
+function lookupIds(model: string): string[] {
+  const bare = model.startsWith("anthropic/") ? model.slice("anthropic/".length) : model;
+  const ids = [model, bare];
+  for (const id of [model, bare]) if (DATE_SUFFIX.test(id)) ids.push(id.replace(DATE_SUFFIX, ""));
+  return ids;
+}
+
+function priceOf(table: PriceTable, model: string): Record<TokenKind, number> | undefined {
+  for (const id of lookupIds(model)) if (Object.hasOwn(table, id)) return table[id];
+  return undefined;
 }
 
 /** Σ tokens(kind) × price(model, kind) / 1e6. Null for a model not in the table. */
 export function costUsd(table: PriceTable, model: string, t: TokenCounts): number | null {
-  const p = Object.hasOwn(table, model) ? table[model] : Object.hasOwn(table, normalizeModel(model)) ? table[normalizeModel(model)] : undefined;
+  const p = priceOf(table, model);
   if (!p) return null;
   return KINDS.reduce((sum, k) => sum + ((t[k] || 0) * p[k]) / 1_000_000, 0);
 }
@@ -163,4 +182,9 @@ export function envPriceTable(raw: string | undefined): PriceTable {
     for (const e of errors) console.error(`[background] ${e}; using the built-in price table`);
   }
   return table;
+}
+
+/** The configured (non-empty) models the table has no price for, each once. */
+export function unpricedModels(table: PriceTable, models: readonly string[]): string[] {
+  return [...new Set(models.filter((m) => m && !priceOf(table, m)))];
 }

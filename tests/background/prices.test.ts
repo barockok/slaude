@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { costUsd, DEFAULT_PRICE_TABLE, loadPriceTable, tokensFromUsage, type PriceTable } from "../../src/background/prices";
+import { costUsd, DEFAULT_PRICE_TABLE, loadPriceTable, tokensFromUsage, unpricedModels, type PriceTable } from "../../src/background/prices";
 
 const T: PriceTable = { m: { input: 3, output: 15, cache_read: 0.3, cache_write: 3.75 } };
 
@@ -23,8 +23,24 @@ describe("costUsd", () => {
     const z = { input: 1_000_000, output: 0, cache_read: 0, cache_write: 0 };
     expect(costUsd(T, "anthropic/m", z)).toBe(3);
     expect(costUsd(T, "openrouter/m", z)).toBeNull();
-    expect(costUsd(T, "m-20250101", z)).toBeNull();
+    expect(costUsd(T, "mm", z)).toBeNull();
     expect(costUsd(DEFAULT_PRICE_TABLE, "anthropic/claude-sonnet-4-6", z)).toBe(3);
+  });
+  test("a trailing -YYYYMMDD date suffix is stripped, exactly (dated ids such as the CLI's helper model)", () => {
+    const z = { input: 1_000_000, output: 0, cache_read: 0, cache_write: 0 };
+    expect(costUsd(T, "m-20250101", z)).toBe(3);
+    expect(costUsd(T, "anthropic/m-20250101", z)).toBe(3);
+    expect(costUsd(DEFAULT_PRICE_TABLE, "claude-haiku-4-5-20251001", z)).toBe(1);
+    // An exact entry wins over the stripped one.
+    expect(costUsd({ ...T, "m-20250101": { input: 7, output: 0, cache_read: 0, cache_write: 0 } }, "m-20250101", z)).toBe(7);
+    // Not a date suffix: no match.
+    for (const id of ["m-2025010", "m-202501011", "m20250101", "m-20250101-x", "m-v20250101"]) expect(costUsd(T, id, z)).toBeNull();
+  });
+});
+
+describe("unpricedModels", () => {
+  test("names each configured model the table has no price for, deduplicated; unset is not listed", () => {
+    expect(unpricedModels(T, ["m", "", "anthropic/m-20250101", "x", "x", "y"])).toEqual(["x", "y"]);
   });
 });
 
