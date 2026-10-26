@@ -3,7 +3,7 @@ import { db } from "../../src/db/schema";
 import * as Runs from "../../src/db/background-runs";
 import { TOOLS_SURVIVING_EMPTY_SET } from "../../src/agent/child-env";
 import { metrics } from "../../src/metrics";
-import { passPrompt, runPass, type PassSpec, type RunnerDeps } from "../../src/background/runner";
+import { passPrompt, PROVISIONAL_OUTPUT_TOKENS, runPass, type PassSpec, type RunnerDeps } from "../../src/background/runner";
 import { passToolId } from "../../src/background/pass-tools";
 import type { PriceTable } from "../../src/background/prices";
 import { fakeBrain } from "./fake-brain";
@@ -50,6 +50,7 @@ function deps(query: RunnerDeps["query"], limitUsd = 1, model = MODEL): RunnerDe
     model: () => model,
     budget: () => ({ limitUsd, timeZone: "UTC" }),
     kbSources: () => [],
+    provider: async () => null,
   };
 }
 
@@ -152,13 +153,142 @@ describe("runPass", () => {
     expect(row.costUsd).toBeCloseTo(0.3);
   });
 
-  test("ok run: one API call split over several messages is priced once; the result total never lowers it", async () => {
+  test("ok run: one API call split over several messages is priced once; the result total replaces the turns", async () => {
     const s = spec();
+    // Counted twice, m1 would push the provisional figure to 0.9 > 0.65 and stop the run.
     const { query } = fakeQuery([assistant("m1"), assistant("m1"), assistant("m2"), result({ input_tokens: 500_000 })]);
-    const r = await runPass(s, deps(query, 5));
+    const r = await runPass(s, deps(query, 0.65));
     expect(r.outcome).toBe("ok");
-    expect(r.costUsd).toBeCloseTo(0.6);
-    expect((await rowOf(s.agentId, r.runId)).outcome).toBe("ok");
+    expect(r.costUsd).toBeCloseTo(0.5);
+    expect((await rowOf(s.agentId, r.runId))).toMatchObject({ outcome: "ok" });
+  });
+
+  describe("output under-count on the real CLI (assistant usage is message_start's)", () => {
+    // Output-only pricing: 100 USD per million output tokens.
+    const OUT: PriceTable = { [MODEL]: { input: 0, output: 100, cache_read: 0, cache_write: 0 } };
+    const tiny = { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+
+    test("each turn counts at least 1024 output tokens, so the stop fires; the stopped row keeps the provisional figure", async () => {
+      const s = spec({ pass: "lessons-upkeep" });
+      const { query, state } = fakeQuery([assistant("m1", tiny), assistant("m2", tiny), assistant("m3", tiny), assistant("m4", tiny), result({ output_tokens: 9000 })]);
+      const r = await runPass(s, { ...deps(query, 0.25), priceTable: OUT });
+      expect(PROVISIONAL_OUTPUT_TOKENS).toBe(1024);
+      expect(r.outcome).toBe("stopped-budget");
+      expect(state.taken).toBe(3);
+      expect(r.costUsd).toBeCloseTo((3 * 1024 * 100) / 1e6);
+      expect((await rowOf(s.agentId, r.runId)).tokens.output).toBe(3 * 1024);
+    });
+
+    test("a large result total corrects the provisional figure upward", async () => {
+      const s = spec({ pass: "lessons-upkeep" });
+      const { query } = fakeQuery([assistant("m1", tiny), assistant("m2", tiny), result({ input_tokens: 20, output_tokens: 5000 })]);
+      const r = await runPass(s, { ...deps(query, 5), priceTable: OUT });
+      expect(r.outcome).toBe("ok");
+      expect(r.costUsd).toBeCloseTo((5000 * 100) / 1e6);
+      expect((await rowOf(s.agentId, r.runId)).tokens).toEqual({ input: 20, output: 5000, cache_read: 0, cache_write: 0 });
+    });
+
+    test("an error mid-run keeps the provisional figure", async () => {
+      const s = spec({ pass: "lessons-upkeep" });
+      const { query } = fakeQuery([assistant("m1", tiny), (() => { throw new Error("boom"); }) as () => never]);
+      const r = await runPass(s, { ...deps(query, 5), priceTable: OUT });
+      expect(r.outcome).toBe("error");
+      expect(r.costUsd).toBeCloseTo((1024 * 100) / 1e6);
+    });
+  });
+
+  describe("per-model pricing from result.modelUsage", () => {
+    const TWO: PriceTable = { ...TABLE, "test-small": { input: 0.1, output: 0, cache_read: 0, cache_write: 0 } };
+    const mu = (inputTokens: number) => ({ inputTokens, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 999 });
+
+    test("each model is priced at its own rate (never the SDK's costUSD)", async () => {
+      const { query } = fakeQuery([assistant("m1"), { ...result(), modelUsage: { [MODEL]: mu(300_000), "test-small": mu(1_000_000) } }]);
+      const r = await runPass(spec(), { ...deps(query, 5), priceTable: TWO });
+      expect(r.outcome).toBe("ok");
+      expect(r.costUsd).toBeCloseTo(0.3 + 0.1);
+    });
+
+    test("a model with no price ends the run as error, logs its id, and keeps a non-zero figure", async () => {
+      const s = spec();
+      const { query } = fakeQuery([assistant("m1"), { ...result(), modelUsage: { [MODEL]: mu(300_000), "mystery-helper": mu(50_000) } }]);
+      const r = await runPass(s, deps(query, 5));
+      expect(r.outcome).toBe("error");
+      expect(r.costUsd).toBeCloseTo(0.3);
+      expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).some((l: string) => l.includes("'mystery-helper'") && l.includes("SLAUDE_PRICE_TABLE"))).toBe(true);
+      expect((await rowOf(s.agentId, r.runId)).outcome).toBe("error");
+    });
+  });
+
+  describe("provider set", () => {
+    const KEYS = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "AWS_REGION"] as const;
+    let saved: Record<string, string | undefined>;
+    beforeEach(() => {
+      saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+      process.env.ANTHROPIC_API_KEY = "process-key";
+      process.env.ANTHROPIC_BASE_URL = "https://process.example.invalid";
+      process.env.ANTHROPIC_AUTH_TOKEN = "process-auth";
+      process.env.AWS_REGION = "process-region";
+    });
+    afterEach(() => {
+      for (const k of KEYS) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    });
+
+    test("a persona with its own provider set gets exactly that set, nothing from this process", async () => {
+      const { query, state } = fakeQuery([result()]);
+      await runPass(spec(), { ...deps(query, 5), provider: async () => ({ apiKey: "persona-key", baseUrl: "https://persona.example.invalid" }) });
+      const e = state.calls[0]!.options.env as Record<string, string | undefined>;
+      expect(e.ANTHROPIC_API_KEY).toBe("persona-key");
+      expect(e.ANTHROPIC_BASE_URL).toBe("https://persona.example.invalid");
+      expect(e.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      expect(e.AWS_REGION).toBeUndefined();
+      expect(e.PATH).toBe(process.env.PATH);
+    });
+
+    test("a filesystem registry declares no provider set (the default seam resolves null)", async () => {
+      const { resolvePersonaOwnProvider } = await import("../../src/gateway/api/tenants");
+      expect(await resolvePersonaOwnProvider("default")).toBeNull();
+    });
+
+    test("without one, the process's provider variables pass through", async () => {
+      const { query, state } = fakeQuery([result()]);
+      await runPass(spec(), deps(query, 5));
+      const e = state.calls[0]!.options.env as Record<string, string | undefined>;
+      expect(e.ANTHROPIC_API_KEY).toBe("process-key");
+      expect(e.ANTHROPIC_BASE_URL).toBe("https://process.example.invalid");
+    });
+
+    test("a provider that cannot be resolved is an error run; the query never starts", async () => {
+      const s = spec();
+      const { query, state } = fakeQuery([result()]);
+      const r = await runPass(s, { ...deps(query, 5), provider: async () => { throw new Error("reference not found"); } });
+      expect(r.outcome).toBe("error");
+      expect(state.calls).toHaveLength(0);
+      expect((await rowOf(s.agentId, r.runId)).outcome).toBe("error");
+    });
+  });
+
+  test("a failure before the query (budget config) still writes an error row and counts the metric", async () => {
+    const s = spec();
+    const { query, state } = fakeQuery([result()]);
+    const r = await runPass(s, { ...deps(query, 5), budget: () => { throw new Error("registry down"); } });
+    expect(r.outcome).toBe("error");
+    expect(state.calls).toHaveLength(0);
+    expect((await rowOf(s.agentId, r.runId)).outcome).toBe("error");
+    expect(metrics.render()).toMatch(new RegExp(`slaude_background_runs_total\\{[^}]*agent="${s.agentId}"[^}]*outcome="error"[^}]*\\} 1`));
+  });
+
+  test("a user-scope pass with no team id says so in one line", async () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { query } = fakeQuery([result()]);
+      await runPass(spec({ scope: { kind: "user", userId: "U0ALICE", teamId: "" } }), deps(query, 5));
+      expect(warn.mock.calls.map((c: unknown[]) => String(c[0])).filter((l: string) => l.includes("no Slack team id"))).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("a result total above the turns seen is taken", async () => {
