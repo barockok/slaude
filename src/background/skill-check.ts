@@ -51,7 +51,13 @@ export interface SkillCheckBudget {
   finish(sessionId: string, runId: string, r: { usage: ModelTokens; outcome: "ok" | "error" }): Promise<void>;
 }
 
-/** The ledger's agent id for a persona: the id its private brain slice is keyed on. */
+/**
+ * The ledger's agent id for a persona: the id its private brain slice is keyed
+ * on. Every tenant's `default` persona resolves to the same process agent id,
+ * so on a multi-tenant gateway they share one background budget and one
+ * ledger (as they share the `agent-<id>` slice); give each tenant a named
+ * persona with its own Slack user id to separate them.
+ */
 export async function backgroundAgentId(personaId: string): Promise<string> {
   if (personaId && personaId !== "default") {
     const p = livePersona(personaId);
