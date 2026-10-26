@@ -92,6 +92,11 @@ type LiveSession = {
    *  inAutoEvolve when a budget is installed), ended exactly once: by the
    *  turn's result, or by the session's teardown when no result came. */
   evolveRun?: EvolveRun;
+  /** Budgeted background turns delivered through sendMessage (a promise
+   *  check), by the inputSeq of the input they rode on: that input's result
+   *  finishes the run with its own usage. A run whose input never reaches a
+   *  result (abort, reboot) is left open for the stale-run sweep. */
+  bgRuns?: Map<number, BackgroundTurnRun>;
   /** The last result's `modelUsage` (a running total per CLI process): the
    *  base the check turn's own usage is measured from. */
   lastModelUsage?: Record<string, ModelUsageRow>;
@@ -138,6 +143,16 @@ export type AgentEvent =
   | { type: "error"; sessionId: string; error: string; code?: FailureCode; jobId?: string }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
   | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
+
+/**
+ * A ledger run a delivered input carries (sendMessage's `backgroundRun`):
+ * opened by the caller before the turn, finished here with that input's own
+ * usage when its result arrives.
+ */
+export interface BackgroundTurnRun {
+  runId: string;
+  finish(usage: ModelTokens, outcome: "ok" | "error"): Promise<void>;
+}
 
 /** An open skill-check run (see LiveSession.evolveRun). */
 type EvolveRun = {
@@ -751,8 +766,8 @@ export class AgentManager extends EventEmitter {
   }
 
   /** Send user input. Starts session loop if not already live. */
-  async sendMessage(sessionId: string, text: string, opts: { sender?: InputSender } = {}) {
-    return this.#send(sessionId, text, false, opts.sender ?? null);
+  async sendMessage(sessionId: string, text: string, opts: { sender?: InputSender; backgroundRun?: BackgroundTurnRun } = {}) {
+    return this.#send(sessionId, text, false, opts.sender ?? null, opts.backgroundRun);
   }
 
   /**
@@ -791,7 +806,7 @@ export class AgentManager extends EventEmitter {
     return out;
   }
 
-  async #send(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null = null) {
+  async #send(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null = null, run?: BackgroundTurnRun) {
     // Signal that a real user turn is starting for this session. Slash commands
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
@@ -833,11 +848,20 @@ export class AgentManager extends EventEmitter {
       live.turn.assistant = [];
       this.#stopBlocked.delete(sessionId);
       live.pushUser(text, synthetic, synthetic ? null : sender);
+      if (run) (live.bgRuns ??= new Map()).set(live.inputSeq, run);
       this.#armIdle(live);
       return;
     }
     this.#stopBlocked.delete(sessionId);
     await this.#startSession(sessionId, text, synthetic, synthetic ? null : sender);
+    if (run) {
+      // A fresh session's first input is inputSeq 1. Anything else (a boot
+      // that failed, another input already in) leaves the run open for the
+      // stale-run sweep rather than charging it a turn that is not its own.
+      const booted = this.#live.get(sessionId);
+      if (booted && booted.inputSeq === 1) (booted.bgRuns ??= new Map()).set(1, run);
+      else console.warn(`[mgr] background run ${run.runId} session=${sessionId}: its input could not be tagged; the run stays open`);
+    }
   }
 
   /** (Re)arm the idle timer for a session. On expiry, close the SDK loop
@@ -1661,6 +1685,10 @@ export class AgentManager extends EventEmitter {
       }
       case "result": {
         if (live) {
+          // The input this result ends: the oldest outstanding one.
+          const endedSeq = live.inputSeq - live.pendingInputs + 1;
+          const bgRun = live.bgRuns?.get(endedSeq);
+          if (bgRun) live.bgRuns!.delete(endedSeq);
           live.pendingInputs = Math.max(0, live.pendingInputs - 1);
           live.inputSynthetic.shift();
           live.inputSenders.shift();
@@ -1670,6 +1698,13 @@ export class AgentManager extends EventEmitter {
           if (live.inAutoEvolve && live.evolveRun) {
             const ok = r.subtype === "success" && !r.is_error;
             this.#endEvolveRun(sessionId, live, ok ? "ok" : "error", turnModelTokens(r.modelUsage, live.evolveRun.base, r.usage));
+          }
+          if (bgRun) {
+            const ok = r.subtype === "success" && !r.is_error;
+            const usage = turnModelTokens(r.modelUsage, live.lastModelUsage, r.usage);
+            void bgRun.finish(usage, ok ? "ok" : "error").catch((e) => {
+              console.error(`[mgr] background run ${bgRun.runId} could not be recorded session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+            });
           }
           if (r.modelUsage) live.lastModelUsage = Object.fromEntries(Object.entries(r.modelUsage).map(([k, v]) => [k, { ...v }]));
         }

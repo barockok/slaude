@@ -6,7 +6,9 @@ export type PassName =
   | "skill-check"
   | "skill-review"
   | "quiet-moment"
-  | "digest";
+  | "digest"
+  | "commitment"
+  | "heartbeat";
 
 /** Estimate used when a pass has no ok run yet (USD). */
 export const PASS_FLOOR: Record<PassName, number> = {
@@ -16,6 +18,8 @@ export const PASS_FLOOR: Record<PassName, number> = {
   "skill-review": 0.05,
   "skill-check": 0.02,
   digest: 0,
+  commitment: 0.03,
+  heartbeat: 0.03,
 };
 
 /** Turn cap per pass. skill-check reuses an existing turn and digest uses no model. */
@@ -24,6 +28,7 @@ export const PASS_MAX_TURNS: Partial<Record<PassName, number>> = {
   "lessons-upkeep": 6,
   "quiet-moment": 10,
   "skill-review": 12,
+  heartbeat: 8,
 };
 
 export interface BudgetConfig {
@@ -44,7 +49,7 @@ export function localDay(at: Date, timeZone: string): string {
 }
 
 /** Passes that must leave room for the day's nightly review while it has not run. */
-const BEHIND_NIGHTLY: ReadonlySet<PassName> = new Set(["quiet-moment", "skill-review", "skill-check"]);
+const BEHIND_NIGHTLY: ReadonlySet<PassName> = new Set(["quiet-moment", "skill-review", "skill-check", "heartbeat"]);
 
 async function estimateFor(agentId: string, pass: PassName): Promise<number> {
   // Never below the floor: a near-zero last run must not unthrottle a pass.

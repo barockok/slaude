@@ -508,9 +508,18 @@ export class NodeClient {
     return b.ok === true && typeof b.runId === "string" ? { ok: true, runId: b.runId } : { ok: false };
   }
 
+  /** Finish the job's own background-turn run (POST /v1/background/turn/finish), retried as skillCheckFinish. */
+  turnFinish(
+    body: { runId: string; outcome: "ok" | "error"; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> },
+    jobToken: string,
+  ): Promise<void> {
+    return this.skillCheckFinish(body, jobToken, "/v1/background/turn/finish");
+  }
+
   async skillCheckFinish(
     body: { runId: string; outcome: "ok" | "error"; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> },
     jobToken: string,
+    path = "/v1/background/skill-check/finish",
   ): Promise<void> {
     // Retried here, not by request(): a retry whose earlier attempt did land
     // (a timeout or 5xx after the gateway wrote the row) gets a 409, which
@@ -520,7 +529,7 @@ export class NodeClient {
       if (attempt > 0) await sleep(this.#baseDelayMs * 2 ** (attempt - 1));
       let res: Response;
       try {
-        res = await this.request("/v1/background/skill-check/finish", {
+        res = await this.request(path, {
           method: "POST",
           body,
           jobToken,

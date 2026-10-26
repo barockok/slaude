@@ -44,6 +44,14 @@ import type { ResultUsage } from "../agent/token-budget";
 
 export const SKILL_CHECK = "skill-check" as const;
 
+/**
+ * The passes whose run is one session turn, opened before the turn and
+ * finished with that turn's own usage: the post-turn skill check, and a
+ * promise check (phase E, src/proactive/promises.ts). startSkillCheck and
+ * finishSkillCheck take the pass (default skill-check).
+ */
+export type TurnPass = typeof SKILL_CHECK | "commitment";
+
 /** What the manager calls around the post-turn skill check. */
 export interface SkillCheckBudget {
   /**
@@ -114,8 +122,8 @@ export interface SkillCheckDeps {
 
 const tableOf = (d: SkillCheckDeps): PriceTable => d.priceTable ?? envPriceTable(env.priceTableRaw());
 
-const settleMetrics = (agentId: string, outcome: RunOutcome, cost: number) => {
-  const labels = { agent: agentId, pass: SKILL_CHECK };
+const settleMetrics = (agentId: string, outcome: RunOutcome, cost: number, pass: TurnPass = SKILL_CHECK) => {
+  const labels = { agent: agentId, pass };
   metric.backgroundRunsTotal.inc({ ...labels, outcome });
   if (cost > 0) metric.backgroundCostUsdTotal.inc(labels, cost);
 };
@@ -135,18 +143,19 @@ const settleMetrics = (agentId: string, outcome: RunOutcome, cost: number) => {
  * ends `skipped-budget`.
  */
 export async function startSkillCheck(
-  a: { personaId: string; model: string; scope: string; reportedModel?: string },
+  a: { personaId: string; model: string; scope: string; reportedModel?: string; pass?: TurnPass },
   deps: SkillCheckDeps = {},
-): Promise<{ ok: true; runId: string; agentId: string } | { ok: false; reason: "budget" | "model" }> {
+): Promise<{ ok: true; runId: string; agentId: string; estimate: number } | { ok: false; reason: "budget" | "model" }> {
+  const pass = a.pass ?? SKILL_CHECK;
   const agentId = await backgroundAgentId(a.personaId);
   const now = (deps.now ?? (() => new Date()))();
   const cfg = (deps.budget ?? budgetConfigFor)(a.personaId);
   const day = localDay(now, cfg.timeZone);
-  const row = { agentId, pass: SKILL_CHECK, scope: a.scope, day, startedAt: now.getTime() };
-  const tag = `[background] agent=${agentId} pass=${SKILL_CHECK}`;
+  const row = { agentId, pass, scope: a.scope, day, startedAt: now.getTime() };
+  const tag = `[background] agent=${agentId} pass=${pass}`;
   const skipped = () => {
     console.log(`${tag}: skipped, not enough of today's budget left`);
-    settleMetrics(agentId, "skipped-budget", 0);
+    settleMetrics(agentId, "skipped-budget", 0, pass);
     return { ok: false as const, reason: "budget" as const };
   };
   await sweepStaleSkillChecks(now);
@@ -154,10 +163,10 @@ export async function startSkillCheck(
   const unpriced = await unpricedBlock(agentId, day, tag);
   if (unpriced !== null) {
     await Runs.finish(await Runs.start({ ...row, model: null }), { tokens: ZERO_TOKENS, costUsd: 0, outcome: "error", unpricedModel: unpriced });
-    settleMetrics(agentId, "error", 0);
+    settleMetrics(agentId, "error", 0, pass);
     return { ok: false, reason: "model" };
   }
-  const gate = await canStart(cfg, agentId, SKILL_CHECK, now);
+  const gate = await canStart(cfg, agentId, pass, now);
   if (!gate.ok) {
     await Runs.finish(await Runs.start({ ...row, model: null }), { tokens: ZERO_TOKENS, costUsd: 0, outcome: "skipped-budget" });
     return skipped();
@@ -173,11 +182,11 @@ export async function startSkillCheck(
   }
   // The estimate is the open run's provisional cost until finish replaces it.
   const runId = await Runs.start({ ...row, model, costUsd: gate.estimate });
-  if (await overAfterStart(cfg, agentId, SKILL_CHECK, now)) {
-    await Runs.finishOpen(runId, { agentId, pass: SKILL_CHECK }, { tokens: ZERO_TOKENS, costUsd: 0, outcome: "skipped-budget" });
+  if (await overAfterStart(cfg, agentId, pass, now)) {
+    await Runs.finishOpen(runId, { agentId, pass }, { tokens: ZERO_TOKENS, costUsd: 0, outcome: "skipped-budget" });
     return skipped();
   }
-  return { ok: true, runId, agentId };
+  return { ok: true, runId, agentId, estimate: gate.estimate };
 }
 
 /** An open skill-check run older than this lost its finish (a check turn is minutes at most). */
@@ -207,11 +216,12 @@ export async function sweepStaleSkillChecks(now: Date = new Date()): Promise<num
  * price start checked) and the run ends as `error`.
  */
 export async function finishSkillCheck(
-  a: { runId: string; agentId: string; usage: ModelTokens; outcome: "ok" | "error" },
+  a: { runId: string; agentId: string; usage: ModelTokens; outcome: "ok" | "error"; pass?: TurnPass },
   deps: SkillCheckDeps = {},
 ): Promise<{ ok: true; costUsd: number } | { ok: false; reason: "not-open" }> {
+  const pass = a.pass ?? SKILL_CHECK;
   const run = await Runs.get(a.runId);
-  if (!run || run.outcome !== null || run.agentId !== a.agentId || run.pass !== SKILL_CHECK) return { ok: false, reason: "not-open" };
+  if (!run || run.outcome !== null || run.agentId !== a.agentId || run.pass !== pass) return { ok: false, reason: "not-open" };
   const table = tableOf(deps);
   // "" is the caller's "the run's own model" (a turn that named none).
   const usage: ModelTokens = {};
@@ -229,16 +239,16 @@ export async function finishSkillCheck(
     for (const m of unpriced) rest = addTokens(rest, usage[m]!);
     const atRunModel = run.model ? costUsd(table, run.model, rest) : null;
     console.error(
-      `[background] agent=${a.agentId} pass=${SKILL_CHECK}: model '${unpriced.map((m) => m || "(none named)").join("', '")}' in the check's usage has no price: SLAUDE_PRICE_TABLE (or the built-in table) lacks it; ${atRunModel !== null ? `priced at '${run.model}'` : "the run keeps its estimate"}`,
+      `[background] agent=${a.agentId} pass=${pass}: model '${unpriced.map((m) => m || "(none named)").join("', '")}' in the check's usage has no price: SLAUDE_PRICE_TABLE (or the built-in table) lacks it; ${atRunModel !== null ? `priced at '${run.model}'` : "the run keeps its estimate"}`,
     );
     outcome = "error";
     total = atRunModel !== null ? total + atRunModel : Math.max(total, run.costUsd);
   }
   const unpricedModel = unpriced.length > 0 ? unpriced[0] || "(none named)" : undefined;
-  if (!(await Runs.finishOpen(a.runId, { agentId: a.agentId, pass: SKILL_CHECK }, { tokens, costUsd: total, outcome, ...(unpricedModel ? { unpricedModel } : {}) }))) {
+  if (!(await Runs.finishOpen(a.runId, { agentId: a.agentId, pass }, { tokens, costUsd: total, outcome, ...(unpricedModel ? { unpricedModel } : {}) }))) {
     return { ok: false, reason: "not-open" };
   }
-  settleMetrics(a.agentId, outcome, total);
+  settleMetrics(a.agentId, outcome, total, pass);
   return { ok: true, costUsd: total };
 }
 
@@ -322,4 +332,18 @@ export function turnModelTokens(
   if (isZero(turn)) return {};
   const model = curKeys.length === 1 ? curKeys[0]! : "";
   return { [model]: turn };
+}
+
+/**
+ * Mono: a background turn's run (a promise check) finished straight on the
+ * ledger with the turn's own usage (AgentManager sendMessage `backgroundRun`).
+ */
+export function ledgerTurnRun(a: { runId: string; agentId: string; pass: TurnPass } & SkillCheckDeps): { runId: string; finish(usage: ModelTokens, outcome: "ok" | "error"): Promise<void> } {
+  return {
+    runId: a.runId,
+    async finish(usage, outcome) {
+      const done = await finishSkillCheck({ runId: a.runId, agentId: a.agentId, usage, outcome, pass: a.pass }, a);
+      if (!done.ok) throw new Error(`${a.pass} run ${a.runId} is not open`);
+    },
+  };
 }

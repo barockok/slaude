@@ -70,6 +70,10 @@ export interface JobClaims {
    *  node's manager injects under the same token (auto-evolve, a continuation
    *  prompt) carries it too. See isInteractiveOrigin, AgentManager.isSyntheticTurn. */
   origin?: TurnOrigin;
+  /** The open ledger run of a budgeted background turn this job carries (a
+   *  promise check, phase E), signed at dispatch. Only this run id may be
+   *  finished with the token (POST /v1/background/turn/finish). */
+  bgRun?: string;
   /** First issue time (unix seconds), carried across token-refresh so the
    *  token's total life is capped. Absent = this token's own `iat`. */
   iat0?: number;
@@ -160,6 +164,9 @@ export function verifyJobToken(
   if ((claims as { typ?: unknown }).typ !== undefined) return { ok: false, reason: "bad_claims" };
   // An empty label would read as "default" through jobLabel; refuse it instead.
   if (claims.label !== undefined && (typeof claims.label !== "string" || claims.label === "")) {
+    return { ok: false, reason: "bad_claims" };
+  }
+  if (claims.bgRun !== undefined && (typeof claims.bgRun !== "string" || claims.bgRun === "")) {
     return { ok: false, reason: "bad_claims" };
   }
   // An unknown origin is refused rather than read as some default.

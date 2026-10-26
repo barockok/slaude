@@ -68,6 +68,11 @@ export interface TurnJob {
    *  currently a cron job's captured initiator. The node applies it before the
    *  turn so credential scoping matches an interactive 1on1. */
   oauthUser?: string;
+  /** The open ledger run this job carries (a promise check, phase E); the
+   *  same id is signed into jobToken as `bgRun`. The node finishes it with the
+   *  turn's usage only when the job holds that one message: a job a human
+   *  message was merged into leaves it open for the stale-run sweep. */
+  bgRun?: string;
   /** Short-lived JWT minted by the gateway; nodes present it on tool calls. */
   jobToken: string;
   enqueuedAt: number;
