@@ -308,14 +308,56 @@ recorded quote. The DM's outcome page landed in their `user-<id>` slice, and a
 channel post's reaction outcome in the agent's slice. Each carries only its
 signal (`asked to stop`, `reacted :eyes:`).
 
+## Real Slack
+
+One persona ran in mono on Socket Mode against a real Slack workspace,
+with the live model and a local gbrain with live embeddings. A person's
+replies and reactions were sent from their own Slack account.
+
+- **"stop" under a channel post.** A proactive post was made in a
+  trusted private channel and recorded in the ledger. The person replied
+  "stop" in its thread. Slack delivered the reply, and the agent answered in
+  one line in that thread ("Got it, I'll stop pinging you about …"). The
+  person's profile gained the topic in `mutes`, with `quote: stop` and
+  `source: told by <them>`. An outcome page with the signal `asked to stop`
+  landed in their slice. The reply never became a turn.
+- **`reaction_added` was not delivered.** A reaction on the same post
+  reached nothing. The gateway's catch-all event log, which saw the thread
+  reply, recorded no event. The bot had `reactions:read`, so the app's Event
+  Subscriptions most likely did not list `reaction_added`. The manifest that
+  `slaude manifest` emits lists it, but this app had been configured by hand.
+  This is an install step, not a code path. The reaction handler is still
+  checked only over the fake Slack's HTTP path (above).
+- **A turn that did not end at `pass`.** Asked to remind the person in the
+  thread at a set time, the agent scheduled a one-off cron job, confirmed,
+  and called `pass`. It then kept working in the same turn. Three minutes
+  early, it posted the reminder itself, deleted the cron job, and called
+  `pass` about ten more times before the turn ended. The pass result's "This
+  turn is over" text was not enough for this model. Now a PostToolUse hook in
+  the manager (so both mono and nodes have it) returns `continue: false`
+  after a successful `pass`, and the CLI ends the turn there. Rerun with the
+  hook: the turn ended right after the first `pass` with a normal successful
+  result. The cron job fired at its time, and that turn also ended at its
+  `pass`.
+- An explicit "remind me at <time>" became a cron job, not a commitment
+  page. That is the intended split: the memory skill keeps commitments for
+  promises that depend on something being checked.
+
+The sandbox can reach Slack only through an HTTPS proxy. The Slack SDK's
+own HTTP and WebSocket clients do not use it under Bun. The run used a
+throwaway preload, kept outside the repository: axios on its fetch adapter,
+and Bun's native WebSocket with its `proxy` option, behind the part of the
+`ws` API that Socket Mode uses. Only the transport was changed; slaude ran
+unmodified.
+
 ## Not verified
 
 - The live run above was one run of each path, with synthetic data and a
   placeholder price. It does not test behaviour across many threads, people
   or days.
-- Real Slack itself: that it delivers `reaction_added` for a bot's DM post
-  under the granted scopes, and delivers thread replies under a bot DM. The
-  fake Slack sends what Slack documents; it is not Slack.
+- Real Slack delivering `reaction_added` (the test app was not subscribed to
+  it, above), and a thread reply under a bot's DM post (the real-Slack run
+  used a channel post). Real Slack HTTP mode was not run; Socket Mode was.
 - Failover between Kubernetes pods (separate OS processes on shared Postgres
   and Redis were checked, above). The repo's minikube e2e stack was tried in
   the build environment. The cluster's own control-plane pods could not start
