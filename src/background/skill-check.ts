@@ -189,15 +189,23 @@ export function ledgerSkillCheckBudget(o: { scopeFor(sessionId: string): Promise
 
 const nonNegative = (t: TokenCounts) => t.input >= 0 && t.output >= 0 && t.cache_read >= 0 && t.cache_write >= 0;
 const isZero = (t: TokenCounts) => t.input === 0 && t.output === 0 && t.cache_read === 0 && t.cache_write === 0;
+const same = (a: TokenCounts, b: TokenCounts) =>
+  a.input === b.input && a.output === b.output && a.cache_read === b.cache_read && a.cache_write === b.cache_write;
+const sum = (byModel: ModelTokens): TokenCounts => Object.values(byModel).reduce(addTokens, { ...ZERO_TOKENS });
 
 /**
- * One turn's usage per model, from a streaming session's `result`. Measured in
- * the pinned CLI: a result's `usage` is that turn's own total (a fresh query
- * engine per input) while `modelUsage` is the process's running total. So the
- * turn's per-model figure is `modelUsage` minus the previous result's. When
- * there is no previous snapshot or the difference is inconsistent (negative,
- * or empty while the turn reports tokens), the turn's `usage` is attributed to
- * the one model in `modelUsage`, else to "" (the run's own model).
+ * One turn's usage per model, from a streaming session's `result`. The
+ * result's `usage` is that turn's own total either way (a fresh query engine
+ * per input), so it decides which shape `modelUsage` has:
+ *
+ *   - per turn: the models' sum equals `usage` → `modelUsage` as it is;
+ *   - a running total (what the pinned CLI reports, read from its code:
+ *     the process-wide cost tracker): the difference from the previous
+ *     result's, used when its sum equals `usage`.
+ *
+ * Anything else (no previous snapshot, a negative or disagreeing difference)
+ * attributes the turn's `usage` to the one model in `modelUsage`, else to ""
+ * (the run's own model). Never fewer tokens than `usage` reports.
  */
 export function turnModelTokens(
   cur: Record<string, ModelUsageRow> | undefined,
@@ -206,17 +214,22 @@ export function turnModelTokens(
 ): ModelTokens {
   const turn = tokensFromUsage((usage ?? {}) as ResultUsage);
   const curKeys = Object.keys(cur ?? {});
-  if (cur && prev && curKeys.length > 0) {
-    const out: ModelTokens = {};
-    let consistent = true;
-    for (const m of curKeys) {
-      const now = tokensFromModelUsage(cur[m]!);
-      const before = prev[m] ? tokensFromModelUsage(prev[m]!) : ZERO_TOKENS;
-      const d = { input: now.input - before.input, output: now.output - before.output, cache_read: now.cache_read - before.cache_read, cache_write: now.cache_write - before.cache_write };
-      if (!nonNegative(d)) consistent = false;
-      else if (!isZero(d)) out[m] = d;
+  const nonZero = (byModel: ModelTokens): ModelTokens => Object.fromEntries(Object.entries(byModel).filter(([, t]) => !isZero(t)));
+  if (cur && curKeys.length > 0) {
+    const asIs: ModelTokens = Object.fromEntries(curKeys.map((m) => [m, tokensFromModelUsage(cur[m]!)]));
+    if (same(sum(asIs), turn)) return nonZero(asIs);
+    if (prev) {
+      const delta: ModelTokens = {};
+      let consistent = true;
+      for (const m of curKeys) {
+        const now = asIs[m]!;
+        const before = prev[m] ? tokensFromModelUsage(prev[m]!) : ZERO_TOKENS;
+        const d = { input: now.input - before.input, output: now.output - before.output, cache_read: now.cache_read - before.cache_read, cache_write: now.cache_write - before.cache_write };
+        if (!nonNegative(d)) consistent = false;
+        delta[m] = d;
+      }
+      if (consistent && same(sum(delta), turn)) return nonZero(delta);
     }
-    if (consistent && (Object.keys(out).length > 0 || isZero(turn))) return out;
   }
   if (isZero(turn)) return {};
   const model = curKeys.length === 1 ? curKeys[0]! : "";

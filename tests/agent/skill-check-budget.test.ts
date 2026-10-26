@@ -186,6 +186,34 @@ describe("budgeted skill check", () => {
     await shutdown(mgr, row.id);
   });
 
+  it("per-turn modelUsage: the check's own figure, not a difference from the user turn's", async () => {
+    const mgr = new AgentManager();
+    const { budget, finishes } = fakeBudget(async () => ({ ok: true, runId: "run-pt" }));
+    mgr.setBackgroundBudget(budget);
+    const row = await mgr.ensureSession(thread());
+    qualifyingThenCheck((s) => s.emit(res({ usage: usage(1200, 150), modelUsage: modelUsage(1200, 150) })));
+    await mgr.sendMessage(row.id, "do a thing");
+    await until(() => finishes.length === 1, 3000, "finish");
+    expect(finishes[0]!.r).toEqual({ outcome: "ok", usage: { [MODEL]: { input: 1200, output: 150, cache_read: 0, cache_write: 0 } } });
+    await shutdown(mgr, row.id);
+  });
+
+  it("a qualifying result with no modelUsage (undefined base): the check's usage is still attributed", async () => {
+    const mgr = new AgentManager();
+    const { budget, finishes } = fakeBudget(async () => ({ ok: true, runId: "run-nb" }));
+    mgr.setBackgroundBudget(budget);
+    const row = await mgr.ensureSession(thread());
+    plan((s, text) => {
+      if (isCheck(text)) return void s.emit(res({ usage: usage(300, 40), modelUsage: modelUsage(1300, 140) }));
+      s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch")]));
+      s.emit(res({ usage: usage(1000, 100) }));
+    });
+    await mgr.sendMessage(row.id, "do a thing");
+    await until(() => finishes.length === 1, 3000, "finish");
+    expect(finishes[0]!.r).toEqual({ outcome: "ok", usage: { [MODEL]: { input: 300, output: 40, cache_read: 0, cache_write: 0 } } });
+    await shutdown(mgr, row.id);
+  });
+
   it("start refused: no check prompt is pushed", async () => {
     logSpy = spyOn(console, "log").mockImplementation(() => {});
     const mgr = new AgentManager();
@@ -364,6 +392,21 @@ describe("turnModelTokens", () => {
   });
   it('falls back to "" (the run\'s model) when the difference is inconsistent and several models are listed', () => {
     expect(turnModelTokens({ ...mu("a", 1, 1), ...mu("b", 1, 1) }, mu("a", 9, 9), usage(3, 1))).toEqual({ "": { input: 3, output: 1, cache_read: 0, cache_write: 0 } });
+  });
+  it("per-turn modelUsage (its sum equals usage) is used as it is, even when the check used more of every kind", () => {
+    // User turn 1000/100, check 1200/150: a difference would wrongly say 200/50.
+    expect(turnModelTokens(mu("a", 1200, 150), mu("a", 1000, 100), usage(1200, 150))).toEqual({ a: { input: 1200, output: 150, cache_read: 0, cache_write: 0 } });
+    expect(turnModelTokens({ ...mu("a", 700, 100), ...mu("b", 500, 50) }, mu("a", 1000, 100), usage(1200, 150))).toEqual({
+      a: { input: 700, output: 100, cache_read: 0, cache_write: 0 },
+      b: { input: 500, output: 50, cache_read: 0, cache_write: 0 },
+    });
+  });
+  it("a running total whose difference disagrees with usage falls back to usage", () => {
+    expect(turnModelTokens(mu("a", 5000, 500), mu("a", 1000, 100), usage(300, 40))).toEqual({ a: { input: 300, output: 40, cache_read: 0, cache_write: 0 } });
+  });
+  it("an undefined base: per-turn modelUsage as it is, a running total falls back to usage", () => {
+    expect(turnModelTokens(mu("a", 300, 40), undefined, usage(300, 40))).toEqual({ a: { input: 300, output: 40, cache_read: 0, cache_write: 0 } });
+    expect(turnModelTokens(mu("a", 1300, 140), undefined, usage(300, 40))).toEqual({ a: { input: 300, output: 40, cache_read: 0, cache_write: 0 } });
   });
   it("is empty for a turn with no tokens", () => {
     expect(turnModelTokens(undefined, undefined, undefined)).toEqual({});
