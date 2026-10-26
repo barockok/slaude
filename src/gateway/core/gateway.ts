@@ -16,6 +16,7 @@ import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slac
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
+import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
 import { ledgerTurnRun } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
@@ -3611,6 +3612,26 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // subscription isn't enabled. Engage the thread, then defer to handleMessage.
   // (handleMessage's seen_events dedup prevents double-handling when the same
   //  ts also arrives via the message event.)
+  // Feedback on proactive posts (phase E): replies go through the message
+  // router below; a reaction is recorded as an outcome (never a mute).
+  const proactiveFeedbackDeps = (args: any): FeedbackDeps => ({
+    call: brainCall,
+    now: () => new Date(),
+    reply: async (channel, threadTs, text) => {
+      await (args.client ?? t.client).chat.postMessage({ channel, thread_ts: threadTs, text });
+    },
+  });
+  t.event("reaction_added", async (args: any) => {
+    const e: any = args.event;
+    if (e?.item?.type !== "message" || !e.user || !brainEnabled() || !brainReady()) return;
+    if ((await getSelfUserIds()).has(e.user) || (await getSelfBots(args)).userIds.has(e.user)) return;
+    try {
+      await onProactiveReaction({ channel: e.item.channel, messageTs: e.item.ts, userId: e.user, reaction: String(e.reaction ?? "") }, proactiveFeedbackDeps(args));
+    } catch (err) {
+      console.error(`[proactive] reaction on ch=${e.item.channel} failed: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
+    }
+  });
+
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
@@ -3638,6 +3659,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (selfUserIds.has(e.user)) {
       metric.slackDropsTotal.inc({ reason: "self_user" });
       return;
+    }
+    // A reply under a proactive post (phase E): recorded as an outcome; a
+    // "stop" mutes that topic for the replier and ends here.
+    if (e.thread_ts && e.thread_ts !== e.ts && brainEnabled() && brainReady()) {
+      try {
+        const fb = await onProactiveReply(
+          { channel: e.channel, threadTs: e.thread_ts, userId: e.user, teamId: args.context?.teamId ?? e.team ?? null, text: String(e.text ?? "") },
+          proactiveFeedbackDeps(args),
+        );
+        if (fb === "muted") return;
+      } catch (err) {
+        console.error(`[proactive] feedback on ch=${e.channel} ts=${e.ts} failed: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
+      }
     }
 
     const channelId: string = e.channel;

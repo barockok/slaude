@@ -101,6 +101,8 @@ export function buildManifest(
           "message.groups",
           "message.im",
           "message.mpim",
+          // Reactions to proactive posts are recorded as outcomes (phase E).
+          "reaction_added",
         ],
       },
       interactivity: { is_enabled: true },
