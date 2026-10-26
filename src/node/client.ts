@@ -33,6 +33,8 @@ export interface NodeClientOpts {
 /** A memory call waits at most this long; longer than the gateway's own bound
  *  on the brain (GATEWAY_MEMORY_TIMEOUT_MS), so the gateway answers first. */
 export const MEMORY_TIMEOUT_MS = 3000;
+/** Bound on one skill-check budget call (it runs after the turn, off its path). */
+export const BACKGROUND_TIMEOUT_MS = 10_000;
 
 /** A memory call gave up at its bound. */
 export class MemoryTimeoutError extends Error {
@@ -483,6 +485,77 @@ export class NodeClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * The post-turn skill check's budget run (POST /v1/background/skill-check/
+   * start|finish). The gateway takes persona, session and scope from the job
+   * token and prices the usage itself. A 404 (a gateway that predates the
+   * routes) and every other non-200 throw: the caller fails closed. `start` is
+   * never retried (a retried start could open a second run); `finish` is, and
+   * a 409 on a retry counts as recorded. Each attempt is bounded by
+   * BACKGROUND_TIMEOUT_MS.
+   */
+  async skillCheckStart(jobToken: string, reportedModel?: string): Promise<{ ok: boolean; runId?: string }> {
+    const res = await this.request("/v1/background/skill-check/start", {
+      method: "POST",
+      body: reportedModel ? { model: reportedModel } : {},
+      jobToken,
+      retry: false,
+      signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS),
+    });
+    const b = await this.#json<{ ok?: unknown; runId?: unknown }>(res);
+    return b.ok === true && typeof b.runId === "string" ? { ok: true, runId: b.runId } : { ok: false };
+  }
+
+  async skillCheckFinish(
+    body: { runId: string; outcome: "ok" | "error"; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> },
+    jobToken: string,
+  ): Promise<void> {
+    // Retried here, not by request(): a retry whose earlier attempt did land
+    // (a timeout or 5xx after the gateway wrote the row) gets a 409, which
+    // then means "already recorded", not a failure.
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < this.#attempts; attempt++) {
+      if (attempt > 0) await sleep(this.#baseDelayMs * 2 ** (attempt - 1));
+      let res: Response;
+      try {
+        res = await this.request("/v1/background/skill-check/finish", {
+          method: "POST",
+          body,
+          jobToken,
+          retry: false,
+          signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS),
+        });
+      } catch (e) {
+        lastErr = e;
+        continue;
+      }
+      if (res.status >= 500) {
+        lastErr = new NodeApiError(res.status, await res.text().catch(() => ""));
+        continue;
+      }
+      if (res.status === 409 && attempt > 0) return;
+      await this.#json<unknown>(res);
+      return;
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  }
+
+  /**
+   * One use of a skill (POST /v1/background/skill-usage), counted for the job
+   * token persona's agent. Not retried (a retry could count a use twice);
+   * bounded by BACKGROUND_TIMEOUT_MS. A non-200 throws.
+   */
+  async skillUsage(skill: string, jobToken: string): Promise<void> {
+    const res = await this.request("/v1/background/skill-usage", {
+      method: "POST",
+      body: { skill },
+      jobToken,
+      retry: false,
+      signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS),
+    });
+    await this.#json<unknown>(res);
   }
 
   /**

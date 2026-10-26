@@ -103,7 +103,7 @@ describe.skipIf(!isPg)("a database-backed registry", () => {
     const r = await buildPersonaRegistry("default");
     expect(r.lookupByName("ana")!.model).toBe("m-ana-live");
     expect(r.lookupByName("ana")!.mcp).toBeNull();
-    expect(r.defaultPersona!()).toEqual({ model: "m-default", mcp, provider: null, runsOn: null, kbSources: null });
+    expect(r.defaultPersona!()).toEqual({ model: "m-default", mcp, provider: null, runsOn: null, kbSources: null, background: null });
     expect(managedPersonaModel("ana", r)).toBe("m-ana-live");
     expect(managedPersonaModel(undefined, r)).toBe("m-default");
     writeFsPersona("fsbot", "UFSBOT", "fs soul");

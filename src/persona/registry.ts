@@ -5,7 +5,7 @@ import { env } from "../config/env";
 import { paths } from "../config/home";
 import type { Persona, PersonaConfig } from "./types";
 import type { EffectivePersona } from "./effective";
-import type { PersonaProvider } from "./sync/payload";
+import type { PersonaBackground, PersonaProvider } from "./sync/payload";
 import { effectivePersonas, isManaged, stateVersion } from "../db/personas";
 import { resolveDbConfig } from "../db/client";
 import { SoulDataSchema, type SoulData } from "../soul/data";
@@ -19,6 +19,7 @@ export type DefaultPersonaFields = {
   model: string | null; mcp: unknown; provider?: PersonaProvider | null; runsOn?: string | null;
   /** Desired layer, not overridable: null = every installed KB. */
   kbSources?: string[] | null;
+  background?: PersonaBackground | null;
 };
 
 export interface PersonaRegistry {
@@ -157,10 +158,11 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
       provider: p.provider ?? null,
       runsOn: p.runsOn ?? null,
       kbSources: p.kbSources ?? null,
+      background: p.background ?? null,
     }));
   const def = all.find((p) => p.name === "default") ?? null;
   const defaultFields = def
-    ? { model: def.model, mcp: def.mcp ?? null, provider: def.provider ?? null, runsOn: def.runsOn ?? null, kbSources: def.kbSources ?? null }
+    ? { model: def.model, mcp: def.mcp ?? null, provider: def.provider ?? null, runsOn: def.runsOn ?? null, kbSources: def.kbSources ?? null, background: def.background ?? null }
     : null;
   return { registry: snapshot(personas, { tombstoned, defaultPersona: defaultFields }), managed: { defaultPersona: def } };
 }
@@ -260,6 +262,17 @@ export function managedPersonaModel(name: string | undefined, r: PersonaRegistry
   if (!r.isManaged()) return undefined;
   if (!name || name === "default") return r.defaultPersona?.()?.model ?? null;
   return r.lookupByName(name)?.model ?? null;
+}
+
+/**
+ * The model a run of persona `name` uses when nothing per-thread applies (a
+ * background pass): the managed persona's effective model, else SLAUDE_MODEL,
+ * else "" (none configured). Same precedence a session row with no model
+ * follows (manager #sessionModel); a filesystem registry carries no persona
+ * model, so its sessions were created with SLAUDE_MODEL as well.
+ */
+export function personaDefaultModel(name: string | undefined, r: PersonaRegistry = getPersonaRegistry()): string {
+  return managedPersonaModel(name, r) ?? env.model() ?? "";
 }
 
 /**

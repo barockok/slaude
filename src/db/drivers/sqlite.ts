@@ -41,9 +41,12 @@ CREATE INDEX IF NOT EXISTS idx_sessions_thread
   ON sessions (slack_team_id, slack_channel_id, slack_thread_ts);
 
 CREATE TABLE IF NOT EXISTS skill_usage (
-  skill TEXT PRIMARY KEY,
-  uses INTEGER NOT NULL DEFAULT 0,
-  last_used_at INTEGER
+  agent_id      TEXT    NOT NULL,
+  skill         TEXT    NOT NULL,
+  uses          INTEGER NOT NULL DEFAULT 0,
+  last_used_at  INTEGER,
+  first_seen_at INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, skill)
 );
 
 CREATE TABLE IF NOT EXISTS kb_ingest_jobs (
@@ -146,6 +149,58 @@ CREATE TABLE IF NOT EXISTS env_bindings (
   PRIMARY KEY (channel_id, thread_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_env_bindings_env ON env_bindings (env_id);
+CREATE TABLE IF NOT EXISTS background_runs (
+  id                 TEXT PRIMARY KEY,
+  agent_id           TEXT NOT NULL,
+  pass               TEXT NOT NULL,
+  scope              TEXT NOT NULL,
+  model              TEXT,
+  tokens_input       INTEGER NOT NULL DEFAULT 0,
+  tokens_output      INTEGER NOT NULL DEFAULT 0,
+  tokens_cache_read  INTEGER NOT NULL DEFAULT 0,
+  tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+  cost_usd           REAL NOT NULL DEFAULT 0,
+  started_at         INTEGER NOT NULL,
+  finished_at        INTEGER,
+  outcome            TEXT,
+  day                TEXT NOT NULL,
+  unpriced_model     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_background_runs_agent_day ON background_runs (agent_id, day);
+CREATE TABLE IF NOT EXISTS proposals (
+  id          TEXT    PRIMARY KEY,
+  agent_id    TEXT    NOT NULL,
+  kind        TEXT    NOT NULL,
+  to_kind     TEXT    NOT NULL,
+  to_user     TEXT,
+  scope       TEXT    NOT NULL,
+  payload     TEXT    NOT NULL DEFAULT '{}',
+  created_at  INTEGER NOT NULL,
+  expires_at  INTEGER NOT NULL,
+  status      TEXT    NOT NULL DEFAULT 'open',
+  decided_by  TEXT,
+  decided_at  INTEGER,
+  slack_app_id  TEXT,
+  slack_team_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_proposals_agent_status ON proposals (agent_id, status);
+CREATE TABLE IF NOT EXISTS background_slots (
+  agent_id    TEXT    NOT NULL,
+  pass        TEXT    NOT NULL,
+  slot        TEXT    NOT NULL,
+  claimed_at  INTEGER NOT NULL,
+  state       TEXT,
+  PRIMARY KEY (agent_id, pass, slot)
+);
+CREATE TABLE IF NOT EXISTS thread_activity (
+  session_id     TEXT    PRIMARY KEY,
+  agent_id       TEXT    NOT NULL,
+  turns          INTEGER NOT NULL DEFAULT 0,
+  last_turn_at   INTEGER NOT NULL,
+  summarized_at  INTEGER,
+  scope          TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_thread_activity_agent ON thread_activity (agent_id, last_turn_at);
 CREATE TABLE IF NOT EXISTS remote_keys (
   team_id     TEXT    NOT NULL,
   user_id     TEXT    NOT NULL,
@@ -283,6 +338,29 @@ export function bootstrapSqliteSchema(db: Database): void {
     const s = stmt.trim();
     if (s) db.run(s);
   }
+
+  // Migration: skill_usage became agent-scoped (pg 0024). The legacy table
+  // (skill, uses, last_used_at) never had a writer, so it is replaced, not copied.
+  const usageCols = db.query(`PRAGMA table_info(skill_usage)`).all() as Array<{ name: string }>;
+  if (!usageCols.some((c) => c.name === "agent_id")) {
+    db.run(`DROP TABLE skill_usage`);
+    for (const stmt of SCHEMA.split(";")) {
+      if (/CREATE TABLE IF NOT EXISTS skill_usage\b/.test(stmt)) db.run(stmt.trim());
+    }
+  }
+
+  // Migration: a run records the reported model it could not price (pg 0027).
+  const runCols = db.query(`PRAGMA table_info(background_runs)`).all() as Array<{ name: string }>;
+  if (!runCols.some((c) => c.name === "unpriced_model")) db.run(`ALTER TABLE background_runs ADD COLUMN unpriced_model TEXT`);
+
+  // Migration: proposals record the Slack app their card was posted as (pg 0026).
+  const proposalCols = db.query(`PRAGMA table_info(proposals)`).all() as Array<{ name: string }>;
+  if (!proposalCols.some((c) => c.name === "slack_app_id")) db.run(`ALTER TABLE proposals ADD COLUMN slack_app_id TEXT`);
+  if (!proposalCols.some((c) => c.name === "slack_team_id")) db.run(`ALTER TABLE proposals ADD COLUMN slack_team_id TEXT`);
+
+  // Migration: background slots carry state to the next period (pg 0025).
+  const slotCols = db.query(`PRAGMA table_info(background_slots)`).all() as Array<{ name: string }>;
+  if (!slotCols.some((c) => c.name === "state")) db.run(`ALTER TABLE background_slots ADD COLUMN state TEXT`);
 
   // Migration: backfill permission_mode column on existing dbs.
   const sessionCols = db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;

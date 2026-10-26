@@ -99,6 +99,19 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
     expect({ provider: runtime.provider, runsOn: runtime.runsOn, kbSources: runtime.kbSources }).toEqual(rt);
   });
 
+  test("background persists through both upserts and counts as a change", async () => {
+    const bg = { budgetUsd: 2.5, timezone: "Europe/Berlin" };
+    await P.applySync(T, [row("ana", { background: bg })], meta("r1", "2026-10-01T10:00:00Z"));
+    const by = async () => (await P.desiredPersonas(T)).find((p) => p.name === "ana")!.background;
+    expect(await by()).toEqual(bg);
+    expect((await P.applySync(T, [row("ana", { background: bg })], meta("r2", "2026-10-01T11:00:00Z"))).unchanged).toEqual(["ana"]);
+    expect((await P.applySync(T, [row("ana", { background: { budgetUsd: 3 } })], meta("r3", "2026-10-01T12:00:00Z"))).updated).toEqual(["ana"]);
+    await P.applySync(T, [row("ana")], meta("r4", "2026-10-01T13:00:00Z"));
+    expect(await by()).toBeNull();
+    await P.createRuntimePersona(T, row("bea", { origin: "runtime", background: bg }), "ops");
+    expect((await P.desiredPersonas(T)).find((p) => p.name === "bea")!.background).toEqual(bg);
+  });
+
   test("a runtime onboard stores provider references too", async () => {
     await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
     await P.createRuntimePersona(T, row("bea", { origin: "runtime", provider: { authToken: "env://PERSONA_BEA_TOKEN" } }), "ops");

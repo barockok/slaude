@@ -64,3 +64,13 @@ export function providerSelectingNames(nodeEnv: Record<string, string | undefine
   }
   return [...names].filter((k) => !keep.has(k));
 }
+
+/** Provider credentials (a runtime bundle's `providerCreds`) as child environment variables. */
+export function providerCredsEnv(creds: { apiKey?: string; baseUrl?: string; authToken?: string; oauthToken?: string }): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (creds.apiKey) out.ANTHROPIC_API_KEY = creds.apiKey;
+  if (creds.baseUrl) out.ANTHROPIC_BASE_URL = creds.baseUrl;
+  if (creds.authToken) out.ANTHROPIC_AUTH_TOKEN = creds.authToken;
+  if (creds.oauthToken) out.CLAUDE_CODE_OAUTH_TOKEN = creds.oauthToken;
+  return out;
+}

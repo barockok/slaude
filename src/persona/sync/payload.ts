@@ -9,6 +9,7 @@
  * its own secrets (master key, job secret, node token, provider keys), and a
  * persona repository must not be able to copy one into a stored persona.
  */
+import { isValidTimeZone } from "../../config/timezone";
 import { z } from "zod";
 import { redactSecrets } from "../../gateway/core/status-text";
 import { PERSONA_VAR_PREFIX, PERSONA_VAR_RE } from "../../secrets/persona-var";
@@ -34,6 +35,7 @@ export class UnresolvedVarError extends PayloadError {
  *   1  the personas-as-code fields
  *   2  adds `provider` (WS-A) and `runsOn` (node labels spec §4.5)
  *   3  adds `kbSources` (WS-C §4.1)
+ *   4  adds `background` (background learning budget and timezone)
  *
  * Each persona field newer than version 1 is one entry in PERSONA_FIELD_VERSION.
  * `render` writes the highest version any field a persona sets needs, so a
@@ -41,8 +43,8 @@ export class UnresolvedVarError extends PayloadError {
  * (which would leave a persona on node credentials, on `default`, or widen it
  * to every KB); a payload that sets none stays 1 and deploys to any gateway.
  */
-export const PERSONA_FIELD_VERSION = { provider: 2, runsOn: 2, kbSources: 3 } as const;
-export const SUPPORTED_PAYLOAD_VERSION = 3;
+export const PERSONA_FIELD_VERSION = { provider: 2, runsOn: 2, kbSources: 3, background: 4 } as const;
+export const SUPPORTED_PAYLOAD_VERSION = 4;
 
 /** The version a payload needs: the highest of any field a persona sets, 1 when none. */
 export function payloadVersionFor(personas: ReadonlyArray<object>): number {
@@ -61,6 +63,23 @@ export const KB_SOURCE_ID_RE = /^kb-[a-z0-9][a-z0-9-]{0,28}$/;
 /** Most ids one persona may list. */
 export const KB_SOURCES_MAX = 64;
 
+/** Most a persona may set as its daily background budget (USD). */
+export const BACKGROUND_BUDGET_MAX_USD = 100;
+
+/** A persona's background-learning settings (see src/background/config.ts). */
+const backgroundSpec = z
+  .object({
+    budgetUsd: z
+      .number()
+      .finite()
+      .min(0, "background.budgetUsd must be 0 or more (0 disables background spend)")
+      .max(BACKGROUND_BUDGET_MAX_USD, `background.budgetUsd must be at most ${BACKGROUND_BUDGET_MAX_USD}`)
+      .optional(),
+    timezone: z.string().refine(isValidTimeZone, "background.timezone must be a valid IANA time zone").optional(),
+  })
+  .strict();
+export type PersonaBackground = z.infer<typeof backgroundSpec>;
+
 const personaSpec = z.object({
   name: z.string().regex(PERSONA_NAME_RE, "persona name must match ^[a-z0-9][a-z0-9-]{0,62}$"),
   slackUserId: z.string().min(1).optional(),
@@ -76,6 +95,8 @@ const personaSpec = z.object({
   // The KB sources this persona may read; absent = every installed KB. Each id
   // is checked by parseKbSources below. Desired layer only, not overridable.
   kbSources: z.array(z.unknown()).optional(),
+  // Background-learning budget and timezone; absent = the environment default and UTC.
+  background: backgroundSpec.optional(),
 });
 
 /**

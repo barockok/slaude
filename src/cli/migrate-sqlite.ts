@@ -9,7 +9,9 @@
  * Target migrations are applied first. Rows are inserted with ON CONFLICT DO
  * NOTHING, so the command is idempotent and safe to re-run after a partial
  * copy. Only columns present on both sides are copied; pg-only columns
- * (tenant_id) take their defaults. skill_usage is intentionally not copied.
+ * (tenant_id) take their defaults. skill_usage is intentionally not copied:
+ * its rows restart, and the skill review measures idle time from a row's
+ * first sighting, so a lost count never reads as "unused".
  */
 import { openDb, resolveDbConfig, type DbClient, type DbConfig } from "../db/client";
 import { runMigrations } from "../db/migrate";

@@ -78,18 +78,20 @@ Slaude speaks the Anthropic Messages API. Any compatible gateway works:
 # OpenRouter
 ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1
 ANTHROPIC_API_KEY=sk-or-...
-SLAUDE_MODEL=anthropic/claude-sonnet-4
+SLAUDE_MODEL=anthropic/claude-sonnet-4-6
 
 # Z.ai
 ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic
 ANTHROPIC_API_KEY=...
-SLAUDE_MODEL=claude-sonnet-4-20250514
+SLAUDE_MODEL=claude-sonnet-4-6
 
 # Self-hosted gateway
 ANTHROPIC_BASE_URL=https://llm.internal.example.com
 ANTHROPIC_AUTH_TOKEN=...
-SLAUDE_MODEL=claude-sonnet-4
+SLAUDE_MODEL=claude-sonnet-4-6
 ```
+
+Background learning prices its runs from `SLAUDE_PRICE_TABLE` (built-in Anthropic list prices by default). A gateway model id the table does not know needs an entry there; see [configuration](../reference/configuration.md).
 
 Telemetry is automatically disabled when `ANTHROPIC_BASE_URL` points at a non-Anthropic host — no Anthropic telemetry headers are sent to third-party gateways.
 

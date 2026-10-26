@@ -10,7 +10,7 @@ interface GateState {
 
 /** A Skill tool response that reports an error: an `is_error` object, or the
  *  CLI's error text ("Error…" or a `<tool_use_error>` wrapper). */
-function isErrorResponse(r: unknown): boolean {
+export function isErrorResponse(r: unknown): boolean {
   if (typeof r === "string") return r.startsWith("Error") || r.includes("<tool_use_error>");
   return typeof r === "object" && r !== null && (r as { is_error?: unknown }).is_error === true;
 }

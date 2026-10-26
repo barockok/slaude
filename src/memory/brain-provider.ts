@@ -20,6 +20,9 @@ type BrainOpCall = (name: string, params: Record<string, unknown>, scope: BrainS
 /** The page a session's turns are appended to. */
 export const conversationSlug = (sessionId: string): string => `conversations/${sessionId.toLowerCase()}`;
 
+/** A session's rolling summary (the quiet-moment pass), beside its conversation page in the same source. */
+export const conversationSummarySlug = (sessionId: string): string => `${conversationSlug(sessionId)}/summary`;
+
 /** Timeline rows in write order (by id). */
 export const orderTimeline = (rows: TimelineRow[]): TimelineRow[] => [...rows].sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
 

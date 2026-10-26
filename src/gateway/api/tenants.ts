@@ -17,7 +17,7 @@
  */
 import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { getPersonaRegistry } from "../../persona/registry";
+import { getPersonaRegistry, managedPersonaProvider } from "../../persona/registry";
 import { db } from "../../db/schema";
 import { resolveDbConfig } from "../../db/client";
 import { effectivePersonas, isManaged } from "../../db/personas";
@@ -182,6 +182,71 @@ async function resolveDeclaredProvider(persona: string, provider: PersonaProvide
 
 const declaresProvider = (p: PersonaProvider | null | undefined): p is PersonaProvider =>
   !!p && PROVIDER_FIELDS.some((f) => p[f]);
+
+/**
+ * The provider set background work on the gateway runs persona
+ * `personaName` with (passes; no bundle fetch), mirroring its runtime bundle:
+ *   - a declared `provider`: exactly that set, resolved;
+ *   - otherwise the encrypted provider_creds rows the bundle would carry,
+ *     persona row over tenant row, per field (a managed tenant: always; an
+ *     unmanaged one: when the persona has a row, as buildBundle's tier 1);
+ *   - null when there are none: the caller uses this process's provider env.
+ * Never a mix: a non-null set is used alone. A reference that cannot be
+ * resolved throws SecretResolutionError, never a fallback to process env.
+ * The registry is the gateway's `default` tenant (one deploy, one workspace).
+ */
+export async function resolvePersonaOwnProvider(personaName: string, tenantId = "default"): Promise<RuntimeBundle["providerCreds"] | null> {
+  const declared = managedPersonaProvider(personaName === "default" ? undefined : personaName);
+  if (declaresProvider(declared)) return resolveDeclaredProvider(personaName, declared);
+  const sqlite = resolveDbConfig().dialect === "sqlite";
+  const fromRows = async (): Promise<RuntimeBundle["providerCreds"] | null> => {
+    const managed = sqlite ? false : await isManaged(tenantId);
+    const row = await db.one<{ id: string }>(`SELECT id FROM personas WHERE tenant_id = ? AND name = ?`, [tenantId, personaName]);
+    // Unmanaged without a persona row: the bundle serves env (tiers 2 and 3).
+    if (!managed && !row) return null;
+    const out: RuntimeBundle["providerCreds"] = {};
+    await applyProviderCreds(out, tenantId, row?.id);
+    return Object.keys(out).length > 0 ? out : null;
+  };
+  if (!sqlite) return fromRows();
+  try {
+    return await fromRows();
+  } catch {
+    return null; // sqlite: no tenancy tables, as buildBundle reads it
+  }
+}
+
+/**
+ * Which provider_creds rows background work for `personaName` would use (as
+ * resolvePersonaOwnProvider picks them), as a fingerprint: a hash of the row
+ * ids, kinds and owners, never the values. Null when it uses none (declared
+ * provider, or process env). Two personas with the same fingerprint run on the
+ * same rows; the scheduler groups personas only when theirs match.
+ */
+export async function providerRowsFingerprint(personaName: string, tenantId = "default"): Promise<string | null> {
+  if (declaresProvider(managedPersonaProvider(personaName === "default" ? undefined : personaName))) return null;
+  const sqlite = resolveDbConfig().dialect === "sqlite";
+  const read = async (): Promise<string | null> => {
+    const managed = sqlite ? false : await isManaged(tenantId);
+    const row = await db.one<{ id: string }>(`SELECT id FROM personas WHERE tenant_id = ? AND name = ?`, [tenantId, personaName]);
+    if (!managed && !row) return null;
+    const rows = await db.query<{ id: string; persona_id: string | null; kind: string }>(
+      row
+        ? `SELECT id, persona_id, kind FROM provider_creds WHERE tenant_id = ? AND (persona_id IS NULL OR persona_id = ?)`
+        : `SELECT id, persona_id, kind FROM provider_creds WHERE tenant_id = ? AND persona_id IS NULL`,
+      row ? [tenantId, row.id] : [tenantId],
+    );
+    if (rows.length === 0) return null;
+    const parts = rows.map((r) => `${r.id}:${r.persona_id ?? ""}:${r.kind}`).sort();
+    return createHmac("sha256", "provider-rows").update(parts.join("\n")).digest("hex").slice(0, 32);
+  };
+  if (!sqlite) return read();
+  try {
+    return await read();
+  } catch {
+    return null;
+  }
+}
 
 /** A managed tenant: effective state only. Self-contained, so tiers 2 and 3
  *  (disk, env) are unreachable from it. Missing or tombstoned persona -> null. */

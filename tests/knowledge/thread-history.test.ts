@@ -4,7 +4,7 @@
  * conversation page through the memory read scope.
  */
 import { describe, expect, test } from "bun:test";
-import { brainHandlers, THREAD_HISTORY_REFUSAL, THREAD_HISTORY_NO_SESSION, type BrainToolDeps } from "../../src/knowledge/mcp-tools";
+import { brainHandlers, THREAD_HISTORY_MAX_CHARS, THREAD_HISTORY_REFUSAL, THREAD_HISTORY_NO_SESSION, THREAD_SUMMARY_MAX_CHARS, type BrainToolDeps } from "../../src/knowledge/mcp-tools";
 import type { BrainScope } from "../../src/knowledge/scope";
 import type { GateInput } from "../../src/knowledge/gated-dispatch";
 import { memoryScopeFor } from "../../src/memory/scope";
@@ -27,7 +27,7 @@ const gate = (over: Partial<GateInput> = {}): GateInput => ({
   channelTrust: "trusted", isManager: false, agentId: AGENT, threadKey: "C0CHAN:1.1", ...over,
 });
 
-function setup(over: { gate?: Partial<GateInput>; sessionId?: string | undefined; data?: Row[] } = {}) {
+function setup(over: { gate?: Partial<GateInput>; sessionId?: string | undefined; data?: Row[]; summary?: string } = {}) {
   const calls: { name: string; slug: unknown; scope: BrainScope }[] = [];
   const g = gate(over.gate);
   const deps: BrainToolDeps = {
@@ -41,6 +41,10 @@ function setup(over: { gate?: Partial<GateInput>; sessionId?: string | undefined
     }),
     call: async (name, params, scope) => {
       calls.push({ name, slug: params.slug, scope });
+      if (name === "get_page") {
+        if (over.summary === undefined) throw Object.assign(new Error("page not found"), { code: "page_not_found" });
+        return { content: `---\ntype: conversation-summary\nthrough: 2026-10-26T14:00:00.000Z\n---\n${over.summary}\n`, tags: [] };
+      }
       return over.data ?? rows();
     },
   };
@@ -83,10 +87,29 @@ describe("kb_thread_history", () => {
   test("reads only this session's page, in the memory read scope", async () => {
     const s = setup();
     await brainHandlers.kb_thread_history({}, s.deps);
-    expect(s.calls).toHaveLength(1);
+    expect(s.calls).toHaveLength(2);
     expect(s.calls[0]!.name).toBe("get_timeline");
     expect(s.calls[0]!.slug).toBe("conversations/sess-abc");
-    expect(s.calls[0]!.scope).toEqual(memoryScopeFor(gate(), { channel: "C0CHAN" }).read!);
+    const read = memoryScopeFor(gate(), { channel: "C0CHAN" }).read!;
+    expect(s.calls[0]!.scope).toEqual(read);
+    // The summary beside it, from the conversation page's own source alone.
+    expect(s.calls[1]).toEqual({ name: "get_page", slug: "conversations/sess-abc/summary", scope: { ...read, allowedSources: [read.sourceId] } });
+  });
+
+  test("the first page opens with the thread's summary, within the character cap", async () => {
+    const out = text(await brainHandlers.kb_thread_history({ limit: 50 }, setup({ summary: "The team planned the release." }).deps));
+    expect(out.split("\n")[0]).toBe("[summary through 2026-10-26T14:00:00.000Z] The team planned the release.");
+    expect(out).toContain("[2026-10-02] assistant: answer 30");
+    // A long summary is cut, and the whole answer stays within THREAD_HISTORY_MAX_CHARS.
+    const big = rows(50).map((r) => ({ ...r, detail: `<user>${"q".repeat(790)}</user>\n<assistant>${"a".repeat(790)}</assistant>` }));
+    const long = text(await brainHandlers.kb_thread_history({ limit: 50 }, setup({ summary: "s".repeat(9000), data: big }).deps));
+    expect(long.length).toBeLessThanOrEqual(THREAD_HISTORY_MAX_CHARS + 200); // the footer line rides on top, as before
+    expect(long.split("\n")[0]!.length).toBeLessThanOrEqual(THREAD_SUMMARY_MAX_CHARS + 60);
+    expect(long).toContain("older turns remain");
+    // Paging back does not repeat it; an empty thread still shows it.
+    const m = long.match(/before: "(\d+)"/)!;
+    expect(text(await brainHandlers.kb_thread_history({ before: m[1] }, setup({ summary: "x", data: big }).deps))).not.toContain("[summary");
+    expect(text(await brainHandlers.kb_thread_history({}, setup({ summary: "only this", data: [] }).deps))).toContain("only this");
   });
 
   test("someone else's /1on1 refuses and reads nothing", async () => {

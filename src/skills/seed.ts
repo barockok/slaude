@@ -10,6 +10,21 @@ import { isBuiltinSkillName } from "../soul/builtin";
  */
 const BUNDLED_SKILLS_DIR = join(import.meta.dir, "..", "..", "skills");
 
+/** The slugs the release bundles (whether or not they were seeded here): a
+ *  skill with one of these slugs is provenance `bundled` (provenance.ts). */
+export function bundledSkillSlugs(bundledDir: string = BUNDLED_SKILLS_DIR): Set<string> {
+  const out = new Set<string>();
+  if (!existsSync(bundledDir)) return out;
+  for (const slug of readdirSync(bundledDir)) {
+    try {
+      if (statSync(join(bundledDir, slug)).isDirectory() && existsSync(join(bundledDir, slug, "SKILL.md"))) out.add(slug);
+    } catch {
+      // unreadable entry: not a bundled skill
+    }
+  }
+  return out;
+}
+
 /**
  * Copy any bundled skill that isn't already present into $SLAUDE_HOME/skills.
  *

@@ -12,7 +12,7 @@ import {
 } from "./payload";
 import { extractSoulData } from "../../soul/extract";
 import {
-  applySync, desiredPersonas, effectivePersonas, kbSourcesColumnPresent, providerColumnPresent, syncState, StaleRevisionError,
+  applySync, desiredPersonas, effectivePersonas, backgroundColumnPresent, kbSourcesColumnPresent, providerColumnPresent, syncState, StaleRevisionError,
   type ApplyResult,
 } from "../../db/personas";
 import { installedKbSourceIds } from "../../knowledge/persona-kb";
@@ -158,6 +158,10 @@ export async function runSync(
     throw new SyncFailure(503,
       "the database schema predates this gateway (personas.kb_sources is missing): apply migration 0017 before syncing personas");
   }
+  if (!(await backgroundColumnPresent())) {
+    throw new SyncFailure(503,
+      "the database schema predates this gateway (personas.background is missing): apply migration 0020 before syncing personas");
+  }
   const warnings = [
     ...providerWarnings(payload),
     // An id that matches no installed KB is applied anyway: the installer and
@@ -201,6 +205,7 @@ export async function runSync(
     rows.push({
       name: p.name, slackUserId: p.slackUserId ?? null, userToken: p.userToken ?? null, model: p.model ?? null,
       soulMd: p.soul, soulJson, mcp: p.mcp ?? null, provider: p.provider ?? null, runsOn: p.runsOn ?? null, kbSources: p.kbSources ?? null,
+      background: p.background ?? null,
       origin: "git", tombstonedAt: null,
     });
   }

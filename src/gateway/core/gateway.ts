@@ -91,7 +91,7 @@ import { accountForSlackUser } from "../../db/accounts";
 import { makeDeferQueue } from "../panel/defer-queue";
 import { suppressibleSurface } from "../panel/suppress";
 import type { DispatchMeta } from "./dispatch";
-import { brainCallIfOpen, brainEnabled, brainReady, ensureSources } from "../../knowledge/brain";
+import { brainCall, brainCallIfOpen, brainEnabled, brainReady, ensureSources } from "../../knowledge/brain";
 import { buildTurnMemoryContext } from "../../memory/turn-context";
 import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
@@ -107,6 +107,8 @@ import { parseRef } from "../../secrets";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
+import { backgroundAgentId, ledgerSkillCheckBudget, warnUnpricedModels } from "../../background/skill-check";
+import { recordSkillUse } from "../../skills/usage";
 import { scrubChildEnv, withoutKeys } from "../../agent/child-env";
 import { providerSelectingNames } from "../../agent/provider-env";
 import { memoryScopeFor, withClaimLock } from "../../memory/scope";
@@ -142,6 +144,9 @@ import * as OneOnOne from "../../db/one-on-one";
 import * as MentionOnly from "../../db/mention-only";
 import { CronScheduler } from "../slack/cron-scheduler";
 import { startCronLeader } from "./cron-leader";
+import { defaultSchedulerDeps, leaderElect, startBackgroundScheduler, type SchedulerSlack } from "../../background/scheduler";
+import { cardPoster, registerProposalActions } from "../../background/proposal-cards";
+import { digestRecipientOf } from "../../background/digest";
 import type { LeaderHandle } from "../../queue/locks";
 import { getNextRun } from "../slack/cron-parser";
 import { clientForApp, type AppRef, type Transport } from "./transport";
@@ -357,6 +362,11 @@ export interface GatewayOptions {
   /** Decision gate (phase B). Default: the runner gateRunnerFromEnv resolves
    *  to at boot (SLAUDE_DECISION_CONFIG), treated as off until it does. */
   gateRunner?: GateRunner;
+  /** Start the background learning scheduler (nightly review, lessons upkeep;
+   *  phase D): leader-elected in the gateway role, directly in mono, never on a
+   *  node, and only with the brain enabled. Default false, so no test starts it
+   *  by building a gateway; server.ts turns it on. */
+  backgroundLearning?: boolean;
 }
 
 /** Redis-backed primitives the control panel needs — injected together so a
@@ -697,6 +707,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const approvals = new ApprovalGate(t, env.slack.approvers(), {
     timeoutSeconds: () => soulData().approvalTimeoutSeconds || 300,
   });
+  // Background-learning messages (phase D): the weekly digest to the manager
+  // and a person's proposals to their DM. Both carry buttons, so they go out
+  // as the bot of the app (interactivity-bound, like the gates); chat:write
+  // with im:write lets a bot post to a user id, which opens its DM.
+  const backgroundManagers = (): string[] => {
+    const soul = soulData();
+    return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
+  };
+  const backgroundSlack: SchedulerSlack = {
+    // As the bot of the app the message names; on a multi-app transport a
+    // post that does not name both app id and team is refused (cardPoster).
+    post: cardPoster(t),
+    managers: backgroundManagers,
+    digestRecipient: () => digestRecipientOf(soulData()),
+  };
+  registerProposalActions(t, { managers: backgroundManagers, call: brainCall, now: () => new Date(), ready: brainReady });
   const ignoreGate = new IgnoreGate();
   // Boot sweep: auto-expire pending gates whose deadline passed while no
   // process was alive (a restart killed their auto-deny timers). Rows with no
@@ -869,6 +895,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     cronScheduler.start();
   }
 
+  // Background learning (phase D): one scheduler where the brain lives. Like
+  // cron, the gateway role elects one replica to run it (each slot is also
+  // claimed in the database, so a leader change mid-pass never re-runs one);
+  // mono runs it directly. Ticks wait for an open brain and never boot it.
+  let backgroundScheduler: { stop(graceMs?: number): Promise<void> } | undefined;
+  if (opts.backgroundLearning === true && env.role() !== "node" && brainEnabled()) {
+    backgroundScheduler = startBackgroundScheduler(defaultSchedulerDeps(backgroundSlack), queueDispatch ? { elect: leaderElect(getRedis()) } : {});
+    console.log(`[slaude] background learning scheduler ${queueDispatch ? "contending for leadership" : "started"}`);
+  }
+
   // MCP resolver — first-call-per-session wires the slack MCP server bound to
   // the session's SlackContext object. We mutate fields on the same context
   // object across turns so the SDK MCP server stays valid for the session.
@@ -979,9 +1015,36 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (!route) return null;
         const { ctx } = route;
         const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
-        return memoryScopeFor(await brainGateFor(ctx), { channel: ctx.channel, runAsUser: runAsUser ?? null });
+        const gate = await brainGateFor(ctx);
+        const scope = memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null });
+        // Only an interactive turn counts toward the quiet-moment pass's thread activity.
+        return gate.interactive ? { ...scope, activityAgentId: gate.agentId } : scope;
       },
     }),
+  );
+
+  // One loud line at boot for a configured model the price table lacks (the
+  // gateway prices every check and pass, its nodes' included).
+  warnUnpricedModels();
+
+  // The post-turn skill check's budget (spec §9.3), on the ledger for turns
+  // that run in THIS process (mono). The run's scope is whom the session's
+  // turns run as, by the same rule as memory above.
+  agent.setBackgroundBudget(
+    ledgerSkillCheckBudget({
+      scopeFor: async (sessionId) => {
+        const route = routes.get(sessionId);
+        if (!route) return "agent";
+        const runAsUser = await agent.resolveEffectiveIdentity(sessionId, route.ctx.channel, route.ctx.threadTs);
+        return runAsUser ? `user:${runAsUser}` : "agent";
+      },
+    }),
+  );
+
+  // Skill usage for the weekly skill review (spec §9.1), for turns that run in
+  // THIS process (mono): keyed by the session persona's agent id, best effort.
+  agent.setSkillUsageRecorder(async (_sessionId, personaName, skill) =>
+    recordSkillUse(await backgroundAgentId(personaName ?? "default"), skill),
   );
 
   // Brain tool deps for a context + surface — shared by the per-session MCP
@@ -2832,6 +2895,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const skillHit = matchSkillInvocation(stripped, discoverSkills(session.persona_id));
     if (skillHit) {
       userText = buildSkillInvocation(skillHit.skill, skillHit.args, session.id);
+      // A `/<slug>` invocation is a use too (it never reaches the Skill tool). Best effort, off the turn's path.
+      void backgroundAgentId(session.persona_id ?? "default")
+        .then((agentId) => recordSkillUse(agentId, skillHit.skill.slug))
+        .catch((e) => console.error(`[skills] could not record a use of /${skillHit.skill.slug}: ${e instanceof Error ? e.message : String(e)}`));
     }
 
     // Resolve username and download any file attachments into the session dir.
@@ -3898,6 +3965,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await drainVoiceCalls(voiceCalls, VOICE_SHUTDOWN_GRACE_MS);
       cancelNightlyMaintenance();
       await cronLeader?.stop().catch(() => {});
+      // Aborts a pass in flight; bounded (STOP_GRACE_MS, 10 s) so shutdown never waits out a review.
+      await backgroundScheduler?.stop().catch(() => {});
       cronScheduler.stop();
       if (panelSweeper) clearInterval(panelSweeper);
       await panelResumeUnsub?.().catch(() => {});

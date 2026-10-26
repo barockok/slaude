@@ -52,8 +52,9 @@ const NO_TENANT_TABLES = new Set([
   "remote_keys",
 ]);
 
-// Tables that exist only on sqlite (legacy; dropped from the pg schema).
-const SQLITE_ONLY_TABLES = new Set(["skill_usage"]);
+// Tables that exist only on sqlite (legacy; dropped from the pg schema). None
+// today: skill_usage moved to both dialects, agent-scoped (pg 0024).
+const SQLITE_ONLY_TABLES = new Set<string>([]);
 
 // Per-table columns that exist only on Postgres.
 const PG_ONLY_COLUMNS = new Set(["tenant_id"]);

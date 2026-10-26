@@ -718,6 +718,27 @@ describe("AgentManager lifecycle", () => {
     await shutdown(mgr, row.id);
   });
 
+  it("the skill gate and the usage counter share PostToolUse: one Skill load does both", async () => {
+    const mgr = new AgentManager();
+    const counted: Array<[string, string | undefined, string]> = [];
+    mgr.setSkillUsageRecorder(async (sessionId, persona, skill) => void counted.push([sessionId, persona, skill]));
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await mgr.sendMessage(row.id, "hi");
+    await until(() => fs.options !== null, 3000, "boot");
+    const post = fs.options.hooks.PostToolUse.flatMap((m: any) => m.hooks);
+    expect(post).toHaveLength(2);
+    const load = { hook_event_name: "PostToolUse", tool_name: "Skill", tool_input: { skill: "slaude:skill-authoring" }, tool_response: { success: true } };
+    for (const h of post) await h(load, "tu", { signal: new AbortController().signal });
+    await until(() => counted.length === 1, 1000, "counted");
+    expect(counted).toEqual([[row.id, undefined, "slaude:skill-authoring"]]);
+    // The gate saw the same load: the governed tool is no longer denied.
+    const pre = fs.options.hooks.PreToolUse.flatMap((m: any) => m.hooks);
+    const outs = await Promise.all(pre.map((h: any) => h({ hook_event_name: "PreToolUse", tool_name: "mcp__slaude_skills__write_skill", tool_input: {} }, "tu", { signal: new AbortController().signal })));
+    expect(outs.some((o: any) => o?.hookSpecificOutput?.permissionDecision === "deny")).toBe(false);
+    await shutdown(mgr, row.id);
+  });
+
   it("marks the evolution turn's tool, text and thinking events autoEvolve, and only those (#131)", async () => {
     process.env.SLAUDE_AUTO_EVOLVE = "1";
     const mgr = new AgentManager();

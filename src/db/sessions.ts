@@ -180,3 +180,32 @@ export async function setModel(id: string, model: string): Promise<void> {
     id,
   ]);
 }
+
+/**
+ * Sessions of these personas touched at or after `sinceMs` (every turn bumps
+ * updated_at through setStatus), most recently touched first: the background
+ * nightly review's candidates for a day's conversations. Bounded by `limit`,
+ * which keeps the active ones.
+ */
+export async function updatedSince(personaIds: readonly string[], sinceMs: number, limit = 2000): Promise<SessionRow[]> {
+  if (personaIds.length === 0) return [];
+  const marks = personaIds.map(() => "?").join(", ");
+  return db.query<SessionRow>(
+    `SELECT * FROM sessions WHERE persona_id IN (${marks}) AND updated_at >= ? ORDER BY updated_at DESC LIMIT ?`,
+    [...personaIds, sinceMs, limit],
+  );
+}
+
+/**
+ * The Slack app a persona's threads arrive through: its most recently
+ * touched session that recorded an app id, else its most recent one (team
+ * only). Only this persona's sessions are read.
+ */
+export async function latestAppOf(personaId: string): Promise<{ apiAppId: string | null; teamId: string | null } | null> {
+  const row = await db.one<{ slack_app_id: string | null; slack_team_id: string | null }>(
+    `SELECT slack_app_id, slack_team_id FROM sessions WHERE persona_id = ?
+      ORDER BY CASE WHEN slack_app_id IS NULL THEN 1 ELSE 0 END, updated_at DESC LIMIT 1`,
+    [personaId],
+  );
+  return row ? { apiAppId: row.slack_app_id ?? null, teamId: row.slack_team_id ?? null } : null;
+}
