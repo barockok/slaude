@@ -3,7 +3,7 @@ import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-
 import { z } from "zod";
 import { loadKbs, type KbEntry } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
-import { brainThink, sdkThinkClient } from "./brain-think";
+import { brainThink, sdkThinkClient, synthesizeFromHits } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, soleSlackSender, type ApprovalReq, type ApprovalRes, type GateInput, type TurnSender } from "./gated-dispatch";
 import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, speakerProfileSource, userSourceId, type BrainScope } from "./scope";
@@ -425,30 +425,8 @@ export const brainHandlers = {
             const pagesGathered = (result as { pagesGathered?: number }).pagesGathered ?? -1;
             if (pagesGathered === 0) {
               try {
-                const pageContext = missed
-                  .filter((h) => typeof (h as { chunk_text?: unknown }).chunk_text === "string")
-                  .map((h) => `[Source: ${hitSlug(h)}]\n${(h as { chunk_text: string }).chunk_text}`)
-                  .join("\n\n---\n\n");
-                if (pageContext) {
-                  const client = sdkThinkClient();
-                  const synthetic = await client.create({
-                    messages: [{ role: "user", content: `Answer the following question using only the provided context. Be concise and cite the source slugs.\n\nQuestion: ${p.question}\n\nContext:\n${pageContext}` }],
-                    max_tokens: 1024,
-                  });
-                  const synthText = ((synthetic as { content?: Array<{ text?: string }> }).content?.[0]?.text) ?? "";
-                  if (synthText) {
-                    return asJson({
-                      question: p.question,
-                      answer: synthText,
-                      citations: missed.map((h) => ({ page_slug: hitSlug(h) })).filter((c) => c.page_slug),
-                      pagesGathered: missed.length,
-                      takesGathered: 0,
-                      graphHits: 0,
-                      synthesisOk: true,
-                      gather_rescue: true,
-                    });
-                  }
-                }
+                const rescued = await synthesizeFromHits(p.question, missed, sdkThinkClient());
+                if (rescued) return asJson({ ...rescued, gather_rescue: true });
               } catch (synthErr) {
                 console.warn("[brain] kb_think rescue synthesis failed:", synthErr instanceof Error ? synthErr.message : String(synthErr));
               }

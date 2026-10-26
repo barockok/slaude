@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sdkThinkClient, brainThink, scopedThinkEngine } from "../src/knowledge/brain-think";
@@ -162,4 +162,61 @@ describe("brainThink (integration, stubbed LLM)", () => {
     expect(sawPrompt).not.toContain("private-branching");
     expect(sawPrompt).not.toMatch(/trunk-based development next quarter/);
   }, 60_000);
+});
+
+describe("brainThink on a remote brain", () => {
+  test("gathers through the backend within the scope, synthesizes, and never opens a local engine", async () => {
+    const home = mkdtempSync(join(tmpdir(), "slaude-remote-think-"));
+    const prevHome = process.env.SLAUDE_BRAIN_HOME;
+    process.env.SLAUDE_BRAIN_MODE = "remote";
+    process.env.SLAUDE_BRAIN_HOME = home;
+    const searched: string[][] = [];
+    const call = async (name: string, _params: Record<string, unknown>, scope: { allowedSources: string[] }) => {
+      expect(name).toBe("search");
+      searched.push(scope.allowedSources);
+      return scope.allowedSources[0] === "shared"
+        ? [{ slug: "notes/branching", source_id: "shared", score: 0.9, chunk_text: "We use short-lived feature branches." }]
+        : [];
+    };
+    let prompt = "";
+    const client = {
+      create: async (params: { messages: Array<{ content: unknown }> }) => {
+        prompt = JSON.stringify(params.messages);
+        return { content: [{ type: "text", text: "Short-lived feature branches. [Source: notes/branching]" }] };
+      },
+    };
+    try {
+      const r = (await brainThink("how do we branch?", {
+        clientId: "agent", sourceId: "agent-a", allowedSources: ["agent-a", "shared"],
+      }, { client: client as never, call: call as never })) as Record<string, unknown>;
+      expect(r.answer).toContain("feature branches");
+      expect(r.citations).toEqual([{ page_slug: "notes/branching" }]);
+      expect(r.pagesGathered).toBe(1);
+      expect(prompt).toContain("short-lived feature branches");
+      // One scoped search per allowed source, nothing outside them.
+      expect(searched.flat().sort()).toEqual(["agent-a", "shared"]);
+      // No local brain was booted (a boot creates its home's contents).
+      expect(readdirSync(home)).toEqual([]);
+    } finally {
+      delete process.env.SLAUDE_BRAIN_MODE;
+      process.env.SLAUDE_BRAIN_HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("with no matching page it answers with a gap and makes no model call", async () => {
+    process.env.SLAUDE_BRAIN_MODE = "remote";
+    let called = false;
+    const client = { create: async () => { called = true; return { content: [] }; } };
+    try {
+      const r = (await brainThink("anything?", { clientId: "a", sourceId: "shared", allowedSources: ["shared"] }, {
+        client: client as never, call: (async () => []) as never,
+      })) as Record<string, unknown>;
+      expect(r.pagesGathered).toBe(0);
+      expect(r.synthesisOk).toBe(true);
+      expect(called).toBe(false);
+    } finally {
+      delete process.env.SLAUDE_BRAIN_MODE;
+    }
+  });
 });

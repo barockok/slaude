@@ -2,6 +2,8 @@ import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import { scrubChildEnv, TOOLS_SURVIVING_EMPTY_SET } from "../agent/child-env";
 import { join } from "node:path";
 import { getBrain } from "./brain";
+import { brainMode } from "./brain-config";
+import { gather, type GatherOpts } from "./gather";
 import type { BrainScope } from "./scope";
 
 /**
@@ -130,16 +132,85 @@ export function scopedThinkEngine<E extends object>(engine: E, allowedSources: r
   });
 }
 
+const hitSlug = (h: unknown): string | undefined =>
+  (h as { slug?: string; page_slug?: string })?.slug ?? (h as { page_slug?: string })?.page_slug;
+
+/**
+ * An answer synthesized through `client` from search hits alone (their
+ * `chunk_text`), in runThink's result shape. Null when no hit carries text or
+ * the model returned none. Used when runThink cannot gather: on a remote
+ * brain, and as kb_think's rescue when its gather came back empty.
+ */
+export async function synthesizeFromHits(
+  question: string,
+  hits: readonly unknown[],
+  client: ThinkClient,
+): Promise<Record<string, unknown> | null> {
+  const withText = hits.filter((h) => typeof (h as { chunk_text?: unknown }).chunk_text === "string" && hitSlug(h));
+  if (withText.length === 0) return null;
+  const pageContext = withText
+    .map((h) => `[Source: ${hitSlug(h)}]\n${(h as { chunk_text: string }).chunk_text}`)
+    .join("\n\n---\n\n");
+  const synthetic = await client.create({
+    messages: [{ role: "user", content: `Answer the following question using only the provided context. Be concise and cite the source slugs.\n\nQuestion: ${question}\n\nContext:\n${pageContext}` }],
+    max_tokens: 1024,
+  });
+  const answer = ((synthetic as { content?: Array<{ text?: string }> }).content?.[0]?.text) ?? "";
+  if (!answer) return null;
+  return {
+    question,
+    answer,
+    citations: withText.map((h) => ({ page_slug: hitSlug(h) })),
+    pagesGathered: withText.length,
+    takesGathered: 0,
+    graphHits: 0,
+    synthesisOk: true,
+  };
+}
+
+/** Pages kb_think hands the synthesis on a remote brain. */
+const REMOTE_THINK_PAGES = 10;
+
+/**
+ * Think on a remote brain. runThink needs an engine in this process, and the
+ * brain lives in another one: calling it booted an empty local brain (on a
+ * gateway, PGLite on the shared volume, which the scale rules forbid) and
+ * synthesized from nothing. Instead the pages come from slaude's per-source
+ * gather through the backend (so the scope is enforced as on every remote
+ * read) and the answer from the SDK client, as in kb_think's rescue. Takes,
+ * graph and trajectory are not gathered.
+ */
+export async function gatherThink(
+  question: string,
+  scope: BrainScope,
+  deps: { client?: ThinkClient; call?: GatherOpts["call"] } = {},
+): Promise<unknown> {
+  const hits = await gather(question, scope, { finalLimit: REMOTE_THINK_PAGES, ...(deps.call ? { call: deps.call } : {}) });
+  const r = await synthesizeFromHits(question, hits, deps.client ?? sdkThinkClient());
+  return r ?? {
+    question,
+    answer: "",
+    citations: [],
+    gaps: ["no pages in this scope match the question"],
+    pagesGathered: 0,
+    takesGathered: 0,
+    graphHits: 0,
+    synthesisOk: hits.length === 0,
+  };
+}
+
 /**
  * Scoped think: gbrain's gather (pages + takes + graph + trajectory) with the
  * caller's source scope, synthesized through the SDK client above.
  * runThink isn't in gbrain's package exports — imported by file path.
+ * On a remote brain, gatherThink instead: runThink needs the engine in-process.
  */
 export async function brainThink(
   question: string,
   scope: BrainScope,
-  deps: { client?: ThinkClient } = {},
+  deps: { client?: ThinkClient; call?: GatherOpts["call"] } = {},
 ): Promise<unknown> {
+  if (brainMode() === "remote") return gatherThink(question, scope, deps);
   const engine = scopedThinkEngine(await getBrain(), scope.allowedSources);
   const thinkPath = join(import.meta.dir, "../../node_modules/gbrain/src/core/think/index.ts");
   const { runThink } = (await import(thinkPath)) as {
