@@ -9,6 +9,7 @@
  * its own secrets (master key, job secret, node token, provider keys), and a
  * persona repository must not be able to copy one into a stored persona.
  */
+import { isValidTimeZone } from "../../config/timezone";
 import { z } from "zod";
 import { redactSecrets } from "../../gateway/core/status-text";
 import { PERSONA_VAR_PREFIX, PERSONA_VAR_RE } from "../../secrets/persona-var";
@@ -64,16 +65,6 @@ export const KB_SOURCES_MAX = 64;
 
 /** Most a persona may set as its daily background budget (USD). */
 export const BACKGROUND_BUDGET_MAX_USD = 100;
-
-/** Whether `tz` is an IANA zone name this runtime accepts. */
-export function isValidTimeZone(tz: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-CA", { timeZone: tz });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /** A persona's background-learning settings (see src/background/config.ts). */
 const backgroundSpec = z
