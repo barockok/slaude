@@ -17,7 +17,7 @@
  */
 import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { getPersonaRegistry } from "../../persona/registry";
+import { getPersonaRegistry, managedPersonaProvider } from "../../persona/registry";
 import { db } from "../../db/schema";
 import { resolveDbConfig } from "../../db/client";
 import { effectivePersonas, isManaged } from "../../db/personas";
@@ -182,6 +182,20 @@ async function resolveDeclaredProvider(persona: string, provider: PersonaProvide
 
 const declaresProvider = (p: PersonaProvider | null | undefined): p is PersonaProvider =>
   !!p && PROVIDER_FIELDS.some((f) => p[f]);
+
+/**
+ * The resolved provider set of a managed persona that declares its own
+ * `provider` (the same atomic set its runtime bundle carries), or null when it
+ * declares none (a filesystem registry never does). Used by work that runs on
+ * the gateway for a persona without a bundle fetch (background passes). A
+ * reference that cannot be resolved throws SecretResolutionError: never fall
+ * back to this process's provider variables.
+ */
+export async function resolvePersonaOwnProvider(personaName: string): Promise<RuntimeBundle["providerCreds"] | null> {
+  const declared = managedPersonaProvider(personaName === "default" ? undefined : personaName);
+  if (!declaresProvider(declared)) return null;
+  return resolveDeclaredProvider(personaName, declared);
+}
 
 /** A managed tenant: effective state only. Self-contained, so tiers 2 and 3
  *  (disk, env) are unreachable from it. Missing or tombstoned persona -> null. */

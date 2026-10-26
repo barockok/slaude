@@ -190,12 +190,7 @@ export function bundleChildEnv(
   bundle: Pick<RuntimeBundle, "providerCreds" | "slackUserId">,
   persona: string,
 ): Record<string, string | undefined> {
-  const creds = bundle.providerCreds ?? {};
-  const out: Record<string, string | undefined> = {};
-  if (creds.apiKey) out.ANTHROPIC_API_KEY = creds.apiKey;
-  if (creds.baseUrl) out.ANTHROPIC_BASE_URL = creds.baseUrl;
-  if (creds.authToken) out.ANTHROPIC_AUTH_TOKEN = creds.authToken;
-  if (creds.oauthToken) out.CLAUDE_CODE_OAUTH_TOKEN = creds.oauthToken;
+  const out: Record<string, string | undefined> = providerCredsEnv(bundle.providerCreds ?? {});
   if (persona !== "default" && bundle.slackUserId) out.SLAUDE_AGENT_ID = bundle.slackUserId;
   return out;
 }
@@ -209,7 +204,7 @@ export {
   PROVIDER_SELECTING_ENV_PREFIXES,
   providerSelectingNames,
 } from "../agent/provider-env";
-import { PROVIDER_ENV_KEYS, providerSelectingNames } from "../agent/provider-env";
+import { PROVIDER_ENV_KEYS, providerCredsEnv, providerSelectingNames } from "../agent/provider-env";
 
 /**
  * The child-env overlay for a session, with the no-silent-fallback rule
