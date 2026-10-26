@@ -146,6 +146,23 @@ CREATE TABLE IF NOT EXISTS env_bindings (
   PRIMARY KEY (channel_id, thread_ts)
 );
 CREATE INDEX IF NOT EXISTS idx_env_bindings_env ON env_bindings (env_id);
+CREATE TABLE IF NOT EXISTS background_runs (
+  id                 TEXT PRIMARY KEY,
+  agent_id           TEXT NOT NULL,
+  pass               TEXT NOT NULL,
+  scope              TEXT NOT NULL,
+  model              TEXT,
+  tokens_input       INTEGER NOT NULL DEFAULT 0,
+  tokens_output      INTEGER NOT NULL DEFAULT 0,
+  tokens_cache_read  INTEGER NOT NULL DEFAULT 0,
+  tokens_cache_write INTEGER NOT NULL DEFAULT 0,
+  cost_usd           REAL NOT NULL DEFAULT 0,
+  started_at         INTEGER NOT NULL,
+  finished_at        INTEGER,
+  outcome            TEXT,
+  day                TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_background_runs_agent_day ON background_runs (agent_id, day);
 CREATE TABLE IF NOT EXISTS remote_keys (
   team_id     TEXT    NOT NULL,
   user_id     TEXT    NOT NULL,

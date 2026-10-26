@@ -266,4 +266,8 @@ export const m = {
   // path, field or value.
   providerCredResolveTotal: metrics.counter("slaude_provider_cred_resolve_total", "Provider credential reference resolutions on this gateway, labeled by scheme (vault|env) and outcome (ok|cached|stale|denied|error)."),
   providerCredStaleServedTotal: metrics.counter("slaude_provider_cred_stale_served_total", "Times a cached provider credential was served past its TTL because Vault could not answer."),
+  // Background learning (phase D). Cost is computed from tokens and the price
+  // table, never the SDK's figure. Labels never carry scope or content.
+  backgroundCostUsdTotal: metrics.counter("slaude_background_cost_usd_total", "USD spent by background learning passes, labeled by agent and pass."),
+  backgroundRunsTotal: metrics.counter("slaude_background_runs_total", "Background learning pass runs, labeled by agent, pass and outcome (ok|skipped-budget|stopped-budget|error)."),
 };
