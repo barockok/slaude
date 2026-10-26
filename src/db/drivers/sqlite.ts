@@ -163,6 +163,21 @@ CREATE TABLE IF NOT EXISTS background_runs (
   day                TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_background_runs_agent_day ON background_runs (agent_id, day);
+CREATE TABLE IF NOT EXISTS proposals (
+  id          TEXT    PRIMARY KEY,
+  agent_id    TEXT    NOT NULL,
+  kind        TEXT    NOT NULL,
+  to_kind     TEXT    NOT NULL,
+  to_user     TEXT,
+  scope       TEXT    NOT NULL,
+  payload     TEXT    NOT NULL DEFAULT '{}',
+  created_at  INTEGER NOT NULL,
+  expires_at  INTEGER NOT NULL,
+  status      TEXT    NOT NULL DEFAULT 'open',
+  decided_by  TEXT,
+  decided_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_proposals_agent_status ON proposals (agent_id, status);
 CREATE TABLE IF NOT EXISTS remote_keys (
   team_id     TEXT    NOT NULL,
   user_id     TEXT    NOT NULL,

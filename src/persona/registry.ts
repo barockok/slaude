@@ -265,6 +265,17 @@ export function managedPersonaModel(name: string | undefined, r: PersonaRegistry
 }
 
 /**
+ * The model a run of persona `name` uses when nothing per-thread applies (a
+ * background pass): the managed persona's effective model, else SLAUDE_MODEL,
+ * else "" (none configured). Same precedence a session row with no model
+ * follows (manager #sessionModel); a filesystem registry carries no persona
+ * model, so its sessions were created with SLAUDE_MODEL as well.
+ */
+export function personaDefaultModel(name: string | undefined, r: PersonaRegistry = getPersonaRegistry()): string {
+  return managedPersonaModel(name, r) ?? env.model() ?? "";
+}
+
+/**
  * The provider references of persona `name` (undefined = the default persona)
  * on a managed tenant, or null when it names none (always null on a filesystem
  * registry). References only; values are resolved at bundle build.

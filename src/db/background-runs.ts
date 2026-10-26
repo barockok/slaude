@@ -74,6 +74,20 @@ export async function start(row: {
   return id;
 }
 
+/**
+ * Record a still-open run's tokens and cost so far (after every priced turn),
+ * so a run that crashes or is still going counts toward spentOn. The outcome
+ * stays NULL until finish.
+ */
+export async function progress(id: string, r: { tokens: TokenCounts; costUsd: number }): Promise<void> {
+  await db.run(
+    `UPDATE background_runs
+        SET tokens_input = ?, tokens_output = ?, tokens_cache_read = ?, tokens_cache_write = ?, cost_usd = ?
+      WHERE id = ? AND outcome IS NULL`,
+    [r.tokens.input, r.tokens.output, r.tokens.cache_read, r.tokens.cache_write, r.costUsd, id],
+  );
+}
+
 export async function finish(
   id: string,
   r: { tokens: TokenCounts; costUsd: number; outcome: RunOutcome },
