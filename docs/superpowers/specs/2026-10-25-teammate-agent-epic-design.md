@@ -16,7 +16,7 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 | R. Runtime prompt as built-in skills | `docs/superpowers/plans/2026-10-25-phase-r-builtin-skills.md` | done, merged (#154; unreleased — ships as RC) | — |
 | C. Memory structure | `docs/superpowers/plans/2026-10-25-phase-c-memory-structure.md` | done, merged (#155; unreleased — ships as RC) | — |
 | D. Background learning and budget | `docs/superpowers/plans/2026-10-26-phase-d-background-learning.md` | done (unreleased — ships as RC) | — |
-| E. Proactiveness | — | not started | — |
+| E. Proactiveness | `docs/superpowers/plans/2026-10-26-phase-e-proactiveness.md` | in progress | — |
 
 **Phase A tasks**
 - [x] A1 Writing-style section; KB-first governs action, not wording (§6.1)
@@ -61,6 +61,17 @@ Updated in the same commit as each piece of work lands. A phase is **done** when
 - [x] D8 Skill provenance, usage, soft retire, weekly review (§9.1)
 - [x] D9 Proposal cards and weekly digest (§9.1)
 - [x] D10 /1on1 nightly scenario; field note; phase closed (§9.4)
+
+**Phase E tasks**
+- [ ] E1 `## Proactive` switch, deterministic, never overridable (§10.2)
+- [ ] E2 Profile ping preferences (§10.4)
+- [ ] E3 Commitment index with machine-readable due (§10.1)
+- [ ] E4 Budgeted background turns (§9.3, §10.1)
+- [ ] E5 Promise scheduler: check turns in their own thread (§10.1)
+- [ ] E6 Restraint rules in code; proactive post ledger (§10.4)
+- [ ] E7 Heartbeat pass and `proactive_post` (§10.3)
+- [ ] E8 Feedback loop: outcomes and topic mutes (§10.5)
+- [ ] E9 Promise-kept scenario; field note; phase closed (§10.6)
 
 ## 1. Goal
 
