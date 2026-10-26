@@ -556,6 +556,16 @@ export const env = {
    * `SLAUDE_QUIET_MAX_PER_DAY` times per agent per persona-local day (K,
    * default 5). A non-integer or a value below 1 falls back to the default.
    */
+  /**
+   * Promise checks (spec §10.1): an event-due commitment is re-checked every
+   * `SLAUDE_PROMISE_POLL_MINUTES` (default 15) until it resolves or
+   * `SLAUDE_PROMISE_EXPIRE_HOURS` (default 24) pass; a time-due one still open
+   * after its check gets its last check that long after its due time.
+   */
+  promisePollMinutes: () => intAtLeastOne("SLAUDE_PROMISE_POLL_MINUTES", 15),
+  promiseExpireHours: () => intAtLeastOne("SLAUDE_PROMISE_EXPIRE_HOURS", 24),
+  /** Heartbeat pass interval in minutes (`SLAUDE_HEARTBEAT_MINUTES`, default 30; spec §10.3). */
+  heartbeatMinutes: () => intAtLeastOne("SLAUDE_HEARTBEAT_MINUTES", 30),
   quietMinTurns: () => intAtLeastOne("SLAUDE_QUIET_MIN_TURNS", 8),
   quietMinutes: () => intAtLeastOne("SLAUDE_QUIET_MINUTES", 30),
   quietMaxPerDay: () => intAtLeastOne("SLAUDE_QUIET_MAX_PER_DAY", 5),

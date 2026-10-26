@@ -201,6 +201,44 @@ CREATE TABLE IF NOT EXISTS thread_activity (
   scope          TEXT    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_thread_activity_agent ON thread_activity (agent_id, last_turn_at);
+CREATE TABLE IF NOT EXISTS commitments (
+  agent_id         TEXT    NOT NULL,
+  source           TEXT    NOT NULL,
+  slug             TEXT    NOT NULL,
+  persona_id       TEXT    NOT NULL DEFAULT 'default',
+  team_id          TEXT,
+  channel_id       TEXT    NOT NULL,
+  thread_ts        TEXT    NOT NULL,
+  beneficiary      TEXT    NOT NULL,
+  run_as           TEXT,
+  due_text         TEXT    NOT NULL,
+  due_kind         TEXT    NOT NULL,
+  check_text       TEXT    NOT NULL DEFAULT '',
+  on_no_change     TEXT    NOT NULL DEFAULT 'silent',
+  next_check_at    INTEGER NOT NULL,
+  expires_at       INTEGER NOT NULL,
+  status           TEXT    NOT NULL DEFAULT 'open',
+  checks           INTEGER NOT NULL DEFAULT 0,
+  last_checked_at  INTEGER,
+  created_at       INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, source, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_commitments_due ON commitments (agent_id, status, next_check_at);
+CREATE TABLE IF NOT EXISTS proactive_posts (
+  id          TEXT    PRIMARY KEY,
+  agent_id    TEXT    NOT NULL,
+  audience    TEXT    NOT NULL,
+  recipient   TEXT    NOT NULL,
+  topic       TEXT    NOT NULL,
+  text_hash   TEXT    NOT NULL,
+  evidence_hash TEXT,
+  channel_id  TEXT    NOT NULL,
+  message_ts  TEXT,
+  team_id     TEXT,
+  posted_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proactive_posts_recipient ON proactive_posts (agent_id, recipient, posted_at);
+CREATE INDEX IF NOT EXISTS idx_proactive_posts_message ON proactive_posts (channel_id, message_ts);
 CREATE TABLE IF NOT EXISTS remote_keys (
   team_id     TEXT    NOT NULL,
   user_id     TEXT    NOT NULL,

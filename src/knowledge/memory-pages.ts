@@ -43,6 +43,17 @@ export interface TypedPageInput {
 /** Keys composePage writes itself; a type's fields may not reuse them. */
 const COMMON_KEYS = new Set(["type", "as_of", "confidence", "source", "subject", "supersedes", "superseded_by"]);
 
+/**
+ * The fields of an existing page that a rewrite carries over: everything but
+ * the common keys, multi-line values, and `quote`, which belongs to the write
+ * that made it.
+ */
+export function carriedFields(meta: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(meta)) if (!COMMON_KEYS.has(k) && k !== "quote" && !/[\r\n]/.test(v)) out[k] = v;
+  return out;
+}
+
 /** Commitment keys, in the order they are written (global constraints). */
 const COMMITMENT_KEYS = ["promiser", "beneficiary", "thread", "due", "check", "on_no_change", "status"] as const;
 const COMMITMENT_STATUS = new Set(["open", "done", "dropped"]);
@@ -174,7 +185,7 @@ function metaText(v: unknown): string | undefined {
  */
 export function readPageRecord(raw: unknown): { meta: Record<string, string>; body: string; superseded: boolean } | null {
   if (raw === null || typeof raw !== "object") return null;
-  const r = raw as { content?: unknown; compiled_truth?: unknown; frontmatter?: unknown; tags?: unknown };
+  const r = raw as { content?: unknown; compiled_truth?: unknown; frontmatter?: unknown; tags?: unknown; type?: unknown };
   const superseded = Array.isArray(r.tags) && r.tags.includes(SUPERSEDED_TAG);
   if (typeof r.content === "string") return { ...parseFrontmatter(r.content), superseded };
   if (typeof r.compiled_truth !== "string") return null;
@@ -185,5 +196,10 @@ export function readPageRecord(raw: unknown): { meta: Record<string, string>; bo
       if (t !== undefined) meta[k] = t;
     }
   }
+  // Measured against the real engine: gbrain keeps a page's `type` in its own
+  // column (not in the record's frontmatter), and returns a YAML date such as
+  // `as_of` as an ISO timestamp string.
+  if (meta.type === undefined && typeof r.type === "string" && r.type) meta.type = r.type;
+  if (meta.as_of !== undefined && /^\d{4}-\d{2}-\d{2}T00:00:00(?:\.0+)?Z$/.test(meta.as_of)) meta.as_of = meta.as_of.slice(0, 10);
   return { meta, body: r.compiled_truth, superseded };
 }

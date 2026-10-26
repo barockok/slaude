@@ -63,6 +63,8 @@ export interface PassToolContext {
   now: () => Date;
   /** Told each queued proposal's id (the runner delivers a person's after the pass). */
   onProposed?: (id: string) => void;
+  /** Told the pages a memoize call wrote, after the writes (the commitment index). A failure is logged, never returned. */
+  onWritten?: (pages: Array<{ slug: string; content: string; source: string }>) => Promise<void> | void;
 }
 
 /** Most pages one read_pages or memoize call takes. */
@@ -295,6 +297,13 @@ export const passHandlers = {
         // A page written again is current again.
         for (const c of mine) if (tagged.has(c.slug)) await ctx.call("remove_tag", { slug: c.slug, tag: SUPERSEDED_TAG }, only(ctx, source));
         for (const c of mine) if (c.supersedes !== undefined) await ctx.call("add_tag", { slug: c.supersedes, tag: SUPERSEDED_TAG }, only(ctx, source));
+      }
+      if (ctx.onWritten) {
+        try {
+          await ctx.onWritten(composed.map((c) => ({ slug: c.slug, content: c.content, source: c.source })));
+        } catch (e) {
+          console.error(`[background] memoize: post-write hook failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
       return ok({ written });
     } catch (e) {

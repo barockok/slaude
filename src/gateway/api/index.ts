@@ -32,6 +32,7 @@
  *   POST  /v1/tools/memory/prefetch|sync  episodic memory, run on the gateway (node+job, label)
  *   POST  /v1/background/skill-check/start|finish  the skill check's budget run (node+job, label)
  *   POST  /v1/background/skill-usage  one use of a skill, for the skill review (node+job, label)
+ *   POST  /v1/background/turn/finish  the background-turn run a job carries (node+job, label)
  *   POST  /v1/tools/:server/:tool     contract-validated tool call        (node+job, label)
  *   POST  /v1/tools/mcpx/:server/list|call   the MCP bridge (WS-C §4.2)   (node+job, label)
  */
@@ -58,7 +59,7 @@ import type { ToolPlaneDeps } from "./tools/deps";
 import { defaultPendingSource, type PendingSource } from "./pending-source";
 import { json, methodNotAllowed, notFound, readBodyCapped, readJson } from "./http";
 import { defaultMemoryPlane, handleMemory, MEMORY_BODY_MAX_BYTES, type MemoryPlane } from "./memory";
-import { BACKGROUND_BODY_MAX_BYTES, handleSkillCheck, handleSkillUsage } from "./background";
+import { BACKGROUND_BODY_MAX_BYTES, handleSkillCheck, handleSkillUsage, handleTurnRun } from "./background";
 import { PersonaNotLiveError } from "../../persona/registry";
 import { memory as processMemory } from "../../memory";
 
@@ -313,6 +314,26 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
           return json(400, { error: "malformed JSON body" });
         }
         return handleSkillCheck(seg[2]!, body, claims!);
+      },
+    },
+    {
+      // The background-turn run a job carries (a promise check, phase E).
+      // Label-gated like the skill check; only the token's own `bgRun` is finished.
+      name: "background.turn",
+      methods: ["POST"],
+      pattern: ["background", "turn", "finish"],
+      auth: "node+job",
+      gate: "label",
+      handle: async ({ req, seg, claims }) => {
+        const text = await readBodyCapped(req, BACKGROUND_BODY_MAX_BYTES);
+        if (text === null) return json(413, { error: "body too large" });
+        let body: unknown = {};
+        try {
+          if (text.trim()) body = JSON.parse(text);
+        } catch {
+          return json(400, { error: "malformed JSON body" });
+        }
+        return handleTurnRun(seg[2]!, body, claims!);
       },
     },
     {

@@ -29,7 +29,7 @@ user message that carries a tag decides the turn. Requests with no tag get
 | Scenario | Params | Reply |
 |---|---|---|
 | `echo` | | `[<persona>] <user text>`; persona is the `Persona-ID:` line in the system prompt. When the request offers slaude's `mcp__slaude_surface__reply` tool (slaude never shows plain assistant text), the reply goes out as that tool call, and the turn ends with `replied` once its result is in |
-| `multi-tool` | `n` (default 2), `tool` (default Bash) | `n` sequential tool calls, then `done after n tools` |
+| `multi-tool` | `n` (default 2), `tool` (default Bash), `args` (base64url JSON object; default `{command}`) | `n` sequential tool calls, then `done after n tools` |
 | `long-stream` | `chunks` (default 20) | Many small chunks |
 | `think` | | A thinking block, then `thought about it` |
 

@@ -31,6 +31,15 @@ export async function findAnyByThread(k: Omit<ThreadKey, "persona_id">): Promise
   );
 }
 
+/** The Slack team of the most recent session in a thread, by channel and thread only (channel ids are workspace-unique). */
+export async function teamForThread(channelId: string, threadTs: string): Promise<string | null> {
+  const row = await db.one<{ slack_team_id: string | null }>(
+    `SELECT slack_team_id FROM sessions WHERE slack_channel_id = ? AND slack_thread_ts = ? ORDER BY updated_at DESC LIMIT 1`,
+    [channelId, threadTs],
+  );
+  return row?.slack_team_id ?? null;
+}
+
 export async function createForThread(args: {
   thread: ThreadKey;
   model: string;

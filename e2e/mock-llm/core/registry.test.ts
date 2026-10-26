@@ -55,6 +55,16 @@ describe("resolveReply", () => {
     });
   });
 
+  describe("multi-tool args", () => {
+    test("args=<base64url JSON> sets the call's arguments; malformed args fall back", () => {
+      const args = Buffer.from(JSON.stringify({ audience: "manager", text: "hi there" })).toString("base64url");
+      const ok = resolveReply(user(`[[mock:multi-tool n=1 tool=T args=${args}]] go`));
+      expect(ok).toEqual({ kind: "tools", calls: [{ id: "toolu_mock_1", name: "T", args: { audience: "manager", text: "hi there" } }] });
+      const bad = resolveReply(user("[[mock:multi-tool n=1 tool=T args=notjson]] go"));
+      expect(bad).toEqual({ kind: "tools", calls: [{ id: "toolu_mock_1", name: "T", args: { command: "echo step-1" } }] });
+    });
+  });
+
   describe("multi-tool", () => {
     const withResults = (n: number, tag = "[[mock:multi-tool n=2]] go"): MockRequest => ({
       messages: [

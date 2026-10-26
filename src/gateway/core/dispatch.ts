@@ -60,6 +60,10 @@ export interface DispatchMeta {
    *  not interactive on the node (fail closed), so every path sets it. */
   origin?: TurnOrigin;
   suppress?: boolean;
+  /** An open ledger run this turn carries (a promise check, phase E): signed
+   *  into the token as `bgRun` and carried in the payload, so the node finishes
+   *  it with the turn's own usage. */
+  backgroundRunId?: string;
 }
 
 export interface QueueDispatch {
@@ -370,6 +374,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           mcpEpoch: await turnMcpEpoch({ tenant: tenantId, persona: personaId, team: meta.teamId, runAsUser }, epochs),
         }),
         ...(remoteClaim ? { remote: remoteClaim } : {}),
+        ...(meta.backgroundRunId ? { bgRun: meta.backgroundRunId } : {}),
       });
       // Routing (spec §2, node labels spec §4.6): warm + fresh on a node that
       // still carries the persona's label → that node's queue; anything else →
@@ -392,6 +397,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           personaId,
           label,
           ...(meta.oauthUser ? { oauthUser: meta.oauthUser } : {}),
+          ...(meta.backgroundRunId ? { bgRun: meta.backgroundRunId } : {}),
           messages: [
             { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}) },
           ],

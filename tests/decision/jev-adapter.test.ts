@@ -61,6 +61,21 @@ describe("jev adapter", () => {
     expect(await mk().decide(req, AbortSignal.timeout(800))).toEqual({ q: { choice: "no", confidence: 0.9 } });
   });
 
+  // The envelope as the live API returned it (2026-10-26, model jev-1.14.0): a
+  // top-level `model`, `answers.<id>` with `type`, `choice`, `confidence` and
+  // `probabilities`, and `usage`. Pinned so a parser change is checked against it.
+  it("parses the live response envelope", async () => {
+    replies.push({
+      status: 200,
+      body: JSON.stringify({
+        model: "jev-1.14.0",
+        answers: { q: { type: "choice", choice: "yes", confidence: 1.0, probabilities: { yes: 1.0, no: 0.0 } } },
+        usage: { input_tokens: 359, output_tokens: 32 },
+      }),
+    });
+    expect(await mk().decide(req, AbortSignal.timeout(800))).toEqual({ q: { choice: "yes", confidence: 1 } });
+  });
+
   it("401 throws auth without retry", async () => {
     replies.push({ status: 401 });
     expect(await kind(mk().decide(req, AbortSignal.timeout(800)))).toBe("auth");

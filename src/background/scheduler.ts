@@ -35,10 +35,11 @@
  */
 import type { Redis } from "ioredis";
 import * as Runs from "../db/background-runs";
+import * as Sessions from "../db/sessions";
 import { claimSlot } from "../db/background-slots";
 import * as Proposals from "../db/proposals";
 import { registerLoop } from "../gateway/core/running-loops";
-import { brainAdminCall, brainCall, brainReady } from "../knowledge/brain";
+import { brainAdminCall, brainCall, brainCallIfOpen, brainReady } from "../knowledge/brain";
 import { m as metric } from "../metrics";
 import { getPersonaRegistry, managedPersonaProvider, personaDefaultModel } from "../persona/registry";
 import { personaKbList } from "../knowledge/persona-kb";
@@ -55,7 +56,15 @@ import { dueQuietThreads, quietSlot, runQuietMoment } from "./passes/quiet-momen
 import { runSkillReview } from "./passes/skill-review";
 import type { ThreadActivity } from "../db/thread-activity";
 import { defaultRunnerDeps } from "./runner";
-import { backgroundAgentId } from "./skill-check";
+import { backgroundAgentId, finishSkillCheck, startSkillCheck } from "./skill-check";
+import { runDueCommitments, type PromiseTransport } from "../proactive/promises";
+import { readPingPrefs } from "../proactive/prefs";
+import { runHeartbeat } from "../proactive/heartbeat";
+import { anyProactiveEnabled } from "../soul/proactive";
+import { env } from "../config/env";
+import { personaApp } from "./digest";
+import { soulData, cachedSoulData } from "../soul/extract";
+import { personaSoulText } from "../persona/soul-source";
 import { sweepStaleRuns } from "./stale-runs";
 
 export { isoWeekSlot, previousDay };
@@ -107,6 +116,12 @@ export interface SchedulerDeps {
   quietDue?: (g: AgentGroup, now: Date) => Promise<ThreadActivity[]>;
   /** Default: a timer that the signal cuts short. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** Check the group's due promises (phase E, src/proactive/promises.ts).
+   *  Runs first every tick: due promises are top priority. Absent: none. */
+  commitments?: (g: AgentGroup, now: Date) => Promise<unknown>;
+  /** Whether a persona's SOUL turns proactiveness on anywhere (the heartbeat
+   *  runs only then). Default: anyProactiveEnabled. */
+  proactiveOn?: (personaId: string) => boolean;
 }
 
 /** `after`: the pass runs only once that pass's ledger rows for the same day have all finished. */
@@ -139,6 +154,13 @@ export function dueSlots(now: Date, tz: string, last: LastSlots = {}): DueSlot[]
     if (last[e.pass] !== slot) out.push({ pass: e.pass, slot, ...(e.after ? { after: e.after } : {}) });
   }
   return out;
+}
+
+/** The heartbeat slot of `now`: persona-local `YYYY-MM-DDTHH:MM`, rounded down to the interval. */
+export function heartbeatSlot(now: Date, tz: string, everyMinutes: number): string {
+  const t = localParts(now, tz);
+  const m = Math.floor(t.minutes / everyMinutes) * everyMinutes;
+  return `${t.day}T${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 }
 
 const errText = (e: unknown): string => redactSecrets(e instanceof Error ? e.message : String(e));
@@ -203,6 +225,17 @@ export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: 
         console.error(`[background] could not list agents: ${errText(e)}`);
         return;
       }
+      // Due promises first, for every agent, before any pass: they are top priority.
+      if (deps.commitments) {
+        for (const g of groups) {
+          if (signal.aborted) return;
+          try {
+            await deps.commitments(g, now);
+          } catch (e) {
+            console.error(`[background] agent=${g.agentId} pass=commitment: ${errText(e)}`);
+          }
+        }
+      }
       for (const g of groups) {
         const seen = last.get(g.agentId) ?? {};
         last.set(g.agentId, seen);
@@ -222,6 +255,15 @@ export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: 
             continue;
           }
           if (await runSlot(g, pass, slot, now, signal, handler, () => claimSlot(g.agentId, pass, slot, now.getTime()))) seen[pass] = slot;
+        }
+        // The heartbeat (phase E): every SLAUDE_HEARTBEAT_MINUTES, only while
+        // the persona's SOUL enables proactiveness somewhere.
+        const heartbeat = deps.handlers.heartbeat;
+        if (heartbeat && !signal.aborted && (deps.proactiveOn ?? anyProactiveEnabled)(g.personaId)) {
+          const slot = heartbeatSlot(now, g.timeZone, env.heartbeatMinutes());
+          if (seen.heartbeat !== slot && (await runSlot(g, "heartbeat", slot, now, signal, heartbeat, () => claimSlot(g.agentId, "heartbeat", slot, now.getTime())))) {
+            seen.heartbeat = slot;
+          }
         }
         const quiet = deps.handlers["quiet-moment"];
         if (!quiet || signal.aborted) continue;
@@ -397,6 +439,8 @@ async function listBrainSources(): Promise<string[]> {
 export interface SchedulerSlack {
   /** Posts as the agent's bot; `channel` is a user id for a DM. */
   post: CardPost;
+  /** How promise checks reach their threads (phase E). Absent: promises are not checked. */
+  promises?: PromiseTransport;
   /** The manager and the backup manager (who may decide manager proposals). */
   managers: () => string[];
   /** Whom the weekly digest goes to: the manager, else the backup manager. */
@@ -411,12 +455,51 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
     "quiet-moment": (r) => runQuietMoment(r, deps),
     "skill-review": (r) => runSkillReview(r, deps),
     digest: (r) => runDigest(r, { call: deps.call, recipient: slack?.digestRecipient ?? (() => null), ...(slack ? { post: slack.post } : {}) }),
+    // The heartbeat needs Slack to speak: without it there is nothing to run.
+    ...(slack
+      ? { heartbeat: (r: SlotRun) => runHeartbeat(r, { runner: deps.runner, call: deps.call, post: slack.post, managerId: personaManager, app: personaApp }) }
+      : {}),
   };
+}
+
+/** A persona's manager: the default persona's effective soul, a named persona's own structured soul. */
+export function personaManager(personaId: string): string | null {
+  try {
+    if (!personaId || personaId === "default") return soulData().manager.userId ?? null;
+    return cachedSoulData(personaSoulText(personaId))?.manager.userId ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Production promise checks for a group: budgeted on the ledger, prefs from the beneficiary's profile. */
+export function promiseChecks(transport: PromiseTransport): (g: AgentGroup, now: Date) => Promise<number> {
+  return (g, now) =>
+    runDueCommitments(g.agentId, now, {
+      transport,
+      timeZone: g.timeZone,
+      // A read that never boots the brain: the scheduler only runs with it open.
+      prefs: async (row) => readPingPrefs(brainCallIfOpen, row.teamId ?? (await Sessions.teamForThread(row.channelId, row.threadTs)), row.beneficiary),
+      openRun: async (row) => {
+        const named = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
+        const r = await startSkillCheck({
+          personaId: row.personaId || "default",
+          model: personaDefaultModel(named),
+          scope: row.runAs ? `user:${row.runAs}` : "agent",
+          pass: "commitment",
+        });
+        return r.ok ? { ok: true, runId: r.runId, agentId: r.agentId } : { ok: false };
+      },
+      dropRun: async (runId, agentId) => {
+        await finishSkillCheck({ runId, agentId, usage: {}, outcome: "error", pass: "commitment" });
+      },
+    });
 }
 
 /** The scheduler as the gateway and mono run it. */
 export function defaultSchedulerDeps(slack?: SchedulerSlack): SchedulerDeps {
   return {
+    ...(slack?.promises ? { commitments: promiseChecks(slack.promises) } : {}),
     now: () => new Date(),
     brainReady,
     agents: defaultAgentGroups,

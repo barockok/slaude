@@ -727,7 +727,8 @@ describe("AgentManager lifecycle", () => {
     await mgr.sendMessage(row.id, "hi");
     await until(() => fs.options !== null, 3000, "boot");
     const post = fs.options.hooks.PostToolUse.flatMap((m: any) => m.hooks);
-    expect(post).toHaveLength(2);
+    // The skill gate, the usage counter, and pass ending the turn.
+    expect(post).toHaveLength(3);
     const load = { hook_event_name: "PostToolUse", tool_name: "Skill", tool_input: { skill: "slaude:skill-authoring" }, tool_response: { success: true } };
     for (const h of post) await h(load, "tu", { signal: new AbortController().signal });
     await until(() => counted.length === 1, 1000, "counted");

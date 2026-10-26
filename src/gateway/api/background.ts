@@ -56,6 +56,28 @@ const finishBody = z
 
 const personaOf = (claims: JobClaims): string => claims.persona || "default";
 
+/**
+ * POST /v1/background/turn/finish — finish the background-turn run the job
+ * carries (a promise check, phase E). Only the run id signed into the token as
+ * `bgRun` may be finished, and only while it is an open `commitment` run of
+ * the token persona's agent; anything else is 409. Priced with the gateway's
+ * table, as the skill check's finish.
+ */
+export async function handleTurnRun(op: string, body: unknown, claims: JobClaims, deps: SkillCheckDeps = {}): Promise<Response> {
+  try {
+    if (op !== "finish") return notFound("unknown background turn op");
+    const b = finishBody.parse(body);
+    if (!claims.bgRun || claims.bgRun !== b.runId) return json(409, { error: "this job carries no such background run" });
+    const agentId = await backgroundAgentId(personaOf(claims));
+    const r = await finishSkillCheck({ runId: b.runId, agentId, usage: b.usage, outcome: b.outcome, pass: "commitment" }, deps);
+    if (!r.ok) return json(409, { error: "no open background run with this id for this agent" });
+    return json(200, { ok: true });
+  } catch (e) {
+    if (e instanceof z.ZodError) return json(400, { error: `invalid input: ${zodIssueLine(e)}` });
+    throw e;
+  }
+}
+
 export async function handleSkillCheck(op: string, body: unknown, claims: JobClaims, deps: SkillCheckDeps = {}): Promise<Response> {
   try {
     if (op === "start") {

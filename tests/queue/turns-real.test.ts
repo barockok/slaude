@@ -122,6 +122,22 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     await redis.del(keys.coalesce("s-coal"));
   });
 
+  // A promise check (phase E) defers while a message waits to be claimed;
+  // a stale coalesce index (its job gone) is not "pending".
+  test("hasPending: a waiting job is pending; no index, or an index whose job is gone, is not", async () => {
+    await ready;
+    expect(await queues.hasPending("s-pend")).toBe(false);
+    const first = await queues.enqueueTurn(turn("s-pend", ["one"], "tok1"), { label: "default" });
+    expect(await queues.hasPending("s-pend")).toBe(true);
+    const job = await queues.queue("turns").getJob(first.jobId);
+    await job!.remove();
+    expect(await redis.exists(keys.coalesce("s-pend"))).toBe(1);
+    expect(await queues.hasPending("s-pend")).toBe(false);
+    await redis.set(keys.coalesce("s-pend"), "not json");
+    expect(await queues.hasPending("s-pend")).toBe(false);
+    await redis.del(keys.coalesce("s-pend"));
+  });
+
   test("turn senders: a fresh job records its sender; a merge from another person or origin adds theirs", async () => {
     await ready;
     const { classifyBrainOp } = await import("../../src/knowledge/gated-dispatch");

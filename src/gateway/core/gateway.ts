@@ -14,6 +14,11 @@ import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
+import { indexWritten, runAsOf } from "../../proactive/commitment-index";
+import type { CommitmentRow } from "../../db/commitments";
+import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
+import type { PromiseTransport } from "../../proactive/promises";
+import { ledgerTurnRun } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
@@ -182,6 +187,8 @@ export interface GatewayHandle {
    *  Requires the session's route to exist (feed a message first). Production
    *  never calls this. */
   __resolveMcp(sessionId: string): Promise<Record<string, McpServerConfig> | undefined>;
+  /** Test seam: how this gateway delivers promise checks (phase E). */
+  __promises?: PromiseTransport;
   /** TEST SEAM: the mono process's voice call registry. */
   __voiceCalls?: VoiceCalls;
   /** TEST/SIM SEAM ONLY. Drive the natural-language connect path (what the
@@ -817,6 +824,85 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       routes.set(sessionId, { ctx, surface: wrapSurface(surfaceForCtx(ctx), sessionId), spoke: false, silent: true });
     },
   });
+  // Promise checks (phase E): a due commitment's check turn goes into the
+  // thread that made the promise, through the cron path (a route bound like a
+  // cron run's, origin cron; the queue in the gateway role, this process in
+  // mono), carrying its open `commitment` ledger run. It never runs as anyone
+  // through a carried identity: the thread's own /1on1 lock decides, and a
+  // check whose thread no longer has the scope it was promised in (a lock
+  // taken or released since) is refused and retried, so a /1on1 promise is
+  // only ever checked inside that /1on1.
+  const promiseTeam = async (row: CommitmentRow): Promise<string | null> =>
+    row.teamId ?? (await Sessions.teamForThread(row.channelId, row.threadTs));
+  const promiseSession = async (row: CommitmentRow): Promise<SessionRow | null> => {
+    const teamId = await promiseTeam(row);
+    return teamId ? Sessions.findByThread({ team_id: teamId, channel_id: row.channelId, thread_ts: row.threadTs, persona_id: row.personaId || "default" }) : null;
+  };
+  /** Throws unless the thread still has the scope the promise was made in (its /1on1 lock owner, or no lock). */
+  const promiseScopeHolds = async (row: CommitmentRow): Promise<void> => {
+    const lockedUser = (await OneOnOne.find(row.channelId, row.threadTs))?.locked_user ?? null;
+    if ((row.runAs ?? null) !== lockedUser) throw new Error("the thread's /1on1 lock changed since the promise; not speaking there");
+  };
+  backgroundSlack.promises = {
+    isBusy: async (row) => {
+      const session = await promiseSession(row);
+      if (!session) return false;
+      if (!queueDispatch) return agent.isTurnInFlight(session.id);
+      // A turn running (its session lock) or a message waiting to be claimed.
+      if ((await getRedis().exists(makeKeys().sessionLock(session.id))) > 0) return true;
+      return queueDispatch.turns.hasPending(session.id);
+    },
+    dispatch: async (row, envelope, run) => {
+      const teamId = await promiseTeam(row);
+      if (!teamId) throw new Error("no Slack team is known for this thread");
+      await promiseScopeHolds(row);
+      const persona = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
+      const session = await agent.ensureSession({ team_id: teamId, channel_id: row.channelId, thread_ts: row.threadTs, persona_id: row.personaId || "default" });
+      const app: AppRef = { apiAppId: session.slack_app_id ?? undefined, teamId };
+      const ctx: SlackContext = {
+        client: outClientForPersona(persona, app),
+        apiAppId: app.apiAppId,
+        resolveBotToken: () => t.botTokenFor?.(app),
+        channel: row.channelId,
+        threadTs: row.threadTs,
+        inboundTs: String(Date.now()),
+        userId: row.beneficiary,
+        teamId,
+        postTarget: "thread",
+        personaId: persona,
+        origin: "cron",
+      };
+      ctx.requestApproval = (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req });
+      ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+      noteTurnSender(session.id, ctx);
+      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, silent: true });
+      if (queueDispatch) {
+        await queueDispatch.dispatch(session, envelope, {
+          teamId,
+          channelId: row.channelId,
+          threadTs: row.threadTs,
+          eventTs: String(Date.now() / 1000),
+          userId: row.beneficiary,
+          personaId: persona,
+          ...(app.apiAppId ? { apiAppId: app.apiAppId } : {}),
+          origin: "cron",
+          backgroundRunId: run.runId,
+        });
+      } else {
+        await agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass: "commitment" }) });
+      }
+    },
+    post: async (row, text) => {
+      // Even the fixed line names the promise's due: only where a check may speak.
+      await promiseScopeHolds(row);
+      const teamId = await promiseTeam(row);
+      const persona = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
+      const session = await promiseSession(row);
+      const app: AppRef = { apiAppId: session?.slack_app_id ?? undefined, teamId: teamId ?? undefined };
+      await outClientForPersona(persona, app).chat.postMessage({ channel: row.channelId, thread_ts: row.threadTs, text });
+    },
+  };
+
   agent.setPermissionResolver(permissions.resolver);
   if (env.remote.enabled() && env.role() !== "gateway") {
     // Mono: the query runs in this process, so resolve the target from the DB
@@ -1078,6 +1164,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
           },
           requestApproval: (r) => surface.requestApproval(r),
+          // A commitment written here is indexed for the promise scheduler (phase E).
+          onWritten: async (pages, scope) =>
+            indexWritten(pages, {
+              agentId: (await claimGate()).agentId,
+              personaId: ctx.personaId ?? "default",
+              teamId: ctx.teamId || null,
+              runAs: runAsOf(scope),
+              allowedThreads: [`${ctx.channel}:${ctx.threadTs}`],
+              writtenAt: new Date(),
+            }),
         }
       : undefined;
   };
@@ -3527,6 +3623,27 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // subscription isn't enabled. Engage the thread, then defer to handleMessage.
   // (handleMessage's seen_events dedup prevents double-handling when the same
   //  ts also arrives via the message event.)
+  // Feedback on proactive posts (phase E): replies go through the message
+  // router below; a reaction is recorded as an outcome (never a mute).
+  const proactiveFeedbackDeps = (args: any): FeedbackDeps => ({
+    call: brainCall,
+    now: () => new Date(),
+    reply: async (channel, threadTs, text) => {
+      await (args.client ?? t.client).chat.postMessage({ channel, thread_ts: threadTs, text });
+    },
+    once: (key) => SeenEvents.tryInsert(key),
+  });
+  t.event("reaction_added", async (args: any) => {
+    const e: any = args.event;
+    if (e?.item?.type !== "message" || !e.user || !brainEnabled() || !brainReady()) return;
+    if ((await getSelfUserIds()).has(e.user) || (await getSelfBots(args)).userIds.has(e.user)) return;
+    try {
+      await onProactiveReaction({ channel: e.item.channel, messageTs: e.item.ts, userId: e.user, reaction: String(e.reaction ?? "") }, proactiveFeedbackDeps(args));
+    } catch (err) {
+      console.error(`[proactive] reaction on ch=${e.item.channel} failed: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
+    }
+  });
+
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
@@ -3554,6 +3671,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (selfUserIds.has(e.user)) {
       metric.slackDropsTotal.inc({ reason: "self_user" });
       return;
+    }
+    // A reply under a proactive post (phase E): recorded as an outcome; a
+    // "stop" mutes that topic for the replier and ends here.
+    if (e.thread_ts && e.thread_ts !== e.ts && brainEnabled() && brainReady()) {
+      try {
+        const fb = await onProactiveReply(
+          { channel: e.channel, threadTs: e.thread_ts, ts: e.ts, userId: e.user, teamId: args.context?.teamId ?? e.team ?? null, text: String(e.text ?? "") },
+          proactiveFeedbackDeps(args),
+        );
+        if (fb === "muted") return;
+      } catch (err) {
+        console.error(`[proactive] feedback on ch=${e.channel} ts=${e.ts} failed: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
+      }
     }
 
     const channelId: string = e.channel;
@@ -3985,6 +4115,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
+    __promises: backgroundSlack.promises!,
     __voiceCalls: voiceCalls,
     __brainGate: async (sessionId: string) => {
       const route = routes.get(sessionId);

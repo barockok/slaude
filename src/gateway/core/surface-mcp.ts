@@ -36,6 +36,9 @@ export interface SurfaceMcpOpts {
   setMentionOnly?: (active: boolean) => Promise<string>;
 }
 
+/** What pass tells the model: the turn is over. */
+export const PASS_DONE = "This turn is over: end it now, with no further tool call and no text.";
+
 /** Build the agent-facing interaction tools for a Surface. Core tools are always present;
  *  optional tools are mounted only when the matching capability is declared. Exported
  *  separately from createSurfaceMcp so the gating is unit-testable without the SDK server. */
@@ -52,11 +55,13 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
       ...c.pass,
       handler: async ({ reason, react }) => {
         console.log("[pass] reason=" + redactSecrets(JSON.stringify(reason)));
+        // Said plainly: a model that reads "passed" as one more step to take
+        // keeps calling pass (seen with a live model) and the turn never ends.
         if (react && surface.capabilities.has("react") && surface.react) {
           try { await surface.react({ name: react }); }
-          catch { return ok("passed (reaction failed)"); }
+          catch { return ok(`passed (reaction failed). ${PASS_DONE}`); }
         }
-        return ok("passed");
+        return ok(`passed. ${PASS_DONE}`);
       },
     },
     {

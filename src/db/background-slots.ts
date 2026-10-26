@@ -33,3 +33,12 @@ export async function previousSlotState(agentId: string, pass: string, beforeSlo
   );
   return row ? { slot: row.slot, state: row.state } : null;
 }
+
+/** When a slot was claimed (epoch ms), or null when it is not. */
+export async function claimedAt(agentId: string, pass: string, slot: string): Promise<number | null> {
+  const row = await db.one<{ claimed_at: number | string }>(
+    `SELECT claimed_at FROM background_slots WHERE agent_id = ? AND pass = ? AND slot = ?`,
+    [agentId, pass, slot],
+  );
+  return row ? Number(row.claimed_at) : null;
+}

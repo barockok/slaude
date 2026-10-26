@@ -117,6 +117,23 @@ describe("dispatch tenant propagation", () => {
     await dispatch.close();
   });
 
+  // A promise check (phase E) carries its open ledger run: in the payload for
+  // the node, and signed into the token so only that run can be finished.
+  test("a background run rides with the job and in the token", async () => {
+    const { enqueued, dispatch } = harness();
+
+    await dispatch.dispatch({ id: "S1" } as unknown as SessionRow, "<runtime-check>", { ...META, backgroundRunId: "run-c1" });
+    await dispatch.dispatch({ id: "S2" } as unknown as SessionRow, "hello", META);
+
+    expect(enqueued[0].bgRun).toBe("run-c1");
+    const v = verifyJobToken(enqueued[0].jobToken);
+    expect(v.ok && v.claims.bgRun).toBe("run-c1");
+    expect(enqueued[1].bgRun).toBeUndefined();
+    const v2 = verifyJobToken(enqueued[1].jobToken);
+    expect(v2.ok && v2.claims.bgRun).toBeUndefined();
+    await dispatch.close();
+  });
+
   test("no oauth user means the field is absent, not empty", async () => {
     const { enqueued, dispatch } = harness();
 

@@ -239,8 +239,8 @@ describe("remote wiring", () => {
       'Load `slaude:skill-authoring` first (call the Skill tool with skill "slaude:skill-authoring"), then retry.',
     ]);
     expect(await run("mcp__remote__bash")).toEqual([]);
-    // The skill gate's load tracker and the skill-usage counter.
-    expect(fs.options.hooks.PostToolUse.flatMap((m: any) => m.hooks)).toHaveLength(2);
+    // The skill gate's load tracker, the skill-usage counter, and pass ending the turn.
+    expect(fs.options.hooks.PostToolUse.flatMap((m: any) => m.hooks)).toHaveLength(3);
     await shutdown(mgr, row.id);
   });
 

@@ -43,6 +43,7 @@ import { buildShimServers } from "./shims";
 import { buildBridgeServers } from "./bridge";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { makeNodeSkillCheckBudget, makeNodeSkillUsageRecorder } from "./background";
+import type { ModelTokens } from "../background/prices";
 import { makeNodeMemoryProvider } from "./memory";
 import { makeNodePermissionResolver } from "./shims/permission";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
@@ -769,7 +770,17 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           turnWaiters.delete(sessionId);
           resolve(o);
         });
-        agent.sendMessage(sessionId, text).catch((e) => {
+        // A promise check's run is finished with this turn's own usage, only
+        // when the job holds that one message (nothing merged into it).
+        const backgroundRun =
+          data.bgRun && data.messages.length === 1
+            ? {
+                runId: data.bgRun,
+                finish: (usage: ModelTokens, outcome: "ok" | "error") =>
+                  store.withToken(sessionId, (t) => client.turnFinish({ runId: data.bgRun!, outcome, usage }, t)),
+              }
+            : undefined;
+        agent.sendMessage(sessionId, text, backgroundRun ? { backgroundRun } : {}).catch((e) => {
           clearTimeout(timer);
           turnWaiters.delete(sessionId);
           reject(e);
