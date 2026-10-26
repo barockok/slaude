@@ -246,7 +246,8 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<{ outco
       );
       return settle(await Runs.start({ ...row(), model: model || null }), "error", ZERO, 0);
     }
-    runId = await Runs.start({ ...row(), model });
+    // The estimate counts as the open run's cost until its first priced turn.
+    runId = await Runs.start({ ...row(), model, costUsd: gate.estimate });
     // The persona's own provider set, or null for this process's provider env. Never a mix.
     provider = await (deps.provider ?? defaultProvider)(spec.personaId);
   } catch (e) {

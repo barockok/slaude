@@ -56,7 +56,12 @@ function toRun(r: Row): BackgroundRun {
   };
 }
 
-/** Open a run row (outcome NULL until finish). `scope` is 'agent' or 'user:<id>'. */
+/**
+ * Open a run row (outcome NULL until finish). `scope` is 'agent' or
+ * 'user:<id>'. `costUsd` is the provisional cost an open run counts toward
+ * spentOn until progress or finish replaces it (the pass's start estimate), so
+ * concurrent runs and a run whose finish is lost never count as free.
+ */
 export async function start(row: {
   agentId: string;
   pass: string;
@@ -64,14 +69,24 @@ export async function start(row: {
   model?: string | null;
   day: string;
   startedAt?: number;
+  costUsd?: number;
 }): Promise<string> {
   const id = randomUUID();
   await db.run(
-    `INSERT INTO background_runs (id, agent_id, pass, scope, model, started_at, day)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, row.agentId, row.pass, row.scope, row.model ?? null, row.startedAt ?? Date.now(), row.day],
+    `INSERT INTO background_runs (id, agent_id, pass, scope, model, started_at, day, cost_usd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, row.agentId, row.pass, row.scope, row.model ?? null, row.startedAt ?? Date.now(), row.day, row.costUsd ?? 0],
   );
   return id;
+}
+
+/** A pass's still-open runs started before `before` (ms), oldest first. */
+export async function listOpen(pass: string, before: number): Promise<BackgroundRun[]> {
+  const rows = await db.query<Row>(
+    `SELECT * FROM background_runs WHERE pass = ? AND outcome IS NULL AND started_at < ? ORDER BY started_at ASC`,
+    [pass, before],
+  );
+  return rows.map(toRun);
 }
 
 /**

@@ -101,6 +101,7 @@ export async function startSkillCheck(
     await Runs.finish(await Runs.start({ ...row, model }), { tokens: ZERO_TOKENS, costUsd: 0, outcome });
     settleMetrics(agentId, outcome, 0);
   };
+  await sweepStaleSkillChecks(now);
   const gate = await canStart(cfg, agentId, SKILL_CHECK, now);
   if (!gate.ok) {
     console.log(`${tag}: skipped, not enough of today's budget left`);
@@ -116,7 +117,28 @@ export async function startSkillCheck(
     await refuse("error", a.model || null);
     return { ok: false, reason: "model" };
   }
-  return { ok: true, runId: await Runs.start({ ...row, model: a.model }), agentId };
+  // The estimate is the open run's provisional cost until finish replaces it.
+  return { ok: true, runId: await Runs.start({ ...row, model: a.model, costUsd: gate.estimate }), agentId };
+}
+
+/** An open skill-check run older than this lost its finish (a check turn is minutes at most). */
+export const SKILL_CHECK_STALE_MS = 60 * 60_000;
+
+/**
+ * End every skill-check run still open after SKILL_CHECK_STALE_MS as `error`,
+ * keeping its provisional cost (the start estimate): its finish was lost (a
+ * node that died, a token that could not be refreshed). Runs at the start of
+ * every skill-check start; exported for the scheduler. Returns how many ended.
+ */
+export async function sweepStaleSkillChecks(now: Date = new Date()): Promise<number> {
+  let n = 0;
+  for (const r of await Runs.listOpen(SKILL_CHECK, now.getTime() - SKILL_CHECK_STALE_MS)) {
+    if (!(await Runs.finishOpen(r.id, { agentId: r.agentId, pass: SKILL_CHECK }, { tokens: r.tokens, costUsd: r.costUsd, outcome: "error" }))) continue;
+    settleMetrics(r.agentId, "error", r.costUsd);
+    n++;
+  }
+  if (n > 0) console.warn(`[background] pass=${SKILL_CHECK}: ${n} run(s) open for over an hour ended as error; their estimate stays as their cost`);
+  return n;
 }
 
 /**

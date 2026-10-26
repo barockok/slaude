@@ -69,6 +69,21 @@ afterEach(() => {
 });
 
 describe("runPass", () => {
+  test("an open run counts its start estimate (the floor) until its first priced turn replaces it", async () => {
+    const s = spec();
+    let openCost: number | undefined;
+    const query = (() =>
+      (async function* () {
+        openCost = (await Runs.listBetween(s.agentId, DAY, DAY))[0]?.costUsd;
+        yield assistant("m1");
+        yield result(TURN);
+      })()) as unknown as RunnerDeps["query"];
+    const r = await runPass(s, deps(query));
+    expect(openCost).toBeCloseTo(0.1, 9);
+    expect(r.outcome).toBe("ok");
+    expect((await rowOf(s.agentId, r.runId)).costUsd).toBeCloseTo(0.3, 9);
+  });
+
   test("budget refuses: skipped-budget, query never called, metric counted", async () => {
     const s = spec();
     const { query, state } = fakeQuery([assistant("m1"), result()]);
