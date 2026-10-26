@@ -289,6 +289,16 @@ Observed, not changed:
   exactly once. Postgres then shows one check and the next poll fifteen minutes
   on. The run also applied migrations 0028 and 0029 on Postgres.
 
+## Daylight saving
+
+The end of a beneficiary's quiet hours was computed as now plus the local
+clock difference. That assumes a 24-hour day, so on a clock-change day a
+deferral ended an hour off: 07:00 instead of 08:00 after falling back, 09:00
+after springing forward (America/New_York). It now corrects the first guess by
+however far its local time is off. Tests pin both transitions. They also pin
+SOUL quiet hours on both sides of a change, and the daily cap counted by local
+day across the fall-back night.
+
 ## Not verified
 
 - The live run above was one run of each path, with synthetic data and a
@@ -299,7 +309,5 @@ Observed, not changed:
   fake Slack sends what Slack documents; it is not Slack.
 - Failover between Kubernetes pods (separate OS processes on shared Postgres
   and Redis were checked, above).
-- DST edge cases in quiet hours: windows are computed at minute precision in
-  local time, and a deferral's end ignores a DST shift.
 - The profile mute rewrite and outcome pages against the real engine (the
   engine's op shapes were checked, not these two writes).
