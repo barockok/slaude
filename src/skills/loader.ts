@@ -52,6 +52,11 @@ function parseSkillFile(absPath: string): ParsedSkill | null {
   };
 }
 
+/** A SKILL.md's frontmatter `name` ("" when it has none), or null when the file is missing. */
+export function skillFileName(absPath: string): string | null {
+  return parseSkillFile(absPath)?.name ?? null;
+}
+
 /**
  * The skills layout is a contract between the gateway and the nodes (WS-C
  * §4.3.1): both mount one $SLAUDE_HOME, the gateway lists and writes skills

@@ -202,6 +202,16 @@ describe("retire and restore", () => {
     expect(() => skillOps.write(RETIRED_DIR, "x", "y", "z")).toThrow(/invalid slug/);
   });
 
+  test("restore refuses a copy whose frontmatter name is a built-in's (invariant 9)", () => {
+    placed("notes", "---\nname: memory\ndescription: d\n---\nbody\n");
+    const { id } = skillOps.retire("notes", undefined, NOW);
+    expect(() => skillOps.restore(id)).toThrow(/built-in/);
+    placed("notes2", "---\nname: \"skill authoring\"\ndescription: d\n---\nbody\n");
+    const r2 = skillOps.retire("notes2", undefined, NOW);
+    expect(() => skillOps.restore(r2.id)).toThrow(/built-in/); // the CLI's name for it is skill-authoring
+    expect(existsSync(join(paths.skills, "notes"))).toBe(false);
+  });
+
   test("delete_skill keeps its hard-delete behaviour", async () => {
     skillOps.write("gone", "gone", "d", "b");
     expect((await makeSkillHandlers().delete_skill({ slug: "gone" })).content[0]!.text).toBe("deleted skill /gone");

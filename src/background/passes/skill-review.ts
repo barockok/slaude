@@ -125,6 +125,8 @@ export interface ReviewToolContext {
   now: () => Date;
   /** Retirements so far in this run (the cap). */
   retired: Array<{ slug: string; retiredId: string }>;
+  /** Calls holding a cap slot that have not finished yet: reserved before the first await, so concurrent calls cannot pass the cap. */
+  reserved?: number;
 }
 
 export const reviewHandlers = {
@@ -137,37 +139,48 @@ export const reviewHandlers = {
     const slug = typeof p.slug === "string" ? p.slug.trim() : "";
     const reason = typeof p.reason === "string" ? p.reason.trim() : "";
     if (isBuiltinSkillName(slug)) return err(BUILTIN_REFUSAL);
-    if (ctx.retired.length >= MAX_RETIREMENTS) return err(RETIRE_CAP_REFUSAL);
+    if (ctx.retired.length + (ctx.reserved ?? 0) >= MAX_RETIREMENTS) return err(RETIRE_CAP_REFUSAL);
     if (!reason) return err("refused: a retirement needs a reason");
     if (reason.length > REASON_MAX) return err(`refused: the reason is over ${REASON_MAX} characters`);
     if (holdsCredential(reason)) return err(CREDENTIAL_REFUSAL);
-    // Provenance and usage are read again now, from disk and the database: never from what the model was shown.
-    const skill = (await reviewSkills(ctx.personaId, ctx.agentId, ctx.now())).find((s) => s.slug === slug);
-    if (!skill) return err(`refused: "${slug}" is not a skill in this agent's skills root`);
-    if (skill.provenance !== "agent") return err(NOT_AGENT_REFUSAL);
-    let retiredId: string;
+    // Hold a cap slot before the first await; a refusal or failure gives it back.
+    ctx.reserved = (ctx.reserved ?? 0) + 1;
     try {
-      retiredId = skillOps.retire(slug, ctx.personaId, ctx.now()).id;
-    } catch (e) {
-      return err(`could not retire ${slug}: ${e instanceof Error ? e.message : String(e)}`);
+      return await retireReserved(slug, reason, ctx);
+    } finally {
+      ctx.reserved = (ctx.reserved ?? 1) - 1;
     }
-    ctx.retired.push({ slug, retiredId });
-    const at = ctx.now().getTime();
-    const lastUsedAt = skill.last_used_at === null ? null : Date.parse(skill.last_used_at);
-    try {
-      await Proposals.recordSkillRetired({
-        agentId: ctx.agentId,
-        payload: { slug, retiredId, persona: ctx.personaId || "default", reason, uses: skill.uses, lastUsedAt },
-        at,
-      });
-    } catch (e) {
-      // The skill is retired either way; the digest misses this one line.
-      console.error(`[background] agent=${ctx.agentId} pass=${SKILL_REVIEW}: retired ${slug} (${retiredId}) but could not record it: ${e instanceof Error ? e.message : String(e)}`);
-    }
-    console.log(`[background] agent=${ctx.agentId} pass=${SKILL_REVIEW}: retired ${slug} as ${retiredId}`);
-    return ok({ retired: slug, id: retiredId, restorable: true });
   },
 };
+
+/** retire_skill once its cap slot is held: on success it moves into `ctx.retired` before the slot is released. */
+async function retireReserved(slug: string, reason: string, ctx: ReviewToolContext): Promise<ToolResult> {
+  // Provenance and usage are read again now, from disk and the database: never from what the model was shown.
+  const skill = (await reviewSkills(ctx.personaId, ctx.agentId, ctx.now())).find((s) => s.slug === slug);
+  if (!skill) return err(`refused: "${slug}" is not a skill in this agent's skills root`);
+  if (skill.provenance !== "agent") return err(NOT_AGENT_REFUSAL);
+  let retiredId: string;
+  try {
+    retiredId = skillOps.retire(slug, ctx.personaId, ctx.now()).id;
+  } catch (e) {
+    return err(`could not retire ${slug}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  ctx.retired.push({ slug, retiredId });
+  const at = ctx.now().getTime();
+  const lastUsedAt = skill.last_used_at === null ? null : Date.parse(skill.last_used_at);
+  try {
+    await Proposals.recordSkillRetired({
+      agentId: ctx.agentId,
+      payload: { slug, retiredId, persona: ctx.personaId || "default", reason, uses: skill.uses, lastUsedAt },
+      at,
+    });
+  } catch (e) {
+    // The skill is retired either way; the digest misses this one line.
+    console.error(`[background] agent=${ctx.agentId} pass=${SKILL_REVIEW}: retired ${slug} (${retiredId}) but could not record it: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  console.log(`[background] agent=${ctx.agentId} pass=${SKILL_REVIEW}: retired ${slug} as ${retiredId}`);
+  return ok({ retired: slug, id: retiredId, restorable: true });
+}
 
 /** This pass's own tools on `slaude_pass`, bound to `ctx`. */
 export function reviewTools(ctx: ReviewToolContext): PassTool[] {

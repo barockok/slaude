@@ -14,7 +14,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve, relative } from "node:path";
-import { discoverSkills, globalSkillsRoot, personaSkillsRoot, RETIRED_DIR, type Skill } from "./loader";
+import { discoverSkills, globalSkillsRoot, personaSkillsRoot, RETIRED_DIR, skillFileName, type Skill } from "./loader";
 import { syncManifest } from "./sync-manifest";
 import { builtinSkillRefusal, cliSkillName, isBuiltinSkillName } from "../soul/builtin";
 import { skillsContract } from "../tools/contracts/skills";
@@ -170,7 +170,8 @@ export const skillOps = {
   },
   /**
    * Move a retired copy back to its slug. Refused when a live skill holds
-   * that slug (it was written again since) or the slug is now a built-in's.
+   * that slug (it was written again since), or the slug or the copy's
+   * frontmatter `name` is now a built-in's.
    */
   restore(id: string, personaName?: string): { slug: string; path: string } {
     const m = id.match(RETIRED_ID_RE);
@@ -179,6 +180,12 @@ export const skillOps = {
     assertNotBuiltin(slug);
     const from = join(ownSkillsRoot(personaName), RETIRED_DIR, id);
     if (!existsSync(join(from, "SKILL.md"))) throw new Error(`retired skill "${id}" not found`);
+    // The CLI names a skill after its frontmatter `name` (invariant 9, as write does).
+    const name = skillFileName(join(from, "SKILL.md")) ?? "";
+    if (name) {
+      assertNotBuiltin(name);
+      assertNotBuiltin(cliSkillName(name));
+    }
     const dir = resolveSkillDir(slug, personaName);
     if (existsSync(dir)) throw new Error(`a live skill "${slug}" exists; retire or delete it before restoring "${id}"`);
     mkdirSync(dirname(dir), { recursive: true });

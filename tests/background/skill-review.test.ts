@@ -196,6 +196,32 @@ describe("the weekly review", () => {
     expect((await Proposals.listSkillRetirements(AGENT, 0)).map((e) => e.payload.slug)).toEqual(["idle-1", "idle-2", "idle-3"]);
   });
 
+  test("concurrent retire_skill calls cannot pass the cap: the slot is held before the first await", async () => {
+    for (const n of [1, 2, 3, 4, 5]) skillOps.write(`idle-${n}`, `idle-${n}`, "d", "b", undefined, old);
+    await SkillUsage.noteSeen(AGENT, [1, 2, 3, 4, 5].map((n) => `idle-${n}`), old.getTime());
+    let results: string[] = [];
+    const { deps } = harness(async (tools) => {
+      results = (await Promise.all([1, 2, 3, 4, 5].map((n) => retire(tools, `idle-${n}`)))).map(text);
+    });
+    const res = await run(deps);
+    expect(res!.retired).toHaveLength(MAX_RETIREMENTS);
+    expect(results.filter((r) => r === RETIRE_CAP_REFUSAL)).toHaveLength(2);
+    expect(await Proposals.listSkillRetirements(AGENT, 0)).toHaveLength(MAX_RETIREMENTS);
+  });
+
+  test("a refused retirement gives its cap slot back", async () => {
+    for (const n of [1, 2, 3]) skillOps.write(`idle-${n}`, `idle-${n}`, "d", "b", undefined, old);
+    await SkillUsage.noteSeen(AGENT, [1, 2, 3].map((n) => `idle-${n}`), old.getTime());
+    let results: string[] = [];
+    const { deps } = harness(async (tools) => {
+      results.push(text(await retire(tools, "no-such-skill")));
+      results = results.concat((await Promise.all([1, 2, 3].map((n) => retire(tools, `idle-${n}`)))).map(text));
+    });
+    const res = await run(deps);
+    expect(results[0]).toContain("is not a skill");
+    expect(res!.retired).toHaveLength(3);
+  });
+
   test("retire_skill refuses built-ins, unknown slugs and bad reasons, and re-reads provenance at the call", async () => {
     skillOps.write("mine", "mine", "d", "b", undefined, old);
     placed("memory");
