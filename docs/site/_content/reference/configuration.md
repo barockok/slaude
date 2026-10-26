@@ -572,6 +572,9 @@ Metrics: `slaude_decision_requests_total{adapter,outcome}` (outcome `ok`, `timeo
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
 | `SLAUDE_SKILLS_REPO` | No | `""` | Git repo URL where runtime-created skills are pushed by `sync_manifest`. Accepts `github:owner/repo` shorthand or full `https`/SSH URL. When unset, `sync_manifest` records skills as local-only entries (survive on PVC only). |
+| `SLAUDE_BACKGROUND_BUDGET_USD` | No | `1` | Daily USD budget for background learning passes and the skill check, per persona. A persona's `background.budgetUsd` overrides it. User turns are never counted. `0` disables background spend. |
+| `SLAUDE_BACKGROUND_TIMEZONE` | No | `UTC` | IANA timezone whose midnight-to-midnight day bounds the budget. A persona's `background.timezone` overrides it; an invalid value falls back to `UTC` with a warning. |
+| `SLAUDE_PRICE_TABLE` | No | built-in list prices | Per-model token prices (USD per million tokens: `input`, `output`, `cache_read`, `cache_write`), as inline JSON or a file path when the value does not start with `{`. A model missing from the table is not run in the background. |
 | `SLAUDE_AUTO_EVOLVE` | No | `1` | Auto-evolve after each substantial user turn. When `1`, the manager injects an internal `<auto-evolve>` prompt so the agent decides whether to save or refine a skill. Set to `0` to disable. |
 | `SLAUDE_SOUL_PARSE_MAX_TOKENS` | No | `8192` | `max_tokens` budget for the soul extractor LLM call. Raise when a slower model needs more headroom (thinking-mode providers emit thinking + text blocks that both count). Non-positive or non-finite values fall back to `8192`. |
 | `SLAUDE_SOUL_PARSE_MODEL` | No | `SLAUDE_MODEL` or `claude-haiku-4-5-20251001` | Model used for the SOUL.md → JSON extraction pass. Defaults to `SLAUDE_MODEL` when set, otherwise `claude-haiku-4-5-20251001`. |

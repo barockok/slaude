@@ -51,11 +51,22 @@ provider:                       # optional: this persona's own LLM credentials
 kbSources:                      # optional: the knowledge bases it may read
   - kb-runbook
 runsOn: "engineering"           # optional: the node label this persona runs on
+background:                     # optional: background-learning settings
+  budgetUsd: 2.5                # daily USD budget, > 0 and at most 100
+  timezone: "Europe/Berlin"     # IANA zone; the budget day runs midnight to midnight here
 ```
 
 `kbSources` lists the `kb-<label>` knowledge-base sources the persona may read.
 Absent means every installed knowledge base; `[]` means none. It filters
 retrieval and is not isolation. See [Knowledge scope](knowledge-scope.md).
+
+`background` sets the persona's daily budget for background learning passes
+and the skill check (`budgetUsd`, greater than 0, at most 100) and the
+timezone its budget day and schedule use (`timezone`, a valid IANA name). Either
+key may be omitted: an absent budget falls back to `SLAUDE_BACKGROUND_BUDGET_USD`
+(default 1), an absent timezone to `SLAUDE_BACKGROUND_TIMEZONE`, then `UTC`.
+Unknown keys inside `background` are refused. A bad timezone or a budget out of
+range fails the sync. It needs migration 0020 on the gateway's database.
 
 `runsOn` names the node label whose nodes run this persona's turns: lower-case
 letters, digits and `-`, at most 32 characters (`^[a-z0-9][a-z0-9-]{0,31}$`).
@@ -174,8 +185,9 @@ overrides it would wipe.
 Behaviour to know:
 
 - `version` is the payload format; absent means 1, and `personas render` always
-  writes the highest version any field needs: 3 when any persona sets
-  `kbSources`, else 2 when any persona sets `provider` or `runsOn`, otherwise 1.
+  writes the highest version any field needs: 4 when any persona sets
+  `background` (upgrade the gateway first: it must run migration 0020 before CI
+  sends v4), else 3 when any persona sets `kbSources`, else 2 when any persona sets `provider` or `runsOn`, otherwise 1.
   A payload without those fields still deploys to an older gateway, and one
   with them is refused by a gateway that would ignore them. A payload whose `version` is newer than the gateway supports is
   refused with 422 before anything is applied: upgrade the gateway first.
