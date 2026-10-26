@@ -224,6 +224,20 @@ CREATE TABLE IF NOT EXISTS commitments (
   PRIMARY KEY (agent_id, source, slug)
 );
 CREATE INDEX IF NOT EXISTS idx_commitments_due ON commitments (agent_id, status, next_check_at);
+CREATE TABLE IF NOT EXISTS proactive_posts (
+  id          TEXT    PRIMARY KEY,
+  agent_id    TEXT    NOT NULL,
+  audience    TEXT    NOT NULL,
+  recipient   TEXT    NOT NULL,
+  topic       TEXT    NOT NULL,
+  text_hash   TEXT    NOT NULL,
+  channel_id  TEXT    NOT NULL,
+  message_ts  TEXT,
+  team_id     TEXT,
+  posted_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_proactive_posts_recipient ON proactive_posts (agent_id, recipient, posted_at);
+CREATE INDEX IF NOT EXISTS idx_proactive_posts_message ON proactive_posts (channel_id, message_ts);
 CREATE TABLE IF NOT EXISTS remote_keys (
   team_id     TEXT    NOT NULL,
   user_id     TEXT    NOT NULL,
