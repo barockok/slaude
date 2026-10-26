@@ -996,7 +996,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (!route) return null;
         const { ctx } = route;
         const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
-        return memoryScopeFor(await brainGateFor(ctx), { channel: ctx.channel, runAsUser: runAsUser ?? null });
+        const gate = await brainGateFor(ctx);
+        const scope = memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null });
+        // Only an interactive turn counts toward the quiet-moment pass's thread activity.
+        return gate.interactive ? { ...scope, activityAgentId: gate.agentId } : scope;
       },
     }),
   );

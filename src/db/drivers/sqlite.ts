@@ -185,6 +185,15 @@ CREATE TABLE IF NOT EXISTS background_slots (
   claimed_at  INTEGER NOT NULL,
   PRIMARY KEY (agent_id, pass, slot)
 );
+CREATE TABLE IF NOT EXISTS thread_activity (
+  session_id     TEXT    PRIMARY KEY,
+  agent_id       TEXT    NOT NULL,
+  turns          INTEGER NOT NULL DEFAULT 0,
+  last_turn_at   INTEGER NOT NULL,
+  summarized_at  INTEGER,
+  scope          TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_thread_activity_agent ON thread_activity (agent_id, last_turn_at);
 CREATE TABLE IF NOT EXISTS remote_keys (
   team_id     TEXT    NOT NULL,
   user_id     TEXT    NOT NULL,

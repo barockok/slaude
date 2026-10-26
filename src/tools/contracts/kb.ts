@@ -96,7 +96,7 @@ export const kbContract = {
     kb_thread_history: {
       name: "kb_thread_history",
       description:
-        "Read this thread's earlier turns beyond the few in your memory context, oldest first, as `[date] who: text` lines. Pass `before` (from the footer of a previous call) to page further back. Only this thread, and only where this turn may read it.",
+        "Read this thread's earlier turns beyond the few in your memory context, oldest first, as `[date] who: text` lines; the first call opens with the thread's summary when one was written. Pass `before` (from the footer of a previous call) to page further back. Only this thread, and only where this turn may read it.",
       schema: {
         limit: z.number().int().min(1).max(50).optional().describe("Turns to return (1..50, default 20); the newest are kept."),
         before: z.string().optional().describe("Only turns older than this entry id (the footer of the previous call gives it)."),

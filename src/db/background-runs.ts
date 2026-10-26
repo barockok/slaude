@@ -89,6 +89,24 @@ export async function listOpen(pass: string, before: number): Promise<Background
   return rows.map(toRun);
 }
 
+/** Every pass's still-open runs started before `before` (ms), oldest first. */
+export async function listOpenAll(before: number): Promise<BackgroundRun[]> {
+  const rows = await db.query<Row>(
+    `SELECT * FROM background_runs WHERE outcome IS NULL AND started_at < ? ORDER BY started_at ASC`,
+    [before],
+  );
+  return rows.map(toRun);
+}
+
+/** How many runs (any outcome, open ones included) the pass has on a persona-local day. */
+export async function countOn(agentId: string, pass: string, day: string): Promise<number> {
+  const row = await db.one<{ n: number | string }>(
+    "SELECT COUNT(*) AS n FROM background_runs WHERE agent_id = ? AND pass = ? AND day = ?",
+    [agentId, pass, day],
+  );
+  return Number(row?.n ?? 0);
+}
+
 /**
  * Record a still-open run's tokens and cost so far (after every priced turn),
  * so a run that crashes or is still going counts toward spentOn. The outcome

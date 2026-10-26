@@ -117,8 +117,8 @@ function threadTurns(rows: DayRow[], slug: string, day: string, timeZone: string
   return [{ at: turns[0]!.at, author: SYSTEM_AUTHOR, text: `--- conversation ${slug} ---` }, ...turns];
 }
 
-/** Keep the newest turns that fit NIGHTLY_MAX_TRANSCRIPT_CHARS. */
-function capped(turns: TranscriptTurn[], tag: string): TranscriptTurn[] {
+/** Keep the newest turns that fit NIGHTLY_MAX_TRANSCRIPT_CHARS (shared with the quiet-moment pass). */
+export function capped(turns: TranscriptTurn[], tag: string): TranscriptTurn[] {
   let size = 0;
   let i = turns.length;
   while (i > 0 && size + turns[i - 1]!.text.length <= NIGHTLY_MAX_TRANSCRIPT_CHARS) size += turns[--i]!.text.length;
@@ -170,8 +170,7 @@ export async function collectDay(group: AgentGroup, day: string, deps: NightlyDe
         console.warn(`${tag}: cannot tell whose slice ${source} is; ${slug} is left out`);
         continue;
       }
-      // Only that person's own turns, the agent's and runtime text: a pass never mixes two people.
-      const own = turns.filter((t) => t.author === userId || t.author === AGENT_AUTHOR || t.author === SYSTEM_AUTHOR);
+      const own = ownTurns(turns, userId);
       if (own.length < turns.length) console.warn(`${tag}: ${turns.length - own.length} turn(s) by someone else in ${source} are left out`);
       const teamId = teamOf.get(slug)!;
       const key = `${userId}\n${teamId}`;
@@ -181,6 +180,11 @@ export async function collectDay(group: AgentGroup, day: string, deps: NightlyDe
     }
   }
   return { agent, users: [...users.values()] };
+}
+
+/** Only that person's own turns, the agent's and runtime text: a pass never mixes two people. */
+export function ownTurns(turns: TranscriptTurn[], userId: string): TranscriptTurn[] {
+  return turns.filter((t) => t.author === userId || t.author === AGENT_AUTHOR || t.author === SYSTEM_AUTHOR);
 }
 
 /** Of `slugs`, the ones that may have a page in `source`: all of them when the listing may be incomplete. */

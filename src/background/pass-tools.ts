@@ -80,6 +80,7 @@ export const NO_PROFILE_REFUSAL = "refused: this person's profile is unavailable
 export const CORRECTION_SLUG_REFUSAL = 'refused: a correction page may not use slug "profile"';
 export const USER_PROPOSAL_KIND_REFUSAL = 'refused: a pass running as a person proposes only kind "promote"';
 export const LESSONS_REFUSAL = `refused: a lessons page holds at most ${LESSONS_MAX_LINES} lines; merge or drop lessons before adding`;
+export const CONVERSATION_REFUSAL = "refused: conversation pages and their summaries are never written with memoize";
 export const PROPOSE_TO_PERSON_REFUSAL = 'refused: an agent-scope pass proposes only to the manager (to: "manager")';
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -164,6 +165,8 @@ interface Composed {
 /** Destination and composed markdown for one page, or the refusal. */
 function composeOne(pg: PassPage, ctx: PassToolContext, now: Date): Composed | { error: string } {
   if (pg.target === "shared" || pg.type === "team-fact") return { error: SHARED_REFUSAL };
+  // A transcript is appended by memory sync only; its summary is the quiet-moment pass's own tool.
+  if (/^[/.]*conversations(\/|$)/i.test(pg.slug.trim()))return { error: CONVERSATION_REFUSAL };
   if (pg.type === "correction" && pg.slug === "profile") return { error: CORRECTION_SLUG_REFUSAL };
   // A correction is about how to treat the run-as person (their profile) in a
   // user-scope pass; in an agent-scope pass it is a lesson candidate in the

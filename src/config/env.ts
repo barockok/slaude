@@ -39,6 +39,13 @@ function positiveInt(name: string, fallback: number): number {
   return n;
 }
 
+/** A positive integer variable that falls back to the default (unset, empty or invalid) rather than throwing. */
+function intAtLeastOne(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? "").trim();
+  const n = raw === "" ? NaN : Number(raw);
+  return Number.isSafeInteger(n) && n >= 1 ? n : fallback;
+}
+
 /** Parse a duration: a bare number of seconds, or a number with an `s`, `m`,
  *  `h` or `d` suffix. Returns null for anything else or a non-positive value. */
 export function parseDurationSec(raw: string): number | null {
@@ -542,6 +549,16 @@ export const env = {
     const n = raw === "" ? NaN : Number(raw);
     return Number.isFinite(n) && n >= 0 ? n : 1;
   },
+  /**
+   * Quiet-moment pass thresholds (spec §9.1): a thread with at least
+   * `SLAUDE_QUIET_MIN_TURNS` turns (N, default 8) that has been quiet for
+   * `SLAUDE_QUIET_MINUTES` minutes (M, default 30) is reviewed, at most
+   * `SLAUDE_QUIET_MAX_PER_DAY` times per agent per persona-local day (K,
+   * default 5). A non-integer or a value below 1 falls back to the default.
+   */
+  quietMinTurns: () => intAtLeastOne("SLAUDE_QUIET_MIN_TURNS", 8),
+  quietMinutes: () => intAtLeastOne("SLAUDE_QUIET_MINUTES", 30),
+  quietMaxPerDay: () => intAtLeastOne("SLAUDE_QUIET_MAX_PER_DAY", 5),
   /**
    * Minimum substantive tool calls in a turn before auto-evolve fires (a
    * mutating tool is also required). `SLAUDE_AUTO_EVOLVE_MIN_TOOLS`, default

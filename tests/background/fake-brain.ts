@@ -35,6 +35,14 @@ export function fakeBrain() {
       }
       case "get_timeline":
         return timelines.get(only!)?.get(params.slug as string) ?? [];
+      case "add_timeline_entry": {
+        let m = timelines.get(scope.sourceId);
+        if (!m) timelines.set(scope.sourceId, (m = new Map()));
+        const rows = m.get(params.slug as string) ?? [];
+        rows.push({ id: rows.length + 1, ...params });
+        m.set(params.slug as string, rows);
+        return { ok: true };
+      }
       case "put_page": {
         const content = params.content as string;
         const prev = src(scope.sourceId).get(params.slug as string);

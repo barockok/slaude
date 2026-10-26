@@ -10,7 +10,7 @@ import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, speakerProfileS
 import { composePage, readPageRecord, type TypedPageInput } from "./memory-pages";
 import { SUPERSEDED_TAG, getPageOrNull, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
-import { conversationSlug, orderTimeline, type TimelineRow } from "../memory/brain-provider";
+import { conversationSlug, conversationSummarySlug, orderTimeline, type TimelineRow } from "../memory/brain-provider";
 import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
 
 export const KB_MCP_NAME = kbContract.server;
@@ -244,6 +244,29 @@ const THREAD_HISTORY_DEFAULT = 20;
 
 /** Most characters one kb_thread_history call returns; the oldest turns drop first. */
 export const THREAD_HISTORY_MAX_CHARS = 12000;
+
+/** Most characters of the thread's summary kb_thread_history shows (part of THREAD_HISTORY_MAX_CHARS). */
+export const THREAD_SUMMARY_MAX_CHARS = 4000;
+
+/**
+ * The thread's rolling summary (the quiet-moment pass) as the history's
+ * opening lines, read from the conversation page's own source only; null when
+ * there is none or it cannot be read (the history goes on without it).
+ */
+async function threadSummaryBlock(call: NonNullable<BrainToolDeps["call"]>, sessionId: string, read: BrainScope): Promise<string | null> {
+  let rec: ReturnType<typeof readPageRecord> = null;
+  try {
+    rec = readPageRecord(await getPageOrNull(call, conversationSummarySlug(sessionId), { ...read, allowedSources: [read.sourceId] }));
+  } catch {
+    return null;
+  }
+  const body = rec?.body.trim();
+  if (!body) return null;
+  const cut = body.length <= THREAD_SUMMARY_MAX_CHARS ? body : body.slice(0, THREAD_SUMMARY_MAX_CHARS - 1) + "…";
+  const through = rec!.meta.through ? ` through ${rec!.meta.through}` : "";
+  return `[summary${through}] ${cut}
+(turns follow)`;
+}
 
 /** One timeline row as `[date] who: text` lines (user, then assistant). The
  *  detail is `<user>U</user>\n<assistant>A</assistant>`; split at the first
@@ -594,11 +617,13 @@ export const brainHandlers = {
         const before = Number(p.before);
         rows = rows.filter((x) => x.id < before);
       }
-      if (rows.length === 0) return ok("No earlier turns are recorded for this thread.");
+      // The first page opens with the thread's summary, inside the same cap.
+      const summary = p.before === undefined ? await threadSummaryBlock(d.call ?? brainCall, t.sessionId, t.read) : null;
+      if (rows.length === 0) return ok(summary ?? "No earlier turns are recorded for this thread.");
       const limit = Math.min(Math.max(Math.trunc(p.limit ?? THREAD_HISTORY_DEFAULT), 1), 50);
       // Newest first until the cap, then printed oldest-first.
       const picked: string[][] = [];
-      let used = 0;
+      let used = summary ? summary.length + 1 : 0;
       let capped = false;
       let oldestId = rows[rows.length - 1]!.id;
       for (const x of rows.slice(-limit).reverse()) {
@@ -612,7 +637,7 @@ export const brainHandlers = {
         used += size;
         oldestId = x.id;
       }
-      const out = picked.reverse().flat();
+      const out = [...(summary ? [summary] : []), ...picked.reverse().flat()];
       const remaining = rows.length - picked.length;
       if (remaining > 0) {
         out.push(`(${remaining} older turns remain${capped ? `; output capped at ${THREAD_HISTORY_MAX_CHARS} characters, oldest dropped` : ""}; pass before: "${oldestId}")`);

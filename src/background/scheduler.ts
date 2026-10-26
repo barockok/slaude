@@ -1,7 +1,8 @@
 /**
  * The background scheduler (spec §9.1; rulings A, B): one loop that, every
- * TICK_MS, sweeps stale skill-check runs, works out which schedule slots are
- * due for each agent, claims each slot in `background_slots`, and runs it.
+ * TICK_MS, sweeps stale runs of every pass, works out which schedule slots are
+ * due for each agent, claims each slot in `background_slots`, and runs it;
+ * then scans the agent's threads for quiet moments (below).
  *
  * Schedule (persona-local time, global constraints):
  *   nightly-review   daily 02:30, then lessons-upkeep (same slot, right after);
@@ -11,6 +12,10 @@
  * week `YYYY-Www` for a weekly one. It is due from its scheduled time until the
  * period ends, so a scheduler that was down at 02:30 runs it late rather than
  * never; an earlier period's missed slot is never run.
+ *
+ * The quiet-moment pass is not on the clock: after an agent's scheduled slots,
+ * each tick claims and runs its due quiet threads (passes/quiet-moment.ts),
+ * each under the slot `<session>@<last_turn_at>`.
  *
  * Runs only where the brain lives: the gateway role, elected through the
  * leader loop (one replica at a time), and mono, directly. Never on nodes,
@@ -37,8 +42,11 @@ import { isoWeekSlot, localParts, previousDay } from "./calendar";
 import { budgetConfigFor } from "./config";
 import { runLessonsUpkeep } from "./passes/lessons-upkeep";
 import { runNightlyReview, type NightlyDeps } from "./passes/nightly-review";
+import { dueQuietThreads, quietSlot, runQuietMoment } from "./passes/quiet-moment";
+import type { ThreadActivity } from "../db/thread-activity";
 import { defaultRunnerDeps } from "./runner";
-import { backgroundAgentId, sweepStaleSkillChecks } from "./skill-check";
+import { backgroundAgentId } from "./skill-check";
+import { sweepStaleRuns } from "./stale-runs";
 
 export { isoWeekSlot, previousDay };
 
@@ -81,8 +89,10 @@ export interface SchedulerDeps {
   agents: () => Promise<AgentGroup[]>;
   /** A pass with no handler is never claimed, so a handler added later still gets its slot. */
   handlers: Partial<Record<PassName, SlotHandler>>;
-  /** Default: sweepStaleSkillChecks. */
+  /** Default: sweepStaleRuns (every pass's runs that lost their finish). */
   sweep?: (now: Date) => Promise<unknown>;
+  /** The group's threads due a quiet-moment pass. Default: dueQuietThreads (env thresholds). */
+  quietDue?: (g: AgentGroup, now: Date) => Promise<ThreadActivity[]>;
   /** Default: a timer that the signal cuts short. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
@@ -130,7 +140,30 @@ async function recordError(agentId: string, pass: PassName, day: string, at: Dat
 
 export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: AbortSignal): Promise<void> } {
   const last = new Map<string, LastSlots>();
-  const sweep = deps.sweep ?? ((now: Date) => sweepStaleSkillChecks(now));
+  const sweep = deps.sweep ?? ((now: Date) => sweepStaleRuns(now));
+  const quietDue = deps.quietDue ?? ((g: AgentGroup, now: Date) => dueQuietThreads(g, now));
+
+  /** Claim a slot and run its handler; a throw is recorded as an error run. */
+  const runSlot = async (g: AgentGroup, pass: PassName, slot: string, now: Date, signal: AbortSignal, handler: SlotHandler, claim: () => Promise<boolean>): Promise<boolean> => {
+    const tag = `[background] agent=${g.agentId} pass=${pass} slot=${slot}`;
+    let mine: boolean;
+    try {
+      mine = await claim();
+    } catch (e) {
+      console.error(`${tag}: could not claim: ${errText(e)}`);
+      return false;
+    }
+    if (!mine) return true;
+    try {
+      await handler({ ...g, pass, slot, now, signal });
+    } catch (e) {
+      console.error(`${tag}: failed: ${errText(e)}`);
+      await recordError(g.agentId, pass, localDay(now, g.timeZone), now).catch((e2) =>
+        console.error(`${tag}: could not record the failure: ${errText(e2)}`),
+      );
+    }
+    return true;
+  };
 
   return {
     async tick(signal = new AbortController().signal) {
@@ -138,7 +171,7 @@ export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: 
       try {
         await sweep(now);
       } catch (e) {
-        console.error(`[background] stale skill-check sweep failed: ${errText(e)}`);
+        console.error(`[background] stale-run sweep failed: ${errText(e)}`);
       }
       if (!deps.brainReady()) {
         console.debug("[background] brain not open; scheduler tick skipped");
@@ -159,28 +192,31 @@ export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: 
           const handler = deps.handlers[pass];
           if (!handler) continue;
           const tag = `[background] agent=${g.agentId} pass=${pass} slot=${slot}`;
-          let mine: boolean;
           try {
             // Not claimed until it may run, so a later tick (or replica) still can.
             if (after && !(await Runs.settledOn(g.agentId, after, localDay(now, g.timeZone)))) {
               console.debug(`${tag}: waiting for ${after} to finish`);
               continue;
             }
-            mine = await claimSlot(g.agentId, pass, slot, now.getTime());
           } catch (e) {
             console.error(`${tag}: could not claim: ${errText(e)}`);
             continue;
           }
-          seen[pass] = slot;
-          if (!mine) continue;
-          try {
-            await handler({ ...g, pass, slot, now, signal });
-          } catch (e) {
-            console.error(`${tag}: failed: ${errText(e)}`);
-            await recordError(g.agentId, pass, localDay(now, g.timeZone), now).catch((e2) =>
-              console.error(`${tag}: could not record the failure: ${errText(e2)}`),
-            );
-          }
+          if (await runSlot(g, pass, slot, now, signal, handler, () => claimSlot(g.agentId, pass, slot, now.getTime()))) seen[pass] = slot;
+        }
+        const quiet = deps.handlers["quiet-moment"];
+        if (!quiet || signal.aborted) continue;
+        let due: ThreadActivity[];
+        try {
+          due = await quietDue(g, now);
+        } catch (e) {
+          console.error(`[background] agent=${g.agentId} pass=quiet-moment: could not list quiet threads: ${errText(e)}`);
+          continue;
+        }
+        for (const t of due) {
+          if (signal.aborted) return;
+          const slot = quietSlot(t.sessionId, t.lastTurnAt);
+          await runSlot(g, "quiet-moment", slot, now, signal, quiet, () => claimSlot(g.agentId, "quiet-moment", slot, now.getTime()));
         }
       }
     },
@@ -296,11 +332,12 @@ async function listBrainSources(): Promise<string[]> {
   return (listed?.sources ?? []).map((s) => s.id);
 }
 
-/** Production handlers: the nightly review and the lessons upkeep. */
+/** Production handlers: the nightly review, the lessons upkeep and the quiet-moment pass. */
 export function passHandlers(deps: NightlyDeps): Partial<Record<PassName, SlotHandler>> {
   return {
     "nightly-review": (r) => runNightlyReview(r, deps),
     "lessons-upkeep": (r) => runLessonsUpkeep(r, deps),
+    "quiet-moment": (r) => runQuietMoment(r, deps),
   };
 }
 
