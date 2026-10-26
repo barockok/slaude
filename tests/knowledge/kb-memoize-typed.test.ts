@@ -112,6 +112,21 @@ describe("kb_memoize target:\"profile\"", () => {
     }
   });
 
+  test("a profile rewrite keeps the fields it does not set (a live model dropped a mute)", async () => {
+    const s = setup();
+    const own = profileSourceId(TEAM, "U0ALICE");
+    await brainHandlers.kb_memoize({ pages: [{ ...profilePage, fields: { mutes: "deploys", pings: "yes" } }], target: "profile" }, s.deps);
+    // The person's "stop" reply leaves a quote; a later rewrite is a different write.
+    await brainHandlers.kb_memoize({ pages: [{ ...profilePage, fields: { mutes: "deploys", pings: "yes", quote: "stop" } }], target: "profile" }, s.deps);
+    const r = await brainHandlers.kb_memoize({ pages: [{ ...profilePage, content: "Call me Al.\n", fields: { pings: "no" } }], target: "profile" }, s.deps);
+    expect(r.isError).toBeUndefined();
+    const { meta, body } = parseFrontmatter(s.brain.contentOf(own, "profile")!);
+    expect(meta.mutes).toBe("deploys");
+    expect(meta.pings).toBe("no");
+    expect(meta.quote).toBeUndefined();
+    expect(body.trim()).toBe("Call me Al.");
+  });
+
   test("the profile written is the sole sender's, not the live ctx speaker's", async () => {
     // Mono: Bob's input is running while the ctx already shows Alice's later message.
     const s = setup({ turnSenders: [{ userId: "U0BOB", teamId: TEAM, origin: "slack" }] });

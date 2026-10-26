@@ -13,14 +13,13 @@
  * said: a DM outcome goes to that person's own slice (a DM is theirs), a
  * channel outcome to the agent's slice.
  */
-import { composePage, readPageRecord } from "../knowledge/memory-pages";
+import { carriedFields, composePage, readPageRecord } from "../knowledge/memory-pages";
 import { getPageOrNull, type BrainOpCall } from "../knowledge/memory-trail";
 import { agentSourceId, speakerProfileSource, userSourceId, type BrainScope } from "../knowledge/scope";
 import * as Posts from "../db/proactive-posts";
 import type { ProactivePost } from "../db/proactive-posts";
 import { prefsFromProfile } from "./prefs";
 
-const COMMON = new Set(["type", "as_of", "confidence", "source", "subject", "supersedes", "superseded_by"]);
 
 /**
  * True when a reply is only a request to stop (mentions and punctuation
@@ -79,8 +78,7 @@ async function muteTopic(post: ProactivePost, userId: string, teamId: string | n
   const rec = readPageRecord(await getPageOrNull(deps.call, "profile", scope));
   const meta = rec && !rec.superseded ? rec.meta : {};
   const prefs = prefsFromProfile(meta);
-  const fields: Record<string, string> = {};
-  for (const [k, v] of Object.entries(meta)) if (!COMMON.has(k) && !/[\r\n]/.test(v)) fields[k] = v;
+  const fields = carriedFields(meta);
   if (prefs.mutes !== "all" && !prefs.mutes.includes(post.topic)) fields.mutes = [...prefs.mutes, post.topic].join(", ");
   fields.quote = quote.replace(/\s+/g, " ").trim().slice(0, 500);
   const page = composePage(

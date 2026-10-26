@@ -43,6 +43,17 @@ export interface TypedPageInput {
 /** Keys composePage writes itself; a type's fields may not reuse them. */
 const COMMON_KEYS = new Set(["type", "as_of", "confidence", "source", "subject", "supersedes", "superseded_by"]);
 
+/**
+ * The fields of an existing page that a rewrite carries over: everything but
+ * the common keys, multi-line values, and `quote`, which belongs to the write
+ * that made it.
+ */
+export function carriedFields(meta: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(meta)) if (!COMMON_KEYS.has(k) && k !== "quote" && !/[\r\n]/.test(v)) out[k] = v;
+  return out;
+}
+
 /** Commitment keys, in the order they are written (global constraints). */
 const COMMITMENT_KEYS = ["promiser", "beneficiary", "thread", "due", "check", "on_no_change", "status"] as const;
 const COMMITMENT_STATUS = new Set(["open", "done", "dropped"]);

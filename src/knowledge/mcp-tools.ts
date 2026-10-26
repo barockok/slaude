@@ -7,7 +7,7 @@ import { brainThink, sdkThinkClient } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, soleSlackSender, type ApprovalReq, type ApprovalRes, type GateInput, type TurnSender } from "./gated-dispatch";
 import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, speakerProfileSource, userSourceId, type BrainScope } from "./scope";
-import { composePage, readPageRecord, type TypedPageInput } from "./memory-pages";
+import { carriedFields, composePage, readPageRecord, type TypedPageInput } from "./memory-pages";
 import { SUPERSEDED_TAG, getPageOrNull, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
 import { conversationSlug, conversationSummarySlug, orderTimeline, type TimelineRow } from "../memory/brain-provider";
@@ -503,6 +503,15 @@ export const brainHandlers = {
     const resolved = resolveMemoizeScope(target, p.subject, await d.scope(), gate);
     if ("error" in resolved) return err(resolved.error);
     const { scope, speaker } = resolved;
+    // A profile rewrite keeps the fields it does not set. Ping preferences
+    // (mutes from a "stop" reply, opt-ins, quiet hours) live there, and a live
+    // model rewrote the page with only a new name, dropping its mutes.
+    const isProfile = (pg: TypedPageInput) => target === "profile" && pg.slug === "profile" && pg.type === "profile";
+    let kept: Record<string, string> = {};
+    if (pages.some(isProfile)) {
+      const rec = readPageRecord(await getPageOrNull(d.call ?? brainCall, "profile", { ...scope, allowedSources: [scope.sourceId] }));
+      if (rec && !rec.superseded) kept = carriedFields(rec.meta);
+    }
     // Compose every page before anything is written: one refusal stops the batch.
     const now = new Date();
     const composed: Array<{ slug: string; content: string; supersedes?: string }> = [];
@@ -516,7 +525,8 @@ export const brainHandlers = {
       // An untyped page keeps its own subject, which composePage refuses.
       const subject = pg.subject ?? (pg.type !== undefined ? (p.subject ?? speaker) : undefined);
       if (target === "profile" && subject !== speaker) return err(PROFILE_REFUSAL);
-      const { subject: _own, ...page } = pg;
+      const { subject: _own, ...own } = pg;
+      const page = isProfile(pg) && Object.keys(kept).length > 0 ? { ...own, fields: { ...kept, ...(own.fields ?? {}) } } : own;
       const c = composePage({ ...page, ...(source !== undefined ? { source } : {}), ...(subject !== undefined ? { subject } : {}) }, now);
       if ("error" in c) return err(c.error);
       composed.push({ slug: pg.slug, content: c.content, ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) });
