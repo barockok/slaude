@@ -180,3 +180,17 @@ export async function setModel(id: string, model: string): Promise<void> {
     id,
   ]);
 }
+
+/**
+ * Sessions of these personas touched at or after `sinceMs` (every turn bumps
+ * updated_at through setStatus), oldest first: the background nightly review's
+ * candidates for a day's conversations. Bounded by `limit`.
+ */
+export async function updatedSince(personaIds: readonly string[], sinceMs: number, limit = 2000): Promise<SessionRow[]> {
+  if (personaIds.length === 0) return [];
+  const marks = personaIds.map(() => "?").join(", ");
+  return db.query<SessionRow>(
+    `SELECT * FROM sessions WHERE persona_id IN (${marks}) AND updated_at >= ? ORDER BY updated_at ASC LIMIT ?`,
+    [...personaIds, sinceMs, limit],
+  );
+}

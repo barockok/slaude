@@ -143,6 +143,7 @@ import * as OneOnOne from "../../db/one-on-one";
 import * as MentionOnly from "../../db/mention-only";
 import { CronScheduler } from "../slack/cron-scheduler";
 import { startCronLeader } from "./cron-leader";
+import { defaultSchedulerDeps, leaderElect, startBackgroundScheduler } from "../../background/scheduler";
 import type { LeaderHandle } from "../../queue/locks";
 import { getNextRun } from "../slack/cron-parser";
 import { clientForApp, type AppRef, type Transport } from "./transport";
@@ -358,6 +359,11 @@ export interface GatewayOptions {
   /** Decision gate (phase B). Default: the runner gateRunnerFromEnv resolves
    *  to at boot (SLAUDE_DECISION_CONFIG), treated as off until it does. */
   gateRunner?: GateRunner;
+  /** Start the background learning scheduler (nightly review, lessons upkeep;
+   *  phase D): leader-elected in the gateway role, directly in mono, never on a
+   *  node, and only with the brain enabled. Default false, so no test starts it
+   *  by building a gateway; server.ts turns it on. */
+  backgroundLearning?: boolean;
 }
 
 /** Redis-backed primitives the control panel needs — injected together so a
@@ -868,6 +874,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     console.log("[slaude] cron scheduler contending for leadership");
   } else {
     cronScheduler.start();
+  }
+
+  // Background learning (phase D): one scheduler where the brain lives. Like
+  // cron, the gateway role elects one replica to run it (each slot is also
+  // claimed in the database, so a leader change mid-pass never re-runs one);
+  // mono runs it directly. Ticks wait for an open brain and never boot it.
+  let backgroundScheduler: { stop(): Promise<void> } | undefined;
+  if (opts.backgroundLearning === true && env.role() !== "node" && brainEnabled()) {
+    backgroundScheduler = startBackgroundScheduler(defaultSchedulerDeps(), queueDispatch ? { elect: leaderElect(getRedis()) } : {});
+    console.log(`[slaude] background learning scheduler ${queueDispatch ? "contending for leadership" : "started"}`);
   }
 
   // MCP resolver — first-call-per-session wires the slack MCP server bound to
@@ -3913,6 +3929,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await drainVoiceCalls(voiceCalls, VOICE_SHUTDOWN_GRACE_MS);
       cancelNightlyMaintenance();
       await cronLeader?.stop().catch(() => {});
+      await backgroundScheduler?.stop().catch(() => {});
       cronScheduler.stop();
       if (panelSweeper) clearInterval(panelSweeper);
       await panelResumeUnsub?.().catch(() => {});

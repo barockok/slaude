@@ -4,6 +4,8 @@ import type { BrainScope } from "../../src/knowledge/scope";
 export function fakeBrain() {
   const pages = new Map<string, Map<string, { content: string; tags: Set<string>; type?: string }>>();
   const calls: Array<{ name: string; params: Record<string, unknown>; scope: BrainScope }> = [];
+  /** Timeline rows per source, per slug (get_timeline). */
+  const timelines = new Map<string, Map<string, unknown[]>>();
   const src = (s: string) => {
     let m = pages.get(s);
     if (!m) pages.set(s, (m = new Map()));
@@ -31,6 +33,8 @@ export function fakeBrain() {
           .filter(([, p]) => p.content.toLowerCase().includes(q))
           .map(([slug]) => ({ slug, source_id: only, score: 1 }));
       }
+      case "get_timeline":
+        return timelines.get(only!)?.get(params.slug as string) ?? [];
       case "put_page": {
         const content = params.content as string;
         const prev = src(scope.sourceId).get(params.slug as string);
@@ -48,7 +52,12 @@ export function fakeBrain() {
     }
   };
   const seed = (source: string, slug: string, content: string) => src(source).set(slug, { content, tags: new Set(), type: typeOf(content) });
+  const seedTimeline = (source: string, slug: string, rows: unknown[]) => {
+    let m = timelines.get(source);
+    if (!m) timelines.set(source, (m = new Map()));
+    m.set(slug, rows);
+  };
   /** Every source any call read or wrote. */
   const touched = () => new Set(calls.flatMap((c) => [c.scope.sourceId, ...c.scope.allowedSources]));
-  return { call, calls, pages, seed, touched };
+  return { call, calls, pages, timelines, seed, seedTimeline, touched };
 }

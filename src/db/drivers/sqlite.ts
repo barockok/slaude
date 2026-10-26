@@ -178,6 +178,13 @@ CREATE TABLE IF NOT EXISTS proposals (
   decided_at  INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_proposals_agent_status ON proposals (agent_id, status);
+CREATE TABLE IF NOT EXISTS background_slots (
+  agent_id    TEXT    NOT NULL,
+  pass        TEXT    NOT NULL,
+  slot        TEXT    NOT NULL,
+  claimed_at  INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, pass, slot)
+);
 CREATE TABLE IF NOT EXISTS remote_keys (
   team_id     TEXT    NOT NULL,
   user_id     TEXT    NOT NULL,
