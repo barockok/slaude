@@ -347,6 +347,16 @@ replies and reactions were sent from their own Slack account.
   hook: the turn ended right after the first `pass` with a normal successful
   result. The cron job fired at its time, and that turn also ended at its
   `pass`.
+- **A profile rewrite dropped the mutes.** In a DM, the person asked to be
+  called by a new name. The model wrote the profile page with only that name.
+  The `mutes` that two "stop" replies had saved on the same page were gone,
+  so the agent would have pinged about those topics again. A later rewrite
+  (a birthday) did the same. The memory skill already said to keep the other
+  fields, but the model never read the page first. `kb_memoize` now carries
+  an existing profile's fields under the ones the new page sets. It does not
+  carry the common keys, or the `quote` the last write left. In a new thread,
+  the profile reached the next turn's `<memory-context>`. `memory_about`
+  returned it there.
 - An explicit "remind me at <time>" became a cron job, not a commitment
   page. That is the intended split: the memory skill keeps commitments for
   promises that depend on something being checked.
