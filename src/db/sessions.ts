@@ -183,14 +183,15 @@ export async function setModel(id: string, model: string): Promise<void> {
 
 /**
  * Sessions of these personas touched at or after `sinceMs` (every turn bumps
- * updated_at through setStatus), oldest first: the background nightly review's
- * candidates for a day's conversations. Bounded by `limit`.
+ * updated_at through setStatus), most recently touched first: the background
+ * nightly review's candidates for a day's conversations. Bounded by `limit`,
+ * which keeps the active ones.
  */
 export async function updatedSince(personaIds: readonly string[], sinceMs: number, limit = 2000): Promise<SessionRow[]> {
   if (personaIds.length === 0) return [];
   const marks = personaIds.map(() => "?").join(", ");
   return db.query<SessionRow>(
-    `SELECT * FROM sessions WHERE persona_id IN (${marks}) AND updated_at >= ? ORDER BY updated_at ASC LIMIT ?`,
+    `SELECT * FROM sessions WHERE persona_id IN (${marks}) AND updated_at >= ? ORDER BY updated_at DESC LIMIT ?`,
     [...personaIds, sinceMs, limit],
   );
 }
