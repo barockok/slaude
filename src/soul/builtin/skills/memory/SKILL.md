@@ -33,6 +33,10 @@ Write one the moment you promise. Fields (`fields`): `promiser`,
 is kept or abandoned, write a new page under a new slug (for example
 `commitments/<slug>-done`) with `status` `done` or `dropped` and `supersedes`
 naming the open one. The new page can never reuse the old slug.
+A commitment with a `thread` and a `due` is checked for you when it falls due,
+in that thread: do not also schedule a cron job or a reminder for it. Write
+`due` as an ISO time with its offset (`2026-11-02T09:00:00+07:00`) when there is
+one; anything else is treated as an event and checked periodically for a day.
 
 ### Heartbeat
 `self/heartbeat` is your own checklist of recurring checks, one line each:

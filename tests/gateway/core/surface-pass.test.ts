@@ -3,7 +3,7 @@ import { createGateway, type GatewayHandle } from "../../../src/gateway/core/gat
 import { AgentManager } from "../../../src/agent/manager";
 import type { Transport } from "../../../src/gateway/core/transport";
 import type { Surface, SurfaceCapability } from "../../../src/gateway/core/surface";
-import { surfaceTools } from "../../../src/gateway/core/surface-mcp";
+import { surfaceTools, PASS_DONE } from "../../../src/gateway/core/surface-mcp";
 import { runtimeBaseline } from "../../../src/soul/loader";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
@@ -82,7 +82,7 @@ describe("pass surface tool", () => {
     const pass = surfaceTools(surface).find((d) => d.name === "pass")!;
     const r = await pass.handler({ reason: "talking about me, not to me", react: "eyes" });
     expect(calls).toEqual(["react:eyes"]);
-    expect(r.content[0]!.text).toBe("passed");
+    expect(r.content[0]!.text).toBe(`passed. ${PASS_DONE}`);
   });
 
   it("pass is mounted on a surface without react, and does not react", async () => {
@@ -90,7 +90,7 @@ describe("pass surface tool", () => {
     const pass = surfaceTools(surface).find((d) => d.name === "pass");
     expect(pass).toBeDefined();
     const r = await pass!.handler({ reason: "not for me", react: "eyes" });
-    expect(r.content[0]!.text).toBe("passed");
+    expect(r.content[0]!.text).toBe(`passed. ${PASS_DONE}`);
   });
 
   it("the pass log line redacts secret-shaped text in the reason", async () => {
@@ -111,7 +111,7 @@ describe("pass surface tool", () => {
     const surface = fakeSurface({ react: async () => { throw new Error("invalid_name"); } });
     const r = await surfaceTools(surface).find((d) => d.name === "pass")!.handler({ reason: "x", react: "nope" });
     expect((r as any).isError).toBeUndefined();
-    expect(r.content[0]!.text).toBe("passed (reaction failed)");
+    expect(r.content[0]!.text).toBe(`passed (reaction failed). ${PASS_DONE}`);
   });
 
   it("stop guard accepts a pass", async () => {
