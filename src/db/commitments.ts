@@ -75,7 +75,12 @@ const toRow = (r: Row): CommitmentRow => ({
   createdAt: Number(r.created_at),
 });
 
-/** Insert or refresh an open commitment; a rewrite of the page reschedules it and reopens a closed row. */
+/**
+ * Insert an open commitment, or refresh one that is still open. A rewrite of
+ * the page never reopens a done, dropped or expired row, and keeps the row's
+ * schedule (next check, expiry, checks so far) unless its `due` changed, so
+ * re-saving a promise never postpones its expiry or repeats its checks.
+ */
 export async function upsertOpen(c: Omit<CommitmentRow, "status" | "checks" | "lastCheckedAt">): Promise<void> {
   await db.run(
     `INSERT INTO commitments (agent_id, source, slug, persona_id, team_id, channel_id, thread_ts, beneficiary, run_as,
@@ -88,13 +93,14 @@ export async function upsertOpen(c: Omit<CommitmentRow, "status" | "checks" | "l
        thread_ts = excluded.thread_ts,
        beneficiary = excluded.beneficiary,
        run_as = excluded.run_as,
-       due_text = excluded.due_text,
-       due_kind = excluded.due_kind,
        check_text = excluded.check_text,
        on_no_change = excluded.on_no_change,
-       next_check_at = excluded.next_check_at,
-       expires_at = excluded.expires_at,
-       status = 'open'`,
+       next_check_at = CASE WHEN commitments.due_text = excluded.due_text THEN commitments.next_check_at ELSE excluded.next_check_at END,
+       expires_at = CASE WHEN commitments.due_text = excluded.due_text THEN commitments.expires_at ELSE excluded.expires_at END,
+       checks = CASE WHEN commitments.due_text = excluded.due_text THEN commitments.checks ELSE 0 END,
+       due_kind = excluded.due_kind,
+       due_text = excluded.due_text
+     WHERE commitments.status = 'open'`,
     [
       c.agentId, c.source, c.slug, c.personaId, c.teamId, c.channelId, c.threadTs, c.beneficiary, c.runAs,
       c.dueText, c.dueKind, c.checkText, c.onNoChange, c.nextCheckAt, c.expiresAt, c.createdAt,

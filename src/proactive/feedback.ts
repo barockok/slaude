@@ -22,10 +22,21 @@ import { prefsFromProfile } from "./prefs";
 
 const COMMON = new Set(["type", "as_of", "confidence", "source", "subject", "supersedes", "superseded_by"]);
 
-/** True when a reply asks the agent to stop: it starts (after any mentions) with stop, not this, mute or no more. */
+/**
+ * True when a reply is only a request to stop (mentions and punctuation
+ * aside): "stop", "not this", "mute", "no more", with at most a "please",
+ * "thanks", "pinging me", "this one", "of these". A message that goes on to
+ * say something else ("stop the rollout, the numbers are wrong") is not one:
+ * it reaches the agent as usual.
+ */
 export function stopPhrase(text: string): boolean {
-  const t = text.replace(/<@[A-Z0-9]+(?:\|[^>]*)?>/g, "").trim().toLowerCase();
-  return /^(stop|not this|mute|no more)\b/.test(t);
+  const t = text
+    .replace(/<@[A-Z0-9]+(?:\|[^>]*)?>/g, " ")
+    .toLowerCase()
+    .replace(/[.!,]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return /^(please )?(stop|not this|mute|no more)( (please|thanks|thank you|pinging me|this|this one|one|of these|these|it))*$/.test(t);
 }
 
 export interface FeedbackDeps {
@@ -33,6 +44,8 @@ export interface FeedbackDeps {
   now: () => Date;
   /** Post one line in the thread, as the agent. */
   reply(channel: string, threadTs: string, text: string): Promise<void>;
+  /** Claim an event once (Slack retries; on a multi-app gateway each app gets a copy). Default: always first. */
+  once?: (key: string) => Promise<boolean>;
 }
 
 const only = (clientId: string, source: string): BrainScope => ({ clientId, sourceId: source, allowedSources: [source] });
@@ -85,11 +98,13 @@ async function muteTopic(post: ProactivePost, userId: string, teamId: string | n
  * "muted": the topic is muted and the agent said so; normal handling stops.
  */
 export async function onProactiveReply(
-  i: { channel: string; threadTs: string; userId: string; teamId: string | null; text: string },
+  i: { channel: string; threadTs: string; ts: string; userId: string; teamId: string | null; text: string },
   deps: FeedbackDeps,
 ): Promise<"muted" | "outcome" | "ignored"> {
   const post = await Posts.findByMessage(i.channel, i.threadTs);
   if (!post || !counts(post, i.userId)) return "ignored";
+  // A second copy of the same reply (a retry, another app's delivery): already handled.
+  if (deps.once && !(await deps.once(`proactive-fb:${i.channel}:${i.ts}`))) return stopPhrase(i.text) ? "muted" : "ignored";
   if (stopPhrase(i.text)) {
     if (await muteTopic(post, i.userId, i.teamId, i.text, deps)) {
       await writeOutcome(post, i.userId, "asked to stop", deps);
@@ -108,6 +123,7 @@ export async function onProactiveReaction(
 ): Promise<"outcome" | "ignored"> {
   const post = await Posts.findByMessage(i.channel, i.messageTs);
   if (!post || !counts(post, i.userId)) return "ignored";
+  if (deps.once && !(await deps.once(`proactive-fb:${i.channel}:${i.messageTs}:${i.userId}:${i.reaction}`))) return "ignored";
   await writeOutcome(post, i.userId, `reacted :${i.reaction.replace(/[^a-z0-9_+-]/gi, "")}:`, deps);
   return "outcome";
 }

@@ -138,7 +138,56 @@ outcome goes to that person's own slice.
 
 ## Review
 
-An independent review of the phase diff is in progress; its findings are recorded here when it completes.
+An independent review of the phase diff found these, all fixed with a test:
+
+- **A promise could get stuck for good.** Its check slot is claimed before
+  anything else runs. A throw after the claim (a Redis blip in the busy check,
+  a failed post) left the row at the same `next_check_at`, so every later
+  tick failed the claim, and twenty such rows at the head of the due list
+  starved every other promise of that agent. Now every path after the claim
+  moves the row on, and a claim that never moved its row (a leader that died
+  mid-check) is recovered after ten minutes.
+- **A check that could never be dispatched never expired.** A /1on1 promise
+  whose lock was released since was refused every 15 minutes, forever, and
+  the person never heard back. Now a failed last check expires the row, with
+  the fixed line where the thread's scope still allows it, and silently where
+  it does not (even the fixed line names the promise).
+- **A commitment's `thread` was trusted.** It comes from frontmatter the model
+  writes, so a turn in one thread could schedule a check, with its own
+  `check` text, into another channel's thread or someone's DM. A commitment
+  is now scheduled only for a thread the write came from: the live turn's own
+  thread, or a thread the background pass reviewed.
+- **Re-saving a promise reopened it or postponed it.** The upsert set `open`
+  on a finished row and recomputed an event promise's expiry from each write.
+  A rewrite now never reopens a finished row and keeps the schedule unless
+  `due` changed.
+- **Any reply starting with "stop" muted the topic and was swallowed**
+  ("stop the rollout, the numbers are wrong" under a channel post). Only a
+  reply that is nothing but a stop request mutes now; anything else reaches
+  the agent.
+- **Feedback ran before de-duplication**, so a Slack retry or a second app's
+  copy of the same reply posted the confirmation twice. Each reply and
+  reaction is now claimed once.
+- **The busy check read a stale queue index as busy**, deferring a promise
+  for up to ten minutes after a turn ended. It now checks that the indexed
+  job is still waiting.
+- **Promise checks waited behind other agents' passes** in the same tick.
+  They now run for every agent before any pass.
+- Smaller ones: an agent-scope promise had no team, so the beneficiary's
+  quiet hours were never read (the thread's team is looked up); a ledger
+  failure after a successful proactive post was reported as a failed post,
+  inviting a second one; a top-level `#` heading did not end the
+  `## Proactive` section.
+
+Also found while closing the phase: the new scenario test reused another
+test's Slack message ts, and the process-wide event de-duplication then
+dropped that test's message. The scenario now uses its own ts and clears
+what it leaves behind.
+
+Left as is: a DM reply at the top level (not in the post's thread) is not
+read as feedback; a human message that lands in a promise check's job in the
+moment between the busy check and the dispatch runs under the check's token
+(origin cron, so it fails closed: no profile is read or written).
 
 ## Rulings
 

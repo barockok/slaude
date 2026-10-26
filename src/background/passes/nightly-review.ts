@@ -158,6 +158,8 @@ export interface PersonDay {
   /** The Slack app of their most recently touched session here (cards go out as it). */
   app?: AppRef;
   turns: TranscriptTurn[];
+  /** The threads (`<channel>:<threadTs>`) their turns came from. */
+  threads: string[];
 }
 
 /**
@@ -166,15 +168,16 @@ export interface PersonDay {
  * group's personas' sessions touched since the day began (setStatus bumps
  * updated_at every turn).
  */
-export async function collectDay(group: AgentGroup, day: string, deps: NightlyDeps): Promise<{ agent: TranscriptTurn[]; users: PersonDay[] }> {
+export async function collectDay(group: AgentGroup, day: string, deps: NightlyDeps): Promise<{ agent: TranscriptTurn[]; agentThreads: string[]; users: PersonDay[] }> {
   const tag = `[background] agent=${group.agentId} pass=nightly-review`;
   const since = Date.parse(`${day}T00:00:00Z`) - MAX_OFFSET_MS;
   const sessions = await Sessions.updatedSince(group.personaIds, since, MAX_SESSIONS);
-  if (sessions.length === 0) return { agent: [], users: [] };
+  if (sessions.length === 0) return { agent: [], agentThreads: [], users: [] };
   if (sessions.length >= MAX_SESSIONS) console.warn(`${tag}: over ${MAX_SESSIONS} sessions since ${day}; only the ${MAX_SESSIONS} touched most recently are read`);
   const teamOf = new Map(sessions.map((s) => [conversationSlug(s.id), s.slack_team_id ?? ""]));
   // Sessions come most recently touched first: the first app seen per slug is the thread's own.
   const appOf = new Map(sessions.map((s) => [conversationSlug(s.id), s.slack_app_id ?? null]));
+  const threadOf = new Map(sessions.map((s) => [conversationSlug(s.id), s.slack_channel_id && s.slack_thread_ts ? `${s.slack_channel_id}:${s.slack_thread_ts}` : null]));
   const only = (source: string): BrainScope => ({ clientId: group.agentId, sourceId: source, allowedSources: [source] });
   const timeline = async (source: string, slug: string): Promise<DayRow[]> => {
     const rows = await deps.call("get_timeline", { slug }, only(source));
@@ -187,7 +190,13 @@ export async function collectDay(group: AgentGroup, day: string, deps: NightlyDe
 
   const agentSrc = agentSourceId(group.agentId);
   const agent: TranscriptTurn[] = [];
-  for (const slug of teamOf.keys()) agent.push(...threadTurns(await timeline(agentSrc, slug), slug, day, group.timeZone));
+  const agentThreads = new Set<string>();
+  for (const slug of teamOf.keys()) {
+    const turns = threadTurns(await timeline(agentSrc, slug), slug, day, group.timeZone);
+    agent.push(...turns);
+    const th = threadOf.get(slug);
+    if (turns.length > 0 && th) agentThreads.add(th);
+  }
 
   const users = new Map<string, PersonDay>();
   const userSources = (await deps.listSources()).filter((s) => s.startsWith("user-")).sort();
@@ -205,13 +214,15 @@ export async function collectDay(group: AgentGroup, day: string, deps: NightlyDe
       const teamId = teamOf.get(slug)!;
       const key = `${userId}\n${teamId}`;
       const apiAppId = appOf.get(slug) ?? null;
-      const person = users.get(key) ?? { userId, teamId, turns: [], ...(apiAppId ? { app: { apiAppId, teamId } } : teamId ? { app: { teamId } } : {}) };
+      const person: PersonDay = users.get(key) ?? { userId, teamId, turns: [], threads: [], ...(apiAppId ? { app: { apiAppId, teamId } } : teamId ? { app: { teamId } } : {}) };
+      const th = threadOf.get(slug);
+      if (th && !person.threads.includes(th)) person.threads.push(th);
       if (!person.app?.apiAppId && apiAppId) person.app = { apiAppId, teamId };
       person.turns.push(...own);
       users.set(key, person);
     }
   }
-  return { agent, users: [...users.values()] };
+  return { agent, agentThreads: [...agentThreads], users: [...users.values()] };
 }
 
 /** Only that person's own turns, the agent's and runtime text: a pass never mixes two people. */
@@ -262,15 +273,15 @@ export interface NightlyResult {
 export async function runNightlyReview(r: AgentGroup & { slot: string; signal?: AbortSignal }, deps: NightlyDeps): Promise<NightlyResult[]> {
   const day = reviewedDay(r.slot);
   const tag = `[background] agent=${r.agentId} pass=nightly-review`;
-  const { agent, users } = await collectDay(r, day, deps);
+  const { agent, agentThreads, users } = await collectDay(r, day, deps);
   const run = deps.run ?? runPass;
   const out: NightlyResult[] = [];
-  const queue: Array<{ scope: PassScope; app?: AppRef; prompt: () => string; transcripts: TranscriptTurn[] }> = [];
+  const queue: Array<{ scope: PassScope; app?: AppRef; prompt: () => string; transcripts: TranscriptTurn[]; threads: string[] }> = [];
   if (agent.length > 0) {
-    queue.push({ scope: { kind: "agent" }, prompt: () => renderPassPrompt("nightly-review-agent", { DAY: day, PROPOSALS_SLUG, LESSONS_SLUG }), transcripts: agent });
+    queue.push({ scope: { kind: "agent" }, prompt: () => renderPassPrompt("nightly-review-agent", { DAY: day, PROPOSALS_SLUG, LESSONS_SLUG }), transcripts: agent, threads: agentThreads });
   }
   for (const u of users) {
-    queue.push({ scope: { kind: "user", userId: u.userId, teamId: u.teamId }, ...(u.app ? { app: u.app } : {}), prompt: () => renderPassPrompt("nightly-review-user", { DAY: day, USER_ID: u.userId }), transcripts: u.turns });
+    queue.push({ scope: { kind: "user", userId: u.userId, teamId: u.teamId }, ...(u.app ? { app: u.app } : {}), prompt: () => renderPassPrompt("nightly-review-user", { DAY: day, USER_ID: u.userId }), transcripts: u.turns, threads: u.threads });
   }
   const label = (s: PassScope) => (s.kind === "user" ? `user:${s.userId}` : "agent");
   for (const [i, q] of queue.entries()) {
@@ -285,6 +296,7 @@ export async function runNightlyReview(r: AgentGroup & { slot: string; signal?: 
       scope: q.scope,
       prompt: q.prompt(),
       transcripts: capped(q.transcripts, tag),
+      threads: q.threads,
       ...(r.signal ? { signal: r.signal } : {}),
     };
     const res = await run(spec, deps.runner);

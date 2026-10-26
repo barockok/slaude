@@ -29,7 +29,7 @@
 import { env } from "../config/env";
 import * as Commitments from "../db/commitments";
 import type { CommitmentRow } from "../db/commitments";
-import { claimSlot } from "../db/background-slots";
+import { claimedAt, claimSlot } from "../db/background-slots";
 import { redactSecrets } from "../gateway/core/status-text";
 import { renderPassPrompt } from "../background/prompts";
 import { localParts } from "../background/calendar";
@@ -42,13 +42,14 @@ export interface PromiseTransport {
   isBusy(row: CommitmentRow): Promise<boolean>;
   /** Dispatch the check turn into the promise's thread, carrying its open run. */
   dispatch(row: CommitmentRow, envelope: string, run: { runId: string; agentId: string }): Promise<void>;
-  /** Post one line in the promise's thread, as the agent. */
+  /** Post one line in the promise's thread, as the agent. Refused (throws) where a check would be. */
   post(row: CommitmentRow, text: string): Promise<void>;
 }
 
 export interface PromiseDeps {
   transport: PromiseTransport;
-  prefs(teamId: string | null, userId: string): Promise<PingPrefs>;
+  /** The beneficiary's ping preferences (their quiet hours defer a check). */
+  prefs(row: CommitmentRow): Promise<PingPrefs>;
   /** Open a `commitment` run for the row (startSkillCheck with pass commitment). */
   openRun(row: CommitmentRow): Promise<{ ok: true; runId: string; agentId: string } | { ok: false }>;
   /** End a run whose turn never went out, at no cost. */
@@ -57,6 +58,8 @@ export interface PromiseDeps {
   timeZone: string;
   /** Default: claimSlot. */
   claim?: (agentId: string, slot: string, at: number) => Promise<boolean>;
+  /** Default: claimedAt (background_slots). */
+  claimedAt?: (agentId: string, slot: string) => Promise<number | null>;
   /** Most promises checked per tick per agent. Default 20. */
   limit?: number;
 }
@@ -99,17 +102,23 @@ export function checkEnvelope(row: CommitmentRow, last: boolean): string {
 
 const errText = (e: unknown): string => redactSecrets(e instanceof Error ? e.message : String(e));
 
+/** A claim older than this whose row never moved on was held by a scheduler that died mid-check. */
+export const STALE_CLAIM_MS = 10 * 60_000;
+
 /** Check an agent's due promises once. Returns how many check turns went out. */
 export async function runDueCommitments(agentId: string, now: Date, deps: PromiseDeps): Promise<number> {
   const pollMs = env.promisePollMinutes() * 60_000;
   const claim = deps.claim ?? ((a: string, slot: string, at: number) => claimSlot(a, "commitment", slot, at));
+  const claimedSince = deps.claimedAt ?? ((a: string, slot: string) => claimedAt(a, "commitment", slot));
   const t = now.getTime();
   let sent = 0;
   for (const row of await Commitments.due(agentId, t, deps.limit ?? 20)) {
     const k = { agentId: row.agentId, source: row.source, slug: row.slug };
     const tag = `[proactive] agent=${agentId} commitment=${row.source}/${row.slug}`;
+    const log = (what: string) => (e: unknown) => console.error(`${tag}: ${what}: ${errText(e)}`);
+    // Before the claim: a failure leaves the row due, and the next tick retries it.
     try {
-      const prefs = await deps.prefs(row.teamId, row.beneficiary);
+      const prefs = await deps.prefs(row);
       if (prefs.quietHours) {
         const tz = prefs.timeZone ?? deps.timeZone;
         if (inWindow(localParts(now, tz).minutes, prefs.quietHours)) {
@@ -117,29 +126,50 @@ export async function runDueCommitments(agentId: string, now: Date, deps: Promis
           continue;
         }
       }
-      if (!(await claim(agentId, promiseSlot(row), t))) continue;
+      if (!(await claim(agentId, promiseSlot(row), t))) {
+        // Claimed and never moved on: the scheduler that claimed it died mid-check.
+        const at = await claimedSince(agentId, promiseSlot(row));
+        if (at !== null && t - at > STALE_CLAIM_MS) {
+          console.warn(`${tag}: its check was claimed ${Math.round((t - at) / 60_000)} min ago and never finished; checking it again`);
+          await Commitments.reschedule(k, t);
+        }
+        continue;
+      }
+    } catch (e) {
+      log("check failed")(e);
+      continue;
+    }
+    // After the claim: the row must always move on, or its slot stays claimed and it is never checked again.
+    let moved = false;
+    const moveTo = async (next: number) => {
+      await Commitments.reschedule(k, next);
+      moved = true;
+    };
+    try {
       if (await deps.transport.isBusy(row)) {
-        await Commitments.reschedule(k, t + BUSY_RETRY_MS);
+        await moveTo(t + BUSY_RETRY_MS);
         continue;
       }
       const last = isLastCheck(row, t, pollMs);
+      const expire = async (why: string) => {
+        await deps.transport.post(row, couldNotConfirm(row)).catch(log("could not post the fixed line"));
+        await Commitments.close(k, "expired");
+        moved = true;
+        console.log(`${tag}: ${why}; expired`);
+      };
       const run = await deps.openRun(row);
       if (!run.ok) {
-        if (last) {
-          await deps.transport.post(row, couldNotConfirm(row));
-          await Commitments.close(k, "expired");
-          console.log(`${tag}: no budget for the last check; told the beneficiary it could not be confirmed`);
-        } else {
-          await Commitments.reschedule(k, t + pollMs);
-        }
+        if (last) await expire("no budget for the last check");
+        else await moveTo(t + pollMs);
         continue;
       }
       try {
         await deps.transport.dispatch(row, checkEnvelope(row, last), { runId: run.runId, agentId: run.agentId });
       } catch (e) {
-        console.error(`${tag}: could not dispatch the check: ${errText(e)}`);
-        await deps.dropRun(run.runId, run.agentId).catch((e2) => console.error(`${tag}: could not end its run: ${errText(e2)}`));
-        await Commitments.reschedule(k, t + pollMs);
+        log("could not dispatch the check")(e);
+        await deps.dropRun(run.runId, run.agentId).catch(log("could not end its run"));
+        if (last) await expire("the last check could not be dispatched");
+        else await moveTo(t + pollMs);
         continue;
       }
       sent++;
@@ -147,11 +177,13 @@ export async function runDueCommitments(agentId: string, now: Date, deps: Promis
         await Commitments.markChecked(k, t, row.expiresAt);
         await Commitments.close(k, "expired");
       } else {
-        const next = row.dueKind === "time" ? Math.max(row.expiresAt, t + pollMs) : t + pollMs;
-        await Commitments.markChecked(k, t, next);
+        await Commitments.markChecked(k, t, row.dueKind === "time" ? Math.max(row.expiresAt, t + pollMs) : t + pollMs);
       }
+      moved = true;
     } catch (e) {
-      console.error(`${tag}: check failed: ${errText(e)}`);
+      log("check failed")(e);
+    } finally {
+      if (!moved) await Commitments.reschedule(k, t + pollMs).catch(log("could not move it on"));
     }
   }
   return sent;

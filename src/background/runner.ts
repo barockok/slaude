@@ -74,6 +74,9 @@ export interface PassSpec {
   prompt: string;
   transcripts?: TranscriptTurn[];
   extraTools?: PassTool[];
+  /** The threads (`<channel>:<threadTs>`) this pass reviews: a commitment it
+   *  writes is scheduled only for one of them. Absent: none is scheduled. */
+  threads?: readonly string[];
   /** Shutdown: aborting it stops the pass after the turn in flight (outcome `error`). */
   signal?: AbortSignal;
 }
@@ -238,6 +241,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
           personaId: spec.personaId,
           teamId: spec.scope.kind === "user" ? spec.scope.teamId || null : null,
           runAs: spec.scope.kind === "user" ? spec.scope.userId : null,
+          allowedThreads: spec.threads ?? [],
           writtenAt: deps.now(),
         }),
     },

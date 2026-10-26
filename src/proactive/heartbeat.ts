@@ -97,6 +97,8 @@ export async function proactivePost(a: ProactivePostArgs, ctx: ProactivePostCont
   });
   state.posts++;
   const where = posted && typeof posted === "object" ? posted : {};
+  // The post is out: a ledger failure is logged, never reported as a failed
+  // post (the model would post it again).
   await Posts.recordPost({
     agentId: ctx.agentId,
     audience: a.audience,
@@ -107,7 +109,7 @@ export async function proactivePost(a: ProactivePostArgs, ctx: ProactivePostCont
     messageTs: where.ts ?? null,
     teamId: ctx.app?.teamId ?? null,
     postedAt: now.getTime(),
-  });
+  }).catch((e) => console.error(`[proactive] agent=${ctx.agentId} posted, but could not record the post: ${e instanceof Error ? e.message : String(e)}`));
   return ok({ posted: true });
 }
 

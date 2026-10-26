@@ -53,6 +53,23 @@ describe("scheduler hook", () => {
     expect(seen).toEqual(["A1", "A2"]);
   });
 
+  test("promises for every group run before any group's passes", async () => {
+    const order: string[] = [];
+    const s = createBackgroundScheduler({
+      now: () => new Date(T0),
+      brainReady: () => true,
+      agents: async () => [group("A1"), group("A2")],
+      handlers: { heartbeat: async (r) => void order.push(`heartbeat:${r.agentId}`) },
+      sweep: async () => 0,
+      expire: async () => 0,
+      quietDue: async () => [],
+      proactiveOn: () => true,
+      commitments: async (g) => void order.push(`promises:${g.agentId}`),
+    });
+    await s.tick();
+    expect(order).toEqual(["promises:A1", "promises:A2", "heartbeat:A1", "heartbeat:A2"]);
+  });
+
   test("without a promise transport, the default deps check no promises", () => {
     expect(defaultSchedulerDeps().commitments).toBeUndefined();
   });

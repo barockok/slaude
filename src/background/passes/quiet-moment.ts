@@ -212,6 +212,7 @@ export async function runQuietMoment(r: AgentGroup & { slot: string; signal?: Ab
       scope,
       prompt,
       transcripts,
+      ...(session?.slack_channel_id && session.slack_thread_ts ? { threads: [`${session.slack_channel_id}:${session.slack_thread_ts}`] } : {}),
       extraTools: [
         summaryTool({ slug: sumSlug, sessionId, through: lastTurnAt, scope: brainScope, call: deps.runner.brainCall, now: deps.runner.now, onWritten: () => (summarized = true) }),
       ],

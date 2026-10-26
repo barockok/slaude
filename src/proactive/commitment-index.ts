@@ -26,6 +26,9 @@ export interface IndexInput {
   teamId: string | null;
   /** Whom a check of this page runs as: the person whose `user-<id>` slice holds it, else null. */
   runAs: string | null;
+  /** The writer's own threads (`<channel>:<threadTs>`): a commitment is checked
+   *  only in a thread it was written from, never one the page merely names. */
+  allowedThreads: readonly string[];
   writtenAt: Date;
 }
 
@@ -60,6 +63,10 @@ export async function indexCommitment(i: IndexInput): Promise<IndexResult> {
   const due = parseDue(meta.due, i.writtenAt, { pollMinutes: env.promisePollMinutes(), expireHours: env.promiseExpireHours() });
   if (!thread || !due || !/^[UW][A-Z0-9]+$/.test(beneficiary)) {
     console.log(`${tag}: not scheduled (needs thread <channel>:<ts>, a due and a beneficiary user id)`);
+    return "ignored";
+  }
+  if (!i.allowedThreads.includes(`${thread.channelId}:${thread.threadTs}`)) {
+    console.warn(`${tag}: not scheduled: its thread is not one this write came from`);
     return "ignored";
   }
   await Commitments.upsertOpen({

@@ -112,6 +112,10 @@ describe("parseProactive", () => {
     expect(parseProactive(text).enabled).toBe(false);
   });
 
+  it("a top-level # heading ends the section", () => {
+    expect(parseProactive(SOUL("## Proactive\n- Enabled: no\n\n# Appendix\n- Enabled: yes\n")).enabled).toBe(false);
+  });
+
   it("a ### Proactive outside a channel block does nothing", () => {
     expect(parseProactive(SOUL("### Proactive\n- Enabled: yes\n")).enabled).toBe(false);
   });

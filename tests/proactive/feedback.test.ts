@@ -42,8 +42,10 @@ beforeEach(async () => {
 
 describe("stopPhrase", () => {
   test("stop, not this, mute, no more — after any mention", () => {
-    for (const t of ["stop", "Stop pinging me", "not this one", "<@U0AGENT> mute", "no more of these"]) expect(stopPhrase(t)).toBe(true);
-    for (const t of ["thanks!", "don't stop", "nonstop", "stopwatch is broken", ""]) expect(stopPhrase(t)).toBe(false);
+    for (const t of ["stop", "Stop pinging me", "not this one", "<@U0AGENT> mute", "no more of these", "Please stop.", "stop, thanks!"]) expect(stopPhrase(t)).toBe(true);
+    for (const t of ["thanks!", "don't stop", "nonstop", "stopwatch is broken", "", "Stop the rollout, the numbers are wrong", "no more than 5 please", "mute the alarm in prod"]) {
+      expect(stopPhrase(t)).toBe(false);
+    }
   });
 });
 
@@ -55,7 +57,7 @@ describe("onProactiveReply", () => {
     if ("error" in page) throw new Error(page.error);
     await h.brain.call("put_page", { slug: "profile", content: page.content }, scopeOf(src));
     const p = await post();
-    const r = await onProactiveReply({ channel: "D0ALICE", threadTs: p.messageTs!, userId: "U0ALICE", teamId: TEAM, text: "stop please" }, h.d);
+    const r = await onProactiveReply({ channel: "D0ALICE", threadTs: p.messageTs!, ts: "1700000099.000100", userId: "U0ALICE", teamId: TEAM, text: "stop please" }, h.d);
     expect(r).toBe("muted");
     const prof = await readProfile(h.brain, "U0ALICE");
     const prefs = prefsFromProfile(prof!.meta);
@@ -73,14 +75,14 @@ describe("onProactiveReply", () => {
   test('"stop" from someone else on a DM post is ignored', async () => {
     const h = deps();
     const p = await post();
-    expect(await onProactiveReply({ channel: "D0ALICE", threadTs: p.messageTs!, userId: "U0BOB", teamId: TEAM, text: "stop" }, h.d)).toBe("ignored");
+    expect(await onProactiveReply({ channel: "D0ALICE", threadTs: p.messageTs!, ts: "1700000099.000100", userId: "U0BOB", teamId: TEAM, text: "stop" }, h.d)).toBe("ignored");
     expect(await readProfile(h.brain, "U0BOB")).toBeNull();
   });
 
   test('"not this" on a channel post mutes the replier only; the outcome goes to the agent slice', async () => {
     const h = deps();
     const p = await post({ audience: "channel", recipient: "C0TEAMCHAN", channelId: "C0TEAMCHAN", topic: "flaky tests" });
-    expect(await onProactiveReply({ channel: "C0TEAMCHAN", threadTs: p.messageTs!, userId: "U0BOB", teamId: TEAM, text: "not this" }, h.d)).toBe("muted");
+    expect(await onProactiveReply({ channel: "C0TEAMCHAN", threadTs: p.messageTs!, ts: "1700000099.000100", userId: "U0BOB", teamId: TEAM, text: "not this" }, h.d)).toBe("muted");
     expect(prefsFromProfile((await readProfile(h.brain, "U0BOB"))!.meta).mutes).toEqual(["flaky tests"]);
     expect(await readProfile(h.brain, "U0ALICE")).toBeNull();
     const out = await h.brain.call("get_page", { slug: `outcomes/proactive-${p.id}` }, scopeOf(agentSourceId(AGENT)));
@@ -90,15 +92,33 @@ describe("onProactiveReply", () => {
   test("a plain reply writes an outcome and continues; another thread is ignored", async () => {
     const h = deps();
     const p = await post();
-    expect(await onProactiveReply({ channel: "D0ALICE", threadTs: p.messageTs!, userId: "U0ALICE", teamId: TEAM, text: "thanks, looking" }, h.d)).toBe("outcome");
+    expect(await onProactiveReply({ channel: "D0ALICE", threadTs: p.messageTs!, ts: "1700000099.000100", userId: "U0ALICE", teamId: TEAM, text: "thanks, looking" }, h.d)).toBe("outcome");
     expect(h.replies).toEqual([]);
-    expect(await onProactiveReply({ channel: "D0ALICE", threadTs: "1.1", userId: "U0ALICE", teamId: TEAM, text: "stop" }, h.d)).toBe("ignored");
+    expect(await onProactiveReply({ channel: "D0ALICE", threadTs: "1.1", ts: "1700000099.000100", userId: "U0ALICE", teamId: TEAM, text: "stop" }, h.d)).toBe("ignored");
   });
 
   test("no team id anywhere: a stop cannot mute, so it is recorded as a reply", async () => {
     const h = deps();
     const p = await post({ teamId: null });
-    expect(await onProactiveReply({ channel: "D0ALICE", threadTs: p.messageTs!, userId: "U0ALICE", teamId: null, text: "stop" }, h.d)).toBe("outcome");
+    expect(await onProactiveReply({ channel: "D0ALICE", threadTs: p.messageTs!, ts: "1700000099.000100", userId: "U0ALICE", teamId: null, text: "stop" }, h.d)).toBe("outcome");
+  });
+});
+
+describe("de-duplication", () => {
+  test("a second copy of the same reply or reaction is not handled twice", async () => {
+    const h = deps();
+    const seen = new Set<string>();
+    const d: FeedbackDeps = { ...h.d, once: async (k) => (seen.has(k) ? false : (seen.add(k), true)) };
+    const p = await post();
+    const reply = { channel: "D0ALICE", threadTs: p.messageTs!, ts: "1700000099.000100", userId: "U0ALICE", teamId: TEAM, text: "stop" };
+    expect(await onProactiveReply(reply, d)).toBe("muted");
+    expect(await onProactiveReply(reply, d)).toBe("muted");
+    expect(h.replies).toHaveLength(1);
+    expect(await onProactiveReply({ ...reply, ts: "1700000100.000100", text: "ok" }, d)).toBe("outcome");
+    expect(await onProactiveReply({ ...reply, ts: "1700000100.000100", text: "ok" }, d)).toBe("ignored");
+    const r = { channel: "D0ALICE", messageTs: p.messageTs!, userId: "U0ALICE", reaction: "eyes" };
+    expect(await onProactiveReaction(r, d)).toBe("outcome");
+    expect(await onProactiveReaction(r, d)).toBe("ignored");
   });
 });
 

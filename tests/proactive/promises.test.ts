@@ -9,6 +9,7 @@ import { db } from "../../src/db/schema";
 import * as Commitments from "../../src/db/commitments";
 import type { CommitmentRow } from "../../src/db/commitments";
 import { claimSlot } from "../../src/db/background-slots";
+import { STALE_CLAIM_MS } from "../../src/proactive/promises";
 import { NO_PREFS, prefsFromProfile, type PingPrefs } from "../../src/proactive/prefs";
 import {
   BUSY_RETRY_MS,
@@ -49,7 +50,7 @@ const row = (over: Partial<Base> = {}): Base => ({
   ...over,
 });
 
-function harness(o: { busy?: boolean; budget?: boolean; prefs?: PingPrefs; dispatchFails?: boolean; claim?: PromiseDeps["claim"] } = {}) {
+function harness(o: { busy?: boolean | "throw"; budget?: boolean; prefs?: PingPrefs; dispatchFails?: boolean; postFails?: boolean; claim?: PromiseDeps["claim"] } = {}) {
   const dispatched: { row: CommitmentRow; envelope: string; runId: string }[] = [];
   const posted: { row: CommitmentRow; text: string }[] = [];
   const dropped: string[] = [];
@@ -60,12 +61,18 @@ function harness(o: { busy?: boolean; budget?: boolean; prefs?: PingPrefs; dispa
     openRun: async () => (o.budget === false ? { ok: false } : { ok: true, runId: `run-${++runs}`, agentId: AGENT }),
     dropRun: async (id) => void dropped.push(id),
     transport: {
-      isBusy: async () => o.busy === true,
+      isBusy: async () => {
+        if (o.busy === "throw") throw new Error("redis blip");
+        return o.busy === true;
+      },
       dispatch: async (r, envelope, run) => {
         if (o.dispatchFails) throw new Error("queue down");
         dispatched.push({ row: r, envelope, runId: run.runId });
       },
-      post: async (r, text) => void posted.push({ row: r, text }),
+      post: async (r, text) => {
+        if (o.postFails) throw new Error("the thread's /1on1 lock changed");
+        posted.push({ row: r, text });
+      },
     },
     ...(o.claim ? { claim: o.claim } : {}),
   };
@@ -213,6 +220,43 @@ describe("runDueCommitments", () => {
     expect(await runDueCommitments(AGENT, new Date(T0), h.deps)).toBe(0);
     expect(h.dropped).toEqual(["run-1"]);
     expect(await get()).toMatchObject({ nextCheckAt: T0 + POLL, checks: 0 });
+  });
+
+  test("a failure after the claim moves the row on, so it is checked again", async () => {
+    await Commitments.upsertOpen(row());
+    await runDueCommitments(AGENT, new Date(T0), harness({ busy: "throw" }).deps);
+    expect(await get()).toMatchObject({ nextCheckAt: T0 + POLL, status: "open" });
+    const h = harness();
+    expect(await runDueCommitments(AGENT, new Date(T0 + POLL), h.deps)).toBe(1);
+  });
+
+  test("a claim whose scheduler died mid-check is recovered after STALE_CLAIM_MS", async () => {
+    await Commitments.upsertOpen(row());
+    // A dead leader: claimed, never moved on.
+    await claimSlot(AGENT, "commitment", `agent-u0agent/commitments/deploy@${T0}`, T0);
+    const h = harness();
+    expect(await runDueCommitments(AGENT, new Date(T0 + MIN), h.deps)).toBe(0);
+    expect((await get())!.nextCheckAt).toBe(T0);
+    const later = T0 + STALE_CLAIM_MS + MIN;
+    expect(await runDueCommitments(AGENT, new Date(later), h.deps)).toBe(0);
+    expect((await get())!.nextCheckAt).toBe(later);
+    expect(await runDueCommitments(AGENT, new Date(later), h.deps)).toBe(1);
+  });
+
+  test("a last check that cannot be dispatched posts the fixed line and expires", async () => {
+    await Commitments.upsertOpen(row({ expiresAt: T0 + POLL }));
+    const h = harness({ dispatchFails: true });
+    await runDueCommitments(AGENT, new Date(T0), h.deps);
+    expect(h.posted.map((p) => p.text)).toEqual(["<@U0ALICE> I couldn't confirm this in time: after the deploy."]);
+    expect((await get())!.status).toBe("expired");
+  });
+
+  test("where even the fixed line is refused (scope changed), the promise still expires, silently", async () => {
+    await Commitments.upsertOpen(row({ expiresAt: T0 + POLL }));
+    const h = harness({ dispatchFails: true, postFails: true });
+    await runDueCommitments(AGENT, new Date(T0), h.deps);
+    expect(h.posted).toEqual([]);
+    expect((await get())!.status).toBe("expired");
   });
 
   test("proactiveness off in the SOUL still keeps the promise (§10.6)", async () => {

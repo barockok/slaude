@@ -60,7 +60,7 @@ describe("parseDue / parseThread", () => {
 });
 
 describe("indexCommitment", () => {
-  const base = { agentId: AGENT, source: agentSourceId(AGENT), slug: "commitments/deploy", personaId: "default", teamId: TEAM, runAs: null, writtenAt: NOW };
+  const base = { agentId: AGENT, source: agentSourceId(AGENT), slug: "commitments/deploy", personaId: "default", teamId: TEAM, runAs: null, allowedThreads: ["C0CHAN:1700000000.000100"], writtenAt: NOW };
 
   test("an open commitment is indexed, idempotently", async () => {
     expect(await indexCommitment({ ...base, content: commitment(OPEN) })).toBe("indexed");
@@ -80,6 +80,24 @@ describe("indexCommitment", () => {
     expect(await indexCommitment({ ...base, slug: "commitments/deploy-done", content: done })).toBe("ignored");
   });
 
+  test("a rewrite never reopens a finished promise, and keeps the schedule unless the due changed", async () => {
+    const k = { agentId: AGENT, source: base.source, slug: base.slug };
+    await indexCommitment({ ...base, content: commitment(OPEN) });
+    const first = (await Commitments.get(k))!;
+    await Commitments.markChecked(k, NOW.getTime() + 1, first.nextCheckAt + 1);
+    // Re-saved a day later with the same due: same expiry, checks kept.
+    await indexCommitment({ ...base, writtenAt: new Date(NOW.getTime() + 86_400_000), content: commitment(OPEN) });
+    expect(await Commitments.get(k)).toMatchObject({ expiresAt: first.expiresAt, checks: 1, nextCheckAt: first.nextCheckAt + 1 });
+    // A new due: rescheduled from the new write, checks reset.
+    const later = new Date(NOW.getTime() + 3_600_000);
+    await indexCommitment({ ...base, writtenAt: later, content: commitment({ ...OPEN, due: "after the review" }) });
+    expect(await Commitments.get(k)).toMatchObject({ dueText: "after the review", checks: 0, expiresAt: later.getTime() + 24 * 3_600_000 });
+    // Done, then re-saved open: stays done.
+    await Commitments.close(k, "done");
+    await indexCommitment({ ...base, content: commitment(OPEN) });
+    expect((await Commitments.get(k))!.status).toBe("done");
+  });
+
   test("a mention-shaped beneficiary is read as its id; close-in-one-line is kept", async () => {
     await indexCommitment({ ...base, content: commitment({ ...OPEN, beneficiary: "<@U0ALICE|alice>", on_no_change: "close-in-one-line" }) });
     expect((await Commitments.get({ agentId: AGENT, source: base.source, slug: base.slug }))).toMatchObject({ beneficiary: "U0ALICE", onNoChange: "close-in-one-line" });
@@ -92,6 +110,12 @@ describe("indexCommitment", () => {
     expect(await indexCommitment({ ...base, content: commitment({ ...OPEN, beneficiary: "alice" }) })).toBe("ignored");
     expect(await indexCommitment({ ...base, content: "---\ntype: outcome\n---\nx" })).toBe("ignored");
     expect(await indexCommitment({ ...base, content: "---\ntype: commitment\nstatus: maybe\n---\nx" })).toBe("ignored");
+    expect(await Commitments.due(AGENT, Number.MAX_SAFE_INTEGER)).toEqual([]);
+  });
+
+  test("a commitment naming a thread the write did not come from is never scheduled", async () => {
+    expect(await indexCommitment({ ...base, allowedThreads: ["C0OTHER:1.1"], content: commitment(OPEN) })).toBe("ignored");
+    expect(await indexCommitment({ ...base, allowedThreads: [], content: commitment(OPEN) })).toBe("ignored");
     expect(await Commitments.due(AGENT, Number.MAX_SAFE_INTEGER)).toEqual([]);
   });
 
@@ -123,7 +147,7 @@ describe("write hooks", () => {
       managers: () => ["U0MGR"],
       requestApproval: async () => ({ approved: true, by: "U0MGR" }),
       call: brain.call,
-      onWritten: (pages, scope) => indexWritten(pages, { agentId: AGENT, personaId: "default", teamId: TEAM, runAs: runAsOf(scope), writtenAt: NOW }),
+      onWritten: (pages, scope) => indexWritten(pages, { agentId: AGENT, personaId: "default", teamId: TEAM, runAs: runAsOf(scope), allowedThreads: ["C0CHAN:1700000000.000100"], writtenAt: NOW }),
     };
     const r = await brainHandlers.kb_memoize(
       { pages: [{ slug: "commitments/deploy", content: "Tell Alice when it ships.", summary: "promise", type: "commitment", fields: OPEN }] },

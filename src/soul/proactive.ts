@@ -80,7 +80,7 @@ const CHANNEL_ID = /^[CGD][A-Z0-9]+$/;
 function channelOf(heading: string): string | null {
   const m = /^##\s+channel\s+(?:<#([A-Za-z0-9]+)(?:\|[^>]*)?>|([A-Za-z0-9]+))/i.exec(heading.trim());
   const id = m ? (m[1] ?? m[2])! : "";
-  return CHANNEL_ID.test(id) && !/x{3}/i.test(id) ? id : null;
+  return CHANNEL_ID.test(id) ? id : null;
 }
 
 /** One `- Key: value` line (also `*`), comment after `#` dropped. */
@@ -107,6 +107,10 @@ export function parseProactive(text: string): ProactiveConfig {
       continue;
     }
     if (fenced) continue;
+    if (/^#\s/.test(line)) {
+      where = null;
+      continue;
+    }
     if (/^##\s/.test(line)) {
       if (/^##\s+proactive\s*$/i.test(line.trim())) where = { kind: "global" };
       else {

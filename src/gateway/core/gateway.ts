@@ -838,19 +838,24 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const teamId = await promiseTeam(row);
     return teamId ? Sessions.findByThread({ team_id: teamId, channel_id: row.channelId, thread_ts: row.threadTs, persona_id: row.personaId || "default" }) : null;
   };
+  /** Throws unless the thread still has the scope the promise was made in (its /1on1 lock owner, or no lock). */
+  const promiseScopeHolds = async (row: CommitmentRow): Promise<void> => {
+    const lockedUser = (await OneOnOne.find(row.channelId, row.threadTs))?.locked_user ?? null;
+    if ((row.runAs ?? null) !== lockedUser) throw new Error("the thread's /1on1 lock changed since the promise; not speaking there");
+  };
   backgroundSlack.promises = {
     isBusy: async (row) => {
       const session = await promiseSession(row);
       if (!session) return false;
       if (!queueDispatch) return agent.isTurnInFlight(session.id);
-      const k = makeKeys();
-      return (await getRedis().exists(k.sessionLock(session.id), k.coalesce(session.id))) > 0;
+      // A turn running (its session lock) or a message waiting to be claimed.
+      if ((await getRedis().exists(makeKeys().sessionLock(session.id))) > 0) return true;
+      return queueDispatch.turns.hasPending(session.id);
     },
     dispatch: async (row, envelope, run) => {
       const teamId = await promiseTeam(row);
       if (!teamId) throw new Error("no Slack team is known for this thread");
-      const lockedUser = (await OneOnOne.find(row.channelId, row.threadTs))?.locked_user ?? null;
-      if ((row.runAs ?? null) !== lockedUser) throw new Error("the thread's /1on1 lock changed since the promise; not checking it here");
+      await promiseScopeHolds(row);
       const persona = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
       const session = await agent.ensureSession({ team_id: teamId, channel_id: row.channelId, thread_ts: row.threadTs, persona_id: row.personaId || "default" });
       const app: AppRef = { apiAppId: session.slack_app_id ?? undefined, teamId };
@@ -888,6 +893,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
     },
     post: async (row, text) => {
+      // Even the fixed line names the promise's due: only where a check may speak.
+      await promiseScopeHolds(row);
       const teamId = await promiseTeam(row);
       const persona = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
       const session = await promiseSession(row);
@@ -1164,6 +1171,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               personaId: ctx.personaId ?? "default",
               teamId: ctx.teamId || null,
               runAs: runAsOf(scope),
+              allowedThreads: [`${ctx.channel}:${ctx.threadTs}`],
               writtenAt: new Date(),
             }),
         }
@@ -3623,6 +3631,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     reply: async (channel, threadTs, text) => {
       await (args.client ?? t.client).chat.postMessage({ channel, thread_ts: threadTs, text });
     },
+    once: (key) => SeenEvents.tryInsert(key),
   });
   t.event("reaction_added", async (args: any) => {
     const e: any = args.event;
@@ -3668,7 +3677,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (e.thread_ts && e.thread_ts !== e.ts && brainEnabled() && brainReady()) {
       try {
         const fb = await onProactiveReply(
-          { channel: e.channel, threadTs: e.thread_ts, userId: e.user, teamId: args.context?.teamId ?? e.team ?? null, text: String(e.text ?? "") },
+          { channel: e.channel, threadTs: e.thread_ts, ts: e.ts, userId: e.user, teamId: args.context?.teamId ?? e.team ?? null, text: String(e.text ?? "") },
           proactiveFeedbackDeps(args),
         );
         if (fb === "muted") return;

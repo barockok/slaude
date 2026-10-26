@@ -37,7 +37,7 @@ const ENV = ["SLAUDE_BRAIN_MODE", "SLAUDE_BRAIN_DISABLED", "SLAUDE_PRICE_TABLE",
 const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 
 const AGENT_ID = "U_SLAUDE";
-const LOCKED = "1600.0";
+const LOCKED = "2600.0";
 const MODEL = "test-model";
 const MIN = 60_000;
 
@@ -143,6 +143,8 @@ beforeEach(async () => {
 afterEach(async () => {
   await h?.stop();
   h = null;
+  // Slack event de-duplication is process-wide: leave no seen ts behind for later files.
+  await db.run("DELETE FROM seen_events");
   for (const s of spies) s.mockRestore();
   spies = [];
 });
@@ -158,7 +160,7 @@ describe("a promise kept with proactiveness off", () => {
     h = createGateway(agent, t);
 
     // 1. Alice asks; the agent promises and writes an open commitment.
-    await mention("U0ALICE", LOCKED, "1600.1", "tell me when the deploy is out?");
+    await mention("U0ALICE", LOCKED, "2600.1", "tell me when the deploy is out?");
     const end = Date.now() + 3000;
     while (sent.length === 0 && Date.now() < end) await Bun.sleep(10);
     const sid = sent[0]!.sid;

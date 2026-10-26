@@ -35,6 +35,7 @@
  */
 import type { Redis } from "ioredis";
 import * as Runs from "../db/background-runs";
+import * as Sessions from "../db/sessions";
 import { claimSlot } from "../db/background-slots";
 import * as Proposals from "../db/proposals";
 import { registerLoop } from "../gateway/core/running-loops";
@@ -224,14 +225,18 @@ export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: 
         console.error(`[background] could not list agents: ${errText(e)}`);
         return;
       }
-      for (const g of groups) {
-        if (deps.commitments && !signal.aborted) {
+      // Due promises first, for every agent, before any pass: they are top priority.
+      if (deps.commitments) {
+        for (const g of groups) {
+          if (signal.aborted) return;
           try {
             await deps.commitments(g, now);
           } catch (e) {
             console.error(`[background] agent=${g.agentId} pass=commitment: ${errText(e)}`);
           }
         }
+      }
+      for (const g of groups) {
         const seen = last.get(g.agentId) ?? {};
         last.set(g.agentId, seen);
         for (const { pass, slot, after } of dueSlots(now, g.timeZone, seen)) {
@@ -473,7 +478,7 @@ export function promiseChecks(transport: PromiseTransport): (g: AgentGroup, now:
     runDueCommitments(g.agentId, now, {
       transport,
       timeZone: g.timeZone,
-      prefs: (teamId, userId) => readPingPrefs(brainCall, teamId, userId),
+      prefs: async (row) => readPingPrefs(brainCall, row.teamId ?? (await Sessions.teamForThread(row.channelId, row.threadTs)), row.beneficiary),
       openRun: async (row) => {
         const named = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
         const r = await startSkillCheck({

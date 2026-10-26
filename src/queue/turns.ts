@@ -395,6 +395,25 @@ export class TurnQueues {
    * `first` says these messages are OLDER than the pending job's (a
    * re-dispatch of a failed turn) for when the ts cannot tell.
    */
+  /**
+   * True when the session has a turn job waiting to be claimed: the job a new
+   * message would be appended to (the coalesce index, checked as #tryAppend
+   * checks it). A stale index (the job claimed, done or removed) is false.
+   */
+  async hasPending(sessionId: string): Promise<boolean> {
+    const existing = await this.#connection.get(this.keys.coalesce(sessionId));
+    if (!existing) return false;
+    let ref: { queue: string; jobId: string };
+    try {
+      ref = JSON.parse(existing);
+    } catch {
+      return false;
+    }
+    const pending = await this.queue(ref.queue).getJob(ref.jobId);
+    if (!pending) return false;
+    return PENDING_STATES.has(await pending.getState()) && !(await this.#turnRan(pending));
+  }
+
   async enqueueTurn(
     job: TurnJob,
     target: TurnTarget = { label: DEFAULT_LABEL },
