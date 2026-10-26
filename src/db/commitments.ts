@@ -102,9 +102,14 @@ export async function upsertOpen(c: Omit<CommitmentRow, "status" | "checks" | "l
   );
 }
 
-/** Close a row (any status but open). True when an open row was closed. */
+/**
+ * Close a row. True when a row changed. `expired` closes only an open row;
+ * `done`/`dropped` (what the page says) also settle an expired one, whose
+ * last check may resolve it after the scheduler stopped checking.
+ */
 export async function close(k: CommitmentKey, status: Exclude<CommitmentStatus, "open">): Promise<boolean> {
-  const r = await db.run(`UPDATE commitments SET status = ? WHERE agent_id = ? AND source = ? AND slug = ? AND status = 'open'`, [
+  const from = status === "expired" ? "('open')" : "('open', 'expired')";
+  const r = await db.run(`UPDATE commitments SET status = ? WHERE agent_id = ? AND source = ? AND slug = ? AND status IN ${from}`, [
     status, k.agentId, k.source, k.slug,
   ]);
   return (r.changes ?? 0) > 0;

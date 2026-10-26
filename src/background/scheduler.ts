@@ -55,7 +55,9 @@ import { dueQuietThreads, quietSlot, runQuietMoment } from "./passes/quiet-momen
 import { runSkillReview } from "./passes/skill-review";
 import type { ThreadActivity } from "../db/thread-activity";
 import { defaultRunnerDeps } from "./runner";
-import { backgroundAgentId } from "./skill-check";
+import { backgroundAgentId, finishSkillCheck, startSkillCheck } from "./skill-check";
+import { runDueCommitments, type PromiseTransport } from "../proactive/promises";
+import { readPingPrefs } from "../proactive/prefs";
 import { sweepStaleRuns } from "./stale-runs";
 
 export { isoWeekSlot, previousDay };
@@ -107,6 +109,9 @@ export interface SchedulerDeps {
   quietDue?: (g: AgentGroup, now: Date) => Promise<ThreadActivity[]>;
   /** Default: a timer that the signal cuts short. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** Check the group's due promises (phase E, src/proactive/promises.ts).
+   *  Runs first every tick: due promises are top priority. Absent: none. */
+  commitments?: (g: AgentGroup, now: Date) => Promise<unknown>;
 }
 
 /** `after`: the pass runs only once that pass's ledger rows for the same day have all finished. */
@@ -204,6 +209,13 @@ export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: 
         return;
       }
       for (const g of groups) {
+        if (deps.commitments && !signal.aborted) {
+          try {
+            await deps.commitments(g, now);
+          } catch (e) {
+            console.error(`[background] agent=${g.agentId} pass=commitment: ${errText(e)}`);
+          }
+        }
         const seen = last.get(g.agentId) ?? {};
         last.set(g.agentId, seen);
         for (const { pass, slot, after } of dueSlots(now, g.timeZone, seen)) {
@@ -397,6 +409,8 @@ async function listBrainSources(): Promise<string[]> {
 export interface SchedulerSlack {
   /** Posts as the agent's bot; `channel` is a user id for a DM. */
   post: CardPost;
+  /** How promise checks reach their threads (phase E). Absent: promises are not checked. */
+  promises?: PromiseTransport;
   /** The manager and the backup manager (who may decide manager proposals). */
   managers: () => string[];
   /** Whom the weekly digest goes to: the manager, else the backup manager. */
@@ -414,9 +428,33 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
   };
 }
 
+/** Production promise checks for a group: budgeted on the ledger, prefs from the beneficiary's profile. */
+export function promiseChecks(transport: PromiseTransport): (g: AgentGroup, now: Date) => Promise<number> {
+  return (g, now) =>
+    runDueCommitments(g.agentId, now, {
+      transport,
+      timeZone: g.timeZone,
+      prefs: (teamId, userId) => readPingPrefs(brainCall, teamId, userId),
+      openRun: async (row) => {
+        const named = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
+        const r = await startSkillCheck({
+          personaId: row.personaId || "default",
+          model: personaDefaultModel(named),
+          scope: row.runAs ? `user:${row.runAs}` : "agent",
+          pass: "commitment",
+        });
+        return r.ok ? { ok: true, runId: r.runId, agentId: r.agentId } : { ok: false };
+      },
+      dropRun: async (runId, agentId) => {
+        await finishSkillCheck({ runId, agentId, usage: {}, outcome: "error", pass: "commitment" });
+      },
+    });
+}
+
 /** The scheduler as the gateway and mono run it. */
 export function defaultSchedulerDeps(slack?: SchedulerSlack): SchedulerDeps {
   return {
+    ...(slack?.promises ? { commitments: promiseChecks(slack.promises) } : {}),
     now: () => new Date(),
     brainReady,
     agents: defaultAgentGroups,

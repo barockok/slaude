@@ -15,6 +15,8 @@ import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
+import type { CommitmentRow } from "../../db/commitments";
+import { ledgerTurnRun } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
@@ -818,6 +820,78 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       routes.set(sessionId, { ctx, surface: wrapSurface(surfaceForCtx(ctx), sessionId), spoke: false, silent: true });
     },
   });
+  // Promise checks (phase E): a due commitment's check turn goes into the
+  // thread that made the promise, through the cron path (a route bound like a
+  // cron run's, origin cron; the queue in the gateway role, this process in
+  // mono), carrying its open `commitment` ledger run. It never runs as anyone
+  // through a carried identity: the thread's own /1on1 lock decides, and a
+  // check whose thread no longer has the scope it was promised in (a lock
+  // taken or released since) is refused and retried, so a /1on1 promise is
+  // only ever checked inside that /1on1.
+  const promiseTeam = async (row: CommitmentRow): Promise<string | null> =>
+    row.teamId ?? (await Sessions.teamForThread(row.channelId, row.threadTs));
+  const promiseSession = async (row: CommitmentRow): Promise<SessionRow | null> => {
+    const teamId = await promiseTeam(row);
+    return teamId ? Sessions.findByThread({ team_id: teamId, channel_id: row.channelId, thread_ts: row.threadTs, persona_id: row.personaId || "default" }) : null;
+  };
+  backgroundSlack.promises = {
+    isBusy: async (row) => {
+      const session = await promiseSession(row);
+      if (!session) return false;
+      if (!queueDispatch) return agent.isTurnInFlight(session.id);
+      const k = makeKeys();
+      return (await getRedis().exists(k.sessionLock(session.id), k.coalesce(session.id))) > 0;
+    },
+    dispatch: async (row, envelope, run) => {
+      const teamId = await promiseTeam(row);
+      if (!teamId) throw new Error("no Slack team is known for this thread");
+      const lockedUser = (await OneOnOne.find(row.channelId, row.threadTs))?.locked_user ?? null;
+      if ((row.runAs ?? null) !== lockedUser) throw new Error("the thread's /1on1 lock changed since the promise; not checking it here");
+      const persona = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
+      const session = await agent.ensureSession({ team_id: teamId, channel_id: row.channelId, thread_ts: row.threadTs, persona_id: row.personaId || "default" });
+      const app: AppRef = { apiAppId: session.slack_app_id ?? undefined, teamId };
+      const ctx: SlackContext = {
+        client: outClientForPersona(persona, app),
+        apiAppId: app.apiAppId,
+        resolveBotToken: () => t.botTokenFor?.(app),
+        channel: row.channelId,
+        threadTs: row.threadTs,
+        inboundTs: String(Date.now()),
+        userId: row.beneficiary,
+        teamId,
+        postTarget: "thread",
+        personaId: persona,
+        origin: "cron",
+      };
+      ctx.requestApproval = (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req });
+      ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+      noteTurnSender(session.id, ctx);
+      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, silent: true });
+      if (queueDispatch) {
+        await queueDispatch.dispatch(session, envelope, {
+          teamId,
+          channelId: row.channelId,
+          threadTs: row.threadTs,
+          eventTs: String(Date.now() / 1000),
+          userId: row.beneficiary,
+          personaId: persona,
+          ...(app.apiAppId ? { apiAppId: app.apiAppId } : {}),
+          origin: "cron",
+          backgroundRunId: run.runId,
+        });
+      } else {
+        await agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass: "commitment" }) });
+      }
+    },
+    post: async (row, text) => {
+      const teamId = await promiseTeam(row);
+      const persona = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
+      const session = await promiseSession(row);
+      const app: AppRef = { apiAppId: session?.slack_app_id ?? undefined, teamId: teamId ?? undefined };
+      await outClientForPersona(persona, app).chat.postMessage({ channel: row.channelId, thread_ts: row.threadTs, text });
+    },
+  };
+
   agent.setPermissionResolver(permissions.resolver);
   if (env.remote.enabled() && env.role() !== "gateway") {
     // Mono: the query runs in this process, so resolve the target from the DB
