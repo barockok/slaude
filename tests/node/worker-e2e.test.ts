@@ -207,7 +207,10 @@ beforeAll(async () => {
       this.aborts.get(id)?.abort();
     }
     override suppressNextTurn(_id: string) {}
-    override async sendMessage(sessionId: string, text: string): Promise<void> {
+    /** The background run each sendMessage carried (phase E promise checks), by session. */
+    bgRuns = new Map<string, { runId: string; finish: (usage: any, outcome: "ok" | "error") => Promise<void> }>();
+    override async sendMessage(sessionId: string, text: string, opts: { backgroundRun?: any } = {}): Promise<void> {
+      if (opts.backgroundRun) this.bgRuns.set(sessionId, opts.backgroundRun);
       this.emit("event", { type: "turnStart", sessionId } as any);
       // The real manager's boot fails this way when the child-env resolver throws.
       if (bootFailure) throw bootFailure;
@@ -443,6 +446,40 @@ d("gateway↔node E2E (real Redis)", () => {
 
     await until(async () => (await stub.resolveEffectiveIdentity(sid)) === "UTESTOWNER1", 15_000);
     expect(await stub.resolveEffectiveIdentity(sid)).toBe("UTESTOWNER1");
+  }, 40_000);
+
+  // A promise check (phase E) carries its open ledger run to the node, which
+  // finishes it with the turn's usage through POST /v1/background/turn/finish.
+  test("a job's background run reaches the node and is finished on the gateway's ledger", async () => {
+    const THREAD = "9150.0";
+    await emitSlack("message", msg(THREAD, "9150.1", "<@USLAUDE> seed the session"));
+    await until(async () => !!(await sessionIdOf(THREAD).catch(() => null)), 15_000);
+    const sid = await sessionIdOf(THREAD);
+    const { startSkillCheck } = await import("../../src/background/skill-check");
+    const Runs = await import("../../src/db/background-runs");
+    const opened = await startSkillCheck(
+      { personaId: "default", model: "claude-opus-5-5", scope: "agent", pass: "commitment" },
+      { budget: () => ({ limitUsd: 5, timeZone: "UTC" }) },
+    );
+    if (!opened.ok) throw new Error("run did not open");
+
+    await qd.dispatch({ id: sid } as any, '<runtime-check kind="commitment">check</runtime-check>', {
+      teamId: "T",
+      channelId: "C0TEAM",
+      threadTs: THREAD,
+      eventTs: String(Date.now() / 1000),
+      userId: "U0MGR",
+      origin: "cron",
+      backgroundRunId: opened.runId,
+    });
+
+    await until(async () => stub.bgRuns.has(sid), 15_000);
+    const run = stub.bgRuns.get(sid)!;
+    expect(run.runId).toBe(opened.runId);
+    await run.finish({ "claude-opus-5-5": { input: 1000, output: 100, cache_read: 0, cache_write: 0 } }, "ok");
+    const row = await Runs.get(opened.runId);
+    expect(row).toMatchObject({ pass: "commitment", outcome: "ok" });
+    expect(row!.costUsd).toBeGreaterThan(0);
   }, 40_000);
 
   // A node has no database: the /1on1 lock it builds the session-mode block
