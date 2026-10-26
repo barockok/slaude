@@ -81,6 +81,18 @@ recorded below as observations.
   git question scored 0.40, under `tAct` 0.8, so chime-in never fired. The
   reworded question scored it 1.0 while thanks, chit-chat and asks to
   someone else stayed "no".
+- **`kb_think` on a remote brain booted a local one.** In remote mode
+  (`SLAUDE_BRAIN_MODE=remote`, the brain in its own server process) every
+  other brain call goes over the backend, but `brainThink` handed gbrain's
+  `runThink` the in-process engine, so it booted an empty local brain (on a
+  gateway, PGLite on the shared volume, which the scale rules forbid), paid
+  for a synthesis over no pages, and was answered only by the rescue path.
+  On a remote brain it now gathers through the backend with slaude's
+  per-source `gather()` and synthesizes with the SDK client, sharing the
+  rescue's synthesis code. Checked against a real brain-server process over a
+  copy of the smoke-test brain: the in-scope page was found, the /1on1 page
+  never reached the prompt, and the client created no local brain. Takes,
+  graph and trajectory are not gathered on that path.
 - **The brain was left open on shutdown,** so each mono restart reported an
   unclean shutdown. Shutdown now closes it; a SIGTERM afterwards left no lock.
 
