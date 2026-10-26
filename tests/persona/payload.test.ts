@@ -312,12 +312,13 @@ describe("background (budget and timezone)", () => {
     expect(parsePayload(base([ana])).personas[0]!.background).toBeUndefined();
     expect(parsePayload(withBg({ budgetUsd: 2.5, timezone: "Europe/Berlin" })).personas[0]!.background).toEqual({ budgetUsd: 2.5, timezone: "Europe/Berlin" });
     expect(parsePayload(withBg({ budgetUsd: 100 })).personas[0]!.background).toEqual({ budgetUsd: 100 });
+    // 0 disables the persona's background spend (as SLAUDE_BACKGROUND_BUDGET_USD=0 does).
+    expect(parsePayload(withBg({ budgetUsd: 0 })).personas[0]!.background).toEqual({ budgetUsd: 0 });
     expect(parsePayload(withBg({ timezone: "UTC" })).personas[0]!.background).toEqual({ timezone: "UTC" });
   });
   test("rejects a bad timezone, a non-positive or too large budget, and unknown keys", () => {
     expect(() => parsePayload(withBg({ timezone: "Mars/Olympus" }))).toThrow(/timezone/);
     expect(() => parsePayload(withBg({ budgetUsd: -1 }))).toThrow(/budgetUsd/);
-    expect(() => parsePayload(withBg({ budgetUsd: 0 }))).toThrow(/budgetUsd/);
     expect(() => parsePayload(withBg({ budgetUsd: 101 }))).toThrow(/budgetUsd/);
     expect(() => parsePayload(withBg({ budgetUsd: "3" }))).toThrow(/budgetUsd/);
     expect(() => parsePayload(withBg({ budgets: 3 }))).toThrow(PayloadError);

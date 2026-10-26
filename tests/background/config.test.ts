@@ -52,6 +52,11 @@ describe("budgetConfigFor", () => {
     expect(budgetConfigFor("ana")).toEqual({ limitUsd: 7, timeZone: "Asia/Tokyo" });
     expect(budgetConfigFor("bea")).toEqual({ limitUsd: 3, timeZone: "Europe/Berlin" });
   });
+  test("a persona budget of 0 disables its background spend (not the env value)", () => {
+    process.env.SLAUDE_BACKGROUND_BUDGET_USD = "3";
+    install([persona("ana", { budgetUsd: 0 })]);
+    expect(budgetConfigFor("ana").limitUsd).toBe(0);
+  });
   test("timezone: persona > env > UTC", () => {
     process.env.SLAUDE_BACKGROUND_TIMEZONE = "Asia/Tokyo";
     install([persona("ana", { timezone: "Europe/Berlin" }), persona("bea")]);

@@ -72,7 +72,7 @@ const backgroundSpec = z
     budgetUsd: z
       .number()
       .finite()
-      .gt(0, "background.budgetUsd must be greater than 0")
+      .min(0, "background.budgetUsd must be 0 or more (0 disables background spend)")
       .max(BACKGROUND_BUDGET_MAX_USD, `background.budgetUsd must be at most ${BACKGROUND_BUDGET_MAX_USD}`)
       .optional(),
     timezone: z.string().refine(isValidTimeZone, "background.timezone must be a valid IANA time zone").optional(),
