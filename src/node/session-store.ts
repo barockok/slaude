@@ -72,6 +72,12 @@ export class RestSessionStore implements SessionStore {
     return t;
   }
 
+  /** `call` on the session's job token, refreshed once if expired (see below):
+   *  for other gateway calls made after the job ended (the skill check). */
+  withToken<T>(id: string, call: (token: string) => Promise<T>): Promise<T> {
+    return this.#withToken(id, call);
+  }
+
   /** Run `call` on the session's token; on an expired-token 401, refresh the
    *  token once (rebinding it unless a newer job bound another meanwhile) and
    *  retry. A failed refresh rethrows the original refusal. */

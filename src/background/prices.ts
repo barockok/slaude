@@ -8,6 +8,9 @@ export type PriceTable = Record<string, Record<TokenKind, number>>;
 
 const KINDS: TokenKind[] = ["input", "output", "cache_read", "cache_write"];
 
+/** An assistant turn's output counts as at least this many tokens until the result reports the real total. */
+export const PROVISIONAL_OUTPUT_TOKENS = 1024;
+
 /**
  * Anthropic list prices, USD per million tokens, taken 2026-10-25 from the
  * claude-api skill's pricing reference (model table cached 2026-10-06, plus its
@@ -99,4 +102,65 @@ export function tokensFromUsage(u: ResultUsage): TokenCounts {
     cache_read: u.cache_read_input_tokens || 0,
     cache_write: u.cache_creation_input_tokens || 0,
   };
+}
+
+/** One model's row of a result's `modelUsage` (camelCase, as the SDK reports it). */
+export type ModelUsageRow = {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
+};
+
+/** Token counts per model id. */
+export type ModelTokens = Record<string, TokenCounts>;
+
+export const ZERO_TOKENS: TokenCounts = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+
+export function addTokens(a: TokenCounts, b: TokenCounts): TokenCounts {
+  return {
+    input: a.input + b.input,
+    output: a.output + b.output,
+    cache_read: a.cache_read + b.cache_read,
+    cache_write: a.cache_write + b.cache_write,
+  };
+}
+
+export function tokensFromModelUsage(r: ModelUsageRow): TokenCounts {
+  return {
+    input: r.inputTokens || 0,
+    output: r.outputTokens || 0,
+    cache_read: r.cacheReadInputTokens || 0,
+    cache_write: r.cacheCreationInputTokens || 0,
+  };
+}
+
+/**
+ * Price token counts per model: the summed tokens, the cost of the priced
+ * models, and the models the table has no price for (never priced at zero:
+ * the caller decides what an unpriced model means).
+ */
+export function priceByModel(table: PriceTable, byModel: ModelTokens): { tokens: TokenCounts; cost: number; unpriced: string[] } {
+  let tokens = { ...ZERO_TOKENS };
+  let cost = 0;
+  const unpriced: string[] = [];
+  for (const [m, t] of Object.entries(byModel)) {
+    tokens = addTokens(tokens, t);
+    const c = costUsd(table, m, t);
+    if (c === null) unpriced.push(m);
+    else cost += c;
+  }
+  return { tokens, cost, unpriced };
+}
+
+let priceTableErrorsLogged = false;
+
+/** SLAUDE_PRICE_TABLE (or the built-in table), its problems logged once per process. */
+export function envPriceTable(raw: string | undefined): PriceTable {
+  const { table, errors } = loadPriceTable(raw);
+  if (errors.length > 0 && !priceTableErrorsLogged) {
+    priceTableErrorsLogged = true;
+    for (const e of errors) console.error(`[background] ${e}; using the built-in price table`);
+  }
+  return table;
 }

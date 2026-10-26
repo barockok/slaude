@@ -15,7 +15,7 @@ import {
 // so the mock applies even when an earlier module already imported the SDK —
 // no query-string re-import (which would split coverage off the canonical file).
 import * as agentSdk from "@anthropic-ai/claude-agent-sdk";
-import { TokenBudget, type UsageSnapshot } from "./token-budget";
+import { TokenBudget, type ResultUsage, type UsageSnapshot } from "./token-budget";
 import { SkillGate } from "./skill-gate";
 import { denySyntheticProfileWrite } from "./profile-write-guard";
 import { m as metric } from "../metrics";
@@ -52,6 +52,8 @@ import { redactSecrets } from "../gateway/core/status-text";
 import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
 import { injectedTurns, voiceCallActive } from "../voice/turn-flags";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
+import { turnModelTokens, type SkillCheckBudget } from "../background/skill-check";
+import { addTokens, PROVISIONAL_OUTPUT_TOKENS, tokensFromUsage, type ModelTokens, type ModelUsageRow, type TokenCounts } from "../background/prices";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
 const REMOTE_DISPOSE_TIMEOUT_MS = 8_000;
@@ -85,6 +87,13 @@ type LiveSession = {
   /** Set after we inject an auto-evolve synthetic prompt — the next result
    *  is the evolution turn itself; don't recurse into another auto-evolve. */
   inAutoEvolve: boolean;
+  /** The budgeted skill-check run of the check turn in flight (set with
+   *  inAutoEvolve when a budget is installed), ended exactly once: by the
+   *  turn's result, or by the session's teardown when no result came. */
+  evolveRun?: EvolveRun;
+  /** The last result's `modelUsage` (a running total per CLI process): the
+   *  base the check turn's own usage is measured from. */
+  lastModelUsage?: Record<string, ModelUsageRow>;
   /** Set after the SDK query() resolves; lets us call setPermissionMode/setModel live. */
   query?: Query;
   /** Idle TTL timer; cleared/rearmed on every user msg and turn-end. */
@@ -122,6 +131,18 @@ export type AgentEvent =
   | { type: "error"; sessionId: string; error: string; code?: FailureCode; jobId?: string }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
   | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
+
+/** An open skill-check run (see LiveSession.evolveRun). */
+type EvolveRun = {
+  budget: SkillCheckBudget;
+  runId: string;
+  /** modelUsage at the qualifying turn's result. */
+  base: Record<string, ModelUsageRow> | undefined;
+  /** Usage of the check turn's assistant messages so far, per message id
+   *  (output raised to PROVISIONAL_OUTPUT_TOKENS), for a turn that never
+   *  reaches its result. */
+  seen: Map<string, { model: string; tokens: TokenCounts }>;
+};
 
 /** Permission resolver — called per tool use; given a sessionId so transports can present UI in the right thread. */
 /** Per-session child-env overlay: a plain record adds variables; a
@@ -314,6 +335,7 @@ export class AgentManager extends EventEmitter {
    *  node worker installs a REST client of the gateway's memory routes. */
   #memory: MemoryProvider = memory;
   #stopGuard: StopGuard | undefined;
+  #backgroundBudget: SkillCheckBudget | undefined;
   #remoteResolver: ((sessionId: string) => Promise<RemoteTarget | null>) | undefined;
   #remoteFactory: ((sessionId: string, t: RemoteTarget) => Promise<RemoteHandle> | RemoteHandle) | undefined;
   /** Per session: the open remote handle and the target it was opened for.
@@ -473,6 +495,14 @@ export class AgentManager extends EventEmitter {
   /** Replace the memory provider (the node role: memory served by the gateway). */
   setMemoryProvider(provider: MemoryProvider) {
     this.#memory = provider;
+  }
+
+  /** Install the background budget for the post-turn skill check (spec
+   *  §9.3): mono over the ledger, a node over /v1. With one installed, a check
+   *  runs only after its run started; a refused or failed start skips it.
+   *  Without one (a bare manager, as in tests) the check runs unbudgeted as before. */
+  setBackgroundBudget(budget: SkillCheckBudget | undefined) {
+    this.#backgroundBudget = budget;
   }
 
   /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
@@ -1435,6 +1465,9 @@ export class AgentManager extends EventEmitter {
           this.emit("event", { type: "error", sessionId, error: message, code: "TURN_FAILED" } satisfies AgentEvent);
         }
       } finally {
+        // A check turn cut off before its result (abort, reload, crash) still
+        // ends its run, with the usage its assistant messages carried.
+        if (live.evolveRun) this.#endEvolveRun(sessionId, live, "error", seenEvolveUsage(live.evolveRun));
         // A session detached by sendMessage's bounded reload wait no longer owns
         // the id: a fresh session may hold it, and nothing here may touch that.
         const owns = () => this.#live.get(sessionId) === live;
@@ -1540,6 +1573,7 @@ export class AgentManager extends EventEmitter {
         // branch type-checks (both the discriminant and `.thinking`).
         type ThinkingBlock = { type: "thinking"; thinking: string };
         const evolve = live?.inAutoEvolve ? { autoEvolve: true } : {};
+        if (live?.inAutoEvolve && live.evolveRun) noteEvolveUsage(live.evolveRun, msg.message as { id?: string; model?: string; usage?: unknown });
         const blocks = msg.message.content as Array<
           (typeof msg.message.content)[number] | ThinkingBlock
         >;
@@ -1609,6 +1643,14 @@ export class AgentManager extends EventEmitter {
           live.pendingInputs = Math.max(0, live.pendingInputs - 1);
           live.inputSynthetic.shift();
           live.inputSenders.shift();
+          // The check turn's result: its own usage (this result's running
+          // modelUsage minus the qualifying turn's) ends its budgeted run.
+          const r = msg as { subtype?: string; is_error?: boolean; usage?: Partial<ResultUsage>; modelUsage?: Record<string, ModelUsageRow> };
+          if (live.inAutoEvolve && live.evolveRun) {
+            const ok = r.subtype === "success" && !r.is_error;
+            this.#endEvolveRun(sessionId, live, ok ? "ok" : "error", turnModelTokens(r.modelUsage, live.evolveRun.base, r.usage));
+          }
+          if (r.modelUsage) live.lastModelUsage = Object.fromEntries(Object.entries(r.modelUsage).map(([k, v]) => [k, { ...v }]));
         }
         // A reload deferred by reloadAfterTurn applies once NO input is
         // outstanding: another queued input (e.g. a user message behind an
@@ -1688,6 +1730,8 @@ export class AgentManager extends EventEmitter {
           } else {
             metric.turnsTotal.inc({ result: "error" });
             metric.errorsTotal.inc({ kind: "turn" });
+            // A failed check turn is over too: the next turn is not a check.
+            if (live) live.inAutoEvolve = false;
             this.emit("event", {
               type: "error",
               sessionId,
@@ -1708,9 +1752,17 @@ export class AgentManager extends EventEmitter {
           // Never during a voice call: the follow-up turn would occupy the
           // session and the next delegated request would queue behind it.
           if (live && !wasAutoEvolve && !deferredReload && !voiceCallActive(sessionId) && this.#shouldAutoEvolve(live)) {
-            live.inAutoEvolve = true;
             live.turnTools = [];
-            live.pushUser(AUTO_EVOLVE_PROMPT, true);
+            const budget = this.#backgroundBudget;
+            if (!budget) {
+              live.inAutoEvolve = true;
+              live.pushUser(AUTO_EVOLVE_PROMPT, true);
+            } else if (live.pendingInputs === 0) {
+              void this.#startBudgetedCheck(sessionId, live, budget);
+            } else {
+              // A queued message would run first and be taken for the check.
+              console.log(`[mgr] skill check skipped session=${sessionId}: a newer message is already queued`);
+            }
           } else if (live) {
             live.turnTools = [];
           }
@@ -1721,6 +1773,59 @@ export class AgentManager extends EventEmitter {
       default:
         break;
     }
+  }
+
+  /**
+   * Start the check's budgeted run, then push the check prompt. Fails closed:
+   * a refused start, or one that throws (network, gateway error), skips the
+   * check with one log line, so it never runs unbudgeted. A session that moved
+   * on while the run started (a message queued, a reload, a voice call, gone)
+   * ends the run as `error` with no usage instead of running the check.
+   */
+  async #startBudgetedCheck(sessionId: string, live: LiveSession, budget: SkillCheckBudget): Promise<void> {
+    let r: { ok: boolean; runId?: string };
+    try {
+      r = await budget.start(sessionId, live.personaName ?? "default");
+    } catch (e) {
+      console.warn(`[mgr] skill check skipped session=${sessionId}: its budgeted run could not start: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+      return;
+    }
+    if (!r.ok || !r.runId) {
+      console.log(`[mgr] skill check skipped session=${sessionId}: refused by the background budget`);
+      return;
+    }
+    const run: EvolveRun = { budget, runId: r.runId, base: live.lastModelUsage, seen: new Map() };
+    const movedOn =
+      this.#live.get(sessionId) !== live ||
+      live.pendingInputs > 0 ||
+      live.inAutoEvolve ||
+      live.reloading === true ||
+      live.abort.signal.aborted ||
+      this.#reloadAfterTurn.has(sessionId) ||
+      voiceCallActive(sessionId);
+    if (movedOn) {
+      console.log(`[mgr] skill check abandoned session=${sessionId}: the session moved on while its run started`);
+      this.#finishEvolveRun(sessionId, run, "error", {});
+      return;
+    }
+    live.evolveRun = run;
+    live.inAutoEvolve = true;
+    live.pushUser(AUTO_EVOLVE_PROMPT, true);
+  }
+
+  /** End the session's open check run (once). */
+  #endEvolveRun(sessionId: string, live: LiveSession, outcome: "ok" | "error", usage: ModelTokens): void {
+    const run = live.evolveRun;
+    if (!run) return;
+    live.evolveRun = undefined;
+    this.#finishEvolveRun(sessionId, run, outcome, usage);
+  }
+
+  /** Detached: nothing awaits it, so a failure is logged, never thrown. */
+  #finishEvolveRun(sessionId: string, run: EvolveRun, outcome: "ok" | "error", usage: ModelTokens): void {
+    void run.budget.finish(sessionId, run.runId, { usage, outcome }).catch((e) => {
+      console.error(`[mgr] skill check run ${run.runId} could not be recorded session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+    });
   }
 
   #flushTurn(live: LiveSession) {
@@ -1764,6 +1869,24 @@ export class AgentManager extends EventEmitter {
     }
     return substantive >= env.autoEvolveMinTools() && mutating;
   }
+}
+
+/** Record one check-turn assistant message's usage (one API call arrives as
+ *  several messages sharing an id: counted once, the last copy wins). Its
+ *  output counts as at least PROVISIONAL_OUTPUT_TOKENS: the CLI reports
+ *  message_start's usage here (see the pass runner). */
+function noteEvolveUsage(run: EvolveRun, m: { id?: string; model?: string; usage?: unknown } | undefined): void {
+  if (!m?.usage) return;
+  const t = tokensFromUsage(m.usage as ResultUsage);
+  t.output = Math.max(t.output, PROVISIONAL_OUTPUT_TOKENS);
+  run.seen.set(m.id ?? `anon-${run.seen.size}`, { model: m.model ?? "", tokens: t });
+}
+
+/** The check turn's usage so far, per model ("" = the run's own model). */
+function seenEvolveUsage(run: EvolveRun): ModelTokens {
+  const out: ModelTokens = {};
+  for (const { model, tokens } of run.seen.values()) out[model] = out[model] ? addTokens(out[model]!, tokens) : tokens;
+  return out;
 }
 
 /** Bound on sendMessage's wait for a reloading session's CLI to exit. */

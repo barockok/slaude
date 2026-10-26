@@ -101,6 +101,32 @@ export async function finish(
   );
 }
 
+/** One run by id, or null. */
+export async function get(id: string): Promise<BackgroundRun | null> {
+  const row = await db.one<Row>("SELECT * FROM background_runs WHERE id = ?", [id]);
+  return row ? toRun(row) : null;
+}
+
+/**
+ * Finish a run only while it is still open and belongs to this agent and
+ * pass. False when no such open run exists (unknown id, already finished,
+ * another agent's or another pass's): nothing is written.
+ */
+export async function finishOpen(
+  id: string,
+  owner: { agentId: string; pass: string },
+  r: { tokens: TokenCounts; costUsd: number; outcome: RunOutcome },
+): Promise<boolean> {
+  const res = await db.run(
+    `UPDATE background_runs
+        SET tokens_input = ?, tokens_output = ?, tokens_cache_read = ?, tokens_cache_write = ?,
+            cost_usd = ?, outcome = ?, finished_at = ?
+      WHERE id = ? AND agent_id = ? AND pass = ? AND outcome IS NULL`,
+    [r.tokens.input, r.tokens.output, r.tokens.cache_read, r.tokens.cache_write, r.costUsd, r.outcome, Date.now(), id, owner.agentId, owner.pass],
+  );
+  return res.changes > 0;
+}
+
 /** Total USD recorded for an agent on a persona-local day. */
 export async function spentOn(agentId: string, day: string): Promise<number> {
   const row = await db.one<{ total: number | string | null }>(

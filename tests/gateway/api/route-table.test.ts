@@ -47,6 +47,7 @@ const EXPECTED_GATES: Record<string, "label" | "none"> = {
   "tools.memory": "label",
   tools: "label",
   "tools.mcpx": "label",
+  "background.skill-check": "label",
 };
 
 /** One concrete request per label-gated route, scoped to the matrix's token. */
@@ -64,6 +65,7 @@ const SAMPLES: Record<string, { method: string; path: string; body?: string }> =
   "tools.memory": { method: "POST", path: "/v1/tools/memory/prefetch", body: "{}" },
   tools: { method: "POST", path: "/v1/tools/kb/search_kbs", body: JSON.stringify({ query: "x" }) },
   "tools.mcpx": { method: "POST", path: "/v1/tools/mcpx/example/list", body: "{}" },
+  "background.skill-check": { method: "POST", path: "/v1/background/skill-check/start", body: "{}" },
 };
 
 const routes: RouteDef[] = v1Routes({ tools: stubTools }, new InMemoryPendingSource());

@@ -33,6 +33,8 @@ export interface NodeClientOpts {
 /** A memory call waits at most this long; longer than the gateway's own bound
  *  on the brain (GATEWAY_MEMORY_TIMEOUT_MS), so the gateway answers first. */
 export const MEMORY_TIMEOUT_MS = 3000;
+/** Bound on one skill-check budget call (it runs after the turn, off its path). */
+export const BACKGROUND_TIMEOUT_MS = 10_000;
 
 /** A memory call gave up at its bound. */
 export class MemoryTimeoutError extends Error {
@@ -483,6 +485,39 @@ export class NodeClient {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  /**
+   * The post-turn skill check's budget run (POST /v1/background/skill-check/
+   * start|finish). The gateway takes persona, session and scope from the job
+   * token and prices the usage itself. A 404 (a gateway that predates the
+   * routes) and every other non-200 throw: the caller fails closed. `start` is
+   * never retried (a retried start could open a second run); both calls are
+   * bounded by BACKGROUND_TIMEOUT_MS.
+   */
+  async skillCheckStart(jobToken: string): Promise<{ ok: boolean; runId?: string }> {
+    const res = await this.request("/v1/background/skill-check/start", {
+      method: "POST",
+      body: {},
+      jobToken,
+      retry: false,
+      signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS),
+    });
+    const b = await this.#json<{ ok?: unknown; runId?: unknown }>(res);
+    return b.ok === true && typeof b.runId === "string" ? { ok: true, runId: b.runId } : { ok: false };
+  }
+
+  async skillCheckFinish(
+    body: { runId: string; outcome: "ok" | "error"; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> },
+    jobToken: string,
+  ): Promise<void> {
+    const res = await this.request("/v1/background/skill-check/finish", {
+      method: "POST",
+      body,
+      jobToken,
+      signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS),
+    });
+    await this.#json<unknown>(res);
   }
 
   /**

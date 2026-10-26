@@ -40,7 +40,19 @@ import { personaDefaultModel } from "../persona/registry";
 import { canStart, localDay, PASS_MAX_TURNS, type BudgetConfig, type PassName } from "./budget";
 import { budgetConfigFor } from "./config";
 import { createPassMcpServer, PASS_MCP_NAME, passProfileSource, passReadSources, type PassScope, type PassTool, type TranscriptTurn } from "./pass-tools";
-import { costUsd, loadPriceTable, tokensFromUsage, type PriceTable, type TokenCounts, type TokenKind } from "./prices";
+import {
+  addTokens as add,
+  costUsd,
+  envPriceTable as loadEnvPriceTable,
+  PROVISIONAL_OUTPUT_TOKENS,
+  priceByModel,
+  tokensFromModelUsage,
+  tokensFromUsage,
+  ZERO_TOKENS as ZERO,
+  type ModelUsageRow,
+  type PriceTable,
+  type TokenCounts,
+} from "./prices";
 
 export type { PassScope, PassTool, TranscriptTurn };
 export type Outcome = RunOutcome;
@@ -77,15 +89,11 @@ async function defaultProvider(personaId: string): Promise<ProviderCreds | null>
   return resolvePersonaOwnProvider(personaId);
 }
 
-/** An assistant turn's output counts as at least this many tokens until the result reports the real total. */
-export const PROVISIONAL_OUTPUT_TOKENS = 1024;
+export { PROVISIONAL_OUTPUT_TOKENS };
 
 export function defaultRunnerDeps(): RunnerDeps {
   return { query: sdkQuery, brainCall: defaultBrainCall, now: () => new Date() };
 }
-
-const ZERO: TokenCounts = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
-const KINDS: TokenKind[] = ["input", "output", "cache_read", "cache_write"];
 
 /** A fixed first line, so the prompt never starts with "/" (the CLI would read a slash command). */
 const PREAMBLE = "Background learning pass follows.\n\n";
@@ -176,35 +184,14 @@ export function passQueryOptions(a: {
   };
 }
 
-let priceTableErrorsLogged = false;
-function envPriceTable(): PriceTable {
-  const { table, errors } = loadPriceTable(env.priceTableRaw());
-  if (errors.length > 0 && !priceTableErrorsLogged) {
-    priceTableErrorsLogged = true;
-    for (const e of errors) console.error(`[background] ${e}; using the built-in price table`);
-  }
-  return table;
-}
+const envPriceTable = (): PriceTable => loadEnvPriceTable(env.priceTableRaw());
 
 const scopeLabel = (s: PassScope): string => (s.kind === "user" ? `user:${s.userId}` : "agent");
 
 type AssistantMsg = { type: "assistant"; message?: { id?: string; model?: string; usage?: Partial<ResultUsage> } };
-type ModelUsageRow = { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number };
 type ResultMsg = { type: "result"; subtype?: string; is_error?: boolean; usage?: Partial<ResultUsage>; modelUsage?: Record<string, ModelUsageRow> };
 
 const asUsage = (u: Partial<ResultUsage> | undefined): TokenCounts => tokensFromUsage((u ?? {}) as ResultUsage);
-const add = (a: TokenCounts, b: TokenCounts): TokenCounts => ({
-  input: a.input + b.input,
-  output: a.output + b.output,
-  cache_read: a.cache_read + b.cache_read,
-  cache_write: a.cache_write + b.cache_write,
-});
-const fromModelUsage = (r: ModelUsageRow): TokenCounts => ({
-  input: r.inputTokens || 0,
-  output: r.outputTokens || 0,
-  cache_read: r.cacheReadInputTokens || 0,
-  cache_write: r.cacheCreationInputTokens || 0,
-});
 
 const errMsg = (e: unknown): string => redactSecrets(e instanceof Error ? e.message : String(e));
 
@@ -334,16 +321,10 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<{ outco
         // replaces the provisional figure, priced per model.
         const byModel = msg.modelUsage && Object.keys(msg.modelUsage).length > 0 ? Object.entries(msg.modelUsage) : null;
         if (byModel) {
-          let t = { ...ZERO };
-          let c = 0;
-          const unpriced: string[] = [];
-          for (const [m, r] of byModel) {
-            const mt = fromModelUsage(r);
-            t = add(t, mt);
-            const mc = costUsd(table, m, mt);
-            if (mc === null) unpriced.push(m);
-            else c += mc;
-          }
+          const { tokens: t, cost: c, unpriced } = priceByModel(
+            table,
+            Object.fromEntries(byModel.map(([m, r]) => [m, tokensFromModelUsage(r)])),
+          );
           if (unpriced.length > 0) {
             // Never price a model at zero: keep the provisional figure (or the
             // priced part, if larger) and end the run as an error.

@@ -30,6 +30,7 @@
  *   POST  /v1/jobs/:id/token-refresh  fresh token, same claims            (node+job within grace, label)
  *   POST  /v1/jobs/:id/token-reissue  re-mint a long-queued job's token   (node+job any age, label)
  *   POST  /v1/tools/memory/prefetch|sync  episodic memory, run on the gateway (node+job, label)
+ *   POST  /v1/background/skill-check/start|finish  the skill check's budget run (node+job, label)
  *   POST  /v1/tools/:server/:tool     contract-validated tool call        (node+job, label)
  *   POST  /v1/tools/mcpx/:server/list|call   the MCP bridge (WS-C §4.2)   (node+job, label)
  */
@@ -56,6 +57,7 @@ import type { ToolPlaneDeps } from "./tools/deps";
 import { defaultPendingSource, type PendingSource } from "./pending-source";
 import { json, methodNotAllowed, notFound, readBodyCapped, readJson } from "./http";
 import { defaultMemoryPlane, handleMemory, MEMORY_BODY_MAX_BYTES, type MemoryPlane } from "./memory";
+import { BACKGROUND_BODY_MAX_BYTES, handleSkillCheck } from "./background";
 import { PersonaNotLiveError } from "../../persona/registry";
 import { memory as processMemory } from "../../memory";
 
@@ -289,6 +291,27 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
           return json(400, { error: "malformed JSON body" });
         }
         return handleMemory(seg[2]!, body, claims!, memoryPlane);
+      },
+    },
+    {
+      // The post-turn skill check's budget run (spec §9.3). Label-gated: it
+      // spends the persona's budget. Persona, agent, session and scope come
+      // from the token; the gateway prices the usage with its own table.
+      name: "background.skill-check",
+      methods: ["POST"],
+      pattern: ["background", "skill-check", "start|finish"],
+      auth: "node+job",
+      gate: "label",
+      handle: async ({ req, seg, claims }) => {
+        const text = await readBodyCapped(req, BACKGROUND_BODY_MAX_BYTES);
+        if (text === null) return json(413, { error: "body too large" });
+        let body: unknown = {};
+        try {
+          if (text.trim()) body = JSON.parse(text);
+        } catch {
+          return json(400, { error: "malformed JSON body" });
+        }
+        return handleSkillCheck(seg[2]!, body, claims!);
       },
     },
     {

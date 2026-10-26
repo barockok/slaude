@@ -107,6 +107,7 @@ import { parseRef } from "../../secrets";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
+import { ledgerSkillCheckBudget } from "../../background/skill-check";
 import { scrubChildEnv, withoutKeys } from "../../agent/child-env";
 import { providerSelectingNames } from "../../agent/provider-env";
 import { memoryScopeFor, withClaimLock } from "../../memory/scope";
@@ -980,6 +981,20 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const { ctx } = route;
         const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
         return memoryScopeFor(await brainGateFor(ctx), { channel: ctx.channel, runAsUser: runAsUser ?? null });
+      },
+    }),
+  );
+
+  // The post-turn skill check's budget (spec §9.3), on the ledger for turns
+  // that run in THIS process (mono). The run's scope is whom the session's
+  // turns run as, by the same rule as memory above.
+  agent.setBackgroundBudget(
+    ledgerSkillCheckBudget({
+      scopeFor: async (sessionId) => {
+        const route = routes.get(sessionId);
+        if (!route) return "agent";
+        const runAsUser = await agent.resolveEffectiveIdentity(sessionId, route.ctx.channel, route.ctx.threadTs);
+        return runAsUser ? `user:${runAsUser}` : "agent";
       },
     }),
   );
