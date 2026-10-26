@@ -14,6 +14,23 @@ const echo: Scenario = {
   },
 };
 
+/**
+ * A tool call's arguments: `args=<base64url JSON object>` when the tag gives
+ * them (a tag value cannot hold spaces), else `{ command: "echo step-<n>" }`.
+ * Malformed args fall back to the default, so a typo is a visible tool error.
+ */
+function toolArgs(raw: string | undefined, step: number): Record<string, unknown> {
+  if (raw) {
+    try {
+      const v = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
+      if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>;
+    } catch {
+      /* fall through */
+    }
+  }
+  return { command: `echo step-${step}` };
+}
+
 const multiTool: Scenario = {
   name: "multi-tool",
   reply: ({ tag, view }) => {
@@ -22,7 +39,7 @@ const multiTool: Scenario = {
     if (done >= n) return { kind: "text", content: `done after ${n} tools` };
     return {
       kind: "tools",
-      calls: [{ id: `toolu_mock_${done + 1}`, name: tag.params["tool"] ?? "Bash", args: { command: `echo step-${done + 1}` } }],
+      calls: [{ id: `toolu_mock_${done + 1}`, name: tag.params["tool"] ?? "Bash", args: toolArgs(tag.params["args"], done + 1) }],
     };
   },
 };
