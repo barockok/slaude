@@ -43,6 +43,11 @@ naming the open one. The new page can never reuse the old slug.
   only. This is a convention you honour when reading (ignore entries tagged
   for another agent); the runtime does not validate it.
 - Act on a profile; never state it to anyone else.
+- Ping preferences are `fields` on the profile page, each only as the person
+  said it: `pings` (`yes` = they want proactive DMs), `topics` (comma-separated
+  topics they want pings about), `mutes` (comma-separated topics, or `all`),
+  `quiet_hours` (`HH:MM-HH:MM`), `timezone` (IANA). "Don't ping me about X"
+  adds X to `mutes`. Rewrite the whole profile page, keeping the other fields.
 
 ### Told and inferred
 What a person said (`told`) and what you concluded (`inferred`) never share a
