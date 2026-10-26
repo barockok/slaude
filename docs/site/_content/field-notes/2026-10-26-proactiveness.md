@@ -327,6 +327,11 @@ replies and reactions were sent from their own Slack account.
   `reaction_added` (`slaude manifest` lists it). Once it was subscribed, a
   reaction on a fresh post arrived over the socket, and the person's slice
   got an outcome page with the signal `reacted :eyes:`.
+- **In a DM.** The same checks were run on two proactive posts in the
+  agent's DM with the person. A reaction on one post was recorded as
+  `reacted :eyes:` in their slice. A "stop" in the other post's thread was
+  answered in one line in that thread, and its topic was added to the
+  topics already in the profile's `mutes`, which kept the earlier one.
 - **One outcome page per post.** A reaction and then a thread reply on the
   same post leave only `replied`: both write `outcomes/proactive-<id>`, and
   the later signal replaces the earlier one. That matches "signal-only
@@ -358,8 +363,7 @@ unmodified.
 - The live run above was one run of each path, with synthetic data and a
   placeholder price. It does not test behaviour across many threads, people
   or days.
-- A thread reply under a bot's DM post on real Slack (the real-Slack run
-  used a channel post). Real Slack HTTP mode was not run; Socket Mode was.
+- Real Slack in HTTP mode: only Socket Mode was run.
 - Failover between Kubernetes pods (separate OS processes on shared Postgres
   and Redis were checked, above). The repo's minikube e2e stack was tried in
   the build environment. The cluster's own control-plane pods could not start
