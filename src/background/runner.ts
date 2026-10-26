@@ -13,7 +13,8 @@
  *      zero: the run keeps at least its estimate);
  *   3. one locked-down `query()`: no built-in tools, no settings, hooks,
  *      plugins or MCP config from disk, dontAsk, a scrubbed env on the
- *      persona's own provider set when it declares one, and only the
+ *      persona's own provider set (declared, else its provider_creds rows,
+ *      as its runtime bundle; process env only when it has none), and only the
  *      `slaude_pass` tools (pre-approved by name, everything else denied);
  *   4. every assistant turn is priced as it arrives and written to the open
  *      ledger row, so a crashed or running pass already counts toward the
@@ -92,7 +93,7 @@ export interface RunnerDeps {
 /** A resolved provider set (a runtime bundle's providerCreds). */
 export type ProviderCreds = { apiKey?: string; baseUrl?: string; authToken?: string; oauthToken?: string };
 
-/** The persona's declared provider, resolved as its runtime bundle would be (loaded lazily: gateway code). */
+/** The persona's provider set, resolved as its runtime bundle would be: declared, else its rows (loaded lazily: gateway code). */
 async function defaultProvider(personaId: string): Promise<ProviderCreds | null> {
   const { resolvePersonaOwnProvider } = await import("../gateway/api/tenants");
   return resolvePersonaOwnProvider(personaId);

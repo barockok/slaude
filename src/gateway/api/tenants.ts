@@ -184,17 +184,36 @@ const declaresProvider = (p: PersonaProvider | null | undefined): p is PersonaPr
   !!p && PROVIDER_FIELDS.some((f) => p[f]);
 
 /**
- * The resolved provider set of a managed persona that declares its own
- * `provider` (the same atomic set its runtime bundle carries), or null when it
- * declares none (a filesystem registry never does). Used by work that runs on
- * the gateway for a persona without a bundle fetch (background passes). A
- * reference that cannot be resolved throws SecretResolutionError: never fall
- * back to this process's provider variables.
+ * The provider set background work on the gateway runs persona
+ * `personaName` with (passes; no bundle fetch), mirroring its runtime bundle:
+ *   - a declared `provider`: exactly that set, resolved;
+ *   - otherwise the encrypted provider_creds rows the bundle would carry,
+ *     persona row over tenant row, per field (a managed tenant: always; an
+ *     unmanaged one: when the persona has a row, as buildBundle's tier 1);
+ *   - null when there are none: the caller uses this process's provider env.
+ * Never a mix: a non-null set is used alone. A reference that cannot be
+ * resolved throws SecretResolutionError, never a fallback to process env.
+ * The registry is the gateway's `default` tenant (one deploy, one workspace).
  */
-export async function resolvePersonaOwnProvider(personaName: string): Promise<RuntimeBundle["providerCreds"] | null> {
+export async function resolvePersonaOwnProvider(personaName: string, tenantId = "default"): Promise<RuntimeBundle["providerCreds"] | null> {
   const declared = managedPersonaProvider(personaName === "default" ? undefined : personaName);
-  if (!declaresProvider(declared)) return null;
-  return resolveDeclaredProvider(personaName, declared);
+  if (declaresProvider(declared)) return resolveDeclaredProvider(personaName, declared);
+  const sqlite = resolveDbConfig().dialect === "sqlite";
+  const fromRows = async (): Promise<RuntimeBundle["providerCreds"] | null> => {
+    const managed = sqlite ? false : await isManaged(tenantId);
+    const row = await db.one<{ id: string }>(`SELECT id FROM personas WHERE tenant_id = ? AND name = ?`, [tenantId, personaName]);
+    // Unmanaged without a persona row: the bundle serves env (tiers 2 and 3).
+    if (!managed && !row) return null;
+    const out: RuntimeBundle["providerCreds"] = {};
+    await applyProviderCreds(out, tenantId, row?.id);
+    return Object.keys(out).length > 0 ? out : null;
+  };
+  if (!sqlite) return fromRows();
+  try {
+    return await fromRows();
+  } catch {
+    return null; // sqlite: no tenancy tables, as buildBundle reads it
+  }
 }
 
 /** A managed tenant: effective state only. Self-contained, so tiers 2 and 3

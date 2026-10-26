@@ -7,7 +7,7 @@ import { __resetMasterKeyCache, encrypt } from "../../../src/db/crypto";
 import * as P from "../../../src/db/personas";
 import type { DesiredPersona } from "../../../src/persona/effective";
 import {
-  __resetEtagKeyForTests, bundleEtagForTests, handleTenantRuntime, setProviderSecretResolver,
+  __resetEtagKeyForTests, bundleEtagForTests, handleTenantRuntime, resolvePersonaOwnProvider, setProviderSecretResolver,
 } from "../../../src/gateway/api/tenants";
 import { createSecretResolver, SecretResolutionError, type ResolveEvent } from "../../../src/secrets";
 
@@ -109,6 +109,26 @@ describe.skipIf(!isPg)("runtime bundle: provider references", () => {
       authToken: "persona-auth-token",
     });
     expect(b.ownProvider).toBeUndefined();
+  });
+
+  // A background pass (no bundle fetch) runs on the same set the bundle carries.
+  test("background passes: a persona without a declared provider gets its rows, the same set as its bundle", async () => {
+    install({});
+    await P.applySync(T, [row("default"), row("ana"), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
+    await cred("c1", null, "api_key", "tenant-key");
+    await cred("c2", "ana", "base_url", "https://persona.example.com");
+    const bundle = (await (await handleTenantRuntime(req(), T, "ana")).json()) as any;
+    expect(await resolvePersonaOwnProvider("ana")).toEqual({ apiKey: "tenant-key", baseUrl: "https://persona.example.com" });
+    expect(await resolvePersonaOwnProvider("ana")).toEqual(bundle.providerCreds);
+    // Tenant rows only.
+    expect(await resolvePersonaOwnProvider("bea")).toEqual({ apiKey: "tenant-key" });
+  });
+
+  test("background passes: no rows and nothing declared is null (this process's provider env)", async () => {
+    install({});
+    await P.applySync(T, [row("default"), row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+    expect(await resolvePersonaOwnProvider("ana")).toBeNull();
+    expect(await resolvePersonaOwnProvider("default")).toBeNull();
   });
 
   // R2-F7: re-validated at bundle build, whatever wrote the row.
