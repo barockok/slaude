@@ -39,7 +39,11 @@ export async function hasOpenProposals(agentId: string, call: UpkeepDeps["call"]
 }
 
 /** Run the upkeep pass for one agent group and slot; null when there was nothing to merge. */
-export async function runLessonsUpkeep(r: AgentGroup & { slot: string }, deps: UpkeepDeps): Promise<{ outcome: Outcome } | null> {
+export async function runLessonsUpkeep(r: AgentGroup & { slot: string; signal?: AbortSignal }, deps: UpkeepDeps): Promise<{ outcome: Outcome } | null> {
+  if (r.signal?.aborted) {
+    console.log(`[background] agent=${r.agentId} pass=lessons-upkeep: shutting down; not running`);
+    return null;
+  }
   if (!(await hasOpenProposals(r.agentId, deps.call))) {
     console.log(`[background] agent=${r.agentId} pass=lessons-upkeep: no open lesson proposals; not running`);
     return null;
@@ -51,6 +55,6 @@ export async function runLessonsUpkeep(r: AgentGroup & { slot: string }, deps: U
     LESSONS_MAX_LINES: String(LESSONS_MAX_LINES),
     NO_PROPOSALS,
   });
-  const res = await (deps.run ?? runPass)({ pass: "lessons-upkeep", personaId: r.personaId, agentId: r.agentId, scope: { kind: "agent" }, prompt }, deps.runner);
+  const res = await (deps.run ?? runPass)({ pass: "lessons-upkeep", personaId: r.personaId, agentId: r.agentId, scope: { kind: "agent" }, prompt, ...(r.signal ? { signal: r.signal } : {}) }, deps.runner);
   return { outcome: res.outcome };
 }

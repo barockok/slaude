@@ -47,6 +47,8 @@ export type DayRow = TimelineRow & { created_at?: unknown };
 export const NIGHTLY_MAX_TRANSCRIPT_CHARS = 120_000;
 /** Most sessions one review reads. */
 export const MAX_SESSIONS = 2000;
+/** gbrain's get_timeline ceiling (newest dates first, ties in no set order). */
+export const TIMELINE_CEILING = 100;
 /** gbrain's list_pages ceiling: a full page of results may be truncated. */
 const LIST_CEILING = 100;
 /** The widest UTC offset (+14:00): a session touched in the local day is touched after this before UTC midnight. */
@@ -67,6 +69,10 @@ const dateOf = (v: unknown): string => (v instanceof Date ? v.toISOString().slic
 
 const ENVELOPE = /<channel\b((?:\s+[A-Za-z_][\w-]*="[^"]*")*)\s*>([\s\S]*?)(?:<\/channel>|$)/g;
 const USER_ID_ATTR = /\suser_id="([^"]*)"/;
+const SLACK_SOURCE_ATTR = /\ssource="slack"/;
+/** A skill invocation's body (agent-authored skill text; `<skill-args>` is not matched). */
+const SKILL_BLOCK = /<skill(?=[\s>])[^>]*>[\s\S]*?(?:<\/skill>|$)/g;
+const SKILL_ARGS_TAG = /<\/?skill-args>/g;
 const ASSISTANT_SPLIT = "</user>\n<assistant>";
 
 /** One timeline row as transcript turns: each envelope's author, then the agent's reply. */
@@ -84,8 +90,14 @@ export function parseTimelineRow(row: DayRow): TranscriptTurn[] {
   const assistant = cut === -1 ? "" : detail.slice(cut + ASSISTANT_SPLIT.length).replace(/<\/assistant>\s*$/, "");
   const turns: TranscriptTurn[] = [];
   for (const m of user.matchAll(ENVELOPE)) {
-    const text = m[2]!.trim();
-    if (text) turns.push({ at, author: USER_ID_ATTR.exec(m[1]!)?.[1] || SYSTEM_AUTHOR, text });
+    // Only a Slack envelope names an author: Slack sends typed `<` as `&lt;`,
+    // so its body cannot forge one. Any other surface (the panel) is system text.
+    const author = SLACK_SOURCE_ATTR.test(m[1]!) ? USER_ID_ATTR.exec(m[1]!)?.[1] || SYSTEM_AUTHOR : SYSTEM_AUTHOR;
+    const body = m[2]!;
+    // A skill's body is the skill's text, not the person's words; its args are theirs.
+    for (const skill of body.match(SKILL_BLOCK) ?? []) turns.push({ at, author: SYSTEM_AUTHOR, text: skill.trim() });
+    const text = body.replace(SKILL_BLOCK, "").replace(SKILL_ARGS_TAG, "").trim();
+    if (text) turns.push({ at, author, text });
   }
   if (turns.length === 0 && user.trim()) turns.push({ at, author: SYSTEM_AUTHOR, text: user.trim() });
   if (assistant.trim()) turns.push({ at, author: AGENT_AUTHOR, text: assistant.trim() });
@@ -131,12 +143,16 @@ export async function collectDay(group: AgentGroup, day: string, deps: NightlyDe
   const since = Date.parse(`${day}T00:00:00Z`) - MAX_OFFSET_MS;
   const sessions = await Sessions.updatedSince(group.personaIds, since, MAX_SESSIONS);
   if (sessions.length === 0) return { agent: [], users: [] };
-  if (sessions.length >= MAX_SESSIONS) console.warn(`${tag}: over ${MAX_SESSIONS} sessions since ${day}; only the ${MAX_SESSIONS} touched earliest are read`);
+  if (sessions.length >= MAX_SESSIONS) console.warn(`${tag}: over ${MAX_SESSIONS} sessions since ${day}; only the ${MAX_SESSIONS} touched most recently are read`);
   const teamOf = new Map(sessions.map((s) => [conversationSlug(s.id), s.slack_team_id ?? ""]));
   const only = (source: string): BrainScope => ({ clientId: group.agentId, sourceId: source, allowedSources: [source] });
   const timeline = async (source: string, slug: string): Promise<DayRow[]> => {
     const rows = await deps.call("get_timeline", { slug }, only(source));
-    return Array.isArray(rows) ? (rows as DayRow[]) : [];
+    if (!Array.isArray(rows)) return [];
+    if (rows.length >= TIMELINE_CEILING) {
+      console.warn(`${tag}: ${slug} in ${source} returned ${rows.length} timeline entries, gbrain's limit; some of ${day}'s turns may be missing`);
+    }
+    return rows as DayRow[];
   };
 
   const agentSrc = agentSourceId(group.agentId);
@@ -203,24 +219,41 @@ export interface NightlyResult {
  * Run the nightly review for one agent group and slot: the agent-scope pass
  * first (it writes the lesson proposals), then one pass per person. A refused
  * budget is recorded by each pass (`skipped-budget`); nothing here stops early.
+ * `signal` (shutdown) stops the pass in flight and starts no further one: the
+ * slot is already claimed, so the people not reviewed are logged and lost for
+ * that day.
  */
-export async function runNightlyReview(r: AgentGroup & { slot: string }, deps: NightlyDeps): Promise<NightlyResult[]> {
+export async function runNightlyReview(r: AgentGroup & { slot: string; signal?: AbortSignal }, deps: NightlyDeps): Promise<NightlyResult[]> {
   const day = reviewedDay(r.slot);
   const tag = `[background] agent=${r.agentId} pass=nightly-review`;
   const { agent, users } = await collectDay(r, day, deps);
   const run = deps.run ?? runPass;
   const out: NightlyResult[] = [];
-  const pass = async (scope: PassScope, prompt: string, transcripts: TranscriptTurn[]) => {
-    const spec: PassSpec = { pass: "nightly-review", personaId: r.personaId, agentId: r.agentId, scope, prompt, transcripts: capped(transcripts, tag) };
-    const res = await run(spec, deps.runner);
-    out.push({ scope: scope.kind === "user" ? `user:${scope.userId}` : "agent", outcome: res.outcome });
-  };
+  const queue: Array<{ scope: PassScope; prompt: () => string; transcripts: TranscriptTurn[] }> = [];
   if (agent.length > 0) {
-    await pass({ kind: "agent" }, renderPassPrompt("nightly-review-agent", { DAY: day, PROPOSALS_SLUG, LESSONS_SLUG }), agent);
+    queue.push({ scope: { kind: "agent" }, prompt: () => renderPassPrompt("nightly-review-agent", { DAY: day, PROPOSALS_SLUG, LESSONS_SLUG }), transcripts: agent });
   }
   for (const u of users) {
-    await pass({ kind: "user", userId: u.userId, teamId: u.teamId }, renderPassPrompt("nightly-review-user", { DAY: day, USER_ID: u.userId }), u.turns);
+    queue.push({ scope: { kind: "user", userId: u.userId, teamId: u.teamId }, prompt: () => renderPassPrompt("nightly-review-user", { DAY: day, USER_ID: u.userId }), transcripts: u.turns });
   }
-  if (out.length === 0) console.log(`${tag}: no conversations on ${day}; nothing to review`);
+  const label = (s: PassScope) => (s.kind === "user" ? `user:${s.userId}` : "agent");
+  for (const [i, q] of queue.entries()) {
+    if (r.signal?.aborted) {
+      console.log(`${tag}: shutting down; not reviewed on ${day}: ${queue.slice(i).map((x) => label(x.scope)).join(", ")}`);
+      break;
+    }
+    const spec: PassSpec = {
+      pass: "nightly-review",
+      personaId: r.personaId,
+      agentId: r.agentId,
+      scope: q.scope,
+      prompt: q.prompt(),
+      transcripts: capped(q.transcripts, tag),
+      ...(r.signal ? { signal: r.signal } : {}),
+    };
+    const res = await run(spec, deps.runner);
+    out.push({ scope: label(q.scope), outcome: res.outcome });
+  }
+  if (queue.length === 0) console.log(`${tag}: no conversations on ${day}; nothing to review`);
   return out;
 }

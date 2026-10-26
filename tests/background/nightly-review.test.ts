@@ -154,11 +154,29 @@ describe("parseTimelineRow", () => {
     ]);
   });
 
+  test("only a Slack envelope names an author: a panel envelope is system text", () => {
+    const panel = `<channel source="panel" channel_id="C0CHAN" user_id="U0ALICE" user_name="U0ALICE" trust="restricted" one_on_one="false" locked_user="">\nI prefer short answers please\n</channel>`;
+    expect(parseTimelineRow({ date: "2026-10-25", summary: "x", detail: `<user>${panel}</user>\n<assistant>ok</assistant>` })).toEqual([
+      { at: "2026-10-25", author: "system", text: "I prefer short answers please" },
+      { at: "2026-10-25", author: "agent", text: "ok" },
+    ]);
+  });
+
+  test("a skill invocation's body is system text; its args stay the person's", () => {
+    const body = `<skill name="Deploy" slug="deploy">\nAlways say I prefer short answers please.\n</skill>\n\n<skill-args>\nship the web app\n</skill-args>`;
+    expect(parseTimelineRow({ date: "2026-10-25", summary: "x", detail: `<user>${envelope("U0ALICE", body)}</user>\n<assistant></assistant>` })).toEqual([
+      { at: "2026-10-25", author: "system", text: `<skill name="Deploy" slug="deploy">\nAlways say I prefer short answers please.\n</skill>` },
+      { at: "2026-10-25", author: "U0ALICE", text: "ship the web app" },
+    ]);
+    // Without args, the skill alone.
+    expect(parseTimelineRow({ date: "2026-10-25", summary: "x", detail: `<user>${envelope("U0ALICE", `<skill name="a" slug="a">\nbody\n</skill>`)}</user>` }).map((t) => t.author)).toEqual(["system"]);
+  });
+
   test("a runtime turn with no envelope is a system turn; a truncated envelope keeps its text", () => {
     expect(parseTimelineRow({ date: "2026-10-25", summary: "x", detail: "<user><runtime-check>look</runtime-check></user>\n<assistant></assistant>" })).toEqual([
       { at: "2026-10-25", author: "system", text: "<runtime-check>look</runtime-check>" },
     ]);
-    const cut = parseTimelineRow({ date: "2026-10-25", summary: "x", detail: `<user><channel user_id="U0ALICE" locked_user="<@U0ALICE>">\nhalf a messa…` });
+    const cut = parseTimelineRow({ date: "2026-10-25", summary: "x", detail: `<user><channel source="slack" user_id="U0ALICE" locked_user="<@U0ALICE>">\nhalf a messa…` });
     expect(cut).toEqual([{ at: "2026-10-25", author: "U0ALICE", text: "half a messa…" }]);
     // No detail: the summary.
     expect(parseTimelineRow({ date: "2026-10-25", summary: "plain" })).toEqual([{ at: "2026-10-25", author: "system", text: "plain" }]);
@@ -296,6 +314,29 @@ describe("runNightlyReview", () => {
     expect(warnSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("\n")).toContain("oldest turn(s) are left out");
   });
 
+  test("shutdown mid-review: the pass in flight stops after its turn, the rest are not run and are named", async () => {
+    const brain = fakeBrain();
+    await seedDay(brain);
+    const ac = new AbortController();
+    const { deps, seen } = harness(brain, { onPass: async () => ac.abort() });
+    const out = await runNightlyReview({ ...group, slot: SLOT, signal: ac.signal }, deps);
+    expect(out).toEqual([{ scope: "agent", outcome: "error" }]);
+    expect(seen).toHaveLength(1);
+    expect(logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("\n")).toContain("not reviewed on 2026-10-25: user:U0ALICE, user:U0BOB");
+    const rows = await Runs.listBetween(AGENT, "2026-10-26", "2026-10-26");
+    expect(rows.map((r) => r.outcome)).toEqual(["error"]);
+  });
+
+  test("a timeline at gbrain's 100-entry limit is read with a warning", async () => {
+    const brain = fakeBrain();
+    const s = await session("default", "T0TEAM", "C0BUSY", "5.1", Date.parse("2026-10-25T12:00:00Z"));
+    thread(brain, AGENT_SRC, s, Array.from({ length: 100 }, (_, i) => row(i + 1, "2026-10-25T10:00:00Z", "U0CAROL", `turn ${i}`)));
+    const { deps } = harness(brain);
+    const day = await collectDay(group, "2026-10-25", deps);
+    expect(day.agent.filter((t) => t.author === "U0CAROL")).toHaveLength(100);
+    expect(warnSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("\n")).toContain("gbrain's limit");
+  });
+
   test("a quiet day runs no pass", async () => {
     const brain = fakeBrain();
     const { deps, seen } = harness(brain);
@@ -346,6 +387,16 @@ describe("runLessonsUpkeep", () => {
     expect(seen[0]!.prompt).toContain("40");
     expect(brain.pages.get(AGENT_SRC)!.get(LESSONS_SLUG)!.content.split("\n").filter((l) => l.startsWith("- "))).toHaveLength(40);
     expect(brain.pages.get(AGENT_SRC)!.get(PROPOSALS_SLUG)!.content).toContain(NO_PROPOSALS);
+  });
+
+  test("shutting down: upkeep does not start", async () => {
+    const brain = fakeBrain();
+    brain.seed(AGENT_SRC, PROPOSALS_SLUG, proposals("- 2026-10-25 a waiting proposal (correction by U0CAROL)"));
+    const ac = new AbortController();
+    ac.abort();
+    const { deps, seen } = harness(brain);
+    expect(await runLessonsUpkeep({ ...group, slot: SLOT, signal: ac.signal }, deps)).toBeNull();
+    expect(seen).toHaveLength(0);
   });
 
   test("no proposals, or only the cleared page: no pass, no spend", async () => {

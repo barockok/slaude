@@ -15,6 +15,7 @@ import {
   isoWeekSlot,
   previousDay,
   startBackgroundScheduler,
+  STOP_GRACE_MS,
   TICK_MS,
   type AgentGroup,
   type SchedulerDeps,
@@ -41,7 +42,7 @@ afterEach(() => {
 });
 
 const daily = (at: string, tz: string, last = {}) =>
-  dueSlots(new Date(at), tz, last).filter((d) => d.pass === "nightly-review" || d.pass === "lessons-upkeep");
+  dueSlots(new Date(at), tz, last).map(({ pass, slot }) => ({ pass, slot })).filter((d) => d.pass === "nightly-review" || d.pass === "lessons-upkeep");
 
 describe("dueSlots", () => {
   test("nightly review then lessons upkeep fall due at 02:30 persona-local, not UTC", () => {
@@ -64,7 +65,7 @@ describe("dueSlots", () => {
     const at = new Date("2026-10-26T20:00:00Z");
     const taken = { "nightly-review": "2026-10-26", "lessons-upkeep": "2026-10-26", digest: "2026-W44" };
     expect(dueSlots(at, NY, taken)).toEqual([]);
-    expect(dueSlots(at, NY, { ...taken, "lessons-upkeep": "2026-10-25" })).toEqual([{ pass: "lessons-upkeep", slot: "2026-10-26" }]);
+    expect(dueSlots(at, NY, { ...taken, "lessons-upkeep": "2026-10-25" })).toEqual([{ pass: "lessons-upkeep", slot: "2026-10-26", after: "nightly-review" }]);
   });
 
   test("skill review Sunday 04:00 and digest Monday 09:00, slotted by ISO week", () => {
@@ -101,11 +102,22 @@ describe("claimSlot", () => {
   });
 });
 
+/** A ledger row for `pass` on 2026-10-26: finished with `outcome`, or open when null. */
+async function nightlyRow(agentId: string, pass: string, outcome: "ok" | null): Promise<string> {
+  const id = await Runs.start({ agentId, pass, scope: "agent", day: "2026-10-26", startedAt: Date.parse("2026-10-26T02:30:00Z") });
+  if (outcome) await Runs.finish(id, { tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, costUsd: 0, outcome });
+  return id;
+}
+
 const AGENT: AgentGroup = { agentId: "UAGENT1", personaId: "default", personaIds: ["default"], timeZone: "UTC" };
 
 function deps(over: Partial<SchedulerDeps> & { at?: string } = {}): SchedulerDeps & { ran: Array<{ pass: PassName; slot: string }>; swept: number } {
   const ran: Array<{ pass: PassName; slot: string }> = [];
-  const record = async (r: SlotRun) => void ran.push({ pass: r.pass, slot: r.slot });
+  const record = async (r: SlotRun) => {
+    ran.push({ pass: r.pass, slot: r.slot });
+    // A pass leaves a finished ledger row, which lessons upkeep waits for.
+    await nightlyRow(r.agentId, r.pass, "ok");
+  };
   const d = {
     now: () => new Date(over.at ?? "2026-10-26T02:30:00Z"),
     brainReady: () => true,
@@ -132,19 +144,39 @@ describe("scheduler tick", () => {
     ]);
   });
 
-  test("a leader dying mid-pass does not get its slot re-run by the next leader", async () => {
+  test("a leader dying mid-pass does not get its slot re-run; upkeep waits for its rows to finish", async () => {
     let release!: () => void;
     const hung = new Promise<void>((r) => (release = r));
-    const first = deps({ handlers: { "nightly-review": () => hung } });
+    let openRow = "";
+    const first = deps({
+      handlers: {
+        "nightly-review": async (r) => {
+          openRow = await nightlyRow(r.agentId, r.pass, null); // the agent pass is running
+          await hung;
+        },
+      },
+    });
     const a = createBackgroundScheduler(first);
     const ticking = a.tick(); // claims the nightly slot, then never finishes
-    await new Promise((r) => setTimeout(r, 10));
+    while (!openRow) await new Promise((r) => setTimeout(r, 1));
     const next = deps();
-    await createBackgroundScheduler(next).tick();
-    // The nightly is not re-run; the upkeep slot nobody took runs.
+    const b = createBackgroundScheduler(next);
+    await b.tick();
+    // The nightly is not re-run, and upkeep does not race the old leader's pass.
+    expect(next.ran).toEqual([]);
+    await Runs.finish(openRow, { tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, costUsd: 0, outcome: "ok" });
+    await b.tick();
     expect(next.ran).toEqual([{ pass: "lessons-upkeep", slot: "2026-10-26" }]);
     release();
     await ticking;
+  });
+
+  test("a day whose nightly ran no pass has no upkeep", async () => {
+    const d = deps({ handlers: { "nightly-review": async () => {}, "lessons-upkeep": async (r) => void d.ran.push({ pass: r.pass, slot: r.slot }) } });
+    const s = createBackgroundScheduler(d);
+    await s.tick();
+    await s.tick();
+    expect(d.ran).toEqual([]);
   });
 
   test("a slot that throws records an error run and the tick goes on", async () => {
@@ -277,6 +309,40 @@ describe("startBackgroundScheduler defaults", () => {
     expect(ticks).toBe(1);
   });
 
+  test("stop() returns within its bound while a pass ignores the abort", async () => {
+    let started = false;
+    const never = new Promise<void>(() => {});
+    const d = deps({ handlers: { "nightly-review": async () => ((started = true), never) } });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const h = startBackgroundScheduler(d);
+      while (!started) await new Promise((r) => setTimeout(r, 1));
+      const t0 = Date.now();
+      await h.stop(50);
+      expect(Date.now() - t0).toBeLessThan(1000);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("not waiting for it");
+      expect(STOP_GRACE_MS).toBe(10_000);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("stop() hands the abort to the pass in flight", async () => {
+    let seen = null as AbortSignal | null;
+    const d = deps({
+      handlers: {
+        "nightly-review": (r) => {
+          seen = r.signal;
+          return new Promise<void>((res) => r.signal.addEventListener("abort", () => res(), { once: true }));
+        },
+      },
+    });
+    const h = startBackgroundScheduler(d);
+    while (!seen) await new Promise((r) => setTimeout(r, 1));
+    await h.stop();
+    expect((seen as AbortSignal | null)?.aborted).toBe(true);
+  });
+
   test("leaderElect: the loop runs once this replica holds the background lock", async () => {
     const keys: string[] = [];
     const redis = {
@@ -319,6 +385,18 @@ describe("defaultAgentGroups", () => {
         { agentId: "UPROC1", personaId: "default", personaIds: ["default", "alpha"], timeZone: "UTC" },
         { agentId: "UBETA1", personaId: "beta", personaIds: ["beta"], timeZone: "UTC" },
       ]);
+    } finally {
+      __resetPersonaRegistry();
+      resetAgentId();
+    }
+  });
+
+  test("a registry that cannot be read is logged; the default persona is still scheduled", async () => {
+    setAgentId("UPROC1");
+    setPersonaRegistry({ list: () => { throw new Error("registry broken"); } } as unknown as PersonaRegistry);
+    try {
+      expect((await defaultAgentGroups()).map((g) => g.agentId)).toEqual(["UPROC1"]);
+      expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("\n")).toContain("registry broken");
     } finally {
       __resetPersonaRegistry();
       resetAgentId();

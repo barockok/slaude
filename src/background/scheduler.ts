@@ -43,6 +43,8 @@ import { backgroundAgentId, sweepStaleSkillChecks } from "./skill-check";
 export { isoWeekSlot, previousDay };
 
 export const TICK_MS = 60_000;
+/** Longest stop() waits for a pass in flight to wind down after the abort (shutdown must not hang on a review). */
+export const STOP_GRACE_MS = 10_000;
 
 /** Personas whose background passes share one agent id (one ledger, one `agent-<id>` slice). */
 export interface AgentGroup {
@@ -57,6 +59,8 @@ export interface AgentGroup {
 export interface DueSlot {
   pass: PassName;
   slot: string;
+  /** Run only after this pass's rows for the slot's day have all finished. */
+  after?: PassName;
 }
 
 /** Per pass, the slot this scheduler last claimed or found claimed. */
@@ -83,12 +87,18 @@ export interface SchedulerDeps {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 }
 
-type Entry = { pass: PassName; minutes: number } & ({ every: "day" } | { every: "week"; weekday: number });
+/** `after`: the pass runs only once that pass's ledger rows for the same day have all finished. */
+type Entry = { pass: PassName; minutes: number; after?: PassName } & ({ every: "day" } | { every: "week"; weekday: number });
 
 /** The schedule, in run order within a tick. */
 const SCHEDULE: readonly Entry[] = [
   { pass: "nightly-review", every: "day", minutes: 2 * 60 + 30 },
-  { pass: "lessons-upkeep", every: "day", minutes: 2 * 60 + 30 },
+  // After the nightly's rows settle: a new leader must not merge the proposals
+  // page while the old leader's nightly agent pass is still rewriting it. A day
+  // whose nightly ran no pass (no conversations) has no upkeep; its proposals
+  // wait for the next. After a budget-skipped nightly the upkeep still runs: it
+  // merges earlier days' proposals, and its own budget check decides.
+  { pass: "lessons-upkeep", every: "day", minutes: 2 * 60 + 30, after: "nightly-review" },
   { pass: "skill-review", every: "week", weekday: 7, minutes: 4 * 60 },
   { pass: "digest", every: "week", weekday: 1, minutes: 9 * 60 },
 ];
@@ -104,7 +114,7 @@ export function dueSlots(now: Date, tz: string, last: LastSlots = {}): DueSlot[]
     const reached = e.every === "day" ? t.minutes >= e.minutes : t.weekday > e.weekday || (t.weekday === e.weekday && t.minutes >= e.minutes);
     if (!reached) continue;
     const slot = e.every === "day" ? t.day : isoWeekSlot(t.day);
-    if (last[e.pass] !== slot) out.push({ pass: e.pass, slot });
+    if (last[e.pass] !== slot) out.push({ pass: e.pass, slot, ...(e.after ? { after: e.after } : {}) });
   }
   return out;
 }
@@ -144,13 +154,18 @@ export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: 
       for (const g of groups) {
         const seen = last.get(g.agentId) ?? {};
         last.set(g.agentId, seen);
-        for (const { pass, slot } of dueSlots(now, g.timeZone, seen)) {
+        for (const { pass, slot, after } of dueSlots(now, g.timeZone, seen)) {
           if (signal.aborted) return;
           const handler = deps.handlers[pass];
           if (!handler) continue;
           const tag = `[background] agent=${g.agentId} pass=${pass} slot=${slot}`;
           let mine: boolean;
           try {
+            // Not claimed until it may run, so a later tick (or replica) still can.
+            if (after && !(await Runs.settledOn(g.agentId, after, localDay(now, g.timeZone)))) {
+              console.debug(`${tag}: waiting for ${after} to finish`);
+              continue;
+            }
             mine = await claimSlot(g.agentId, pass, slot, now.getTime());
           } catch (e) {
             console.error(`${tag}: could not claim: ${errText(e)}`);
@@ -194,9 +209,12 @@ export function leaderElect(redis: Redis): Elect {
 
 /**
  * Start the scheduler loop: under `elect` (gateway) it ticks only while this
- * replica leads; without it (mono) it ticks from now on. stop() ends it.
+ * replica leads; without it (mono) it ticks from now on. stop() aborts it (the
+ * pass in flight ends after its current turn) and waits at most `graceMs`
+ * (default STOP_GRACE_MS) for it to finish; past that it returns and the loop
+ * winds down on its own.
  */
-export function startBackgroundScheduler(deps: SchedulerDeps, opts: { elect?: Elect } = {}): { stop(): Promise<void> } {
+export function startBackgroundScheduler(deps: SchedulerDeps, opts: { elect?: Elect } = {}): { stop(graceMs?: number): Promise<void> } {
   const scheduler = createBackgroundScheduler(deps);
   const sleep = deps.sleep ?? timerSleep;
   const loop = async (signal: AbortSignal) => {
@@ -223,11 +241,21 @@ export function startBackgroundScheduler(deps: SchedulerDeps, opts: { elect?: El
     };
   }
   let unregister = () => {};
-  const stop = async () => {
-    if (stopped) return;
-    stopped = true;
-    unregister();
-    await stopFn();
+  let stopping: Promise<void> | null = null;
+  const stop = async (graceMs = STOP_GRACE_MS) => {
+    if (!stopped) {
+      stopped = true;
+      unregister();
+      stopping = stopFn().catch((e) => console.error(`[background] scheduler stop failed: ${errText(e)}`));
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const grace = new Promise<"late">((resolve) => {
+      timer = setTimeout(() => resolve("late"), graceMs);
+      timer.unref?.();
+    });
+    const r = await Promise.race([stopping!.then(() => "done" as const), grace]);
+    clearTimeout(timer);
+    if (r === "late") console.warn(`[background] scheduler still finishing a pass after ${graceMs} ms; not waiting for it`);
   };
   unregister = registerLoop(() => void stop());
   return { stop };
@@ -242,7 +270,8 @@ export async function defaultAgentGroups(): Promise<AgentGroup[]> {
   let names: string[] = [];
   try {
     names = getPersonaRegistry().list().map((p) => p.name).filter((n) => n && n !== "default");
-  } catch {
+  } catch (e) {
+    console.error(`[background] could not read the persona registry; scheduling the default persona only: ${errText(e)}`);
     names = [];
   }
   const groups = new Map<string, AgentGroup>();

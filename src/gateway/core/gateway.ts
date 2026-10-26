@@ -880,7 +880,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // cron, the gateway role elects one replica to run it (each slot is also
   // claimed in the database, so a leader change mid-pass never re-runs one);
   // mono runs it directly. Ticks wait for an open brain and never boot it.
-  let backgroundScheduler: { stop(): Promise<void> } | undefined;
+  let backgroundScheduler: { stop(graceMs?: number): Promise<void> } | undefined;
   if (opts.backgroundLearning === true && env.role() !== "node" && brainEnabled()) {
     backgroundScheduler = startBackgroundScheduler(defaultSchedulerDeps(), queueDispatch ? { elect: leaderElect(getRedis()) } : {});
     console.log(`[slaude] background learning scheduler ${queueDispatch ? "contending for leadership" : "started"}`);
@@ -3929,6 +3929,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await drainVoiceCalls(voiceCalls, VOICE_SHUTDOWN_GRACE_MS);
       cancelNightlyMaintenance();
       await cronLeader?.stop().catch(() => {});
+      // Aborts a pass in flight; bounded (STOP_GRACE_MS, 10 s) so shutdown never waits out a review.
       await backgroundScheduler?.stop().catch(() => {});
       cronScheduler.stop();
       if (panelSweeper) clearInterval(panelSweeper);

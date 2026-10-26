@@ -188,3 +188,13 @@ export async function listBetween(agentId: string, fromDay: string, toDay: strin
   );
   return rows.map(toRun);
 }
+
+/** True when the pass has at least one row for the day and none of its rows for the day is still open. */
+export async function settledOn(agentId: string, pass: string, day: string): Promise<boolean> {
+  const row = await db.one<{ total: number | string; open: number | string }>(
+    `SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END), 0) AS open
+       FROM background_runs WHERE agent_id = ? AND pass = ? AND day = ?`,
+    [agentId, pass, day],
+  );
+  return Number(row?.total ?? 0) > 0 && Number(row?.open ?? 0) === 0;
+}
