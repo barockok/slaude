@@ -22,7 +22,7 @@ function spec(over: Partial<PassSpec> = {}): PassSpec {
 }
 
 type Msg = Record<string, unknown>;
-const assistant = (id: string, usage = TURN): Msg => ({ type: "assistant", parent_tool_use_id: null, message: { id, usage, content: [] } });
+const assistant = (id: string, usage = TURN, model?: string): Msg => ({ type: "assistant", parent_tool_use_id: null, message: { id, usage, content: [], ...(model ? { model } : {}) } });
 const result = (usage: Msg = {}, subtype = "success"): Msg => ({ type: "result", subtype, is_error: subtype !== "success", usage });
 
 /** A fake query yielding `msgs` (a function throws), recording calls and how many messages were taken. */
@@ -96,24 +96,49 @@ describe("runPass", () => {
     expect(metrics.render()).toMatch(new RegExp(`slaude_background_runs_total\\{[^}]*agent="${s.agentId}"[^}]*outcome="skipped-budget"[^}]*\\} 1`));
   });
 
-  test("unknown model: error, cost 0, query never called, one line naming the model", async () => {
+  test("an unpriced configured model still runs, priced by the model the CLI reports", async () => {
     const s = spec();
-    const { query, state } = fakeQuery([assistant("m1"), result()]);
+    const { query, state } = fakeQuery([assistant("m1", TURN, MODEL), result(TURN)]);
     const r = await runPass(s, deps(query, 1, "mystery-model-9"));
-    expect(r).toMatchObject({ outcome: "error", costUsd: 0 });
-    expect(state.calls).toHaveLength(0);
-    const row = await rowOf(s.agentId, r.runId);
-    expect(row).toMatchObject({ outcome: "error", costUsd: 0, model: "mystery-model-9" });
-    const lines = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("'mystery-model-9'");
-    expect(lines[0]).toContain("SLAUDE_PRICE_TABLE");
+    expect(r.outcome).toBe("ok");
+    expect(state.calls).toHaveLength(1);
+    expect(state.calls[0]!.options.model).toBe("mystery-model-9");
+    expect(r.costUsd).toBeCloseTo(0.3, 9);
+    expect(await rowOf(s.agentId, r.runId)).toMatchObject({ outcome: "ok", model: "mystery-model-9" });
   });
 
-  test("no model configured: error, query never called", async () => {
-    const { query, state } = fakeQuery([result()]);
-    expect((await runPass(spec(), deps(query, 1, ""))).outcome).toBe("error");
-    expect(state.calls).toHaveLength(0);
+  test("no model configured (SLAUDE_MODEL unset): the CLI's default runs, priced by the reported model", async () => {
+    const s = spec();
+    const { query, state } = fakeQuery([assistant("m1", TURN, MODEL), result(TURN)]);
+    const r = await runPass(s, deps(query, 1, ""));
+    expect(r.outcome).toBe("ok");
+    expect(state.calls).toHaveLength(1);
+    expect("model" in state.calls[0]!.options).toBe(false);
+    expect(r.costUsd).toBeCloseTo(0.3, 9);
+  });
+
+  test("a reported model with no price ends the run as error after that turn, keeping at least the estimate", async () => {
+    const s = spec();
+    const { query, state } = fakeQuery([assistant("m1", TURN, "mystery-model-9"), assistant("m2", TURN, "mystery-model-9"), result(TURN)]);
+    const r = await runPass(s, deps(query, 1, ""));
+    expect(r.outcome).toBe("error");
+    expect(state.taken).toBe(1);
+    expect((state.calls[0]!.options.abortController as AbortController).signal.aborted).toBe(true);
+    // Never zero: the nightly's floor estimate stays as the cost.
+    expect(r.costUsd).toBeCloseTo(0.1, 9);
+    expect((await rowOf(s.agentId, r.runId)).tokens.input).toBe(300_000);
+    expect(errSpy.mock.calls.map((c: unknown[]) => String(c[0])).join("\n")).toContain("'mystery-model-9'");
+  });
+
+  test("near-simultaneous starts with room for one estimate never both run (insert first, then re-check)", async () => {
+    const agentId = `agent-race${++seq}`;
+    const a = fakeQuery([result()]);
+    const b = fakeQuery([result()]);
+    // nightly-review's floor is 0.10: 0.15 leaves room for one open run, not two.
+    const [ra, rb] = await Promise.all([runPass(spec({ agentId }), deps(a.query, 0.15)), runPass(spec({ agentId }), deps(b.query, 0.15))]);
+    expect(a.state.calls.length + b.state.calls.length).toBeLessThanOrEqual(1);
+    for (const [r, q] of [[ra, a], [rb, b]] as const) if (q.state.calls.length === 0) expect(r.outcome).toBe("skipped-budget");
+    expect(await Runs.spentOn(agentId, DAY)).toBeLessThanOrEqual(0.15 + 1e-9);
   });
 
   test("a 3-turn run crossing the limit on turn 2 is aborted after turn 2 and the cost includes turn 2", async () => {

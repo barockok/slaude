@@ -4,8 +4,13 @@
  * skill review) runs through runPass:
  *
  *   1. canStart refuses → a `skipped-budget` ledger row, no model call;
- *   2. the persona's model must be in the price table, else an `error` row
- *      and one log line (never priced at zero);
+ *   2. the row opens with its provisional estimate, then the day's spend is
+ *      re-checked (other open rows included): over → `skipped-budget`, so
+ *      passes starting at once never overshoot together. An unset or
+ *      unpriced persona model still runs (the CLI picks its default): each
+ *      turn is priced by the model the CLI reports, and a reported model
+ *      with no price ends the run `error` after that turn (never priced at
+ *      zero: the run keeps at least its estimate);
  *   3. one locked-down `query()`: no built-in tools, no settings, hooks,
  *      plugins or MCP config from disk, dontAsk, a scrubbed env on the
  *      persona's own provider set when it declares one, and only the
@@ -39,7 +44,7 @@ import type { BrainOpCall } from "../knowledge/memory-trail";
 import { personaKbSourceIds } from "../knowledge/persona-kb";
 import { m as metric } from "../metrics";
 import { personaDefaultModel } from "../persona/registry";
-import { canStart, localDay, PASS_MAX_TURNS, type BudgetConfig, type PassName } from "./budget";
+import { canStart, localDay, overAfterStart, PASS_MAX_TURNS, type BudgetConfig, type PassName } from "./budget";
 import { budgetConfigFor } from "./config";
 import { createPassMcpServer, PASS_MCP_NAME, passProfileSource, passReadSources, type PassScope, type PassTool, type TranscriptTurn } from "./pass-tools";
 import {
@@ -164,7 +169,8 @@ export function passQueryOptions(a: {
 }): Options {
   return {
     systemPrompt: SYSTEM_PROMPT,
-    model: a.model,
+    // No model configured: the CLI's own default (what the reported usage names).
+    ...(a.model ? { model: a.model } : {}),
     // `tools: []` removes every built-in (`--tools ""`); the surviving few are
     // disallowed by name too (child-env.ts). MCP tools are not built-ins: the
     // pass's own are mounted below and pre-approved by name, because dontAsk
@@ -241,6 +247,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
   let model: string;
   let table: PriceTable;
   let provider: ProviderCreds | null;
+  let estimate = 0;
   try {
     cfg = (deps.budget ?? budgetConfigFor)(spec.personaId);
     day = localDay(startedAt, cfg.timeZone);
@@ -252,15 +259,17 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
     model = (deps.model ?? personaDefaultModel)(spec.personaId);
     table = deps.priceTable ?? envPriceTable();
     if (!model || costUsd(table, model, ZERO) === null) {
-      console.error(
-        model
-          ? `${tag}: model '${model}' has no price: SLAUDE_PRICE_TABLE (or the built-in table) lacks it; not starting`
-          : `${tag}: no model configured (persona model or SLAUDE_MODEL); not starting`,
+      console.warn(
+        `${tag}: ${model ? `model '${model}' has no price` : "no model configured"}; the run is priced by the models the CLI reports (SLAUDE_PRICE_TABLE or the built-in table)`,
       );
-      return settle(await Runs.start({ ...row(), model: model || null }), "error", ZERO, 0);
     }
     // The estimate counts as the open run's cost until its first priced turn.
-    runId = await Runs.start({ ...row(), model, costUsd: gate.estimate });
+    estimate = gate.estimate;
+    runId = await Runs.start({ ...row(), model: model || null, costUsd: estimate });
+    if (await overAfterStart(cfg, spec.agentId, spec.pass, startedAt)) {
+      console.log(`${tag}: skipped, not enough of today's budget left`);
+      return settle(runId, "skipped-budget", ZERO, 0);
+    }
     // The persona's own provider set, or null for this process's provider env. Never a mix.
     provider = await (deps.provider ?? defaultProvider)(spec.personaId);
   } catch (e) {
@@ -281,7 +290,8 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
   }
 
   // Provisional per-turn figure: per message id, at the message's model when
-  // priced (else the run's), output raised to PROVISIONAL_OUTPUT_TOKENS.
+  // priced (else the run's), output raised to PROVISIONAL_OUTPUT_TOKENS. A
+  // message priced by neither is returned: the caller ends the run.
   const perMessage = new Map<string, { model: string; tokens: TokenCounts }>();
   let anon = 0;
   let tokens = { ...ZERO };
@@ -291,19 +301,25 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
     cost = c;
     await Runs.progress(openId, { tokens, costUsd: cost });
   };
-  const provisional = async () => {
+  const provisional = async (): Promise<string[]> => {
     let t = { ...ZERO };
     let c = 0;
+    const unpriced: string[] = [];
     for (const m of perMessage.values()) {
       t = add(t, m.tokens);
-      c += costUsd(table, m.model, m.tokens) ?? costUsd(table, model, m.tokens)!;
+      const mc = costUsd(table, m.model, m.tokens) ?? (model ? costUsd(table, model, m.tokens) : null);
+      if (mc === null) unpriced.push(m.model || "(none named)");
+      else c += mc;
     }
-    await record(t, c);
+    // Never priced at zero: an unpriced turn keeps at least the estimate.
+    await record(t, unpriced.length > 0 ? Math.max(c, estimate) : c);
+    return unpriced;
   };
 
   const abort = new AbortController();
   let outcome: Outcome = "error";
   let shutdown = false;
+  let unpricedStop = false;
   const onShutdown = () => {
     shutdown = true;
     abort.abort();
@@ -326,7 +342,14 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
         const t = asUsage(msg.message.usage);
         t.output = Math.max(t.output, PROVISIONAL_OUTPUT_TOKENS);
         perMessage.set(msg.message.id ?? `anon-${anon++}`, { model: msg.message.model || model, tokens: t });
-        await provisional();
+        const unpriced = await provisional();
+        if (unpriced.length > 0) {
+          console.error(`${tag}: model '${[...new Set(unpriced)].join("', '")}' the CLI reported has no price: SLAUDE_PRICE_TABLE (or the built-in table) lacks it; stopping the run`);
+          abort.abort();
+          outcome = "error";
+          unpricedStop = true;
+          break;
+        }
         if (shutdown) break;
         if ((await Runs.spentOn(spec.agentId, day)) > cfg.limitUsd + 1e-9) {
           abort.abort();
@@ -355,20 +378,28 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
             // priced part, if larger) and end the run as an error.
             console.error(`${tag}: model '${unpriced.join("', '")}' in the run's usage has no price: SLAUDE_PRICE_TABLE (or the built-in table) lacks it`);
             outcome = "error";
-            if (c > cost) await record(t, c);
+            if (Math.max(c, estimate) > cost) await record(t, Math.max(c, estimate));
           } else {
             await record(t, c);
           }
         } else if (msg.usage) {
           const t = asUsage(msg.usage);
-          await record(t, costUsd(table, model, t)!);
+          // The run's model, else the one model the CLI named on every turn.
+          const named = [...new Set([...perMessage.values()].map((m) => m.model).filter(Boolean))];
+          const c = (model ? costUsd(table, model, t) : null) ?? (named.length === 1 ? costUsd(table, named[0]!, t) : null);
+          if (c !== null) await record(t, c);
+          else {
+            console.error(`${tag}: the run's usage names no model and '${model || "(none configured)"}' has no price; the run keeps its figure so far`);
+            outcome = "error";
+            await record(t, Math.max(cost, estimate));
+          }
         }
         break;
       }
     }
     if (!sawResult && outcome !== "stopped-budget") outcome = "error";
   } catch (e) {
-    if (outcome !== "stopped-budget" && !shutdown) {
+    if (outcome !== "stopped-budget" && !shutdown && !unpricedStop) {
       outcome = "error";
       console.error(`${tag}: failed: ${errMsg(e)}`);
     }
