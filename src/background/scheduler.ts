@@ -316,11 +316,21 @@ export function startBackgroundScheduler(deps: SchedulerDeps, opts: { elect?: El
   return { stop };
 }
 
-/** What a pass routes on for a persona: its declared provider, its model and its KB filter. */
-function routingKey(personaId: string): string {
+/** The provider_creds rows a persona's passes use, as a fingerprint (gateway code, loaded lazily). */
+async function defaultProviderRows(personaId: string): Promise<string | null> {
+  const { providerRowsFingerprint } = await import("../gateway/api/tenants");
+  return providerRowsFingerprint(personaId);
+}
+
+/**
+ * What a pass routes on for a persona: its declared provider, the
+ * provider_creds rows it would use (a fingerprint, never the values), its
+ * model and its KB filter.
+ */
+async function routingKey(personaId: string, providerRows: (p: string) => Promise<string | null>): Promise<string> {
   const named = personaId === "default" ? undefined : personaId;
   const kbs = personaKbList(named);
-  return JSON.stringify([managedPersonaProvider(named) ?? null, personaDefaultModel(named), kbs ? [...kbs].sort() : null]);
+  return JSON.stringify([managedPersonaProvider(named) ?? null, await providerRows(personaId), personaDefaultModel(named), kbs ? [...kbs].sort() : null]);
 }
 
 /** Personas already logged as left out of a group (one line each per process). */
@@ -332,13 +342,13 @@ const loggedUngrouped = new Set<string>();
  * A persona that cannot be resolved (retired mid-sync) is left out this tick.
  *
  * A group's passes run with its first persona's provider, model and KB filter,
- * so a persona whose declared provider, model or kbSources differ from the
- * group's is never merged into it: its people's transcripts would go to
- * another persona's provider host, and the pass could read KBs its filter
- * excludes. It is left out (one log line) and has no background passes until
+ * so a persona whose declared provider, provider_creds rows, model or
+ * kbSources differ from the group's is never merged into it: its people's
+ * transcripts would go to another persona's provider host, and the pass
+ * could read KBs its filter excludes. It is left out (one log line) and has no background passes until
  * it has its own Slack user id (its own agent id and group).
  */
-export async function defaultAgentGroups(): Promise<AgentGroup[]> {
+export async function defaultAgentGroups(providerRows: (personaId: string) => Promise<string | null> = defaultProviderRows): Promise<AgentGroup[]> {
   let names: string[] = [];
   try {
     names = getPersonaRegistry().list().map((p) => p.name).filter((n) => n && n !== "default");
@@ -358,7 +368,7 @@ export async function defaultAgentGroups(): Promise<AgentGroup[]> {
     // Unknown (the registry could not say): may lead a group, never joins one.
     let key: string | null = null;
     try {
-      key = routingKey(personaId);
+      key = await routingKey(personaId, providerRows);
     } catch {
       /* left null */
     }

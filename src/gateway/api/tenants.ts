@@ -216,6 +216,38 @@ export async function resolvePersonaOwnProvider(personaName: string, tenantId = 
   }
 }
 
+/**
+ * Which provider_creds rows background work for `personaName` would use (as
+ * resolvePersonaOwnProvider picks them), as a fingerprint: a hash of the row
+ * ids, kinds and owners, never the values. Null when it uses none (declared
+ * provider, or process env). Two personas with the same fingerprint run on the
+ * same rows; the scheduler groups personas only when theirs match.
+ */
+export async function providerRowsFingerprint(personaName: string, tenantId = "default"): Promise<string | null> {
+  if (declaresProvider(managedPersonaProvider(personaName === "default" ? undefined : personaName))) return null;
+  const sqlite = resolveDbConfig().dialect === "sqlite";
+  const read = async (): Promise<string | null> => {
+    const managed = sqlite ? false : await isManaged(tenantId);
+    const row = await db.one<{ id: string }>(`SELECT id FROM personas WHERE tenant_id = ? AND name = ?`, [tenantId, personaName]);
+    if (!managed && !row) return null;
+    const rows = await db.query<{ id: string; persona_id: string | null; kind: string }>(
+      row
+        ? `SELECT id, persona_id, kind FROM provider_creds WHERE tenant_id = ? AND (persona_id IS NULL OR persona_id = ?)`
+        : `SELECT id, persona_id, kind FROM provider_creds WHERE tenant_id = ? AND persona_id IS NULL`,
+      row ? [tenantId, row.id] : [tenantId],
+    );
+    if (rows.length === 0) return null;
+    const parts = rows.map((r) => `${r.id}:${r.persona_id ?? ""}:${r.kind}`).sort();
+    return createHmac("sha256", "provider-rows").update(parts.join("\n")).digest("hex").slice(0, 32);
+  };
+  if (!sqlite) return read();
+  try {
+    return await read();
+  } catch {
+    return null;
+  }
+}
+
 /** A managed tenant: effective state only. Self-contained, so tiers 2 and 3
  *  (disk, env) are unreachable from it. Missing or tombstoned persona -> null. */
 async function buildManagedBundle(tenantId: string, personaId: string): Promise<RuntimeBundle | null> {

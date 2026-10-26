@@ -7,7 +7,7 @@ import { __resetMasterKeyCache, encrypt } from "../../../src/db/crypto";
 import * as P from "../../../src/db/personas";
 import type { DesiredPersona } from "../../../src/persona/effective";
 import {
-  __resetEtagKeyForTests, bundleEtagForTests, handleTenantRuntime, resolvePersonaOwnProvider, setProviderSecretResolver,
+  __resetEtagKeyForTests, bundleEtagForTests, handleTenantRuntime, providerRowsFingerprint, resolvePersonaOwnProvider, setProviderSecretResolver,
 } from "../../../src/gateway/api/tenants";
 import { createSecretResolver, SecretResolutionError, type ResolveEvent } from "../../../src/secrets";
 
@@ -122,6 +122,20 @@ describe.skipIf(!isPg)("runtime bundle: provider references", () => {
     expect(await resolvePersonaOwnProvider("ana")).toEqual(bundle.providerCreds);
     // Tenant rows only.
     expect(await resolvePersonaOwnProvider("bea")).toEqual({ apiKey: "tenant-key" });
+  });
+
+  test("the grouping fingerprint of provider rows: different rows differ, the same rows match, values never appear", async () => {
+    install({});
+    await P.applySync(T, [row("default"), row("ana"), row("bea"), row("cid"), row("dee")], meta("r1", "2026-10-01T10:00:00Z"));
+    await cred("c1", null, "api_key", "tenant-key-value");
+    await cred("c2", "ana", "base_url", "https://ana.example.com");
+    await cred("c3", "bea", "base_url", "https://bea.example.com");
+    const [ana, bea, cid, dee] = await Promise.all(["ana", "bea", "cid", "dee"].map((n) => providerRowsFingerprint(n)));
+    expect(ana).not.toBeNull();
+    expect(ana).not.toBe(bea);
+    expect(cid).toBe(dee); // tenant rows only: the same rows
+    expect(cid).not.toBe(ana);
+    for (const fp of [ana, bea, cid]) for (const v of ["tenant-key-value", "ana.example.com"]) expect(fp!).not.toContain(v);
   });
 
   test("background passes: no rows and nothing declared is null (this process's provider env)", async () => {

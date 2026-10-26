@@ -422,6 +422,38 @@ describe("defaultAgentGroups", () => {
     }
   });
 
+  test("personas on different provider_creds rows are never grouped; on the same rows they are", async () => {
+    setAgentId("UPROC1");
+    const personas = [
+      { name: "ana", slackUserId: "" },
+      { name: "bea", slackUserId: "" },
+      { name: "cid", slackUserId: "" },
+    ];
+    const reg = {
+      list: () => personas,
+      lookupByName: (n: string) => personas.find((p) => p.name === n) ?? null,
+      lookupByUserId: () => null,
+      isMultiPersonaMode: () => true,
+      isManaged: () => true,
+      tombstonedPersonaFor: () => null,
+      defaultPersona: () => ({ model: null, mcp: null, background: null }),
+    } as unknown as PersonaRegistry;
+    setPersonaRegistry(reg);
+    errSpy.mockClear();
+    // default and cid share the tenant rows; ana and bea each have their own.
+    const rows: Record<string, string> = { default: "fp-tenant", ana: "fp-ana", bea: "fp-bea", cid: "fp-tenant" };
+    try {
+      expect(await defaultAgentGroups(async (p) => rows[p] ?? null)).toEqual([
+        { agentId: "UPROC1", personaId: "default", personaIds: ["default", "cid"], timeZone: "UTC" },
+      ]);
+      const lines = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+      for (const n of ["ana", "bea"]) expect(lines.filter((l: string) => l.includes(`persona=${n}:`))).toHaveLength(1);
+    } finally {
+      __resetPersonaRegistry();
+      resetAgentId();
+    }
+  });
+
   test("a registry that cannot be read is logged; the default persona is still scheduled", async () => {
     setAgentId("UPROC1");
     setPersonaRegistry({ list: () => { throw new Error("registry broken"); } } as unknown as PersonaRegistry);

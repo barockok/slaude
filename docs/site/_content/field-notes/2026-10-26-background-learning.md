@@ -309,8 +309,9 @@ The final whole-branch review found:
 - **A multi-persona group ran every pass under its first persona's provider
   and KBs,** not only its model and budget: a second persona's people's
   transcripts went to the first one's provider host. The quiet-moment pass now
-  runs as the thread's own persona, and a persona whose provider, model or
-  `kbSources` differ is not grouped (below).
+  runs as the thread's own persona, and a persona whose provider (declared
+  or by its `provider_creds` rows), model or `kbSources` differ is not
+  grouped (below). The re-review found the first key ignored the rows.
 - **Check-then-insert.** The start rule read the spend, then inserted, so
   checks finishing in the same minute each saw room for one and overshot
   together. Now insert, then re-check.
@@ -404,8 +405,9 @@ real turn path and its real scoped memory sync. The brain is an in-memory fake,
   uses the process agent id, so they share one ledger and one budget.
 - **Personas on one agent id.** A persona without its own Slack user id shares
   the process agent id, its ledger and its `agent-<id>` slice. It joins that
-  group only when its declared provider, model and `kbSources` equal the
-  group's first persona's; otherwise it is logged once and gets no background
+  group only when its declared provider, the `provider_creds` rows it would
+  run on (compared by a fingerprint of row ids, never values), model and
+  `kbSources` equal the group's first persona's; otherwise it is logged once and gets no background
   passes until it has its own `slackUserId`. A joined persona's nightly,
   upkeep and skill review still run under the first persona's settings,
   budget and timezone (they are equal in what routes data, not in budget);
