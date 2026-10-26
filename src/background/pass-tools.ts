@@ -58,6 +58,8 @@ export interface PassToolContext {
   transcripts: TranscriptTurn[];
   call: BrainOpCall;
   now: () => Date;
+  /** Told each queued proposal's id (the runner delivers a person's after the pass). */
+  onProposed?: (id: string) => void;
 }
 
 /** Most pages one read_pages or memoize call takes. */
@@ -348,6 +350,7 @@ export const passHandlers = {
       payload: p.payload,
       createdAt,
     });
+    ctx.onProposed?.(id);
     return ok({ proposed: id, to: toKind, expires_at: new Date(createdAt + Proposals.PROPOSAL_TTL_MS).toISOString() });
   },
 };

@@ -16,7 +16,7 @@ Rules:
 - Told and inferred never share a page.
 - Never record credentials, government ids, payment data, health, performance judgements or anyone's private life.
 - Profiles are not written in this pass; they are written only by a pass running as that person.
-- Anything the whole team should know (ownership, who debugged what) is not written: `propose` it with kind `team-fact` to `manager`.
+- Anything the whole team should know (ownership, who debugged what) is not written: `propose` it with kind `team-fact` to `manager`. The payload is `{ "summary": "<one line>", "pages": [{ "slug", "content", "type": "team-fact", "confidence", "source" }] }`: the page as it would be written to shared memory once the manager approves.
 
 Lesson proposals: read `{{PROPOSALS_SLUG}}` first, then write it back with `memoize` (type `correction`) holding the proposals already on it plus the new ones, one per line:
 `- YYYY-MM-DD <the lesson, one sentence> (source: <thread or person>; evidence: correction | pattern)`

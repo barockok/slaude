@@ -13,6 +13,9 @@
  * period ends, so a scheduler that was down at 02:30 runs it late rather than
  * never; an earlier period's missed slot is never run.
  *
+ * Every tick also expires the open proposals past their 14 days (DB only, so
+ * it runs with the brain closed, like the stale-run sweep).
+ *
  * The quiet-moment pass is not on the clock: after an agent's scheduled slots,
  * each tick claims and runs its due quiet threads (passes/quiet-moment.ts),
  * each under the slot `<session>@<last_turn_at>`.
@@ -31,6 +34,7 @@
 import type { Redis } from "ioredis";
 import * as Runs from "../db/background-runs";
 import { claimSlot } from "../db/background-slots";
+import * as Proposals from "../db/proposals";
 import { registerLoop } from "../gateway/core/running-loops";
 import { brainAdminCall, brainCall, brainReady } from "../knowledge/brain";
 import { m as metric } from "../metrics";
@@ -40,6 +44,8 @@ import { redactSecrets } from "../gateway/core/status-text";
 import { localDay, type PassName } from "./budget";
 import { isoWeekSlot, localParts, previousDay } from "./calendar";
 import { budgetConfigFor } from "./config";
+import { runDigest } from "./digest";
+import { postPersonProposals, type CardPost } from "./proposal-cards";
 import { runLessonsUpkeep } from "./passes/lessons-upkeep";
 import { runNightlyReview, type NightlyDeps } from "./passes/nightly-review";
 import { dueQuietThreads, quietSlot, runQuietMoment } from "./passes/quiet-moment";
@@ -92,6 +98,8 @@ export interface SchedulerDeps {
   handlers: Partial<Record<PassName, SlotHandler>>;
   /** Default: sweepStaleRuns (every pass's runs that lost their finish). */
   sweep?: (now: Date) => Promise<unknown>;
+  /** Default: Proposals.expireDue (open proposals past expires_at become expired). */
+  expire?: (now: Date) => Promise<unknown>;
   /** The group's threads due a quiet-moment pass. Default: dueQuietThreads (env thresholds). */
   quietDue?: (g: AgentGroup, now: Date) => Promise<ThreadActivity[]>;
   /** Default: a timer that the signal cuts short. */
@@ -142,6 +150,7 @@ async function recordError(agentId: string, pass: PassName, day: string, at: Dat
 export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: AbortSignal): Promise<void> } {
   const last = new Map<string, LastSlots>();
   const sweep = deps.sweep ?? ((now: Date) => sweepStaleRuns(now));
+  const expire = deps.expire ?? ((now: Date) => Proposals.expireDue(now.getTime()));
   const quietDue = deps.quietDue ?? ((g: AgentGroup, now: Date) => dueQuietThreads(g, now));
 
   /** Claim a slot and run its handler; a throw is recorded as an error run. */
@@ -173,6 +182,12 @@ export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: 
         await sweep(now);
       } catch (e) {
         console.error(`[background] stale-run sweep failed: ${errText(e)}`);
+      }
+      try {
+        const n = await expire(now);
+        if (typeof n === "number" && n > 0) console.log(`[background] ${n} unanswered proposal(s) expired`);
+      } catch (e) {
+        console.error(`[background] proposal expiry failed: ${errText(e)}`);
       }
       if (!deps.brainReady()) {
         console.debug("[background] brain not open; scheduler tick skipped");
@@ -333,22 +348,39 @@ async function listBrainSources(): Promise<string[]> {
   return (listed?.sources ?? []).map((s) => s.id);
 }
 
-/** Production handlers: the nightly review, the lessons upkeep, the quiet-moment pass and the weekly skill review. */
-export function passHandlers(deps: NightlyDeps): Partial<Record<PassName, SlotHandler>> {
+/** Where the scheduler's messages go: the gateway's Slack (absent in tests and without Slack). */
+export interface SchedulerSlack {
+  /** Posts as the agent's bot; `channel` is a user id for a DM. */
+  post: CardPost;
+  /** The manager and the backup manager. */
+  managers: () => string[];
+}
+
+/** Production handlers: the nightly review, the lessons upkeep, the quiet-moment pass, the weekly skill review and the weekly digest. */
+export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial<Record<PassName, SlotHandler>> {
   return {
     "nightly-review": (r) => runNightlyReview(r, deps),
     "lessons-upkeep": (r) => runLessonsUpkeep(r, deps),
     "quiet-moment": (r) => runQuietMoment(r, deps),
     "skill-review": (r) => runSkillReview(r, deps),
+    digest: (r) => runDigest(r, { call: deps.call, managers: slack?.managers ?? (() => []), ...(slack ? { post: slack.post } : {}) }),
   };
 }
 
 /** The scheduler as the gateway and mono run it. */
-export function defaultSchedulerDeps(): SchedulerDeps {
+export function defaultSchedulerDeps(slack?: SchedulerSlack): SchedulerDeps {
   return {
     now: () => new Date(),
     brainReady,
     agents: defaultAgentGroups,
-    handlers: passHandlers({ runner: defaultRunnerDeps(), call: brainCall, listSources: listBrainSources }),
+    handlers: passHandlers(
+      {
+        runner: defaultRunnerDeps(),
+        call: brainCall,
+        listSources: listBrainSources,
+        ...(slack ? { deliver: (a) => postPersonProposals({ ...a, post: slack.post }).then(() => {}) } : {}),
+      },
+      slack,
+    ),
   };
 }

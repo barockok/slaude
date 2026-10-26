@@ -12,4 +12,4 @@ Write the whole lessons page with `memoize` (slug `{{LESSONS_SLUG}}`, type `less
 
 Then write `{{PROPOSALS_SLUG}}` back (type `correction`) holding only the proposals still waiting for more evidence that are under 14 days old, one per line as they were. When none are left, its content is exactly: {{NO_PROPOSALS}}
 
-A lesson that has kept proving itself may be proposed for the agent's SOUL: `propose` with kind `lesson-promotion` to `manager`, with the lesson and its evidence. The operator merges it; never write the SOUL.
+A lesson that has kept proving itself may be proposed for the agent's SOUL: `propose` with kind `lesson-promotion` to `manager`, as payload `{ "lesson": "<the lesson>", "evidence": "<where it proved itself>" }`. The operator merges it; never write the SOUL.

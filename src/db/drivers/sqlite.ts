@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS background_slots (
   pass        TEXT    NOT NULL,
   slot        TEXT    NOT NULL,
   claimed_at  INTEGER NOT NULL,
+  state       TEXT,
   PRIMARY KEY (agent_id, pass, slot)
 );
 CREATE TABLE IF NOT EXISTS thread_activity (
@@ -344,6 +345,10 @@ export function bootstrapSqliteSchema(db: Database): void {
       if (/CREATE TABLE IF NOT EXISTS skill_usage\b/.test(stmt)) db.run(stmt.trim());
     }
   }
+
+  // Migration: background slots carry state to the next period (pg 0025).
+  const slotCols = db.query(`PRAGMA table_info(background_slots)`).all() as Array<{ name: string }>;
+  if (!slotCols.some((c) => c.name === "state")) db.run(`ALTER TABLE background_slots ADD COLUMN state TEXT`);
 
   // Migration: backfill permission_mode column on existing dbs.
   const sessionCols = db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>;

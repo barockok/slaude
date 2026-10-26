@@ -39,7 +39,7 @@ import { passToolId, passWriteSource, type PassScope, type PassTool, type Transc
 import { renderPassPrompt } from "../prompts";
 import { runPass, type Outcome } from "../runner";
 import type { AgentGroup } from "../scheduler";
-import { capped, ownTurns, parseTimelineRow, SYSTEM_AUTHOR, TIMELINE_CEILING, type DayRow, type NightlyDeps } from "./nightly-review";
+import { capped, deliverRunProposals, ownTurns, parseTimelineRow, SYSTEM_AUTHOR, TIMELINE_CEILING, type DayRow, type NightlyDeps } from "./nightly-review";
 
 export const QUIET_MOMENT = "quiet-moment" as const;
 /** The summary tool's name on `slaude_pass`. */
@@ -60,7 +60,7 @@ export function quietThresholds(): QuietThresholds {
   return { minTurns: env.quietMinTurns(), quietMs: env.quietMinutes() * 60_000, maxPerDay: env.quietMaxPerDay() };
 }
 
-export type QuietDeps = Pick<NightlyDeps, "runner" | "call" | "run">;
+export type QuietDeps = Pick<NightlyDeps, "runner" | "call" | "run" | "deliver">;
 
 /** The claim slot for one quiet stretch of a thread. */
 export const quietSlot = (sessionId: string, lastTurnAt: number): string => `${sessionId}@${lastTurnAt}`;
@@ -212,6 +212,7 @@ export async function runQuietMoment(r: AgentGroup & { slot: string; signal?: Ab
     },
     deps.runner,
   );
+  await deliverRunProposals(deps.deliver, { agentId: r.agentId, scope, proposed: res.proposed, tag });
   if (summarized) await ThreadActivity.markSummarized(sessionId, lastTurnAt);
   else console.log(`${tag}: session=${sessionId} ended ${res.outcome} without a summary`);
   return { outcome: res.outcome, summarized };

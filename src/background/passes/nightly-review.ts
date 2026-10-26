@@ -38,6 +38,30 @@ export interface NightlyDeps {
   listSources: () => Promise<string[]>;
   /** Seam (tests): the runner. */
   run?: typeof runPass;
+  /** Posts a run-as pass's proposals to that person's DM, once per run. Absent: they wait unseen until they expire. */
+  deliver?: PersonDelivery;
+}
+
+/** Delivery of one pass run's proposals to the person it ran as (proposal-cards.ts postPersonProposals). */
+export type PersonDelivery = (a: { agentId: string; userId: string; teamId?: string; ids: string[] }) => Promise<void>;
+
+/**
+ * After a pass that ran as a person: post the proposals it queued to that
+ * person's DM, in one message. Agent-scope runs propose only to the manager
+ * (the weekly digest), so nothing is posted for them. A failure is logged;
+ * the proposals stay open until they expire.
+ */
+export async function deliverRunProposals(deliver: PersonDelivery | undefined, a: { agentId: string; scope: PassScope; proposed?: string[]; tag: string }): Promise<void> {
+  if (a.scope.kind !== "user" || !a.proposed || a.proposed.length === 0) return;
+  if (!deliver) {
+    console.warn(`${a.tag}: ${a.proposed.length} proposal(s) for ${a.scope.userId} not posted: no Slack to post through`);
+    return;
+  }
+  try {
+    await deliver({ agentId: a.agentId, userId: a.scope.userId, ...(a.scope.teamId ? { teamId: a.scope.teamId } : {}), ids: a.proposed });
+  } catch (e) {
+    console.error(`${a.tag}: could not post ${a.proposed.length} proposal(s) to ${a.scope.userId}: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** A timeline row as get_timeline returns it (gbrain adds created_at). */
@@ -257,6 +281,7 @@ export async function runNightlyReview(r: AgentGroup & { slot: string; signal?: 
     };
     const res = await run(spec, deps.runner);
     out.push({ scope: label(q.scope), outcome: res.outcome });
+    await deliverRunProposals(deps.deliver, { agentId: r.agentId, scope: q.scope, proposed: res.proposed, tag });
   }
   if (queue.length === 0) console.log(`${tag}: no conversations on ${day}; nothing to review`);
   return out;

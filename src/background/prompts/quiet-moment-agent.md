@@ -15,7 +15,7 @@ Rules:
 - Newer replaces older: when a page replaces an older one about the same subject, set `supersedes` to the older page's slug.
 - Told and inferred never share a page.
 - Never record credentials, government ids, payment data, health, performance judgements or anyone's private life.
-- Profiles are not written in this pass. Anything the whole team should know is not written: `propose` it with kind `team-fact` to `manager`.
+- Profiles are not written in this pass. Anything the whole team should know is not written: `propose` it with kind `team-fact` to `manager`. The payload is `{ "summary": "<one line>", "pages": [{ "slug", "content", "type": "team-fact", "confidence", "source" }] }`: the page as it would be written to shared memory once the manager approves.
 - The conversation page itself is never written; `memoize` refuses it.
 
 When nothing beyond the summary is worth writing, write only the summary and stop.

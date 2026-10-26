@@ -154,3 +154,40 @@ export async function expireDue(now: number): Promise<number> {
   const r = await db.run("UPDATE proposals SET status = 'expired' WHERE status = 'open' AND expires_at <= ?", [now]);
   return r.changes;
 }
+
+/**
+ * Undo an approval whose write failed, so the proposal can be tried again:
+ * only the exact decision `decide` recorded (same approver and time) goes
+ * back to open, and only while it is unexpired.
+ */
+export async function reopen(id: string, by: string, at: number): Promise<boolean> {
+  const r = await db.run(
+    `UPDATE proposals SET status = 'open', decided_by = NULL, decided_at = NULL
+      WHERE id = ? AND status = 'approved' AND decided_by = ? AND decided_at = ? AND expires_at > ?`,
+    [id, by, at, at],
+  );
+  return r.changes > 0;
+}
+
+/**
+ * Claim the restore of a retired skill: the retirement row goes from
+ * `approved` to `rejected` (the retirement was undone), decided by `by`. One
+ * caller wins across replicas; false when it was already restored (or is not
+ * a retirement).
+ */
+export async function claimSkillRestore(id: string, by: string, at: number): Promise<boolean> {
+  const r = await db.run(
+    "UPDATE proposals SET status = 'rejected', decided_by = ?, decided_at = ? WHERE id = ? AND kind = ? AND status = 'approved'",
+    [by, at, id, SKILL_RETIRED_KIND],
+  );
+  return r.changes > 0;
+}
+
+/** Give back a restore claim whose move failed: the skill is still retired. */
+export async function releaseSkillRestore(id: string, by: string, at: number): Promise<void> {
+  await db.run(
+    `UPDATE proposals SET status = 'approved', decided_by = ?, decided_at = created_at
+      WHERE id = ? AND kind = ? AND status = 'rejected' AND decided_by = ? AND decided_at = ?`,
+    [SKILL_REVIEW_ACTOR, id, SKILL_RETIRED_KIND, by, at],
+  );
+}

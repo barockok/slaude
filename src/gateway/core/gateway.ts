@@ -91,7 +91,7 @@ import { accountForSlackUser } from "../../db/accounts";
 import { makeDeferQueue } from "../panel/defer-queue";
 import { suppressibleSurface } from "../panel/suppress";
 import type { DispatchMeta } from "./dispatch";
-import { brainCallIfOpen, brainEnabled, brainReady, ensureSources } from "../../knowledge/brain";
+import { brainCall, brainCallIfOpen, brainEnabled, brainReady, ensureSources } from "../../knowledge/brain";
 import { buildTurnMemoryContext } from "../../memory/turn-context";
 import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
@@ -144,7 +144,8 @@ import * as OneOnOne from "../../db/one-on-one";
 import * as MentionOnly from "../../db/mention-only";
 import { CronScheduler } from "../slack/cron-scheduler";
 import { startCronLeader } from "./cron-leader";
-import { defaultSchedulerDeps, leaderElect, startBackgroundScheduler } from "../../background/scheduler";
+import { defaultSchedulerDeps, leaderElect, startBackgroundScheduler, type SchedulerSlack } from "../../background/scheduler";
+import { registerProposalActions } from "../../background/proposal-cards";
 import type { LeaderHandle } from "../../queue/locks";
 import { getNextRun } from "../slack/cron-parser";
 import { clientForApp, type AppRef, type Transport } from "./transport";
@@ -705,6 +706,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const approvals = new ApprovalGate(t, env.slack.approvers(), {
     timeoutSeconds: () => soulData().approvalTimeoutSeconds || 300,
   });
+  // Background-learning messages (phase D): the weekly digest to the manager
+  // and a person's proposals to their DM. Both carry buttons, so they go out
+  // as the bot of the app (interactivity-bound, like the gates); chat:write
+  // with im:write lets a bot post to a user id, which opens its DM.
+  const backgroundManagers = (): string[] => {
+    const soul = soulData();
+    return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
+  };
+  const backgroundSlack: SchedulerSlack = {
+    post: async (msg) => {
+      await botClientFor(msg.app).chat.postMessage({ channel: msg.channel, text: msg.text, blocks: msg.blocks });
+    },
+    managers: backgroundManagers,
+  };
+  registerProposalActions(t, { managers: backgroundManagers, call: brainCall, now: () => new Date(), ready: brainReady });
   const ignoreGate = new IgnoreGate();
   // Boot sweep: auto-expire pending gates whose deadline passed while no
   // process was alive (a restart killed their auto-deny timers). Rows with no
@@ -883,7 +899,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // mono runs it directly. Ticks wait for an open brain and never boot it.
   let backgroundScheduler: { stop(graceMs?: number): Promise<void> } | undefined;
   if (opts.backgroundLearning === true && env.role() !== "node" && brainEnabled()) {
-    backgroundScheduler = startBackgroundScheduler(defaultSchedulerDeps(), queueDispatch ? { elect: leaderElect(getRedis()) } : {});
+    backgroundScheduler = startBackgroundScheduler(defaultSchedulerDeps(backgroundSlack), queueDispatch ? { elect: leaderElect(getRedis()) } : {});
     console.log(`[slaude] background learning scheduler ${queueDispatch ? "contending for leadership" : "started"}`);
   }
 

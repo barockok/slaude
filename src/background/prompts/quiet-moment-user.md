@@ -17,7 +17,7 @@ Rules:
 - Newer replaces older: when a page replaces an older one about the same subject, set `supersedes` to the older page's slug.
 - Told and inferred never share a page.
 - Never record credentials, government ids, payment data, health, performance judgements or anyone's private life.
-- Something worth keeping beyond this person's memory is never written there: `propose` it with kind `promote` and they decide.
+- Something worth keeping beyond this person's memory is never written there: `propose` it with kind `promote` and they decide. The payload is `{ "summary": "<one line>", "target": "shared", "pages": [{ "slug", "content", "type", "confidence", "source" }] }` (`target` `"agent"` keeps it in the agent's own memory instead of the team's): the page as it would be written once they approve. They see it in their direct messages, and nothing is written until they approve.
 - The conversation page itself is never written; `memoize` refuses it.
 
 When nothing beyond the summary is worth writing, write only the summary and stop.

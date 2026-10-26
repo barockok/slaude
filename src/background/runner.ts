@@ -199,14 +199,23 @@ const asUsage = (u: Partial<ResultUsage> | undefined): TokenCounts => tokensFrom
 
 const errMsg = (e: unknown): string => redactSecrets(e instanceof Error ? e.message : String(e));
 
-export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<{ outcome: Outcome; costUsd: number; runId: string }> {
+export interface PassResult {
+  outcome: Outcome;
+  costUsd: number;
+  runId: string;
+  /** Ids of the proposals this run queued, in order. */
+  proposed?: string[];
+}
+
+export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassResult> {
   const maxTurns = PASS_MAX_TURNS[spec.pass];
   if (maxTurns === undefined) throw new Error(`pass ${spec.pass} does not run through the pass runner`);
   const kbSources = (deps.kbSources ?? personaKbSourceIds)(spec.personaId);
   // Fails loudly on an unusable user id or a clashing extra tool name before anything is recorded.
   passReadSources(spec.scope, spec.agentId, kbSources);
+  const proposed: string[] = [];
   const { server, toolIds } = createPassMcpServer(
-    { scope: spec.scope, agentId: spec.agentId, kbSources, transcripts: spec.transcripts ?? [], call: deps.brainCall, now: deps.now },
+    { scope: spec.scope, agentId: spec.agentId, kbSources, transcripts: spec.transcripts ?? [], call: deps.brainCall, now: deps.now, onProposed: (id) => proposed.push(id) },
     spec.extraTools,
   );
   const tag = `[background] agent=${spec.agentId} pass=${spec.pass}`;
@@ -223,7 +232,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<{ outco
     await Runs.finish(runId, { tokens, costUsd: cost, outcome });
     metric.backgroundRunsTotal.inc({ ...labels, outcome });
     if (cost > 0) metric.backgroundCostUsdTotal.inc(labels, cost);
-    return { outcome, costUsd: cost, runId };
+    return { outcome, costUsd: cost, runId, proposed };
   };
 
   // Everything before the query: a throw here still records an `error` run.
@@ -262,7 +271,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<{ outco
       // The ledger itself is unavailable: count the failure, say so, and record nothing.
       metric.backgroundRunsTotal.inc({ ...labels, outcome: "error" });
       console.error(`${tag}: could not record the failed run: ${errMsg(e2)}`);
-      return { outcome: "error", costUsd: 0, runId: runId ?? "" };
+      return { outcome: "error", costUsd: 0, runId: runId ?? "", proposed };
     }
   }
   const openId = runId;
