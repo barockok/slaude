@@ -100,6 +100,9 @@ type LiveSession = {
   idleTimer?: ReturnType<typeof setTimeout>;
   /** Set when reload_session is called so expected exit errors are suppressed. */
   reloading?: boolean;
+  /** Inputs pushed so far (never decreases): a check whose budgeted start
+   *  resolves after another input was pushed is stale and is not run. */
+  inputSeq: number;
   /** Inputs pushed whose `result` has not arrived yet. Inputs overlap (an
    *  auto-evolve prompt and the next user message can both be outstanding), so
    *  this is a count: a turn is in flight while it is above zero. */
@@ -1374,6 +1377,7 @@ export class AgentManager extends EventEmitter {
       id: sessionId,
       // Every input starts a turn; its `result` ends it (#fanout).
       pushUser: (text: string, synthetic = false, sender: InputSender | null = null) => {
+        live.inputSeq++;
         live.pendingInputs++;
         live.inputSynthetic.push(synthetic);
         live.inputSenders.push(sender);
@@ -1390,6 +1394,7 @@ export class AgentManager extends EventEmitter {
       mode,
       personaName,
       bootFp,
+      inputSeq: 1, // firstText
       pendingInputs: 1, // firstText is already queued
       exited: new Promise<void>((r) => (markExited = r)),
     };
@@ -1758,7 +1763,7 @@ export class AgentManager extends EventEmitter {
               live.inAutoEvolve = true;
               live.pushUser(AUTO_EVOLVE_PROMPT, true);
             } else if (live.pendingInputs === 0) {
-              void this.#startBudgetedCheck(sessionId, live, budget);
+              void this.#startBudgetedCheck(sessionId, live, budget, live.inputSeq);
             } else {
               // A queued message would run first and be taken for the check.
               console.log(`[mgr] skill check skipped session=${sessionId}: a newer message is already queued`);
@@ -1779,10 +1784,10 @@ export class AgentManager extends EventEmitter {
    * Start the check's budgeted run, then push the check prompt. Fails closed:
    * a refused start, or one that throws (network, gateway error), skips the
    * check with one log line, so it never runs unbudgeted. A session that moved
-   * on while the run started (a message queued, a reload, a voice call, gone)
+   * on while the run started (any input pushed since, a reload, a voice call, gone)
    * ends the run as `error` with no usage instead of running the check.
    */
-  async #startBudgetedCheck(sessionId: string, live: LiveSession, budget: SkillCheckBudget): Promise<void> {
+  async #startBudgetedCheck(sessionId: string, live: LiveSession, budget: SkillCheckBudget, seq: number): Promise<void> {
     let r: { ok: boolean; runId?: string };
     try {
       r = await budget.start(sessionId, live.personaName ?? "default");
@@ -1797,6 +1802,9 @@ export class AgentManager extends EventEmitter {
     const run: EvolveRun = { budget, runId: r.runId, base: live.lastModelUsage, seen: new Map() };
     const movedOn =
       this.#live.get(sessionId) !== live ||
+      // Any input since the qualifying turn ended, even one whose turn has
+      // already finished: the check would no longer follow that turn.
+      live.inputSeq !== seq ||
       live.pendingInputs > 0 ||
       live.inAutoEvolve ||
       live.reloading === true ||

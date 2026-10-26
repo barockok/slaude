@@ -321,6 +321,40 @@ describe("budgeted skill check", () => {
     await shutdown(mgr, row.id);
   });
 
+  it("a later user turn that finished while the run started: the stale check is never pushed", async () => {
+    logSpy = spyOn(console, "log").mockImplementation(() => {});
+    const mgr = new AgentManager();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { budget, finishes } = fakeBudget(async () => {
+      await gate;
+      return { ok: true, runId: "run-stale" };
+    });
+    mgr.setBackgroundBudget(budget);
+    const row = await mgr.ensureSession(thread());
+    let userTurns = 0;
+    const fs = plan((s, text) => {
+      if (isCheck(text)) return void s.emit(res());
+      userTurns++;
+      // The first turn qualifies; the second is a plain reply that ends at once.
+      if (userTurns === 1) s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch")]));
+      else s.emit(asst([{ type: "text", text: "ok" }]));
+      s.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(userTurns, userTurns) }));
+    });
+    const events: any[] = [];
+    mgr.on("event", (e: any) => events.push(e));
+    await mgr.sendMessage(row.id, "first");
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "first done");
+    await mgr.sendMessage(row.id, "second");
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "second done");
+    release();
+    await until(() => finishes.length === 1, 3000, "finish");
+    expect(finishes[0]!.r).toEqual({ outcome: "error", usage: {} });
+    await Bun.sleep(30);
+    expect(fs.users.some((u) => isCheck(String(u.message.content)))).toBe(false);
+    await shutdown(mgr, row.id);
+  });
+
   it("mono ledger: a refused budget pushes no check and leaves a skipped-budget row", async () => {
     logSpy = spyOn(console, "log").mockImplementation(() => {});
     setAgentId("U0AGENT");
