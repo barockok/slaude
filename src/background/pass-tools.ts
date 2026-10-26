@@ -30,6 +30,9 @@ import { getPageOrNull, SUPERSEDED_TAG, supersededSlugs, type BrainOpCall } from
 import { PAGE_TYPES, type PageType } from "../knowledge/page-types";
 import { AGENT_SOURCE, agentSourceId, PUBLIC_SOURCE, SHARED_SOURCE, speakerProfileSource, userSourceId, type BrainScope } from "../knowledge/scope";
 import * as Proposals from "../db/proposals";
+import { CONVERSATION_REFUSAL, holdsCredential, isConversationSlug, LESSONS_MAX_LINES, LESSONS_REFUSAL, lineCount, proposalPayloadError } from "./proposal-payload";
+
+export { CONVERSATION_REFUSAL, holdsCredential, LESSONS_MAX_LINES, LESSONS_REFUSAL };
 
 export type PassScope = { kind: "agent" } | { kind: "user"; userId: string; teamId: string };
 
@@ -65,7 +68,6 @@ export interface PassToolContext {
 /** Most pages one read_pages or memoize call takes. */
 export const PASS_MAX_PAGES = 20;
 /** A `lessons` page holds at most this many lines (global constraints). */
-export const LESSONS_MAX_LINES = 40;
 /** A quote shorter than this would match almost any turn. */
 export const MIN_QUOTE_CHARS = 8;
 /** Largest proposal payload, as JSON. */
@@ -81,8 +83,6 @@ export const SOURCE_REFUSAL = "refused: that source is outside this pass's scope
 export const NO_PROFILE_REFUSAL = "refused: this person's profile is unavailable to this pass (no Slack team id)";
 export const CORRECTION_SLUG_REFUSAL = 'refused: a correction page may not use slug "profile"';
 export const USER_PROPOSAL_KIND_REFUSAL = 'refused: a pass running as a person proposes only kind "promote"';
-export const LESSONS_REFUSAL = `refused: a lessons page holds at most ${LESSONS_MAX_LINES} lines; merge or drop lessons before adding`;
-export const CONVERSATION_REFUSAL = "refused: conversation pages and their summaries are never written with memoize";
 export const PROPOSE_TO_PERSON_REFUSAL = 'refused: an agent-scope pass proposes only to the manager (to: "manager")';
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
@@ -139,7 +139,6 @@ export function quotedFromOwnTurn(quote: string | undefined, userId: string, tra
   return transcripts.some((t) => t.author === userId && squash(t.text).includes(q));
 }
 
-const lineCount = (s: string): number => s.replace(/\s+$/, "").split(/\r?\n/).length;
 
 const PAGE_TYPE_ENUM = PAGE_TYPES as unknown as [PageType, ...PageType[]];
 
@@ -168,7 +167,7 @@ interface Composed {
 function composeOne(pg: PassPage, ctx: PassToolContext, now: Date): Composed | { error: string } {
   if (pg.target === "shared" || pg.type === "team-fact") return { error: SHARED_REFUSAL };
   // A transcript is appended by memory sync only; its summary is the quiet-moment pass's own tool.
-  if (/^[/.]*conversations(\/|$)/i.test(pg.slug.trim()))return { error: CONVERSATION_REFUSAL };
+  if (isConversationSlug(pg.slug)) return { error: CONVERSATION_REFUSAL };
   if (pg.type === "correction" && pg.slug === "profile") return { error: CORRECTION_SLUG_REFUSAL };
   // A correction is about how to treat the run-as person (their profile) in a
   // user-scope pass; in an agent-scope pass it is a lesson candidate in the
@@ -198,23 +197,6 @@ function composeOne(pg: PassPage, ctx: PassToolContext, now: Date): Composed | {
   return { slug: pg.slug, content: c.content, source: profile, ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) };
 }
 
-/**
- * True when any string in `v` (recursively, keys included) looks like a
- * credential: the string alone, and each object entry rendered as `key: value`,
- * since JSON's `"api_key":"…"` shape is not what redactSecrets matches.
- */
-export function holdsCredential(v: unknown, key?: string): boolean {
-  if (typeof v === "string") {
-    if (redactSecrets(v) !== v) return true;
-    return key !== undefined && redactSecrets(`${key}: ${v}`) !== `${key}: ${v}`;
-  }
-  if (typeof v === "number" || typeof v === "boolean") return key !== undefined && holdsCredential(String(v), key);
-  if (Array.isArray(v)) return v.some((x) => holdsCredential(x, key));
-  if (v !== null && typeof v === "object") {
-    return Object.entries(v as Record<string, unknown>).some(([k, x]) => holdsCredential(k) || holdsCredential(x, k));
-  }
-  return false;
-}
 
 export const passHandlers = {
   async read_pages(p: { slugs: string[]; source?: string }, ctx: PassToolContext): Promise<ToolResult> {
@@ -329,6 +311,9 @@ export const passHandlers = {
     if (json.length > MAX_PROPOSAL_CHARS) return err(`refused: payload is over ${MAX_PROPOSAL_CHARS} characters`);
     if (holdsCredential(p.payload)) return err(CREDENTIAL_REFUSAL);
     if (ctx.scope.kind === "user" && p.kind !== "promote") return err(USER_PROPOSAL_KIND_REFUSAL);
+    // The same guards the card applies on approval: a payload that could never be written is never queued.
+    const bad = proposalPayloadError(p.kind, p.payload);
+    if (bad) return err(bad);
     let toKind: Proposals.ProposalTo;
     let toUser: string | null;
     if (ctx.scope.kind === "user") {

@@ -19,12 +19,13 @@ import { getPageOrNull } from "../../knowledge/memory-trail";
 import { agentSourceId } from "../../knowledge/scope";
 import { runPass, type Outcome } from "../runner";
 import { LESSONS_MAX_LINES } from "../pass-tools";
+import { LESSON_PROPOSALS_PAGE_SLUG, LESSONS_PAGE_SLUG } from "../proposal-payload";
 import { renderPassPrompt } from "../prompts";
 import type { NightlyDeps } from "./nightly-review";
 import type { AgentGroup } from "../scheduler";
 
-export const LESSONS_SLUG = "self/lessons";
-export const PROPOSALS_SLUG = "self/lesson-proposals";
+export const LESSONS_SLUG = LESSONS_PAGE_SLUG;
+export const PROPOSALS_SLUG = LESSON_PROPOSALS_PAGE_SLUG;
 /** The proposals page's whole body once nothing is waiting. */
 export const NO_PROPOSALS = "No open lesson proposals.";
 

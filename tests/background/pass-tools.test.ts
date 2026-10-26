@@ -249,12 +249,12 @@ describe("pass tools in user scope (U0ALICE)", () => {
 
   test("propose with to: manager is stored as to the person", async () => {
     const { ctx } = alice();
-    const r = await passHandlers.propose({ kind: "promote", payload: { slug: "people/x", why: "useful to the team" }, to: "manager" }, ctx);
+    const r = await passHandlers.propose({ kind: "promote", payload: { slug: "people/x", content: "c", why: "useful to the team" }, to: "manager" }, ctx);
     expect(r.isError).toBeUndefined();
     const id = JSON.parse(text(r)).proposed as string;
     const row = (await Proposals.get(id))!;
     expect(row).toMatchObject({ agentId: AGENT, kind: "promote", toKind: "person", toUser: ALICE, scope: `user:${ALICE}`, status: "open" });
-    expect(row.payload).toEqual({ slug: "people/x", why: "useful to the team" });
+    expect(row.payload).toEqual({ slug: "people/x", content: "c", why: "useful to the team" });
     expect(row.createdAt).toBe(NOW.getTime());
     expect(row.expiresAt).toBe(NOW.getTime() + 14 * 24 * 60 * 60 * 1000);
   });
@@ -304,7 +304,7 @@ describe("pass tools in agent scope", () => {
 
   test("propose goes to the manager; to: person is refused", async () => {
     const { ctx } = agent();
-    const r = await passHandlers.propose({ kind: "team-fact", payload: { slug: "shared/services/billing", owner: ALICE }, to: "manager" }, ctx);
+    const r = await passHandlers.propose({ kind: "team-fact", payload: { slug: "shared/services/billing", content: "c", owner: ALICE }, to: "manager" }, ctx);
     const row = (await Proposals.get(JSON.parse(text(r)).proposed))!;
     expect(row).toMatchObject({ toKind: "manager", toUser: null, scope: "agent" });
     expect((await passHandlers.propose({ kind: "team-fact", payload: {}, to: "person" }, ctx)).isError).toBe(true);
