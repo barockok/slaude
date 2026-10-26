@@ -322,10 +322,13 @@ describe("/1on1 nightly review, end to end", () => {
 
     // 2. D+1 02:30: the scheduler claims the nightly slot and runs it.
     const seen: Seen[] = [];
+    // A clock that moves on, as a real one does: the ledger orders by started_at, and a
+    // frozen clock gives both passes the same one, leaving their order to the storage.
+    let clock = Date.parse(NIGHTLY_AT);
     const runner: RunnerDeps = {
       query: fakeQuery(seen),
       brainCall,
-      now: () => new Date(NIGHTLY_AT),
+      now: () => new Date((clock += 1000)),
       priceTable: TABLE,
       model: () => MODEL,
       budget: () => ({ limitUsd: 1, timeZone: "UTC" }),
