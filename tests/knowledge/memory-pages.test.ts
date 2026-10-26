@@ -3,7 +3,7 @@ import matter from "gray-matter";
 // js-yaml 3 (gray-matter's parser) ships no types.
 // @ts-ignore
 import yaml from "js-yaml";
-import { composePage, CREDENTIAL_REFUSAL, parseFrontmatter, PAGE_TYPES } from "../../src/knowledge/memory-pages";
+import { composePage, CREDENTIAL_REFUSAL, parseFrontmatter, PAGE_TYPES, readPageRecord } from "../../src/knowledge/memory-pages";
 
 const NOW = new Date("2026-10-25T13:00:00Z");
 const page = (over: Record<string, unknown> = {}) => ({ slug: "notes/x", content: "Body text.\n", summary: "s", ...over });
@@ -174,5 +174,31 @@ describe("composed frontmatter is valid YAML", () => {
     expect(c).toContain('\nbeneficiary: "U0ALICE"\n');
     expect(c).toContain('\ndue: "2026-11-01"\n');
     expect((matter(c).data as Record<string, unknown>).due).toBe("2026-11-01");
+  });
+});
+
+// The record shape the real engine returned (gbrain get_page, measured
+// 2026-10-26): `type` in its own column, not in `frontmatter`; `as_of` an ISO
+// timestamp string; `tags` empty even for a page tagged by add_tag (readers
+// take superseded status from a tag listing, supersededSlugs).
+describe("readPageRecord against the real engine's record shape", () => {
+  test("type comes from the record's column; as_of reads back as a date", () => {
+    const rec = readPageRecord({
+      slug: "commitments/deploy-42",
+      type: "commitment",
+      compiled_truth: "Tell Alice when deploy 42 is out.",
+      frontmatter: { due: "after deploy 42 ships", as_of: "2026-10-26T00:00:00.000Z", status: "open", beneficiary: "U0ALICE" },
+      tags: [],
+    });
+    expect(rec).toEqual({
+      meta: { due: "after deploy 42 ships", as_of: "2026-10-26", status: "open", beneficiary: "U0ALICE", type: "commitment" },
+      body: "Tell Alice when deploy 42 is out.",
+      superseded: false,
+    });
+  });
+
+  test("a frontmatter type wins over the column; a timestamp that is not midnight is kept", () => {
+    const rec = readPageRecord({ type: "note", compiled_truth: "x", frontmatter: { type: "profile", as_of: "2026-10-26T09:30:00.000Z" } });
+    expect(rec!.meta).toEqual({ type: "profile", as_of: "2026-10-26T09:30:00.000Z" });
   });
 });
