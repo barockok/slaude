@@ -1,5 +1,5 @@
 import type { WebClient } from "@slack/web-api";
-import type { PersonaProvider } from "./sync/payload";
+import type { PersonaBackground, PersonaProvider } from "./sync/payload";
 
 export interface PersonaConfig {
   slackUserId: string;
@@ -36,4 +36,7 @@ export interface Persona {
   /** Managed personas only: the `kb-*` sources it may read, or null for every
    *  installed KB (WS-C §4.1). Undefined for filesystem personas (all). */
   kbSources?: string[] | null;
+  /** Managed personas only: background-learning budget and timezone, or null
+   *  for the environment default and UTC. Undefined for filesystem personas. */
+  background?: PersonaBackground | null;
 }

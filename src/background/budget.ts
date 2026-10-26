@@ -47,7 +47,8 @@ export function localDay(at: Date, timeZone: string): string {
 const BEHIND_NIGHTLY: ReadonlySet<PassName> = new Set(["quiet-moment", "skill-review", "skill-check"]);
 
 async function estimateFor(agentId: string, pass: PassName): Promise<number> {
-  return (await Runs.lastOkCost(agentId, pass)) ?? PASS_FLOOR[pass];
+  // Never below the floor: a near-zero last run must not unthrottle a pass.
+  return Math.max((await Runs.lastOkCost(agentId, pass)) ?? 0, PASS_FLOOR[pass]);
 }
 
 /**

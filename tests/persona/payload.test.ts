@@ -263,8 +263,8 @@ describe("kbSources (WS-C §4.1)", () => {
   });
 
   test("one version table: the payload needs the highest version of any field a persona sets", () => {
-    expect(PERSONA_FIELD_VERSION).toEqual({ provider: 2, runsOn: 2, kbSources: 3 });
-    expect(SUPPORTED_PAYLOAD_VERSION).toBe(3);
+    expect(PERSONA_FIELD_VERSION).toEqual({ provider: 2, runsOn: 2, kbSources: 3, background: 4 });
+    expect(SUPPORTED_PAYLOAD_VERSION).toBe(4);
     const key = { apiKey: "env://PERSONA_ANA_KEY" };
     expect(payloadVersionFor([])).toBe(1);
     expect(payloadVersionFor([ana])).toBe(1);
@@ -303,5 +303,29 @@ describe("kbSources (WS-C §4.1)", () => {
 
   test("kbSources is a known field, so it is never reported as ignored", () => {
     expect(unknownFieldPaths(withKb(["kb-a"]))).toEqual([]);
+  });
+});
+
+describe("background (budget and timezone)", () => {
+  const withBg = (background: unknown) => base([{ ...ana, background }]);
+  test("accepts a budget and a timezone, either alone, and absent", () => {
+    expect(parsePayload(base([ana])).personas[0]!.background).toBeUndefined();
+    expect(parsePayload(withBg({ budgetUsd: 2.5, timezone: "Europe/Berlin" })).personas[0]!.background).toEqual({ budgetUsd: 2.5, timezone: "Europe/Berlin" });
+    expect(parsePayload(withBg({ budgetUsd: 100 })).personas[0]!.background).toEqual({ budgetUsd: 100 });
+    expect(parsePayload(withBg({ timezone: "UTC" })).personas[0]!.background).toEqual({ timezone: "UTC" });
+  });
+  test("rejects a bad timezone, a non-positive or too large budget, and unknown keys", () => {
+    expect(() => parsePayload(withBg({ timezone: "Mars/Olympus" }))).toThrow(/timezone/);
+    expect(() => parsePayload(withBg({ budgetUsd: -1 }))).toThrow(/budgetUsd/);
+    expect(() => parsePayload(withBg({ budgetUsd: 0 }))).toThrow(/budgetUsd/);
+    expect(() => parsePayload(withBg({ budgetUsd: 101 }))).toThrow(/budgetUsd/);
+    expect(() => parsePayload(withBg({ budgetUsd: "3" }))).toThrow(/budgetUsd/);
+    expect(() => parsePayload(withBg({ budgets: 3 }))).toThrow(PayloadError);
+  });
+  test("a persona that sets it needs payload version 4; an old payload without it still parses", () => {
+    expect(payloadVersionFor([{ ...ana, background: { budgetUsd: 1 } }])).toBe(4);
+    expect(payloadVersionFor([{ ...ana, kbSources: [] }])).toBe(3);
+    expect(parsePayload({ ...base([ana]), version: 3 }).personas).toHaveLength(1);
+    expect(() => parsePayload({ ...withBg({ budgetUsd: 1 }), version: 5 })).toThrow(/newer/);
   });
 });

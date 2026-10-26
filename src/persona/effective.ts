@@ -3,7 +3,7 @@
  * it. This is the single merge; nothing else combines the two layers, so the
  * gateway, the runtime bundle and the panel cannot disagree about what is live.
  */
-import { PROVIDER_FIELDS, type PersonaProvider } from "./sync/payload";
+import { PROVIDER_FIELDS, type PersonaBackground, type PersonaProvider } from "./sync/payload";
 export type OverrideField = "soul" | "model" | "mcp";
 export const OVERRIDE_FIELDS: readonly OverrideField[] = ["soul", "model", "mcp"];
 
@@ -26,6 +26,9 @@ export interface DesiredPersona {
    *  both mean every installed KB; [] means none. Desired layer only, like
    *  provider: not an override field. */
   kbSources?: string[] | null;
+  /** Background-learning budget and timezone. Absent and null both mean the
+   *  defaults. Desired layer only, not an override field. */
+  background?: PersonaBackground | null;
   origin: "git" | "runtime";
   tombstonedAt: number | null;
 }
@@ -66,7 +69,13 @@ export function sameDesired(a: DesiredPersona, b: DesiredPersona): boolean {
     a.soulMd === b.soulMd && JSON.stringify(a.mcp) === JSON.stringify(b.mcp) &&
     (a.runsOn ?? null) === (b.runsOn ?? null) &&
     canonicalProvider(a.provider) === canonicalProvider(b.provider) &&
-    JSON.stringify(a.kbSources ?? null) === JSON.stringify(b.kbSources ?? null) && a.tombstonedAt === null;
+    JSON.stringify(a.kbSources ?? null) === JSON.stringify(b.kbSources ?? null) &&
+    canonicalBackground(a.background) === canonicalBackground(b.background) && a.tombstonedAt === null;
+}
+
+function canonicalBackground(b: PersonaBackground | null | undefined): string {
+  if (!b) return "null";
+  return JSON.stringify([b.budgetUsd ?? null, b.timezone ?? null]);
 }
 
 /** Key-order-independent form, so a row read back from JSONB compares equal. */

@@ -58,6 +58,21 @@ describe("personas-as-code schema", () => {
     }
   });
 
+  test("0020: personas.background is a nullable jsonb, null on existing rows, and the migration is idempotent", async () => {
+    const pg = await openDb({ dialect: "pg", driver: "pglite" });
+    try {
+      await runMigrations(pg, { log: () => {} });
+      const col = await pg.one<{ data_type: string; is_nullable: string }>(
+        `SELECT data_type, is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='personas' AND column_name='background'`);
+      expect(col).toEqual({ data_type: "jsonb", is_nullable: "YES" });
+      await pg.run(`INSERT INTO personas (id, tenant_id, name, soul_md, created_at, updated_at) VALUES ('p1','default','ana','',0,0)`);
+      expect((await pg.one<{ background: unknown }>(`SELECT background FROM personas WHERE id='p1'`))!.background).toBeNull();
+      await pg.exec(readFileSync(join(MIGRATIONS_DIR, "0020_persona_background.sql"), "utf8"));
+    } finally {
+      await pg.close();
+    }
+  });
+
   test("0016: runs_on is nullable (null = default) and checked against the label pattern", async () => {
     const pg = await openDb({ dialect: "pg", driver: "pglite" });
     try {

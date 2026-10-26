@@ -57,6 +57,20 @@ describe("canStart", () => {
     expect(await canStart(CFG, "a1", "nightly-review", NOW)).toEqual({ ok: false, reason: "budget" });
   });
 
+  test("a near-zero last ok run never drops the estimate below the floor", async () => {
+    await Runs.finish(await Runs.start({ agentId: "a1", pass: "nightly-review", scope: "agent", day: "2026-10-25" }), {
+      tokens: T,
+      costUsd: 0.0001,
+      outcome: "ok",
+    });
+    await ledger("skill-check", 0.95, "ok");
+    expect(await canStart(CFG, "a1", "nightly-review", NOW)).toEqual({ ok: false, reason: "budget" });
+    await db.run("DELETE FROM background_runs WHERE pass = 'skill-check'");
+    const r = await canStart(CFG, "a1", "nightly-review", NOW);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.estimate).toBeCloseTo(PASS_FLOOR["nightly-review"]);
+  });
+
   test("before the nightly ran, lower passes leave room for it", async () => {
     // 1 - 0.90 - 0.10 = 0 < 0.02 (the brief's 0.85 leaves 0.05, which would pass)
     await ledger("quiet-moment", 0.9, "ok");
