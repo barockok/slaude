@@ -207,7 +207,10 @@ describe("pass tools in user scope (U0ALICE)", () => {
     const { ctx, brain } = alice();
     const okR = await passHandlers.memoize({ pages: [{ slug: `people/${ALICE}`, type: "person-note", content: "likes tables" }] }, ctx);
     expect(okR.isError).toBeUndefined();
-    expect(brain.pages.get(userSourceId(ALICE))?.has(`people/${ALICE}`)).toBe(true);
+    // Slack ids are upper case. gbrain stores a lowercased slug but chunks under the
+    // one it is sent, so a mixed-case slug fails there: memoize must send it lowercased.
+    expect(brain.calls.filter((c) => c.name === "put_page").map((c) => c.params.slug)).toEqual([`people/${ALICE.toLowerCase()}`]);
+    expect(brain.pages.get(userSourceId(ALICE))?.has(`people/${ALICE.toLowerCase()}`)).toBe(true);
     const bad = await passHandlers.memoize(
       { pages: [{ slug: "a", type: "outcome", content: "ok" }, { slug: "b", type: "outcome", content: "x", target: "shared" }] },
       ctx,

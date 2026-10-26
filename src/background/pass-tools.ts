@@ -262,10 +262,14 @@ export const passHandlers = {
   },
 
   async memoize(p: { pages: PassPage[] }, ctx: PassToolContext): Promise<ToolResult> {
-    const pages = p.pages;
-    if (!Array.isArray(pages) || pages.length === 0 || pages.length > PASS_MAX_PAGES) {
+    if (!Array.isArray(p.pages) || p.pages.length === 0 || p.pages.length > PASS_MAX_PAGES) {
       return err(`memoize takes 1..${PASS_MAX_PAGES} pages`);
     }
+    // gbrain stores slugs lowercased and chunks and reads them as given, so a
+    // mixed-case slug (a person-note at people/<SlackId>) fails after its page
+    // row is written; the same normalisation as kb_memoize.
+    const lower = (s: string | undefined) => (typeof s === "string" ? s.toLowerCase() : s);
+    const pages = p.pages.map((pg) => ({ ...pg, slug: lower(pg.slug)!, supersedes: lower(pg.supersedes) }));
     // Compose every page before anything is written: one refusal stops the batch.
     const now = ctx.now();
     const composed: Composed[] = [];

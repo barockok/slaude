@@ -44,9 +44,11 @@ export function fakeBrain() {
         return { ok: true };
       }
       case "put_page": {
+        // Like gbrain: the slug is stored lowercased; every other op matches it exactly.
         const content = params.content as string;
-        const prev = src(scope.sourceId).get(params.slug as string);
-        src(scope.sourceId).set(params.slug as string, { content, tags: prev?.tags ?? new Set(), type: typeOf(content) });
+        const slug = (params.slug as string).toLowerCase();
+        const prev = src(scope.sourceId).get(slug);
+        src(scope.sourceId).set(slug, { content, tags: prev?.tags ?? new Set(), type: typeOf(content) });
         return { ok: true };
       }
       case "add_tag":
