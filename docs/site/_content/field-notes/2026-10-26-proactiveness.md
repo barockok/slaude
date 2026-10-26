@@ -6,7 +6,7 @@ date: 2026-10-26
 # Proactiveness: promises kept in their own thread, everything else behind code-enforced restraint
 
 **Date:** 2026-10-26
-**Status:** Built on the epic branch, unreleased. It touches the agent loop, the dispatch path and the DB schema (migrations 0028 and 0029), so it goes out as a release candidate first. Checked against a fake brain, a scripted model and a fake Slack, on the mono gateway and, for the node path, against a real Redis. Not checked against a live model.
+**Status:** Built on the epic branch, unreleased. It touches the agent loop, the dispatch path and the DB schema (migrations 0028 and 0029), so it goes out as a release candidate first. Checked against a fake brain, a scripted model and a fake Slack, on the mono gateway and, for the node path, against a real Redis. The heartbeat pass was run once with the real CLI against the repo's mock LLM: the CLI was offered exactly the six `mcp__slaude_pass__` tools (including `proactive_post`) and no built-ins, a `proactive_post` call reached the pass's server (where the mock's placeholder arguments failed validation, so nothing was posted), and the run ended `ok` with its ledger row. Not checked against a live model.
 
 Phase E is the last phase of the teammate-agent epic. It splits into two
 pieces with different rules:
