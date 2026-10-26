@@ -17,6 +17,7 @@ import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extr
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
 import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
+import type { PromiseTransport } from "../../proactive/promises";
 import { ledgerTurnRun } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
@@ -186,6 +187,8 @@ export interface GatewayHandle {
    *  Requires the session's route to exist (feed a message first). Production
    *  never calls this. */
   __resolveMcp(sessionId: string): Promise<Record<string, McpServerConfig> | undefined>;
+  /** Test seam: how this gateway delivers promise checks (phase E). */
+  __promises?: PromiseTransport;
   /** TEST SEAM: the mono process's voice call registry. */
   __voiceCalls?: VoiceCalls;
   /** TEST/SIM SEAM ONLY. Drive the natural-language connect path (what the
@@ -4103,6 +4106,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
+    __promises: backgroundSlack.promises!,
     __voiceCalls: voiceCalls,
     __brainGate: async (sessionId: string) => {
       const route = routes.get(sessionId);
