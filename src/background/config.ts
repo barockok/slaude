@@ -1,6 +1,6 @@
 import { env } from "../config/env";
+import { isValidTimeZone } from "../config/timezone";
 import { getPersonaRegistry } from "../persona/registry";
-import { isValidTimeZone } from "../persona/sync/payload";
 import type { BudgetConfig } from "./budget";
 
 const warned = new Set<string>();
@@ -12,16 +12,22 @@ export function __resetBackgroundConfigWarnings(): void {
 
 /**
  * The budget and day-boundary timezone for a persona's background passes.
- * Persona `background` values win over the environment (budget), which wins
+ * Persona `background` values win over the environment
+ * (`SLAUDE_BACKGROUND_BUDGET_USD`, `SLAUDE_BACKGROUND_TIMEZONE`), which wins
  * over the defaults (1 USD, UTC). A timezone `localDay` would reject falls back
  * to UTC with one warning per persona per process, so a bad value never makes
- * a pass throw.
+ * a pass throw. Without a persona registry (mono) only env and defaults apply.
  */
 export function budgetConfigFor(personaId: string): BudgetConfig {
-  const reg = getPersonaRegistry();
-  const bg = personaId === "default" ? reg.defaultPersona?.()?.background : reg.lookupByName(personaId)?.background;
+  let bg: { budgetUsd?: number; timezone?: string } | null | undefined;
+  try {
+    const reg = getPersonaRegistry();
+    bg = personaId === "default" ? reg.defaultPersona?.()?.background : reg.lookupByName(personaId)?.background;
+  } catch {
+    bg = undefined;
+  }
   const limitUsd = bg?.budgetUsd ?? env.backgroundBudgetUsd();
-  let timeZone = bg?.timezone ?? "UTC";
+  let timeZone = bg?.timezone || env.backgroundTimezone() || "UTC";
   if (!isValidTimeZone(timeZone)) {
     if (!warned.has(personaId)) {
       warned.add(personaId);

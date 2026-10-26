@@ -532,6 +532,11 @@ export const env = {
    * (`SLAUDE_BACKGROUND_BUDGET_USD`, default 1). A non-numeric or negative
    * value falls back to 1; 0 is allowed and disables background spend.
    */
+  /**
+   * Day-boundary timezone for background passes (`SLAUDE_BACKGROUND_TIMEZONE`,
+   * IANA name). Empty when unset; the caller validates it and falls back to UTC.
+   */
+  backgroundTimezone: () => opt("SLAUDE_BACKGROUND_TIMEZONE").trim(),
   backgroundBudgetUsd: () => {
     const raw = opt("SLAUDE_BACKGROUND_BUDGET_USD", "1").trim();
     const n = raw === "" ? NaN : Number(raw);

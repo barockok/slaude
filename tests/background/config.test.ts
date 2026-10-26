@@ -25,9 +25,11 @@ let saved: string | undefined;
 beforeEach(() => {
   saved = process.env.SLAUDE_BACKGROUND_BUDGET_USD;
   delete process.env.SLAUDE_BACKGROUND_BUDGET_USD;
+  delete process.env.SLAUDE_BACKGROUND_TIMEZONE;
   __resetBackgroundConfigWarnings();
 });
 afterEach(() => {
+  delete process.env.SLAUDE_BACKGROUND_TIMEZONE;
   if (saved === undefined) delete process.env.SLAUDE_BACKGROUND_BUDGET_USD;
   else process.env.SLAUDE_BACKGROUND_BUDGET_USD = saved;
   __resetPersonaRegistry();
@@ -49,6 +51,35 @@ describe("budgetConfigFor", () => {
     install([persona("ana", { budgetUsd: 7, timezone: "Asia/Tokyo" }), persona("bea", { timezone: "Europe/Berlin" })]);
     expect(budgetConfigFor("ana")).toEqual({ limitUsd: 7, timeZone: "Asia/Tokyo" });
     expect(budgetConfigFor("bea")).toEqual({ limitUsd: 3, timeZone: "Europe/Berlin" });
+  });
+  test("timezone: persona > env > UTC", () => {
+    process.env.SLAUDE_BACKGROUND_TIMEZONE = "Asia/Tokyo";
+    install([persona("ana", { timezone: "Europe/Berlin" }), persona("bea")]);
+    expect(budgetConfigFor("ana").timeZone).toBe("Europe/Berlin");
+    expect(budgetConfigFor("bea").timeZone).toBe("Asia/Tokyo");
+    delete process.env.SLAUDE_BACKGROUND_TIMEZONE;
+    expect(budgetConfigFor("bea").timeZone).toBe("UTC");
+  });
+  test("an invalid env timezone falls back to UTC with one warning", () => {
+    process.env.SLAUDE_BACKGROUND_TIMEZONE = "Mars/Olympus";
+    install([persona("ana")]);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(budgetConfigFor("ana").timeZone).toBe("UTC");
+      budgetConfigFor("ana");
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  test("a process with no persona registry (mono) uses env then defaults", () => {
+    process.env.SLAUDE_BACKGROUND_TIMEZONE = "Asia/Tokyo";
+    process.env.SLAUDE_BACKGROUND_BUDGET_USD = "2";
+    setPersonaRegistry({
+      lookupByUserId: () => null, lookupByName: () => null, list: () => [],
+      isMultiPersonaMode: () => false, isManaged: () => false, tombstonedPersonaFor: () => null,
+    });
+    expect(budgetConfigFor("default")).toEqual({ limitUsd: 2, timeZone: "Asia/Tokyo" });
   });
   test("the default persona reads the tenant's default row", () => {
     install([], { budgetUsd: 2 });
