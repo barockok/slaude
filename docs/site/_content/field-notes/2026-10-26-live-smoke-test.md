@@ -42,7 +42,12 @@ recorded below as observations.
 - **Heartbeat and feedback:** a checklist item produced one `proactive_post`
   to the manager's DM, recorded with topic and evidence hashes; later
   heartbeats stayed silent. An exact "stop" under it muted that topic and was
-  answered in one line, with no agent turn.
+  answered in one line, with no agent turn. The mute survived a later profile
+  rewrite.
+- **Nightly review:** started late (the host was down at 02:30 local), it ran
+  for the day once per scope, the agent's and, as that person, the one with
+  /1on1 content, and wrote an `outcome` for a kept check-in. Lessons upkeep
+  skipped itself: no lesson was proposed.
 
 ## Defects found and fixed
 
@@ -77,7 +82,7 @@ recorded below as observations.
   reworded question scored it 1.0 while thanks, chit-chat and asks to
   someone else stayed "no".
 - **The brain was left open on shutdown,** so each mono restart reported an
-  unclean shutdown. Shutdown now closes it.
+  unclean shutdown. Shutdown now closes it; a SIGTERM afterwards left no lock.
 
 ## Observed, not changed
 
