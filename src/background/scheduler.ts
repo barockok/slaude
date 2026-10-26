@@ -39,7 +39,7 @@ import * as Sessions from "../db/sessions";
 import { claimSlot } from "../db/background-slots";
 import * as Proposals from "../db/proposals";
 import { registerLoop } from "../gateway/core/running-loops";
-import { brainAdminCall, brainCall, brainReady } from "../knowledge/brain";
+import { brainAdminCall, brainCall, brainCallIfOpen, brainReady } from "../knowledge/brain";
 import { m as metric } from "../metrics";
 import { getPersonaRegistry, managedPersonaProvider, personaDefaultModel } from "../persona/registry";
 import { personaKbList } from "../knowledge/persona-kb";
@@ -478,7 +478,8 @@ export function promiseChecks(transport: PromiseTransport): (g: AgentGroup, now:
     runDueCommitments(g.agentId, now, {
       transport,
       timeZone: g.timeZone,
-      prefs: async (row) => readPingPrefs(brainCall, row.teamId ?? (await Sessions.teamForThread(row.channelId, row.threadTs)), row.beneficiary),
+      // A read that never boots the brain: the scheduler only runs with it open.
+      prefs: async (row) => readPingPrefs(brainCallIfOpen, row.teamId ?? (await Sessions.teamForThread(row.channelId, row.threadTs)), row.beneficiary),
       openRun: async (row) => {
         const named = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
         const r = await startSkillCheck({
