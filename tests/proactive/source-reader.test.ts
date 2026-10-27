@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { JobClaims } from "../../src/gateway/api/auth";
-import { connectText, reauthText, type CallToolResult, type McpBridge } from "../../src/gateway/core/mcp-bridge";
+import { BridgeRefused, NOT_MOUNTED, connectText, reauthText, type CallToolResult, type McpBridge } from "../../src/gateway/core/mcp-bridge";
 import type { ExternalMcp } from "../../src/gateway/core/external-mcp";
 import { backgroundClaims, createSourceReader, unservedWatches } from "../../src/proactive/source-reader";
 
@@ -55,6 +55,28 @@ describe("source reader", () => {
     await reader.tools("p1", SRC);
     expect((await reader.read("default", "mail", "get_thread", {})).kind).toBe("error");
     expect(calls).toHaveLength(0);
+  });
+
+  test("bridge exceptions become outcomes, never rejections", async () => {
+    const secret = "xoxb-" + "0000000000-dummyvalue";
+    const bridge: Pick<McpBridge, "list" | "call"> = {
+      list: async () => {
+        throw new BridgeRefused(404, NOT_MOUNTED);
+      },
+      call: async () => {
+        throw new Error(`credential lookup failed: ${secret}`);
+      },
+    };
+    const warnings: string[] = [];
+    const reader = createSourceReader(bridge, (m) => warnings.push(m));
+    expect(await reader.tools("default", SRC)).toEqual([]);
+    expect(await reader.tools("default", SRC)).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(NOT_MOUNTED);
+    const out = await reader.read("default", "mail", "get_thread", {});
+    expect(out.kind).toBe("error");
+    expect((out as { text: string }).text).toContain("credential lookup failed");
+    expect((out as { text: string }).text).not.toContain(secret);
   });
 
   test("an unavailable listing offers no tools", async () => {

@@ -24,7 +24,9 @@ export interface SourceReader {
 }
 
 /** Claims for a background read: the agent itself, outside any thread.
- *  `lock: null` makes the bridge's card scope "global" (the manager's). */
+ *  `lock: null` makes the bridge's card scope "global" (the manager's).
+ *  `tenant: "default"` is a known single-tenant limit: the agent credential
+ *  lookup keys on tenant, so a multi-tenant gateway reads the default one's. */
 export function backgroundClaims(personaId: string, agentId: string): JobClaims {
   return {
     tenant: "default",
@@ -42,6 +44,8 @@ export function backgroundClaims(personaId: string, agentId: string): JobClaims 
     exp: 0,
   };
 }
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /** The text parts of a tool result, joined; structured content when there is no text. */
 function resultText(r: CallToolResult): string {
@@ -68,7 +72,19 @@ export function createSourceReader(
   return {
     async tools(personaId, src) {
       allowed.set(key(personaId, src.server), new Set(src.readTools));
-      const listed = await bridge.list(backgroundClaims(personaId, personaId), src.server);
+      let listed: Awaited<ReturnType<typeof bridge.list>>;
+      try {
+        listed = await bridge.list(backgroundClaims(personaId, personaId), src.server);
+      } catch (e) {
+        // Not served (BridgeRefused NOT_MOUNTED, e.g. a file config without the
+        // opt-in, or a config change), or a credential/database failure.
+        const w = `${key(personaId, src.server)}\u0000list`;
+        if (!warned.has(w)) {
+          warned.add(w);
+          warn(`[proactive] watch "${src.server}": could not list its tools: ${redactSecrets(errText(e))} — skipped`);
+        }
+        return [];
+      }
       if (listed.unavailable) return [];
       const byName = new Map<string, { name: string; description?: string; inputSchema?: unknown }>();
       for (const t of listed.tools) {
@@ -96,7 +112,12 @@ export function createSourceReader(
       if (!allowed.get(key(personaId, server))?.has(tool)) {
         return { kind: "error", text: `${tool} is not a read tool of ${server}` };
       }
-      const r = await bridge.call(backgroundClaims(personaId, personaId), server, tool, args, signal);
+      let r: CallToolResult;
+      try {
+        r = await bridge.call(backgroundClaims(personaId, personaId), server, tool, args, signal);
+      } catch (e) {
+        return { kind: "error", text: redactSecrets(errText(e)) };
+      }
       const text = resultText(r);
       if (text === reauthText(server) || text === connectText(server)) return { kind: "needs-auth" };
       if (r.isError) return { kind: "error", text: redactSecrets(text) };
