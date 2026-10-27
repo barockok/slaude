@@ -11,7 +11,7 @@ function setup(outcome: ReadOutcome = { kind: "ok", text: "item" }, tools: Array
   const brain = fakeBrain();
   const seen: unknown[] = [];
   const reader: SourceReader = {
-    tools: async () => [],
+    tools: async () => ({ tools: [] }),
     read: async (_p, server, tool, args) => {
       seen.push([server, tool, args]);
       return outcome;

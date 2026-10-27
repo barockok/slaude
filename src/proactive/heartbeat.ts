@@ -40,7 +40,7 @@ import { checkProactive, textHash, UNCHANGED_WINDOW_MS, type Audience } from "./
 import type { Level } from "./levels";
 import { JOURNAL_MAX_CHARS, JOURNAL_SLUG, loadRules, resolveLevel, type ProactiveRule } from "./rules";
 import { watchableSources } from "./sources";
-import type { SourceReader } from "./source-reader";
+import type { SourceReader, SourceTools } from "./source-reader";
 import { triageTools, type RoutedItem, type TriageState } from "./triage-tools";
 import { defaultDispatchDeps, dispatchProactive, type ProactiveDispatchDeps, type ProactiveTransport } from "./dispatch";
 
@@ -298,30 +298,36 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   // privateServices and non-http servers out (the reader does not).
   const watched = deps.sources ? watchableSources(config().watch, (deps.mcp ?? bridgeExternalMcp)(r.personaId), warnOnce) : [];
   const sources: Array<(typeof watched)[number] & { tools: Array<{ name: string; description?: string }> }> = [];
+  // Refused at listing because the agent's credential needs (re)connecting:
+  // not read this round, its watermark kept, and the manager told.
+  const listNeedsAuth = new Set<string>();
   for (const src of watched) {
-    const tools = await deps.sources!.tools(r.personaId, src).catch(() => []);
-    if (tools.length) sources.push({ ...src, tools });
+    const listed = await deps.sources!.tools(r.personaId, src).catch((): SourceTools => ({ tools: [] }));
+    if (listed.needsAuth) listNeedsAuth.add(src.server);
+    else if (listed.tools.length) sources.push({ ...src, tools: listed.tools });
   }
+  const managerId = deps.managerId(r.personaId);
+  const app = await deps.app(r.personaId).catch(() => undefined);
+  const reauth = (servers: Iterable<string>) => tellReauth(r, servers, { managerId, app, post: deps.post, startedAt, tag });
   if (!checklist && !sources.length) {
     console.debug(`${tag}: no checklist and no readable source; not running`);
+    await reauth(listNeedsAuth);
     return null;
   }
   const since: Record<string, number | null> = {};
   for (const s of sources) since[s.server] = await Watermarks.getSince(r.agentId, s.server);
   const journal = await agentPageBody(r.agentId, deps.call, JOURNAL_SLUG);
   const rules = await loadRules(r.agentId, deps.call);
-  const managerId = deps.managerId(r.personaId);
-  const app = await deps.app(r.personaId).catch(() => undefined);
   const channelsOn = (deps.channelsOn ?? proactiveChannels)(r.personaId);
 
   // 2. Triage.
-  const state: TriageState = { items: [], readCalls: 0, bytes: {}, needsAuth: new Set(), failed: new Set(), journal: null };
+  const state: TriageState = { items: [], readCalls: 0, bytes: {}, needsAuth: new Set(listNeedsAuth), failed: new Set(), journal: null };
   const extraTools: PassTool[] = triageTools(
     {
       personaId: r.personaId,
       agentId: r.agentId,
       sources,
-      reader: deps.sources ?? { tools: async () => [], read: async () => ({ kind: "error", text: "no source reader" }) },
+      reader: deps.sources ?? { tools: async () => ({ tools: [] }), read: async () => ({ kind: "error", text: "no source reader" }) },
       since,
       call: deps.call,
       now: deps.runner.now,
@@ -357,6 +363,11 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
     deps.runner,
   );
 
+  // A pass cut short (stopped-budget) still decides what it routed, but it is
+  // not complete: no journal, no watermark, so the next round reads its
+  // sources again (restraint's "unchanged" keeps a routed item from repeating).
+  // An errored pass decides nothing.
+  const complete = res.outcome === "ok";
   if (res.outcome !== "error") {
     // 3. Decide, inform, dispatch.
     const ctx: ProactivePostContext = {
@@ -372,10 +383,15 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
     };
     const posts = { posts: 0 };
     const notDelivered: string[] = [];
+    /** Sources with an item not delivered this round: their watermark stays, so the item is read again. */
+    const undeliveredFrom = new Set<string>();
     for (const item of state.items) {
       const d = decideItem(item, { rules, managerId, config });
       const drop = (why: string, rule: ProactiveRule | null) => {
-        notDelivered.push(`Not delivered: ${line(item.kind, 100)} → ${line(item.destination, 40)} (${rule ? line(rule.slug) : "default"})`);
+        undeliveredFrom.add(item.source);
+        notDelivered.push(
+          `Not delivered: ${line(item.source, 60)}/${line(item.itemId, 100)} ${line(item.kind, 100)} → ${line(item.destination, 40)} (${rule ? line(rule.slug) : "default"})`,
+        );
         console.log(`${tag}: item ${line(item.source, 60)}/${line(item.itemId, 60)} not delivered: ${why}`);
       };
       if (d.action === "none") {
@@ -421,8 +437,8 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
     }
 
     // 4. Finish: the journal, then the watermarks of the sources read without error.
-    let stored = true;
-    if (state.journal !== null || notDelivered.length) {
+    let stored = complete;
+    if (complete && (state.journal !== null || notDelivered.length)) {
       const page = composePage({ slug: JOURNAL_SLUG, content: redactSecrets(journalBody(state.journal ?? journal, notDelivered)), type: "heartbeat-journal" }, startedAt);
       try {
         if ("error" in page) throw new Error(page.error);
@@ -436,22 +452,29 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
       const now = deps.runner.now().getTime();
       for (const s of sources) {
         // Read in this round (a read sets its byte count) and never failed or needed auth.
-        if (!(s.server in state.bytes) || state.needsAuth.has(s.server) || state.failed.has(s.server)) continue;
+        if (!(s.server in state.bytes) || state.needsAuth.has(s.server) || state.failed.has(s.server) || undeliveredFrom.has(s.server)) continue;
         await Watermarks.advance(r.agentId, s.server, startedAt.getTime() - WATERMARK_OVERLAP_MS, now);
       }
     }
   }
 
-  // Re-authorising: the manager hears once per source per day.
-  if (managerId) {
-    for (const server of state.needsAuth) {
-      const day = localDay(startedAt, r.timeZone);
-      if (!(await claimSlot(r.agentId, "heartbeat-reauth", `${server}@${day}`, startedAt.getTime()))) continue;
-      const text = `My connection to ${server} needs re-authorising: run /mcp global connect ${server}.`;
-      await deps
-        .post({ channel: managerId, ...(app ? { app } : {}), text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] })
-        .catch((e) => console.error(`${tag}: could not tell the manager that ${server} needs re-authorising: ${e instanceof Error ? e.message : String(e)}`));
-    }
-  }
+  await reauth(state.needsAuth);
   return { outcome: res.outcome };
+}
+
+/** Re-authorising: the manager hears once per source per (persona-local) day. */
+async function tellReauth(
+  r: { agentId: string; timeZone: string },
+  servers: Iterable<string>,
+  a: { managerId: string | null; app: AppRef | undefined; post: CardPost; startedAt: Date; tag: string },
+): Promise<void> {
+  if (!a.managerId) return;
+  const day = localDay(a.startedAt, r.timeZone);
+  for (const server of servers) {
+    if (!(await claimSlot(r.agentId, "heartbeat-reauth", `${server}@${day}`, a.startedAt.getTime()))) continue;
+    const text = `My connection to ${server} needs re-authorising: run /mcp global connect ${server}.`;
+    await a
+      .post({ channel: a.managerId, ...(a.app ? { app: a.app } : {}), text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] })
+      .catch((e) => console.error(`${a.tag}: could not tell the manager that ${server} needs re-authorising: ${e instanceof Error ? e.message : String(e)}`));
+  }
 }

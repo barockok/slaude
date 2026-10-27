@@ -175,6 +175,8 @@ describe("runHeartbeat", () => {
     outcome?: Outcome;
     checklist?: string;
     sources?: boolean;
+    /** The listing is refused: the agent's credential needs re-authorising. */
+    listNeedsAuth?: boolean;
     brain?: ReturnType<typeof fakeBrain>;
   } = {}) {
     const brain = o.brain ?? fakeBrain();
@@ -182,7 +184,7 @@ describe("runHeartbeat", () => {
     const dispatched: Array<{ post: ProactivePost; envelope: string }> = [];
     const specs: PassSpec[] = [];
     const reader: SourceReader = {
-      tools: async (_p, src) => src.readTools.map((name) => ({ name })),
+      tools: async (_p, src) => (o.listNeedsAuth ? { tools: [], needsAuth: true } : { tools: src.readTools.map((name) => ({ name })) }),
       read: async () => o.read ?? { kind: "ok", text: "one new invoice" },
     };
     const transport: ProactiveTransport = { dispatch: async (post, envelope) => void dispatched.push({ post, envelope }) };
@@ -288,14 +290,14 @@ describe("runHeartbeat", () => {
     expect(h.posted).toEqual([]);
     const j = journalOf(h.brain)!;
     expect(j).toContain("Looked at mail.");
-    expect(j).toContain("Not delivered: invoice emails → C0OFF (default)");
+    expect(j).toContain("Not delivered: mail/m-1 invoice emails → C0OFF (default)");
   });
 
   test("an item to a non-opted-in person is refused by restraint and journaled", async () => {
     const h = round({ items: [item({ destination: "U0ALICE" })] });
     await h.go();
     expect(h.posted).toEqual([]);
-    expect(journalOf(h.brain)).toContain("Not delivered: invoice emails → U0ALICE (default)");
+    expect(journalOf(h.brain)).toContain("Not delivered: mail/m-1 invoice emails → U0ALICE (default)");
   });
 
   test(`posts over ${HEARTBEAT_MAX_POSTS} per round are journaled as not delivered`, async () => {
@@ -303,7 +305,26 @@ describe("runHeartbeat", () => {
     const h = round({ items });
     await h.go();
     expect(h.posted).toHaveLength(HEARTBEAT_MAX_POSTS);
-    expect(journalOf(h.brain)).toContain(`Not delivered: kind ${HEARTBEAT_MAX_POSTS} → ${MGR} (default)`);
+    expect(journalOf(h.brain)).toContain(`Not delivered: mail/m-${HEARTBEAT_MAX_POSTS} kind ${HEARTBEAT_MAX_POSTS} → ${MGR} (default)`);
+    // The undelivered item's source is read again next round.
+    expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
+  });
+
+  test("an item not delivered keeps its source's watermark; a fully delivered source advances", async () => {
+    const h = round({ items: [item({ destination: "U0ALICE" })] });
+    await h.go();
+    expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
+    const ok = round({ items: [item()] });
+    await ok.go();
+    expect(await Watermarks.getSince(AGENT, "mail")).toBe(NOW.getTime() - 5 * 60_000);
+  });
+
+  test("a pass stopped by the budget posts what it routed but writes no journal and advances no watermark", async () => {
+    const h = round({ items: [item()], journal: "partial", outcome: "stopped-budget" });
+    expect(await h.go()).toEqual({ outcome: "stopped-budget" });
+    expect(h.posted).toHaveLength(1);
+    expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
+    expect(journalOf(h.brain)).toBeNull();
   });
 
   test("an error outcome advances no watermark and writes no journal", async () => {
@@ -321,6 +342,30 @@ describe("runHeartbeat", () => {
       await h.go();
       expect(h.posted).toEqual(i === 0 ? [{ channel: MGR, text: "My connection to mail needs re-authorising: run /mcp global connect mail." }] : []);
     }
+    expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
+  });
+
+  test("needs-auth at listing: no read tool, watermark kept, the manager is DMed once per day", async () => {
+    const brain = fakeBrain();
+    for (let i = 0; i < 2; i++) {
+      const h = round({ brain, listNeedsAuth: true });
+      // No checklist and no readable source: nothing to triage, but the manager still hears.
+      expect(await h.go()).toBeNull();
+      expect(h.specs).toEqual([]);
+      expect(h.posted).toEqual(i === 0 ? [{ channel: MGR, text: "My connection to mail needs re-authorising: run /mcp global connect mail." }] : []);
+    }
+    expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
+  });
+
+  test("needs-auth at listing with a checklist: the round runs without that source", async () => {
+    const brain = fakeBrain();
+    const page = composePage({ slug: HEARTBEAT_SLUG, content: "- Check open investigations.", type: "heartbeat" }, NOW);
+    if ("error" in page) throw new Error(page.error);
+    await brain.call("put_page", { slug: HEARTBEAT_SLUG, content: page.content }, scopeOf(agentSourceId(AGENT)));
+    const h = round({ brain, listNeedsAuth: true, journal: "ok" });
+    expect(await h.go()).toEqual({ outcome: "ok" });
+    expect(h.specs[0]!.extraTools!.map((t) => t.name)).toEqual(["route_item", "write_journal"]);
+    expect(h.posted.map((p) => p.text)).toEqual(["My connection to mail needs re-authorising: run /mcp global connect mail."]);
     expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
   });
 

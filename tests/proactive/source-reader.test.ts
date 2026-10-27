@@ -34,7 +34,7 @@ describe("source reader", () => {
     const { bridge, calls } = fakeBridge();
     const warnings: string[] = [];
     const reader = createSourceReader(bridge, (m) => warnings.push(m));
-    const tools = await reader.tools("default", SRC);
+    const { tools } = await reader.tools("default", SRC);
     expect(tools.map((t) => t.name)).toEqual(["search_threads", "get_thread"]);
     expect(tools[0]).toEqual({ name: "search_threads", description: "search", inputSchema: { type: "object" } });
     expect(warnings).toHaveLength(1);
@@ -69,8 +69,8 @@ describe("source reader", () => {
     };
     const warnings: string[] = [];
     const reader = createSourceReader(bridge, (m) => warnings.push(m));
-    expect(await reader.tools("default", SRC)).toEqual([]);
-    expect(await reader.tools("default", SRC)).toEqual([]);
+    expect(await reader.tools("default", SRC)).toEqual({ tools: [] });
+    expect(await reader.tools("default", SRC)).toEqual({ tools: [] });
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain(NOT_MOUNTED);
     const out = await reader.read("default", "mail", "get_thread", {});
@@ -79,12 +79,15 @@ describe("source reader", () => {
     expect((out as { text: string }).text).not.toContain(secret);
   });
 
-  test("an unavailable listing offers no tools", async () => {
-    const bridge: Pick<McpBridge, "list" | "call"> = {
-      list: async () => ({ tools: [], instructions: connectText("mail"), unavailable: true }),
+  test("an unavailable listing offers no tools; a connect or reauth refusal says needs-auth", async () => {
+    const listing = (instructions: string): Pick<McpBridge, "list" | "call"> => ({
+      list: async () => ({ tools: [], instructions, unavailable: true }),
       call: async () => ({}),
-    };
-    expect(await createSourceReader(bridge, () => {}).tools("default", SRC)).toEqual([]);
+    });
+    for (const text of [connectText("mail"), reauthText("mail")]) {
+      expect(await createSourceReader(listing(text), () => {}).tools("default", SRC)).toEqual({ tools: [], needsAuth: true });
+    }
+    expect(await createSourceReader(listing("mail is unavailable right now; try again later"), () => {}).tools("default", SRC)).toEqual({ tools: [] });
   });
 
   test("reauth text maps to needs-auth", async () => {

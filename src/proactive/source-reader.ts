@@ -18,8 +18,14 @@ import type { WatchedSource } from "./sources";
 
 export type ReadOutcome = { kind: "ok"; text: string } | { kind: "needs-auth" } | { kind: "error"; text: string };
 
+export type SourceTool = { name: string; description?: string; inputSchema?: unknown };
+
+/** A source's read tools; `needsAuth` when the listing was refused because the
+ *  agent's credential needs connecting or re-authorising (then `tools` is empty). */
+export type SourceTools = { tools: SourceTool[]; needsAuth?: true };
+
 export interface SourceReader {
-  tools(personaId: string, src: WatchedSource): Promise<Array<{ name: string; description?: string; inputSchema?: unknown }>>;
+  tools(personaId: string, src: WatchedSource): Promise<SourceTools>;
   read(personaId: string, server: string, tool: string, args: unknown, signal?: AbortSignal): Promise<ReadOutcome>;
 }
 
@@ -83,17 +89,20 @@ export function createSourceReader(
           warned.add(w);
           warn(`[proactive] watch "${src.server}": could not list its tools: ${redactSecrets(errText(e))} — skipped`);
         }
-        return [];
+        return { tools: [] };
       }
-      if (listed.unavailable) return [];
-      const byName = new Map<string, { name: string; description?: string; inputSchema?: unknown }>();
+      if (listed.unavailable) {
+        const why = listed.instructions;
+        return why === reauthText(src.server) || why === connectText(src.server) ? { tools: [], needsAuth: true } : { tools: [] };
+      }
+      const byName = new Map<string, SourceTool>();
       for (const t of listed.tools) {
         const name = (t as { name?: unknown })?.name;
         if (typeof name !== "string") continue;
         const { description, inputSchema } = t as { description?: unknown; inputSchema?: unknown };
         byName.set(name, { name, ...(typeof description === "string" ? { description } : {}), ...(inputSchema !== undefined ? { inputSchema } : {}) });
       }
-      const out: Array<{ name: string; description?: string; inputSchema?: unknown }> = [];
+      const out: SourceTool[] = [];
       for (const name of src.readTools) {
         const tool = byName.get(name);
         if (tool) {
@@ -105,7 +114,7 @@ export function createSourceReader(
         warned.add(w);
         warn(`[proactive] watch "${src.server}": readTools names "${name}", which the server does not list — skipped`);
       }
-      return out;
+      return { tools: out };
     },
 
     async read(personaId, server, tool, args, signal) {
