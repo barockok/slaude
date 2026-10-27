@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { JobClaims } from "../../src/gateway/api/auth";
 import { BridgeRefused, NOT_MOUNTED, bridgeFailureResult, connectText, protocolErrorText, reauthText, unavailableText, type CallToolResult, type McpBridge } from "../../src/gateway/core/mcp-bridge";
 import type { ExternalMcp } from "../../src/gateway/core/external-mcp";
-import { backgroundClaims, createSourceReader, unservedWatches } from "../../src/proactive/source-reader";
+import { backgroundClaims, createSourceReader, oauthOnlyWatches, unservedWatches } from "../../src/proactive/source-reader";
 
 const SRC = { server: "mail", readTools: ["search_threads", "get_thread", "archive"] };
 
@@ -162,5 +162,16 @@ describe("source reader", () => {
     };
     const bridged: ExternalMcp = { servers: { cal: session.servers.cal! }, privateServices: [] };
     expect(unservedWatches(["mail", "cal", "missing"], session, bridged)).toEqual(["mail"]);
+  });
+
+  test("oauthOnlyWatches names served watches with no config headers (mono: they need the CLI-held OAuth)", () => {
+    const bridged: ExternalMcp = {
+      servers: {
+        mail: { type: "http", url: "https://mcp.example.com/mail" },
+        cal: { type: "http", url: "https://mcp.example.com/cal", headers: { authorization: "Bearer ${PERSONA_CAL}" } },
+      } as any,
+      privateServices: [],
+    };
+    expect(oauthOnlyWatches(["mail", "cal", "missing", "mail"], bridged)).toEqual(["mail"]);
   });
 });

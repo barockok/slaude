@@ -194,6 +194,14 @@ export interface HeartbeatDeps {
   config?: ProactivePostContext["config"];
   /** Seam (tests): the channels whose own Proactive is on. Default: proactiveChannels. */
   channelsOn?: (personaId: string) => string[];
+  /**
+   * Mono: the agent's OAuth credential lives in the CLI's own store (what
+   * `/mcp global connect` writes there), which the bridge does not read and
+   * must not refresh (the CLI rotates it). A source that needs auth is then
+   * skipped with one warning per boot, never a DM telling the manager to
+   * reconnect, which would not help.
+   */
+  agentOAuthInCli?: boolean;
   /** Seam (tests): dispatch deps. Default: defaultDispatchDeps. */
   dispatchDeps?: (transport: ProactiveTransport, personaId: string) => ProactiveDispatchDeps;
 }
@@ -316,7 +324,14 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   }
   const managerId = deps.managerId(r.personaId);
   const app = await deps.app(r.personaId).catch(() => undefined);
-  const reauth = (servers: Iterable<string>) => tellReauth(r, servers, { managerId, app, post: deps.post, startedAt, tag });
+  const reauth = async (servers: Iterable<string>) => {
+    if (!deps.agentOAuthInCli) return tellReauth(r, servers, { managerId, app, post: deps.post, startedAt, tag });
+    for (const server of servers) {
+      warnOnce(
+        `[proactive] persona=${r.personaId} watch "${server}": its agent connection is OAuth, which on mono lives in the agent CLI's own store; the heartbeat cannot read that store, so the source is skipped (on mono, watch a server authenticated by its config headers)`,
+      );
+    }
+  };
   if (!checklist && !sources.length) {
     console.debug(`${tag}: no checklist and no readable source; not running`);
     await reauth(listNeedsAuth);

@@ -154,3 +154,11 @@ export function unservedWatches(watch: readonly string[], session: ExternalMcp, 
   const served = oauthHttpServers(bridged.servers);
   return [...new Set(watch)].filter((n) => Object.hasOwn(session.servers, n) && !Object.hasOwn(served, n));
 }
+
+/** Mono: watched servers the bridge serves with no config headers, so reading
+ *  them as the agent needs an OAuth connection, which on mono lives in the
+ *  agent CLI's own store and is never used by the heartbeat. */
+export function oauthOnlyWatches(watch: readonly string[], bridged: ExternalMcp): string[] {
+  const served = oauthHttpServers(bridged.servers);
+  return [...new Set(watch)].filter((n) => Object.hasOwn(served, n) && Object.keys(served[n]!.headers ?? {}).length === 0);
+}

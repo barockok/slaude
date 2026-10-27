@@ -132,7 +132,7 @@ import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { bridgeExternalMcp, connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
 import { connectText, createMcpBridge, reauthText, type McpBridge } from "./mcp-bridge";
-import { createSourceReader, unservedWatches } from "../../proactive/source-reader";
+import { createSourceReader, oauthOnlyWatches, unservedWatches } from "../../proactive/source-reader";
 import { parseRunAs } from "../../agent/credential-owner";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
 import { randomBytes } from "node:crypto";
@@ -746,6 +746,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             `[proactive] persona=${p} watch "${name}": the MCP bridge does not serve it, so the heartbeat cannot read it; a file-configured server needs SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG=1`,
           );
         }
+        // Mono: /mcp global connect writes the agent's OAuth grant into the
+        // CLI's own store, which the bridge neither reads nor may refresh (the
+        // CLI rotates it), so a server with no config headers is not readable.
+        if (env.role() === "mono") {
+          for (const name of oauthOnlyWatches(watch, bridgeExternalMcp(named))) {
+            console.warn(
+              `[proactive] persona=${p} watch "${name}": it has no config headers, so the heartbeat would need the agent's OAuth connection, which on mono lives in the agent CLI's own store and is not used; the source is skipped when it asks for auth`,
+            );
+          }
+        }
       } catch (e) {
         console.warn(`[proactive] persona=${p}: could not check watched sources: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -755,6 +765,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // As the bot of the app the message names; on a multi-app transport a
     // post that does not name both app id and team is refused (cardPoster).
     post: cardPoster(t),
+    // Mono keeps the agent's OAuth grants in the CLI's own store (persistTokens).
+    ...(env.role() === "mono" ? { agentOAuthInCli: true } : {}),
     managers: backgroundManagers,
     digestRecipient: () => digestRecipientOf(soulData()),
   };

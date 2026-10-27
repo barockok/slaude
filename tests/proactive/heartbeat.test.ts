@@ -415,6 +415,29 @@ describe("runHeartbeat", () => {
     expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
   });
 
+  test("mono (the agent's OAuth lives in the CLI's own store): needs-auth skips the source with one warning and never DMs the manager", async () => {
+    const brain = fakeBrain();
+    const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (let i = 0; i < 2; i++) {
+        const listing = round({ brain, listNeedsAuth: true });
+        listing.deps.agentOAuthInCli = true;
+        expect(await listing.go()).toBeNull();
+        expect(listing.posted).toEqual([]);
+        const reading = round({ brain, read: { kind: "needs-auth" } });
+        reading.deps.agentOAuthInCli = true;
+        await reading.go();
+        expect(reading.posted).toEqual([]);
+      }
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("CLI's own"));
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).toContain('"mail"');
+      expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test("needs-auth at listing with a checklist: the round runs without that source", async () => {
     const brain = fakeBrain();
     const page = composePage({ slug: HEARTBEAT_SLUG, content: "- Check open investigations.", type: "heartbeat" }, NOW);

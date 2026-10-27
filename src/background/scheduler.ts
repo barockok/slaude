@@ -448,6 +448,8 @@ export interface SchedulerSlack {
   proactive?: ProactiveTransport;
   /** The agent's own MCP sources, read as the agent (heartbeat round). Absent: no source is read. */
   sources?: SourceReader;
+  /** Mono: the agent's OAuth credentials live in the CLI's own store, which the heartbeat cannot read (HeartbeatDeps.agentOAuthInCli). */
+  agentOAuthInCli?: boolean;
   /** The manager and the backup manager (who may decide manager proposals). */
   managers: () => string[];
   /** Whom the weekly digest goes to: the manager, else the backup manager. */
@@ -475,6 +477,7 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
               // Read at run time: the gateway sets both after building the scheduler deps.
               ...(slack.sources ? { sources: slack.sources } : {}),
               ...(slack.proactive ? { proactive: slack.proactive } : {}),
+              ...(slack.agentOAuthInCli ? { agentOAuthInCli: true } : {}),
               mcp: bridgeExternalMcp,
             }),
         }
