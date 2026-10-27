@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Level } from "../proactive/levels";
 import { db } from "./schema";
 
 /**
@@ -6,6 +7,16 @@ import { db } from "./schema";
  * restraint rules count and what feedback finds a post by. Database only.
  */
 export type Audience = "manager" | "person" | "channel";
+
+/** What a post rested on (migration 0030), stored as JSON. */
+export interface PostContext {
+  source: string | null;
+  itemId: string | null;
+  summary: string;
+  ruleSlug: string | null;
+  level: Level;
+  evidence: string;
+}
 
 export interface ProactivePost {
   id: string;
@@ -22,6 +33,10 @@ export interface ProactivePost {
   messageTs: string | null;
   teamId: string | null;
   postedAt: number;
+  /** The text that was sent, or null for a row written before migration 0030. */
+  text: string | null;
+  /** What the post rested on, or null for an older row or unreadable JSON. */
+  context: PostContext | null;
 }
 
 interface Row {
@@ -36,6 +51,18 @@ interface Row {
   message_ts: string | null;
   team_id: string | null;
   posted_at: number | string;
+  text: string | null;
+  context: string | null;
+}
+
+function parseContext(raw: string | null): PostContext | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" ? (v as PostContext) : null;
+  } catch {
+    return null;
+  }
 }
 
 const toPost = (r: Row): ProactivePost => ({
@@ -50,14 +77,18 @@ const toPost = (r: Row): ProactivePost => ({
   messageTs: r.message_ts,
   teamId: r.team_id,
   postedAt: Number(r.posted_at),
+  text: r.text ?? null,
+  context: parseContext(r.context ?? null),
 });
 
-export async function recordPost(p: Omit<ProactivePost, "id">): Promise<string> {
+export async function recordPost(
+  p: Omit<ProactivePost, "id" | "text" | "context"> & { text?: string | null; context?: PostContext | null },
+): Promise<string> {
   const id = randomUUID();
   await db.run(
-    `INSERT INTO proactive_posts (id, agent_id, audience, recipient, topic, text_hash, evidence_hash, channel_id, message_ts, team_id, posted_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, p.agentId, p.audience, p.recipient, p.topic, p.textHash, p.evidenceHash, p.channelId, p.messageTs, p.teamId, p.postedAt],
+    `INSERT INTO proactive_posts (id, agent_id, audience, recipient, topic, text_hash, evidence_hash, channel_id, message_ts, team_id, posted_at, text, context)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, p.agentId, p.audience, p.recipient, p.topic, p.textHash, p.evidenceHash, p.channelId, p.messageTs, p.teamId, p.postedAt, p.text ?? null, p.context ? JSON.stringify(p.context) : null],
   );
   return id;
 }
