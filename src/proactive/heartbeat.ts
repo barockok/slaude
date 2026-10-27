@@ -80,10 +80,18 @@ export interface ProactivePostArgs {
 const USER_ID = /^[UW][A-Z0-9]+$/;
 const CHANNEL_ID = /^[CG][A-Z0-9]+$/;
 
-/** Why a post did not go out: `cap` (this run's post limit), `invalid` (a bad argument), `restraint` (`rule` refused it), `failed` (Slack threw). */
+/** Why a post did not go out: `cap` (this run's post limit), `invalid` (a bad argument), `restraint` (`rule` refused it), `channel` (Slack says the channel cannot take it), `failed` (Slack threw otherwise). */
 type Sent =
   | { ok: true; post: Posts.ProactivePost | null }
-  | { ok: false; error: string; kind: "cap" | "invalid" | "restraint" | "failed"; rule?: RestraintRule };
+  | { ok: false; error: string; kind: "cap" | "invalid" | "restraint" | "channel" | "failed"; rule?: RestraintRule };
+
+/** Slack errors that will not change by retrying: the channel is not there, not joined or archived. */
+const CHANNEL_ERRORS: ReadonlySet<string> = new Set(["channel_not_found", "not_in_channel", "is_archived"]);
+/** The Slack Web API error code a post threw with, if any. */
+const slackError = (e: unknown): string | undefined => {
+  const code = (e as { data?: { error?: unknown } } | null)?.data?.error;
+  return typeof code === "string" ? code : undefined;
+};
 
 /** Check, post and record one proactive post. `post` is the recorded row, or null when recording failed. */
 async function sendProactive(a: ProactivePostArgs, ctx: ProactivePostContext, state: { posts: number }): Promise<Sent> {
@@ -117,13 +125,20 @@ async function sendProactive(a: ProactivePostArgs, ctx: ProactivePostContext, st
   }
   // Minted before the post: the message carries it as a marker only.
   const id = randomUUID();
-  const posted = await ctx.post({
-    channel: recipient,
-    ...(ctx.app ? { app: ctx.app } : {}),
-    text,
-    blocks: [{ type: "section", text: { type: "mrkdwn", text } }],
-    metadata: { event_type: "slaude_proactive", event_payload: { post: id } },
-  });
+  let posted: Awaited<ReturnType<CardPost>>;
+  try {
+    posted = await ctx.post({
+      channel: recipient,
+      ...(ctx.app ? { app: ctx.app } : {}),
+      text,
+      blocks: [{ type: "section", text: { type: "mrkdwn", text } }],
+      metadata: { event_type: "slaude_proactive", event_payload: { post: id } },
+    });
+  } catch (e) {
+    const code = slackError(e);
+    if (code && CHANNEL_ERRORS.has(code)) return { ok: false, error: `refused: slack: ${code}`, kind: "channel" };
+    throw e;
+  }
   state.posts++;
   const where = posted && typeof posted === "object" ? posted : {};
   const row: Posts.ProactivePost = {
@@ -230,19 +245,23 @@ export type Decision =
 /**
  * What code does with one routed item. The destination names the audience; the
  * level is the rule's (else inform), lowered by the model's proposal and the
- * ceiling for that place. `ignore`, or a channel whose proactiveness is off,
- * gives none (`reason: "off"` marks the latter, which the journal records).
+ * ceiling for that place. `ignore`, or a channel whose proactiveness is off
+ * or that has no Proactive block of its own (`channelsOn`), gives none
+ * (`reason: "off"` marks the latter, which the journal records).
  */
 export function decideItem(
   item: RoutedItem,
-  a: { rules: ProactiveRule[]; managerId: string | null; config: (ch?: string) => ResolvedProactive },
+  a: { rules: ProactiveRule[]; managerId: string | null; config: (ch?: string) => ResolvedProactive; channelsOn: readonly string[] },
 ): Decision {
   const d = item.destination;
   const channel = CHANNEL_ID.test(d);
   const audience: Audience | null = channel ? "channel" : a.managerId && d === a.managerId ? "manager" : USER_ID.test(d) ? "person" : null;
   if (!audience) return { action: "none" };
   const cfg = channel ? a.config(d) : a.config();
-  if (channel && !cfg.enabled) return { action: "none", reason: "off" };
+  // A channel only with its own `### Proactive / Enabled: yes` (what the
+  // prompt lists): untrusted items must not pick any channel the global
+  // switch would otherwise allow.
+  if (channel && (!cfg.enabled || !a.channelsOn.includes(d))) return { action: "none", reason: "off" };
   const { level, rule } = resolveLevel({
     rules: a.rules,
     ...(item.ruleSlug !== undefined ? { ruleSlug: item.ruleSlug } : {}),
@@ -410,7 +429,7 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
     /** Sources with an item not delivered for a passing reason this round: their watermark stays, so the item is read again. */
     const undeliveredFrom = new Set<string>();
     for (const item of state.items) {
-      const d = decideItem(item, { rules, managerId, config });
+      const d = decideItem(item, { rules, managerId, config, channelsOn });
       const label = `${line(item.source, 60)}/${line(item.itemId, 100)} ${line(item.kind, 100)} → ${line(item.destination, 40)}`;
       // Transient (quiet hours, a daily cap or cooldown, the run's post cap, a failed post or dispatch): read again next round.
       const drop = (why: string, rule: ProactiveRule | null) => {
@@ -461,7 +480,7 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
       if (!sent.ok) {
         // "unchanged": it already went out (an earlier round, or the overlap re-read it); nothing to journal.
         if (sent.rule === "unchanged") console.log(`${tag}: item ${line(item.source, 60)}/${line(item.itemId, 60)} already posted (unchanged)`);
-        else if ((sent.kind === "restraint" && !NOT_NOW.has(sent.rule!)) || sent.kind === "invalid") notPosted(sent.rule ?? sent.error.replace(/^refused: /, "").slice(0, 120));
+        else if ((sent.kind === "restraint" && !NOT_NOW.has(sent.rule!)) || sent.kind === "invalid" || sent.kind === "channel") notPosted(sent.rule ?? sent.error.replace(/^refused: /, "").slice(0, 120));
         else drop(sent.error, d.rule);
         continue;
       }

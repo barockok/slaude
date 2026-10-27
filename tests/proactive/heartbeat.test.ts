@@ -178,6 +178,8 @@ describe("runHeartbeat", () => {
     /** The listing is refused: the agent's credential needs re-authorising. */
     listNeedsAuth?: boolean;
     brain?: ReturnType<typeof fakeBrain>;
+    /** A Slack error code the post throws with (as the Web API client does). */
+    postError?: string;
   } = {}) {
     const brain = o.brain ?? fakeBrain();
     const posted: Array<{ channel: string; text: string; metadata?: { event_type: string; event_payload: { post: string } } }> = [];
@@ -192,12 +194,14 @@ describe("runHeartbeat", () => {
       runner,
       call: brain.call,
       post: async (m) => {
+        if (o.postError) throw Object.assign(new Error(`An API error occurred: ${o.postError}`), { data: { ok: false, error: o.postError } });
         posted.push({ channel: m.channel, text: m.text, ...(m.metadata ? { metadata: m.metadata as any } : {}) });
         return { channel: m.channel.startsWith("U") ? "D0DM" : m.channel, ts: `18000000${posted.length}.000100` };
       },
       managerId: () => MGR,
       app: async () => ({ apiAppId: "A0APP", teamId: "T0TEAM" }),
       config: configFrom(o.soul ?? SOUL()),
+      channelsOn: () => Object.entries(parseProactive(o.soul ?? SOUL()).channels).filter(([, on]) => on).map(([c]) => c),
       ...(o.sources === false ? {} : { sources: reader, mcp: () => MAIL }),
       proactive: transport,
       dispatchDeps: (t, personaId) => ({
@@ -292,6 +296,30 @@ describe("runHeartbeat", () => {
     const j = journalOf(h.brain)!;
     expect(j).toContain("Looked at mail.");
     expect(j).toContain("Not posted: mail/m-1 invoice emails → C0OFF (proactiveness is off there)");
+  });
+
+  test("a channel with no explicit Proactive block is not a destination, even with Enabled: yes globally", async () => {
+    const h = round({ items: [item({ destination: "C0MADE" })], journal: "ok" });
+    await h.go();
+    expect(h.posted).toEqual([]);
+    expect(journalOf(h.brain)).toContain("Not posted: mail/m-1 invoice emails → C0MADE (proactiveness is off there)");
+    expect(await Watermarks.getSince(AGENT, "mail")).toBe(NOW.getTime() - 5 * 60_000);
+  });
+
+  for (const code of ["channel_not_found", "not_in_channel", "is_archived"]) {
+    test(`a Slack ${code} error is terminal: not posted, the watermark advances`, async () => {
+      const h = round({ soul: SOUL("\n## Channel C0EXAMPLE\n### Proactive\n- Enabled: yes\n"), items: [item({ destination: "C0EXAMPLE" })], journal: "ok", postError: code });
+      await h.go();
+      expect(journalOf(h.brain)).toContain(`Not posted: mail/m-1 invoice emails → C0EXAMPLE (slack: ${code})`);
+      expect(await Watermarks.getSince(AGENT, "mail")).toBe(NOW.getTime() - 5 * 60_000);
+    });
+  }
+
+  test("another Slack error stays transient: not delivered, the watermark stays", async () => {
+    const h = round({ items: [item()], journal: "ok", postError: "ratelimited" });
+    await h.go();
+    expect(journalOf(h.brain)).toContain(`Not delivered: mail/m-1 invoice emails → ${MGR} (default)`);
+    expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
   });
 
   test("an item to a non-opted-in person is refused by restraint and journaled", async () => {
@@ -476,7 +504,7 @@ describe("runHeartbeat", () => {
 describe("decideItem", () => {
   const cfg = configFrom("## Proactive\n- Enabled: yes\n- Highest: ask\n\n## Channel C0OFF\n### Proactive\n- Enabled: no\n");
   const it = (over: Partial<RoutedItem> = {}): RoutedItem => ({ source: "mail", itemId: "1", kind: "k", destination: MGR, proposedLevel: "act", summary: "s", evidence: "e", ...over });
-  const d = (over: Partial<RoutedItem> = {}) => decideItem(it(over), { rules: [], managerId: MGR, config: cfg });
+  const d = (over: Partial<RoutedItem> = {}) => decideItem(it(over), { rules: [], managerId: MGR, config: cfg, channelsOn: ["C0ON"] });
 
   test("destinations map to audiences", () => {
     expect(d()).toMatchObject({ action: "post", audience: "manager", recipient: MGR, level: "inform", rule: null });
@@ -487,12 +515,17 @@ describe("decideItem", () => {
 
   test("ignore and a channel switched off give none", () => {
     expect(d({ proposedLevel: "ignore" })).toMatchObject({ action: "none" });
-    expect(d({ destination: "C0OFF" })).toMatchObject({ action: "none" });
+    expect(d({ destination: "C0OFF" })).toMatchObject({ action: "none", reason: "off" });
+  });
+
+  test("a channel is a destination only with its own Proactive block on, whatever the global switch", () => {
+    expect(d({ destination: "C0OTHER" })).toEqual({ action: "none", reason: "off" });
+    expect(d({ destination: "G0ON" })).toEqual({ action: "none", reason: "off" });
   });
 
   test("a rule's level is clamped to the ceiling", () => {
     const rule: ProactiveRule = { slug: "rules/proactive/k-global", kind: "k", scope: "global", level: "act", how: null, taughtBy: MGR, taughtAt: "", thread: "", quote: null };
-    expect(decideItem(it(), { rules: [rule], managerId: MGR, config: cfg })).toMatchObject({ action: "post", level: "ask", rule });
+    expect(decideItem(it(), { rules: [rule], managerId: MGR, config: cfg, channelsOn: [] })).toMatchObject({ action: "post", level: "ask", rule });
   });
 });
 

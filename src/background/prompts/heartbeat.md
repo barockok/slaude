@@ -25,7 +25,7 @@ Rules people taught you (slug · kind · scope · level):
 Your proactive posts of the last 7 days (when · where · topic · signal):
 {{RECENT_POSTS}}
 
-Channels where proactiveness is on: {{CHANNELS_ON}}. Your manager: <@{{MANAGER}}>.
+Channels where proactiveness is on: {{CHANNELS_ON}}. Route to no other channel; an item for any other channel is not posted. Your manager: <@{{MANAGER}}>.
 
 For each item worth anything, call `route_item` once with:
 - `source` (the server name, or `memory`) and `itemId` (the source's own id, or the page slug);
