@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { fakeBrain } from "../memory/fake-brain";
 import { JOURNAL_MAX_CHARS } from "../../src/proactive/rules";
 import type { ReadOutcome, SourceReader } from "../../src/proactive/source-reader";
@@ -93,6 +93,35 @@ describe("triage tools", () => {
     expect(desc).not.toContain(secret);
     const big = setup(undefined, [{ name: "list_things", description: "d".repeat(10_000), inputSchema: { type: "object", description: "s".repeat(10_000) } }]).list;
     expect(((big.find((t) => t.name === "read_tracker") as any).description as string).length).toBeLessThan(4000);
+  });
+
+  test("two servers whose names sanitise to the same read tool: the second is skipped with one warning per boot", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const build = () =>
+        triageTools(
+          {
+            personaId: "default",
+            agentId: "a1",
+            sources: [
+              { server: "my.mail", readTools: ["list_things"], tools: [{ name: "list_things" }] },
+              { server: "my_mail", readTools: ["list_things"], tools: [{ name: "list_things" }] },
+            ],
+            reader: { tools: async () => ({ tools: [] }), read: async () => ({ kind: "ok", text: "" }) },
+            since: {},
+            call: fakeBrain().call,
+            now: () => NOW,
+          },
+          fresh(),
+        ).map((t) => t.name);
+      expect(build()).toEqual(["read_my_mail", "route_item", "write_journal"]);
+      expect(build()).toEqual(["read_my_mail", "route_item", "write_journal"]);
+      const warned = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("my_mail"));
+      expect(warned).toHaveLength(1);
+      expect(warned[0]).toContain('"my.mail"');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test("a source with no tools gets no read tool", () => {

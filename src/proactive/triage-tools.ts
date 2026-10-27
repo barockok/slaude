@@ -59,6 +59,14 @@ type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text: redactSecrets(text) }] });
 const err = (text: string): ToolResult => ({ content: [{ type: "text", text: redactSecrets(text) }], isError: true });
 
+/** Once per message per process: a clash is boot-time config, not per-round news. */
+const warned = new Set<string>();
+const warnOnce = (m: string): void => {
+  if (warned.has(m)) return;
+  warned.add(m);
+  console.warn(m);
+};
+
 /** MCP tool names allow [A-Za-z0-9_-]; any other character in a server name becomes `_`. */
 const toolNameFor = (server: string): string => "read_" + server.replace(/[^A-Za-z0-9_-]/g, "_");
 
@@ -125,7 +133,20 @@ function readTool(a: TriageToolArgs, state: TriageState, src: TriageToolArgs["so
 /** The triage pass's tools: one `read_<server>` per source that has tools, `route_item`, `write_journal`. */
 export function triageTools(a: TriageToolArgs, state: TriageState): PassTool[] {
   const watched = new Set(a.sources.map((s) => s.server));
-  const reads = a.sources.filter((s) => s.readTools.some((t) => s.tools.some((x) => x.name === t))).map((s) => readTool(a, state, s));
+  // Two servers whose names sanitise alike would mount two tools of one name,
+  // which the pass's MCP server refuses: the first keeps it, the second is skipped.
+  const names = new Map<string, string>();
+  const reads: PassTool[] = [];
+  for (const s of a.sources.filter((s) => s.readTools.some((t) => s.tools.some((x) => x.name === t)))) {
+    const name = toolNameFor(s.server);
+    const first = names.get(name);
+    if (first !== undefined) {
+      warnOnce(`[proactive] watch "${s.server}": its read tool would be ${name}, which "${first}" already has; skipped (rename one of the servers)`);
+      continue;
+    }
+    names.set(name, s.server);
+    reads.push(readTool(a, state, s));
+  }
 
   const route = tool(
     "route_item",
