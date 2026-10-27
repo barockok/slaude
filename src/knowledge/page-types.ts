@@ -9,8 +9,11 @@ export type PageType =
   | "outcome"
   | "lessons"
   | "heartbeat"
-  | "team-fact";
+  | "team-fact"
+  | "proactive-rule"
+  | "heartbeat-journal";
 
 export const PAGE_TYPES: readonly PageType[] = [
   "profile", "person-note", "commitment", "investigation", "correction", "outcome", "lessons", "heartbeat", "team-fact",
+  "proactive-rule", "heartbeat-journal",
 ];
