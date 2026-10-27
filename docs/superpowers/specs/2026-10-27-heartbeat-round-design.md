@@ -164,7 +164,7 @@ Each proactive post is sent with Slack `metadata` `{event_type: "slaude_proactiv
 ## Verification
 
 - Unit: the parser for `Watch`/`Highest`; rule resolution and clamping (scope precedence, `proposedLevel` only lowering, ceiling); `proactive_rule` authorisation (lowering by a recipient, raising by an approver, raising past the ceiling refused, global scope).
-- Pass shape: the triage pass offers only the memory tools, the `read_*` tools, `route_item`, `set_watermark` and `write_journal`, checked with the real CLI against the mock LLM, as the existing runner test does.
+- Pass shape: the triage pass offers only the memory tools, the `read_*` tools, `route_item` and `write_journal` (no watermark tool: code advances watermarks, §4 step 4), checked with the real CLI against the mock LLM, as the existing runner test does.
 - Injection: a fixture email that tells the agent to post to a channel or to raise a rule produces at most a `route_item`, and code refuses whatever goes past the rules.
 - Continuity: two rounds over the same fixture source. The second sees only new items, does not repost a handled one, and carries an open item forward. An aborted round does not move a watermark.
 - Replies: a top-level DM answer after a post gets no `<proactive-context>`; `proactive_rule` in a /1on1 is refused; widening a DM rule to global drops the quote and keeps the provenance; a channel reply without a mention under a proactive post gets a turn with `<proactive-context>`; "just reply to these from now on" from a non-approver produces an approval card, and from an approver produces a rule page with provenance.
