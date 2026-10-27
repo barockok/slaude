@@ -36,7 +36,7 @@ import { runPass, type Outcome, type PassTool, type RunnerDeps } from "../backgr
 import type { CardPost } from "../background/proposal-cards";
 import type { AgentGroup } from "../background/scheduler";
 import { NO_PREFS, readPingPrefs } from "./prefs";
-import { checkProactive, textHash, UNCHANGED_WINDOW_MS, type Audience } from "./restraint";
+import { checkProactive, textHash, UNCHANGED_WINDOW_MS, type Audience, type RestraintRule } from "./restraint";
 import type { Level } from "./levels";
 import { JOURNAL_MAX_CHARS, JOURNAL_SLUG, loadRules, resolveLevel, type ProactiveRule } from "./rules";
 import { watchableSources } from "./sources";
@@ -80,12 +80,15 @@ export interface ProactivePostArgs {
 const USER_ID = /^[UW][A-Z0-9]+$/;
 const CHANNEL_ID = /^[CG][A-Z0-9]+$/;
 
-type Sent = { ok: true; post: Posts.ProactivePost | null } | { ok: false; error: string };
+/** Why a post did not go out: `cap` (this run's post limit), `invalid` (a bad argument), `restraint` (`rule` refused it), `failed` (Slack threw). */
+type Sent =
+  | { ok: true; post: Posts.ProactivePost | null }
+  | { ok: false; error: string; kind: "cap" | "invalid" | "restraint" | "failed"; rule?: RestraintRule };
 
 /** Check, post and record one proactive post. `post` is the recorded row, or null when recording failed. */
 async function sendProactive(a: ProactivePostArgs, ctx: ProactivePostContext, state: { posts: number }): Promise<Sent> {
-  const no = (error: string): Sent => ({ ok: false, error });
-  if (state.posts >= HEARTBEAT_MAX_POSTS) return no(`refused: at most ${HEARTBEAT_MAX_POSTS} posts per heartbeat`);
+  const no = (error: string): Sent => ({ ok: false, error, kind: "invalid" });
+  if (state.posts >= HEARTBEAT_MAX_POSTS) return { ok: false, error: `refused: at most ${HEARTBEAT_MAX_POSTS} posts per heartbeat`, kind: "cap" };
   if (!a.evidence?.trim()) return no("refused: a proactive post needs evidence (a page slug or link it rests on)");
   const text = redactSecrets((a.text ?? "").trim());
   const topic = (a.topic ?? "").trim();
@@ -109,7 +112,9 @@ async function sendProactive(a: ProactivePostArgs, ctx: ProactivePostContext, st
       history,
     },
   );
-  if (!verdict.ok) return no(`refused: ${verdict.rule}; do not post this, and do not rephrase it to get around the rule`);
+  if (!verdict.ok) {
+    return { ok: false, error: `refused: ${verdict.rule}; do not post this, and do not rephrase it to get around the rule`, kind: "restraint", rule: verdict.rule };
+  }
   // Minted before the post: the message carries it as a marker only.
   const id = randomUUID();
   const posted = await ctx.post({
@@ -285,6 +290,9 @@ const warnOnce = (m: string) => {
   console.warn(m);
 };
 
+/** Restraint refusals that mean "not now": the item is read again and posted once the window opens. */
+const NOT_NOW: ReadonlySet<RestraintRule> = new Set<RestraintRule>(["quiet-hours", "daily-cap", "cooldown"]);
+
 /** Run one heartbeat round for an agent group; null when there was nothing to check. */
 export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; signal?: AbortSignal }, deps: HeartbeatDeps): Promise<{ outcome: Outcome } | null> {
   const tag = `[background] agent=${r.agentId} pass=heartbeat`;
@@ -383,19 +391,24 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
     };
     const posts = { posts: 0 };
     const notDelivered: string[] = [];
-    /** Sources with an item not delivered this round: their watermark stays, so the item is read again. */
+    /** Sources with an item not delivered for a passing reason this round: their watermark stays, so the item is read again. */
     const undeliveredFrom = new Set<string>();
     for (const item of state.items) {
       const d = decideItem(item, { rules, managerId, config });
+      const label = `${line(item.source, 60)}/${line(item.itemId, 100)} ${line(item.kind, 100)} → ${line(item.destination, 40)}`;
+      // Transient (quiet hours, a daily cap or cooldown, the run's post cap, a failed post or dispatch): read again next round.
       const drop = (why: string, rule: ProactiveRule | null) => {
         undeliveredFrom.add(item.source);
-        notDelivered.push(
-          `Not delivered: ${line(item.source, 60)}/${line(item.itemId, 100)} ${line(item.kind, 100)} → ${line(item.destination, 40)} (${rule ? line(rule.slug) : "default"})`,
-        );
+        notDelivered.push(`Not delivered: ${label} (${rule ? line(rule.slug) : "default"})`);
         console.log(`${tag}: item ${line(item.source, 60)}/${line(item.itemId, 60)} not delivered: ${why}`);
       };
+      // Terminal (a refusal that is not about timing, a switched-off place, a bad item): handled, never re-read for it.
+      const notPosted = (reason: string) => {
+        notDelivered.push(`Not posted: ${label} (${reason})`);
+        console.log(`${tag}: item ${line(item.source, 60)}/${line(item.itemId, 60)} not posted: ${reason}`);
+      };
       if (d.action === "none") {
-        if (d.reason === "off") drop("proactiveness is off there", null);
+        if (d.reason === "off") notPosted("proactiveness is off there");
         continue;
       }
       const summary = clamp(redactSecrets(item.summary.trim()), MAX_POST_CHARS);
@@ -418,9 +431,12 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
         },
         ctx,
         posts,
-      ).catch((e): Sent => ({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+      ).catch((e): Sent => ({ ok: false, error: e instanceof Error ? e.message : String(e), kind: "failed" }));
       if (!sent.ok) {
-        drop(sent.error, d.rule);
+        // "unchanged": it already went out (an earlier round, or the overlap re-read it); nothing to journal.
+        if (sent.rule === "unchanged") console.log(`${tag}: item ${line(item.source, 60)}/${line(item.itemId, 60)} already posted (unchanged)`);
+        else if ((sent.kind === "restraint" && !NOT_NOW.has(sent.rule!)) || sent.kind === "invalid") notPosted(sent.rule ?? sent.error.replace(/^refused: /, "").slice(0, 120));
+        else drop(sent.error, d.rule);
         continue;
       }
       if ((d.level === "ask" || d.level === "act") && deps.proactive) {

@@ -284,20 +284,20 @@ describe("runHeartbeat", () => {
     expect(h.dispatched[0]!.envelope).toContain("ask:");
   });
 
-  test("an item to a channel with proactiveness off posts nothing and is journaled as not delivered", async () => {
+  test("an item to a channel with proactiveness off posts nothing and is journaled as not posted", async () => {
     const h = round({ soul: SOUL("\n## Channel C0OFF\n### Proactive\n- Enabled: no\n"), items: [item({ destination: "C0OFF" })], journal: "Looked at mail." });
     await h.go();
     expect(h.posted).toEqual([]);
     const j = journalOf(h.brain)!;
     expect(j).toContain("Looked at mail.");
-    expect(j).toContain("Not delivered: mail/m-1 invoice emails → C0OFF (default)");
+    expect(j).toContain("Not posted: mail/m-1 invoice emails → C0OFF (proactiveness is off there)");
   });
 
   test("an item to a non-opted-in person is refused by restraint and journaled", async () => {
     const h = round({ items: [item({ destination: "U0ALICE" })] });
     await h.go();
     expect(h.posted).toEqual([]);
-    expect(journalOf(h.brain)).toContain("Not delivered: mail/m-1 invoice emails → U0ALICE (default)");
+    expect(journalOf(h.brain)).toContain("Not posted: mail/m-1 invoice emails → U0ALICE (not-opted-in)");
   });
 
   test(`posts over ${HEARTBEAT_MAX_POSTS} per round are journaled as not delivered`, async () => {
@@ -310,13 +310,46 @@ describe("runHeartbeat", () => {
     expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
   });
 
-  test("an item not delivered keeps its source's watermark; a fully delivered source advances", async () => {
+  const ADVANCED = NOW.getTime() - 5 * 60_000;
+
+  test("a refusal that is not about timing is terminal: not-opted-in does not pin the watermark", async () => {
     const h = round({ items: [item({ destination: "U0ALICE" })] });
     await h.go();
+    expect(await Watermarks.getSince(AGENT, "mail")).toBe(ADVANCED);
+    expect(journalOf(h.brain)).not.toContain("Not delivered");
+  });
+
+  test("a mute refusal does not pin the watermark", async () => {
+    const brain = fakeBrain();
+    const page = composePage({ slug: "profile", content: "x", type: "profile", subject: "U0ALICE", fields: { pings: "yes", topics: "invoice emails", mutes: "invoice emails" } }, NOW);
+    if ("error" in page) throw new Error(page.error);
+    await brain.call("put_page", { slug: "profile", content: page.content }, scopeOf(profileSourceId("T0TEAM", "U0ALICE")));
+    const h = round({ brain, items: [item({ destination: "U0ALICE" })] });
+    await h.go();
+    expect(h.posted).toEqual([]);
+    expect(journalOf(h.brain)).toContain("Not posted: mail/m-1 invoice emails → U0ALICE (muted)");
+    expect(await Watermarks.getSince(AGENT, "mail")).toBe(ADVANCED);
+  });
+
+  test("a quiet-hours refusal is not now: it pins the watermark and is journaled not delivered", async () => {
+    const h = round({ soul: SOUL("- Quiet hours: 11:00–13:00\n"), items: [item()] });
+    await h.go();
+    expect(h.posted).toEqual([]);
+    expect(journalOf(h.brain)).toContain(`Not delivered: mail/m-1 invoice emails → ${MGR} (default)`);
     expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
-    const ok = round({ items: [item()] });
-    await ok.go();
-    expect(await Watermarks.getSince(AGENT, "mail")).toBe(NOW.getTime() - 5 * 60_000);
+  });
+
+  test("an item already posted by a stopped round is refused unchanged next round: handled, the watermark advances", async () => {
+    const brain = fakeBrain();
+    const cut = round({ brain, items: [item()], outcome: "stopped-budget" });
+    await cut.go();
+    expect(cut.posted).toHaveLength(1);
+    expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
+    const next = round({ brain, items: [item()], journal: "Looked at mail." });
+    await next.go();
+    expect(next.posted).toEqual([]);
+    expect(await Watermarks.getSince(AGENT, "mail")).toBe(ADVANCED);
+    expect(journalOf(brain)).not.toContain("m-1");
   });
 
   test("a pass stopped by the budget posts what it routed but writes no journal and advances no watermark", async () => {
