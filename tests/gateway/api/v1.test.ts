@@ -16,6 +16,11 @@ import { adminHandlers, slackHandlers, type SlackContext } from "../../../src/ga
 import { skillHandlers, skillOps } from "../../../src/skills/mcp-tools";
 import { kbHandlers } from "../../../src/knowledge/mcp-tools";
 import { paths, ensureHome } from "../../../src/config/home";
+import { __setRuleBrainCall } from "../../../src/proactive/rule-tool";
+import { backgroundAgentId } from "../../../src/background/skill-check";
+import { agentSourceId } from "../../../src/knowledge/scope";
+import { readPageRecord } from "../../../src/knowledge/memory-pages";
+import { fakeBrain } from "../../memory/fake-brain";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 
 const NODE_TOKEN = "test-node-token";
@@ -354,6 +359,28 @@ describe("/v1/tools — REST tool plane", () => {
     const body = (await r.json()) as any;
     expect(body.isError).toBe(true);
     expect(body.content[0].text).toContain("Only manager or approver");
+  });
+
+  test("runtime/proactive_rule takes its teacher from the signed initiator", async () => {
+    const brain = fakeBrain();
+    __setRuleBrainCall(brain.call);
+    try {
+      const source = agentSourceId(await backgroundAgentId("default"));
+      const slug = "rules/proactive/build-failures-c0team";
+      const teacher = mintJobToken({ ...claimsFor(sessionId), initiator: "U0RELAY" });
+      const body = { kind: "build failures", scope: "here", level: "ignore", quote: "stop telling me" };
+      // A teacher named in the body is not an argument: the strict parse refuses it.
+      const forged = await call(`/v1/tools/runtime/proactive_rule`, { method: "POST", body: JSON.stringify({ ...body, taughtBy: "U0EVIL" }) }, { job: teacher });
+      expect(forged.status).toBe(400);
+      const r = await call(`/v1/tools/runtime/proactive_rule`, { method: "POST", body: JSON.stringify(body) }, { job: teacher });
+      expect(r.status).toBe(200);
+      expect(((await r.json()) as any).isError).toBeUndefined();
+      const page = readPageRecord({ content: brain.contentOf(source, slug) })!;
+      expect(page.meta.taught_by).toBe("U0RELAY");
+      expect(page.meta.thread).toBe("C0TEAM/100.0");
+    } finally {
+      __setRuleBrainCall(null);
+    }
   });
 
   test("skills/list_skills matches the direct MCP handler result", async () => {

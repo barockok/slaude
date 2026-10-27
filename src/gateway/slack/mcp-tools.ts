@@ -20,6 +20,7 @@ import { run as runIngest } from "../../knowledge/ingest";
 import { slackContract } from "../../tools/contracts/slack";
 import { runtimeContract } from "../../tools/contracts/runtime";
 import { connectContract } from "../../tools/contracts/connect";
+import { proactiveRule } from "../../proactive/rule-tool";
 
 function format(text: string): string {
   return redactSlack(mdToMrkdwn(text), soulData().redactPatterns);
@@ -506,7 +507,7 @@ async function editCanvasEnd(
  *  channel id is given, approvers are resolved per-channel (a `## Channel`
  *  override replaces the global approver set there); manager/backup are
  *  always honored regardless of channel. */
-function isManagerOrApprover(userId?: string, channelId?: string): boolean {
+export function isManagerOrApprover(userId?: string, channelId?: string): boolean {
   if (!userId) return false;
   const soul = channelId ? effectiveSoulForChannel(channelId) : soulData();
   if (soul.manager?.userId === userId) return true;
@@ -813,6 +814,8 @@ export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInsta
         (args) => adminHandlers.resumeCronJob(ctx, { jobId: args.job_id })),
       tool(c.remove_cron_job.name, c.remove_cron_job.description, c.remove_cron_job.schema,
         (args) => adminHandlers.removeCronJob(ctx, { jobId: args.job_id })),
+      tool(c.proactive_rule.name, c.proactive_rule.description, c.proactive_rule.schema,
+        (args) => proactiveRule(ctx, args)),
       tool(c.trigger_ingest.name, c.trigger_ingest.description, c.trigger_ingest.schema,
         () => adminHandlers.triggerIngest(ctx)),
       tool(c.reload_session.name, c.reload_session.description, c.reload_session.schema,

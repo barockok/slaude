@@ -6,6 +6,7 @@
  * handler's parameter type — no casts.
  */
 import { adminHandlers } from "../../slack/mcp-tools";
+import { proactiveRule } from "../../../proactive/rule-tool";
 import { runtimeContract } from "../../../tools/contracts/runtime";
 import { parseToolArgs } from "../../../tools/contracts/types";
 import type { JobClaims } from "../auth";
@@ -57,6 +58,10 @@ export async function executeRuntimeTool(
       const a = parseToolArgs(c.remove_cron_job, body);
       return adminHandlers.removeCronJob(ctx, { jobId: a.job_id });
     }
+    case c.proactive_rule.name:
+      // ctx.userId is claims.initiator (the signed sender), so taughtBy and
+      // the approver check never come from the request body.
+      return proactiveRule(ctx, parseToolArgs(c.proactive_rule, body));
     case c.trigger_ingest.name:
       parseToolArgs(c.trigger_ingest, body);
       return adminHandlers.triggerIngest(ctx);

@@ -1,6 +1,6 @@
 /**
  * Contract for the `slaude_runtime` MCP server (control-plane housekeeping:
- * ignore gates, cron jobs, KB ingest, session reload).
+ * ignore gates, cron jobs, learned proactive rules, KB ingest, session reload).
  */
 import { z } from "zod";
 import type { ServerContract } from "./types";
@@ -95,6 +95,18 @@ export const runtimeContract = {
         "Deactivate a scheduled cron job by its full ID or 8-char prefix. The job is soft-deleted (set inactive) — historical runs remain in the database. Use when a recurring task is no longer needed, the user asks to cancel something scheduled, or a job was created by mistake. Call list_cron_jobs first to find the ID. Requires manager or approver authorization.",
       schema: {
         job_id: z.string().describe("Full job ID or 8-character prefix from list_cron_jobs."),
+      },
+    },
+    proactive_rule: {
+      name: "proactive_rule",
+      description:
+        "Record how you should handle a kind of item from now on. Use when someone says how you should treat a kind of thing (\"ignore these\", \"just tell me\", \"ask me first\", \"just reply to these\"). Levels: ignore < inform < ask < act. `here` means this channel or DM; `global` applies everywhere, and widening to global needs the manager. Lowering a rule here applies at once; raising one is capped by the SOUL and may need an approver, so the result says whether it was saved. Refused in a /1on1.",
+      schema: {
+        kind: z.string().min(3).max(200).describe("The kind of item, in a few words (e.g. 'invoice emails', 'build failures')."),
+        scope: z.enum(["here", "global"]).describe("'here' = this channel or DM; 'global' = everywhere (needs the manager)."),
+        level: z.enum(["ignore", "inform", "ask", "act"]).describe("What to do with such an item: ignore it, inform about it, ask before acting, or act."),
+        how: z.string().max(500).optional().describe("What to do each time. Required for 'act'."),
+        quote: z.string().min(1).max(500).describe("The person's own words that taught this, verbatim."),
       },
     },
     trigger_ingest: {

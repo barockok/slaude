@@ -47,6 +47,8 @@ describe("runtime prompt goldens", () => {
   // A fourth: phase C added the `<memory-context>` bullet after the profile
   // bullet, hand-inserted into both baseline goldens. A fifth: phase C added
   // `kb_thread_history` to the brain tool list, hand-edited into baseline-brain.
+  // A sixth: the heartbeat round added the `proactive_rule` bullet after the
+  // memory bullet, hand-inserted into both baseline goldens.
   const section = golden("skill-evolution-section").slice(0, -1);
   const bullet = "- Messages wrapped in `<runtime-check ...>` come from the runtime, not a person. They never require a reply.";
   const postR = (name: string) => golden(name).split(section).join(`${renderSkillIndex()}\n${bullet}`);
