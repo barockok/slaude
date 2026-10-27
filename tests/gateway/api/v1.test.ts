@@ -361,25 +361,53 @@ describe("/v1/tools — REST tool plane", () => {
     expect(body.content[0].text).toContain("Only manager or approver");
   });
 
-  test("runtime/proactive_rule takes its teacher from the signed initiator", async () => {
+  test("runtime/proactive_rule takes its teacher from the signed initiator, on the job's own sender only", async () => {
+    // The job's recorded senders (the queue's turn-senders record, by token job id).
+    const sendersByJob: Record<string, Array<{ userId: string; teamId: string | null; origin: string | null }>> = {
+      "J-own": [{ userId: "U0RELAY", teamId: "T1", origin: "slack" }],
+      "J-merged": [{ userId: "U0RELAY", teamId: "T1", origin: "slack" }, { userId: "U0OTHER", teamId: "T1", origin: "slack" }],
+    };
+    const qd = {
+      dispatch: async () => {},
+      abort: async () => {},
+      pubsub: { close: async () => {} },
+      turns: { close: async () => {}, turnSenders: async (job: string) => sendersByJob[job] ?? null },
+      registry: { close: async () => {}, liveLabels: async () => [] },
+      close: async () => {},
+    } as any;
+    const gw = createGateway(new AgentManager(), capturingTransport().t, { queueDispatch: qd });
     const brain = fakeBrain();
     __setRuleBrainCall(brain.call);
     try {
       const source = agentSourceId(await backgroundAgentId("default"));
       const slug = "rules/proactive/build-failures-c0team";
-      const teacher = mintJobToken({ ...claimsFor(sessionId), initiator: "U0RELAY" });
+      const post = async (body: unknown, claims: Partial<JobClaims>) => {
+        const token = mintJobToken({ ...claimsFor(sessionId), initiator: "U0RELAY", origin: "slack", ...claims });
+        const res = (await gw.fetchV1(new Request("http://gw/v1/tools/runtime/proactive_rule", {
+          method: "POST",
+          headers: { authorization: `Bearer ${NODE_TOKEN}`, [JOB_HEADER]: token, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })))!;
+        return { status: res.status, json: res.status === 200 ? ((await res.json()) as any) : null };
+      };
       const body = { kind: "build failures", scope: "here", level: "ignore", quote: "stop telling me" };
       // A teacher named in the body is not an argument: the strict parse refuses it.
-      const forged = await call(`/v1/tools/runtime/proactive_rule`, { method: "POST", body: JSON.stringify({ ...body, taughtBy: "U0EVIL" }) }, { job: teacher });
-      expect(forged.status).toBe(400);
-      const r = await call(`/v1/tools/runtime/proactive_rule`, { method: "POST", body: JSON.stringify(body) }, { job: teacher });
-      expect(r.status).toBe(200);
-      expect(((await r.json()) as any).isError).toBeUndefined();
+      expect((await post({ ...body, taughtBy: "U0EVIL" }, { job: "J-own" })).status).toBe(400);
+      // A merged job, an unrecorded one, and a cron-origin token are not one person's own turn.
+      for (const claims of [{ job: "J-merged" }, { job: "J-unrecorded" }, { job: "J-own", origin: "cron" as const }]) {
+        const r = await post(body, claims);
+        expect(r.status).toBe(200);
+        expect(r.json.isError).toBe(true);
+      }
+      expect(brain.contentOf(source, slug)).toBeUndefined();
+      const r = await post(body, { job: "J-own" });
+      expect(r.json.isError).toBeUndefined();
       const page = readPageRecord({ content: brain.contentOf(source, slug) })!;
       expect(page.meta.taught_by).toBe("U0RELAY");
       expect(page.meta.thread).toBe("C0TEAM/100.0");
     } finally {
       __setRuleBrainCall(null);
+      await gw.stop();
     }
   });
 

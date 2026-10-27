@@ -2,12 +2,19 @@
  * `proactive_rule` (spec §5 "Changing a rule"): a person tells the agent how
  * to handle a kind of item from now on, and the agent records it as a rule
  * page in its own slice. The checks live here, not in the prompt:
+ *   - only on a person's own Slack turn: origin "slack", and the running
+ *     turn holds exactly one sender, that person (cron, promise checks,
+ *     heartbeat turns, panel turns and merged turns are refused; synthetic
+ *     turns inside a Slack job are denied by the worker's PreToolUse guard,
+ *     src/agent/profile-write-guard.ts);
  *   - never in a /1on1 (a private thread must not shape posts to others);
  *   - lowering a rule for this channel or DM applies at once;
  *   - raising is capped by the SOUL's `Highest` for the scope, and within it
  *     needs an approver for the scope (the speaker, or one who approves the
  *     card the turn opens);
- *   - `global` always needs the manager or backup, in either direction.
+ *   - `global`, and raising a DM rule, need the manager or backup speaking:
+ *     the approval card posts in this thread to the channel's approvers, so
+ *     it cannot reach them, and the tool refuses instead of opening one.
  * `taughtBy` is the turn's signed sender (ctx.userId), never an argument.
  * Shared by the in-process MCP server (createRuntimeMcp) and the node relay
  * (POST /v1/tools/runtime/proactive_rule).
@@ -28,6 +35,7 @@ const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] })
 const err = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 
 export const ONE_ON_ONE_REFUSAL = "refused: teach this outside the /1on1, so it can apply to others";
+export const NOT_OWN_TURN_REFUSAL = "refused: a rule is taught only by a person's own Slack message, on their own turn";
 
 export interface ProactiveRuleArgs {
   kind: string;
@@ -52,11 +60,20 @@ function managers(): string[] {
   return [s.manager?.userId, s.backupManager?.userId].filter((u): u is string => !!u);
 }
 
-/** Who may approve a rule for this scope, as Slack mentions. */
-function approverNames(channel: string | null): string {
+/** Who may approve a rule for this channel, as Slack mentions. */
+function approverNames(channel: string): string {
   const ids = new Set(managers());
-  if (channel) for (const a of effectiveSoulForChannel(channel).approvers ?? []) ids.add(a.userId);
+  for (const a of effectiveSoulForChannel(channel).approvers ?? []) ids.add(a.userId);
   return ids.size > 0 ? [...ids].map(mention).join(", ") : "the manager";
+}
+
+/** True when the running turn holds exactly one sender: this person, from Slack. */
+async function ownTurn(ctx: SlackContext, userId: string): Promise<boolean> {
+  const senders = await ctx.turnSenders?.();
+  if (!senders || senders.length !== 1) return false;
+  const s = senders[0]!;
+  // A team on both sides must agree; mono records none when Slack sent none.
+  return s.origin === "slack" && s.userId === userId && (!s.teamId || !ctx.teamId || s.teamId === ctx.teamId);
 }
 
 export async function proactiveRule(
@@ -67,6 +84,10 @@ export async function proactiveRule(
   const userId = ctx.userId;
   if (!userId) return err(ONE_ON_ONE_REFUSAL);
   if (ctx.channel && ctx.threadTs && (await OneOnOne.find(ctx.channel, ctx.threadTs))) return err(ONE_ON_ONE_REFUSAL);
+  // A non-human turn carries an id on its route (cron: its creator; a promise
+  // check: the beneficiary; a heartbeat turn: the agent), and a merged turn's
+  // initiator is only its first sender: none of them said this.
+  if (ctx.origin !== "slack" || !(await ownTurn(ctx, userId))) return err(NOT_OWN_TURN_REFUSAL);
 
   const dm = ctx.channel.startsWith("D");
   const scope = a.scope === "global" ? "global" : dm ? userId : ctx.channel;
@@ -80,6 +101,7 @@ export async function proactiveRule(
   const now = (deps.now ?? (() => new Date()))();
   const persona = ctx.personaId ?? "default";
   const agentId = await backgroundAgentId(persona);
+  if (userId === agentId) return err(NOT_OWN_TURN_REFUSAL);
   const composed = composeRulePage({
     kind: a.kind, scope, level: a.level, how: how ?? null,
     taughtBy: userId, taughtAt: now.toISOString(), thread: `${ctx.channel}/${ctx.threadTs}`,
@@ -107,6 +129,12 @@ export async function proactiveRule(
   const canApprove = (u: string) => (channel ? isManagerOrApprover(u, channel) : managers().includes(u));
   let approvedBy: string | undefined;
   if ((raising || scope === "global") && !canApprove(userId)) {
+    // Global and DM: only the manager or backup, and a card in this thread
+    // would be addressed to the channel's approvers, so no card.
+    if (!channel) {
+      const m = managers();
+      return err(`refused: ask ${m.length > 0 ? m.map(mention).join(" or ") : "the manager"} to set this; only they can approve it here`);
+    }
     const who = approverNames(channel);
     if (!ctx.requestApproval) return err(`refused: this needs approval from ${who}, and no approval card can be opened here`);
     const r = await ctx.requestApproval({
@@ -115,7 +143,7 @@ export async function proactiveRule(
     });
     if (!r.approved) return err(`not approved${r.by ? ` by ${mention(r.by)}` : ""}${r.note ? `: ${r.note}` : ""}; the rule was not changed`);
     // The card's clickers come from the channel's approver list (or anyone,
-    // when it has none), so check the clicker against this scope too.
+    // when it has none), so check the clicker against the channel too.
     if (!canApprove(r.by)) return err(`refused: ${mention(r.by)} cannot approve this; it needs ${who}`);
     approvedBy = r.by;
   }
