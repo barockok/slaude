@@ -34,12 +34,12 @@ describe("parseClock / inWindow", () => {
 
 describe("parseProactive", () => {
   it("defaults to disabled, cap 1, cooldown 4, no quiet hours", () => {
-    expect(parseProactive(SOUL(""))).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 1, cooldownHours: 4, channels: {} });
+    expect(parseProactive(SOUL(""))).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 1, cooldownHours: 4, watch: [], highest: "inform", channels: {}, channelHighest: {} });
   });
 
   it("reads the global section", () => {
     const c = parseProactive(SOUL("## Proactive\n- Enabled: yes\n- Quiet hours: 21:00–08:00\n- Max per person per day: 3\n- Cooldown: 2 hours\n"));
-    expect(c).toEqual({ enabled: true, quietHours: { start: 21 * 60, end: 8 * 60 }, maxPerPersonPerDay: 3, cooldownHours: 2, channels: {} });
+    expect(c).toEqual({ enabled: true, quietHours: { start: 21 * 60, end: 8 * 60 }, maxPerPersonPerDay: 3, cooldownHours: 2, watch: [], highest: "inform", channels: {}, channelHighest: {} });
   });
 
   it("is case-insensitive, accepts a hyphen, and ignores comments", () => {
@@ -145,7 +145,7 @@ describe("proactiveFor", () => {
     __setProactiveSoulSource(() => {
       throw new Error("no soul");
     });
-    expect(proactiveFor("default", "C0TEAMCHAN")).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 1, cooldownHours: 4 });
+    expect(proactiveFor("default", "C0TEAMCHAN")).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 1, cooldownHours: 4, watch: [], highest: "inform" });
   });
 
   it("anyEnabled is true when only a channel is on", async () => {
@@ -170,5 +170,34 @@ describe("invariant 3: proactiveness is raised only by the SOUL", () => {
   it("an override write for it is refused", async () => {
     const r = await mutateOverride({ field: "proactive" as never, action: "add", value: "C0TEAMCHAN", by: "U0MANAGER" }, {});
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("Watch and Highest", () => {
+  it("parse globally; Highest replaces per channel; Watch is global only", () => {
+    const c = parseProactive(
+      "## Proactive\n- Enabled: yes\n- Watch: mail, tracker\n- Highest: ask\n\n## Channel <#C0EXAMPLE>\n### Proactive\n- Enabled: yes\n- Highest: act\n- Watch: other\n",
+    );
+    expect(c.watch).toEqual(["mail", "tracker"]);
+    expect(c.highest).toBe("ask");
+    expect(c.channelHighest).toEqual({ C0EXAMPLE: "act" });
+  });
+
+  it("defaults: no Watch, Highest inform; an unknown level keeps the default", () => {
+    expect(parseProactive("## Proactive\n- Enabled: yes\n- Highest: always\n")).toMatchObject({
+      watch: [],
+      highest: "inform",
+      channelHighest: {},
+    });
+  });
+
+  it("proactiveFor resolves highest per channel", () => {
+    __setProactiveSoulSource(
+      () => "## Proactive\n- Enabled: yes\n- Watch: mail\n- Highest: ask\n\n## Channel <#C0EXAMPLE>\n### Proactive\n- Highest: act\n",
+    );
+    expect(proactiveFor("default", "C0EXAMPLE").highest).toBe("act");
+    expect(proactiveFor("default", "C0OTHER0").highest).toBe("ask");
+    expect(proactiveFor("default").highest).toBe("ask");
+    expect(proactiveFor("default", "C0EXAMPLE").watch).toEqual(["mail"]);
   });
 });

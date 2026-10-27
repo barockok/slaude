@@ -8,10 +8,13 @@
  *   - Quiet hours: 21:00–08:00
  *   - Max per person per day: 1
  *   - Cooldown: 4 hours
+ *   - Watch: mail, tracker   # sources the heartbeat round reads — global only
+ *   - Highest: ask           # ceiling: ignore | inform | ask | act — default inform
  *
  *   ## Channel <#C…>
  *   ### Proactive
  *   - Enabled: yes
+ *   - Highest: act           # replaces the global ceiling in this channel
  *
  * Parsed here, deterministically, from the persona's SOUL text. Never through
  * the LLM structured extraction (a mis-extraction must never turn it on), never
@@ -20,6 +23,7 @@
  */
 import { createHash } from "node:crypto";
 import { personaSoulText } from "../persona/soul-source";
+import { parseLevel, type Level } from "../proactive/levels";
 
 export interface QuietHours {
   /** Minutes since local midnight. */
@@ -32,12 +36,18 @@ export interface ProactiveConfig {
   quietHours: QuietHours | null;
   maxPerPersonPerDay: number;
   cooldownHours: number;
+  /** Sources the heartbeat round reads (global only). */
+  watch: string[];
+  /** The ceiling no learned reaction may raise the level past. */
+  highest: Level;
   /** Channel id → that channel's own `### Proactive` `Enabled`. */
   channels: Record<string, boolean>;
+  /** Channel id → that channel's own `### Proactive` `Highest`. */
+  channelHighest: Record<string, Level>;
 }
 
 /** The resolved switch for one audience: the global settings, `enabled` per channel when one is given. */
-export type ResolvedProactive = Omit<ProactiveConfig, "channels">;
+export type ResolvedProactive = Omit<ProactiveConfig, "channels" | "channelHighest">;
 
 export const DEFAULT_MAX_PER_PERSON_PER_DAY = 1;
 export const DEFAULT_COOLDOWN_HOURS = 4;
@@ -47,6 +57,8 @@ const DISABLED: ResolvedProactive = {
   quietHours: null,
   maxPerPersonPerDay: DEFAULT_MAX_PER_PERSON_PER_DAY,
   cooldownHours: DEFAULT_COOLDOWN_HOURS,
+  watch: [],
+  highest: "inform",
 };
 
 /** `HH:MM` → minutes since midnight, or null. */
@@ -96,7 +108,10 @@ export function parseProactive(text: string): ProactiveConfig {
     quietHours: null,
     maxPerPersonPerDay: DEFAULT_MAX_PER_PERSON_PER_DAY,
     cooldownHours: DEFAULT_COOLDOWN_HOURS,
+    watch: [],
+    highest: "inform",
     channels: {},
+    channelHighest: {},
   };
   // Where we are: the global section, a channel's Proactive subsection, or elsewhere.
   let where: { kind: "global" } | { kind: "channel"; id: string; inProactive: boolean } | null = null;
@@ -129,10 +144,17 @@ export function parseProactive(text: string): ProactiveConfig {
     if (!kv) continue;
     const [key, value] = kv;
     if (where.kind === "channel") {
-      if (where.inProactive && key === "enabled") out.channels[where.id] = value.toLowerCase() === "yes";
+      if (!where.inProactive) continue;
+      if (key === "enabled") out.channels[where.id] = value.toLowerCase() === "yes";
+      else if (key === "highest") {
+        const l = parseLevel(value);
+        if (l) out.channelHighest[where.id] = l;
+      }
       continue;
     }
     if (key === "enabled") out.enabled = value.toLowerCase() === "yes";
+    else if (key === "watch") out.watch = value.split(",").map((w) => w.trim()).filter(Boolean);
+    else if (key === "highest") out.highest = parseLevel(value) ?? out.highest;
     else if (key === "quiet hours") out.quietHours = parseWindow(value);
     else if (key === "max per person per day") {
       const n = /^\d+$/.test(value) ? Number(value) : NaN;
@@ -174,15 +196,20 @@ function configFor(personaId: string): ProactiveConfig | null {
 
 /**
  * The switch for a persona, for one channel when given: that channel's own
- * `### Proactive` when it has one, else the global value. Any failure reads
+ * `### Proactive` when it has one, else the global value
+ * (`watch` is always the global value). Any failure reads
  * as disabled.
  */
 export function proactiveFor(personaId: string, channelId?: string): ResolvedProactive {
   const c = configFor(personaId);
   if (!c) return { ...DISABLED };
-  const { channels, ...global } = c;
-  if (channelId !== undefined && channels[channelId] !== undefined) return { ...global, enabled: channels[channelId]! };
-  return global;
+  const { channels, channelHighest, ...global } = c;
+  if (channelId === undefined) return global;
+  return {
+    ...global,
+    enabled: channels[channelId] ?? global.enabled,
+    highest: channelHighest[channelId] ?? global.highest,
+  };
 }
 
 /** True when the persona's SOUL enables proactiveness globally or in any channel. */
