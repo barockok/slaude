@@ -61,6 +61,7 @@ import { runDueCommitments, type PromiseTransport } from "../proactive/promises"
 import type { ProactiveTransport } from "../proactive/dispatch";
 import { readPingPrefs } from "../proactive/prefs";
 import { runHeartbeat } from "../proactive/heartbeat";
+import { bridgeExternalMcp } from "../gateway/core/external-mcp";
 import { anyProactiveEnabled } from "../soul/proactive";
 import { env } from "../config/env";
 import { personaApp } from "./digest";
@@ -463,7 +464,20 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
     digest: (r) => runDigest(r, { call: deps.call, recipient: slack?.digestRecipient ?? (() => null), ...(slack ? { post: slack.post } : {}) }),
     // The heartbeat needs Slack to speak: without it there is nothing to run.
     ...(slack
-      ? { heartbeat: (r: SlotRun) => runHeartbeat(r, { runner: deps.runner, call: deps.call, post: slack.post, managerId: personaManager, app: personaApp }) }
+      ? {
+          heartbeat: (r: SlotRun) =>
+            runHeartbeat(r, {
+              runner: deps.runner,
+              call: deps.call,
+              post: slack.post,
+              managerId: personaManager,
+              app: personaApp,
+              // Read at run time: the gateway sets both after building the scheduler deps.
+              ...(slack.sources ? { sources: slack.sources } : {}),
+              ...(slack.proactive ? { proactive: slack.proactive } : {}),
+              mcp: bridgeExternalMcp,
+            }),
+        }
       : {}),
   };
 }

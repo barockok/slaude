@@ -212,6 +212,12 @@ export function proactiveFor(personaId: string, channelId?: string): ResolvedPro
   };
 }
 
+/** The channels whose own `### Proactive` turns proactiveness on. */
+export function proactiveChannels(personaId: string): string[] {
+  const c = configFor(personaId);
+  return c ? Object.entries(c.channels).filter(([, on]) => on).map(([id]) => id).sort() : [];
+}
+
 /** True when the persona's SOUL enables proactiveness globally or in any channel. */
 export function anyProactiveEnabled(personaId: string): boolean {
   const c = configFor(personaId);

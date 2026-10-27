@@ -81,10 +81,11 @@ const toPost = (r: Row): ProactivePost => ({
   context: parseContext(r.context ?? null),
 });
 
+/** Record a post; `id` when the caller minted it before posting (the Slack metadata marker carries it). */
 export async function recordPost(
-  p: Omit<ProactivePost, "id" | "text" | "context"> & { text?: string | null; context?: PostContext | null },
+  p: Omit<ProactivePost, "id" | "text" | "context"> & { id?: string; text?: string | null; context?: PostContext | null },
 ): Promise<string> {
-  const id = randomUUID();
+  const id = p.id ?? randomUUID();
   await db.run(
     `INSERT INTO proactive_posts (id, agent_id, audience, recipient, topic, text_hash, evidence_hash, channel_id, message_ts, team_id, posted_at, text, context)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -98,6 +99,15 @@ export async function recentFor(agentId: string, recipient: string, sinceMs: num
   const rows = await db.query<Row>(
     `SELECT * FROM proactive_posts WHERE agent_id = ? AND recipient = ? AND posted_at >= ? ORDER BY posted_at DESC`,
     [agentId, recipient, sinceMs],
+  );
+  return rows.map(toPost);
+}
+
+/** An agent's posts to anyone since `sinceMs`, newest first, at most `limit`. */
+export async function recentByAgent(agentId: string, sinceMs: number, limit: number): Promise<ProactivePost[]> {
+  const rows = await db.query<Row>(
+    `SELECT * FROM proactive_posts WHERE agent_id = ? AND posted_at >= ? ORDER BY posted_at DESC LIMIT ?`,
+    [agentId, sinceMs, limit],
   );
   return rows.map(toPost);
 }
