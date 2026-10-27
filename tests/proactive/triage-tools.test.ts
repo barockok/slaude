@@ -7,7 +7,7 @@ import { TRIAGE_MAX_BYTES_PER_SOURCE, TRIAGE_MAX_ITEMS, TRIAGE_MAX_READS, triage
 const NOW = new Date("2026-10-27T10:00:00Z");
 const fresh = (): TriageState => ({ items: [], readCalls: 0, bytes: {}, needsAuth: new Set(), failed: new Set(), journal: null });
 
-function setup(outcome: ReadOutcome = { kind: "ok", text: "item" }, tools: Array<{ name: string }> = [{ name: "list_things" }]) {
+function setup(outcome: ReadOutcome = { kind: "ok", text: "item" }, tools: Array<{ name: string; description?: string; inputSchema?: unknown }> = [{ name: "list_things" }]) {
   const brain = fakeBrain();
   const seen: unknown[] = [];
   const reader: SourceReader = {
@@ -71,6 +71,28 @@ describe("triage tools", () => {
     const { run, state } = setup({ kind: "error", text: "boom" });
     await run("read_tracker", { tool: "list_things", args: {} });
     expect(state.failed.has("tracker")).toBe(true);
+  });
+
+  test("a tool's own error (bad args) is a failed call: the source is not marked failed", async () => {
+    const { run, state } = setup({ kind: "tool-error", text: "missing required argument: project" });
+    const r = await run("read_tracker", { tool: "list_things", args: {} });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("missing required argument: project");
+    expect(r.content[0]!.text).toContain("arguments");
+    expect(state.failed.has("tracker")).toBe(false);
+    expect(state.readCalls).toBe(1);
+  });
+
+  test("the read tool's description carries each tool's description and input schema, redacted and capped", () => {
+    const secret = "xoxb-" + "0000000000-dummyvalue";
+    const schema = { type: "object", properties: { project: { type: "string", description: `e.g. ${secret}` } }, required: ["project"] };
+    const { list } = setup(undefined, [{ name: "list_things", description: "List open things in a project.", inputSchema: schema }]);
+    const desc = (list.find((t) => t.name === "read_tracker") as any).description as string;
+    expect(desc).toContain("list_things: List open things in a project.");
+    expect(desc).toContain('"required":["project"]');
+    expect(desc).not.toContain(secret);
+    const big = setup(undefined, [{ name: "list_things", description: "d".repeat(10_000), inputSchema: { type: "object", description: "s".repeat(10_000) } }]).list;
+    expect(((big.find((t) => t.name === "read_tracker") as any).description as string).length).toBeLessThan(4000);
   });
 
   test("a source with no tools gets no read tool", () => {

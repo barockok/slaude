@@ -12,7 +12,7 @@ import type { BrainOpCall } from "../knowledge/memory-trail";
 import type { PassTool } from "../background/runner";
 import { parseLevel, type Level } from "./levels";
 import { JOURNAL_MAX_CHARS } from "./rules";
-import type { SourceReader } from "./source-reader";
+import type { SourceReader, SourceTool } from "./source-reader";
 import type { WatchedSource } from "./sources";
 
 export const TRIAGE_MAX_READS = 20;
@@ -43,7 +43,7 @@ export interface TriageState {
 export interface TriageToolArgs {
   personaId: string;
   agentId: string;
-  sources: Array<WatchedSource & { tools: Array<{ name: string; description?: string }> }>;
+  sources: Array<WatchedSource & { tools: SourceTool[] }>;
   reader: SourceReader;
   /** Per server: epoch ms of the last round that read it, or null. */
   since: Record<string, number | null>;
@@ -62,13 +62,38 @@ const err = (text: string): ToolResult => ({ content: [{ type: "text", text: red
 /** MCP tool names allow [A-Za-z0-9_-]; any other character in a server name becomes `_`. */
 const toolNameFor = (server: string): string => "read_" + server.replace(/[^A-Za-z0-9_-]/g, "_");
 
+/** Per read tool, at most this much of its description and of its input schema (JSON) goes into `read_<server>`'s description. */
+const TOOL_DESC_MAX = 400;
+const TOOL_SCHEMA_MAX = 1200;
+/** The whole `read_<server>` description. */
+const READ_DESC_MAX = 3600;
+const cap = (s: string, max: number): string => (s.length > max ? s.slice(0, max - 1) + "…" : s);
+
+/** One line per read tool: its upstream description and input schema, redacted and capped (both are upstream text). */
+function toolLines(tools: TriageToolArgs["sources"][number]["tools"], allowed: readonly string[]): string {
+  return allowed
+    .map((name) => {
+      const t = tools.find((x) => x.name === name);
+      const desc = t?.description ? cap(redactSecrets(t.description.replace(/\s+/g, " ").trim()), TOOL_DESC_MAX) : "";
+      let schema = "";
+      try {
+        schema = t?.inputSchema !== undefined ? cap(redactSecrets(JSON.stringify(t.inputSchema)), TOOL_SCHEMA_MAX) : "";
+      } catch {
+        schema = "";
+      }
+      return `- ${name}${desc ? `: ${desc}` : ""}${schema ? `\n  input schema: ${schema}` : ""}`;
+    })
+    .join("\n");
+}
+
 function readTool(a: TriageToolArgs, state: TriageState, src: TriageToolArgs["sources"][number]): PassTool {
   const since = a.since[src.server];
   const sinceText = since == null ? "the last 24 hours" : new Date(since).toISOString();
   const allowed = src.readTools.filter((t) => src.tools.some((x) => x.name === t));
+  const head = `Read "${src.server}" (read-only). Look for items since ${sinceText}. Pass the tool's name as \`tool\` and its arguments, matching its input schema, as \`args\`. Tools:\n`;
   return tool(
     toolNameFor(src.server),
-    `Read "${src.server}" (read-only). Tools: ${allowed.join(", ")}. Look for items since ${sinceText}.`,
+    cap(head + toolLines(src.tools, allowed), READ_DESC_MAX),
     { tool: z.enum(allowed as [string, ...string[]]), args: z.record(z.string(), z.unknown()) },
     async (x: { tool: string; args: Record<string, unknown> }) => {
       if (state.readCalls >= TRIAGE_MAX_READS) return err(`Read limit reached (${TRIAGE_MAX_READS}). Route what you have.`);
@@ -84,6 +109,8 @@ function readTool(a: TriageToolArgs, state: TriageState, src: TriageToolArgs["so
         state.failed.add(src.server);
         return err(`${src.server} read failed: ${r.text}`);
       }
+      // The source answered; this call failed (most often its arguments). The source is not failed.
+      if (r.kind === "tool-error") return err(`${x.tool} failed: ${r.text}. Check the tool's arguments against its input schema.`);
       // Re-read after the await: parallel reads in one turn all passed the check above.
       const now = state.bytes[src.server] ?? 0;
       const room = TRIAGE_MAX_BYTES_PER_SOURCE - now;

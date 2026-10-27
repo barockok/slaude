@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { JobClaims } from "../../src/gateway/api/auth";
-import { BridgeRefused, NOT_MOUNTED, connectText, reauthText, type CallToolResult, type McpBridge } from "../../src/gateway/core/mcp-bridge";
+import { BridgeRefused, NOT_MOUNTED, bridgeFailureResult, connectText, protocolErrorText, reauthText, unavailableText, type CallToolResult, type McpBridge } from "../../src/gateway/core/mcp-bridge";
 import type { ExternalMcp } from "../../src/gateway/core/external-mcp";
 import { backgroundClaims, createSourceReader, unservedWatches } from "../../src/proactive/source-reader";
 
@@ -99,12 +99,26 @@ describe("source reader", () => {
     }
   });
 
-  test("other errors map to error", async () => {
-    const { bridge } = fakeBridge({ content: [{ type: "text", text: "mail is unavailable right now; try again later" }], isError: true });
+  test("the bridge's own failure maps to error", async () => {
+    const { bridge } = fakeBridge(bridgeFailureResult(unavailableText("mail")));
     const reader = createSourceReader(bridge, () => {});
     await reader.tools("default", SRC);
     const out = await reader.read("default", "mail", "get_thread", {});
     expect(out).toEqual({ kind: "error", text: "mail is unavailable right now; try again later" });
+  });
+
+  test("an upstream tool's own error result is a failed call, not a failed source", async () => {
+    const { bridge } = fakeBridge({ content: [{ type: "text", text: "missing required argument: id" }], isError: true });
+    const reader = createSourceReader(bridge, () => {});
+    await reader.tools("default", SRC);
+    expect(await reader.read("default", "mail", "get_thread", {})).toEqual({ kind: "tool-error", text: "missing required argument: id" });
+  });
+
+  test("the upstream rejecting the arguments (JSON-RPC invalid params) is a failed call", async () => {
+    const { bridge } = fakeBridge(bridgeFailureResult(protocolErrorText("mail", -32602)));
+    const reader = createSourceReader(bridge, () => {});
+    await reader.tools("default", SRC);
+    expect((await reader.read("default", "mail", "get_thread", {})).kind).toBe("tool-error");
   });
 
   test("secrets in results are redacted", async () => {

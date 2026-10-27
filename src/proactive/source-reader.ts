@@ -12,11 +12,19 @@
  */
 import type { JobClaims } from "../gateway/api/auth";
 import { oauthHttpServers, type ExternalMcp } from "../gateway/core/external-mcp";
-import { connectText, reauthText, type CallToolResult, type McpBridge } from "../gateway/core/mcp-bridge";
+import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import { connectText, isBridgeFailure, protocolErrorText, reauthText, type CallToolResult, type McpBridge } from "../gateway/core/mcp-bridge";
 import { redactSecrets } from "../gateway/core/status-text";
 import type { WatchedSource } from "./sources";
 
-export type ReadOutcome = { kind: "ok"; text: string } | { kind: "needs-auth" } | { kind: "error"; text: string };
+/** `error`: the source could not be read (a bridge, transport or policy
+ *  failure). `tool-error`: the source answered, but the call failed (bad
+ *  arguments, an upstream tool's own error result): a failed call, not a failed source. */
+export type ReadOutcome =
+  | { kind: "ok"; text: string }
+  | { kind: "needs-auth" }
+  | { kind: "error"; text: string }
+  | { kind: "tool-error"; text: string };
 
 export type SourceTool = { name: string; description?: string; inputSchema?: unknown };
 
@@ -129,7 +137,12 @@ export function createSourceReader(
       }
       const text = resultText(r);
       if (text === reauthText(server) || text === connectText(server)) return { kind: "needs-auth" };
-      if (r.isError) return { kind: "error", text: redactSecrets(text) };
+      if (r.isError) {
+        // The bridge's own failure is the source's; anything else (an upstream
+        // tool's error result, or the upstream rejecting the arguments) is this call's.
+        const ours = isBridgeFailure(r) && text !== protocolErrorText(server, ErrorCode.InvalidParams);
+        return { kind: ours ? "error" : "tool-error", text: redactSecrets(text) };
+      }
       return { kind: "ok", text: redactSecrets(text) };
     },
   };

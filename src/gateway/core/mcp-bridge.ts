@@ -474,7 +474,18 @@ export interface McpBridge {
   __poolKeys(): string[];
 }
 
-const errResult = (text: string): CallToolResult => ({ content: [{ type: "text", text }], isError: true });
+/** The bridge's own failure results (a transport, policy or budget failure,
+ *  never an upstream tool's error), told apart in process by identity. */
+const bridgeFailures = new WeakSet<CallToolResult>();
+const errResult = (text: string): CallToolResult => {
+  const r: CallToolResult = { content: [{ type: "text", text }], isError: true };
+  bridgeFailures.add(r);
+  return r;
+};
+/** Whether `r` is a failure the bridge produced itself, not an upstream tool's own error result. */
+export const isBridgeFailure = (r: CallToolResult): boolean => bridgeFailures.has(r);
+/** TEST SEAM: a result the bridge reports as its own failure. */
+export const bridgeFailureResult = errResult;
 
 export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
   const credDeps: CredentialDeps = {

@@ -40,7 +40,7 @@ import { checkProactive, textHash, UNCHANGED_WINDOW_MS, type Audience, type Rest
 import type { Level } from "./levels";
 import { JOURNAL_MAX_CHARS, JOURNAL_SLUG, loadRules, resolveLevel, type ProactiveRule } from "./rules";
 import { watchableSources } from "./sources";
-import type { SourceReader, SourceTools } from "./source-reader";
+import type { SourceReader, SourceTool, SourceTools } from "./source-reader";
 import { triageTools, type RoutedItem, type TriageState } from "./triage-tools";
 import { defaultDispatchDeps, dispatchProactive, type ProactiveDispatchDeps, type ProactiveTransport } from "./dispatch";
 
@@ -305,7 +305,7 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   // Only watchableSources output reaches the reader: it is what keeps
   // privateServices and non-http servers out (the reader does not).
   const watched = deps.sources ? watchableSources(config().watch, (deps.mcp ?? bridgeExternalMcp)(r.personaId), warnOnce) : [];
-  const sources: Array<(typeof watched)[number] & { tools: Array<{ name: string; description?: string }> }> = [];
+  const sources: Array<(typeof watched)[number] & { tools: SourceTool[] }> = [];
   // Refused at listing because the agent's credential needs (re)connecting:
   // not read this round, its watermark kept, and the manager told.
   const listNeedsAuth = new Set<string>();
