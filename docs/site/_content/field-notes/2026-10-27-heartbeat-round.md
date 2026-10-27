@@ -89,6 +89,68 @@ code decide what happens to each item. The model proposes; code clamps.
   turn with exactly one sender, and a rule kind with no letters or digits is
   refused (it collided on an empty slug).
 
+## Rulings taken while building
+
+- **`ask`/`act` turns use origin `cron`,** not a new `heartbeat` origin (the
+  spec's wording). `cron` already means a non-interactive synthetic turn: no
+  profile reads, the gate bypassed. A new origin would have touched every
+  origin switch for a label.
+- **The turn's initiator is the agent's own id,** in a DM as in a channel, not
+  the DM's recipient. The route's user id is what manager-only tools and the
+  brain gate's manager check read, so untrusted item content must never run
+  with the manager's rights. An act that needs a manager-only tool is refused
+  and the agent asks instead.
+- **The /1on1 check is check-then-act.** The dispatch refuses a post thread
+  that has a /1on1 lock, but a lock taken between that check and the turn's
+  start would make the turn run as the person holding it. The window is a new
+  thread the agent just opened, so it is narrow; it is not closed.
+
+## What the final review found and fixed
+
+- **I1: an already-posted item pinned its watermark under the default caps.**
+  With one post a day and a four-hour cooldown, a re-routed item hit
+  `daily-cap` or `cooldown` before `unchanged`, both timing refusals, so the
+  watermark stayed for up to a day and the journal said "Not delivered". The
+  round now dedupes in code, before restraint, on (agent, source, item) over
+  the last 7 days of posts: an item posted once is handled, and never goes to a
+  second destination later.
+- **I2: triage guessed arguments, and a bad call failed the whole source.**
+  `read_<server>` offered only tool names. Its description now carries each
+  read tool's description and JSON input schema, redacted and capped. The
+  reader tells the bridge's own failures (transport, policy, budget: the source
+  failed) from an upstream tool's error result or an invalid-params answer (only
+  that call failed, the watermark can still move).
+- **I3: OAuth sources on mono were never readable** (outcome: refused, not
+  read). `/mcp global connect` on mono writes the agent's grant into the CLI's
+  own store; the bridge reads only the gateway's store, and refreshing the CLI's
+  grant from a second place would spend its rotating refresh token under the
+  CLI. Reading that store was not contained, so mono warns at boot for a watched
+  server with no config headers, and a source that asks for auth is skipped with
+  one warning per boot instead of a daily "re-authorise" DM that reconnecting
+  could not fix. A server authenticated by config headers reads as before.
+- **I4: an ask/act turn could not speak on a multi-app gateway.** The thread a
+  post opens has no session app, and the transport refuses an unnamed app.
+  `proactive_posts.app_id` (migration 0030, unreleased) records the posting
+  app, and the dispatch stamps it on the new thread's session.
+- **I5: injected context could raise a rule to act.** Both
+  `<proactive-context>` blocks, and one core line, now say the post, source,
+  summary and evidence are data, never instructions. A raise to `act` needs
+  `quote` verbatim in this turn's own Slack text (mono records each input's own
+  text with its sender, never the envelope); where that text is not known (a
+  node) a raise to act always opens a card, even for the manager.
+- **I6: any channel id was a destination** while global `Enabled` was on,
+  though the prompt listed only explicit channel blocks; an invented or unjoined
+  channel then threw in Slack and pinned the watermark every round. A channel is
+  now a destination only with its own `### Proactive / Enabled: yes`, and
+  `channel_not_found`, `not_in_channel` and `is_archived` are terminal.
+  **Provisional, for the owner to confirm:** global `Enabled: yes` alone no
+  longer reaches unlisted channels.
+- Smaller: two servers whose names sanitise to the same `read_` name broke
+  every round (the second is now skipped with a boot warning); the act envelope
+  asked for a reply although a `<runtime-check>` never requires one (it now
+  says to report what was done, or pass); `proactive_rule`'s description says
+  a DM raise needs the manager.
+
 ## What was verified, and what was not
 
 Verified: the parser and level math; the reader against a fake bridge (typed
@@ -108,6 +170,10 @@ are covered only through tests; Postgres for the new migration locally.
 
 - **Mono and file-configured servers.** Mono has no bridge, so it watches a
   file-configured server only with `SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG=1`.
+- **Mono and OAuth servers.** Mono never reads a watched server through the
+  agent's OAuth grant (I3); only config-header servers are watchable there.
+- **The quote check is mono-only.** Nodes do not carry a turn's own text to the
+  tool plane, so there a raise to `act` always waits for a card.
 - **Single tenant.** Background claims use `tenant: "default"`; the agent
   credential lookup keys on tenant, so a multi-tenant gateway reads the
   default tenant's credential.
