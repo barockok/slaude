@@ -4,7 +4,7 @@ import * as Runs from "../../src/db/background-runs";
 import { TOOLS_SURVIVING_EMPTY_SET } from "../../src/agent/child-env";
 import { metrics } from "../../src/metrics";
 import { passPrompt, PROVISIONAL_OUTPUT_TOKENS, runPass, type PassSpec, type RunnerDeps } from "../../src/background/runner";
-import { passToolId } from "../../src/background/pass-tools";
+import { passToolId, READ_ONLY_PASS_TOOLS } from "../../src/background/pass-tools";
 import type { PriceTable } from "../../src/background/prices";
 import { fakeBrain } from "./fake-brain";
 import { personaDefaultModel } from "../../src/persona/registry";
@@ -457,6 +457,12 @@ describe("runPass", () => {
     await runPass(spec({ pass: "skill-review", extraTools: [extra as never] }), deps(query, 5));
     expect(state.calls[0]!.options.allowedTools).toContain("mcp__slaude_pass__list_skills");
     expect(state.calls[0]!.options.maxTurns).toBe(12);
+  });
+
+  test("baseTools limits the mounted and allowed pass tools", async () => {
+    const { query, state } = fakeQuery([result()]);
+    await runPass(spec({ baseTools: READ_ONLY_PASS_TOOLS }), deps(query, 5));
+    expect(state.calls[0]!.options.allowedTools).toEqual(["read_pages", "list_pages", "search"].map(passToolId));
   });
 
   test("an extra tool clashing with a pass tool throws before any ledger row", async () => {

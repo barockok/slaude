@@ -48,7 +48,7 @@ import { personaDefaultModel } from "../persona/registry";
 import { canStart, localDay, overAfterStart, PASS_MAX_TURNS, unpricedBlock, type BudgetConfig, type PassName } from "./budget";
 import { budgetConfigFor } from "./config";
 import { indexWritten } from "../proactive/commitment-index";
-import { createPassMcpServer, PASS_MCP_NAME, passProfileSource, passReadSources, type PassScope, type PassTool, type TranscriptTurn } from "./pass-tools";
+import { createPassMcpServer, type PassToolName, PASS_MCP_NAME, passProfileSource, passReadSources, type PassScope, type PassTool, type TranscriptTurn } from "./pass-tools";
 import {
   addTokens as add,
   costUsd,
@@ -74,6 +74,8 @@ export interface PassSpec {
   prompt: string;
   transcripts?: TranscriptTurn[];
   extraTools?: PassTool[];
+  /** Which base pass tools to mount; absent: all five. */
+  baseTools?: readonly PassToolName[];
   /** The threads (`<channel>:<threadTs>`) this pass reviews: a commitment it
    *  writes is scheduled only for one of them. Absent: none is scheduled. */
   threads?: readonly string[];
@@ -246,6 +248,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
         }),
     },
     spec.extraTools,
+    spec.baseTools,
   );
   const tag = `[background] agent=${spec.agentId} pass=${spec.pass}`;
   if (spec.scope.kind === "user" && passProfileSource(spec.scope) === null) {
