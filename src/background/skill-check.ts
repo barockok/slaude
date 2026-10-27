@@ -47,10 +47,14 @@ export const SKILL_CHECK = "skill-check" as const;
 /**
  * The passes whose run is one session turn, opened before the turn and
  * finished with that turn's own usage: the post-turn skill check, and a
- * promise check (phase E, src/proactive/promises.ts). startSkillCheck and
- * finishSkillCheck take the pass (default skill-check).
+ * promise check (phase E, src/proactive/promises.ts), and a heartbeat ask/act
+ * turn (src/proactive/dispatch.ts). startSkillCheck and finishSkillCheck take
+ * the pass (default skill-check).
  */
-export type TurnPass = typeof SKILL_CHECK | "commitment";
+export type TurnPass = typeof SKILL_CHECK | "commitment" | "heartbeat-turn";
+
+/** The turn passes a dispatched background turn (`bgRun`) can carry. */
+export const CARRIED_TURN_PASSES: readonly TurnPass[] = ["commitment", "heartbeat-turn"];
 
 /** What the manager calls around the post-turn skill check. */
 export interface SkillCheckBudget {

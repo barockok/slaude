@@ -88,6 +88,16 @@ describe("canStart", () => {
     expect((await canStart(CFG, "a1", "skill-check", NOW)).ok).toBe(true);
   });
 
+  test("a heartbeat ask/act turn costs like a promise check and waits behind the nightly", async () => {
+    expect(PASS_FLOOR["heartbeat-turn"]).toBe(PASS_FLOOR.commitment);
+    // Spent 0.90: 0.10 left covers 0.03, but not with the nightly's 0.10 reserved, until it ran.
+    await ledger("quiet-moment", 0.9, "ok");
+    expect(await canStart(CFG, "a1", "heartbeat-turn", NOW)).toEqual({ ok: false, reason: "budget" });
+    expect((await canStart(CFG, "a1", "commitment", NOW)).ok).toBe(true);
+    await ledger("nightly-review", 0, "ok");
+    expect((await canStart(CFG, "a1", "heartbeat-turn", NOW)).ok).toBe(true);
+  });
+
   test("the nightly itself and lessons-upkeep are not held behind the reserve", async () => {
     await ledger("quiet-moment", 0.85, "ok");
     expect((await canStart(CFG, "a1", "lessons-upkeep", NOW)).ok).toBe(true);

@@ -8,7 +8,8 @@ export type PassName =
   | "quiet-moment"
   | "digest"
   | "commitment"
-  | "heartbeat";
+  | "heartbeat"
+  | "heartbeat-turn";
 
 /** Estimate used when a pass has no ok run yet (USD). */
 export const PASS_FLOOR: Record<PassName, number> = {
@@ -20,6 +21,7 @@ export const PASS_FLOOR: Record<PassName, number> = {
   digest: 0,
   commitment: 0.03,
   heartbeat: 0.03,
+  "heartbeat-turn": 0.03,
 };
 
 /** Turn cap per pass. skill-check reuses an existing turn and digest uses no model. */
@@ -49,7 +51,7 @@ export function localDay(at: Date, timeZone: string): string {
 }
 
 /** Passes that must leave room for the day's nightly review while it has not run. */
-const BEHIND_NIGHTLY: ReadonlySet<PassName> = new Set(["quiet-moment", "skill-review", "skill-check", "heartbeat"]);
+const BEHIND_NIGHTLY: ReadonlySet<PassName> = new Set(["quiet-moment", "skill-review", "skill-check", "heartbeat", "heartbeat-turn"]);
 
 async function estimateFor(agentId: string, pass: PassName): Promise<number> {
   // Never below the floor: a near-zero last run must not unthrottle a pass.
@@ -59,7 +61,7 @@ async function estimateFor(agentId: string, pass: PassName): Promise<number> {
 /**
  * Start rule: a pass starts only if remaining >= its estimate (last ok cost,
  * else floor). Until a nightly-review row with outcome ok, stopped-budget or
- * error exists for the day, quiet-moment / skill-review / skill-check must also
+ * error exists for the day, the passes behind it (BEHIND_NIGHTLY) must also
  * leave the nightly's estimate (a skipped-budget nightly keeps the reserve).
  */
 export async function canStart(

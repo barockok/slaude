@@ -58,6 +58,7 @@ import type { ThreadActivity } from "../db/thread-activity";
 import { defaultRunnerDeps } from "./runner";
 import { backgroundAgentId, finishSkillCheck, startSkillCheck } from "./skill-check";
 import { runDueCommitments, type PromiseTransport } from "../proactive/promises";
+import type { ProactiveTransport } from "../proactive/dispatch";
 import { readPingPrefs } from "../proactive/prefs";
 import { runHeartbeat } from "../proactive/heartbeat";
 import { anyProactiveEnabled } from "../soul/proactive";
@@ -442,6 +443,8 @@ export interface SchedulerSlack {
   post: CardPost;
   /** How promise checks reach their threads (phase E). Absent: promises are not checked. */
   promises?: PromiseTransport;
+  /** How the heartbeat round's ask/act turns reach their post's thread. Absent: such items are only posted. */
+  proactive?: ProactiveTransport;
   /** The agent's own MCP sources, read as the agent (heartbeat round). Absent: no source is read. */
   sources?: SourceReader;
   /** The manager and the backup manager (who may decide manager proposals). */

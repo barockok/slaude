@@ -18,8 +18,9 @@ import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
 import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
 import type { PromiseTransport } from "../../proactive/promises";
+import type { ProactiveTransport } from "../../proactive/dispatch";
 import { proactiveFor } from "../../soul/proactive";
-import { ledgerTurnRun } from "../../background/skill-check";
+import { ledgerTurnRun, type TurnPass } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
@@ -191,6 +192,8 @@ export interface GatewayHandle {
   __resolveMcp(sessionId: string): Promise<Record<string, McpServerConfig> | undefined>;
   /** Test seam: how this gateway delivers promise checks (phase E). */
   __promises?: PromiseTransport;
+  /** Test seam: how this gateway dispatches heartbeat ask/act turns. */
+  __proactive?: ProactiveTransport;
   /** TEST SEAM: the mono process's voice call registry. */
   __voiceCalls?: VoiceCalls;
   /** TEST/SIM SEAM ONLY. Drive the natural-language connect path (what the
@@ -849,6 +852,60 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       routes.set(sessionId, { ctx, surface: wrapSurface(surfaceForCtx(ctx), sessionId), spoke: false, silent: true });
     },
   });
+  /**
+   * One background turn into a thread through the cron path (promise checks,
+   * heartbeat ask/act): the thread's session, a route bound like a cron run's
+   * (origin cron, silent), then the queue in the gateway role or this
+   * process in mono, carrying the open ledger run its own usage closes. Whom
+   * the turn runs as is the thread's own /1on1 lock, never a carried identity;
+   * callers check that the lock is what they expect. `userId` is the ctx's
+   * and the job's initiator; `engage` marks the thread engaged so a later
+   * human reply continues it.
+   */
+  const dispatchThreadTurn = async (
+    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean },
+    envelope: string,
+    run: { runId: string; agentId: string },
+    pass: TurnPass,
+  ): Promise<void> => {
+    const { teamId, channelId, threadTs, userId } = target;
+    const persona = target.personaId;
+    const session = await agent.ensureSession({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: persona ?? "default" });
+    if (target.engage) await Sessions.setEngaged(session.id, true);
+    const app: AppRef = { apiAppId: session.slack_app_id ?? undefined, teamId };
+    const ctx: SlackContext = {
+      client: outClientForPersona(persona, app),
+      apiAppId: app.apiAppId,
+      resolveBotToken: () => t.botTokenFor?.(app),
+      channel: channelId,
+      threadTs,
+      inboundTs: String(Date.now()),
+      userId,
+      teamId,
+      postTarget: "thread",
+      personaId: persona,
+      origin: "cron",
+    };
+    ctx.requestApproval = (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req });
+    ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+    noteTurnSender(session.id, ctx);
+    routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, silent: true });
+    if (queueDispatch) {
+      await queueDispatch.dispatch(session, envelope, {
+        teamId,
+        channelId,
+        threadTs,
+        eventTs: String(Date.now() / 1000),
+        userId,
+        personaId: persona,
+        ...(app.apiAppId ? { apiAppId: app.apiAppId } : {}),
+        origin: "cron",
+        backgroundRunId: run.runId,
+      });
+    } else {
+      await agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }) });
+    }
+  };
   // Promise checks (phase E): a due commitment's check turn goes into the
   // thread that made the promise, through the cron path (a route bound like a
   // cron run's, origin cron; the queue in the gateway role, this process in
@@ -882,40 +939,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (!teamId) throw new Error("no Slack team is known for this thread");
       await promiseScopeHolds(row);
       const persona = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
-      const session = await agent.ensureSession({ team_id: teamId, channel_id: row.channelId, thread_ts: row.threadTs, persona_id: row.personaId || "default" });
-      const app: AppRef = { apiAppId: session.slack_app_id ?? undefined, teamId };
-      const ctx: SlackContext = {
-        client: outClientForPersona(persona, app),
-        apiAppId: app.apiAppId,
-        resolveBotToken: () => t.botTokenFor?.(app),
-        channel: row.channelId,
-        threadTs: row.threadTs,
-        inboundTs: String(Date.now()),
-        userId: row.beneficiary,
-        teamId,
-        postTarget: "thread",
-        personaId: persona,
-        origin: "cron",
-      };
-      ctx.requestApproval = (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req });
-      ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
-      noteTurnSender(session.id, ctx);
-      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, silent: true });
-      if (queueDispatch) {
-        await queueDispatch.dispatch(session, envelope, {
-          teamId,
-          channelId: row.channelId,
-          threadTs: row.threadTs,
-          eventTs: String(Date.now() / 1000),
-          userId: row.beneficiary,
-          personaId: persona,
-          ...(app.apiAppId ? { apiAppId: app.apiAppId } : {}),
-          origin: "cron",
-          backgroundRunId: run.runId,
-        });
-      } else {
-        await agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass: "commitment" }) });
-      }
+      await dispatchThreadTurn(
+        { teamId, channelId: row.channelId, threadTs: row.threadTs, personaId: persona, userId: row.beneficiary },
+        envelope,
+        run,
+        "commitment",
+      );
     },
     post: async (row, text) => {
       // Even the fixed line names the promise's due: only where a check may speak.
@@ -925,6 +954,37 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const session = await promiseSession(row);
       const app: AppRef = { apiAppId: session?.slack_app_id ?? undefined, teamId: teamId ?? undefined };
       await outClientForPersona(persona, app).chat.postMessage({ channel: row.channelId, thread_ts: row.threadTs, text });
+    },
+  };
+
+  // Heartbeat ask/act (src/proactive/dispatch.ts): the item's turn goes into
+  // the thread of the post the round just made, as the agent. The thread is
+  // new, so no /1on1 lock is expected; one taken since would make the turn
+  // run as that person, so it is refused. The initiator is the agent's own id
+  // in a DM as in a channel: no person sent this turn, and the route's
+  // userId is what manager-only tools and the brain gate's isManager read,
+  // so a DM recipient (often the manager) must not lend the turn their
+  // rights. A human reply rewrites the route with its real sender. Engaged,
+  // so that reply continues the thread.
+  backgroundSlack.proactive = {
+    dispatch: async (post, envelope, run, personaId) => {
+      if (!post.messageTs) throw new Error("the post has no message ts");
+      if (!post.teamId) throw new Error("no Slack team is known for this post");
+      if (await OneOnOne.find(post.channelId, post.messageTs)) throw new Error("the post's thread has a /1on1 lock; a heartbeat turn runs only as the agent");
+      const persona = personaId && personaId !== "default" ? personaId : undefined;
+      await dispatchThreadTurn(
+        {
+          teamId: post.teamId,
+          channelId: post.channelId,
+          threadTs: post.messageTs,
+          personaId: persona,
+          userId: post.agentId,
+          engage: true,
+        },
+        envelope,
+        run,
+        "heartbeat-turn",
+      );
     },
   };
 
@@ -4150,6 +4210,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
     __promises: backgroundSlack.promises!,
+    __proactive: backgroundSlack.proactive!,
     __voiceCalls: voiceCalls,
     __brainGate: async (sessionId: string) => {
       const route = routes.get(sessionId);
