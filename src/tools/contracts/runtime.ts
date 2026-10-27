@@ -100,7 +100,7 @@ export const runtimeContract = {
     proactive_rule: {
       name: "proactive_rule",
       description:
-        "Record how you should handle a kind of item from now on. Use when someone says how you should treat a kind of thing (\"ignore these\", \"just tell me\", \"ask me first\", \"just reply to these\"). Levels: ignore < inform < ask < act. `here` means this channel or DM; `global` applies everywhere, and widening to global needs the manager. Lowering a rule here applies at once; raising one is capped by the SOUL and may need an approver, so the result says whether it was saved. Refused in a /1on1.",
+        "Record how you should handle a kind of item from now on. Use when someone says how you should treat a kind of thing (\"ignore these\", \"just tell me\", \"ask me first\", \"just reply to these\"). Levels: ignore < inform < ask < act. `here` means this channel or DM; `global` applies everywhere, and widening to global needs the manager. Lowering a rule here applies at once; raising one is capped by the SOUL and needs an approver (in a DM, the manager), and raising to `act` needs `quote` to be the person's words from this message, so the result says whether it was saved. Refused in a /1on1.",
       schema: {
         kind: z.string().min(3).max(200).describe("The kind of item, in a few words (e.g. 'invoice emails', 'build failures')."),
         scope: z.enum(["here", "global"]).describe("'here' = this channel or DM; 'global' = everywhere (needs the manager)."),
