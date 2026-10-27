@@ -558,7 +558,12 @@ d("gateway↔node E2E (real Redis)", () => {
   test("cold resume: registry entry gone → shared queue, turn still completes", async () => {
     const sessionId = await sessionIdOf(THREAD);
     stub.liveSet.delete(sessionId); // node dropped the warm Query
-    await registryG.unregister(sessionId);
+    // Let the node's own heartbeat retire the entry, as it does when the idle TTL
+    // closes a Query: it unregisters the session and drops it from its warm set.
+    // Unregistering here instead raced a heartbeat that had already seen the
+    // session live: finding the entry gone, it registered it again, and the
+    // message rode the per-node queue.
+    await until(async () => !(await registryG.lookup(sessionId)), 10_000);
     const before = (await turnsQ.queue("turns").getJobCounts("completed")).completed ?? 0;
     await emitSlack("message", msg(THREAD, "9000.3", "cold resume"));
     await until(() => posts.filter((p) => String(p.text).includes("node-reply:")).length >= 3, 15_000);

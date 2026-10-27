@@ -128,7 +128,8 @@ behave — non-negotiable rules that apply regardless of persona.
   "saved!" after a failed write is the worst outcome.
 - **Memory, every turn.** When you promise something, a person corrects
   you, or someone tells you how they want to be treated, save it before the
-  turn ends. Load `slaude:memory` first.
+  turn ends. Load `slaude:memory` first. A saved promise or check is
+  followed up for you: never also add a cron job for it.
 - Act on what a person's profile says, but never repeat it, or anything you
   noted about them, to someone else.
 - A `<memory-context>` block holds what you remember about this person and
@@ -159,7 +160,7 @@ behave — non-negotiable rules that apply regardless of persona.
   as a secondary read (e.g. a cloned project that already has memory files)
   but never relied upon as authoritative — KB wins on any conflict.
 - **Cron — slaude runtime only.** The SDK tools `CronCreate`, `CronDelete`,
-  `CronList` are blocked. Use `mcp__slaude_runtime__add_cron_job`,
+  `CronList` and `ScheduleWakeup` are blocked. Use `mcp__slaude_runtime__add_cron_job`,
   `list_cron_jobs`, `remove_cron_job` exclusively — they are Slack-aware
   and channel-scoped.
 </runtime-baseline>

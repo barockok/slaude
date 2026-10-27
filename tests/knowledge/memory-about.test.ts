@@ -38,11 +38,11 @@ const tag = (b: Brain, source: string, slug: string) =>
 /** Alice's memory across every source: profile, agent note, /1on1 note, team fact; plus Bob's. */
 async function seed(b: Brain) {
   await put(b, profileSourceId(TEAM, "U0ALICE"), "profile", page("Call me Al. Terse answers.", { type: "profile" }, "2026-10-20"));
-  await put(b, agentSourceId(AGENT), "people/U0ALICE", page("Prefers a diff over a description.", { type: "person-note" }, "2026-10-21"));
-  await put(b, userSourceId("U0ALICE"), "people/U0ALICE", page("Worried about the release date.", { type: "person-note" }, "2026-10-22"));
-  await put(b, SHARED_SOURCE, "shared/people/U0ALICE", page("Owns the billing service.", { type: "team-fact", confidence: "told" }, "2026-10-23"));
+  await put(b, agentSourceId(AGENT), "people/u0alice", page("Prefers a diff over a description.", { type: "person-note" }, "2026-10-21"));
+  await put(b, userSourceId("U0ALICE"), "people/u0alice", page("Worried about the release date.", { type: "person-note" }, "2026-10-22"));
+  await put(b, SHARED_SOURCE, "shared/people/u0alice", page("Owns the billing service.", { type: "team-fact", confidence: "told" }, "2026-10-23"));
   await put(b, profileSourceId(TEAM, "U0BOB"), "profile", page("Bob wants no pings after 18:00.", { type: "profile" }, "2026-10-19"));
-  await put(b, agentSourceId(AGENT), "people/U0BOB", page("Bob likes tables.", { type: "person-note" }, "2026-10-19"));
+  await put(b, agentSourceId(AGENT), "people/u0bob", page("Bob likes tables.", { type: "person-note" }, "2026-10-19"));
 }
 
 type Read = { name: string; slug: unknown; scope: BrainScope };
@@ -80,8 +80,8 @@ describe("memory_about for the person asking", () => {
     expect(r.isError).toBeUndefined();
     const out = text(r);
     expect(out).toContain("[told] profile, from their profile, as of 2026-10-20 (slug profile)\nCall me Al. Terse answers.");
-    expect(out).toContain("[inferred] person-note, from the agent's notes, as of 2026-10-21 (slug people/U0ALICE)\nPrefers a diff over a description.");
-    expect(out).toContain("[told] team-fact, from the team knowledge base, as of 2026-10-23 (slug shared/people/U0ALICE)\nOwns the billing service.");
+    expect(out).toContain("[inferred] person-note, from the agent's notes, as of 2026-10-21 (slug people/u0alice)\nPrefers a diff over a description.");
+    expect(out).toContain("[told] team-fact, from the team knowledge base, as of 2026-10-23 (slug shared/people/u0alice)\nOwns the billing service.");
     // Nobody else's memory.
     expect(out).not.toContain("Bob");
   });
@@ -100,7 +100,7 @@ describe("memory_about for the person asking", () => {
     await seed(b);
     const s = setup(b, { lockedUser: "U0ALICE" });
     const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
-    expect(out).toContain("[inferred] person-note, from their /1on1 notes, as of 2026-10-22 (slug people/U0ALICE)\nWorried about the release date.");
+    expect(out).toContain("[inferred] person-note, from their /1on1 notes, as of 2026-10-22 (slug people/u0alice)\nWorried about the release date.");
     expect(out).toContain("Call me Al.");
     expect(out).toContain("Prefers a diff over a description.");
   });
@@ -108,7 +108,7 @@ describe("memory_about for the person asking", () => {
   test("in someone else's /1on1 only the asker's own profile is read, never the lock owner's slice", async () => {
     const b = fakeBrain();
     await seed(b);
-    await put(b, userSourceId("U0BOB"), "people/U0ALICE", page("Bob's /1on1 note about Alice.", { type: "person-note" }, "2026-10-22"));
+    await put(b, userSourceId("U0BOB"), "people/u0alice", page("Bob's /1on1 note about Alice.", { type: "person-note" }, "2026-10-22"));
     const s = setup(b, { lockedUser: "U0BOB" });
     const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
     expect(out).toContain("Call me Al.");
@@ -133,10 +133,10 @@ describe("memory_about for the person asking", () => {
   test("superseded pages are left out, judged per source", async () => {
     const b = fakeBrain();
     await seed(b);
-    await tag(b, agentSourceId(AGENT), "people/U0ALICE");
+    await tag(b, agentSourceId(AGENT), "people/u0alice");
     // The same slug tagged in the user slice does not hide the shared copy.
-    await put(b, SHARED_SOURCE, "people/U0ALICE", page("Shared note on Alice.", { type: "person-note" }, "2026-10-24"));
-    await tag(b, userSourceId("U0ALICE"), "people/U0ALICE");
+    await put(b, SHARED_SOURCE, "people/u0alice", page("Shared note on Alice.", { type: "person-note" }, "2026-10-24"));
+    await tag(b, userSourceId("U0ALICE"), "people/u0alice");
     const s = setup(b, { lockedUser: "U0ALICE" });
     const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
     expect(out).not.toContain("Prefers a diff over a description.");
@@ -151,11 +151,11 @@ describe("memory_about for the person asking", () => {
     const s = setup(b);
     const w = await brainHandlers.kb_memoize({
       subject: "U0ALICE",
-      pages: [{ slug: "people/U0ALICE-2", content: "Prefers a call over a long thread.", summary: "s", type: "person-note", supersedes: "people/U0ALICE" }],
+      pages: [{ slug: "people/u0alice-2", content: "Prefers a call over a long thread.", summary: "s", type: "person-note", supersedes: "people/u0alice" }],
     }, s.deps);
     expect(w.isError).toBeUndefined();
     const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
-    expect(out).toContain("(slug people/U0ALICE-2)\nPrefers a call over a long thread.");
+    expect(out).toContain("(slug people/u0alice-2)\nPrefers a call over a long thread.");
     expect(out).not.toContain("Prefers a diff over a description.");
   });
 
@@ -179,7 +179,7 @@ describe("memory_about for the person asking", () => {
     const s = setup(b);
     await brainHandlers.kb_memoize({ subject: "U0BOB", pages: [{ slug: "people/bob-notes", content: "Bob reviews fast.", summary: "s", type: "person-note" }] }, s.deps);
     // A fixed slug carrying another person's subject is not shown either.
-    await put(b, SHARED_SOURCE, "people/U0ALICE", page("Mislabelled.", { type: "person-note", subject: "U0BOB" }, "2026-10-24"));
+    await put(b, SHARED_SOURCE, "people/u0alice", page("Mislabelled.", { type: "person-note", subject: "U0BOB" }, "2026-10-24"));
     const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
     expect(out).not.toContain("Bob reviews fast.");
     expect(out).not.toContain("Mislabelled.");
@@ -190,11 +190,11 @@ describe("memory_about for the person asking", () => {
     const b = fakeBrain();
     await seed(b);
     await put(b, PUBLIC_SOURCE, "notes/alice-ci", page("Asked about CI twice.", { type: "person-note", subject: "U0ALICE" }, "2026-10-24"));
-    await put(b, PUBLIC_SOURCE, "people/U0ALICE", page("Old public note.", { type: "person-note" }, "2026-10-23"));
+    await put(b, PUBLIC_SOURCE, "people/u0alice", page("Old public note.", { type: "person-note" }, "2026-10-23"));
     const s = setup(b, { channelTrust: "public" });
     const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
     expect(out).toContain("[inferred] person-note, from the public notes, as of 2026-10-24 (slug notes/alice-ci)\nAsked about CI twice.");
-    expect(out).toContain("(slug people/U0ALICE)\nOld public note.");
+    expect(out).toContain("(slug people/u0alice)\nOld public note.");
     expect(out).toContain("Call me Al.");
     expect(out).not.toContain("Prefers a diff"); // the agent slice is not in a public channel's scope
   });
@@ -263,8 +263,8 @@ describe("memory_about reads gbrain's page record", () => {
       if (src === own && params.slug === "profile") {
         return { slug: "profile", compiled_truth: "Call me Al.\n", frontmatter: { type: "profile", as_of: new Date("2026-10-20T00:00:00Z"), confidence: "told" }, tags: [] };
       }
-      if (src === agentSourceId(AGENT) && params.slug === "people/U0ALICE") {
-        return { slug: "people/U0ALICE", compiled_truth: "Old note.", frontmatter: { type: "person-note", as_of: "2026-10-01", confidence: "inferred" }, tags: [SUPERSEDED_TAG] };
+      if (src === agentSourceId(AGENT) && params.slug === "people/u0alice") {
+        return { slug: "people/u0alice", compiled_truth: "Old note.", frontmatter: { type: "person-note", as_of: "2026-10-01", confidence: "inferred" }, tags: [SUPERSEDED_TAG] };
       }
       throw Object.assign(new Error("page not found"), { code: "page_not_found" });
     };
@@ -277,12 +277,12 @@ describe("memory_about reads gbrain's page record", () => {
 describe("formatMemoryAbout", () => {
   test("one block per entry, profile first", () => {
     const entries: MemoryEntry[] = [
-      { where: "agent", slug: "people/U0ALICE", type: "person-note", confidence: "inferred", as_of: "2026-10-21", body: "Prefers diffs.\n" },
+      { where: "agent", slug: "people/u0alice", type: "person-note", confidence: "inferred", as_of: "2026-10-21", body: "Prefers diffs.\n" },
       { where: "profile", slug: "profile", type: "profile", confidence: "told", as_of: "2026-10-20", body: "Call me Al." },
     ];
     expect(formatMemoryAbout(entries)).toBe(
       "[told] profile, from their profile, as of 2026-10-20 (slug profile)\nCall me Al.\n\n" +
-        "[inferred] person-note, from the agent's notes, as of 2026-10-21 (slug people/U0ALICE)\nPrefers diffs.",
+        "[inferred] person-note, from the agent's notes, as of 2026-10-21 (slug people/u0alice)\nPrefers diffs.",
     );
   });
 
@@ -299,15 +299,15 @@ describe("kb_memoize per-page subject (one batch, notes about two people)", () =
     const r = await brainHandlers.kb_memoize({
       subject: "U0BOB",
       pages: [
-        { slug: "people/U0BOB", content: "Bob likes diffs.", summary: "s", type: "person-note" },
-        { slug: "people/U0ALICE", content: "Alice seems stretched thin.", summary: "s", type: "person-note", subject: "U0ALICE" },
+        { slug: "people/u0bob", content: "Bob likes diffs.", summary: "s", type: "person-note" },
+        { slug: "people/u0alice", content: "Alice seems stretched thin.", summary: "s", type: "person-note", subject: "U0ALICE" },
       ],
     }, w.deps);
     expect(r.isError).toBeUndefined();
     const own = agentSourceId(AGENT);
     const subjectOf = (slug: string) => parseFrontmatter(b.contentOf(own, slug)!).meta.subject;
-    expect(subjectOf("people/U0BOB")).toBe("U0BOB");
-    expect(subjectOf("people/U0ALICE")).toBe("U0ALICE");
+    expect(subjectOf("people/u0bob")).toBe("U0BOB");
+    expect(subjectOf("people/u0alice")).toBe("U0ALICE");
     const bob = setup(b, { userId: "U0BOB", turnSenders: [BOB] });
     const out = text(await brainHandlers.memory_about({ userId: "U0BOB" }, bob.deps));
     expect(out).toContain("Bob likes diffs.");
@@ -329,7 +329,7 @@ describe("kb_memoize per-page subject (one batch, notes about two people)", () =
     const { z } = await import("zod");
     const { kbContract } = await import("../../src/tools/contracts/kb");
     const parsed = z.object(kbContract.tools.kb_memoize.schema).parse({
-      pages: [{ slug: "people/U0ALICE", content: "x", summary: "s", type: "person-note", subject: "U0ALICE" }],
+      pages: [{ slug: "people/u0alice", content: "x", summary: "s", type: "person-note", subject: "U0ALICE" }],
     }) as { pages: Array<{ subject?: string }> };
     expect(parsed.pages[0]!.subject).toBe("U0ALICE");
     expect(kbContract.tools.kb_memoize.description).toContain("subject");

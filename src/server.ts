@@ -19,7 +19,7 @@ import { getDb, resolveDbConfig } from "./db/client";
 import { assertGatewayRequirements } from "./config/gateway-requirements";
 import { securitySwitchViolations } from "./config/security-switches";
 import { nodeKeyViolations } from "./gateway/auth/node-credential";
-import { brainEnabled, brainEngineConfig } from "./knowledge/brain";
+import { brainEnabled, brainEngineConfig, closeBrain } from "./knowledge/brain";
 import { brainMode } from "./knowledge/brain-config";
 import * as SoulOverrides from "./db/soul-overrides";
 import { bootProviderSecretResolver } from "./gateway/core/provider-secrets";
@@ -192,6 +192,9 @@ async function main() {
     await reaperHandle?.stop();
     await loopback?.stop();
     await slack.stop();
+    // The gateway's stop ends brain work but leaves the engine open; an embedded
+    // brain then keeps its lock and the next boot reports an unclean shutdown.
+    await closeBrain().catch((e) => console.error("[slaude] brain close failed:", e));
     process.exit(0);
   };
   process.on("SIGINT", shutdown);

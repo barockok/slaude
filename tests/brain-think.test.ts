@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sdkThinkClient, brainThink } from "../src/knowledge/brain-think";
+import { sdkThinkClient, brainThink, scopedThinkEngine } from "../src/knowledge/brain-think";
 import { closeBrain, ensureSources, brainCall } from "../src/knowledge/brain";
 
 const brainDir = mkdtempSync(join(tmpdir(), "slaude-brainthink-"));
@@ -85,6 +85,30 @@ describe("sdkThinkClient slash-command guard", () => {
   });
 });
 
+describe("scopedThinkEngine", () => {
+  test("forces the caller's sources on page searches and drops out-of-scope take hits", async () => {
+    const seen: Array<Record<string, unknown> | undefined> = [];
+    const engine = {
+      async searchKeyword(_q: string, opts?: Record<string, unknown>) { seen.push(opts); return []; },
+      async searchVector(_e: unknown, opts?: Record<string, unknown>) { seen.push(opts); return []; },
+      async searchTakes() { return [{ page_id: 1 }, { page_id: 2 }]; },
+      async searchTakesVector() { return []; },
+      async executeRaw(_sql: string, params?: unknown[]) {
+        const [ids, sources] = params as [number[], string[]];
+        const pageSource: Record<number, string> = { 1: "shared", 2: "user-u9" };
+        return ids.filter((id) => sources.includes(pageSource[id]!)).map((id) => ({ id }));
+      },
+      other() { return "untouched"; },
+    };
+    const scoped = scopedThinkEngine(engine, ["shared"]);
+    await scoped.searchKeyword("q", { limit: 5, sourceId: "user-u9" });
+    await scoped.searchVector(new Float32Array(1));
+    expect(seen).toEqual([{ limit: 5, sourceIds: ["shared"] }, { sourceIds: ["shared"] }]);
+    expect(await scoped.searchTakes()).toEqual([{ page_id: 1 }]);
+    expect(scoped.other()).toBe("untouched");
+  });
+});
+
 describe("brainThink (integration, stubbed LLM)", () => {
   test("runs gbrain's gather+synthesize pipeline scoped, via injected client", async () => {
     await ensureSources();
@@ -109,4 +133,90 @@ describe("brainThink (integration, stubbed LLM)", () => {
     expect(answer).toContain("Thursdays");
     expect(sawPrompt).toContain("cadence"); // gather actually retrieved the page into the prompt
   }, 60_000);
+
+  test("gather never reads outside the caller's sources (a /1on1 page stays out of a channel turn)", async () => {
+    // gbrain's runThink takes the scope but its page gather searched every
+    // source; a live run saw a /1on1 page reach a channel turn's synthesis prompt.
+    await ensureSources(["user-u9"]);
+    await brainCall("put_page", { slug: "plans/private-branching", content: "Private: the team moves to trunk-based development next quarter." }, {
+      clientId: "U9", sourceId: "user-u9", allowedSources: ["user-u9"],
+    });
+    await brainCall("put_page", { slug: "notes/branching", content: "Branching: we use short-lived feature branches and release branches." }, {
+      clientId: "agent", sourceId: "shared", allowedSources: ["shared"],
+    });
+    let sawPrompt = "";
+    const fakeClient = {
+      create: async (params: { messages: Array<{ content: unknown }> }) => {
+        sawPrompt += JSON.stringify(params.messages);
+        return {
+          id: "x", type: "message", role: "assistant", model: "stub",
+          content: [{ type: "text", text: "Feature branches. [Source: notes/branching]" }],
+          stop_reason: "end_turn", usage: { input_tokens: 0, output_tokens: 0 },
+        };
+      },
+    };
+    await brainThink("any planned changes to branching strategy or trunk-based development?", {
+      clientId: "agent", sourceId: "shared", allowedSources: ["shared"],
+    }, { client: fakeClient as never });
+    expect(sawPrompt).toContain("branching");
+    expect(sawPrompt).not.toContain("private-branching");
+    expect(sawPrompt).not.toMatch(/trunk-based development next quarter/);
+  }, 60_000);
+});
+
+describe("brainThink on a remote brain", () => {
+  test("gathers through the backend within the scope, synthesizes, and never opens a local engine", async () => {
+    const home = mkdtempSync(join(tmpdir(), "slaude-remote-think-"));
+    const prevHome = process.env.SLAUDE_BRAIN_HOME;
+    process.env.SLAUDE_BRAIN_MODE = "remote";
+    process.env.SLAUDE_BRAIN_HOME = home;
+    const searched: string[][] = [];
+    const call = async (name: string, _params: Record<string, unknown>, scope: { allowedSources: string[] }) => {
+      expect(name).toBe("search");
+      searched.push(scope.allowedSources);
+      return scope.allowedSources[0] === "shared"
+        ? [{ slug: "notes/branching", source_id: "shared", score: 0.9, chunk_text: "We use short-lived feature branches." }]
+        : [];
+    };
+    let prompt = "";
+    const client = {
+      create: async (params: { messages: Array<{ content: unknown }> }) => {
+        prompt = JSON.stringify(params.messages);
+        return { content: [{ type: "text", text: "Short-lived feature branches. [Source: notes/branching]" }] };
+      },
+    };
+    try {
+      const r = (await brainThink("how do we branch?", {
+        clientId: "agent", sourceId: "agent-a", allowedSources: ["agent-a", "shared"],
+      }, { client: client as never, call: call as never })) as Record<string, unknown>;
+      expect(r.answer).toContain("feature branches");
+      expect(r.citations).toEqual([{ page_slug: "notes/branching" }]);
+      expect(r.pagesGathered).toBe(1);
+      expect(prompt).toContain("short-lived feature branches");
+      // One scoped search per allowed source, nothing outside them.
+      expect(searched.flat().sort()).toEqual(["agent-a", "shared"]);
+      // No local brain was booted (a boot creates its home's contents).
+      expect(readdirSync(home)).toEqual([]);
+    } finally {
+      delete process.env.SLAUDE_BRAIN_MODE;
+      process.env.SLAUDE_BRAIN_HOME = prevHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("with no matching page it answers with a gap and makes no model call", async () => {
+    process.env.SLAUDE_BRAIN_MODE = "remote";
+    let called = false;
+    const client = { create: async () => { called = true; return { content: [] }; } };
+    try {
+      const r = (await brainThink("anything?", { clientId: "a", sourceId: "shared", allowedSources: ["shared"] }, {
+        client: client as never, call: (async () => []) as never,
+      })) as Record<string, unknown>;
+      expect(r.pagesGathered).toBe(0);
+      expect(r.synthesisOk).toBe(true);
+      expect(called).toBe(false);
+    } finally {
+      delete process.env.SLAUDE_BRAIN_MODE;
+    }
+  });
 });

@@ -13,7 +13,11 @@ export const GATE_QUESTIONS: Record<keyof GateDecision, DecisionQuestion> = {
   },
   agentCanHelp: {
     instructions:
-      "Decide whether an AI teammate with access to the team's knowledge base could usefully answer or act on the new message. `kbHitScore` is the top knowledge-base match score from 0 to 1, or null when unknown.",
+      // Live Jev run: framed as "an AI teammate with access to the team's knowledge
+      // base", a low kbHitScore read as "cannot help" (0.40 on a plain git question
+      // at score 0.05), so a young KB never chimed in. Rephrased, the same message
+      // scored 1.0 while thanks, chit-chat and asks to someone else stayed "no".
+      "Decide whether an AI teammate could usefully answer or act on the new message. The teammate is a capable general assistant that can also search the team's knowledge base. `kbHitScore` is the top knowledge-base match score from 0 to 1, or null when unknown; a low score means only that the team's docs do not cover it, not that the teammate cannot help.",
     options: { yes: "the teammate could add something useful", no: "nothing useful to add" },
   },
   alreadyAnswered: {

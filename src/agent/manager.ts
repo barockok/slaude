@@ -60,6 +60,15 @@ import { addTokens, PROVISIONAL_OUTPUT_TOKENS, tokensFromUsage, type ModelTokens
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
 const REMOTE_DISPOSE_TIMEOUT_MS = 8_000;
 
+/**
+ * CLI scheduling built-ins, removed from every session. slaude schedules through
+ * its own Slack-aware cron tools (`add_cron_job` …); the CLI's versions live in
+ * the child process, which exits at idle, so a job made there silently never
+ * runs. The core prompt said these were blocked; nothing enforced it, and a live
+ * run saw the model call `ScheduleWakeup` for a promise.
+ */
+export const SCHEDULER_TOOLS = ["CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "RemoteTrigger"] as const;
+
 /** Who sent one delivered input (the gateway's view of the message). */
 export interface InputSender {
   userId: string;
@@ -1380,7 +1389,8 @@ export class AgentManager extends EventEmitter {
         plugins: allPlugins,
         // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
         // local-only tools with no remote counterpart are removed outright.
-        ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES, disallowedTools: [...REMOTE_DENIED_LOCAL_TOOLS] } : {}),
+        ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES } : {}),
+        disallowedTools: [...SCHEDULER_TOOLS, ...(remoteHandle ? REMOTE_DENIED_LOCAL_TOOLS : [])],
         permissionMode: mode,
         ...(mode === "bypassPermissions"
           ? { allowDangerouslySkipPermissions: true }
