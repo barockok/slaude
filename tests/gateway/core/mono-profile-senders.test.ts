@@ -149,7 +149,8 @@ describe("mono: each delivered message carries its sender to the manager", () =>
     expect(senders[0]).toBeUndefined();
     await mention("U0ALICE", "700.0", "700.1");
     await waitSent(2);
-    expect(senders[1]).toEqual(ALICE);
+    // With the message's own text (the mention stripped, never the envelope): the quote check reads it.
+    expect(senders[1]).toEqual({ ...ALICE, text: "call me Al" });
     await h.__panelChat!((await Sessions.findById(sent[1]!))!, "operator note", "U0OPERATOR");
     await waitSent(3);
     expect(senders[2]).toEqual({ userId: "U0OPERATOR", teamId: "T", origin: "panel" });
