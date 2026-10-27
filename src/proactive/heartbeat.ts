@@ -411,6 +411,16 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
         if (d.reason === "off") notPosted("proactiveness is off there");
         continue;
       }
+      // Item dedupe, before restraint: an item already posted (an earlier or
+      // stopped round, the overlap re-read, or a second destination this round)
+      // is handled. Restraint's caps would otherwise refuse it as "not now" and
+      // pin its source's watermark for up to a day.
+      const source = line(item.source, FIELD_MAX);
+      const itemId = line(item.itemId, FIELD_MAX);
+      if (source && itemId && (await Posts.postedItem(r.agentId, source, itemId, startedAt.getTime() - UNCHANGED_WINDOW_MS))) {
+        console.log(`${tag}: item ${line(item.source, 60)}/${line(item.itemId, 60)} already posted`);
+        continue;
+      }
       const summary = clamp(redactSecrets(item.summary.trim()), MAX_POST_CHARS);
       const evidence = clamp(redactSecrets(item.evidence.trim()), EVIDENCE_MAX);
       const sent = await sendProactive(
@@ -421,8 +431,8 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
           text: summary,
           evidence,
           context: {
-            source: line(item.source, FIELD_MAX) || null,
-            itemId: line(item.itemId, FIELD_MAX) || null,
+            source: source || null,
+            itemId: itemId || null,
             summary,
             ruleSlug: d.rule?.slug ?? null,
             level: d.level,

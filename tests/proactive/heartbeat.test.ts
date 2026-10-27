@@ -352,6 +352,31 @@ describe("runHeartbeat", () => {
     expect(journalOf(brain)).not.toContain("m-1");
   });
 
+  test("default caps (1/day, 4h cooldown): an item already posted is handled by the item dedupe, not pinned as not delivered", async () => {
+    const brain = fakeBrain();
+    const DEFAULT = "## Proactive\n- Enabled: yes\n- Watch: mail\n";
+    const cut = round({ brain, soul: DEFAULT, items: [item()], outcome: "stopped-budget" });
+    await cut.go();
+    expect(cut.posted).toHaveLength(1);
+    const next = round({ brain, soul: DEFAULT, items: [item()], journal: "Looked at mail." });
+    await next.go();
+    expect(next.posted).toEqual([]);
+    expect(await Watermarks.getSince(AGENT, "mail")).toBe(ADVANCED);
+    expect(journalOf(brain)).not.toContain("Not delivered");
+    expect(journalOf(brain)).not.toContain("m-1");
+  });
+
+  test("an item posted once is not posted again to a second destination next round", async () => {
+    const brain = fakeBrain();
+    const soul = SOUL("\n## Channel C0EXAMPLE\n### Proactive\n- Enabled: yes\n");
+    const first = round({ brain, soul, items: [item()], journal: "ok" });
+    await first.go();
+    expect(first.posted.map((p) => p.channel)).toEqual([MGR]);
+    const again = round({ brain, soul, items: [item({ destination: "C0EXAMPLE", summary: "Reworded: a vendor invoice is due Friday.", evidence: "other" })], journal: "ok" });
+    await again.go();
+    expect(again.posted).toEqual([]);
+  });
+
   test("a pass stopped by the budget posts what it routed but writes no journal and advances no watermark", async () => {
     const h = round({ items: [item()], journal: "partial", outcome: "stopped-budget" });
     expect(await h.go()).toEqual({ outcome: "stopped-budget" });

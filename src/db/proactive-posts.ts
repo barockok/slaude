@@ -112,6 +112,22 @@ export async function recentByAgent(agentId: string, sinceMs: number, limit: num
   return rows.map(toPost);
 }
 
+/**
+ * Whether the agent posted about this source item since `sinceMs`, to anyone:
+ * the heartbeat round's item dedupe (an item goes out once, to one place).
+ * The context is JSON, so rows are matched here, not in SQL.
+ */
+export async function postedItem(agentId: string, source: string, itemId: string, sinceMs: number): Promise<boolean> {
+  const rows = await db.query<Pick<Row, "context">>(
+    `SELECT context FROM proactive_posts WHERE agent_id = ? AND posted_at >= ? AND context IS NOT NULL`,
+    [agentId, sinceMs],
+  );
+  return rows.some((r) => {
+    const c = parseContext(r.context);
+    return c?.source === source && c.itemId === itemId;
+  });
+}
+
 /** The proactive post a Slack message is, by its channel and ts. */
 export async function findByMessage(channelId: string, messageTs: string): Promise<ProactivePost | null> {
   const row = await db.one<Row>(`SELECT * FROM proactive_posts WHERE channel_id = ? AND message_ts = ? LIMIT 1`, [channelId, messageTs]);
