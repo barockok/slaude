@@ -8,6 +8,9 @@ import { passToolId, READ_ONLY_PASS_TOOLS } from "../../src/background/pass-tool
 import type { PriceTable } from "../../src/background/prices";
 import { fakeBrain } from "./fake-brain";
 import { personaDefaultModel } from "../../src/persona/registry";
+import { runHeartbeat } from "../../src/proactive/heartbeat";
+import { parseProactive } from "../../src/soul/proactive";
+import type { ExternalMcp } from "../../src/gateway/core/external-mcp";
 
 const NOW = new Date("2026-10-26T03:00:00Z");
 const DAY = "2026-10-26";
@@ -496,5 +499,39 @@ describe("runPass", () => {
       if (prev === undefined) delete process.env.SLAUDE_MODEL;
       else process.env.SLAUDE_MODEL = prev;
     }
+  });
+});
+
+describe("the heartbeat round's pass options", () => {
+  // Driven through the real runHeartbeat and runPass with a fake query. The
+  // real-CLI block does not cover option shape, so this is the shape check.
+  test("the triage pass offers exactly its own mcp__slaude_pass__ tools, with a watched server", async () => {
+    const MAIL = { servers: { mail: { type: "http", url: "https://mcp.example.com/mail", readTools: ["list_mail"] } }, privateServices: [] } as unknown as ExternalMcp;
+    const soul = parseProactive("## Proactive\n- Enabled: yes\n- Watch: mail\n");
+    const { query, state } = fakeQuery([assistant("m1"), result(TURN)]);
+    const agentId = `agent-hb${++seq}`;
+    const out = await runHeartbeat(
+      { agentId, personaId: "default", personaIds: ["default"], timeZone: "UTC", slot: "2026-10-26T12:00", now: NOW },
+      {
+        runner: deps(query),
+        call: fakeBrain().call,
+        post: async (m) => ({ channel: m.channel, ts: "1.1" }),
+        managerId: () => "U0MANAGER",
+        app: async () => undefined,
+        config: () => ({ ...soul }) as never,
+        sources: { tools: async (_p, src) => ({ tools: src.readTools.map((name) => ({ name })) }), read: async () => ({ kind: "ok", text: "" }) },
+        mcp: () => MAIL,
+      },
+    );
+    expect(out).toEqual({ outcome: "ok" });
+    expect(state.calls).toHaveLength(1);
+    const o = state.calls[0]!.options;
+    expect(o.allowedTools).toEqual(
+      ["read_pages", "list_pages", "search", "read_mail", "route_item", "write_journal"].map(passToolId),
+    );
+    expect(o.tools).toEqual([]);
+    expect(o.strictMcpConfig).toBe(true);
+    expect(o.permissionMode).toBe("dontAsk");
+    expect(Object.keys(o.mcpServers as object)).toEqual(["slaude_pass"]);
   });
 });
