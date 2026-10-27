@@ -18,6 +18,7 @@ import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
 import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
 import type { PromiseTransport } from "../../proactive/promises";
+import { proactiveFor } from "../../soul/proactive";
 import { ledgerTurnRun } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
@@ -128,7 +129,8 @@ import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { bridgeExternalMcp, connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
-import { connectText, createMcpBridge, reauthText } from "./mcp-bridge";
+import { connectText, createMcpBridge, reauthText, type McpBridge } from "./mcp-bridge";
+import { createSourceReader, unservedWatches } from "../../proactive/source-reader";
 import { parseRunAs } from "../../agent/credential-owner";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
 import { randomBytes } from "node:crypto";
@@ -722,6 +724,29 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const soul = soulData();
     return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
   };
+  /** The persona's servers as the MCP bridge serves them (bridgeExternalMcp:
+   *  the managed persona's config; files only with the operator's opt-in). */
+  const bridgeServers = (claims: JobClaims) =>
+    bridgeExternalMcp(claims.persona && claims.persona !== "default" ? claims.persona : undefined);
+  /** Boot warning: a watched server a session mounts but the bridge does not
+   *  serve (a file-configured server without the opt-in) is never read. */
+  const warnUnservedWatches = (): void => {
+    const personas = ["default", ...getPersonaRegistry().list().map((p) => p.name)];
+    for (const p of new Set(personas)) {
+      try {
+        const watch = proactiveFor(p).watch;
+        if (!watch.length) continue;
+        const named = p === "default" ? undefined : p;
+        for (const name of unservedWatches(watch, sessionExternalMcp(named, loadExternalMcp()), bridgeExternalMcp(named))) {
+          console.warn(
+            `[proactive] persona=${p} watch "${name}": the MCP bridge does not serve it, so the heartbeat cannot read it; a file-configured server needs SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG=1`,
+          );
+        }
+      } catch (e) {
+        console.warn(`[proactive] persona=${p}: could not check watched sources: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  };
   const backgroundSlack: SchedulerSlack = {
     // As the bot of the app the message names; on a multi-app transport a
     // post that does not name both app id and team is refused (cardPoster).
@@ -986,7 +1011,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // claimed in the database, so a leader change mid-pass never re-runs one);
   // mono runs it directly. Ticks wait for an open brain and never boot it.
   let backgroundScheduler: { stop(graceMs?: number): Promise<void> } | undefined;
+  // The heartbeat round reads the agent's own sources through a bridge of its
+  // own: the same servers as the node bridge (bridgeServers), but no
+  // onNeedsAuth, so a source that needs re-authorising posts no card; the
+  // round reports it instead. Reads go out as the agent (backgroundClaims).
+  let backgroundBridge: McpBridge | undefined;
   if (opts.backgroundLearning === true && env.role() !== "node" && brainEnabled()) {
+    backgroundBridge = createMcpBridge({ servers: bridgeServers });
+    backgroundSlack.sources = createSourceReader(backgroundBridge);
+    warnUnservedWatches();
     backgroundScheduler = startBackgroundScheduler(defaultSchedulerDeps(backgroundSlack), queueDispatch ? { elect: leaderElect(getRedis()) } : {});
     console.log(`[slaude] background learning scheduler ${queueDispatch ? "contending for leadership" : "started"}`);
   }
@@ -3887,7 +3920,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // config; files only with the operator's opt-in). mono
   // never calls it: its sessions mount external MCP directly, as before.
   const mcpBridge = createMcpBridge({
-    servers: (claims) => bridgeExternalMcp(claims.persona && claims.persona !== "default" ? claims.persona : undefined),
+    servers: bridgeServers,
     onNeedsAuth: (claims, server, scope, reason) => postBridgeConnectCard(claims, server, scope, reason),
   });
   /** The `/mcp` connect card, posted in the turn's thread when a bridged server
@@ -4102,6 +4135,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await panelResumeUnsub?.().catch(() => {});
       await panelHoldUnsub?.().catch(() => {});
       await mcpBridge.close().catch(() => {});
+      await backgroundBridge?.close().catch(() => {});
       await t.stop();
       // Never rejects (errors are logged above). While closing, the KB import
       // stops before its next KB, so shutdown does not wait for a full import.

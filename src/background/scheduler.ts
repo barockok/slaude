@@ -66,6 +66,7 @@ import { personaApp } from "./digest";
 import { soulData, cachedSoulData } from "../soul/extract";
 import { personaSoulText } from "../persona/soul-source";
 import { sweepStaleRuns } from "./stale-runs";
+import type { SourceReader } from "../proactive/source-reader";
 
 export { isoWeekSlot, previousDay };
 
@@ -441,6 +442,8 @@ export interface SchedulerSlack {
   post: CardPost;
   /** How promise checks reach their threads (phase E). Absent: promises are not checked. */
   promises?: PromiseTransport;
+  /** The agent's own MCP sources, read as the agent (heartbeat round). Absent: no source is read. */
+  sources?: SourceReader;
   /** The manager and the backup manager (who may decide manager proposals). */
   managers: () => string[];
   /** Whom the weekly digest goes to: the manager, else the backup manager. */
