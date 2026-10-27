@@ -3744,6 +3744,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     },
     once: (key) => SeenEvents.tryInsert(key),
   });
+  /**
+   * Is this copy of a reply under a proactive post the copy of the app that
+   * made the post? Slack delivers a channel message to every app installed
+   * there, and the thread must be taken (its session stamped with the
+   * receiving app) by the bot that posted. The root's author
+   * (`parent_user_id`) being this app's bot decides it. A root posted as a
+   * real user (xoxp), or an event without `parent_user_id`, names no app:
+   * taken only when no other registered app's bot is in the channel (a
+   * single-app deploy); a failed member lookup reads as one being there.
+   */
+  const postedThroughThisApp = async (args: any, e: any): Promise<boolean> => {
+    const own = await getBotId(args);
+    if (e.parent_user_id && e.parent_user_id === own) return true;
+    if (e.parent_user_id && !(await getSelfUserIds()).has(e.parent_user_id)) return false;
+    const others = [...(await getSelfBots(args)).userIds].filter((u) => u && u !== own);
+    return !others.length || !(await anyInChannel(args.client ?? t.client, e.channel, others));
+  };
   t.event("reaction_added", async (args: any) => {
     const e: any = args.event;
     if (e?.item?.type !== "message" || !e.user || !brainEnabled() || !brainReady()) return;
@@ -3797,7 +3814,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         );
         if (fb.result === "muted") return;
         // The post's agent is a named persona's Slack user, else the default persona's.
-        if (fb.post) {
+        if (fb.post && (await postedThroughThisApp(args, e))) {
           const name = getPersonaRegistry().lookupByUserId(fb.post.agentId)?.name;
           proactive = { personaId: name && name !== "default" ? name : undefined };
         }

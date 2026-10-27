@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { rmSync } from "node:fs";
 import { createGateway } from "../../../src/gateway/core/gateway";
 import { AgentManager } from "../../../src/agent/manager";
-import type { Transport } from "../../../src/gateway/core/transport";
+import type { AppRef, Transport } from "../../../src/gateway/core/transport";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { __resetSoulDataMemo } from "../../../src/soul/extract";
 import { paths } from "../../../src/config/home";
@@ -74,11 +74,12 @@ function makeGw() {
   return { ...cap, agent, sends, h, asked: gate.asked };
 }
 
-const msg = (client: any, text: string, ts: string, opts: { user?: string; thread?: string; channel?: string; im?: boolean } = {}) => ({
+const msg = (client: any, text: string, ts: string, opts: { user?: string; thread?: string; parent?: string; channel?: string; im?: boolean } = {}) => ({
   event: {
     type: "message", channel: opts.channel ?? CH, channel_type: opts.im ? "im" : "channel",
     user: opts.user ?? WORLD.manager, team: TEAM, ts,
     ...(opts.thread ? { thread_ts: opts.thread } : {}),
+    ...(opts.parent ? { parent_user_id: opts.parent } : {}),
     text,
   },
   client,
@@ -135,7 +136,7 @@ describe("replies under a proactive post", () => {
   it("a channel reply without a mention under a proactive post gets a turn with proactive-context and skips the gate", async () => {
     const g = (gw = makeGw());
     const root = await proactivePost();
-    await g.emit("message", msg(g.t.client, "thanks, which vendor is it", nextTs(), { thread: root }));
+    await g.emit("message", msg(g.t.client, "thanks, which vendor is it", nextTs(), { thread: root, parent: "USLAUDEBOT" }));
     expect(g.sends).toHaveLength(1);
     expect(g.sends[0]).toContain("<proactive-context>");
     expect(g.sends[0]).toContain('about "invoice": An invoice came in from the vendor.');
@@ -177,5 +178,55 @@ describe("replies under a proactive post", () => {
     expect(g.sends).toEqual([]);
     expect(g.posts.map((p) => p.text)).toContain("Got it, I'll stop pinging you about invoice.");
     expect(g.asked).toEqual([]);
+  });
+
+  it("with two registered apps in the channel, only the posting app's copy takes the thread", async () => {
+    const BOT = { A0ONE: "U0BOTA", A0TWO: "U0BOTB" } as const;
+    type App = keyof typeof BOT;
+    const handlers = new Map<string, (args: any) => Promise<void>>();
+    const clientOf = (app: App): any => ({
+      auth: { test: async () => ({ user_id: BOT[app], bot_id: `B${app}`, team: TEAM, url: "x" }) },
+      chat: { postMessage: async () => ({ ok: true, ts: "1.1" }), update: async () => ({ ok: true }) },
+      reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+      assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+      conversations: { info: async () => ({}), members: async () => ({ ok: true, members: [WORLD.manager, BOT.A0ONE, BOT.A0TWO] }), replies: async () => ({ ok: true, messages: [] }) },
+      users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
+      search: { messages: async () => ({}) },
+    });
+    const clients = { A0ONE: clientOf("A0ONE"), A0TWO: clientOf("A0TWO") };
+    const t: Transport = {
+      client: clients.A0ONE,
+      clientFor: (app: AppRef) => clients[(app.apiAppId ?? "A0ONE") as App],
+      apps: async () => (["A0ONE", "A0TWO"] as App[]).map((id) => ({ apiAppId: id, teamId: TEAM, botUserId: BOT[id], client: clients[id] })),
+      action: () => {}, use: () => {}, start: async () => {}, stop: async () => {},
+      event: (name: string, fn: any) => void handlers.set(name, fn),
+    };
+    const agent = new AgentManager();
+    const turns: string[] = [];
+    agent.sendMessage = async (id: string) => void turns.push(id);
+    const h = createGateway(agent, t);
+    gw = { h } as any;
+    const deliver = (app: App, event: Record<string, unknown>) =>
+      handlers.get("message")!({
+        event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, user: WORLD.manager, ...event },
+        client: clients[app],
+        context: { teamId: TEAM, apiAppId: app, botUserId: BOT[app] },
+      });
+
+    // B made the post; A's copy arrives first and must not take the thread.
+    const root = await proactivePost();
+    const reply = { ts: nextTs(), thread_ts: root, parent_user_id: BOT.A0TWO, text: "which vendor?" };
+    await deliver("A0ONE", reply);
+    expect(turns).toEqual([]);
+    await deliver("A0TWO", reply);
+    expect(turns).toHaveLength(1);
+    expect((await Sessions.findById(turns[0]!))!.slack_app_id).toBe("A0TWO");
+
+    // No parent_user_id with another app's bot in the channel: neither copy takes it.
+    const root2 = await proactivePost();
+    const bare = { ts: nextTs(), thread_ts: root2, text: "which vendor?" };
+    await deliver("A0ONE", bare);
+    await deliver("A0TWO", bare);
+    expect(turns).toHaveLength(1);
   });
 });

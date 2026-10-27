@@ -101,6 +101,11 @@ describe("proactiveReplyBlock", () => {
     );
   });
 
+  test("whitespace-only text reads as not kept", async () => {
+    const block = await proactiveReplyBlock({ channel: "C0EXAMPLE", threadTs: "1800.100" }, { find: at(post({ text: " \n ", context: null })) });
+    expect(block).toContain('about "invoice". Its text was not kept.');
+  });
+
   test("no block outside a proactive thread", async () => {
     expect(await proactiveReplyBlock({ channel: "C0EXAMPLE", threadTs: "9.9" }, { find: at(post()), rules: async () => [rule()] })).toBe("");
     expect(await proactiveReplyBlock({ channel: "C0OTHER", threadTs: "1800.100" }, { find: at(post()), rules: async () => [rule()] })).toBe("");

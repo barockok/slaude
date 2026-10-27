@@ -37,7 +37,7 @@ export async function proactiveReplyBlock(
   const posted = new Date(post.postedAt).toISOString();
   const lines = [
     "<proactive-context>",
-    post.text
+    safe(post.text)
       ? `You posted this proactively (${posted}) about "${safe(post.topic)}": ${safe(post.text)}`
       : `You posted this proactively (${posted}) about "${safe(post.topic)}". Its text was not kept.`,
   ];
