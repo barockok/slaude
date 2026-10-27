@@ -876,7 +876,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * human reply continues it.
    */
   const dispatchThreadTurn = async (
-    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean },
+    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean; appId?: string | null },
     envelope: string,
     run: { runId: string; agentId: string },
     pass: TurnPass,
@@ -885,6 +885,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const persona = target.personaId;
     const session = await agent.ensureSession({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: persona ?? "default" });
     if (target.engage) await Sessions.setEngaged(session.id, true);
+    // A thread a heartbeat post just opened has no app of its own yet: the
+    // post's app is stamped on it, so this turn (and a later reply's) speaks
+    // as the app that posted, which a multi-app transport requires.
+    if (!session.slack_app_id && target.appId) {
+      await Sessions.setSlackApp(session.id, target.appId);
+      session.slack_app_id = target.appId;
+    }
     const app: AppRef = { apiAppId: session.slack_app_id ?? undefined, teamId };
     const ctx: SlackContext = {
       client: outClientForPersona(persona, app),
@@ -993,6 +1000,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           personaId: persona,
           userId: post.agentId,
           engage: true,
+          appId: post.appId,
         },
         envelope,
         run,

@@ -237,7 +237,8 @@ CREATE TABLE IF NOT EXISTS proactive_posts (
   team_id     TEXT,
   posted_at   INTEGER NOT NULL,
   text        TEXT,
-  context     TEXT
+  context     TEXT,
+  app_id      TEXT
 );
 CREATE TABLE IF NOT EXISTS heartbeat_watermarks (
   agent_id   TEXT    NOT NULL,
@@ -400,6 +401,7 @@ export function bootstrapSqliteSchema(db: Database): void {
   const postCols = db.query(`PRAGMA table_info(proactive_posts)`).all() as Array<{ name: string }>;
   if (!postCols.some((c) => c.name === "text")) db.run(`ALTER TABLE proactive_posts ADD COLUMN text TEXT`);
   if (!postCols.some((c) => c.name === "context")) db.run(`ALTER TABLE proactive_posts ADD COLUMN context TEXT`);
+  if (!postCols.some((c) => c.name === "app_id")) db.run(`ALTER TABLE proactive_posts ADD COLUMN app_id TEXT`);
 
   // Migration: a run records the reported model it could not price (pg 0027).
   const runCols = db.query(`PRAGMA table_info(background_runs)`).all() as Array<{ name: string }>;

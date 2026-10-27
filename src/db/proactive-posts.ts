@@ -37,6 +37,8 @@ export interface ProactivePost {
   text: string | null;
   /** What the post rested on, or null for an older row or unreadable JSON. */
   context: PostContext | null;
+  /** The Slack app (api_app_id) that posted it, or null when unknown (an older row, a single-app transport). */
+  appId: string | null;
 }
 
 interface Row {
@@ -53,6 +55,7 @@ interface Row {
   posted_at: number | string;
   text: string | null;
   context: string | null;
+  app_id: string | null;
 }
 
 function parseContext(raw: string | null): PostContext | null {
@@ -79,17 +82,18 @@ const toPost = (r: Row): ProactivePost => ({
   postedAt: Number(r.posted_at),
   text: r.text ?? null,
   context: parseContext(r.context ?? null),
+  appId: r.app_id ?? null,
 });
 
 /** Record a post; `id` when the caller minted it before posting (the Slack metadata marker carries it). */
 export async function recordPost(
-  p: Omit<ProactivePost, "id" | "text" | "context"> & { id?: string; text?: string | null; context?: PostContext | null },
+  p: Omit<ProactivePost, "id" | "text" | "context" | "appId"> & { id?: string; text?: string | null; context?: PostContext | null; appId?: string | null },
 ): Promise<string> {
   const id = p.id ?? randomUUID();
   await db.run(
-    `INSERT INTO proactive_posts (id, agent_id, audience, recipient, topic, text_hash, evidence_hash, channel_id, message_ts, team_id, posted_at, text, context)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, p.agentId, p.audience, p.recipient, p.topic, p.textHash, p.evidenceHash, p.channelId, p.messageTs, p.teamId, p.postedAt, p.text ?? null, p.context ? JSON.stringify(p.context) : null],
+    `INSERT INTO proactive_posts (id, agent_id, audience, recipient, topic, text_hash, evidence_hash, channel_id, message_ts, team_id, posted_at, text, context, app_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, p.agentId, p.audience, p.recipient, p.topic, p.textHash, p.evidenceHash, p.channelId, p.messageTs, p.teamId, p.postedAt, p.text ?? null, p.context ? JSON.stringify(p.context) : null, p.appId ?? null],
   );
   return id;
 }

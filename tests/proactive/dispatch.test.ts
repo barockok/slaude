@@ -52,6 +52,7 @@ const post = (over: Partial<ProactivePost> = {}): ProactivePost => ({
   postedAt: POSTED,
   text: "An invoice came in from the vendor; I will reply with the standard terms.",
   context: { source: "mail", itemId: "m-42", summary: "Vendor invoice, net 30 asked", ruleSlug: "rules/proactive/invoice-c0example", level: "act", evidence: "mail m-42" },
+  appId: null,
   ...over,
 });
 
@@ -269,6 +270,24 @@ describe("the mono gateway's proactive transport", () => {
     const runs = await db.query<{ pass: string; outcome: string; scope: string; cost_usd: number }>("SELECT pass, outcome, scope, cost_usd FROM background_runs");
     expect(runs.map((r) => [r.pass, r.outcome, r.scope])).toEqual([["heartbeat-turn", "ok", "agent"]]);
     expect(runs[0]!.cost_usd).toBeCloseTo((1_000 * 1 + 100 * 10) / 1e6, 9);
+  });
+
+  test("the post's app is stamped on the new thread's session, and a queued turn carries it", async () => {
+    const metas: DispatchMeta[] = [];
+    const qd = {
+      dispatch: async (_s: unknown, _text: string, meta: DispatchMeta) => void metas.push(meta),
+      abort: async () => {},
+      pubsub: { close: async () => {} },
+      turns: { close: async () => {} },
+      registry: { close: async () => {}, liveLabels: async () => [] },
+      close: async () => {},
+    } as unknown as QueueDispatch;
+    h = createGateway(agent, slackTransport(), { queueDispatch: qd });
+    const p = post({ id: "post-app", messageTs: "2000.1", appId: "A0SECOND" });
+    expect(await dispatchProactive(p, "ask", null, "ask", defaultDispatchDeps(h.__proactive!, "default"))).toBe("sent");
+    const session = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "2000.1", persona_id: "default" });
+    expect(session?.slack_app_id).toBe("A0SECOND");
+    expect(metas[0]).toMatchObject({ apiAppId: "A0SECOND" });
   });
 
   test("a thread with a /1on1 lock is refused: the turn would run as that person", async () => {

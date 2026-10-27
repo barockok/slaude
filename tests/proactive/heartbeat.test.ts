@@ -267,6 +267,7 @@ describe("runHeartbeat", () => {
       topic: "invoice emails",
       text: item().summary,
       context: { source: "mail", itemId: "m-1", summary: item().summary, ruleSlug: null, level: "inform", evidence: item().evidence },
+      appId: "A0APP",
     });
     expect(h.dispatched).toEqual([]);
     expect(await Watermarks.getSince(AGENT, "mail")).toBe(NOW.getTime() - 5 * 60_000);

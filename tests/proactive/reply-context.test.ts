@@ -26,6 +26,7 @@ const post = (over: Partial<ProactivePost> = {}): ProactivePost => ({
   postedAt: POSTED,
   text: "An invoice came in from the vendor; I will reply with the standard terms.",
   context: { source: "mail", itemId: "m-42", summary: "Vendor invoice, net 30 asked", ruleSlug: "rules/proactive/invoice-c0example", level: "inform", evidence: "mail m-42" },
+  appId: null,
   ...over,
 });
 

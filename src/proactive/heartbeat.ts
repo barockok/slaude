@@ -140,6 +140,7 @@ async function sendProactive(a: ProactivePostArgs, ctx: ProactivePostContext, st
     postedAt: now.getTime(),
     text,
     context: a.context ?? null,
+    appId: ctx.app?.apiAppId ?? null,
   };
   // The post is out: a ledger failure is logged, never reported as a failed
   // post (the model would post it again).

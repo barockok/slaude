@@ -39,6 +39,13 @@ describe("proactive_posts text and context", () => {
     expect(old?.context).toBeNull();
   });
 
+  test("a post keeps the app that posted it; an older row reads null", async () => {
+    await Posts.recordPost({ ...base, messageTs: "4.4", appId: "A0APP" });
+    await Posts.recordPost({ ...base, messageTs: "5.5" });
+    expect((await Posts.findByMessage("D1", "4.4"))?.appId).toBe("A0APP");
+    expect((await Posts.findByMessage("D1", "5.5"))?.appId).toBeNull();
+  });
+
   test("unreadable context JSON reads as null", async () => {
     await Posts.recordPost({ ...base, messageTs: "3.3" });
     await db.run(`UPDATE proactive_posts SET context = '{nope' WHERE message_ts = '3.3'`);
