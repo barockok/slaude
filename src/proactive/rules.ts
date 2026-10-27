@@ -92,7 +92,10 @@ export function composeRulePage(
   now: Date,
 ): { slug: string; content: string } | { error: string } {
   const scopeTag = r.scope === "global" ? "global" : r.scope.toLowerCase();
-  const slug = r.slug ?? `${RULE_PREFIX}${slugify(r.kind)}-${scopeTag}`;
+  const kindTag = slugify(r.kind);
+  // A punctuation-only kind would slug to `rules/proactive/-<scope>`.
+  if (r.slug === undefined && !kindTag) return { error: "refused: the kind needs at least one letter or digit" };
+  const slug = r.slug ?? `${RULE_PREFIX}${kindTag}-${scopeTag}`;
   const fields: Record<string, string> = {
     kind: oneLine(r.kind), scope: oneLine(r.scope), level: r.level,
     taught_by: oneLine(r.taughtBy), taught_at: oneLine(r.taughtAt), thread: oneLine(r.thread),

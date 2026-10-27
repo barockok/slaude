@@ -64,6 +64,10 @@ describe("composeRulePage", () => {
     expect(p.slug).toBe("rules/proactive/invoice-emails-global");
     expect(readPageRecord({ content: p.content })!.meta.quote).toBeUndefined();
   });
+  test("refuses a kind with no letters or digits", () => {
+    const p = composeRulePage({ ...base, kind: "!!!" }, NOW);
+    expect(p).toEqual({ error: "refused: the kind needs at least one letter or digit" });
+  });
   test("refuses a credential-like value", () => {
     const p = composeRulePage({ ...base, how: "use sk-abcdefghijklmnopqrstuvwxyz123456" }, NOW);
     expect("error" in p).toBe(true);
