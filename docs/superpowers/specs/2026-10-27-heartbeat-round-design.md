@@ -1,7 +1,7 @@
 # The heartbeat round: one agent, all its sources, learned reactions under the mandate
 
 **Date:** 2026-10-27
-**Status:** Design, approved approach A; not built.
+**Status:** Design, approach A chosen, owner questions answered; not built.
 **Builds on:** the teammate epic (`2026-10-25-teammate-agent-epic-design.md`, phase E), the live smoke test (`docs/site/_content/field-notes/2026-10-26-live-smoke-test.md`).
 
 ## Intent
@@ -144,6 +144,8 @@ Same schedule, slot claim, budget kind (`heartbeat`) and HA leader rules as toda
   - Raising is checked in code against `Highest` for the scope. Above it: refused, and the agent says so. Within it: applied when the speaker is an approver for that scope (the channel's approvers, or the manager and backup for `global` and DMs). Otherwise the turn opens a session approval card (`approvals.request`) in the thread where the rule was asked for, addressed to that scope's approvers, and the rule is written when one of them approves. *(My call: the teaching always happens in a live turn, which is what that card needs; the 14-day background proposal card is addressed only to the manager or one person.)*
   - `global` scope needs the speaker (or approver) to be one the global mandate allows: the manager or a global approver.
   - The tool writes the rule page with provenance from the turn's own envelope (`taughtBy` is the signed sender, never a model argument).
+- **Only threaded replies count (owner's decision).** A top-level answer in a DM is not linked to a post; it reaches the agent as an ordinary DM turn without `<proactive-context>`. Linking unthreaded answers to the latest post is deferred.
+- **Private places (owner's decision).** Rules may be taught in a DM; that is where the manager mostly teaches. `proactive_rule` is refused in a /1on1 thread, with a line saying to teach it outside the /1on1. A rule taught in a DM keeps the verbatim `quote` only while its scope is that DM. Widening it to `global` writes the new rule page with `taughtBy`, `taughtAt` and `thread` but no `quote`, so a person's own words never sit in a rule that shapes posts to others.
 - **Outside proactive threads.** The same tool works in any thread ("keep an eye on the auditors' emails, and just tell me"). A watch request still updates `self/heartbeat` through `memoize`.
 - **Natural stop phrasings.** These reach the agent turn and now carry the context, so the agent can lower the rule with `proactive_rule`, or mute the topic, instead of only promising to stop.
 
@@ -165,5 +167,5 @@ Each proactive post is sent with Slack `metadata` `{event_type: "slaude_proactiv
 - Pass shape: the triage pass offers only the memory tools, the `read_*` tools, `route_item`, `set_watermark` and `write_journal`, checked with the real CLI against the mock LLM, as the existing runner test does.
 - Injection: a fixture email that tells the agent to post to a channel or to raise a rule produces at most a `route_item`, and code refuses whatever goes past the rules.
 - Continuity: two rounds over the same fixture source. The second sees only new items, does not repost a handled one, and carries an open item forward. An aborted round does not move a watermark.
-- Replies: a channel reply without a mention under a proactive post gets a turn with `<proactive-context>`; "just reply to these from now on" from a non-approver produces an approval card, and from an approver produces a rule page with provenance.
+- Replies: a top-level DM answer after a post gets no `<proactive-context>`; `proactive_rule` in a /1on1 is refused; widening a DM rule to global drops the quote and keeps the provenance; a channel reply without a mention under a proactive post gets a turn with `<proactive-context>`; "just reply to these from now on" from a non-approver produces an approval card, and from an approver produces a rule page with provenance.
 - Live smoke (as in the 2026-10-26 run): the agent's own test inbox connected as an MCP server, one channel at `Highest: act`, one at `inform`.
