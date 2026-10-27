@@ -52,6 +52,13 @@ describe("triage tools", () => {
     expect((await run("read_tracker", { tool: "list_things", args: {} })).isError).toBe(true);
   });
 
+  test("parallel reads share the byte cap", async () => {
+    const { run, state } = setup({ kind: "ok", text: "x".repeat(TRIAGE_MAX_BYTES_PER_SOURCE) });
+    const rs = await Promise.all([run("read_tracker", { tool: "list_things", args: {} }), run("read_tracker", { tool: "list_things", args: {} })]);
+    expect(rs.filter((r) => r.isError).length).toBe(1);
+    expect(state.bytes.tracker).toBe(TRIAGE_MAX_BYTES_PER_SOURCE);
+  });
+
   test("needs-auth is recorded and the round continues", async () => {
     const { run, state } = setup({ kind: "needs-auth" });
     const r = await run("read_tracker", { tool: "list_things", args: {} });

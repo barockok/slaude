@@ -84,9 +84,12 @@ function readTool(a: TriageToolArgs, state: TriageState, src: TriageToolArgs["so
         state.failed.add(src.server);
         return err(`${src.server} read failed: ${r.text}`);
       }
-      const room = TRIAGE_MAX_BYTES_PER_SOURCE - used;
+      // Re-read after the await: parallel reads in one turn all passed the check above.
+      const now = state.bytes[src.server] ?? 0;
+      const room = TRIAGE_MAX_BYTES_PER_SOURCE - now;
+      if (room <= 0) return err(`Read budget for ${src.server} is used up. Route what you have.`);
       const cut = r.text.length > room;
-      state.bytes[src.server] = used + Math.min(r.text.length, room);
+      state.bytes[src.server] = now + Math.min(r.text.length, room);
       return ok(cut ? r.text.slice(0, room) + `\n[truncated: ${src.server} read budget reached]` : r.text);
     },
   ) as unknown as PassTool;
