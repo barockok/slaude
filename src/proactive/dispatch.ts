@@ -42,8 +42,8 @@ export interface ProactiveDispatchDeps {
 
 export const dispatchSlot = (post: Pick<ProactivePost, "id">): string => `heartbeat-act:${post.id}`;
 
-/** One line, and nothing that can close the envelope's blocks. */
-const safe = (s: string | null | undefined): string => (s ?? "").replace(/[\r\n]+/g, " ").trim().replaceAll("</", "<\\/");
+/** One line, and no `<` at all: an interpolated value can neither open nor close a tag. */
+const safe = (s: string | null | undefined): string => (s ?? "").replace(/[\r\n]+/g, " ").trim().replaceAll("<", "‹");
 
 /** The turn's prompt: what was posted and why, then what to do now. */
 export function proactiveEnvelope(post: ProactivePost, level: "ask" | "act", rule: ProactiveRule | null, highest: Level): string {
@@ -83,6 +83,8 @@ export async function dispatchProactive(
   deps: ProactiveDispatchDeps,
 ): Promise<"sent" | "duplicate" | "no-budget"> {
   if (!post.messageTs) throw new Error(`proactive post ${post.id} has no message ts; there is no thread to dispatch into`);
+  // Built first: a post it cannot render (a bad postedAt) claims nothing and opens no run.
+  const envelope = proactiveEnvelope(post, level, rule, highest);
   const now = (deps.now ?? Date.now)();
   if (!(await deps.claim(post.agentId, dispatchSlot(post), now))) return "duplicate";
   const run = await deps.openRun(post);
@@ -91,7 +93,7 @@ export async function dispatchProactive(
     return "no-budget";
   }
   try {
-    await deps.transport.dispatch(post, proactiveEnvelope(post, level, rule, highest), { runId: run.runId, agentId: run.agentId }, deps.personaId);
+    await deps.transport.dispatch(post, envelope, { runId: run.runId, agentId: run.agentId }, deps.personaId);
   } catch (e) {
     await deps.dropRun?.(run.runId, run.agentId).catch((d) =>
       console.error(`[proactive] agent=${post.agentId} post=${post.id}: could not end its run: ${d instanceof Error ? d.message : String(d)}`),
