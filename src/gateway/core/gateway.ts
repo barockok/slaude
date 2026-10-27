@@ -17,6 +17,7 @@ import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extr
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
 import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
+import { proactiveReplyBlock } from "../../proactive/reply-context";
 import type { PromiseTransport } from "../../proactive/promises";
 import type { ProactiveTransport } from "../../proactive/dispatch";
 import { proactiveFor } from "../../soul/proactive";
@@ -1302,6 +1303,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return inner ? `<memory-context>\n${inner}\n</memory-context>\n\n` : "";
     } catch (e) {
       console.warn(`[memory-context] skipped: ${e instanceof Error ? e.name : typeof e}`);
+      return "";
+    }
+  };
+
+  // A reply under a proactive post (spec §5 Stitching): the post's
+  // `<proactive-context>` for that reply's turn. Only threaded replies count,
+  // so a top-level message (its own root) never gets one. Like the memory
+  // block it reads only an already-open brain; any failure means no block.
+  const turnProactiveBlock = async (m: { channel: string; threadTs: string; eventTs: string; personaId?: string }): Promise<string> => {
+    if (m.threadTs === m.eventTs || !brainEnabled() || !brainReady()) return "";
+    try {
+      const block = await proactiveReplyBlock({ channel: m.channel, threadTs: m.threadTs, personaId: m.personaId });
+      return block ? `${block}\n\n` : "";
+    } catch (e) {
+      console.warn(`[proactive-context] skipped: ${e instanceof Error ? e.name : typeof e}`);
       return "";
     }
   };
@@ -3105,7 +3121,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const order = takeDispatchSlot(session.id);
     slot.release = order.release;
     const oneOnOneLock = await OneOnOne.find(channelId, threadTs);
-    const [userName, files, memoryContext] = await Promise.all([
+    const [userName, files, memoryContext, proactiveContext] = await Promise.all([
       resolveUserName(client, userId),
       attachToken
         ? downloadAttachments({
@@ -3119,6 +3135,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       suppress
         ? ""
         : turnMemoryBlock({ channel: channelId, threadTs, userId, teamId, personaId: dispatch?.personaId, lockedUser: oneOnOneLock?.locked_user ?? null }),
+      suppress ? "" : turnProactiveBlock({ channel: channelId, threadTs, eventTs, personaId: dispatch?.personaId }),
     ]);
     if (env.metricsPerUser()) {
       metric.userTurnsTotal.inc({ user_id: userId, user_name: userName });
@@ -3157,6 +3174,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       `trust="${trust}"${oneOnOneAttr}>\n` +
       `${userText}${attachmentBlock}\n</channel>\n\n` +
       memoryContext +
+      proactiveContext +
       (files.length
         ? `User attached ${files.length} file(s); paths above are local — Read them directly.\n`
         : "") +
@@ -3766,14 +3784,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return;
     }
     // A reply under a proactive post (phase E): recorded as an outcome; a
-    // "stop" mutes that topic for the replier and ends here.
+    // "stop" mutes that topic for the replier and ends here. Any other reply
+    // continues in a proactive thread (spec §5 Stitching): the agent started
+    // it, so the decision gate is never consulted there, and a thread with no
+    // session yet is engaged for the post's persona below.
+    let proactive: { personaId: string | undefined } | null = null;
     if (e.thread_ts && e.thread_ts !== e.ts && brainEnabled() && brainReady()) {
       try {
         const fb = await onProactiveReply(
           { channel: e.channel, threadTs: e.thread_ts, ts: e.ts, userId: e.user, teamId: args.context?.teamId ?? e.team ?? null, text: String(e.text ?? "") },
           proactiveFeedbackDeps(args),
         );
-        if (fb === "muted") return;
+        if (fb.result === "muted") return;
+        // The post's agent is a named persona's Slack user, else the default persona's.
+        if (fb.post) {
+          const name = getPersonaRegistry().lookupByUserId(fb.post.agentId)?.name;
+          proactive = { personaId: name && name !== "default" ? name : undefined };
+        }
       } catch (err) {
         console.error(`[proactive] feedback on ch=${e.channel} ts=${e.ts} failed: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
       }
@@ -3820,8 +3847,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       (u) => u && u !== botId && (!selfBotUsers.has(u) || absentAppBots.has(u)) && !registry.lookupByUserId(u),
     );
 
+    // No gate in a proactive thread (see above); everything else unchanged.
+    const gated = (): boolean => !proactive && gateActive();
+
     if (mentionsBot) {
-      const act = gateActive() ? await consultGate(args, { mentionsAgent: true }) : undefined;
+      const act = gated() ? await consultGate(args, { mentionsAgent: true }) : undefined;
       if (act === "record_doubt") return await recordDoubt(args);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts);
       return await handleMessage(args, { engagedBefore });
@@ -3841,7 +3871,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Re-engage the persona's row if it was disengaged; a first mention has
       // no row yet and the session is born engaged.
       const personaId = mentionedPersona.name;
-      const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
+      const act = gated() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
       if (act === "record_doubt") return await recordDoubt(args, personaId);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, mentionedPersona.name);
       return await handleMessage(args, { personaId: mentionedPersona.name, engagedBefore });
@@ -3910,7 +3940,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: "default" });
       if (def?.engaged) {
         if (otherApp(def)) return;
-        const act = gateActive() ? await consultGate(args, { mentionsAgent: false }) : undefined;
+        const act = gated() ? await consultGate(args, { mentionsAgent: false }) : undefined;
         if (act === "record") return await recordEngaged(args);
         return await handleMessage(args);
       }
@@ -3920,7 +3950,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: p.name });
           if (row?.engaged) {
             if (otherApp(row)) return;
-            const act = gateActive() ? await consultGate(args, { mentionsAgent: false, personaId: p.name }) : undefined;
+            const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: p.name }) : undefined;
             if (act === "record") {
               return await recordEngaged(args, p.name);
             }
@@ -3942,7 +3972,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // Engaged session outside the registry (e.g. persona removed from
         // config) — keep handling plain replies as that persona.
         const restoredPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
-        const act = gateActive() ? await consultGate(args, { mentionsAgent: false, personaId: restoredPersonaId }) : undefined;
+        const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: restoredPersonaId }) : undefined;
         if (act === "record") {
           return await recordEngaged(args, restoredPersonaId);
         }
@@ -3959,6 +3989,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         );
         return await handleMessage(args, { suppress: true, personaId: disengagedPersonaId });
       }
+    }
+    // A reply under a proactive post with no session in the thread yet (an
+    // inform post): the session handleMessage creates is born engaged. A
+    // thread disengaged since (a colleague mention) stays disengaged above.
+    if (proactive) {
+      console.log(`[slack-rx] engage ch=${channelId} ts=${e.ts} user=${e.user} — reply under a proactive post`);
+      return await handleMessage(args, { personaId: proactive.personaId });
     }
     console.log(
       `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — channel msg, thread not engaged (no @mention)`,

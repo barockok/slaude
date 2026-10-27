@@ -12,7 +12,7 @@
  * `heartbeat-act:<post id>` in `background_slots` first, so a second replica
  * or a retried round finds it claimed.
  */
-import type { ProactivePost } from "../db/proactive-posts";
+import type { PostContext, ProactivePost } from "../db/proactive-posts";
 import { claimSlot } from "../db/background-slots";
 import { finishSkillCheck, startSkillCheck } from "../background/skill-check";
 import { personaDefaultModel } from "../persona/registry";
@@ -42,16 +42,26 @@ export interface ProactiveDispatchDeps {
 
 export const dispatchSlot = (post: Pick<ProactivePost, "id">): string => `heartbeat-act:${post.id}`;
 
-/** One line, and no `<` at all: an interpolated value can neither open nor close a tag. */
-const safe = (s: string | null | undefined): string => (s ?? "").replace(/[\r\n]+/g, " ").trim().replaceAll("<", "‹");
+/**
+ * One line, and no `<` at all: an interpolated value can neither open nor
+ * close a tag. Every `<proactive-context>` block (this envelope, a reply's
+ * block) interpolates only through it.
+ */
+export const safe = (s: string | null | undefined): string => (s ?? "").replace(/[\r\n]+/g, " ").trim().replaceAll("<", "‹");
+
+/** What a post rested on. */
+export const sourceLine = (c: PostContext | null): string =>
+  `Source: ${safe(c?.source) || "none"} item ${safe(c?.itemId) || "none"}. Summary: ${safe(c?.summary) || "none"}. Evidence: ${safe(c?.evidence) || "none"}.`;
+
+/** The rule a post applied, with its provenance. */
+export const ruleLine = (rule: ProactiveRule | null): string =>
+  rule
+    ? `Rule: ${safe(rule.slug)} (${safe(rule.level)}, scope ${safe(rule.scope)}, taught by <@${safe(rule.taughtBy)}> on ${safe(rule.taughtAt)}).`
+    : "Rule: none (default inform).";
 
 /** The turn's prompt: what was posted and why, then what to do now. */
 export function proactiveEnvelope(post: ProactivePost, level: "ask" | "act", rule: ProactiveRule | null, highest: Level): string {
-  const c = post.context;
   const posted = new Date(post.postedAt).toISOString();
-  const ruleLine = rule
-    ? `Rule: ${safe(rule.slug)} (${safe(rule.level)}, scope ${safe(rule.scope)}, taught by <@${safe(rule.taughtBy)}> on ${safe(rule.taughtAt)}).`
-    : "Rule: none (default inform).";
   const todo =
     level === "ask"
       ? "ask: You asked before acting. Wait for an answer in this thread; do nothing else now. Call pass."
@@ -59,8 +69,8 @@ export function proactiveEnvelope(post: ProactivePost, level: "ask" | "act", rul
   return [
     "<proactive-context>",
     `You posted this proactively (${posted}) about "${safe(post.topic)}": ${safe(post.text) || "(the text was not kept)"}`,
-    `Source: ${safe(c?.source) || "none"} item ${safe(c?.itemId) || "none"}. Summary: ${safe(c?.summary) || "none"}. Evidence: ${safe(c?.evidence) || "none"}.`,
-    ruleLine,
+    sourceLine(post.context),
+    ruleLine(rule),
     `Most allowed here: ${safe(highest)}.`,
     "</proactive-context>",
     "<runtime-check>",
