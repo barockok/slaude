@@ -10,7 +10,7 @@
 import * as Posts from "../db/proactive-posts";
 import { brainCallIfOpen } from "../knowledge/brain";
 import { proactiveFor } from "../soul/proactive";
-import { ruleLine, safe, sourceLine } from "./dispatch";
+import { DATA_LINE, ruleLine, safe, sourceLine } from "./dispatch";
 import { loadRules, type ProactiveRule } from "./rules";
 
 export interface ReplyContextDeps {
@@ -41,8 +41,9 @@ export async function proactiveReplyBlock(
       ? `You posted this proactively (${posted}) about "${safe(post.topic)}": ${safe(post.text)}`
       : `You posted this proactively (${posted}) about "${safe(post.topic)}". Its text was not kept.`,
   ];
+  if (c) lines.push(sourceLine(c));
+  lines.push(DATA_LINE);
   if (c) {
-    lines.push(sourceLine(c));
     if (c.ruleSlug) {
       const rules = await (deps.rules ?? ((agentId: string) => loadRules(agentId, brainCallIfOpen)))(post.agentId);
       const rule = rules.find((r) => r.slug === c.ruleSlug);

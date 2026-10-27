@@ -14,7 +14,10 @@
  *     card the turn opens);
  *   - `global`, and raising a DM rule, need the manager or backup speaking:
  *     the approval card posts in this thread to the channel's approvers, so
- *     it cannot reach them, and the tool refuses instead of opening one.
+ *     it cannot reach them, and the tool refuses instead of opening one;
+ *   - raising to `act` needs `quote` verbatim in this turn's own Slack text
+ *     (ctx.turnTexts, mono); where that text is unknown (a node) a card asks
+ *     even when the speaker could approve.
  * `taughtBy` is the turn's signed sender (ctx.userId), never an argument.
  * Shared by the in-process MCP server (createRuntimeMcp) and the node relay
  * (POST /v1/tools/runtime/proactive_rule).
@@ -76,6 +79,20 @@ async function ownTurn(ctx: SlackContext, userId: string): Promise<boolean> {
   return s.origin === "slack" && s.userId === userId && (!s.teamId || !ctx.teamId || s.teamId === ctx.teamId);
 }
 
+/** Whitespace-collapsed and lowercased, so a quote matches its message however it was spaced or cased. */
+const norm = (s: string): string => s.replace(/\s+/g, " ").trim().toLowerCase();
+
+/**
+ * Whether `quote` appears verbatim in this turn's own Slack text: true, false,
+ * or null when the text is not available (a node; a turn without it).
+ */
+async function quoteInTurn(ctx: SlackContext, quote: string): Promise<boolean | null> {
+  const texts = await ctx.turnTexts?.();
+  if (!texts) return null;
+  const q = norm(quote);
+  return q.length > 0 && texts.some((t) => norm(t).includes(q));
+}
+
 export async function proactiveRule(
   ctx: SlackContext,
   a: ProactiveRuleArgs,
@@ -125,17 +142,28 @@ export async function proactiveRule(
     }
   }
 
+  // A raise to act lets untrusted items be acted on, so it must rest on the
+  // speaker's own words: `quote` verbatim in this turn's own Slack text (the
+  // model could otherwise lift it from injected context). Where that text is
+  // not available, a card asks, even when the speaker could approve.
+  let unverified = false;
+  if (raising && a.level === "act") {
+    const heard = await quoteInTurn(ctx, a.quote);
+    if (heard === false) return err("refused: `quote` must be the person's own words from this message, verbatim; the rule was not changed");
+    unverified = heard === null;
+  }
+
   // Lowering here applies at once; raising, or any global rule, needs an approver for the scope.
   const canApprove = (u: string) => (channel ? isManagerOrApprover(u, channel) : managers().includes(u));
   let approvedBy: string | undefined;
-  if ((raising || scope === "global") && !canApprove(userId)) {
+  if (((raising || scope === "global") && !canApprove(userId)) || unverified) {
     // Global and DM: only the manager or backup, and a card in this thread
-    // would be addressed to the channel's approvers, so no card.
-    if (!channel) {
+    // would be addressed to the channel's approvers, so no card for anyone else.
+    if (!channel && !canApprove(userId)) {
       const m = managers();
       return err(`refused: ask ${m.length > 0 ? m.map(mention).join(" or ") : "the manager"} to set this; only they can approve it here`);
     }
-    const who = approverNames(channel);
+    const who = channel ? approverNames(channel) : managers().map(mention).join(" or ") || "the manager";
     if (!ctx.requestApproval) return err(`refused: this needs approval from ${who}, and no approval card can be opened here`);
     const r = await ctx.requestApproval({
       summary: `Let me handle ${a.kind} at ${a.level} ${where}${how ? `: ${how}` : ""}`,

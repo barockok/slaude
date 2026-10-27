@@ -104,6 +104,53 @@ describe("proactive_rule", () => {
     expect(page("rules/proactive/invoice-emails-c0team")!.meta.level).toBe("ask");
   });
 
+  describe("a raise to act checks the quote against this turn's own Slack text", () => {
+    const actArgs = { kind: "invoice emails", scope: "here" as const, level: "act" as const, how: "reply with the template", quote: "just answer these" };
+
+    test("the quote is in the person's own message: the manager's raise applies without a card", async () => {
+      const r = await proactiveRule(
+        ctx({ userId: WORLD.manager, turnTexts: () => ["Thanks.  Just answer these from now on."], requestApproval: async () => { throw new Error("no card"); } }),
+        actArgs,
+        deps(),
+      );
+      expect(r.isError).toBeUndefined();
+      expect(page("rules/proactive/invoice-emails-c0team")!.meta.level).toBe("act");
+    });
+
+    test("a quote that is not in the message is refused, with no card and no write", async () => {
+      let asked = false;
+      const r = await proactiveRule(
+        ctx({ userId: WORLD.manager, turnTexts: () => ["what is in the inbox today?"], requestApproval: async () => { asked = true; return { approved: true, by: WORLD.manager }; } }),
+        actArgs,
+        deps(),
+      );
+      expect(r.isError).toBe(true);
+      expect(text(r)).toContain("verbatim");
+      expect(asked).toBe(false);
+      expect(page("rules/proactive/invoice-emails-c0team")).toBeNull();
+    });
+
+    test("where the turn's text is not available, a raise to act opens a card even for the manager", async () => {
+      const seen: unknown[] = [];
+      const r = await proactiveRule(ctx({ userId: WORLD.manager, requestApproval: approving(WORLD.manager, seen) }), actArgs, deps());
+      expect(r.isError).toBeUndefined();
+      expect(seen).toHaveLength(1);
+      expect(page("rules/proactive/invoice-emails-c0team")!.meta.level).toBe("act");
+    });
+
+    test("in a DM with the manager and no text to check, the raise opens a card instead of applying", async () => {
+      __setProactiveSoulSource(() => "## Proactive\n- Highest: act\n");
+      try {
+        const seen: unknown[] = [];
+        const r = await proactiveRule(ctx({ userId: WORLD.manager, channel: "D0DM00001", requestApproval: approving(WORLD.manager, seen) }), actArgs, deps());
+        expect(r.isError).toBeUndefined();
+        expect(seen).toHaveLength(1);
+      } finally {
+        __setProactiveSoulSource(() => SOUL);
+      }
+    });
+  });
+
   test("raising past Highest is refused and names the ceiling", async () => {
     let asked = false;
     const r = await proactiveRule(

@@ -71,6 +71,10 @@ export type SlackContext = {
    *  turn began; a node: the job's recorded senders). Null or absent =
    *  unknown, which refuses a profile write. */
   turnSenders?: () => Promise<readonly TurnSender[] | null> | readonly TurnSender[] | null;
+  /** The Slack text of each message the running turn holds, as its sender
+   *  typed it (never the envelope, which carries injected context). Mono
+   *  only (AgentManager.turnTexts); null or absent = unknown. */
+  turnTexts?: () => Promise<readonly string[] | null> | readonly string[] | null;
   /** Optional approval gate — set by the adapter so request_approval works. */
   requestApproval?: (req: {
     summary: string;

@@ -813,6 +813,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // cron scheduler, whose routes bind it too (cron inputs carry no sender).
   const noteTurnSender = (sessionId: string, ctx: SlackContext): void => {
     ctx.turnSenders ??= () => (typeof agent.turnSenders === "function" ? agent.turnSenders(sessionId) : null);
+    ctx.turnTexts ??= () => (typeof agent.turnTexts === "function" ? agent.turnTexts(sessionId) : null);
   };
 
   const cronScheduler = new CronScheduler({
@@ -3307,7 +3308,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
       if (suppress) agent.suppressNextTurn(session.id);
       try {
-        await agent.sendMessage(session.id, envelope, { sender: { userId, teamId: teamId || null, origin: "slack" } });
+        await agent.sendMessage(session.id, envelope, { sender: { userId, teamId: teamId || null, origin: "slack", text: stripped } });
       } catch (e: any) {
         console.error("[slaude] sendMessage threw:", e?.message ?? e, e?.stack);
       }
