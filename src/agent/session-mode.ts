@@ -58,6 +58,7 @@ const SANDBOX_BLOCK = [
   "The sandbox holds no credentials: anything that needs one (pushing code, opening a pull request, calling an API) cannot be done from Bash there. The knowledge base, MCP servers and web tools are unchanged and still run here.",
   "Background jobs: Bash with run_in_background returns an ID; read output with mcp__remote__bash_output and stop it with mcp__remote__bash_kill.",
   "To publish work: commit on a branch named factory/<name>, then call mcp__remote__git_push (it asks the user for approval and pushes from outside the sandbox).",
+  "The repos were cloned when the sandbox was created and have no remote, so `git fetch` or `git pull` from Bash always fails. To bring newer commits in, call mcp__remote__git_fetch with the branch names (for example [\"master\"]); they arrive as mirror/<branch>. Rebase on mirror/master before a push, and `git reset --hard mirror/factory/<name>` when a human rewrote your branch.",
   "If a sandbox tool fails because the sandbox is unreachable or expired, stop and tell the user. Do not retry in a loop and do not work around it.",
   "The user can leave with `/sandbox off`, which destroys the sandbox: push anything worth keeping first.",
   "</sandbox-mode>",

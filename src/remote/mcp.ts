@@ -28,7 +28,9 @@ export const REMOTE_DENIED_LOCAL_TOOLS = [
 ] as const;
 
 const PREFIX = `mcp__${REMOTE_MCP_NAME}__`;
-const READ_ONLY = new Set(["read", "glob", "grep", "bash_output"]);
+/** git_fetch only moves refs from the server mirror into the sandbox (refs/remotes/mirror/*); it
+ *  publishes nothing and touches no working tree, so it is allowed like a read. */
+const READ_ONLY = new Set(["read", "glob", "grep", "bash_output", "git_fetch"]);
 const EDITS = new Set(["write", "edit"]);
 const SHELL = new Set(["bash", "bash_kill"]);
 /** Publishes code: asks in every mode that can ask, never auto-allowed (see gitPushGuard). */
