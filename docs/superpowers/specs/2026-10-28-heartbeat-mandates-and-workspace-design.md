@@ -2,6 +2,8 @@
 
 Date: 2026-10-28. Follows the heartbeat round (`2026-10-27-heartbeat-round-design.md`).
 
+Status: implemented on the epic branch; see the plan (`../plans/2026-10-28-heartbeat-mandates-and-workspace.md`) and the field note `2026-10-28-heartbeat-mandates-and-workspace`.
+
 ## Intent
 
 Two gaps in the heartbeat round, both found by asking how a proactive turn

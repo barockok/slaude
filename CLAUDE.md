@@ -105,6 +105,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/site/_content/field-notes/<date>-<slug>.md` and publish to the docs site. Add a new file per significant finding/decision/mistake; index it below as one line (date, a short title with the key detail, the link; the full write-up lives in the note). Newest first.
 
+- [2026-10-28 — Heartbeat mandates and one proactive folder: triage sees each channel's mandate; proactive threads share a folder, one turn at a time (in-process claim, Redis lock on nodes)](docs/site/_content/field-notes/2026-10-28-heartbeat-mandates-and-workspace.md)
 - [2026-10-27 — Heartbeat round: one read-only pass over the agent's MCP sources, code-owned watermarks and restraint, rules the model may only lower](docs/site/_content/field-notes/2026-10-27-heartbeat-round.md)
 - [2026-10-26 — Live smoke test of the teammate epic (real Slack, live model; kb_think scope leak and gbrain slug casing fixed)](docs/site/_content/field-notes/2026-10-26-live-smoke-test.md)
 - [2026-10-26 — Proactiveness: promises kept in their own thread via the cron path, heartbeat posts behind code-enforced restraint](docs/site/_content/field-notes/2026-10-26-proactiveness.md)
