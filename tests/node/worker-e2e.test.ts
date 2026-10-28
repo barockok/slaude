@@ -542,21 +542,29 @@ d("gateway↔node E2E (real Redis)", () => {
     expect(Object.keys(await stub.localMcp!(sid))).toEqual(["gh"]);
   }, 40_000);
 
+  // This thread's replies and this session's completed jobs on a queue. The
+  // routing tests must wait for their OWN turn: a cumulative reply count or a
+  // queue-wide completed count is already met by earlier tests (another
+  // session's job can ride the per-node queue too), so the test returned while
+  // its turn was still running, and that turn ending later re-registered the
+  // session warm under the next test.
+  const threadReplies = () => posts.filter((p) => p.thread_ts === THREAD && String(p.text).includes("node-reply:")).length;
+  const completedFor = async (queue: string, sessionId: string) =>
+    (await turnsQ.queue(queue).getCompleted()).filter((j: any) => j.data?.sessionId === sessionId).length;
+
   test("warm routing: second message rides the per-node queue", async () => {
     const sessionId = await sessionIdOf(THREAD);
     // The worker registered the session warm after the first turn.
     await until(async () => (await registryG.lookup(sessionId))?.node === NODE_ID, 10_000);
+    const replies = threadReplies();
+    const onNode = await completedFor(nodeTurnsQueueFn(NODE_ID), sessionId);
     await emitSlack("message", msg(THREAD, "9000.2", "warm follow-up"));
-    await until(() => posts.filter((p) => String(p.text).includes("node-reply:")).length >= 2, 15_000);
+    await until(() => threadReplies() > replies, 15_000);
     // The reply lands from inside the turn; BullMQ marks the job "completed" a
-    // beat later. Poll for the per-node queue's completed count instead of a
-    // one-shot read that races the completion transition under load. Intact
-    // assertion: a job that (wrongly) rode the SHARED queue never bumps the
-    // per-node count, so this still times out and fails on a routing regression.
-    await until(
-      async () => ((await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getJobCounts("completed")).completed ?? 0) >= 1,
-      10_000,
-    );
+    // beat later, after the worker has re-registered the session. A job that
+    // (wrongly) rode the SHARED queue never shows up here, so a routing
+    // regression still times out.
+    await until(async () => (await completedFor(nodeTurnsQueueFn(NODE_ID), sessionId)) > onNode, 10_000);
   }, 30_000);
 
   test("reload:<tenant> subscription is live before/after the first turn (cache bustable)", async () => {
@@ -575,16 +583,13 @@ d("gateway↔node E2E (real Redis)", () => {
     // session live: finding the entry gone, it registered it again, and the
     // message rode the per-node queue.
     await until(async () => !(await registryG.lookup(sessionId)), 10_000);
-    const before = (await turnsQ.queue("turns").getJobCounts("completed")).completed ?? 0;
+    const replies = threadReplies();
+    const shared = await completedFor("turns", sessionId);
     await emitSlack("message", msg(THREAD, "9000.3", "cold resume"));
-    await until(() => posts.filter((p) => String(p.text).includes("node-reply:")).length >= 3, 15_000);
-    // Same settle race as warm-routing: wait for the shared-queue completion to
-    // register rather than reading the count the instant the reply posts. A
-    // turn that never ran on the shared queue leaves the count flat → times out.
-    await until(
-      async () => ((await turnsQ.queue("turns").getJobCounts("completed")).completed ?? 0) > before,
-      10_000,
-    );
+    await until(() => threadReplies() > replies, 15_000);
+    // Same settle race as warm-routing: wait for this session's shared-queue
+    // completion. A turn that never ran on the shared queue → times out.
+    await until(async () => (await completedFor("turns", sessionId)) > shared, 10_000);
   }, 30_000);
 
   test("/abort mid-turn reaches the node over pub/sub", async () => {
