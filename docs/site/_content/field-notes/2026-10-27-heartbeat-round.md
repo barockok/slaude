@@ -143,8 +143,9 @@ code decide what happens to each item. The model proposes; code clamps.
   channel then threw in Slack and pinned the watermark every round. A channel is
   now a destination only with its own `### Proactive / Enabled: yes`, and
   `channel_not_found`, `not_in_channel` and `is_archived` are terminal.
-  **Provisional, for the owner to confirm:** global `Enabled: yes` alone no
-  longer reaches unlisted channels.
+  **Confirmed by the owner:** global `Enabled: yes` alone does not reach
+  unlisted channels; a channel takes proactive posts only with its own
+  `### Proactive` block enabled.
 - Smaller: two servers whose names sanitise to the same `read_` name broke
   every round (the second is now skipped with a boot warning); the act envelope
   asked for a reply although a `<runtime-check>` never requires one (it now
