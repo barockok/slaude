@@ -64,6 +64,11 @@ for s in 1 2 3; do
     grep -E '^\(fail\)' "$shard_out" | sort -u
     echo "::error::${fails} test(s) failed in shard ${s}"
     failed=1
+    # Each failure's own output again, at the end where a long log is never
+    # cut off (CI log views and API reads keep only the tail).
+    echo "::group::shard ${s} failure details"
+    grep -B60 -E '^\(fail\)' "$shard_out" | tail -n 600
+    echo "::endgroup::"
   fi
   # bun 1.3.11 can exit 99/100 with zero failures (PGLite's quit handler sets
   # process.exitCode); tolerate only that, and only without a crash marker.
