@@ -73,6 +73,11 @@ describe("syncKbWikis while the brain is closing", () => {
   });
 
   test("stops before the next KB once a close is waiting", async () => {
+    // Start from a quiet brain: brain work or a close another file left behind
+    // would make the run stop before its first KB (brainClosing() already true).
+    await settleBrainWork();
+    for (let i = 0; brainClosing() && i < 500; i++) await sleep(10);
+    expect(brainClosing()).toBe(false);
     const run = trackBrainWork(syncKbWikis());
     await closeBrain(); // waits for `run`, which must not start the second KB
     const results = await run;
