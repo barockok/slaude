@@ -875,10 +875,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * the turn runs as is the thread's own /1on1 lock, never a carried identity;
    * callers check that the lock is what they expect. `userId` is the ctx's
    * and the job's initiator; `engage` marks the thread engaged so a later
-   * human reply continues it.
+   * human reply continues it; `sharedFolder` (a heartbeat channel post's
+   * thread only) creates its session in the agent's proactive folder.
    */
   const dispatchThreadTurn = async (
-    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean; appId?: string | null },
+    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean; appId?: string | null; sharedFolder?: boolean },
     envelope: string,
     run: { runId: string; agentId: string },
     pass: TurnPass,
@@ -887,7 +888,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const persona = target.personaId;
     const session = await agent.ensureSession(
       { team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: persona ?? "default" },
-      pass === "heartbeat-turn" ? { workingDir: proactiveWorkspaceDir(run.agentId) } : {},
+      target.sharedFolder ? { workingDir: proactiveWorkspaceDir(run.agentId) } : {},
     );
     if (target.engage) await Sessions.setEngaged(session.id, true);
     // A thread a heartbeat post just opened has no app of its own yet: the
@@ -1015,6 +1016,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           userId: post.agentId,
           engage: true,
           appId: post.appId,
+          // Only a channel post's thread shares the proactive folder: a DM
+          // post's thread (manager or person) keeps its own, so files made
+          // for one person never sit where a channel thread works.
+          sharedFolder: post.audience === "channel",
         },
         envelope,
         run,

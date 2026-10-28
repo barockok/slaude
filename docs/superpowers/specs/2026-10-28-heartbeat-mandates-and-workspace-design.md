@@ -86,9 +86,13 @@ at almost no cost and keeps the structure global.
   (on the cluster that is the shared volume, so every gateway and node sees
   the same folder).
 - Which turns use it: a thread created by a heartbeat `ask`/`act` dispatch
-  gets that folder as its `working_dir` when its session is created. Later
-  human replies in that thread keep it, as any thread keeps its folder.
-  Promise checks, cron runs and ordinary threads are unchanged.
+  of a post whose audience is `channel` gets that folder as its
+  `working_dir` when its session is created. Later human replies in that
+  thread keep it, as any thread keeps its folder. A post to the manager or a
+  person is a DM, and its thread keeps its own per-thread folder: files made
+  for one person must not sit where channel threads work, and the folder is
+  for work shared across posts, which a DM is not. Promise checks, cron runs
+  and ordinary threads are unchanged.
 - Claim: a turn whose session works in that folder takes a claim on it for
   the length of the turn. A second such turn waits for the claim (delayed and
   re-tried, like a session lock held by another node), never fails or drops.

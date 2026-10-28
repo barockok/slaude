@@ -6,7 +6,7 @@
  * (origin cron, no person), engaged, carrying its `heartbeat-turn` run.
  */
 import { existsSync } from "node:fs";
-import { proactiveWorkspaceDir } from "../../src/agent/workspace-claim";
+import { isProactiveWorkspace, proactiveWorkspaceDir } from "../../src/agent/workspace-claim";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import * as Posts from "../../src/db/proactive-posts";
@@ -311,6 +311,37 @@ describe("the mono gateway's proactive transport", () => {
     expect(await runDueCommitments(AGENT_ID, new Date(row!.nextCheckAt), deps)).toBe(1);
     expect(sent.map((x) => x.sid)).toEqual([session!.id]);
   }, 5000);
+
+  test("a DM post's thread (manager or person audience) keeps its own folder, never the shared one", async () => {
+    h = createGateway(agent, slackTransport());
+    const deps = defaultDispatchDeps(h.__proactive!, "default");
+    await dispatchProactive(post(), "act", rule(), "act", deps);
+    await dispatchProactive(post({ id: "post-dm", audience: "manager", recipient: "U0MANAGER", channelId: "D0MANAGER", messageTs: "1900.1" }), "ask", null, "ask", deps);
+    await dispatchProactive(post({ id: "post-person", audience: "person", recipient: "U0ALICE", channelId: "D0ALICE", messageTs: "1900.2" }), "ask", null, "ask", deps);
+    const ch = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "1800.100", persona_id: "default" });
+    const mgr = await Sessions.findByThread({ team_id: "T", channel_id: "D0MANAGER", thread_ts: "1900.1", persona_id: "default" });
+    const person = await Sessions.findByThread({ team_id: "T", channel_id: "D0ALICE", thread_ts: "1900.2", persona_id: "default" });
+    expect(ch!.working_dir).toBe(proactiveWorkspaceDir(AGENT_ID));
+    for (const s of [mgr!, person!]) {
+      expect(isProactiveWorkspace(s.working_dir)).toBe(false);
+      expect(s.working_dir).not.toBe(ch!.working_dir);
+    }
+    expect(mgr!.working_dir).not.toBe(person!.working_dir);
+  });
+
+  test("a promise check's thread keeps its own folder", async () => {
+    h = createGateway(agent, slackTransport());
+    const row = {
+      agentId: AGENT_ID, source: `agent-${AGENT_ID}`, slug: "commitments/x", personaId: "default", teamId: "T",
+      channelId: "C0EXAMPLE", threadTs: "2100.1", beneficiary: "U0ALICE", runAs: null, dueText: "soon",
+      dueKind: "event" as const, checkText: "", onNoChange: "silent" as const, nextCheckAt: 0, expiresAt: 0,
+      status: "open" as const, checks: 0, lastCheckedAt: null, createdAt: 0,
+    };
+    await h.__promises!.dispatch(row, "check", { runId: "run-x", agentId: AGENT_ID });
+    const s = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "2100.1", persona_id: "default" });
+    expect(isProactiveWorkspace(s!.working_dir)).toBe(false);
+    expect(sent.map((x) => x.sid)).toEqual([s!.id]);
+  });
 
   test("a heartbeat dispatch does not wait for the turn to be accepted", async () => {
     // A turn waiting for the proactive folder: sendMessage never resolves.

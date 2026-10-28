@@ -15,7 +15,7 @@ Triage picked a destination channel for each item but saw only the channel ids. 
 ## What changed
 
 - The triage prompt now carries the global mandate and, for each enabled channel, that channel's own mandate (or a pointer to the global one). Each is one line, has no `<`, and is cut at 600 characters with an ellipsis. Routing decisions in code are unchanged; the model only sees more.
-- Heartbeat ask and act threads get `workspaces/agent-<id>/proactive/` as their working directory when the thread is created. The agent id is sanitised. Later human replies in that thread keep it.
+- Heartbeat ask and act threads of a channel post get `workspaces/agent-<id>/proactive/` as their working directory when the thread is created. The agent id is sanitised. Later human replies in that thread keep it. A post to the manager or a person is a DM, and its thread keeps its own folder, so files made for one person never sit where channel threads work.
 - One turn at a time in that folder. In process, a claim (`WorkspaceClaims`) is FIFO and re-entrant per session. It is released at the turn's result, at session exit, or when a send fails. On nodes, a Redis lock (`withKeyLock`, key `lock:workspace:<hash of dir>`) is taken inside the session lock, and a held lock requeues the turn after 500 ms instead of failing it. The gateway marks the job with the folder; the mark is not signed, since a forged one only adds waiting.
 - Auto-evolve skill checks take the folder only if it is free and are skipped otherwise. On mono a heartbeat dispatch does not wait for its turn, so a later failure leaves its ledger run to the stale-run sweep.
 
