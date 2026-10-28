@@ -7,6 +7,7 @@
  * without a Redis server.
  */
 import { createHash } from "node:crypto";
+import { resolve } from "node:path";
 
 /** SLAUDE_REDIS_PREFIX — namespace for every key this process touches. */
 export function redisPrefix(): string {
@@ -84,7 +85,7 @@ export interface Keys {
   nodeSet(): string;
   /** `lock:session:<sessionId>` — one turn at a time per session. */
   sessionLock(sessionId: string): string;
-  /** `lock:workspace:<sha256(dir) first 32 hex>` — one turn at a time in a
+  /** `lock:workspace:<sha256(resolved dir) first 32 hex>` — one turn at a time in a
    *  shared working directory (the agent's proactive folder) across nodes.
    *  Hashed so a path never puts `/` into the key. */
   workspaceLock(dir: string): string;
@@ -157,7 +158,7 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     nodeLabels: (nodeId) => `${prefix}:nodelabels:${nodeId}`,
     nodeSet: () => `${prefix}:nodeset`,
     sessionLock: (sessionId) => `${prefix}:lock:session:${sessionId}`,
-    workspaceLock: (dir) => `${prefix}:lock:workspace:${createHash("sha256").update(dir).digest("hex").slice(0, 32)}`,
+    workspaceLock: (dir) => `${prefix}:lock:workspace:${createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 32)}`,
     leaderLock: (role) => `${prefix}:lock:leader:${role}`,
     coalesce: (sessionId) => `${prefix}:coalesce:${sessionId}`,
     coalesceLock: (sessionId) => `${prefix}:lock:coalesce:${sessionId}`,

@@ -1,16 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { paths } from "../../src/config/home";
 import { isProactiveWorkspace, proactiveWorkspaceDir, WorkspaceClaims } from "../../src/agent/workspace-claim";
 
 describe("proactive workspace paths", () => {
   test("the proactive folder is per agent, under paths.workspaces", () => {
-    expect(proactiveWorkspaceDir("U0AGENT")).toBe(join(paths.workspaces, "agent-U0AGENT", "proactive"));
+    expect(proactiveWorkspaceDir("U0AGENT")).toBe(resolve(paths.workspaces, "agent-U0AGENT", "proactive"));
+  });
+  test("the proactive folder is an absolute, resolved path", () => {
+    const d = proactiveWorkspaceDir("U0AGENT");
+    expect(d).toBe(resolve(d));
   });
   test("an agent id cannot leave paths.workspaces", () => {
     for (const id of ["../../etc", "a/b", "x y", ""]) {
       const d = proactiveWorkspaceDir(id);
-      expect(dirname(dirname(d))).toBe(paths.workspaces);
+      expect(dirname(dirname(d))).toBe(resolve(paths.workspaces));
       expect(basename(dirname(d))).toMatch(/^agent-[A-Za-z0-9_-]*$/);
     }
   });
@@ -59,5 +63,14 @@ describe("WorkspaceClaims", () => {
     expect(c.holderOf("/w")).toBe("s2");
     c.releaseHolder("s2");
     expect(c.holderOf("/w")).toBeNull();
+  }, 2000);
+  test("WorkspaceClaims: one folder however its path is spelled", async () => {
+    const c = new WorkspaceClaims(); let got = false;
+    await c.acquire("/w/agent-U0A/proactive", "s1");
+    const p2 = c.acquire("/w/agent-U0A/./x/../proactive/", "s2").then(() => (got = true));
+    await Bun.sleep(5); expect(got).toBe(false);
+    expect(c.holderOf("/w//agent-U0A/proactive")).toBe("s1");
+    c.releaseHolder("s1"); await p2;
+    expect(c.holderOf("/w/agent-U0A/proactive")).toBe("s2");
   }, 2000);
 });

@@ -31,6 +31,7 @@ import { makeRegistry, type Registry } from "../../queue/registry";
 import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { TurnQueues, type TurnJob, type TurnTarget } from "../../queue/turns";
 import { isFailureCode } from "./failure-codes";
+import { resolve } from "node:path";
 import { isProactiveWorkspace } from "../../agent/workspace-claim";
 import type { TurnOrigin } from "../../knowledge/gated-dispatch";
 
@@ -401,7 +402,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           ...(meta.backgroundRunId ? { bgRun: meta.backgroundRunId } : {}),
           // The agent's proactive folder is shared by every heartbeat thread:
           // the node serialises turns there across nodes by this field.
-          ...(isProactiveWorkspace(session.working_dir) ? { workspace: session.working_dir! } : {}),
+          ...(isProactiveWorkspace(session.working_dir) ? { workspace: resolve(session.working_dir!) } : {}),
           messages: [
             { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}) },
           ],

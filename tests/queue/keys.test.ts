@@ -56,6 +56,13 @@ describe("queue/keys", () => {
     expect(a).toMatch(/^p:lock:workspace:[0-9a-f]{32}$/);
   });
 
+  test("workspaceLock: one key however the folder's path is spelled", () => {
+    const k = makeKeys("p");
+    const a = k.workspaceLock("/w/agent-U0A/proactive");
+    expect(k.workspaceLock("/w//agent-U0A/./proactive/")).toBe(a);
+    expect(k.workspaceLock("/w/agent-U0A/x/../proactive")).toBe(a);
+  });
+
   test("queue names: shared is bare, per-node dots the nodeId in", () => {
     expect(TURNS_QUEUE).toBe("turns");
     expect(nodeTurnsQueue("host-ab12")).toBe("turns.host-ab12");

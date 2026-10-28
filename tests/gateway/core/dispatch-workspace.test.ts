@@ -54,6 +54,14 @@ describe("workspace on the turn job", () => {
     await h.dispatch.close();
   });
 
+  test("the job carries the folder resolved, however the session row spells it", async () => {
+    const h = harness();
+    const dir = proactiveWorkspaceDir("U0AGENT");
+    await h.dispatch.dispatch({ id: "S4", working_dir: `${dir}/` } as unknown as SessionRow, "hi", META);
+    expect(h.enqueued[0]!.workspace).toBe(dir);
+    await h.dispatch.close();
+  });
+
   test("an ordinary session's job has no workspace key", async () => {
     const h = harness();
     await h.dispatch.dispatch({ id: "S2", working_dir: "/tmp/elsewhere/S2" } as unknown as SessionRow, "hi", META);

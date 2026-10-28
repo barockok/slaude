@@ -3,14 +3,14 @@
  * every thread a heartbeat `ask`/`act` dispatch opens, so files the agent
  * makes while working a post survive from one post to the next.
  */
-import { join, resolve, dirname, basename } from "node:path";
+import { resolve, dirname, basename } from "node:path";
 import { paths } from "../config/home";
 
 const safeId = (id: string): string => id.replace(/[^A-Za-z0-9_-]/g, "_");
 
-/** `<paths.workspaces>/agent-<safe id>/proactive`. */
+/** `<paths.workspaces>/agent-<safe id>/proactive`, resolved (absolute, normalised). */
 export function proactiveWorkspaceDir(agentId: string): string {
-  return join(paths.workspaces, `agent-${safeId(agentId)}`, "proactive");
+  return resolve(paths.workspaces, `agent-${safeId(agentId)}`, "proactive");
 }
 
 /** True exactly for the proactive folder of some agent. */
@@ -31,6 +31,9 @@ export function isProactiveWorkspace(dir: string | null | undefined): boolean {
  *
  * On nodes a cross-process lock is taken before a turn reaches the
  * manager, so this claim only ever orders turns that lock already ordered.
+ *
+ * A folder is keyed by its resolved path, as isProactiveWorkspace reads it,
+ * so two spellings of one folder are one folder.
  */
 type Waiter = { holder: string; resolve: () => void };
 
@@ -39,7 +42,8 @@ export class WorkspaceClaims {
   #held = new Map<string, string>();
 
   /** Resolves once `holder` holds `dir`: at once when free or already its own, else in FIFO turn. */
-  acquire(dir: string, holder: string): Promise<void> {
+  acquire(rawDir: string, holder: string): Promise<void> {
+    const dir = resolve(rawDir);
     const f = this.#folders.get(dir);
     if (!f) {
       this.#folders.set(dir, { holder, waiters: [] });
@@ -72,6 +76,6 @@ export class WorkspaceClaims {
 
   /** Who holds `dir` now, or null. */
   holderOf(dir: string): string | null {
-    return this.#folders.get(dir)?.holder ?? null;
+    return this.#folders.get(resolve(dir))?.holder ?? null;
   }
 }
