@@ -651,6 +651,106 @@ d("gateway↔node E2E (real Redis)", () => {
     };
   }, 30_000);
 
+  // Heartbeat mandates spec Part 2: one turn at a time in the agent's
+  // proactive folder across nodes. A job carrying `workspace` waits (delayed,
+  // never failed) while another owner holds the folder's lock; a job without
+  // it is not held up by that lock.
+  test("a job in a held proactive folder is requeued until the folder frees; other jobs run at once", async () => {
+    const { proactiveWorkspaceDir } = await import("../../src/agent/workspace-claim");
+    const WS_THREAD = "9700.0";
+    const OTHER_THREAD = "9710.0";
+    const repliesIn = (thread: string) =>
+      posts.filter((p) => p.thread_ts === thread && String(p.text).includes("node-reply:")).length;
+    const requeued = () => Number(/slaude_node_turns_total\{result="requeued"\} (\d+)/.exec(metricsRender())?.[1] ?? 0);
+
+    // Seed the thread's session with an ordinary turn.
+    const seeded = repliesIn(WS_THREAD);
+    await emitSlack("message", msg(WS_THREAD, "9700.1", "<@USLAUDE> seed the folder session"));
+    await until(() => repliesIn(WS_THREAD) > seeded, 15_000);
+    const sid = await sessionIdOf(WS_THREAD);
+
+    const dir = proactiveWorkspaceDir("U0AGENT");
+    const folderKey = keys.workspaceLock(dir);
+    expect(await acquireLockFn(redis, folderKey, "foreign-node:other-session", 60_000)).toBe(true);
+    const calls: string[] = [];
+    const prev = behavior;
+    behavior = async (a) => {
+      calls.push(a.sessionId);
+      await prev(a);
+    };
+    try {
+      const wsBefore = repliesIn(WS_THREAD);
+      const requeuedBefore = requeued();
+      await qd.dispatch({ id: sid, working_dir: dir } as any, "proactive folder work", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WS_THREAD,
+        eventTs: String(Date.now() / 1000),
+        userId: "U0MGR",
+      });
+      // The node claims it, finds the folder held, and delays it — more than once.
+      await until(() => requeued() >= requeuedBefore + 2, 10_000);
+      expect(calls.filter((c) => c === sid)).toHaveLength(0);
+
+      // A job without `workspace` runs while the folder is still held.
+      const otherBefore = repliesIn(OTHER_THREAD);
+      await emitSlack("message", msg(OTHER_THREAD, "9710.1", "<@USLAUDE> not in the folder"));
+      await until(() => repliesIn(OTHER_THREAD) > otherBefore, 15_000);
+      expect(await redis.get(folderKey)).toBe("foreign-node:other-session");
+      expect(calls.filter((c) => c === sid)).toHaveLength(0);
+      expect(repliesIn(WS_THREAD)).toBe(wsBefore);
+
+      // The foreign holder lets go: the delayed job runs and replies.
+      await redis.del(folderKey);
+      await until(() => repliesIn(WS_THREAD) > wsBefore, 15_000);
+      expect(calls.filter((c) => c === sid)).toHaveLength(1);
+      // The turn's own folder lock is released after the turn.
+      await until(async () => (await redis.get(folderKey)) === null, 5_000);
+    } finally {
+      behavior = prev;
+      await redis.del(folderKey);
+    }
+  }, 60_000);
+
+  test("losing the proactive folder's lock mid-turn aborts the agent", async () => {
+    const { proactiveWorkspaceDir } = await import("../../src/agent/workspace-claim");
+    const WS_THREAD = "9720.0";
+    const repliesIn = (thread: string) =>
+      posts.filter((p) => p.thread_ts === thread && String(p.text).includes("node-reply:")).length;
+    const seeded = repliesIn(WS_THREAD);
+    await emitSlack("message", msg(WS_THREAD, "9720.1", "<@USLAUDE> seed the folder session"));
+    await until(() => repliesIn(WS_THREAD) > seeded, 15_000);
+    const sid = await sessionIdOf(WS_THREAD);
+    const dir = proactiveWorkspaceDir("U0AGENT-LOST");
+    const folderKey = keys.workspaceLock(dir);
+
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const prev = behavior;
+    behavior = async ({ signal }) => {
+      signal.addEventListener("abort", () => release(), { once: true });
+      await gate;
+    };
+    try {
+      const abortedBefore = stub.abortedSessions.filter((s: string) => s === sid).length;
+      await qd.dispatch({ id: sid, working_dir: dir } as any, "long proactive task", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WS_THREAD,
+        eventTs: String(Date.now() / 1000),
+        userId: "U0MGR",
+      });
+      await until(() => stub.aborts.has(sid), 10_000);
+      expect(await redis.get(folderKey)).toBe(`${NODE_ID}:${sid}`);
+      // Yank only the folder lock: the session lock is still held.
+      await redis.del(folderKey);
+      await until(() => stub.abortedSessions.filter((s: string) => s === sid).length > abortedBefore, 10_000);
+      await until(() => !stub.aborts.has(sid), 10_000);
+    } finally {
+      behavior = prev;
+    }
+  }, 40_000);
+
   // Phase 3: the node's session config home is pod-local and seeded from the
   // gateway's credential store with the access tokens for the turn's runAs
   // owner. Runs the real /v1 endpoint, the real dispatcher-minted runAs, and

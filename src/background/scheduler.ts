@@ -65,7 +65,7 @@ import { bridgeExternalMcp } from "../gateway/core/external-mcp";
 import { anyProactiveEnabled } from "../soul/proactive";
 import { env } from "../config/env";
 import { personaApp } from "./digest";
-import { soulData, cachedSoulData } from "../soul/extract";
+import { soulData, cachedSoulData, channelMandate } from "../soul/extract";
 import { personaSoulText } from "../persona/soul-source";
 import { sweepStaleRuns } from "./stale-runs";
 import type { SourceReader } from "../proactive/source-reader";
@@ -473,6 +473,7 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
               call: deps.call,
               post: slack.post,
               managerId: personaManager,
+              mandates: personaMandates,
               app: personaApp,
               // Read at run time: the gateway sets both after building the scheduler deps.
               ...(slack.sources ? { sources: slack.sources } : {}),
@@ -492,6 +493,24 @@ export function personaManager(personaId: string): string | null {
     return cachedSoulData(personaSoulText(personaId))?.manager.userId ?? null;
   } catch {
     return null;
+  }
+}
+
+export interface PersonaMandates {
+  global: string;
+  channels: Record<string, string | null>;
+}
+
+/** A persona's global mandate and each listed channel's own (null: it follows the global one). Never throws. */
+export function personaMandates(personaId: string, channelIds: readonly string[]): PersonaMandates {
+  try {
+    const soul = !personaId || personaId === "default" ? soulData() : cachedSoulData(personaSoulText(personaId));
+    if (!soul) return { global: "", channels: {} };
+    const channels: Record<string, string | null> = {};
+    for (const c of channelIds) channels[c] = channelMandate(soul, c);
+    return { global: soul.mandate ?? "", channels };
+  } catch {
+    return { global: "", channels: {} };
   }
 }
 

@@ -55,6 +55,7 @@ import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/typ
 import { turnModelTokens, type SkillCheckBudget } from "../background/skill-check";
 import { skillUsageHook, type SkillUsageRecorder } from "./skill-usage-hook";
 import { passEndsTurnHook } from "./pass-stop-hook";
+import { isProactiveWorkspace, WorkspaceClaims } from "./workspace-claim";
 import { addTokens, PROVISIONAL_OUTPUT_TOKENS, tokensFromUsage, type ModelTokens, type ModelUsageRow, type TokenCounts } from "../background/prices";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
@@ -121,6 +122,10 @@ type LiveSession = {
   idleTimer?: ReturnType<typeof setTimeout>;
   /** Set when reload_session is called so expected exit errors are suppressed. */
   reloading?: boolean;
+  /** Set when the idle timer closed the input: the instance is on its way out
+   *  (still in #live until its loop unwinds), so a send treats it like a
+   *  reloading one and boots fresh after it exits. */
+  closing?: boolean;
   /** Inputs pushed so far (never decreases): a check whose budgeted start
    *  resolves after another input was pushed is stale and is not run. */
   inputSeq: number;
@@ -133,6 +138,8 @@ type LiveSession = {
   exited: Promise<void>;
   /** Slack channel of the session row, cached at start for metric labels. */
   channelId?: string | null;
+  /** The session row's working dir, cached at start (set once at creation, never changed). */
+  workingDir?: string;
   /** Current permission mode (kept in sync by setPermissionMode) — remote tool gating reads it. */
   mode?: PermissionMode;
   /** The named persona this session booted as (undefined = default). */
@@ -422,6 +429,8 @@ export class AgentManager extends EventEmitter {
   });
   /** Built-in skills loaded per session; reset at every boot, dropped at teardown. */
   #skillGate = new SkillGate();
+  /** The agent's proactive folder holds one turn at a time in this process. */
+  #claims = new WorkspaceClaims();
 
   /** Current context-usage snapshot for a session, or null if no turn has completed. */
   getTokenSnapshot(sessionId: string): UsageSnapshot | null {
@@ -699,17 +708,18 @@ export class AgentManager extends EventEmitter {
   }
 
   /** Get-or-create a session bound to a Slack thread. */
-  async ensureSession(thread: ThreadKey, opts: { title?: string } = {}) {
+  async ensureSession(thread: ThreadKey, opts: { title?: string; workingDir?: string } = {}) {
     let row = await this.#store.findByThread(thread);
     if (!row) {
       // Multi-persona: named personas sharing a thread must not share a cwd.
       // Suffix the workspace with the persona; default persona → path unchanged.
       const personaSuffix =
         thread.persona_id && thread.persona_id !== "default" ? `__${thread.persona_id}` : "";
-      const workingDir = join(
-        paths.workspaces,
-        `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}${personaSuffix}`,
-      );
+      // `opts.workingDir` (a heartbeat thread's shared folder) applies only here,
+      // at creation; an existing row keeps the folder it has.
+      const workingDir =
+        opts.workingDir ??
+        join(paths.workspaces, `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}${personaSuffix}`);
       mkdirSync(workingDir, { recursive: true });
       try {
         row = await this.#store.createForThread({
@@ -764,6 +774,7 @@ export class AgentManager extends EventEmitter {
    *  A throwing listener must not stall teardown. */
   #signalSessionExit(sessionId: string) {
     this.#idleHeld.delete(sessionId);
+    this.#claims.releaseHolder(sessionId);
     try {
       this.emit("sessionExit", sessionId);
     } catch (e) {
@@ -775,6 +786,17 @@ export class AgentManager extends EventEmitter {
    *  False for unknown or not-live sessions. */
   isTurnInFlight(sessionId: string): boolean {
     return (this.#live.get(sessionId)?.pendingInputs ?? 0) > 0;
+  }
+
+  /** True when the session works in the agent's proactive folder and another
+   *  session holds that folder now, so a message sent to it would wait for
+   *  the folder. False for a session anywhere else, or one that holds it. */
+  async folderHeldByOther(sessionId: string): Promise<boolean> {
+    const cached = this.#live.get(sessionId);
+    const dir = cached ? cached.workingDir : (await this.#store.findById(sessionId))?.working_dir;
+    if (!isProactiveWorkspace(dir)) return false;
+    const holder = this.#claims.holderOf(dir!);
+    return holder !== null && holder !== sessionId;
   }
 
   /** Send user input. Starts session loop if not already live. */
@@ -830,40 +852,71 @@ export class AgentManager extends EventEmitter {
   }
 
   async #send(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null = null, run?: BackgroundTurnRun) {
+    // A session in the agent's proactive folder waits for the folder before
+    // its turn starts: two threads there never run at once in this process.
+    // Re-entrant, so the holder's own next input never waits on itself. The
+    // working dir is set at creation and never changes: a live session's
+    // cached copy saves a store read (a /v1 call on a node) per input.
+    const cached = this.#live.get(sessionId);
+    const dir = cached ? cached.workingDir : (await this.#store.findById(sessionId))?.working_dir;
+    const claimed = isProactiveWorkspace(dir);
+    try {
+      await this.#sendClaimed(sessionId, text, synthetic, sender, run, claimed ? dir! : null);
+    } catch (e) {
+      // Failed before its input was in, and no other input of this session
+      // runs or boots: nothing of this session runs there.
+      if (claimed && !this.isTurnInFlight(sessionId) && !this.#booting.has(sessionId)) this.#claims.releaseHolder(sessionId);
+      throw e;
+    }
+  }
+
+  async #sendClaimed(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null, run: BackgroundTurnRun | undefined, claimDir: string | null) {
     // Signal that a real user turn is starting for this session. Slash commands
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
-    this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
-    let live = this.#live.get(sessionId);
-    // A reloading session has closed its input: anything pushed now would never
-    // reach the CLI. Wait for it to exit and boot a fresh one for this message.
-    // Bounded: a CLI that never exits after its stdin closes must not hang this
-    // forever. Past the bound the old session is aborted and detached (its
-    // eventual exit cannot touch the fresh one), and the message boots fresh.
-    while (live?.reloading) {
-      const old = live;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const exited = await Promise.race([
-        old.exited.then(() => true),
-        new Promise<boolean>((r) => (timer = setTimeout(() => r(false), this.#reloadExitTimeoutMs))),
-      ]);
-      clearTimeout(timer);
-      if (!exited) {
-        console.warn(`[mgr] reloading session=${sessionId} did not exit within ${this.#reloadExitTimeoutMs}ms; aborting it and booting fresh`);
-        this.abort(sessionId);
-        if (old.idleTimer) clearTimeout(old.idleTimer);
-        if (this.#live.get(sessionId) === old) {
-          this.#live.delete(sessionId);
-          this.#skillGate.forget(sessionId);
-          // The detached instance's own teardown no longer owns the id and
-          // stays silent, so this is its one exit signal (a voice call must learn).
-          this.#signalSessionExit(sessionId);
-        }
-        live = undefined;
-        break;
-      }
+    // A session in the proactive folder signals it once it holds the folder.
+    if (!claimDir) this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
+    let live: LiveSession | undefined;
+    // Repeats until the folder is held without waiting for it: anything read
+    // before a wait (the live instance, its reload state) may be stale after.
+    for (;;) {
       live = this.#live.get(sessionId);
+      // A reloading (or idled-out) session has closed its input: anything pushed now would never
+      // reach the CLI. Wait for it to exit and boot a fresh one for this message.
+      // Bounded: a CLI that never exits after its stdin closes must not hang this
+      // forever. Past the bound the old session is aborted and detached (its
+      // eventual exit cannot touch the fresh one), and the message boots fresh.
+      while (live?.reloading || live?.closing) {
+        const old = live;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const exited = await Promise.race([
+          old.exited.then(() => true),
+          new Promise<boolean>((r) => (timer = setTimeout(() => r(false), this.#reloadExitTimeoutMs))),
+        ]);
+        clearTimeout(timer);
+        if (!exited) {
+          console.warn(`[mgr] reloading session=${sessionId} did not exit within ${this.#reloadExitTimeoutMs}ms; aborting it and booting fresh`);
+          this.abort(sessionId);
+          if (old.idleTimer) clearTimeout(old.idleTimer);
+          if (this.#live.get(sessionId) === old) {
+            this.#live.delete(sessionId);
+            this.#skillGate.forget(sessionId);
+            // The detached instance's own teardown no longer owns the id and
+            // stays silent, so this is its one exit signal (a voice call must learn).
+            this.#signalSessionExit(sessionId);
+          }
+          live = undefined;
+          break;
+        }
+        live = this.#live.get(sessionId);
+      }
+      // Held already (re-entrant): go on with the instance just read. Otherwise
+      // wait for the folder (an old instance's exit may have freed it) and read
+      // the session again.
+      if (!claimDir || this.#claims.holderOf(claimDir) === sessionId) break;
+      await this.#claims.acquire(claimDir, sessionId);
     }
+    if (claimDir) this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
     if (live) {
       // flush prior turn if any pending assistant content was buffered
       this.#flushTurn(live);
@@ -895,9 +948,14 @@ export class AgentManager extends EventEmitter {
     if (this.#idleHeld.has(live.id)) return;
     if (ms <= 0) return;
     live.idleTimer = setTimeout(() => {
+      // Not idle while an input is outstanding (a turn longer than the idle
+      // timeout): closing now would make a later send wait out the exit and
+      // abort that turn. Re-armed here, and again at the turn's result.
+      if (live.pendingInputs > 0) return this.#armIdle(live);
       // Flush any buffered assistant content; close the prompt iterable so
       // the for-await loop in #startSession unwinds cleanly.
       this.#flushTurn(live);
+      live.closing = true;
       try {
         live.closeIterable();
       } catch {}
@@ -1451,6 +1509,7 @@ export class AgentManager extends EventEmitter {
       turnTools: [],
       inAutoEvolve: false,
       channelId: row.slack_channel_id,
+      workingDir: row.working_dir,
       mode,
       personaName,
       bootFp,
@@ -1759,6 +1818,7 @@ export class AgentManager extends EventEmitter {
             // A config reload still applies: it is not an MCP recovery attempt.
             if (deferredReload) this.reload(sessionId);
           }
+          this.#releaseIfIdle(sessionId, live);
           break;
         }
         // Clean turn — reset the circuit breaker counter.
@@ -1848,11 +1908,19 @@ export class AgentManager extends EventEmitter {
           }
         }
         if (deferredReload && live) this.reload(sessionId);
+        this.#releaseIfIdle(sessionId, live);
         break;
       }
       default:
         break;
     }
+  }
+
+  /** Free the proactive folder once no input of this session is outstanding
+   *  (checked after an unbudgeted skill check may have been pushed). */
+  #releaseIfIdle(sessionId: string, live: LiveSession | undefined): void {
+    if (live && live.pendingInputs > 0) return;
+    this.#claims.releaseHolder(sessionId);
   }
 
   /**
@@ -1890,6 +1958,18 @@ export class AgentManager extends EventEmitter {
       console.log(`[mgr] skill check abandoned session=${sessionId}: the session moved on while its run started`);
       this.#finishEvolveRun(sessionId, run, "error", {});
       return;
+    }
+    // Pushed after its turn freed the proactive folder: the check takes the
+    // folder only when it is free (at once), and is skipped, never queued,
+    // when another thread there holds it or waits for it.
+    if (isProactiveWorkspace(live.workingDir)) {
+      const holder = this.#claims.holderOf(live.workingDir!);
+      if (holder !== null && holder !== sessionId) {
+        console.log(`[mgr] skill check abandoned session=${sessionId}: another thread holds the proactive folder`);
+        this.#finishEvolveRun(sessionId, run, "error", {});
+        return;
+      }
+      void this.#claims.acquire(live.workingDir!, sessionId);
     }
     live.evolveRun = run;
     live.inAutoEvolve = true;

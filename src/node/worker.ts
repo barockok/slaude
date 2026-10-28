@@ -33,7 +33,7 @@ import { assertNodeIdUsable, DEFAULT_LABEL, LABEL_RE, labelTurnsQueue, makeKeys,
 import { createRedis, heartbeatSec as envHeartbeatSec, nodeDrainSec, redisUrl } from "../queue/redis";
 import { makeRegistry, type Registry } from "../queue/registry";
 import { makePubSub, type PubSub } from "../queue/pubsub";
-import { withSessionLock, HELD_BY_OTHER } from "../queue/locks";
+import { withKeyLock, withSessionLock, HELD_BY_OTHER } from "../queue/locks";
 import { jobLabel, TurnQueues, type TurnJob } from "../queue/turns";
 import { GateDenied, isLabelMismatch, labelMismatchBoot, NodeApiError, NodeClient, bundleFetchFailure } from "./client";
 import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
@@ -900,17 +900,34 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
 
     const started = Date.now();
     let res: "done" | "error" | "skipped" | typeof STALE_CONFIG | typeof HELD_BY_OTHER;
+    // Which lock a lost-lock abort came from, for its log line.
+    const lockSignals: { session?: AbortSignal; folder?: AbortSignal } = {};
     try {
       res = await runLockedTurn<"done" | "error" | "skipped">({
-        lock: (fn) =>
-          withSessionLock(
+        lock: (fn) => {
+          // The TTL is also the takeover delay when this node dies: it never gets to
+          // release the lock, so the re-delivered turn waits the lock out.
+          const lockOpts = { redis: cmd, keys, ...sessionLockOpts, ...opts.lock };
+          const workspace = data.workspace;
+          return withSessionLock(
             data.sessionId,
             nodeId,
-            fn,
-            // The TTL is also the takeover delay when this node dies: it never gets to
-            // release the lock, so the re-delivered turn waits the lock out.
-            { redis: cmd, keys, ...sessionLockOpts, ...opts.lock },
-          ),
+            !workspace
+              ? fn
+              : (sessionLost) =>
+                  // The agent's proactive folder: one turn at a time there across
+                  // nodes, taken inside the session lock. Held by another owner →
+                  // HELD_BY_OTHER, which requeues like a held session. Losing
+                  // either lock aborts the turn through the signal fn receives.
+                  withKeyLock(keys.workspaceLock(workspace), `${nodeId}:${data.sessionId}`, (folderLost) => {
+                    lockSignals.session = sessionLost;
+                    lockSignals.folder = folderLost;
+                    const lost = AbortSignal.any([sessionLost, folderLost]);
+                    return fn(lost);
+                  }, lockOpts),
+            lockOpts,
+          );
+        },
         bindToken: (t) => store.bindToken(data.sessionId, t),
         ensureConfigFp: (fp) => agent.ensureConfigFp(data.sessionId, fp),
         jobToken,
@@ -918,7 +935,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           // Lost the lock (TTL lapsed / another holder): stop touching the
           // session immediately — another node may already be running it.
           const onLost = () => {
-            console.error(`[node] session lock lost session=${data.sessionId} — aborting turn`);
+            const which = lockSignals.folder?.aborted && !lockSignals.session?.aborted ? "proactive folder lock" : "session lock";
+            console.error(`[node] ${which} lost session=${data.sessionId} — aborting turn`);
             turnAborts.get(data.sessionId)?.abort();
             agent.abort(data.sessionId);
           };

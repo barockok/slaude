@@ -112,6 +112,7 @@ import { buildGateInput, type GateContextDeps } from "../gate/context";
 import type { GateAction, Trust } from "../gate/types";
 import { providerSecretResolver } from "../api/tenants";
 import { parseRef } from "../../secrets";
+import { proactiveWorkspaceDir } from "../../agent/workspace-claim";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
@@ -874,17 +875,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * the turn runs as is the thread's own /1on1 lock, never a carried identity;
    * callers check that the lock is what they expect. `userId` is the ctx's
    * and the job's initiator; `engage` marks the thread engaged so a later
-   * human reply continues it.
+   * human reply continues it; `sharedFolder` (a heartbeat channel post's
+   * thread only) creates its session in the agent's proactive folder.
    */
   const dispatchThreadTurn = async (
-    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean; appId?: string | null },
+    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean; appId?: string | null; sharedFolder?: boolean },
     envelope: string,
     run: { runId: string; agentId: string },
     pass: TurnPass,
   ): Promise<void> => {
     const { teamId, channelId, threadTs, userId } = target;
     const persona = target.personaId;
-    const session = await agent.ensureSession({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: persona ?? "default" });
+    const session = await agent.ensureSession(
+      { team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: persona ?? "default" },
+      target.sharedFolder ? { workingDir: proactiveWorkspaceDir(run.agentId) } : {},
+    );
     if (target.engage) await Sessions.setEngaged(session.id, true);
     // A thread a heartbeat post just opened has no app of its own yet: the
     // post's app is stamped on it, so this turn (and a later reply's) speaks
@@ -923,6 +928,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         origin: "cron",
         backgroundRunId: run.runId,
       });
+    } else if (pass === "heartbeat-turn") {
+      // Not awaited: the turn may wait for the agent's proactive folder (one
+      // turn there at a time), and a round dispatching several items must not
+      // block on it. A turn that then fails leaves its run to the stale sweep.
+      void agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }) }).catch((e) => {
+        console.error(`[proactive] heartbeat turn failed session=${session.id}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+      });
     } else {
       await agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }) });
     }
@@ -950,7 +962,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     isBusy: async (row) => {
       const session = await promiseSession(row);
       if (!session) return false;
-      if (!queueDispatch) return agent.isTurnInFlight(session.id);
+      // Mono: a turn running, or the proactive folder held by another thread
+      // (the check would wait for it, and the scheduler awaits the check).
+      if (!queueDispatch) return agent.isTurnInFlight(session.id) || (await agent.folderHeldByOther(session.id));
       // A turn running (its session lock) or a message waiting to be claimed.
       if ((await getRedis().exists(makeKeys().sessionLock(session.id))) > 0) return true;
       return queueDispatch.turns.hasPending(session.id);
@@ -1002,6 +1016,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           userId: post.agentId,
           engage: true,
           appId: post.appId,
+          // Only a channel post's thread shares the proactive folder: a DM
+          // post's thread (manager or person) keeps its own, so files made
+          // for one person never sit where a channel thread works.
+          sharedFolder: post.audience === "channel",
         },
         envelope,
         run,

@@ -5,6 +5,8 @@
  * on the mono gateway the turn goes into the post's thread as the agent
  * (origin cron, no person), engaged, carrying its `heartbeat-turn` run.
  */
+import { existsSync } from "node:fs";
+import { isProactiveWorkspace, proactiveWorkspaceDir } from "../../src/agent/workspace-claim";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import * as Posts from "../../src/db/proactive-posts";
@@ -30,6 +32,9 @@ import { resetAgentId, setAgentId } from "../../src/knowledge/agent-identity";
 import { __setProactiveSoulSource } from "../../src/soul/proactive";
 import { loadSoul } from "../../src/soul/loader";
 import { fakeBrain } from "../memory/fake-brain";
+import * as Commitments from "../../src/db/commitments";
+import { runDueCommitments } from "../../src/proactive/promises";
+import { NO_PREFS } from "../../src/proactive/prefs";
 
 const AGENT_ID = "U_SLAUDE";
 const MODEL = "test-model";
@@ -253,6 +258,122 @@ describe("the mono gateway's proactive transport", () => {
   afterEach(async () => {
     await h?.stop();
     h = null;
+  });
+
+  test("a heartbeat thread works in the agent's proactive folder; another post's thread shares it", async () => {
+    h = createGateway(agent, slackTransport());
+    const deps = defaultDispatchDeps(h.__proactive!, "default");
+    await dispatchProactive(post(), "act", rule(), "act", deps);
+    await dispatchProactive(post({ id: "post-2", messageTs: "1800.200" }), "ask", null, "ask", deps);
+    const a = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "1800.100", persona_id: "default" });
+    const b = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "1800.200", persona_id: "default" });
+    expect(a!.working_dir).toBe(proactiveWorkspaceDir(AGENT_ID));
+    expect(b!.working_dir).toBe(a!.working_dir);
+    expect(existsSync(a!.working_dir)).toBe(true);
+  });
+
+  test("mono: a promise check in a proactive-folder thread while another thread holds the folder is deferred, no turn sent", async () => {
+    await db.run("DELETE FROM commitments");
+    h = createGateway(agent, slackTransport());
+    // The promise was made in a heartbeat channel thread, so its session works in the folder.
+    await dispatchProactive(post(), "act", rule(), "act", defaultDispatchDeps(h.__proactive!, "default"));
+    const session = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "1800.100", persona_id: "default" });
+    sent = [];
+    // Idle itself, but another session holds the proactive folder.
+    let held = true;
+    const asked: string[] = [];
+    agent.folderHeldByOther = async (sid: string) => (asked.push(sid), held);
+    const now = POSTED + 60 * 60_000;
+    await Commitments.upsertOpen({
+      agentId: AGENT_ID, source: `agent-${AGENT_ID}`, slug: "commitments/invoice", personaId: "default", teamId: "T",
+      channelId: "C0EXAMPLE", threadTs: "1800.100", beneficiary: "U0MANAGER", runAs: null, dueText: "after the reply",
+      dueKind: "event", checkText: "", onNoChange: "silent", nextCheckAt: now - 1, expiresAt: now + 86_400_000, createdAt: POSTED,
+    });
+    let runs = 0;
+    const deps = {
+      transport: h.__promises!, timeZone: "UTC", prefs: async () => NO_PREFS,
+      openRun: async () => ({ ok: true as const, runId: `run-c${++runs}`, agentId: AGENT_ID }), dropRun: async () => {},
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const n = await Promise.race([
+      runDueCommitments(AGENT_ID, new Date(now), deps),
+      new Promise<number>((r) => (timer = setTimeout(() => r(-1), 2000))),
+    ]);
+    clearTimeout(timer);
+    expect(n).toBe(0);
+    expect(asked).toEqual([session!.id]);
+    expect(sent).toEqual([]);
+    expect(runs).toBe(0);
+    const row = await Commitments.get({ agentId: AGENT_ID, source: `agent-${AGENT_ID}`, slug: "commitments/invoice" });
+    expect(row!.nextCheckAt).toBeGreaterThan(now);
+    // Once the folder is free the check goes out.
+    held = false;
+    expect(await runDueCommitments(AGENT_ID, new Date(row!.nextCheckAt), deps)).toBe(1);
+    expect(sent.map((x) => x.sid)).toEqual([session!.id]);
+  }, 5000);
+
+  test("a DM post's thread (manager or person audience) keeps its own folder, never the shared one", async () => {
+    h = createGateway(agent, slackTransport());
+    const deps = defaultDispatchDeps(h.__proactive!, "default");
+    await dispatchProactive(post(), "act", rule(), "act", deps);
+    await dispatchProactive(post({ id: "post-dm", audience: "manager", recipient: "U0MANAGER", channelId: "D0MANAGER", messageTs: "1900.1" }), "ask", null, "ask", deps);
+    await dispatchProactive(post({ id: "post-person", audience: "person", recipient: "U0ALICE", channelId: "D0ALICE", messageTs: "1900.2" }), "ask", null, "ask", deps);
+    const ch = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "1800.100", persona_id: "default" });
+    const mgr = await Sessions.findByThread({ team_id: "T", channel_id: "D0MANAGER", thread_ts: "1900.1", persona_id: "default" });
+    const person = await Sessions.findByThread({ team_id: "T", channel_id: "D0ALICE", thread_ts: "1900.2", persona_id: "default" });
+    expect(ch!.working_dir).toBe(proactiveWorkspaceDir(AGENT_ID));
+    for (const s of [mgr!, person!]) {
+      expect(isProactiveWorkspace(s.working_dir)).toBe(false);
+      expect(s.working_dir).not.toBe(ch!.working_dir);
+    }
+    expect(mgr!.working_dir).not.toBe(person!.working_dir);
+  });
+
+  test("a promise check's thread keeps its own folder", async () => {
+    h = createGateway(agent, slackTransport());
+    const row = {
+      agentId: AGENT_ID, source: `agent-${AGENT_ID}`, slug: "commitments/x", personaId: "default", teamId: "T",
+      channelId: "C0EXAMPLE", threadTs: "2100.1", beneficiary: "U0ALICE", runAs: null, dueText: "soon",
+      dueKind: "event" as const, checkText: "", onNoChange: "silent" as const, nextCheckAt: 0, expiresAt: 0,
+      status: "open" as const, checks: 0, lastCheckedAt: null, createdAt: 0,
+    };
+    await h.__promises!.dispatch(row, "check", { runId: "run-x", agentId: AGENT_ID });
+    const s = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "2100.1", persona_id: "default" });
+    expect(isProactiveWorkspace(s!.working_dir)).toBe(false);
+    expect(sent.map((x) => x.sid)).toEqual([s!.id]);
+  });
+
+  test("a heartbeat dispatch does not wait for the turn to be accepted", async () => {
+    // A turn waiting for the proactive folder: sendMessage never resolves.
+    agent.sendMessage = () => new Promise<void>(() => {});
+    h = createGateway(agent, slackTransport());
+    const deps = defaultDispatchDeps(h.__proactive!, "default");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const r = await Promise.race([
+      dispatchProactive(post(), "act", rule(), "act", deps),
+      new Promise<string>((res) => (timer = setTimeout(() => res("timed out"), 1000))),
+    ]);
+    clearTimeout(timer);
+    expect(r).toBe("sent");
+  }, 5000);
+
+  test("a heartbeat turn that fails after dispatch is logged with its session, redacted, never thrown", async () => {
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      agent.sendMessage = async () => {
+        throw new Error("boot failed password=hunter2-placeholder");
+      };
+      h = createGateway(agent, slackTransport());
+      expect(await dispatchProactive(post(), "act", rule(), "act", defaultDispatchDeps(h.__proactive!, "default"))).toBe("sent");
+      const session = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "1800.100", persona_id: "default" });
+      await Bun.sleep(10);
+      const lines = errSpy.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes("heartbeat turn"));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(`session=${session!.id}`);
+      expect(lines[0]).not.toContain("hunter2-placeholder");
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   test("the turn goes into the post's thread as the agent, engaged, and its heartbeat-turn run closes with its usage", async () => {

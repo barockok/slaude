@@ -517,6 +517,7 @@ describe("the heartbeat round's pass options", () => {
         call: fakeBrain().call,
         post: async (m) => ({ channel: m.channel, ts: "1.1" }),
         managerId: () => "U0MANAGER",
+        mandates: () => ({ global: "", channels: {} }),
         app: async () => undefined,
         config: () => ({ ...soul }) as never,
         sources: { tools: async (_p, src) => ({ tools: src.readTools.map((name) => ({ name })) }), read: async () => ({ kind: "ok", text: "" }) },
