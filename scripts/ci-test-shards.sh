@@ -27,8 +27,10 @@ all_files() {
 }
 
 # Shard 1: the gateway suite. Shard 2: the suites that open the most PGLite
-# databases. Shard 3: everything else.
-heavy='^tests/(db|brain-migrate|node|queue|integration|deploy|panel|persona|cli)/'
+# databases. Shard 3: everything else. tests/node shares process-wide state
+# (a mocked SDK module, warm sessions) that breaks tests/brain-migrate when it
+# runs first in the same process, so the two stay in different shards.
+heavy='^tests/(db|brain-migrate|deploy|panel|persona|cli)/'
 shard_files() {
   case "$1" in
     1) all_files | grep -E '^tests/gateway/' ;;
@@ -44,6 +46,7 @@ if [ "$total" -ne "$covered" ]; then
 fi
 
 passes_total=0
+failed=0
 for s in 1 2 3; do
   shard_out=$(mktemp)
   mapfile -t files < <(shard_files "$s")
@@ -59,22 +62,25 @@ for s in 1 2 3; do
   echo "shard ${s}: bun exit code ${code}; ${passes} passed; ${fails} failed"
   if [ "$fails" -ne 0 ]; then
     grep -E '^\(fail\)' "$shard_out" | sort -u
-    echo "::error::${fails} test(s) failed in shard ${s}"; exit 1
+    echo "::error::${fails} test(s) failed in shard ${s}"
+    failed=1
   fi
   # bun 1.3.11 can exit 99/100 with zero failures (PGLite's quit handler sets
   # process.exitCode); tolerate only that, and only without a crash marker.
   if [ "$code" -ne 0 ]; then
     if [ "$code" -ne 99 ] && [ "$code" -ne 100 ]; then
-      echo "::error::shard ${s}: bun exited ${code} (not 0/99/100), treating it as a crash"; exit "$code"
-    fi
-    if grep -qiE 'panic|segmentation fault|SIGSEGV|SIGABRT|illegal instruction|bus error' "$shard_out"; then
-      echo "::error::shard ${s}: crash marker in test output, refusing to tolerate exit ${code}"; exit "$code"
+      [ "$fails" -ne 0 ] || echo "::error::shard ${s}: bun exited ${code} (not 0/99/100), treating it as a crash"
+      failed=1
+    elif grep -qiE 'panic|segmentation fault|SIGSEGV|SIGABRT|illegal instruction|bus error' "$shard_out"; then
+      echo "::error::shard ${s}: crash marker in test output, refusing to tolerate exit ${code}"
+      failed=1
     fi
   fi
   passes_total=$((passes_total + passes))
   rm -f "$shard_out"
 done
 
+[ "$failed" -eq 0 ] || exit 1
 if [ "$passes_total" -lt "$floor" ]; then
   echo "::error::only ${passes_total} passes (expected >= ${floor}): the suite ran partially"; exit 1
 fi
