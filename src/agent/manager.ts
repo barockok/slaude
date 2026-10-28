@@ -948,6 +948,10 @@ export class AgentManager extends EventEmitter {
     if (this.#idleHeld.has(live.id)) return;
     if (ms <= 0) return;
     live.idleTimer = setTimeout(() => {
+      // Not idle while an input is outstanding (a turn longer than the idle
+      // timeout): closing now would make a later send wait out the exit and
+      // abort that turn. Re-armed here, and again at the turn's result.
+      if (live.pendingInputs > 0) return this.#armIdle(live);
       // Flush any buffered assistant content; close the prompt iterable so
       // the for-await loop in #startSession unwinds cleanly.
       this.#flushTurn(live);

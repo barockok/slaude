@@ -27,6 +27,7 @@ Approach A: keep routing in code and enrich the prompt, rather than let the mode
 ## Review found
 
 - A message could be dropped if its session was reloaded, aborted or went idle while it waited for the folder. A waiting send now re-reads the session after every wait, and an instance the idle timer closed is marked closing and treated like a reloading one (the send waits for its exit and boots fresh). Each variant has a test.
+- The idle timer could fire in the middle of a turn longer than the idle timeout, and with the closing mark a later send would then wait out the exit and abort that turn. The idle close now waits while an input is outstanding (it re-arms instead), so a long turn is never closed under itself; this applies to every session, not only the proactive folder.
 - Final review: a promise check on mono could stall the background scheduler behind the folder (now busy, deferred); DM-audience heartbeat threads shared the folder with channel threads (now only channel posts' threads use it); the claim and the Redis key used the raw path while the folder check resolves it (now resolved everywhere).
 - The turn start was announced before the folder was held. It is now emitted only once held.
 - A failed send released the folder while the same session was still booting.

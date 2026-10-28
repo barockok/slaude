@@ -317,6 +317,30 @@ describe("the proactive folder holds one turn at a time", () => {
     }
   }, 10_000);
 
+  it("an idle timer that expires mid-turn does not close the session; it closes once the turn is over", async () => {
+    const savedIdle = process.env.SLAUDE_IDLE_MINUTES;
+    const mgr = new AgentManager();
+    const log = recordEvents(mgr);
+    const a = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+    try {
+      process.env.SLAUDE_IDLE_MINUTES = String(120 / 60_000);
+      const gate = deferred();
+      const fa = plan((s) => void gate.p.then(() => s.emit(res())));
+      await mgr.sendMessage(a.id, "a long turn");
+      // Well past the idle timeout while the turn still runs: the input stays open.
+      await Bun.sleep(400);
+      expect(fa.promptClosed).toBe(false);
+      gate.resolve();
+      await until(() => log.includes(`done:${a.id}`), 3000, "a done");
+      // Idle after the turn: the session closes as before.
+      await until(() => fa.promptClosed, 3000, "idle close after the turn");
+    } finally {
+      if (savedIdle === undefined) delete process.env.SLAUDE_IDLE_MINUTES;
+      else process.env.SLAUDE_IDLE_MINUTES = savedIdle;
+      await shutdown(mgr, a.id);
+    }
+  }, 10_000);
+
   it("a send that fails while another send of the same session still boots keeps the folder", async () => {
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
     try {
