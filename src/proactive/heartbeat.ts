@@ -46,8 +46,9 @@ import { defaultDispatchDeps, dispatchProactive, type ProactiveDispatchDeps, typ
 
 export const HEARTBEAT_SLUG = "self/heartbeat";
 export const HEARTBEAT_MAX_POSTS = 3;
-/** Longest proactive post, in characters. */
+/** Longest mandate line in the triage prompt, in characters (cut with an ellipsis past it). */
 export const MANDATE_MAX = 600;
+/** Longest proactive post, in characters. */
 export const MAX_POST_CHARS = 1200;
 
 export interface ProactivePostContext {
