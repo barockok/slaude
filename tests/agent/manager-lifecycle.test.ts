@@ -1837,11 +1837,14 @@ describe("AgentManager: store failures outside any caller", () => {
 
   it("a resume-retry reboot that fails signals sessionExit (a voice call on it must end)", async () => {
     const mgr = new AgentManager();
-    let boots = 0;
+    // Every read after the first boot reached the SDK fails: the retry
+    // reboot's read (reads before it, such as sendMessage's own, succeed).
+    let booted = false;
+    currentQuery = (args) => ((booted = true), dispatcher(args));
     const { dbSessionStore } = await import("../../src/agent/session-store");
     mgr.setSessionStore({
       ...dbSessionStore,
-      findById: (id: string) => (++boots > 1 ? Promise.reject(new Error("401 expired")) : dbSessionStore.findById(id)),
+      findById: (id: string) => (booted ? Promise.reject(new Error("401 expired")) : dbSessionStore.findById(id)),
     } as any);
     const exits: string[] = [];
     mgr.on("sessionExit", (id: string) => exits.push(id));

@@ -55,6 +55,7 @@ import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/typ
 import { turnModelTokens, type SkillCheckBudget } from "../background/skill-check";
 import { skillUsageHook, type SkillUsageRecorder } from "./skill-usage-hook";
 import { passEndsTurnHook } from "./pass-stop-hook";
+import { isProactiveWorkspace, WorkspaceClaims } from "./workspace-claim";
 import { addTokens, PROVISIONAL_OUTPUT_TOKENS, tokensFromUsage, type ModelTokens, type ModelUsageRow, type TokenCounts } from "../background/prices";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
@@ -133,6 +134,8 @@ type LiveSession = {
   exited: Promise<void>;
   /** Slack channel of the session row, cached at start for metric labels. */
   channelId?: string | null;
+  /** The session row's working dir, cached at start (set once at creation, never changed). */
+  workingDir?: string;
   /** Current permission mode (kept in sync by setPermissionMode) — remote tool gating reads it. */
   mode?: PermissionMode;
   /** The named persona this session booted as (undefined = default). */
@@ -422,6 +425,8 @@ export class AgentManager extends EventEmitter {
   });
   /** Built-in skills loaded per session; reset at every boot, dropped at teardown. */
   #skillGate = new SkillGate();
+  /** The agent's proactive folder holds one turn at a time in this process. */
+  #claims = new WorkspaceClaims();
 
   /** Current context-usage snapshot for a session, or null if no turn has completed. */
   getTokenSnapshot(sessionId: string): UsageSnapshot | null {
@@ -765,6 +770,7 @@ export class AgentManager extends EventEmitter {
    *  A throwing listener must not stall teardown. */
   #signalSessionExit(sessionId: string) {
     this.#idleHeld.delete(sessionId);
+    this.#claims.releaseHolder(sessionId);
     try {
       this.emit("sessionExit", sessionId);
     } catch (e) {
@@ -831,6 +837,25 @@ export class AgentManager extends EventEmitter {
   }
 
   async #send(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null = null, run?: BackgroundTurnRun) {
+    // A session in the agent's proactive folder waits for the folder before
+    // its turn starts: two threads there never run at once in this process.
+    // Re-entrant, so the holder's own next input never waits on itself. The
+    // working dir is set at creation and never changes: a live session's
+    // cached copy saves a store read (a /v1 call on a node) per input.
+    const cached = this.#live.get(sessionId);
+    const dir = cached ? cached.workingDir : (await this.#store.findById(sessionId))?.working_dir;
+    const claimed = isProactiveWorkspace(dir);
+    if (claimed) await this.#claims.acquire(dir!, sessionId);
+    try {
+      await this.#sendClaimed(sessionId, text, synthetic, sender, run, claimed ? dir! : null);
+    } catch (e) {
+      // Failed before its input was in: nothing of this session runs there.
+      if (claimed && !this.isTurnInFlight(sessionId)) this.#claims.releaseHolder(sessionId);
+      throw e;
+    }
+  }
+
+  async #sendClaimed(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null, run: BackgroundTurnRun | undefined, claimDir: string | null) {
     // Signal that a real user turn is starting for this session. Slash commands
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
@@ -865,6 +890,9 @@ export class AgentManager extends EventEmitter {
       }
       live = this.#live.get(sessionId);
     }
+    // The old instance's exit freed the folder: take it again (at once when
+    // still held) before this input reaches the fresh one.
+    if (claimDir) await this.#claims.acquire(claimDir, sessionId);
     if (live) {
       // flush prior turn if any pending assistant content was buffered
       this.#flushTurn(live);
@@ -1452,6 +1480,7 @@ export class AgentManager extends EventEmitter {
       turnTools: [],
       inAutoEvolve: false,
       channelId: row.slack_channel_id,
+      workingDir: row.working_dir,
       mode,
       personaName,
       bootFp,
@@ -1760,6 +1789,7 @@ export class AgentManager extends EventEmitter {
             // A config reload still applies: it is not an MCP recovery attempt.
             if (deferredReload) this.reload(sessionId);
           }
+          this.#releaseIfIdle(sessionId, live);
           break;
         }
         // Clean turn — reset the circuit breaker counter.
@@ -1849,11 +1879,19 @@ export class AgentManager extends EventEmitter {
           }
         }
         if (deferredReload && live) this.reload(sessionId);
+        this.#releaseIfIdle(sessionId, live);
         break;
       }
       default:
         break;
     }
+  }
+
+  /** Free the proactive folder once no input of this session is outstanding
+   *  (checked after an unbudgeted skill check may have been pushed). */
+  #releaseIfIdle(sessionId: string, live: LiveSession | undefined): void {
+    if (live && live.pendingInputs > 0) return;
+    this.#claims.releaseHolder(sessionId);
   }
 
   /**
@@ -1891,6 +1929,18 @@ export class AgentManager extends EventEmitter {
       console.log(`[mgr] skill check abandoned session=${sessionId}: the session moved on while its run started`);
       this.#finishEvolveRun(sessionId, run, "error", {});
       return;
+    }
+    // Pushed after its turn freed the proactive folder: the check takes the
+    // folder only when it is free (at once), and is skipped, never queued,
+    // when another thread there holds it or waits for it.
+    if (isProactiveWorkspace(live.workingDir)) {
+      const holder = this.#claims.holderOf(live.workingDir!);
+      if (holder !== null && holder !== sessionId) {
+        console.log(`[mgr] skill check abandoned session=${sessionId}: another thread holds the proactive folder`);
+        this.#finishEvolveRun(sessionId, run, "error", {});
+        return;
+      }
+      void this.#claims.acquire(live.workingDir!, sessionId);
     }
     live.evolveRun = run;
     live.inAutoEvolve = true;
