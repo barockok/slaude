@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../src/config/home";
-import { clearKbCache } from "../src/knowledge/loader";
+import { clearKbCache, loadKbs } from "../src/knowledge/loader";
 import { closeBrain } from "../src/knowledge/brain";
 import { syncKbWikis } from "../src/knowledge/brain-sync";
 import {
@@ -81,6 +81,12 @@ describe("syncKbWikis while the brain is closing", () => {
     const run = trackBrainWork(syncKbWikis());
     await closeBrain(); // waits for `run`, which must not start the second KB
     const results = await run;
-    expect(results.map((r) => r.label)).toEqual(["bw-one"]);
+    const labels = results.map((r) => r.label);
+    // Shown as a CI annotation too: a long job's log is cut before this file.
+    if (JSON.stringify(labels) !== '["bw-one"]') {
+      const kbs = loadKbs().map((k) => k.label);
+      console.log(`::error title=brain-work KB stop::results=${JSON.stringify(results)} kbs=${JSON.stringify(kbs)} knowledge=${paths.knowledge}`);
+    }
+    expect(labels).toEqual(["bw-one"]);
   }, 60_000);
 });
