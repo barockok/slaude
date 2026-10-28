@@ -32,6 +32,9 @@ import { resetAgentId, setAgentId } from "../../src/knowledge/agent-identity";
 import { __setProactiveSoulSource } from "../../src/soul/proactive";
 import { loadSoul } from "../../src/soul/loader";
 import { fakeBrain } from "../memory/fake-brain";
+import * as Commitments from "../../src/db/commitments";
+import { runDueCommitments } from "../../src/proactive/promises";
+import { NO_PREFS } from "../../src/proactive/prefs";
 
 const AGENT_ID = "U_SLAUDE";
 const MODEL = "test-model";
@@ -268,6 +271,46 @@ describe("the mono gateway's proactive transport", () => {
     expect(b!.working_dir).toBe(a!.working_dir);
     expect(existsSync(a!.working_dir)).toBe(true);
   });
+
+  test("mono: a promise check in a proactive-folder thread while another thread holds the folder is deferred, no turn sent", async () => {
+    await db.run("DELETE FROM commitments");
+    h = createGateway(agent, slackTransport());
+    // The promise was made in a heartbeat channel thread, so its session works in the folder.
+    await dispatchProactive(post(), "act", rule(), "act", defaultDispatchDeps(h.__proactive!, "default"));
+    const session = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "1800.100", persona_id: "default" });
+    sent = [];
+    // Idle itself, but another session holds the proactive folder.
+    let held = true;
+    const asked: string[] = [];
+    agent.folderHeldByOther = async (sid: string) => (asked.push(sid), held);
+    const now = POSTED + 60 * 60_000;
+    await Commitments.upsertOpen({
+      agentId: AGENT_ID, source: `agent-${AGENT_ID}`, slug: "commitments/invoice", personaId: "default", teamId: "T",
+      channelId: "C0EXAMPLE", threadTs: "1800.100", beneficiary: "U0MANAGER", runAs: null, dueText: "after the reply",
+      dueKind: "event", checkText: "", onNoChange: "silent", nextCheckAt: now - 1, expiresAt: now + 86_400_000, createdAt: POSTED,
+    });
+    let runs = 0;
+    const deps = {
+      transport: h.__promises!, timeZone: "UTC", prefs: async () => NO_PREFS,
+      openRun: async () => ({ ok: true as const, runId: `run-c${++runs}`, agentId: AGENT_ID }), dropRun: async () => {},
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const n = await Promise.race([
+      runDueCommitments(AGENT_ID, new Date(now), deps),
+      new Promise<number>((r) => (timer = setTimeout(() => r(-1), 2000))),
+    ]);
+    clearTimeout(timer);
+    expect(n).toBe(0);
+    expect(asked).toEqual([session!.id]);
+    expect(sent).toEqual([]);
+    expect(runs).toBe(0);
+    const row = await Commitments.get({ agentId: AGENT_ID, source: `agent-${AGENT_ID}`, slug: "commitments/invoice" });
+    expect(row!.nextCheckAt).toBeGreaterThan(now);
+    // Once the folder is free the check goes out.
+    held = false;
+    expect(await runDueCommitments(AGENT_ID, new Date(row!.nextCheckAt), deps)).toBe(1);
+    expect(sent.map((x) => x.sid)).toEqual([session!.id]);
+  }, 5000);
 
   test("a heartbeat dispatch does not wait for the turn to be accepted", async () => {
     // A turn waiting for the proactive folder: sendMessage never resolves.

@@ -961,7 +961,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     isBusy: async (row) => {
       const session = await promiseSession(row);
       if (!session) return false;
-      if (!queueDispatch) return agent.isTurnInFlight(session.id);
+      // Mono: a turn running, or the proactive folder held by another thread
+      // (the check would wait for it, and the scheduler awaits the check).
+      if (!queueDispatch) return agent.isTurnInFlight(session.id) || (await agent.folderHeldByOther(session.id));
       // A turn running (its session lock) or a message waiting to be claimed.
       if ((await getRedis().exists(makeKeys().sessionLock(session.id))) > 0) return true;
       return queueDispatch.turns.hasPending(session.id);

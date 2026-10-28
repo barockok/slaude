@@ -162,6 +162,27 @@ describe("the proactive folder holds one turn at a time", () => {
     await shutdown(mgr, b.id);
   }, 10_000);
 
+  it("folderHeldByOther: true only for another session in the folder while one holds it", async () => {
+    const mgr = new AgentManager();
+    const log = recordEvents(mgr);
+    const a = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+    const b = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+    const c = await mgr.ensureSession(thread());
+    expect(await mgr.folderHeldByOther(b.id)).toBe(false);
+    const gate = deferred();
+    plan((s) => void gate.p.then(() => s.emit(res())));
+    await mgr.sendMessage(a.id, "first");
+    // b is idle (not live), yet a message to it would wait: it is held by a.
+    expect(mgr.isTurnInFlight(b.id)).toBe(false);
+    expect(await mgr.folderHeldByOther(b.id)).toBe(true);
+    expect(await mgr.folderHeldByOther(a.id)).toBe(false);
+    expect(await mgr.folderHeldByOther(c.id)).toBe(false);
+    gate.resolve();
+    await until(() => log.includes(`done:${a.id}`), 3000, "a done");
+    expect(await mgr.folderHeldByOther(b.id)).toBe(false);
+    await shutdown(mgr, a.id);
+  }, 10_000);
+
   it("a turn that errors releases the folder", async () => {
     const mgr = new AgentManager();
     const log = recordEvents(mgr);

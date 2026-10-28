@@ -784,6 +784,17 @@ export class AgentManager extends EventEmitter {
     return (this.#live.get(sessionId)?.pendingInputs ?? 0) > 0;
   }
 
+  /** True when the session works in the agent's proactive folder and another
+   *  session holds that folder now, so a message sent to it would wait for
+   *  the folder. False for a session anywhere else, or one that holds it. */
+  async folderHeldByOther(sessionId: string): Promise<boolean> {
+    const cached = this.#live.get(sessionId);
+    const dir = cached ? cached.workingDir : (await this.#store.findById(sessionId))?.working_dir;
+    if (!isProactiveWorkspace(dir)) return false;
+    const holder = this.#claims.holderOf(dir!);
+    return holder !== null && holder !== sessionId;
+  }
+
   /** Send user input. Starts session loop if not already live. */
   async sendMessage(sessionId: string, text: string, opts: { sender?: InputSender; backgroundRun?: BackgroundTurnRun } = {}) {
     return this.#send(sessionId, text, false, opts.sender ?? null, opts.backgroundRun);
