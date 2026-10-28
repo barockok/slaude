@@ -3,7 +3,7 @@ import { existsSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node
 import { join } from "node:path";
 import { paths } from "../src/config/home";
 import { SoulDataSchema } from "../src/soul/data";
-import { __resetSoulDataMemo, effectiveSoulForChannel, loadSoulData, setSoulData, soulData } from "../src/soul/extract";
+import { __resetSoulDataMemo, channelMandate, effectiveSoulForChannel, loadSoulData, setSoulData, soulData } from "../src/soul/extract";
 
 const CACHE_DIR = join(paths.home, "cache");
 const originalFetch = globalThis.fetch;
@@ -539,5 +539,20 @@ describe("effectiveSoulForChannel — resolution", () => {
     expect(() => effectiveSoulForChannel("C0CHAN0001")).not.toThrow();
     const d = effectiveSoulForChannel("C0CHAN0001");
     expect(d.approvers.map((a) => a.userId)).toContain("U0GLOBAL01");
+  });
+});
+
+describe("channelMandate", () => {
+  test("a block's own mandate, else null", () => {
+    const soul = SoulDataSchema.parse({
+      mandate: "global",
+      channelOverrides: [
+        { channel: "C0A", mandate: "  for A  ", approvers: [] },
+        { channel: "C0B", approvers: [] },
+      ],
+    });
+    expect(channelMandate(soul, "C0A")).toBe("for A");
+    expect(channelMandate(soul, "C0B")).toBeNull();
+    expect(channelMandate(soul, "C0NONE")).toBeNull();
   });
 });

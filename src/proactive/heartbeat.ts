@@ -34,7 +34,7 @@ import { localDay } from "../background/budget";
 import { READ_ONLY_PASS_TOOLS } from "../background/pass-tools";
 import { runPass, type Outcome, type PassTool, type RunnerDeps } from "../background/runner";
 import type { CardPost } from "../background/proposal-cards";
-import type { AgentGroup } from "../background/scheduler";
+import type { AgentGroup, PersonaMandates } from "../background/scheduler";
 import { NO_PREFS, readPingPrefs } from "./prefs";
 import { checkProactive, textHash, UNCHANGED_WINDOW_MS, type Audience, type RestraintRule } from "./restraint";
 import type { Level } from "./levels";
@@ -47,6 +47,7 @@ import { defaultDispatchDeps, dispatchProactive, type ProactiveDispatchDeps, typ
 export const HEARTBEAT_SLUG = "self/heartbeat";
 export const HEARTBEAT_MAX_POSTS = 3;
 /** Longest proactive post, in characters. */
+export const MANDATE_MAX = 600;
 export const MAX_POST_CHARS = 1200;
 
 export interface ProactivePostContext {
@@ -197,6 +198,8 @@ export interface HeartbeatDeps {
   post: CardPost;
   /** The persona's manager. */
   managerId: (personaId: string) => string | null;
+  /** The persona's global mandate and each enabled channel's own, for the triage prompt. */
+  mandates: (personaId: string, channelIds: readonly string[]) => PersonaMandates;
   /** The persona's Slack app. */
   app: (personaId: string) => Promise<AppRef | undefined>;
   /** The agent's own MCP sources, read as the agent. Absent: no source is read. */
@@ -284,6 +287,11 @@ const FIELD_MAX = 200;
 
 /** One line, bounded, and no tag can open or close: model or source text going into a prompt or a page. */
 const line = (s: string | null | undefined, max = FIELD_MAX): string => (s ?? "").replace(/[\r\n]+/g, " ").replaceAll("<", "‹").trim().slice(0, max);
+/** A mandate on one line, cut at MANDATE_MAX with an ellipsis when it was longer. */
+const mandateLine = (s: string | null | undefined): string => {
+  const one = line(s, Number.MAX_SAFE_INTEGER);
+  return one.length > MANDATE_MAX ? `${one.slice(0, MANDATE_MAX)}…` : one;
+};
 const clamp = (s: string, max: number): string => (s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s);
 const iso = (ms: number): string => new Date(ms).toISOString().slice(0, 16) + "Z";
 
@@ -362,6 +370,7 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   const journal = await agentPageBody(r.agentId, deps.call, JOURNAL_SLUG);
   const rules = await loadRules(r.agentId, deps.call);
   const channelsOn = (deps.channelsOn ?? proactiveChannels)(r.personaId);
+  const m = deps.mandates(r.personaId, channelsOn);
 
   // 2. Triage.
   const state: TriageState = { items: [], readCalls: 0, bytes: {}, needsAuth: new Set(listNeedsAuth), failed: new Set(), journal: null };
@@ -388,7 +397,8 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
     RULES: rules.map((x) => `- ${line(x.slug)} · ${line(x.kind)} · ${line(x.scope)} · ${x.level}`).join("\n") || "(none)",
     RECENT_POSTS: await recentPostLines(r.agentId, deps.call, startedAt),
     SOURCES: sources.map((s) => `- ${s.server}: ${since[s.server] == null ? "the last 24 hours" : `since ${iso(since[s.server]!)}`}`).join("\n") || "(none)",
-    CHANNELS_ON: channelsOn.map((c) => `<#${c}>`).join(", ") || "none",
+    MANDATE: mandateLine(m.global) || "(not set)",
+    CHANNELS_ON: channelsOn.map((c) => `- <#${c}>: ${m.channels[c] ? mandateLine(m.channels[c]) : "the global mandate"}`).join("\n") || "(none)",
     MAX_POSTS: String(HEARTBEAT_MAX_POSTS),
     MANAGER: managerId ?? "none",
   });

@@ -346,6 +346,12 @@ function withManagerApprover(approvers: ApproverEntry[], base: SoulData): Approv
   return out;
 }
 
+/** A channel block's own trimmed mandate; null when it has no block or no mandate (it inherits the global one). */
+export function channelMandate(soul: SoulData, channelId: string): string | null {
+  const m = soul.channelOverrides.find((c) => c.channel === channelId)?.mandate?.trim();
+  return m || null;
+}
+
 export function effectiveSoulForChannel(channelId?: string): SoulData {
   const base = soulData();
   if (!channelId) return base;
@@ -354,7 +360,7 @@ export function effectiveSoulForChannel(channelId?: string): SoulData {
     if (!ov) return base;
     return {
       ...base,
-      mandate: ov.mandate?.trim() ? ov.mandate : base.mandate,
+      mandate: channelMandate(base, channelId) ?? base.mandate,
       approvers: ov.approvers.length
         ? withManagerApprover(ov.approvers, base)
         : base.approvers,
