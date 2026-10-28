@@ -106,6 +106,12 @@ at almost no cost and keeps the structure global.
   are the fix later.
 - One turn at a time in the folder: a long `act` turn delays the next one.
 - A human reply in an old proactive thread also waits for the claim.
+- On the queue path the gateway's event follower stops 20 minutes after
+  enqueue and is not extended while a job is delayed: a turn that waits for
+  the folder and then runs past that loses its reactions, status, done and
+  error posts (the reply itself still posts).
+- Each 500 ms requeue of a job whose token is past 20% of its life makes a
+  `/v1` token-refresh call.
 
 ## Left to the builder
 
