@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { denySyntheticProfileWrite, KB_MEMOIZE_TOOL, SYNTHETIC_PROFILE_DENIAL } from "../../src/agent/profile-write-guard";
+import { denySyntheticProfileWrite, KB_MEMOIZE_TOOL, PROACTIVE_RULE_TOOL, SYNTHETIC_PROFILE_DENIAL, SYNTHETIC_RULE_DENIAL } from "../../src/agent/profile-write-guard";
 
 const call = (hook: ReturnType<typeof denySyntheticProfileWrite>, input: Record<string, unknown>) =>
   hook({ hook_event_name: "PreToolUse", session_id: "s", transcript_path: "/t", cwd: "/w", ...input } as any, "tu", { signal: new AbortController().signal });
@@ -22,5 +22,12 @@ describe("denySyntheticProfileWrite", () => {
     }
     expect(await call(synthetic, { tool_name: "mcp__slaude_kb__kb_delete_page", tool_input: { target: "profile" } })).toEqual({});
     expect(await synthetic({ hook_event_name: "PostToolUse", tool_name: KB_MEMOIZE_TOOL, tool_input: { target: "profile" } } as any, "tu", { signal: new AbortController().signal })).toEqual({});
+  });
+
+  it("denies proactive_rule on a synthetic turn, and passes it on a delivered one", async () => {
+    expect(PROACTIVE_RULE_TOOL).toBe("mcp__slaude_runtime__proactive_rule");
+    const input = { tool_name: PROACTIVE_RULE_TOOL, tool_input: { kind: "invoice emails", scope: "global", level: "ignore", quote: "q" } };
+    expect(await call(denySyntheticProfileWrite(() => true), input)).toEqual({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: SYNTHETIC_RULE_DENIAL } });
+    expect(await call(denySyntheticProfileWrite(() => false), input)).toEqual({});
   });
 });

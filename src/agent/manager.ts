@@ -74,6 +74,8 @@ export interface InputSender {
   userId: string;
   teamId: string | null;
   origin: string | null;
+  /** The message's own text as its sender typed it (never the envelope). See turnTexts. */
+  text?: string;
 }
 
 type LiveSession = {
@@ -811,9 +813,20 @@ export class AgentManager extends EventEmitter {
     const out: InputSender[] = [];
     for (const s of live.inputSenders) {
       if (!s) return null;
-      if (!out.some((o) => o.userId === s.userId && o.teamId === s.teamId && o.origin === s.origin)) out.push(s);
+      if (!out.some((o) => o.userId === s.userId && o.teamId === s.teamId && o.origin === s.origin)) out.push({ userId: s.userId, teamId: s.teamId, origin: s.origin });
     }
     return out;
+  }
+
+  /**
+   * The own text of every input outstanding now, as turnSenders counts them
+   * (a queued input may fold into the running turn). Null whenever turnSenders
+   * would be, or any input was delivered without its text.
+   */
+  turnTexts(sessionId: string): string[] | null {
+    if (!this.turnSenders(sessionId)) return null;
+    const texts = this.#live.get(sessionId)!.inputSenders.map((s) => s?.text);
+    return texts.every((t): t is string => typeof t === "string") ? texts : null;
   }
 
   async #send(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null = null, run?: BackgroundTurnRun) {

@@ -39,7 +39,9 @@ export interface ExternalMcp {
 
 /** Parse a `.mcp.json`-shaped object: expand ${VAR} placeholders across stdio/http
  *  fields and read the `privateServices` whitelist. Names not present in `mcpServers`
- *  are warned-about and dropped. `env` is injectable for testing. Note: mutates the
+ *  are warned-about and dropped. Unknown keys on a server entry survive, so an HTTP
+ *  server may carry `readTools` (string[], the tools that only read), which the
+ *  heartbeat's watch list requires (see `proactive/sources.ts`). `env` is injectable for testing. Note: mutates the
  *  parsed input in place (placeholders are expanded on the server configs). */
 export function parseExternalMcp(
   parsed: any,

@@ -26,7 +26,8 @@
  */
 import { z } from "zod";
 import { parseRunAs } from "../../agent/credential-owner";
-import { backgroundAgentId, finishSkillCheck, skillCheckModel, startSkillCheck, type SkillCheckDeps } from "../../background/skill-check";
+import { backgroundAgentId, CARRIED_TURN_PASSES, finishSkillCheck, skillCheckModel, startSkillCheck, type SkillCheckDeps, type TurnPass } from "../../background/skill-check";
+import * as Runs from "../../db/background-runs";
 import * as Sessions from "../../db/sessions";
 import * as SkillUsage from "../../db/skill-usage";
 import { SKILL_KEY_MAX, skillUsageKey } from "../../skills/usage";
@@ -58,9 +59,10 @@ const personaOf = (claims: JobClaims): string => claims.persona || "default";
 
 /**
  * POST /v1/background/turn/finish — finish the background-turn run the job
- * carries (a promise check, phase E). Only the run id signed into the token as
- * `bgRun` may be finished, and only while it is an open `commitment` run of
- * the token persona's agent; anything else is 409. Priced with the gateway's
+ * carries (a promise check, phase E, or a heartbeat ask/act turn). Only the run
+ * id signed into the token as `bgRun` may be finished, and only while it is an
+ * open `commitment` or `heartbeat-turn` run of the token persona's agent;
+ * anything else is 409. Priced with the gateway's
  * table, as the skill check's finish.
  */
 export async function handleTurnRun(op: string, body: unknown, claims: JobClaims, deps: SkillCheckDeps = {}): Promise<Response> {
@@ -69,8 +71,11 @@ export async function handleTurnRun(op: string, body: unknown, claims: JobClaims
     const b = finishBody.parse(body);
     if (!claims.bgRun || claims.bgRun !== b.runId) return json(409, { error: "this job carries no such background run" });
     const agentId = await backgroundAgentId(personaOf(claims));
-    const r = await finishSkillCheck({ runId: b.runId, agentId, usage: b.usage, outcome: b.outcome, pass: "commitment" }, deps);
-    if (!r.ok) return json(409, { error: "no open background run with this id for this agent" });
+    // The run's own pass, when it is one a dispatched turn carries; finish
+    // re-checks it (and the agent, and that it is open) under its update.
+    const pass = (await Runs.get(b.runId))?.pass as TurnPass | undefined;
+    const r = pass && CARRIED_TURN_PASSES.includes(pass) ? await finishSkillCheck({ runId: b.runId, agentId, usage: b.usage, outcome: b.outcome, pass }, deps) : null;
+    if (!r?.ok) return json(409, { error: "no open background run with this id for this agent" });
     return json(200, { ok: true });
   } catch (e) {
     if (e instanceof z.ZodError) return json(400, { error: `invalid input: ${zodIssueLine(e)}` });

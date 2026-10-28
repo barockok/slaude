@@ -499,6 +499,16 @@ describe("posting as the right Slack app", () => {
     expect(posted).toEqual([MANAGER]);
   });
 
+  test("message metadata passes through to chat.postMessage, and is omitted when absent", async () => {
+    const sent: Array<Record<string, unknown>> = [];
+    const post = cardPoster({ client: { chat: { postMessage: async (m: Record<string, unknown>) => void sent.push(m) } } as never });
+    const metadata = { event_type: "slaude_proactive", event_payload: { post: "p1" } };
+    await post({ channel: MANAGER, text: "x", blocks: [], metadata });
+    await post({ channel: MANAGER, text: "y", blocks: [] });
+    expect(sent[0]!.metadata).toEqual(metadata);
+    expect("metadata" in sent[1]!).toBe(false);
+  });
+
   test("a click through another app or workspace than the card's is refused", async () => {
     const { deps } = setup();
     const t = fakeTransport();

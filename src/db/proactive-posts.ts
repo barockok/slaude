@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Level } from "../proactive/levels";
 import { db } from "./schema";
 
 /**
@@ -6,6 +7,16 @@ import { db } from "./schema";
  * restraint rules count and what feedback finds a post by. Database only.
  */
 export type Audience = "manager" | "person" | "channel";
+
+/** What a post rested on (migration 0030), stored as JSON. */
+export interface PostContext {
+  source: string | null;
+  itemId: string | null;
+  summary: string;
+  ruleSlug: string | null;
+  level: Level;
+  evidence: string;
+}
 
 export interface ProactivePost {
   id: string;
@@ -22,6 +33,12 @@ export interface ProactivePost {
   messageTs: string | null;
   teamId: string | null;
   postedAt: number;
+  /** The text that was sent, or null for a row written before migration 0030. */
+  text: string | null;
+  /** What the post rested on, or null for an older row or unreadable JSON. */
+  context: PostContext | null;
+  /** The Slack app (api_app_id) that posted it, or null when unknown (an older row, a single-app transport). */
+  appId: string | null;
 }
 
 interface Row {
@@ -36,6 +53,19 @@ interface Row {
   message_ts: string | null;
   team_id: string | null;
   posted_at: number | string;
+  text: string | null;
+  context: string | null;
+  app_id: string | null;
+}
+
+function parseContext(raw: string | null): PostContext | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" ? (v as PostContext) : null;
+  } catch {
+    return null;
+  }
 }
 
 const toPost = (r: Row): ProactivePost => ({
@@ -50,14 +80,20 @@ const toPost = (r: Row): ProactivePost => ({
   messageTs: r.message_ts,
   teamId: r.team_id,
   postedAt: Number(r.posted_at),
+  text: r.text ?? null,
+  context: parseContext(r.context ?? null),
+  appId: r.app_id ?? null,
 });
 
-export async function recordPost(p: Omit<ProactivePost, "id">): Promise<string> {
-  const id = randomUUID();
+/** Record a post; `id` when the caller minted it before posting (the Slack metadata marker carries it). */
+export async function recordPost(
+  p: Omit<ProactivePost, "id" | "text" | "context" | "appId"> & { id?: string; text?: string | null; context?: PostContext | null; appId?: string | null },
+): Promise<string> {
+  const id = p.id ?? randomUUID();
   await db.run(
-    `INSERT INTO proactive_posts (id, agent_id, audience, recipient, topic, text_hash, evidence_hash, channel_id, message_ts, team_id, posted_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, p.agentId, p.audience, p.recipient, p.topic, p.textHash, p.evidenceHash, p.channelId, p.messageTs, p.teamId, p.postedAt],
+    `INSERT INTO proactive_posts (id, agent_id, audience, recipient, topic, text_hash, evidence_hash, channel_id, message_ts, team_id, posted_at, text, context, app_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, p.agentId, p.audience, p.recipient, p.topic, p.textHash, p.evidenceHash, p.channelId, p.messageTs, p.teamId, p.postedAt, p.text ?? null, p.context ? JSON.stringify(p.context) : null, p.appId ?? null],
   );
   return id;
 }
@@ -69,6 +105,31 @@ export async function recentFor(agentId: string, recipient: string, sinceMs: num
     [agentId, recipient, sinceMs],
   );
   return rows.map(toPost);
+}
+
+/** An agent's posts to anyone since `sinceMs`, newest first, at most `limit`. */
+export async function recentByAgent(agentId: string, sinceMs: number, limit: number): Promise<ProactivePost[]> {
+  const rows = await db.query<Row>(
+    `SELECT * FROM proactive_posts WHERE agent_id = ? AND posted_at >= ? ORDER BY posted_at DESC LIMIT ?`,
+    [agentId, sinceMs, limit],
+  );
+  return rows.map(toPost);
+}
+
+/**
+ * Whether the agent posted about this source item since `sinceMs`, to anyone:
+ * the heartbeat round's item dedupe (an item goes out once, to one place).
+ * The context is JSON, so rows are matched here, not in SQL.
+ */
+export async function postedItem(agentId: string, source: string, itemId: string, sinceMs: number): Promise<boolean> {
+  const rows = await db.query<Pick<Row, "context">>(
+    `SELECT context FROM proactive_posts WHERE agent_id = ? AND posted_at >= ? AND context IS NOT NULL`,
+    [agentId, sinceMs],
+  );
+  return rows.some((r) => {
+    const c = parseContext(r.context);
+    return c?.source === source && c.itemId === itemId;
+  });
 }
 
 /** The proactive post a Slack message is, by its channel and ts. */

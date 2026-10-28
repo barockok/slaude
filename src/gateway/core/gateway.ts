@@ -17,8 +17,11 @@ import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extr
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
 import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
+import { proactiveReplyBlock } from "../../proactive/reply-context";
 import type { PromiseTransport } from "../../proactive/promises";
-import { ledgerTurnRun } from "../../background/skill-check";
+import type { ProactiveTransport } from "../../proactive/dispatch";
+import { proactiveFor } from "../../soul/proactive";
+import { ledgerTurnRun, type TurnPass } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
@@ -128,7 +131,8 @@ import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { bridgeExternalMcp, connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
-import { connectText, createMcpBridge, reauthText } from "./mcp-bridge";
+import { connectText, createMcpBridge, reauthText, type McpBridge } from "./mcp-bridge";
+import { createSourceReader, oauthOnlyWatches, unservedWatches } from "../../proactive/source-reader";
 import { parseRunAs } from "../../agent/credential-owner";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
 import { randomBytes } from "node:crypto";
@@ -189,6 +193,8 @@ export interface GatewayHandle {
   __resolveMcp(sessionId: string): Promise<Record<string, McpServerConfig> | undefined>;
   /** Test seam: how this gateway delivers promise checks (phase E). */
   __promises?: PromiseTransport;
+  /** Test seam: how this gateway dispatches heartbeat ask/act turns. */
+  __proactive?: ProactiveTransport;
   /** TEST SEAM: the mono process's voice call registry. */
   __voiceCalls?: VoiceCalls;
   /** TEST/SIM SEAM ONLY. Drive the natural-language connect path (what the
@@ -722,10 +728,45 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const soul = soulData();
     return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
   };
+  /** The persona's servers as the MCP bridge serves them (bridgeExternalMcp:
+   *  the managed persona's config; files only with the operator's opt-in). */
+  const bridgeServers = (claims: JobClaims) =>
+    bridgeExternalMcp(claims.persona && claims.persona !== "default" ? claims.persona : undefined);
+  /** Boot warning: a watched server a session mounts but the bridge does not
+   *  serve (a file-configured server without the opt-in) is never read. */
+  const warnUnservedWatches = (): void => {
+    const personas = ["default", ...getPersonaRegistry().list().map((p) => p.name)];
+    for (const p of new Set(personas)) {
+      try {
+        const watch = proactiveFor(p).watch;
+        if (!watch.length) continue;
+        const named = p === "default" ? undefined : p;
+        for (const name of unservedWatches(watch, sessionExternalMcp(named, loadExternalMcp()), bridgeExternalMcp(named))) {
+          console.warn(
+            `[proactive] persona=${p} watch "${name}": the MCP bridge does not serve it, so the heartbeat cannot read it; a file-configured server needs SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG=1`,
+          );
+        }
+        // Mono: /mcp global connect writes the agent's OAuth grant into the
+        // CLI's own store, which the bridge neither reads nor may refresh (the
+        // CLI rotates it), so a server with no config headers is not readable.
+        if (env.role() === "mono") {
+          for (const name of oauthOnlyWatches(watch, bridgeExternalMcp(named))) {
+            console.warn(
+              `[proactive] persona=${p} watch "${name}": it has no config headers, so the heartbeat would need the agent's OAuth connection, which on mono lives in the agent CLI's own store and is not used; the source is skipped when it asks for auth`,
+            );
+          }
+        }
+      } catch (e) {
+        console.warn(`[proactive] persona=${p}: could not check watched sources: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  };
   const backgroundSlack: SchedulerSlack = {
     // As the bot of the app the message names; on a multi-app transport a
     // post that does not name both app id and team is refused (cardPoster).
     post: cardPoster(t),
+    // Mono keeps the agent's OAuth grants in the CLI's own store (persistTokens).
+    ...(env.role() === "mono" ? { agentOAuthInCli: true } : {}),
     managers: backgroundManagers,
     digestRecipient: () => digestRecipientOf(soulData()),
   };
@@ -772,6 +813,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // cron scheduler, whose routes bind it too (cron inputs carry no sender).
   const noteTurnSender = (sessionId: string, ctx: SlackContext): void => {
     ctx.turnSenders ??= () => (typeof agent.turnSenders === "function" ? agent.turnSenders(sessionId) : null);
+    ctx.turnTexts ??= () => (typeof agent.turnTexts === "function" ? agent.turnTexts(sessionId) : null);
   };
 
   const cronScheduler = new CronScheduler({
@@ -824,6 +866,67 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       routes.set(sessionId, { ctx, surface: wrapSurface(surfaceForCtx(ctx), sessionId), spoke: false, silent: true });
     },
   });
+  /**
+   * One background turn into a thread through the cron path (promise checks,
+   * heartbeat ask/act): the thread's session, a route bound like a cron run's
+   * (origin cron, silent), then the queue in the gateway role or this
+   * process in mono, carrying the open ledger run its own usage closes. Whom
+   * the turn runs as is the thread's own /1on1 lock, never a carried identity;
+   * callers check that the lock is what they expect. `userId` is the ctx's
+   * and the job's initiator; `engage` marks the thread engaged so a later
+   * human reply continues it.
+   */
+  const dispatchThreadTurn = async (
+    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean; appId?: string | null },
+    envelope: string,
+    run: { runId: string; agentId: string },
+    pass: TurnPass,
+  ): Promise<void> => {
+    const { teamId, channelId, threadTs, userId } = target;
+    const persona = target.personaId;
+    const session = await agent.ensureSession({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: persona ?? "default" });
+    if (target.engage) await Sessions.setEngaged(session.id, true);
+    // A thread a heartbeat post just opened has no app of its own yet: the
+    // post's app is stamped on it, so this turn (and a later reply's) speaks
+    // as the app that posted, which a multi-app transport requires.
+    if (!session.slack_app_id && target.appId) {
+      await Sessions.setSlackApp(session.id, target.appId);
+      session.slack_app_id = target.appId;
+    }
+    const app: AppRef = { apiAppId: session.slack_app_id ?? undefined, teamId };
+    const ctx: SlackContext = {
+      client: outClientForPersona(persona, app),
+      apiAppId: app.apiAppId,
+      resolveBotToken: () => t.botTokenFor?.(app),
+      channel: channelId,
+      threadTs,
+      inboundTs: String(Date.now()),
+      userId,
+      teamId,
+      postTarget: "thread",
+      personaId: persona,
+      origin: "cron",
+    };
+    ctx.requestApproval = (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req });
+    ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+    noteTurnSender(session.id, ctx);
+    routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, silent: true });
+    if (queueDispatch) {
+      await queueDispatch.dispatch(session, envelope, {
+        teamId,
+        channelId,
+        threadTs,
+        eventTs: String(Date.now() / 1000),
+        userId,
+        personaId: persona,
+        ...(app.apiAppId ? { apiAppId: app.apiAppId } : {}),
+        origin: "cron",
+        backgroundRunId: run.runId,
+      });
+    } else {
+      await agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }) });
+    }
+  };
   // Promise checks (phase E): a due commitment's check turn goes into the
   // thread that made the promise, through the cron path (a route bound like a
   // cron run's, origin cron; the queue in the gateway role, this process in
@@ -857,40 +960,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (!teamId) throw new Error("no Slack team is known for this thread");
       await promiseScopeHolds(row);
       const persona = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
-      const session = await agent.ensureSession({ team_id: teamId, channel_id: row.channelId, thread_ts: row.threadTs, persona_id: row.personaId || "default" });
-      const app: AppRef = { apiAppId: session.slack_app_id ?? undefined, teamId };
-      const ctx: SlackContext = {
-        client: outClientForPersona(persona, app),
-        apiAppId: app.apiAppId,
-        resolveBotToken: () => t.botTokenFor?.(app),
-        channel: row.channelId,
-        threadTs: row.threadTs,
-        inboundTs: String(Date.now()),
-        userId: row.beneficiary,
-        teamId,
-        postTarget: "thread",
-        personaId: persona,
-        origin: "cron",
-      };
-      ctx.requestApproval = (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req });
-      ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
-      noteTurnSender(session.id, ctx);
-      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, silent: true });
-      if (queueDispatch) {
-        await queueDispatch.dispatch(session, envelope, {
-          teamId,
-          channelId: row.channelId,
-          threadTs: row.threadTs,
-          eventTs: String(Date.now() / 1000),
-          userId: row.beneficiary,
-          personaId: persona,
-          ...(app.apiAppId ? { apiAppId: app.apiAppId } : {}),
-          origin: "cron",
-          backgroundRunId: run.runId,
-        });
-      } else {
-        await agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass: "commitment" }) });
-      }
+      await dispatchThreadTurn(
+        { teamId, channelId: row.channelId, threadTs: row.threadTs, personaId: persona, userId: row.beneficiary },
+        envelope,
+        run,
+        "commitment",
+      );
     },
     post: async (row, text) => {
       // Even the fixed line names the promise's due: only where a check may speak.
@@ -900,6 +975,38 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const session = await promiseSession(row);
       const app: AppRef = { apiAppId: session?.slack_app_id ?? undefined, teamId: teamId ?? undefined };
       await outClientForPersona(persona, app).chat.postMessage({ channel: row.channelId, thread_ts: row.threadTs, text });
+    },
+  };
+
+  // Heartbeat ask/act (src/proactive/dispatch.ts): the item's turn goes into
+  // the thread of the post the round just made, as the agent. The thread is
+  // new, so no /1on1 lock is expected; one taken since would make the turn
+  // run as that person, so it is refused. The initiator is the agent's own id
+  // in a DM as in a channel: no person sent this turn, and the route's
+  // userId is what manager-only tools and the brain gate's isManager read,
+  // so a DM recipient (often the manager) must not lend the turn their
+  // rights. A human reply rewrites the route with its real sender. Engaged,
+  // so that reply continues the thread.
+  backgroundSlack.proactive = {
+    dispatch: async (post, envelope, run, personaId) => {
+      if (!post.messageTs) throw new Error("the post has no message ts");
+      if (!post.teamId) throw new Error("no Slack team is known for this post");
+      if (await OneOnOne.find(post.channelId, post.messageTs)) throw new Error("the post's thread has a /1on1 lock; a heartbeat turn runs only as the agent");
+      const persona = personaId && personaId !== "default" ? personaId : undefined;
+      await dispatchThreadTurn(
+        {
+          teamId: post.teamId,
+          channelId: post.channelId,
+          threadTs: post.messageTs,
+          personaId: persona,
+          userId: post.agentId,
+          engage: true,
+          appId: post.appId,
+        },
+        envelope,
+        run,
+        "heartbeat-turn",
+      );
     },
   };
 
@@ -986,7 +1093,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // claimed in the database, so a leader change mid-pass never re-runs one);
   // mono runs it directly. Ticks wait for an open brain and never boot it.
   let backgroundScheduler: { stop(graceMs?: number): Promise<void> } | undefined;
+  // The heartbeat round reads the agent's own sources through a bridge of its
+  // own: the same servers as the node bridge (bridgeServers), but no
+  // onNeedsAuth, so a source that needs re-authorising posts no card; the
+  // round reports it instead. Reads go out as the agent (backgroundClaims).
+  let backgroundBridge: McpBridge | undefined;
   if (opts.backgroundLearning === true && env.role() !== "node" && brainEnabled()) {
+    backgroundBridge = createMcpBridge({ servers: bridgeServers });
+    backgroundSlack.sources = createSourceReader(backgroundBridge);
+    warnUnservedWatches();
     backgroundScheduler = startBackgroundScheduler(defaultSchedulerDeps(backgroundSlack), queueDispatch ? { elect: leaderElect(getRedis()) } : {});
     console.log(`[slaude] background learning scheduler ${queueDispatch ? "contending for leadership" : "started"}`);
   }
@@ -1209,6 +1324,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return inner ? `<memory-context>\n${inner}\n</memory-context>\n\n` : "";
     } catch (e) {
       console.warn(`[memory-context] skipped: ${e instanceof Error ? e.name : typeof e}`);
+      return "";
+    }
+  };
+
+  // A reply under a proactive post (spec §5 Stitching): the post's
+  // `<proactive-context>` for that reply's turn. Only threaded replies count,
+  // so a top-level message (its own root) never gets one. Like the memory
+  // block it reads only an already-open brain; any failure means no block.
+  const turnProactiveBlock = async (m: { channel: string; threadTs: string; eventTs: string; personaId?: string }): Promise<string> => {
+    if (m.threadTs === m.eventTs || !brainEnabled() || !brainReady()) return "";
+    try {
+      const block = await proactiveReplyBlock({ channel: m.channel, threadTs: m.threadTs, personaId: m.personaId });
+      return block ? `${block}\n\n` : "";
+    } catch (e) {
+      console.warn(`[proactive-context] skipped: ${e instanceof Error ? e.name : typeof e}`);
       return "";
     }
   };
@@ -3012,7 +3142,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const order = takeDispatchSlot(session.id);
     slot.release = order.release;
     const oneOnOneLock = await OneOnOne.find(channelId, threadTs);
-    const [userName, files, memoryContext] = await Promise.all([
+    const [userName, files, memoryContext, proactiveContext] = await Promise.all([
       resolveUserName(client, userId),
       attachToken
         ? downloadAttachments({
@@ -3026,6 +3156,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       suppress
         ? ""
         : turnMemoryBlock({ channel: channelId, threadTs, userId, teamId, personaId: dispatch?.personaId, lockedUser: oneOnOneLock?.locked_user ?? null }),
+      suppress ? "" : turnProactiveBlock({ channel: channelId, threadTs, eventTs, personaId: dispatch?.personaId }),
     ]);
     if (env.metricsPerUser()) {
       metric.userTurnsTotal.inc({ user_id: userId, user_name: userName });
@@ -3064,6 +3195,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       `trust="${trust}"${oneOnOneAttr}>\n` +
       `${userText}${attachmentBlock}\n</channel>\n\n` +
       memoryContext +
+      proactiveContext +
       (files.length
         ? `User attached ${files.length} file(s); paths above are local — Read them directly.\n`
         : "") +
@@ -3176,7 +3308,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
       if (suppress) agent.suppressNextTurn(session.id);
       try {
-        await agent.sendMessage(session.id, envelope, { sender: { userId, teamId: teamId || null, origin: "slack" } });
+        await agent.sendMessage(session.id, envelope, { sender: { userId, teamId: teamId || null, origin: "slack", text: stripped } });
       } catch (e: any) {
         console.error("[slaude] sendMessage threw:", e?.message ?? e, e?.stack);
       }
@@ -3633,6 +3765,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     },
     once: (key) => SeenEvents.tryInsert(key),
   });
+  /**
+   * Is this copy of a reply under a proactive post the copy of the app that
+   * made the post? Slack delivers a channel message to every app installed
+   * there, and the thread must be taken (its session stamped with the
+   * receiving app) by the bot that posted. The root's author
+   * (`parent_user_id`) being this app's bot decides it. A root posted as a
+   * real user (xoxp), or an event without `parent_user_id`, names no app:
+   * taken only when no other registered app's bot is in the channel (a
+   * single-app deploy); a failed member lookup reads as one being there.
+   */
+  const postedThroughThisApp = async (args: any, e: any): Promise<boolean> => {
+    const own = await getBotId(args);
+    if (e.parent_user_id && e.parent_user_id === own) return true;
+    if (e.parent_user_id && !(await getSelfUserIds()).has(e.parent_user_id)) return false;
+    const others = [...(await getSelfBots(args)).userIds].filter((u) => u && u !== own);
+    return !others.length || !(await anyInChannel(args.client ?? t.client, e.channel, others));
+  };
   t.event("reaction_added", async (args: any) => {
     const e: any = args.event;
     if (e?.item?.type !== "message" || !e.user || !brainEnabled() || !brainReady()) return;
@@ -3673,14 +3822,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return;
     }
     // A reply under a proactive post (phase E): recorded as an outcome; a
-    // "stop" mutes that topic for the replier and ends here.
+    // "stop" mutes that topic for the replier and ends here. Any other reply
+    // continues in a proactive thread (spec §5 Stitching): the agent started
+    // it, so the decision gate is never consulted there, and a thread with no
+    // session yet is engaged for the post's persona below.
+    let proactive: { personaId: string | undefined } | null = null;
     if (e.thread_ts && e.thread_ts !== e.ts && brainEnabled() && brainReady()) {
       try {
         const fb = await onProactiveReply(
           { channel: e.channel, threadTs: e.thread_ts, ts: e.ts, userId: e.user, teamId: args.context?.teamId ?? e.team ?? null, text: String(e.text ?? "") },
           proactiveFeedbackDeps(args),
         );
-        if (fb === "muted") return;
+        if (fb.result === "muted") return;
+        // The post's agent is a named persona's Slack user, else the default persona's.
+        if (fb.post && (await postedThroughThisApp(args, e))) {
+          const name = getPersonaRegistry().lookupByUserId(fb.post.agentId)?.name;
+          proactive = { personaId: name && name !== "default" ? name : undefined };
+        }
       } catch (err) {
         console.error(`[proactive] feedback on ch=${e.channel} ts=${e.ts} failed: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
       }
@@ -3727,8 +3885,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       (u) => u && u !== botId && (!selfBotUsers.has(u) || absentAppBots.has(u)) && !registry.lookupByUserId(u),
     );
 
+    // No gate in a proactive thread (see above); everything else unchanged.
+    const gated = (): boolean => !proactive && gateActive();
+
     if (mentionsBot) {
-      const act = gateActive() ? await consultGate(args, { mentionsAgent: true }) : undefined;
+      const act = gated() ? await consultGate(args, { mentionsAgent: true }) : undefined;
       if (act === "record_doubt") return await recordDoubt(args);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts);
       return await handleMessage(args, { engagedBefore });
@@ -3748,7 +3909,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Re-engage the persona's row if it was disengaged; a first mention has
       // no row yet and the session is born engaged.
       const personaId = mentionedPersona.name;
-      const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
+      const act = gated() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
       if (act === "record_doubt") return await recordDoubt(args, personaId);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, mentionedPersona.name);
       return await handleMessage(args, { personaId: mentionedPersona.name, engagedBefore });
@@ -3817,7 +3978,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: "default" });
       if (def?.engaged) {
         if (otherApp(def)) return;
-        const act = gateActive() ? await consultGate(args, { mentionsAgent: false }) : undefined;
+        const act = gated() ? await consultGate(args, { mentionsAgent: false }) : undefined;
         if (act === "record") return await recordEngaged(args);
         return await handleMessage(args);
       }
@@ -3827,7 +3988,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: p.name });
           if (row?.engaged) {
             if (otherApp(row)) return;
-            const act = gateActive() ? await consultGate(args, { mentionsAgent: false, personaId: p.name }) : undefined;
+            const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: p.name }) : undefined;
             if (act === "record") {
               return await recordEngaged(args, p.name);
             }
@@ -3849,7 +4010,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // Engaged session outside the registry (e.g. persona removed from
         // config) — keep handling plain replies as that persona.
         const restoredPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
-        const act = gateActive() ? await consultGate(args, { mentionsAgent: false, personaId: restoredPersonaId }) : undefined;
+        const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: restoredPersonaId }) : undefined;
         if (act === "record") {
           return await recordEngaged(args, restoredPersonaId);
         }
@@ -3866,6 +4027,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         );
         return await handleMessage(args, { suppress: true, personaId: disengagedPersonaId });
       }
+    }
+    // A reply under a proactive post with no session in the thread yet (an
+    // inform post): the session handleMessage creates is born engaged. A
+    // thread disengaged since (a colleague mention) stays disengaged above.
+    if (proactive) {
+      console.log(`[slack-rx] engage ch=${channelId} ts=${e.ts} user=${e.user} — reply under a proactive post`);
+      return await handleMessage(args, { personaId: proactive.personaId });
     }
     console.log(
       `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — channel msg, thread not engaged (no @mention)`,
@@ -3887,7 +4055,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // config; files only with the operator's opt-in). mono
   // never calls it: its sessions mount external MCP directly, as before.
   const mcpBridge = createMcpBridge({
-    servers: (claims) => bridgeExternalMcp(claims.persona && claims.persona !== "default" ? claims.persona : undefined),
+    servers: bridgeServers,
     onNeedsAuth: (claims, server, scope, reason) => postBridgeConnectCard(claims, server, scope, reason),
   });
   /** The `/mcp` connect card, posted in the turn's thread when a bridged server
@@ -4102,6 +4270,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await panelResumeUnsub?.().catch(() => {});
       await panelHoldUnsub?.().catch(() => {});
       await mcpBridge.close().catch(() => {});
+      await backgroundBridge?.close().catch(() => {});
       await t.stop();
       // Never rejects (errors are logged above). While closing, the KB import
       // stops before its next KB, so shutdown does not wait for a full import.
@@ -4116,6 +4285,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
     __promises: backgroundSlack.promises!,
+    __proactive: backgroundSlack.proactive!,
     __voiceCalls: voiceCalls,
     __brainGate: async (sessionId: string) => {
       const route = routes.get(sessionId);

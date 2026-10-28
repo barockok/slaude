@@ -49,6 +49,9 @@ export type PassTool = SdkMcpToolDefinition<any>;
 
 export const PASS_MCP_NAME = "slaude_pass";
 export const PASS_TOOL_NAMES = ["read_pages", "list_pages", "search", "memoize", "propose"] as const;
+export type PassToolName = (typeof PASS_TOOL_NAMES)[number];
+/** The base tools of a pass that must not write or propose. */
+export const READ_ONLY_PASS_TOOLS: readonly PassToolName[] = ["read_pages", "list_pages", "search"];
 
 /** The name the model calls a slaude_pass tool by. */
 export const passToolId = (name: string): string => `mcp__${PASS_MCP_NAME}__${name}`;
@@ -383,9 +386,13 @@ export function passTools(ctx: PassToolContext): PassTool[] {
   return tools as unknown as PassTool[];
 }
 
-/** The `slaude_pass` server: the pass's tools plus `extra`. A name collision throws. */
-export function createPassMcpServer(ctx: PassToolContext, extra: readonly PassTool[] = []): { server: McpSdkServerConfigWithInstance; toolIds: string[] } {
-  const tools = [...passTools(ctx), ...extra];
+/** The `slaude_pass` server: the pass's `base` tools (default all five) plus `extra`. A name collision throws. */
+export function createPassMcpServer(
+  ctx: PassToolContext,
+  extra: readonly PassTool[] = [],
+  base: readonly PassToolName[] = PASS_TOOL_NAMES,
+): { server: McpSdkServerConfigWithInstance; toolIds: string[] } {
+  const tools = [...passTools(ctx).filter((t) => (base as readonly string[]).includes(t.name)), ...extra];
   const names = tools.map((t) => t.name);
   if (new Set(names).size !== names.length) throw new Error(`slaude_pass: duplicate tool name in ${names.join(", ")}`);
   return { server: createSdkMcpServer({ name: PASS_MCP_NAME, version: "0.1.0", tools }), toolIds: names.map(passToolId) };

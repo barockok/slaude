@@ -1,8 +1,9 @@
 /**
  * POST /v1/background/turn/finish (phase E): a node finishes the background
- * turn run its job carries (a promise check). Only the run id signed into the
- * job token as `bgRun` is finished, only while it is an open `commitment` run
- * of the token persona's agent, priced with the gateway's own table.
+ * turn run its job carries (a promise check, a heartbeat ask/act turn). Only
+ * the run id signed into the job token as `bgRun` is finished, only while it
+ * is an open `commitment` or `heartbeat-turn` run of the token persona's
+ * agent, priced with the gateway's own table.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { db } from "../../../src/db/schema";
@@ -27,7 +28,7 @@ const claims = (over: Partial<JobClaims> = {}): JobClaims =>
 
 const body = async (r: Response) => ({ status: r.status, json: (await r.json()) as any });
 
-async function openRun(pass: "commitment" | "skill-check" = "commitment"): Promise<string> {
+async function openRun(pass: "commitment" | "skill-check" | "heartbeat-turn" = "commitment"): Promise<string> {
   const r = await startSkillCheck({ personaId: "default", model: MODEL, scope: "agent", pass }, deps);
   if (!r.ok) throw new Error("run did not open");
   return r.runId;
@@ -71,6 +72,13 @@ describe("background turn finish", () => {
     expect((await handleTurnRun("finish", b, claims(), deps)).status).toBe(409);
     expect((await handleTurnRun("finish", b, claims({ bgRun: "other" }), deps)).status).toBe(409);
     expect((await Runs.get(runId))!.outcome).toBeNull();
+  });
+
+  test("a heartbeat ask/act run finishes under its own pass", async () => {
+    const runId = await openRun("heartbeat-turn");
+    const r = await body(await handleTurnRun("finish", { runId, outcome: "ok", usage: { [MODEL]: M(1_000, 100) } }, claims({ bgRun: runId }), deps));
+    expect(r).toEqual({ status: 200, json: { ok: true } });
+    expect(await Runs.get(runId)).toMatchObject({ outcome: "ok", pass: "heartbeat-turn" });
   });
 
   test("a skill-check run cannot be finished through this route", async () => {

@@ -18,7 +18,7 @@ const error = (r: { content: string } | { error: string }): string => {
 
 describe("PAGE_TYPES", () => {
   test("the exact type strings", () => {
-    expect([...PAGE_TYPES]).toEqual(["profile", "person-note", "commitment", "investigation", "correction", "outcome", "lessons", "heartbeat", "team-fact"]);
+    expect([...PAGE_TYPES]).toEqual(["profile", "person-note", "commitment", "investigation", "correction", "outcome", "lessons", "heartbeat", "team-fact", "proactive-rule", "heartbeat-journal"]);
   });
 });
 

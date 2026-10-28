@@ -2028,6 +2028,27 @@ describe("turnSenders: who sent the inputs the CLI is processing (phase C, invar
     await shutdown(mgr, row.id);
   });
 
+  it("turnTexts: the own text of every outstanding input; null when any came without one", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await mgr.sendMessage(row.id, "<channel>T1</channel> plus injected context", { sender: { ...A, text: "T1: just answer these" } });
+    await until(() => fs.users.length === 1, 3000, "T1 delivered");
+    expect(mgr.turnTexts(row.id)).toEqual(["T1: just answer these"]);
+    // The sender record a profile write reads is unchanged by the text.
+    expect(mgr.turnSenders(row.id)).toEqual([A]);
+    await mgr.sendMessage(row.id, "T2", { sender: A }); // no text: unknown
+    expect(mgr.turnTexts(row.id)).toBeNull();
+    fs.emit(res());
+    await until(() => events.filter((e) => e.type === "done").length === 1, 3000, "T1 done");
+    expect(mgr.turnTexts(row.id)).toBeNull();
+    fs.emit(res());
+    await until(() => events.filter((e) => e.type === "done").length === 2, 3000, "T2 done");
+    expect(mgr.turnTexts(row.id)).toBeNull();
+    await shutdown(mgr, row.id);
+  });
+
   it("T2 with Bob as its sole sender writes Bob's profile, even while the ctx shows Alice", async () => {
     const { profileSourceId } = await import("../../src/knowledge/scope");
     const mgr = new AgentManager();

@@ -58,14 +58,17 @@ import type { ThreadActivity } from "../db/thread-activity";
 import { defaultRunnerDeps } from "./runner";
 import { backgroundAgentId, finishSkillCheck, startSkillCheck } from "./skill-check";
 import { runDueCommitments, type PromiseTransport } from "../proactive/promises";
+import type { ProactiveTransport } from "../proactive/dispatch";
 import { readPingPrefs } from "../proactive/prefs";
 import { runHeartbeat } from "../proactive/heartbeat";
+import { bridgeExternalMcp } from "../gateway/core/external-mcp";
 import { anyProactiveEnabled } from "../soul/proactive";
 import { env } from "../config/env";
 import { personaApp } from "./digest";
 import { soulData, cachedSoulData } from "../soul/extract";
 import { personaSoulText } from "../persona/soul-source";
 import { sweepStaleRuns } from "./stale-runs";
+import type { SourceReader } from "../proactive/source-reader";
 
 export { isoWeekSlot, previousDay };
 
@@ -441,6 +444,12 @@ export interface SchedulerSlack {
   post: CardPost;
   /** How promise checks reach their threads (phase E). Absent: promises are not checked. */
   promises?: PromiseTransport;
+  /** How the heartbeat round's ask/act turns reach their post's thread. Absent: such items are only posted. */
+  proactive?: ProactiveTransport;
+  /** The agent's own MCP sources, read as the agent (heartbeat round). Absent: no source is read. */
+  sources?: SourceReader;
+  /** Mono: the agent's OAuth credentials live in the CLI's own store, which the heartbeat cannot read (HeartbeatDeps.agentOAuthInCli). */
+  agentOAuthInCli?: boolean;
   /** The manager and the backup manager (who may decide manager proposals). */
   managers: () => string[];
   /** Whom the weekly digest goes to: the manager, else the backup manager. */
@@ -457,7 +466,21 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
     digest: (r) => runDigest(r, { call: deps.call, recipient: slack?.digestRecipient ?? (() => null), ...(slack ? { post: slack.post } : {}) }),
     // The heartbeat needs Slack to speak: without it there is nothing to run.
     ...(slack
-      ? { heartbeat: (r: SlotRun) => runHeartbeat(r, { runner: deps.runner, call: deps.call, post: slack.post, managerId: personaManager, app: personaApp }) }
+      ? {
+          heartbeat: (r: SlotRun) =>
+            runHeartbeat(r, {
+              runner: deps.runner,
+              call: deps.call,
+              post: slack.post,
+              managerId: personaManager,
+              app: personaApp,
+              // Read at run time: the gateway sets both after building the scheduler deps.
+              ...(slack.sources ? { sources: slack.sources } : {}),
+              ...(slack.proactive ? { proactive: slack.proactive } : {}),
+              ...(slack.agentOAuthInCli ? { agentOAuthInCli: true } : {}),
+              mcp: bridgeExternalMcp,
+            }),
+        }
       : {}),
   };
 }

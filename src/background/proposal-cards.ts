@@ -43,7 +43,10 @@ export type Block = Record<string, any>;
 
 /** Posts one message (a DM when `channel` is a user id) as the agent's bot, as the Slack app `app` names when known. */
 /** Post a message as the agent's bot; returns where it landed (a proactive post records it, phase E). */
-export type CardPost = (msg: { channel: string; app?: AppRef; text: string; blocks: Block[] }) => Promise<{ channel?: string; ts?: string } | void>;
+/** Slack message metadata (a marker only; the database is the source of truth). */
+export type MessageMetadata = { event_type: string; event_payload: Record<string, unknown> };
+
+export type CardPost = (msg: { channel: string; app?: AppRef; text: string; blocks: Block[]; metadata?: MessageMetadata }) => Promise<{ channel?: string; ts?: string } | void>;
 
 export const NO_APP_REFUSAL = "refused: on a multi-app gateway a card goes out only as a named Slack app (app id and team)";
 
@@ -64,7 +67,12 @@ export function cardPoster(t: Pick<Transport, "client" | "clientFor" | "apps">):
       const registered = t.apps ? (await t.apps()).length : Infinity;
       if (registered !== 1) throw new Error(NO_APP_REFUSAL);
     }
-    const r = (await clientForApp(t, msg.app).chat.postMessage({ channel: msg.channel, text: msg.text, blocks: msg.blocks })) as
+    const r = (await clientForApp(t, msg.app).chat.postMessage({
+      channel: msg.channel,
+      text: msg.text,
+      blocks: msg.blocks,
+      ...(msg.metadata ? { metadata: msg.metadata } : {}),
+    })) as
       | { channel?: unknown; ts?: unknown }
       | undefined;
     return {
