@@ -28,6 +28,10 @@ class FakeSession {
   err: Error | null = null;
   users: any[] = [];
   onUser: ((um: any) => void) | null = null;
+  /** Set once the prompt iterable has closed (stdin closed). */
+  promptClosed = false;
+  /** When set, the CLI exits only once this resolves after its stdin closed. */
+  exitGate: Promise<void> | null = null;
   _wake: (() => void) | null = null;
   wake() {
     const w = this._wake;
@@ -50,6 +54,8 @@ class FakeSession {
           self.users.push(um);
           self.onUser?.(um);
         }
+        self.promptClosed = true;
+        if (self.exitGate) await self.exitGate;
         self.ended = true;
         self.wake();
       } catch (e) {
@@ -270,6 +276,46 @@ describe("the proactive folder holds one turn at a time", () => {
       await shutdown(mgr, b.id);
     }, 10_000);
   }
+
+  it("a message waiting at the folder while its own live session idles out reaches a fresh session", async () => {
+    const savedIdle = process.env.SLAUDE_IDLE_MINUTES;
+    const mgr = new AgentManager();
+    const log = recordEvents(mgr);
+    try {
+      const a = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+      const b = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+      // b's warm-up turn arms an idle close of ~120 ms; its CLI then exits only
+      // once exitGate resolves, so b stays live with its input closed.
+      process.env.SLAUDE_IDLE_MINUTES = String(120 / 60_000);
+      const fb1 = plan((s) => s.emit(res()));
+      const exitGate = deferred();
+      fb1.exitGate = exitGate.p;
+      await mgr.sendMessage(b.id, "warm up");
+      await until(() => log.includes(`done:${b.id}`), 3000, "b warm");
+      process.env.SLAUDE_IDLE_MINUTES = "0";
+      const gate = deferred();
+      plan((s) => void gate.p.then(() => s.emit(res())));
+      const fb2 = plan((s) => s.emit(res()));
+      await mgr.sendMessage(a.id, "first");
+      const sentB = mgr.sendMessage(b.id, "second");
+      // b idles out while its message waits; its instance is still live.
+      await until(() => fb1.promptClosed, 3000, "b's idle close");
+      expect(mgr.isLive(b.id)).toBe(true);
+      // The folder is handed to b while its closed instance is still in place.
+      gate.resolve();
+      await Bun.sleep(40);
+      exitGate.resolve();
+      await sentB;
+      await until(() => fb2.users.length === 1, 3000, "b's message on a fresh session");
+      expect(String(fb2.users[0].message.content)).toContain("second");
+      expect(fb1.users).toHaveLength(1);
+      await shutdown(mgr, a.id);
+      await shutdown(mgr, b.id);
+    } finally {
+      if (savedIdle === undefined) delete process.env.SLAUDE_IDLE_MINUTES;
+      else process.env.SLAUDE_IDLE_MINUTES = savedIdle;
+    }
+  }, 10_000);
 
   it("a send that fails while another send of the same session still boots keeps the folder", async () => {
     const errSpy = spyOn(console, "error").mockImplementation(() => {});

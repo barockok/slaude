@@ -122,6 +122,10 @@ type LiveSession = {
   idleTimer?: ReturnType<typeof setTimeout>;
   /** Set when reload_session is called so expected exit errors are suppressed. */
   reloading?: boolean;
+  /** Set when the idle timer closed the input: the instance is on its way out
+   *  (still in #live until its loop unwinds), so a send treats it like a
+   *  reloading one and boots fresh after it exits. */
+  closing?: boolean;
   /** Inputs pushed so far (never decreases): a check whose budgeted start
    *  resolves after another input was pushed is stale and is not run. */
   inputSeq: number;
@@ -877,12 +881,12 @@ export class AgentManager extends EventEmitter {
     // before a wait (the live instance, its reload state) may be stale after.
     for (;;) {
       live = this.#live.get(sessionId);
-      // A reloading session has closed its input: anything pushed now would never
+      // A reloading (or idled-out) session has closed its input: anything pushed now would never
       // reach the CLI. Wait for it to exit and boot a fresh one for this message.
       // Bounded: a CLI that never exits after its stdin closes must not hang this
       // forever. Past the bound the old session is aborted and detached (its
       // eventual exit cannot touch the fresh one), and the message boots fresh.
-      while (live?.reloading) {
+      while (live?.reloading || live?.closing) {
         const old = live;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const exited = await Promise.race([
@@ -947,6 +951,7 @@ export class AgentManager extends EventEmitter {
       // Flush any buffered assistant content; close the prompt iterable so
       // the for-await loop in #startSession unwinds cleanly.
       this.#flushTurn(live);
+      live.closing = true;
       try {
         live.closeIterable();
       } catch {}
