@@ -900,6 +900,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
 
     const started = Date.now();
     let res: "done" | "error" | "skipped" | typeof STALE_CONFIG | typeof HELD_BY_OTHER;
+    // Which lock a lost-lock abort came from, for its log line.
+    const lockSignals: { session?: AbortSignal; folder?: AbortSignal } = {};
     try {
       res = await runLockedTurn<"done" | "error" | "skipped">({
         lock: (fn) => {
@@ -918,6 +920,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
                   // HELD_BY_OTHER, which requeues like a held session. Losing
                   // either lock aborts the turn through the signal fn receives.
                   withKeyLock(keys.workspaceLock(workspace), `${nodeId}:${data.sessionId}`, (folderLost) => {
+                    lockSignals.session = sessionLost;
+                    lockSignals.folder = folderLost;
                     const lost = AbortSignal.any([sessionLost, folderLost]);
                     return fn(lost);
                   }, lockOpts),
@@ -931,7 +935,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           // Lost the lock (TTL lapsed / another holder): stop touching the
           // session immediately — another node may already be running it.
           const onLost = () => {
-            console.error(`[node] session lock lost session=${data.sessionId} — aborting turn`);
+            const which = lockSignals.folder?.aborted && !lockSignals.session?.aborted ? "proactive folder lock" : "session lock";
+            console.error(`[node] ${which} lost session=${data.sessionId} — aborting turn`);
             turnAborts.get(data.sessionId)?.abort();
             agent.abort(data.sessionId);
           };
