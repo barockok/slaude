@@ -7,7 +7,7 @@
  *
  * The fake SDK harness is the one background-turn.test.ts uses.
  */
-import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 
 process.env.SLAUDE_MEMORY = "sqlite";
 process.env.SLAUDE_AUTO_EVOLVE = "0";
@@ -198,6 +198,135 @@ describe("the proactive folder holds one turn at a time", () => {
     await sentB;
     await until(() => log.includes(`done:${b.id}`), 3000, "b done");
     await shutdown(mgr, b.id);
+  }, 10_000);
+
+  it("mgr.abort mid-turn releases the folder", async () => {
+    const mgr = new AgentManager();
+    const log = recordEvents(mgr);
+    const a = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+    const b = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+    const fa = plan(() => {});
+    plan((s) => s.emit(res()));
+    await mgr.sendMessage(a.id, "first");
+    await until(() => fa.users.length === 1, 3000, "a input");
+    const sentB = mgr.sendMessage(b.id, "second");
+    await Bun.sleep(40);
+    expect(log.includes(`turnStart:${b.id}`)).toBe(false);
+    mgr.abort(a.id);
+    await sentB;
+    await until(() => log.includes(`done:${b.id}`), 3000, "b done");
+    await shutdown(mgr, a.id);
+    await shutdown(mgr, b.id);
+  }, 10_000);
+
+  for (const how of ["reloaded", "aborted"] as const) {
+    it(`a message waiting at the folder while its own live session is ${how} reaches a fresh session`, async () => {
+      const mgr = new AgentManager();
+      const log = recordEvents(mgr);
+      const a = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+      const b = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+      // b runs one turn and goes idle, still live; then a takes the folder.
+      const fb1 = plan((s) => s.emit(res()));
+      await mgr.sendMessage(b.id, "warm up");
+      await until(() => log.includes(`done:${b.id}`), 3000, "b warm");
+      const gate = deferred();
+      plan((s) => void gate.p.then(() => s.emit(res())));
+      const fb2 = plan((s) => s.emit(res()));
+      await mgr.sendMessage(a.id, "first");
+      const sentB = mgr.sendMessage(b.id, "second");
+      await Bun.sleep(40);
+      expect(fb1.users).toHaveLength(1);
+      // b's live session goes away while its message waits for the folder.
+      if (how === "reloaded") mgr.reload(b.id);
+      else mgr.abort(b.id);
+      await until(() => !mgr.isLive(b.id), 3000, "b gone");
+      gate.resolve();
+      await sentB;
+      await until(() => fb2.users.length === 1, 3000, "b's message on a fresh session");
+      expect(String(fb2.users[0].message.content)).toContain("second");
+      expect(fb1.users).toHaveLength(1);
+      await shutdown(mgr, a.id);
+      await shutdown(mgr, b.id);
+    }, 10_000);
+  }
+
+  it("a send that fails while another send of the same session still boots keeps the folder", async () => {
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const mgr = new AgentManager();
+      const log = recordEvents(mgr);
+      const b = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+      const c = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+      // b's reads: two sends' own lookups, then one boot read held, the other failing on cue.
+      const bootGate = deferred();
+      const failGate = deferred();
+      let bReads = 0;
+      const { dbSessionStore } = await import("../../src/agent/session-store");
+      mgr.setSessionStore({
+        ...dbSessionStore,
+        findById: async (id: string) => {
+          if (id !== b.id) return dbSessionStore.findById(id);
+          const n = ++bReads;
+          if (n === 3) await bootGate.p;
+          if (n === 4) {
+            await failGate.p;
+            throw new Error("store down");
+          }
+          return dbSessionStore.findById(id);
+        },
+      } as any);
+      const turnGate = deferred();
+      plan((s) => void turnGate.p.then(() => s.emit(res())));
+      plan((s) => s.emit(res()));
+      // Whichever boot reads fourth fails; the other is held at its read.
+      const settle = (p: Promise<void>) => p.then(() => "ok", (e) => String(e));
+      const sends = [settle(mgr.sendMessage(b.id, "first")), settle(mgr.sendMessage(b.id, "second"))];
+      const failed = Promise.race(sends.map((p) => p.then((r) => (r === "ok" ? new Promise<string>(() => {}) : r))));
+      await until(() => bReads === 4, 3000, "both boots reading");
+      const sentC = mgr.sendMessage(c.id, "elsewhere");
+      await Bun.sleep(20);
+      failGate.resolve();
+      expect(await failed).toContain("store down");
+      await Bun.sleep(40);
+      expect(log.includes(`turnStart:${c.id}`)).toBe(false);
+      bootGate.resolve();
+      expect((await Promise.all(sends)).filter((r) => r === "ok")).toHaveLength(1);
+      await Bun.sleep(40);
+      expect(log.includes(`turnStart:${c.id}`)).toBe(false);
+      turnGate.resolve();
+      await sentC;
+      await until(() => log.includes(`done:${c.id}`), 3000, "c done");
+      expect(log.indexOf(`turnStart:${c.id}`)).toBeGreaterThan(log.indexOf(`done:${b.id}`));
+      await shutdown(mgr, b.id);
+      await shutdown(mgr, c.id);
+    } finally {
+      errSpy.mockRestore();
+    }
+  }, 10_000);
+
+  it("turnStart is emitted only once the folder is held: a send that waited out its own reload", async () => {
+    const mgr = new AgentManager();
+    const log = recordEvents(mgr);
+    const b = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+    const c = await mgr.ensureSession(thread(), { workingDir: FOLDER() });
+    plan(() => {}); // b's first turn never ends on its own
+    const cGate = deferred();
+    plan((s) => void cGate.p.then(() => s.emit(res()))); // c
+    const fb2 = plan((s) => s.emit(res())); // b, rebooted
+    await mgr.sendMessage(b.id, "first");
+    const sentC = mgr.sendMessage(c.id, "waits");
+    mgr.reload(b.id); // b's exit frees the folder: c takes it
+    const sentB = mgr.sendMessage(b.id, "after reload");
+    await until(() => log.includes(`turnStart:${c.id}`), 3000, "c starts");
+    await Bun.sleep(40);
+    expect(log.filter((e) => e === `turnStart:${b.id}`)).toHaveLength(1);
+    cGate.resolve();
+    await sentC;
+    await sentB;
+    await until(() => fb2.users.length === 1, 3000, "b's message on a fresh session");
+    expect(log.lastIndexOf(`turnStart:${b.id}`)).toBeGreaterThan(log.indexOf(`done:${c.id}`));
+    await shutdown(mgr, b.id);
+    await shutdown(mgr, c.id);
   }, 10_000);
 
   it("a second message to the holding session does not wait on itself", async () => {

@@ -845,12 +845,12 @@ export class AgentManager extends EventEmitter {
     const cached = this.#live.get(sessionId);
     const dir = cached ? cached.workingDir : (await this.#store.findById(sessionId))?.working_dir;
     const claimed = isProactiveWorkspace(dir);
-    if (claimed) await this.#claims.acquire(dir!, sessionId);
     try {
       await this.#sendClaimed(sessionId, text, synthetic, sender, run, claimed ? dir! : null);
     } catch (e) {
-      // Failed before its input was in: nothing of this session runs there.
-      if (claimed && !this.isTurnInFlight(sessionId)) this.#claims.releaseHolder(sessionId);
+      // Failed before its input was in, and no other input of this session
+      // runs or boots: nothing of this session runs there.
+      if (claimed && !this.isTurnInFlight(sessionId) && !this.#booting.has(sessionId)) this.#claims.releaseHolder(sessionId);
       throw e;
     }
   }
@@ -859,40 +859,49 @@ export class AgentManager extends EventEmitter {
     // Signal that a real user turn is starting for this session. Slash commands
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
-    this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
-    let live = this.#live.get(sessionId);
-    // A reloading session has closed its input: anything pushed now would never
-    // reach the CLI. Wait for it to exit and boot a fresh one for this message.
-    // Bounded: a CLI that never exits after its stdin closes must not hang this
-    // forever. Past the bound the old session is aborted and detached (its
-    // eventual exit cannot touch the fresh one), and the message boots fresh.
-    while (live?.reloading) {
-      const old = live;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const exited = await Promise.race([
-        old.exited.then(() => true),
-        new Promise<boolean>((r) => (timer = setTimeout(() => r(false), this.#reloadExitTimeoutMs))),
-      ]);
-      clearTimeout(timer);
-      if (!exited) {
-        console.warn(`[mgr] reloading session=${sessionId} did not exit within ${this.#reloadExitTimeoutMs}ms; aborting it and booting fresh`);
-        this.abort(sessionId);
-        if (old.idleTimer) clearTimeout(old.idleTimer);
-        if (this.#live.get(sessionId) === old) {
-          this.#live.delete(sessionId);
-          this.#skillGate.forget(sessionId);
-          // The detached instance's own teardown no longer owns the id and
-          // stays silent, so this is its one exit signal (a voice call must learn).
-          this.#signalSessionExit(sessionId);
-        }
-        live = undefined;
-        break;
-      }
+    // A session in the proactive folder signals it once it holds the folder.
+    if (!claimDir) this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
+    let live: LiveSession | undefined;
+    // Repeats until the folder is held without waiting for it: anything read
+    // before a wait (the live instance, its reload state) may be stale after.
+    for (;;) {
       live = this.#live.get(sessionId);
+      // A reloading session has closed its input: anything pushed now would never
+      // reach the CLI. Wait for it to exit and boot a fresh one for this message.
+      // Bounded: a CLI that never exits after its stdin closes must not hang this
+      // forever. Past the bound the old session is aborted and detached (its
+      // eventual exit cannot touch the fresh one), and the message boots fresh.
+      while (live?.reloading) {
+        const old = live;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const exited = await Promise.race([
+          old.exited.then(() => true),
+          new Promise<boolean>((r) => (timer = setTimeout(() => r(false), this.#reloadExitTimeoutMs))),
+        ]);
+        clearTimeout(timer);
+        if (!exited) {
+          console.warn(`[mgr] reloading session=${sessionId} did not exit within ${this.#reloadExitTimeoutMs}ms; aborting it and booting fresh`);
+          this.abort(sessionId);
+          if (old.idleTimer) clearTimeout(old.idleTimer);
+          if (this.#live.get(sessionId) === old) {
+            this.#live.delete(sessionId);
+            this.#skillGate.forget(sessionId);
+            // The detached instance's own teardown no longer owns the id and
+            // stays silent, so this is its one exit signal (a voice call must learn).
+            this.#signalSessionExit(sessionId);
+          }
+          live = undefined;
+          break;
+        }
+        live = this.#live.get(sessionId);
+      }
+      // Held already (re-entrant): go on with the instance just read. Otherwise
+      // wait for the folder (an old instance's exit may have freed it) and read
+      // the session again.
+      if (!claimDir || this.#claims.holderOf(claimDir) === sessionId) break;
+      await this.#claims.acquire(claimDir, sessionId);
     }
-    // The old instance's exit freed the folder: take it again (at once when
-    // still held) before this input reaches the fresh one.
-    if (claimDir) await this.#claims.acquire(claimDir, sessionId);
+    if (claimDir) this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
     if (live) {
       // flush prior turn if any pending assistant content was buffered
       this.#flushTurn(live);
