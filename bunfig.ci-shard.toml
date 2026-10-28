@@ -1,0 +1,6 @@
+# bun test config for scripts/ci-test-shards.sh: the same preload and ignores
+# as bunfig.toml, without coverage. A shard covers part of the suite, so the
+# coverage thresholds there cannot hold; coverage is gated on the sqlite job.
+[test]
+preload = ["./tests/setup.ts"]
+pathIgnorePatterns = ["**/panel-web/**"]
