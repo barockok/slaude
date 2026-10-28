@@ -1,6 +1,7 @@
 /**
  * The agent's proactive folder: one working directory per agent, shared by
- * every thread a heartbeat `ask`/`act` dispatch opens, so files the agent
+ * the threads that heartbeat `ask`/`act` dispatches open under channel posts
+ * (DM posts and promise checks keep their own folder), so files the agent
  * makes while working a post survive from one post to the next.
  */
 import { resolve, dirname, basename } from "node:path";

@@ -400,8 +400,8 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           label,
           ...(meta.oauthUser ? { oauthUser: meta.oauthUser } : {}),
           ...(meta.backgroundRunId ? { bgRun: meta.backgroundRunId } : {}),
-          // The agent's proactive folder is shared by every heartbeat thread:
-          // the node serialises turns there across nodes by this field.
+          // The agent's proactive folder is shared by heartbeat channel-post
+          // threads: the node serialises turns there across nodes by this field.
           ...(isProactiveWorkspace(session.working_dir) ? { workspace: resolve(session.working_dir!) } : {}),
           messages: [
             { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}) },

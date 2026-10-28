@@ -22,8 +22,9 @@ does real work:
 ## Goals
 
 - Triage judges each item against the mandate of each channel it could go to.
-- Every proactive turn of an agent works in the same persistent folder, so a
-  repository cloned once is reused by later rounds (pull, not clone).
+- Every proactive turn of an agent in a channel post's thread works in the
+  same persistent folder, so a repository cloned once is reused by later
+  rounds (pull, not clone). DM posts and promise checks keep their own folder.
 - Only one turn works in that folder at a time.
 
 ## Non-goals
