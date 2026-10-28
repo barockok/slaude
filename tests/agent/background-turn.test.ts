@@ -6,6 +6,10 @@
  *
  * The fake SDK harness is the one skill-check-budget.test.ts uses.
  */
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { paths } from "../../src/config/home";
 import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 
 process.env.SLAUDE_MEMORY = "sqlite";
@@ -138,6 +142,20 @@ afterAll(() => {
 const tokens = (input: number, output: number) => ({ input, output, cache_read: 0, cache_write: 0 });
 
 describe("budgeted background turn", () => {
+  it("ensureSession: workingDir applies only at creation; default stays per-thread", async () => {
+    const mgr = new AgentManager();
+    const t = thread();
+    const x = join(tmpdir(), `ws-x-${Date.now()}`);
+    const row = await mgr.ensureSession(t, { workingDir: x });
+    expect(row.working_dir).toBe(x);
+    expect(existsSync(x)).toBe(true);
+    const again = await mgr.ensureSession(t, { workingDir: join(tmpdir(), "ws-other") });
+    expect(again.id).toBe(row.id);
+    expect(again.working_dir).toBe(x);
+    const plain = await mgr.ensureSession(thread());
+    expect(basename(plain.working_dir)).toMatch(/^T0TEAM-C0TEAM-/);
+    expect(dirname(plain.working_dir)).toBe(paths.workspaces);
+  });
   it("a fresh session's background input is finished with its own usage", async () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());

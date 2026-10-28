@@ -112,6 +112,7 @@ import { buildGateInput, type GateContextDeps } from "../gate/context";
 import type { GateAction, Trust } from "../gate/types";
 import { providerSecretResolver } from "../api/tenants";
 import { parseRef } from "../../secrets";
+import { proactiveWorkspaceDir } from "../../agent/workspace-claim";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
@@ -884,7 +885,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   ): Promise<void> => {
     const { teamId, channelId, threadTs, userId } = target;
     const persona = target.personaId;
-    const session = await agent.ensureSession({ team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: persona ?? "default" });
+    const session = await agent.ensureSession(
+      { team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: persona ?? "default" },
+      pass === "heartbeat-turn" ? { workingDir: proactiveWorkspaceDir(run.agentId) } : {},
+    );
     if (target.engage) await Sessions.setEngaged(session.id, true);
     // A thread a heartbeat post just opened has no app of its own yet: the
     // post's app is stamped on it, so this turn (and a later reply's) speaks

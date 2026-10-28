@@ -699,17 +699,18 @@ export class AgentManager extends EventEmitter {
   }
 
   /** Get-or-create a session bound to a Slack thread. */
-  async ensureSession(thread: ThreadKey, opts: { title?: string } = {}) {
+  async ensureSession(thread: ThreadKey, opts: { title?: string; workingDir?: string } = {}) {
     let row = await this.#store.findByThread(thread);
     if (!row) {
       // Multi-persona: named personas sharing a thread must not share a cwd.
       // Suffix the workspace with the persona; default persona → path unchanged.
       const personaSuffix =
         thread.persona_id && thread.persona_id !== "default" ? `__${thread.persona_id}` : "";
-      const workingDir = join(
-        paths.workspaces,
-        `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}${personaSuffix}`,
-      );
+      // `opts.workingDir` (a heartbeat thread's shared folder) applies only here,
+      // at creation; an existing row keeps the folder it has.
+      const workingDir =
+        opts.workingDir ??
+        join(paths.workspaces, `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}${personaSuffix}`);
       mkdirSync(workingDir, { recursive: true });
       try {
         row = await this.#store.createForThread({

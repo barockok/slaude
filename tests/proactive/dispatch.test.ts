@@ -5,6 +5,8 @@
  * on the mono gateway the turn goes into the post's thread as the agent
  * (origin cron, no person), engaged, carrying its `heartbeat-turn` run.
  */
+import { existsSync } from "node:fs";
+import { proactiveWorkspaceDir } from "../../src/agent/workspace-claim";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import * as Posts from "../../src/db/proactive-posts";
@@ -253,6 +255,18 @@ describe("the mono gateway's proactive transport", () => {
   afterEach(async () => {
     await h?.stop();
     h = null;
+  });
+
+  test("a heartbeat thread works in the agent's proactive folder; another post's thread shares it", async () => {
+    h = createGateway(agent, slackTransport());
+    const deps = defaultDispatchDeps(h.__proactive!, "default");
+    await dispatchProactive(post(), "act", rule(), "act", deps);
+    await dispatchProactive(post({ id: "post-2", messageTs: "1800.200" }), "ask", null, "ask", deps);
+    const a = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "1800.100", persona_id: "default" });
+    const b = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "1800.200", persona_id: "default" });
+    expect(a!.working_dir).toBe(proactiveWorkspaceDir(AGENT_ID));
+    expect(b!.working_dir).toBe(a!.working_dir);
+    expect(existsSync(a!.working_dir)).toBe(true);
   });
 
   test("the turn goes into the post's thread as the agent, engaged, and its heartbeat-turn run closes with its usage", async () => {
