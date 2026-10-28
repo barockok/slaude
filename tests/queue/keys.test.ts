@@ -47,6 +47,15 @@ describe("queue/keys", () => {
     expect(k.nodeLabels("n1").startsWith("p:nodes:")).toBe(false);
   });
 
+  test("workspaceLock: stable per folder, distinct across folders, no '/' in the key", () => {
+    const k = makeKeys("p");
+    const a = k.workspaceLock("/w/agent-U0A/proactive");
+    expect(a).toBe(k.workspaceLock("/w/agent-U0A/proactive"));
+    expect(a).not.toBe(k.workspaceLock("/w/agent-U0B/proactive"));
+    expect(a).not.toContain("/");
+    expect(a).toMatch(/^p:lock:workspace:[0-9a-f]{32}$/);
+  });
+
   test("queue names: shared is bare, per-node dots the nodeId in", () => {
     expect(TURNS_QUEUE).toBe("turns");
     expect(nodeTurnsQueue("host-ab12")).toBe("turns.host-ab12");

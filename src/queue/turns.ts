@@ -73,6 +73,12 @@ export interface TurnJob {
    *  turn's usage only when the job holds that one message: a job a human
    *  message was merged into leaves it open for the stale-run sweep. */
   bgRun?: string;
+  /** The session's working directory, set only when it is the agent's
+   *  proactive folder (shared by every heartbeat thread). The node then takes
+   *  that folder's lock inside the session lock, so one turn at a time runs
+   *  there across nodes. Not a signed claim: it only adds serialisation.
+   *  Absent = no folder lock. */
+  workspace?: string;
   /** Short-lived JWT minted by the gateway; nodes present it on tool calls. */
   jobToken: string;
   enqueuedAt: number;
