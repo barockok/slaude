@@ -1144,13 +1144,20 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     await turnQueues.close().catch(() => {});
     http?.stop(true);
     // The workers are closed: their own connections (one per label plus one)
-    // go too, or each stop would leak labels + 1 connections.
+    // go too, or each stop would leak labels + 1 connections. quit() resolves
+    // before the socket is gone (a connection still opening reports "connect"
+    // for a moment after), so wait for "end", bounded, then force it.
     for (const c of [...bullConns, cmd, sub]) {
+      const ended = c.status === "end" ? Promise.resolve() : new Promise<void>((r) => c.once("end", () => r()));
       try {
         await c.quit();
       } catch {
         c.disconnect();
       }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<false>((r) => (timer = setTimeout(() => r(false), 1000)));
+      if (!(await Promise.race([ended.then(() => true), late]))) c.disconnect();
+      clearTimeout(timer);
     }
     state = "stopped";
     console.log(`[node] ${nodeId} stopped`);
