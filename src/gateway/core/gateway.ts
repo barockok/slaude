@@ -34,6 +34,7 @@ const VOICE_SHUTDOWN_GRACE_MS = 5_000;
 import { monoPersonaSoul } from "../../voice/mono-soul";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
+import { messageToText } from "../slack/message-text";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus, redactSecrets } from "./status-text";
 import * as Remote from "../../db/remote";
@@ -2273,7 +2274,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const channelId: string = event.channel;
     const userId: string | undefined = event.user;
     const eventTs: string = event.ts;
-    const text: string = (event.text || "").trim();
+    // Read text plus blocks/attachments; bots often put the body in a card.
+    const text: string = messageToText(event);
     const channelType: string = event.channel_type ?? "";
 
     console.log(
