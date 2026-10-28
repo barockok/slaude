@@ -14,6 +14,13 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { REAL_URL, realEnabled, testPrefix, cleanupPrefix, sweepTag, obliterateQueues, until, sleep } from "../queue/real";
 
 process.env.SLAUDE_BRAIN_DISABLED = "1";
+// No post-turn auto-evolve check (its synthetic turn keeps a session busy) and
+// no idle close: the tests retire sessions themselves. The file used to get
+// both only because an earlier file in the same process leaked them.
+const ENV_KEYS = ["SLAUDE_AUTO_EVOLVE", "SLAUDE_IDLE_MINUTES"] as const;
+const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+process.env.SLAUDE_AUTO_EVOLVE = "0";
+process.env.SLAUDE_IDLE_MINUTES = "0";
 
 const NODE_TOKEN = "e2e-node-token";
 const JOB_SECRET = "e2e-job-secret";
@@ -272,6 +279,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
   if (!realEnabled) return;
   await workerHandle?.stop({ drainSec: 1 }).catch(() => {});
   await qd?.close().catch(() => {});
