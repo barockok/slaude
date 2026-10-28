@@ -7,7 +7,7 @@
  * are reverse-engineered from cli.js (`a2A` + the file store `V_1`) and pinned by a
  * golden test — if the CLI changes its format, that canary fails loudly.
  */
-import { readFileSync, writeFileSync, existsSync, renameSync, chmodSync, lstatSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, renameSync, chmodSync, lstatSync, realpathSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 
@@ -113,6 +113,8 @@ export function writeEntry(
       [key]: (({ tokenEndpoint: _pinned, ...fileEntry }) => fileEntry)(toStoredEntry(serverName, cfg, tokens, now)),
     },
   };
+  // A fresh home has no config directory until the CLI first runs there.
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   // Atomic write so a concurrent CLI refresh-write can't observe a torn file.
   const tmp = join(dir, `.credentials.json.tmp-${randomBytes(6).toString("hex")}`);
   writeFileSync(tmp, JSON.stringify(next), { encoding: "utf8", mode: 0o600 });
