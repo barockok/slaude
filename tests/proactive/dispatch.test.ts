@@ -269,6 +269,39 @@ describe("the mono gateway's proactive transport", () => {
     expect(existsSync(a!.working_dir)).toBe(true);
   });
 
+  test("a heartbeat dispatch does not wait for the turn to be accepted", async () => {
+    // A turn waiting for the proactive folder: sendMessage never resolves.
+    agent.sendMessage = () => new Promise<void>(() => {});
+    h = createGateway(agent, slackTransport());
+    const deps = defaultDispatchDeps(h.__proactive!, "default");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const r = await Promise.race([
+      dispatchProactive(post(), "act", rule(), "act", deps),
+      new Promise<string>((res) => (timer = setTimeout(() => res("timed out"), 1000))),
+    ]);
+    clearTimeout(timer);
+    expect(r).toBe("sent");
+  }, 5000);
+
+  test("a heartbeat turn that fails after dispatch is logged with its session, redacted, never thrown", async () => {
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      agent.sendMessage = async () => {
+        throw new Error("boot failed password=hunter2-placeholder");
+      };
+      h = createGateway(agent, slackTransport());
+      expect(await dispatchProactive(post(), "act", rule(), "act", defaultDispatchDeps(h.__proactive!, "default"))).toBe("sent");
+      const session = await Sessions.findByThread({ team_id: "T", channel_id: "C0EXAMPLE", thread_ts: "1800.100", persona_id: "default" });
+      await Bun.sleep(10);
+      const lines = errSpy.mock.calls.map((c) => c.map(String).join(" ")).filter((l) => l.includes("heartbeat turn"));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(`session=${session!.id}`);
+      expect(lines[0]).not.toContain("hunter2-placeholder");
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
   test("the turn goes into the post's thread as the agent, engaged, and its heartbeat-turn run closes with its usage", async () => {
     h = createGateway(agent, slackTransport());
     const deps = defaultDispatchDeps(h.__proactive!, "default");

@@ -927,6 +927,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         origin: "cron",
         backgroundRunId: run.runId,
       });
+    } else if (pass === "heartbeat-turn") {
+      // Not awaited: the turn may wait for the agent's proactive folder (one
+      // turn there at a time), and a round dispatching several items must not
+      // block on it. A turn that then fails leaves its run to the stale sweep.
+      void agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }) }).catch((e) => {
+        console.error(`[proactive] heartbeat turn failed session=${session.id}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+      });
     } else {
       await agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }) });
     }
