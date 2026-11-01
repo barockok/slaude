@@ -151,4 +151,15 @@ describe("an app registered for a persona", () => {
     expect(g.turns).toHaveLength(1);
     expect(await persona(g.turns[0]!)).toBe("default");
   });
+
+  it("records a colleague mention in the persona's own thread under that persona, not a stray default row", async () => {
+    const g = setup();
+    await g.deliver("A0ALPHA", { user: WORLD.manager, ts: "108.1", text: `<@${BOT.A0ALPHA.user}> hi` });
+    const before = g.turns.length;
+    await g.deliver("A0ALPHA", { user: WORLD.manager, ts: "108.2", thread_ts: "108.1", text: "<@U0COLLEAGUE> can you look?" });
+    // The record is a suppressed pass: it lands in the alpha session and never creates a default row.
+    const def = await Sessions.findByThread({ team_id: "T", channel_id: "C0TEAM", thread_ts: "108.1", persona_id: "default" });
+    expect(def).toBeNull();
+    expect(g.turns.slice(before).every((id) => id === g.turns[0])).toBe(true);
+  });
 });

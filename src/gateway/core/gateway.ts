@@ -698,8 +698,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const id: unknown = args?.context?.personaId;
     if (typeof id !== "string" || !id || id === "default") return undefined;
     if (getPersonaRegistry().lookupByName(id)) return id;
-    if (!warnedAppPersona.has(id)) {
-      warnedAppPersona.add(id);
+    const key = `${args?.context?.apiAppId ?? "-"}:${id}`;
+    if (!warnedAppPersona.has(key)) {
+      warnedAppPersona.add(key);
       console.warn(`[persona] app ${args?.context?.apiAppId ?? "-"} is registered for persona=${id}, which is not live: its messages run as the default persona`);
     }
     return undefined;
@@ -3967,7 +3968,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         console.log(
           `[slack-rx] disengage ch=${channelId} ts=${e.ts} user=${e.user} — recording (suppressed), thread now disengaged`,
         );
-        return await handleMessage(args, { suppress: true });
+        return await handleMessage(args, { suppress: true, personaId: row.persona_id && row.persona_id !== "default" ? row.persona_id : undefined });
       }
       console.log(
         `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — mention to other user, no session to populate`,
@@ -3986,7 +3987,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         : null;
       if (row) {
         console.log(`[slack-rx] record ch=${channelId} ts=${e.ts} user=${e.user} — mention-only, suppressed`);
-        return await handleMessage(args, { suppress: true });
+        return await handleMessage(args, { suppress: true, personaId: row.persona_id && row.persona_id !== "default" ? row.persona_id : undefined });
       }
       console.log(`[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — mention-only, no @mention`);
       metric.slackDropsTotal.inc({ reason: "mention_only" });
