@@ -6,7 +6,7 @@ date: 2026-11-01
 # One Slack app per persona: the receiving app picks the persona
 
 **Date:** 2026-11-01
-**Status:** Proposed in a pull request, unreleased. It changes how the gateway routes inbound Slack messages, so it ships in a release candidate. Checked with unit tests (gateway handlers, HTTP transport); not yet checked against real Slack.
+**Status:** Shipped in `v0.45.0-rc.11`. It changes how the gateway routes inbound Slack messages, so it soaks as a release candidate. Checked with unit tests (gateway handlers, HTTP transport); not yet checked against real Slack.
 
 ## What was wrong
 
@@ -26,7 +26,7 @@ Nodes were never the problem: a job carries its persona, and one node already se
 - **No change when the persona is `default`.** That is what a registration gets without `--persona`, so existing single-app and multi-app deployments behave as before.
 - **A persona that is not live falls back to the default persona, with one warning per persona.** Dropping the message, as a retired persona's mention is dropped, would silence apps that were registered with a persona name that has no matching persona (a typo, or a fixture that seeds the default soul under another name). The warning names the app and persona.
 - **Mention routing is unchanged.** A mention of a persona's own Slack user still routes to that persona, and a mention of the receiving bot wins over it as before.
-- **Not changed here:** `CLAUDE.md` still records "one container = one persona" as the deploy unit, and the `how-slaude-works` skill still says "more agents = more deploys". Both stay true for deployments with one persona; whether to word them for the per-app case is a maintainer's call.
+- **Suppressed records follow the thread.** A colleague mention or a mention-only message in a thread is recorded under the persona of the thread's existing session, so it never creates a stray default row. `CLAUDE.md` now names one app per persona as a second way to run several agents; the `how-slaude-works` skill still says "more agents = more deploys".
 
 ## Checked
 
