@@ -688,6 +688,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (!personaId || personaId === "default") return defaultOutClient(app);
     return livePersona(personaId)?.outClient ?? defaultOutClient(app);
   };
+  // The persona an app is registered for (`slack-app add --persona`, `slack_apps.persona_id`). What is addressed to the
+  // app's own bot (a DM, an @mention of it, a reply in a thread it is engaged in) runs as that persona, so a second
+  // Slack app is a second persona on the same gateway and nodes, posting through its own bot. 'default' (what a
+  // registration gets without `--persona`), a persona that is not live, and a transport that carries no per-app
+  // persona all give undefined: the default persona, exactly as before.
+  const warnedAppPersona = new Set<string>();
+  const appPersonaOf = (args: any): string | undefined => {
+    const id: unknown = args?.context?.personaId;
+    if (typeof id !== "string" || !id || id === "default") return undefined;
+    if (getPersonaRegistry().lookupByName(id)) return id;
+    if (!warnedAppPersona.has(id)) {
+      warnedAppPersona.add(id);
+      console.warn(`[persona] app ${args?.context?.apiAppId ?? "-"} is registered for persona=${id}, which is not live: its messages run as the default persona`);
+    }
+    return undefined;
+  };
   // Surfaces resolve their client on every call, so a sync that rotates,
   // removes or re-points a persona's userToken reaches surfaces built before
   // it, including the one the in-process surface MCP of a warm session holds
@@ -3814,10 +3830,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
-    const act = gateActive() ? await consultGate(args, { mentionsAgent: true }) : undefined;
-    if (act === "record_doubt") return await recordDoubt(args);
-    const engagedBefore = await engageOnMention(args.context?.teamId ?? e.team, e.channel, ts, e.ts);
-    await handleMessage(args, { engagedBefore });
+    const personaId = appPersonaOf(args);
+    const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
+    if (act === "record_doubt") return await recordDoubt(args, personaId);
+    const engagedBefore = await engageOnMention(args.context?.teamId ?? e.team, e.channel, ts, e.ts, personaId);
+    await handleMessage(args, { personaId, engagedBefore });
   });
 
   // Single message router: every non-bot message goes here so we can manage
@@ -3869,7 +3886,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     // DMs: always handle, no engagement tracking needed.
     if (e.channel_type === "im") {
-      return await handleMessage(args);
+      return await handleMessage(args, { personaId: appPersonaOf(args) });
     }
 
     const mentions = Array.from(text.matchAll(/<@([A-Z0-9]+)>/g)).map((m) => m[1]);
@@ -3906,11 +3923,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // No gate in a proactive thread (see above); everything else unchanged.
     const gated = (): boolean => !proactive && gateActive();
 
+    // The persona of the app this copy arrived through: the "bot's own" identity below.
+    const appPersona = appPersonaOf(args);
     if (mentionsBot) {
-      const act = gated() ? await consultGate(args, { mentionsAgent: true }) : undefined;
-      if (act === "record_doubt") return await recordDoubt(args);
-      const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts);
-      return await handleMessage(args, { engagedBefore });
+      const act = gated() ? await consultGate(args, { mentionsAgent: true, personaId: appPersona }) : undefined;
+      if (act === "record_doubt") return await recordDoubt(args, appPersona);
+      const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, appPersona);
+      return await handleMessage(args, { personaId: appPersona, engagedBefore });
     }
     if (!mentionedPersona) {
       // A retired persona's identity stops routing: drop what is addressed to it
@@ -3993,12 +4012,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return true;
     };
     if (teamId) {
-      const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: "default" });
+      const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: appPersona ?? "default" });
       if (def?.engaged) {
         if (otherApp(def)) return;
-        const act = gated() ? await consultGate(args, { mentionsAgent: false }) : undefined;
-        if (act === "record") return await recordEngaged(args);
-        return await handleMessage(args);
+        const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: appPersona }) : undefined;
+        if (act === "record") return await recordEngaged(args, appPersona);
+        return await handleMessage(args, { personaId: appPersona });
       }
       // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
       if (registry.isMultiPersonaMode()) {
