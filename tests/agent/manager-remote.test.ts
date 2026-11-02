@@ -30,6 +30,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
 // when an earlier test file already imported AgentManager. Keeping the canonical
 // specifier means coverage is attributed to src/agent/manager.ts.
 const { AgentManager, SCHEDULER_TOOLS } = await import("../../src/agent/manager");
+const { WAKE_ONLY_TOOL_IDS } = await import("../../src/proactive/wake-guard");
 const Sessions = await import("../../src/db/sessions");
 
 // ---------------------------------------------------------------------------
@@ -287,7 +288,7 @@ describe("remote wiring", () => {
     expect(pre).toHaveLength(2);
     for (const h of pre) expect(await h({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {} }, "tu", { signal: new AbortController().signal })).toEqual({});
     // only the CLI scheduling built-ins (slaude has its own cron); no remote deny list
-    expect(fs.options.disallowedTools).toEqual([...SCHEDULER_TOOLS]);
+    expect(fs.options.disallowedTools).toEqual([...SCHEDULER_TOOLS, ...WAKE_ONLY_TOOL_IDS]);
     await shutdown(mgr, row.id);
   });
 
