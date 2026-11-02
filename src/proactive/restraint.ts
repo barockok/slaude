@@ -62,6 +62,14 @@ export interface RestraintContext {
 /** "Unchanged" looks back this far. */
 export const UNCHANGED_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
+/**
+ * The agent's own checklist and notes. They never change meaningfully between
+ * two recurring posts, so as evidence they say nothing about whether a post
+ * repeats an earlier one: comparing them refused every later post of a
+ * recurring check as `unchanged` for the whole window.
+ */
+export const SELF_EVIDENCE: ReadonlySet<string> = new Set(["self/heartbeat", "self/heartbeat-journal", "self/wake-journal"]);
+
 /** A hash of the text as a reader sees it: Slack markup, case and spacing ignored. */
 export function textHash(text: string): string {
   const norm = text
@@ -106,7 +114,8 @@ export function checkProactive(req: ProactiveRequest, ctx: RestraintContext): { 
   // Unchanged: the same text, or (found with a live model, which rewords a
   // repeat) the same evidence, to the same recipient within the window.
   const hash = textHash(req.text);
-  const ev = req.evidence?.trim() ? textHash(req.evidence) : null;
+  const evidence = req.evidence?.trim() ?? "";
+  const ev = evidence && !SELF_EVIDENCE.has(evidence.toLowerCase()) ? textHash(evidence) : null;
   if (ctx.history.some((h) => t - h.postedAt < UNCHANGED_WINDOW_MS && (h.textHash === hash || (ev !== null && h.evidenceHash === ev)))) return no("unchanged");
   return { ok: true };
 }
