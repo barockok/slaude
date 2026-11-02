@@ -96,7 +96,7 @@ const slackError = (e: unknown): string | undefined => {
 };
 
 /** Check, post and record one proactive post. `post` is the recorded row, or null when recording failed. */
-async function sendProactive(a: ProactivePostArgs, ctx: ProactivePostContext, state: { posts: number }): Promise<Sent> {
+export async function sendProactive(a: ProactivePostArgs, ctx: ProactivePostContext, state: { posts: number }): Promise<Sent> {
   const no = (error: string): Sent => ({ ok: false, error, kind: "invalid" });
   if (state.posts >= HEARTBEAT_MAX_POSTS) return { ok: false, error: `refused: at most ${HEARTBEAT_MAX_POSTS} posts per heartbeat`, kind: "cap" };
   if (!a.evidence?.trim()) return no("refused: a proactive post needs evidence (a page slug or link it rests on)");
@@ -226,7 +226,7 @@ export interface HeartbeatDeps {
   dispatchDeps?: (transport: ProactiveTransport, personaId: string) => ProactiveDispatchDeps;
 }
 
-const agentScope = (agentId: string): BrainScope => {
+export const agentScope = (agentId: string): BrainScope => {
   const source = agentSourceId(agentId);
   return { clientId: agentId, sourceId: source, allowedSources: [source] };
 };

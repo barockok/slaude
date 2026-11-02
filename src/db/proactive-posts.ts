@@ -16,6 +16,8 @@ export interface PostContext {
   ruleSlug: string | null;
   level: Level;
   evidence: string;
+  /** The wake's ledger run, when a wake posted this: only that run may post under it. */
+  wakeRun?: string;
 }
 
 export interface ProactivePost {

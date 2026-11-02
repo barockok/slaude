@@ -269,5 +269,11 @@ export const m = {
   // Background learning (phase D). Cost is computed from tokens and the price
   // table, never the SDK's figure. Labels never carry scope or content.
   backgroundCostUsdTotal: metrics.counter("slaude_background_cost_usd_total", "USD spent by background learning passes, labeled by agent and pass."),
+  wakeGateTotal: metrics.counter("slaude_wake_gate_total", "Heartbeat wake gate decisions per slot, labeled by agent and result (first|next-check|checklist-changed|max-sleep|no-checklist|idle|busy|no-budget)."),
+  wakeCostUsd: metrics.histogram("slaude_wake_cost_usd", "USD one heartbeat wake cost, labeled by agent.", [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10]),
+  wakeTurns: metrics.histogram("slaude_wake_turns", "Model turns one heartbeat wake took, labeled by agent.", [1, 2, 5, 10, 20, 40, 80, 160]),
+  wakeDurationSeconds: metrics.histogram("slaude_wake_duration_seconds", "How long one heartbeat wake ran, labeled by agent.", [10, 30, 60, 120, 300, 600, 900, 1800]),
+  wakeCapHitTotal: metrics.counter("slaude_wake_cap_hit_total", "Heartbeat wakes a cap stopped, labeled by agent and cap (usd|turns|minutes)."),
+  wakePostsTotal: metrics.counter("slaude_wake_posts_total", "Heartbeat wake posts, labeled by agent and result (posted, or the refusal)."),
   backgroundRunsTotal: metrics.counter("slaude_background_runs_total", "Background learning pass runs, labeled by agent, pass and outcome (ok|skipped-budget|stopped-budget|error)."),
 };
