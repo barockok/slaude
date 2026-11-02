@@ -15,6 +15,8 @@
  *   ### Proactive
  *   - Enabled: yes
  *   - Highest: act           # replaces the global ceiling in this channel
+ *   - Cooldown: 0.5          # replaces the global cooldown in this channel
+ *   - Max per day: 12        # replaces the global daily cap in this channel
  *
  * Parsed here, deterministically, from the persona's SOUL text. Never through
  * the LLM structured extraction (a mis-extraction must never turn it on), never
@@ -44,10 +46,14 @@ export interface ProactiveConfig {
   channels: Record<string, boolean>;
   /** Channel id → that channel's own `### Proactive` `Highest`. */
   channelHighest: Record<string, Level>;
+  /** Channel id → that channel's own `### Proactive` `Cooldown`, in hours. */
+  channelCooldownHours: Record<string, number>;
+  /** Channel id → that channel's own `### Proactive` `Max per day`. */
+  channelMaxPerDay: Record<string, number>;
 }
 
 /** The resolved switch for one audience: the global settings, `enabled` per channel when one is given. */
-export type ResolvedProactive = Omit<ProactiveConfig, "channels" | "channelHighest">;
+export type ResolvedProactive = Omit<ProactiveConfig, "channels" | "channelHighest" | "channelCooldownHours" | "channelMaxPerDay">;
 
 export const DEFAULT_MAX_PER_PERSON_PER_DAY = 1;
 export const DEFAULT_COOLDOWN_HOURS = 4;
@@ -102,6 +108,18 @@ function keyValue(line: string): [string, string] | null {
   return [m[1]!.trim().toLowerCase(), m[2]!.replace(/\s+#.*$/, "").trim()];
 }
 
+/** A cap from a SOUL line: a positive whole number, or null. */
+function parseCap(value: string): number | null {
+  const n = /^\d+$/.test(value) ? Number(value) : NaN;
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** A cooldown from a SOUL line, in hours, or null. */
+function parseCooldown(value: string): number | null {
+  const m = /^(\d+(?:\.\d+)?)\s*(?:h|hours?)?$/i.exec(value);
+  return m ? Number(m[1]) : null;
+}
+
 export function parseProactive(text: string): ProactiveConfig {
   const out: ProactiveConfig = {
     enabled: false,
@@ -112,6 +130,8 @@ export function parseProactive(text: string): ProactiveConfig {
     highest: "inform",
     channels: {},
     channelHighest: {},
+    channelCooldownHours: {},
+    channelMaxPerDay: {},
   };
   // Where we are: the global section, a channel's Proactive subsection, or elsewhere.
   let where: { kind: "global" } | { kind: "channel"; id: string; inProactive: boolean } | null = null;
@@ -149,6 +169,12 @@ export function parseProactive(text: string): ProactiveConfig {
       else if (key === "highest") {
         const l = parseLevel(value);
         if (l) out.channelHighest[where.id] = l;
+      } else if (key === "cooldown") {
+        const h = parseCooldown(value);
+        if (h !== null) out.channelCooldownHours[where.id] = h;
+      } else if (key === "max per day") {
+        const n = parseCap(value);
+        if (n !== null) out.channelMaxPerDay[where.id] = n;
       }
       continue;
     }
@@ -157,11 +183,11 @@ export function parseProactive(text: string): ProactiveConfig {
     else if (key === "highest") out.highest = parseLevel(value) ?? out.highest;
     else if (key === "quiet hours") out.quietHours = parseWindow(value);
     else if (key === "max per person per day") {
-      const n = /^\d+$/.test(value) ? Number(value) : NaN;
-      if (Number.isInteger(n) && n > 0) out.maxPerPersonPerDay = n;
+      const n = parseCap(value);
+      if (n !== null) out.maxPerPersonPerDay = n;
     } else if (key === "cooldown") {
-      const m = /^(\d+(?:\.\d+)?)\s*(?:h|hours?)?$/i.exec(value);
-      if (m) out.cooldownHours = Number(m[1]);
+      const h = parseCooldown(value);
+      if (h !== null) out.cooldownHours = h;
     }
   }
   return out;
@@ -203,12 +229,14 @@ function configFor(personaId: string): ProactiveConfig | null {
 export function proactiveFor(personaId: string, channelId?: string): ResolvedProactive {
   const c = configFor(personaId);
   if (!c) return { ...DISABLED };
-  const { channels, channelHighest, ...global } = c;
+  const { channels, channelHighest, channelCooldownHours, channelMaxPerDay, ...global } = c;
   if (channelId === undefined) return global;
   return {
     ...global,
     enabled: channels[channelId] ?? global.enabled,
     highest: channelHighest[channelId] ?? global.highest,
+    cooldownHours: channelCooldownHours[channelId] ?? global.cooldownHours,
+    maxPerPersonPerDay: channelMaxPerDay[channelId] ?? global.maxPerPersonPerDay,
   };
 }
 

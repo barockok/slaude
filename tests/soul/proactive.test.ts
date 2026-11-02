@@ -34,12 +34,12 @@ describe("parseClock / inWindow", () => {
 
 describe("parseProactive", () => {
   it("defaults to disabled, cap 1, cooldown 4, no quiet hours", () => {
-    expect(parseProactive(SOUL(""))).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 1, cooldownHours: 4, watch: [], highest: "inform", channels: {}, channelHighest: {} });
+    expect(parseProactive(SOUL(""))).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 1, cooldownHours: 4, watch: [], highest: "inform", channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {} });
   });
 
   it("reads the global section", () => {
     const c = parseProactive(SOUL("## Proactive\n- Enabled: yes\n- Quiet hours: 21:00–08:00\n- Max per person per day: 3\n- Cooldown: 2 hours\n"));
-    expect(c).toEqual({ enabled: true, quietHours: { start: 21 * 60, end: 8 * 60 }, maxPerPersonPerDay: 3, cooldownHours: 2, watch: [], highest: "inform", channels: {}, channelHighest: {} });
+    expect(c).toEqual({ enabled: true, quietHours: { start: 21 * 60, end: 8 * 60 }, maxPerPersonPerDay: 3, cooldownHours: 2, watch: [], highest: "inform", channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {} });
   });
 
   it("is case-insensitive, accepts a hyphen, and ignores comments", () => {
@@ -118,6 +118,33 @@ describe("parseProactive", () => {
 
   it("a ### Proactive outside a channel block does nothing", () => {
     expect(parseProactive(SOUL("### Proactive\n- Enabled: yes\n")).enabled).toBe(false);
+  });
+});
+
+describe("a channel's own Cooldown and Max per day", () => {
+  const TEXT = "## Proactive\n- Enabled: no\n- Cooldown: 4 hours\n- Max per person per day: 2\n\n## Channel C0TEAMCHAN\n### Proactive\n- Enabled: yes\n- Cooldown: 0.5\n- Max per day: 12\n\n## Channel C0OTHERCHA\n### Proactive\n- Enabled: yes\n";
+  it("parses them per channel", () => {
+    const c = parseProactive(SOUL(TEXT));
+    expect(c.channelCooldownHours).toEqual({ C0TEAMCHAN: 0.5 });
+    expect(c.channelMaxPerDay).toEqual({ C0TEAMCHAN: 12 });
+  });
+  it("ignores invalid values", () => {
+    const c = parseProactive(SOUL("## Channel C0TEAMCHAN\n### Proactive\n- Cooldown: soon\n- Max per day: 0\n"));
+    expect(c.channelCooldownHours).toEqual({});
+    expect(c.channelMaxPerDay).toEqual({});
+  });
+  it("apply only to that channel", () => {
+    __setProactiveSoulSource(() => SOUL(TEXT));
+    const own = proactiveFor("default", "C0TEAMCHAN");
+    expect(own.cooldownHours).toBe(0.5);
+    expect(own.maxPerPersonPerDay).toBe(12);
+    const other = proactiveFor("default", "C0OTHERCHA");
+    expect(other.cooldownHours).toBe(4);
+    expect(other.maxPerPersonPerDay).toBe(2);
+    const global = proactiveFor("default");
+    expect(global.cooldownHours).toBe(4);
+    expect(global.maxPerPersonPerDay).toBe(2);
+    __setProactiveSoulSource(null);
   });
 });
 
