@@ -222,6 +222,8 @@ export interface HeartbeatDeps {
    * reconnect, which would not help.
    */
   agentOAuthInCli?: boolean;
+  /** A waking persona: its checklist goes to the wake, so this round reads only watched sources. */
+  skipChecklist?: boolean;
   /** Seam (tests): dispatch deps. Default: defaultDispatchDeps. */
   dispatchDeps?: (transport: ProactiveTransport, personaId: string) => ProactiveDispatchDeps;
 }
@@ -232,7 +234,7 @@ export const agentScope = (agentId: string): BrainScope => {
 };
 
 /** A live page's body in the agent's slice, or "". */
-async function agentPageBody(agentId: string, call: BrainOpCall, slug: string): Promise<string> {
+export async function agentPageBody(agentId: string, call: BrainOpCall, slug: string): Promise<string> {
   const rec = readPageRecord(await getPageOrNull(call, slug, agentScope(agentId)));
   return rec && !rec.superseded ? rec.body.trim() : "";
 }
@@ -287,7 +289,7 @@ const EVIDENCE_MAX = 500;
 const FIELD_MAX = 200;
 
 /** One line, bounded, and no tag can open or close: model or source text going into a prompt or a page. */
-const line = (s: string | null | undefined, max = FIELD_MAX): string => (s ?? "").replace(/[\r\n]+/g, " ").replaceAll("<", "‹").trim().slice(0, max);
+export const line = (s: string | null | undefined, max = FIELD_MAX): string => (s ?? "").replace(/[\r\n]+/g, " ").replaceAll("<", "‹").trim().slice(0, max);
 /** A mandate on one line, cut at MANDATE_MAX with an ellipsis when it was longer. */
 const mandateLine = (s: string | null | undefined): string => {
   const one = line(s, Number.MAX_SAFE_INTEGER);
@@ -296,7 +298,7 @@ const mandateLine = (s: string | null | undefined): string => {
 const clamp = (s: string, max: number): string => (s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s);
 const iso = (ms: number): string => new Date(ms).toISOString().slice(0, 16) + "Z";
 
-async function recentPostLines(agentId: string, call: BrainOpCall, now: Date): Promise<string> {
+export async function recentPostLines(agentId: string, call: BrainOpCall, now: Date): Promise<string> {
   const rows = await Posts.recentByAgent(agentId, now.getTime() - RECENT_POSTS_MS, RECENT_POSTS_MAX);
   const out: string[] = [];
   for (const p of rows) {
@@ -338,7 +340,7 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   const config = deps.config ?? ((ch?: string) => proactiveFor(r.personaId, ch));
 
   // 1. Load.
-  const checklist = await heartbeatChecklist(r.agentId, deps.call);
+  const checklist = deps.skipChecklist ? "" : await heartbeatChecklist(r.agentId, deps.call);
   // Only watchableSources output reaches the reader: it is what keeps
   // privateServices and non-http servers out (the reader does not).
   const watched = deps.sources ? watchableSources(config().watch, (deps.mcp ?? bridgeExternalMcp)(r.personaId), warnOnce) : [];

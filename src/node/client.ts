@@ -510,14 +510,14 @@ export class NodeClient {
 
   /** Finish the job's own background-turn run (POST /v1/background/turn/finish), retried as skillCheckFinish. */
   turnFinish(
-    body: { runId: string; outcome: "ok" | "error"; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> },
+    body: { runId: string; outcome: "ok" | "error" | "stopped-budget"; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }>; stats?: { turns?: number; durationMs?: number; cap?: "usd" | "turns" | "minutes" } },
     jobToken: string,
   ): Promise<void> {
     return this.skillCheckFinish(body, jobToken, "/v1/background/turn/finish");
   }
 
   async skillCheckFinish(
-    body: { runId: string; outcome: "ok" | "error"; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> },
+    body: { runId: string; outcome: "ok" | "error" | "stopped-budget"; stats?: { turns?: number; durationMs?: number; cap?: "usd" | "turns" | "minutes" }; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> },
     jobToken: string,
     path = "/v1/background/skill-check/finish",
   ): Promise<void> {

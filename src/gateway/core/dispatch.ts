@@ -66,6 +66,8 @@ export interface DispatchMeta {
    *  into the token as `bgRun` and carried in the payload, so the node finishes
    *  it with the turn's own usage. */
   backgroundRunId?: string;
+  /** This turn is a heartbeat wake: signed as `wake`, and its caps go to the node. Needs backgroundRunId. */
+  wake?: { maxBudgetUsd?: number; maxTurns?: number; maxMinutes?: number };
 }
 
 export interface QueueDispatch {
@@ -377,6 +379,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         }),
         ...(remoteClaim ? { remote: remoteClaim } : {}),
         ...(meta.backgroundRunId ? { bgRun: meta.backgroundRunId } : {}),
+        ...(meta.wake && meta.backgroundRunId ? { wake: true } : {}),
       });
       // Routing (spec §2, node labels spec §4.6): warm + fresh on a node that
       // still carries the persona's label → that node's queue; anything else →
@@ -400,6 +403,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           label,
           ...(meta.oauthUser ? { oauthUser: meta.oauthUser } : {}),
           ...(meta.backgroundRunId ? { bgRun: meta.backgroundRunId } : {}),
+          ...(meta.wake ? { wake: meta.wake } : {}),
           // The agent's proactive folder is shared by heartbeat channel-post
           // threads: the node serialises turns there across nodes by this field.
           ...(isProactiveWorkspace(session.working_dir) ? { workspace: resolve(session.working_dir!) } : {}),

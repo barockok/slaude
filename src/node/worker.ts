@@ -19,6 +19,7 @@
  * abort publish aborts the agent. SIGTERM drains: stop claiming, finish
  * in-flight turns within the grace, deregister everything, exit.
  */
+import type { WakeStats } from "../proactive/wake-settle";
 import { hostname, tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -776,11 +777,15 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           data.bgRun && data.messages.length === 1
             ? {
                 runId: data.bgRun,
-                finish: (usage: ModelTokens, outcome: "ok" | "error") =>
-                  store.withToken(sessionId, (t) => client.turnFinish({ runId: data.bgRun!, outcome, usage }, t)),
+                finish: (usage: ModelTokens, outcome: "ok" | "error" | "stopped-budget", stats?: WakeStats) =>
+                  store.withToken(sessionId, (t) => client.turnFinish({ runId: data.bgRun!, outcome, usage, ...(stats ? { stats } : {}) }, t)),
               }
             : undefined;
-        agent.sendMessage(sessionId, text, backgroundRun ? { backgroundRun } : {}).catch((e) => {
+        // A wake's wall clock ends just inside this turn's own timeout, so the
+        // wake always closes its run itself; off, the timeout is the limit.
+        const wakeLimit = Math.max(1, Math.floor(turnTimeoutMs / 60_000) - 1);
+        const wake = data.wake ? { ...data.wake, maxMinutes: Math.min(data.wake.maxMinutes || wakeLimit, wakeLimit) } : undefined;
+        agent.sendMessage(sessionId, text, { ...(backgroundRun ? { backgroundRun } : {}), ...(wake ? { wake } : {}) }).catch((e) => {
           clearTimeout(timer);
           turnWaiters.delete(sessionId);
           reject(e);

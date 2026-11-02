@@ -60,7 +60,9 @@ import { backgroundAgentId, finishSkillCheck, startSkillCheck } from "./skill-ch
 import { runDueCommitments, type PromiseTransport } from "../proactive/promises";
 import type { ProactiveTransport } from "../proactive/dispatch";
 import { readPingPrefs } from "../proactive/prefs";
-import { runHeartbeat } from "../proactive/heartbeat";
+import { runHeartbeat, tellManagerOnce } from "../proactive/heartbeat";
+import { runWake, type WakeTransport } from "../proactive/wake";
+import { wakeEligibility } from "../soul/proactive";
 import { bridgeExternalMcp } from "../gateway/core/external-mcp";
 import { anyProactiveEnabled } from "../soul/proactive";
 import { env } from "../config/env";
@@ -448,6 +450,8 @@ export interface SchedulerSlack {
   proactive?: ProactiveTransport;
   /** The agent's own MCP sources, read as the agent (heartbeat round). Absent: no source is read. */
   sources?: SourceReader;
+  /** How a heartbeat wake's turn reaches its session. Absent: nobody wakes; personas stay on the round. */
+  wake?: WakeTransport;
   /** Mono: the agent's OAuth credentials live in the CLI's own store, which the heartbeat cannot read (HeartbeatDeps.agentOAuthInCli). */
   agentOAuthInCli?: boolean;
   /** The manager and the backup manager (who may decide manager proposals). */
@@ -467,20 +471,38 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
     // The heartbeat needs Slack to speak: without it there is nothing to run.
     ...(slack
       ? {
-          heartbeat: (r: SlotRun) =>
-            runHeartbeat(r, {
+          heartbeat: async (r: SlotRun) => {
+            const managerId = personaManager(r.personaId);
+            const eligible = wakeEligibility(r.personaId, managerId);
+            // Read at run time: the gateway sets these after building the scheduler deps.
+            const waking = eligible.ok && !!slack.wake;
+            await runHeartbeat(r, {
               runner: deps.runner,
               call: deps.call,
               post: slack.post,
               managerId: personaManager,
               mandates: personaMandates,
               app: personaApp,
-              // Read at run time: the gateway sets both after building the scheduler deps.
               ...(slack.sources ? { sources: slack.sources } : {}),
               ...(slack.proactive ? { proactive: slack.proactive } : {}),
               ...(slack.agentOAuthInCli ? { agentOAuthInCli: true } : {}),
+              ...(waking ? { skipChecklist: true } : {}),
               mcp: bridgeExternalMcp,
-            }),
+            });
+            if (waking) {
+              await runWake(r, { call: deps.call, post: slack.post, transport: slack.wake!, managerId: personaManager, mandates: personaMandates, app: personaApp });
+            } else if (!eligible.ok && eligible.reason) {
+              const why = eligible.reason === "no-manager" ? "I have no manager in my SOUL" : "none of my enabled destinations has Highest: act";
+              await tellManagerOnce(r, "wake-ineligible", `My SOUL says Wake: yes, but ${why}, so I'm staying on the summarising heartbeat.`, {
+                managerId,
+                app: await personaApp(r.personaId).catch(() => undefined),
+                post: slack.post,
+                at: r.now,
+                tag: `[background] agent=${r.agentId} pass=heartbeat`,
+              });
+              console.warn(`[background] agent=${r.agentId}: Wake: yes but not eligible (${eligible.reason}); staying on the round`);
+            }
+          },
         }
       : {}),
   };

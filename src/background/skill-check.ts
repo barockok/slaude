@@ -41,6 +41,7 @@ import {
   unpricedModels,
 } from "./prices";
 import type { ResultUsage } from "../agent/token-budget";
+import { settleWakeRun, type WakeStats } from "../proactive/wake-settle";
 
 export const SKILL_CHECK = "skill-check" as const;
 
@@ -51,10 +52,10 @@ export const SKILL_CHECK = "skill-check" as const;
  * turn (src/proactive/dispatch.ts). startSkillCheck and finishSkillCheck take
  * the pass (default skill-check).
  */
-export type TurnPass = typeof SKILL_CHECK | "commitment" | "heartbeat-turn";
+export type TurnPass = typeof SKILL_CHECK | "commitment" | "heartbeat-turn" | "heartbeat-wake";
 
 /** The turn passes a dispatched background turn (`bgRun`) can carry. */
-export const CARRIED_TURN_PASSES: readonly TurnPass[] = ["commitment", "heartbeat-turn"];
+export const CARRIED_TURN_PASSES: readonly TurnPass[] = ["commitment", "heartbeat-turn", "heartbeat-wake"];
 
 /** What the manager calls around the post-turn skill check. */
 export interface SkillCheckBudget {
@@ -220,7 +221,7 @@ export async function sweepStaleSkillChecks(now: Date = new Date()): Promise<num
  * price start checked) and the run ends as `error`.
  */
 export async function finishSkillCheck(
-  a: { runId: string; agentId: string; usage: ModelTokens; outcome: "ok" | "error"; pass?: TurnPass },
+  a: { runId: string; agentId: string; usage: ModelTokens; outcome: "ok" | "error" | "stopped-budget"; pass?: TurnPass; stats?: WakeStats },
   deps: SkillCheckDeps = {},
 ): Promise<{ ok: true; costUsd: number } | { ok: false; reason: "not-open" }> {
   const pass = a.pass ?? SKILL_CHECK;
@@ -248,11 +249,21 @@ export async function finishSkillCheck(
     outcome = "error";
     total = atRunModel !== null ? total + atRunModel : Math.max(total, run.costUsd);
   }
+  // A wake cut off by its wall clock never reached a result, so its usage is
+  // unknown. It is never free: it counts at its cap, the most it could have been.
+  if (pass === "heartbeat-wake" && a.outcome === "stopped-budget" && Object.keys(usage).length === 0) {
+    total = Math.max(run.costUsd, env.wakeMaxUsd());
+  }
   const unpricedModel = unpriced.length > 0 ? unpriced[0] || "(none named)" : undefined;
   if (!(await Runs.finishOpen(a.runId, { agentId: a.agentId, pass }, { tokens, costUsd: total, outcome, ...(unpricedModel ? { unpricedModel } : {}) }))) {
     return { ok: false, reason: "not-open" };
   }
   settleMetrics(a.agentId, outcome, total, pass);
+  if (pass === "heartbeat-wake") {
+    await settleWakeRun({ agentId: a.agentId, outcome, costUsd: total, ...(a.stats ? { stats: a.stats } : {}), now: (deps.now ?? (() => new Date()))().getTime() }).catch((e) =>
+      console.error(`[background] agent=${a.agentId} pass=${pass}: could not settle the wake: ${e instanceof Error ? e.message : String(e)}`),
+    );
+  }
   return { ok: true, costUsd: total };
 }
 
@@ -342,11 +353,11 @@ export function turnModelTokens(
  * Mono: a background turn's run (a promise check) finished straight on the
  * ledger with the turn's own usage (AgentManager sendMessage `backgroundRun`).
  */
-export function ledgerTurnRun(a: { runId: string; agentId: string; pass: TurnPass } & SkillCheckDeps): { runId: string; finish(usage: ModelTokens, outcome: "ok" | "error"): Promise<void> } {
+export function ledgerTurnRun(a: { runId: string; agentId: string; pass: TurnPass } & SkillCheckDeps): { runId: string; finish(usage: ModelTokens, outcome: "ok" | "error" | "stopped-budget", stats?: WakeStats): Promise<void> } {
   return {
     runId: a.runId,
-    async finish(usage, outcome) {
-      const done = await finishSkillCheck({ runId: a.runId, agentId: a.agentId, usage, outcome, pass: a.pass }, a);
+    async finish(usage, outcome, stats) {
+      const done = await finishSkillCheck({ runId: a.runId, agentId: a.agentId, usage, outcome, pass: a.pass, ...(stats ? { stats } : {}) }, a);
       if (!done.ok) throw new Error(`${a.pass} run ${a.runId} is not open`);
     },
   };

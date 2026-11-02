@@ -73,6 +73,9 @@ export interface TurnJob {
    *  turn's usage only when the job holds that one message: a job a human
    *  message was merged into leaves it open for the stale-run sweep. */
   bgRun?: string;
+  /** Set when this job is a heartbeat wake: its caps. The same fact is signed
+   *  into jobToken as `wake`; these only tell the node how to run it. */
+  wake?: { maxBudgetUsd?: number; maxTurns?: number; maxMinutes?: number };
   /** The session's working directory, set only when it is the agent's
    *  proactive folder (shared by every heartbeat thread). The node then takes
    *  that folder's lock inside the session lock, so one turn at a time runs

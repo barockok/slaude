@@ -122,7 +122,7 @@ const isBg = (text: string) => text.includes("<runtime-check kind=\"commitment\"
 const BG = '<runtime-check kind="commitment">check the deploy</runtime-check>';
 
 function recorder(runId = "run-c1") {
-  const finishes: { usage: ModelTokens; outcome: "ok" | "error" }[] = [];
+  const finishes: { usage: ModelTokens; outcome: "ok" | "error" | "stopped-budget" }[] = [];
   const run: BackgroundTurnRun = { runId, finish: async (usage, outcome) => void finishes.push({ usage, outcome }) };
   return { run, finishes };
 }
