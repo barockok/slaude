@@ -550,6 +550,17 @@ export const env = {
     return Number.isFinite(n) && n >= 0 ? n : 1;
   },
   /**
+   * Daily USD limit of the proactive pool (heartbeat, promise checks, wakes)
+   * per agent (`SLAUDE_PROACTIVE_BUDGET_USD`). Unset, empty or invalid: null,
+   * one pool shared with learning passes under `backgroundBudgetUsd`. 0 is
+   * allowed and stops proactive spend.
+   */
+  proactiveBudgetUsd: (): number | null => {
+    const raw = opt("SLAUDE_PROACTIVE_BUDGET_USD", "").trim();
+    const n = raw === "" ? NaN : Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  },
+  /**
    * Quiet-moment pass thresholds (spec §9.1): a thread with at least
    * `SLAUDE_QUIET_MIN_TURNS` turns (N, default 8) that has been quiet for
    * `SLAUDE_QUIET_MINUTES` minutes (M, default 30) is reviewed, at most

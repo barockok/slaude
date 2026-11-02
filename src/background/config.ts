@@ -14,7 +14,8 @@ export function __resetBackgroundConfigWarnings(): void {
  * The budget and day-boundary timezone for a persona's background passes.
  * Persona `background` values win over the environment
  * (`SLAUDE_BACKGROUND_BUDGET_USD`, `SLAUDE_BACKGROUND_TIMEZONE`), which wins
- * over the defaults (1 USD, UTC). A timezone `localDay` would reject falls back
+ * over the defaults (1 USD, UTC). `SLAUDE_PROACTIVE_BUDGET_USD`, when set, splits
+ * off the proactive pool (see BudgetConfig). A timezone `localDay` would reject falls back
  * to UTC with one warning per persona per process, so a bad value never makes
  * a pass throw. Without a persona registry (mono) only env and defaults apply.
  */
@@ -35,5 +36,6 @@ export function budgetConfigFor(personaId: string): BudgetConfig {
     }
     timeZone = "UTC";
   }
-  return { limitUsd, timeZone };
+  const proactiveLimitUsd = env.proactiveBudgetUsd();
+  return { limitUsd, ...(proactiveLimitUsd !== null ? { proactiveLimitUsd } : {}), timeZone };
 }
