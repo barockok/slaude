@@ -489,8 +489,13 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
         posts,
       ).catch((e): Sent => ({ ok: false, error: e instanceof Error ? e.message : String(e), kind: "failed" }));
       if (!sent.ok) {
-        // "unchanged": it already went out (an earlier round, or the overlap re-read it); nothing to journal.
-        if (sent.rule === "unchanged") console.log(`${tag}: item ${line(item.source, 60)}/${line(item.itemId, 60)} already posted (unchanged)`);
+        // "unchanged": the same text or evidence already went out, so this item
+        // is handled. It is journaled: the model's own draft may say it routed
+        // this, and the next round reads that journal as what really happened.
+        if (sent.rule === "unchanged") {
+          notDelivered.push(`Not sent again: ${label} (unchanged)`);
+          console.log(`${tag}: item ${line(item.source, 60)}/${line(item.itemId, 60)} already posted (unchanged)`);
+        }
         else if ((sent.kind === "restraint" && !NOT_NOW.has(sent.rule!)) || sent.kind === "invalid" || sent.kind === "channel") notPosted(sent.rule ?? sent.error.replace(/^refused: /, "").slice(0, 120));
         else drop(sent.error, d.rule);
         continue;

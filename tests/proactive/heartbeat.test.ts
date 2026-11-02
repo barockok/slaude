@@ -419,6 +419,19 @@ describe("runHeartbeat", () => {
     expect(journalOf(brain)).not.toContain("m-1");
   });
 
+  test("a different item refused as unchanged is journaled as not sent, so the next round cannot read it as routed; the watermark advances", async () => {
+    const brain = fakeBrain();
+    const first = round({ brain, items: [item()], journal: "Looked at mail." });
+    await first.go();
+    expect(first.posted).toHaveLength(1);
+    const next = round({ brain, items: [item({ itemId: "m-2", summary: "Reworded: the same invoice again." })], journal: "Routed m-2." });
+    await next.go();
+    expect(next.posted).toEqual([]);
+    expect(journalOf(brain)).toContain("Not sent again: mail/m-2 invoice emails");
+    expect(journalOf(brain)).toContain("(unchanged)");
+    expect(await Watermarks.getSince(AGENT, "mail")).toBe(ADVANCED);
+  });
+
   test("default caps (1/day, 4h cooldown): an item already posted is handled by the item dedupe, not pinned as not delivered", async () => {
     const brain = fakeBrain();
     const DEFAULT = "## Proactive\n- Enabled: yes\n- Watch: mail\n";
