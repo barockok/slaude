@@ -102,6 +102,29 @@ describe("SlackSurface", () => {
     expect(messages[0]!.replies).toEqual([{ ts: "2.0", user: "U8" }]);
   });
 
+  test("getHistory reads bot messages whose body is only in attachments", async () => {
+    const s = new SlackSurface(
+      fakeClient({
+        convReplies: () => ({
+          has_more: false,
+          messages: [
+            {
+              ts: "1.0",
+              bot_id: "B1",
+              bot_profile: { name: "Alert Bot" },
+              text: "",
+              attachments: [{ title: "Checkout API - High error rate", text: "Description: ALERT" }],
+            },
+          ],
+        }),
+      }),
+      binding(),
+    );
+    const { messages } = await s.getHistory({});
+    expect(messages[0]!.author).toBe("Alert Bot");
+    expect(messages[0]!.text).toBe("Checkout API - High error rate\nDescription: ALERT");
+  });
+
   test("getHistory omits replies when includeReplies=false", async () => {
     const s = new SlackSurface(
       fakeClient({ convReplies: () => ({ has_more: false, messages: [{ ts: "1.0", user: "U9", text: "x", replies: [{ ts: "2.0" }] }] }) }),
