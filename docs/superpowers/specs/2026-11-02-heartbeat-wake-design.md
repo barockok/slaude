@@ -147,10 +147,11 @@ CREATE TABLE heartbeat_wake_state (
   next_check_at  BIGINT,
   last_wake_at   BIGINT,
   last_outcome   TEXT,
+  finished_at    BIGINT,
   failures       INTEGER NOT NULL DEFAULT 0,
   checklist_hash TEXT,
   updated_at     BIGINT NOT NULL,
-  PRIMARY KEY (tenant_id, agent_id)
+  PRIMARY KEY (agent_id)
 );
 ```
 

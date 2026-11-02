@@ -575,6 +575,8 @@ export const env = {
    */
   promisePollMinutes: () => intAtLeastOne("SLAUDE_PROMISE_POLL_MINUTES", 15),
   promiseExpireHours: () => intAtLeastOne("SLAUDE_PROMISE_EXPIRE_HOURS", 24),
+  /** The longest a waking agent may sleep, in hours (`SLAUDE_WAKE_MAX_SLEEP_HOURS`, default 24). */
+  wakeMaxSleepHours: () => intAtLeastOne("SLAUDE_WAKE_MAX_SLEEP_HOURS", 24),
   /** Heartbeat pass interval in minutes (`SLAUDE_HEARTBEAT_MINUTES`, default 30; spec §10.3). */
   heartbeatMinutes: () => intAtLeastOne("SLAUDE_HEARTBEAT_MINUTES", 30),
   quietMinTurns: () => intAtLeastOne("SLAUDE_QUIET_MIN_TURNS", 8),
