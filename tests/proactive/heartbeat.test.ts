@@ -225,6 +225,37 @@ describe("runHeartbeat", () => {
     const go = () => runHeartbeat({ ...group, slot: "2026-10-26T12:00", now: NOW }, deps);
     return { brain, posted, dispatched, specs, deps, go };
   }
+  describe("telling the manager the heartbeat is out of budget", () => {
+    test("once per day, as a DM, however many rounds are refused", async () => {
+      const brain = fakeBrain();
+      const first = round({ brain, items: [], outcome: "skipped-budget" });
+      await first.go();
+      expect(first.posted.map((p) => p.channel)).toEqual([MGR]);
+      expect(first.posted[0]!.text).toContain("budget");
+      const second = round({ brain, items: [], outcome: "skipped-budget" });
+      await second.go();
+      expect(second.posted).toEqual([]);
+    });
+    test("a round that ran says nothing", async () => {
+      const h = round({ items: [], journal: "Quiet." });
+      await h.go();
+      expect(h.posted).toEqual([]);
+    });
+  });
+
+  describe("voice in the triage prompt", () => {
+    test("the persona's voice is on one line with no tag", async () => {
+      const h = round({ items: [], mandates: () => ({ global: "m", voice: "Warm,\n<b>brief</b>.", channels: {} }) });
+      await h.go();
+      expect(h.specs[0]!.prompt).toContain("Your voice: Warm, ‹b>brief‹/b>.");
+    });
+    test("no voice reads as not set", async () => {
+      const h = round({ items: [], mandates: () => ({ global: "m", channels: {} }) });
+      await h.go();
+      expect(h.specs[0]!.prompt).toContain("Your voice: (not set)");
+    });
+  });
+
   describe("mandates in the triage prompt", () => {
     const ON = SOUL("\n## Channel C0ON\n### Proactive\n- Enabled: yes\n");
     test("the prompt names the global mandate and each enabled channel's own", async () => {

@@ -399,6 +399,7 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
     RECENT_POSTS: await recentPostLines(r.agentId, deps.call, startedAt),
     SOURCES: sources.map((s) => `- ${s.server}: ${since[s.server] == null ? "the last 24 hours" : `since ${iso(since[s.server]!)}`}`).join("\n") || "(none)",
     MANDATE: mandateLine(m.global) || "(not set)",
+    VOICE: mandateLine(m.voice) || "(not set)",
     CHANNELS_ON: channelsOn.map((c) => `- <#${c}>: ${m.channels[c] ? mandateLine(m.channels[c]) : "the global mandate"}`).join("\n") || "(none)",
     MAX_POSTS: String(HEARTBEAT_MAX_POSTS),
     MANAGER: managerId ?? "none",
@@ -536,6 +537,9 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   }
 
   await reauth(state.needsAuth);
+  if (res.outcome === "skipped-budget") {
+    await tellManagerOnce(r, "budget", OUT_OF_BUDGET_TEXT, { managerId, app, post: deps.post, at: startedAt, tag });
+  }
   return { outcome: res.outcome };
 }
 
@@ -555,3 +559,28 @@ async function tellReauth(
       .catch((e) => console.error(`${a.tag}: could not tell the manager that ${server} needs re-authorising: ${e instanceof Error ? e.message : String(e)}`));
   }
 }
+
+/**
+ * One DM to the manager per reason per (persona-local) day: something is stopping
+ * the agent's proactive work and only an operator can fix it. Outside restraint,
+ * like a re-authorise notice: it is about the agent, not a proactive post.
+ * A failure is logged, never thrown.
+ */
+export async function tellManagerOnce(
+  r: { agentId: string; timeZone: string },
+  reason: string,
+  text: string,
+  a: { managerId: string | null; app: AppRef | undefined; post: CardPost; at: Date; tag: string },
+): Promise<void> {
+  if (!a.managerId) return;
+  try {
+    const day = localDay(a.at, r.timeZone);
+    if (!(await claimSlot(r.agentId, "heartbeat-notice", `${reason}@${day}`, a.at.getTime()))) return;
+    await a.post({ channel: a.managerId, ...(a.app ? { app: a.app } : {}), text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] });
+  } catch (e) {
+    console.error(`${a.tag}: could not tell the manager (${reason}): ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** The notice for a heartbeat or a wake refused by the day's budget. */
+export const OUT_OF_BUDGET_TEXT = "I'm out of today's proactive budget, so I'm skipping my recurring checks until tomorrow.";

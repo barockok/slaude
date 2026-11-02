@@ -498,6 +498,8 @@ export function personaManager(personaId: string): string | null {
 
 export interface PersonaMandates {
   global: string;
+  /** The persona's `## Identity` voice, when it has one. */
+  voice?: string;
   channels: Record<string, string | null>;
 }
 
@@ -508,7 +510,7 @@ export function personaMandates(personaId: string, channelIds: readonly string[]
     if (!soul) return { global: "", channels: {} };
     const channels: Record<string, string | null> = {};
     for (const c of channelIds) channels[c] = channelMandate(soul, c);
-    return { global: soul.mandate ?? "", channels };
+    return { global: soul.mandate ?? "", ...(soul.identity?.voice ? { voice: soul.identity.voice } : {}), channels };
   } catch {
     return { global: "", channels: {} };
   }

@@ -286,7 +286,7 @@ Triage keeps `self/heartbeat-journal`; the wake keeps `self/wake-journal`. A wak
 
 One `claimSlot`-guarded DM per day and reason to the manager, the way `tellReauth` already works:
 
-- budget refused N slots today;
+- the first budget refusal of the day;
 - 3 consecutive failed wakes, with the last outcome;
 - `Wake: yes` but ineligible, once per boot in the logs and once per day by DM.
 
