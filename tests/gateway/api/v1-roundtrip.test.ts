@@ -118,6 +118,9 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     resume_cron_job: { input: () => ({ job_id: cronJobId }) },
     remove_cron_job: { input: () => ({ job_id: cronJobId }) },
     proactive_rule: { input: { kind: "roundtrip items", scope: "here", level: "ignore", quote: "roundtrip" }, isErrorOk: true }, // the test home's brain may not be open
+    read_channel: { input: { channel: "C0EXAMPLE" }, isErrorOk: true }, // not in this persona's Read list
+    proactive_post: { input: { destination: "manager", kind: "roundtrip items", level: "inform", text: "t", evidence: "e", item_id: "i" }, isErrorOk: true }, // not a wake
+    finish_round: { input: { journal: "j" }, isErrorOk: true }, // not a wake
     trigger_ingest: { input: {}, isErrorOk: true }, // no slaude.json in the test home
     reload_session: { input: {}, isErrorOk: true }, // session not live in this process
     can_use_tool: { input: { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "rt_perm_fixture" } }, // REST-only: returns {pendingId}

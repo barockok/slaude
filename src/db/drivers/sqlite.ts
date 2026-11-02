@@ -241,7 +241,6 @@ CREATE TABLE IF NOT EXISTS proactive_posts (
   app_id      TEXT
 );
 CREATE TABLE IF NOT EXISTS heartbeat_wake_state (
-  tenant_id      TEXT    NOT NULL DEFAULT 'default',
   agent_id       TEXT    NOT NULL PRIMARY KEY,
   next_check_at  INTEGER,
   last_wake_at   INTEGER,

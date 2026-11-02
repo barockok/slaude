@@ -113,8 +113,9 @@ import type { GateAction, Trust } from "../gate/types";
 import { providerSecretResolver } from "../api/tenants";
 import { parseRef } from "../../secrets";
 import { proactiveWorkspaceDir } from "../../agent/workspace-claim";
-import { wakeGateConfig, type WakeRunOptions } from "../../proactive/wake";
+import { wakeGateConfig, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
 import { wakeRefusal } from "../../proactive/wake-guard";
+import { wakeStatusText } from "../../proactive/wake-status";
 import type { WakeToolDeps } from "../../proactive/wake-tools";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
@@ -200,6 +201,7 @@ export interface GatewayHandle {
   __promises?: PromiseTransport;
   /** Test seam: how this gateway dispatches heartbeat ask/act turns. */
   __proactive?: ProactiveTransport;
+  __wake?: WakeTransport;
   /** TEST SEAM: the mono process's voice call registry. */
   __voiceCalls?: VoiceCalls;
   /** TEST/SIM SEAM ONLY. Drive the natural-language connect path (what the
@@ -2496,6 +2498,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         await reply(helpText());
         return;
       }
+      if (slash.kind === "heartbeat-status") {
+        const persona = dispatch?.personaId ?? "default";
+        const managerId = personaManager(persona);
+        if (!managerId || userId !== managerId) {
+          await reply(":no_entry: only this agent's manager can see this");
+          return;
+        }
+        await reply(await wakeStatusText({ personaId: persona, agentId: await backgroundAgentId(persona), managerId, budget: budgetConfigFor(persona), call: brainCall, now: new Date() }));
+        return;
+      }
       if (slash.kind === "mode-help") {
         const modes = Object.entries(MODE_LABELS)
           .map(([k, v]) => `• \`${humanModeName(k as any)}\` — ${v}`)
@@ -4376,6 +4388,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
     __promises: backgroundSlack.promises!,
     __proactive: backgroundSlack.proactive!,
+    __wake: backgroundSlack.wake!,
     __voiceCalls: voiceCalls,
     __brainGate: async (sessionId: string) => {
       const route = routes.get(sessionId);

@@ -2,7 +2,7 @@
 
 Date: 2026-11-02. Follows the heartbeat round (`2026-10-27-heartbeat-round-design.md`) and heartbeat mandates (`2026-10-28-heartbeat-mandates-and-workspace-design.md`).
 
-Status: design, not built. It touches the agent loop, the dispatch path, the job token and the DB schema, so it ships as a release candidate.
+Status: built on `feat/heartbeat-wake`, not released and not run live. See the plan (`../plans/2026-11-02-heartbeat-wake.md`) and the field note `2026-11-02-heartbeat-wake`. It touches the agent loop, the dispatch path, the job token and the DB schema, so it ships as a release candidate.
 
 ## Intent
 
@@ -197,7 +197,7 @@ need to look.
 
 ### 5. Tools in a wake
 
-Enforced at the gateway from the signed claim, on mono and on nodes alike. The allow-list covers slaude's own Slack and runtime tools. Anything new defaults to refused.
+Enforced twice from one list (`src/proactive/wake-guard.ts`): the query's `disallowedTools` hides refused tools on mono and on nodes, and the `/v1` tool plane refuses them from the signed claim, which is what holds if a node disagrees. Anything new defaults to refused.
 
 | Tool | In a wake |
 |---|---|
@@ -267,7 +267,7 @@ When `SLAUDE_PROACTIVE_BUDGET_USD` is unset there is one shared pool, as today, 
 |---|---|---|---|
 | `SLAUDE_WAKE_MAX_USD` | `maxBudgetUsd` | 1 | No per-run limit. The pool's remaining budget still applies |
 | `SLAUDE_WAKE_MAX_TURNS` | `maxTurns` | 40 | No turn limit |
-| `SLAUDE_WAKE_MAX_MINUTES` | A wall clock that aborts the turn | 15 | No wall clock. The job token's total life still ends the run |
+| `SLAUDE_WAKE_MAX_MINUTES` | A wall clock that aborts the turn | 15 | No wall clock on mono. On a node the worker's turn timeout (15 minutes today) still applies, so a wake there ends just inside it |
 
 The starting values are guesses until wakes are measured. Section 9's metrics are how they get adjusted.
 
@@ -323,7 +323,7 @@ These ship first and stand alone, because every persona on the round benefits.
 |---|---|
 | Gateway restarts mid-wake | On a node the turn continues and tools work from claims. The run finishes through `turnFinish`, or the stale sweep ends it at 2 h keeping its provisional cost |
 | Node dies mid-wake | BullMQ redelivers once. Duplicate posts are stopped by item dedupe. Spend is bounded by two caps at worst |
-| Wake outlives the token's total life | Tool calls start failing and the run ends as an error, with backoff. A wall clock, when set, must sit inside that life. With it disabled, this is what ends a very long wake |
+| Wake reaches a node's turn timeout | The worker sets the wake's wall clock just inside that timeout, so the wake closes its own run as `stopped-budget`. **A wake on a node cannot run longer than one turn may (15 minutes today), whatever the setting** |
 | Folder held by a long proactive thread | The wake waits (existing lock). Its wall clock starts when the turn starts |
 | Agent never calls `finish_round` | Next check in 2 slots, the failure counted, and the old journal kept |
 | A wake loads a model with no price | Existing `unpricedBlock`: background spend stops for the day, with one loud line |
@@ -342,19 +342,17 @@ Page history (`page_versions`) is the audit trail for a changed checklist. The c
 
 - **External spend is not metered.** `maxBudgetUsd` counts model usage. A skill that starts GPU renders or paid APIs is limited only by its own guards and the mandate. This matters more once work runs unattended, so such skills should be listed under "ask first".
 - **Worker slots.** A wake holds one for its whole run, and turns have no priority today. On a small node a human turn can wait. Lower the wall clock, or give waking personas a separate node label. `slaude_wake_duration_seconds` shows how much this matters.
-- **Folder contention.** Known from the mandates design. A human reply in a proactive thread waits behind a wake, for at most the wall clock when one is set. With the wall clock disabled, that wait is bounded only by the token's total life.
+- **Folder contention.** Known from the mandates design. A human reply in a proactive thread waits behind a wake, for at most the wall clock when one is set. With the wall clock disabled, that wait is bounded only by the node's turn timeout, or on mono by the USD cap and the pool.
 - **`read_channel` in a thread.** Anyone in a thread with the agent can get a `Read:` channel's text into that thread by asking. List a channel under `Read:` only if everyone who can talk to the agent may see it.
 - **Learned rules are enforced on posts, not on work.** "Just tell me, don't do it" is honoured by the prompt for the work itself.
-- **Session rows accumulate**, at most one per wake. I found no session retention in the code I read, so this adds a sweep (see below).
+- **A wall-clock stop's real cost is unknown.** An aborted query reports no usage, so the run counts at `SLAUDE_WAKE_MAX_USD` (or its floor when that is off), the safe direction when the cap is on.
+- **Transcripts stay.** The sweep removes wake session rows and what is keyed on them, after `SLAUDE_WAKE_KEEP_DAYS` (14). The CLI's transcript files are not removed.
 - **One journal per agent**, shared across its destinations.
 
 ## What is left to the builder
 
 - The floor `PASS_FLOOR["heartbeat-wake"]`, starting at 0.10.
-- The retention sweep for `wake:%` rows and their transcripts (start at 14 days), including any child tables keyed on the session.
 - Whether a wake job should get a lower BullMQ priority.
-- How `error_max_budget_usd` surfaces through `manager.ts`'s result handling. It must not post an error, since the route is silent.
-- Core prompt and `slaude:memory` updates: the wake exists, the checklist can state a cadence, and evidence must be specific.
 
 ## Rollout
 

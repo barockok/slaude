@@ -179,7 +179,12 @@ async function recordError(agentId: string, pass: PassName, day: string, at: Dat
 
 export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: AbortSignal): Promise<void> } {
   const last = new Map<string, LastSlots>();
-  const sweep = deps.sweep ?? ((now: Date) => sweepStaleRuns(now));
+  const sweep =
+    deps.sweep ??
+    (async (now: Date) => {
+      await sweepStaleRuns(now);
+      await Sessions.deleteWakeSessionsBefore(now.getTime() - env.wakeKeepDays() * 86_400_000);
+    });
   const expire = deps.expire ?? ((now: Date) => Proposals.expireDue(now.getTime()));
   const quietDue = deps.quietDue ?? ((g: AgentGroup, now: Date) => dueQuietThreads(g, now));
 

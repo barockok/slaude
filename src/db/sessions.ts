@@ -218,3 +218,20 @@ export async function latestAppOf(personaId: string): Promise<{ apiAppId: string
   );
   return row ? { apiAppId: row.slack_app_id ?? null, teamId: row.slack_team_id ?? null } : null;
 }
+
+/**
+ * Remove heartbeat wakes' session rows older than `beforeMs`, with what is keyed
+ * on them. A wake is one fresh session, never resumed, so they would only pile up.
+ * Never a session of a real thread: the key is the wake's synthetic `wake:` thread.
+ * The CLI's transcript files stay. Returns how many were removed.
+ */
+export async function deleteWakeSessionsBefore(beforeMs: number): Promise<number> {
+  const rows = await db.query<{ id: string }>(`SELECT id FROM sessions WHERE slack_thread_ts LIKE 'wake:%' AND updated_at < ?`, [beforeMs]);
+  for (const { id } of rows) {
+    for (const table of ["pending_gates", "memory_turns", "memory_facts", "thread_activity"]) {
+      await db.run(`DELETE FROM ${table} WHERE session_id = ?`, [id]);
+    }
+    await db.run(`DELETE FROM sessions WHERE id = ?`, [id]);
+  }
+  return rows.length;
+}

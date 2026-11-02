@@ -35,6 +35,7 @@ export type SlashHit =
   | { kind: "unignore"; target: "thread" }
   | { kind: "cron-add"; cronExpr: string; prompt: string; target: "thread" | "channel"; whenActive: "fire" | "skip" }
   | { kind: "cron-list" }
+  | { kind: "heartbeat-status" }
   | { kind: "cron-remove"; id: string }
   | { kind: "cron-pause"; id: string }
   | { kind: "cron-resume"; id: string }
@@ -77,6 +78,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/unignore-thread", summary: "stop ignoring this thread" },
   { usage: `/cron-add "<expr>" "<prompt>" [channel] [passive]`, summary: "schedule a prompt; `channel` posts to channel root, `passive` skips when a human is active" },
   { usage: "/cron-list", summary: "list scheduled crons" },
+  { usage: "/heartbeat status", summary: "what the agent's recurring checks are doing, and what they cost (manager only)" },
   { usage: `/cron-edit <id> "<expr>" "<prompt>" [channel] [passive]`, summary: "update a scheduled cron's expression, prompt, target, and passive mode" },
   { usage: "/cron-pause <id>", summary: "pause a scheduled cron without deleting it" },
   { usage: "/cron-resume <id>", summary: "resume a paused cron and recompute its next run" },
@@ -170,6 +172,9 @@ export function parseSlashCommand(text: string): SlashHit | null {
   if (cmd === "cron-add") {
     const parsed = parseCronCreateTail(t.replace(/^\/cron-add\s+/, ""));
     return parsed ? { kind: "cron-add", ...parsed } : null;
+  }
+  if (cmd === "heartbeat" && (arg === "" || arg === "status")) {
+    return { kind: "heartbeat-status" };
   }
   if (cmd === "cron-list") {
     return { kind: "cron-list" };
