@@ -175,6 +175,10 @@ describe("a wake's query", () => {
     expect(lastOptions.maxBudgetUsd).toBeUndefined();
     expect(lastOptions.maxTurns).toBeUndefined();
     expect(lastOptions.disallowedTools).not.toContain("mcp__slaude_slack__reply");
+    // The wake's own tools are hidden; read_channel works in any turn.
+    expect(lastOptions.disallowedTools).toContain("mcp__slaude_runtime__proactive_post");
+    expect(lastOptions.disallowedTools).toContain("mcp__slaude_runtime__finish_round");
+    expect(lastOptions.disallowedTools).not.toContain("mcp__slaude_runtime__read_channel");
     await shutdown(mgr, row.id);
   });
 });

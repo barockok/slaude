@@ -49,7 +49,7 @@ import { sessionModeBlock, type RemoteModeInfo } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
 import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
-import { wakeDeniedToolIds } from "../proactive/wake-guard";
+import { WAKE_ONLY_TOOL_IDS, wakeDeniedToolIds } from "../proactive/wake-guard";
 import type { WakeStats } from "../proactive/wake-settle";
 import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
 import { injectedTurns, voiceCallActive } from "../voice/turn-flags";
@@ -1504,7 +1504,7 @@ export class AgentManager extends EventEmitter {
         // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
         // local-only tools with no remote counterpart are removed outright.
         ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES } : {}),
-        disallowedTools: [...SCHEDULER_TOOLS, ...(remoteHandle ? REMOTE_DENIED_LOCAL_TOOLS : []), ...(wake ? wakeDeniedToolIds() : [])],
+        disallowedTools: [...SCHEDULER_TOOLS, ...(remoteHandle ? REMOTE_DENIED_LOCAL_TOOLS : []), ...(wake ? wakeDeniedToolIds() : WAKE_ONLY_TOOL_IDS)],
         ...(wake?.maxBudgetUsd && wake.maxBudgetUsd > 0 ? { maxBudgetUsd: wake.maxBudgetUsd } : {}),
         ...(wake?.maxTurns && wake.maxTurns > 0 ? { maxTurns: wake.maxTurns } : {}),
         permissionMode: mode,
