@@ -74,6 +74,9 @@ export interface JobClaims {
    *  promise check, phase E), signed at dispatch. Only this run id may be
    *  finished with the token (POST /v1/background/turn/finish). */
   bgRun?: string;
+  /** This job is a heartbeat wake (bgRun is its run), signed at dispatch: the
+   *  tool plane applies the wake's allow-list. Absent = a normal turn. */
+  wake?: boolean;
   /** First issue time (unix seconds), carried across token-refresh so the
    *  token's total life is capped. Absent = this token's own `iat`. */
   iat0?: number;
@@ -167,6 +170,10 @@ export function verifyJobToken(
     return { ok: false, reason: "bad_claims" };
   }
   if (claims.bgRun !== undefined && (typeof claims.bgRun !== "string" || claims.bgRun === "")) {
+    return { ok: false, reason: "bad_claims" };
+  }
+  // A wake is always a budgeted run; a claim without one is not a real wake.
+  if (claims.wake !== undefined && (claims.wake !== true || !claims.bgRun)) {
     return { ok: false, reason: "bad_claims" };
   }
   // An unknown origin is refused rather than read as some default.

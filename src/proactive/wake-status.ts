@@ -1,0 +1,53 @@
+/**
+ * `/heartbeat status`: what the agent's recurring checks are doing, for its
+ * manager. Today's refusals and the last 7 days' wakes, so caps can be set from
+ * what wakes really take.
+ */
+import { localDay, PROACTIVE_PASSES, type BudgetConfig } from "../background/budget";
+import * as Runs from "../db/background-runs";
+import * as WakeState from "../db/heartbeat-wake-state";
+import type { BrainOpCall } from "../knowledge/memory-trail";
+import { agentPageBody } from "./heartbeat";
+import { wakeEligibility } from "../soul/proactive";
+import { WAKE_JOURNAL_SLUG } from "./wake-tools";
+
+const usd = (n: number): string => `$${n.toFixed(2)}`;
+const when = (ms: number | null): string => (ms === null ? "never" : new Date(ms).toISOString().slice(0, 16).replace("T", " ") + " UTC");
+const WEEK_MS = 7 * 86_400_000;
+const JOURNAL_SHOWN = 800;
+
+export async function wakeStatusText(a: { personaId: string; agentId: string; managerId: string | null; budget: BudgetConfig; call: BrainOpCall; now: Date }): Promise<string> {
+  const eligible = wakeEligibility(a.personaId, a.managerId);
+  const today = localDay(a.now, a.budget.timeZone);
+  const runs = await Runs.listBetween(a.agentId, localDay(new Date(a.now.getTime() - WEEK_MS), a.budget.timeZone), today);
+  const proactive = (p: string) => (PROACTIVE_PASSES as readonly string[]).includes(p);
+  const todays = runs.filter((r) => r.day === today);
+  const spent = (f: (p: string) => boolean) => todays.filter((r) => f(r.pass)).reduce((s, r) => s + r.costUsd, 0);
+  const split = a.budget.proactiveLimitUsd !== undefined && a.budget.proactiveLimitUsd !== null;
+  const lines: string[] = ["*Recurring checks*"];
+  lines.push(
+    eligible.ok
+      ? "Mode: wakes"
+      : `Mode: summarising heartbeat${eligible.reason ? ` (Wake: yes, but ${eligible.reason === "no-manager" ? "no manager" : "no enabled destination has Highest: act"})` : ""}`,
+  );
+  lines.push(
+    split
+      ? `Today: proactive ${usd(spent(proactive))} of ${usd(a.budget.proactiveLimitUsd!)}, learning ${usd(spent((p) => !proactive(p)))} of ${usd(a.budget.limitUsd)}`
+      : `Today: ${usd(spent(() => true))} of ${usd(a.budget.limitUsd)} (one shared budget)`,
+  );
+  const skipped = todays.filter((r) => r.outcome === "skipped-budget" && proactive(r.pass)).length;
+  if (skipped) lines.push(`Refused by budget today: ${skipped}`);
+  const state = await WakeState.get(a.agentId);
+  if (state) {
+    lines.push(`Last wake: ${when(state.lastWakeAt)} (${state.lastOutcome ?? "running"}); next check: ${when(state.nextCheckAt)}; failures in a row: ${state.failures}`);
+  }
+  const wakes = runs.filter((r) => r.pass === "heartbeat-wake" && r.outcome && r.outcome !== "skipped-budget");
+  if (wakes.length) {
+    const costs = wakes.map((r) => r.costUsd).sort((x, y) => x - y);
+    const stopped = wakes.filter((r) => r.outcome === "stopped-budget").length;
+    lines.push(`Last 7 days: ${wakes.length} wakes, median ${usd(costs[Math.floor(costs.length / 2)]!)}, highest ${usd(costs[costs.length - 1]!)}, ${stopped} stopped by a cap`);
+  }
+  const journal = await agentPageBody(a.agentId, a.call, WAKE_JOURNAL_SLUG).catch(() => "");
+  if (journal) lines.push(`Latest notes:\n> ${journal.slice(0, JOURNAL_SHOWN).replace(/\n/g, "\n> ")}`);
+  return lines.join("\n");
+}

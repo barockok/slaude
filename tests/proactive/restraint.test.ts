@@ -123,6 +123,16 @@ describe("rules", () => {
     expect(rule(checkProactive(req(), ctx({ config: loose, history: at(8) })))).toBe("ok");
   });
 
+  test("unchanged: the agent's own checklist or notes as evidence do not dedupe recurring posts", () => {
+    const loose = configFrom("## Proactive\n- Enabled: yes\n- Cooldown: 0\n- Max per person per day: 50\n");
+    for (const own of ["self/heartbeat", "self/heartbeat-journal", "self/wake-journal", " SELF/Heartbeat "]) {
+      const history = [{ postedAt: NOW.getTime() - 26 * H, textHash: textHash("Yesterday's brief."), evidenceHash: textHash(own) }];
+      expect(rule(checkProactive(req({ text: "Today's brief.", evidence: own }), ctx({ config: loose, history })))).toBe("ok");
+      // The same text still dedupes.
+      expect(rule(checkProactive(req({ text: "Yesterday's brief.", evidence: own }), ctx({ config: loose, history })))).toBe("unchanged");
+    }
+  });
+
   test("unchanged: a reworded post resting on the same evidence posts nothing (seen with a live model)", () => {
     const loose = configFrom("## Proactive\n- Enabled: yes\n- Max per person per day: 9\n- Cooldown: 0 hours\n");
     const history = [{ postedAt: NOW.getTime() - 26 * H, textHash: textHash("Deploy 42 is stuck."), evidenceHash: textHash("investigations/deploy-42") }];

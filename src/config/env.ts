@@ -40,6 +40,12 @@ function positiveInt(name: string, fallback: number): number {
 }
 
 /** A positive integer variable that falls back to the default (unset, empty or invalid) rather than throwing. */
+function numberAtLeastZero(name: string, fallback: number): number {
+  const raw = opt(name, "").trim();
+  const n = raw === "" ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 function intAtLeastOne(name: string, fallback: number): number {
   const raw = (process.env[name] ?? "").trim();
   const n = raw === "" ? NaN : Number(raw);
@@ -550,6 +556,17 @@ export const env = {
     return Number.isFinite(n) && n >= 0 ? n : 1;
   },
   /**
+   * Daily USD limit of the proactive pool (heartbeat, promise checks, wakes)
+   * per agent (`SLAUDE_PROACTIVE_BUDGET_USD`). Unset, empty or invalid: null,
+   * one pool shared with learning passes under `backgroundBudgetUsd`. 0 is
+   * allowed and stops proactive spend.
+   */
+  proactiveBudgetUsd: (): number | null => {
+    const raw = opt("SLAUDE_PROACTIVE_BUDGET_USD", "").trim();
+    const n = raw === "" ? NaN : Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  },
+  /**
    * Quiet-moment pass thresholds (spec §9.1): a thread with at least
    * `SLAUDE_QUIET_MIN_TURNS` turns (N, default 8) that has been quiet for
    * `SLAUDE_QUIET_MINUTES` minutes (M, default 30) is reviewed, at most
@@ -564,6 +581,16 @@ export const env = {
    */
   promisePollMinutes: () => intAtLeastOne("SLAUDE_PROMISE_POLL_MINUTES", 15),
   promiseExpireHours: () => intAtLeastOne("SLAUDE_PROMISE_EXPIRE_HOURS", 24),
+  /** Per-wake USD cap (`SLAUDE_WAKE_MAX_USD`, default 1). 0 turns it off; the day's pool still applies. */
+  wakeMaxUsd: () => numberAtLeastZero("SLAUDE_WAKE_MAX_USD", 1),
+  /** Per-wake turn cap (`SLAUDE_WAKE_MAX_TURNS`, default 40). 0 turns it off. */
+  wakeMaxTurns: () => numberAtLeastZero("SLAUDE_WAKE_MAX_TURNS", 40),
+  /** Per-wake wall clock in minutes (`SLAUDE_WAKE_MAX_MINUTES`, default 15). 0 turns it off; a node's turn timeout still applies. */
+  wakeMaxMinutes: () => numberAtLeastZero("SLAUDE_WAKE_MAX_MINUTES", 15),
+  /** How long a wake's session is kept (`SLAUDE_WAKE_KEEP_DAYS`, default 14). */
+  wakeKeepDays: () => intAtLeastOne("SLAUDE_WAKE_KEEP_DAYS", 14),
+  /** The longest a waking agent may sleep, in hours (`SLAUDE_WAKE_MAX_SLEEP_HOURS`, default 24). */
+  wakeMaxSleepHours: () => intAtLeastOne("SLAUDE_WAKE_MAX_SLEEP_HOURS", 24),
   /** Heartbeat pass interval in minutes (`SLAUDE_HEARTBEAT_MINUTES`, default 30; spec §10.3). */
   heartbeatMinutes: () => intAtLeastOne("SLAUDE_HEARTBEAT_MINUTES", 30),
   quietMinTurns: () => intAtLeastOne("SLAUDE_QUIET_MIN_TURNS", 8),

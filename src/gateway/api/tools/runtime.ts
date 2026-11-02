@@ -7,6 +7,8 @@
  */
 import { adminHandlers } from "../../slack/mcp-tools";
 import { proactiveRule } from "../../../proactive/rule-tool";
+import { finishRoundTool, proactivePostTool, readChannelTool } from "../../../proactive/wake-tools";
+import { wakeRefusal } from "../../../proactive/wake-guard";
 import { runtimeContract } from "../../../tools/contracts/runtime";
 import { parseToolArgs } from "../../../tools/contracts/types";
 import type { JobClaims } from "../auth";
@@ -62,6 +64,12 @@ export async function executeRuntimeTool(
       // ctx.userId is claims.initiator (the signed sender), so taughtBy and
       // the approver check never come from the request body.
       return proactiveRule(ctx, parseToolArgs(c.proactive_rule, body));
+    case c.read_channel.name:
+      return readChannelTool(ctx, parseToolArgs(c.read_channel, body));
+    case c.proactive_post.name:
+      return proactivePostTool(ctx, parseToolArgs(c.proactive_post, body));
+    case c.finish_round.name:
+      return finishRoundTool(ctx, parseToolArgs(c.finish_round, body));
     case c.trigger_ingest.name:
       parseToolArgs(c.trigger_ingest, body);
       return adminHandlers.triggerIngest(ctx);
@@ -71,6 +79,10 @@ export async function executeRuntimeTool(
       // REST-only (never MCP-mounted): the node worker's permissionResolver
       // opens a gate here and long-polls /v1/pending/:id for the click.
       const a = parseToolArgs(c.can_use_tool, body);
+      // Nobody is in a wake's turn to click a card: refused at once, not left waiting.
+      if (claims.wake) {
+        return { content: [{ type: "text", text: JSON.stringify({ decision: { behavior: "deny", message: wakeRefusal(a.tool_name) } }) }] };
+      }
       const res = await deps.openPermission(claims, {
         toolName: a.tool_name,
         input: (a.input ?? {}) as Record<string, unknown>,

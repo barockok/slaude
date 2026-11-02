@@ -113,6 +113,10 @@ import type { GateAction, Trust } from "../gate/types";
 import { providerSecretResolver } from "../api/tenants";
 import { parseRef } from "../../secrets";
 import { proactiveWorkspaceDir } from "../../agent/workspace-claim";
+import { wakeGateConfig, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
+import { wakeRefusal } from "../../proactive/wake-guard";
+import { wakeStatusText } from "../../proactive/wake-status";
+import type { WakeToolDeps } from "../../proactive/wake-tools";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
@@ -154,7 +158,8 @@ import * as OneOnOne from "../../db/one-on-one";
 import * as MentionOnly from "../../db/mention-only";
 import { CronScheduler } from "../slack/cron-scheduler";
 import { startCronLeader } from "./cron-leader";
-import { defaultSchedulerDeps, leaderElect, startBackgroundScheduler, type SchedulerSlack } from "../../background/scheduler";
+import { defaultSchedulerDeps, leaderElect, personaManager, startBackgroundScheduler, type SchedulerSlack } from "../../background/scheduler";
+import { budgetConfigFor } from "../../background/config";
 import { cardPoster, registerProposalActions } from "../../background/proposal-cards";
 import { digestRecipientOf } from "../../background/digest";
 import type { LeaderHandle } from "../../queue/locks";
@@ -196,6 +201,7 @@ export interface GatewayHandle {
   __promises?: PromiseTransport;
   /** Test seam: how this gateway dispatches heartbeat ask/act turns. */
   __proactive?: ProactiveTransport;
+  __wake?: WakeTransport;
   /** TEST SEAM: the mono process's voice call registry. */
   __voiceCalls?: VoiceCalls;
   /** TEST/SIM SEAM ONLY. Drive the natural-language connect path (what the
@@ -884,6 +890,31 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       routes.set(sessionId, { ctx, surface: wrapSurface(surfaceForCtx(ctx), sessionId), spoke: false, silent: true });
     },
   });
+  /** Nobody is in a wake's turn to click a card: refused at once rather than left waiting. */
+  const refuseApprovalInWake: NonNullable<SlackContext["requestApproval"]> = async () => {
+    throw new Error("approval is not available when you woke on your own; propose it with proactive_post at level ask");
+  };
+  /** A wake's post's thread, ready for a human reply: engaged, its app stamped, a channel post's in the proactive folder. */
+  const bindWakePostThread: WakeToolDeps["bindThread"] = async (post, personaId) => {
+    if (!post.messageTs || !post.teamId) return;
+    const persona = personaId && personaId !== "default" ? personaId : "default";
+    const session = await agent.ensureSession(
+      { team_id: post.teamId, channel_id: post.channelId, thread_ts: post.messageTs, persona_id: persona },
+      post.audience === "channel" ? { workingDir: proactiveWorkspaceDir(post.agentId) } : {},
+    );
+    await Sessions.setEngaged(session.id, true);
+    if (!session.slack_app_id && post.appId) await Sessions.setSlackApp(session.id, post.appId);
+  };
+  const wakeToolDeps: WakeToolDeps = {
+    post: backgroundSlack.post,
+    call: brainCall,
+    managerId: personaManager,
+    agentId: backgroundAgentId,
+    timeZone: (personaId) => budgetConfigFor(personaId).timeZone,
+    bindThread: bindWakePostThread,
+    gate: wakeGateConfig,
+    now: () => new Date(),
+  };
   /**
    * One background turn into a thread through the cron path (promise checks,
    * heartbeat ask/act): the thread's session, a route bound like a cron run's
@@ -896,7 +927,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * thread only) creates its session in the agent's proactive folder.
    */
   const dispatchThreadTurn = async (
-    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean; appId?: string | null; sharedFolder?: boolean },
+    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean; appId?: string | null; sharedFolder?: boolean; wake?: WakeRunOptions },
     envelope: string,
     run: { runId: string; agentId: string },
     pass: TurnPass,
@@ -929,7 +960,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       personaId: persona,
       origin: "cron",
     };
-    ctx.requestApproval = (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req });
+    ctx.requestApproval = target.wake
+      ? refuseApprovalInWake
+      : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req });
+    if (target.wake) ctx.wake = { runId: run.runId, deps: wakeToolDeps };
     ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
     noteTurnSender(session.id, ctx);
     routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, silent: true });
@@ -944,17 +978,32 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         ...(app.apiAppId ? { apiAppId: app.apiAppId } : {}),
         origin: "cron",
         backgroundRunId: run.runId,
+        ...(target.wake ? { wake: target.wake } : {}),
       });
-    } else if (pass === "heartbeat-turn") {
+    } else if (pass === "heartbeat-turn" || pass === "heartbeat-wake") {
       // Not awaited: the turn may wait for the agent's proactive folder (one
       // turn there at a time), and a round dispatching several items must not
       // block on it. A turn that then fails leaves its run to the stale sweep.
-      void agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }) }).catch((e) => {
+      void agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }), ...(target.wake ? { wake: target.wake } : {}) }).catch((e) => {
         console.error(`[proactive] heartbeat turn failed session=${session.id}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
       });
     } else {
       await agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }) });
     }
+  };
+  // A heartbeat wake: a fresh session of the agent itself, keyed on its own
+  // synthetic thread, in the agent's proactive folder. Its only way to speak is
+  // proactive_post. On a node the signed `wake` claim carries that rule.
+  backgroundSlack.wake = {
+    dispatch: async (target, envelope, run, caps) => {
+      const persona = target.personaId && target.personaId !== "default" ? target.personaId : undefined;
+      await dispatchThreadTurn(
+        { teamId: target.teamId, channelId: target.managerId, threadTs: target.threadTs, personaId: persona, userId: target.agentId, appId: target.appId ?? null, sharedFolder: true, wake: caps },
+        envelope,
+        run,
+        "heartbeat-wake",
+      );
+    },
   };
   // Promise checks (phase E): a due commitment's check turn goes into the
   // thread that made the promise, through the cron path (a route bound like a
@@ -1045,7 +1094,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     },
   };
 
-  agent.setPermissionResolver(permissions.resolver);
+  // Nobody is in a wake's turn to click a card (mono; a node asks the tool plane).
+  agent.setPermissionResolver((sessionId, toolName, input, ctx) =>
+    routes.get(sessionId)?.ctx.wake ? Promise.resolve({ behavior: "deny", message: wakeRefusal(toolName) }) : permissions.resolver(sessionId, toolName, input, ctx),
+  );
   if (env.remote.enabled() && env.role() !== "gateway") {
     // Mono: the query runs in this process, so resolve the target from the DB
     // and open the helper here. In split deploys the node does this from claims.
@@ -2444,6 +2496,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       };
       if (slash.kind === "help") {
         await reply(helpText());
+        return;
+      }
+      if (slash.kind === "heartbeat-status") {
+        const persona = dispatch?.personaId ?? "default";
+        const managerId = personaManager(persona);
+        if (!managerId || userId !== managerId) {
+          await reply(":no_entry: only this agent's manager can see this");
+          return;
+        }
+        await reply(await wakeStatusText({ personaId: persona, agentId: await backgroundAgentId(persona), managerId, budget: budgetConfigFor(persona), call: brainCall, now: new Date() }));
         return;
       }
       if (slash.kind === "mode-help") {
@@ -4143,8 +4205,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // token with no job claim have none, which refuses a profile write.
       turnSenders: async () => (queueDispatch && claims.job ? queueDispatch.turns.turnSenders(claims.job) : null),
     };
-    ctx.requestApproval = (req) =>
-      approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, app, ...req });
+    ctx.requestApproval = claims.wake
+      ? refuseApprovalInWake
+      : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, app, ...req });
+    if (claims.wake && claims.bgRun) ctx.wake = { runId: claims.bgRun, deps: wakeToolDeps };
     ctx.reloadSession = (prompt?) => agent.reload(claims.session, prompt);
     return ctx;
   };
@@ -4324,6 +4388,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
     __promises: backgroundSlack.promises!,
     __proactive: backgroundSlack.proactive!,
+    __wake: backgroundSlack.wake!,
     __voiceCalls: voiceCalls,
     __brainGate: async (sessionId: string) => {
       const route = routes.get(sessionId);

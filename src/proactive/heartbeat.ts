@@ -96,7 +96,7 @@ const slackError = (e: unknown): string | undefined => {
 };
 
 /** Check, post and record one proactive post. `post` is the recorded row, or null when recording failed. */
-async function sendProactive(a: ProactivePostArgs, ctx: ProactivePostContext, state: { posts: number }): Promise<Sent> {
+export async function sendProactive(a: ProactivePostArgs, ctx: ProactivePostContext, state: { posts: number }): Promise<Sent> {
   const no = (error: string): Sent => ({ ok: false, error, kind: "invalid" });
   if (state.posts >= HEARTBEAT_MAX_POSTS) return { ok: false, error: `refused: at most ${HEARTBEAT_MAX_POSTS} posts per heartbeat`, kind: "cap" };
   if (!a.evidence?.trim()) return no("refused: a proactive post needs evidence (a page slug or link it rests on)");
@@ -222,17 +222,19 @@ export interface HeartbeatDeps {
    * reconnect, which would not help.
    */
   agentOAuthInCli?: boolean;
+  /** A waking persona: its checklist goes to the wake, so this round reads only watched sources. */
+  skipChecklist?: boolean;
   /** Seam (tests): dispatch deps. Default: defaultDispatchDeps. */
   dispatchDeps?: (transport: ProactiveTransport, personaId: string) => ProactiveDispatchDeps;
 }
 
-const agentScope = (agentId: string): BrainScope => {
+export const agentScope = (agentId: string): BrainScope => {
   const source = agentSourceId(agentId);
   return { clientId: agentId, sourceId: source, allowedSources: [source] };
 };
 
 /** A live page's body in the agent's slice, or "". */
-async function agentPageBody(agentId: string, call: BrainOpCall, slug: string): Promise<string> {
+export async function agentPageBody(agentId: string, call: BrainOpCall, slug: string): Promise<string> {
   const rec = readPageRecord(await getPageOrNull(call, slug, agentScope(agentId)));
   return rec && !rec.superseded ? rec.body.trim() : "";
 }
@@ -287,7 +289,7 @@ const EVIDENCE_MAX = 500;
 const FIELD_MAX = 200;
 
 /** One line, bounded, and no tag can open or close: model or source text going into a prompt or a page. */
-const line = (s: string | null | undefined, max = FIELD_MAX): string => (s ?? "").replace(/[\r\n]+/g, " ").replaceAll("<", "‹").trim().slice(0, max);
+export const line = (s: string | null | undefined, max = FIELD_MAX): string => (s ?? "").replace(/[\r\n]+/g, " ").replaceAll("<", "‹").trim().slice(0, max);
 /** A mandate on one line, cut at MANDATE_MAX with an ellipsis when it was longer. */
 const mandateLine = (s: string | null | undefined): string => {
   const one = line(s, Number.MAX_SAFE_INTEGER);
@@ -296,7 +298,7 @@ const mandateLine = (s: string | null | undefined): string => {
 const clamp = (s: string, max: number): string => (s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s);
 const iso = (ms: number): string => new Date(ms).toISOString().slice(0, 16) + "Z";
 
-async function recentPostLines(agentId: string, call: BrainOpCall, now: Date): Promise<string> {
+export async function recentPostLines(agentId: string, call: BrainOpCall, now: Date): Promise<string> {
   const rows = await Posts.recentByAgent(agentId, now.getTime() - RECENT_POSTS_MS, RECENT_POSTS_MAX);
   const out: string[] = [];
   for (const p of rows) {
@@ -338,7 +340,7 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   const config = deps.config ?? ((ch?: string) => proactiveFor(r.personaId, ch));
 
   // 1. Load.
-  const checklist = await heartbeatChecklist(r.agentId, deps.call);
+  const checklist = deps.skipChecklist ? "" : await heartbeatChecklist(r.agentId, deps.call);
   // Only watchableSources output reaches the reader: it is what keeps
   // privateServices and non-http servers out (the reader does not).
   const watched = deps.sources ? watchableSources(config().watch, (deps.mcp ?? bridgeExternalMcp)(r.personaId), warnOnce) : [];
@@ -399,6 +401,7 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
     RECENT_POSTS: await recentPostLines(r.agentId, deps.call, startedAt),
     SOURCES: sources.map((s) => `- ${s.server}: ${since[s.server] == null ? "the last 24 hours" : `since ${iso(since[s.server]!)}`}`).join("\n") || "(none)",
     MANDATE: mandateLine(m.global) || "(not set)",
+    VOICE: mandateLine(m.voice) || "(not set)",
     CHANNELS_ON: channelsOn.map((c) => `- <#${c}>: ${m.channels[c] ? mandateLine(m.channels[c]) : "the global mandate"}`).join("\n") || "(none)",
     MAX_POSTS: String(HEARTBEAT_MAX_POSTS),
     MANAGER: managerId ?? "none",
@@ -489,8 +492,13 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
         posts,
       ).catch((e): Sent => ({ ok: false, error: e instanceof Error ? e.message : String(e), kind: "failed" }));
       if (!sent.ok) {
-        // "unchanged": it already went out (an earlier round, or the overlap re-read it); nothing to journal.
-        if (sent.rule === "unchanged") console.log(`${tag}: item ${line(item.source, 60)}/${line(item.itemId, 60)} already posted (unchanged)`);
+        // "unchanged": the same text or evidence already went out, so this item
+        // is handled. It is journaled: the model's own draft may say it routed
+        // this, and the next round reads that journal as what really happened.
+        if (sent.rule === "unchanged") {
+          notDelivered.push(`Not sent again: ${label} (unchanged)`);
+          console.log(`${tag}: item ${line(item.source, 60)}/${line(item.itemId, 60)} already posted (unchanged)`);
+        }
         else if ((sent.kind === "restraint" && !NOT_NOW.has(sent.rule!)) || sent.kind === "invalid" || sent.kind === "channel") notPosted(sent.rule ?? sent.error.replace(/^refused: /, "").slice(0, 120));
         else drop(sent.error, d.rule);
         continue;
@@ -531,6 +539,9 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   }
 
   await reauth(state.needsAuth);
+  if (res.outcome === "skipped-budget") {
+    await tellManagerOnce(r, "budget", OUT_OF_BUDGET_TEXT, { managerId, app, post: deps.post, at: startedAt, tag });
+  }
   return { outcome: res.outcome };
 }
 
@@ -550,3 +561,28 @@ async function tellReauth(
       .catch((e) => console.error(`${a.tag}: could not tell the manager that ${server} needs re-authorising: ${e instanceof Error ? e.message : String(e)}`));
   }
 }
+
+/**
+ * One DM to the manager per reason per (persona-local) day: something is stopping
+ * the agent's proactive work and only an operator can fix it. Outside restraint,
+ * like a re-authorise notice: it is about the agent, not a proactive post.
+ * A failure is logged, never thrown.
+ */
+export async function tellManagerOnce(
+  r: { agentId: string; timeZone: string },
+  reason: string,
+  text: string,
+  a: { managerId: string | null; app: AppRef | undefined; post: CardPost; at: Date; tag: string },
+): Promise<void> {
+  if (!a.managerId) return;
+  try {
+    const day = localDay(a.at, r.timeZone);
+    if (!(await claimSlot(r.agentId, "heartbeat-notice", `${reason}@${day}`, a.at.getTime()))) return;
+    await a.post({ channel: a.managerId, ...(a.app ? { app: a.app } : {}), text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] });
+  } catch (e) {
+    console.error(`${a.tag}: could not tell the manager (${reason}): ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** The notice for a heartbeat or a wake refused by the day's budget. */
+export const OUT_OF_BUDGET_TEXT = "I'm out of today's proactive budget, so I'm skipping my recurring checks until tomorrow.";

@@ -10,11 +10,15 @@
  *   - Cooldown: 4 hours
  *   - Watch: mail, tracker   # sources the heartbeat round reads — global only
  *   - Highest: ask           # ceiling: ignore | inform | ask | act — default inform
+ *   - Wake: yes              # the agent itself wakes for its checklist — global only, default no
+ *   - Read: <#C…>, <#C…>     # channels this agent may read, in any turn — global only
  *
  *   ## Channel <#C…>
  *   ### Proactive
  *   - Enabled: yes
  *   - Highest: act           # replaces the global ceiling in this channel
+ *   - Cooldown: 0.5          # replaces the global cooldown in this channel
+ *   - Max per day: 12        # replaces the global daily cap in this channel
  *
  * Parsed here, deterministically, from the persona's SOUL text. Never through
  * the LLM structured extraction (a mis-extraction must never turn it on), never
@@ -40,14 +44,22 @@ export interface ProactiveConfig {
   watch: string[];
   /** The ceiling no learned reaction may raise the level past. */
   highest: Level;
+  /** Whether the agent itself wakes for its checklist (global only). */
+  wake: boolean;
+  /** Channels this agent may read with read_channel (global only). */
+  read: string[];
   /** Channel id → that channel's own `### Proactive` `Enabled`. */
   channels: Record<string, boolean>;
   /** Channel id → that channel's own `### Proactive` `Highest`. */
   channelHighest: Record<string, Level>;
+  /** Channel id → that channel's own `### Proactive` `Cooldown`, in hours. */
+  channelCooldownHours: Record<string, number>;
+  /** Channel id → that channel's own `### Proactive` `Max per day`. */
+  channelMaxPerDay: Record<string, number>;
 }
 
 /** The resolved switch for one audience: the global settings, `enabled` per channel when one is given. */
-export type ResolvedProactive = Omit<ProactiveConfig, "channels" | "channelHighest">;
+export type ResolvedProactive = Omit<ProactiveConfig, "wake" | "read" | "channels" | "channelHighest" | "channelCooldownHours" | "channelMaxPerDay">;
 
 export const DEFAULT_MAX_PER_PERSON_PER_DAY = 1;
 export const DEFAULT_COOLDOWN_HOURS = 4;
@@ -102,6 +114,24 @@ function keyValue(line: string): [string, string] | null {
   return [m[1]!.trim().toLowerCase(), m[2]!.replace(/\s+#.*$/, "").trim()];
 }
 
+/** Channel ids from a comma-separated SOUL value (`<#C…|name>` or `C…`); anything else is dropped. */
+function parseChannelList(value: string): string[] {
+  const ids = value.split(",").map((v) => /^\s*(?:<#([A-Za-z0-9]+)(?:\|[^>]*)?>|([A-Za-z0-9]+))\s*$/.exec(v)).map((m) => (m ? (m[1] ?? m[2])! : ""));
+  return ids.filter((id) => CHANNEL_ID.test(id));
+}
+
+/** A cap from a SOUL line: a positive whole number, or null. */
+function parseCap(value: string): number | null {
+  const n = /^\d+$/.test(value) ? Number(value) : NaN;
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+/** A cooldown from a SOUL line, in hours, or null. */
+function parseCooldown(value: string): number | null {
+  const m = /^(\d+(?:\.\d+)?)\s*(?:h|hours?)?$/i.exec(value);
+  return m ? Number(m[1]) : null;
+}
+
 export function parseProactive(text: string): ProactiveConfig {
   const out: ProactiveConfig = {
     enabled: false,
@@ -110,8 +140,12 @@ export function parseProactive(text: string): ProactiveConfig {
     cooldownHours: DEFAULT_COOLDOWN_HOURS,
     watch: [],
     highest: "inform",
+    wake: false,
+    read: [],
     channels: {},
     channelHighest: {},
+    channelCooldownHours: {},
+    channelMaxPerDay: {},
   };
   // Where we are: the global section, a channel's Proactive subsection, or elsewhere.
   let where: { kind: "global" } | { kind: "channel"; id: string; inProactive: boolean } | null = null;
@@ -149,19 +183,27 @@ export function parseProactive(text: string): ProactiveConfig {
       else if (key === "highest") {
         const l = parseLevel(value);
         if (l) out.channelHighest[where.id] = l;
+      } else if (key === "cooldown") {
+        const h = parseCooldown(value);
+        if (h !== null) out.channelCooldownHours[where.id] = h;
+      } else if (key === "max per day") {
+        const n = parseCap(value);
+        if (n !== null) out.channelMaxPerDay[where.id] = n;
       }
       continue;
     }
     if (key === "enabled") out.enabled = value.toLowerCase() === "yes";
+    else if (key === "wake") out.wake = value.toLowerCase() === "yes";
+    else if (key === "read") out.read = parseChannelList(value);
     else if (key === "watch") out.watch = value.split(",").map((w) => w.trim()).filter(Boolean);
     else if (key === "highest") out.highest = parseLevel(value) ?? out.highest;
     else if (key === "quiet hours") out.quietHours = parseWindow(value);
     else if (key === "max per person per day") {
-      const n = /^\d+$/.test(value) ? Number(value) : NaN;
-      if (Number.isInteger(n) && n > 0) out.maxPerPersonPerDay = n;
+      const n = parseCap(value);
+      if (n !== null) out.maxPerPersonPerDay = n;
     } else if (key === "cooldown") {
-      const m = /^(\d+(?:\.\d+)?)\s*(?:h|hours?)?$/i.exec(value);
-      if (m) out.cooldownHours = Number(m[1]);
+      const h = parseCooldown(value);
+      if (h !== null) out.cooldownHours = h;
     }
   }
   return out;
@@ -203,12 +245,14 @@ function configFor(personaId: string): ProactiveConfig | null {
 export function proactiveFor(personaId: string, channelId?: string): ResolvedProactive {
   const c = configFor(personaId);
   if (!c) return { ...DISABLED };
-  const { channels, channelHighest, ...global } = c;
+  const { wake: _wake, read: _read, channels, channelHighest, channelCooldownHours, channelMaxPerDay, ...global } = c;
   if (channelId === undefined) return global;
   return {
     ...global,
     enabled: channels[channelId] ?? global.enabled,
     highest: channelHighest[channelId] ?? global.highest,
+    cooldownHours: channelCooldownHours[channelId] ?? global.cooldownHours,
+    maxPerPersonPerDay: channelMaxPerDay[channelId] ?? global.maxPerPersonPerDay,
   };
 }
 
@@ -216,6 +260,28 @@ export function proactiveFor(personaId: string, channelId?: string): ResolvedPro
 export function proactiveChannels(personaId: string): string[] {
   const c = configFor(personaId);
   return c ? Object.entries(c.channels).filter(([, on]) => on).map(([id]) => id).sort() : [];
+}
+
+/** The channels this persona's SOUL lets it read with read_channel. */
+export function proactiveRead(personaId: string): string[] {
+  return configFor(personaId)?.read ?? [];
+}
+
+export type WakeEligibility = { ok: true } | { ok: false; reason: "no-manager" | "no-act-destination" | null };
+
+/**
+ * Whether a persona wakes: `Wake: yes`, a manager, and at least one enabled
+ * destination whose ceiling is `act`. `reason: null` is a persona that never
+ * asked to wake; any other reason is a misconfiguration worth saying out loud.
+ * An upgrade cannot turn this on: `Highest: act` alone is not enough.
+ */
+export function wakeEligibility(personaId: string, managerId: string | null): WakeEligibility {
+  const c = configFor(personaId);
+  if (!c?.wake) return { ok: false, reason: null };
+  if (!managerId) return { ok: false, reason: "no-manager" };
+  const globalAct = c.enabled && c.highest === "act";
+  const channelAct = Object.entries(c.channels).some(([id, on]) => on && (c.channelHighest[id] ?? c.highest) === "act");
+  return globalAct || channelAct ? { ok: true } : { ok: false, reason: "no-act-destination" };
 }
 
 /** True when the persona's SOUL enables proactiveness globally or in any channel. */

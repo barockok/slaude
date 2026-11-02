@@ -45,7 +45,7 @@ import type { BrainOpCall } from "../knowledge/memory-trail";
 import { personaKbSourceIds } from "../knowledge/persona-kb";
 import { m as metric } from "../metrics";
 import { personaDefaultModel } from "../persona/registry";
-import { canStart, localDay, overAfterStart, PASS_MAX_TURNS, unpricedBlock, type BudgetConfig, type PassName } from "./budget";
+import { canStart, localDay, overAfterStart, overLimit, PASS_MAX_TURNS, unpricedBlock, type BudgetConfig, type PassName } from "./budget";
 import { budgetConfigFor } from "./config";
 import { indexWritten } from "../proactive/commitment-index";
 import { createPassMcpServer, type PassToolName, PASS_MCP_NAME, passProfileSource, passReadSources, type PassScope, type PassTool, type TranscriptTurn } from "./pass-tools";
@@ -384,7 +384,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
           break;
         }
         if (shutdown) break;
-        if ((await Runs.spentOn(spec.agentId, day)) > cfg.limitUsd + 1e-9) {
+        if (await overLimit(cfg, spec.agentId, spec.pass, day)) {
           abort.abort();
           outcome = "stopped-budget";
           console.log(`${tag}: stopped, today's budget is spent`);

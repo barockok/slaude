@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { inWindow, parseClock, parseProactive, proactiveFor, __setProactiveSoulSource } from "../../src/soul/proactive";
+import { inWindow, parseClock, parseProactive, proactiveFor, proactiveRead, wakeEligibility, __setProactiveSoulSource } from "../../src/soul/proactive";
 import { FIELD_ALIASES, mutateOverride } from "../../src/soul/overrides";
 import { EXTRACTION_PROMPT, SoulDataSchema } from "../../src/soul/data";
 
@@ -34,12 +34,12 @@ describe("parseClock / inWindow", () => {
 
 describe("parseProactive", () => {
   it("defaults to disabled, cap 1, cooldown 4, no quiet hours", () => {
-    expect(parseProactive(SOUL(""))).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 1, cooldownHours: 4, watch: [], highest: "inform", channels: {}, channelHighest: {} });
+    expect(parseProactive(SOUL(""))).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 1, cooldownHours: 4, watch: [], highest: "inform", wake: false, read: [], channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {} });
   });
 
   it("reads the global section", () => {
     const c = parseProactive(SOUL("## Proactive\n- Enabled: yes\n- Quiet hours: 21:00–08:00\n- Max per person per day: 3\n- Cooldown: 2 hours\n"));
-    expect(c).toEqual({ enabled: true, quietHours: { start: 21 * 60, end: 8 * 60 }, maxPerPersonPerDay: 3, cooldownHours: 2, watch: [], highest: "inform", channels: {}, channelHighest: {} });
+    expect(c).toEqual({ enabled: true, quietHours: { start: 21 * 60, end: 8 * 60 }, maxPerPersonPerDay: 3, cooldownHours: 2, watch: [], highest: "inform", wake: false, read: [], channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {} });
   });
 
   it("is case-insensitive, accepts a hyphen, and ignores comments", () => {
@@ -118,6 +118,78 @@ describe("parseProactive", () => {
 
   it("a ### Proactive outside a channel block does nothing", () => {
     expect(parseProactive(SOUL("### Proactive\n- Enabled: yes\n")).enabled).toBe(false);
+  });
+});
+
+describe("a channel's own Cooldown and Max per day", () => {
+  const TEXT = "## Proactive\n- Enabled: no\n- Cooldown: 4 hours\n- Max per person per day: 2\n\n## Channel C0TEAMCHAN\n### Proactive\n- Enabled: yes\n- Cooldown: 0.5\n- Max per day: 12\n\n## Channel C0OTHERCHA\n### Proactive\n- Enabled: yes\n";
+  it("parses them per channel", () => {
+    const c = parseProactive(SOUL(TEXT));
+    expect(c.channelCooldownHours).toEqual({ C0TEAMCHAN: 0.5 });
+    expect(c.channelMaxPerDay).toEqual({ C0TEAMCHAN: 12 });
+  });
+  it("ignores invalid values", () => {
+    const c = parseProactive(SOUL("## Channel C0TEAMCHAN\n### Proactive\n- Cooldown: soon\n- Max per day: 0\n"));
+    expect(c.channelCooldownHours).toEqual({});
+    expect(c.channelMaxPerDay).toEqual({});
+  });
+  it("apply only to that channel", () => {
+    __setProactiveSoulSource(() => SOUL(TEXT));
+    const own = proactiveFor("default", "C0TEAMCHAN");
+    expect(own.cooldownHours).toBe(0.5);
+    expect(own.maxPerPersonPerDay).toBe(12);
+    const other = proactiveFor("default", "C0OTHERCHA");
+    expect(other.cooldownHours).toBe(4);
+    expect(other.maxPerPersonPerDay).toBe(2);
+    const global = proactiveFor("default");
+    expect(global.cooldownHours).toBe(4);
+    expect(global.maxPerPersonPerDay).toBe(2);
+    __setProactiveSoulSource(null);
+  });
+});
+
+describe("Wake and Read", () => {
+  it("parse from the global section", () => {
+    const c = parseProactive(SOUL("## Proactive\n- Wake: yes\n- Read: <#C0EXAMPLE|team>, C0OTHERCHA, not-a-channel\n"));
+    expect(c.wake).toBe(true);
+    expect(c.read).toEqual(["C0EXAMPLE", "C0OTHERCHA"]);
+  });
+  it("are global only: a channel block cannot set them", () => {
+    const c = parseProactive(SOUL("## Channel C0TEAMCHAN\n### Proactive\n- Wake: yes\n- Read: C0OTHERCHA\n"));
+    expect(c.wake).toBe(false);
+    expect(c.read).toEqual([]);
+  });
+
+  const eligible = (soul: string, manager: string | null = "U0MANAGER") => {
+    __setProactiveSoulSource(() => SOUL(soul));
+    const r = wakeEligibility("default", manager);
+    __setProactiveSoulSource(null);
+    return r;
+  };
+  it("a persona wakes with Wake: yes, a manager, and act on an enabled channel", () => {
+    expect(eligible("## Proactive\n- Wake: yes\n\n## Channel C0TEAMCHAN\n### Proactive\n- Enabled: yes\n- Highest: act\n")).toEqual({ ok: true });
+  });
+  it("or act globally while enabled globally", () => {
+    expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n")).toEqual({ ok: true });
+  });
+  it("no Wake line is simply not waking, with no reason to warn about", () => {
+    expect(eligible("## Proactive\n- Enabled: yes\n- Highest: act\n")).toEqual({ ok: false, reason: null });
+  });
+  it("no manager is refused", () => {
+    expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n", null)).toEqual({ ok: false, reason: "no-manager" });
+  });
+  it("a ceiling below act is refused, and Highest: act on a disabled channel does not count", () => {
+    expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: ask\n")).toEqual({ ok: false, reason: "no-act-destination" });
+    expect(eligible("## Proactive\n- Wake: yes\n\n## Channel C0TEAMCHAN\n### Proactive\n- Enabled: no\n- Highest: act\n")).toEqual({ ok: false, reason: "no-act-destination" });
+    expect(eligible("## Proactive\n- Wake: yes\n- Highest: act\n")).toEqual({ ok: false, reason: "no-act-destination" });
+  });
+  it("a channel's ceiling replaces the global one", () => {
+    expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n\n## Channel C0TEAMCHAN\n### Proactive\n- Enabled: yes\n- Highest: inform\n")).toEqual({ ok: true });
+  });
+  it("proactiveRead lists only the persona's Read channels", () => {
+    __setProactiveSoulSource(() => SOUL("## Proactive\n- Read: C0OTHERCHA\n"));
+    expect(proactiveRead("default")).toEqual(["C0OTHERCHA"]);
+    __setProactiveSoulSource(null);
   });
 });
 

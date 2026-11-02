@@ -49,6 +49,8 @@ import { sessionModeBlock, type RemoteModeInfo } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
 import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
+import { WAKE_ONLY_TOOL_IDS, wakeDeniedToolIds } from "../proactive/wake-guard";
+import type { WakeStats } from "../proactive/wake-settle";
 import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
 import { injectedTurns, voiceCallActive } from "../voice/turn-flags";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
@@ -170,8 +172,11 @@ export type AgentEvent =
  */
 export interface BackgroundTurnRun {
   runId: string;
-  finish(usage: ModelTokens, outcome: "ok" | "error"): Promise<void>;
+  finish(usage: ModelTokens, outcome: "ok" | "error" | "stopped-budget", stats?: WakeStats): Promise<void>;
 }
+
+/** A heartbeat wake's caps (src/proactive/wake.ts). Absent or 0: off. */
+export type WakeOptions = { maxBudgetUsd?: number; maxTurns?: number; maxMinutes?: number };
 
 /** An open skill-check run (see LiveSession.evolveRun). */
 type EvolveRun = {
@@ -424,6 +429,8 @@ export class AgentManager extends EventEmitter {
   #suppressNextTurn = new Set<string>();
   /** Sessions whose idle TTL is suspended (an active voice call, spec §6). */
   #idleHeld = new Set<string>();
+  /** Sessions that are heartbeat wakes (see #armWake). */
+  #wakes = new Map<string, { options: WakeOptions; timer?: ReturnType<typeof setTimeout> }>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -774,6 +781,8 @@ export class AgentManager extends EventEmitter {
    *  A throwing listener must not stall teardown. */
   #signalSessionExit(sessionId: string) {
     this.#idleHeld.delete(sessionId);
+    this.#wakeEnded(sessionId);
+    this.#wakes.delete(sessionId);
     this.#claims.releaseHolder(sessionId);
     try {
       this.emit("sessionExit", sessionId);
@@ -800,7 +809,8 @@ export class AgentManager extends EventEmitter {
   }
 
   /** Send user input. Starts session loop if not already live. */
-  async sendMessage(sessionId: string, text: string, opts: { sender?: InputSender; backgroundRun?: BackgroundTurnRun } = {}) {
+  async sendMessage(sessionId: string, text: string, opts: { sender?: InputSender; backgroundRun?: BackgroundTurnRun; wake?: WakeOptions } = {}) {
+    if (opts.wake) this.#armWake(sessionId, opts.wake, opts.backgroundRun);
     return this.#send(sessionId, text, false, opts.sender ?? null, opts.backgroundRun);
   }
 
@@ -960,6 +970,38 @@ export class AgentManager extends EventEmitter {
         live.closeIterable();
       } catch {}
     }, ms);
+  }
+
+  /**
+   * Mark a session as a heartbeat wake before it boots. Its query gets the caps
+   * and hides the tools a wake may not call. The wall clock closes the run itself
+   * and ends the turn, because an aborted query never reaches a result.
+   */
+  #armWake(sessionId: string, wake: WakeOptions, run: BackgroundTurnRun | undefined) {
+    const state: { options: WakeOptions; timer?: ReturnType<typeof setTimeout> } = { options: wake };
+    this.#wakes.set(sessionId, state);
+    if (!wake.maxMinutes || wake.maxMinutes <= 0) return;
+    state.timer = setTimeout(() => {
+      console.log(`[mgr] wake session=${sessionId} reached its wall clock (${wake.maxMinutes} min)`);
+      const live = this.#live.get(sessionId);
+      if (live?.bgRuns) for (const [seq, r] of live.bgRuns) if (r === run) live.bgRuns.delete(seq);
+      if (run) {
+        void run.finish({}, "stopped-budget", { cap: "minutes", durationMs: wake.maxMinutes! * 60_000 }).catch((e) => {
+          console.error(`[mgr] background run ${run.runId} could not be recorded session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+        });
+      }
+      this.#wakes.delete(sessionId);
+      this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
+      this.abort(sessionId);
+    }, wake.maxMinutes * 60_000);
+    (state.timer as { unref?: () => void }).unref?.();
+  }
+
+  /** The wake's turn ended: no wall clock any more. Stays marked so nothing follows it (no skill check). */
+  #wakeEnded(sessionId: string) {
+    const w = this.#wakes.get(sessionId);
+    if (w?.timer) clearTimeout(w.timer);
+    if (w) w.timer = undefined;
   }
 
   /** Cancel any in-flight turn for the session. */
@@ -1445,6 +1487,7 @@ export class AgentManager extends EventEmitter {
           : {}),
       };
       const hasMcpServers = Object.keys(mergedMcpServers).length > 0;
+      const wake = this.#wakes.get(sessionId)?.options;
       options = {
         cwd: row.working_dir,
         // Pass `model` only when explicitly set. Empty = let the SDK / CLI use
@@ -1461,7 +1504,9 @@ export class AgentManager extends EventEmitter {
         // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
         // local-only tools with no remote counterpart are removed outright.
         ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES } : {}),
-        disallowedTools: [...SCHEDULER_TOOLS, ...(remoteHandle ? REMOTE_DENIED_LOCAL_TOOLS : [])],
+        disallowedTools: [...SCHEDULER_TOOLS, ...(remoteHandle ? REMOTE_DENIED_LOCAL_TOOLS : []), ...(wake ? wakeDeniedToolIds() : WAKE_ONLY_TOOL_IDS)],
+        ...(wake?.maxBudgetUsd && wake.maxBudgetUsd > 0 ? { maxBudgetUsd: wake.maxBudgetUsd } : {}),
+        ...(wake?.maxTurns && wake.maxTurns > 0 ? { maxTurns: wake.maxTurns } : {}),
         permissionMode: mode,
         ...(mode === "bypassPermissions"
           ? { allowDangerouslySkipPermissions: true }
@@ -1777,7 +1822,7 @@ export class AgentManager extends EventEmitter {
           live.inputSenders.shift();
           // The check turn's result: its own usage (this result's running
           // modelUsage minus the qualifying turn's) ends its budgeted run.
-          const r = msg as { subtype?: string; is_error?: boolean; usage?: Partial<ResultUsage>; modelUsage?: Record<string, ModelUsageRow> };
+          const r = msg as { subtype?: string; is_error?: boolean; usage?: Partial<ResultUsage>; modelUsage?: Record<string, ModelUsageRow>; num_turns?: number; duration_ms?: number };
           if (live.inAutoEvolve && live.evolveRun) {
             const ok = r.subtype === "success" && !r.is_error;
             this.#endEvolveRun(sessionId, live, ok ? "ok" : "error", turnModelTokens(r.modelUsage, live.evolveRun.base, r.usage));
@@ -1785,7 +1830,11 @@ export class AgentManager extends EventEmitter {
           if (bgRun) {
             const ok = r.subtype === "success" && !r.is_error;
             const usage = turnModelTokens(r.modelUsage, live.lastModelUsage, r.usage);
-            void bgRun.finish(usage, ok ? "ok" : "error").catch((e) => {
+            const wake = this.#wakes.has(sessionId);
+            const cap = wake ? (r.subtype === "error_max_budget_usd" ? ("usd" as const) : r.subtype === "error_max_turns" ? ("turns" as const) : undefined) : undefined;
+            const stats = wake ? { ...(r.num_turns !== undefined ? { turns: r.num_turns } : {}), ...(r.duration_ms !== undefined ? { durationMs: r.duration_ms } : {}), ...(cap ? { cap } : {}) } : undefined;
+            if (wake) this.#wakeEnded(sessionId);
+            void bgRun.finish(usage, ok ? "ok" : cap ? "stopped-budget" : "error", stats).catch((e) => {
               console.error(`[mgr] background run ${bgRun.runId} could not be recorded session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
             });
           }
@@ -1867,6 +1916,14 @@ export class AgentManager extends EventEmitter {
           if (RESUME_MISS_RE.test(errStr)) {
             console.log(`[resume-attempt] suppressing resume-miss result error session=${sessionId} (reboot will reseed --session-id)`);
             if (live) live.turnTools = [];
+          } else if (this.#wakes.has(sessionId)) {
+            // Nobody is in a wake's turn: its ledger run and state record this,
+            // and the manager hears after repeated failures. A cap is not an
+            // incident, and a failed wake must not be retried at full cost.
+            metric.turnsTotal.inc({ result: "error" });
+            console.log(`[mgr] wake session=${sessionId} ended: ${redactSecrets(errStr)}`);
+            if (live) live.turnTools = [];
+            this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
           } else {
             metric.turnsTotal.inc({ result: "error" });
             metric.errorsTotal.inc({ kind: "turn" });
@@ -2012,6 +2069,8 @@ export class AgentManager extends EventEmitter {
    */
   #shouldAutoEvolve(live: LiveSession): boolean {
     if (!env.autoEvolve()) return false;
+    // A wake skips the check: the nightly skill review still sees its work.
+    if (this.#wakes.has(live.id)) return false;
     const tools = live.turnTools;
     if (tools.some((t) =>
       t === "mcp__slaude_skills__write_skill" ||

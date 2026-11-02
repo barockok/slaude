@@ -1,3 +1,4 @@
+import { finishRoundTool, proactivePostTool, readChannelTool, wakeThreadRefusal, type WakeTurn } from "../../proactive/wake-tools";
 import { z } from "zod";
 import { voiceTurns, VOICE_SUPPRESSED_RESULT } from "../../voice/turn-flags";
 import {
@@ -62,6 +63,8 @@ export type SlackContext = {
   userId?: string;
   /** Slack team id of the current workspace. */
   teamId?: string;
+  /** Set on a heartbeat wake's turn (the route, or the signed `wake` claim). */
+  wake?: WakeTurn;
   /** What started the route's current job (a person's Slack message, the
    *  panel, or cron). Drives GateInput.interactive; absent = not interactive.
    *  A synthetic turn the runtime injects afterwards (auto-evolve, a
@@ -359,6 +362,10 @@ export const slackHandlers = {
     { channel, text, thread_ts, broadcast }: { channel: string; text: string; thread_ts?: string; broadcast?: boolean },
   ): Promise<ToolResult> {
     try {
+      if (ctx.wake) {
+        const refused = await wakeThreadRefusal(ctx.wake, channel, thread_ts);
+        if (refused) return err(refused);
+      }
       const replyOpts = thread_ts ? (broadcast ? { thread_ts, reply_broadcast: true as const } : { thread_ts }) : {};
       const r = await ctx.client.chat.postMessage({
         channel,
@@ -820,6 +827,12 @@ export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInsta
         (args) => adminHandlers.removeCronJob(ctx, { jobId: args.job_id })),
       tool(c.proactive_rule.name, c.proactive_rule.description, c.proactive_rule.schema,
         (args) => proactiveRule(ctx, args)),
+      tool(c.read_channel.name, c.read_channel.description, c.read_channel.schema,
+        (args) => readChannelTool(ctx, args)),
+      tool(c.proactive_post.name, c.proactive_post.description, c.proactive_post.schema,
+        (args) => proactivePostTool(ctx, args)),
+      tool(c.finish_round.name, c.finish_round.description, c.finish_round.schema,
+        (args) => finishRoundTool(ctx, args)),
       tool(c.trigger_ingest.name, c.trigger_ingest.description, c.trigger_ingest.schema,
         () => adminHandlers.triggerIngest(ctx)),
       tool(c.reload_session.name, c.reload_session.description, c.reload_session.schema,

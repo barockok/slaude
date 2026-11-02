@@ -15,6 +15,7 @@ import { skillsContract } from "../../../tools/contracts/skills";
 import { kbContract } from "../../../tools/contracts/kb";
 import { zodIssueLine, type ServerContract } from "../../../tools/contracts/types";
 import { m as metric } from "../../../metrics";
+import { wakeAllows, wakeRefusal } from "../../../proactive/wake-guard";
 import type { JobClaims } from "../auth";
 import { json, notFound } from "../http";
 import type { ToolPlaneDeps, ToolResult } from "./deps";
@@ -55,6 +56,11 @@ export async function executeToolCall(
   if (!entry) return notFound(`unknown tool server '${server}'`);
   if (!Object.hasOwn(entry.contract.tools, tool)) return notFound(`unknown tool '${server}/${tool}'`);
   metric.v1ToolCallsTotal.inc({ server, tool });
+  // A wake's allow-list, from the signed claim. can_use_tool is the node's
+  // permission plumbing, not a model's call: it answers for itself (a refusal).
+  if (claims.wake && tool !== "can_use_tool" && !wakeAllows(server, tool)) {
+    return json(200, { content: [{ type: "text", text: wakeRefusal(tool) }], isError: true });
+  }
   let result: ToolResult | null;
   try {
     result = await entry.execute(tool, body, claims, deps);

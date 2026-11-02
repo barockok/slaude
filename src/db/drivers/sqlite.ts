@@ -240,6 +240,17 @@ CREATE TABLE IF NOT EXISTS proactive_posts (
   context     TEXT,
   app_id      TEXT
 );
+CREATE TABLE IF NOT EXISTS heartbeat_wake_state (
+  agent_id       TEXT    NOT NULL PRIMARY KEY,
+  next_check_at  INTEGER,
+  last_wake_at   INTEGER,
+  finished_at    INTEGER,
+  last_outcome   TEXT,
+  failures       INTEGER NOT NULL DEFAULT 0,
+  checklist_hash TEXT,
+  updated_at     INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS heartbeat_watermarks (
   agent_id   TEXT    NOT NULL,
   source     TEXT    NOT NULL,

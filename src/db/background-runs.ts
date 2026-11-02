@@ -180,10 +180,12 @@ export async function finishOpen(
 }
 
 /** Total USD recorded for an agent on a persona-local day. */
-export async function spentOn(agentId: string, day: string): Promise<number> {
+export async function spentOn(agentId: string, day: string, only: { passes?: readonly string[]; exceptPasses?: readonly string[] } = {}): Promise<number> {
+  const list = only.passes ?? only.exceptPasses ?? [];
+  const filter = list.length ? ` AND pass ${only.passes ? "IN" : "NOT IN"} (${list.map(() => "?").join(", ")})` : "";
   const row = await db.one<{ total: number | string | null }>(
-    "SELECT COALESCE(SUM(cost_usd), 0) AS total FROM background_runs WHERE agent_id = ? AND day = ?",
-    [agentId, day],
+    `SELECT COALESCE(SUM(cost_usd), 0) AS total FROM background_runs WHERE agent_id = ? AND day = ?${filter}`,
+    [agentId, day, ...list],
   );
   return Number(row?.total ?? 0);
 }

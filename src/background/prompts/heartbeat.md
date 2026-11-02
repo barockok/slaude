@@ -27,6 +27,8 @@ Your proactive posts of the last 7 days (when · where · topic · signal):
 
 Your mandate: {{MANDATE}}
 
+Your voice: {{VOICE}}
+
 Channels where proactiveness is on, and what each is for:
 {{CHANNELS_ON}}
 

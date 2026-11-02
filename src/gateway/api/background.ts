@@ -55,26 +55,41 @@ const finishBody = z
   })
   .strict();
 
+/** A dispatched background turn's finish: it may also have been stopped by a cap, and may report what it took. */
+const turnFinishBody = finishBody
+  .extend({
+    outcome: z.enum(["ok", "error", "stopped-budget"]),
+    stats: z
+      .object({
+        turns: z.number().int().min(0).optional(),
+        durationMs: z.number().min(0).optional(),
+        cap: z.enum(["usd", "turns", "minutes"]).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 const personaOf = (claims: JobClaims): string => claims.persona || "default";
 
 /**
  * POST /v1/background/turn/finish — finish the background-turn run the job
  * carries (a promise check, phase E, or a heartbeat ask/act turn). Only the run
  * id signed into the token as `bgRun` may be finished, and only while it is an
- * open `commitment` or `heartbeat-turn` run of the token persona's agent;
+ * open `commitment`, `heartbeat-turn` or `heartbeat-wake` run of the token persona's agent;
  * anything else is 409. Priced with the gateway's
  * table, as the skill check's finish.
  */
 export async function handleTurnRun(op: string, body: unknown, claims: JobClaims, deps: SkillCheckDeps = {}): Promise<Response> {
   try {
     if (op !== "finish") return notFound("unknown background turn op");
-    const b = finishBody.parse(body);
+    const b = turnFinishBody.parse(body);
     if (!claims.bgRun || claims.bgRun !== b.runId) return json(409, { error: "this job carries no such background run" });
     const agentId = await backgroundAgentId(personaOf(claims));
     // The run's own pass, when it is one a dispatched turn carries; finish
     // re-checks it (and the agent, and that it is open) under its update.
     const pass = (await Runs.get(b.runId))?.pass as TurnPass | undefined;
-    const r = pass && CARRIED_TURN_PASSES.includes(pass) ? await finishSkillCheck({ runId: b.runId, agentId, usage: b.usage, outcome: b.outcome, pass }, deps) : null;
+    const r = pass && CARRIED_TURN_PASSES.includes(pass) ? await finishSkillCheck({ runId: b.runId, agentId, usage: b.usage, outcome: b.outcome, pass, ...(b.stats ? { stats: b.stats } : {}) }, deps) : null;
     if (!r?.ok) return json(409, { error: "no open background run with this id for this agent" });
     return json(200, { ok: true });
   } catch (e) {

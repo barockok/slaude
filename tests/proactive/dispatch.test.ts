@@ -272,6 +272,26 @@ describe("the mono gateway's proactive transport", () => {
     expect(existsSync(a!.working_dir)).toBe(true);
   });
 
+  test("a wake: a fresh session in the proactive folder, on its own thread, its caps reaching the turn", async () => {
+    let wake: unknown;
+    agent.sendMessage = async (sid: string, text: string, opts?: { backgroundRun?: BackgroundTurnRun; wake?: unknown }) => {
+      wake = opts?.wake;
+      sent.push({ sid, text, ...(opts?.backgroundRun ? { run: opts.backgroundRun } : {}) });
+    };
+    h = createGateway(agent, slackTransport());
+    await h.__wake!.dispatch(
+      { teamId: "T", managerId: "U0MANAGER", threadTs: `wake:${AGENT_ID}:slot-1`, personaId: "default", agentId: AGENT_ID, appId: undefined },
+      '<runtime-check kind="wake">look</runtime-check>',
+      { runId: "run-1", agentId: AGENT_ID },
+      { maxBudgetUsd: 1, maxTurns: 40 },
+    );
+    const row = await Sessions.findByThread({ team_id: "T", channel_id: "U0MANAGER", thread_ts: `wake:${AGENT_ID}:slot-1`, persona_id: "default" });
+    expect(row!.working_dir).toBe(proactiveWorkspaceDir(AGENT_ID));
+    await Bun.sleep(0);
+    expect(sent[0]!.sid).toBe(row!.id);
+    expect(wake).toEqual({ maxBudgetUsd: 1, maxTurns: 40 });
+  });
+
   test("mono: a promise check in a proactive-folder thread while another thread holds the folder is deferred, no turn sent", async () => {
     await db.run("DELETE FROM commitments");
     h = createGateway(agent, slackTransport());
