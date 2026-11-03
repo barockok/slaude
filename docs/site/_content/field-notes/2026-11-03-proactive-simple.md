@@ -38,3 +38,5 @@ After the change, with no one prompting: the agent saved its research for the fi
 - Thread turns get notes, not fresh activity, so a stale line in the notes can be repeated until the next wake corrects it.
 - Two agents can ask the manager the same thing when one watches the other.
 - Upgrade: `Enabled: yes` now means working unattended. An upstream release needs a release note or a migration default.
+
+One limit had to move from the prompt into code. "Remind once" was only an instruction, and a follow-up in a thread had no cooldown. When the cooldown refused a post, a live agent used the thread instead and asked the same question three times in two hours. A wake can now add one follow-up to a thread until someone answers, counted from the thread itself.
