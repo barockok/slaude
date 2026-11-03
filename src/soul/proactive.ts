@@ -3,22 +3,26 @@
  * of the persona's SOUL, plus `### Proactive` inside a `## Channel <#C…>`
  * block, in either direction.
  *
- *   ## Proactive
- *   - Enabled: no            # yes | no — default no
- *   - Quiet hours: 21:00–08:00
- *   - Max per person per day: 1
- *   - Cooldown: 4 hours
- *   - Watch: mail, tracker   # sources the heartbeat round reads — global only
- *   - Highest: ask           # ceiling: ignore | inform | ask | act — default inform
- *   - Wake: yes              # the agent itself wakes for its checklist — global only, default no
- *   - Read: <#C…>, <#C…>     # channels this agent may read, in any turn — global only
+ * One setting turns it on, in the place it applies to:
  *
  *   ## Channel <#C…>
  *   ### Proactive
- *   - Enabled: yes
- *   - Highest: act           # replaces the global ceiling in this channel
- *   - Cooldown: 0.5          # replaces the global cooldown in this channel
- *   - Max per day: 12        # replaces the global daily cap in this channel
+ *   - Enabled: yes           # the agent works on its own here; its mandate says what it may do
+ *
+ *   ## Proactive
+ *   - Enabled: yes           # the same for its manager's DM (and people who opted in)
+ *
+ * Everything else is optional and has a sensible default:
+ *   - Max per day: 6         # posts per recipient per day (either section)
+ *   - Quiet hours: 21:00–08:00
+ *   - Read: <#C…>, <#C…>     # further channels it may read, in any turn (global only)
+ *   - Watch: mail, tracker   # external sources for the locked triage round (global only)
+ *
+ * Still honoured so a soul can narrow things, never needed to turn anything on:
+ *   - Wake: no               # stay on the summarising round (global only)
+ *   - Highest: ask           # lower the ceiling: ignore | inform | ask (default act)
+ *   - Cooldown: 4 hours      # minimum gap between posts to one recipient
+ *   - Max per person per day # the old name of Max per day
  *
  * Parsed here, deterministically, from the persona's SOUL text. Never through
  * the LLM structured extraction (a mis-extraction must never turn it on), never
@@ -61,8 +65,8 @@ export interface ProactiveConfig {
 /** The resolved switch for one audience: the global settings, `enabled` per channel when one is given. */
 export type ResolvedProactive = Omit<ProactiveConfig, "wake" | "read" | "channels" | "channelHighest" | "channelCooldownHours" | "channelMaxPerDay">;
 
-export const DEFAULT_MAX_PER_PERSON_PER_DAY = 1;
-export const DEFAULT_COOLDOWN_HOURS = 4;
+export const DEFAULT_MAX_PER_PERSON_PER_DAY = 6;
+export const DEFAULT_COOLDOWN_HOURS = 1;
 
 const DISABLED: ResolvedProactive = {
   enabled: false,
@@ -139,8 +143,9 @@ export function parseProactive(text: string): ProactiveConfig {
     maxPerPersonPerDay: DEFAULT_MAX_PER_PERSON_PER_DAY,
     cooldownHours: DEFAULT_COOLDOWN_HOURS,
     watch: [],
-    highest: "inform",
-    wake: false,
+    // Where proactiveness is on, the mandate is the authority: the ceiling only narrows.
+    highest: "act",
+    wake: true,
     read: [],
     channels: {},
     channelHighest: {},
@@ -186,7 +191,7 @@ export function parseProactive(text: string): ProactiveConfig {
       } else if (key === "cooldown") {
         const h = parseCooldown(value);
         if (h !== null) out.channelCooldownHours[where.id] = h;
-      } else if (key === "max per day") {
+      } else if (key === "max per day" || key === "max per person per day") {
         const n = parseCap(value);
         if (n !== null) out.channelMaxPerDay[where.id] = n;
       }
@@ -198,7 +203,7 @@ export function parseProactive(text: string): ProactiveConfig {
     else if (key === "watch") out.watch = value.split(",").map((w) => w.trim()).filter(Boolean);
     else if (key === "highest") out.highest = parseLevel(value) ?? out.highest;
     else if (key === "quiet hours") out.quietHours = parseWindow(value);
-    else if (key === "max per person per day") {
+    else if (key === "max per person per day" || key === "max per day") {
       const n = parseCap(value);
       if (n !== null) out.maxPerPersonPerDay = n;
     } else if (key === "cooldown") {
@@ -262,22 +267,23 @@ export function proactiveChannels(personaId: string): string[] {
   return c ? Object.entries(c.channels).filter(([, on]) => on).map(([id]) => id).sort() : [];
 }
 
-/** The channels this persona's SOUL lets it read with read_channel. */
+/** The channels this persona may read with read_channel: where it works on its own, and any its SOUL lists. */
 export function proactiveRead(personaId: string): string[] {
-  return configFor(personaId)?.read ?? [];
+  const c = configFor(personaId);
+  return c ? [...new Set([...c.read, ...proactiveChannels(personaId)])] : [];
 }
 
 export type WakeEligibility = { ok: true } | { ok: false; reason: "no-manager" | "no-act-destination" | null };
 
 /**
- * Whether a persona wakes: `Wake: yes`, a manager, and at least one enabled
- * destination whose ceiling is `act`. `reason: null` is a persona that never
- * asked to wake; any other reason is a misconfiguration worth saying out loud.
- * An upgrade cannot turn this on: `Highest: act` alone is not enough.
+ * Whether a persona wakes: proactiveness is on somewhere, it has a manager, and
+ * no soul line narrowed every enabled place below `act`. `reason: null` is a
+ * persona that never turned proactiveness on (or said `Wake: no`); any other
+ * reason is a misconfiguration worth saying out loud.
  */
 export function wakeEligibility(personaId: string, managerId: string | null): WakeEligibility {
   const c = configFor(personaId);
-  if (!c?.wake) return { ok: false, reason: null };
+  if (!c?.wake || !(c.enabled || Object.values(c.channels).some(Boolean))) return { ok: false, reason: null };
   if (!managerId) return { ok: false, reason: "no-manager" };
   const globalAct = c.enabled && c.highest === "act";
   const channelAct = Object.entries(c.channels).some(([id, on]) => on && (c.channelHighest[id] ?? c.highest) === "act");

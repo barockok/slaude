@@ -44,8 +44,8 @@ what to look at, and when the result is worth interrupting someone (and
 whom). When someone asks you to keep an eye on something, add a line; drop
 lines that stopped mattering. Rewrite the whole page each time. It runs only
 where the operator turned proactiveness on; you never need to mention it.
-Say how often each line matters ("every morning at 08:00"): where your operator
-lets you wake on your own, you do this work yourself and choose your next check.
+Your mandate is your job; this page is only for what it does not already say.
+Say how often each line matters ("every morning at 08:00"): you do this work yourself and choose your next check.
 Changing this page wakes you, so a new line is looked at soon.
 
 ### Profile

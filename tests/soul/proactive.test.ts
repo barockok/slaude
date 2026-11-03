@@ -33,13 +33,13 @@ describe("parseClock / inWindow", () => {
 });
 
 describe("parseProactive", () => {
-  it("defaults to disabled, cap 1, cooldown 4, no quiet hours", () => {
-    expect(parseProactive(SOUL(""))).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 1, cooldownHours: 4, watch: [], highest: "inform", wake: false, read: [], channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {} });
+  it("defaults to disabled, cap 6, cooldown 1, no quiet hours", () => {
+    expect(parseProactive(SOUL(""))).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 6, cooldownHours: 1, watch: [], highest: "act", wake: true, read: [], channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {} });
   });
 
   it("reads the global section", () => {
     const c = parseProactive(SOUL("## Proactive\n- Enabled: yes\n- Quiet hours: 21:00–08:00\n- Max per person per day: 3\n- Cooldown: 2 hours\n"));
-    expect(c).toEqual({ enabled: true, quietHours: { start: 21 * 60, end: 8 * 60 }, maxPerPersonPerDay: 3, cooldownHours: 2, watch: [], highest: "inform", wake: false, read: [], channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {} });
+    expect(c).toEqual({ enabled: true, quietHours: { start: 21 * 60, end: 8 * 60 }, maxPerPersonPerDay: 3, cooldownHours: 2, watch: [], highest: "act", wake: true, read: [], channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {} });
   });
 
   it("is case-insensitive, accepts a hyphen, and ignores comments", () => {
@@ -57,8 +57,8 @@ describe("parseProactive", () => {
   it("ignores malformed numbers and quiet hours", () => {
     const c = parseProactive(SOUL("## Proactive\n- Enabled: yes\n- Quiet hours: late\n- Max per person per day: lots\n- Cooldown: -3 hours\n"));
     expect(c.quietHours).toBeNull();
-    expect(c.maxPerPersonPerDay).toBe(1);
-    expect(c.cooldownHours).toBe(4);
+    expect(c.maxPerPersonPerDay).toBe(6);
+    expect(c.cooldownHours).toBe(1);
   });
 
   it("stops the section at the next ## heading", () => {
@@ -155,8 +155,8 @@ describe("Wake and Read", () => {
     expect(c.read).toEqual(["C0EXAMPLE", "C0OTHERCHA"]);
   });
   it("are global only: a channel block cannot set them", () => {
-    const c = parseProactive(SOUL("## Channel C0TEAMCHAN\n### Proactive\n- Wake: yes\n- Read: C0OTHERCHA\n"));
-    expect(c.wake).toBe(false);
+    const c = parseProactive(SOUL("## Channel C0TEAMCHAN\n### Proactive\n- Wake: no\n- Read: C0OTHERCHA\n"));
+    expect(c.wake).toBe(true);
     expect(c.read).toEqual([]);
   });
 
@@ -172,16 +172,23 @@ describe("Wake and Read", () => {
   it("or act globally while enabled globally", () => {
     expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n")).toEqual({ ok: true });
   });
-  it("no Wake line is simply not waking, with no reason to warn about", () => {
-    expect(eligible("## Proactive\n- Enabled: yes\n- Highest: act\n")).toEqual({ ok: false, reason: null });
+  it("Enabled: yes alone is enough, globally or in a channel", () => {
+    expect(eligible("## Proactive\n- Enabled: yes\n")).toEqual({ ok: true });
+    expect(eligible("## Channel C0TEAMCHAN\n### Proactive\n- Enabled: yes\n")).toEqual({ ok: true });
+  });
+  it("off everywhere is simply not waking, with no reason to warn about", () => {
+    expect(eligible("## Proactive\n- Enabled: no\n")).toEqual({ ok: false, reason: null });
+    expect(eligible("## Proactive\n- Wake: yes\n- Highest: act\n")).toEqual({ ok: false, reason: null });
+    expect(eligible("## Channel C0TEAMCHAN\n### Proactive\n- Enabled: no\n- Highest: act\n")).toEqual({ ok: false, reason: null });
+  });
+  it("Wake: no opts out", () => {
+    expect(eligible("## Proactive\n- Enabled: yes\n- Wake: no\n")).toEqual({ ok: false, reason: null });
   });
   it("no manager is refused", () => {
     expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n", null)).toEqual({ ok: false, reason: "no-manager" });
   });
-  it("a ceiling below act is refused, and Highest: act on a disabled channel does not count", () => {
+  it("a ceiling below act narrows it, and says why", () => {
     expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: ask\n")).toEqual({ ok: false, reason: "no-act-destination" });
-    expect(eligible("## Proactive\n- Wake: yes\n\n## Channel C0TEAMCHAN\n### Proactive\n- Enabled: no\n- Highest: act\n")).toEqual({ ok: false, reason: "no-act-destination" });
-    expect(eligible("## Proactive\n- Wake: yes\n- Highest: act\n")).toEqual({ ok: false, reason: "no-act-destination" });
   });
   it("a channel's ceiling replaces the global one", () => {
     expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n\n## Channel C0TEAMCHAN\n### Proactive\n- Enabled: yes\n- Highest: inform\n")).toEqual({ ok: true });
@@ -217,7 +224,7 @@ describe("proactiveFor", () => {
     __setProactiveSoulSource(() => {
       throw new Error("no soul");
     });
-    expect(proactiveFor("default", "C0TEAMCHAN")).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 1, cooldownHours: 4, watch: [], highest: "inform" });
+    expect(proactiveFor("default", "C0TEAMCHAN")).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 6, cooldownHours: 1, watch: [], highest: "inform" });
   });
 
   it("anyEnabled is true when only a channel is on", async () => {
@@ -255,10 +262,10 @@ describe("Watch and Highest", () => {
     expect(c.channelHighest).toEqual({ C0EXAMPLE: "act" });
   });
 
-  it("defaults: no Watch, Highest inform; an unknown level keeps the default", () => {
+  it("defaults: no Watch, Highest act; an unknown level keeps the default", () => {
     expect(parseProactive("## Proactive\n- Enabled: yes\n- Highest: always\n")).toMatchObject({
       watch: [],
-      highest: "inform",
+      highest: "act",
       channelHighest: {},
     });
   });

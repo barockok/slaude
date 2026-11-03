@@ -13,6 +13,7 @@ import type { AgentGroup, PersonaMandates } from "../background/scheduler";
 import { finishSkillCheck, startSkillCheck } from "../background/skill-check";
 import { env } from "../config/env";
 import * as Runs from "../db/background-runs";
+import * as Posts from "../db/proactive-posts";
 import * as WakeState from "../db/heartbeat-wake-state";
 import type { AppRef } from "../gateway/core/transport";
 import type { BrainOpCall } from "../knowledge/memory-trail";
@@ -23,6 +24,7 @@ import { agentPageBody, heartbeatChecklist, line, OUT_OF_BUDGET_TEXT, recentPost
 import { loadRules } from "./rules";
 import { wakeDue, type WakeGateConfig } from "./wake-gate";
 import { WAKE_JOURNAL_SLUG } from "./wake-tools";
+import { recentActivity, type ActivityReader } from "./wake-activity";
 
 /** How long and how much one wake may run. Absent or 0: that cap is off. The pool always applies to the USD one. */
 export interface WakeRunOptions {
@@ -48,6 +50,8 @@ export interface WakeDeps {
   managerId: (personaId: string) => string | null;
   mandates: (personaId: string, channelIds: readonly string[]) => PersonaMandates;
   app: (personaId: string) => Promise<AppRef | undefined>;
+  /** Reads Slack as this agent, for what happened since its last wake. Absent: no activity block. */
+  activity?: (personaId: string, app: AppRef) => ActivityReader;
   /** Seams (tests). */
   gate?: () => WakeGateConfig;
   channelsOn?: (personaId: string) => string[];
@@ -67,6 +71,17 @@ export const checklistHash = (checklist: string): string => createHash("sha256")
 
 const FAILURES_WORTH_A_NOTICE = 3;
 
+async function activityBlock(r: AgentGroup & { now: Date }, channels: readonly string[], lastWakeAt: number | null, app: AppRef, deps: WakeDeps): Promise<string> {
+  if (!deps.activity) return "(not available)";
+  try {
+    const posts = await Posts.recentByAgent(r.agentId, r.now.getTime() - 7 * 86_400_000, 30);
+    return await recentActivity({ reader: deps.activity(r.personaId, app), channels, posts, agentId: r.agentId, lastWakeAt, now: r.now });
+  } catch (e) {
+    console.warn(`[background] agent=${r.agentId} pass=heartbeat-wake: could not read activity: ${e instanceof Error ? e.message : String(e)}`);
+    return "(could not be read this time; say so rather than assume nothing happened)";
+  }
+}
+
 /** One wake, if one is due. Never throws for a transport failure: the run ends as an error, and the backoff applies. */
 export async function runWake(r: AgentGroup & { slot: string; now: Date; signal?: AbortSignal }, deps: WakeDeps): Promise<WakeResult> {
   const tag = `[background] agent=${r.agentId} pass=heartbeat-wake`;
@@ -77,8 +92,14 @@ export async function runWake(r: AgentGroup & { slot: string; now: Date; signal?
   const app = await deps.app(r.personaId).catch(() => undefined);
   const notice = { managerId, app, post: deps.post, at: r.now, tag };
 
+  // The agent's job is its mandates plus its optional checklist: turning
+  // proactiveness on in a place with a mandate is enough for it to start.
   const checklist = await heartbeatChecklist(r.agentId, deps.call);
-  const hash = checklist ? checklistHash(checklist) : null;
+  const channels = (deps.channelsOn ?? proactiveChannels)(r.personaId);
+  const m = deps.mandates(r.personaId, channels);
+  const placed = channels.map((c) => m.channels[c] ?? m.global);
+  const job = [checklist, ...(proactiveFor(r.personaId).enabled ? [m.global] : []), ...placed].filter(Boolean).join("\n");
+  const hash = job ? checklistHash(job) : null;
   const state = await WakeState.get(r.agentId);
   if (state && state.failures >= FAILURES_WORTH_A_NOTICE) {
     await tellManagerOnce(r, "wake-failures", `My last ${state.failures} recurring checks failed (last result: ${line(state.lastOutcome) || "unknown"}). Please take a look.`, notice);
@@ -113,8 +134,6 @@ export async function runWake(r: AgentGroup & { slot: string; now: Date; signal?
 
   try {
     await WakeState.noteStart(r.agentId, hash!, now);
-    const channels = (deps.channelsOn ?? proactiveChannels)(r.personaId);
-    const m = deps.mandates(r.personaId, channels);
     const strip = (s: string, t: string) => s.replace(new RegExp(`</?${t}>`, "gi"), "");
     const rules = await loadRules(r.agentId, deps.call);
     const destinations = [
@@ -124,8 +143,9 @@ export async function runWake(r: AgentGroup & { slot: string; now: Date; signal?
     const envelope = renderPassPrompt("heartbeat-wake", {
       NOW: new Date(now).toISOString(),
       TIME_ZONE: r.timeZone,
-      CHECKLIST: strip(checklist, "checklist"),
-      JOURNAL: strip(await agentPageBody(r.agentId, deps.call, WAKE_JOURNAL_SLUG), "journal") || "(none yet)",
+      CHECKLIST: strip(checklist, "checklist") || "(none: your mandate above is your job)",
+      ACTIVITY: strip(await activityBlock(r, channels, state?.lastWakeAt ?? null, app, deps), "activity"),
+      JOURNAL: strip(await agentPageBody(r.agentId, deps.call, WAKE_JOURNAL_SLUG), "notes") || "(none yet)",
       RULES: rules.map((x) => `- ${line(x.slug)} · ${line(x.kind)} · ${line(x.scope)} · ${x.level}`).join("\n") || "(none)",
       RECENT_POSTS: await recentPostLines(r.agentId, deps.call, r.now),
       DESTINATIONS: destinations.join("\n") || "(none)",

@@ -18,6 +18,8 @@ const H = 60 * MIN;
 const group = { agentId: AGENT, personaId: "default", timeZone: "UTC", slot: "2026-10-26T12:00", now: NOW } as never;
 const SOUL = "## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n\n## Channel C0ONCHANNE\n### Proactive\n- Enabled: yes\n";
 const CHECKLIST = "Every morning: post the brief.";
+const MANDATE = "Do without asking: research and draft. Ask first: publish.";
+const JOB_HASH = checklistHash(`${CHECKLIST}\nKeep things moving.\n${MANDATE}`);
 
 async function withChecklist(brain: ReturnType<typeof fakeBrain>, text = CHECKLIST) {
   const page = composePage({ slug: "self/heartbeat", content: text, type: "heartbeat" }, NOW);
@@ -58,8 +60,48 @@ beforeEach(async () => {
 afterEach(() => __setProactiveSoulSource(null));
 
 describe("runWake", () => {
-  test("no checklist: nothing runs", async () => {
+  test("a mandate alone is a job: no checklist page is needed", async () => {
     const h = harness();
+    expect(await runWake(group, h.deps)).toBe("woke");
+    expect(h.sent[0]!.envelope).toContain("your mandate above is your job");
+  });
+
+  test("a changed mandate wakes it again, unasked", async () => {
+    const h = harness();
+    await withChecklist(h.brain);
+    await WakeState.noteStart(AGENT, JOB_HASH, NOW.getTime() - H);
+    await WakeState.noteFinished(AGENT, NOW.getTime() + H, NOW.getTime() - H);
+    expect(await runWake(group, h.deps)).toBe("idle");
+    const changed = { ...h.deps, mandates: () => ({ global: "", channels: { C0ONCHANNE: "A new goal." } }) };
+    expect(await runWake(group, changed)).toBe("woke");
+  });
+
+  test("the activity block is read before the model and handed over", async () => {
+    const h = harness({
+      activity: () => ({
+        history: async () => [{ ts: String(NOW.getTime() / 1000 - 60), user: MGR, text: "Approved, go." }],
+        replies: async () => [],
+      }),
+    });
+    await runWake(group, h.deps);
+    expect(h.sent[0]!.envelope).toContain("Approved, go.");
+  });
+
+  test("a failed Slack read is said, not read as silence", async () => {
+    const h = harness({
+      activity: () => ({
+        history: async () => {
+          throw Object.assign(new Error("x"), { data: { error: "missing_scope" } });
+        },
+        replies: async () => [],
+      }),
+    });
+    await runWake(group, h.deps);
+    expect(h.sent[0]!.envelope).toContain("could not be read (missing_scope)");
+  });
+
+  test("no mandate and no checklist: nothing runs", async () => {
+    const h = harness({ mandates: () => ({ global: "", channels: {} }) });
     expect(await runWake(group, h.deps)).toBe("no-checklist");
     expect(h.sent).toEqual([]);
     expect(await Runs.spentOn(AGENT, "2026-10-26")).toBe(0);
@@ -80,13 +122,13 @@ describe("runWake", () => {
     expect(s.envelope).toContain("<#C0ONCHANNE>: Do without asking: research and draft. Ask first: publish.");
     const st = await WakeState.get(AGENT);
     expect(st?.lastWakeAt).toBe(NOW.getTime());
-    expect(st?.checklistHash).toBe(checklistHash(CHECKLIST));
+    expect(st?.checklistHash).toBe(JOB_HASH);
   });
 
   test("the slot after: idle, with no model call", async () => {
     const h = harness();
     await withChecklist(h.brain);
-    await WakeState.noteStart(AGENT, checklistHash(CHECKLIST), NOW.getTime() - H);
+    await WakeState.noteStart(AGENT, JOB_HASH, NOW.getTime() - H);
     await WakeState.noteFinished(AGENT, NOW.getTime() + H, NOW.getTime() - H);
     expect(await runWake(group, h.deps)).toBe("idle");
     expect(h.sent).toEqual([]);
@@ -145,7 +187,7 @@ describe("runWake", () => {
   test("three failures in a row: the manager hears once", async () => {
     const h = harness();
     await withChecklist(h.brain);
-    await WakeState.noteStart(AGENT, checklistHash(CHECKLIST), NOW.getTime() - H);
+    await WakeState.noteStart(AGENT, JOB_HASH, NOW.getTime() - H);
     await WakeState.noteSettled(AGENT, { outcome: "error", failures: 3, nextCheckAt: NOW.getTime() + H }, NOW.getTime() - MIN);
     await runWake(group, h.deps);
     await runWake(group, h.deps);

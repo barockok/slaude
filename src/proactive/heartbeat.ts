@@ -49,7 +49,7 @@ export const HEARTBEAT_MAX_POSTS = 3;
 /** Longest mandate line in the triage prompt, in characters (cut with an ellipsis past it). */
 export const MANDATE_MAX = 600;
 /** Longest proactive post, in characters. */
-export const MAX_POST_CHARS = 1200;
+export const MAX_POST_CHARS = 3000;
 
 export interface ProactivePostContext {
   agentId: string;
@@ -364,7 +364,7 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
     }
   };
   if (!checklist && !sources.length) {
-    console.debug(`${tag}: no checklist and no readable source; not running`);
+    if (!deps.skipChecklist) console.debug(`${tag}: no checklist and no readable source; not running`);
     await reauth(listNeedsAuth);
     return null;
   }

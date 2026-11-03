@@ -16,7 +16,7 @@ import { mcpMountedTools, type ServerContract } from "../tools/contracts/types";
 /** Tool server (the /v1 path segment) → the tools a wake may call. */
 const ALLOWED: Readonly<Record<string, readonly string[] | "all">> = {
   surface: ["pass"],
-  // post_message is limited further, to threads this run opened (wake-tools.ts).
+  // post_message is limited further, to threads of the agent's own posts (wake-tools.ts).
   slack: ["get_user_profile", "read_canvas", "post_message"],
   runtime: ["proactive_post", "read_channel", "finish_round"],
   skills: ["list_skills", "read_skill"],
@@ -39,7 +39,7 @@ export function wakeAllows(server: string, tool: string): boolean {
 }
 
 export const wakeRefusal = (tool: string): string =>
-  `refused: ${tool} is not available when you woke on your own, because nobody is in this turn. To reach someone, use proactive_post; to follow up on a post you made in this wake, use post_message with its thread_ts.`;
+  `refused: ${tool} is not available when you woke on your own, because nobody is in this turn. To reach someone, use proactive_post; to follow up on a post you made, use post_message with its thread_ts.`;
 
 /** The tools that only mean something in a wake: a normal session does not see them. */
 export const WAKE_ONLY_TOOL_IDS: readonly string[] = ["proactive_post", "finish_round"].map((t) => `mcp__${runtimeContract.server}__${t}`);

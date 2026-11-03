@@ -42,7 +42,7 @@ function harness(over: Partial<WakeToolDeps> = {}, history: unknown = { messages
   const ctx: WakeToolContext = { client: client as never, channel: MGR, wake: { runId: "run-1", deps }, apiAppId: "A0APP", teamId: "T0TEAM" };
   return { ctx, deps, brain, posted, bound };
 }
-const post = (over: Record<string, unknown> = {}) => ({ destination: "C0ONCHANNE", kind: "daily brief", level: "inform" as const, text: "Today's numbers are up.", evidence: "projects/numbers", item_id: "brief-1", ...over });
+const post = (over: Record<string, unknown> = {}) => ({ destination: "C0ONCHANNE", kind: "daily brief", text: "Today's numbers are up.", evidence: "projects/numbers", item_id: "brief-1", ...over });
 const parsed = (r: { content: { text: string }[] }) => JSON.parse(r.content[0]!.text);
 
 beforeEach(async () => {
@@ -77,11 +77,26 @@ describe("proactive_post", () => {
     expect(r.isError).toBe(true);
     expect(h.posted).toEqual([]);
   });
-  test("the checklist or notes are refused as evidence", async () => {
+  test("the checklist or notes count as no evidence, and do not make later posts look repeated", async () => {
     const h = harness();
-    for (const e of ["self/heartbeat", "self/wake-journal"]) {
-      expect((await proactivePostTool(h.ctx, post({ evidence: e }))).isError).toBe(true);
-    }
+    expect(parsed(await proactivePostTool(h.ctx, post({ evidence: "self/heartbeat", item_id: "a", text: "First." }))).posted).toBe(true);
+    await db.run("UPDATE proactive_posts SET posted_at = posted_at - 7200000");
+    expect(parsed(await proactivePostTool(h.ctx, post({ evidence: "self/wake-journal", item_id: "b", text: "Second." }))).posted).toBe(true);
+  });
+  test("text alone is enough: it goes to the one place, as a plain update", async () => {
+    const h = harness();
+    __setProactiveSoulSource(() => "## Reporting\n- Manager: U0MANAGER\n\n## Channel C0ONCHANNE\n### Proactive\n- Enabled: yes\n");
+    const r = parsed(await proactivePostTool(h.ctx, { text: "**Rendered** the reel: out.mp4" }));
+    expect(r.channel).toBe("C0ONCHANNE");
+    expect(h.posted[0]!.text).toBe("*Rendered* the reel: out.mp4");
+    const row = await Posts.findByMessage("C0ONCHANNE", r.ts);
+    expect(row?.topic).toBe("update");
+    expect(row?.context?.level).toBe("inform");
+  });
+  test("several places: it must say which", async () => {
+    const h = harness();
+    const r = await proactivePostTool(h.ctx, { text: "Which?" });
+    expect(r.isError).toBe(true);
     expect(h.posted).toEqual([]);
   });
   test("the same item goes out once", async () => {
@@ -93,9 +108,9 @@ describe("proactive_post", () => {
   });
   test("no rule keeps the asked level; a ceiling lowers it", async () => {
     const h = harness();
-    const a = parsed(await proactivePostTool(h.ctx, post({ level: "ask" })));
+    const a = parsed(await proactivePostTool(h.ctx, post({ needs_reply: true })));
     expect((await Posts.findByMessage("C0ONCHANNE", a.ts))?.context?.level).toBe("ask");
-    const b = parsed(await proactivePostTool(h.ctx, post({ destination: "C0ASKCHANN", level: "ask", item_id: "brief-2", evidence: "projects/other", text: "Other." })));
+    const b = parsed(await proactivePostTool(h.ctx, post({ destination: "C0ASKCHANN", needs_reply: true, item_id: "brief-2", evidence: "projects/other", text: "Other." })));
     expect((await Posts.findByMessage("C0ASKCHANN", b.ts))?.context?.level).toBe("inform");
   });
   test("a taught ignore rule refuses", async () => {
@@ -131,7 +146,10 @@ describe("post_message in a wake", () => {
     expect(await wakeThreadRefusal(h.ctx.wake!, "C0ONCHANNE", r.ts)).toBeNull();
     expect(await wakeThreadRefusal(h.ctx.wake!, "C0ONCHANNE", undefined)).toContain("refused");
     expect(await wakeThreadRefusal(h.ctx.wake!, "C0ONCHANNE", "9.9")).toContain("refused");
-    expect(await wakeThreadRefusal({ ...h.ctx.wake!, runId: "other" }, "C0ONCHANNE", r.ts)).toContain("refused");
+    // A later wake may remind in the thread of an earlier post of this agent's.
+    expect(await wakeThreadRefusal({ ...h.ctx.wake!, runId: "other" }, "C0ONCHANNE", r.ts)).toBeNull();
+    const other = { ...h.ctx.wake!, deps: { ...h.ctx.wake!.deps, agentId: async () => "U0SOMEONEELSE" } };
+    expect(await wakeThreadRefusal(other, "C0ONCHANNE", r.ts)).toContain("refused");
   });
 });
 
@@ -169,10 +187,10 @@ describe("finish_round", () => {
     expect(s?.nextCheckAt).toBe(NOW.getTime() + 24 * H);
     expect(s?.finishedAt).toBe(NOW.getTime());
   });
-  test("no time, or a bad one: one slot on", async () => {
+  test("no time, or a bad one: a few hours on", async () => {
     const h = harness();
-    expect(parsed(await finishRoundTool(h.ctx, { journal: "x" })).nextCheckAt).toBe(new Date(NOW.getTime() + 30 * 60_000).toISOString());
-    expect(parsed(await finishRoundTool(h.ctx, { journal: "x", next_check_at: "soon" })).nextCheckAt).toBe(new Date(NOW.getTime() + 30 * 60_000).toISOString());
+    expect(parsed(await finishRoundTool(h.ctx, { journal: "x" })).nextCheckAt).toBe(new Date(NOW.getTime() + 4 * H).toISOString());
+    expect(parsed(await finishRoundTool(h.ctx, { journal: "x", next_check_at: "soon" })).nextCheckAt).toBe(new Date(NOW.getTime() + 4 * H).toISOString());
   });
   test("outside a wake it refuses", async () => {
     const h = harness();

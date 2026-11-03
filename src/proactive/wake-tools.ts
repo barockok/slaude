@@ -16,7 +16,8 @@ import { proactiveChannels, proactiveFor, proactiveRead, type ResolvedProactive 
 import { agentScope, HEARTBEAT_MAX_POSTS, sendProactive, type ProactivePostContext } from "./heartbeat";
 import { minLevel, type Level } from "./levels";
 import { nextLocal } from "./promises";
-import { SELF_EVIDENCE, UNCHANGED_WINDOW_MS, type Audience, type RestraintRule } from "./restraint";
+import { SELF_EVIDENCE, textHash, UNCHANGED_WINDOW_MS, type Audience, type RestraintRule } from "./restraint";
+import { mdToMrkdwn } from "../gateway/slack/format";
 import { JOURNAL_MAX_CHARS, loadRules, resolveLevel } from "./rules";
 import { clampNextCheck, type WakeGateConfig } from "./wake-gate";
 
@@ -60,12 +61,12 @@ const NOT_A_WAKE = "refused: this tool works only when you woke on your own.";
 const personaOf = (c: WakeToolContext): string => c.personaId ?? "default";
 
 export interface ProactivePostToolArgs {
-  destination: string;
-  kind: string;
-  level: "inform" | "ask";
   text: string;
-  evidence: string;
-  item_id: string;
+  destination?: string;
+  needs_reply?: boolean;
+  kind?: string;
+  evidence?: string;
+  item_id?: string;
 }
 
 /** Restraint refusals that pass with time, and when. */
@@ -86,18 +87,24 @@ export async function proactivePostTool(c: WakeToolContext, a: ProactivePostTool
   if (!c.wake) return err(NOT_A_WAKE);
   const { deps, runId } = c.wake;
   const personaId = personaOf(c);
-  const evidence = a.evidence.trim();
-  if (SELF_EVIDENCE.has(evidence.toLowerCase())) {
-    return err("refused: evidence must be what this post rests on (a page or link with the facts), not your checklist or notes.");
-  }
   const managerId = deps.managerId(personaId);
-  const d = a.destination.trim();
+  const places = proactiveChannels(personaId);
+  // One place to work in: that is where a post goes.
+  const d = a.destination?.trim() || (places.length === 1 ? places[0]! : places.length === 0 ? "manager" : "");
+  if (!d) return err(`refused: say which destination: ${places.join(", ")}.`);
   const audience: Audience | null = d === "manager" || d === managerId ? "manager" : /^[CG][A-Z0-9]+$/.test(d) ? "channel" : /^[UW][A-Z0-9]+$/.test(d) ? "person" : null;
   if (!audience) return err("refused: destination must be \"manager\", a channel id or a user id.");
   const recipient = audience === "manager" ? managerId : d;
   if (!recipient) return err("refused: this agent has no manager.");
   // A channel only with its own enabled `### Proactive` block, as in the round.
-  if (audience === "channel" && !proactiveChannels(personaId).includes(recipient)) return err("refused: proactiveness is off in that channel.");
+  if (audience === "channel" && !places.includes(recipient)) return err("refused: you do not work in that channel on your own.");
+  const text = mdToMrkdwn(a.text.trim());
+  const kind = a.kind?.trim() || "update";
+  // Your own notes say nothing about whether a post repeats an earlier one: as evidence they count as none.
+  const given = a.evidence?.trim() ?? "";
+  const itemId = a.item_id?.trim() || `text:${textHash(a.text).slice(0, 16)}`;
+  const evidence = given && !SELF_EVIDENCE.has(given.toLowerCase()) ? given : `item:${itemId}`;
+  const asked: "ask" | "inform" = a.needs_reply ? "ask" : "inform";
 
   const now = deps.now();
   const agentId = await deps.agentId(personaId);
@@ -106,13 +113,12 @@ export async function proactivePostTool(c: WakeToolContext, a: ProactivePostTool
   // A rule and the ceiling can only lower what the agent asks for. Unlike the
   // round, no rule does not mean `inform`: the mandate is the authority here.
   const rules = await loadRules(agentId, deps.call);
-  const { rule } = resolveLevel({ rules, kind: a.kind, destination: recipient, proposed: a.level, highest: cfg.highest });
-  const level: Level = minLevel(minLevel(rule ? rule.level : a.level, a.level), cfg.highest);
+  const { rule } = resolveLevel({ rules, kind, destination: recipient, proposed: asked, highest: cfg.highest });
+  const level: Level = minLevel(minLevel(rule ? rule.level : asked, asked), cfg.highest);
   if (level === "ignore") {
     metric.wakePostsTotal.inc({ agent: agentId, result: "ignored" });
     return ok({ refused: true, rule: "ignored", retryable: false });
   }
-  const itemId = a.item_id.trim();
   if (await Posts.postedItem(agentId, WAKE_SOURCE, itemId, now.getTime() - UNCHANGED_WINDOW_MS)) {
     metric.wakePostsTotal.inc({ agent: agentId, result: "already-posted" });
     return ok({ refused: true, rule: "already-posted", retryable: false });
@@ -124,10 +130,10 @@ export async function proactivePostTool(c: WakeToolContext, a: ProactivePostTool
     {
       audience,
       recipient,
-      topic: a.kind,
-      text: a.text,
+      topic: kind,
+      text,
       evidence,
-      context: { source: WAKE_SOURCE, itemId, summary: a.text, ruleSlug: rule?.slug ?? null, level, evidence, wakeRun: runId },
+      context: { source: WAKE_SOURCE, itemId, summary: text, ruleSlug: rule?.slug ?? null, level, evidence, wakeRun: runId },
     },
     ctx,
     { posts: mine.length },
@@ -149,28 +155,25 @@ export async function proactivePostTool(c: WakeToolContext, a: ProactivePostTool
   return ok({ posted: true, channel: sent.post?.channelId ?? recipient, ts: sent.post?.messageTs ?? null, maxPosts: HEARTBEAT_MAX_POSTS });
 }
 
-/** Whether a wake may post in this thread: only under a post this run opened. Null: it may. */
-export async function wakeThreadRefusal(wake: WakeTurn, channel: string, threadTs: string | undefined): Promise<string | null> {
-  const refused = "refused: when you woke on your own, post_message works only with the channel and ts proactive_post returned in this wake.";
+/** Whether a wake may post in this thread: only under a post this agent made, so a reminder lands in the question's own thread. Null: it may. */
+export async function wakeThreadRefusal(wake: WakeTurn, channel: string, threadTs: string | undefined, personaId = "default"): Promise<string | null> {
+  const refused = "refused: when you woke on your own, post_message works only in the thread of a post you made. To start something new, use proactive_post.";
   if (!threadTs) return refused;
   const post = await Posts.findByMessage(channel, threadTs);
-  return post?.context?.wakeRun === wake.runId ? null : refused;
+  return post && post.agentId === (await wake.deps.agentId(personaId)) ? null : refused;
 }
 
 const READ_CHANNEL_LIMIT = 50;
 
 /** Recent messages of a channel the SOUL lists under `Read:`. Available in any turn. */
-export async function readChannelTool(c: WakeToolContext, a: { channel: string; oldest?: string; limit?: number }): Promise<ToolResult> {
+export async function readChannelTool(c: WakeToolContext, a: { channel: string; thread_ts?: string; oldest?: string; limit?: number }): Promise<ToolResult> {
   const channel = a.channel.trim();
   if (!proactiveRead(personaOf(c)).includes(channel)) {
-    return err("refused: that channel is not in this agent's Read list. Only the operator can add it (SOUL, ## Proactive, Read:).");
+    return err("refused: you do not work in that channel and it is not in your Read list. Only the operator can add it (SOUL, ## Proactive, Read:).");
   }
   try {
-    const r = await c.client.conversations.history({
-      channel,
-      limit: Math.min(Math.max(a.limit ?? 20, 1), READ_CHANNEL_LIMIT),
-      ...(a.oldest ? { oldest: a.oldest } : {}),
-    });
+    const page = { channel, limit: Math.min(Math.max(a.limit ?? 20, 1), READ_CHANNEL_LIMIT), ...(a.oldest ? { oldest: a.oldest } : {}) };
+    const r = a.thread_ts ? await c.client.conversations.replies({ ...page, ts: a.thread_ts }) : await c.client.conversations.history(page);
     const messages = ((r.messages ?? []) as Array<Record<string, unknown>>).map((m) => ({
       ts: m.ts,
       user: m.user ?? m.bot_id,

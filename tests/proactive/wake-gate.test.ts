@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { WakeState } from "../../src/db/heartbeat-wake-state";
-import { clampNextCheck, settleWake, wakeDue, type WakeGateConfig } from "../../src/proactive/wake-gate";
+import { clampNextCheck, DEFAULT_SLEEP_MS, settleWake, wakeDue, type WakeGateConfig } from "../../src/proactive/wake-gate";
 
 const MIN = 60_000;
 const H = 60 * MIN;
@@ -47,10 +47,10 @@ describe("clampNextCheck", () => {
   test("too far: the longest sleep, so an agent cannot sleep forever", () => {
     expect(clampNextCheck(NOW + 365 * 24 * H, NOW, CFG)).toBe(NOW + 24 * H);
   });
-  test("missing or invalid: one slot on", () => {
-    expect(clampNextCheck(null, NOW, CFG)).toBe(NOW + 30 * MIN);
-    expect(clampNextCheck(undefined, NOW, CFG)).toBe(NOW + 30 * MIN);
-    expect(clampNextCheck(NaN, NOW, CFG)).toBe(NOW + 30 * MIN);
+  test("missing or invalid: a few hours on, not one slot", () => {
+    expect(clampNextCheck(null, NOW, CFG)).toBe(NOW + DEFAULT_SLEEP_MS);
+    expect(clampNextCheck(undefined, NOW, CFG)).toBe(NOW + DEFAULT_SLEEP_MS);
+    expect(clampNextCheck(NaN, NOW, CFG)).toBe(NOW + DEFAULT_SLEEP_MS);
   });
 });
 

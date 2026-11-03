@@ -17,7 +17,7 @@ import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extr
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
 import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
-import { proactiveReplyBlock } from "../../proactive/reply-context";
+import { proactiveReplyBlock, proactiveWorkBlock } from "../../proactive/reply-context";
 import type { PromiseTransport } from "../../proactive/promises";
 import type { ProactiveTransport } from "../../proactive/dispatch";
 import { proactiveFor } from "../../soul/proactive";
@@ -117,6 +117,7 @@ import { wakeGateConfig, type WakeRunOptions, type WakeTransport } from "../../p
 import { wakeRefusal } from "../../proactive/wake-guard";
 import { wakeStatusText } from "../../proactive/wake-status";
 import type { WakeToolDeps } from "../../proactive/wake-tools";
+import type { ActivityMessage } from "../../proactive/wake-activity";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
@@ -158,7 +159,7 @@ import * as OneOnOne from "../../db/one-on-one";
 import * as MentionOnly from "../../db/mention-only";
 import { CronScheduler } from "../slack/cron-scheduler";
 import { startCronLeader } from "./cron-leader";
-import { defaultSchedulerDeps, leaderElect, personaManager, startBackgroundScheduler, type SchedulerSlack } from "../../background/scheduler";
+import { defaultSchedulerDeps, leaderElect, personaManager, startBackgroundScheduler, wakeNow, type SchedulerSlack } from "../../background/scheduler";
 import { budgetConfigFor } from "../../background/config";
 import { cardPoster, registerProposalActions } from "../../background/proposal-cards";
 import { digestRecipientOf } from "../../background/digest";
@@ -991,6 +992,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }) });
     }
   };
+  // A wake reads Slack as itself, before its model call.
+  backgroundSlack.activity = (personaId, app) => {
+    const client = outClientForPersona(personaId === "default" ? undefined : personaId, app);
+    return {
+      history: async (channel, oldest, limit) => ((await client.conversations.history({ channel, oldest, limit })).messages ?? []) as ActivityMessage[],
+      replies: async (channel, ts, limit) => ((await client.conversations.replies({ channel, ts, limit })).messages ?? []) as ActivityMessage[],
+    };
+  };
   // A heartbeat wake: a fresh session of the agent itself, keyed on its own
   // synthetic thread, in the agent's proactive folder. Its only way to speak is
   // proactive_post. On a node the signed `wake` claim carries that rule.
@@ -1272,7 +1281,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       ? (livePersona(personaId)?.slackUserId ?? agentIdSync())
       : agentIdSync();
     return {
-      userId: ctx.userId ?? null,
+      // A wake's initiator is the agent itself, and the agent is not a person
+      // talking: it writes to its own mind like any background turn.
+      userId: ctx.userId && ctx.userId !== personaAgentId ? ctx.userId : null,
       teamId: ctx.teamId || null,
       // Mono: the route's origin (set by the Slack, panel and cron paths);
       // nodes: the signed `origin` claim. Unknown reads as not interactive.
@@ -1419,10 +1430,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // `<proactive-context>` for that reply's turn. Only threaded replies count,
   // so a top-level message (its own root) never gets one. Like the memory
   // block it reads only an already-open brain; any failure means no block.
-  const turnProactiveBlock = async (m: { channel: string; threadTs: string; eventTs: string; personaId?: string }): Promise<string> => {
-    if (m.threadTs === m.eventTs || !brainEnabled() || !brainReady()) return "";
+  const turnProactiveBlock = async (m: { channel: string; threadTs: string; eventTs: string; personaId?: string; firstTurn: boolean }): Promise<string> => {
+    if (!brainEnabled() || !brainReady()) return "";
     try {
-      const block = await proactiveReplyBlock({ channel: m.channel, threadTs: m.threadTs, personaId: m.personaId });
+      const persona = m.personaId ?? "default";
+      const reply = m.threadTs === m.eventTs ? "" : await proactiveReplyBlock({ channel: m.channel, threadTs: m.threadTs, personaId: m.personaId });
+      // Where the agent works on its own, a new thread starts knowing what it has been doing.
+      const work = m.firstTurn && proactiveFor(persona, m.channel).enabled ? await proactiveWorkBlock({ channel: m.channel, agentId: await backgroundAgentId(persona), call: brainCallIfOpen }) : "";
+      const block = [reply, work].filter(Boolean).join("\n\n");
       return block ? `${block}\n\n` : "";
     } catch (e) {
       console.warn(`[proactive-context] skipped: ${e instanceof Error ? e.name : typeof e}`);
@@ -2508,6 +2523,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         await reply(await wakeStatusText({ personaId: persona, agentId: await backgroundAgentId(persona), managerId, budget: budgetConfigFor(persona), call: brainCall, now: new Date() }));
         return;
       }
+      if (slash.kind === "heartbeat-now") {
+        const persona = dispatch?.personaId ?? "default";
+        const managerId = personaManager(persona);
+        if (!managerId || userId !== managerId) {
+          await reply(":no_entry: only this agent's manager can do this");
+          return;
+        }
+        const now = new Date();
+        const result = await wakeNow({ personaId: persona, personaIds: [persona], agentId: await backgroundAgentId(persona), slot: `now-${now.getTime()}`, now, timeZone: budgetConfigFor(persona).timeZone }, { call: brainCall, slack: backgroundSlack });
+        await reply(result === "woke" ? "On it." : `Did not start: ${result}.`);
+        return;
+      }
       if (slash.kind === "mode-help") {
         const modes = Object.entries(MODE_LABELS)
           .map(([k, v]) => `• \`${humanModeName(k as any)}\` — ${v}`)
@@ -3253,7 +3280,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       suppress
         ? ""
         : turnMemoryBlock({ channel: channelId, threadTs, userId, teamId, personaId: dispatch?.personaId, lockedUser: oneOnOneLock?.locked_user ?? null }),
-      suppress ? "" : turnProactiveBlock({ channel: channelId, threadTs, eventTs, personaId: dispatch?.personaId }),
+      suppress ? "" : turnProactiveBlock({ channel: channelId, threadTs, eventTs, personaId: dispatch?.personaId, firstTurn: !session.claude_started }),
     ]);
     if (env.metricsPerUser()) {
       metric.userTurnsTotal.inc({ user_id: userId, user_name: userName });

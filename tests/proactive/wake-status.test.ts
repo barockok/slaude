@@ -48,7 +48,7 @@ describe("/heartbeat status", () => {
     __setProactiveSoulSource(() => "## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: ask\n");
     const t = await status({ budget: { limitUsd: 1, timeZone: "UTC" } });
     expect(t).toContain("one shared budget");
-    expect(t).toContain("no enabled destination has Highest: act");
+    expect(t).toContain("every place it is on in has a Highest below act");
   });
 });
 
