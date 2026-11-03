@@ -1,6 +1,6 @@
 # Proactiveness that is simple to turn on and gets things done
 
-Date: 2026-11-03. Follows `2026-11-02-heartbeat-wake-design.md`. Status: in progress on `feat/proactive-simple`.
+Date: 2026-11-03. Follows `2026-11-02-heartbeat-wake-design.md`. Status: on `feat/proactive-simple`, live on one deployment as a patched rc.12.
 
 ## Goal
 

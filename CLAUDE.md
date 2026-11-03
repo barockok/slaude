@@ -105,6 +105,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/site/_content/field-notes/<date>-<slug>.md` and publish to the docs site. Add a new file per significant finding/decision/mistake; index it below as one line (date, a short title with the key detail, the link; the full write-up lives in the note). Newest first.
 
+- [2026-11-03 — Proactiveness: one switch; wakes see replies, save to memory and finish work; manager and mandates parsed without the soul cache](docs/site/_content/field-notes/2026-11-03-proactive-simple.md)
 - [2026-11-02 — Heartbeat wake: the agent itself wakes up, on the session runtime; round fixes (evidence dedupe, budget pools, notices)](docs/site/_content/field-notes/2026-11-02-heartbeat-wake.md)
 - [2026-11-01 — One Slack app per persona: the receiving app picks the persona (`slack_apps.persona_id` was stored but never read; DMs and mentions of a persona's app ran as default)](docs/site/_content/field-notes/2026-11-01-app-persona-routing.md)
 - [2026-10-28 — Heartbeat mandates and one proactive folder: triage sees each channel's mandate; proactive threads share a folder, one turn at a time (in-process claim, Redis lock on nodes)](docs/site/_content/field-notes/2026-10-28-heartbeat-mandates-and-workspace.md)
