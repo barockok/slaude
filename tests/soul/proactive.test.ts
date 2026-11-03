@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { inWindow, parseClock, parseProactive, proactiveFor, proactiveRead, wakeEligibility, __setProactiveSoulSource } from "../../src/soul/proactive";
+import { inWindow, parseClock, parseManager, parseProactive, proactiveFor, proactiveRead, wakeEligibility, __setProactiveSoulSource } from "../../src/soul/proactive";
 import { FIELD_ALIASES, mutateOverride } from "../../src/soul/overrides";
 import { EXTRACTION_PROMPT, SoulDataSchema } from "../../src/soul/data";
 
@@ -278,5 +278,14 @@ describe("Watch and Highest", () => {
     expect(proactiveFor("default", "C0OTHER0").highest).toBe("ask");
     expect(proactiveFor("default").highest).toBe("ask");
     expect(proactiveFor("default", "C0EXAMPLE").watch).toEqual(["mail"]);
+  });
+});
+
+describe("parseManager", () => {
+  it("reads the Reporting section only, in either form", () => {
+    expect(parseManager("## Reporting\n- Manager: U0MANAGER\n- Manager handle: @x\n")).toBe("U0MANAGER");
+    expect(parseManager("## Reporting\n- Manager: <@U0MANAGER|x>\n")).toBe("U0MANAGER");
+    expect(parseManager("## Other\n- Manager: U0MANAGER\n")).toBeNull();
+    expect(parseManager("## Reporting\n- Manager: someone\n")).toBeNull();
   });
 });

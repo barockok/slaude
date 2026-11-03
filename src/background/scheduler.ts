@@ -62,7 +62,7 @@ import type { ProactiveTransport } from "../proactive/dispatch";
 import { readPingPrefs } from "../proactive/prefs";
 import { runHeartbeat, tellManagerOnce } from "../proactive/heartbeat";
 import { runWake, type WakeDeps, type WakeResult, type WakeTransport } from "../proactive/wake";
-import { wakeEligibility } from "../soul/proactive";
+import { parseManager, wakeEligibility } from "../soul/proactive";
 import * as WakeState from "../db/heartbeat-wake-state";
 import type { BrainOpCall } from "../knowledge/memory-trail";
 import { bridgeExternalMcp } from "../gateway/core/external-mcp";
@@ -539,7 +539,8 @@ export async function wakeNow(
 export function personaManager(personaId: string): string | null {
   try {
     if (!personaId || personaId === "default") return soulData().manager.userId ?? null;
-    return cachedSoulData(personaSoulText(personaId))?.manager.userId ?? null;
+    const soul = personaSoulText(personaId);
+    return cachedSoulData(soul)?.manager.userId ?? parseManager(soul);
   } catch {
     return null;
   }

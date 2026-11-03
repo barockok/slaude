@@ -55,17 +55,25 @@ describe("recentActivity", () => {
     };
     expect(await run(r)).toContain("top level");
   });
-  test("looks back at most three days, and one day on a first wake", async () => {
+  test("always reads three days, so an old thread with a new reply is seen", async () => {
     let oldest = "";
-    const r = reader([]);
-    r.history = async (_c, o) => {
+    const root = { ts: ts(30 * H), user: "U0BOSS", text: "approved all", reply_count: 1, latest_reply: ts(H / 2) };
+    const r = reader([root], { [root.ts]: [root, { ts: ts(H / 2), user: "U0BOSS", text: "this" }] });
+    const history = r.history;
+    r.history = async (c, o, l) => {
       oldest = o;
-      return [];
+      return history(c, o, l);
     };
-    await run(r, [], NOW.getTime() - 30 * 24 * H);
+    const t = await run(r);
     expect(Number(oldest)).toBeCloseTo((NOW.getTime() - 72 * H) / 1000, 0);
-    await run(r, [], null);
-    expect(Number(oldest)).toBeCloseTo((NOW.getTime() - 24 * H) / 1000, 0);
+    expect(t).toContain("approved all");
+    expect(t).toContain("<@U0BOSS>: this");
+  });
+  test("a person's message from before the last wake stays, and is not marked new", async () => {
+    const t = await run(reader([{ ts: ts(10 * H), user: "U0BOSS", text: "go ahead" }]));
+    expect(t).toContain("go ahead");
+    expect(t).not.toContain("go ahead (new)");
+    expect(await run(reader([{ ts: ts(H), user: "U0BOSS", text: "go ahead" }]))).toContain("go ahead (new)");
   });
   test("stays bounded, and secrets are redacted", async () => {
     const many = Array.from({ length: 30 }, (_, i) => ({ ts: ts(H + i), user: "U0X", text: "x".repeat(2000) }));

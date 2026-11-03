@@ -58,7 +58,9 @@ export async function recentActivity(a: {
 }): Promise<string> {
   const now = a.now.getTime();
   const sinceMs = Math.max(a.lastWakeAt ?? now - FIRST_LOOKBACK_MS, now - MAX_LOOKBACK_MS);
-  const oldest = (sinceMs / 1000).toFixed(6);
+  // Always the whole window: a thread with a new reply can have an old root, and
+  // a person's message from before the last wake must survive stale notes.
+  const oldest = ((now - MAX_LOOKBACK_MS) / 1000).toFixed(6);
   const out: string[] = [];
   const ownPost = new Set(a.posts.map((p) => p.messageTs).filter(Boolean));
 
@@ -72,7 +74,9 @@ export async function recentActivity(a: {
     }
     // Slack returns newest first. Your own posts are listed below with their answers.
     const shown = messages.filter((m) => !ownPost.has(m.ts)).reverse();
-    const lines = shown.map((m) => line(m, a.agentId));
+    const isNew = (m: ActivityMessage): boolean => Number(m.ts) * 1000 >= sinceMs;
+    // Your own older top-level messages add nothing; a person's stay visible for the window.
+    const lines = shown.filter((m) => isNew(m) || m.user !== a.agentId).map((m) => `${line(m, a.agentId)}${isNew(m) ? " (new)" : ""}`);
     const active = messages
       .filter((m) => !ownPost.has(m.ts) && (m.reply_count ?? 0) > 0 && Number(m.latest_reply ?? 0) * 1000 >= sinceMs)
       .slice(0, MAX_THREADS);
@@ -84,7 +88,7 @@ export async function recentActivity(a: {
         // The top level still shows; a lost thread is not worth failing the rest.
       }
     }
-    out.push(`<#${channel}> since ${new Date(sinceMs).toISOString().slice(0, 16)}Z:`, ...(lines.length ? lines : ["- (nothing new)"]));
+    out.push(`<#${channel}>, last 3 days (you last looked ${new Date(sinceMs).toISOString().slice(0, 16)}Z):`, ...(lines.length ? lines : ["- (nothing new)"]));
   }
 
   const posts = a.posts.filter((p) => p.messageTs).slice(0, POSTS_SHOWN);

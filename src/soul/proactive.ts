@@ -273,6 +273,33 @@ export function proactiveRead(personaId: string): string[] {
   return c ? [...new Set([...c.read, ...proactiveChannels(personaId)])] : [];
 }
 
+/**
+ * The manager's user id from the SOUL's `## Reporting` section, parsed here so a
+ * persona's manager does not depend on the LLM extraction having run for this
+ * exact soul text (right after a soul edit its cache is empty). Null when absent.
+ */
+export function parseManager(text: string): string | null {
+  let inReporting = false;
+  let fenced = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
+    if (/^##?\s/.test(line)) {
+      inReporting = /^##\s+reporting\s*$/i.test(line.trim());
+      continue;
+    }
+    if (!inReporting) continue;
+    const kv = keyValue(line);
+    if (kv?.[0] !== "manager") continue;
+    const m = /^(?:<@)?([UW][A-Z0-9]+)(?:\|[^>]*)?>?$/.exec(kv[1]);
+    return m ? m[1]! : null;
+  }
+  return null;
+}
+
 export type WakeEligibility = { ok: true } | { ok: false; reason: "no-manager" | "no-act-destination" | null };
 
 /**
