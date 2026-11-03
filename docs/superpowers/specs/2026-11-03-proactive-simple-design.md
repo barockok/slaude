@@ -10,7 +10,7 @@ Writing `Enabled: yes` in a place in a SOUL is all it takes for an agent to work
 
 | Finding | Evidence | Cause |
 |---|---|---|
-| Wakes could not see answers | An agent's notes at 14:01Z: "zero approvals"; the approval was posted at 13:25Z | A wake is a fresh session and nothing read Slack |
+| Wakes could not see answers | An agent's notes at 14:01Z: "zero approvals"; the approval was posted at 10:45Z | A wake is a fresh session and nothing read Slack |
 | Wakes could not save anything | `kb operation "put_page" is not allowed from this channel`; the agent then wrote "no write tool available" into its notes | The wake's initiator is the agent's own id, so the gate read it as a person in a public channel |
 | Nothing was made | 11 posts in 3 days, all concepts or status; approved work had no assets | Prompt and checklist reward proposing, and nothing defines a finished wake |
 | Threads started from nothing | An agent, mentioned about its own approved concepts: "No assets found, no prior context" | Only replies under a post get context, and notes belong to wakes |

@@ -363,7 +363,7 @@ export const slackHandlers = {
   ): Promise<ToolResult> {
     try {
       if (ctx.wake) {
-        const refused = await wakeThreadRefusal(ctx.wake, channel, thread_ts, ctx.personaId ?? "default");
+        const refused = await wakeThreadRefusal(ctx.wake, ctx.client, channel, thread_ts, ctx.personaId ?? "default");
         if (refused) return err(refused);
       }
       const replyOpts = thread_ts ? (broadcast ? { thread_ts, reply_broadcast: true as const } : { thread_ts }) : {};

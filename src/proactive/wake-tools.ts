@@ -155,12 +155,40 @@ export async function proactivePostTool(c: WakeToolContext, a: ProactivePostTool
   return ok({ posted: true, channel: sent.post?.channelId ?? recipient, ts: sent.post?.messageTs ?? null, maxPosts: HEARTBEAT_MAX_POSTS });
 }
 
-/** Whether a wake may post in this thread: only under a post this agent made, so a reminder lands in the question's own thread. Null: it may. */
-export async function wakeThreadRefusal(wake: WakeTurn, channel: string, threadTs: string | undefined, personaId = "default"): Promise<string | null> {
+/** Messages in a row an agent may leave in a thread with nobody answering: its post and one follow-up. */
+const MAX_UNANSWERED = 2;
+
+/** How many of the thread's last messages in a row are this agent's. */
+async function unansweredRun(client: WebClient, channel: string, threadTs: string, agentId: string): Promise<number> {
+  const users: unknown[] = [];
+  let cursor: string | undefined;
+  do {
+    const r = await client.conversations.replies({ channel, ts: threadTs, limit: 200, ...(cursor ? { cursor } : {}) });
+    for (const m of r.messages ?? []) users.push(m.user);
+    cursor = r.response_metadata?.next_cursor || undefined;
+  } while (cursor);
+  let run = 0;
+  while (run < users.length && users[users.length - 1 - run] === agentId) run++;
+  return run;
+}
+
+/**
+ * Whether a wake may post in this thread. Null: it may. Only under a post this agent
+ * made, and only while it has not already said two things in a row there: this tool
+ * has no cooldown or daily limit, so this rule is what bounds it (one follow-up a post).
+ */
+export async function wakeThreadRefusal(wake: WakeTurn, client: WebClient, channel: string, threadTs: string | undefined, personaId = "default"): Promise<string | null> {
   const refused = "refused: when you woke on your own, post_message works only in the thread of a post you made. To start something new, use proactive_post.";
   if (!threadTs) return refused;
   const post = await Posts.findByMessage(channel, threadTs);
-  return post && post.agentId === (await wake.deps.agentId(personaId)) ? null : refused;
+  const agentId = await wake.deps.agentId(personaId);
+  if (!post || post.agentId !== agentId) return refused;
+  try {
+    if ((await unansweredRun(client, channel, threadTs, agentId)) < MAX_UNANSWERED) return null;
+  } catch (e) {
+    return `refused: could not read that thread to see whether anyone answered (${e instanceof Error ? e.message : String(e)}). Keep the item in your notes and look again next time.`;
+  }
+  return "refused: nobody has answered your last two messages in this thread, and another one will not help. Keep it in your notes and work on what does not depend on it. Newly finished work someone must see can go in a proactive_post.";
 }
 
 const READ_CHANNEL_LIMIT = 50;

@@ -10,7 +10,7 @@ date: 2026-11-03
 
 ## What was wrong
 
-Measured on live agents over three days: 11 posts, all concepts or status. No asset existed when the manager approved, and an agent wrote "zero approvals" 36 minutes after one.
+Measured on live agents over three days: 11 posts, all concepts or status. No asset existed when the manager approved, and an agent wrote "zero approvals" over three hours after one.
 
 - A wake could not see replies: a fresh session, and nothing read Slack.
 - A wake could not save: its initiator is the agent's own id, so the KB gate read it as a person in a public channel. The agent then wrote "no write tool" into its notes and believed it.

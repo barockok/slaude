@@ -140,16 +140,53 @@ describe("proactive_post", () => {
 });
 
 describe("post_message in a wake", () => {
-  test("only under a post this run opened", async () => {
+  const thread = (...users: string[]) => ({
+    conversations: { replies: async () => ({ messages: users.map((user, i) => ({ user, ts: `1.${i}` })) }) },
+  }) as never;
+
+  test("only under a post this agent made", async () => {
     const h = harness();
     const r = parsed(await proactivePostTool(h.ctx, post()));
-    expect(await wakeThreadRefusal(h.ctx.wake!, "C0ONCHANNE", r.ts)).toBeNull();
-    expect(await wakeThreadRefusal(h.ctx.wake!, "C0ONCHANNE", undefined)).toContain("refused");
-    expect(await wakeThreadRefusal(h.ctx.wake!, "C0ONCHANNE", "9.9")).toContain("refused");
-    // A later wake may remind in the thread of an earlier post of this agent's.
-    expect(await wakeThreadRefusal({ ...h.ctx.wake!, runId: "other" }, "C0ONCHANNE", r.ts)).toBeNull();
+    const quiet = thread(AGENT);
+    expect(await wakeThreadRefusal(h.ctx.wake!, quiet, "C0ONCHANNE", r.ts)).toBeNull();
+    expect(await wakeThreadRefusal(h.ctx.wake!, quiet, "C0ONCHANNE", undefined)).toContain("refused");
+    expect(await wakeThreadRefusal(h.ctx.wake!, quiet, "C0ONCHANNE", "9.9")).toContain("refused");
+    // A later wake may follow up in the thread of an earlier post of this agent's.
+    expect(await wakeThreadRefusal({ ...h.ctx.wake!, runId: "other" }, quiet, "C0ONCHANNE", r.ts)).toBeNull();
     const other = { ...h.ctx.wake!, deps: { ...h.ctx.wake!.deps, agentId: async () => "U0SOMEONEELSE" } };
-    expect(await wakeThreadRefusal(other, "C0ONCHANNE", r.ts)).toContain("refused");
+    expect(await wakeThreadRefusal(other, quiet, "C0ONCHANNE", r.ts)).toContain("refused");
+  });
+
+  test("one follow-up until someone answers", async () => {
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    const w = h.ctx.wake!;
+    // The post and one follow-up with no answer: the third message is refused, at any later time.
+    expect(await wakeThreadRefusal(w, thread(AGENT, AGENT), "C0ONCHANNE", r.ts)).toContain("nobody has answered");
+    // An answer opens it again, so approved work can be delivered in its thread.
+    expect(await wakeThreadRefusal(w, thread(AGENT, AGENT, MGR), "C0ONCHANNE", r.ts)).toBeNull();
+    expect(await wakeThreadRefusal(w, thread(AGENT, AGENT, MGR, AGENT), "C0ONCHANNE", r.ts)).toBeNull();
+    expect(await wakeThreadRefusal(w, thread(AGENT, AGENT, MGR, AGENT, AGENT), "C0ONCHANNE", r.ts)).toContain("nobody has answered");
+  });
+
+  test("reads every page of a long thread", async () => {
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    const pages: Record<string, unknown> = {
+      first: { messages: [{ user: AGENT }, { user: MGR }], response_metadata: { next_cursor: "next" } },
+      next: { messages: [{ user: AGENT }, { user: AGENT }], response_metadata: { next_cursor: "" } },
+    };
+    const client = { conversations: { replies: async (a: { cursor?: string }) => pages[a.cursor ?? "first"] } } as never;
+    expect(await wakeThreadRefusal(h.ctx.wake!, client, "C0ONCHANNE", r.ts)).toContain("nobody has answered");
+  });
+
+  test("a thread it cannot read is refused, and says why", async () => {
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    const client = { conversations: { replies: async () => { throw new Error("ratelimited"); } } } as never;
+    const refused = await wakeThreadRefusal(h.ctx.wake!, client, "C0ONCHANNE", r.ts);
+    expect(refused).toContain("refused");
+    expect(refused).toContain("ratelimited");
   });
 });
 
