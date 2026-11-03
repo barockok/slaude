@@ -62,7 +62,7 @@ import type { ProactiveTransport } from "../proactive/dispatch";
 import { readPingPrefs } from "../proactive/prefs";
 import { runHeartbeat, tellManagerOnce } from "../proactive/heartbeat";
 import { runWake, type WakeDeps, type WakeResult, type WakeTransport } from "../proactive/wake";
-import { parseManager, wakeEligibility } from "../soul/proactive";
+import { parseManager, parseMandates, wakeEligibility } from "../soul/proactive";
 import * as WakeState from "../db/heartbeat-wake-state";
 import type { BrainOpCall } from "../knowledge/memory-trail";
 import { bridgeExternalMcp } from "../gateway/core/external-mcp";
@@ -556,8 +556,13 @@ export interface PersonaMandates {
 /** A persona's global mandate and each listed channel's own (null: it follows the global one). Never throws. */
 export function personaMandates(personaId: string, channelIds: readonly string[]): PersonaMandates {
   try {
-    const soul = !personaId || personaId === "default" ? soulData() : cachedSoulData(personaSoulText(personaId));
-    if (!soul) return { global: "", channels: {} };
+    const named = personaId && personaId !== "default" ? personaSoulText(personaId) : null;
+    const soul = named === null ? soulData() : cachedSoulData(named);
+    if (!soul) {
+      // Right after a soul edit nothing has extracted it yet: the job must not vanish with the cache.
+      const parsed = parseMandates(named ?? "");
+      return { global: parsed.global, channels: Object.fromEntries(channelIds.map((c) => [c, parsed.channels[c] ?? null])) };
+    }
     const channels: Record<string, string | null> = {};
     for (const c of channelIds) channels[c] = channelMandate(soul, c);
     return { global: soul.mandate ?? "", ...(soul.identity?.voice ? { voice: soul.identity.voice } : {}), channels };

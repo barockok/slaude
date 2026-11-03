@@ -300,6 +300,41 @@ export function parseManager(text: string): string | null {
   return null;
 }
 
+/**
+ * A persona's mandates from the SOUL text: `## Mandate`, and `### Mandate` per
+ * channel. For when the LLM extraction has not run for this exact soul text.
+ */
+export function parseMandates(text: string): { global: string; channels: Record<string, string> } {
+  const out: { global: string[]; channels: Record<string, string[]> } = { global: [], channels: {} };
+  let target: string[] | null = null;
+  let channel: string | null = null;
+  let fenced = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*(```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
+    if (/^##\s/.test(line)) {
+      channel = /^##\s+channel\b/i.test(line) ? channelOf(line) : null;
+      target = /^##\s+mandate\s*$/i.test(line.trim()) ? out.global : null;
+      continue;
+    }
+    if (/^#\s/.test(line)) {
+      channel = null;
+      target = null;
+      continue;
+    }
+    if (/^###\s/.test(line)) {
+      target = channel && /^###\s+mandate\s*$/i.test(line.trim()) ? (out.channels[channel] ??= []) : null;
+      continue;
+    }
+    const body = line.trim().replace(/^[-*]\s+/, "");
+    if (target && body) target.push(body);
+  }
+  return { global: out.global.join(" "), channels: Object.fromEntries(Object.entries(out.channels).map(([c, v]) => [c, v.join(" ")])) };
+}
+
 export type WakeEligibility = { ok: true } | { ok: false; reason: "no-manager" | "no-act-destination" | null };
 
 /**

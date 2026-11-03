@@ -19,7 +19,7 @@ import type { AppRef } from "../gateway/core/transport";
 import type { BrainOpCall } from "../knowledge/memory-trail";
 import { m as metric } from "../metrics";
 import { personaDefaultModel } from "../persona/registry";
-import { proactiveChannels, proactiveFor } from "../soul/proactive";
+import { proactiveChannels, proactiveFor, proactiveRead } from "../soul/proactive";
 import { agentPageBody, heartbeatChecklist, line, OUT_OF_BUDGET_TEXT, recentPostLines, tellManagerOnce } from "./heartbeat";
 import { loadRules } from "./rules";
 import { wakeDue, type WakeGateConfig } from "./wake-gate";
@@ -75,7 +75,7 @@ async function activityBlock(r: AgentGroup & { now: Date }, channels: readonly s
   if (!deps.activity) return "(not available)";
   try {
     const posts = await Posts.recentByAgent(r.agentId, r.now.getTime() - 7 * 86_400_000, 30);
-    return await recentActivity({ reader: deps.activity(r.personaId, app), channels, posts, agentId: r.agentId, lastWakeAt, now: r.now });
+    return await recentActivity({ reader: deps.activity(r.personaId, app), channels: [...new Set([...channels, ...proactiveRead(r.personaId)])], posts, agentId: r.agentId, lastWakeAt, now: r.now });
   } catch (e) {
     console.warn(`[background] agent=${r.agentId} pass=heartbeat-wake: could not read activity: ${e instanceof Error ? e.message : String(e)}`);
     return "(could not be read this time; say so rather than assume nothing happened)";

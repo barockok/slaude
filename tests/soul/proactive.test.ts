@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { inWindow, parseClock, parseManager, parseProactive, proactiveFor, proactiveRead, wakeEligibility, __setProactiveSoulSource } from "../../src/soul/proactive";
+import { inWindow, parseClock, parseManager, parseMandates, parseProactive, proactiveFor, proactiveRead, wakeEligibility, __setProactiveSoulSource } from "../../src/soul/proactive";
 import { FIELD_ALIASES, mutateOverride } from "../../src/soul/overrides";
 import { EXTRACTION_PROMPT, SoulDataSchema } from "../../src/soul/data";
 
@@ -287,5 +287,15 @@ describe("parseManager", () => {
     expect(parseManager("## Reporting\n- Manager: <@U0MANAGER|x>\n")).toBe("U0MANAGER");
     expect(parseManager("## Other\n- Manager: U0MANAGER\n")).toBeNull();
     expect(parseManager("## Reporting\n- Manager: someone\n")).toBeNull();
+  });
+});
+
+describe("parseMandates", () => {
+  const soul = "## Mandate\n- Help.\n- Draft first.\n\n## Proactive\n- Enabled: no\n\n## Channel <#C0HOMECHAN|home>\n\n### Mandate\n- Do the job.\n- Ask first: pay.\n\n### Proactive\n- Enabled: yes\n\n## Channel C0OTHERCHAN\n### Proactive\n- Enabled: yes\n";
+  it("reads the global one and each channel's, and nothing from Proactive", () => {
+    expect(parseMandates(soul)).toEqual({ global: "Help. Draft first.", channels: { C0HOMECHAN: "Do the job. Ask first: pay." } });
+  });
+  it("empty soul: nothing", () => {
+    expect(parseMandates("")).toEqual({ global: "", channels: {} });
   });
 });
