@@ -1331,18 +1331,16 @@ describe("AgentManager on a node: provider credentials from the child-env resolv
 });
 
 describe("AgentManager reload: overlapping inputs and a CLI that never exits", () => {
-  it("a reload requested while an auto-evolve turn AND a queued user message are pending waits for BOTH results", async () => {
+  it("a reload requested during an auto-evolve turn with a user message waiting: the reload runs, and the message boots fresh", async () => {
     process.env.SLAUDE_AUTO_EVOLVE = "1";
     const mgr = new AgentManager();
     const events = record(mgr);
     const row = await mgr.ensureSession(thread());
     let finishEvolve: () => void = () => {};
-    let finishB: () => void = () => {};
     const fs = plan((s) => {
       s.onUser = (um) => {
         const text = String(um.message.content);
         if (text.includes("<auto-evolve>")) finishEvolve = () => s.emit(res());
-        else if (text === "B") finishB = () => s.emit(res());
         else {
           s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), txt("did the work")]));
           s.emit(res());
@@ -1351,22 +1349,30 @@ describe("AgentManager reload: overlapping inputs and a CLI that never exits", (
     });
     await mgr.sendMessage(row.id, "A");
     // A is done and the auto-evolve prompt is in flight; the node would now
-    // release the lock, and the next job pushes B into the same session.
+    // release the lock, and the next job sends B. B must not enter that turn:
+    // the CLI folds it in, and B's own turn would never end.
     await until(() => fs.users.length === 2, 3000, "auto-evolve injected");
-    await mgr.sendMessage(row.id, "B");
-    await until(() => fs.users.length === 3, 3000, "B delivered");
+    let freshGotB = false;
+    const fresh = plan((s) => {
+      s.onUser = (um) => {
+        if (String(um.message.content) === "B") {
+          freshGotB = true;
+          s.emit(res());
+        }
+      };
+    });
+    const sent = mgr.sendMessage(row.id, "B");
+    await Bun.sleep(30);
+    expect(fs.users.length).toBe(2);
 
     expect(mgr.reloadAfterTurn(row.id)).toBe(true);
     finishEvolve();
-    await until(() => events.some((e) => e.type === "done" && e.autoEvolve), 3000, "evolve done");
-    await Bun.sleep(30);
-    // B is still in flight: input must stay open.
-    expect(fs.ended).toBe(false);
-    expect(mgr.isLive(row.id)).toBe(true);
-
-    finishB();
-    await until(() => !mgr.isLive(row.id), 3000, "reload after both results");
+    await until(() => freshGotB, 3000, "B in a fresh session");
+    await sent;
     expect(fs.ended).toBe(true);
+    expect(fs.users.some((u) => String(u.message.content) === "B")).toBe(false);
+    expect(fresh.users.some((u) => String(u.message.content) === "B")).toBe(true);
+    expect(events.some((e) => e.type === "done" && e.autoEvolve)).toBe(true);
     expect(events.filter((e) => e.type === "error")).toHaveLength(0);
   });
 

@@ -321,6 +321,93 @@ describe("budgeted skill check", () => {
     await shutdown(mgr, row.id);
   });
 
+  // The CLI folds an input that arrives during a running turn into that turn, so
+  // one result would answer both, flagged as the check's: the node's turn never
+  // ended and the thread sat until the 15-minute turn timeout.
+  describe("a message sent during the check turn", () => {
+    /** A qualifying "first" turn, then a check turn left open for the test to end. */
+    const openCheck = () => {
+      const seen = { check: 0, second: 0 };
+      const fs = plan((s, text) => {
+        if (isCheck(text)) return void seen.check++;
+        if (text.includes("second")) return void seen.second++;
+        s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch")]));
+        s.emit(res({ usage: usage(1000, 100), modelUsage: modelUsage(1000, 100) }));
+      });
+      return { fs, seen };
+    };
+    const pushed = (fs: FakeSession, needle: string) => fs.users.some((u) => String(u.message.content).includes(needle));
+
+    for (const budgeted of [true, false]) {
+      it(`waits for the check's result, then gets its own turn and its own done (${budgeted ? "budgeted" : "unbudgeted"})`, async () => {
+        const mgr = new AgentManager();
+        if (budgeted) mgr.setBackgroundBudget(fakeBudget(async () => ({ ok: true, runId: "run-wait" })).budget);
+        const dones: { autoEvolve?: boolean }[] = [];
+        mgr.on("event", (e: any) => {
+          if (e.type === "done") dones.push(e);
+        });
+        const row = await mgr.ensureSession(thread());
+        const { fs, seen } = openCheck();
+        await mgr.sendMessage(row.id, "first");
+        await until(() => seen.check === 1, 3000, "check turn");
+
+        const sent = mgr.sendMessage(row.id, "second");
+        await Bun.sleep(30);
+        expect(pushed(fs, "second")).toBe(false);
+
+        fs.emit(res());
+        await until(() => seen.second === 1, 3000, "second turn");
+        await sent;
+        fs.emit(res());
+        await until(() => dones.length === 3, 3000, "three dones");
+        expect(dones.map((d) => d.autoEvolve === true)).toEqual([false, true, false]);
+        await shutdown(mgr, row.id);
+      });
+    }
+
+    it("is released by a check that errors", async () => {
+      const mgr = new AgentManager();
+      mgr.setBackgroundBudget(fakeBudget(async () => ({ ok: true, runId: "run-err" })).budget);
+      const row = await mgr.ensureSession(thread());
+      const { fs, seen } = openCheck();
+      await mgr.sendMessage(row.id, "first");
+      await until(() => seen.check === 1, 3000, "check turn");
+      const sent = mgr.sendMessage(row.id, "second");
+      await Bun.sleep(30);
+      expect(pushed(fs, "second")).toBe(false);
+      fs.emit(res({ subtype: "error_during_execution", is_error: true }));
+      await until(() => seen.second === 1, 3000, "second turn");
+      await sent;
+      fs.emit(res());
+      await shutdown(mgr, row.id);
+    });
+
+    it("is released by an abort: it boots a fresh session instead of hanging", async () => {
+      logSpy = spyOn(console, "log").mockImplementation(() => {});
+      const mgr = new AgentManager();
+      mgr.setBackgroundBudget(fakeBudget(async () => ({ ok: true, runId: "run-abort" })).budget);
+      const row = await mgr.ensureSession(thread());
+      const { fs, seen } = openCheck();
+      let fresh = 0;
+      const next = plan((s, text) => {
+        if (text.includes("second")) {
+          fresh++;
+          s.emit(res());
+        }
+      });
+      await mgr.sendMessage(row.id, "first");
+      await until(() => seen.check === 1, 3000, "check turn");
+      const sent = mgr.sendMessage(row.id, "second");
+      await Bun.sleep(30);
+      mgr.abort(row.id);
+      await until(() => fresh === 1, 3000, "second turn in a fresh session");
+      await sent;
+      expect(pushed(fs, "second")).toBe(false);
+      expect(pushed(next, "second")).toBe(true);
+      await shutdown(mgr, row.id);
+    });
+  });
+
   it("a later user turn that finished while the run started: the stale check is never pushed", async () => {
     logSpy = spyOn(console, "log").mockImplementation(() => {});
     const mgr = new AgentManager();

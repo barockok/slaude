@@ -103,6 +103,11 @@ type LiveSession = {
   /** Set after we inject an auto-evolve synthetic prompt — the next result
    *  is the evolution turn itself; don't recurse into another auto-evolve. */
   inAutoEvolve: boolean;
+  /** Set while a check turn is in flight, settled by its result. The CLI folds an
+   *  input that arrives during a running turn into that turn, so one result would
+   *  answer both, flagged as the check's, and the input's own turn would never
+   *  end. Inputs wait on this, or on the session's exit, before going in. */
+  checkEnded?: { promise: Promise<void>; resolve: () => void };
   /** The budgeted skill-check run of the check turn in flight (set with
    *  inAutoEvolve when a budget is installed), ended exactly once: by the
    *  turn's result, or by the session's teardown when no result came. */
@@ -919,6 +924,13 @@ export class AgentManager extends EventEmitter {
           break;
         }
         live = this.#live.get(sessionId);
+      }
+      // Never into a running check turn (LiveSession.checkEnded). Unbounded here
+      // like the check itself: the node's turn timeout aborts a check that never
+      // ends, and its exit releases this wait. Read the session again after.
+      if (live?.checkEnded) {
+        await Promise.race([live.checkEnded.promise, live.exited]);
+        continue;
       }
       // Held already (re-entrant): go on with the instance just read. Otherwise
       // wait for the folder (an old instance's exit may have freed it) and read
@@ -1813,6 +1825,10 @@ export class AgentManager extends EventEmitter {
       }
       case "result": {
         if (live) {
+          // Settled first so no branch below can miss it; a waiting input resumes
+          // only after this handler returns, and reads the session again then.
+          live.checkEnded?.resolve();
+          live.checkEnded = undefined;
           // The input this result ends: the oldest outstanding one.
           const endedSeq = live.inputSeq - live.pendingInputs + 1;
           const bgRun = live.bgRuns?.get(endedSeq);
@@ -1952,8 +1968,7 @@ export class AgentManager extends EventEmitter {
             live.turnTools = [];
             const budget = this.#backgroundBudget;
             if (!budget) {
-              live.inAutoEvolve = true;
-              live.pushUser(AUTO_EVOLVE_PROMPT, true);
+              this.#pushCheck(live);
             } else if (live.pendingInputs === 0) {
               void this.#startBudgetedCheck(sessionId, live, budget, live.inputSeq);
             } else {
@@ -2029,6 +2044,14 @@ export class AgentManager extends EventEmitter {
       void this.#claims.acquire(live.workingDir!, sessionId);
     }
     live.evolveRun = run;
+    this.#pushCheck(live);
+  }
+
+  /** Start the check turn. Later inputs wait for its result (LiveSession.checkEnded). */
+  #pushCheck(live: LiveSession): void {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    live.checkEnded = { promise, resolve };
     live.inAutoEvolve = true;
     live.pushUser(AUTO_EVOLVE_PROMPT, true);
   }
