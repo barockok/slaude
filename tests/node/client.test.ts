@@ -1,5 +1,5 @@
 /**
- * NodeClient: bearer/job headers, retry policy (5xx/network yes, 4xx never),
+ * NodeClient: bearer/job headers, retry policy (5xx/network yes, 4xx never, tool calls never),
  * ETag runtime cache, tool-plane 404 folding. Runs against a local Bun.serve
  * stub — no gateway, no Redis.
  */
@@ -257,5 +257,54 @@ describe("postMcpx retry policy", () => {
     tries = 0;
     await expect(client(down).postMcpx("crm", "list", {}, "job")).rejects.toThrow("connection refused");
     expect(tries).toBe(3);
+  });
+});
+
+/**
+ * A tool call can sit behind an approval card for minutes, and the gateway may
+ * already have acted on it. A resend posts a second card and loses the answer
+ * to the first, so a call is sent once and waits for the gate's own answer.
+ */
+describe("postTool sends a call once and waits for its answer", () => {
+  const recording = (impl: () => Promise<Response>) => {
+    const inits: RequestInit[] = [];
+    const f = (async (_url: string, init: RequestInit) => {
+      inits.push(init);
+      return impl();
+    }) as unknown as typeof fetch;
+    return { inits, client: new NodeClient({ baseUrl: "http://gw.invalid", token: "t", attempts: 3, baseDelayMs: 1, fetchImpl: f }) };
+  };
+
+  test("a network error is not resent", async () => {
+    const { inits, client } = recording(async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+    await expect(client.postTool("kb", "kb_memoize", { pages: [] }, "job")).rejects.toThrow("timed out");
+    expect(inits.length).toBe(1);
+  });
+
+  test("a 5xx is not resent", async () => {
+    const { inits, client } = recording(async () => new Response("bad gateway", { status: 502 }));
+    await expect(client.postTool("kb", "kb_memoize", { pages: [] }, "job")).rejects.toBeInstanceOf(NodeApiError);
+    expect(inits.length).toBe(1);
+  });
+
+  test("the runtime's fetch limit is off, so an approval wait is not cut at 300 s", async () => {
+    const { inits, client } = recording(async () => Response.json({ content: [{ type: "text", text: "ok" }] }));
+    await client.postTool("kb", "kb_memoize", { pages: [] }, "job");
+    expect((inits[0] as { timeout?: unknown }).timeout).toBe(false);
+  });
+
+  test("the turn's abort reaches the request", async () => {
+    const { inits, client } = recording(async () => Response.json({ content: [{ type: "text", text: "ok" }] }));
+    const ac = new AbortController();
+    await client.postTool("kb", "kb_memoize", { pages: [] }, "job", ac.signal);
+    expect(inits[0]!.signal).toBe(ac.signal);
+  });
+
+  test("other requests keep the default limit", async () => {
+    const { inits, client } = recording(async () => Response.json({ ok: true }));
+    await client.request("/v1/x");
+    expect("timeout" in inits[0]!).toBe(false);
   });
 });

@@ -224,7 +224,7 @@ export class NodeClient {
   /** Low-level request with bearer + optional job token + retry policy. */
   async request(
     path: string,
-    o: { method?: string; body?: unknown; jobToken?: string; headers?: Record<string, string>; retry?: boolean; signal?: AbortSignal } = {},
+    o: { method?: string; body?: unknown; jobToken?: string; headers?: Record<string, string>; retry?: boolean; signal?: AbortSignal; noTimeout?: boolean } = {},
   ): Promise<Response> {
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.#token}`,
@@ -242,6 +242,8 @@ export class NodeClient {
           headers,
           ...(o.body !== undefined ? { body: JSON.stringify(o.body) } : {}),
           ...(o.signal ? { signal: o.signal } : {}),
+          // Bun's own fetch limit (300 s), not part of RequestInit's type.
+          ...(o.noTimeout ? ({ timeout: false } as RequestInit) : {}),
         });
         // 5xx: transient server trouble — retry. Everything else returns.
         if (res.status >= 500 && retry && attempt < this.#attempts - 1) {
@@ -397,9 +399,21 @@ export class NodeClient {
    * (unknown tool / not mounted on this deployment) is folded into an
    * MCP-shaped isError result so shim handlers can hand it to the model
    * as-is; other non-200s throw.
+   *
+   * Sent once, with no time limit but the turn's own abort: a call can wait
+   * minutes behind an approval card, whose expiry answers it. A resend would
+   * post a second card and lose the answer to the first, and the gateway may
+   * already have acted on the call.
    */
-  async postTool(server: string, tool: string, body: unknown, jobToken: string): Promise<ToolResult> {
-    const res = await this.request(`/v1/tools/${server}/${tool}`, { method: "POST", body, jobToken });
+  async postTool(server: string, tool: string, body: unknown, jobToken: string, signal?: AbortSignal): Promise<ToolResult> {
+    const res = await this.request(`/v1/tools/${server}/${tool}`, {
+      method: "POST",
+      body,
+      jobToken,
+      retry: false,
+      noTimeout: true,
+      ...(signal ? { signal } : {}),
+    });
     if (res.status === 404) {
       const text = await res.text().catch(() => "");
       return { content: [{ type: "text", text: `tool unavailable: ${text.slice(0, 200)}` }], isError: true };

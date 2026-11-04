@@ -298,3 +298,17 @@ describe("voice turn suppression", () => {
     expect(posted).toEqual(["surface/reply"]);
   });
 });
+
+describe("a tool call and the turn's abort", () => {
+  const registered = (servers: any, name: string) => servers[name].instance._registeredTools;
+
+  test("the call carries the turn's abort signal", async () => {
+    const signals: unknown[] = [];
+    const client = { postTool: async (_s: string, _n: string, _a: any, _t: string, signal?: AbortSignal) => { signals.push(signal); return { content: [{ type: "text", text: "ok" }] }; } } as any;
+    const ac = new AbortController();
+    const servers = buildShimServers("s1", { client, tokenFor: () => "tok", signalFor: (id) => (id === "s1" ? ac.signal : undefined) });
+    await registered(servers, "slaude_surface")["get_history"].handler({});
+    expect(signals).toEqual([ac.signal]);
+  });
+});
+
