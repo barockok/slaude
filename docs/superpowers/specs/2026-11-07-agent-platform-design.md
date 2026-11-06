@@ -1,6 +1,7 @@
 # Agent platform: identity, mandates, access, audit, memory, console
 
-Date: 2026-11-07. Status: reviewed (verdict: agree with changes; changes folded in, see "Review changes").
+Date: 2026-11-07. Status: approved by architecture review (second pass: agree; field-level
+fallback folded in).
 
 ## Why
 
@@ -105,9 +106,11 @@ Named personas have no structured soul at runtime today: `soulData()` and
 - managed tenants (Postgres): parse `personas.soul_json` (already extracted at sync,
   `persona/sync/run.ts`);
 - filesystem personas and sqlite: none in phase 1 (LLM extraction per persona is deferred).
-- Fallback: when P has no structured soul, P's soul-derived grants are the **default persona's**,
-  which is exactly today's behaviour. This is the only place a named persona consults the
-  default soul.
+- Fallback is **field-level**: for each of manager, backup manager, trusted channels, allowed
+  channels, DM allowlist, blocked users and approvers, P uses its own value when non-empty and
+  the default persona's value otherwise (also when P has no structured soul at all). Invariant:
+  **with no stored grants, a named persona admits exactly what it admits today.** The truth table
+  pins the case of a named persona whose `soul_json` carries only identity and mandate.
 - `/soul trust|allow|dm|block` keeps writing `soul_overrides` (no persona column) and applies
   only to the default persona's soul, before grant derivation. Named personas are tuned with
   stored grants. No schema change to `soul_overrides`.
@@ -136,7 +139,7 @@ over the effective grants):
    does not admit.
 4. C is not a DM: admit when C has a channel grant on P, or U holds a **stored** `member` grant on
    P without `dm_only`, or a workspace grant exists on P.
-5. Otherwise drop (`not_granted`, metric label stays `whitelist` for dashboards that exist).
+5. Otherwise drop with reason `whitelist` (the existing metric label, so dashboards keep working).
 
 With no stored grants this is exactly today's `channelModeAdmits` plus blocklist, which the
 admission truth-table tests pin. Stored grants only widen (member, workspace) or narrow (deny).
@@ -161,7 +164,10 @@ a DB blip.
 approvers only). It replaces the role checks in: the `/1on1` lock manager check, the admin slash
 command checks (which today use the global soul's approvers, not channel-effective ones), the
 `/soul` and `/heartbeat` manager checks, and approval-gate `#resolveApprovers` for named personas.
-For the approval gate, `roleOf` precedes the existing fallbacks (legacy category map,
+For named personas `roleOf` returns approver without the default persona's scope keyword
+matching (`selectApproversFrom`), so a named persona's scoped approvers are eligible for every
+category in phase 1; the default persona keeps scope matching. For the approval gate, `roleOf`
+precedes the existing fallbacks (legacy category map,
 `SLAUDE_APPROVERS`, then "anyone" when no approver is configured), which stay unchanged.
 
 ### Tool permission cards: who may click
