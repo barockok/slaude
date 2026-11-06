@@ -11,6 +11,9 @@ import { matchAudioOrigin, type AudioPolicy } from "../../voice/audio-acl";
 import { audioPolicyFromEnv } from "../../voice/config";
 import { redactTree } from "../../redact";
 import { auditGateRow } from "../../audit/emit";
+import * as OneOnOne from "../../db/one-on-one";
+import { canDecidePermission } from "../../access/permission-auth";
+import type { TurnOrigin } from "../../knowledge/gated-dispatch";
 
 type PendingKey = string; // toolUseID
 
@@ -28,7 +31,33 @@ type Pending = {
   resolve: (r: Awaited<ReturnType<CanUseTool>>) => void;
   /** gate-bus unsubscribe, when a bus is configured. */
   unsub?: () => Promise<void>;
+  /** The durable row as written: the click's authorisation inputs and the
+   *  refusal audit read it without a DB round-trip. */
+  row: Pick<PendingGates.PendingGate, "kind" | "id" | "payload" | "sessionId">;
 };
+
+/** Who started the turn a permission prompt belongs to, stamped into the
+ *  `perm` row so any replica can authorise a click. */
+export interface TurnStamp {
+  /** Slack user who started the turn; null when no human did. */
+  initiator: string | null;
+  origin?: TurnOrigin;
+}
+
+/** The stamp for a turn: only a Slack-message turn has a human initiator.
+ *  A panel turn's speaker is an operator, a cron or background turn's is the
+ *  job's creator, and an unknown origin (an older gateway's token) is not
+ *  trusted, so all of those stamp null and need an approver or manager. */
+export function turnStamp(userId: string | null | undefined, origin: TurnOrigin | undefined): TurnStamp {
+  return { initiator: origin === "slack" && userId ? userId : null, ...(origin ? { origin } : {}) };
+}
+
+/** The `initiator`/`origin` payload keys for a stamp. */
+function stampPayload(stamp: TurnStamp | undefined): Record<string, unknown> {
+  return { initiator: stamp?.initiator ?? null, ...(stamp?.origin ? { origin: stamp.origin } : {}) };
+}
+
+export const PERM_REFUSED_TEXT = "Only the person who asked or an approver can decide this.";
 
 export type PermissionDecision = Awaited<ReturnType<CanUseTool>>;
 
@@ -391,10 +420,17 @@ export class PermissionGate {
   #pending = new Map<PendingKey, Pending>();
   /** Explicit bus override (tests/sim); undefined = env-driven default. */
   #busOverride: GateBus | null | undefined;
+  /** The live turn of an in-process session (its route context), read when a
+   *  prompt opens: the initiator is the speaker of THIS turn, never a stale one. */
+  #turnOf: (sessionId: string) => TurnStamp | undefined;
 
-  constructor(transport: Transport, opts: { gateBus?: GateBus | null } = {}) {
+  constructor(
+    transport: Transport,
+    opts: { gateBus?: GateBus | null; turnOf?: (sessionId: string) => TurnStamp | undefined } = {},
+  ) {
     this.#transport = transport;
     this.#busOverride = opts.gateBus;
+    this.#turnOf = opts.turnOf ?? (() => undefined);
     this.#autoAllow = autoAllowFromEnv();
 
     transport.action(
@@ -432,6 +468,17 @@ export class PermissionGate {
                 : "*Denied*";
           return `${toolName} → ${decided} by <@${userId}>`;
         };
+        // Authorisation runs before any resolve, publish or waiter delivery,
+        // so a refused click never consumes the row: the card and the row stay
+        // pending for someone who may decide.
+        const refused = async (row: Pick<PendingGates.PendingGate, "kind" | "id" | "payload" | "sessionId">): Promise<boolean> => {
+          if (await mayDecide(row, userId)) return false;
+          auditPermRefused(row, userId, decision);
+          try {
+            await respond({ response_type: "ephemeral", replace_original: false, text: PERM_REFUSED_TEXT });
+          } catch {}
+          return true;
+        };
         const pend = this.#pending.get(toolUseId);
         if (!pend) {
           const cur = await PendingGates.get(toolUseId);
@@ -440,11 +487,14 @@ export class PermissionGate {
           if (!isPollRow && cur.instanceId === PendingGates.INSTANCE_ID) {
             // Our own in-process row with no waiter: the abort raced the
             // click. Settle the stray so it doesn't linger until expiry.
+            // Deliberately not authorised: nothing is decided here (the turn
+            // that asked is gone), any click only clears the dead row.
             const settled = await PendingGates.resolve(toolUseId, "cancelled", userId);
             if (settled) auditPermCancelled(settled, "slack_user", userId, "click raced the turn's abort");
             await this.#publish(toolUseId);
             return void (await stale());
           }
+          if (await refused(cur)) return;
           const bus = this.#bus();
           if (isPollRow || bus) {
             // poll row: the waiter is a node long-poll — any replica decides.
@@ -478,6 +528,7 @@ export class PermissionGate {
           } catch {}
           return;
         }
+        if (await refused(pend.row)) return;
         // DB row is the source of truth: exactly one click wins the guarded
         // UPDATE; every later click sees null and is stale. The decision
         // granularity (allow vs always) rides along in the payload so
@@ -570,6 +621,8 @@ export class PermissionGate {
     app?: AppRef;
     /** Persona name, stamped into the row for its audit rows. */
     persona?: string | null;
+    /** Who started the turn (from the job token), stamped for click authorisation. */
+    turn?: TurnStamp;
   }): Promise<{ decision: PermissionDecision } | { pendingId: string }> {
     const policy = permissionPolicy(args.toolName, args.input, this.#autoAllow, gateVoiceAudio(args.toolName));
     if (policy) return { decision: policy };
@@ -584,6 +637,7 @@ export class PermissionGate {
         threadTs: args.threadTs,
         waiter: "poll",
         ...(args.persona ? { personaName: args.persona } : {}),
+        ...stampPayload(args.turn),
         ...(args.suggestions?.length ? { suggestions: args.suggestions } : {}),
       },
       expiresAt: Date.now() + PERM_GATE_TTL_MS,
@@ -625,16 +679,18 @@ export class PermissionGate {
     // Durable pending state FIRST, then the in-process waiter, then the
     // buttons: by the time a click can exist, both stores are in place — no
     // window where a click finds half-initialized state.
+    const payload: Record<string, unknown> = {
+      toolName,
+      channel: route.channel,
+      threadTs: route.threadTs,
+      ...(route.persona ? { personaName: route.persona } : {}),
+      ...stampPayload(this.#turnOf(sessionId)),
+    };
     await PendingGates.create({
       id: toolUseId,
       kind: "perm",
       sessionId,
-      payload: {
-        toolName,
-        channel: route.channel,
-        threadTs: route.threadTs,
-        ...(route.persona ? { personaName: route.persona } : {}),
-      },
+      payload,
       expiresAt: Date.now() + PERM_GATE_TTL_MS,
     });
 
@@ -650,6 +706,7 @@ export class PermissionGate {
       input,
       suggestions: ctx.suggestions,
       resolve: resolveFn,
+      row: { kind: "perm", id: toolUseId, payload, sessionId },
     };
     this.#pending.set(toolUseId, pend);
     // Cross-replica wakeup: a click landing on a sibling replica resolves the
@@ -724,6 +781,53 @@ function auditPermDecided(
     decision,
     summary: `${tool}: ${decision}`,
     ...(input ? { details: { input } } : {}),
+  });
+}
+
+/** A non-empty string payload value, else null. */
+const strOf = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+
+/**
+ * May `clicker` decide this perm row? Inputs come from the row alone, so any
+ * replica answers the same. A row written before the initiator was stamped
+ * has no `initiator` key and is treated as a turn with no initiator (approver
+ * or manager required). A failed lock lookup counts as no lock (fail closed).
+ */
+async function mayDecide(
+  row: Pick<PendingGates.PendingGate, "payload">,
+  clicker: string,
+): Promise<boolean> {
+  const p = row.payload ?? {};
+  const channel = strOf(p.channel);
+  const threadTs = strOf(p.threadTs);
+  let lockOwner: string | null = null;
+  if (channel && threadTs) {
+    try {
+      lockOwner = (await OneOnOne.find(channel, threadTs))?.locked_user ?? null;
+    } catch {}
+  }
+  return canDecidePermission({
+    clicker,
+    initiator: strOf(p.initiator),
+    lockOwner,
+    persona: strOf(p.personaName),
+    channel,
+  });
+}
+
+/** Audit a click refused by the authorisation check. The row is untouched. */
+function auditPermRefused(
+  row: Pick<PendingGates.PendingGate, "kind" | "id" | "payload" | "sessionId">,
+  userId: string,
+  attempted: "allow" | "always" | "deny",
+): void {
+  auditGateRow(row, {
+    verb: "refused",
+    actorKind: "slack_user",
+    actorId: userId,
+    decision: "refused",
+    summary: `${String(row.payload.toolName ?? "tool")}: refused (not the requester or an approver)`,
+    details: { attempted },
   });
 }
 

@@ -1,6 +1,9 @@
 import { describe, expect, test, beforeEach, beforeAll, afterAll } from "bun:test";
 import * as PendingGates from "../src/db/pending-gates";
-import { PermissionGate, permissionPolicy, redactForCard, voiceStartCard, voiceCardConfig } from "../src/gateway/slack/permission-gate";
+import { PermissionGate, permissionPolicy, redactForCard, voiceStartCard, voiceCardConfig, turnStamp, PERM_REFUSED_TEXT } from "../src/gateway/slack/permission-gate";
+import { setSoulData, __resetSoulDataMemo } from "../src/soul/extract";
+import { SoulDataSchema } from "../src/soul/data";
+import * as OneOnOne from "../src/db/one-on-one";
 import { buildAudioPolicy } from "../src/voice/audio-acl";
 import * as AuditEvents from "../src/db/audit-events";
 import { flushAudits } from "../src/audit/emit";
@@ -51,6 +54,10 @@ function fakeApp() {
   };
 }
 
+/** The turn's initiator in these tests is USR, who then clicks the cards. */
+const USR_TURN = { initiator: "USR", origin: "slack" as const };
+const AS_USR = { turnOf: () => USR_TURN };
+
 function ctx(toolUseID: string, signal: AbortSignal, suggestions?: any[]): any {
   return {
     toolUseID,
@@ -90,7 +97,7 @@ describe("PermissionGate", () => {
   test("auto-allow list bypasses prompt", async () => {
     process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Read,Glob";
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     const ac = new AbortController();
     const r = await gate.resolver("S", "Read", { x: 1 }, ctx("T1", ac.signal));
     expect(r.behavior).toBe("allow");
@@ -99,7 +106,7 @@ describe("PermissionGate", () => {
 
   test("synthesized OAuth tools are denied even with a live thread (not just fail-closed)", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C1", "1.0"); // live route — would otherwise prompt for approval
     const ac = new AbortController();
     for (const t of [
@@ -115,7 +122,7 @@ describe("PermissionGate", () => {
 
   test("mcp__slaude_connect__* always allowed (our deterministic connect path)", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     const ac = new AbortController();
     const r = await gate.resolver("S", "mcp__slaude_connect__connect_mcp", { server: "x" }, ctx("T", ac.signal));
     expect(r.behavior).toBe("allow");
@@ -123,7 +130,7 @@ describe("PermissionGate", () => {
 
   test("mcp__slaude_slack__* always allowed", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     const ac = new AbortController();
     const r = await gate.resolver("S", "mcp__slaude_slack__reply", {}, ctx("T2", ac.signal));
     expect(r.behavior).toBe("allow");
@@ -131,7 +138,7 @@ describe("PermissionGate", () => {
 
   test("mcp__slaude_surface__* always allowed (agent output path — never gate)", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     const ac = new AbortController();
     for (const t of ["mcp__slaude_surface__reply", "mcp__slaude_surface__edit", "mcp__slaude_surface__upload"]) {
       const r = await gate.resolver("S", t, {}, ctx("T2", ac.signal));
@@ -141,7 +148,7 @@ describe("PermissionGate", () => {
 
   test("mcp__slaude_runtime__* always allowed", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     const ac = new AbortController();
     const r = await gate.resolver("S", "mcp__slaude_runtime__reload_session", {}, ctx("T2", ac.signal));
     expect(r.behavior).toBe("allow");
@@ -149,7 +156,7 @@ describe("PermissionGate", () => {
 
   test("mid-call voice tools are allowed without a card", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     for (const t of ["mcp__slaude_voice__voice_say", "mcp__slaude_voice__voice_context", "mcp__slaude_voice__voice_stop"]) {
@@ -186,7 +193,7 @@ describe("PermissionGate", () => {
   let cardSeq = 0;
   async function voiceCard(input: Record<string, unknown>, tool = "mcp__slaude_voice__voice_start") {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const p = gate.resolver("S", tool, input, ctx(`UF-${++cardSeq}`, ac.signal));
@@ -198,7 +205,7 @@ describe("PermissionGate", () => {
   /** voice_start input the gate refuses: denied, and no card is posted. */
   async function deniedWithoutCard(input: Record<string, unknown>) {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const r = await gate.resolver("S", "mcp__slaude_voice__voice_start", input, ctx(`UD-${++cardSeq}`, ac.signal));
@@ -424,7 +431,7 @@ describe("PermissionGate", () => {
 
   test("approving voice_start runs the exact input the card was rendered from", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const input = baseInput();
     const ac = new AbortController();
@@ -460,7 +467,7 @@ describe("PermissionGate", () => {
 
   test("approval card redacts token/secret/key/password values, nested too", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const p = gate.resolver(
@@ -484,7 +491,7 @@ describe("PermissionGate", () => {
 
   test("no route bound → deny", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     const ac = new AbortController();
     const r = await gate.resolver("S", "Bash", { command: "ls" }, ctx("T3", ac.signal));
     expect(r.behavior).toBe("deny");
@@ -492,7 +499,7 @@ describe("PermissionGate", () => {
 
   test("allow once", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const promise = gate.resolver("S", "Bash", { command: "ls" }, ctx("U1", ac.signal));
@@ -507,7 +514,7 @@ describe("PermissionGate", () => {
 
   test("always (no suggestions) → addRules fallback", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const p = gate.resolver("S", "Bash", { command: "ls" }, ctx("U2", ac.signal));
@@ -523,7 +530,7 @@ describe("PermissionGate", () => {
 
   test("always (with suggestions) honors them", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const sugg = [{ type: "addRules", rules: [{ toolName: "Bash(ls:*)" }], behavior: "allow", destination: "session" }];
@@ -538,7 +545,7 @@ describe("PermissionGate", () => {
 
   test("deny resolves with deny", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const p = gate.resolver("S", "Write", { file_path: "/x" }, ctx("U4", ac.signal));
@@ -552,7 +559,7 @@ describe("PermissionGate", () => {
 
   test("abort signal denies", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const p = gate.resolver("S", "Bash", {}, ctx("U5", ac.signal));
@@ -564,7 +571,7 @@ describe("PermissionGate", () => {
 
   test("duplicate click after decision → already-decided respond", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const p = gate.resolver("S", "Bash", {}, ctx("U6", ac.signal));
@@ -586,7 +593,7 @@ describe("PermissionGate", () => {
 
   test("click on a cancelled row says cancelled, not decided", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const p = gate.resolver("S", "Bash", {}, ctx("UCXL1", ac.signal));
@@ -604,7 +611,7 @@ describe("PermissionGate", () => {
 
   test("unbindSession + decisionReason rendered", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    const gate = new PermissionGate(f.app, AS_USR);
     gate.bindSession("S", "C", "T");
     const ac = new AbortController();
     const p = gate.resolver("S", "Bash", {}, {
@@ -640,7 +647,7 @@ describe("PermissionGate", () => {
 
     test("a click records gate.permission.decided with the clicker, tool and redacted input", async () => {
       const f = fakeApp();
-      const gate = new PermissionGate(f.app);
+      const gate = new PermissionGate(f.app, AS_USR);
       gate.bindSession("SAUD1", "C", "T");
       const ac = new AbortController();
       const p = gate.resolver("SAUD1", "Bash", { command: "ls", token: "hunter2" }, ctx("UA1", ac.signal));
@@ -665,14 +672,14 @@ describe("PermissionGate", () => {
 
     test("the persona bound with the session is stamped into the row and used, with no session lookup", async () => {
       const f = fakeApp();
-      const gate = new PermissionGate(f.app);
+      const gate = new PermissionGate(f.app, AS_USR);
       gate.bindSession("SAUDP", "C", "T", undefined, "helper");
       const ac = new AbortController();
       const p = gate.resolver("SAUDP", "Bash", {}, ctx("UAP", ac.signal));
       expect((await PendingGates.get("UAP"))!.payload.personaName).toBe("helper");
       await f.fire(await buttonId(f, "allow"), "USR");
       await p;
-      const r = await gate.open({ sessionId: "SAUDP", toolName: "Read", input: {}, toolUseId: "UAP2", channel: "C", threadTs: "T", persona: "helper" });
+      const r = await gate.open({ sessionId: "SAUDP", toolName: "Read", input: {}, toolUseId: "UAP2", channel: "C", threadTs: "T", persona: "helper", turn: USR_TURN });
       expect("pendingId" in r).toBe(true);
       await f.fire("slaude_perm:deny:UAP2", "USR");
       const rows = await auditRows("SAUDP", 2);
@@ -681,7 +688,7 @@ describe("PermissionGate", () => {
 
     test("deny records decision deny; a duplicate click records nothing more", async () => {
       const f = fakeApp();
-      const gate = new PermissionGate(f.app);
+      const gate = new PermissionGate(f.app, AS_USR);
       gate.bindSession("SAUD2", "C", "T");
       const ac = new AbortController();
       const p = gate.resolver("SAUD2", "Write", {}, ctx("UA2", ac.signal));
@@ -696,7 +703,7 @@ describe("PermissionGate", () => {
 
     test("an abort records gate.permission.cancelled by system", async () => {
       const f = fakeApp();
-      const gate = new PermissionGate(f.app);
+      const gate = new PermissionGate(f.app, AS_USR);
       gate.bindSession("SAUD3", "C", "T");
       const ac = new AbortController();
       const p = gate.resolver("SAUD3", "Bash", {}, ctx("UA3", ac.signal));
@@ -712,7 +719,7 @@ describe("PermissionGate", () => {
       f.app.client.chat.postMessage = async () => {
         throw new Error("slack down");
       };
-      const gate = new PermissionGate(f.app);
+      const gate = new PermissionGate(f.app, AS_USR);
       gate.bindSession("SAUD4", "C", "T");
       const ac = new AbortController();
       await expect(gate.resolver("SAUD4", "Bash", {}, ctx("UA4", ac.signal))).rejects.toThrow("slack down");
@@ -723,8 +730,8 @@ describe("PermissionGate", () => {
 
     test("the node path: a failed post on open records cancelled, a click on a poll row records decided", async () => {
       const f = fakeApp();
-      const gate = new PermissionGate(f.app);
-      const r = await gate.open({ sessionId: "SAUD5", toolName: "Bash", input: {}, toolUseId: "UA5", channel: "C", threadTs: "T" });
+      const gate = new PermissionGate(f.app, AS_USR);
+      const r = await gate.open({ sessionId: "SAUD5", toolName: "Bash", input: {}, toolUseId: "UA5", channel: "C", threadTs: "T", turn: USR_TURN });
       expect("pendingId" in r).toBe(true);
       await f.fire("slaude_perm:allow:UA5", "USR");
       f.app.client.chat.postMessage = async () => {
@@ -738,6 +745,165 @@ describe("PermissionGate", () => {
         ["gate.permission.cancelled", "Read", "cancelled"],
         ["gate.permission.decided", "Bash", "allow"],
       ]);
+    });
+  });
+
+  describe("who may decide (click authorisation)", () => {
+    beforeAll(() => {
+      setSoulData(SoulDataSchema.parse({
+        manager: { userId: "UMGR" },
+        approvers: [{ userId: "UAPPROVER", scope: "anything", catchall: true }],
+      }));
+    });
+    afterAll(() => __resetSoulDataMemo());
+
+    const slackTurn = (initiator: string) => ({ turnOf: () => turnStamp(initiator, "slack") });
+    async function refusals(sessionId: string, want = 1) {
+      for (let i = 0; ; i++) {
+        await flushAudits();
+        const items = (await AuditEvents.list({ sessionId, action: "gate.permission.refused" })).items;
+        if (items.length >= want || i >= 200) return items;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    }
+    const tick = () => new Promise((r) => setTimeout(r, 10));
+
+    test("turnStamp: only a Slack turn has an initiator", () => {
+      expect(turnStamp("UALICE", "slack")).toEqual({ initiator: "UALICE", origin: "slack" });
+      expect(turnStamp("UALICE", "cron")).toEqual({ initiator: null, origin: "cron" });
+      expect(turnStamp("operator@example.com", "panel")).toEqual({ initiator: null, origin: "panel" });
+      expect(turnStamp("UALICE", undefined)).toEqual({ initiator: null });
+    });
+
+    test("the initiator and origin are stamped into the row", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app, slackTurn("UALICE"));
+      gate.bindSession("SAZ0", "CTEAM", "T");
+      const ac = new AbortController();
+      const p = gate.resolver("SAZ0", "Bash", {}, ctx("AZ0", ac.signal));
+      await firstPost(f);
+      expect((await PendingGates.get("AZ0"))!.payload).toMatchObject({ initiator: "UALICE", origin: "slack" });
+      ac.abort();
+      await p;
+    });
+
+    test("a non-initiator click is refused: row pending, waiter unresolved, refusal audited; the initiator then decides", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app, slackTurn("UALICE"));
+      gate.bindSession("SAZ1", "CTEAM", "T");
+      const ac = new AbortController();
+      let settled = false;
+      const p = gate.resolver("SAZ1", "Bash", { command: "ls" }, ctx("AZ1", ac.signal)).then((r) => { settled = true; return r; });
+      await firstPost(f);
+      const calls = await f.fire("slaude_perm:allow:AZ1", "UBOB");
+      expect(calls).toEqual([{ response_type: "ephemeral", replace_original: false, text: PERM_REFUSED_TEXT }]);
+      await tick();
+      expect(settled).toBe(false);
+      expect((await PendingGates.get("AZ1"))!.status).toBe("pending");
+      const [ev, ...rest] = await refusals("SAZ1");
+      expect(rest).toHaveLength(0);
+      expect(ev).toMatchObject({
+        action: "gate.permission.refused",
+        decision: "refused",
+        actorKind: "slack_user",
+        actorId: "UBOB",
+        targetKind: "tool",
+        targetId: "Bash",
+      });
+      await f.fire("slaude_perm:allow:AZ1", "UALICE");
+      expect(((await p) as any).behavior).toBe("allow");
+      expect((await PendingGates.get("AZ1"))!.resolvedBy).toBe("UALICE");
+    });
+
+    test("the manager decides a card someone else asked for", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app, slackTurn("UALICE"));
+      gate.bindSession("SAZ2", "CTEAM", "T");
+      const ac = new AbortController();
+      const p = gate.resolver("SAZ2", "Bash", {}, ctx("AZ2", ac.signal));
+      await firstPost(f);
+      await f.fire("slaude_perm:deny:AZ2", "UMGR");
+      expect(((await p) as any).message).toBe("Denied by <@UMGR>");
+    });
+
+    test("the thread's /1on1 lock owner decides", async () => {
+      await OneOnOne.lock({ channelId: "CTEAM", threadTs: "TLOCK", lockedUser: "UOWNER", createdBy: "UOWNER" });
+      try {
+        const f = fakeApp();
+        const gate = new PermissionGate(f.app, slackTurn("UALICE"));
+        gate.bindSession("SAZ3", "CTEAM", "TLOCK");
+        const ac = new AbortController();
+        const p = gate.resolver("SAZ3", "Bash", {}, ctx("AZ3", ac.signal));
+        await firstPost(f);
+        await f.fire("slaude_perm:allow:AZ3", "UOWNER");
+        expect(((await p) as any).behavior).toBe("allow");
+      } finally {
+        await OneOnOne.unlock("CTEAM", "TLOCK");
+      }
+    });
+
+    test("a cron turn has no initiator: its creator (a member) is refused, an approver decides", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app, { turnOf: () => turnStamp("UALICE", "cron") });
+      gate.bindSession("SAZ4", "CTEAM", "T");
+      const ac = new AbortController();
+      let settled = false;
+      const p = gate.resolver("SAZ4", "Bash", {}, ctx("AZ4", ac.signal)).then((r) => { settled = true; return r; });
+      await firstPost(f);
+      expect((await PendingGates.get("AZ4"))!.payload).toMatchObject({ initiator: null, origin: "cron" });
+      const calls = await f.fire("slaude_perm:allow:AZ4", "UALICE");
+      expect(calls[0].text).toBe(PERM_REFUSED_TEXT);
+      await tick();
+      expect(settled).toBe(false);
+      expect((await PendingGates.get("AZ4"))!.status).toBe("pending");
+      await f.fire("slaude_perm:allow:AZ4", "UAPPROVER");
+      expect(((await p) as any).behavior).toBe("allow");
+    });
+
+    test("the node poll-row path enforces the same rule", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app);
+      const r = await gate.open({
+        sessionId: "SAZ5", toolName: "Bash", input: {}, toolUseId: "AZ5", channel: "CTEAM", threadTs: "T",
+        turn: turnStamp("UALICE", "slack"),
+      });
+      expect("pendingId" in r).toBe(true);
+      expect((await PendingGates.get("AZ5"))!.payload).toMatchObject({ waiter: "poll", initiator: "UALICE", origin: "slack" });
+      const calls = await f.fire("slaude_perm:allow:AZ5", "UBOB");
+      expect(calls).toEqual([{ response_type: "ephemeral", replace_original: false, text: PERM_REFUSED_TEXT }]);
+      expect((await PendingGates.get("AZ5"))!.status).toBe("pending");
+      expect(await refusals("SAZ5")).toHaveLength(1);
+      await f.fire("slaude_perm:allow:AZ5", "UALICE");
+      const row = (await PendingGates.get("AZ5"))!;
+      expect(row.status).toBe("approved");
+      expect(row.resolvedBy).toBe("UALICE");
+    });
+
+    test("a panel-origin poll row needs an approver", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app);
+      await gate.open({
+        sessionId: "SAZ6", toolName: "Bash", input: {}, toolUseId: "AZ6", channel: "CTEAM", threadTs: "T",
+        turn: turnStamp("operator@example.com", "panel"),
+      });
+      await f.fire("slaude_perm:allow:AZ6", "UBOB");
+      expect((await PendingGates.get("AZ6"))!.status).toBe("pending");
+      await f.fire("slaude_perm:deny:AZ6", "UAPPROVER");
+      expect((await PendingGates.get("AZ6"))!.status).toBe("denied");
+    });
+
+    test("a row written before the initiator stamp (no key) is treated as no initiator", async () => {
+      const f = fakeApp();
+      new PermissionGate(f.app);
+      await PendingGates.create({
+        id: "AZ7", kind: "perm", sessionId: "SAZ7",
+        payload: { toolName: "Bash", channel: "CTEAM", threadTs: "T", waiter: "poll" },
+        expiresAt: Date.now() + 60_000,
+      });
+      await f.fire("slaude_perm:allow:AZ7", "UALICE");
+      expect((await PendingGates.get("AZ7"))!.status).toBe("pending");
+      await f.fire("slaude_perm:allow:AZ7", "UMGR");
+      expect((await PendingGates.get("AZ7"))!.status).toBe("approved");
     });
   });
 });

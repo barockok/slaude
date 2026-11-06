@@ -9,7 +9,7 @@ import {
 import { ReactionTracker } from "../slack/reactions";
 import { Presence } from "../slack/presence";
 import { Status } from "../slack/status";
-import { PermissionGate } from "../slack/permission-gate";
+import { PermissionGate, turnStamp } from "../slack/permission-gate";
 import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
@@ -743,7 +743,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const route = routes.get(sessionId);
     return botClientFor(route ? appOf(route.ctx) : undefined);
   });
-  const permissions = new PermissionGate(t);
+  // A prompt is stamped with the route's live turn (the Slack, panel and cron
+  // paths each set the ctx's speaker and origin before the turn runs).
+  const permissions = new PermissionGate(t, {
+    turnOf: (sessionId) => {
+      const c = routes.get(sessionId)?.ctx;
+      return c ? turnStamp(c.userId, c.origin) : undefined;
+    },
+  });
   const approvals = new ApprovalGate(t, env.slack.approvers(), {
     timeoutSeconds: () => soulData().approvalTimeoutSeconds || 300,
   });
@@ -4287,6 +4294,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           suggestions: args.suggestions,
           app: { apiAppId: claims.app, teamId: claims.team },
           persona: claims.persona,
+          turn: turnStamp(claims.initiator, claims.origin),
         }),
       openApproval: (claims, args) =>
         approvals.open({

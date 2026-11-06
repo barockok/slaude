@@ -12,7 +12,7 @@ import * as PendingGates from "../../../src/db/pending-gates";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import * as AuditEvents from "../../../src/db/audit-events";
 import { flushAudits } from "../../../src/audit/emit";
-import { PermissionGate } from "../../../src/gateway/slack/permission-gate";
+import { PermissionGate, turnStamp } from "../../../src/gateway/slack/permission-gate";
 import { ApprovalGate } from "../../../src/gateway/slack/approval-gate";
 import { getPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../../src/persona/registry";
 
@@ -278,7 +278,8 @@ describe("stale-click idempotency (two clicks, one wins)", () => {
 
   it("permission prompt: concurrent allow + deny → exactly one decision", async () => {
     const f = fakeApp();
-    const gate = new PermissionGate(f.app);
+    // U1 asked; the manager may decide too, so both clicks are authorised.
+    const gate = new PermissionGate(f.app, { turnOf: () => turnStamp("U1", "slack") });
     gate.bindSession("S", CH, "700.0");
     const ac = new AbortController();
     const p = gate.resolver("S", "Bash", { command: "ls" }, { toolUseID: "race_tu", signal: ac.signal } as any);
@@ -287,7 +288,7 @@ describe("stale-click idempotency (two clicks, one wins)", () => {
 
     const [a, b] = await Promise.all([
       f.fire("slaude_perm:allow:race_tu", "U1"),
-      f.fire("slaude_perm:deny:race_tu", "U2"),
+      f.fire("slaude_perm:deny:race_tu", WORLD.manager),
     ]);
     const r = (await p) as any;
     const row = (await PendingGates.get("race_tu"))!;
