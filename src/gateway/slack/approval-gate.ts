@@ -4,6 +4,7 @@ import { effectiveSoulForChannel } from "../../soul/extract";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
+import { auditGateRow } from "../../audit/emit";
 
 export type ApprovalRequest = {
   channel: string;
@@ -123,7 +124,15 @@ export class ApprovalGate {
             });
           } catch {}
         };
-        const notAllowed = async () => {
+        const notAllowed = async (pendingRow: PendingGates.PendingGate) => {
+          // The existing allowlist check refused the click; the row stays pending.
+          auditGateRow(pendingRow, {
+            verb: "refused",
+            actorKind: "slack_user",
+            actorId: userId,
+            decision: "refused",
+            summary: `approval ${verb} refused: clicker is not an approver`,
+          });
           try {
             await respond({
               response_type: "ephemeral",
@@ -155,7 +164,8 @@ export class ApprovalGate {
           if (!isPollRow && row.instanceId === PendingGates.INSTANCE_ID) {
             // Our own in-process row with no waiter: the abort raced the
             // click. Settle the stray so it doesn't linger until expiry.
-            await PendingGates.resolve(id, "cancelled", userId);
+            const settled = await PendingGates.resolve(id, "cancelled", userId);
+            if (settled) auditApprovalCancelled(settled, "slack_user", userId, "click raced the turn's abort");
             await this.#publish(id);
             return void (await stale());
           }
@@ -168,9 +178,10 @@ export class ApprovalGate {
             // authorize the clicker — checked BEFORE the guarded resolve so a
             // non-approver click never consumes the row.
             const approvers = new Set<string>((row.payload.approvers as string[] | undefined) ?? []);
-            if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed());
+            if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed(row));
             const resolved = await PendingGates.resolve(id, approved ? "approved" : "denied", userId);
             if (!resolved) return void (await stale());
+            auditApprovalDecided(resolved, userId, approved);
             await this.#publish(id);
             try {
               await respond({
@@ -200,7 +211,7 @@ export class ApprovalGate {
         const approvers = new Set<string>(
           (row.payload.approvers as string[] | undefined) ?? [...pending.approvers],
         );
-        if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed());
+        if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed(row));
 
         // Exactly one click wins the guarded UPDATE; a duplicate or a race
         // against the auto-deny timer sees null and is stale.
@@ -220,6 +231,7 @@ export class ApprovalGate {
         if (pending.timer) clearTimeout(pending.timer);
         this.#pending.delete(id);
         void pending.unsub?.().catch(() => {});
+        auditApprovalDecided(resolved, userId, approved);
         await this.#publish(id);
         const label = approved ? "*Approved*" : "*Denied*";
         try {
@@ -380,6 +392,7 @@ export class ApprovalGate {
         void (async () => {
           const row = await PendingGates.resolve(id, "expired", "system");
           if (!row) return; // a click won
+          auditApprovalExpired(row, timeoutSec);
           await this.#publish(id);
           if (cardTs) {
             void client.chat
@@ -406,7 +419,9 @@ export class ApprovalGate {
       cardTs = posted.ts as string | undefined;
     } catch (e) {
       // The card never reached Slack — settle the row and rethrow.
-      void PendingGates.resolve(id, "cancelled", "system").catch(() => {});
+      void PendingGates.resolve(id, "cancelled", "system")
+        .then((row) => row && auditApprovalCancelled(row, "system", "system", "card post failed"))
+        .catch(() => {});
       void this.#publish(id);
       throw e;
     }
@@ -456,7 +471,10 @@ export class ApprovalGate {
           // cancelled, or even a purged row) is ours to finish: deny locally,
           // never hang.
           const row = await PendingGates.resolve(id, "expired", "system");
-          if (row) await this.#publish(id);
+          if (row) {
+            auditApprovalExpired(row, timeoutSec);
+            await this.#publish(id);
+          }
           if (!row) {
             const cur = await PendingGates.get(id);
             if (cur && (cur.status === "approved" || cur.status === "denied")) return;
@@ -507,7 +525,11 @@ export class ApprovalGate {
         this.#pending.delete(id);
         void p.unsub?.().catch(() => {});
         void PendingGates.resolve(id, "cancelled", "system")
-          .then((row) => (row ? this.#publish(id) : undefined))
+          .then((row) => {
+            if (!row) return;
+            auditApprovalCancelled(row, "system", "system", "turn aborted");
+            return this.#publish(id);
+          })
           .catch(() => {});
         p.resolve({ approved: false, by: "system", note: "aborted" });
       },
@@ -527,11 +549,54 @@ export class ApprovalGate {
       if (pending.timer) clearTimeout(pending.timer);
       this.#pending.delete(id);
       void pending.unsub?.().catch(() => {});
-      void PendingGates.resolve(id, "cancelled", "system").catch(() => {});
+      void PendingGates.resolve(id, "cancelled", "system")
+        .then((row) => row && auditApprovalCancelled(row, "system", "system", "card post failed"))
+        .catch(() => {});
       throw e;
     }
     return promise;
   }
+}
+
+// Audit helpers. Each is called only by the path whose guarded resolve won,
+// so every row is recorded once. Expiry: the in-process auto-deny timer owns
+// the rows it expires; rows a sweep expires (no timer alive) are audited by
+// the sweep's caller (auditExpiredGates).
+function auditApprovalDecided(row: PendingGates.PendingGate, userId: string, approved: boolean): void {
+  auditGateRow(row, {
+    verb: "decided",
+    actorKind: "slack_user",
+    actorId: userId,
+    decision: approved ? "allow" : "deny",
+    summary: `${approved ? "approved" : "denied"}: ${String(row.payload.summary ?? "")}`,
+  });
+}
+
+function auditApprovalExpired(row: PendingGates.PendingGate, timeoutSec: number): void {
+  auditGateRow(row, {
+    verb: "expired",
+    actorKind: "system",
+    actorId: "system",
+    decision: "expired",
+    summary: `auto-denied after ${timeoutSec}s: ${String(row.payload.summary ?? "")}`,
+    details: { timeoutSec },
+  });
+}
+
+function auditApprovalCancelled(
+  row: PendingGates.PendingGate,
+  actorKind: "slack_user" | "system",
+  actorId: string,
+  reason: string,
+): void {
+  auditGateRow(row, {
+    verb: "cancelled",
+    actorKind,
+    actorId,
+    decision: "cancelled",
+    summary: `cancelled (${reason}): ${String(row.payload.summary ?? "")}`,
+    details: { reason },
+  });
 }
 
 function truncate(s: string, n: number) {

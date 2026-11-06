@@ -5,6 +5,8 @@ import * as PendingGates from "../src/db/pending-gates";
 import { ApprovalGate } from "../src/gateway/slack/approval-gate";
 import { setSoulData, __resetSoulDataMemo } from "../src/soul/extract";
 import { SoulDataSchema } from "../src/soul/data";
+import * as AuditEvents from "../src/db/audit-events";
+import { flushAudits } from "../src/audit/emit";
 
 type Handler = (a: any) => Promise<void>;
 
@@ -377,5 +379,106 @@ describe("ApprovalGate", () => {
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(id, "U400");
     expect((await p).approved).toBe(true);
+  });
+
+  describe("audit", () => {
+    // Fire-and-forget writes, some behind a guarded resolve: poll until the
+    // expected count lands (or a short deadline passes).
+    async function auditRows(sessionId: string, want = 1) {
+      for (let i = 0; ; i++) {
+        await flushAudits();
+        const items = (await AuditEvents.list({ sessionId, action: "gate.approval." })).items;
+        if (items.length >= want || i >= 200) return items;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    }
+    const buttonId = async (f: { posts: any[] }, verb: string) =>
+      (await firstPost(f)).blocks
+        .find((b: any) => b.type === "actions")
+        .elements.find((e: any) => e.action_id.includes(verb)).action_id;
+
+    test("a non-approver click is refused, the approver's click is decided", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, []);
+      const p = gate.request({ channel: "C", threadTs: "T", summary: "write shared page", category: "kb", sessionId: "SAPR1" });
+      const id = await buttonId(f, "approve");
+      await f.fire(id, "U999");
+      await f.fire(id, "U001");
+      await p;
+      const rows = await auditRows("SAPR1", 2);
+      expect(rows.map((r) => [r.action, r.decision, r.actorId]).sort()).toEqual([
+        ["gate.approval.decided", "allow", "U001"],
+        ["gate.approval.refused", "refused", "U999"],
+      ]);
+      for (const r of rows) {
+        expect(r).toMatchObject({ targetKind: "approval", targetId: "kb", persona: "default", channelId: "C", threadTs: "T" });
+        expect(r.details.category).toBe("kb");
+      }
+    });
+
+    test("deny records decision deny", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, []);
+      const p = gate.request({ channel: "C", threadTs: "T", summary: "x", sessionId: "SAPR2" });
+      await f.fire(await buttonId(f, "deny"), "U002");
+      await p;
+      const [ev] = await auditRows("SAPR2");
+      expect(ev).toMatchObject({ action: "gate.approval.decided", decision: "deny", targetId: "plan" });
+    });
+
+    test("the auto-deny timer records gate.approval.expired once", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, [], { timeoutSeconds: () => 0.05 as any });
+      await gate.request({ channel: "C", threadTs: "T", summary: "stuck", sessionId: "SAPR3" });
+      const rows = await auditRows("SAPR3");
+      expect(rows.map((r) => [r.action, r.decision, r.actorKind])).toEqual([["gate.approval.expired", "expired", "system"]]);
+    });
+
+    test("open(): the timer records expired; a click on the poll row records decided", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, [], { timeoutSeconds: () => 0.05 as any });
+      await gate.open({ channel: "C", threadTs: "T", summary: "a", sessionId: "SAPR4" });
+      await auditRows("SAPR4");
+      const slow = new ApprovalGate(fakeApp().app, [], { timeoutSeconds: () => 0 });
+      const { pendingId } = await slow.open({ channel: "C", threadTs: "T", summary: "b", sessionId: "SAPR4" });
+      await f.fire(`slaude_appr:approve:${pendingId}`, "U999");
+      await f.fire(`slaude_appr:approve:${pendingId}`, "U001");
+      const rows = await auditRows("SAPR4", 3);
+      expect(rows.map((r) => r.action).sort()).toEqual([
+        "gate.approval.decided",
+        "gate.approval.expired",
+        "gate.approval.refused",
+      ]);
+    });
+
+    test("an abort records gate.approval.cancelled", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, []);
+      const ac = new AbortController();
+      const p = gate.request({ channel: "C", threadTs: "T", summary: "x", sessionId: "SAPR5" }, ac.signal);
+      await firstPost(f);
+      ac.abort();
+      await p;
+      const [ev] = await auditRows("SAPR5");
+      expect(ev).toMatchObject({ action: "gate.approval.cancelled", decision: "cancelled", actorKind: "system" });
+    });
+
+    test("a failed card post records gate.approval.cancelled on both paths", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+      const f = fakeApp();
+      f.app.client.chat.postMessage = async () => {
+        throw new Error("slack down");
+      };
+      const gate = new ApprovalGate(f.app, []);
+      await expect(gate.request({ channel: "C", threadTs: "T", summary: "x", sessionId: "SAPR6" })).rejects.toThrow();
+      await expect(gate.open({ channel: "C", threadTs: "T", summary: "y", sessionId: "SAPR6" })).rejects.toThrow();
+      const rows = await auditRows("SAPR6", 2);
+      expect(rows.map((r) => r.action)).toEqual(["gate.approval.cancelled", "gate.approval.cancelled"]);
+    });
   });
 });
