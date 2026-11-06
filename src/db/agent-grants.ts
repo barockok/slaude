@@ -49,6 +49,24 @@ export interface CreateGrantInput {
 
 const DEFAULT_TENANT = "default";
 
+type ChangeListener = (persona: string | null) => void;
+const listeners = new Set<ChangeListener>();
+
+/** Called after every create (with its persona) and revoke (null: the persona
+ *  is not read back). In-process only; other replicas wait out their cache TTL. */
+export function onGrantsChanged(fn: ChangeListener): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
+}
+
+function changed(persona: string | null) {
+  for (const fn of listeners) {
+    try {
+      fn(persona);
+    } catch { /* a listener never fails the write */ }
+  }
+}
+
 export async function create(input: CreateGrantInput, now: number = Date.now()): Promise<AgentGrantRow> {
   if (!GRANT_ROLES.includes(input.role)) throw new Error(`agent grant: invalid role ${JSON.stringify(input.role)}`);
   if (!SUBJECT_KINDS.includes(input.subjectKind)) throw new Error(`agent grant: invalid subject_kind ${JSON.stringify(input.subjectKind)}`);
@@ -80,6 +98,7 @@ export async function create(input: CreateGrantInput, now: number = Date.now()):
     params.push(row.tenantId);
   }
   await db.run(`INSERT INTO agent_grants (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, params);
+  changed(row.persona);
   return row;
 }
 
@@ -108,6 +127,7 @@ export async function listAll(tenant?: string): Promise<AgentGrantRow[]> {
 /** Hard delete. True when a row was removed. */
 export async function revoke(id: string): Promise<boolean> {
   const r = await db.run(`DELETE FROM agent_grants WHERE id = ?`, [id]);
+  if (r.changes > 0) changed(null);
   return r.changes > 0;
 }
 
