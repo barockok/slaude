@@ -11,6 +11,7 @@ import {
   PROVIDER_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError, type SyncPayload,
 } from "./payload";
 import { extractSoulData } from "../../soul/extract";
+import { emitAudit } from "../../audit/emit";
 import {
   applySync, desiredPersonas, effectivePersonas, backgroundColumnPresent, kbSourcesColumnPresent, providerColumnPresent, syncState, StaleRevisionError,
   type ApplyResult,
@@ -251,9 +252,39 @@ export async function runSync(
   }
 
   try {
-    return { ...(await applySync(tenant, rows, meta)), revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal, warnings };
+    const applied = await applySync(tenant, rows, meta);
+    auditPersonaSync(tenant, opts.by, meta.revision, applied);
+    return { ...applied, revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal, warnings };
   } catch (e) {
     if (e instanceof StaleRevisionError) throw new SyncFailure(409, e.message);
     throw e;
   }
+}
+
+/** persona.sync: one row per applied (not dry-run) sync, with the revision and
+ *  counts, never a value. The actor is the deploy caller's identity (`by`). */
+export function auditPersonaSync(tenant: string, by: string, revision: string, r: ApplyResult): void {
+  emitAudit({
+    tenantId: tenant,
+    persona: "default",
+    actorKind: "system",
+    actorId: by,
+    action: "persona.sync",
+    targetKind: "tenant",
+    targetId: tenant,
+    summary: `persona sync ${revision}: ${r.created.length} created, ${r.updated.length} updated, ${r.tombstoned.length} tombstoned`,
+    details: {
+      revision,
+      created: r.created,
+      updated: r.updated,
+      tombstoned: r.tombstoned,
+      counts: {
+        created: r.created.length,
+        updated: r.updated.length,
+        unchanged: r.unchanged.length,
+        tombstoned: r.tombstoned.length,
+        overridesWiped: r.overridesWiped,
+      },
+    },
+  });
 }
