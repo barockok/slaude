@@ -44,12 +44,51 @@ export interface TurnStamp {
   origin?: TurnOrigin;
 }
 
-/** The stamp for a turn: only a Slack-message turn has a human initiator.
- *  A panel turn's speaker is an operator, a cron or background turn's is the
- *  job's creator, and an unknown origin (an older gateway's token) is not
- *  trusted, so all of those stamp null and need an approver or manager. */
+
+const TURN_ORIGIN_SET: ReadonlySet<string> = new Set<TurnOrigin>(["slack", "panel", "cron"]);
+
+/**
+ * The stamp for a prompt from the senders of the inputs the turn is
+ * processing (AgentManager.turnSenders in process, the job's recorded senders
+ * on the node path), never from the route context, which every delivered
+ * message rewrites. The initiator is the sole sender of a Slack message, and
+ * only when there is exactly one sender and the turn is not synthetic; any
+ * other case (no senders known, several people, a cron or panel input, an
+ * injected turn) stamps null and needs an approver or manager. `expect`, when
+ * given, must equal that sender (the job token's own initiator). `origin` is
+ * recorded for the audit trail only; it never grants anything.
+ */
+export function stampFromSenders(
+  senders: readonly { userId: string; origin: string | null }[] | null | undefined,
+  opts: { synthetic?: boolean; origin?: TurnOrigin; expect?: string } = {},
+): TurnStamp {
+  const sole = !opts.synthetic && senders?.length === 1 ? senders[0]! : null;
+  const soleOrigin = sole?.origin && TURN_ORIGIN_SET.has(sole.origin) ? (sole.origin as TurnOrigin) : undefined;
+  const origin = soleOrigin ?? opts.origin;
+  const ok = !!sole && sole.origin === "slack" && !!sole.userId && (opts.expect === undefined || opts.expect === sole.userId);
+  return { initiator: ok ? sole!.userId : null, ...(origin ? { origin } : {}) };
+}
+
+/** The in-process stamp for `sessionId`'s running turn, read from the agent
+ *  manager's per-input bookkeeping. `ctxOrigin` (the route's) is recorded
+ *  only; it is rewritten by every delivered message and grants nothing. */
+export function liveTurnStamp(
+  agent: { turnSenders?: (sessionId: string) => readonly { userId: string; origin: string | null }[] | null; isSyntheticTurn?: (sessionId: string) => boolean },
+  sessionId: string,
+  ctxOrigin: TurnOrigin | undefined,
+): TurnStamp {
+  return stampFromSenders(typeof agent.turnSenders === "function" ? agent.turnSenders(sessionId) : null, {
+    synthetic: typeof agent.isSyntheticTurn === "function" && agent.isSyntheticTurn(sessionId),
+    origin: ctxOrigin,
+  });
+}
+
+/** The stamp for a turn with one known sender (see stampFromSenders): only
+ *  a Slack-message turn has a human initiator. A panel turn's speaker is an
+ *  operator, a cron or background turn's is the job's creator, and an unknown
+ *  origin is not trusted, so all of those stamp null. */
 export function turnStamp(userId: string | null | undefined, origin: TurnOrigin | undefined): TurnStamp {
-  return { initiator: origin === "slack" && userId ? userId : null, ...(origin ? { origin } : {}) };
+  return stampFromSenders(userId ? [{ userId, origin: origin ?? null }] : null, { origin });
 }
 
 /** The `initiator`/`origin` payload keys for a stamp. */
@@ -442,7 +481,16 @@ export class PermissionGate {
         if (!m) return;
         const decision = m[1] as "allow" | "always" | "deny";
         const toolUseId = m[2]!;
-        const userId = (body as any).user?.id ?? "unknown";
+        const clicker = (body as any).user?.id;
+        if (typeof clicker !== "string" || !clicker) {
+          // No clicker identity: nobody to authorise, so nothing is decided.
+          console.warn(`[permission-gate] click on ${toolUseId} without a user id refused`);
+          try {
+            await respond({ response_type: "ephemeral", replace_original: false, text: PERM_REFUSED_TEXT });
+          } catch {}
+          return;
+        }
+        const userId: string = clicker;
         const status = decision === "deny" ? ("denied" as const) : ("approved" as const);
         const stale = async (status?: string) => {
           // Duplicate click, expiry, abort, or another replica won. Answer
@@ -470,10 +518,20 @@ export class PermissionGate {
         };
         // Authorisation runs before any resolve, publish or waiter delivery,
         // so a refused click never consumes the row: the card and the row stay
-        // pending for someone who may decide.
+        // pending for someone who may decide. Accepted window: a role or lock
+        // revoked between this check and the guarded resolve below still lets
+        // this one click through.
         const refused = async (row: Pick<PendingGates.PendingGate, "kind" | "id" | "payload" | "sessionId">): Promise<boolean> => {
-          if (await mayDecide(row, userId)) return false;
-          auditPermRefused(row, userId, decision);
+          let ok = false;
+          let failure: string | undefined;
+          try {
+            ok = await mayDecide(row, userId);
+          } catch (e) {
+            failure = e instanceof Error ? e.message : String(e);
+            console.error(`[permission-gate] authorisation check failed for ${toolUseId}, refusing: ${failure}`);
+          }
+          if (ok) return false;
+          auditPermRefused(row, userId, decision, failure);
           try {
             await respond({ response_type: "ephemeral", replace_original: false, text: PERM_REFUSED_TEXT });
           } catch {}
@@ -791,7 +849,8 @@ const strOf = (v: unknown): string | null => (typeof v === "string" && v ? v : n
  * May `clicker` decide this perm row? Inputs come from the row alone, so any
  * replica answers the same. A row written before the initiator was stamped
  * has no `initiator` key and is treated as a turn with no initiator (approver
- * or manager required). A failed lock lookup counts as no lock (fail closed).
+ * or manager required). A throw (lock or role lookup) propagates: the caller
+ * refuses the click.
  */
 async function mayDecide(
   row: Pick<PendingGates.PendingGate, "payload">,
@@ -801,11 +860,7 @@ async function mayDecide(
   const channel = strOf(p.channel);
   const threadTs = strOf(p.threadTs);
   let lockOwner: string | null = null;
-  if (channel && threadTs) {
-    try {
-      lockOwner = (await OneOnOne.find(channel, threadTs))?.locked_user ?? null;
-    } catch {}
-  }
+  if (channel && threadTs) lockOwner = (await OneOnOne.find(channel, threadTs))?.locked_user ?? null;
   return canDecidePermission({
     clicker,
     initiator: strOf(p.initiator),
@@ -820,14 +875,15 @@ function auditPermRefused(
   row: Pick<PendingGates.PendingGate, "kind" | "id" | "payload" | "sessionId">,
   userId: string,
   attempted: "allow" | "always" | "deny",
+  failure?: string,
 ): void {
   auditGateRow(row, {
     verb: "refused",
     actorKind: "slack_user",
     actorId: userId,
     decision: "refused",
-    summary: `${String(row.payload.toolName ?? "tool")}: refused (not the requester or an approver)`,
-    details: { attempted },
+    summary: `${String(row.payload.toolName ?? "tool")}: refused (${failure ? "authorisation check failed" : "not the requester or an approver"})`,
+    details: { attempted, ...(failure ? { error: failure } : {}) },
   });
 }
 

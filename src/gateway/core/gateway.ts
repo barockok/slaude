@@ -9,7 +9,7 @@ import {
 import { ReactionTracker } from "../slack/reactions";
 import { Presence } from "../slack/presence";
 import { Status } from "../slack/status";
-import { PermissionGate, turnStamp } from "../slack/permission-gate";
+import { PermissionGate, liveTurnStamp, stampFromSenders } from "../slack/permission-gate";
 import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
@@ -743,13 +743,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const route = routes.get(sessionId);
     return botClientFor(route ? appOf(route.ctx) : undefined);
   });
-  // A prompt is stamped with the route's live turn (the Slack, panel and cron
-  // paths each set the ctx's speaker and origin before the turn runs).
+  // A prompt's initiator comes from the senders of the inputs the session is
+  // processing, never from the route ctx (every delivered message rewrites
+  // its userId and origin, so a bystander posting mid-turn would be stamped).
   const permissions = new PermissionGate(t, {
-    turnOf: (sessionId) => {
-      const c = routes.get(sessionId)?.ctx;
-      return c ? turnStamp(c.userId, c.origin) : undefined;
-    },
+    turnOf: (sessionId) => liveTurnStamp(agent, sessionId, routes.get(sessionId)?.ctx.origin),
   });
   const approvals = new ApprovalGate(t, env.slack.approvers(), {
     timeoutSeconds: () => soulData().approvalTimeoutSeconds || 300,
@@ -4282,7 +4280,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Non-blocking gate opens (spec §3 "Blocking tools"): the node long-polls
       // /v1/pending/:id; ANY replica's Block Kit click settles the durable row
       // and publishes gate:<id> for the instant wakeup.
-      openPermission: (claims, args) =>
+      openPermission: async (claims, args) =>
         permissions.open({
           sessionId: claims.session,
           toolName: args.toolName,
@@ -4294,7 +4292,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           suggestions: args.suggestions,
           app: { apiAppId: claims.app, teamId: claims.team },
           persona: claims.persona,
-          turn: turnStamp(claims.initiator, claims.origin),
+          // The job's recorded senders (merged follow-ups included): the
+          // token's initiator only when it is the job's sole Slack sender.
+          // A node runs one job per session at a time (session lock), and a
+          // follow-up either merges into a waiting job (and joins its
+          // senders) or waits for its own job and token, so a later message
+          // cannot re-stamp this prompt or decide it with its own token.
+          turn: stampFromSenders(queueDispatch && claims.job ? await queueDispatch.turns.turnSenders(claims.job) : null, {
+            origin: claims.origin,
+            expect: claims.initiator,
+          }),
         }),
       openApproval: (claims, args) =>
         approvals.open({

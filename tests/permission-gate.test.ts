@@ -1,6 +1,6 @@
-import { describe, expect, test, beforeEach, beforeAll, afterAll } from "bun:test";
+import { describe, expect, test, beforeEach, beforeAll, afterAll, spyOn } from "bun:test";
 import * as PendingGates from "../src/db/pending-gates";
-import { PermissionGate, permissionPolicy, redactForCard, voiceStartCard, voiceCardConfig, turnStamp, PERM_REFUSED_TEXT } from "../src/gateway/slack/permission-gate";
+import { PermissionGate, permissionPolicy, redactForCard, voiceStartCard, voiceCardConfig, turnStamp, stampFromSenders, liveTurnStamp, PERM_REFUSED_TEXT } from "../src/gateway/slack/permission-gate";
 import { setSoulData, __resetSoulDataMemo } from "../src/soul/extract";
 import { SoulDataSchema } from "../src/soul/data";
 import * as OneOnOne from "../src/db/one-on-one";
@@ -890,6 +890,110 @@ describe("PermissionGate", () => {
       expect((await PendingGates.get("AZ6"))!.status).toBe("pending");
       await f.fire("slaude_perm:deny:AZ6", "UAPPROVER");
       expect((await PendingGates.get("AZ6"))!.status).toBe("denied");
+    });
+
+    /** A fake agent manager whose outstanding inputs are `senders` (null = unknown). */
+    const agentWith = (senders: { userId: string; origin: string | null }[] | null, synthetic = false) => ({
+      turnSenders: () => senders,
+      isSyntheticTurn: () => synthetic,
+    });
+
+    test("stampFromSenders: one Slack sender only, never synthetic, matching the token when asked", () => {
+      const alice = { userId: "UALICE", origin: "slack" };
+      expect(stampFromSenders([alice])).toEqual({ initiator: "UALICE", origin: "slack" });
+      expect(stampFromSenders([alice, { userId: "UBOB", origin: "slack" }], { origin: "slack" })).toEqual({ initiator: null, origin: "slack" });
+      expect(stampFromSenders([alice], { synthetic: true, origin: "slack" })).toEqual({ initiator: null, origin: "slack" });
+      expect(stampFromSenders(null, { origin: "slack" })).toEqual({ initiator: null, origin: "slack" });
+      expect(stampFromSenders([{ userId: "op@example.com", origin: "panel" }])).toEqual({ initiator: null, origin: "panel" });
+      // Node path: the token's initiator must be the job's sole sender.
+      expect(stampFromSenders([alice], { origin: "slack", expect: "UALICE" }).initiator).toBe("UALICE");
+      expect(stampFromSenders([alice], { origin: "slack", expect: "UBOB" }).initiator).toBeNull();
+    });
+
+    test("a second person's message mid-turn: the bystander's click is refused, an approver decides", async () => {
+      const f = fakeApp();
+      // Alice started the turn; Bob posted while it ran (the route ctx now names
+      // Bob as a slack speaker), so the turn has two senders.
+      const agent = agentWith([{ userId: "UALICE", origin: "slack" }, { userId: "UBOB", origin: "slack" }]);
+      const gate = new PermissionGate(f.app, { turnOf: (sid) => liveTurnStamp(agent, sid, "slack") });
+      gate.bindSession("SAZ8", "CTEAM", "T");
+      const ac = new AbortController();
+      let settled = false;
+      const p = gate.resolver("SAZ8", "Bash", {}, ctx("AZ8", ac.signal)).then((r) => { settled = true; return r; });
+      await firstPost(f);
+      expect((await PendingGates.get("AZ8"))!.payload.initiator).toBeNull();
+      const calls = await f.fire("slaude_perm:allow:AZ8", "UBOB");
+      expect(calls[0].text).toBe(PERM_REFUSED_TEXT);
+      await tick();
+      expect(settled).toBe(false);
+      expect((await PendingGates.get("AZ8"))!.status).toBe("pending");
+      await f.fire("slaude_perm:allow:AZ8", "UAPPROVER");
+      expect(((await p) as any).behavior).toBe("allow");
+    });
+
+    test("a cron turn with a bystander message: the bystander is refused", async () => {
+      const f = fakeApp();
+      // A cron input carries no sender, so the manager reports the senders as
+      // unknown; the bystander's message rewrote the route ctx to origin slack.
+      const agent = agentWith(null);
+      const gate = new PermissionGate(f.app, { turnOf: (sid) => liveTurnStamp(agent, sid, "slack") });
+      gate.bindSession("SAZ9", "CTEAM", "T");
+      const ac = new AbortController();
+      const p = gate.resolver("SAZ9", "Bash", {}, ctx("AZ9", ac.signal));
+      await firstPost(f);
+      expect((await PendingGates.get("AZ9"))!.payload.initiator).toBeNull();
+      await f.fire("slaude_perm:allow:AZ9", "UBOB");
+      expect((await PendingGates.get("AZ9"))!.status).toBe("pending");
+      await f.fire("slaude_perm:deny:AZ9", "UMGR");
+      expect(((await p) as any).behavior).toBe("deny");
+    });
+
+    test("a synthetic turn has no initiator", async () => {
+      const f = fakeApp();
+      const agent = agentWith([{ userId: "UALICE", origin: "slack" }], true);
+      const gate = new PermissionGate(f.app, { turnOf: (sid) => liveTurnStamp(agent, sid, "slack") });
+      gate.bindSession("SAZ10", "CTEAM", "T");
+      const ac = new AbortController();
+      const p = gate.resolver("SAZ10", "Bash", {}, ctx("AZ10", ac.signal));
+      await firstPost(f);
+      await f.fire("slaude_perm:allow:AZ10", "UALICE");
+      expect((await PendingGates.get("AZ10"))!.status).toBe("pending");
+      ac.abort();
+      await p;
+    });
+
+    test("a click with no user id is refused and decides nothing", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app, slackTurn("UALICE"));
+      gate.bindSession("SAZ11", "CTEAM", "T");
+      const ac = new AbortController();
+      let settled = false;
+      const p = gate.resolver("SAZ11", "Bash", {}, ctx("AZ11", ac.signal)).then((r) => { settled = true; return r; });
+      await firstPost(f);
+      const calls = await f.fire("slaude_perm:allow:AZ11", undefined as any);
+      expect(calls[0].text).toBe(PERM_REFUSED_TEXT);
+      await tick();
+      expect(settled).toBe(false);
+      expect((await PendingGates.get("AZ11"))!.status).toBe("pending");
+      ac.abort();
+      await p;
+    });
+
+    test("a failing authorisation lookup refuses the click, audits it, and leaves the row pending", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app, slackTurn("UALICE"));
+      await gate.open({ sessionId: "SAZ12", toolName: "Bash", input: {}, toolUseId: "AZ12", channel: "CTEAM", threadTs: "T", turn: turnStamp("UALICE", "slack") });
+      const spy = spyOn(OneOnOne, "find").mockImplementation(async () => { throw new Error("db down"); });
+      try {
+        const calls = await f.fire("slaude_perm:allow:AZ12", "UALICE");
+        expect(calls[0].text).toBe(PERM_REFUSED_TEXT);
+      } finally {
+        spy.mockRestore();
+      }
+      expect((await PendingGates.get("AZ12"))!.status).toBe("pending");
+      const [ev] = await refusals("SAZ12");
+      expect(ev).toMatchObject({ action: "gate.permission.refused", decision: "refused", actorId: "UALICE" });
+      expect((ev!.details as any).error).toBe("db down");
     });
 
     test("a row written before the initiator stamp (no key) is treated as no initiator", async () => {
