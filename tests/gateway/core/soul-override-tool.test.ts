@@ -66,6 +66,18 @@ describe("soul_override MCP tool", () => {
     expect(rows.find((e) => e.action === "soul.override.set")!.details).toMatchObject({ op: "add", value: "C0AUD", via: "agent_tool" });
   });
 
+  it("the agent tool records the turn's persona, session and thread when the gateway supplies them", async () => {
+    await db.run("DELETE FROM audit_events");
+    const def = surfaceTools(fakeSurface, {
+      initiator: () => "U0MGR",
+      auditContext: () => ({ persona: "helper", sessionId: "S_SOUL", channelId: "C0SOUL", threadTs: "5.5" }),
+    }).find((d) => d.name === "soul_override")!;
+    await def.handler({ field: "trust", action: "add", value: "C0CTX" });
+    await flushAudits();
+    const [ev] = (await AuditEvents.list({ action: "soul.override.set" })).items;
+    expect(ev).toMatchObject({ persona: "helper", sessionId: "S_SOUL", channelId: "C0SOUL", threadTs: "5.5", actorId: "U0MGR" });
+  });
+
   it("not mounted when no initiator resolver provided (legacy callers)", () => {
     const defs = surfaceTools(fakeSurface);
     expect(defs.find((d) => d.name === "soul_override")).toBeUndefined();

@@ -135,8 +135,8 @@ import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
-import { auditExpiredGates, auditGateRow, emitAudit } from "../../audit/emit";
-import { auditIgnore, auditOneOnOne } from "../../audit/events";
+import { auditExpiredGates, auditGateRow } from "../../audit/emit";
+import { auditIgnore, auditOneOnOne, auditSoulOverride } from "../../audit/events";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { bridgeExternalMcp, connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
 import { connectText, createMcpBridge, reauthText, type McpBridge } from "./mcp-bridge";
@@ -893,6 +893,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           sessionId,
           app: jobApp,
           ...req,
+          persona: ctx.personaId,
         });
       ctx.reloadSession = (prompt?) => agent.reload(sessionId, prompt);
       noteTurnSender(sessionId, ctx);
@@ -971,7 +972,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     };
     ctx.requestApproval = target.wake
       ? refuseApprovalInWake
-      : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req });
+      : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req, persona: ctx.personaId });
     if (target.wake) ctx.wake = { runId: run.runId, deps: wakeToolDeps };
     ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
     noteTurnSender(session.id, ctx);
@@ -1491,6 +1492,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const servers: Record<string, McpServerConfig> = {
       [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, {
         initiator: () => route.ctx.userId,
+        auditContext: () => ({
+          persona: route.ctx.personaId, sessionId,
+          channelId: route.ctx.channel, threadTs: route.ctx.threadTs ?? route.ctx.inboundTs,
+        }),
         setOneOnOne: (action, scope) => agentOneOnOne(sessionId, route.ctx, action, scope),
         setMentionOnly: (active) => agentMentionOnly(route.ctx, active),
       }),
@@ -2666,12 +2671,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             { managerId: soul.manager.userId },
           );
           if (res.ok) {
-            emitAudit({
-              persona: dispatch?.personaId, actorKind: "slack_user", actorId: userId,
-              action: "soul.override.set", targetKind: "soul_field", targetId: res.field,
-              sessionId: session.id, channelId, threadTs,
-              summary: `soul override ${res.field} ${slash.action} ${res.value}`,
-              details: { field: res.field, op: slash.action, value: res.value, via: "slash" },
+            auditSoulOverride("soul.override.set", {
+              userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs,
+              field: res.field, op: slash.action, value: res.value, via: "slash",
             });
             agent.noteSessionEvent(session.id, `Soul ACL override: ${slash.action} \`${res.value}\` to \`${res.field}\` (shadows SOUL.md).`);
           }
@@ -2685,13 +2687,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (slash.kind === "soul-clear") {
           if (slash.field === "all") await SoulOverrides.clear();
           else await SoulOverrides.clear(FIELD_ALIASES[slash.field]);
-          emitAudit({
-            persona: dispatch?.personaId, actorKind: "slack_user", actorId: userId,
-            action: "soul.override.cleared", targetKind: "soul_field",
-            targetId: slash.field === "all" ? "all" : FIELD_ALIASES[slash.field],
-            sessionId: session.id, channelId, threadTs,
-            summary: `soul overrides cleared (${slash.field})`,
-            details: { field: slash.field, via: "slash" },
+          auditSoulOverride("soul.override.cleared", {
+            userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs,
+            field: slash.field === "all" ? "all" : FIELD_ALIASES[slash.field], via: "slash",
           });
           agent.noteSessionEvent(session.id, `Soul ACL overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
           await reply(`:leftwards_arrow_with_hook: soul overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
@@ -3030,6 +3028,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               summary: `Edit cron job ${slash.id}: "${slash.prompt}" at "${slash.cronExpr}"`,
               category: "cron",
               app,
+              persona: dispatch?.personaId,
               risks: "Changes unattended scheduled agent execution.",
             });
             if (!approval.approved) return void (await reply(":x: cron edit denied by manager"));
@@ -3085,6 +3084,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               summary: `Cron job: "${slash.prompt}" at "${slash.cronExpr}"`,
               category: "cron",
               app,
+              persona: dispatch?.personaId,
               risks: "Scheduled agent execution — runs unattended.",
             });
             if (!approval.approved) {
@@ -3190,7 +3190,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               origin: "slack",
             };
             ctx.requestApproval = (req) =>
-              approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app: appOf(ctx), ...req });
+              approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app: appOf(ctx), ...req, persona: ctx.personaId });
             ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
             noteTurnSender(session.id, ctx);
             routes.set(session.id, {
@@ -3349,7 +3349,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // The previous message's tail first (arrival order).
     await order.ready;
 
-    permissions.bindSession(session.id, channelId, threadTs, app);
+    permissions.bindSession(session.id, channelId, threadTs, app, session.persona_id);
 
     // First turn for this session → seed the SlackContext + route.
     // Subsequent turns → mutate the existing context so the bound MCP tools
@@ -3401,6 +3401,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           sessionId: session.id,
           app: appOf(ctx),
           ...req,
+          persona: ctx.personaId,
         });
       ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       noteTurnSender(session.id, ctx);
@@ -4250,7 +4251,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     };
     ctx.requestApproval = claims.wake
       ? refuseApprovalInWake
-      : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, app, ...req });
+      : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, app, ...req, persona: ctx.personaId });
     if (claims.wake && claims.bgRun) ctx.wake = { runId: claims.bgRun, deps: wakeToolDeps };
     ctx.reloadSession = (prompt?) => agent.reload(claims.session, prompt);
     return ctx;
@@ -4262,6 +4263,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       surfaceFor: (ctx) => wrapSurface(surfaceForCtx(ctx), ctx.sessionId ?? ""),
       surfaceOpts: (claims, ctx) => ({
         initiator: () => ctx.userId,
+        auditContext: () => ({
+          persona: ctx.personaId, sessionId: claims.session,
+          channelId: ctx.channel, threadTs: ctx.threadTs ?? ctx.inboundTs,
+        }),
         setOneOnOne: (action, scope) => agentOneOnOne(claims.session, ctx, action, scope),
         setMentionOnly: (active) => agentMentionOnly(ctx, active),
       }),
@@ -4281,6 +4286,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           decisionReason: args.decisionReason,
           suggestions: args.suggestions,
           app: { apiAppId: claims.app, teamId: claims.team },
+          persona: claims.persona,
         }),
       openApproval: (claims, args) =>
         approvals.open({
@@ -4289,6 +4295,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           sessionId: claims.session,
           app: { apiAppId: claims.app, teamId: claims.team },
           ...args,
+          persona: claims.persona,
         }),
     },
     // Instant long-poll wakeup on gate clicks when Redis is configured;

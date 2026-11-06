@@ -10,8 +10,9 @@
  * Never pass tokens, cookie values, the authorization code, the client secret,
  * or chat message content into `detail`.
  */
-import { emitAudit } from "../../../audit/emit";
-import type { AuditDeps, AuditInput } from "../../../audit";
+import { emitAudit, type EmitInput } from "../../../audit/emit";
+import { soulOverrideInput } from "../../../audit/events";
+import type { AuditDeps } from "../../../audit";
 import type { PanelRole } from "./roles";
 
 export interface AuditRecord {
@@ -27,13 +28,27 @@ export interface AuditRecord {
 const SESSION_ACTIONS = new Set(["chat", "lock", "release", "force-release"]);
 
 /** Panel action → platform action, target and (for refusals) decision. Pure. */
-export function panelAuditInput(rec: AuditRecord): AuditInput & { persona?: string | null } {
+export function panelAuditInput(rec: AuditRecord): EmitInput {
   const detail = rec.detail
     ? Object.fromEntries(Object.entries(rec.detail).filter(([, v]) => v !== undefined))
     : {};
   const outcome = rec.outcome ?? "ok";
   const persona = typeof detail.persona === "string" ? detail.persona : undefined;
   const tenantId = typeof detail.tenantId === "string" ? detail.tenantId : undefined;
+  const panelDetails = { panelAction: rec.action, ...(rec.role !== undefined ? { role: rec.role } : {}), outcome, ...detail };
+  if (rec.action === "persona.override" && outcome === "ok" && (detail.op === "set" || detail.op === "clear")) {
+    // The same change a manager makes with /soul: the shared builder, so the
+    // three surfaces (Slack, agent tool, panel) record one shape.
+    return soulOverrideInput(detail.op === "set" ? "soul.override.set" : "soul.override.cleared", {
+      operator: rec.operator,
+      tenantId,
+      persona,
+      field: typeof detail.field === "string" ? detail.field : null,
+      op: detail.op,
+      via: "panel",
+      details: panelDetails,
+    });
+  }
   let action: string;
   let targetKind: string | null = null;
   let targetId: string | null = null;
@@ -42,8 +57,8 @@ export function panelAuditInput(rec: AuditRecord): AuditInput & { persona?: stri
   } else if (rec.action === "persona.create") {
     action = "panel.persona.onboard";
   } else if (rec.action === "persona.override") {
-    // The same change a manager makes with /soul, so the same action names.
-    action = detail.op === "clear" ? "soul.override.cleared" : detail.op === "set" ? "soul.override.set" : "panel.persona.override";
+    // A refused override (no change happened).
+    action = "panel.persona.override";
     targetKind = "soul_field";
     targetId = typeof detail.field === "string" ? detail.field : null;
   } else if (rec.action === "reload") {
@@ -66,12 +81,7 @@ export function panelAuditInput(rec: AuditRecord): AuditInput & { persona?: stri
     decision: outcome === "denied" ? "refused" : null,
     sessionId: rec.session ?? null,
     summary: `${rec.action}${outcome === "ok" ? "" : ` (${outcome})`}`,
-    details: {
-      panelAction: rec.action,
-      ...(rec.role !== undefined ? { role: rec.role } : {}),
-      outcome,
-      ...detail,
-    },
+    details: panelDetails,
   };
 }
 

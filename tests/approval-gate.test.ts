@@ -417,6 +417,17 @@ describe("ApprovalGate", () => {
       }
     });
 
+    test("the request's persona is stamped into the row and recorded", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, []);
+      const p = gate.request({ channel: "C", threadTs: "T", summary: "x", sessionId: "SAPRP", persona: "helper" });
+      await f.fire(await buttonId(f, "deny"), "U002");
+      await p;
+      const [ev] = await auditRows("SAPRP");
+      expect(ev!.persona).toBe("helper");
+    });
+
     test("deny records decision deny", async () => {
       writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
       const f = fakeApp();

@@ -12,6 +12,8 @@ async function capture(fn: (sink: (l: string) => void) => void): Promise<string[
 }
 
 beforeEach(async () => {
+  // Writes left in flight by an earlier test must land before the wipe.
+  await flushAudits();
   await db.run("DELETE FROM audit_events");
 });
 

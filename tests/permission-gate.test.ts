@@ -663,6 +663,22 @@ describe("PermissionGate", () => {
       expect(JSON.stringify(ev!.details)).not.toContain("hunter2");
     });
 
+    test("the persona bound with the session is stamped into the row and used, with no session lookup", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app);
+      gate.bindSession("SAUDP", "C", "T", undefined, "helper");
+      const ac = new AbortController();
+      const p = gate.resolver("SAUDP", "Bash", {}, ctx("UAP", ac.signal));
+      expect((await PendingGates.get("UAP"))!.payload.personaName).toBe("helper");
+      await f.fire(await buttonId(f, "allow"), "USR");
+      await p;
+      const r = await gate.open({ sessionId: "SAUDP", toolName: "Read", input: {}, toolUseId: "UAP2", channel: "C", threadTs: "T", persona: "helper" });
+      expect("pendingId" in r).toBe(true);
+      await f.fire("slaude_perm:deny:UAP2", "USR");
+      const rows = await auditRows("SAUDP", 2);
+      expect(rows.map((e) => e.persona)).toEqual(["helper", "helper"]);
+    });
+
     test("deny records decision deny; a duplicate click records nothing more", async () => {
       const f = fakeApp();
       const gate = new PermissionGate(f.app);
@@ -673,6 +689,7 @@ describe("PermissionGate", () => {
       await f.fire(id, "USR");
       await p;
       await f.fire(id, "USR");
+      await flushAudits();
       const rows = await auditRows("SAUD2");
       expect(rows.map((r) => [r.action, r.decision])).toEqual([["gate.permission.decided", "deny"]]);
     });

@@ -116,6 +116,8 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("panel persona overrides", () =>
     const p = "/panel/api/personas/ana/overrides/model";
     expect((await panel.fetch(put(p, { value: "m" }, superadmin)))!.status).toBe(200);
     expect((await panel.fetch(del(p, superadmin)))!.status).toBe(200);
+    // A second DELETE removes nothing, so it records nothing.
+    expect((await panel.fetch(del(p, superadmin)))!.status).toBe(200);
     await flushAudits();
     const rows = (await AuditEvents.list({ action: "soul.override." })).items;
     expect(rows.map((e) => e.action).sort()).toEqual(["soul.override.cleared", "soul.override.set"]);

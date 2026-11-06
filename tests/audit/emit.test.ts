@@ -5,6 +5,8 @@ import * as Sessions from "../../src/db/sessions";
 import { auditExpiredGates, emitAudit, flushAudits, gateActionKind, gateTarget } from "../../src/audit/emit";
 
 beforeEach(async () => {
+  // Writes left in flight by an earlier test must land before the wipe.
+  await flushAudits();
   await db.run("DELETE FROM audit_events");
 });
 
@@ -34,6 +36,16 @@ describe("emitAudit", () => {
     await flushAudits();
     const by = Object.fromEntries((await AuditEvents.list({ action: "x." })).items.map((e) => [e.action, e.persona]));
     expect(by).toEqual({ "x.one": "helper", "x.two": "default", "x.three": "named" });
+  });
+
+  test("flushAudits with a timeout returns even when a write never settles", async () => {
+    emitAudit(
+      { actorKind: "system", actorId: "system", action: "x.hang" },
+      { insert: () => new Promise<void>((r) => setTimeout(r, 300)), sink: () => {} },
+    );
+    const t0 = Date.now();
+    await flushAudits({ timeoutMs: 30 });
+    expect(Date.now() - t0).toBeLessThan(250);
   });
 
   test("a failing writer never throws out of emitAudit", async () => {

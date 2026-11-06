@@ -387,7 +387,7 @@ export class PermissionGate {
   #transport: Pick<Transport, "client" | "clientFor">;
   #autoAllow: Set<string>;
   /** sessionId → channel/thread for routing the prompt. */
-  #routes = new Map<string, { channel: string; threadTs: string; app?: AppRef }>();
+  #routes = new Map<string, { channel: string; threadTs: string; app?: AppRef; persona?: string }>();
   #pending = new Map<PendingKey, Pending>();
   /** Explicit bus override (tests/sim); undefined = env-driven default. */
   #busOverride: GateBus | null | undefined;
@@ -452,6 +452,9 @@ export class PermissionGate {
             // its waiter, so deciding here is safe (spec §5).
             const row = await PendingGates.resolve(toolUseId, status, userId, { decision });
             if (!row) return void (await stale());
+            // No input in details here: a poll row deliberately does not store
+            // the tool input (it can carry secrets, and the row outlives the
+            // decision by 24 h), and this replica holds no waiter that has it.
             auditPermDecided(row, userId, decision);
             await this.#publish(toolUseId);
             try {
@@ -537,9 +540,10 @@ export class PermissionGate {
   }
 
   /** Adapter calls this when it knows where a session lives in Slack, and
-   *  which app it belongs to: the card is posted as that app (D1.2). */
-  bindSession(sessionId: string, channel: string, threadTs: string, app?: AppRef) {
-    this.#routes.set(sessionId, { channel, threadTs, ...(app ? { app } : {}) });
+   *  which app it belongs to: the card is posted as that app (D1.2). `persona`
+   *  is stamped into the gate row so its audit rows need no session lookup. */
+  bindSession(sessionId: string, channel: string, threadTs: string, app?: AppRef, persona?: string | null) {
+    this.#routes.set(sessionId, { channel, threadTs, ...(app ? { app } : {}), ...(persona ? { persona } : {}) });
   }
 
   unbindSession(sessionId: string) {
@@ -564,6 +568,8 @@ export class PermissionGate {
     suggestions?: unknown[];
     /** Slack app the session belongs to (D1.2). */
     app?: AppRef;
+    /** Persona name, stamped into the row for its audit rows. */
+    persona?: string | null;
   }): Promise<{ decision: PermissionDecision } | { pendingId: string }> {
     const policy = permissionPolicy(args.toolName, args.input, this.#autoAllow, gateVoiceAudio(args.toolName));
     if (policy) return { decision: policy };
@@ -577,6 +583,7 @@ export class PermissionGate {
         channel: args.channel,
         threadTs: args.threadTs,
         waiter: "poll",
+        ...(args.persona ? { personaName: args.persona } : {}),
         ...(args.suggestions?.length ? { suggestions: args.suggestions } : {}),
       },
       expiresAt: Date.now() + PERM_GATE_TTL_MS,
@@ -622,7 +629,12 @@ export class PermissionGate {
       id: toolUseId,
       kind: "perm",
       sessionId,
-      payload: { toolName, channel: route.channel, threadTs: route.threadTs },
+      payload: {
+        toolName,
+        channel: route.channel,
+        threadTs: route.threadTs,
+        ...(route.persona ? { personaName: route.persona } : {}),
+      },
       expiresAt: Date.now() + PERM_GATE_TTL_MS,
     });
 

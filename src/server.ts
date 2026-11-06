@@ -22,6 +22,7 @@ import { nodeKeyViolations } from "./gateway/auth/node-credential";
 import { brainEnabled, brainEngineConfig, closeBrain } from "./knowledge/brain";
 import { brainMode } from "./knowledge/brain-config";
 import * as SoulOverrides from "./db/soul-overrides";
+import { flushAudits } from "./audit/emit";
 import { bootProviderSecretResolver } from "./gateway/core/provider-secrets";
 import { setProviderSecretResolver } from "./gateway/api/tenants";
 
@@ -194,6 +195,9 @@ async function main() {
     await slack.stop();
     // The gateway's stop ends brain work but leaves the engine open; an embedded
     // brain then keeps its lock and the next boot reports an unclean shutdown.
+    // Audit writes still in flight (decisions made just before the signal): give
+    // them a short bound so a hung database cannot hold the exit.
+    await flushAudits({ timeoutMs: 2_000 }).catch(() => {});
     await closeBrain().catch((e) => console.error("[slaude] brain close failed:", e));
     process.exit(0);
   };

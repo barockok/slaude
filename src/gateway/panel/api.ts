@@ -295,14 +295,19 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         if (!row.slack_channel_id || !row.slack_thread_ts) {
           return json(400, { error: "session has no Slack thread to unlock" });
         }
+        const held = await OneOnOne.find(row.slack_channel_id, row.slack_thread_ts);
         // Unlocking must also end remote mode: a surviving target would come back to
         // life on the next lock by the same user.
         await endRemoteForThread(row.slack_channel_id, row.slack_thread_ts, { sessionId: row.id, userMachineOnly: true });
         await OneOnOne.unlock(row.slack_channel_id, row.slack_thread_ts);
-        auditOneOnOne("one_on_one.unlocked", {
-          operator: operatorId, persona: row.persona_id, sessionId: row.id,
-          channelId: row.slack_channel_id, threadTs: row.slack_thread_ts, via: "panel",
-        });
+        // One row for this control, and only when a lock was released.
+        if (held) {
+          auditOneOnOne("one_on_one.unlocked", {
+            operator: operatorId, persona: row.persona_id, sessionId: row.id,
+            channelId: row.slack_channel_id, threadTs: row.slack_thread_ts,
+            lockedUser: held.locked_user, via: "panel",
+          });
+        }
         // The unlock has applied; a failed reload must not turn it into a 500.
         try {
           deps.onUnlock?.(row.id);
@@ -312,7 +317,10 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         break;
       }
     }
-    audit({ action: `control.${action}`, operator: operatorId, role, session: row.id, detail: { model, mode } });
+    // unlock-1on1 is recorded above as one_on_one.unlocked (one row, not two).
+    if (action !== "unlock-1on1") {
+      audit({ action: `control.${action}`, operator: operatorId, role, session: row.id, detail: { model, mode } });
+    }
     const fresh = await Sessions.findById(row.id);
     return json(200, { ok: true, session: fresh });
   }
@@ -574,10 +582,13 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             throw e;
           }
           const reload = await publishConfigReload(deps.pubsub, tenant);
-          audit({
-            action: "persona.override", operator: operatorId, role, outcome: "ok",
-            detail: { tenantId: tenant, persona: name, field, op: req.method === "PUT" ? "set" : "clear" },
-          });
+          // A DELETE that removed nothing changed nothing: no audit row.
+          if (req.method === "PUT" || removed) {
+            audit({
+              action: "persona.override", operator: operatorId, role, outcome: "ok",
+              detail: { tenantId: tenant, persona: name, field, op: req.method === "PUT" ? "set" : "clear" },
+            });
+          }
           return json(200, { ok: true, ...(removed !== undefined ? { removed } : {}), ...reload });
         }
         return json(404, { error: "not found" });

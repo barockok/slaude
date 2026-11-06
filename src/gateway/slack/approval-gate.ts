@@ -25,6 +25,8 @@ export type ApprovalRequest = {
    *  timeout edit made, as this app. A click needs no client: it answers
    *  through the click's own response_url, which belongs to the posting app. */
   app?: AppRef;
+  /** Persona name, stamped into the row for its audit rows. */
+  persona?: string | null;
 };
 
 export type ApprovalDecision = {
@@ -381,6 +383,7 @@ export class ApprovalGate {
         category: req.category ?? null,
         approvers: [...approvers],
         waiter: "poll",
+        ...(req.persona ? { personaName: req.persona } : {}),
       },
       expiresAt: timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : undefined,
     });
@@ -445,6 +448,7 @@ export class ApprovalGate {
         summary: req.summary,
         category: req.category ?? null,
         approvers: [...approvers],
+        ...(req.persona ? { personaName: req.persona } : {}),
       },
       expiresAt: timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : undefined,
     });

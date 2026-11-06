@@ -1,4 +1,4 @@
-import * as Sessions from "../db/sessions";
+import { db } from "../db/schema";
 import type { PendingGate } from "../db/pending-gates";
 import { audit, type AuditDeps, type AuditInput } from "./index";
 
@@ -6,9 +6,9 @@ import { audit, type AuditDeps, type AuditInput } from "./index";
  * Fire-and-forget front door for decision points. `audit()` already never
  * throws; this adds two things the call sites need:
  *
- *  - persona: when the caller does not know it (the Slack gates are shared by
- *    every persona on a gateway), it is read from the session row; anything
- *    unknown is recorded as "default".
+ *  - persona: callers pass it when they know it (gate rows carry
+ *    `personaName`); otherwise it is read from the session row (persona_id
+ *    only); anything unknown is recorded as "default".
  *  - in-flight tracking, so tests (and a graceful shutdown) can wait for the
  *    writes with `flushAudits()` without the decision path ever awaiting them.
  */
@@ -21,7 +21,7 @@ export function emitAudit(input: EmitInput, deps?: AuditDeps): void {
     let persona = input.persona;
     if (!persona && input.sessionId) {
       try {
-        persona = (await Sessions.findById(input.sessionId))?.persona_id ?? null;
+        persona = (await db.one<{ persona_id: string | null }>(`SELECT persona_id FROM sessions WHERE id = ?`, [input.sessionId]))?.persona_id ?? null;
       } catch {
         persona = null;
       }
@@ -32,10 +32,24 @@ export function emitAudit(input: EmitInput, deps?: AuditDeps): void {
   void p.finally(() => inflight.delete(p));
 }
 
-/** Resolve once every audit write started so far has settled. */
-export async function flushAudits(): Promise<void> {
-  while (inflight.size) await Promise.all([...inflight]);
+/** Resolve once every audit write started so far has settled, or after
+ *  `timeoutMs` (shutdown: a hung sink must not hold the exit). */
+export async function flushAudits(opts: { timeoutMs?: number } = {}): Promise<void> {
+  const drain = (async () => {
+    while (inflight.size) await Promise.all([...inflight]);
+  })();
+  if (opts.timeoutMs === undefined) return drain;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<void>((r) => {
+    timer = setTimeout(r, opts.timeoutMs);
+    timer.unref?.();
+  });
+  await Promise.race([drain, bound]);
+  clearTimeout(timer);
 }
+
+/** A non-empty string, else null. */
+const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 
 /** pending_gates kind → the audit action segment. */
 export function gateActionKind(kind: string): string {
@@ -46,7 +60,6 @@ export function gateActionKind(kind: string): string {
  *  category for an approval, the server for an /mcp connect card. */
 export function gateTarget(row: Pick<PendingGate, "kind" | "id" | "payload">): { targetKind: string; targetId: string } {
   const p = row.payload ?? {};
-  const str = (v: unknown) => (typeof v === "string" && v ? v : null);
   if (row.kind === "perm") return { targetKind: "tool", targetId: str(p.toolName) ?? "unknown" };
   if (row.kind === "approval") return { targetKind: "approval", targetId: str(p.scope) ?? str(p.category) ?? "plan" };
   return { targetKind: "mcp_server", targetId: str(p.serverName) ?? row.id };
@@ -69,7 +82,6 @@ export function auditGateRow(
   },
 ): void {
   const p = row.payload ?? {};
-  const str = (v: unknown) => (typeof v === "string" && v ? v : null);
   emitAudit({
     actorKind: ev.actorKind,
     actorId: ev.actorId,
