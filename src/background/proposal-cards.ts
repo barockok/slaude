@@ -26,6 +26,8 @@
  * A write that fails puts the row back to open, so it can be clicked again.
  */
 import * as Proposals from "../db/proposals";
+import { emitAudit } from "../audit/emit";
+import { getPersonaRegistry } from "../persona/registry";
 import type { Proposal } from "../db/proposals";
 import { redactSecrets } from "../gateway/core/status-text";
 import { clientForApp, type AppRef, type Transport } from "../gateway/core/transport";
@@ -268,9 +270,11 @@ async function forwardToManager(p: Proposal, by: string, at: number): Promise<Cl
     });
   } catch (e) {
     await Proposals.reopen(p.id, by, at).catch(() => {});
+    auditProposal(p, by, "allow", "reopened");
     console.error(`[background] proposal ${p.id}: approved by ${by} but could not be sent to the manager: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
     return { ok: false, text: ":warning: that did not reach the manager. The proposal is open again; try again." };
   }
+  auditProposal(p, by, "allow", "forwarded");
   return { ok: true, line: `Approved by <@${by}>; sent to the manager, who decides whether it goes into shared memory` };
 }
 
@@ -288,6 +292,7 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   }
   if (a.verb === "reject") {
     if (!(await Proposals.decide(p.id, "rejected", a.by, at))) return { ok: false, text: ":lock: this proposal was already decided" };
+    auditProposal(p, a.by, "deny", "rejected");
     return { ok: true, line: `Rejected by <@${a.by}>` };
   }
   let w: { pages: PageArg[]; target: MemoizeTarget } | null = null;
@@ -302,7 +307,10 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   // Never boot the brain from a click: the proposal stays open for a later one.
   if (w && deps.ready && !deps.ready()) return { ok: false, text: ":hourglass: memory is not available right now; the proposal stays open, try again later." };
   if (!(await Proposals.decide(p.id, "approved", a.by, at))) return { ok: false, text: ":lock: this proposal was already decided" };
-  if (!w) return { ok: true, line: `Approved by <@${a.by}>; the operator makes the change in git` };
+  if (!w) {
+    auditProposal(p, a.by, "allow", "recorded");
+    return { ok: true, line: `Approved by <@${a.by}>; the operator makes the change in git` };
+  }
   let res: { ok: true } | { ok: false; reason: string };
   try {
     res = await applyWrite(p, w, a.by, deps);
@@ -311,10 +319,40 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   }
   if (!res.ok) {
     await Proposals.reopen(p.id, a.by, at).catch((e) => console.error(`[background] proposal ${p.id}: could not reopen after a failed write: ${e instanceof Error ? e.message : String(e)}`));
+    auditProposal(p, a.by, "allow", "reopened");
     console.error(`[background] proposal ${p.id}: approved by ${a.by} but the write failed: ${redactSecrets(res.reason)}`);
     return { ok: false, text: `:warning: the write did not land (${escapeMrkdwn(clip(redactSecrets(res.reason), 300))}). The proposal is open again; try again.` };
   }
+  auditProposal(p, a.by, "allow", "written");
   return { ok: true, line: `Approved by <@${a.by}>; written to ${w.target === "shared" ? "shared memory" : "the agent's own memory"}` };
+}
+
+/** The persona whose agent id (its Slack user id) owns a proposal; "default" otherwise. */
+function personaOfAgent(agentId: string): string {
+  try {
+    return getPersonaRegistry().list().find((p) => p.slackUserId === agentId && p.name)?.name ?? "default";
+  } catch {
+    return "default";
+  }
+}
+
+/**
+ * proposal.decided, once per click that won `Proposals.decide`. `outcome`
+ * says what followed: rejected, recorded (operator acts in git), written,
+ * forwarded (to the manager), or reopened (the follow-up failed).
+ */
+function auditProposal(p: Proposal, by: string, decision: "allow" | "deny", outcome: string): void {
+  emitAudit({
+    persona: personaOfAgent(p.agentId),
+    actorKind: "slack_user",
+    actorId: by,
+    action: "proposal.decided",
+    targetKind: "proposal",
+    targetId: p.id,
+    decision,
+    summary: `${p.kind} proposal ${decision === "allow" ? "approved" : "rejected"} (${outcome})`,
+    details: { kind: p.kind, toKind: p.toKind, scope: p.scope, outcome, agentId: p.agentId },
+  });
 }
 
 /** A click on Restore: the manager or backup moves a retired skill back, once. */

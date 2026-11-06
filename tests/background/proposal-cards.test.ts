@@ -39,6 +39,8 @@ import { runDigest } from "../../src/background/digest";
 import { passHandlers } from "../../src/background/pass-tools";
 import { CONVERSATION_REFUSAL, LESSONS_PAGE_REFUSAL, LESSONS_REFUSAL, PROFILE_PAGE_REFUSAL, SLUG_SEGMENT_REFUSAL } from "../../src/background/proposal-payload";
 import { CREDENTIAL_REFUSAL } from "../../src/knowledge/memory-pages";
+import * as AuditEvents from "../../src/db/audit-events";
+import { flushAudits } from "../../src/audit/emit";
 
 const AGENT = "U0AGENT";
 const MANAGER = "U0MANAGER";
@@ -189,6 +191,32 @@ describe("approving and rejecting", () => {
     expect(brain.calls.length).toBe(0);
   });
 
+  test("each won decision records one proposal.decided row; refusals and repeat clicks record none", async () => {
+    await db.run("DELETE FROM audit_events WHERE action = 'proposal.decided'");
+    const { deps } = setup();
+    const written = await teamFact();
+    await decideProposal({ id: written, verb: "approve", by: ALICE }, deps); // refused
+    await decideProposal({ id: written, verb: "approve", by: MANAGER }, deps);
+    await decideProposal({ id: written, verb: "approve", by: BACKUP }, deps); // already decided
+    const rejected = await teamFact();
+    await decideProposal({ id: rejected, verb: "reject", by: BACKUP }, deps);
+    const forwarded = await promote();
+    await decideProposal({ id: forwarded, verb: "approve", by: ALICE }, deps);
+    const recorded = await Proposals.insert({ agentId: AGENT, kind: "skill-removal", toKind: "manager", toUser: null, scope: "agent", payload: { slug: "s" }, createdAt: NOW - DAY });
+    await decideProposal({ id: recorded, verb: "approve", by: MANAGER }, deps);
+    await flushAudits();
+    const rows = (await AuditEvents.list({ action: "proposal.decided" })).items;
+    const by = Object.fromEntries(rows.map((r) => [r.targetId, [r.decision, r.actorId, r.details.outcome]]));
+    expect(rows).toHaveLength(4);
+    expect(by).toEqual({
+      [written]: ["allow", MANAGER, "written"],
+      [rejected]: ["deny", BACKUP, "rejected"],
+      [forwarded]: ["allow", ALICE, "forwarded"],
+      [recorded]: ["allow", MANAGER, "recorded"],
+    });
+    for (const r of rows) expect(r).toMatchObject({ actorKind: "slack_user", targetKind: "proposal", persona: "default" });
+  });
+
   test("an expired proposal cannot be decided", async () => {
     const { deps } = setup({ now: () => new Date(NOW + 14 * DAY) });
     const id = await teamFact();
@@ -211,6 +239,9 @@ describe("approving and rejecting", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.text).toContain("open again");
     expect((await Proposals.get(id))!.status).toBe("open");
+    await flushAudits();
+    const [ev] = (await AuditEvents.list({ action: "proposal.decided" })).items.filter((e) => e.targetId === id);
+    expect(ev?.details.outcome).toBe("reopened");
   });
 
   test("with the brain not open nothing is decided", async () => {
