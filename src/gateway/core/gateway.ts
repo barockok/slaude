@@ -134,6 +134,7 @@ import { downloadAttachments, type SlackFile } from "../slack/attachments";
 import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
+import * as AuditEvents from "../../db/audit-events";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { bridgeExternalMcp, connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
 import { connectText, createMcpBridge, reauthText, type McpBridge } from "./mcp-bridge";
@@ -815,6 +816,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // quiet deployments where the inbound-path purge never fires.
     void PendingGates.sweepExpired().catch(() => {});
     void PendingGates.purgeSettledOlderThan().catch(() => {});
+    // Audit rows are the durable record; kept SLAUDE_AUDIT_RETENTION_DAYS.
+    void AuditEvents.purgeOlderThan(env.auditRetentionDays() * 86_400_000).catch(() => {});
     void SeenEvents.purgeOlderThan().catch(() => {});
     void SlackOauthFlows.sweepExpiredFlows().catch(() => {});
     // Idle sandboxes (provisioned environments) are torn down and restart on

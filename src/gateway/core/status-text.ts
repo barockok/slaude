@@ -48,6 +48,10 @@ const SECRET_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9._-]{10,}/g, // JWT
 ];
 
+/** Object keys whose values are secrets whatever they hold (approval cards,
+ *  audit details). */
+export const SECRET_KEY = /token|secret|key|password|authorization|cookie|credential/i;
+
 /** Deterministic regex backstop: mask anything secret-shaped. */
 export function redactSecrets(s: string): string {
   let out = s;

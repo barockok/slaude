@@ -9,6 +9,7 @@ import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { voiceStartProblem } from "../../agent/voice-mcp";
 import { matchAudioOrigin, type AudioPolicy } from "../../voice/audio-acl";
 import { audioPolicyFromEnv } from "../../voice/config";
+import { SECRET_KEY } from "../core/status-text";
 
 type PendingKey = string; // toolUseID
 
@@ -168,10 +169,6 @@ export function decisionFromPermRow(
   return { behavior: "deny", message: row.status === "expired" ? "expired before a decision" : "cancelled" };
 }
 
-/** Keys whose values never appear on an approval card (the card is posted
- *  into a shared thread). Matched at any depth of the tool input. */
-const SECRET_KEY = /token|secret|key|password|authorization|cookie|credential/i;
-
 /** Capability URLs: the secret is in the path, so only the origin may show.
  *  voice_start's stream_url/clear_url anywhere, and any `*_url` under `audio`. */
 const CAPABILITY_URL_KEY = /^(stream|clear)_url$/i;
@@ -187,7 +184,8 @@ function originOnly(v: unknown): string {
   }
 }
 
-/** Copy of `value` with every secret-named key's value replaced, every value
+/** Copy of `value` with every secret-named key's value replaced (SECRET_KEY,
+ *  matched at any depth: the card is posted into a shared thread), every value
  *  under a `headers` object (route headers may carry auth of any name), and
  *  every capability URL cut to its origin. */
 export function redactForCard(value: unknown, depth = 0, parentKey = ""): unknown {
