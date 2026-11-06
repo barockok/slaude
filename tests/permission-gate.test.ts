@@ -2,6 +2,8 @@ import { describe, expect, test, beforeEach, beforeAll, afterAll } from "bun:tes
 import * as PendingGates from "../src/db/pending-gates";
 import { PermissionGate, permissionPolicy, redactForCard, voiceStartCard, voiceCardConfig } from "../src/gateway/slack/permission-gate";
 import { buildAudioPolicy } from "../src/voice/audio-acl";
+import * as AuditEvents from "../src/db/audit-events";
+import { flushAudits } from "../src/audit/emit";
 
 type Handler = (a: any) => Promise<void>;
 
@@ -617,5 +619,108 @@ describe("PermissionGate", () => {
     await f.fire(denyId, "USR");
     await p;
     gate.unbindSession("S");
+  });
+
+  describe("audit", () => {
+    // Audit writes are fire-and-forget, some behind a guarded resolve: poll
+    // until the expected count lands (or a short deadline passes).
+    async function auditRows(sessionId: string, want = 1) {
+      for (let i = 0; ; i++) {
+        await flushAudits();
+        const items = (await AuditEvents.list({ sessionId, action: "gate.permission." })).items;
+        if (items.length >= want || i >= 200) return items;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    }
+    async function buttonId(f: { posts: any[] }, verb: string): Promise<string> {
+      return (await firstPost(f)).blocks
+        .find((b: any) => b.type === "actions")
+        .elements.find((e: any) => e.action_id.includes(`${verb}:`)).action_id;
+    }
+
+    test("a click records gate.permission.decided with the clicker, tool and redacted input", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app);
+      gate.bindSession("SAUD1", "C", "T");
+      const ac = new AbortController();
+      const p = gate.resolver("SAUD1", "Bash", { command: "ls", token: "hunter2" }, ctx("UA1", ac.signal));
+      await f.fire(await buttonId(f, "always"), "USR");
+      await p;
+      const [ev, ...rest] = await auditRows("SAUD1");
+      expect(rest).toHaveLength(0);
+      expect(ev).toMatchObject({
+        action: "gate.permission.decided",
+        decision: "always",
+        actorKind: "slack_user",
+        actorId: "USR",
+        targetKind: "tool",
+        targetId: "Bash",
+        persona: "default",
+        channelId: "C",
+        threadTs: "T",
+      });
+      expect((ev!.details as any).input.command).toBe("ls");
+      expect(JSON.stringify(ev!.details)).not.toContain("hunter2");
+    });
+
+    test("deny records decision deny; a duplicate click records nothing more", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app);
+      gate.bindSession("SAUD2", "C", "T");
+      const ac = new AbortController();
+      const p = gate.resolver("SAUD2", "Write", {}, ctx("UA2", ac.signal));
+      const id = await buttonId(f, "deny");
+      await f.fire(id, "USR");
+      await p;
+      await f.fire(id, "USR");
+      const rows = await auditRows("SAUD2");
+      expect(rows.map((r) => [r.action, r.decision])).toEqual([["gate.permission.decided", "deny"]]);
+    });
+
+    test("an abort records gate.permission.cancelled by system", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app);
+      gate.bindSession("SAUD3", "C", "T");
+      const ac = new AbortController();
+      const p = gate.resolver("SAUD3", "Bash", {}, ctx("UA3", ac.signal));
+      await firstPost(f);
+      ac.abort();
+      await p;
+      const [ev] = await auditRows("SAUD3");
+      expect(ev).toMatchObject({ action: "gate.permission.cancelled", decision: "cancelled", actorKind: "system", targetId: "Bash" });
+    });
+
+    test("a failed card post records gate.permission.cancelled", async () => {
+      const f = fakeApp();
+      f.app.client.chat.postMessage = async () => {
+        throw new Error("slack down");
+      };
+      const gate = new PermissionGate(f.app);
+      gate.bindSession("SAUD4", "C", "T");
+      const ac = new AbortController();
+      await expect(gate.resolver("SAUD4", "Bash", {}, ctx("UA4", ac.signal))).rejects.toThrow("slack down");
+      const [ev] = await auditRows("SAUD4");
+      expect(ev).toMatchObject({ action: "gate.permission.cancelled", decision: "cancelled" });
+      expect((ev!.details as any).reason).toBe("card post failed");
+    });
+
+    test("the node path: a failed post on open records cancelled, a click on a poll row records decided", async () => {
+      const f = fakeApp();
+      const gate = new PermissionGate(f.app);
+      const r = await gate.open({ sessionId: "SAUD5", toolName: "Bash", input: {}, toolUseId: "UA5", channel: "C", threadTs: "T" });
+      expect("pendingId" in r).toBe(true);
+      await f.fire("slaude_perm:allow:UA5", "USR");
+      f.app.client.chat.postMessage = async () => {
+        throw new Error("slack down");
+      };
+      await expect(
+        gate.open({ sessionId: "SAUD5", toolName: "Read", input: {}, toolUseId: "UA6", channel: "C", threadTs: "T" }),
+      ).rejects.toThrow("slack down");
+      const rows = await auditRows("SAUD5", 2);
+      expect(rows.map((e) => [e.action, e.targetId, e.decision]).sort()).toEqual([
+        ["gate.permission.cancelled", "Read", "cancelled"],
+        ["gate.permission.decided", "Bash", "allow"],
+      ]);
+    });
   });
 });

@@ -10,6 +10,7 @@ import { voiceStartProblem } from "../../agent/voice-mcp";
 import { matchAudioOrigin, type AudioPolicy } from "../../voice/audio-acl";
 import { audioPolicyFromEnv } from "../../voice/config";
 import { redactTree } from "../../redact";
+import { auditGateRow } from "../../audit/emit";
 
 type PendingKey = string; // toolUseID
 
@@ -439,7 +440,8 @@ export class PermissionGate {
           if (!isPollRow && cur.instanceId === PendingGates.INSTANCE_ID) {
             // Our own in-process row with no waiter: the abort raced the
             // click. Settle the stray so it doesn't linger until expiry.
-            await PendingGates.resolve(toolUseId, "cancelled", userId);
+            const settled = await PendingGates.resolve(toolUseId, "cancelled", userId);
+            if (settled) auditPermCancelled(settled, "slack_user", userId, "click raced the turn's abort");
             await this.#publish(toolUseId);
             return void (await stale());
           }
@@ -450,6 +452,7 @@ export class PermissionGate {
             // its waiter, so deciding here is safe (spec §5).
             const row = await PendingGates.resolve(toolUseId, status, userId, { decision });
             if (!row) return void (await stale());
+            auditPermDecided(row, userId, decision);
             await this.#publish(toolUseId);
             try {
               await respond({
@@ -489,6 +492,7 @@ export class PermissionGate {
         }
         this.#pending.delete(toolUseId);
         void pend.unsub?.().catch(() => {});
+        auditPermDecided(row, userId, decision, pend.input);
         await this.#publish(toolUseId);
 
         // Use respond() — fires against the click's response_url and is much
@@ -586,7 +590,9 @@ export class PermissionGate {
       });
     } catch (e) {
       // The prompt never reached Slack — settle the row and rethrow.
-      await PendingGates.resolve(args.toolUseId, "cancelled", "system").catch(() => {});
+      await PendingGates.resolve(args.toolUseId, "cancelled", "system")
+        .then((row) => row && auditPermCancelled(row, "system", "system", "card post failed", args.input))
+        .catch(() => {});
       throw e;
     }
     return { pendingId: args.toolUseId };
@@ -660,7 +666,9 @@ export class PermissionGate {
         this.#pending.delete(toolUseId);
         void pend.unsub?.().catch(() => {});
         // Settle the durable row too; a click that raced the abort loses.
-        void PendingGates.resolve(toolUseId, "cancelled", "system").catch(() => {});
+        void PendingGates.resolve(toolUseId, "cancelled", "system")
+          .then((row) => row && auditPermCancelled(row, "system", "system", "turn aborted", input))
+          .catch(() => {});
         resolveFn({ behavior: "deny", message: "aborted" });
       },
       { once: true },
@@ -678,12 +686,53 @@ export class PermissionGate {
       // The prompt never reached Slack — tear both stores down and rethrow.
       this.#pending.delete(toolUseId);
       void pend.unsub?.().catch(() => {});
-      void PendingGates.resolve(toolUseId, "cancelled", "system").catch(() => {});
+      void PendingGates.resolve(toolUseId, "cancelled", "system")
+        .then((row) => row && auditPermCancelled(row, "system", "system", "card post failed", input))
+        .catch(() => {});
       throw e;
     }
 
     return promise;
   };
+}
+
+/** Audit a click that won the guarded resolve. Fire-and-forget: the writer
+ *  redacts and caps the tool input, and never blocks the decision. */
+function auditPermDecided(
+  row: PendingGates.PendingGate,
+  userId: string,
+  decision: "allow" | "always" | "deny",
+  input?: Record<string, unknown>,
+): void {
+  const tool = String(row.payload.toolName ?? "tool");
+  auditGateRow(row, {
+    verb: "decided",
+    actorKind: "slack_user",
+    actorId: userId,
+    decision,
+    summary: `${tool}: ${decision}`,
+    ...(input ? { details: { input } } : {}),
+  });
+}
+
+/** Audit a prompt settled as cancelled (abort, post failure, raced click).
+ *  Only the caller whose guarded resolve won calls this, so it is once per row.
+ *  Expiry has no in-process path here: sweepExpired owns it. */
+function auditPermCancelled(
+  row: PendingGates.PendingGate,
+  actorKind: "slack_user" | "system",
+  actorId: string,
+  reason: string,
+  input?: Record<string, unknown>,
+): void {
+  auditGateRow(row, {
+    verb: "cancelled",
+    actorKind,
+    actorId,
+    decision: "cancelled",
+    summary: `${String(row.payload.toolName ?? "tool")}: cancelled (${reason})`,
+    details: { reason, ...(input ? { input } : {}) },
+  });
 }
 
 function truncate(s: string, max: number) {
