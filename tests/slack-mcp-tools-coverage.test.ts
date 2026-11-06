@@ -7,6 +7,8 @@ import {
 } from "../src/gateway/slack/mcp-tools";
 import * as CronJobs from "../src/db/cron-jobs";
 import * as Ignores from "../src/db/ignores";
+import * as AuditEvents from "../src/db/audit-events";
+import { flushAudits } from "../src/audit/emit";
 import { db } from "../src/db/schema";
 import { setSoulData, __resetSoulDataMemo } from "../src/soul/extract";
 import { SoulDataSchema } from "../src/soul/data";
@@ -523,6 +525,31 @@ describe("adminHandlers thread ignores", () => {
     const res = await adminHandlers.unignoreThread(ctx);
     expect(res.content[0]!.text).toContain("Thread ignore removed");
     expect(await Ignores.findActiveForThread(ctx.channel, ctx.threadTs)).toBeNull();
+  });
+});
+
+describe("adminHandlers ignore audit", () => {
+  test("agent-tool ignores record ignore.set and ignore.cleared with the initiating user; no-ops record nothing", async () => {
+    await db.run("DELETE FROM audit_events");
+    const ctx = makeCtx();
+    await adminHandlers.ignoreThread(ctx, { duration: "1h", reason: "drift" });
+    await adminHandlers.unignoreThread(ctx);
+    await adminHandlers.unignoreThread(ctx);
+    await adminHandlers.ignoreUser(ctx, { userId: "U_AUD", duration: "permanent", reason: "spam" });
+    await adminHandlers.unignoreUser(ctx, { userId: "U_AUD" });
+    await adminHandlers.unignoreUser(ctx, { userId: "U_AUD" });
+    await flushAudits();
+    // Ids order by millisecond only; compare as a sorted set.
+    const rows = (await AuditEvents.list({ action: "ignore." })).items;
+    expect(rows.map((e) => [e.action, e.targetKind, e.actorId, e.details.via]).sort()).toEqual([
+      ["ignore.cleared", "thread", ctx.userId, "agent_tool"],
+      ["ignore.cleared", "user", ctx.userId, "agent_tool"],
+      ["ignore.set", "thread", ctx.userId, "agent_tool"],
+      ["ignore.set", "user", ctx.userId, "agent_tool"],
+    ]);
+    const set = (kind: string) => rows.find((e) => e.action === "ignore.set" && e.targetKind === kind)!;
+    expect(set("thread").details).toMatchObject({ reason: "drift" });
+    expect(set("user").details.expiresAt).toBeNull();
   });
 });
 

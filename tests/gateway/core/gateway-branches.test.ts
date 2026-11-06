@@ -12,6 +12,8 @@ import * as Remote from "../../../src/db/remote";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import * as MentionOnly from "../../../src/db/mention-only";
 import * as SO from "../../../src/db/soul-overrides";
+import * as AuditEvents from "../../../src/db/audit-events";
+import { flushAudits } from "../../../src/audit/emit";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { __resetModelCache } from "../../../src/agent/models";
 import { paths } from "../../../src/config/home";
@@ -490,6 +492,82 @@ describe("gateway uncovered branches", () => {
     await g.emit("message", dmArgs(g, "/ignore <@U0NOISY> 5m"));
     await g.emit("message", dmArgs(g, "/unignore <@U0NOISY>"));
     expect(g.posts.some((p) => String(p.text).includes("stopped ignoring <@U0NOISY>"))).toBe(true);
+  });
+
+  describe("audit rows for slash state changes", () => {
+    // Slash handling and the audit write both finish after emit() returns:
+    // poll until the expected count lands (or a short deadline passes).
+    const rowsFor = async (prefix: string, want: number) => {
+      for (let i = 0; ; i++) {
+        await flushAudits();
+        const items = (await AuditEvents.list({ action: prefix })).items;
+        if (items.length >= want || i >= 200) return items.reverse();
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    };
+
+    it("/ignore and /unignore record ignore.set and ignore.cleared; a no-op unignore records nothing", async () => {
+      writeSoulFixture(WORLD);
+      await db.run("DELETE FROM audit_events");
+      const g = makeGw();
+      const ts = nextTs();
+      await g.emit("message", dmArgs(g, "hi", { ts }));
+      await g.emit("message", dmArgs(g, "/ignore-thread 10m", { thread_ts: ts }));
+      await g.emit("message", dmArgs(g, "/unignore-thread", { thread_ts: ts }));
+      await g.emit("message", dmArgs(g, "/unignore-thread", { thread_ts: ts }));
+      await rowsFor("ignore.", 2);
+      await g.emit("message", dmArgs(g, "/ignore <@U0NOISY> 5m"));
+      await rowsFor("ignore.", 3);
+      await g.emit("message", dmArgs(g, "/unignore <@U0NOISY>"));
+      await g.emit("message", dmArgs(g, "/unignore <@U0NOISY>"));
+      const rows = await rowsFor("ignore.", 4);
+      await new Promise((r) => setTimeout(r, 50));
+      expect((await rowsFor("ignore.", 5)).length).toBe(4);
+      expect(rows.map((e) => [e.action, e.targetKind, e.actorId]).sort()).toEqual([
+        ["ignore.cleared", "thread", WORLD.manager],
+        ["ignore.cleared", "user", WORLD.manager],
+        ["ignore.set", "thread", WORLD.manager],
+        ["ignore.set", "user", WORLD.manager],
+      ]);
+      const userSet = rows.find((e) => e.action === "ignore.set" && e.targetKind === "user")!;
+      expect(userSet.targetId).toBe("U0NOISY");
+      expect(typeof userSet.details.expiresAt).toBe("number");
+    });
+
+    it("/1on1 on and off record one_on_one.locked and one_on_one.unlocked", async () => {
+      writeSoulFixture(WORLD);
+      await db.run("DELETE FROM audit_events");
+      const g = makeGw();
+      const ts = nextTs();
+      await g.emit("message", dmArgs(g, "hi", { ts }));
+      await g.emit("message", dmArgs(g, "/1on1", { thread_ts: ts }));
+      await rowsFor("one_on_one.", 1);
+      await g.emit("message", dmArgs(g, "/1on1 off", { thread_ts: ts }));
+      const rows = await rowsFor("one_on_one.", 2);
+      expect(rows.map((e) => [e.action, e.actorKind, e.actorId, e.threadTs]).sort()).toEqual([
+        ["one_on_one.locked", "slack_user", WORLD.manager, ts],
+        ["one_on_one.unlocked", "slack_user", WORLD.manager, ts],
+      ]);
+      expect(rows[0]!.persona).toBe("default");
+    });
+
+    it("/soul add and /soul clear record soul.override.set and soul.override.cleared", async () => {
+      writeSoulFixture(WORLD);
+      await SO.clear();
+      await db.run("DELETE FROM audit_events");
+      const g = makeGw();
+      await g.emit("message", dmArgs(g, "/soul dm add <@U0EXTRA>"));
+      await g.emit("message", dmArgs(g, "/soul trust add notachannel")); // refused by validation
+      await rowsFor("soul.override.", 1);
+      await g.emit("message", dmArgs(g, "/soul clear all"));
+      const rows = await rowsFor("soul.override.", 2);
+      expect(rows.map((e) => [e.action, e.actorId, e.targetKind]).sort()).toEqual([
+        ["soul.override.cleared", WORLD.manager, "soul_field"],
+        ["soul.override.set", WORLD.manager, "soul_field"],
+      ]);
+      expect(rows.find((e) => e.action === "soul.override.set")!.details).toMatchObject({ op: "add", value: "U0EXTRA", via: "slash" });
+      expect(rows.find((e) => e.action === "soul.override.cleared")!.targetId).toBe("all");
+    });
   });
 
   it("skill invocation rewrites the user text via buildSkillInvocation", async () => {

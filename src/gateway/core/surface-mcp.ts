@@ -3,6 +3,7 @@ import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@
 import { surfaceContract } from "../../tools/contracts/surface";
 import type { Surface } from "./surface";
 import { mutateOverride, FIELD_ALIASES, type FieldAlias } from "../../soul/overrides";
+import { emitAudit } from "../../audit/emit";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { soulData } from "../../soul/extract";
 import { redactSecrets } from "./status-text";
@@ -170,10 +171,23 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
         }
         if (action === "clear") {
           await SoulOverrides.clear(FIELD_ALIASES[field as FieldAlias]);
+          emitAudit({
+            actorKind: "slack_user", actorId: who, action: "soul.override.cleared",
+            targetKind: "soul_field", targetId: FIELD_ALIASES[field as FieldAlias],
+            summary: `soul overrides cleared (${field})`, details: { field, via: "agent_tool" },
+          });
           return ok(`cleared runtime overrides for ${field}`);
         }
         if (!value) return fail("value is required for add/remove");
         const res = await mutateOverride({ field: field as FieldAlias, action, value, by: who }, { managerId: soul.manager.userId });
+        if (res.ok) {
+          emitAudit({
+            actorKind: "slack_user", actorId: who, action: "soul.override.set",
+            targetKind: "soul_field", targetId: res.field,
+            summary: `soul override ${res.field} ${action} ${res.value}`,
+            details: { field: res.field, op: action, value: res.value, via: "agent_tool" },
+          });
+        }
         return res.ok
           ? ok(`soul override applied: ${res.field} ${action} ${res.value} — effective immediately`)
           : fail(res.reason);

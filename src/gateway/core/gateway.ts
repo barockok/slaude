@@ -135,7 +135,8 @@ import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
-import { auditExpiredGates, auditGateRow } from "../../audit/emit";
+import { auditExpiredGates, auditGateRow, emitAudit } from "../../audit/emit";
+import { auditIgnore, auditOneOnOne } from "../../audit/events";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { bridgeExternalMcp, connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
 import { connectText, createMcpBridge, reauthText, type McpBridge } from "./mcp-bridge";
@@ -1821,6 +1822,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const prevTarget = await Remote.findTarget(ctx.channel, threadTs);
       if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true });
       await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
+      auditOneOnOne("one_on_one.locked", { userId, sessionId, channelId: ctx.channel, threadTs, persona: ctx.personaId, lockedUser: userId, via: "agent_tool" });
       agent.reload(sessionId);
       return `Locked this thread to a 1on1 with <@${userId}> — only they and the manager are heard here now.`;
     }
@@ -1828,6 +1830,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const existing = await OneOnOne.find(ctx.channel, threadTs);
       if (!existing) {
         await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
+        auditOneOnOne("one_on_one.locked", { userId, sessionId, channelId: ctx.channel, threadTs, persona: ctx.personaId, lockedUser: userId, via: "agent_tool", mode: "open" });
       }
       await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true }); // open mode forbids remote
       await OneOnOne.setOpen(ctx.channel, threadTs, scope ?? "");
@@ -1838,6 +1841,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (!await OneOnOne.find(ctx.channel, threadTs)) return "No active 1on1 in this thread — nothing to release.";
     await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true });
     await OneOnOne.unlock(ctx.channel, threadTs);
+    auditOneOnOne("one_on_one.unlocked", { userId, sessionId, channelId: ctx.channel, threadTs, persona: ctx.personaId, via: "agent_tool" });
     agent.reload(sessionId);
     return "Released 1on1 — the thread is open again.";
   }
@@ -2572,6 +2576,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const prevTarget = await Remote.findTarget(channelId, threadTs);
           if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(channelId, threadTs, { sessionId: session.id, userMachineOnly: true });
           await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
+          auditOneOnOne("one_on_one.locked", { userId, sessionId: session.id, channelId, threadTs, persona: dispatch?.personaId, lockedUser: userId, via: "slash" });
           agent.reload(session.id);
           await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release. Ask me to open it to guests when needed.`);
           // Onboarding unlocks this person's own integrations; it never gates
@@ -2616,6 +2621,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             return;
           }
           await OneOnOne.setLocked(channelId, threadTs);
+          auditOneOnOne("one_on_one.locked", { userId, sessionId: session.id, channelId, threadTs, persona: dispatch?.personaId, lockedUser: existing.locked_user, via: "slash", mode: "relock" });
           agent.reload(session.id);
           await reply(`:lock: *1on1 re-locked* — only <@${existing.locked_user}> and the manager are heard again.`);
           return;
@@ -2627,6 +2633,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
         const r = await endRemoteForThread(channelId, threadTs, { sessionId: session.id, userMachineOnly: true });
         await OneOnOne.unlock(channelId, threadTs);
+        auditOneOnOne("one_on_one.unlocked", { userId, sessionId: session.id, channelId, threadTs, persona: dispatch?.personaId, lockedUser: existing.locked_user, via: "slash" });
         agent.reload(session.id);
         await reply(":unlock: 1on1 released — the thread is open again." + (r.ended ? " Remote mode ended." : ""));
         return;
@@ -2659,6 +2666,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             { managerId: soul.manager.userId },
           );
           if (res.ok) {
+            emitAudit({
+              persona: dispatch?.personaId, actorKind: "slack_user", actorId: userId,
+              action: "soul.override.set", targetKind: "soul_field", targetId: res.field,
+              sessionId: session.id, channelId, threadTs,
+              summary: `soul override ${res.field} ${slash.action} ${res.value}`,
+              details: { field: res.field, op: slash.action, value: res.value, via: "slash" },
+            });
             agent.noteSessionEvent(session.id, `Soul ACL override: ${slash.action} \`${res.value}\` to \`${res.field}\` (shadows SOUL.md).`);
           }
           await reply(
@@ -2671,6 +2685,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (slash.kind === "soul-clear") {
           if (slash.field === "all") await SoulOverrides.clear();
           else await SoulOverrides.clear(FIELD_ALIASES[slash.field]);
+          emitAudit({
+            persona: dispatch?.personaId, actorKind: "slack_user", actorId: userId,
+            action: "soul.override.cleared", targetKind: "soul_field",
+            targetId: slash.field === "all" ? "all" : FIELD_ALIASES[slash.field],
+            sessionId: session.id, channelId, threadTs,
+            summary: `soul overrides cleared (${slash.field})`,
+            details: { field: slash.field, via: "slash" },
+          });
           agent.noteSessionEvent(session.id, `Soul ACL overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
           await reply(`:leftwards_arrow_with_hook: soul overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
           return;
@@ -2855,6 +2877,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
             await Ignores.remove({ targetType: "user", userId: slash.userId });
             await Ignores.create({ targetType: "user", userId: slash.userId, createdBy: userId, expiresAt, reason: "manual" });
+            auditIgnore("ignore.set", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "user", targetUser: slash.userId, expiresAt, via: "slash" });
             const durText = duration ? `for ${duration}` : "permanently";
             await reply(`:mute: ignoring <@${slash.userId}> ${durText}`);
           } else {
@@ -2870,6 +2893,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
             await Ignores.remove({ targetType: "thread", channelId, threadTs });
             await Ignores.create({ targetType: "thread", channelId, threadTs, createdBy: userId, expiresAt, reason: "manual" });
+            auditIgnore("ignore.set", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "thread", expiresAt, via: "slash" });
             const durText = duration ? `for ${duration}` : "permanently";
             await reply(`:mute: ignoring this thread ${durText}`);
           }
@@ -2887,10 +2911,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               await reply(":no_entry: only manager or approver can unignore users");
               return;
             }
-            await Ignores.remove({ targetType: "user", userId: slash.userId });
+            const removed = await Ignores.remove({ targetType: "user", userId: slash.userId });
+            if (removed) auditIgnore("ignore.cleared", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "user", targetUser: slash.userId, via: "slash" });
             await reply(`:speaker: stopped ignoring <@${slash.userId}>`);
           } else {
-            await Ignores.remove({ targetType: "thread", channelId, threadTs });
+            const removed = await Ignores.remove({ targetType: "thread", channelId, threadTs });
+            if (removed) auditIgnore("ignore.cleared", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "thread", via: "slash" });
             await reply(":speaker: stopped ignoring this thread");
           }
           return;

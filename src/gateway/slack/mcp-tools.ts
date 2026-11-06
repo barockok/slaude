@@ -1,5 +1,6 @@
 import { finishRoundTool, proactivePostTool, readChannelTool, wakeThreadRefusal, type WakeTurn } from "../../proactive/wake-tools";
 import { z } from "zod";
+import { auditIgnore } from "../../audit/events";
 import { voiceTurns, VOICE_SUPPRESSED_RESULT } from "../../voice/turn-flags";
 import {
   createSdkMcpServer,
@@ -700,6 +701,7 @@ export const adminHandlers = {
       expiresAt,
       reason,
     });
+    auditIgnore("ignore.set", { by: ctx.userId ?? "agent", persona: ctx.personaId, channelId: ctx.channel, threadTs: ctx.threadTs, targetType: "thread", expiresAt, reason, via: "agent_tool" });
     return ok(`thread ignored ${parsed.permanent ? "permanently" : `for ${duration}`}`);
   },
 
@@ -709,6 +711,7 @@ export const adminHandlers = {
     }
     const removed = await Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
     if (removed === 0) return ok("no active ignore for this thread");
+    auditIgnore("ignore.cleared", { by: ctx.userId ?? "agent", persona: ctx.personaId, channelId: ctx.channel, threadTs: ctx.threadTs, targetType: "thread", via: "agent_tool" });
     return ok("Thread ignore removed. Normal processing resumed.");
   },
 
@@ -730,6 +733,7 @@ export const adminHandlers = {
       expiresAt,
       reason,
     });
+    auditIgnore("ignore.set", { by: ctx.userId ?? "agent", persona: ctx.personaId, channelId: ctx.channel, threadTs: ctx.threadTs, targetType: "user", targetUser: userId, expiresAt, reason, via: "agent_tool" });
     return ok(`user <@${userId}> ignored ${parsed.permanent ? "permanently" : `for ${duration}`}`);
   },
 
@@ -739,6 +743,7 @@ export const adminHandlers = {
     }
     const removed = await Ignores.remove({ targetType: "user", userId });
     if (removed === 0) return ok(`no active ignore for user <@${userId}>`);
+    auditIgnore("ignore.cleared", { by: ctx.userId ?? "agent", persona: ctx.personaId, channelId: ctx.channel, threadTs: ctx.threadTs, targetType: "user", targetUser: userId, via: "agent_tool" });
     return ok(`stopped ignoring <@${userId}>`);
   },
 
