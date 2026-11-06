@@ -43,6 +43,7 @@ import type { LabelStatus } from "../../queue/label-status";
 import { guardRequest } from "./auth/guard";
 import { createAuthRoutes } from "./auth/routes";
 import { audit } from "./auth/audit";
+import { auditOneOnOne } from "../../audit/events";
 import type { PanelRole } from "./auth/roles";
 import { enumerateSessions } from "./enumerator";
 import { servePanelStatic } from "./static";
@@ -298,6 +299,10 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         // life on the next lock by the same user.
         await endRemoteForThread(row.slack_channel_id, row.slack_thread_ts, { sessionId: row.id, userMachineOnly: true });
         await OneOnOne.unlock(row.slack_channel_id, row.slack_thread_ts);
+        auditOneOnOne("one_on_one.unlocked", {
+          operator: operatorId, persona: row.persona_id, sessionId: row.id,
+          channelId: row.slack_channel_id, threadTs: row.slack_thread_ts, via: "panel",
+        });
         // The unlock has applied; a failed reload must not turn it into a 500.
         try {
           deps.onUnlock?.(row.id);

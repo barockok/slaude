@@ -7,6 +7,8 @@ import * as Sessions from "../../src/db/sessions";
 import * as OneOnOne from "../../src/db/one-on-one";
 import * as Remote from "../../src/db/remote";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
+import * as AuditEvents from "../../src/db/audit-events";
+import { flushAudits } from "../../src/audit/emit";
 
 const SECRET = "t".repeat(32);
 
@@ -54,6 +56,13 @@ describe("panel unlock-1on1", () => {
     expect(await OneOnOne.find("C_PU", "9.1")).toBeNull();
     expect(await Remote.findTarget("C_PU", "9.1")).toBeNull();
     expect(unlocked).toEqual([row.id]);
+    await flushAudits();
+    const rows = (await AuditEvents.list({ sessionId: row.id })).items;
+    expect(rows.map((e) => [e.action, e.actorKind, e.actorId]).sort()).toEqual([
+      ["one_on_one.unlocked", "operator", "op@example.com"],
+      ["panel.session.control", "operator", "op@example.com"],
+    ]);
+    expect(rows.find((e) => e.action === "one_on_one.unlocked")).toMatchObject({ channelId: "C_PU", threadTs: "9.1", persona: "default" });
   });
 
   it("a throwing reload hook does not fail the request; the unlock stands", async () => {
