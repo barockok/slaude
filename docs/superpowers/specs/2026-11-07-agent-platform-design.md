@@ -1,6 +1,6 @@
 # Agent platform: identity, mandates, access, audit, memory, console
 
-Date: 2026-11-07. Status: draft for review.
+Date: 2026-11-07. Status: reviewed (verdict: agree with changes; changes folded in, see "Review changes").
 
 ## Why
 
@@ -43,7 +43,8 @@ Agent      = identity: persona row/soul, Slack user and/or app(s), memory home a
 Mandate    = a job the agent holds: instructions, triggers, approvers, (phase 2) tool policy,
              memory attachments, environment, budget
 Grant      = (agent, subject, role)   subject: user | channel-members | everyone-in-workspace
-Role       = owner > manager > approver > member      (deny is a separate flag, always wins)
+Role       = manager > approver > member      (deny is a separate flag, always wins;
+             "owner" is not a grant: console superadmin covers it)
 AuditEvent = append-only record of every decision and administrative change
 Environment= named execution config + node label selector + kind (node | remote-user-machine)
 ```
@@ -86,86 +87,175 @@ Table `agent_grants`:
 | `persona` | persona name (`default` for the default persona) |
 | `subject_kind` | `user` \| `channel` \| `workspace` |
 | `subject_id` | Slack user id, channel id, or team id |
-| `role` | `owner` \| `manager` \| `approver` \| `member` |
+| `role` | `manager` \| `approver` \| `member` |
 | `deny` | boolean; a deny row for a user blocks them even where a channel grant admits |
 | `created_by`, `created_at`, `expires_at` (nullable), `note` |
 
-Effective grants for a persona = **soul-derived grants** (computed, read-only, `source=soul`)
-+ **stored grants** (`source=console`). Soul mapping:
+Grants are keyed by persona **name**. A tombstoned persona's grants stay in the table (inert);
+a persona renamed in git is a new persona and its grants must be re-created (documented in the
+console). `expires_at` is filtered at read time (`expires_at IS NULL OR expires_at > now`); no
+sweep.
+
+#### Structured soul per persona
+
+Named personas have no structured soul at runtime today: `soulData()` and
+`effectiveSoulForChannel()` are process-wide views of the default soul. Add
+`soulDataFor(persona)` in `src/soul/`:
+
+- managed tenants (Postgres): parse `personas.soul_json` (already extracted at sync,
+  `persona/sync/run.ts`);
+- filesystem personas and sqlite: none in phase 1 (LLM extraction per persona is deferred).
+- Fallback: when P has no structured soul, P's soul-derived grants are the **default persona's**,
+  which is exactly today's behaviour. This is the only place a named persona consults the
+  default soul.
+- `/soul trust|allow|dm|block` keeps writing `soul_overrides` (no persona column) and applies
+  only to the default persona's soul, before grant derivation. Named personas are tuned with
+  stored grants. No schema change to `soul_overrides`.
+
+#### Grant derivation
+
+Effective grants for a persona = **soul-derived grants** (computed in memory, read-only,
+`source=soul`) + **stored grants** (`source=console`). Soul mapping:
 
 - manager, backup manager -> `user` `manager`
-- approvers (global and per-channel) -> `user` `approver` (channel-scoped approvers keep their channel)
+- approvers (global, and per-channel with replace semantics as in `effectiveSoulForChannel`,
+  manager and backup always appended) -> `user` `approver`, channel-scoped where the soul scopes
+  them. Approver is an approval right, **not** a chat right.
 - trusted and allowed channels -> `channel` `member`
-- DM allowlist -> `user` `member` (DM only, flagged `dm_only`)
+- DM allowlist -> `user` `member` flagged `dm_only`
 - blocked users -> `user` deny
 
-Admission for a message from user U in channel C to persona P (`src/access/admission.ts`):
+#### Admission
 
-1. If any deny applies to U for P -> drop (`blocked_user`).
-2. If U holds manager or owner for P -> admit.
-3. If C is a DM: admit when U holds any non-deny user grant for P (member covers the DM allowlist).
-4. Else admit when C has a channel grant for P, or U holds a user grant for P that is not
-   `dm_only`, or a workspace grant exists for P.
-5. Otherwise drop (`not_granted`).
+For a message from user U in channel C to persona P (`src/access/admission.ts`, pure function
+over the effective grants):
 
-This replaces `channelModeAdmits` and the blocklist step in `preTurnDropReason`. The persona is
-resolved **before** admission (it already is for app routing and mentions; the default persona
-otherwise), and the persona's own soul is used for soul-derived grants. A named persona with no
-manager in its own soul inherits the default persona's manager and backup, so existing
-deployments keep working.
+1. A deny for U on P -> drop (`blocked_user`).
+2. U holds `manager` on P -> admit.
+3. C is a DM: admit when U holds a `member` grant on P (soul `dm_only` or stored). Approver alone
+   does not admit.
+4. C is not a DM: admit when C has a channel grant on P, or U holds a **stored** `member` grant on
+   P without `dm_only`, or a workspace grant exists on P.
+5. Otherwise drop (`not_granted`, metric label stays `whitelist` for dashboards that exist).
 
-Role checks elsewhere move to one function `roleOf(persona, user, channel?)`: admin slash
-commands, `request_approval` approvers, brain manager-tier ops, and the tool permission card.
+With no stored grants this is exactly today's `channelModeAdmits` plus blocklist, which the
+admission truth-table tests pin. Stored grants only widen (member, workspace) or narrow (deny).
+
+Drop order in `preTurnDropReason` stays: missing identity, self-echo, caller step (dedup claim),
+ignore gate (so `/unignore` keeps its bypass), then admission (replacing blocklist plus channel
+mode).
+
+Persona threading: every router path already passes `dispatch.personaId` to `handleMessage`,
+but `preTurnDropReason(args)`, `ingressDrops(args)` and `consultGate` (which drops
+`o.personaId`) read the default soul. They take the persona id:
+`preTurnDropReason(args, { personaId })`, `ingressDrops(args, personaId)`.
+
+Failure: soul-derived grants are in memory, so when the `agent_grants` read fails admission
+degrades to soul-only (today's behaviour), logs once a minute and increments
+`slaude_grants_read_failures_total`. It never drops managers or trusted-channel traffic because of
+a DB blip.
+
+#### One role function
+
+`roleOf(persona, user, channel?) -> "manager" | "approver" | "member" | null` (channel-aware for
+approvers only). It replaces the role checks in: the `/1on1` lock manager check, the admin slash
+command checks (which today use the global soul's approvers, not channel-effective ones), the
+`/soul` and `/heartbeat` manager checks, and approval-gate `#resolveApprovers` for named personas.
+For the approval gate, `roleOf` precedes the existing fallbacks (legacy category map,
+`SLAUDE_APPROVERS`, then "anyone" when no approver is configured), which stay unchanged.
 
 ### Tool permission cards: who may click
 
 Today any viewer of the card can approve (`permission-gate.ts`, click handler takes
-`body.user.id` with no check). New rule: the clicker must be the turn initiator, the `/1on1`
-lock owner, or hold approver or higher for the persona. Others get an ephemeral refusal and the
-card stays pending. The decision and the refusal are both audited.
+`body.user.id` with no check). Clicks land on any replica, so the authorisation inputs must be in
+the `pending_gates` row:
+
+- Stamp `initiator` (Slack user id or null) and `persona` into the `perm` row payload at create
+  time: in process from the session route context (`ctx.userId`, `session.persona_id`); on the
+  node path from `JobClaims.initiator` and `JobClaims.persona`, available where
+  `permissions.open` is called.
+- Rule: the clicker may decide when they are the initiator, the `/1on1` lock owner of the thread,
+  or `roleOf(persona, clicker, channel)` is `approver` or `manager`. Turns with no human initiator
+  (panel chat `origin: panel`, cron, heartbeat, background) require approver or manager.
+- The check runs **before** the guarded `resolve`, so an unauthorised click never consumes the
+  row (same pattern as the approval gate). The refusal is an ephemeral message; the card stays
+  pending; the refusal is audited (`gate.permission.refused`).
+- The stray-row cancel path (own in-process row with no waiter) stays independent of the clicker.
+- The sim transport passes `body.user.id`, so sim scenarios must click as the initiator or an
+  approver; existing sim YAML flows are updated where needed.
 
 ### Audit trail
 
-Table `audit_events` (append-only; no update or delete path in code; retention purge only,
-default 365 days, `SLAUDE_AUDIT_RETENTION_DAYS`):
+Table `audit_events`: append-only at the code level (insert and a retention purge are the only
+write paths), retention default 365 days via `SLAUDE_AUDIT_RETENTION_DAYS`:
 
 | column | meaning |
 |---|---|
-| `id` | text pk (ulid-like, time sortable) |
+| `id` | text pk, time sortable (cursor) |
 | `at` | epoch ms |
 | `tenant_id`, `persona` | scope |
 | `actor_kind` | `slack_user` \| `operator` \| `agent` \| `system` |
-| `actor_id` | Slack user id, operator subject, agent id, or `system` |
-| `action` | dotted verb, e.g. `gate.permission.decided`, `gate.approval.decided`, `gate.approval.refused`, `gate.expired`, `grant.created`, `grant.revoked`, `proposal.decided`, `memory.shared_write`, `panel.session.control`, `persona.override.set` |
+| `actor_id` | Slack user id, operator email or subject, agent id, or `system` |
+| `action` | dotted verb (list below) |
 | `target_kind`, `target_id` | e.g. `tool` + tool name, `grant` + id |
-| `decision` | `allow` \| `always` \| `deny` \| `expired` \| `refused` \| null |
+| `decision` | `allow` \| `always` \| `deny` \| `expired` \| `cancelled` \| `refused` \| null |
 | `session_id`, `channel_id`, `thread_ts` | context, nullable |
-| `summary` | short human line (redacted, no secrets) |
-| `details` | JSON (redacted with the existing secret-key redaction) |
+| `summary` | short human line, redacted |
+| `details` | JSON, redacted key-wise |
 
-Writers: permission gate, approval gate (including brain shared and admin writes), gate
-expiry sweep, proposal decisions, grant changes, panel operator actions (replacing stdout-only
-audit lines, which stay as a log mirror). `pending_gates` keeps its 24 h purge; the audit row is
-the durable record.
+Indexes: `(tenant_id, persona, at)`, `(session_id, at)`, `(actor_id, at)`.
 
-Read API: `GET /panel/api/audit?persona&action&actor&since&until&cursor` and per-session
+Actions in phase 1: `gate.permission.decided|refused|expired|cancelled`,
+`gate.approval.decided|refused|expired`, `gate.mcp_connect.decided`, `grant.created`,
+`grant.revoked`, `proposal.decided`, `ignore.set|cleared`, `one_on_one.locked|unlocked`,
+`soul.override.set|cleared` (Slack `/soul` and panel overrides), `persona.sync`,
+`panel.session.control`, `panel.persona.onboard`.
+
+One writer, `src/audit/`, with two sinks: the table and the existing stdout JSON line
+(`panel/auth/audit.ts` becomes a caller of the writer, so they cannot drift). Redaction uses the
+existing secret redaction (`redactSecrets` in `status-text.ts`) on `summary` and on every string
+value in `details`; keys matching the secret-key pattern are replaced. Audit write failures never
+block a decision: they log and increment `slaude_audit_write_failures_total`.
+
+`pending_gates` keeps its 24 h purge; the audit row is the durable record.
+
+Read API: `GET /panel/api/audit?persona&action&actor&session&since&until&cursor` and
 `GET /panel/api/sessions/:id/audit`.
+
+Schema: `audit_events` and `agent_grants` go into both `drivers/sqlite.ts` and a new Postgres
+migration (`tests/db/schema-drift.test.ts` enforces parity). A DB schema change ships as an RC
+per CLAUDE.md.
 
 ### Memory (rebrand of kb)
 
-- User-facing name is **Memory**. A **memory store** is a brain source. Store kinds: `agent`
-  (private mind), `shared`, `public`, `personal` (`user-<id>`), `profile`, `library`
-  (`kb-<label>`, installed wikis).
-- Agent tools gain `memory_*` names (`memory_search`, `memory_think`, `memory_get`,
-  `memory_list`, `memory_save`, `memory_delete`, `memory_graph`, `memory_about`,
-  `memory_thread_history`, `memory_stores`). The `kb_*` names remain as aliases for one minor
-  release and are hidden from the built-in skill text.
-- Console: Memory page lists stores with page counts and last write; a store page lists pages;
-  a page view shows content, type, tags, and links. Read-only in phase 1, except delete of a
-  page in the agent or shared store by a superadmin, which is audited.
-- Gaps against the platform, tracked for phase 2: per-page version history and rollback
-  (check gbrain support first), explicit per-mandate attachment with `read_only` or
-  `read_write`, and isolation of `kb-*` stores (today a filter on a shared volume).
+Terms, to avoid collisions with the existing episodic `src/memory/` provider and the
+`/v1/tools/memory/*` node API:
+
+- **Memory** (user-facing) = everything the agent knows. Two parts: **memory stores** (brain
+  sources, semantic) and **conversation memory** (episodic, `src/memory/`, unchanged).
+- Store kinds: `agent` (private mind, `agent-<id>`), `shared`, `public`, `personal`
+  (`user-<id>`), `profile` (`profile-*`), `library` (`kb-<label>`).
+
+Agent tools: `memory_search`, `memory_think`, `memory_get`, `memory_list`, `memory_save`,
+`memory_delete`, `memory_graph`, `memory_thread_history`, `memory_stores`, `memory_search_stores`
+(new names), with the `kb_*` names kept as aliases (required: resumed sessions keep calling them).
+`memory_about` already exists and keeps its name. Required alongside:
+
+- `SLAUDE_AUTO_ALLOW_TOOLS` expands aliases both ways.
+- `profile-write-guard.ts` matches both `kb_memoize` and `memory_save`.
+- Gated dispatch classifies by gbrain op, so it is unaffected; the `kb` and `kb-admin` approval
+  categories keep their strings.
+- Prompt text moves to the new names: `src/soul/runtime/core.md`, the built-in memory skill,
+  `skills/how-slaude-works`, `background/pass-tools.ts`, `proactive/commitment-index.ts`.
+
+This is the widest-blast change in the spec, so it is the last task on the branch and can be
+split into its own RC.
+
+Console: Memory page lists stores with page counts; a store page lists pages; a page view shows
+content, type, tags and links. Read-only in phase 1.
+
+Phase 2 gaps against the platform: per-page versions and rollback (check gbrain first), explicit
+per-mandate attachment with `read_only` or `read_write`, isolation of `kb-*` stores.
 
 ### Environments and nodes
 
@@ -193,18 +283,26 @@ The existing `src/gateway/panel/web` and `src/gateway/portal/web` are replaced, 
   `prefers-color-scheme` plus a `data-theme` override.
 - Layout: top bar (product name, search, docs, user), left nav, page header (title, one-line
   description, primary action), filter row, table or detail.
-- Console nav: Overview, Agents, Sessions, Approvals and audit, Access, Memory, Environments,
-  Credentials. Agent detail tabs: Overview, Mandates, Access, Memory, Activity.
+- Console nav (phase 1): Overview, Agents, Sessions, Approvals and audit, Access, Memory,
+  Environments (one read-only list: node pools, persona `runsOn`, personal environments without
+  secrets). Credentials is phase 2. Agent detail tabs: Overview, Mandates, Access, Activity.
+- Console roles stay an email allowlist file (`panel/auth/roles.ts`); the Access page shows them
+  but cannot edit them. It edits agent grants (superadmin only).
 - Portal nav: My account (linked Slack identities), Integrations, My agents (agents the person
   holds a grant on, with their role).
-- Backend: existing panel and portal APIs stay; new endpoints are added under the same auth.
-  The static servers point at the new build output.
+- Compatibility contract (must not change): `/panel/auth/*` stays the only unauthenticated panel
+  path; `/portal/auth/login|callback|refresh|logout|me`; `/portal/link?t=` (server-rendered
+  identity binding page); `/portal/oauth/callback`; existing panel and portal JSON APIs. The
+  static apps keep serving `web/dist` at `/panel/` and `/portal/`; build scripts
+  (`panel:build`, `portal:build`, `web:build`), the Dockerfile web stage and its `COPY` paths,
+  and the unbuilt-app guard are updated to the new `src/web/` output paths in the same commit.
 
 ## Error handling
 
 - Admission failures are drops with a reason label (`not_granted`, `blocked_user`), metric and
   log as today; no reply leaks to the sender.
-- Grant table read failures fail closed for non-managers (drop) and log once per minute.
+- Grant table read failures degrade to soul-only admission (today's behaviour) and log once a
+  minute.
 - Audit write failures never block the decision path; they log and increment
   `slaude_audit_write_failures_total`.
 - Permission click by an unauthorised user: ephemeral message, card unchanged.
@@ -222,9 +320,10 @@ The existing `src/gateway/panel/web` and `src/gateway/portal/web` are replaced, 
 
 ## Phasing
 
-Phase 1 (this branch): permission-card authorisation, audit trail, grants and admission with
-per-persona roles, mandate read model, memory tool rebrand and read-only memory pages, new
-console and portal on the new design system, integration test instructions.
+Phase 1 (this branch, in order): audit trail; permission-card authorisation; per-persona
+structured soul, grants, admission and `roleOf`; mandate read model; new console and portal on
+the new design system with the new read and grant APIs; integration test instructions; memory
+tool rebrand last.
 
 Phase 2: mandates in personas-as-code with tool policy, memory attachments, environment and
 budget; environment-based dispatch; memory versions; run records for crons and heartbeat; cost
@@ -232,5 +331,18 @@ per session and agent in the console.
 
 ## Out of scope
 
-Multi-tenant wiring, removing the `slackUserId` requirement for app-only personas, outcome
+Multi-tenant wiring, per-persona `soul_overrides`, LLM soul extraction for filesystem personas, removing the `slackUserId` requirement for app-only personas, outcome
 graders, webhooks.
+
+## Review changes
+
+An independent architecture review (verdict: agree with changes) corrected these points, all
+folded in above: named personas have no structured soul at runtime (added `soulDataFor` with
+default fallback); `soul_overrides` is global (kept, default persona only); the first draft's
+admission widened DM and unlisted-channel reach for approvers (approver is now approval-only);
+persona must be threaded into `preTurnDropReason`, `ingressDrops` and `consultGate`; permission
+rows must carry initiator and persona and be checked before resolve; audit writers, indexes,
+redaction and schema parity were incomplete; the memory rename needs aliases, auto-allow and
+profile-guard handling and must not collide with episodic memory; the console needs an explicit
+compatibility contract and a smaller phase 1; `owner` had no source; grant read failure must
+degrade to soul-only rather than drop.
