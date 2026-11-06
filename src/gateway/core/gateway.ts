@@ -135,6 +135,7 @@ import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
+import { auditExpiredGates, auditGateRow } from "../../audit/emit";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { bridgeExternalMcp, connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
 import { connectText, createMcpBridge, reauthText, type McpBridge } from "./mcp-bridge";
@@ -800,9 +801,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Boot sweep: auto-expire pending gates whose deadline passed while no
   // process was alive (a restart killed their auto-deny timers). Rows with no
   // deadline stay; a later click on one settles it as cancelled.
+  // Expiry audit ownership: a row is expired by exactly one guarded UPDATE.
+  // Rows this sweep (or the recurring one below) wins are audited here; rows an
+  // in-process auto-deny timer wins are audited by that timer (approval-gate).
   void PendingGates.sweepExpired()
     .then((rows) => {
       for (const r of rows) console.log(`[gates] expired orphaned ${r.kind} gate ${r.id} (session ${r.sessionId})`);
+      auditExpiredGates(rows);
     })
     .catch((e) => console.error("[gates] boot sweep failed:", e));
   // Clean up expired ignores + abandoned paste-back OAuth flows every 5 minutes.
@@ -814,7 +819,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // Overdue gates (live auto-deny timers normally win; this catches strays)
     // + settled gate rows past the 24h audit horizon + stale dedup rows on
     // quiet deployments where the inbound-path purge never fires.
-    void PendingGates.sweepExpired().catch(() => {});
+    void PendingGates.sweepExpired().then(auditExpiredGates).catch(() => {});
     void PendingGates.purgeSettledOlderThan().catch(() => {});
     // Audit rows are the durable record; kept SLAUDE_AUDIT_RETENTION_DAYS.
     void AuditEvents.purgeOlderThan(env.auditRetentionDays() * 86_400_000).catch(() => {});
@@ -2071,7 +2076,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return;
     }
     // One click wins; a duplicate (or another replica) sees null and stops.
-    if (!(await PendingGates.resolve(token, "approved", clicker))) return;
+    const settled = await PendingGates.resolve(token, "approved", clicker);
+    if (!settled) return;
+    auditGateRow(settled, {
+      verb: "decided",
+      actorKind: "slack_user",
+      actorId: clicker,
+      decision: "allow",
+      summary: `connect ${ctx.serverName} (${ctx.scope})`,
+      details: { server: ctx.serverName, scope: ctx.scope },
+    });
     await connectServer({ ...ctx, sessionId: gate.sessionId, serverCfg: cfg, personaName: ctx.personaName, app: clickApp });
   });
 

@@ -10,6 +10,8 @@ import { paths } from "../../../src/config/home";
 import { db } from "../../../src/db/schema";
 import * as PendingGates from "../../../src/db/pending-gates";
 import * as OneOnOne from "../../../src/db/one-on-one";
+import * as AuditEvents from "../../../src/db/audit-events";
+import { flushAudits } from "../../../src/audit/emit";
 import { PermissionGate } from "../../../src/gateway/slack/permission-gate";
 import { ApprovalGate } from "../../../src/gateway/slack/approval-gate";
 import { getPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../../src/persona/registry";
@@ -160,6 +162,13 @@ describe("durable gate state across gateway restarts", () => {
       await g.click("slaude_mcp:connect:cardtoken1", WORLD.manager);
       expect(g.posts.some((p) => /connected/i.test(String(p.text ?? "")))).toBe(true);
       expect((await PendingGates.get("cardtoken1"))!.status).toBe("approved");
+      await flushAudits();
+      const decided = (await AuditEvents.list({ sessionId: "S_OLD", action: "gate.mcp_connect.decided" })).items;
+      expect(decided).toHaveLength(1);
+      expect(decided[0]).toMatchObject({
+        actorKind: "slack_user", actorId: WORLD.manager, decision: "allow",
+        targetKind: "mcp_server", targetId: "workbench", channelId: CH, threadTs: "500.0",
+      });
 
       // A second click on the consumed card does nothing.
       const before = g.posts.length;
@@ -168,6 +177,29 @@ describe("durable gate state across gateway restarts", () => {
     } finally {
       rmSync(join(paths.home, ".mcp.json"), { force: true });
     }
+  });
+
+  it("the boot sweep records one gate.<kind>.expired per row it expires", async () => {
+    await db.run("DELETE FROM audit_events WHERE session_id = 'S_SWEPT'");
+    await PendingGates.create({
+      id: "swept_perm", kind: "perm", sessionId: "S_SWEPT",
+      payload: { toolName: "Bash", channel: CH, threadTs: "9.0" }, expiresAt: Date.now() - 1,
+    });
+    await PendingGates.create({
+      id: "swept_appr", kind: "approval", sessionId: "S_SWEPT",
+      payload: { channel: CH, threadTs: "9.0", summary: "x", category: "kb" }, expiresAt: Date.now() - 1,
+    });
+    makeGw();
+    let items: AuditEvents.AuditEvent[] = [];
+    for (let i = 0; i < 200 && items.length < 2; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+      await flushAudits();
+      items = (await AuditEvents.list({ sessionId: "S_SWEPT" })).items;
+    }
+    expect(items.map((e) => [e.action, e.targetId, e.decision]).sort()).toEqual([
+      ["gate.approval.expired", "kb", "expired"],
+      ["gate.permission.expired", "Bash", "expired"],
+    ]);
   });
 
   it("a non-owner click never consumes a connect card", async () => {
