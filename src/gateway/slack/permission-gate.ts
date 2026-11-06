@@ -9,7 +9,7 @@ import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { voiceStartProblem } from "../../agent/voice-mcp";
 import { matchAudioOrigin, type AudioPolicy } from "../../voice/audio-acl";
 import { audioPolicyFromEnv } from "../../voice/config";
-import { SECRET_KEY } from "../core/status-text";
+import { redactTree } from "../../redact";
 
 type PendingKey = string; // toolUseID
 
@@ -169,38 +169,10 @@ export function decisionFromPermRow(
   return { behavior: "deny", message: row.status === "expired" ? "expired before a decision" : "cancelled" };
 }
 
-/** Capability URLs: the secret is in the path, so only the origin may show.
- *  voice_start's stream_url/clear_url anywhere, and any `*_url` under `audio`. */
-const CAPABILITY_URL_KEY = /^(stream|clear)_url$/i;
-const AUDIO_URL_KEY = /_url$/i;
-
-function originOnly(v: unknown): string {
-  if (typeof v !== "string") return "[redacted]";
-  try {
-    const u = new URL(v);
-    return u.origin && u.origin !== "null" ? `${u.origin}/…` : "[redacted]";
-  } catch {
-    return "[redacted]";
-  }
-}
-
-/** Copy of `value` with every secret-named key's value replaced (SECRET_KEY,
- *  matched at any depth: the card is posted into a shared thread), every value
- *  under a `headers` object (route headers may carry auth of any name), and
- *  every capability URL cut to its origin. */
-export function redactForCard(value: unknown, depth = 0, parentKey = ""): unknown {
-  if (depth > 20 || value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map((v) => redactForCard(v, depth + 1, parentKey));
-  const inAudio = /^audio$/i.test(parentKey);
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (SECRET_KEY.test(k)) out[k] = "[redacted]";
-    else if (CAPABILITY_URL_KEY.test(k) || (inAudio && AUDIO_URL_KEY.test(k))) out[k] = originOnly(v);
-    else if (/^headers$/i.test(k) && v !== null && typeof v === "object" && !Array.isArray(v)) {
-      out[k] = Object.fromEntries(Object.keys(v as Record<string, unknown>).map((h) => [h, "[redacted]"]));
-    } else out[k] = redactForCard(v, depth + 1, k);
-  }
-  return out;
+/** Copy of `value` with secret-named keys, header values and capability URLs
+ *  redacted (see redactTree). The card is posted into a shared thread. */
+export function redactForCard(value: unknown): unknown {
+  return redactTree(value);
 }
 
 const VOICE_START = "mcp__slaude_voice__voice_start";

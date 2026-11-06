@@ -8,6 +8,11 @@ import { db, dbDialect } from "./schema";
  * tenant_id exists on Postgres only (the sqlite bootstrap carries no tenant
  * columns, see tests/db/schema-drift.test.ts), so the tenant is written and
  * filtered on Postgres and ignored on sqlite.
+ *
+ * Every query is keyed on id: it starts with the zero-padded epoch ms, so time
+ * bounds and retention are id ranges and the (…, id) indexes serve both the
+ * filter and ORDER BY id DESC. id and action compare bytewise on both dialects
+ * (COLLATE "C" on Postgres, sqlite's default BINARY).
  */
 export interface AuditEvent {
   /** Time sortable: zero-padded epoch ms + random suffix. Also the list cursor. */
@@ -48,9 +53,17 @@ export interface AuditPage {
 }
 
 const DEFAULT_LIMIT = 50;
+const TIME_KEY_WIDTH = 13;
+
+/** The time part of an id: epoch ms, zero padded so lexical order is time order. */
+export function timeKey(ms: number): string {
+  return String(Math.max(0, Math.floor(ms))).padStart(TIME_KEY_WIDTH, "0");
+}
+
 const MAX_LIMIT = 500;
 
-export async function insert(ev: AuditEvent): Promise<void> {
+/** `detailsJson`: the details already serialized by the writer (serialized once). */
+export async function insert(ev: AuditEvent, detailsJson: string = JSON.stringify(ev.details ?? {})): Promise<void> {
   const cols = [
     "id", "persona", "at", "actor_kind", "actor_id", "action", "target_kind", "target_id",
     "decision", "session_id", "channel_id", "thread_ts", "summary", "details",
@@ -58,7 +71,7 @@ export async function insert(ev: AuditEvent): Promise<void> {
   const params: unknown[] = [
     ev.id, ev.persona ?? null, ev.at, ev.actorKind, ev.actorId, ev.action, ev.targetKind ?? null,
     ev.targetId ?? null, ev.decision ?? null, ev.sessionId ?? null, ev.channelId ?? null,
-    ev.threadTs ?? null, ev.summary, JSON.stringify(ev.details ?? {}),
+    ev.threadTs ?? null, ev.summary, detailsJson,
   ];
   if (dbDialect() === "pg" && ev.tenantId) {
     cols.push("tenant_id");
@@ -84,9 +97,11 @@ export async function list(filter: AuditFilter, opts: { cursor?: string; limit?:
   }
   if (filter.action !== undefined) {
     if (filter.action.endsWith(".")) {
-      // substr, not LIKE: action names contain "_", a LIKE wildcard.
-      where.push("substr(action, 1, ?) = ?");
-      params.push(filter.action.length, filter.action);
+      // A range, not LIKE: action names contain "_", a LIKE wildcard. The upper
+      // bound is the prefix with its last character (".") bumped by one.
+      const p = filter.action;
+      where.push("action >= ? AND action < ?");
+      params.push(p, p.slice(0, -1) + String.fromCharCode(p.charCodeAt(p.length - 1) + 1));
     } else {
       where.push("action = ?");
       params.push(filter.action);
@@ -101,12 +116,12 @@ export async function list(filter: AuditFilter, opts: { cursor?: string; limit?:
     params.push(filter.sessionId);
   }
   if (filter.since !== undefined) {
-    where.push("at >= ?");
-    params.push(filter.since);
+    where.push("id >= ?");
+    params.push(timeKey(filter.since));
   }
   if (filter.until !== undefined) {
-    where.push("at <= ?");
-    params.push(filter.until);
+    where.push("id < ?");
+    params.push(timeKey(filter.until + 1));
   }
   if (opts.cursor) {
     where.push("id < ?");
@@ -125,7 +140,7 @@ export async function list(filter: AuditFilter, opts: { cursor?: string; limit?:
 
 /** Retention: delete rows older than `maxAgeMs`. The only delete path. */
 export async function purgeOlderThan(maxAgeMs: number, now: number = Date.now()): Promise<number> {
-  const r = await db.run(`DELETE FROM audit_events WHERE at < ?`, [now - maxAgeMs]);
+  const r = await db.run(`DELETE FROM audit_events WHERE id < ?`, [timeKey(now - maxAgeMs)]);
   return r.changes;
 }
 

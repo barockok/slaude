@@ -1,22 +1,20 @@
-import { redactSecrets, SECRET_KEY } from "../gateway/core/status-text";
+import { redactSecrets, redactTree } from "../redact";
+
+/** Longest summary kept, in characters. */
+export const MAX_SUMMARY_CHARS = 500;
 
 /**
- * Audit redaction. Reuses the status-line secret net (`redactSecrets`) on the
- * summary and on every string in details, and replaces the value of any key
- * matching SECRET_KEY (the same key pattern approval cards use) whatever it
- * holds.
+ * Audit redaction: the approval card's walker (secret-named keys, header
+ * values, capability URLs) plus the secret net on every string, and an object
+ * nested too deep is dropped rather than stored raw.
  */
-export function redactValue(value: unknown, depth = 0): unknown {
-  if (typeof value === "string") return redactSecrets(value);
-  if (value === null || typeof value !== "object") return value;
-  // Too deep to walk: drop it rather than store anything unredacted.
-  if (depth > 20) return "[truncated]";
-  if (Array.isArray(value)) return value.map((v) => redactValue(v, depth + 1));
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[k] = SECRET_KEY.test(k) ? "[redacted]" : redactValue(v, depth + 1);
-  }
-  return out;
+export function redactValue(value: unknown): unknown {
+  return redactTree(value, { strings: redactSecrets, tooDeep: "truncate" });
+}
+
+export function redactSummary(summary: string): string {
+  const s = redactSecrets(summary);
+  return s.length > MAX_SUMMARY_CHARS ? `${s.slice(0, MAX_SUMMARY_CHARS - 1)}…` : s;
 }
 
 export function redactEvent(ev: { summary: string; details: Record<string, unknown> }): {
@@ -24,7 +22,7 @@ export function redactEvent(ev: { summary: string; details: Record<string, unkno
   details: Record<string, unknown>;
 } {
   return {
-    summary: redactSecrets(ev.summary),
+    summary: redactSummary(ev.summary),
     details: redactValue(ev.details) as Record<string, unknown>,
   };
 }

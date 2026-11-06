@@ -209,7 +209,9 @@ write paths), retention default 365 days via `SLAUDE_AUDIT_RETENTION_DAYS`:
 | `summary` | short human line, redacted |
 | `details` | JSON, redacted key-wise |
 
-Indexes: `(tenant_id, persona, at)`, `(session_id, at)`, `(actor_id, at)`.
+Indexes: `(tenant_id, persona, id)`, `(session_id, id)`, `(actor_id, id)`. The id starts with the
+zero-padded epoch ms, so time bounds (`since`, `until`) and the retention purge are id ranges and
+one index serves both the filter and `ORDER BY id DESC`; `at` stays for display.
 
 Actions in phase 1: `gate.permission.decided|refused|expired|cancelled`,
 `gate.approval.decided|refused|expired`, `gate.mcp_connect.decided`, `grant.created`,

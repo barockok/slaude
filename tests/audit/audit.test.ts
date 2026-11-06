@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { db, dbDialect } from "../../src/db/schema";
 import * as AuditEvents from "../../src/db/audit-events";
 import { audit, newAuditId } from "../../src/audit";
-import { redactEvent } from "../../src/audit/redact";
+import { redactEvent, redactValue } from "../../src/audit/redact";
 import { metrics } from "../../src/metrics";
 
 beforeEach(async () => {
@@ -101,6 +101,20 @@ describe("audit_events repo", () => {
     expect(await ats({ sessionId: "s2" })).toEqual([1003]);
     expect(await ats({ since: 1002, until: 1003 })).toEqual([1003, 1002]);
     expect(await ats({ persona: "alpha", actorId: "U2", action: "gate." })).toEqual([1004]);
+    expect(await ats({ since: 1004 })).toEqual([1004]);
+    expect(await ats({ until: 1001 })).toEqual([1001]);
+  });
+
+  test("a prefix matches only that dotted prefix: no gateway.x, and _ is literal", async () => {
+    await AuditEvents.insert(row(1, { action: "gate.approval.decided" }));
+    await AuditEvents.insert(row(2, { action: "gateway.x" }));
+    await AuditEvents.insert(row(3, { action: "gate/x" }));
+    await AuditEvents.insert(row(4, { action: "one_on_one.locked" }));
+    await AuditEvents.insert(row(5, { action: "oneXonXone.locked" }));
+    await AuditEvents.insert(row(6, { action: "Gate.upper" }));
+    const ats = async (action: string) => (await AuditEvents.list({ action })).items.map((e) => e.at);
+    expect(await ats("gate.")).toEqual([1001]);
+    expect(await ats("one_on_one.")).toEqual([1004]);
   });
 
   test("tenant filter scopes on Postgres and is a no-op on sqlite", async () => {
@@ -111,10 +125,13 @@ describe("audit_events repo", () => {
   });
 
   test("purgeOlderThan deletes only rows older than the horizon", async () => {
-    await AuditEvents.insert(row(1, { at: 100 }));
-    await AuditEvents.insert(row(2, { at: 900 }));
-    expect(await AuditEvents.purgeOlderThan(500, 1000)).toBe(1);
-    expect((await AuditEvents.list({})).items.map((e) => e.at)).toEqual([900]);
+    // Purge is by id (its time part), the primary key.
+    await AuditEvents.insert(row(1, { id: newAuditId(100), at: 100 }));
+    await AuditEvents.insert(row(2, { id: newAuditId(499), at: 499 }));
+    await AuditEvents.insert(row(3, { id: newAuditId(500), at: 500 }));
+    await AuditEvents.insert(row(4, { id: newAuditId(900), at: 900 }));
+    expect(await AuditEvents.purgeOlderThan(500, 1000)).toBe(2);
+    expect((await AuditEvents.list({})).items.map((e) => e.at)).toEqual([900, 500]);
   });
 });
 
@@ -149,6 +166,45 @@ describe("redaction", () => {
       ok: true,
       none: null,
     });
+  });
+});
+
+describe("redaction parity with the approval card", () => {
+  test("header values, capability URLs and secret keys are masked; strings netted", () => {
+    const out = redactValue({
+      headers: { "X-Custom": "abc", Accept: "json" },
+      stream_url: "https://wb.example/p/cap-1/stream",
+      audio: { meet_url: "https://wb.example/p/cap-3", sample_rate: 24000 },
+      other_url: "https://docs.example/page",
+      cookie: "c",
+      note: "password=hunter2",
+    });
+    expect(out).toEqual({
+      headers: { "X-Custom": "[redacted]", Accept: "[redacted]" },
+      stream_url: "https://wb.example/…",
+      audio: { meet_url: "https://wb.example/…", sample_rate: 24000 },
+      other_url: "https://docs.example/page",
+      cookie: "[redacted]",
+      note: "••••",
+    });
+  });
+
+  test("shared references reuse their result and cycles become [circular]", () => {
+    const shared = { a: "token=abc" };
+    const loop: Record<string, unknown> = { name: "n" };
+    loop.self = loop;
+    const out = redactValue({ x: shared, y: shared, loop }) as any;
+    expect(out.x).toEqual({ a: "••••" });
+    expect(out.y).toBe(out.x);
+    expect(out.loop).toEqual({ name: "n", self: "[circular]" });
+    expect(() => JSON.stringify(out)).not.toThrow();
+  });
+
+  test("the walk stops after its node cap", () => {
+    const wide = Array.from({ length: 20_000 }, (_, i) => ({ i }));
+    const out = redactValue(wide) as unknown[];
+    expect(out[0]).toEqual({ i: 0 });
+    expect(out[19_999]).toBe("[truncated]");
   });
 });
 
@@ -244,9 +300,60 @@ describe("audit writer", () => {
         throw new Error("unreadable");
       },
     });
-    await audit({ actorKind: "system", actorId: "system", action: "persona.sync", details }, { sink: (l) => lines.push(l) });
+    await audit(
+      { actorKind: "system", actorId: "system", action: "persona.sync", decision: "allow", summary: "s", details },
+      { sink: (l) => lines.push(l) },
+    );
+    expect(failures()).toBe(before + 1);
+    // A degraded event is still written to both sinks.
+    expect(JSON.parse(lines[0]!)).toMatchObject({ action: "persona.sync", decision: "allow", summary: "s", detail: { unserializable: true } });
+    const [it] = (await AuditEvents.list({})).items;
+    expect(it).toMatchObject({ action: "persona.sync", actorId: "system", decision: "allow", details: { unserializable: true } });
+  });
+
+  test("details that cannot be serialized degrade to a marker, one failure", async () => {
+    const before = failures();
+    await audit(
+      { actorKind: "system", actorId: "system", action: "persona.sync", details: { n: 1n } },
+      { sink: () => {} },
+    );
+    expect(failures()).toBe(before + 1);
+    expect((await AuditEvents.list({})).items[0]!.details).toEqual({ unserializable: true });
+  });
+
+  test("a failing clock does not throw: counted, nothing written", async () => {
+    const before = failures();
+    const lines: string[] = [];
+    await audit(
+      { actorKind: "system", actorId: "system", action: "persona.sync" },
+      {
+        sink: (l) => lines.push(l),
+        now: () => {
+          throw new Error("no clock");
+        },
+      },
+    );
     expect(failures()).toBe(before + 1);
     expect(lines).toHaveLength(0);
+  });
+
+  test("summary is capped at 500 characters", async () => {
+    await audit({ actorKind: "system", actorId: "system", action: "persona.sync", summary: "x".repeat(2000) }, { sink: () => {} });
+    const [it] = (await AuditEvents.list({})).items;
+    expect(it!.summary.length).toBe(500);
+  });
+
+  test("details over 16 KB serialized are replaced by a marker with a 1 KB preview", async () => {
+    const lines: string[] = [];
+    await audit(
+      { actorKind: "system", actorId: "system", action: "persona.sync", details: { blob: "y".repeat(20_000) } },
+      { sink: (l) => lines.push(l) },
+    );
+    const [it] = (await AuditEvents.list({})).items;
+    expect(it!.details.truncated).toBe(true);
+    expect(it!.details.bytes).toBeGreaterThan(16 * 1024);
+    expect((it!.details.preview as string).length).toBe(1024);
+    expect(JSON.parse(lines[0]!).detail).toEqual(it!.details);
   });
 
   test("default sink is stdout", async () => {
