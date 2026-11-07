@@ -13,7 +13,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  SessionForceReleaseResponse, SessionHeartbeatResponse, SessionLockResponse, SessionReleaseResponse,
+  SessionDetailResponse, SessionForceReleaseResponse, SessionHeartbeatResponse, SessionLockResponse, SessionReleaseResponse,
 } from "../../../../gateway/panel/api-types";
 import { ApiError } from "../../../lib/api";
 import { api } from "../../client";
@@ -27,6 +27,8 @@ export interface SessionLock {
   unsupported: boolean;
   /** We held the lock and lost it. */
   lost: boolean;
+  /** Who holds it now, when we lost it to a take-over; null when it expired or was released. */
+  lostTo: string | null;
   busy: "take" | "release" | "force" | null;
   error: string | null;
   take: () => Promise<void>;
@@ -44,11 +46,14 @@ const ownerOf = (e: unknown): string | null => {
   return b && typeof b.owner === "string" ? b.owner : null;
 };
 
+const pathFor = (sessionId: string, sub: string) => `/api/sessions/${encodeURIComponent(sessionId)}/${sub}`;
+
 export function useSessionLock(sessionId: string, initialOwner: string | null | undefined, me: string | null): SessionLock {
   const [owner, setOwner] = useState<string | null>(initialOwner ?? null);
   const [ttl, setTtl] = useState(DEFAULT_TTL);
   const [unsupported, setUnsupported] = useState(false);
   const [lost, setLost] = useState(false);
+  const [lostTo, setLostTo] = useState<string | null>(null);
   const [busy, setBusy] = useState<SessionLock["busy"]>(null);
   const [error, setError] = useState<string | null>(null);
   const mine = !!me && owner === me;
@@ -62,9 +67,15 @@ export function useSessionLock(sessionId: string, initialOwner: string | null | 
     if (!mineRef.current) setOwner(initialOwner ?? null);
   }, [initialOwner]);
 
-  const path = (sub: string) => `/api/sessions/${encodeURIComponent(sessionId)}/${sub}`;
+  // A lost-to-someone notice ends once that person no longer holds it.
+  useEffect(() => {
+    if (lost && lostTo && owner !== lostTo) {
+      setLost(false);
+      setLostTo(null);
+    }
+  }, [lost, lostTo, owner]);
 
-  const fail = (e: unknown, verb: string) => {
+  const fail = useCallback((e: unknown, verb: string) => {
     if (e instanceof ApiError && e.status === 503) {
       setUnsupported(true);
       return;
@@ -80,43 +91,48 @@ export function useSessionLock(sessionId: string, initialOwner: string | null | 
       return;
     }
     setError(`Could not ${verb}: ${(e as Error).message}`);
-  };
+  }, []);
+
+  const regained = useCallback(() => {
+    setLost(false);
+    setLostTo(null);
+  }, []);
 
   const take = useCallback(async () => {
     setBusy("take");
     setError(null);
     try {
-      const r = await api.post<SessionLockResponse>(path("lock"));
+      const r = await api.post<SessionLockResponse>(pathFor(sessionId, "lock"));
       setOwner(r.locked_by);
       setTtl(r.ttl_ms || DEFAULT_TTL);
-      setLost(false);
+      regained();
     } catch (e) {
       fail(e, "take control");
     } finally {
       setBusy(null);
     }
-  }, [sessionId]);
+  }, [sessionId, fail, regained]);
 
   const release = useCallback(async () => {
     setBusy("release");
     setError(null);
     try {
-      await api.post<SessionReleaseResponse>(path("release"));
+      await api.post<SessionReleaseResponse>(pathFor(sessionId, "release"));
       setOwner(null);
     } catch (e) {
       fail(e, "release control");
     } finally {
       setBusy(null);
     }
-  }, [sessionId]);
+  }, [sessionId, fail]);
 
   const forceTake = useCallback(async () => {
     setBusy("force");
     setError(null);
     try {
-      const r = await api.post<SessionForceReleaseResponse>(path("force-release"));
+      const r = await api.post<SessionForceReleaseResponse>(pathFor(sessionId, "force-release"));
       setOwner(r.owner);
-      setLost(false);
+      regained();
       return true;
     } catch (e) {
       fail(e, "take over this session");
@@ -124,30 +140,44 @@ export function useSessionLock(sessionId: string, initialOwner: string | null | 
     } finally {
       setBusy(null);
     }
-  }, [sessionId]);
+  }, [sessionId, fail, regained]);
 
-  // Heartbeat while we hold it.
+  // Heartbeat while we hold it. A 409 means we lost it: ask who holds it now,
+  // to tell a take-over apart from an expiry or a release elsewhere.
   useEffect(() => {
     if (!mine || unsupported) return;
+    let alive = true;
     const every = Math.max(5_000, Math.floor(ttl / 3));
     const t = setInterval(() => {
-      api.post<SessionHeartbeatResponse>(path("heartbeat")).then(
-        (r) => r.ttl_ms && setTtl(r.ttl_ms),
-        (e: unknown) => {
-          if (e instanceof ApiError && e.status === 409) {
-            setOwner(null);
-            setLost(true);
+      api.post<SessionHeartbeatResponse>(pathFor(sessionId, "heartbeat")).then(
+        (r) => {
+          if (alive && r.ttl_ms && r.ttl_ms !== ttl) setTtl(r.ttl_ms);
+        },
+        async (e: unknown) => {
+          if (!alive || !(e instanceof ApiError && e.status === 409)) return; // a blip: the next beat retries inside the TTL
+          let now: string | null = null;
+          try {
+            now = (await api.get<SessionDetailResponse>(`/api/sessions/${encodeURIComponent(sessionId)}`)).panel_locked_by ?? null;
+          } catch {
+            /* unknown: report it as expired */
           }
-          // A network blip: the next beat tries again well inside the TTL.
+          if (!alive) return;
+          const taken = now && now !== me ? now : null;
+          setOwner(taken);
+          setLostTo(taken);
+          setLost(true);
         },
       );
     }, every);
-    return () => clearInterval(t);
-  }, [mine, unsupported, ttl, sessionId]);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [mine, unsupported, ttl, sessionId, me]);
 
   // Leaving the page (or the tab) hands the thread back to Slack.
   useEffect(() => {
-    const url = `${api.base}${path("release")}`;
+    const url = `${api.base}${pathFor(sessionId, "release")}`;
     const send = () => {
       if (!mineRef.current) return;
       void fetch(url, { method: "POST", headers: { "x-panel-csrf": "1" }, credentials: "same-origin", keepalive: true }).catch(() => undefined);
@@ -159,21 +189,12 @@ export function useSessionLock(sessionId: string, initialOwner: string | null | 
     };
   }, [sessionId]);
 
-  return {
-    owner,
-    mine,
-    unsupported,
-    lost,
-    busy,
-    error,
-    take,
-    release,
-    forceTake,
-    claimed: useCallback(() => {
-      if (me) setOwner(me);
-      setLost(false);
-    }, [me]),
-    heldBy: useCallback((o: string | null) => setOwner(o), []),
-    clearError: useCallback(() => setError(null), []),
-  };
+  const claimed = useCallback(() => {
+    if (me) setOwner(me);
+    regained();
+  }, [me, regained]);
+  const heldBy = useCallback((o: string | null) => setOwner(o), []);
+  const clearError = useCallback(() => setError(null), []);
+
+  return { owner, mine, unsupported, lost, lostTo, busy, error, take, release, forceTake, claimed, heldBy, clearError };
 }

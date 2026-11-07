@@ -22,6 +22,7 @@ export function Drawer({ open, onClose, title, description, children }: DrawerPr
   const id = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const restoreRef = useRef<HTMLElement | null>(null);
+  const layerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -29,7 +30,14 @@ export function Drawer({ open, onClose, title, description, children }: DrawerPr
     panelRef.current?.focus();
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    // Everything behind the drawer is out of reach (pointer, keyboard and
+    // assistive tech) until it closes. Elements already inert stay inert.
+    const behind = Array.from(document.body.children).filter(
+      (el): el is HTMLElement => el instanceof HTMLElement && el !== layerRef.current && !el.inert,
+    );
+    for (const el of behind) el.inert = true;
     return () => {
+      for (const el of behind) el.inert = false;
       document.body.style.overflow = prev;
       restoreRef.current?.focus?.({ preventScroll: true });
     };
@@ -58,7 +66,7 @@ export function Drawer({ open, onClose, title, description, children }: DrawerPr
   };
 
   return createPortal(
-    <div className="sl-drawer-layer" onKeyDown={onKeyDown}>
+    <div className="sl-drawer-layer" ref={layerRef} onKeyDown={onKeyDown}>
       <div className="sl-dialog-backdrop" onClick={onClose} aria-hidden="true" />
       <div
         ref={panelRef}

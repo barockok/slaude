@@ -20,11 +20,16 @@ export function useSessionEvents(sessionId: string): SessionEvents {
 
   useEffect(() => {
     setEntries([]);
+    // Ids of the entries kept, in arrival order: trimmed with them, so a long
+    // session does not grow the set without bound.
     const seen = new Set<string>();
+    const order: string[] = [];
     const close = openSessionStream(sessionId, {
       onEntry: (e) => {
         if (seen.has(e.id)) return;
         seen.add(e.id);
+        order.push(e.id);
+        while (order.length > KEEP) seen.delete(order.shift()!);
         setEntries((xs) => (xs.length >= KEEP ? [...xs.slice(xs.length - KEEP + 1), e] : [...xs, e]));
         if ((e.event.type === "done" && !e.event.autoEvolve) || e.event.type === "error") setTurnsEnded((n) => n + 1);
       },

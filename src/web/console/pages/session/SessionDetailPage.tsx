@@ -28,6 +28,8 @@ export function isSessionTab(t: string | undefined): t is SessionTab {
 }
 
 const REFRESH_MS = 20_000;
+/** Operator messages kept on the page, like the event tail's cap. */
+const SENT_KEEP = 200;
 
 function SessionAudit({ sessionId }: { sessionId: string }) {
   const pages = useAuditPages(`/api/sessions/${encodeURIComponent(sessionId)}/audit?limit=25`);
@@ -121,7 +123,8 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
   const usage = latestUsage(events.entries);
 
   const onSent = useCallback(
-    (text: string) => setSent((xs) => [...xs, { id: `op-${Date.now()}-${xs.length}`, at: Date.now(), text, by: me ?? "You" }]),
+    (text: string) =>
+      setSent((xs) => [...xs.slice(-(SENT_KEEP - 1)), { id: `op-${Date.now()}-${xs.length}`, at: Date.now(), text, by: me ?? "You" }]),
     [me],
   );
 
@@ -230,7 +233,7 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
         {tab === "timeline" ? (
           <TimelineTab items={items} status={events.status} detail={events.detail} />
         ) : tab === "chat" ? (
-          <ChatTab sessionId={id} messages={chat} lock={lock} isSuperadmin={isSuper} onSent={onSent} noBackend={events.status === "unavailable"} />
+          <ChatTab sessionId={id} messages={chat} lock={lock} isSuperadmin={isSuper} onSent={onSent} />
         ) : (
           <SessionAudit sessionId={id} />
         )}

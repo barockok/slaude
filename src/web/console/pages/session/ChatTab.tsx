@@ -16,8 +16,6 @@ export interface ChatTabProps {
   lock: SessionLock;
   isSuperadmin: boolean;
   onSent: (text: string) => void;
-  /** No event bus (the live tail answered 503): the lock lives on the same Redis, so there is none either. */
-  noBackend?: boolean;
 }
 
 function Banner({ tone, title, children, actions }: { tone: "neutral" | "accent" | "warning" | "danger"; title: string; children?: ReactNode; actions?: ReactNode }) {
@@ -35,7 +33,7 @@ function Banner({ tone, title, children, actions }: { tone: "neutral" | "accent"
   );
 }
 
-export function ChatTab({ sessionId, messages, lock, isSuperadmin, onSent, noBackend }: ChatTabProps) {
+export function ChatTab({ sessionId, messages, lock, isSuperadmin, onSent }: ChatTabProps) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -46,9 +44,11 @@ export function ChatTab({ sessionId, messages, lock, isSuperadmin, onSent, noBac
     if (log.current) log.current.scrollTop = log.current.scrollHeight;
   }, [messages.length]);
 
-  const unsupported = lock.unsupported || !!noBackend;
+  // Only the lock endpoints answering 503 says there is no lock backend.
+  const unsupported = lock.unsupported;
   const canType = lock.mine || unsupported;
   const someoneElse = !!lock.owner && !lock.mine;
+  const stolen = lock.lost && !!lock.lostTo && lock.owner === lock.lostTo;
 
   const send = async (e?: FormEvent) => {
     e?.preventDefault();
@@ -57,10 +57,11 @@ export function ChatTab({ sessionId, messages, lock, isSuperadmin, onSent, noBac
     setSending(true);
     setSendError(null);
     try {
-      await api.post<SessionChatResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/chat`, { text: t });
+      const r = await api.post<SessionChatResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/chat`, { text: t });
       onSent(t);
       setText("");
-      if (!unsupported) lock.claimed();
+      // The server took the lock for this send: hold it (heartbeat, release on leave).
+      if (r?.locked_by) lock.claimed();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         const owner = (err.body as { owner?: string } | null)?.owner ?? null;
@@ -114,17 +115,17 @@ export function ChatTab({ sessionId, messages, lock, isSuperadmin, onSent, noBac
       </div>
 
       <div className="sl-chat__control">
-        {lock.lost && !lock.owner && (
+        {lock.lost && !stolen && (
           <Banner
             tone="danger"
-            title="You lost control of this session"
+            title="Your control of this session ended"
             actions={
               <Button size="sm" onClick={() => void lock.take()} loading={lock.busy === "take"}>
                 Take control again
               </Button>
             }
           >
-            The lock expired or a superadmin took over. Slack replies in the thread have resumed.
+            The lock expired or was released elsewhere, so Slack replies in the thread have resumed.
           </Banner>
         )}
 
@@ -147,8 +148,8 @@ export function ChatTab({ sessionId, messages, lock, isSuperadmin, onSent, noBac
           </Banner>
         ) : someoneElse ? (
           <Banner
-            tone="warning"
-            title={`${lock.owner} is driving this session`}
+            tone={stolen ? "danger" : "warning"}
+            title={stolen ? `Taken over by ${lock.owner}` : `${lock.owner} is driving this session`}
             actions={
               <Button
                 size="sm"
@@ -161,7 +162,9 @@ export function ChatTab({ sessionId, messages, lock, isSuperadmin, onSent, noBac
               </Button>
             }
           >
-            {isSuperadmin
+            {stolen
+              ? `${lock.owner} took control from you, so your messages no longer reach the agent. Slack stays paused while they drive it.`
+              : isSuperadmin
               ? "Slack is paused for them. Taking over moves control to you and is recorded in the audit trail."
               : "Slack is paused for them. Only a superadmin can take over; ask them to release it."}
           </Banner>
