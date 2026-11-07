@@ -63,30 +63,72 @@ that a background writer touches next.
 
 ## Fix
 
-- **Label every write with the brain's model.** At boot slaude wraps the
-  engine's `upsertChunks` (an own property, so gbrain's transaction engines,
-  made with `Object.create(engine)`, inherit it). A chunk without a label gets
-  the configured model, or the brain's recorded one when the process has none.
-  Explicit labels are kept. (`src/knowledge/embedding-guard.ts`)
-- **Refuse to embed on a mismatch.** After `initSchema` the boot compares the
+- **Labels describe the vector.** At boot slaude wraps the engine's
+  `upsertChunks` (an own property, so gbrain's transaction engines, made with
+  `Object.create(engine)`, inherit it). Every text chunk that carries a vector
+  is taken as made by this process's gateway, whatever label it arrives with:
+  it gets the gateway's model when that is the label model, and loses its
+  vector otherwise (logged loudly; the write lands unembedded). The label
+  model is the configured one only where this process can embed and the guard
+  did not refuse; elsewhere it is the brain's own record. Only a caller that
+  marks its chunks as carried in (`CARRIED_IN`: the bundle import) keeps
+  explicit labels. Image chunks (a separate vector column) are left alone.
+  (`src/knowledge/embedding-guard.ts`)
+- **Guard at boot, once per boot.** After `initSchema` the boot compares the
   process's configured model and dimensions with gbrain's `config` table
-  (`embedding_model`, `embedding_dimensions`) and the gateway's model. On a
-  mismatch it logs `EMBEDDING REFUSED`, resets the gateway and marks embedding
+  (`embedding_model`, `embedding_dimensions`):
+  - same model: embed;
+  - same model name and dimensions, another provider prefix (`openai:x` and
+    `litellm:x`): adopt the configured name into the record and embed;
+  - another model name: probe (below);
+  - other dimensions, or a gateway on another model: refuse.
+  A refusal logs `EMBEDDING REFUSED`, resets the gateway and marks embedding
   inactive: `put_page` writes unembedded, sync passes `no_embed`, the embed
-  sweep skips. At write time, a vector the gateway produced with a model other
-  than the brain's is dropped with the same loud log; with no gateway, a vector
-  can only have been carried in (a bundle import, checked against the brain's
-  dimensions there) and is kept.
-- **Repair.** `slaude brain reembed --model-mismatch` lists chunks whose label
-  differs from the configured model, by label and page, without changing
-  anything. `--apply` re-embeds each listed page whole with the configured
-  model and stamps its embedding signature; when the brain's record names
-  another model, every page is re-embedded and the record is set afterwards.
-  It uses gbrain's APIs only (`sources_list`, `listPages`, `getChunks`,
-  `upsertChunks`, `setPageEmbeddingSignature`, `getConfig`/`setConfig`,
-  `embedBatch`); no SQL on gbrain tables. It refuses in remote mode, without a
-  configured model, on a dimension mismatch (the column width cannot change by
-  re-embedding), and with `--apply` when the gateway is inactive.
+  sweep skips.
+- **Probe before refusing.** The record alone is not proof (see the upgrade
+  case below). The boot re-embeds up to 5 stored chunk texts with the gateway
+  and compares them with their stored vectors, plain and title-wrapped
+  (gbrain's default search mode embeds chunks behind a title prefix). All at
+  cosine 0.99 or above, or no stored vector at all, adopts the configured name
+  (`[brain] embedding record adopted: <old> -> <new> (probe ok)`). A lower
+  similarity refuses. The probe is bounded (20 s, 5 samples, 50 pages); if it
+  fails or times out the boot does not refuse: embedding stays on with a
+  warning, because refusing a healthy brain is worse than a later check.
+- **Repair.** `slaude brain reembed --model-mismatch` lists pages with a text
+  chunk labelled with another model (counts, and the first 50 pages), without
+  changing anything. `--apply` re-embeds each such page whole with the
+  configured model and stamps its embedding signature. When the record names
+  another model, every page is re-embedded and the record is set once all are
+  done; such a run resumes, skipping pages already labelled with the target
+  whose signature is current. Soft-deleted pages (still inside gbrain's purge
+  window) are covered via `listPages({ includeDeleted: true })`. Vectors are
+  computed first, then the page's chunk texts are re-read inside the write
+  transaction and the page is skipped when they changed meanwhile, so a
+  gateway writing beside the repair is fine: its own write stands. Modality
+  and token counts are kept from the stored chunks.
+  `slaude brain reembed --adopt` is record-only: it sets the record to the
+  configured model without touching a vector, for an operator who knows the
+  vectors match. Both use gbrain's APIs; the one exception is a read-only
+  `SELECT` of a page's `embedding_signature` and its chunks' `modality`, which
+  gbrain's `rowToPage` / `rowToChunk` drop. Both refuse in remote mode,
+  without a configured model and on a dimension mismatch; `--model-mismatch
+  --apply` also refuses when the gateway is inactive. While either runs, the
+  boot guard neither adopts nor refuses: the command decides.
+- **Bundle import.** `/brain-import` marks its chunks as carried in, and when
+  the bundle's model equals the target brain's, labels the carried vectors
+  with it (the per-chunk labels a bundle carries are gbrain's default).
+
+## Upgrade case: the record names gbrain's default
+
+Brains created while gbrain's gateway was not yet configured at schema time
+(slaude releases from mid-June to early October 2026 configured it after
+`initSchema`) had the `config` table seeded with gbrain's default model, while
+every vector came from the configured provider. A plain record comparison
+would refuse every one of them at the first boot of this release. The probe
+recognises them (the stored vectors match the configured model) and adopts
+the configured name into the record, logged once. Where the probe cannot run
+(the provider is unreachable at boot) embedding stays on and the next boot
+probes again; `slaude brain reembed --adopt --apply` settles it by hand.
 
 ## Running the repair
 
@@ -96,6 +138,8 @@ gateway (inside the gateway container, or the brain server in remote mode):
 ```sh
 slaude brain reembed --model-mismatch           # dry run: what is mislabelled
 slaude brain reembed --model-mismatch --apply   # re-embed those pages
+slaude brain reembed --adopt                    # dry run: record vs configured
+slaude brain reembed --adopt --apply            # record the configured model only
 ```
 
 With an embedded PGLite brain, stop the gateway first: PGLite is single-writer
