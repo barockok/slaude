@@ -1,7 +1,7 @@
 import type { AuditEventView } from "../../../gateway/panel/api-types";
 import { Link } from "../../lib/router";
 import { Badge, CodeBlock, KeyValue } from "../../ui";
-import { ACTOR_KIND_LABEL, absoluteTime, actionLabel, decisionLabel, decisionTone, relativeTime, sessionPath } from "../lib/format";
+import { absoluteTime, actionLabel, actorKindLabel, auditAgent, decisionLabel, decisionTone, relativeTime, sessionPath } from "../lib/format";
 import { Drawer } from "./Drawer";
 
 const none = <span className="sl-faint">None</span>;
@@ -29,12 +29,12 @@ export function AuditDrawer({ event, onClose }: { event: AuditEventView | null; 
               {
                 key: "agent",
                 label: "Agent",
-                value: e.persona ? (
-                  <Link className="sl-link" to={`/agents/${encodeURIComponent(e.persona)}`}>
-                    {e.persona}
+                value: auditAgent(e) ? (
+                  <Link className="sl-link" to={`/agents/${encodeURIComponent(auditAgent(e)!)}`}>
+                    {auditAgent(e)}
                   </Link>
                 ) : (
-                  none
+                  <span className="sl-faint">Console (not about one agent)</span>
                 ),
               },
               {
@@ -43,7 +43,7 @@ export function AuditDrawer({ event, onClose }: { event: AuditEventView | null; 
                 value: (
                   <span className="sl-stack">
                     <span className="sl-mono sl-break">{e.actorId}</span>
-                    <span className="sl-caption">{ACTOR_KIND_LABEL[e.actorKind] ?? e.actorKind}</span>
+                    <span className="sl-caption">{actorKindLabel(e)}</span>
                   </span>
                 ),
               },
@@ -53,7 +53,7 @@ export function AuditDrawer({ event, onClose }: { event: AuditEventView | null; 
                 label: "Target",
                 value: e.targetId ? (
                   <span className="sl-stack">
-                    <span className="sl-mono sl-break">{e.targetId}</span>
+                    <span className="sl-mono sl-break">{e.targetLabel ?? e.targetId}</span>
                     {e.targetKind && <span className="sl-caption">{e.targetKind.replace(/_/g, " ")}</span>}
                   </span>
                 ) : (
@@ -76,7 +76,22 @@ export function AuditDrawer({ event, onClose }: { event: AuditEventView | null; 
                   none
                 ),
               },
-              { key: "channel", label: "Channel", value: e.channelId ? <span className="sl-mono">{e.channelId}</span> : none },
+              {
+                key: "channel",
+                label: "Channel",
+                value: e.channelId ? (
+                  e.channelLabel ? (
+                    <span className="sl-stack">
+                      <span>{e.channelLabel}</span>
+                      <span className="sl-caption sl-mono">{e.channelId}</span>
+                    </span>
+                  ) : (
+                    <span className="sl-mono">{e.channelId}</span>
+                  )
+                ) : (
+                  none
+                ),
+              },
               ...(e.threadTs ? [{ key: "thread", label: "Thread", value: <span className="sl-mono">{e.threadTs}</span> }] : []),
               { key: "id", label: "Event id", value: <span className="sl-mono sl-break">{e.id}</span> },
             ]}

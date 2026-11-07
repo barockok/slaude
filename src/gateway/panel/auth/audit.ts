@@ -14,6 +14,7 @@ import { emitAudit, type EmitInput } from "../../../audit/emit";
 import { soulOverrideInput } from "../../../audit/events";
 import type { AuditDeps } from "../../../audit";
 import type { PanelRole } from "./roles";
+import { isConsoleWidePanelAction } from "../console-wide";
 
 export interface AuditRecord {
   /** Panel action name, e.g. "auth.login", "control.reset", "force-release". */
@@ -70,9 +71,13 @@ export function panelAuditInput(rec: AuditRecord): EmitInput {
     if (rec.session) [targetKind, targetId] = ["session", rec.session];
     else if (persona) [targetKind, targetId] = ["persona", persona];
   }
+  // Sign-in, console roles and a config reload belong to no agent: persona
+  // null, never the default agent the writer would otherwise assume.
+  const consoleWide = !persona && !rec.session && isConsoleWidePanelAction(rec.action);
   return {
     ...(tenantId ? { tenantId } : {}),
     persona,
+    ...(consoleWide ? { consoleWide: true } : {}),
     actorKind: "operator",
     actorId: rec.operator,
     action,

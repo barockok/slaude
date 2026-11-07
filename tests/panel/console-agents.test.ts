@@ -12,7 +12,7 @@ import * as AuditEvents from "../../src/db/audit-events";
 import { flushAudits } from "../../src/audit/emit";
 import { SoulDataSchema } from "../../src/soul/data";
 import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
-import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
+import { __resetPersonaRegistry, setManagedDefaultSoul, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
 import { __setGrantsReader, roleOf } from "../../src/access/role";
 import type { AgentDetailResponse, AgentsResponse, AllGrantsResponse, ConsoleGrantView, CreateGrantResponse } from "../../src/gateway/panel/api-types";
 
@@ -22,7 +22,7 @@ const superadmin = cookie("lead@example.com");
 const operator = cookie("alice@example.com");
 const unlisted = cookie("eve@example.com");
 
-function registryWith(personas: Array<{ name: string; soulJson?: unknown }>): PersonaRegistry {
+function registryWith(personas: Array<{ name: string; soulJson?: unknown; soulMd?: string }>): PersonaRegistry {
   const full = personas.map((p) => ({ slackUserId: `UP${p.name.toUpperCase()}`, config: { slackUserId: "UX", name: p.name }, outClient: null, ...p }) as Persona);
   return {
     lookupByUserId: () => null,
@@ -79,8 +79,11 @@ beforeEach(async () => {
   await db.run("DELETE FROM cron_jobs");
   setSoulData(SoulDataSchema.parse({ manager: { userId: "UMGR" }, mandate: "Help the team." }));
   setPersonaRegistry(registryWith([
-    { name: "scout", soulJson: { manager: { userId: "USCOUT" }, mandate: "Scout things.", trustedChannels: ["CSCOUT"] } },
+    // Mandates are read from the soul text (as the scheduler reads them); soul_json decides access.
+    { name: "scout", soulJson: { manager: { userId: "USCOUT" }, mandate: "Scout things.", trustedChannels: ["CSCOUT"] }, soulMd: "# Scout\n\n## Mandate\nScout things.\n" },
   ]));
+  // The default soul text, never this machine's own SOUL.md.
+  setManagedDefaultSoul("# Default\n");
   __setGrantsReader(null);
 });
 afterEach(async () => {
@@ -88,6 +91,7 @@ afterEach(async () => {
   __setGrantsReader(null);
   __resetPersonaRegistry();
   __resetSoulDataMemo();
+  setManagedDefaultSoul(null);
   for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   __resetRoleCache();
   await db.run("DELETE FROM agent_grants");

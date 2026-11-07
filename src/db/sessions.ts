@@ -117,7 +117,7 @@ export async function listSessions(o: ListSessionsOpts = {}): Promise<SessionRow
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   params.push(limit, offset);
   return db.query<SessionRow>(
-    `SELECT * FROM sessions ${clause} ORDER BY updated_at DESC LIMIT ? OFFSET ?`,
+    `SELECT * FROM sessions ${clause} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?`,
     params,
   );
 }

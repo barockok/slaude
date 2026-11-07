@@ -46,29 +46,29 @@ function defaultMandates(now: number): MandateView[] {
       triggers: ["any admitted message"], approvers: ["UALICE"],
     },
     {
-      id: "channel:CTEAM", kind: "channel", title: "Mandate in <#CTEAM>", source: "soul", channelId: "CTEAM", approverNote: note,
+      id: "channel:CTEAM", kind: "channel", title: "Mandate in #team", source: "soul", channelId: "CTEAM", channelLabel: "#team", approverNote: note,
       instructions: "In the team channel, answer only when mentioned or when a question goes unanswered for an hour. Keep replies in threads.",
-      triggers: ["messages in <#CTEAM>"], approvers: ["UALICE", "UBOB"],
+      triggers: ["messages in #team"], approvers: ["UALICE", "UBOB"],
     },
     {
-      id: "channel:COPS", kind: "channel", title: "Mandate in <#COPS>", source: "soul", channelId: "COPS", approverNote: note,
+      id: "channel:COPS", kind: "channel", title: "Mandate in #ops", source: "soul", channelId: "COPS", channelLabel: "#ops", approverNote: note,
       instructions: "", inheritsGlobal: true, proactive: { enabled: true, highest: "ask" },
-      triggers: ["messages in <#COPS>"], approvers: [],
+      triggers: ["messages in #ops"], approvers: [],
     },
     {
       id: "heartbeat", kind: "heartbeat", title: "Heartbeat", source: "proactive", approverNote: note,
-      instructions: "Watches: issue-tracker, ci-status. Highest action: ask.",
+      instructions: "Watches: issue-tracker, ci-status. Highest action: ask. Works on its own in #ops.",
       triggers: ["heartbeat round", "wake"], approvers: ["UALICE"],
     },
     {
       id: "cron:c_standup", kind: "cron", title: "Every weekday morning, read the open items in the team tracker and the last day of...", source: "cron",
       instructions: LONG_CRON, triggers: ["cron 0 9 * * 1-5"], approvers: ["UALICE"], approverNote: note,
-      channelId: "CTEAM", schedule: "0 9 * * 1-5", lastRunAt: now - 5 * HOUR,
+      channelId: "CTEAM", channelLabel: "#team", schedule: "0 9 * * 1-5", lastRunAt: now - 5 * HOUR,
     },
     {
       id: "cron:c_weekly", kind: "cron", title: "Summarise the week's incidents for the ops channel", source: "cron",
       instructions: "Summarise the week's incidents for the ops channel.", triggers: ["cron 0 16 * * 5"], approvers: ["UALICE"], approverNote: note,
-      channelId: "COPS", schedule: "0 16 * * 5", lastRunAt: null,
+      channelId: "COPS", channelLabel: "#ops", schedule: "0 16 * * 5", lastRunAt: null,
     },
   ];
 }
@@ -81,9 +81,33 @@ function scoutMandates(): MandateView[] {
       triggers: ["any admitted message"], approvers: [],
     },
     {
-      id: "channel:CTEAM", kind: "channel", title: "Mandate in <#CTEAM>", source: "soul", channelId: "CTEAM",
-      instructions: "Answer research requests in threads only.", triggers: ["messages in <#CTEAM>"], approvers: ["UALICE", "UBOB"],
+      id: "channel:CTEAM", kind: "channel", title: "Mandate in #team", source: "soul", channelId: "CTEAM", channelLabel: "#team",
+      instructions: "Answer research requests in threads only.", triggers: ["messages in #team"], approvers: ["UALICE", "UBOB"],
       proactive: { enabled: false },
+    },
+  ];
+}
+
+/** A filesystem persona: mandates from its soul text, wakes switched on by a channel block. */
+function triageMandates(now: number): MandateView[] {
+  return [
+    {
+      id: "global", kind: "global", title: "Global mandate", source: "soul",
+      instructions: "Sort incoming alerts: page the on-call engineer for anything customer facing, file the rest.",
+      triggers: ["any admitted message"], approvers: ["UALICE"],
+    },
+    {
+      id: "channel:CALERTS", kind: "channel", title: "Mandate in #CALERTS", source: "soul", channelId: "CALERTS",
+      instructions: "", inheritsGlobal: true, proactive: { enabled: true }, triggers: ["messages in #CALERTS"], approvers: ["UALICE"],
+    },
+    {
+      id: "heartbeat", kind: "heartbeat", title: "Heartbeat", source: "proactive",
+      instructions: "Works on its own in #CALERTS.", triggers: ["heartbeat round", "wake"], approvers: ["UALICE"],
+    },
+    {
+      id: "cron:c_sweep", kind: "cron", title: "Sweep unacknowledged alerts", source: "cron",
+      instructions: "Sweep unacknowledged alerts", triggers: ["cron */30 * * * *"], approvers: ["UALICE"],
+      channelId: "CALERTS", schedule: "*/30 * * * *", lastRunAt: now - 12 * MIN,
     },
   ];
 }
@@ -140,7 +164,7 @@ export function createFixtures(now: number = Date.now()): ConsoleFixtures {
     }),
     triage: detail({
       name: "triage", slackUserId: "UTRIAGE", model: "claude-haiku-4-5", runsOn: "edge", live: false,
-      mandates: [], grants: [],
+      mandates: triageMandates(now), grants: [],
     }),
   };
 
@@ -175,13 +199,18 @@ const SEEDS: Seed[] = [
   { ago: 20 * HOUR, persona: "default", actorKind: "slack_user", actorId: "UALICE", action: "gate.permission.decided", targetKind: "tool", targetId: "Edit", decision: "always", sessionId: "s_4a10", summary: "Always allow Edit in this thread" },
   { ago: 26 * HOUR, persona: "default", actorKind: "operator", actorId: "jane.doe@example.com", action: "grant.revoked", targetKind: "grant", targetId: "g_00", decision: null, summary: "revoked member for user UDAVE" },
   { ago: 2 * DAY, persona: "scout", actorKind: "system", actorId: "gateway", action: "persona.sync", targetKind: "persona", targetId: "scout", decision: null, summary: "Synced from the personas repository" },
+  // Console-wide: no agent. The second is an older row written under the default agent.
+  { ago: 30 * MIN, persona: null, actorKind: "operator", actorId: "alice@example.com", action: "panel.config.reload", targetKind: null, targetId: null, decision: null, summary: "reload" },
+  { ago: 47 * HOUR, persona: "default", actorKind: "operator", actorId: "jane.doe@example.com", action: "panel.auth.login", targetKind: null, targetId: null, decision: null, summary: "auth.login" },
 ];
 
 function auditTrail(now: number): AuditEventView[] {
   const out: AuditEventView[] = SEEDS.map((s, i) => {
     const { ago, ...rest } = s;
-    return { id: `a_${String(1000 - i).padStart(4, "0")}`, at: now - ago, details: detailsFor(rest), ...rest };
-  });
+    const label = rest.channelId ? CHANNEL_LABELS[rest.channelId] : undefined;
+    return { id: `a_${String(1000 - i).padStart(4, "0")}`, at: now - ago, details: detailsFor(rest), ...rest, ...(label ? { channelLabel: label } : {}) };
+  }).sort((a, b) => b.at - a.at);
+  out.forEach((e, i) => (e.id = `a_${String(1000 - i).padStart(4, "0")}`));
   // A longer tail for paging: routine decisions over the past days.
   const tools = ["Bash", "Read", "Edit", "WebFetch", "Write"];
   for (let i = 0; i < 48; i++) {
@@ -200,6 +229,7 @@ function auditTrail(now: number): AuditEventView[] {
       decision: allow ? "allow" : "deny",
       sessionId: `s_${(0x3000 + i).toString(16)}`,
       channelId: i % 2 ? "CTEAM" : "COPS",
+      channelLabel: i % 2 ? "#team" : "#ops",
       summary: `${allow ? "Allowed" : "Denied"} ${tool}`,
       details: {},
     });
@@ -232,10 +262,17 @@ function detailsFor(e: Omit<Seed, "ago">): Record<string, unknown> {
       token: "[redacted]",
     };
   }
-  if (e.action.startsWith("grant.")) return { grantId: e.targetId, role: "approver", subjectKind: "user", subjectId: "UALICE", expiresAt: null };
+  if (e.action.startsWith("grant.")) return { grantId: e.targetId, role: "approver", subjectKind: "user", subjectId: "UALICE", expiresAt: null, operatorRole: "superadmin" };
+  if (e.action.startsWith("panel.")) return { panelAction: e.summary, role: e.actorId === "bob@example.com" ? "operator" : "superadmin", outcome: "ok" };
   if (e.action === "memory.page.viewed") return { store: "user-ualice", slug: "preferences", storeKind: "personal", operatorRole: "superadmin" };
   return {};
 }
+
+/** What the gateway's Slack name lookup answers for the fixture channels (CGONE: the app is not in it). */
+export const CHANNEL_LABELS: Record<string, string> = { CTEAM: "#team", COPS: "#ops", CALERTS: "#alerts", DUALICE: "DM with alice" };
+
+/** Names of the people mentioned in fixture messages. */
+export const USER_NAMES: Record<string, string> = { UALICE: "alice", UBOB: "bob" };
 
 // --- Sessions ----------------------------------------------------------------
 
@@ -261,6 +298,11 @@ function sessionRows(now: number): ConsoleFixtures["sessions"] {
     row("s_4a10", "default", "DUALICE", TS(6), "running", "claude-opus-4-1", 20 * HOUR, { engaged: 0, warm: false, node: undefined }),
     row("s_3001", "scout", "CTEAM", TS(7), "idle", "claude-sonnet-4-5", 2 * DAY, { claude_started: 0 }),
     row("s_2ff0", "default", null, null, "idle", "claude-opus-4-1", 3 * DAY, { title: "Heartbeat round", engaged: 0 }),
+    // No model on the row: the agent's configured model, then the deployment default.
+    row("s_1e40", "scout", "CGONE", TS(8), "idle", "", 3 * DAY + HOUR, { title: "Notes from a channel the app left" }),
+    // Older sessions, past the first page of 50.
+    ...Array.from({ length: 54 }, (_, i) =>
+      row(`s_old${String(i + 1).padStart(2, "0")}`, "default", "CTEAM", TS(20 + i), "idle", "", 4 * DAY + i * 6 * HOUR, { title: `Older thread ${i + 1}` })),
   ];
 }
 
@@ -301,7 +343,13 @@ export function sessionHistory(sessionId: string, now: number): SessionHistoryIt
   const out: SessionHistoryItem[] = [];
   for (let i = 1; i <= turns; i++) {
     const at = now - (turns - i + 1) * 7 * MIN - 2 * HOUR;
-    out.push({ id: `${i}:user`, at, who: "user", name: i % 3 === 0 ? "bob" : "alice", text: i === 1 ? "Earliest question: where is the release checklist?" : `Earlier question ${i}` });
+    const userText =
+      i === 1 ? "Earliest question: where is the release checklist?"
+      : i === turns - 1 ? "Ask <@UBOB> in <#COPS|ops> &amp; read <https://example.com/runbook|the runbook> first"
+      : `Earlier question ${i}`;
+    // A line from a scheduled run has no message time of its own: only its day is known.
+    const userAt = i === 2 ? { at, dateOnly: true } : { at: at - 40_000 };
+    out.push({ id: `${i}:user`, ...userAt, who: "user", name: i % 3 === 0 ? "bob" : "alice", text: userText });
     out.push({ id: `${i}:agent`, at, who: "agent", text: i === turns ? "Last earlier answer: the checklist lives in docs/release-checklist.md." : `Earlier answer ${i}` });
   }
   return out;

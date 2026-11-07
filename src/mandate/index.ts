@@ -2,11 +2,20 @@
  * Mandates: the jobs an agent (persona) holds. Phase 1 is a read model computed
  * from what already exists (SOUL.md stays authoritative), never stored:
  *
+ * The mandate text comes from {@link personaMandateText}, the same reading the
+ * scheduler's heartbeat and wake prompts use: the default persona's effective
+ * soul; for a named persona its soul text (managed soul or SOUL.md, else the
+ * default persona's soul text), then the cached extraction of that text, else
+ * the deterministic `## Mandate` / `### Mandate` parse. A named persona's
+ * structured `soul_json` decides access (approvers), not its mandates here.
+ *
  *  - `global`: the soul's `## Mandate` (trigger: any admitted message).
- *  - `channel:<id>`: each `## Channel` block, with its own `### Proactive`
- *    switch. A block with no mandate text (approvers or proactive only) is
- *    listed with `inheritsGlobal`.
- *  - `heartbeat`: the `## Proactive` block when enabled.
+ *  - `channel:<id>`: each `## Channel` block with a mandate, and each with its
+ *    own `### Proactive` switch. A block with no mandate text is listed with
+ *    `inheritsGlobal`. The default persona's blocks never appear under a
+ *    named persona.
+ *  - `heartbeat`: when proactive wakes are on anywhere: the `## Proactive`
+ *    block, or any channel's own `### Proactive` with `Enabled: yes` (one switch).
  *  - `cron:<id>`: each active, unpaused `cron_jobs` row of the persona.
  *
  * Approvers are who can actually approve at runtime: for a named persona the
@@ -20,8 +29,8 @@ import { approversFor } from "../access/role";
 import * as CronJobs from "../db/cron-jobs";
 import { personaSoulText } from "../persona/soul-source";
 import type { Level } from "../proactive/levels";
-import { channelMandate } from "../soul/extract";
-import { effectiveSoulForChannelFor, soulDataFor } from "../soul/per-persona";
+import { effectiveSoulForChannelFor } from "../soul/per-persona";
+import { personaMandateText } from "../soul/persona-mandates";
 import { parseProactive, type ProactiveConfig } from "../soul/proactive";
 
 export interface Mandate {
@@ -64,20 +73,20 @@ function cronTitle(prompt: string): string {
 export async function listMandates(personaName: string): Promise<Mandate[]> {
   const persona = personaName && personaName !== "default" ? personaName : "default";
   const isDefault = persona === "default";
-  const soul = soulDataFor(persona);
+  const text = personaMandateText(persona);
   const proactive = proactiveOf(persona);
   const approversIn = async (channelId?: string): Promise<string[]> =>
     isDefault ? effectiveSoulForChannelFor("default", channelId).approvers.map((a) => a.userId) : approversFor(persona, channelId);
   const out: Mandate[] = [];
 
-  const global = soul.mandate?.trim();
+  const global = text.global;
   if (global) {
     out.push({ id: "global", kind: "global", title: "Global mandate", instructions: global, triggers: ["any admitted message"], approvers: await approversIn(), source: "soul" });
   }
 
-  const channels = [...new Set([...soul.channelOverrides.map((c) => c.channel), ...Object.keys(proactive?.channels ?? {})])].sort();
+  const channels = [...new Set([...Object.keys(text.channels), ...Object.keys(proactive?.channels ?? {})])].sort();
   for (const channelId of channels) {
-    const own = channelMandate(soul, channelId);
+    const own = text.channels[channelId] ?? null;
     const m: Mandate = {
       id: `channel:${channelId}`,
       kind: "channel",
@@ -97,13 +106,20 @@ export async function listMandates(personaName: string): Promise<Mandate[]> {
     out.push(m);
   }
 
-  if (proactive?.enabled) {
-    const watch = proactive.watch.length ? proactive.watch.join(", ") : "no sources";
+  // One switch: wakes run when the global section or any channel turns them on.
+  const onChannels = proactive ? Object.entries(proactive.channels).filter(([, on]) => on).map(([id]) => id).sort() : [];
+  if (proactive && (proactive.enabled || onChannels.length > 0)) {
+    const parts: string[] = [];
+    if (proactive.enabled) {
+      parts.push(`Watches: ${proactive.watch.length ? proactive.watch.join(", ") : "no sources"}.`);
+      parts.push(`Highest action: ${proactive.highest}.`);
+    }
+    if (onChannels.length) parts.push(`Works on its own in ${onChannels.map((c) => `<#${c}>`).join(", ")}.`);
     out.push({
       id: "heartbeat",
       kind: "heartbeat",
       title: "Heartbeat",
-      instructions: `Watches: ${watch}. Highest action: ${proactive.highest}.`,
+      instructions: parts.join(" "),
       triggers: proactive.wake ? ["heartbeat round", "wake"] : ["heartbeat round"],
       approvers: await approversIn(),
       source: "proactive",

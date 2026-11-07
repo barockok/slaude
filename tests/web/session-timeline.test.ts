@@ -7,7 +7,7 @@
 import { describe, expect, test } from "bun:test";
 import type { SessionEvent } from "../../src/gateway/panel/api-types";
 import {
-  buildItems, contextLabel, deliveryOf, historyItems, sessionActivityNow, turnRunning, type StreamEntry, type TimelineItem,
+  buildItems, contextLabel, deliveryOf, historyItems, sessionActivityNow, tailUsers, turnRunning, type StreamEntry, type TimelineItem,
 } from "../../src/web/console/pages/session/timeline-model";
 
 const S = "s1";
@@ -113,5 +113,20 @@ describe("earlier turns, activity and the context meter", () => {
   test("the meter stops at 100% and shows the token count", () => {
     expect(contextLabel({ pctUsed: 2.38, totalInput: 476_000 })).toBe("Context 100% used (476,000 tokens)");
     expect(contextLabel({ pctUsed: 0.354, totalInput: 70_800 })).toBe("Context 35% used (70,800 tokens)");
+  });
+});
+
+describe("earlier lines and names", () => {
+  test("a date-only history line stays date only on the timeline", () => {
+    const [u, a] = historyItems([{ id: "1:user", at: 5, who: "user", text: "q", dateOnly: true }, { id: "1:agent", at: 9, who: "agent", text: "a" }], "scout");
+    expect(u!.dateOnly).toBe(true);
+    expect(a!.dateOnly).toBeUndefined();
+  });
+  test("the live tail's user messages name their senders", () => {
+    const e = (event: SessionEvent): StreamEntry => ({ id: String(Math.random()), at: 1, event });
+    expect(tailUsers([
+      e({ type: "userMessage", sessionId: "s", userId: "UALICE", userName: "alice", text: "hi", at: 1 } as SessionEvent),
+      e({ type: "turnStart", sessionId: "s" } as SessionEvent),
+    ])).toEqual({ UALICE: "alice" });
   });
 });

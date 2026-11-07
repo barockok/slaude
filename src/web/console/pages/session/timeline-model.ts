@@ -33,6 +33,8 @@ export type Item =
       target?: string;
       /** From the conversation record (before this page opened). */
       earlier?: boolean;
+      /** Only the day is known (an earlier line with no message time of its own). */
+      dateOnly?: boolean;
     }
   | { kind: "thinking"; key: string; at: number; text: string }
   | { kind: "tool"; key: string; at: number; tool: string; input: unknown; result?: unknown; resultAt?: number; isError?: boolean }
@@ -185,7 +187,15 @@ export function historyItems(history: SessionHistoryItem[], persona: string): Ex
     name: h.who === "agent" ? persona : (h.name ?? "Someone in the thread"),
     text: h.text,
     earlier: true,
+    ...(h.dateOnly ? { dateOnly: true } : {}),
   }));
+}
+
+/** Slack user id -> name, from the live tail's user messages (who said what). */
+export function tailUsers(entries: StreamEntry[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const { event: e } of entries) if (e.type === "userMessage" && e.userId && e.userName) out[e.userId] = e.userName;
+  return out;
 }
 
 /** Whether the newest turn boundary in the tail says a turn is running (undefined: the tail has none). */

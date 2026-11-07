@@ -29,7 +29,57 @@ export interface MemoryPageSummary {
   title: string;
   /** Epoch ms, or null when unknown. */
   updatedAt: number | null;
+  /** Epoch ms, when the engine says. */
+  createdAt?: number | null;
+  /** The frontmatter's own `title`, when it has one. */
+  frontmatterTitle?: string;
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+/** Whether a title is only the slug said again (the engine's fallback when a page has none). */
+export function titleFromSlug(title: string, slug: string): boolean {
+  const t = squash(title);
+  if (!t) return true;
+  const last = slug.split("/").pop() ?? slug;
+  return t === squash(last) || t === squash(slug);
+}
+
+/**
+ * The title the console shows for a page, the slug staying as secondary text:
+ *  1. its frontmatter `title`;
+ *  2. a session's conversation record (`conversations/<uuid>`): "Conversation
+ *     <date> (<short id>)", the date the record started;
+ *  3. its own title, unless that is only the slug said again;
+ *  4. the first `# heading` of its content (one page, not the list);
+ *  5. whatever title it has, else the slug.
+ */
+export function displayTitle(p: {
+  slug: string;
+  title: string;
+  frontmatterTitle?: string | null;
+  content?: string;
+  createdAt?: number | null;
+  updatedAt?: number | null;
+}): string {
+  const fm = p.frontmatterTitle?.trim();
+  if (fm) return fm;
+  const conv = /^conversations\/(.+)$/.exec(p.slug);
+  if (conv && UUID_RE.test(conv[1]!)) {
+    const at = p.createdAt ?? p.updatedAt ?? null;
+    const day = at ? new Date(at).toISOString().slice(0, 10) : null;
+    return `Conversation${day ? ` ${day}` : ""} (${conv[1]!.slice(0, 8)})`;
+  }
+  const own = p.title.trim();
+  if (own && !titleFromSlug(own, p.slug)) return own;
+  const h1 = p.content ? /^#\s+(.+?)\s*$/m.exec(p.content)?.[1] : undefined;
+  if (h1 && !titleFromSlug(h1, p.slug)) return h1;
+  return own || p.slug;
+}
+
+const fmTitle = (fm: Record<string, unknown> | null | undefined): string | undefined =>
+  typeof fm?.title === "string" && fm.title.trim() ? fm.title.trim() : undefined;
 
 export interface MemoryPageLink {
   to: string;
@@ -142,7 +192,10 @@ export function localMemoryBrowser(): MemoryBrowser {
     },
     async pages(store, { offset, limit }) {
       const rows = await (await engine()).listPages({ sourceId: store, sort: "slug", limit, offset });
-      return rows.map((p) => ({ slug: p.slug, type: p.type, title: p.title, updatedAt: ms(p.updated_at) }));
+      return rows.map((p) => {
+        const fm = fmTitle(p.frontmatter);
+        return { slug: p.slug, type: p.type, title: p.title, updatedAt: ms(p.updated_at), createdAt: ms(p.created_at), ...(fm ? { frontmatterTitle: fm } : {}) };
+      });
     },
     async page(store, slug) {
       const e = await engine();

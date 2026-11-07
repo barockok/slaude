@@ -190,4 +190,26 @@ describe("memory API", () => {
     expect(personal.details).toMatchObject({ store: "user-ualice", slug: "notes/a", storeKind: "personal" });
     expect(JSON.stringify(rows)).not.toContain("PRIVATE-CONTENT");
   });
+
+  test("titles: a conversation record reads as Conversation, date and short id; a frontmatter title wins", async () => {
+    const id = "0842e8f7-b41a-44b6-9c3d-2f1e0a9b7c55";
+    const at = Date.UTC(2026, 10, 7);
+    const conv: MemoryBrowser = {
+      ...stub,
+      async pages() {
+        return [
+          { slug: `conversations/${id}`, type: "conversation", title: "0842e8f7 B41a 44b6 9c3d 2f1e0a9b7c55", updatedAt: at, createdAt: at },
+          { slug: "notes/x", type: "note", title: "X", updatedAt: at, frontmatterTitle: "Named in frontmatter" },
+        ];
+      },
+      async page() {
+        return { ...PAGE, slug: `conversations/${id}`, title: "0842e8f7 B41a 44b6 9c3d 2f1e0a9b7c55", createdAt: at, frontmatter: {} };
+      },
+    };
+    const list = await get("/panel/api/memory/stores/shared/pages", operator, conv);
+    expect(list.body.items.map((p: { title: string }) => p.title)).toEqual(["Conversation 2026-11-07 (0842e8f7)", "Named in frontmatter"]);
+    expect(list.body.items[0].slug).toBe(`conversations/${id}`);
+    const one = await get(`/panel/api/memory/pages?store=shared&slug=${encodeURIComponent(`conversations/${id}`)}`, operator, conv);
+    expect(one.body.title).toBe("Conversation 2026-11-07 (0842e8f7)");
+  });
 });

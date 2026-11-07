@@ -12,7 +12,10 @@ import * as Sessions from "../../db/sessions";
 import type { SessionRow } from "../../db/schema";
 import type { Registry } from "../../queue/registry";
 import { activityOf, type LocalSessions } from "./activity";
-import type { SessionActivity } from "./api-types";
+import type { ModelSource, SessionActivity } from "./api-types";
+import { env } from "../../config/env";
+import { managedPersonaModel } from "../../persona/registry";
+import { channelLabels, type SlackNames } from "./slack-names";
 
 export interface SessionSummary {
   id: string;
@@ -38,6 +41,28 @@ export interface SessionSummary {
   node?: string;
   /** Operator currently driving this session via the panel, if any. */
   panel_locked_by?: string;
+  /** The model shown: the row's, else the agent's configured one, else the deployment default. */
+  effective_model: string | null;
+  model_source: ModelSource;
+  /** `#name` / `DM with ...` of slack_channel_id, when resolvable. */
+  channel_label?: string;
+}
+
+/**
+ * The model a session runs on, for display: its own row's model (set at
+ * creation or by /model), else the agent's configured model (managed
+ * personas), else the deployment default (SLAUDE_MODEL, or null when unset).
+ */
+export function sessionModel(row: Pick<SessionRow, "model" | "persona_id">): { effective_model: string | null; model_source: ModelSource } {
+  if (row.model && row.model.trim()) return { effective_model: row.model, model_source: "session" };
+  let agent: string | null | undefined;
+  try {
+    agent = managedPersonaModel(row.persona_id || "default");
+  } catch {
+    agent = undefined;
+  }
+  if (agent) return { effective_model: agent, model_source: "agent" };
+  return { effective_model: env.model() || null, model_source: "deployment" };
 }
 
 export interface EnumerateDeps {
@@ -49,6 +74,8 @@ export interface EnumerateDeps {
   turnsInFlight?: (sessionIds: string[]) => Promise<Map<string, boolean | undefined>>;
   /** Panel active-surface lock owners, in order, for all rows in one call (optional enrichment). */
   panelOwners?: (sessionIds: string[]) => Promise<Array<string | null>>;
+  /** Slack channel names (optional enrichment; failures leave the id). */
+  names?: SlackNames | null;
 }
 
 function summarize(row: SessionRow): SessionSummary {
@@ -68,6 +95,7 @@ function summarize(row: SessionRow): SessionSummary {
     updated_at: row.updated_at,
     warm: false,
     activity: activityOf(row.status, false, undefined),
+    ...sessionModel(row),
   };
   const tenant = (row as any).tenant_id;
   if (tenant !== undefined && tenant !== null) s.tenant_id = tenant;
@@ -85,6 +113,7 @@ export async function enumerateSessions(
 ): Promise<SessionSummary[]> {
   const rows = await Sessions.listSessions(o);
   const out = rows.map(summarize);
+  const appOf = new Map(rows.map((r) => [r.id, (r as { slack_app_id?: string | null }).slack_app_id ?? null]));
   if (deps.local) {
     for (const s of out) {
       s.warm = deps.local.isWarm(s.id);
@@ -118,6 +147,16 @@ export async function enumerateSessions(
       });
     } catch {
       /* lock lookup best-effort */
+    }
+  }
+  if (deps.names && out.length > 0) {
+    const labels = await channelLabels(
+      deps.names,
+      out.map((s) => ({ channelId: s.slack_channel_id, ctx: { persona: s.persona_id, appId: appOf.get(s.id), teamId: s.slack_team_id } })),
+    );
+    for (const s of out) {
+      const l = s.slack_channel_id ? labels.get(s.slack_channel_id) : undefined;
+      if (l) s.channel_label = l;
     }
   }
   return out;

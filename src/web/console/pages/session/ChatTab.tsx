@@ -3,7 +3,8 @@ import type { SessionChatResponse } from "../../../../gateway/panel/api-types";
 import { ApiError } from "../../../lib/api";
 import { Avatar, Button, Dialog, EmptyState, IconLock, cx } from "../../../ui";
 import { api } from "../../client";
-import { absoluteTime, clockTime } from "../../lib/format";
+import { absoluteTime, clockTime, shortDate } from "../../lib/format";
+import { SlackText } from "../../components/SlackText";
 import { DeliveryMark, EarlierHeader, useFollow, type TimelineItem } from "./TimelineTab";
 import type { SessionHistory } from "./useSessionHistory";
 import type { SessionLock } from "./useSessionLock";
@@ -42,11 +43,13 @@ function Message({ m }: { m: ChatItem }) {
     <li className={cx("sl-chat__msg", m.who === "operator" && "is-operator", m.who === "user" && "is-user")}>
       {m.who !== "operator" && <Avatar name={m.name} size="sm" />}
       <div className="sl-chat__bubble">
-        <p className="sl-tl__text">{m.text}</p>
+        <p className="sl-tl__text">
+          <SlackText text={m.text} />
+        </p>
         <span className="sl-chat__foot">
-          <time className="sl-chat__time" dateTime={new Date(m.at).toISOString()} title={absoluteTime(m.at)}>
+          <time className="sl-chat__time" dateTime={new Date(m.at).toISOString()} title={m.dateOnly ? "Only the day of this line is recorded" : absoluteTime(m.at)}>
             {m.who !== "agent" ? `${m.name}${m.who === "user" ? " in Slack" : ""}, ` : ""}
-            {m.earlier ? absoluteTime(m.at) : clockTime(m.at)}
+            {m.earlier ? (m.dateOnly ? shortDate(m.at) : absoluteTime(m.at)) : clockTime(m.at)}
           </time>
           {m.delivery && <DeliveryMark delivery={m.delivery} target={m.target} />}
         </span>

@@ -100,7 +100,9 @@ function MandateCard({ m, persona }: { m: MandateView; persona: string }) {
             {m.channelId && (
               <div>
                 <dt>Posts to</dt>
-                <dd className="sl-mono">#{m.channelId}</dd>
+                <dd className={m.channelLabel ? undefined : "sl-mono"} title={m.channelLabel ? m.channelId : undefined}>
+                  {m.channelLabel ?? `#${m.channelId}`}
+                </dd>
               </div>
             )}
           </>

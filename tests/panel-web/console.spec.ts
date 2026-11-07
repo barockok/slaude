@@ -240,7 +240,7 @@ test.describe("session watch", () => {
 
     await page.goto("/panel/sessions");
     await settled(page, "Compare queue libraries");
-    const stale = page.getByRole("row").filter({ hasText: "DUALICE" });
+    const stale = page.getByRole("row").filter({ hasText: "DM with alice" });
     await expect(stale.getByText("Idle")).toBeVisible();
     await expect(page.getByRole("row").filter({ hasText: "Compare queue libraries" }).getByText("Warm")).toBeVisible();
     await page.goto("/panel/");
@@ -260,9 +260,77 @@ test.describe("session watch", () => {
     await expect(log.getByRole("separator").filter({ hasText: "Earlier in this session" })).toBeVisible();
   });
 
+  test("Slack markup in messages reads as Slack shows it; a date-only line shows no clock", async ({ page }) => {
+    await page.goto("/panel/sessions/s_7f21");
+    const tl = page.locator(".sl-tl__scroll");
+    const line = tl.locator(".sl-tl__msg").filter({ hasText: "read the runbook first" });
+    await expect(line).toBeVisible();
+    await expect(line.getByRole("link", { name: "the runbook" })).toHaveAttribute("href", "https://example.com/runbook");
+    await expect(line.getByText("@bob", { exact: true })).toBeVisible();
+    await expect(line.getByText("#ops", { exact: true })).toBeVisible();
+    await expect(line).toContainText("Ask @bob in #ops & read the runbook first");
+    await expect(tl.getByText("<@UBOB>", { exact: false })).toHaveCount(0);
+    await expect(tl.getByText("&amp;", { exact: false })).toHaveCount(0);
+
+    await tl.getByRole("button", { name: "Load earlier" }).click();
+    const cron = tl.locator(".sl-tl__msg").filter({ hasText: /Earlier question 2$/ });
+    await expect(cron.locator("time")).toHaveAttribute("title", "Only the day of this line is recorded");
+  });
+
   test("with memory off the timeline says why there is no history", async ({ page }) => {
     await page.goto("/panel/sessions/s_6a02?stubNoHistory=1");
     await expect(page.getByText("No earlier turns to show: memory is disabled", { exact: false })).toBeVisible();
+  });
+});
+
+test.describe("console polish", () => {
+  test("sessions load 50 at a time; Load more appends the rest; every row says its model and channel", async ({ page }) => {
+    await page.goto("/panel/sessions?stubDelay=0");
+    await settled(page, "Compare queue libraries");
+    const table = page.getByRole("table", { name: "Sessions" });
+    const body = table.locator("tbody tr");
+    await expect(body).toHaveCount(50);
+    await expect(page.getByText("50 loaded, newest first")).toBeVisible();
+    await page.getByRole("button", { name: "Load more" }).click();
+    await expect(body).toHaveCount(63);
+    await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
+    await expect(table.getByRole("row").filter({ hasText: "Older thread 54" })).toBeVisible();
+    // Model: the row's own, the agent's configured one, or the deployment default (muted).
+    await expect(table.getByRole("row").filter({ hasText: "Release checklist for the console" })).toContainText("claude-sonnet-4-5");
+    const leftover = table.getByRole("row").filter({ hasText: "Notes from a channel the app left" });
+    await expect(leftover).toContainText("claude-sonnet-4-5");
+    // A channel the gateway could not name keeps its id.
+    await expect(leftover).toContainText("CGONE");
+    await expect(table.getByRole("row").filter({ hasText: "Older thread 1" }).first().getByText("Deployment default")).toBeVisible();
+    await expect(table.getByRole("row").filter({ hasText: "Compare queue libraries" })).toContainText("#team");
+  });
+
+  test("the session header names the channel", async ({ page }) => {
+    await page.goto("/panel/sessions/s_6a02");
+    await expect(page.locator(".sl-session-meta")).toContainText("#ops, thread");
+  });
+
+  test("mandates show #channel names, never Slack tokens; a filesystem persona lists its heartbeat and cron", async ({ page }) => {
+    await page.goto("/panel/agents/default/mandates");
+    await expect(page.getByRole("heading", { name: "Mandate in #team" })).toBeVisible();
+    await expect(page.getByText("<#", { exact: false })).toHaveCount(0);
+    await page.goto("/panel/agents/triage/mandates");
+    await expect(page.getByRole("heading", { name: "Heartbeat" }).first()).toBeVisible();
+    await expect(page.getByText("Sweep unacknowledged alerts").first()).toBeVisible();
+  });
+
+  test("audit: console-wide rows have no agent; an operator's role is named", async ({ page }) => {
+    await page.goto("/panel/audit");
+    await settled(page, "Bash: run the test suite");
+    const reload = page.getByRole("row").filter({ hasText: "Agent config reloaded" });
+    await expect(reload).toContainText("Console");
+    await expect(reload).toContainText("Superadmin");
+    const signIn = page.getByRole("row").filter({ hasText: "Signed in to console" });
+    // An older row written under the default agent still reads as Console.
+    await expect(signIn).toContainText("Console");
+    await expect(signIn).not.toContainText("default");
+    const grant = page.getByRole("row").filter({ hasText: "approver for user UALICE" });
+    await expect(grant).toContainText("Superadmin");
   });
 });
 

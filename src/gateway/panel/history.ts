@@ -51,7 +51,7 @@ const unescapeAttr = (s: string) => s.replace(/&quot;/g, '"').replace(/&lt;/g, "
  * model got it: a `<channel ...>` envelope around the message, then runtime
  * instructions. Only the message (and the sender's display name) is shown.
  */
-export function parseUserLine(raw: string): { text: string; name?: string } {
+export function parseUserLine(raw: string): { text: string; name?: string; at?: number } {
   const s = raw.trim();
   const m = /^<(channel|cron|wake|heartbeat)\b([^>]*)>\n?([\s\S]*?)(?:\n?<\/\1>[\s\S]*)?$/.exec(s);
   if (!m) return { text: s };
@@ -59,7 +59,15 @@ export function parseUserLine(raw: string): { text: string; name?: string } {
   const text = (m[3] ?? "").trim();
   const userName = attr(open, "user_name");
   const name = userName ? unescapeAttr(userName) : undefined;
-  return { text, ...(name ? { name: attr(open, "source") === "panel" ? `${name} (console)` : name } : {}) };
+  const at = slackTsMs(attr(open, "inbound_ts"));
+  return { text, ...(name ? { name: attr(open, "source") === "panel" ? `${name} (console)` : name } : {}), ...(at !== null ? { at } : {}) };
+}
+
+/** A Slack message ts (`1762506060.000100`) as epoch ms, or null. */
+export function slackTsMs(ts: string | undefined): number | null {
+  if (!ts || !/^\d{9,11}(\.\d+)?$/.test(ts)) return null;
+  const ms = Math.round(Number(ts) * 1000);
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
 const between = (s: string, tag: string): string | null => {
@@ -70,17 +78,31 @@ const between = (s: string, tag: string): string | null => {
   return s.slice(start, close < 0 ? undefined : close);
 };
 
-/** A recorded turn as console lines: the user's message, then the agent's answer. */
+/**
+ * A recorded turn as console lines: the user's message, then the agent's answer.
+ *
+ * The record is written once per turn, after the reply, so its time is the
+ * agent line's. The user line's own time is the Slack message ts its envelope
+ * carries (`inbound_ts`); a line with neither (a cron or wake envelope, an
+ * older row with only a day) is marked `dateOnly` rather than shown with a
+ * clock time it never had.
+ */
 export function turnLines(row: MemoryTimelineRow): SessionHistoryItem[] {
-  const at = row.createdAt ?? (Date.parse(`${row.date}T00:00:00Z`) || 0);
+  const day = Date.parse(`${row.date}T00:00:00Z`) || 0;
   const detail = row.detail ?? "";
   const userRaw = between(detail, "user") ?? row.summary ?? "";
   const agentRaw = between(detail, "assistant") ?? "";
   const out: SessionHistoryItem[] = [];
   const user = parseUserLine(userRaw);
-  if (user.text) out.push({ id: `${row.id}:user`, at, who: "user", ...(user.name ? { name: redactSecrets(user.name) } : {}), text: redactSecrets(user.text) });
+  if (user.text) {
+    const when = user.at !== undefined ? { at: user.at } : { at: row.createdAt ?? day, dateOnly: true };
+    out.push({ id: `${row.id}:user`, ...when, who: "user", ...(user.name ? { name: redactSecrets(user.name) } : {}), text: redactSecrets(user.text) });
+  }
   const agent = agentRaw.trim();
-  if (agent) out.push({ id: `${row.id}:agent`, at, who: "agent", text: redactSecrets(agent) });
+  if (agent) {
+    const when = row.createdAt != null ? { at: row.createdAt } : { at: day, dateOnly: true };
+    out.push({ id: `${row.id}:agent`, ...when, who: "agent", text: redactSecrets(agent) });
+  }
   return out;
 }
 

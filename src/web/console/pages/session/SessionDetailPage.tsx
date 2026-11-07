@@ -16,7 +16,9 @@ import { StatusBadge } from "../SessionsPage";
 import { ChatTab } from "./ChatTab";
 import { ControlBar } from "./ControlBar";
 import { StreamIndicator, TimelineTab } from "./TimelineTab";
-import { buildItems, contextLabel, historyItems, latestUsage, sessionActivityNow, turnRunning, type OperatorMessage } from "./timeline-model";
+import { buildItems, contextLabel, historyItems, latestUsage, sessionActivityNow, tailUsers, turnRunning, type OperatorMessage } from "./timeline-model";
+import { SlackUsersProvider } from "../../components/SlackText";
+import { ModelName } from "../SessionsPage";
 import { useSessionEvents } from "./useSessionEvents";
 import { useSessionHistory } from "./useSessionHistory";
 import { useSessionLock } from "./useSessionLock";
@@ -132,6 +134,7 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
   const items = useMemo(() => buildItems(events.entries, gates, sent, persona), [events.entries, gates, sent, persona]);
   const chat = useMemo(() => items.filter((i): i is Extract<typeof i, { kind: "text" }> => i.kind === "text"), [items]);
   const earlier = useMemo(() => historyItems(history.items, persona), [history.items, persona]);
+  const users = useMemo(() => ({ ...history.users, ...tailUsers(events.entries) }), [history.users, events.entries]);
   const usage = latestUsage(events.entries);
   const activity = sessionActivityNow(data, turnRunning(events.entries));
 
@@ -172,9 +175,14 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
     );
   }
 
+  const channel = data?.channel_label ?? session.slack_channel_id;
   const where = session.slack_channel_id
-    ? `${session.slack_channel_id}${session.slack_thread_ts ? `, thread ${session.slack_thread_ts}` : ""}`
+    ? `${channel}${session.slack_thread_ts ? `, thread ${session.slack_thread_ts}` : ""}`
     : "No Slack thread";
+  // A model set from the console lands in `session`; otherwise what the server resolved.
+  const model = session.model
+    ? { effective_model: session.model, model_source: "session" as const }
+    : { effective_model: data?.effective_model ?? null, model_source: data?.model_source ?? ("deployment" as const) };
 
   return (
     <>
@@ -184,7 +192,7 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
           <h1 className="sl-page-header__title">
             <span className="sl-title-row">
               <Avatar name={session.persona_id} />
-              <span className="sl-break">{session.title ?? (session.slack_channel_id ? `${session.persona_id} in ${session.slack_channel_id}` : `${session.persona_id} session`)}</span>
+              <span className="sl-break">{session.title ?? (session.slack_channel_id ? `${session.persona_id} in ${channel}` : `${session.persona_id} session`)}</span>
               <StatusBadge activity={activity} />
             </span>
           </h1>
@@ -195,8 +203,8 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
                 {session.persona_id}
               </Link>
             </span>
-            <span className="sl-mono">{where}</span>
-            <span className="sl-mono">{session.model}</span>
+            <span className="sl-mono" title={data?.channel_label ? session.slack_channel_id ?? undefined : undefined}>{where}</span>
+            <ModelName {...model} />
             <span>
               Active <TimeAgo at={session.updated_at} />
             </span>
@@ -239,6 +247,7 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
             {usage && <ContextMeter usage={usage} />}
           </div>
         )}
+        <SlackUsersProvider users={users}>
         {tab === "timeline" ? (
           <TimelineTab items={items} earlier={earlier} history={history} status={events.status} detail={events.detail} />
         ) : tab === "chat" ? (
@@ -246,6 +255,7 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
         ) : (
           <SessionAudit sessionId={id} />
         )}
+        </SlackUsersProvider>
       </Tabs>
     </>
   );

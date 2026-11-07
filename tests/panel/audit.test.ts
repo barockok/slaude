@@ -3,6 +3,8 @@ import { db } from "../../src/db/schema";
 import * as AuditEvents from "../../src/db/audit-events";
 import { flushAudits } from "../../src/audit/emit";
 import { audit, panelAuditInput } from "../../src/gateway/panel/auth/audit";
+import { isConsoleWideAuditAction, isConsoleWidePanelAction } from "../../src/gateway/panel/console-wide";
+import { auditAgent } from "../../src/web/console/lib/format";
 
 async function capture(fn: (sink: (l: string) => void) => void): Promise<string[]> {
   const lines: string[] = [];
@@ -41,6 +43,36 @@ describe("panel audit", () => {
     const rec = JSON.parse(line!);
     expect(rec.action).toBe("panel.auth.login");
     expect("session" in rec).toBe(false);
+  });
+
+  it("console-wide events (sign-in, console roles, reload) are recorded with no agent", async () => {
+    await capture((sink) => {
+      audit({ action: "auth.login", operator: "alice@example.com" }, sink);
+      audit({ action: "console.roles.read", operator: "bob@example.com", outcome: "denied" }, sink);
+      audit({ action: "reload", operator: "alice@example.com", role: "superadmin", detail: { tenantId: "default" } }, sink);
+      audit({ action: "control.stop", operator: "alice@example.com", session: "S-9" }, sink);
+    });
+    const rows = (await AuditEvents.list({})).items;
+    const by = (a: string) => rows.find((r) => r.action === a)!;
+    expect(by("panel.auth.login").persona).toBeNull();
+    expect(by("panel.console.roles.read").persona).toBeNull();
+    expect(by("panel.config.reload").persona).toBeNull();
+    // A session control belongs to the session's agent (no row: the default).
+    expect(by("panel.session.control").persona).toBe("default");
+    expect(panelAuditInput({ action: "auth.login", operator: "o" }).consoleWide).toBe(true);
+    expect(panelAuditInput({ action: "persona.create", operator: "o", detail: { persona: "helper" } }).consoleWide).toBeUndefined();
+  });
+
+  it("server and console share one console-wide rule: what the panel records with no agent, the console shows as Console", () => {
+    const panelActions = ["auth.login", "auth.logout", "auth.denied", "console.roles.read", "reload", "control.stop", "chat", "persona.create", "grant.create", "memory.private"];
+    for (const a of panelActions) {
+      const rec = panelAuditInput({ action: a, operator: "o" });
+      // The mapped action is console-wide exactly when the panel action is.
+      expect(isConsoleWideAuditAction(rec.action)).toBe(isConsoleWidePanelAction(a));
+      expect(rec.consoleWide === true).toBe(isConsoleWidePanelAction(a));
+      // An older row of that action under the default agent reads as Console.
+      expect(auditAgent({ persona: "default", action: rec.action }) === null).toBe(isConsoleWidePanelAction(a));
+    }
   });
 
   it("a denied outcome is a refusal and carries its detail", async () => {
