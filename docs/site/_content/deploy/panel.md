@@ -279,6 +279,9 @@ by the image's web stage and by CI). Until phase 4 they were not: `dist/` is
 gitignored and nothing built it, so a deployed image served Vite's source
 shell and the panel UI never worked in a container at all.
 
-The React app (`src/gateway/panel/web/`) builds with Vite (`bun run
-test:web` covers it under Playwright) — a browser toolchain kept separate
-from the Bun server, excluded from `bun test` and the server `tsc`.
+The console (`src/web/console/`, served at `/panel`) and the portal
+(`src/web/portal/`) build with Vite from one shared codebase (`src/web/`).
+It is a browser toolchain kept separate from the Bun server: excluded from
+`bun test` and the server `tsc`, and checked by its own
+`src/web/tsconfig.json`, which `bun run typecheck` also runs. `bun run
+test:web` drives the built app under Playwright.

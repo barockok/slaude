@@ -9,7 +9,8 @@ export interface PopoverTriggerProps {
   onClick: () => void;
   "aria-expanded": boolean;
   "aria-haspopup": "menu" | "dialog";
-  "aria-controls": string;
+  /** Set only while the panel is open, so it never points at a missing element. */
+  "aria-controls"?: string;
 }
 
 export interface PopoverProps {
@@ -70,7 +71,7 @@ export function Popover({ trigger, children, align = "start", kind = "dialog", c
         onClick: () => setOpen((o) => !o),
         "aria-expanded": open,
         "aria-haspopup": kind,
-        "aria-controls": id,
+        "aria-controls": open ? id : undefined,
       })}
       {open && (
         <div

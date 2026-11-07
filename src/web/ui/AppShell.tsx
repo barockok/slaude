@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { Link } from "../lib/router";
 import { IconButton } from "./Button";
 import { cx } from "./cx";
@@ -6,6 +6,8 @@ import { Avatar } from "./Display";
 import { IconBook, IconClose, IconMenu, IconMonitor, IconMoon, IconSignOut, IconSun, Mark } from "./icons";
 import { Menu, Popover } from "./Popover";
 import { readThemePref, saveThemePref, type ThemePref } from "./theme";
+
+const NAV_FOCUSABLE = "a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1'])";
 
 export interface AppShellProps {
   /** Shown after the product name, e.g. "console". */
@@ -34,17 +36,32 @@ export function AppShell({ product, homeTo = "/", search, topActions, user, side
   useEffect(() => setNavOpen(false), [routeKey]);
 
   useEffect(() => {
-    if (!navOpen) return;
-    panelRef.current?.querySelector<HTMLElement>("a, button")?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setNavOpen(false);
-        menuBtn.current?.focus();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    if (navOpen) panelRef.current?.querySelector<HTMLElement>("a, button")?.focus();
   }, [navOpen]);
+
+  // While the overlay nav is open (phone width), keep focus inside it and the
+  // menu button that closes it; Escape on the nav closes it. Handled on the nav
+  // itself, so an Escape meant for a dialog or popover never reaches it.
+  const onNavKeyDown = (e: ReactKeyboardEvent<HTMLElement>) => {
+    if (!navOpen) return;
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      setNavOpen(false);
+      menuBtn.current?.focus();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const els = [
+      menuBtn.current,
+      ...Array.from(panelRef.current?.querySelectorAll<HTMLElement>(NAV_FOCUSABLE) ?? []),
+    ].filter((el): el is HTMLElement => !!el);
+    // The menu button and the nav are apart in the DOM, so step through them
+    // explicitly rather than letting Tab reach the rest of the top bar.
+    const i = els.indexOf(document.activeElement as HTMLElement);
+    if (i < 0) return;
+    e.preventDefault();
+    els[(i + (e.shiftKey ? -1 : 1) + els.length) % els.length]!.focus();
+  };
 
   return (
     <div className={cx("sl-shell", navOpen && "is-nav-open")}>
@@ -60,6 +77,7 @@ export function AppShell({ product, homeTo = "/", search, topActions, user, side
             aria-expanded={navOpen}
             aria-controls="sl-sidebar"
             onClick={() => setNavOpen((o) => !o)}
+            onKeyDown={onNavKeyDown}
           >
             {navOpen ? <IconClose size={18} /> : <IconMenu size={18} />}
           </IconButton>
@@ -77,7 +95,7 @@ export function AppShell({ product, homeTo = "/", search, topActions, user, side
       </header>
       <div className="sl-shell__body">
         <div className="sl-sidebar-backdrop" onClick={() => setNavOpen(false)} aria-hidden="true" />
-        <aside id="sl-sidebar" className="sl-sidebar" ref={panelRef}>
+        <aside id="sl-sidebar" className="sl-sidebar" ref={panelRef} onKeyDown={onNavKeyDown}>
           {sidebar}
         </aside>
         <main id="sl-main" className="sl-content" tabIndex={-1}>

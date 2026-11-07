@@ -13,9 +13,7 @@ export function setBase(b: string): void {
   base = b.replace(/\/+$/, "");
 }
 
-export function href(to: string): string {
-  return base + (to.startsWith("/") ? to : `/${to}`);
-}
+export const href = (to: string): string => base + (to.startsWith("/") ? to : `/${to}`);
 
 function currentPath(): string {
   const p = location.pathname;
@@ -33,7 +31,9 @@ export function navigate(to: string, opts: { replace?: boolean } = {}): void {
   const url = href(to);
   history[opts.replace ? "replaceState" : "pushState"](null, "", url);
   for (const cb of listeners) cb();
+  if (opts.replace) return; // a new page: start at the top, land screen readers on the content
   window.scrollTo(0, 0);
+  requestAnimationFrame(() => document.getElementById("sl-main")?.focus({ preventScroll: true }));
 }
 
 /** Match "/agents/:name" against a path; params are URI-decoded. */

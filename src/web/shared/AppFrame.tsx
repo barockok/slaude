@@ -4,7 +4,7 @@
  * Each app supplies its nav, how to load "me", and how to render a page.
  */
 import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
-import { ApiError, type ApiClient } from "../lib/api";
+import { ApiError, AuthRedirectError, type ApiClient } from "../lib/api";
 import { navigate, useRoute } from "../lib/router";
 import {
   AppShell, Button, DocsLink, EmptyState, JumpSearch, NavItem, Sidebar, ToastProvider, UserMenu, Mark,
@@ -58,8 +58,8 @@ export function AppFrame({ product, sidebarTitle, nav, api, loadIdentity, render
     loadIdentity().then(
       (identity) => setState({ status: "ok", identity }),
       (error: Error) => {
-        // A 401 has already sent the browser to sign in; keep showing the shell.
-        if (error instanceof ApiError && error.status === 401) return;
+        // The browser is already on its way to sign in; keep showing the shell.
+        if (error instanceof AuthRedirectError) return;
         setState({ status: "error", error });
       },
     );

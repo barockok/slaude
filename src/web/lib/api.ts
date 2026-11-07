@@ -6,8 +6,11 @@
  * - Every non-GET carries the app's anti-CSRF header (`x-panel-csrf: 1` or
  *   `x-portal-csrf: 1`); the server refuses mutating requests without it, and a
  *   cross-site page cannot set a custom header without a preflight.
- * - A 401 gets exactly one refresh attempt (POST <base>/auth/refresh) and one
- *   retry; a second 401 sends the browser to <base>/auth/login with a returnTo.
+ * - A 401 gets one refresh attempt (POST <base>/auth/refresh, shared by every
+ *   request that hits a 401 at the same time) and one retry. A failed refresh
+ *   sends the browser to <base>/auth/login with a returnTo; a retry that still
+ *   answers 401 after a good refresh throws, so the page shows an error instead
+ *   of looping through the provider.
  * - Failures throw ApiError with the status and the server's `{ error }` text.
  */
 
@@ -21,6 +24,14 @@ export class ApiError extends Error {
   ) {
     super(message);
     this.name = "ApiError";
+  }
+}
+
+/** Thrown while the browser is already leaving for the sign-in page. */
+export class AuthRedirectError extends ApiError {
+  constructor() {
+    super(401, "Your session has expired. Signing you in again.");
+    this.name = "AuthRedirectError";
   }
 }
 
@@ -54,7 +65,7 @@ export function createApi(app: AppName): ApiClient {
 
   function toLogin(): never {
     location.assign(loginUrl());
-    throw new ApiError(401, "Your session has expired. Signing you in again.");
+    throw new AuthRedirectError();
   }
 
   function send(path: string, opts: RequestOptions): Promise<Response> {
@@ -71,17 +82,24 @@ export function createApi(app: AppName): ApiClient {
     });
   }
 
+  // One refresh in flight at a time: concurrent 401s wait on the same promise
+  // rather than each rotating the session.
+  let refreshing: Promise<boolean> | null = null;
+  function refresh(): Promise<boolean> {
+    refreshing ??= fetch(`${base}/auth/refresh`, { method: "POST", headers: { ...csrf }, credentials: "same-origin" })
+      .then((r) => r.ok, () => false)
+      .finally(() => {
+        refreshing = null;
+      });
+    return refreshing;
+  }
+
   async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
     let res = await send(path, opts);
     if (res.status === 401 && !opts.noAuthRedirect) {
-      const refreshed = await fetch(`${base}/auth/refresh`, {
-        method: "POST",
-        headers: { ...csrf },
-        credentials: "same-origin",
-      }).catch(() => null);
-      if (!refreshed?.ok) toLogin();
+      if (!(await refresh())) toLogin();
       res = await send(path, opts);
-      if (res.status === 401) toLogin();
+      if (res.status === 401) throw new ApiError(401, "You are signed in, but the server still refused this request.");
     }
     const text = res.status === 204 ? "" : await res.text();
     let body: unknown = null;
