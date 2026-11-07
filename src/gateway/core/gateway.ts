@@ -14,7 +14,7 @@ import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
-import { effectiveSoulForChannelFor, soulDataFor } from "../../soul/per-persona";
+import { approvalTimeoutFor, effectiveSoulForChannelFor, soulDataFor } from "../../soul/per-persona";
 import { admit } from "../../access/admission";
 import { loadGrants, roleOf, usersWithRole } from "../../access/role";
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
@@ -787,14 +787,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const surfaceFactoryFor = (personaId?: string, app?: AppRef): SurfaceFactory => {
     if (opts.surfaceFactory) return opts.surfaceFactory;
     const named = personaId && personaId !== "default" ? personaId : undefined;
-    return makeSlackSurfaceFactory(() => outClientForPersona(named, app));
+    return makeSlackSurfaceFactory(() => outClientForPersona(named, app), named);
   };
   // A session's surface follows its context: the persona's current client, as
   // the app the context currently names.
   const surfaceForCtx = (ctx: SlackContext): Surface =>
     opts.surfaceFactory
       ? opts.surfaceFactory(bindingFor(ctx))
-      : makeSlackSurfaceFactory(() => outClientForPersona(ctx.personaId, appOf(ctx)))(bindingFor(ctx));
+      : makeSlackSurfaceFactory(() => outClientForPersona(ctx.personaId, appOf(ctx)), ctx.personaId)(bindingFor(ctx));
 
   // Resolve per-session client: persona xoxp when available, bot token as fallback.
   // routes Map is populated lazily (after this line), but the resolver is called
@@ -815,7 +815,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     turnOf: (sessionId) => liveTurnStamp(agent, sessionId, routes.get(sessionId)?.ctx.origin),
   });
   const approvals = new ApprovalGate(t, env.slack.approvers(), {
-    timeoutSeconds: () => soulData().approvalTimeoutSeconds || 300,
+    // The agent's own soul timeout, else the default persona's, else 5 minutes.
+    timeoutSeconds: (persona) => approvalTimeoutFor(persona) || 300,
   });
   // Background-learning messages (phase D): the weekly digest to the manager
   // and a person's proposals to their DM. Both carry buttons, so they go out

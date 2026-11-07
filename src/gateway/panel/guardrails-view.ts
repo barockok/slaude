@@ -23,7 +23,7 @@ import { env } from "../../config/env";
 import { db } from "../../db/schema";
 import { autoAllowFromEnv, PERM_GATE_TTL_MS } from "../slack/permission-gate";
 import { loadGrants, usersWithRole } from "../../access/role";
-import { soulDataFor, channelApproversOf } from "../../soul/per-persona";
+import { approvalTimeoutFor, channelApproversOf, redactPatternsFor, soulDataFor } from "../../soul/per-persona";
 import { soulData } from "../../soul/extract";
 import { loadApprovers } from "../../soul/loader";
 import { personaSoulText } from "../../persona/soul-source";
@@ -200,8 +200,11 @@ async function approvals(name: string, text: string): Promise<GuardrailFamily> {
     }
     settings.push(setting("deny", "Denied users", "Users with a deny grant on this agent are removed from the list", "code"));
   }
-  settings.push(setting("timeout", "An approval waits for", `${def.approvalTimeoutSeconds || 300} seconds`, def.approvalTimeoutSeconds ? "soul" : "default",
-    "the default agent's soul (approval timeout)", "Read from the default agent's soul for every agent."));
+  const ownTimeout = name === "default" ? def.approvalTimeoutSeconds : soulDataFor(name).approvalTimeoutSeconds;
+  const timeout = approvalTimeoutFor(name);
+  settings.push(setting("timeout", "An approval waits for", `${timeout || 300} seconds`, timeout ? "soul" : "default",
+    ownTimeout > 0 ? "this agent's soul (approval timeout)" : timeout ? "the default agent's soul (approval timeout)" : undefined,
+    name !== "default" && !(ownTimeout > 0) && timeout ? "This agent sets none, so the default agent's applies." : undefined));
   const prose = soulSections(text, /approv/i);
   return {
     id: "approvals",
@@ -311,24 +314,22 @@ function policy(): GuardrailFamily {
 function redaction(name: string, text: string): GuardrailFamily {
   const def = soulData().redactPatterns;
   const own = name === "default" ? def : soulDataFor(name).redactPatterns;
-  const settings = [
-    setting("patterns", "Redacted from replies", list(def), def.length ? "soul" : "default", "the default agent's soul (redact patterns)",
-      "Matches are replaced with [REDACTED] in what the agent posts."),
-    setting("secrets", "Secret shapes masked", `${SECRET_PATTERN_COUNT} kinds (keys, tokens, bearer headers, JWTs)`, "code", "redact/index.ts",
-      "Masked in the status line, approval cards, the audit trail and console views."),
-  ];
-  if (name !== "default" && JSON.stringify(own) !== JSON.stringify(def)) {
-    settings.splice(1, 0, setting("own-patterns", "This agent's own patterns", list(own), "soul", "this agent's soul",
-      "Not applied today: replies use the default agent's patterns."));
-  }
+  const effective = redactPatternsFor(name);
+  const inherited = name !== "default" && own.length === 0 && def.length > 0;
   const prose = soulSections(text, /redact/i);
   return {
     id: "redaction",
     title: "Redaction",
     summary: "Text that never leaves in a reply or a console view.",
-    scope: "deployment",
+    scope: "agent",
     status: "active",
-    settings,
+    settings: [
+      setting("patterns", "Redacted from replies", list(effective), effective.length ? "soul" : "default",
+        inherited ? "the default agent's soul (redact patterns)" : "this agent's soul (redact patterns)",
+        inherited ? "This agent names none, so the default agent's apply. Matches are replaced with [REDACTED]." : "Matches are replaced with [REDACTED] in what the agent posts."),
+      setting("secrets", "Secret shapes masked", `${SECRET_PATTERN_COUNT} kinds (keys, tokens, bearer headers, JWTs)`, "code", "redact/index.ts",
+        "Masked in the status line, approval cards, the audit trail and console views."),
+    ],
     ...(prose ? { text: prose, textSource: "SOUL.md" } : {}),
   };
 }

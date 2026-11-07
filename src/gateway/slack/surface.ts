@@ -3,7 +3,7 @@ import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
 import { redactSlack } from "./redact";
-import { soulData } from "../../soul/extract";
+import { redactPatternsFor } from "../../soul/per-persona";
 import { SLACK_SURFACE_ID } from "../core/surface";
 import type {
   ApprovalRequest,
@@ -15,9 +15,10 @@ import type {
   SurfaceFactory,
 } from "../core/surface";
 
-// Same outbound formatting the legacy slack tools used — markdown → mrkdwn + soul redaction.
-function format(text: string): string {
-  return redactSlack(mdToMrkdwn(text), soulData().redactPatterns);
+// Same outbound formatting the legacy slack tools used: markdown to mrkdwn, then the
+// posting agent's own soul redaction (the default persona's when it names none).
+function format(text: string, persona?: string): string {
+  return redactSlack(mdToMrkdwn(text), redactPatternsFor(persona));
 }
 
 /** Surface implementation over the Slack Web API. Bound to one conversation/thread per
@@ -29,14 +30,16 @@ export class SlackSurface implements Surface {
 
   #resolve: () => WebClient;
   #b: SessionBinding;
+  #persona: string | undefined;
 
   /** `client` may be a resolver, read on every call: a named persona's surface
    *  then follows its CURRENT client, so a token rotated by a persona sync
    *  reaches surfaces (and the in-process surface MCP holding one) built
    *  before it. */
-  constructor(client: WebClient | (() => WebClient), binding: SessionBinding) {
+  constructor(client: WebClient | (() => WebClient), binding: SessionBinding, persona?: string) {
     this.#resolve = typeof client === "function" ? client : () => client;
     this.#b = binding;
+    this.#persona = persona;
   }
 
   get #client(): WebClient {
@@ -47,7 +50,7 @@ export class SlackSurface implements Surface {
     const r = await this.#client.chat.postMessage({
       channel: this.#b.conversationId,
       thread_ts: this.#b.threadRef,
-      text: format(text),
+      text: format(text, this.#persona),
       mrkdwn: true,
     });
     return { ref: String(r.ts) };
@@ -84,14 +87,14 @@ export class SlackSurface implements Surface {
     await this.#client.chat.postEphemeral({
       channel: this.#b.conversationId,
       user,
-      text: format(i.text),
+      text: format(i.text, this.#persona),
       ...(i.blocks ? { blocks: i.blocks } : {}),
       ...(this.#b.threadRef ? { thread_ts: this.#b.threadRef } : {}),
     });
   }
 
   async edit({ ref, text }: { ref: string; text: string }): Promise<void> {
-    await this.#client.chat.update({ channel: this.#b.conversationId, ts: ref, text: format(text) });
+    await this.#client.chat.update({ channel: this.#b.conversationId, ts: ref, text: format(text, this.#persona) });
   }
 
   async react({ name, ref }: { name: string; ref?: string }): Promise<void> {
@@ -117,13 +120,13 @@ export class SlackSurface implements Surface {
       file: createReadStream(path),
       filename,
       title: title ?? filename,
-      ...(comment ? { initial_comment: format(comment) } : {}),
+      ...(comment ? { initial_comment: format(comment, this.#persona) } : {}),
       ...(altText ? { alt_text: altText } : {}),
     } as any);
   }
 }
 
-/** Close over a Slack WebClient and return a factory that builds a SlackSurface per session. */
-export function makeSlackSurfaceFactory(client: WebClient | (() => WebClient)): SurfaceFactory {
-  return (binding: SessionBinding) => new SlackSurface(client, binding);
+/** Close over a Slack WebClient and return a factory that builds a SlackSurface per session, posting as `persona`. */
+export function makeSlackSurfaceFactory(client: WebClient | (() => WebClient), persona?: string): SurfaceFactory {
+  return (binding: SessionBinding) => new SlackSurface(client, binding, persona);
 }

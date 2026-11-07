@@ -653,6 +653,17 @@ describe("ApprovalGate", () => {
       expect(ev!.persona).toBe("helper");
     });
 
+    test("the timeout is asked for the request's own persona", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
+      const f = fakeApp();
+      const asked: Array<string | null | undefined> = [];
+      const gate = new ApprovalGate(f.app, [], { timeoutSeconds: (persona) => (asked.push(persona), 0) });
+      const p = gate.request({ channel: "C", threadTs: "T", summary: "x", sessionId: "SAPRT", persona: "helper" });
+      await f.fire(await buttonId(f, "deny"), "U002");
+      await p;
+      expect(asked).toEqual(["helper"]);
+    });
+
     test("deny records decision deny", async () => {
       writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
       const f = fakeApp();

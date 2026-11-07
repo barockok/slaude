@@ -99,15 +99,15 @@ export class ApprovalGate {
   /** Env-derived fallback allowlist. Used when persona has no approvers block
    *  or no matching category and no 'default' key either. */
   #envApprovers: Set<string>;
-  /** Source for the per-request timeout. Injected so tests can override. */
-  #timeoutSeconds: () => number;
+  /** Source for the per-request timeout, given the request's persona. Injected so tests can override. */
+  #timeoutSeconds: (persona?: string | null) => number;
   /** Explicit bus override (tests/sim); undefined = env-driven default. */
   #busOverride: GateBus | null | undefined;
 
   constructor(
     transport: Transport,
     envApprovers: string[],
-    opts: { timeoutSeconds?: () => number; gateBus?: GateBus | null } = {},
+    opts: { timeoutSeconds?: (persona?: string | null) => number; gateBus?: GateBus | null } = {},
   ) {
     this.#transport = transport;
     this.#envApprovers = new Set(envApprovers);
@@ -420,7 +420,7 @@ export class ApprovalGate {
   async open(req: ApprovalRequest): Promise<{ pendingId: string }> {
     const id = this.#mintId();
     const approvers = await this.#resolveApprovers(req);
-    const timeoutSec = this.#timeoutSeconds();
+    const timeoutSec = this.#timeoutSeconds(req.persona);
     await PendingGates.create({
       id,
       kind: "approval",
@@ -483,7 +483,7 @@ export class ApprovalGate {
   async request(req: ApprovalRequest, abortSignal?: AbortSignal): Promise<ApprovalDecision> {
     const id = this.#mintId();
     const approvers = await this.#resolveApprovers(req);
-    const timeoutSec = this.#timeoutSeconds();
+    const timeoutSec = this.#timeoutSeconds(req.persona);
 
     // Durable pending state FIRST, then the in-process waiter, then the
     // buttons — by the time a click can exist, both stores are in place.

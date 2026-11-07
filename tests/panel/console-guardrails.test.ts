@@ -159,6 +159,9 @@ describe("GET /panel/api/guardrails", () => {
     expect(value(family(g, "approvals"), "approvers").value).toEqual(expect.arrayContaining(["UMGR"]));
     expect(value(family(g, "proactive"), "enabled")).toMatchObject({ value: false, source: "default" });
     expect(value(family(g, "memory-gating"), "own-slice").value).toBe("agent-upscout");
+    // scout's soul names no redaction patterns or timeout: the default agent's apply, and the page says so.
+    expect(value(family(g, "redaction"), "patterns")).toMatchObject({ value: ["secret-\\d+"], origin: "the default agent's soul (redact patterns)" });
+    expect(value(family(g, "approvals"), "timeout")).toMatchObject({ value: "300 seconds", source: "default" });
   });
 
   test("learned rules that cannot be read say so instead of failing the page", async () => {
