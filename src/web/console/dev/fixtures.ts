@@ -301,8 +301,8 @@ export function sessionHistory(sessionId: string, now: number): SessionHistoryIt
   const out: SessionHistoryItem[] = [];
   for (let i = 1; i <= turns; i++) {
     const at = now - (turns - i + 1) * 7 * MIN - 2 * HOUR;
-    out.push({ at, who: "user", name: i % 3 === 0 ? "bob" : "alice", text: i === 1 ? "Earliest question: where is the release checklist?" : `Earlier question ${i}` });
-    out.push({ at, who: "agent", text: i === turns ? "Last earlier answer: the checklist lives in docs/release-checklist.md." : `Earlier answer ${i}` });
+    out.push({ id: `${i}:user`, at, who: "user", name: i % 3 === 0 ? "bob" : "alice", text: i === 1 ? "Earliest question: where is the release checklist?" : `Earlier question ${i}` });
+    out.push({ id: `${i}:agent`, at, who: "agent", text: i === turns ? "Last earlier answer: the checklist lives in docs/release-checklist.md." : `Earlier answer ${i}` });
   }
   return out;
 }

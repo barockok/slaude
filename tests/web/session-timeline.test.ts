@@ -94,7 +94,8 @@ describe("the agent's replies", () => {
 
 describe("earlier turns, activity and the context meter", () => {
   test("history lines become earlier messages", () => {
-    const items = historyItems([{ at: 1, who: "user", name: "alice", text: "q" }, { at: 1, who: "agent", text: "a" }], "scout");
+    const items = historyItems([{ id: "7:user", at: 1, who: "user", name: "alice", text: "q" }, { id: "7:agent", at: 1, who: "agent", text: "a" }], "scout");
+    expect(items.map((i) => i.key)).toEqual(["earlier-7:user", "earlier-7:agent"]);
     expect(items.map((i) => [i.who, i.name, i.text, i.earlier])).toEqual([["user", "alice", "q", true], ["agent", "scout", "a", true]]);
   });
 

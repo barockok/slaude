@@ -209,6 +209,8 @@ export interface SessionDetailResponse {
 
 /** One earlier exchange line of a session, from its durable conversation record. */
 export interface SessionHistoryItem {
+  /** Stable per line: the record's row id and the side (`<row>:user`, `<row>:agent`). */
+  id: string;
   /** Epoch ms the turn was recorded (the agent's line shares its user line's time). */
   at: number;
   who: "user" | "agent";

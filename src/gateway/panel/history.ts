@@ -78,9 +78,9 @@ export function turnLines(row: MemoryTimelineRow): SessionHistoryItem[] {
   const agentRaw = between(detail, "assistant") ?? "";
   const out: SessionHistoryItem[] = [];
   const user = parseUserLine(userRaw);
-  if (user.text) out.push({ at, who: "user", ...(user.name ? { name: redactSecrets(user.name) } : {}), text: redactSecrets(user.text) });
+  if (user.text) out.push({ id: `${row.id}:user`, at, who: "user", ...(user.name ? { name: redactSecrets(user.name) } : {}), text: redactSecrets(user.text) });
   const agent = agentRaw.trim();
-  if (agent) out.push({ at, who: "agent", text: redactSecrets(agent) });
+  if (agent) out.push({ id: `${row.id}:agent`, at, who: "agent", text: redactSecrets(agent) });
   return out;
 }
 

@@ -109,6 +109,7 @@ describe("GET /panel/api/sessions/:id/history", () => {
     expect(first.body.items.map((i) => `${i.who}:${i.text}`)).toEqual(["user:question 4", "agent:answer 4", "user:question 5", "agent:answer 5"]);
     expect(first.body.items[0]!.name).toBe("alice");
     expect(first.body.items[0]!.at).toBe(4_000);
+    expect(first.body.items.map((i) => i.id)).toEqual(["4:user", "4:agent", "5:user", "5:agent"]);
     expect(first.body.nextCursor).toBe("4");
     expect(seen[0]).toBe(`agent-uagent:${slug}`);
 

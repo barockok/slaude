@@ -177,9 +177,9 @@ export function buildItems(entries: StreamEntry[], gates: AuditEventView[], sent
 
 /** Earlier turns (the conversation record) as timeline messages. */
 export function historyItems(history: SessionHistoryItem[], persona: string): Extract<Item, { kind: "text" }>[] {
-  return history.map((h, i) => ({
+  return history.map((h) => ({
     kind: "text" as const,
-    key: `earlier-${i}-${h.at}-${h.who}`,
+    key: `earlier-${h.id}`,
     at: h.at,
     who: h.who === "agent" ? ("agent" as const) : ("user" as const),
     name: h.who === "agent" ? persona : (h.name ?? "Someone in the thread"),
