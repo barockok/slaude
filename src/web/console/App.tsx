@@ -1,6 +1,6 @@
 /**
  * The operator console, served at /panel: shell, navigation and the page for
- * each route. Pages not built yet render a placeholder.
+ * each route.
  */
 import { matchPath } from "../lib/router";
 import { AppFrame, type Identity, type NavEntry } from "../shared/AppFrame";
@@ -9,7 +9,14 @@ import { api } from "./client";
 import { AccessPage } from "./pages/AccessPage";
 import { AgentDetailPage, isAgentTab } from "./pages/agent/AgentDetailPage";
 import { AgentsPage } from "./pages/AgentsPage";
+import { AuditPage } from "./pages/AuditPage";
+import { EnvironmentsPage } from "./pages/EnvironmentsPage";
+import { MemoryPageView } from "./pages/memory/MemoryPageView";
+import { MemoryStorePage } from "./pages/memory/MemoryStorePage";
+import { MemoryStoresPage } from "./pages/memory/MemoryStoresPage";
 import { OverviewPage } from "./pages/OverviewPage";
+import { SessionDetailPage, isSessionTab } from "./pages/session/SessionDetailPage";
+import { SessionsPage } from "./pages/SessionsPage";
 
 export { api };
 
@@ -40,6 +47,21 @@ function renderPage(path: string, entry: NavEntry | null) {
   if (path === "/") return <OverviewPage />;
   if (path === "/agents") return <AgentsPage />;
   if (path === "/access") return <AccessPage />;
+  if (path === "/sessions") return <SessionsPage />;
+  if (path === "/audit") return <AuditPage />;
+  if (path === "/memory") return <MemoryStoresPage />;
+  if (path === "/environments") return <EnvironmentsPage />;
+  const session = matchPath("/sessions/:id", path) ?? matchPath("/sessions/:id/:tab", path);
+  if (session) {
+    const tab = session.tab ?? "timeline";
+    if (isSessionTab(tab)) return <SessionDetailPage key={session.id} id={session.id!} tab={tab} />;
+  }
+  if (path.startsWith("/sessions/")) return <NotFoundPage home="/sessions" />;
+  const memPage = matchPath("/memory/:store/page", path);
+  if (memPage) return <MemoryPageView key={memPage.store} storeId={memPage.store!} />;
+  const store = matchPath("/memory/:store", path);
+  if (store) return <MemoryStorePage key={store.store} storeId={store.store!} />;
+  if (path.startsWith("/memory/")) return <NotFoundPage home="/memory" />;
   const agent = matchPath("/agents/:name", path) ?? matchPath("/agents/:name/:tab", path);
   if (agent) {
     const tab = agent.tab ?? "overview";
