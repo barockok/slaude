@@ -1,5 +1,6 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
-import { parseSlackMarkup } from "../lib/slack-markup";
+import { Markdown } from "../../ui";
+import { parseSlackMarkup, slackToMarkdown } from "../lib/slack-markup";
 
 /** Slack user id -> display name, for `<@U…>` mentions (from history answers and the live tail). */
 const SlackUsers = createContext<Readonly<Record<string, string>>>({});
@@ -29,4 +30,14 @@ export function SlackText({ text }: { text: string }) {
       )}
     </>
   );
+}
+
+/**
+ * An agent's message: markdown (the agent writes markdown), with any Slack
+ * link and mention markup in it resolved first. User messages stay SlackText.
+ */
+export function AgentText({ text }: { text: string }) {
+  const users = useContext(SlackUsers);
+  const source = useMemo(() => slackToMarkdown(text, users), [text, users]);
+  return <Markdown source={source} toolbar="compact" className="sl-agent-md" />;
 }

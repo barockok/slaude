@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { AgentDetailResponse, MandateView } from "../../../../gateway/panel/api-types";
-import { Avatar, Badge, Card, EmptyState } from "../../../ui";
+import { Avatar, Badge, Card, EmptyState, Markdown } from "../../../ui";
 import { TimeAgo } from "../../../shared/TimeAgo";
 
 const GROUPS: Array<{ kind: MandateView["kind"]; label: string; hint: string }> = [
@@ -16,20 +16,19 @@ const SOURCE_LABEL: Record<MandateView["source"], string> = { soul: "Soul", cron
 export const slackText = (s: string) => s.replace(/<#([A-Z0-9]+)(\|[^>]*)?>/g, "#$1");
 
 function Instructions({ text }: { text: string }) {
-  const ref = useRef<HTMLParagraphElement>(null);
+  const ref = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const [overflows, setOverflows] = useState(false);
 
   useLayoutEffect(() => {
-    const el = ref.current;
+    const el = ref.current?.querySelector<HTMLElement>(".sl-md, .sl-md-raw");
     if (el && !open) setOverflows(el.scrollHeight > el.clientHeight + 1);
   }, [text, open]);
 
+  // Mandate text is soul prose: markdown, shown rendered with a raw view.
   return (
-    <div className="sl-mandate__instructions">
-      <p ref={ref} className={open ? undefined : "is-clamped"}>
-        {slackText(text)}
-      </p>
+    <div className="sl-mandate__instructions" ref={ref}>
+      <Markdown source={slackText(text)} toolbar="compact" className={open ? undefined : "is-clamped"} />
       {(overflows || open) && (
         <button type="button" className="sl-link-btn" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
           {open ? "Show less" : "Show more"}

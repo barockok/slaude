@@ -160,17 +160,13 @@
   gap: var(--sl-pad-xs);
 }
 
-.sl-mandate__instructions p {
+.sl-mandate__instructions .sl-md {
   color: var(--sl-text-secondary);
-  white-space: pre-line;
-  overflow-wrap: anywhere;
 }
 
-.sl-mandate__instructions p.is-clamped {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-  line-clamp: 4;
+.sl-mandate__instructions .is-clamped .sl-md,
+.sl-mandate__instructions .is-clamped .sl-md-raw {
+  max-height: 6.5rem;
   overflow: hidden;
 }
 
@@ -1305,4 +1301,13 @@
   .sl-session-head .sl-title-row .sl-avatar {
     display: none;
   }
+}
+
+/* An agent message rendered as markdown inside the timeline and chat. */
+.sl-agent-md .sl-md {
+  line-height: var(--sl-leading-body);
+}
+
+.sl-agent-md .sl-md__p {
+  margin-bottom: var(--sl-pad-xs);
 }

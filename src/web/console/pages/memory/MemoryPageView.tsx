@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { MemoryPageResponse } from "../../../../gateway/panel/api-types";
 import { Link, useSearch } from "../../../lib/router";
-import { Badge, Card, EmptyState, IconArrowLeft, KeyValue, PageHeader, Skeleton } from "../../../ui";
+import { Badge, Card, EmptyState, IconArrowLeft, KeyValue, Markdown, PageHeader, Skeleton } from "../../../ui";
 import { TimeAgo } from "../../../shared/TimeAgo";
 import { useApi } from "../../hooks/useApi";
 import { MemoryError, PrivateBadge, isPrivateStoreId, pagePath, storePath } from "./memoryParts";
@@ -22,14 +22,14 @@ function Body({ page }: { page: MemoryPageResponse }) {
       <div className="sl-memory-page__main">
         <Card title="Content">
           {page.content.trim() ? (
-            <pre className="sl-prose-pre">{page.content}</pre>
+            <Markdown source={page.content} />
           ) : (
             <EmptyState title="This page has no content" description="It may hold only links or frontmatter." />
           )}
         </Card>
         {page.timeline.trim() && (
           <Card title="Timeline">
-            <pre className="sl-prose-pre">{page.timeline}</pre>
+            <Markdown source={page.timeline} />
           </Card>
         )}
       </div>

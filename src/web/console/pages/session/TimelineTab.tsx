@@ -4,7 +4,7 @@ import type { StreamEntry, StreamStatus } from "../../lib/sessionStream";
 import type { SessionHistory } from "./useSessionHistory";
 import { resultText, type Delivery, type Item } from "./timeline-model";
 import { absoluteTime, actionLabel, actorKindLabel, clockTime, decisionLabel, decisionTone, duration, shortDate } from "../../lib/format";
-import { SlackText } from "../../components/SlackText";
+import { AgentText, SlackText } from "../../components/SlackText";
 
 /** One line that says what a tool call does: the command, the file, the pattern. */
 function inputSummary(input: unknown): string {
@@ -114,9 +114,13 @@ function ItemView({ it }: { it: Item }) {
               {it.delivery && <DeliveryMark delivery={it.delivery} target={it.target} />}
               {it.earlier ? <EarlierTime at={it.at} dateOnly={it.dateOnly} /> : <Time at={it.at} />}
             </div>
-            <p className="sl-tl__text">
-              <SlackText text={it.text} />
-            </p>
+            {it.who === "agent" ? (
+              <AgentText text={it.text} />
+            ) : (
+              <p className="sl-tl__text">
+                <SlackText text={it.text} />
+              </p>
+            )}
           </div>
         </div>
       );

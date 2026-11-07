@@ -46,3 +46,21 @@ describe("Slack markup in console text", () => {
     expect(parseSlackMarkup("")).toEqual([]);
   });
 });
+
+import { slackToMarkdown } from "../../src/web/console/lib/slack-markup";
+import { parseInline } from "../../src/web/ui/md-parse";
+
+describe("agent text as markdown", () => {
+  test("Slack links become markdown links, mentions their names", () => {
+    expect(slackToMarkdown("see <https://example.com/a_(b)|the [docs]> <@U1>", { U1: "Jane Doe" })).toBe(
+      "see [the \\[docs\\]](<https://example.com/a_(b)>) @Jane Doe",
+    );
+    expect(parseInline(slackToMarkdown("<https://example.com/a_(b)|the [docs]>"))).toEqual([
+      { t: "link", href: "https://example.com/a_(b)", c: [{ t: "text", v: "the [docs]" }] },
+    ]);
+  });
+
+  test("a Slack link to a non-web scheme stays text", () => {
+    expect(slackToMarkdown("<javascript:alert(1)|x>")).toBe("<javascript:alert(1)|x>");
+  });
+});
