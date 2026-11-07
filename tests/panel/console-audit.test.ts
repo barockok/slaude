@@ -48,7 +48,7 @@ beforeEach(async () => {
   await AuditEvents.insert(ev(0));
   await AuditEvents.insert(ev(1, { action: "grant.created", actorKind: "operator", actorId: "lead@example.com", sessionId: null }));
   await AuditEvents.insert(ev(2, { persona: "default", sessionId: "S-2" }));
-  await AuditEvents.insert(ev(3, { action: "gate.approval.decided" }));
+  await AuditEvents.insert(ev(3, { action: "gate.approval.decided", decision: "deny" }));
   await AuditEvents.insert(ev(4));
 });
 afterEach(async () => {
@@ -79,6 +79,8 @@ describe("GET /panel/api/audit", () => {
     expect(summaries((await get("/panel/api/audit?action=gate.")).body)).toEqual(["event 4", "event 3", "event 2", "event 0"]);
     expect(summaries((await get("/panel/api/audit?actor=lead%40example.com")).body)).toEqual(["event 1"]);
     expect(summaries((await get("/panel/api/audit?session=S-2")).body)).toEqual(["event 2"]);
+    expect(summaries((await get("/panel/api/audit?decision=deny")).body)).toEqual(["event 3"]);
+    expect(summaries((await get("/panel/api/audit?action=gate.&decision=deny")).body)).toEqual(["event 3"]);
   });
 
   test("time bounds take epoch ms or ISO, inclusive", async () => {

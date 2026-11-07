@@ -41,6 +41,8 @@ export interface AuditFilter {
   action?: string;
   actorId?: string;
   sessionId?: string;
+  /** Exact decision, e.g. "allow" or "deny". */
+  decision?: string;
   /** Inclusive epoch ms bounds. */
   since?: number;
   until?: number;
@@ -114,6 +116,10 @@ export async function list(filter: AuditFilter, opts: { cursor?: string; limit?:
   if (filter.sessionId !== undefined) {
     where.push("session_id = ?");
     params.push(filter.sessionId);
+  }
+  if (filter.decision !== undefined) {
+    where.push("decision = ?");
+    params.push(filter.decision);
   }
   if (filter.since !== undefined) {
     where.push("id >= ?");

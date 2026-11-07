@@ -128,6 +128,138 @@ export interface RevokeGrantResponse {
   ok: true;
 }
 
+// --- Sessions ---------------------------------------------------------------
+// Snake-case on purpose: these routes predate the console and answer database
+// rows as they are (src/db/schema.ts SessionRow, panel/enumerator.ts).
+
+/** One row of GET /panel/api/sessions: the stored row joined with the warm registry. */
+export interface SessionSummaryView {
+  id: string;
+  persona_id: string;
+  model: string;
+  /** `running` while a turn is in flight, `idle` otherwise; other values pass through. */
+  status: string;
+  claude_started: number;
+  engaged: number;
+  title: string | null;
+  working_dir: string;
+  slack_team_id: string | null;
+  slack_channel_id: string | null;
+  slack_thread_ts: string | null;
+  created_at: number;
+  updated_at: number;
+  tenant_id?: string;
+  /** Warm on a node right now. */
+  warm: boolean;
+  /** Owning node id when warm. */
+  node?: string;
+  /** Operator driving the session from the console, if any. */
+  panel_locked_by?: string;
+}
+
+/** GET /panel/api/sessions?persona&status&limit&offset, newest first. */
+export interface SessionsResponse {
+  sessions: SessionSummaryView[];
+}
+
+/** The stored session row. */
+export interface SessionRowView {
+  id: string;
+  created_at: number;
+  updated_at: number;
+  title: string | null;
+  model: string;
+  working_dir: string;
+  status: string;
+  claude_started: number;
+  slack_team_id: string | null;
+  slack_channel_id: string | null;
+  slack_thread_ts: string | null;
+  permission_mode: string;
+  engaged: number;
+  persona_id: string;
+  slack_app_id?: string | null;
+}
+
+/** GET /panel/api/sessions/:id */
+export interface SessionDetailResponse {
+  session: SessionRowView;
+  /** Operator holding the console lock; absent when nobody does. */
+  panel_locked_by?: string;
+}
+
+export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk";
+
+/** Body of POST /panel/api/sessions/:id/control. `reset` and `mode` are superadmin only. */
+export type SessionControlRequest =
+  | { action: "stop" | "reset" | "unlock-1on1" }
+  | { action: "model"; model: string }
+  | { action: "mode"; mode: PermissionMode };
+
+export interface SessionControlResponse {
+  ok: true;
+  session: SessionRowView | null;
+}
+
+/** POST /panel/api/sessions/:id/chat (202). 409 `{ error, owner? }` when another operator holds the lock. */
+export interface SessionChatResponse {
+  ok: true;
+  locked_by?: string;
+}
+
+/** POST /panel/api/sessions/:id/lock. 409 `{ error, owner }` when held by someone else. */
+export interface SessionLockResponse {
+  ok: true;
+  locked_by: string;
+  ttl_ms: number;
+}
+
+/** POST /panel/api/sessions/:id/heartbeat: 200 when still held, 409 `{ ok: false }` when lost. */
+export interface SessionHeartbeatResponse {
+  ok: boolean;
+  ttl_ms: number;
+}
+
+export interface SessionReleaseResponse {
+  ok: true;
+  released: boolean;
+}
+
+/** POST /panel/api/sessions/:id/force-release (superadmin): the caller now holds the lock. */
+export interface SessionForceReleaseResponse {
+  ok: true;
+  owner: string;
+  displaced?: string;
+}
+
+export interface SessionUsageSnapshot {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  totalInput: number;
+  contextWindow: number;
+  pctUsed: number;
+  remaining: number;
+}
+
+/**
+ * One frame of GET /panel/api/sessions/:id/events (text/event-stream): the
+ * agent's events as they happen, `id:` set to the stream entry id. The stream
+ * ends with a named `session-expired` event when the access token runs out;
+ * refresh and reconnect with `?lastId=` to continue without a gap.
+ */
+export type SessionEvent =
+  | { type: "assistantText"; sessionId: string; text: string; autoEvolve?: boolean }
+  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; autoEvolve?: boolean }
+  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; autoEvolve?: boolean }
+  | { type: "thinking"; sessionId: string; text: string; autoEvolve?: boolean }
+  | { type: "turnStart"; sessionId: string }
+  | { type: "done"; sessionId: string; autoEvolve?: boolean }
+  | { type: "error"; sessionId: string; error: string; code?: string; jobId?: string }
+  | { type: "tokenUsage"; sessionId: string; snapshot: SessionUsageSnapshot }
+  | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
+
 // --- Audit ------------------------------------------------------------------
 
 export type AuditActorKind = "slack_user" | "operator" | "agent" | "system";

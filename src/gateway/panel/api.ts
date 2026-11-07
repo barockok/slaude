@@ -38,7 +38,7 @@
  *   POST   /panel/api/agents/:name/grants          store a console grant (superadmin)
  *   DELETE /panel/api/agents/:name/grants/:id      revoke a console grant (superadmin)
  *   GET    /panel/api/grants                       every unexpired console grant, with its persona
- *   GET    /panel/api/audit?persona&action&actor&session&since&until&cursor&limit
+ *   GET    /panel/api/audit?persona&action&actor&session&decision&since&until&cursor&limit
  *   GET    /panel/api/sessions/:id/audit?cursor&limit
  *   GET    /panel/api/memory/stores                memory stores (brain sources) with page counts;
  *                                                  personal and profile stores are superadmin only
@@ -98,6 +98,8 @@ import type {
   AuditPageResponse,
   AgentDetailResponse,
   AgentGrantsResponse,
+  SessionDetailResponse,
+  SessionsResponse,
   AllGrantsResponse,
   AgentsResponse,
   CreateGrantResponse,
@@ -213,6 +215,7 @@ const auditQuerySchema = z
     action: z.string().min(1).max(128).optional(),
     actor: z.string().min(1).max(128).optional(),
     session: z.string().min(1).max(128).optional(),
+    decision: z.string().min(1).max(32).optional(),
     since: timeParam.optional(),
     until: timeParam.optional(),
     ...pageParams,
@@ -625,9 +628,9 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         if (req.method !== "GET") return json(405, { error: "method not allowed" });
         const q = auditQuerySchema.safeParse(queryOf(url));
         if (!q.success) return json(400, { error: issuesLine(q.error) });
-        const { persona, action, actor, session, since, until, cursor, limit } = q.data;
+        const { persona, action, actor, session, decision, since, until, cursor, limit } = q.data;
         const page = await AuditEvents.list(
-          { persona, action, actorId: actor, sessionId: session, since, until },
+          { persona, action, actorId: actor, sessionId: session, decision, since, until },
           { cursor, limit },
         );
         return json(200, page satisfies AuditPageResponse);
@@ -959,7 +962,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             panelOwner: deps.panelLock ? (id) => deps.panelLock!.owner(id) : undefined,
           },
         );
-        return json(200, { sessions });
+        return json(200, { sessions } satisfies SessionsResponse);
       }
 
       // /panel/api/sessions/:id[/sub]
@@ -987,7 +990,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           // TODO(transcript): the durable SDK transcript read from the RWX
           // volume (design §2) attaches here as `transcript`; the live tail is
           // the SSE endpoint. Left for the UI-driven follow-up.
-          return json(200, { session: row, panel_locked_by: lockedBy ?? undefined });
+          return json(200, { session: row, panel_locked_by: lockedBy ?? undefined } satisfies SessionDetailResponse);
         }
 
         // GET /panel/api/sessions/:id/events  (SSE)
