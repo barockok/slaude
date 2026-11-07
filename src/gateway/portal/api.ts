@@ -22,8 +22,9 @@
  * the victim's account — after which the attacker's messages would run on the
  * victim's credentials. GET /portal/link only renders a confirmation page.
  */
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { randomBytes } from "node:crypto";
+// The design tokens as text (see TOKENS_CSS).
+import tokensCssText from "../../web/ui/tokens.css" with { type: "text" };
 import type { SlackNames } from "../panel/slack-names";
 import { env } from "../../config/env";
 import { linkSlackIdentity, unlinkSlackIdentity, slackIdentitiesForAccount } from "../../db/accounts";
@@ -71,8 +72,42 @@ export interface PortalApi {
 const json = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-const html = (status: number, body: string): Response =>
-  new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });
+/**
+ * A server-rendered page with a strict Content-Security-Policy: nothing loads
+ * but the page's own inline style and script, each allowed by the response's
+ * nonce; fetches go to this origin only; no forms, base or framing.
+ */
+export function portalCsp(nonce: string): string {
+  return [
+    "default-src 'none'",
+    `script-src 'nonce-${nonce}'`,
+    `style-src 'nonce-${nonce}'`,
+    "connect-src 'self'",
+    "img-src 'none'",
+    "form-action 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+  ].join("; ");
+}
+
+const html = (status: number, page: (nonce: string) => string): Response => {
+  const nonce = randomBytes(16).toString("base64");
+  return new Response(page(nonce), {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "content-security-policy": portalCsp(nonce),
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "cache-control": "no-store",
+    },
+  });
+};
+
+/** Text made safe for HTML element content and double-quoted attribute values. */
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
 
 /**
  * Anti-CSRF for state-changing requests. The portal authenticates with a cookie,
@@ -103,28 +138,23 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   }
 }
 
-/** The design tokens (src/web/ui/tokens.css), inlined into the server-rendered pages; "" when unreadable. */
-let tokensCss: string | null = null;
-function tokens(): string {
-  if (tokensCss === null) {
-    try {
-      tokensCss = readFileSync(join(import.meta.dir, "..", "..", "web", "ui", "tokens.css"), "utf8").replace(/<\/style/gi, "");
-    } catch {
-      tokensCss = "";
-    }
-  }
-  return tokensCss;
-}
+/**
+ * The design tokens, inlined into the server-rendered pages. Imported as text,
+ * so Bun resolves it with the module graph: from source in the Docker image and
+ * the release tarball (both ship src/), embedded in a compiled build. A
+ * `</style` in it could close the element early, so it is removed.
+ */
+const TOKENS_CSS: string = (typeof tokensCssText === "string" ? tokensCssText : "").replace(/<\/style/gi, "");
 
 /** The page frame for the server-rendered portal pages: tokens inline, no SPA, light and dark. */
-function pageFrame(title: string, main: string, script = ""): string {
+function pageFrame(nonce: string, title: string, main: string, script = ""): string {
   return `<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title}</title>
-<style>
-${tokens()}
+<title>${escapeHtml(title)}</title>
+<style nonce="${nonce}">
+${TOKENS_CSS}
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: var(--sl-pad-lg, 1rem); background: var(--sl-page-bg, #fcfcfb); color: var(--sl-text, #0b0b0b); font: var(--sl-text-body, .875rem)/var(--sl-leading-body, 1.25rem) var(--sl-font-sans, system-ui, sans-serif); }
   main { width: 100%; max-width: 28rem; padding: var(--sl-pad-xl, 1.5rem); border-radius: var(--sl-radius-panel, .75rem); background: var(--sl-surface-2, #fff); box-shadow: var(--sl-panel-shadow); }
@@ -139,6 +169,7 @@ ${tokens()}
   dt { color: var(--sl-text-secondary); }
   dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
   .name { display: block; color: var(--sl-text); }
+  .name:empty { display: none; }
   .id { display: block; font: var(--sl-text-caption, .75rem)/var(--sl-leading-caption, 1.0625rem) var(--sl-font-mono, ui-monospace, monospace); color: var(--sl-text-muted); }
   button { font: inherit; height: var(--sl-control-h, 2rem); padding: 0 var(--sl-pad-md, .75rem); border: 0; border-radius: var(--sl-radius, .5rem); background: var(--sl-fill-primary, #0b0b0b); color: var(--sl-on-primary, #fff); cursor: pointer; font-weight: var(--sl-weight-medium, 500); }
   button:disabled { opacity: .5; cursor: default; }
@@ -147,46 +178,51 @@ ${tokens()}
   #result.ok { color: var(--sl-text-success); }
   #result.err { color: var(--sl-text-danger); }
 </style>
-<main>
-  <div class="brand"><div class="mark" aria-hidden="true"></div>slaude <span>portal</span></div>
 ${main}
-</main>
 ${script}
 </html>`;
 }
 
 /** The page for an invalid or expired link. */
-function expiredPage(): string {
-  return pageFrame("Link expired", `  <h1>This link has expired</h1>
-  <p>It is invalid or too old. Ask the agent for a new one: send /link to the agent as a message.</p>`);
+function expiredPage(nonce: string): string {
+  return pageFrame(nonce, "Link expired", `<main>
+  <div class="brand"><div class="mark" aria-hidden="true"></div>slaude <span>portal</span></div>
+  <h1>This link has expired</h1>
+  <p>It is invalid or too old. Ask the agent for a new one: send /link to the agent as a message.</p>
+</main>`);
 }
 
 /**
- * The confirmation page. Every value is set with textContent from JSON, never
- * concatenated into markup, and the button posts the token with the anti-CSRF
- * header. Names are display only; the ids stay what the link binds.
+ * The confirmation page. Nothing is interpolated into the script: every value
+ * (the token, the ids, the names, which come from Slack and anyone can set)
+ * is HTML-escaped into a data-* attribute, and the fixed script reads them
+ * from the DOM and sets text with textContent. The button posts the token
+ * with the anti-CSRF header; the page itself binds nothing.
  */
-function confirmPage(token: string, team: string, slackUser: string, names: { teamName?: string; userName?: string } = {}): string {
-  const main = `  <h1>Connect your account</h1>
+function confirmPage(nonce: string, token: string, team: string, slackUser: string, names: { teamName?: string; userName?: string } = {}): string {
+  const attr = (v: string | undefined) => `"${escapeHtml(v ?? "")}"`;
+  const main = `<main id="link" data-token=${attr(token)} data-team=${attr(team)} data-team-name=${attr(names.teamName)} data-user=${attr(slackUser)} data-user-name=${attr(names.userName)}>
+  <div class="brand"><div class="mark" aria-hidden="true"></div>slaude <span>portal</span></div>
+  <h1>Connect your account</h1>
   <p>This links the Slack user below to the account you are signed in as. Any agent you message can then use the integrations you connect here.</p>
   <dl>
     <div class="row"><dt>Workspace</dt><dd><span class="name" id="team-name"></span><span class="id" id="team"></span></dd></div>
     <div class="row"><dt>Slack user</dt><dd><span class="name" id="user-name"></span><span class="id" id="user"></span></dd></div>
   </dl>
   <button id="go" type="button">Connect</button>
-  <p id="result" role="status"></p>`;
-  const script = `<script>
-  const token = ${JSON.stringify(token)};
-  const set = (id, v) => { const el = document.getElementById(id); if (v) el.textContent = v; else el.remove(); };
-  set("team-name", ${JSON.stringify(names.teamName ?? "")});
-  set("team", ${JSON.stringify(team)});
-  set("user-name", ${JSON.stringify(names.userName ?? "")});
-  set("user", ${JSON.stringify(slackUser)});
+  <p id="result" role="status"></p>
+</main>`;
+  const script = `<script nonce="${nonce}">
+  const d = document.getElementById("link").dataset;
+  document.getElementById("team-name").textContent = d.teamName || "";
+  document.getElementById("team").textContent = d.team || "";
+  document.getElementById("user-name").textContent = d.userName || "";
+  document.getElementById("user").textContent = d.user || "";
   document.getElementById("go").addEventListener("click", async () => {
     const res = await fetch("/portal/api/link", {
       method: "POST",
       headers: { "content-type": "application/json", "x-portal-csrf": "1" },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token: d.token }),
     });
     const body = await res.json().catch(() => ({}));
     const out = document.getElementById("result");
@@ -195,7 +231,7 @@ function confirmPage(token: string, team: string, slackUser: string, names: { te
     document.getElementById("go").disabled = res.ok;
   });
 </script>`;
-  return pageFrame("Connect your account", main, script);
+  return pageFrame(nonce, "Connect your account", main, script);
 }
 
 export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
@@ -233,9 +269,9 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         if (!guarded.ok) return guarded.response;
         const token = url.searchParams.get("t");
         const verified = verifyLinkToken(token);
-        if (!verified.ok) return html(400, expiredPage());
+        if (!verified.ok) return html(400, expiredPage);
         const names = await identityNames(verified.claims.team, verified.claims.slackUser);
-        return html(200, confirmPage(token!, verified.claims.team, verified.claims.slackUser, names));
+        return html(200, (nonce) => confirmPage(nonce, token!, verified.claims.team, verified.claims.slackUser, names));
       }
 
       if (seg.length === 3 && seg[1] === "api" && seg[2] === "me") {
