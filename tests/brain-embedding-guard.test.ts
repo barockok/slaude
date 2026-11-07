@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   closeBrain,
   configuredEmbeddingModel,
   embeddingActive,
+  embeddingProbeSettled,
   embeddingRefusal,
   getBrain,
   runAdminOp,
@@ -64,15 +65,54 @@ afterEach(async () => {
   home = null;
 });
 
-function configure(provider = "openai"): void {
-  if (!home) {
-    home = mkdtempSync(join(tmpdir(), "slaude-embedguard-"));
-    process.env.SLAUDE_BRAIN_HOME = home;
+/**
+ * One freshly initialised brain per file, copied for each test. A fresh
+ * PGLite initdb gets slower with every one a process has run and falls off a
+ * cliff after about two dozen (each then takes over 20 s under coverage),
+ * while opening an existing data dir stays fast. The suite runs every file in
+ * one process, so a file that initialises a brain per test slows the first
+ * boots of every later file. Copying a template keeps this file at one initdb.
+ */
+let template: string | null = null;
+async function templateHome(): Promise<string> {
+  if (template) return template;
+  const t = mkdtempSync(join(tmpdir(), "slaude-embedguard-tpl-"));
+  process.env.SLAUDE_BRAIN_HOME = t;
+  setEmbeddingEnv();
+  await quiet(() => getBrain());
+  await closeBrain();
+  template = t;
+  return t;
+}
+afterAll(() => {
+  if (template) rmSync(template, { recursive: true, force: true });
+});
+
+/** A new brain home: a copy of the template (`withConfig: false` drops its config.json files). */
+async function newHome(withConfig = true): Promise<string> {
+  const tpl = await templateHome();
+  const h = mkdtempSync(join(tmpdir(), "slaude-embedguard-"));
+  cpSync(tpl, h, { recursive: true });
+  if (!withConfig) {
+    rmSync(join(h, "config.json"), { force: true });
+    rmSync(join(h, ".gbrain"), { recursive: true, force: true });
   }
+  return h;
+}
+
+function setEmbeddingEnv(provider = "openai"): void {
   process.env.EMBEDDING_PROVIDER = provider;
   process.env.EMBEDDING_MODEL = "text-embedding-3-small";
   process.env.EMBEDDING_DIMENSIONS = String(DIMS);
   process.env.EMBEDDING_API_KEY = "sk-test-placeholder";
+}
+
+async function configure(provider = "openai"): Promise<void> {
+  if (!home) {
+    home = await newHome();
+    process.env.SLAUDE_BRAIN_HOME = home;
+  }
+  setEmbeddingEnv(provider);
 }
 
 /** A deterministic text -> vector "model"; another seed is another model. */
@@ -111,13 +151,20 @@ const PAGE = "---\ntype: note\n---\n# Note\n\nsome body text for one chunk";
 
 /** A brain embedded with MODEL_A under the openai config, whose record then names `record`. */
 async function brainRecordedAs(record: string): Promise<void> {
-  configure();
+  await configure();
   await stubTransport(MODEL_A);
   const e = (await getBrain()) as unknown as TestEngine;
   await runAdminOp("put_page", { slug: "notes/seed", content: PAGE });
   await e.setConfig("embedding_model", record);
   await closeBrain();
-  configure();
+  await configure();
+}
+
+/** Boot, then wait for the background embedding probe (the boot itself does not). */
+async function bootSettled(): Promise<unknown> {
+  const e = await getBrain();
+  await embeddingProbeSettled();
+  return e;
 }
 
 function quiet<T>(fn: () => Promise<T>): Promise<T> {
@@ -157,42 +204,80 @@ describe("classifyEmbeddingRecord", () => {
 });
 
 describe("probeEmbeddingRecord", () => {
-  const engine = (vectors: Array<number[] | null>): ProbeEngine => ({
-    async listAllSources() {
-      return [{ id: "s1" }, { id: "s2" }];
-    },
-    async listPages() {
-      return [{ slug: "p", title: "T" }, { slug: "q", title: null }];
-    },
-    async getChunksWithEmbeddings() {
-      return vectors.map((v, i) => ({ chunk_text: `text ${i}`, chunk_source: "compiled_truth", embedding: v }));
-    },
+  type P = { slug: string; title?: string | null; updated: number; chunks: Array<{ text: string; vec: number[] | null; model?: string | null }> };
+  /** Pages per source; listPages honours the three sorts the probe asks for. */
+  function engine(sources: Record<string, P[]>, calls: string[] = []): ProbeEngine {
+    return {
+      async listAllSources() {
+        return Object.keys(sources).map((id) => ({ id }));
+      },
+      async listPages({ sourceId, sort, limit }) {
+        calls.push(`${sourceId}:${sort}`);
+        const ps = [...sources[sourceId]!];
+        if (sort === "slug") ps.sort((a, b) => a.slug.localeCompare(b.slug));
+        if (sort === "updated_asc") ps.sort((a, b) => a.updated - b.updated);
+        if (sort === "updated_desc") ps.sort((a, b) => b.updated - a.updated);
+        return ps.slice(0, limit);
+      },
+      async getChunksWithEmbeddings(slug, { sourceId }) {
+        const p = sources[sourceId]!.find((x) => x.slug === slug)!;
+        return p.chunks.map((c) => ({ chunk_text: c.text, chunk_source: "compiled_truth", embedding: c.vec, model: c.model ?? DEFAULT_LABEL }));
+      },
+    };
+  }
+  const page = (slug: string, updated: number, model: (t: string) => number[], n = 2): P => ({
+    slug, updated, title: "T", chunks: Array.from({ length: n }, (_, i) => ({ text: `${slug} ${i}`, vec: model(`${slug} ${i}`) })),
   });
   const embedA = async (t: string[]) => t.map(MODEL_A);
 
-  test("matching vectors (plain or title-wrapped input) match; at most `samples` are embedded", async () => {
-    const stored = [MODEL_A("text 0"), null, MODEL_A("<T>text 2")];
-    let sent = 0;
-    const r = await probeEmbeddingRecord(engine(stored), {
-      embed: async (t) => ((sent += t.length), embedA(t)),
-      wrap: (title, text) => `<${title}>${text}`,
-      samples: 2,
-    });
-    expect(r).toMatchObject({ status: "match", samples: 2 });
-    expect(sent).toBe(4);
+  test("a uniform brain matches; at most one chunk per page; every source and sort is sampled", async () => {
+    const calls: string[] = [];
+    const sent: string[] = [];
+    const r = await probeEmbeddingRecord(
+      engine({ s1: [page("a", 1, MODEL_A), page("b", 2, MODEL_A), page("c", 3, MODEL_A)], s2: [page("d", 1, MODEL_A)] }, calls),
+      { embed: async (t) => (sent.push(...t), embedA(t)), defaultLabel: DEFAULT_LABEL },
+    );
+    expect(r).toMatchObject({ status: "match", samples: 4, min: expect.any(Number) });
+    expect(sent.sort()).toEqual(["a 0", "b 0", "c 0", "d 0"]);
+    expect(calls).toEqual(["s1:updated_asc", "s1:updated_desc", "s1:slug", "s2:updated_asc", "s2:updated_desc", "s2:slug"]);
   });
-  test("vectors of another model mismatch", async () => {
-    const r = await probeEmbeddingRecord(engine([MODEL_B("text 0")]), { embed: embedA });
+
+  test("a mixed brain (older pages on another model) is a mismatch even when the slug-first page matches", async () => {
+    // Slug order alone would sample only "a-new" (and its chunks) and adopt.
+    const r = await probeEmbeddingRecord(
+      engine({ s1: [page("a-new", 9, MODEL_A, 5), page("m-old", 1, MODEL_B), page("z-old", 2, MODEL_B)] }),
+      { embed: embedA, samples: 5 },
+    );
     expect(r.status).toBe("mismatch");
   });
-  test("no stored vectors is empty; maxPages bounds the walk", async () => {
-    expect(await probeEmbeddingRecord(engine([null]), { embed: embedA, maxPages: 3 })).toEqual({ status: "empty", samples: 0 });
+
+  test("the title-wrapped input counts as a match", async () => {
+    const p: P = { slug: "w", updated: 1, title: "T", chunks: [{ text: "x", vec: MODEL_A("<T>x") }] };
+    const r = await probeEmbeddingRecord(engine({ s: [p] }), { embed: embedA, wrap: (title, text) => `<${title}>${text}` });
+    expect(r).toMatchObject({ status: "match", samples: 1 });
   });
+
+  test("labels naming two models other than the default are mixed, never adopted", async () => {
+    const p1: P = { slug: "a", updated: 1, chunks: [{ text: "a", vec: MODEL_A("a"), model: OPENAI }] };
+    const p2: P = { slug: "b", updated: 2, chunks: [{ text: "b", vec: MODEL_A("b"), model: "voyage:voyage-3" }, { text: "c", vec: null, model: "google:x" }] };
+    const r = await probeEmbeddingRecord(engine({ s: [p1, p2] }), { embed: embedA, defaultLabel: DEFAULT_LABEL });
+    expect(r).toEqual({ status: "mixed", labels: [OPENAI, "voyage:voyage-3"] });
+    const one = await probeEmbeddingRecord(engine({ s: [p1] }), { embed: embedA, defaultLabel: DEFAULT_LABEL });
+    expect(one.status).toBe("match");
+  });
+
+  test("no stored vectors is empty; maxPages bounds the walk", async () => {
+    const empty: P = { slug: "e", updated: 1, chunks: [{ text: "e", vec: null }] };
+    expect(await probeEmbeddingRecord(engine({ s: [empty, page("f", 2, MODEL_A)] }), { embed: embedA, maxPages: 1 })).toEqual({ status: "empty", samples: 0 });
+  });
+
   test("an embed error or a timeout is an error, never a verdict", async () => {
-    expect(await probeEmbeddingRecord(engine([MODEL_A("text 0")]), { embed: async () => { throw new Error("down"); } })).toEqual({ status: "error", error: "down" });
-    const slow = await probeEmbeddingRecord(engine([MODEL_A("text 0")]), { embed: () => new Promise(() => {}), timeoutMs: 20 });
+    const e = engine({ s: [page("a", 1, MODEL_A)] });
+    expect(await probeEmbeddingRecord(e, { embed: async () => { throw new Error("down"); } })).toEqual({ status: "error", error: "down" });
+    const slow = await probeEmbeddingRecord(e, { embed: () => new Promise(() => {}), timeoutMs: 20 });
     expect(slow).toMatchObject({ status: "error", error: expect.stringContaining("timed out") });
   });
+
   test("cosine edge cases", () => {
     expect(cosineSimilarity([], [])).toBe(0);
     expect(cosineSimilarity([0, 0], [1, 1])).toBe(0);
@@ -268,7 +353,7 @@ describe("installChunkModelStamp", () => {
 
 describe("brain boot: writes use the configured embedding model", () => {
   test("put_page embeds with the configured provider and labels the chunk with it", async () => {
-    configure();
+    await configure();
     await stubTransport();
     await getBrain();
     expect(embeddingActive()).toBe(true);
@@ -285,8 +370,8 @@ describe("brain boot: writes use the configured embedding model", () => {
     await stubTransport(MODEL_A);
     const log = spyOn(console, "log").mockImplementation(() => {});
     try {
-      const e = (await getBrain()) as unknown as TestEngine;
-      expect(logged(log, `[brain] embedding record adopted: ${DEFAULT_LABEL} -> ${OPENAI} (probe ok)`)).toBe(true);
+      const e = (await bootSettled()) as unknown as TestEngine;
+      expect(logged(log, `[brain] embedding record adopted: ${DEFAULT_LABEL} -> ${OPENAI} (probe ok: 1 sample(s), min cosine 1.0000)`)).toBe(true);
       expect(embeddingActive()).toBe(true);
       expect(embeddingRefusal()).toBeNull();
       expect(await e.getConfig("embedding_model")).toBe(OPENAI);
@@ -311,15 +396,28 @@ describe("brain boot: writes use the configured embedding model", () => {
   }, 60_000);
 
   test("a brain with no stored vectors adopts", async () => {
-    configure();
+    await configure();
     const e0 = (await getBrain()) as unknown as TestEngine;
     await e0.setConfig("embedding_model", DEFAULT_LABEL);
     await closeBrain();
-    configure();
+    await configure();
     await stubTransport(MODEL_A);
-    const e = (await quiet(() => getBrain())) as unknown as TestEngine;
+    const e = (await quiet(() => bootSettled())) as unknown as TestEngine;
     expect(embeddingActive()).toBe(true);
     expect(await e.getConfig("embedding_model")).toBe(OPENAI);
+  }, 60_000);
+
+  test("the boot does not wait for the probe, and closeBrain does not wait for it either", async () => {
+    await brainRecordedAs(DEFAULT_LABEL);
+    const gw = (await gbrainImport("ai/gateway")) as Gw;
+    gw.__setEmbedTransportForTests(() => new Promise(() => {})); // a provider that never answers
+    const t0 = Date.now();
+    const e = (await getBrain()) as unknown as TestEngine;
+    expect(embeddingActive()).toBe(true); // embedding stays on while the probe runs
+    expect(await e.getConfig("embedding_model")).toBe(DEFAULT_LABEL);
+    await closeBrain();
+    expect(Date.now() - t0).toBeLessThan(15_000);
+    await embeddingProbeSettled(); // nothing in flight after a close
   }, 60_000);
 
   test("a probe error keeps embedding on and warns, the record unchanged", async () => {
@@ -327,7 +425,7 @@ describe("brain boot: writes use the configured embedding model", () => {
     await stubTransport(MODEL_A, true);
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     try {
-      const e = (await getBrain()) as unknown as TestEngine;
+      const e = (await bootSettled()) as unknown as TestEngine;
       expect(logged(warn, "the probe of stored vectors failed")).toBe(true);
       expect(embeddingActive()).toBe(true);
       expect(embeddingRefusal()).toBeNull();
@@ -337,13 +435,54 @@ describe("brain boot: writes use the configured embedding model", () => {
     }
   }, 60_000);
 
+  test("a mixed brain (older page on another same-width model) is not adopted, even when the slug-first page matches", async () => {
+    await configure();
+    await stubTransport(MODEL_B);
+    const e0 = (await getBrain()) as unknown as TestEngine;
+    await runAdminOp("put_page", { slug: "notes/z-old", content: "---\ntype: note\n---\n# Old\n\nolder body" });
+    await stubTransport(MODEL_A);
+    await new Promise((r) => setTimeout(r, 20));
+    await runAdminOp("put_page", { slug: "notes/a-new", content: "---\ntype: note\n---\n# New\n\nnewer body" });
+    await e0.setConfig("embedding_model", DEFAULT_LABEL);
+    await closeBrain();
+    await configure();
+    await stubTransport(MODEL_A);
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const e = (await bootSettled()) as unknown as TestEngine;
+      expect(logged(err, "EMBEDDING REFUSED")).toBe(true);
+      expect(embeddingActive()).toBe(false);
+      expect(await e.getConfig("embedding_model")).toBe(DEFAULT_LABEL);
+    } finally {
+      err.mockRestore();
+    }
+  }, 60_000);
+
+  test("chunk labels naming two models refuse auto-adoption", async () => {
+    await configure();
+    await stubTransport(MODEL_A);
+    const e0 = (await getBrain()) as unknown as TestEngine;
+    await runAdminOp("put_page", { slug: "notes/one", content: PAGE });
+    await runAdminOp("put_page", { slug: "notes/two", content: "---\ntype: note\n---\n# Two\n\nanother body" });
+    const vec = new Float32Array(MODEL_A("another body"));
+    await e0.upsertChunks("notes/two", [{ chunk_index: 0, chunk_text: "another body", chunk_source: "compiled_truth", embedding: vec, model: "voyage:voyage-3" }], { sourceId: "default", [CARRIED_IN]: true });
+    await e0.setConfig("embedding_model", DEFAULT_LABEL);
+    await closeBrain();
+    await configure();
+    await stubTransport(MODEL_A);
+    await quiet(async () => {
+      await bootSettled();
+      expect(embeddingRefusal()).toContain("a mixed brain is never adopted automatically");
+    });
+  }, 60_000);
+
   test("stored vectors of another model refuse; writes land unembedded, labelled with the brain's record", async () => {
     await brainRecordedAs(DEFAULT_LABEL);
     await stubTransport(MODEL_B);
     const err = spyOn(console, "error").mockImplementation(() => {});
     let engine: unknown;
     try {
-      engine = await getBrain();
+      engine = await bootSettled();
       expect(logged(err, "EMBEDDING REFUSED")).toBe(true);
     } finally {
       err.mockRestore();
@@ -358,7 +497,7 @@ describe("brain boot: writes use the configured embedding model", () => {
   }, 60_000);
 
   test("a process with no embedding config labels writes with the brain's own record", async () => {
-    configure();
+    await configure();
     await getBrain();
     await closeBrain();
     for (const k of ["EMBEDDING_PROVIDER", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS", "EMBEDDING_API_KEY", "OPENAI_API_KEY"]) delete process.env[k];
@@ -372,7 +511,7 @@ describe("brain boot: writes use the configured embedding model", () => {
   }, 60_000);
 
   test("a transaction engine inherits the stamp: carried labels kept, gateway vectors relabelled (getChunks round trip)", async () => {
-    configure();
+    await configure();
     await stubTransport();
     const engine = (await getBrain()) as unknown as TestEngine;
     await runAdminOp("put_page", { slug: "notes/tx", content: PAGE });
@@ -387,7 +526,7 @@ describe("brain boot: writes use the configured embedding model", () => {
 
 describe("slaude brain reembed", () => {
   test("--model-mismatch: dry run reports, apply re-embeds and relabels", async () => {
-    configure();
+    await configure();
     await stubTransport();
     const engine = (await getBrain()) as unknown as TestEngine;
     await runAdminOp("put_page", { slug: "notes/good", content: PAGE });
@@ -432,7 +571,7 @@ describe("slaude brain reembed", () => {
   }, 60_000);
 
   test("refuses without a configured model, and in remote mode", async () => {
-    home = mkdtempSync(join(tmpdir(), "slaude-embedguard-"));
+    home = await newHome(false);
     process.env.SLAUDE_BRAIN_HOME = home;
     await expect(runReembedCommand({ apply: false })).rejects.toThrow("no embedding model configured");
     await closeBrain();
@@ -440,18 +579,29 @@ describe("slaude brain reembed", () => {
     await expect(runReembedCommand({ apply: false })).rejects.toThrow("SLAUDE_BRAIN_MODE=remote");
   }, 60_000);
 
-  test("refuses a dimension mismatch (and the boot refuses it too)", async () => {
-    configure();
+  test("the vector column width is the dimension authority: a config row alone does not refuse, the column does", async () => {
+    await configure();
     const engine = (await getBrain()) as unknown as TestEngine;
     await engine.setConfig("embedding_dimensions", "1536");
     await closeBrain();
-    configure();
+    await configure();
     await quiet(async () => {
-      await expect(runAdoptCommand({ apply: true })).rejects.toThrow("can change the vector column width");
-      await closeBrain();
-      configure();
       await getBrain();
-      expect(embeddingRefusal()).toContain("embedding_dimensions is 1536");
+      expect(embeddingRefusal()).toBeNull();
+      await closeBrain();
+      // config.json already says 1536, so the boot keeps the 1280-wide store
+      // and this process now asks for 1536 against a 1280 column.
+      for (const f of [join(home!, "config.json"), join(home!, ".gbrain", "config.json")]) {
+        const cfg = JSON.parse(readFileSync(f, "utf8"));
+        writeFileSync(f, JSON.stringify({ ...cfg, embedding_dimensions: 1536 }));
+      }
+      await configure();
+      process.env.EMBEDDING_DIMENSIONS = "1536";
+      await getBrain();
+      expect(embeddingRefusal()).toContain(`embedding_dimensions is ${DIMS} but this process is configured for 1536`);
+      await closeBrain();
+      process.env.EMBEDDING_DIMENSIONS = "1536";
+      await expect(runAdoptCommand({ apply: true })).rejects.toThrow("can change the vector column width");
     });
   }, 60_000);
 });
