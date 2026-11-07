@@ -1,4 +1,5 @@
 import type { AuditEventView } from "../../../gateway/panel/api-types";
+import { isConsoleWideAuditAction } from "../../../gateway/panel/console-wide";
 
 /**
  * Display helpers for the console: audit actions, sessions and Slack subjects.
@@ -89,9 +90,6 @@ export function actorKindLabel(e: Pick<AuditEventView, "actorKind" | "details">)
   return ACTOR_KIND_LABEL[e.actorKind] ?? e.actorKind;
 }
 
-/** Console-wide panel actions: sign-in, console roles, config reload. */
-const CONSOLE_ACTION = /^panel\.(auth\.|console\.|config\.reload$)/;
-
 /**
  * Who an audit row is about, for the Agent column: the agent, or null for a
  * console-wide event. Older rows recorded console sign-ins under the default
@@ -99,7 +97,7 @@ const CONSOLE_ACTION = /^panel\.(auth\.|console\.|config\.reload$)/;
  */
 export function auditAgent(e: Pick<AuditEventView, "persona" | "action">): string | null {
   if (!e.persona) return null;
-  if (e.persona === "default" && CONSOLE_ACTION.test(e.action)) return null;
+  if (e.persona === "default" && isConsoleWideAuditAction(e.action)) return null;
   return e.persona;
 }
 
