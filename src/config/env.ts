@@ -531,6 +531,13 @@ export const env = {
    */
   autoEvolve: () => opt("SLAUDE_AUTO_EVOLVE", "1") !== "0",
   /**
+   * Mount the deprecated kb_* aliases of the memory_* tools (kb_memoize,
+   * kb_search, list_kbs, ...) on the slaude_kb MCP server, in-process and on
+   * node shims. Set to "0" to offer only the memory_* names. The REST tool
+   * plane accepts the old names either way (a node on an older build).
+   */
+  memoryToolAliases: () => opt("SLAUDE_MEMORY_TOOL_ALIASES", "1") !== "0",
+  /**
    * Raw `SLAUDE_DECISION_CONFIG` JSON (decision gate, phase B); parsed and
    * validated by `parseDecisionConfig`. Gateway-only. Empty when unset.
    */

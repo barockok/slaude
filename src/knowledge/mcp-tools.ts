@@ -11,7 +11,8 @@ import { carriedFields, composePage, readPageRecord, type TypedPageInput } from 
 import { SUPERSEDED_TAG, getPageOrNull, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
 import { conversationSlug, conversationSummarySlug, orderTimeline, type TimelineRow } from "../memory/brain-provider";
-import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
+import { isMemoryToolAlias, kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
+import { env } from "../config/env";
 
 export const KB_MCP_NAME = kbContract.server;
 // Re-export: the limit is defined in the shared contract (single source of truth)
@@ -665,25 +666,28 @@ export function createKbMcp(deps?: BrainToolDeps, opts: { kbs?: () => KbEntry[] 
   const c = kbContract.tools;
   // Each memory tool mounts under its memory_* name and its deprecated kb_*
   // alias: one handler and one schema for both (contract MEMORY_TOOL_ALIASES).
+  // SLAUDE_MEMORY_TOOL_ALIASES=0 mounts only the memory_* names.
+  const aliases = env.memoryToolAliases();
+  const mounted = (t: { name: string }) => aliases || !isMemoryToolAlias(t.name);
   const brainTools = deps && brainEnabled()
     ? [
-        ...[c.memory_think, c.kb_think].map((t) => tool(t.name, t.description, t.schema,
+        ...[c.memory_think, c.kb_think].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
           (a: { question: string }) => brainHandlers.kb_think(a, deps))),
-        ...[c.memory_search, c.kb_search].map((t) => tool(t.name, t.description, t.schema,
+        ...[c.memory_search, c.kb_search].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
           (a: { query: string; limit?: number }) => brainHandlers.kb_search(a, deps))),
-        ...[c.memory_get, c.kb_get_page].map((t) => tool(t.name, t.description, t.schema,
+        ...[c.memory_get, c.kb_get_page].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
           (a: { slug: string }) => brainHandlers.kb_get_page(a, deps))),
-        ...[c.memory_list, c.kb_list_pages].map((t) => tool(t.name, t.description, t.schema,
+        ...[c.memory_list, c.kb_list_pages].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
           (a: { type?: string; tag?: string; limit?: number }) => brainHandlers.kb_list_pages(a, deps))),
-        ...[c.memory_graph, c.kb_graph].map((t) => tool(t.name, t.description, t.schema,
+        ...[c.memory_graph, c.kb_graph].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
           (a: { slug: string }) => brainHandlers.kb_graph(a, deps))),
-        ...[c.memory_save, c.kb_memoize].map((t) => tool(t.name, t.description, t.schema,
+        ...[c.memory_save, c.kb_memoize].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
           (a: KbMemoizeArgs) => brainHandlers.kb_memoize(a, deps))),
         tool(c.memory_about.name, c.memory_about.description, c.memory_about.schema,
           (a: { userId: string }) => brainHandlers.memory_about(a, deps)),
-        ...[c.memory_thread_history, c.kb_thread_history].map((t) => tool(t.name, t.description, t.schema,
+        ...[c.memory_thread_history, c.kb_thread_history].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
           (a: { limit?: number; before?: string }) => brainHandlers.kb_thread_history(a, deps))),
-        ...[c.memory_delete, c.kb_delete_page].map((t) => tool(t.name, t.description, t.schema,
+        ...[c.memory_delete, c.kb_delete_page].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
           (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps))),
       ]
     : [];
@@ -693,8 +697,8 @@ export function createKbMcp(deps?: BrainToolDeps, opts: { kbs?: () => KbEntry[] 
     version: "0.2.0",
     tools: [
       ...brainTools,
-      ...[c.memory_stores, c.list_kbs].map((t) => tool(t.name, t.description, t.schema, () => kbHandlers.list_kbs(kbs()))),
-      ...[c.memory_search_stores, c.search_kbs].map((t) => tool(t.name, t.description, t.schema,
+      ...[c.memory_stores, c.list_kbs].filter(mounted).map((t) => tool(t.name, t.description, t.schema, () => kbHandlers.list_kbs(kbs()))),
+      ...[c.memory_search_stores, c.search_kbs].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
         (a: { query: string; limit?: number }) => kbHandlers.search_kbs(a, kbs()))),
     ],
   });

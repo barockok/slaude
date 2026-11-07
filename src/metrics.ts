@@ -225,7 +225,7 @@ export const m = {
     "/v1 requests the label gate refused with 403 (the job's label is not among the node's labels), labeled by route-table route name.",
   ),
   memoryGatewayFailuresTotal: metrics.counter("slaude_memory_gateway_failures_total", "Node memory calls to the gateway that failed, labeled by kind (<op>:<status>|timeout|network|unsupported). The turn runs without memory."),
-  v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server + tool."),
+  v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server, tool (a memory tool under its memory_* name) and alias (true when called by its deprecated kb_* name)."),
   // Node runtime (spec §6).
   nodeSessionsLive: metrics.gauge("slaude_node_sessions_live", "Warm SDK Query sessions held by this node."),
   nodeAuthPaused: metrics.gauge(

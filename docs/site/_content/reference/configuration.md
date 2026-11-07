@@ -499,11 +499,12 @@ Gateway-side limits of the [MCP bridge](../deploy/mcp-bridge.md) (gateway role o
 
 ### Brain (knowledge base and memory) <a id="brain"></a>
 
-The brain is the gbrain engine behind the `kb_*` tools and episodic memory (`src/knowledge/`). In the gateway topology it runs on gateways only; nodes reach it through `/v1/tools/kb/*` and `/v1/tools/memory/*`.
+The brain is the gbrain engine behind the memory tools (`memory_*`, with `kb_*` aliases) and episodic memory (`src/knowledge/`). In the gateway topology it runs on gateways only; nodes reach it through `/v1/tools/kb/*` and `/v1/tools/memory/*`.
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `SLAUDE_BRAIN_DISABLED` | No | unset | `1` turns the brain off: no `kb_*` tools and the flat sqlite memory store. |
+| `SLAUDE_BRAIN_DISABLED` | No | unset | `1` turns the brain off: no memory page tools (only `memory_stores` / `memory_search_stores`) and the flat sqlite memory store. |
+| `SLAUDE_MEMORY_TOOL_ALIASES` | No | `1` | `0` stops mounting the deprecated `kb_*` aliases of the memory tools (`kb_memoize`, `kb_search`, `list_kbs`, ...) on the `slaude_kb` MCP server, in-process and on nodes, so the model sees only the `memory_*` names (set it on gateways and nodes alike). Leave it on while sessions started before the rename may resume: they call the old names. The REST tool plane (`/v1/tools/kb/<name>`) accepts the old names either way. |
 | `SLAUDE_BRAIN_ENGINE` | Gateway topology | `pglite` | `pglite` (embedded, single writer, in `SLAUDE_BRAIN_HOME`) or `postgres`. A gateway refuses to boot on `pglite`: it is single-writer and clears locks it finds at boot, so replicas on the shared volume would corrupt it. |
 | `SLAUDE_BRAIN_DATABASE_URL` | With `postgres` | none | **Gateway only.** The brain's own database (the `vector`, `pg_trgm` and `pgcrypto` extensions; see `deploy/postgres-init/10-brain-database.sql`). Kept separate from slaude's schema. |
 | `SLAUDE_BRAIN_HOME` | No | `$SLAUDE_HOME/brain` | The brain's home: gbrain's `config.json` and, on `pglite`, its database. |

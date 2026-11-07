@@ -27,6 +27,14 @@ import {
 } from "../../src/agent/profile-write-guard";
 import { builtinGoverning } from "../../src/soul/builtin";
 import { wakeAllows, wakeDeniedToolIds } from "../../src/proactive/wake-guard";
+import { shimMountedTools } from "../../src/node/shims";
+import { skillsContract } from "../../src/tools/contracts/skills";
+import { mcpMountedTools } from "../../src/tools/contracts/types";
+import { executeToolCall } from "../../src/gateway/api/tools";
+import type { JobClaims } from "../../src/gateway/api/auth";
+import { metrics } from "../../src/metrics";
+
+const restClaims = { tenant: "default", persona: "default", session: "S1", team: "T1", channel: "C1", thread: "1.0", initiator: "U1", scope: "turn", runAs: "agent", exp: 0 } as JobClaims;
 
 const PAIRS = Object.entries(MEMORY_TOOL_ALIASES) as Array<[keyof typeof MEMORY_TOOL_ALIASES, string]>;
 const tools = kbContract.tools as Record<string, { name: string; description: string; schema: unknown }>;
@@ -229,5 +237,85 @@ describe("allowlists name both memory names", () => {
       expect(wakeAllows("kb", alias)).toBe(true);
     }
     expect(wakeDeniedToolIds().filter((id) => id.startsWith("mcp__slaude_kb__"))).toEqual([]);
+  });
+});
+
+describe("SLAUDE_MEMORY_TOOL_ALIASES", () => {
+  const prevAliases = process.env.SLAUDE_MEMORY_TOOL_ALIASES;
+  const prevBrain = process.env.SLAUDE_BRAIN_DISABLED;
+  afterEach(() => {
+    if (prevAliases === undefined) delete process.env.SLAUDE_MEMORY_TOOL_ALIASES;
+    else process.env.SLAUDE_MEMORY_TOOL_ALIASES = prevAliases;
+    if (prevBrain === undefined) delete process.env.SLAUDE_BRAIN_DISABLED;
+    else process.env.SLAUDE_BRAIN_DISABLED = prevBrain;
+  });
+
+  const deps: BrainToolDeps = {
+    scope: () => ({ clientId: "c", sourceId: "agent-test", allowedSources: ["agent-test"] }) as any,
+    gate: () => ({ userId: "U1", lockedUser: null, channelTrust: "trusted", isManager: true, agentId: "A", threadKey: "C1:1.0" }) as any,
+    managers: () => ["U1"],
+    requestApproval: async () => ({ approved: true, by: "U1" }) as any,
+  };
+  const MEMORY_NAMES = [...PAIRS.map(([m]) => m), "memory_about"].sort();
+  const ALL_NAMES = [...PAIRS.flat(), "memory_about"].sort();
+
+  async function listed(): Promise<string[]> {
+    const client = await connect(createKbMcp(deps));
+    try {
+      return (await client.listTools()).tools.map((t) => t.name).sort();
+    } finally {
+      await client.close();
+    }
+  }
+
+  test("default (unset) and 1: both names are mounted, in-process and on node shims", async () => {
+    delete process.env.SLAUDE_BRAIN_DISABLED;
+    for (const v of [undefined, "1"]) {
+      if (v === undefined) delete process.env.SLAUDE_MEMORY_TOOL_ALIASES;
+      else process.env.SLAUDE_MEMORY_TOOL_ALIASES = v;
+      expect(await listed()).toEqual(ALL_NAMES);
+      expect(shimMountedTools(kbContract).map((t) => t.name).sort()).toEqual(ALL_NAMES);
+    }
+  });
+
+  test("0: only the memory_* names are mounted and listed, in-process and on node shims", async () => {
+    delete process.env.SLAUDE_BRAIN_DISABLED;
+    process.env.SLAUDE_MEMORY_TOOL_ALIASES = "0";
+    expect(await listed()).toEqual(MEMORY_NAMES);
+    expect(shimMountedTools(kbContract).map((t) => t.name).sort()).toEqual(MEMORY_NAMES);
+    // Other servers' shims are untouched by the flag.
+    expect(shimMountedTools(skillsContract).length).toBe(mcpMountedTools(skillsContract).length);
+    process.env.SLAUDE_BRAIN_DISABLED = "1";
+    expect(await listed()).toEqual(["memory_search_stores", "memory_stores"]);
+  });
+
+  test("0: the REST tool plane still accepts an old name", async () => {
+    process.env.SLAUDE_MEMORY_TOOL_ALIASES = "0";
+    const viaOld = await executeToolCall("kb", "list_kbs", {}, restClaims, {} as never);
+    const viaNew = await executeToolCall("kb", "memory_stores", {}, restClaims, {} as never);
+    expect(viaOld.status).toBe(200);
+    expect(await viaOld.json()).toEqual(await viaNew.json());
+  });
+});
+
+describe("slaude_v1_tool_calls_total labels", () => {
+  test("a memory tool counts under its memory_* name, with alias true for the old name", async () => {
+    // Labels render sorted by name: alias, server, tool.
+    const count = (tool: string, alias: string) => {
+      const line = metrics.render().split("\n").find((l) => l.startsWith(`slaude_v1_tool_calls_total{alias="${alias}",server="kb",tool="${tool}"} `));
+      return line ? Number(line.split(" ").pop()) : 0;
+    };
+    const before = { old: count("memory_search_stores", "true"), now: count("memory_search_stores", "false") };
+    await executeToolCall("kb", "search_kbs", { query: "x" }, restClaims, {} as never);
+    await executeToolCall("kb", "memory_search_stores", { query: "x" }, restClaims, {} as never);
+    await executeToolCall("kb", "memory_search_stores", { query: "x" }, restClaims, {} as never);
+    expect(count("memory_search_stores", "true")).toBe(before.old + 1);
+    expect(count("memory_search_stores", "false")).toBe(before.now + 2);
+    expect(metrics.render()).not.toMatch(/slaude_v1_tool_calls_total\{[^}]*tool="search_kbs"/);
+  });
+
+  test("other servers carry alias=false", async () => {
+    await executeToolCall("skills", "list_skills", {}, restClaims, {} as never).catch(() => undefined);
+    expect(metrics.render()).toContain('slaude_v1_tool_calls_total{alias="false",server="skills",tool="list_skills"}');
   });
 });

@@ -48,6 +48,11 @@ export function canonicalMemoryTool(name: string): string {
   return Object.hasOwn(ALIAS_TO_MEMORY, name) ? ALIAS_TO_MEMORY[name]! : name;
 }
 
+/** True for a deprecated alias name (kb_memoize, list_kbs, ...). */
+export function isMemoryToolAlias(name: string): boolean {
+  return Object.hasOwn(ALIAS_TO_MEMORY, name);
+}
+
 /** The other name of an aliased memory tool (memory_save <-> kb_memoize), or
  *  null when the name has no twin. */
 export function memoryToolTwin(name: string): string | null {
