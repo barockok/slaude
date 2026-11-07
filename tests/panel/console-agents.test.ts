@@ -14,7 +14,7 @@ import { SoulDataSchema } from "../../src/soul/data";
 import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
 import { __setGrantsReader, roleOf } from "../../src/access/role";
-import type { AgentDetailResponse, AgentsResponse, ConsoleGrantView, CreateGrantResponse } from "../../src/gateway/panel/api-types";
+import type { AgentDetailResponse, AgentsResponse, AllGrantsResponse, ConsoleGrantView, CreateGrantResponse } from "../../src/gateway/panel/api-types";
 
 const SECRET = "t".repeat(32);
 const cookie = (email: string) => `${AT_COOKIE}=${mintSession({ sub: "s", email }, "at", { secret: SECRET })}`;
@@ -96,6 +96,7 @@ describe("authentication", () => {
     expect((await call("GET", "/panel/api/agents/scout")).status).toBe(401);
     expect((await call("POST", "/panel/api/agents/scout/grants", undefined, { subjectKind: "user", subjectId: "UNEW", role: "member" })).status).toBe(401);
     expect((await call("DELETE", "/panel/api/agents/scout/grants/x")).status).toBe(401);
+    expect((await call("GET", "/panel/api/grants")).status).toBe(401);
   });
 
   test("a signed-in identity outside the allowlist is refused", async () => {
@@ -247,5 +248,29 @@ describe("DELETE /panel/api/agents/:name/grants/:id", () => {
     expect((await call("DELETE", "/panel/api/agents/scout/grants/nope", superadmin)).status).toBe(404);
     expect((await call("DELETE", `/panel/api/agents/scout/grants/${other.id}`, superadmin)).status).toBe(404);
     expect((await AgentGrants.listAll()).map((x: ConsoleGrantView | AgentGrants.AgentGrantRow) => x.id)).toEqual([other.id]);
+  });
+});
+
+describe("GET /panel/api/grants", () => {
+  test("an operator gets every unexpired console grant across agents, with its persona", async () => {
+    const now = Date.now();
+    const a = await AgentGrants.create({ persona: "scout", subjectKind: "user", subjectId: "UNEW", role: "approver", createdBy: "lead@example.com", note: "cover" });
+    const b = await AgentGrants.create({ persona: "default", subjectKind: "channel", subjectId: "CTEAM", role: "member", createdBy: "lead@example.com", expiresAt: now + 60_000 });
+    // Expired: stored, but not listed.
+    await AgentGrants.create({ persona: "scout", subjectKind: "user", subjectId: "UOLD", role: "member", createdBy: "lead@example.com", expiresAt: now - 1_000 }, now - 60_000);
+    const r = await call("GET", "/panel/api/grants", operator);
+    expect(r.status).toBe(200);
+    const grants = (r.body as AllGrantsResponse).grants;
+    expect(grants.map((g) => g.id).sort()).toEqual([a.id, b.id].sort());
+    expect(grants.find((g) => g.id === a.id)).toEqual({
+      source: "console", id: a.id, persona: "scout", subjectKind: "user", subjectId: "UNEW", role: "approver",
+      deny: false, dmOnly: false, createdBy: "lead@example.com", createdAt: a.createdAt, expiresAt: null, note: "cover",
+    });
+    expect(grants.find((g) => g.id === b.id)).toMatchObject({ persona: "default", subjectKind: "channel", expiresAt: now + 60_000 });
+  });
+
+  test("an empty store is an empty list; only GET is allowed", async () => {
+    expect((await call("GET", "/panel/api/grants", operator)).body).toEqual({ grants: [] });
+    expect((await call("POST", "/panel/api/grants", superadmin, {})).status).toBe(405);
   });
 });

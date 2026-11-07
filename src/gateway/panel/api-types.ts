@@ -98,6 +98,16 @@ export interface AgentGrantsResponse {
   grants: GrantView[];
 }
 
+/** A stored console grant with the agent (persona) it is on. */
+export interface PersonaConsoleGrantView extends ConsoleGrantView {
+  persona: string;
+}
+
+/** GET /panel/api/grants: every unexpired console grant across agents, by persona then age. */
+export interface AllGrantsResponse {
+  grants: PersonaConsoleGrantView[];
+}
+
 /** Body of POST /panel/api/agents/:name/grants. */
 export interface CreateGrantRequest {
   subjectKind: SubjectKind;

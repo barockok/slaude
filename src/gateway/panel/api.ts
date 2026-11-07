@@ -37,6 +37,7 @@
  *   GET    /panel/api/agents/:name/grants          effective grants (soul and console)
  *   POST   /panel/api/agents/:name/grants          store a console grant (superadmin)
  *   DELETE /panel/api/agents/:name/grants/:id      revoke a console grant (superadmin)
+ *   GET    /panel/api/grants                       every unexpired console grant, with its persona
  *   GET    /panel/api/audit?persona&action&actor&session&since&until&cursor&limit
  *   GET    /panel/api/sessions/:id/audit?cursor&limit
  *   GET    /panel/api/memory/stores                memory stores (brain sources) with page counts;
@@ -79,7 +80,7 @@ import { oauthKey } from "../../agent/mcp-oauth/store";
 import * as AgentGrants from "../../db/agent-grants";
 import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
-import { agentDetail, agentNames, agentSummaries, consoleGrantView, environmentsView, grantViews, isAgent } from "./console-views";
+import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
@@ -97,6 +98,7 @@ import type {
   AuditPageResponse,
   AgentDetailResponse,
   AgentGrantsResponse,
+  AllGrantsResponse,
   AgentsResponse,
   CreateGrantResponse,
   RevokeGrantResponse,
@@ -608,6 +610,13 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           details: { ...grantDetails(row), operatorRole: role },
         });
         return json(200, { ok: true } satisfies RevokeGrantResponse);
+      }
+
+      // GET /panel/api/grants: every console grant across agents, for the
+      // Access page. Read-only, any operator.
+      if (seg.length === 3 && seg[2] === "grants") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        return json(200, { grants: await allConsoleGrants() } satisfies AllGrantsResponse);
       }
 
       // GET /panel/api/audit: the durable audit trail, newest first. Read-only,

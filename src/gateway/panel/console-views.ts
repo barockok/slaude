@@ -16,6 +16,7 @@ import type {
   GrantView,
   MandateView,
   NodePoolView,
+  PersonaConsoleGrantView,
   SoulGrantView,
 } from "./api-types";
 
@@ -43,6 +44,13 @@ export function consoleGrantView(g: AgentGrants.AgentGrantRow): ConsoleGrantView
     expiresAt: g.expiresAt,
     note: g.note,
   };
+}
+
+/** Every unexpired console grant across agents (tenant `default`), with its persona. */
+export async function allConsoleGrants(now: number = Date.now()): Promise<PersonaConsoleGrantView[]> {
+  return (await AgentGrants.listAll("default"))
+    .filter((g) => g.expiresAt === null || g.expiresAt > now)
+    .map((g) => ({ ...consoleGrantView(g), persona: g.persona }));
 }
 
 /** Effective grants: soul-derived, then the stored unexpired console grants. */
