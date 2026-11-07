@@ -36,6 +36,10 @@ const ACTION_LABELS: Record<string, string> = {
   "panel.persona.onboard": "Agent onboarded from console",
   "panel.persona.override": "Agent override refused",
   "panel.config.reload": "Agent config reloaded",
+  "panel.auth.login": "Signed in to console",
+  "panel.auth.logout": "Signed out of console",
+  "panel.auth.denied": "Console sign-in denied",
+  "panel.console.roles.read": "Console roles viewed",
 };
 
 /** A readable sentence-case label for a dotted audit action. */
@@ -68,6 +72,43 @@ export const ACTOR_KIND_LABEL: Record<string, string> = {
   agent: "Agent",
   system: "System",
 };
+
+const ROLE_LABEL: Record<string, string> = { superadmin: "Superadmin", operator: "Operator" };
+
+/**
+ * The actor's kind as the Actor column says it: an operator's console role
+ * when the row records one (details.operatorRole, or details.role written by
+ * the panel). A grant row's details.role is the granted role, not the
+ * operator's, so only a console role name counts.
+ */
+export function actorKindLabel(e: Pick<AuditEventView, "actorKind" | "details">): string {
+  if (e.actorKind === "operator") {
+    const d = e.details ?? {};
+    for (const v of [d.operatorRole, d.role]) if (typeof v === "string" && ROLE_LABEL[v]) return ROLE_LABEL[v]!;
+  }
+  return ACTOR_KIND_LABEL[e.actorKind] ?? e.actorKind;
+}
+
+/** Console-wide panel actions: sign-in, console roles, config reload. */
+const CONSOLE_ACTION = /^panel\.(auth\.|console\.|config\.reload$)/;
+
+/**
+ * Who an audit row is about, for the Agent column: the agent, or null for a
+ * console-wide event. Older rows recorded console sign-ins under the default
+ * agent; those read as console-wide too.
+ */
+export function auditAgent(e: Pick<AuditEventView, "persona" | "action">): string | null {
+  if (!e.persona) return null;
+  if (e.persona === "default" && CONSOLE_ACTION.test(e.action)) return null;
+  return e.persona;
+}
+
+/** The Target column: `kind id`, with a channel's `#name` when the gateway resolved it. */
+export function auditTarget(e: Pick<AuditEventView, "targetKind" | "targetId" | "targetLabel">): string | null {
+  if (!e.targetId) return null;
+  const id = e.targetLabel ?? e.targetId;
+  return e.targetKind ? `${e.targetKind.replace(/_/g, " ")} ${id}` : id;
+}
 
 /** Build "/audit?persona=...&action=..." with only the set parameters. */
 export function auditHref(params: Record<string, string | null | undefined>): string {

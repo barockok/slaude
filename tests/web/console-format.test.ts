@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AuditEventView } from "../../src/gateway/panel/api-types";
 import {
-  ACTOR_KIND_LABEL, PERMISSION_MODE_LABEL, absoluteTime, actionLabel, auditHref, auditLinkFor, clockTime, decisionLabel,
+  ACTOR_KIND_LABEL, PERMISSION_MODE_LABEL, absoluteTime, actionLabel, actorKindLabel, auditAgent, auditTarget, auditHref, auditLinkFor, clockTime, decisionLabel,
   decisionTone, duration, expiryLabel, relativeTime, sessionPath, sessionStatus, shortDate,
 } from "../../src/web/console/lib/format";
 
@@ -114,5 +114,30 @@ describe("durations and clock", () => {
   });
   test("clockTime is a 24-hour time of day", () => {
     expect(clockTime(NOW)).toMatch(/\d{2}\D\d{2}\D\d{2}/);
+  });
+});
+
+describe("audit labels", () => {
+  test("an operator row says the console role it records", () => {
+    expect(actorKindLabel({ actorKind: "operator", details: { role: "superadmin" } })).toBe("Superadmin");
+    expect(actorKindLabel({ actorKind: "operator", details: { operatorRole: "operator" } })).toBe("Operator");
+    expect(actorKindLabel({ actorKind: "operator", details: {} })).toBe("Operator");
+    // A grant row: details.role is the granted role; the operator's is operatorRole.
+    expect(actorKindLabel({ actorKind: "operator", details: { role: "approver", operatorRole: "superadmin" } })).toBe("Superadmin");
+    expect(actorKindLabel({ actorKind: "operator", details: { role: "approver" } })).toBe("Operator");
+    expect(actorKindLabel({ actorKind: "slack_user", details: { role: "superadmin" } })).toBe("Slack user");
+  });
+  test("console-wide rows belong to no agent, older default-agent sign-ins included", () => {
+    expect(auditAgent({ persona: null, action: "panel.auth.login" })).toBeNull();
+    expect(auditAgent({ persona: "default", action: "panel.auth.login" })).toBeNull();
+    expect(auditAgent({ persona: "default", action: "panel.config.reload" })).toBeNull();
+    expect(auditAgent({ persona: "default", action: "panel.console.roles.read" })).toBeNull();
+    expect(auditAgent({ persona: "default", action: "grant.created" })).toBe("default");
+    expect(auditAgent({ persona: "scout", action: "panel.auth.login" })).toBe("scout");
+  });
+  test("a channel target shows its name when resolved", () => {
+    expect(auditTarget({ targetKind: "channel", targetId: "CTEAM", targetLabel: "#team" })).toBe("channel #team");
+    expect(auditTarget({ targetKind: "mcp_server", targetId: "issue-tracker" })).toBe("mcp server issue-tracker");
+    expect(auditTarget({ targetKind: null, targetId: null })).toBeNull();
   });
 });

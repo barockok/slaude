@@ -8,16 +8,27 @@ import { audit, type AuditDeps, type AuditInput } from "./index";
  *
  *  - persona: callers pass it when they know it (gate rows carry
  *    `personaName`); otherwise it is read from the session row (persona_id
- *    only); anything unknown is recorded as "default".
+ *    only); anything unknown is recorded as "default", except a
+ *    `consoleWide` event, which belongs to no agent and records null.
  *  - in-flight tracking, so tests (and a graceful shutdown) can wait for the
  *    writes with `flushAudits()` without the decision path ever awaiting them.
  */
-export type EmitInput = Omit<AuditInput, "persona"> & { persona?: string | null };
+export type EmitInput = Omit<AuditInput, "persona"> & {
+  persona?: string | null;
+  /** About the deployment, not one agent (console sign-in, console roles,
+   *  config reload): recorded with persona null, never defaulted. */
+  consoleWide?: boolean;
+};
 
 const inflight = new Set<Promise<void>>();
 
 export function emitAudit(input: EmitInput, deps?: AuditDeps): void {
   const p: Promise<void> = (async () => {
+    const { consoleWide, ...row } = input;
+    if (consoleWide) {
+      await audit({ ...row, persona: null }, deps);
+      return;
+    }
     let persona = input.persona;
     if (!persona && input.sessionId) {
       try {
@@ -26,7 +37,7 @@ export function emitAudit(input: EmitInput, deps?: AuditDeps): void {
         persona = null;
       }
     }
-    await audit({ ...input, persona: persona || "default" }, deps);
+    await audit({ ...row, persona: persona || "default" }, deps);
   })().catch(() => {});
   inflight.add(p);
   void p.finally(() => inflight.delete(p));

@@ -27,6 +27,11 @@ export interface AuditRecord {
 
 const SESSION_ACTIONS = new Set(["chat", "lock", "release", "force-release"]);
 
+/** Panel actions about the console or the deployment, not one agent. */
+export function isConsoleWideAction(action: string): boolean {
+  return action.startsWith("auth.") || action.startsWith("console.") || action === "reload";
+}
+
 /** Panel action → platform action, target and (for refusals) decision. Pure. */
 export function panelAuditInput(rec: AuditRecord): EmitInput {
   const detail = rec.detail
@@ -70,9 +75,13 @@ export function panelAuditInput(rec: AuditRecord): EmitInput {
     if (rec.session) [targetKind, targetId] = ["session", rec.session];
     else if (persona) [targetKind, targetId] = ["persona", persona];
   }
+  // Sign-in, console roles and a config reload belong to no agent: persona
+  // null, never the default agent the writer would otherwise assume.
+  const consoleWide = !persona && !rec.session && isConsoleWideAction(rec.action);
   return {
     ...(tenantId ? { tenantId } : {}),
     persona,
+    ...(consoleWide ? { consoleWide: true } : {}),
     actorKind: "operator",
     actorId: rec.operator,
     action,

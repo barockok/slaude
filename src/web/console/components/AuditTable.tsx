@@ -1,13 +1,8 @@
 import type { ReactNode } from "react";
 import type { AuditEventView } from "../../../gateway/panel/api-types";
 import { Badge, Table, type Column } from "../../ui";
-import { ACTOR_KIND_LABEL, actionLabel, decisionLabel, decisionTone } from "../lib/format";
+import { actionLabel, actorKindLabel, auditAgent, auditTarget, decisionLabel, decisionTone } from "../lib/format";
 import { TimeAgo } from "../../shared/TimeAgo";
-
-function target(e: AuditEventView): string | null {
-  if (!e.targetId) return null;
-  return e.targetKind ? `${e.targetKind.replace(/_/g, " ")} ${e.targetId}` : e.targetId;
-}
 
 const COLUMNS: Column<AuditEventView>[] = [
   { key: "at", header: "Time", width: "8.5rem", render: (e) => <TimeAgo at={e.at} />, skeleton: 0.6 },
@@ -19,7 +14,7 @@ const COLUMNS: Column<AuditEventView>[] = [
     render: (e) => (
       <span className="sl-stack">
         <span className="sl-mono sl-truncate">{e.actorId}</span>
-        <span className="sl-caption">{ACTOR_KIND_LABEL[e.actorKind] ?? e.actorKind}</span>
+        <span className="sl-caption">{actorKindLabel(e)}</span>
       </span>
     ),
   },
@@ -40,7 +35,7 @@ const COLUMNS: Column<AuditEventView>[] = [
     width: "20%",
     skeleton: 0.6,
     render: (e) => {
-      const t = target(e);
+      const t = auditTarget(e);
       return t ? <span className="sl-mono sl-truncate">{t}</span> : null;
     },
   },
@@ -58,7 +53,7 @@ const AGENT_COLUMN: Column<AuditEventView> = {
   header: "Agent",
   width: "9%",
   skeleton: 0.6,
-  render: (e) => e.persona ?? null,
+  render: (e) => auditAgent(e) ?? <span className="sl-faint">Console</span>,
 };
 
 export interface AuditTableProps {

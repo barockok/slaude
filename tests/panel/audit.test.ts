@@ -43,6 +43,24 @@ describe("panel audit", () => {
     expect("session" in rec).toBe(false);
   });
 
+  it("console-wide events (sign-in, console roles, reload) are recorded with no agent", async () => {
+    await capture((sink) => {
+      audit({ action: "auth.login", operator: "alice@example.com" }, sink);
+      audit({ action: "console.roles.read", operator: "bob@example.com", outcome: "denied" }, sink);
+      audit({ action: "reload", operator: "alice@example.com", role: "superadmin", detail: { tenantId: "default" } }, sink);
+      audit({ action: "control.stop", operator: "alice@example.com", session: "S-9" }, sink);
+    });
+    const rows = (await AuditEvents.list({})).items;
+    const by = (a: string) => rows.find((r) => r.action === a)!;
+    expect(by("panel.auth.login").persona).toBeNull();
+    expect(by("panel.console.roles.read").persona).toBeNull();
+    expect(by("panel.config.reload").persona).toBeNull();
+    // A session control belongs to the session's agent (no row: the default).
+    expect(by("panel.session.control").persona).toBe("default");
+    expect(panelAuditInput({ action: "auth.login", operator: "o" }).consoleWide).toBe(true);
+    expect(panelAuditInput({ action: "persona.create", operator: "o", detail: { persona: "helper" } }).consoleWide).toBeUndefined();
+  });
+
   it("a denied outcome is a refusal and carries its detail", async () => {
     const [line] = await capture((sink) =>
       audit(
