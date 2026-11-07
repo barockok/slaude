@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { ConsoleGrantView, CreateGrantRequest, CreateGrantResponse, GrantRole, SubjectKind } from "../../../../gateway/panel/api-types";
 import { ApiError } from "../../../lib/api";
 import { Button, Dialog, Field, Input, Select } from "../../../ui";
@@ -52,6 +52,10 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+  const idRef = useRef<HTMLInputElement>(null);
+  const roleRef = useRef<HTMLSelectElement>(null);
+  const expiresRef = useRef<HTMLInputElement>(null);
+  const fieldRef = { subjectId: idRef, role: roleRef, expires: expiresRef } as const;
 
   useEffect(() => {
     if (!open) return;
@@ -85,7 +89,11 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitted(true);
-    if (idErr || expErr) return;
+    // Land on the first field that needs fixing.
+    if (idErr || expErr) {
+      (idErr ? idRef : expiresRef).current?.focus();
+      return;
+    }
     const body: CreateGrantRequest = {
       subjectKind: f.subjectKind,
       subjectId: f.subjectId.trim(),
@@ -103,6 +111,8 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
     } catch (err) {
       const msg = err instanceof ApiError && err.status === 403 ? "Only a superadmin can change grants." : (err as Error).message;
       setServerError(msg);
+      const field = serverField(msg);
+      if (field) fieldRef[field].current?.focus();
     } finally {
       setBusy(false);
     }
@@ -149,6 +159,7 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
           >
             {({ id, describedBy, invalid }) => (
               <Input
+                ref={idRef}
                 id={id}
                 aria-describedby={describedBy}
                 invalid={invalid}
@@ -170,7 +181,7 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
           error={srvField === "role" ? serverError : null}
         >
           {({ id, describedBy, invalid }) => (
-            <Select id={id} aria-describedby={describedBy} invalid={invalid} value={f.role} onChange={(e) => set("role", e.target.value as GrantRole)}>
+            <Select ref={roleRef} id={id} aria-describedby={describedBy} invalid={invalid} value={f.role} onChange={(e) => set("role", e.target.value as GrantRole)}>
               {rolesFor(f.subjectKind).map((r) => (
                 <option key={r} value={r}>
                   {ROLE_LABEL[r]}
@@ -206,6 +217,7 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
         >
           {({ id, describedBy, invalid }) => (
             <Input
+              ref={expiresRef}
               id={id}
               type="datetime-local"
               aria-describedby={describedBy}

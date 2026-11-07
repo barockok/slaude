@@ -52,7 +52,7 @@ function HeaderSkeleton() {
 }
 
 export function AgentDetailPage({ name, tab }: { name: string; tab: AgentTab }) {
-  const { data, loading, error, reload } = useApi<AgentDetailResponse>(`/api/agents/${encodeURIComponent(name)}`);
+  const { data, error, reload } = useApi<AgentDetailResponse>(`/api/agents/${encodeURIComponent(name)}`);
 
   const back = (
     <Link to="/agents" className="sl-back">
@@ -86,9 +86,9 @@ export function AgentDetailPage({ name, tab }: { name: string; tab: AgentTab }) 
           label="Agent sections"
           tabs={AGENT_TABS.map((t) => ({ value: t, label: TAB_LABEL[t] }))}
           value={tab}
-          onChange={(t) => navigate(agentPath(name, t), { replace: true })}
+          onChange={(t) => navigate(agentPath(name, t), { inPage: true })}
         >
-          {!data || (loading && !data) ? (
+          {!data ? (
             <HeaderSkeleton />
           ) : tab === "overview" ? (
             <IdentityCard agent={data} />

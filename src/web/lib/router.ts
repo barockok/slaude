@@ -27,11 +27,16 @@ function subscribe(cb: () => void): () => void {
   return () => void (listeners.delete(cb), window.removeEventListener("popstate", cb));
 }
 
-export function navigate(to: string, opts: { replace?: boolean } = {}): void {
+/**
+ * Go to an in-app path. `replace` swaps the current history entry; `inPage`
+ * pushes an entry (Back returns to it) but stays put, for a view within the
+ * same page such as a tab, keeping scroll and focus where they are.
+ */
+export function navigate(to: string, opts: { replace?: boolean; inPage?: boolean } = {}): void {
   const url = href(to);
   history[opts.replace ? "replaceState" : "pushState"](null, "", url);
   for (const cb of listeners) cb();
-  if (opts.replace) return; // a new page: start at the top, land screen readers on the content
+  if (opts.replace || opts.inPage) return; // a new page: start at the top, land screen readers on the content
   window.scrollTo(0, 0);
   requestAnimationFrame(() => document.getElementById("sl-main")?.focus({ preventScroll: true }));
 }

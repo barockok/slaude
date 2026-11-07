@@ -13,7 +13,7 @@
 import type {
   AgentSummary, ConsoleGrantView, CreateGrantRequest, GrantView,
 } from "../../../gateway/panel/api-types";
-import { createFixtures, type ConsoleFixtures } from "./fixtures";
+import { allGrantsOf, createFixtures, type ConsoleFixtures } from "./fixtures";
 
 const ID_RE = { user: /^[UW][A-Z0-9]+$/, channel: /^[CGD][A-Z0-9]+$/, workspace: /^T[A-Z0-9]+$/ } as const;
 const ID_SHAPE = {
@@ -95,6 +95,7 @@ export function installStub(): void {
       });
     }
     if (path === "/api/console-roles") return json(200, fx.roles);
+    if (path === "/api/grants") return method === "GET" ? json(200, allGrantsOf(fx)) : json(405, { error: "method not allowed" });
     if (path === "/api/audit") {
       let items = fx.audit;
       const persona = query.get("persona"), action = query.get("action"), actor = query.get("actor"), session = query.get("session");

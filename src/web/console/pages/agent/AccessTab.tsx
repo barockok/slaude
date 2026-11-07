@@ -20,6 +20,8 @@ function describe(g: GrantView): string {
   return `the ${what} for ${SUBJECT_LABEL[g.subjectKind].toLowerCase()} ${g.subjectId}`;
 }
 
+const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
 function columns(canEdit: boolean, onRevoke: (g: ConsoleGrantView) => void): Column<GrantView>[] {
   const cols: Column<GrantView>[] = [
     {
@@ -115,6 +117,13 @@ export function AccessTab({ agent, onChanged }: { agent: AgentDetailResponse; on
       setRevoking(null);
       onChanged();
     } catch (e) {
+      if (e instanceof ApiError && e.status === 404) {
+        // Someone else revoked it first (or it expired): the goal is met.
+        toast({ tone: "neutral", title: "Already revoked", description: `${capitalize(describe(revoking))} was already gone.` });
+        setRevoking(null);
+        onChanged();
+        return;
+      }
       const msg = e instanceof ApiError && e.status === 403 ? "Only a superadmin can change grants." : (e as Error).message;
       toast({ tone: "danger", title: "Could not revoke the grant", description: msg });
     } finally {

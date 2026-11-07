@@ -4,7 +4,7 @@
  * can import it. Times are relative to `now` so "5 min ago" stays true.
  */
 import type {
-  AgentDetailResponse, AuditEventView, ConsoleGrantView, ConsoleRolesResponse, GrantView, MandateView,
+  AgentDetailResponse, AllGrantsResponse, AuditEventView, ConsoleGrantView, ConsoleRolesResponse, GrantView, MandateView,
 } from "../../../gateway/panel/api-types";
 
 const MIN = 60_000;
@@ -191,4 +191,17 @@ function auditTrail(now: number): AuditEventView[] {
     });
   }
   return out;
+}
+
+/** GET /panel/api/grants over the fixtures: unexpired console grants by persona, then age. */
+export function allGrantsOf(fx: ConsoleFixtures, now: number = Date.now()): AllGrantsResponse {
+  const grants = Object.values(fx.agents)
+    .sort((a, b) => (a.name < b.name ? -1 : 1))
+    .flatMap((a) =>
+      a.grants
+        .filter((g): g is ConsoleGrantView => g.source === "console" && (g.expiresAt === null || g.expiresAt > now))
+        .sort((x, y) => x.createdAt - y.createdAt)
+        .map((g) => ({ ...g, persona: a.name })),
+    );
+  return { grants };
 }

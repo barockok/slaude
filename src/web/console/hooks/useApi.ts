@@ -31,6 +31,7 @@ export function useApi<T>(path: string | null): ApiState<T> {
     setError(null);
     api.get<T>(path, { signal: ctl.signal }).then(
       (d) => {
+        if (ctl.signal.aborted) return;
         setData(d);
         setLoading(false);
       },
