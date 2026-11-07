@@ -86,14 +86,29 @@ that a background writer touches next.
   inactive: `put_page` writes unembedded, sync passes `no_embed`, the embed
   sweep skips.
 - **Probe before refusing.** The record alone is not proof (see the upgrade
-  case below). The boot re-embeds up to 5 stored chunk texts with the gateway
+  case below). The boot re-embeds up to 6 stored chunk texts with the gateway
   and compares them with their stored vectors, plain and title-wrapped
-  (gbrain's default search mode embeds chunks behind a title prefix). All at
-  cosine 0.99 or above, or no stored vector at all, adopts the configured name
-  (`[brain] embedding record adopted: <old> -> <new> (probe ok)`). A lower
-  similarity refuses. The probe is bounded (20 s, 5 samples, 50 pages); if it
-  fails or times out the boot does not refuse: embedding stays on with a
-  warning, because refusing a healthy brain is worse than a later check.
+  (gbrain's default search mode embeds chunks behind a title prefix). A brain
+  can be mixed (an older model on older pages, a same-width model on newer
+  ones), so the samples are spread: at most one chunk per page, pages taken
+  round-robin from every source and from both ends of the update history
+  (oldest and newest first) plus slug order. Every sample must reach cosine
+  0.99; one miss refuses. Chunk labels that already name two or more models
+  other than gbrain's default also refuse: a mixed brain is never adopted
+  automatically. A full match, or no stored vector at all, adopts the
+  configured name, logging the sample count and the minimum cosine
+  (`[brain] embedding record adopted: <old> -> <new> (probe ok: 6 sample(s), min cosine 0.9998)`).
+  The probe runs off the boot path: the boot does not wait for the provider,
+  and embedding stays on while it runs (the process embedded with this same
+  config before this guard existed); a mismatch refuses as soon as it is
+  known. `closeBrain` waits only for the probe's short database reads (a
+  close under an in-flight PGLite query is not safe) and never for the
+  provider call; a result that arrives after a close is dropped. The probe is
+  bounded (20 s, 60 pages); if it fails or times out it does not refuse:
+  embedding stays on with a warning, because refusing a healthy brain is
+  worse than a later check. Dimensions are judged by the
+  vector column's declared width (as the bundle import does), not the config
+  row.
 - **Repair.** `slaude brain reembed --model-mismatch` lists pages with a text
   chunk labelled with another model (counts, and the first 50 pages), without
   changing anything. `--apply` re-embeds each such page whole with the
