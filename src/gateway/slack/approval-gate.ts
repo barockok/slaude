@@ -1,7 +1,7 @@
 import { clientForApp, type AppRef, type Transport, type WebClientLike } from "../core/transport";
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
 import { effectiveSoulForChannel } from "../../soul/extract";
-import { loadGrants, usersWithRole } from "../../access/role";
+import { approversFor } from "../../access/role";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
@@ -286,10 +286,8 @@ export class ApprovalGate {
    *   5. Empty (anyone may click). */
   async #resolveApprovers(req: ApprovalRequest): Promise<Set<string>> {
     if (req.persona && req.persona !== "default") {
-      const own = usersWithRole(await loadGrants(req.persona), ["approver", "manager"], req.channel);
-      if (own.length) return new Set(own);
-      const managers = usersWithRole(await loadGrants("default"), ["manager"]);
-      if (managers.length) return new Set(managers);
+      const ids = await approversFor(req.persona, req.channel);
+      if (ids.length) return new Set(ids);
       console.warn(`[approval-gate] persona=${req.persona} has no approver or manager, nor does the default persona: nobody can approve`);
       return new Set([NOBODY]);
     }

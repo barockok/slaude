@@ -133,6 +133,19 @@ export async function loadGrants(personaName: string | null | undefined): Promis
   return effectiveGrants(p, await storedGrants(p));
 }
 
+/**
+ * Who may approve for a NAMED persona, as the approval gate resolves it: every
+ * user whose role on it (channel aware) is approver or manager, with no scope
+ * keyword matching (phase 1); when it has none, the default persona's
+ * managers; else nobody (an empty list). Not for the default persona, whose
+ * gate matches soul approvers by scope per request.
+ */
+export async function approversFor(personaName: string, channelId?: string | null): Promise<string[]> {
+  const own = usersWithRole(await loadGrants(personaName), ["approver", "manager"], channelId);
+  if (own.length) return own;
+  return usersWithRole(await loadGrants("default"), ["manager"]);
+}
+
 /** `roleFromGrants` over {@link loadGrants}; `personaName` is the persona NAME. */
 export async function roleOf(personaName: string | null | undefined, userId: string, channelId?: string | null): Promise<Role | null> {
   return roleFromGrants(await loadGrants(personaName), userId, channelId);
