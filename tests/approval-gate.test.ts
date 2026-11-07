@@ -661,7 +661,8 @@ describe("ApprovalGate", () => {
       await f.fire(await buttonId(f, "deny"), "U002");
       await p;
       const [ev] = await auditRows("SAPR2");
-      expect(ev).toMatchObject({ action: "gate.approval.decided", decision: "deny", targetId: "plan" });
+      // A request with no scope or category is named by its own summary.
+      expect(ev).toMatchObject({ action: "gate.approval.decided", decision: "deny", targetId: "x" });
     });
 
     test("the auto-deny timer records gate.approval.expired once", async () => {

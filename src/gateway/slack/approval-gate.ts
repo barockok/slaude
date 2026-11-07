@@ -5,7 +5,7 @@ import { approversFor, isDenied, loadGrants } from "../../access/role";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
-import { auditGateRow } from "../../audit/emit";
+import { approvalTitle, auditGateRow } from "../../audit/emit";
 
 export type ApprovalRequest = {
   channel: string;
@@ -33,6 +33,14 @@ export type ApprovalRequest = {
 /** An approver id no Slack user has: an approver set of just this admits
  *  nobody (an empty set would admit anyone). Never rendered on the card. */
 const NOBODY = "!nobody";
+
+/** Slack's three escapes, so a request's own words never become markup. */
+const escapeMrkdwn = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** The card's decided line, named by the request itself: `Deploy to staging → *Approved* by @x`. */
+export function decidedLine(payload: Record<string, unknown> | null | undefined, approved: boolean, userId: string): string {
+  return `${escapeMrkdwn(approvalTitle(payload))} → ${approved ? "*Approved*" : "*Denied*"} by <@${userId}>`;
+}
 
 export type ApprovalDecision = {
   approved: boolean;
@@ -199,7 +207,7 @@ export class ApprovalGate {
             try {
               await respond({
                 replace_original: true,
-                text: `Plan → ${approved ? "*Approved*" : "*Denied*"} by <@${userId}>`,
+                text: decidedLine(resolved.payload, approved, userId),
                 blocks: [],
               });
             } catch {}
@@ -247,11 +255,10 @@ export class ApprovalGate {
         void pending.unsub?.().catch(() => {});
         auditApprovalDecided(resolved, userId, approved);
         await this.#publish(id);
-        const label = approved ? "*Approved*" : "*Denied*";
         try {
           await respond({
             replace_original: true,
-            text: `Plan → ${label} by <@${userId}>`,
+            text: decidedLine(resolved.payload, approved, userId),
             blocks: [],
           });
         } catch {}

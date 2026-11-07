@@ -57,6 +57,14 @@ describe("emitAudit", () => {
   });
 });
 
+describe("approval card decided line", () => {
+  test("names the request, escapes it, and says who decided", async () => {
+    const { decidedLine } = await import("../../src/gateway/slack/approval-gate");
+    expect(decidedLine({ summary: "Ship <v2> & tag" }, true, "UAPP")).toBe("Ship &lt;v2&gt; &amp; tag → *Approved* by <@UAPP>");
+    expect(decidedLine({ category: "deploy", summary: "anything" }, false, "UAPP")).toBe("deploy → *Denied* by <@UAPP>");
+  });
+});
+
 describe("gate helpers", () => {
   test("action kind and target per gate kind", () => {
     expect(gateActionKind("perm")).toBe("permission");
@@ -64,7 +72,9 @@ describe("gate helpers", () => {
     expect(gateTarget(gate("perm", { toolName: "Bash" }))).toEqual({ targetKind: "tool", targetId: "Bash" });
     expect(gateTarget(gate("perm", {}))).toEqual({ targetKind: "tool", targetId: "unknown" });
     expect(gateTarget(gate("approval", { scope: "shared", category: "kb" }))).toEqual({ targetKind: "approval", targetId: "shared" });
-    expect(gateTarget(gate("approval", {}))).toEqual({ targetKind: "approval", targetId: "plan" });
+    expect(gateTarget(gate("approval", {}))).toEqual({ targetKind: "approval", targetId: "approval" });
+    expect(gateTarget(gate("approval", { summary: "\n Deploy v2 to staging\nthen smoke test" }))).toEqual({ targetKind: "approval", targetId: "Deploy v2 to staging" });
+    expect(gateTarget(gate("approval", { summary: "y".repeat(200) })).targetId).toHaveLength(80);
     expect(gateTarget(gate("mcp_connect", { serverName: "docs" }))).toEqual({ targetKind: "mcp_server", targetId: "docs" });
     expect(gateTarget(gate("mcp_connect", {}))).toEqual({ targetKind: "mcp_server", targetId: "g-mcp_connect" });
   });
