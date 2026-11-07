@@ -18,6 +18,7 @@ import { ControlBar } from "./ControlBar";
 import { StreamIndicator, TimelineTab } from "./TimelineTab";
 import { buildItems, contextLabel, historyItems, latestUsage, sessionActivityNow, tailUsers, turnRunning, type OperatorMessage } from "./timeline-model";
 import { SlackUsersProvider } from "../../components/SlackText";
+import { DEFAULT_SURFACE, SessionSurface, surfaceInfo } from "../../lib/surfaces";
 import { ModelName } from "../SessionsPage";
 import { useSessionEvents } from "./useSessionEvents";
 import { useSessionHistory } from "./useSessionHistory";
@@ -176,9 +177,10 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
   }
 
   const channel = data?.channel_label ?? session.slack_channel_id;
+  const sf = surfaceInfo(data?.surface);
   const where = session.slack_channel_id
-    ? `${channel}${session.slack_thread_ts ? `, thread ${session.slack_thread_ts}` : ""}`
-    : "No Slack thread";
+    ? sf.describe({ channelId: session.slack_channel_id, threadRef: session.slack_thread_ts, channelLabel: channel })
+    : `No ${sf.conversation}`;
   // A model set from the console lands in `session`; otherwise what the server resolved.
   const model = session.model
     ? { effective_model: session.model, model_source: "session" as const }
@@ -247,15 +249,17 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
             {usage && <ContextMeter usage={usage} />}
           </div>
         )}
+        <SessionSurface.Provider value={data?.surface ?? DEFAULT_SURFACE}>
         <SlackUsersProvider users={users}>
         {tab === "timeline" ? (
           <TimelineTab items={items} earlier={earlier} history={history} status={events.status} detail={events.detail} />
         ) : tab === "chat" ? (
-          <ChatTab sessionId={id} messages={chat} earlier={earlier} history={history} lock={lock} isSuperadmin={isSuper} onSent={onSent} />
+          <ChatTab sessionId={id} messages={chat} earlier={earlier} history={history} surface={data?.surface} lock={lock} isSuperadmin={isSuper} onSent={onSent} />
         ) : (
           <SessionAudit sessionId={id} />
         )}
         </SlackUsersProvider>
+        </SessionSurface.Provider>
       </Tabs>
     </>
   );

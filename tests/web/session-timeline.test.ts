@@ -77,8 +77,8 @@ describe("the agent's replies", () => {
       { type: "toolResult", tool: "mcp__slaude_runtime__proactive_post", result: [{ type: "text", text: '{"refused":true,"rule":"quiet-hours"}' }], toolUseId: "r3" },
     ]);
     expect(texts(items).map((t) => [t.text, t.delivery, t.target])).toEqual([
-      ["Done.", "slack", undefined],
-      ["Heads up.", "slack", "COPS"],
+      ["Done.", "posted", undefined],
+      ["Heads up.", "posted", "COPS"],
       ["Nightly summary.", "failed", undefined],
     ]);
     expect(deliveryOf({ is_error: true, content: "boom" })).toBe("failed");
@@ -94,7 +94,7 @@ describe("the agent's replies", () => {
 
 describe("earlier turns, activity and the context meter", () => {
   test("history lines become earlier messages", () => {
-    const items = historyItems([{ id: "7:user", at: 1, who: "user", name: "alice", text: "q" }, { id: "7:agent", at: 1, who: "agent", text: "a" }], "scout");
+    const items = historyItems([{ id: "7:user", at: 1, who: "user", name: "alice", text: "q", surface: "slack" }, { id: "7:agent", at: 1, who: "agent", text: "a", surface: "slack" }], "scout");
     expect(items.map((i) => i.key)).toEqual(["earlier-7:user", "earlier-7:agent"]);
     expect(items.map((i) => [i.who, i.name, i.text, i.earlier])).toEqual([["user", "alice", "q", true], ["agent", "scout", "a", true]]);
   });
@@ -118,7 +118,7 @@ describe("earlier turns, activity and the context meter", () => {
 
 describe("earlier lines and names", () => {
   test("a date-only history line stays date only on the timeline", () => {
-    const [u, a] = historyItems([{ id: "1:user", at: 5, who: "user", text: "q", dateOnly: true }, { id: "1:agent", at: 9, who: "agent", text: "a" }], "scout");
+    const [u, a] = historyItems([{ id: "1:user", at: 5, who: "user", text: "q", dateOnly: true, surface: "slack" }, { id: "1:agent", at: 9, who: "agent", text: "a", surface: "slack" }], "scout");
     expect(u!.dateOnly).toBe(true);
     expect(a!.dateOnly).toBeUndefined();
   });
