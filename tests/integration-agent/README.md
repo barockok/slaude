@@ -374,11 +374,18 @@ click()  {  # click <app> <user> <channel> <messageTs> <actionId>
 }
 ephemerals() { curl -fsS "$F/calls?method=response_url" | jq '[.calls[].detail.body]'; }
 psqlq() { docker exec -i slaude-it-pg psql -U postgres -d slaude -At -F ' | ' -c "$1"; }
-# How many tool results the mock's latest multi-tool request carried: 1 or more
-# means the tool call came back to the model, so the turn got past its gate.
+# The journal keeps counts, not message contents (`messages` is a number; see
+# e2e/mock-llm/README.md). jmark prints the newest row's `seq`; take it just
+# before the `say` that starts a multi-tool turn: M=$(jmark).
+jmark() { curl -fsS http://127.0.0.1:9092/__mock/journal | jq '[.[].seq] | max // 0'; }
+# toolran <mark>: how many multi-tool requests after the mark carry more
+# messages than the first one did. A tool result adds messages to the next
+# request, so 1 or more means the tool call came back to the model and the turn
+# got past its gate. Without a mark it reads the whole journal (clear it first).
 toolran() {
   curl -fsS http://127.0.0.1:9092/__mock/journal \
-    | jq '[.[] | select(.tag == "multi-tool")] | last | .messages | map(select(.role == "tool")) | length'
+    | jq --argjson m "${1:-0}" '[.[] | select(.tag == "multi-tool" and .seq > $m) | .messages] as $a
+        | if ($a | length) < 2 then 0 else [$a[1:][] | select(. > $a[0])] | length end'
 }
 ```
 

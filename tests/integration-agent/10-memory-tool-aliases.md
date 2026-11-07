@@ -46,13 +46,9 @@ a shared or admin write still asks for approval through the gated dispatch.
   `notes/it-shared-a` and `notes/it-shared-b`).
 - base64url helper:
   `b64u() { printf '%s' "$1" | base64 | tr '+/' '-_' | tr -d '=\n'; }`
-- The mock journal records counts, not message contents (see
-  `e2e/mock-llm/README.md`: `messages` is a number). A tool call that came
-  back to the model shows as a second `multi-tool` row with a larger
-  `messages` count:
-  `mt() { curl -fsS http://127.0.0.1:9092/__mock/journal | jq -c '[.[] | select(.tag == "multi-tool") | .messages]'; }`
-- Clear the mock journal before each tool step:
-  `curl -fsS -X DELETE http://127.0.0.1:9092/__mock/journal`.
+- The mock journal records counts, not message contents. Each tool step takes
+  `M=$(jmark)` just before its `say` and checks `toolran $M` (README helpers):
+  1 or more means the tool result came back to the model.
 
 ## Steps
 
@@ -60,12 +56,12 @@ a shared or admin write still asks for approval through the gated dispatch.
    `bun test tests/tools/memory-aliases.test.ts tests/tools/contracts.test.ts tests/gateway/api/v1-roundtrip.test.ts tests/agent/profile-write-guard.test.ts tests/agent/skill-gate.test.ts tests/soul.test.ts tests/soul/builtin.test.ts tests/soul/runtime-golden.test.ts tests/permission-gate.test.ts tests/proactive/wake-guard.test.ts tests/knowledge/kb-memoize-typed.test.ts tests/knowledge/memory-about.test.ts`.
 2. New name, read:
    `say ADEFAULT UALICE CTEAM "[[mock:multi-tool n=1 tool=mcp__slaude_kb__memory_search args=$(b64u '{"query":"integration test page"}')]] alias new search"`;
-   poll the thread up to 30 s, then `mt`.
+   poll the thread up to 30 s, then `toolran $M`.
 3. Old name, read: the same with `tool=mcp__slaude_kb__kb_search` and text
-   `alias old search`; then `mt`.
+   `alias old search`; then `toolran $M`.
 4. New name, write (own store, no approval):
    `say ADEFAULT UALICE CTEAM "[[mock:multi-tool n=1 tool=mcp__slaude_kb__memory_save args=$(b64u '{"pages":[{"slug":"notes/it-alias-new","content":"Written through memory_save.","summary":"integration test"}]}')]] alias new save"`;
-   then `mt` and `msgs` for the thread.
+   then `toolran $M` and `msgs` for the thread.
 5. Old name, write: the same with `tool=mcp__slaude_kb__kb_memoize`, slug
    `notes/it-alias-old`, content `Written through kb_memoize.`.
 6. As `lead`: `GET /panel/api/memory/stores`, find the default agent's store
@@ -73,7 +69,7 @@ a shared or admin write still asks for approval through the gated dispatch.
    `GET /panel/api/memory/pages?store=<that id>&slug=notes/it-alias-new` and
    the same for `notes/it-alias-old`.
 7. Stores, both names: `tool=mcp__slaude_kb__memory_stores` and
-   `tool=mcp__slaude_kb__list_kbs` (args `$(b64u '{}')`); `mt` after each.
+   `tool=mcp__slaude_kb__list_kbs` (args `$(b64u '{}')`); `toolran $M` after each.
 8. Auto-allow expansion. A `slaude_kb` call never shows a permission card
    (static policy above), so the expansion has no visible effect on a turn;
    check the parsed set the gateway and nodes build instead:
@@ -89,15 +85,15 @@ a shared or admin write still asks for approval through the gated dispatch.
 ## Expected observations
 
 1. All pass.
-2. No card. `mt` prints two rows, the second with a larger `messages` count
-   (the tool result came back to the model).
+2. No card. `toolran $M` prints 1 or more within 30 s (the tool result came
+   back to the model).
 3. Same as step 2: the alias runs the same handler.
-4. No card; `mt` as in step 2.
+4. No card; `toolran $M` as in step 2.
 5. Same.
 6. `200` for both pages, contents `Written through memory_save.` and
    `Written through kb_memoize.`, both in the agent's own store
    (`agent-<id>`).
-7. `mt` as in step 2 for both names (same handler; the unit test
+7. `toolran $M` as in step 2 for both names (same handler; the unit test
    `tests/tools/memory-aliases.test.ts` asserts the two results are equal).
 8. Both runs print
    `mcp__slaude_kb__kb_memoize,mcp__slaude_kb__memory_save`.
@@ -125,3 +121,9 @@ pages live in the scratch brain and go with `rm -rf "$IT"`.
 - `memory_about` keeps its name; it is not part of the alias table.
 - The episodic conversation memory (`src/memory/`, tables `memory_turns` and
   `memory_facts`, node API `/v1/tools/memory/*`) is unchanged by the rebrand.
+- With `SLAUDE_MEMORY_TOOL_ALIASES=0` the `kb_*` aliases are not mounted or
+  listed, so in steps 3, 5 and the `list_kbs` half of 7 the CLI answers the
+  call with a no-such-tool error (no page is written in step 5); the REST
+  plane still accepts the old names. These steps assume the
+  default (`1`). `slaude_v1_tool_calls_total` counts node calls under the
+  `memory_*` name with `alias="true"` for an old name.

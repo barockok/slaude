@@ -35,7 +35,8 @@ Code: `src/access/permission-auth.ts` (`canDecidePermission`),
 Requester decides, bystander refused:
 
 1. Run the unit floor.
-2. `say ADEFAULT UALICE CTEAM '[[mock:multi-tool n=1 tool=Bash]] permission check one'`; note the
+2. `M=$(jmark)`, then
+   `say ADEFAULT UALICE CTEAM '[[mock:multi-tool n=1 tool=Bash]] permission check one'`; note the
    `ts` as `T1`. Poll `thread CTEAM $T1` until a message from `UAGENT` has
    blocks with an `actions` element; note its `ts` as `CARD1` and the action
    ids (`slaude_perm:allow:<id>` etc.).
@@ -92,7 +93,7 @@ Cron turn (no initiator):
    `Bash: refused (not the requester or an approver)`, details contain
    `"attempted":"allow"` and the `gateId`.
 9. The card is replaced (decided) and the turn continues past the gate:
-   within 30 s `toolran` (README B5) prints 1 or more.
+   within 30 s `toolran $M` (README B5, `M` from step 2) prints 1 or more.
 10. The row is no longer `pending` (decided by `UALICE`); the audit row is
     `gate.permission.decided | UALICE | allow | Bash: allow`.
 11. The approver's `Deny` decides the card (no refusal ephemeral).

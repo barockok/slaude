@@ -45,7 +45,8 @@ Environment A (sim; the stub's plan summary is always `deploy prod`):
 
 Environment B:
 
-5. `say ADEFAULT UALICE CTEAM "[[mock:multi-tool n=1 tool=mcp__slaude_surface__request_approval args=$ARGS]] approval one"`;
+5. `M=$(jmark)`, then
+   `say ADEFAULT UALICE CTEAM "[[mock:multi-tool n=1 tool=mcp__slaude_surface__request_approval args=$ARGS]] approval one"`;
    note `ts` as `T1`. Poll `thread CTEAM $T1` for a message with buttons
    `Approve` and `Deny` (action ids `slaude_appr:approve:<id>`,
    `slaude_appr:deny:<id>`); note its `ts` as `CARD1`.
@@ -85,7 +86,7 @@ Environment B:
    `:no_entry: <@UBOB>, you are not on the approver allowlist for this plan. The plan stays pending.`
 7. `pending`.
 8. The card text becomes `Plan → *Approved* by <@UAPPR>`; the turn continues
-   past the gate (`toolran` prints 1 or more within 30 s).
+   past the gate (`toolran $M`, `M` from step 5, prints 1 or more within 30 s).
 9. Denied.
 10. After 60 s the plan auto-denies.
 11. Rows include, in order:
