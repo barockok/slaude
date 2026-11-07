@@ -182,4 +182,39 @@ describe("TokenBudget", () => {
     });
     expect(b.evaluateThreshold("s1", 0.8, 0.9)).toBe("warn");
   });
+
+  test("a tool loop's summed result usage does not inflate the fill: the last prompt counts", () => {
+    // Three model calls in one turn, each seeing ~60k of prompt. The result's
+    // usage sums them (180k input), which read as 90% (and past 100% on the
+    // next turns) before; the last call's prompt is the real fill.
+    const b = new TokenBudget();
+    b.notePrompt("s1", { input_tokens: 10, cache_read_input_tokens: 55_000, cache_creation_input_tokens: 4_990, output_tokens: 50 });
+    b.notePrompt("s1", { input_tokens: 10, cache_read_input_tokens: 59_000, cache_creation_input_tokens: 990, output_tokens: 40 });
+    b.notePrompt("s1", { input_tokens: 20, cache_read_input_tokens: 60_000, cache_creation_input_tokens: 980, output_tokens: 300 });
+    b.record("s1", {
+      usage: usage({ input_tokens: 40, cache_read_input_tokens: 174_000, cache_creation_input_tokens: 6_960, output_tokens: 390 }),
+      modelUsage: modelUsage(200_000),
+    });
+    const s = b.snapshot("s1")!;
+    expect(s.totalInput).toBe(61_000);
+    expect(s.pctUsed).toBeCloseTo(0.305);
+    expect(s.outputTokens).toBe(390);
+    expect(s.pctUsed).toBeLessThanOrEqual(1);
+  });
+
+  test("notePrompt ignores an empty or missing usage, and record falls back to the result", () => {
+    const b = new TokenBudget();
+    b.notePrompt("s1", undefined);
+    b.notePrompt("s1", { input_tokens: 0, output_tokens: 5 });
+    b.record("s1", { usage: usage(), modelUsage: modelUsage() });
+    expect(b.snapshot("s1")!.totalInput).toBe(1600);
+  });
+
+  test("forget drops the noted prompt too", () => {
+    const b = new TokenBudget();
+    b.notePrompt("s1", { input_tokens: 99_000 });
+    b.forget("s1");
+    b.record("s1", { usage: usage(), modelUsage: modelUsage() });
+    expect(b.snapshot("s1")!.totalInput).toBe(1600);
+  });
 });

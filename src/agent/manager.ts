@@ -15,7 +15,7 @@ import {
 // so the mock applies even when an earlier module already imported the SDK —
 // no query-string re-import (which would split coverage off the canonical file).
 import * as agentSdk from "@anthropic-ai/claude-agent-sdk";
-import { TokenBudget, type ResultUsage, type UsageSnapshot } from "./token-budget";
+import { TokenBudget, type PromptUsage, type ResultUsage, type UsageSnapshot } from "./token-budget";
 import { SkillGate } from "./skill-gate";
 import { denySyntheticProfileWrite } from "./profile-write-guard";
 import { m as metric } from "../metrics";
@@ -1749,6 +1749,11 @@ export class AgentManager extends EventEmitter {
     switch (msg.type) {
       case "assistant": {
         void this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
+        // The context fill is this call's prompt, not the result's per-turn sum.
+        // A subagent's messages (parent_tool_use_id set) run in their own context.
+        if (!(msg as { parent_tool_use_id?: string | null }).parent_tool_use_id) {
+          this.#budget.notePrompt(sessionId, (msg.message as { usage?: PromptUsage }).usage);
+        }
         // The SDK's BetaContentBlock union types only text + tool_use, but the
         // model also emits thinking blocks at runtime. Widen so the thinking
         // branch type-checks (both the discriminant and `.thinking`).
