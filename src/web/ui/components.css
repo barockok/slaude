@@ -1497,3 +1497,264 @@ textarea.sl-input {
   max-width: 26rem;
   text-align: center;
 }
+
+/* ---------------------------------------------------------------- markdown */
+
+.sl-markdown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sl-gap-xs);
+  min-width: 0;
+}
+
+.sl-md-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sl-gap-xs);
+  min-width: 0;
+}
+
+.sl-md-toolbar__title {
+  margin-right: auto;
+  min-width: 0;
+  font-size: var(--sl-text-footnote);
+  color: var(--sl-text-secondary);
+}
+
+.sl-md-seg {
+  display: inline-flex;
+  gap: 0.125rem;
+  padding: 0.125rem;
+  border-radius: var(--sl-radius);
+  background: var(--sl-fill-field);
+  box-shadow: inset 0 0 0 1px var(--sl-fill-field-ring);
+}
+
+.sl-md-seg__btn {
+  height: var(--sl-control-h-xs);
+  padding: 0 var(--sl-pad-sm);
+  border-radius: var(--sl-radius-xs);
+  font-size: var(--sl-text-caption);
+  color: var(--sl-text-secondary);
+}
+
+.sl-md-seg__btn:hover:not(:disabled) {
+  color: var(--sl-text);
+}
+
+.sl-md-seg__btn.is-active {
+  background: var(--sl-fill-ghost-selected);
+  color: var(--sl-text);
+}
+
+.sl-md-seg__btn:disabled {
+  color: var(--sl-text-disabled);
+}
+
+.sl-md-seg__btn:focus-visible {
+  box-shadow: var(--sl-focus-ring);
+}
+
+/* Compact: the toolbar floats in the corner and shows on hover or focus. */
+.sl-markdown--compact {
+  position: relative;
+  gap: 0;
+}
+
+.sl-markdown--compact > .sl-md-toolbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  padding: 0.125rem;
+  border-radius: var(--sl-radius);
+  background: var(--sl-surface-popover);
+  box-shadow: var(--sl-shadow-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--sl-dur-snap) var(--sl-ease-out);
+}
+
+.sl-markdown--compact:hover > .sl-md-toolbar,
+.sl-markdown--compact:focus-within > .sl-md-toolbar {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .sl-markdown--compact > .sl-md-toolbar {
+    position: static;
+    align-self: flex-end;
+    opacity: 1;
+    pointer-events: auto;
+    box-shadow: none;
+    background: transparent;
+  }
+}
+
+.sl-md {
+  min-width: 0;
+  color: var(--sl-text);
+  font-size: var(--sl-text-body);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.sl-md > :first-child {
+  margin-top: 0;
+}
+
+.sl-md > :last-child {
+  margin-bottom: 0;
+}
+
+.sl-md__p {
+  margin: 0 0 var(--sl-pad-md);
+}
+
+.sl-md__h {
+  margin: var(--sl-pad-lg) 0 var(--sl-pad-sm);
+  font-weight: var(--sl-weight-semibold);
+  color: var(--sl-text);
+  line-height: var(--sl-leading-heading);
+}
+
+.sl-md__h1 {
+  font-size: var(--sl-text-title);
+  line-height: var(--sl-leading-title);
+}
+
+.sl-md__h2 {
+  font-size: 1.125rem;
+}
+
+.sl-md__h3 {
+  font-size: var(--sl-text-heading);
+}
+
+.sl-md__h4,
+.sl-md__h5,
+.sl-md__h6 {
+  font-size: var(--sl-text-body);
+}
+
+.sl-md__h6 {
+  color: var(--sl-text-secondary);
+}
+
+.sl-md__code {
+  padding: 0.0625rem 0.3125rem;
+  border-radius: var(--sl-radius-xs);
+  background: var(--sl-bg-neutral);
+  font-family: var(--sl-font-mono);
+  font-size: var(--sl-text-code);
+}
+
+.sl-md__pre {
+  margin: 0 0 var(--sl-pad-md);
+}
+
+.sl-md__pre .sl-code__pre {
+  white-space: pre;
+}
+
+.sl-md__list {
+  margin: 0 0 var(--sl-pad-md);
+  padding-left: 1.5rem;
+}
+
+.sl-md ul.sl-md__list {
+  list-style: disc;
+}
+
+.sl-md ul.sl-md__list ul.sl-md__list {
+  list-style: circle;
+}
+
+.sl-md ol.sl-md__list {
+  list-style: decimal;
+}
+
+.sl-md__list .sl-md__list {
+  margin-bottom: 0;
+}
+
+.sl-md__li {
+  margin: 0.125rem 0;
+}
+
+.sl-md__li > .sl-md__p:last-child {
+  margin-bottom: 0;
+}
+
+.sl-md__task {
+  list-style: none;
+  margin-left: -1.25rem;
+}
+
+.sl-md__check {
+  margin: 0 var(--sl-pad-xs) 0 0;
+  vertical-align: -0.125rem;
+  accent-color: var(--sl-accent);
+}
+
+.sl-md__quote {
+  margin: 0 0 var(--sl-pad-md);
+  padding: 0 0 0 var(--sl-pad-md);
+  border-left: 3px solid var(--sl-border-strong);
+  color: var(--sl-text-secondary);
+}
+
+.sl-md__hr {
+  margin: var(--sl-pad-lg) 0;
+  border: 0;
+  border-top: 1px solid var(--sl-border);
+}
+
+.sl-md__table-wrap {
+  margin: 0 0 var(--sl-pad-md);
+  overflow-x: auto;
+  border-radius: var(--sl-radius);
+  box-shadow: inset 0 0 0 1px var(--sl-border);
+}
+
+.sl-md__table-wrap:focus-visible {
+  box-shadow: var(--sl-focus-ring);
+}
+
+.sl-md__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--sl-text-footnote);
+}
+
+.sl-md__table th,
+.sl-md__table td {
+  padding: var(--sl-pad-xs) var(--sl-pad-sm);
+  border-bottom: 1px solid var(--sl-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.sl-md__table th {
+  font-weight: var(--sl-weight-medium);
+  color: var(--sl-text-secondary);
+  background: var(--sl-surface-0);
+}
+
+.sl-md__table tr:last-child td {
+  border-bottom: 0;
+}
+
+.sl-md__frontmatter {
+  margin: 0 0 var(--sl-pad-md);
+  padding: var(--sl-pad-xs) var(--sl-pad-md);
+  border-radius: var(--sl-radius);
+  background: var(--sl-surface-0);
+  box-shadow: inset 0 0 0 1px var(--sl-border);
+}
+
+.sl-md__fm-value {
+  white-space: pre-wrap;
+}
