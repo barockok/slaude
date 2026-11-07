@@ -32,6 +32,7 @@ import {
   type ReembedEngine,
 } from "../src/knowledge/brain-reembed";
 import { applyPage } from "../src/brain-migrate/apply";
+import { trackBrainWork } from "../src/knowledge/brain-work";
 import type { BundlePage } from "../src/brain-migrate/bundle";
 import type { MigrateEngine } from "../src/brain-migrate/engine-types";
 
@@ -242,6 +243,16 @@ describe("probeEmbeddingRecord", () => {
     expect(calls).toEqual(["s1:updated_asc", "s1:updated_desc", "s1:slug", "s2:updated_asc", "s2:updated_desc", "s2:slug"]);
   });
 
+  test("with many sources the samples span sources before a second page of any", async () => {
+    const sources: Record<string, P[]> = {};
+    for (let k = 0; k < 8; k++) sources[`s${k}`] = [page(`p${k}a`, 1, MODEL_A), page(`p${k}b`, 2, MODEL_A)];
+    const sent: string[] = [];
+    await probeEmbeddingRecord(engine(sources), { embed: async (t) => (sent.push(...t), embedA(t)) });
+    expect(sent.length).toBe(6);
+    expect(new Set(sent.map((t) => t.slice(1, 2))).size).toBe(6); // six different sources
+    expect(sent.some((t) => t.startsWith("p1b"))).toBe(true); // newest-first for the second source
+  });
+
   test("a mixed brain (older pages on another model) is a mismatch even when the slug-first page matches", async () => {
     // Slug order alone would sample only "a-new" (and its chunks) and adopt.
     const r = await probeEmbeddingRecord(
@@ -418,6 +429,37 @@ describe("brain boot: writes use the configured embedding model", () => {
     await closeBrain();
     expect(Date.now() - t0).toBeLessThan(15_000);
     await embeddingProbeSettled(); // nothing in flight after a close
+  }, 60_000);
+
+  test("a probe answering while closeBrain waits on other brain work never writes to the closing engine", async () => {
+    await brainRecordedAs(DEFAULT_LABEL);
+    let called!: () => void;
+    const providerCalled = new Promise<void>((r) => (called = r));
+    let release!: () => void;
+    const provider = new Promise<void>((r) => (release = r));
+    const gw = (await gbrainImport("ai/gateway")) as Gw;
+    gw.__setEmbedTransportForTests(async ({ values }: { values: string[] }) => {
+      called();
+      await provider;
+      return { embeddings: values.map(MODEL_A), usage: { tokens: 1 } }; // a match: would adopt
+    });
+    const e = (await getBrain()) as unknown as TestEngine & { setConfig: (k: string, v: string) => Promise<void> };
+    const writes: string[] = [];
+    const original = e.setConfig.bind(e);
+    e.setConfig = async (k: string, v: string) => {
+      writes.push(`${k}=${v}`);
+      return original(k, v);
+    };
+    await providerCalled; // sampling done, the provider call is pending
+    const probe = embeddingProbeSettled();
+    let finishJob!: () => void;
+    trackBrainWork(new Promise<void>((r) => (finishJob = r))); // e.g. a long boot-time import
+    const closing = closeBrain();
+    release(); // the provider answers while the close waits on the job
+    await probe;
+    finishJob();
+    await closing;
+    expect(writes).toEqual([]);
   }, 60_000);
 
   test("a probe error keeps embedding on and warns, the record unchanged", async () => {

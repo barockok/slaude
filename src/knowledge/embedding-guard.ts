@@ -159,12 +159,22 @@ export async function probeEmbeddingRecord(engine: ProbeEngine, o: ProbeOptions)
     // One short list per (source, order); interleaved so the first samples
     // already cover every source and both ends of the history.
     const perList = Math.max(1, Math.ceil(want / PROBE_SORTS.length));
-    const lists: Array<Array<{ sourceId: string; slug: string; title: string }>> = [];
+    type Listed = Array<{ sourceId: string; slug: string; title: string }>;
+    const grid: Listed[][] = [];
     for (const { id } of await engine.listAllSources()) {
+      const row: Listed[] = [];
       for (const sort of PROBE_SORTS) {
         const pages = await engine.listPages({ sourceId: id, limit: perList * 4, offset: 0, sort });
-        lists.push(pages.map((p) => ({ sourceId: id, slug: p.slug, title: p.title ?? "" })));
+        row.push(pages.map((p) => ({ sourceId: id, slug: p.slug, title: p.title ?? "" })));
       }
+      grid.push(row);
+    }
+    // Visit sources first, rotating the order per source, so with many
+    // sources the first samples already span sources and both ends of the
+    // history instead of using up the budget on the first one or two.
+    const lists: Listed[] = [];
+    for (let p = 0; p < PROBE_SORTS.length; p++) {
+      for (let k = 0; k < grid.length; k++) lists.push(grid[k]![(k + p) % PROBE_SORTS.length]!);
     }
     const seen = new Set<string>();
     const order: Array<{ sourceId: string; slug: string; title: string }> = [];
