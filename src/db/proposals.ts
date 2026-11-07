@@ -214,3 +214,12 @@ export async function stampApp(ids: readonly string[], app: { apiAppId?: string;
     [app.apiAppId ?? null, app.teamId ?? null, ...ids],
   );
 }
+
+/** Skill removal proposals and skill retirements across agents, newest first (the console's skill pages). */
+export async function listSkillProposals(limit = 500): Promise<Proposal[]> {
+  const rows = await db.query<Row>(
+    "SELECT * FROM proposals WHERE kind IN ('skill-removal', ?) ORDER BY created_at DESC LIMIT ?",
+    [SKILL_RETIRED_KIND, limit],
+  );
+  return rows.map(toProposal);
+}

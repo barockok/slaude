@@ -47,6 +47,9 @@
  *   GET    /panel/api/memory/pages?store&slug      one page: content, type, tags, links
  *   GET    /panel/api/environments                 node pools, persona runsOn, personal environments (no secrets)
  *   GET    /panel/api/console-roles                the console's email allowlist (read-only, superadmin)
+ *   GET    /panel/api/skills                       every skill: source, origin, agents, status, usage
+ *   GET    /panel/api/skills/:id                   one skill: frontmatter, SKILL.md, files, provenance, usage, proposals
+ *   POST   /panel/api/skills/:id/retire|restore    an agent-authored skill (superadmin; audited)
  *   GET    /panel/api/overview                     counts and the latest audit events
  */
 import { PanelVoiceRedactor } from "./voice-redact";
@@ -88,6 +91,7 @@ import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
 import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
+import { buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
 import { agentStoreNames, displayTitle, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
@@ -111,6 +115,9 @@ import type {
   AgentsResponse,
   CreateGrantResponse,
   RevokeGrantResponse,
+  SkillActionResponse,
+  SkillDetailResponse,
+  SkillsResponse,
 } from "./api-types";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
@@ -162,6 +169,8 @@ export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "grant.revoke",
   "memory.private",
   "console.roles.read",
+  "skill.retire",
+  "skill.restore",
 ]);
 
 /** Returns the 403 to send, or null when the role suffices. */
@@ -697,6 +706,55 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           details: { ...grantDetails(row), operatorRole: role },
         });
         return json(200, { ok: true } satisfies RevokeGrantResponse);
+      }
+
+      // --- Resources: skills. Reads for any operator; retire and restore are
+      // superadmin only, only for skills the agent wrote itself, and audited
+      // as skill.retired / skill.restored.
+      if (seg[2] === "skills") {
+        if (seg.length === 3) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          const { entries, notes } = await buildSkills();
+          return json(200, { skills: entries.map(summaryOf), notes } satisfies SkillsResponse);
+        }
+        let skillId: string;
+        try { skillId = decodeURIComponent(seg[3]!); } catch { return json(404, { error: "no such skill" }); }
+        if (seg.length === 4) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          const detail = await skillDetail(skillId);
+          return detail ? json(200, detail satisfies SkillDetailResponse) : json(404, { error: "no such skill" });
+        }
+        if (seg.length === 5 && (seg[4] === "retire" || seg[4] === "restore")) {
+          if (req.method !== "POST") return json(405, { error: "method not allowed" });
+          const verb = seg[4];
+          const denied = requireSuperadmin(role, { action: `skill.${verb}`, operator: operatorId });
+          if (denied) return denied;
+          let reason = "";
+          if (verb === "retire") {
+            let body: unknown = {};
+            try { body = await req.json(); } catch { body = {}; }
+            const r = (body as { reason?: unknown })?.reason;
+            reason = typeof r === "string" ? r.trim().slice(0, 300) : "";
+          }
+          const res = verb === "retire"
+            ? await retireSkill(skillId, { by: operatorId, reason: reason || `retired from the console by ${operatorId}` })
+            : await restoreSkill(skillId, { by: operatorId });
+          if (!res.ok) return json(res.status, { error: res.error });
+          const owner = res.entry.owner ?? "default";
+          emitAudit({
+            tenantId: "default",
+            persona: owner,
+            actorKind: "operator",
+            actorId: operatorId,
+            action: verb === "retire" ? "skill.retired" : "skill.restored",
+            targetKind: "skill",
+            targetId: res.entry.slug,
+            summary: `${verb === "retire" ? "retired" : "restored"} skill ${res.entry.slug}`,
+            details: { skill: res.entry.slug, retiredId: res.retiredId, persona: owner, ...(reason ? { reason } : {}), operatorRole: role },
+          });
+          return json(200, { ok: true, id: res.id } satisfies SkillActionResponse);
+        }
+        return json(404, { error: "not found" });
       }
 
       // GET /panel/api/grants: every console grant across agents, for the

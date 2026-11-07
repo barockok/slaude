@@ -494,3 +494,127 @@ export interface OverviewResponse {
  * (src/web/console/lib/surfaces.ts), so a new surface is an entry there.
  */
 export type SurfaceId = "slack" | (string & {});
+
+// --- Resources: skills (read-only, plus retire and restore) -------------------
+
+/**
+ * Where a skill comes from:
+ * - `built-in`: slaude's own `slaude:*` skills, part of every session;
+ * - `installed`: placed in a skills root by the dependency manifest
+ *   (slaude.json and slaude.lock), seeded from the release, or put there by an operator;
+ * - `plugin`: a Claude Code plugin installed from the manifest and mounted into every session;
+ * - `agent-authored`: written by the agent itself with write_skill.
+ */
+export type SkillSourceKind = "built-in" | "installed" | "plugin" | "agent-authored";
+
+export type SkillStatus = "active" | "retired";
+
+/** Where one skill came from, as far as the runtime records it. Absent fields are unknown. */
+export interface SkillOrigin {
+  /** The root it lives in: the shared base, one agent's own overlay, the built-in plugin, or a plugin's install path. */
+  root: "base" | "agent" | "built-in" | "plugin";
+  /** Installed from the manifest: the git repo, the requested ref and the pinned commit from slaude.lock. */
+  repo?: string;
+  ref?: string;
+  commit?: string;
+  /** Path of the skill inside the repo, when the manifest names one. */
+  path?: string;
+  /** Shipped with the slaude release and seeded into the base root at boot. */
+  bundled?: boolean;
+  /** In a skills root but in no lock: placed by an operator or the personas repo. */
+  local?: boolean;
+  /** Plugin skills: the plugin, its marketplace, version and commit. */
+  plugin?: string;
+  marketplace?: string;
+  version?: string;
+  /** Agent-authored: the agent whose root it was written to, and when (frontmatter `authored_at`). */
+  authoredBy?: string;
+  authoredAt?: string | null;
+  /** Retired copies: when it was retired and the retired copy's id. */
+  retiredAt?: number | null;
+  retiredId?: string;
+}
+
+export interface SkillUsageTotals {
+  uses: number;
+  lastUsedAt: number | null;
+  /** When usage tracking of this skill began (the earliest first sighting). */
+  trackedSince: number | null;
+}
+
+export interface SkillSummaryView {
+  /** Stable id for the detail route, e.g. `base:triage`, `agent:scout:triage`, `builtin:memory`, `plugin:docs:search`, `retired:default:triage-20261101T000000Z`. */
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  /** How a person or the agent invokes it (`/triage`, `slaude:memory`, `docs:search`). */
+  invocation: string;
+  source: SkillSourceKind;
+  status: SkillStatus;
+  origin: SkillOrigin;
+  /** The agents that can use it now (none for a retired copy). */
+  agents: string[];
+  /** Summed over those agents. */
+  usage: SkillUsageTotals;
+  /** True when another skill with the same slug in an agent's overlay shadows this one for that agent. */
+  shadowedFor?: string[];
+}
+
+/** GET /panel/api/skills */
+export interface SkillsResponse {
+  skills: SkillSummaryView[];
+  /** Why part of the list may be missing (an unreadable lock, a failed usage read). */
+  notes: string[];
+}
+
+export interface SkillFileView {
+  /** Relative to the skill's directory, `/` separated. */
+  path: string;
+  size: number;
+}
+
+export interface SkillUsageRowView {
+  agent: string;
+  /** The usage key the row was counted under (slug or CLI name). */
+  key: string;
+  uses: number;
+  lastUsedAt: number | null;
+  firstSeenAt: number;
+}
+
+export interface SkillProposalView {
+  id: string;
+  kind: string;
+  status: string;
+  agent: string;
+  createdAt: number;
+  decidedBy: string | null;
+  decidedAt: number | null;
+  /** The reason the proposal or retirement gave. */
+  reason: string | null;
+}
+
+/** GET /panel/api/skills/:id */
+export interface SkillDetailResponse extends SkillSummaryView {
+  /** Frontmatter keys as written (values as text). */
+  frontmatter: Record<string, unknown>;
+  /** The SKILL.md body, without frontmatter. */
+  body: string;
+  /** The whole SKILL.md, as written. */
+  raw: string;
+  files: SkillFileView[];
+  /** True when the file list was cut at its limit. */
+  filesTruncated: boolean;
+  usageHistory: SkillUsageRowView[];
+  proposals: SkillProposalView[];
+  /** What a superadmin may do to it from the console. */
+  actions: { retire: boolean; restore: boolean };
+}
+
+/** POST /panel/api/skills/:id/retire and /restore (superadmin). */
+export interface SkillActionResponse {
+  ok: true;
+  /** The id the skill has now (a retired copy's id, or the live skill's). */
+  id: string;
+}
