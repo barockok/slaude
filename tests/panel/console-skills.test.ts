@@ -184,7 +184,8 @@ describe("retire and restore", () => {
     expect(retired).toMatchObject({ status: "retired", agents: [], source: "agent-authored" });
     const detail = (await call("GET", `/panel/api/skills/${encodeURIComponent(r.body.id)}`)).body as SkillDetailResponse;
     expect(detail.actions).toEqual({ retire: false, restore: true });
-    expect(detail.proposals).toMatchObject([{ kind: "skill-retired", status: "approved", agent: "scout", reason: "never used" }]);
+    // The retirement row names the operator, not the skill review.
+    expect(detail.proposals).toMatchObject([{ kind: "skill-retired", status: "approved", agent: "scout", reason: "never used", decidedBy: "lead@example.com" }]);
 
     const back = await call("POST", `/panel/api/skills/${encodeURIComponent(r.body.id)}/restore`, superadmin);
     expect(back.status).toBe(200);

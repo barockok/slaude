@@ -139,13 +139,16 @@ export interface SkillRetiredPayload {
   lastUsedAt: number | null;
 }
 
-/** Record that the skill review retired a skill (an already-settled row). */
-export async function recordSkillRetired(a: { agentId: string; payload: SkillRetiredPayload; at: number }): Promise<string> {
+/**
+ * Record a retired skill (an already-settled row). `decidedBy` is who retired
+ * it: the skill review (default) or the operator who did it from the console.
+ */
+export async function recordSkillRetired(a: { agentId: string; payload: SkillRetiredPayload; at: number; decidedBy?: string }): Promise<string> {
   const id = randomUUID();
   await db.run(
     `INSERT INTO proposals (id, agent_id, kind, to_kind, to_user, scope, payload, created_at, expires_at, status, decided_by, decided_at)
      VALUES (?, ?, ?, 'manager', NULL, 'agent', ?, ?, ?, 'approved', ?, ?)`,
-    [id, a.agentId, SKILL_RETIRED_KIND, JSON.stringify(a.payload), a.at, a.at, SKILL_REVIEW_ACTOR, a.at],
+    [id, a.agentId, SKILL_RETIRED_KIND, JSON.stringify(a.payload), a.at, a.at, a.decidedBy ?? SKILL_REVIEW_ACTOR, a.at],
   );
   return id;
 }

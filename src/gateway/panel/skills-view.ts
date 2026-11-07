@@ -474,6 +474,7 @@ export async function retireSkill(id: string, a: { by: string; reason: string; n
       agentId,
       payload: { slug: e.slug, retiredId, persona: owner, reason: a.reason, uses: e.usage.uses, lastUsedAt: e.usage.lastUsedAt },
       at: now.getTime(),
+      decidedBy: a.by,
     }).catch((err) => console.error(`[panel] retired skill ${e.slug} (${retiredId}) but could not record it: ${err instanceof Error ? err.message : String(err)}`));
   }
   return { ok: true, id: `retired:${owner}:${retiredId}`, entry: e, retiredId };

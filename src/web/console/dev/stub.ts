@@ -221,7 +221,7 @@ export function installStub(): void {
         agents: [],
         origin: { ...sk.origin, retiredAt: now, retiredId: rid },
         actions: { retire: false, restore: true },
-        proposals: [{ id: `p_${now}`, kind: "skill-retired", status: "approved", agent: owner, createdAt: now, decidedBy: "skill-review", decidedAt: now, reason: "retired from the console" }, ...sk.proposals],
+        proposals: [{ id: `p_${now}`, kind: "skill-retired", status: "approved", agent: owner, createdAt: now, decidedBy: fx.me.email, decidedAt: now, reason: "retired from the console" }, ...sk.proposals],
       };
     } else {
       const liveId = owner === "default" ? `base:${sk.slug}` : `agent:${owner}:${sk.slug}`;
