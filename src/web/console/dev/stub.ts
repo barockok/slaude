@@ -186,7 +186,7 @@ export function installStub(): void {
 
   function sessionSummary(r: ConsoleFixtures["sessions"][number]): SessionSummaryView {
     const { permission_mode: _p, slack_app_id: _a, ...rest } = r;
-    return { ...rest, activity: activityOf(r), panel_locked_by: fx.locks[r.id], ...modelOf(r), ...labelOf(r) };
+    return { ...rest, activity: activityOf(r), panel_locked_by: fx.locks[r.id], ...modelOf(r), ...labelOf(r), surface: "slack" };
   }
 
   /** The row's model, else the agent's configured one, else the deployment default (as the server). */
@@ -233,7 +233,7 @@ export function installStub(): void {
       return json(200, {
         session, panel_locked_by: fx.locks[id], warm, activity: activityOf(row),
         ...(warm ? { turn_in_flight: working.has(id) } : {}),
-        ...modelOf(row), ...labelOf(row),
+        ...modelOf(row), ...labelOf(row), surface: "slack",
       });
     }
     if (sub === "history") {

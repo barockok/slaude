@@ -4,6 +4,7 @@ import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
 import { redactSlack } from "./redact";
 import { soulData } from "../../soul/extract";
+import { SLACK_SURFACE_ID } from "../core/surface";
 import type {
   ApprovalRequest,
   ApprovalResult,
@@ -23,7 +24,7 @@ function format(text: string): string {
  *  session. The sim drives this exact class over a fake WebClient, so the agent sees an
  *  identical Surface in sim and prod. */
 export class SlackSurface implements Surface {
-  readonly id = "slack";
+  readonly id = SLACK_SURFACE_ID;
   readonly capabilities: ReadonlySet<SurfaceCapability> = new Set<SurfaceCapability>(["edit", "react", "upload", "ephemeral"]);
 
   #resolve: () => WebClient;

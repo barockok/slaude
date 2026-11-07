@@ -40,6 +40,11 @@ export async function teamForThread(channelId: string, threadTs: string): Promis
   return row?.slack_team_id ?? null;
 }
 
+/**
+ * Create the session row for a conversation thread. Every session is on the
+ * Slack surface today (team, channel, thread); the panel reads that from
+ * surfaceOfSession (src/gateway/core/surface.ts), not from a literal.
+ */
 export async function createForThread(args: {
   thread: ThreadKey;
   model: string;

@@ -16,6 +16,7 @@ import type { ModelSource, SessionActivity } from "./api-types";
 import { env } from "../../config/env";
 import { managedPersonaModel } from "../../persona/registry";
 import { channelLabels, type SlackNames } from "./slack-names";
+import { surfaceOfSession } from "../core/surface";
 
 export interface SessionSummary {
   id: string;
@@ -46,6 +47,8 @@ export interface SessionSummary {
   model_source: ModelSource;
   /** `#name` / `DM with ...` of slack_channel_id, when resolvable. */
   channel_label?: string;
+  /** The chat surface the conversation is on (surfaceOfSession). */
+  surface: string;
 }
 
 /**
@@ -96,6 +99,7 @@ function summarize(row: SessionRow): SessionSummary {
     warm: false,
     activity: activityOf(row.status, false, undefined),
     ...sessionModel(row),
+    surface: surfaceOfSession(row),
   };
   const tenant = (row as any).tenant_id;
   if (tenant !== undefined && tenant !== null) s.tenant_id = tenant;

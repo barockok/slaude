@@ -68,6 +68,7 @@ import { enumerateSessions, sessionModel } from "./enumerator";
 import { channelLabels, mentionNames, type SlackNames } from "./slack-names";
 import { activityOf, streamTurnInFlight, streamTurnsInFlight, type LocalSessions } from "./activity";
 import { sessionHistory } from "./history";
+import { surfaceOfSession } from "../core/surface";
 import { redactSecrets } from "../../redact";
 import { servePanelStatic } from "./static";
 import { publishConfigReload } from "../core/config-reload";
@@ -335,9 +336,10 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
   const panelRole = deps.role ?? "gateway";
 
   /** Audit rows with channel labels (`#name`) where the gateway can resolve them. */
-  async function labelAudit<T extends { persona?: string | null; channelId?: string | null; targetKind?: string | null; targetId?: string | null }>(
-    items: T[],
-  ): Promise<Array<T & { channelLabel?: string; targetLabel?: string }>> {
+  async function labelAudit<T extends { persona?: string | null; channelId?: string | null; sessionId?: string | null; targetKind?: string | null; targetId?: string | null }>(
+    raw: T[],
+  ): Promise<Array<T & { channelLabel?: string; targetLabel?: string; surface?: string }>> {
+    const items = withSurface(raw);
     if (!deps.names || items.length === 0) return items;
     const targetChannel = (e: T) => (e.targetKind === "channel" && e.targetId ? e.targetId : null);
     const labels = await channelLabels(deps.names, items.flatMap((e) => [
@@ -350,6 +352,11 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
       const t = tc ? labels.get(tc) : undefined;
       return { ...e, ...(c ? { channelLabel: c } : {}), ...(t ? { targetLabel: t } : {}) };
     });
+  }
+
+  /** Audit events that happened in a conversation (a channel or a session) carry its surface. */
+  function withSurface<T extends { channelId?: string | null; sessionId?: string | null }>(items: T[]): Array<T & { surface?: string }> {
+    return items.map((e) => (e.channelId || e.sessionId ? { ...e, surface: surfaceOfSession() } : e));
   }
 
   /** Warm sessions: in this process (mono) or in the node registry (gateway). */
@@ -1085,6 +1092,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             activity: activityOf(row.status, live.warm, live.inFlight),
             ...sessionModel(row),
             ...(label ? { channel_label: label } : {}),
+            surface: surfaceOfSession(row),
           } satisfies SessionDetailResponse);
         }
 

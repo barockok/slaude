@@ -75,6 +75,7 @@ import { activeRemoteTarget } from "../../remote/active";
 import { sweepIdleSandboxes } from "../../remote/env-runtime";
 import { makeMonoRemoteFactory, monoRemoteResolver } from "../../remote/mono";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
+import { surfaceOfSession } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
@@ -648,6 +649,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       ...(m.userName ? { userName: redactSecrets(m.userName) } : {}),
       text: redactSecrets(m.text),
       at: Date.now(),
+      surface: surfaceOfSession(),
     };
     void panelInfra.pubsub.appendEvent(sessionId, event).catch(() => {});
   }

@@ -168,6 +168,8 @@ export interface SessionSummaryView {
   model_source: ModelSource;
   /** The Slack channel's display label (`#name`, `DM with Jane Doe`, `DM`) when the gateway could resolve it. */
   channel_label?: string;
+  /** The chat surface the conversation is on. */
+  surface: SurfaceId;
 }
 
 /**
@@ -225,6 +227,8 @@ export interface SessionDetailResponse {
   model_source: ModelSource;
   /** The Slack channel's display label, when it could be resolved. */
   channel_label?: string;
+  /** The chat surface the conversation is on. */
+  surface: SurfaceId;
 }
 
 /** One earlier exchange line of a session, from its durable conversation record. */
@@ -244,6 +248,8 @@ export interface SessionHistoryItem {
   name?: string;
   /** Redacted text. */
   text: string;
+  /** The surface the conversation is on (where a user line was said). */
+  surface: SurfaceId;
 }
 
 /**
@@ -335,7 +341,8 @@ export type SessionEvent =
   | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" }
   // A Slack message delivered to the session (text redacted). Display only:
   // the model gets the message through its turn, never through this event.
-  | { type: "userMessage"; sessionId: string; userId: string; userName?: string; text: string; at: number };
+  // `surface` says where it was said; events written before it existed have none (read as Slack).
+  | { type: "userMessage"; sessionId: string; userId: string; userName?: string; text: string; at: number; surface?: SurfaceId };
 
 // --- Audit ------------------------------------------------------------------
 
@@ -363,6 +370,8 @@ export interface AuditEventView {
   channelLabel?: string;
   /** Display label of the target when it is a channel and resolvable. */
   targetLabel?: string;
+  /** The surface of the conversation the event happened in, when it has one (a channel or session). */
+  surface?: SurfaceId;
 }
 
 /** GET /panel/api/audit and GET /panel/api/sessions/:id/audit. Newest first. */
@@ -476,3 +485,12 @@ export interface OverviewResponse {
   /** The 10 most recent audit events, newest first. */
   recentAudit: AuditEventView[];
 }
+
+// --- Surfaces -----------------------------------------------------------------
+
+/**
+ * The chat surface a conversation lives on. Every session is on Slack today;
+ * the console turns the id into words and icons from its own registry
+ * (src/web/console/lib/surfaces.ts), so a new surface is an entry there.
+ */
+export type SurfaceId = "slack" | (string & {});
