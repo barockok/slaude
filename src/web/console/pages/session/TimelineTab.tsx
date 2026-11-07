@@ -232,6 +232,7 @@ export function EarlierHeader({ history, count }: { history: SessionHistory; cou
           </Button>
         </div>
       )}
+      {!history.hasMore && history.note && <p className="sl-caption sl-tl__earlier-note">{history.note[0]!.toUpperCase() + history.note.slice(1)}.</p>}
       <div className="sl-tl__divider is-earlier" role="separator">
         <span>Earlier in this session</span>
       </div>

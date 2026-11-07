@@ -122,6 +122,20 @@ describe("GET /panel/api/sessions/:id/history", () => {
     expect((await get(api, `/panel/api/sessions/${row.id}/history?cursor=abc`)).status).toBe(400);
   });
 
+  it("at gbrain's row cap, the oldest page says older turns are not shown", async () => {
+    const { MAX_ROWS } = await import("../../src/gateway/panel/history");
+    const row = await session();
+    const slug = `conversations/${row.id.toLowerCase()}`;
+    const rows = Array.from({ length: MAX_ROWS }, (_, i) => turn(i + 1, envelope(`q${i + 1}`), `a${i + 1}`));
+    const api = createPanelApi({ registry: null, pubsub: null, panelLock: null, chat: async () => {}, memory: memoryWith({ "agent-uagent": { [slug]: rows } }) });
+    const newest = await get<SessionHistoryResponse>(api, `/panel/api/sessions/${row.id}/history?limit=10`);
+    expect(newest.body.note).toBeUndefined();
+    const oldest = await get<SessionHistoryResponse>(api, `/panel/api/sessions/${row.id}/history?limit=10&cursor=11`);
+    expect(oldest.body.items[0]!.text).toBe("q1");
+    expect(oldest.body.nextCursor).toBeNull();
+    expect(oldest.body.note).toContain("older turns are not");
+  });
+
   it("falls back to the legacy agent source for the default persona", async () => {
     const row = await session();
     const slug = `conversations/${row.id.toLowerCase()}`;

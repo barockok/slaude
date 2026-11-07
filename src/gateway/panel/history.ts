@@ -20,7 +20,7 @@ import { redactSecrets } from "../../redact";
 import type { SessionHistoryItem, SessionHistoryResponse } from "./api-types";
 
 /** Rows read per request: the page is cut from these. */
-const MAX_ROWS = 1000;
+export const MAX_ROWS = 1000;
 
 /**
  * The agent sources a session's conversation page may live in, own slice
@@ -104,8 +104,12 @@ export async function sessionHistory(
   const ordered = [...rows].sort((a, b) => a.id - b.id);
   const older = opts.before === undefined ? ordered : ordered.filter((r) => r.id < opts.before!);
   const page = older.slice(-opts.limit);
+  // gbrain answered its cap: older turns exist past it and cannot be paged to.
+  const capped = rows.length >= MAX_ROWS;
+  const nextCursor = older.length > page.length && page.length > 0 ? String(page[0]!.id) : null;
   return {
     items: page.flatMap(turnLines),
-    nextCursor: older.length > page.length && page.length > 0 ? String(page[0]!.id) : null,
+    nextCursor,
+    ...(capped && nextCursor === null ? { note: `only the latest ${MAX_ROWS} turns of this session can be shown; older turns are not` } : {}),
   };
 }
