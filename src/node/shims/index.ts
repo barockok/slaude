@@ -97,7 +97,7 @@ function shimServer(contract: ServerContract, sessionId: string, deps: ShimDeps)
           if (contract.server === surfaceContract.server && t.name === surfaceContract.tools.request_approval.name) {
             return await requestApprovalOverRest(sessionId, args, token, deps);
           }
-          return await deps.client.postTool(segment, t.name, args, token);
+          return await deps.client.postTool(segment, t.name, args, token, deps.signalFor?.(sessionId));
         } catch (e) {
           return errResult(`${segment}/${t.name} failed: ${e instanceof Error ? e.message : String(e)}`);
         }

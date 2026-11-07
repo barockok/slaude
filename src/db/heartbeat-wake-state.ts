@@ -81,3 +81,8 @@ export async function noteSettled(agentId: string, s: { outcome: string; failure
     [agentId, s.outcome, s.failures, s.nextCheckAt, now],
   );
 }
+
+/** A manager asked for a look now: the next gate check finds it due. */
+export async function markDue(agentId: string, now: number): Promise<void> {
+  await db.run(`UPDATE heartbeat_wake_state SET next_check_at = ?, updated_at = ? WHERE agent_id = ?`, [now, now, agentId]);
+}

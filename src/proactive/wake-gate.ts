@@ -16,7 +16,7 @@ export type GateResult =
   | { due: true; reason: "first" | "next-check" | "checklist-changed" | "max-sleep" }
   | { due: false; reason: "no-checklist" | "idle" };
 
-/** Whether a wake is due now. `checklistHash` is null when the agent has no checklist. */
+/** Whether a wake is due now. `checklistHash` covers the agent's job (mandates and checklist); null when it has neither. */
 export function wakeDue(state: WakeState | null, checklistHash: string | null, now: number, cfg: WakeGateConfig): GateResult {
   if (checklistHash === null) return { due: false, reason: "no-checklist" };
   if (!state || state.lastWakeAt === null) return { due: true, reason: "first" };
@@ -26,11 +26,14 @@ export function wakeDue(state: WakeState | null, checklistHash: string | null, n
   return { due: false, reason: "idle" };
 }
 
-/** The agent's proposal, kept inside [now + one slot, now + max sleep]. No valid proposal: one slot on. */
+/** How long an agent sleeps when it did not say when to look next. */
+export const DEFAULT_SLEEP_MS = 4 * 3_600_000;
+
+/** The agent's proposal, kept inside [now + one slot, now + max sleep]. No valid proposal: a few hours on, not one slot, so forgetting is not expensive. */
 export function clampNextCheck(proposed: number | null | undefined, now: number, cfg: WakeGateConfig): number {
   const soonest = now + cfg.slotMs;
-  if (proposed === null || proposed === undefined || !Number.isFinite(proposed)) return soonest;
-  return Math.min(Math.max(proposed, soonest), now + cfg.maxSleepMs);
+  const wanted = proposed === null || proposed === undefined || !Number.isFinite(proposed) ? now + DEFAULT_SLEEP_MS : proposed;
+  return Math.min(Math.max(wanted, soonest), now + cfg.maxSleepMs);
 }
 
 export type WakeOutcome = "ok" | "stopped-budget" | "error";

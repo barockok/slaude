@@ -28,7 +28,7 @@ export async function wakeStatusText(a: { personaId: string; agentId: string; ma
   lines.push(
     eligible.ok
       ? "Mode: wakes"
-      : `Mode: summarising heartbeat${eligible.reason ? ` (Wake: yes, but ${eligible.reason === "no-manager" ? "no manager" : "no enabled destination has Highest: act"})` : ""}`,
+      : `Mode: summarising heartbeat${eligible.reason ? ` (proactiveness is on, but ${eligible.reason === "no-manager" ? "there is no manager" : "every place it is on in has a Highest below act"})` : ""}`,
   );
   lines.push(
     split

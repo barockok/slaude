@@ -61,8 +61,10 @@ import { runDueCommitments, type PromiseTransport } from "../proactive/promises"
 import type { ProactiveTransport } from "../proactive/dispatch";
 import { readPingPrefs } from "../proactive/prefs";
 import { runHeartbeat, tellManagerOnce } from "../proactive/heartbeat";
-import { runWake, type WakeTransport } from "../proactive/wake";
-import { wakeEligibility } from "../soul/proactive";
+import { runWake, type WakeDeps, type WakeResult, type WakeTransport } from "../proactive/wake";
+import { parseManager, parseMandates, wakeEligibility } from "../soul/proactive";
+import * as WakeState from "../db/heartbeat-wake-state";
+import type { BrainOpCall } from "../knowledge/memory-trail";
 import { bridgeExternalMcp } from "../gateway/core/external-mcp";
 import { anyProactiveEnabled } from "../soul/proactive";
 import { env } from "../config/env";
@@ -457,6 +459,8 @@ export interface SchedulerSlack {
   sources?: SourceReader;
   /** How a heartbeat wake's turn reaches its session. Absent: nobody wakes; personas stay on the round. */
   wake?: WakeTransport;
+  /** How a wake reads Slack. Absent: wakes run without the activity block. */
+  activity?: WakeDeps["activity"];
   /** Mono: the agent's OAuth credentials live in the CLI's own store, which the heartbeat cannot read (HeartbeatDeps.agentOAuthInCli). */
   agentOAuthInCli?: boolean;
   /** The manager and the backup manager (who may decide manager proposals). */
@@ -495,10 +499,10 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
               mcp: bridgeExternalMcp,
             });
             if (waking) {
-              await runWake(r, { call: deps.call, post: slack.post, transport: slack.wake!, managerId: personaManager, mandates: personaMandates, app: personaApp });
+              await runWake(r, { call: deps.call, post: slack.post, transport: slack.wake!, managerId: personaManager, mandates: personaMandates, app: personaApp, ...(slack.activity ? { activity: slack.activity } : {}) });
             } else if (!eligible.ok && eligible.reason) {
-              const why = eligible.reason === "no-manager" ? "I have no manager in my SOUL" : "none of my enabled destinations has Highest: act";
-              await tellManagerOnce(r, "wake-ineligible", `My SOUL says Wake: yes, but ${why}, so I'm staying on the summarising heartbeat.`, {
+              const why = eligible.reason === "no-manager" ? "I have no manager in my SOUL" : "every place it is on in has a Highest below act";
+              await tellManagerOnce(r, "wake-ineligible", `Proactiveness is on in my SOUL, but ${why}, so I can only summarise, not work on my own.`, {
                 managerId,
                 app: await personaApp(r.personaId).catch(() => undefined),
                 post: slack.post,
@@ -513,11 +517,30 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
   };
 }
 
+/** `/heartbeat now`: a wake outside the schedule, for a manager. Marked due, then the normal path: budget, caps and restraint are unchanged. */
+export async function wakeNow(
+  r: AgentGroup & { slot: string; now: Date },
+  deps: { call: BrainOpCall; slack: SchedulerSlack },
+): Promise<WakeResult | "not-eligible"> {
+  if (!deps.slack.wake || !wakeEligibility(r.personaId, personaManager(r.personaId)).ok) return "not-eligible";
+  await WakeState.markDue(r.agentId, r.now.getTime());
+  return runWake(r, {
+    call: deps.call,
+    post: deps.slack.post,
+    transport: deps.slack.wake,
+    managerId: personaManager,
+    mandates: personaMandates,
+    app: personaApp,
+    ...(deps.slack.activity ? { activity: deps.slack.activity } : {}),
+  });
+}
+
 /** A persona's manager: the default persona's effective soul, a named persona's own structured soul. */
 export function personaManager(personaId: string): string | null {
   try {
     if (!personaId || personaId === "default") return soulData().manager.userId ?? null;
-    return cachedSoulData(personaSoulText(personaId))?.manager.userId ?? null;
+    const soul = personaSoulText(personaId);
+    return cachedSoulData(soul)?.manager.userId ?? parseManager(soul);
   } catch {
     return null;
   }
@@ -533,8 +556,13 @@ export interface PersonaMandates {
 /** A persona's global mandate and each listed channel's own (null: it follows the global one). Never throws. */
 export function personaMandates(personaId: string, channelIds: readonly string[]): PersonaMandates {
   try {
-    const soul = !personaId || personaId === "default" ? soulData() : cachedSoulData(personaSoulText(personaId));
-    if (!soul) return { global: "", channels: {} };
+    const named = personaId && personaId !== "default" ? personaSoulText(personaId) : null;
+    const soul = named === null ? soulData() : cachedSoulData(named);
+    if (!soul) {
+      // Right after a soul edit nothing has extracted it yet: the job must not vanish with the cache.
+      const parsed = parseMandates(named ?? "");
+      return { global: parsed.global, channels: Object.fromEntries(channelIds.map((c) => [c, parsed.channels[c] ?? null])) };
+    }
     const channels: Record<string, string | null> = {};
     for (const c of channelIds) channels[c] = channelMandate(soul, c);
     return { global: soul.mandate ?? "", ...(soul.identity?.voice ? { voice: soul.identity.voice } : {}), channels };

@@ -84,9 +84,11 @@ describe("core size budget", () => {
   // the skill). Re-pinned again for phase C task 5: +122 chars for the
   // `<memory-context>` bullet (the per-turn block needs one line saying what it
   // is and that it is never quoted). Again for task 6: +22 chars for
-  // `kb_thread_history` in the brain tool list. Procedures belong in a built-in skill,
-  // not the always-on core.
-  const BUDGET = 10488;
+  // `kb_thread_history` in the brain tool list. Again for proactive-simple: +125
+  // chars so the proactive_rule bullet says what a rule is not (a live agent
+  // recorded a format wish as an `act` rule). Procedures belong in a built-in
+  // skill, not the always-on core.
+  const BUDGET = 10613;
   test("core stays within its budget", () => {
     const length = norm(runtimeBaseline(true)).length;
     expect(length, "core grew past its budget — move procedures into a built-in skill").toBeLessThanOrEqual(BUDGET * 1.05);
