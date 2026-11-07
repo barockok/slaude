@@ -108,6 +108,18 @@ d("session control panel over real Redis", () => {
     expect(s).toBeTruthy();
     expect(s.warm).toBe(true);
     expect(s.node).toBe("panel-node-A");
+    expect(["warm", "working"]).toContain(s.activity);
+
+    // The inbound Slack message is on the session's event stream for the
+    // console (display only), redacted, with who sent it.
+    const shown = (await pubsub.readEvents(sessionId)).map((e: any) => e.event).filter((e: any) => e?.type === "userMessage");
+    expect(shown.map((e: any) => e.text)).toContain("hello panel");
+    expect(shown[0].userId).toBeTruthy();
+    expect(typeof shown[0].at).toBe("number");
+
+    const detail = (await (await fetch(`${gw.url}/panel/api/sessions/${sessionId}`, { headers: HDR })).json()) as any;
+    expect(detail.warm).toBe(true);
+    expect(["warm", "working"]).toContain(detail.activity);
 
     // Fail-closed: no session cookie → 401.
     const noauth = await fetch(`${gw.url}/panel/api/sessions`);
@@ -205,6 +217,10 @@ d("session control panel over real Redis", () => {
     expect(await redis.get(keys.panelLock(sessionId))).toBeNull();
     // The two deferred Slack messages now dispatch and answer.
     await until(() => replies(gw.transport, "panel-reply").length >= repliesBefore + 2, 25_000);
+    // Shown on the console's tail when delivered (on replay), not when held.
+    const shown = (await pubsub.readEvents(sessionId)).map((e: any) => e.event).filter((e: any) => e?.type === "userMessage").map((e: any) => e.text);
+    expect(shown).toContain("slack while locked A");
+    expect(shown).toContain("slack while locked B");
   }, 40_000);
 
   test("TTL auto-expiry resumes Slack (deferred replayed by the sweeper)", async () => {

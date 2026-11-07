@@ -293,14 +293,19 @@ export interface SessionUsageSnapshot {
  */
 export type SessionEvent =
   | { type: "assistantText"; sessionId: string; text: string; autoEvolve?: boolean }
-  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; autoEvolve?: boolean }
-  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; autoEvolve?: boolean }
+  // `toolUseId` pairs a result with its call; older events have none, and an
+  // older result's `tool` is "".
+  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; toolUseId?: string; autoEvolve?: boolean }
+  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; toolUseId?: string; autoEvolve?: boolean }
   | { type: "thinking"; sessionId: string; text: string; autoEvolve?: boolean }
   | { type: "turnStart"; sessionId: string }
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
   | { type: "error"; sessionId: string; error: string; code?: string; jobId?: string }
   | { type: "tokenUsage"; sessionId: string; snapshot: SessionUsageSnapshot }
-  | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
+  | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" }
+  // A Slack message delivered to the session (text redacted). Display only:
+  // the model gets the message through its turn, never through this event.
+  | { type: "userMessage"; sessionId: string; userId: string; userName?: string; text: string; at: number };
 
 // --- Audit ------------------------------------------------------------------
 

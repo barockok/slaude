@@ -614,6 +614,35 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       .catch((e) => console.error("[panel] hold subscribe failed:", e));
   }
 
+  // The console's live tail reads events:<session>. On nodes the worker
+  // appends every agent event there; in mono nothing did, so the console
+  // showed no activity. Mono appends its own agent's events here.
+  if (panelInfra && !queueDispatch) {
+    const pubsub = panelInfra.pubsub;
+    agent.on("event", (e: AgentEvent) => {
+      if (voiceTurns.active(e.sessionId)) return;
+      void pubsub.appendEvent(e.sessionId, e).catch(() => {});
+    });
+  }
+
+  /**
+   * Show a Slack message delivered to a session on the console's live tail.
+   * Display only: it goes to the event stream, never to the agent's input
+   * (the model gets the message through its turn).
+   */
+  function streamUserMessage(sessionId: string, m: { userId: string; userName?: string; text: string }): void {
+    if (!panelInfra) return;
+    const event = {
+      type: "userMessage" as const,
+      sessionId,
+      userId: m.userId,
+      ...(m.userName ? { userName: redactSecrets(m.userName) } : {}),
+      text: redactSecrets(m.text),
+      at: Date.now(),
+    };
+    void panelInfra.pubsub.appendEvent(sessionId, event).catch(() => {});
+  }
+
   // Sweeper: drain-driven off the deferred queue, not a local held map — so a
   // TTL-expiry (or a release we missed the broadcast for) still resumes on
   // whichever replica is holding the deferred messages. For each session with
@@ -3436,6 +3465,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // AgentManager in mono). Extracted so the active-surface lock can defer
     // and later replay it verbatim.
     const runDispatch = async () => {
+      // Delivered now (a deferred message only when it is replayed).
+      streamUserMessage(session.id, { userId, userName, text: stripped });
       if (queueDispatch) {
         // Gateway role: the turn runs on a node (spec §2). Suppression rides on
         // the message so the node's suppress hook records without running the
