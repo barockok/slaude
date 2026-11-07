@@ -7,7 +7,9 @@ import type { PortalMeResponse } from "../../gateway/portal/api-types";
 import { AppFrame, type Identity, type NavEntry } from "../shared/AppFrame";
 import { NotFoundPage, PlaceholderPage } from "../shared/PlaceholderPage";
 import { api } from "./client";
+import { ConnectReturn } from "./ConnectReturn";
 import { AccountPage } from "./pages/AccountPage";
+import { IntegrationsPage } from "./pages/IntegrationsPage";
 
 export { api };
 
@@ -28,7 +30,7 @@ function page(path: string) {
     case "/":
       return <AccountPage />;
     case "/integrations":
-      return <PlaceholderPage entry={NAV[1]!} />;
+      return <IntegrationsPage />;
     case "/agents":
       return <PlaceholderPage entry={NAV[2]!} />;
     default:
@@ -44,7 +46,12 @@ export function App() {
       nav={NAV}
       api={api}
       loadIdentity={loadIdentity}
-      renderPage={(path) => page(path)}
+      renderPage={(path) => (
+        <>
+          <ConnectReturn />
+          {page(path)}
+        </>
+      )}
     />
   );
 }
