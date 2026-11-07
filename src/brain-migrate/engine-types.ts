@@ -10,7 +10,7 @@ export interface MigrateEngine {
   getTimeline(slug: string, o?: { sourceId?: string; limit?: number }): Promise<Array<{ date: string | Date; source: string; summary: string; detail: string }>>;
   getRawData(slug: string, source?: string, o?: { sourceId?: string }): Promise<Array<{ source: string; data: Record<string, unknown> }>>;
   putPage(slug: string, p: { type: string; title: string; compiled_truth: string; timeline?: string; frontmatter?: Record<string, unknown>; content_hash?: string }, o?: { sourceId?: string }): Promise<unknown>;
-  upsertChunks(slug: string, chunks: Array<{ chunk_index: number; chunk_text: string; chunk_source: "compiled_truth" | "timeline" | "fenced_code"; embedding?: Float32Array; model?: string; token_count?: number }>, o?: { sourceId?: string }): Promise<void>;
+  upsertChunks(slug: string, chunks: Array<{ chunk_index: number; chunk_text: string; chunk_source: "compiled_truth" | "timeline" | "fenced_code"; embedding?: Float32Array; model?: string; token_count?: number }>, o?: { sourceId?: string; /** CARRIED_IN (knowledge/embedding-guard): vectors carried in, labels kept */ slaudeCarriedIn?: boolean }): Promise<void>;
   addTag(slug: string, tag: string, o?: { sourceId?: string }): Promise<void>;
   addTimelineEntry(slug: string, e: { date: string; source?: string; summary: string; detail?: string }, o?: { sourceId?: string; skipExistenceCheck?: boolean }): Promise<void>;
   putRawData(slug: string, source: string, data: object, o?: { sourceId?: string }): Promise<void>;
