@@ -5,11 +5,12 @@
  */
 import type { PortalMeResponse } from "../../gateway/portal/api-types";
 import { AppFrame, type Identity, type NavEntry } from "../shared/AppFrame";
-import { NotFoundPage, PlaceholderPage } from "../shared/PlaceholderPage";
+import { NotFoundPage } from "../shared/PlaceholderPage";
 import { api } from "./client";
 import { ConnectReturn } from "./ConnectReturn";
 import { AccountPage } from "./pages/AccountPage";
 import { IntegrationsPage } from "./pages/IntegrationsPage";
+import { MyAgentsPage } from "./pages/MyAgentsPage";
 
 export { api };
 
@@ -32,7 +33,7 @@ function page(path: string) {
     case "/integrations":
       return <IntegrationsPage />;
     case "/agents":
-      return <PlaceholderPage entry={NAV[2]!} />;
+      return <MyAgentsPage />;
     default:
       return <NotFoundPage home="/" />;
   }
