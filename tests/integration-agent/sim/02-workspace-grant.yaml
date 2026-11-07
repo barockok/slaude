@@ -1,0 +1,7 @@
+# Seed first: a stored workspace grant (subject T0SIM, the sim team).
+# Anyone in the workspace is admitted in an unlisted channel.
+layer: restricted
+as: outsider
+steps:
+  - send: { text: "outsider with a workspace grant" }
+  - expect_reply: { contains: "ack: done" }

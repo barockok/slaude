@@ -1,0 +1,6 @@
+# The manager may DM the agent.
+layer: dm
+as: manager
+steps:
+  - send: { text: "manager DM" }
+  - expect_reply: { contains: "ack: done" }

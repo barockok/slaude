@@ -1,0 +1,6 @@
+# An approver alone is not admitted in a DM.
+layer: dm
+as: approver
+steps:
+  - send: { text: "approver DM" }
+  - expect_drop: { reason: whitelist }

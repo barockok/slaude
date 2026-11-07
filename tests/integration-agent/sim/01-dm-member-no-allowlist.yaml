@@ -1,0 +1,6 @@
+# A DM from someone who is not manager, backup or on the DM allowlist drops.
+layer: dm
+as: member
+steps:
+  - send: { text: "member DM without allowlist" }
+  - expect_drop: { reason: whitelist }

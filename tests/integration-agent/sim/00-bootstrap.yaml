@@ -1,0 +1,6 @@
+# Creates the database schema at $SLAUDE_DB_PATH (the manager DMs the agent).
+layer: dm
+as: manager
+steps:
+  - send: { text: "bootstrap" }
+  - expect_reply: { contains: "ack: done" }
