@@ -2,10 +2,18 @@
  * Mandates: the jobs an agent (persona) holds. Phase 1 is a read model computed
  * from what already exists (SOUL.md stays authoritative), never stored:
  *
+ * The mandate text comes from {@link personaMandateText}, the same reading the
+ * scheduler's heartbeat and wake prompts use: the default persona's effective
+ * soul; for a named persona its soul text (managed soul or SOUL.md, else the
+ * default persona's soul text), then the cached extraction of that text, else
+ * the deterministic `## Mandate` / `### Mandate` parse. A named persona's
+ * structured `soul_json` decides access (approvers), not its mandates here.
+ *
  *  - `global`: the soul's `## Mandate` (trigger: any admitted message).
- *  - `channel:<id>`: each `## Channel` block, with its own `### Proactive`
- *    switch. A block with no mandate text (approvers or proactive only) is
- *    listed with `inheritsGlobal`.
+ *  - `channel:<id>`: each `## Channel` block with a mandate, and each with its
+ *    own `### Proactive` switch. A block with no mandate text is listed with
+ *    `inheritsGlobal`. The default persona's blocks never appear under a
+ *    named persona.
  *  - `heartbeat`: when proactive wakes are on anywhere: the `## Proactive`
  *    block, or any channel's own `### Proactive` with `Enabled: yes` (one switch).
  *  - `cron:<id>`: each active, unpaused `cron_jobs` row of the persona.
@@ -21,10 +29,9 @@ import { approversFor } from "../access/role";
 import * as CronJobs from "../db/cron-jobs";
 import { personaSoulText } from "../persona/soul-source";
 import type { Level } from "../proactive/levels";
-import { cachedSoulData, channelMandate } from "../soul/extract";
-import { effectiveSoulForChannelFor, ownSoulDataFor, soulDataFor } from "../soul/per-persona";
-import { parseMandates, parseProactive, type ProactiveConfig } from "../soul/proactive";
-import type { SoulData } from "../soul/data";
+import { effectiveSoulForChannelFor } from "../soul/per-persona";
+import { personaMandateText } from "../soul/persona-mandates";
+import { parseProactive, type ProactiveConfig } from "../soul/proactive";
 
 export interface Mandate {
   id: string;
@@ -58,42 +65,6 @@ function proactiveOf(persona: string): ProactiveConfig | null {
   }
 }
 
-/** The mandate text of a persona: the global mandate and each channel block's own. */
-interface MandateText {
-  global: string;
-  channels: Record<string, string | null>;
-}
-
-function fromSoul(soul: SoulData): MandateText {
-  const channels: Record<string, string | null> = {};
-  for (const c of soul.channelOverrides) channels[c.channel] = channelMandate(soul, c.channel);
-  return { global: soul.mandate?.trim() ?? "", channels };
-}
-
-/**
- * Where a persona's mandates are written. The default persona: its effective
- * soul. A named persona: its own structured soul (soul_json) when it has one;
- * otherwise (a filesystem persona) the same soul-text fallback the scheduler
- * uses (personaMandates): the extracted soul cache for its text, else the
- * deterministic `## Mandate` / `### Mandate` parse. Never the default soul's
- * channel blocks: those belong to the default persona.
- */
-function mandateTextOf(persona: string, isDefault: boolean): MandateText {
-  if (isDefault) return fromSoul(soulDataFor("default"));
-  const own = ownSoulDataFor(persona);
-  if (own) return fromSoul(own);
-  let text: string;
-  try {
-    text = personaSoulText(persona);
-  } catch {
-    return { global: "", channels: {} };
-  }
-  const cached = cachedSoulData(text);
-  if (cached) return fromSoul(cached);
-  const parsed = parseMandates(text);
-  return { global: parsed.global.trim(), channels: parsed.channels };
-}
-
 function cronTitle(prompt: string): string {
   const first = prompt.trim().split(/\r?\n/, 1)[0]!.trim();
   return first.length > TITLE_MAX ? `${first.slice(0, TITLE_MAX - 3)}...` : first;
@@ -102,7 +73,7 @@ function cronTitle(prompt: string): string {
 export async function listMandates(personaName: string): Promise<Mandate[]> {
   const persona = personaName && personaName !== "default" ? personaName : "default";
   const isDefault = persona === "default";
-  const text = mandateTextOf(persona, isDefault);
+  const text = personaMandateText(persona);
   const proactive = proactiveOf(persona);
   const approversIn = async (channelId?: string): Promise<string[]> =>
     isDefault ? effectiveSoulForChannelFor("default", channelId).approvers.map((a) => a.userId) : approversFor(persona, channelId);

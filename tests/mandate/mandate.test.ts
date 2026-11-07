@@ -27,7 +27,16 @@ const SCOUT_JSON = {
   ],
 };
 
+// The mandate text lives in the soul text, which is what the mandate read
+// model and the scheduler read (no extraction cache here: the parse applies).
 const SCOUT_MD = `# Scout
+
+## Mandate
+Keep the team informed.
+
+## Channel <#CTEAM|team>
+### Mandate
+Answer team questions.
 
 ## Proactive
 - Enabled: yes
@@ -36,6 +45,8 @@ const SCOUT_MD = `# Scout
 - Wake: yes
 
 ## Channel <#COPS|ops>
+### Mandate
+Run ops triage.
 ### Proactive
 - Enabled: yes
 - Highest: act
@@ -101,7 +112,6 @@ describe("listMandates", () => {
       "global",
       "channel:COPS",
       "channel:CQUIET",
-      "channel:CREVIEW",
       "channel:CTEAM",
       "heartbeat",
       ...[active.id, longJob.id].sort().map((id) => `cron:${id}`),
@@ -124,10 +134,9 @@ describe("listMandates", () => {
     expect(sorted(team.approvers)).toEqual(["UALICE", "UBACKUP", "USCOUT"]);
     expect(team.proactive).toBeUndefined();
 
-    // Blocks with no mandate text: approvers only, or proactive only.
-    const review = ms.find((m) => m.id === "channel:CREVIEW")!;
-    expect(review).toMatchObject({ kind: "channel", instructions: "", inheritsGlobal: true, channelId: "CREVIEW" });
-    expect(sorted(review.approvers)).toEqual(["UBACKUP", "UDAVE", "USCOUT"]);
+    // An approvers-only block of soul_json is access, not a mandate: not listed.
+    expect(ms.some((m) => m.id === "channel:CREVIEW")).toBe(false);
+    // A block with no mandate text, proactive only.
     const quiet = ms.find((m) => m.id === "channel:CQUIET")!;
     expect(quiet).toMatchObject({ instructions: "", inheritsGlobal: true, proactive: { enabled: false } });
 
@@ -207,7 +216,7 @@ describe("listMandates", () => {
 
   test("a named persona with no approvers or managers shows the default persona's managers", async () => {
     setSoulData(SoulDataSchema.parse({ mandate: "default mandate" }));
-    setPersonaRegistry(registryWith([{ name: "lone", soulJson: { mandate: "Do lone things." }, soulMd: "# Lone\n" }]));
+    setPersonaRegistry(registryWith([{ name: "lone", soulJson: { mandate: "Do lone things." }, soulMd: "# Lone\n\n## Mandate\nDo lone things.\n" }]));
     expect((await listMandates("lone"))[0]!.approvers).toEqual([]);
     await grant("default", "UBOSS", "manager");
     const ms = await listMandates("lone");
@@ -252,6 +261,23 @@ Post the release status every morning.
     const hb = ms.find((m) => m.id === "heartbeat")!;
     expect(hb.triggers).toEqual(["heartbeat round", "wake"]);
     expect(hb.instructions).toBe("Works on its own in <#CREL>.");
+  });
+
+  test("the mandate text matches what the scheduler's wake prompt reads", async () => {
+    const { personaMandates } = await import("../../src/background/scheduler");
+    for (const name of ["scout", "default"]) {
+      const ms = await listMandates(name);
+      const channelIds = ms.filter((m) => m.kind === "channel").map((m) => m.channelId!);
+      const sched = personaMandates(name, channelIds);
+      expect(ms.find((m) => m.id === "global")?.instructions ?? "").toBe(sched.global.trim());
+      for (const c of channelIds) expect(ms.find((m) => m.id === `channel:${c}`)!.instructions || null).toBe(sched.channels[c] ?? null);
+    }
+  });
+
+  test("a named persona with no soul text of its own reads the default persona's soul text", async () => {
+    setManagedDefaultSoul("# Default\n\n## Mandate\nThe default soul text mandate.\n");
+    setPersonaRegistry(registryWith([{ name: "bare" }]));
+    expect((await listMandates("bare"))[0]).toMatchObject({ id: "global", instructions: "The default soul text mandate." });
   });
 
   test("filesystem persona with only a global proactive switch shows the heartbeat", async () => {
