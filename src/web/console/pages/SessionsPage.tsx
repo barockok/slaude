@@ -5,7 +5,7 @@ import {
   Avatar, Badge, Button, Card, EmptyState, FilterChip, IconLock, PageHeader, SearchField, Table, type Column, type FilterOption,
 } from "../../ui";
 import { ErrorState } from "../components/ErrorState";
-import { TimeAgo } from "../components/TimeAgo";
+import { TimeAgo } from "../../shared/TimeAgo";
 import { useApi } from "../hooks/useApi";
 import { useIdentity } from "../../shared/AppFrame";
 import { sessionPath, sessionStatus } from "../lib/format";

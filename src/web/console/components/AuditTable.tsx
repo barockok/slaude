@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { AuditEventView } from "../../../gateway/panel/api-types";
 import { Badge, Table, type Column } from "../../ui";
 import { ACTOR_KIND_LABEL, actionLabel, decisionLabel, decisionTone } from "../lib/format";
-import { TimeAgo } from "./TimeAgo";
+import { TimeAgo } from "../../shared/TimeAgo";
 
 function target(e: AuditEventView): string | null {
   if (!e.targetId) return null;

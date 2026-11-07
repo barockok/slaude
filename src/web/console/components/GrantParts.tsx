@@ -1,7 +1,9 @@
 import type { ReactNode } from "react";
-import type { GrantRole, SubjectKind } from "../../../gateway/panel/api-types";
-import { Badge, IconBuilding, IconHash, IconUser } from "../../ui";
-import { ROLE_LABEL, ROLE_TONE, SUBJECT_LABEL } from "../lib/grants";
+import type { SubjectKind } from "../../../gateway/panel/api-types";
+import { IconBuilding, IconHash, IconUser } from "../../ui";
+import { SUBJECT_LABEL } from "../lib/grants";
+
+export { RoleBadge } from "../../shared/RoleBadge";
 
 const KIND_ICON = { user: IconUser, channel: IconHash, workspace: IconBuilding } as const;
 
@@ -19,8 +21,4 @@ export function Subject({ kind, id, sub }: { kind: SubjectKind; id: string; sub?
       </span>
     </span>
   );
-}
-
-export function RoleBadge({ role }: { role: GrantRole }) {
-  return <Badge tone={ROLE_TONE[role]}>{ROLE_LABEL[role]}</Badge>;
 }

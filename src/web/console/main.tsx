@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "../ui/tokens.css";
 import "../ui/base.css";
 import "../ui/components.css";
+import "../shared/shared.css";
 import "./console.css";
 import { setBase } from "../lib/router";
 import { App } from "./App";

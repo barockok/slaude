@@ -1,122 +1,8 @@
 /*
- * Console page layouts. Components live in ui/components.css; this file only
- * arranges them for the console's pages, with the same --sl-* tokens.
+ * Console page layouts. Components live in ui/components.css and the utilities
+ * both apps use live in shared/shared.css; this file only arranges them for the
+ * console's pages, with the same --sl-* tokens.
  */
-
-/* ---------------------------------------------------------------- text utilities */
-
-.sl-nowrap {
-  white-space: nowrap;
-}
-
-.sl-caption {
-  color: var(--sl-text-muted);
-  font-size: var(--sl-text-footnote);
-  line-height: var(--sl-leading-footnote);
-}
-
-.sl-faint {
-  color: var(--sl-text-muted);
-}
-
-.sl-truncate {
-  display: block;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sl-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  min-width: 0;
-}
-
-.sl-stack-lg {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sl-pad-sm);
-}
-
-.sl-inline {
-  display: inline-flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sl-pad-xs);
-}
-
-.sl-link {
-  color: var(--sl-text-accent);
-  text-decoration: none;
-  border-radius: var(--sl-radius-xs);
-}
-
-.sl-link:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.sl-link-btn {
-  align-self: flex-start;
-  padding: 0;
-  color: var(--sl-text-accent);
-  font-size: var(--sl-text-footnote);
-  border-radius: var(--sl-radius-xs);
-}
-
-.sl-link-btn:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.sl-count {
-  margin-left: 0.25rem;
-  color: var(--sl-text-muted);
-  font-weight: var(--sl-weight-regular);
-}
-
-/* ---------------------------------------------------------------- sections */
-
-.sl-section {
-  margin-top: var(--sl-gap-lg);
-}
-
-.sl-section--flush {
-  margin-top: 0;
-}
-
-.sl-section__head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--sl-gap-md);
-  margin-bottom: var(--sl-pad-md);
-}
-
-.sl-section__head .sl-caption {
-  margin-top: 0.125rem;
-}
-
-.sl-section__title {
-  font-size: var(--sl-text-heading);
-  line-height: var(--sl-leading-heading);
-  font-weight: var(--sl-weight-semibold);
-}
-
-@media (max-width: 640px) {
-  .sl-section__head {
-    flex-wrap: wrap;
-  }
-}
-
-.sl-more {
-  display: flex;
-  justify-content: center;
-  margin-top: var(--sl-pad-lg);
-}
 
 /* ---------------------------------------------------------------- overview stats */
 
@@ -180,59 +66,6 @@
   color: var(--sl-text-muted);
   font-size: var(--sl-text-footnote);
   line-height: var(--sl-leading-footnote);
-}
-
-/* ---------------------------------------------------------------- tables */
-
-.sl-identity {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sl-pad-sm);
-  min-width: 0;
-}
-
-.sl-identity__name {
-  font-weight: var(--sl-weight-medium);
-}
-
-.sl-subject {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--sl-pad-sm);
-  min-width: 0;
-}
-
-.sl-subject__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: var(--sl-control-h-xs);
-  height: var(--sl-control-h-xs);
-  border-radius: var(--sl-radius-xs);
-  background: var(--sl-fill-disabled);
-  box-shadow: inset 0 0 0 1px var(--sl-border);
-  color: var(--sl-text-secondary);
-}
-
-.sl-source {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3125rem;
-  color: var(--sl-text-secondary);
-  font-size: var(--sl-text-footnote);
-  white-space: nowrap;
-  cursor: help;
-}
-
-.sl-source .sl-icon {
-  color: var(--sl-text-muted);
-}
-
-/* Two-line cells (id over a note) get room to breathe; one-line rows keep the 45 px height. */
-.sl-content .sl-table td {
-  padding-top: 0.4375rem;
-  padding-bottom: 0.4375rem;
 }
 
 /* ---------------------------------------------------------------- agent detail */
@@ -1421,15 +1254,5 @@
 @media (max-width: 640px) {
   .sl-session-head .sl-title-row .sl-avatar {
     display: none;
-  }
-}
-
-/* A wide table on a phone scrolls inside its box; keep its empty state in view. */
-@media (max-width: 768px) {
-  .sl-table tr.is-empty td > * {
-    position: sticky;
-    left: 0;
-    width: calc(100vw - 2 * var(--sl-pad-lg));
-    max-width: 100%;
   }
 }

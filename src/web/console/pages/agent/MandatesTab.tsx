@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { AgentDetailResponse, MandateView } from "../../../../gateway/panel/api-types";
 import { Avatar, Badge, Card, EmptyState } from "../../../ui";
-import { TimeAgo } from "../../components/TimeAgo";
+import { TimeAgo } from "../../../shared/TimeAgo";
 
 const GROUPS: Array<{ kind: MandateView["kind"]; label: string; hint: string }> = [
   { kind: "global", label: "Global", hint: "Applies to every admitted message." },

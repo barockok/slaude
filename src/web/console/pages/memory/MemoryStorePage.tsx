@@ -4,7 +4,7 @@ import { AuthRedirectError } from "../../../lib/api";
 import { Link, navigate } from "../../../lib/router";
 import { Badge, Button, Card, EmptyState, IconArrowLeft, PageHeader, Table, type Column } from "../../../ui";
 import { api } from "../../client";
-import { TimeAgo } from "../../components/TimeAgo";
+import { TimeAgo } from "../../../shared/TimeAgo";
 import { useApi } from "../../hooks/useApi";
 import { KindBadge, MemoryError, PrivateBadge, isPrivateStoreId, pagePath } from "./memoryParts";
 

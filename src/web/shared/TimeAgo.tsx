@@ -1,4 +1,4 @@
-import { absoluteTime, relativeTime } from "../lib/format";
+import { absoluteTime, relativeTime } from "./time";
 
 /** Relative time, with the absolute time on hover and for assistive tech. */
 export function TimeAgo({ at }: { at: number }) {

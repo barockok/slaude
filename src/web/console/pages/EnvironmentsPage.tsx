@@ -3,7 +3,7 @@ import type { EnvironmentsResponse, NodePoolView, PersonalEnvironmentView } from
 import { Link } from "../../lib/router";
 import { Avatar, Badge, Card, EmptyState, PageHeader, Skeleton, Table, type Column } from "../../ui";
 import { ErrorState } from "../components/ErrorState";
-import { TimeAgo } from "../components/TimeAgo";
+import { TimeAgo } from "../../shared/TimeAgo";
 import { useApi } from "../hooks/useApi";
 
 type Placement = EnvironmentsResponse["personas"][number];

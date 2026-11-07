@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { MemoryPageResponse } from "../../../../gateway/panel/api-types";
 import { Link, useSearch } from "../../../lib/router";
 import { Badge, Card, EmptyState, IconArrowLeft, KeyValue, PageHeader, Skeleton } from "../../../ui";
-import { TimeAgo } from "../../components/TimeAgo";
+import { TimeAgo } from "../../../shared/TimeAgo";
 import { useApi } from "../../hooks/useApi";
 import { MemoryError, PrivateBadge, isPrivateStoreId, pagePath, storePath } from "./memoryParts";
 

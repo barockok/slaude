@@ -7,7 +7,7 @@ import { api } from "../../client";
 import { AuditDrawer } from "../../components/AuditDrawer";
 import { AuditTable } from "../../components/AuditTable";
 import { ErrorState } from "../../components/ErrorState";
-import { TimeAgo } from "../../components/TimeAgo";
+import { TimeAgo } from "../../../shared/TimeAgo";
 import { useApi } from "../../hooks/useApi";
 import { useAuditPages } from "../../hooks/useAuditPages";
 import { useRole } from "../../hooks/useRole";
