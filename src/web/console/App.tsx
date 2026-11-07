@@ -6,6 +6,7 @@ import { matchPath } from "../lib/router";
 import { AppFrame, type Identity, type NavEntry } from "../shared/AppFrame";
 import { NotFoundPage, PlaceholderPage } from "../shared/PlaceholderPage";
 import { api } from "./client";
+import { AccessPage } from "./pages/AccessPage";
 import { AgentDetailPage, isAgentTab } from "./pages/agent/AgentDetailPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -38,6 +39,7 @@ async function loadIdentity(): Promise<Identity> {
 function renderPage(path: string, entry: NavEntry | null) {
   if (path === "/") return <OverviewPage />;
   if (path === "/agents") return <AgentsPage />;
+  if (path === "/access") return <AccessPage />;
   const agent = matchPath("/agents/:name", path) ?? matchPath("/agents/:name/:tab", path);
   if (agent) {
     const tab = agent.tab ?? "overview";
