@@ -17,6 +17,14 @@
  *   retired copies  <root>/.retired/<slug>-<stamp>, moved there by the weekly
  *                   skill review (or the console), restorable.
  * Nodes share $SLAUDE_HOME and mount the same roots, so nothing differs per node.
+ *
+ * Usage keys are what the runtime records (skills/usage.ts skillUsageKey): the
+ * name the Skill tool was called with, a leading "/" and the home plugin's
+ * prefix removed. So a base or overlay skill counts under its slug and its CLI
+ * name, a built-in under `slaude:<name>`, and a plugin skill under
+ * `<plugin>:<CLI name of its frontmatter name>` (the name the CLI lists),
+ * `<plugin>:<directory>`, and its bare CLI name when no other skill answers
+ * to that name.
  */
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -259,9 +267,22 @@ export async function buildSkills(): Promise<Built> {
         },
         dir: sdir,
         owner: null,
-        ...base([invocation], names),
+        ...base([...new Set([invocation, `${plugin}:${entry}`])], names),
       });
     }
+  }
+
+  // A plugin skill called by its bare name is recorded under that name: count
+  // it there too, unless another skill answers to the same bare name.
+  const bareOwners = new Map<string, number>();
+  const bareOf = (e: SkillEntry) => (e.source === "plugin" ? e.invocation.slice(e.invocation.indexOf(":") + 1) : null);
+  for (const e of entries) {
+    const answersTo = e.source === "plugin" ? [bareOf(e)!] : e.keys;
+    for (const k of answersTo) bareOwners.set(k, (bareOwners.get(k) ?? 0) + 1);
+  }
+  for (const e of entries) {
+    const bare = bareOf(e);
+    if (bare && bareOwners.get(bare) === 1) e.keys.push(bare);
   }
 
   // Retired copies, in each agent's own root.

@@ -166,6 +166,29 @@ describe("GET /panel/api/skills", () => {
   });
 });
 
+describe("plugin skill usage", () => {
+  test("counts every key the runtime records for it: plugin and CLI name, plugin and directory, and the bare name when unique", async () => {
+    await SkillUsage.record("UDEFAULT", "docs-kit:search", 10);
+    await SkillUsage.record("UPSCOUT", "search", 20);
+    // A bare name another skill also answers to is not counted for the plugin.
+    await SkillUsage.record("UDEFAULT", "triage-x", 30);
+    const { skills } = (await call("GET", "/panel/api/skills")).body as SkillsResponse;
+    expect(byId(skills, "plugin:docs-kit:search")!.usage).toEqual({ uses: 2, lastUsedAt: 20, trackedSince: 10 });
+  });
+
+  test("a plugin skill whose frontmatter name differs from its directory counts under both", async () => {
+    skill(join(pluginDir, "skills", "lookup"), { name: "Find Things", description: "Find" });
+    try {
+      await SkillUsage.record("UDEFAULT", "docs-kit:Find-Things", 10);
+      await SkillUsage.record("UDEFAULT", "docs-kit:lookup", 20);
+      const { skills } = (await call("GET", "/panel/api/skills")).body as SkillsResponse;
+      expect(byId(skills, "plugin:docs-kit:lookup")).toMatchObject({ invocation: "docs-kit:Find-Things", usage: { uses: 2 } });
+    } finally {
+      rmSync(join(pluginDir, "skills", "lookup"), { recursive: true, force: true });
+    }
+  });
+});
+
 describe("retire and restore", () => {
   test("operators cannot; installed skills cannot be retired", async () => {
     expect((await call("POST", "/panel/api/skills/agent%3Ascout%3Ascout-x/retire", operator, {})).status).toBe(403);

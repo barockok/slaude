@@ -68,7 +68,11 @@ HTML through: raw HTML in the text shows as text, and only `http`, `https` and
   writes to its own root (`$SLAUDE_HOME/personas/<name>/skills`), which
   shadows a shared skill of the same name for that agent only.
 
-Uses come from the `skill_usage` table (a counted load of the skill). A
+Uses come from the `skill_usage` table (a counted load of the skill), keyed by
+the name the agent called the skill with: a shared or own skill by its name, a
+built-in as `slaude:<name>`, and a plugin skill as `<plugin>:<name>` (the
+name in its frontmatter, as the plugin lists it), `<plugin>:<directory>`, or
+its bare name when no other skill has that name. A
 superadmin can **retire** an agent-authored skill (it moves to `.retired/` and
 stops reaching the agent, the same path the weekly skill review takes, so the
 next digest lists it and the manager can restore it from Slack) and **restore**
