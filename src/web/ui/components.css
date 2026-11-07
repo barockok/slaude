@@ -190,6 +190,15 @@
   color: var(--sl-text);
 }
 
+.sl-nav-group {
+  margin-top: var(--sl-pad-md);
+  padding: var(--sl-pad-xs) var(--sl-pad-sm) 0.125rem;
+  font-size: var(--sl-text-caption);
+  line-height: var(--sl-leading-caption);
+  font-weight: var(--sl-weight-medium);
+  color: var(--sl-text-muted);
+}
+
 .sl-nav-item__icon {
   display: inline-flex;
   color: var(--sl-text-muted);

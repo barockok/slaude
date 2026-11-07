@@ -3,11 +3,11 @@
  * user menu, toasts, the signed-in identity, and the dev-only gallery route.
  * Each app supplies its nav, how to load "me", and how to render a page.
  */
-import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, Fragment, lazy, Suspense, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, AuthRedirectError, type ApiClient } from "../lib/api";
 import { navigate, useRoute } from "../lib/router";
 import {
-  AppShell, Button, DocsLink, EmptyState, JumpSearch, NavItem, Sidebar, ToastProvider, UserMenu, Mark,
+  AppShell, Button, DocsLink, EmptyState, JumpSearch, NavGroup, NavItem, Sidebar, ToastProvider, UserMenu, Mark,
 } from "../ui";
 
 export const DOCS_URL = "https://barockok.github.io/slaude/";
@@ -18,6 +18,8 @@ export interface NavEntry {
   to: string;
   description: string;
   keywords?: string;
+  /** A heading the entry sits under in the sidebar (consecutive entries share it). */
+  group?: string;
 }
 
 export interface Identity {
@@ -125,10 +127,13 @@ export function AppFrame({ product, sidebarTitle, nav, api, loadIdentity, render
           user={<UserMenu name={identity?.name ?? null} detail={identity?.detail} onSignOut={signOut} />}
           sidebar={
             <Sidebar title={sidebarTitle} label={`${sidebarTitle} navigation`}>
-              {nav.map((n) => (
-                <NavItem key={n.to} to={n.to} active={!isGallery && entry?.to === n.to}>
-                  {n.label}
-                </NavItem>
+              {nav.map((n, i) => (
+                <Fragment key={n.to}>
+                  {n.group && n.group !== nav[i - 1]?.group && <NavGroup label={n.group} />}
+                  <NavItem to={n.to} active={!isGallery && entry?.to === n.to}>
+                    {n.label}
+                  </NavItem>
+                </Fragment>
               ))}
               {Gallery && (
                 <NavItem to="/_gallery" active={isGallery}>

@@ -1,4 +1,4 @@
-export { AppShell, Sidebar, NavItem, DocsLink, UserMenu } from "./AppShell";
+export { AppShell, Sidebar, NavItem, NavGroup, DocsLink, UserMenu } from "./AppShell";
 export type { AppShellProps, SidebarProps, NavItemProps, UserMenuProps } from "./AppShell";
 export { Button, IconButton } from "./Button";
 export type { ButtonProps, ButtonVariant, ButtonSize, IconButtonProps } from "./Button";
