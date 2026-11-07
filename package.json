@@ -26,7 +26,7 @@
     "sim": "bun src/gateway/sim/cli.ts",
     "brain-export": "bun src/cli/brain-export.ts",
     "brain-import": "bun src/cli/brain-import.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p src/web/tsconfig.json",
     "docs": "bun docs/site/build.mjs",
     "panel:dev": "vite --config src/gateway/panel/web/vite.config.ts",
     "panel:build": "vite build --config src/gateway/panel/web/vite.config.ts",

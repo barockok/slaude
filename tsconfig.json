@@ -27,12 +27,12 @@
     "noPropertyAccessFromIndexSignature": false
   },
 
-  // The control-panel browser app (React + DOM) is built by Vite with its own
-  // toolchain/tsconfig — intentionally separate from the Bun-native server
-  // (design §Frontend). Keep it out of the server-side `tsc --noEmit` so DOM
-  // globals here don't fail the backend typecheck.
+  // The browser apps (src/web: console and portal, React + DOM) are checked by
+  // their own src/web/tsconfig.json, intentionally separate from the Bun-native
+  // server (design §Frontend), so DOM globals there do not leak into the backend
+  // check. `bun run typecheck` runs both.
   // deploy/k8s-local/probe runs INSIDE a container and imports the image's own
   // /app/src paths, which do not resolve on a developer machine. It is verified
   // by running it, not by this typecheck. e2e/harness/in-pod is the same kind of file.
-  "exclude": ["src/gateway/panel/web", "src/gateway/portal/web", "tests/panel-web", "deploy/k8s-local/probe", "e2e/harness/in-pod"]
+  "exclude": ["src/web", "src/gateway/panel/web", "src/gateway/portal/web", "tests/panel-web", "deploy/k8s-local/probe", "e2e/harness/in-pod"]
 }
