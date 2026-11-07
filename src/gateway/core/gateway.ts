@@ -4470,7 +4470,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // The end-user portal is its own mount with its own guard: an ordinary user
   // never reaches an operator route, and the panel's guard is not relaxed.
   // createPortalApi returns null for every request while SLAUDE_PORTAL is off.
-  const portalApi = createPortalApi();
+  // Channel, user and workspace names for display in the console and the
+  // portal, looked up through the bot of the row's app (or the persona's
+  // latest app), cached. One instance, one cache.
+  const slackNames = createSlackNames({ clientFor: panelNameClient });
+  const portalApi = createPortalApi({ names: slackNames });
   // Reuses whichever pub/sub this gateway already holds; with none (mono, no
   // Redis) the reload is local-only, which is all there is to notify.
   // With a queue, a persona whose runsOn no live node carries is reported as a
@@ -4497,9 +4501,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         onUnlock: (sessionId) => { agent.reload(sessionId); },
         // The persona view says where a persona's stdio MCP servers run.
         role: queueDispatch ? "gateway" : "mono",
-        // Channel and user names for display, looked up through the bot of the
-        // row's app (or the persona's latest app), cached.
-        names: createSlackNames({ clientFor: panelNameClient }),
+        names: slackNames,
         // Mono: sessions run here, so liveness is the manager's live map
         // (nothing registers in the node registry).
         local: queueDispatch

@@ -124,6 +124,36 @@ describe("redeeming an onboarding link", () => {
     expect(await Accounts.accountForSlackUser("TTESTTEAM1", "UTESTUSER1")).toBeNull();
   });
 
+  test("the confirmation page is styled with the design tokens and shows names, ids as secondary text", async () => {
+    const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
+    const names = {
+      teamName: async (id: string) => (id === "TTESTTEAM1" ? "Example <Workspace>" : null),
+      userName: async (id: string) => (id === "UTESTUSER1" ? "Jane Doe" : null),
+    };
+    const res = await createPortalApi({ names }).fetch(
+      new Request(`https://slaude.example.com/portal/link?t=${t}`, { headers: { cookie: signedIn("sub-1", "alice@example.com") } }),
+    );
+    expect(res!.status).toBe(200);
+    const page = await res!.text();
+    expect(page).toContain("--sl-page-bg");
+    // Names and ids arrive as JSON for textContent, never as markup.
+    expect(page).toContain(JSON.stringify("Example <Workspace>"));
+    expect(page).not.toContain("<Workspace>\"<");
+    expect(page).toContain(JSON.stringify("Jane Doe"));
+    expect(page).toContain(JSON.stringify("TTESTTEAM1"));
+    expect(await Accounts.accountForSlackUser("TTESTTEAM1", "UTESTUSER1")).toBeNull();
+  });
+
+  test("names that cannot be resolved leave the ids alone", async () => {
+    const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
+    const names = { teamName: async () => { throw new Error("slack down"); }, userName: async () => null };
+    const res = await createPortalApi({ names }).fetch(
+      new Request(`https://slaude.example.com/portal/link?t=${t}`, { headers: { cookie: signedIn("sub-1", "alice@example.com") } }),
+    );
+    expect(res!.status).toBe(200);
+    expect(await res!.text()).toContain(`set("team-name", "")`);
+  });
+
   test("the confirmation page sends an anonymous visitor to login, preserving the token", async () => {
     const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
 

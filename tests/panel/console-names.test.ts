@@ -45,6 +45,23 @@ function stubSlack(o: { channels?: Record<string, Record<string, unknown>>; user
 }
 
 describe("createSlackNames", () => {
+  it("a workspace name comes from auth.test of that workspace's token, never another team's", async () => {
+    let calls = 0;
+    const client: SlackNameClient = {
+      conversations: { info: async () => ({}) },
+      users: { info: async () => ({}) },
+      auth: { test: async () => (calls++, { ok: true, team: "Example Workspace", team_id: "TWORK" }) },
+    };
+    const names = createSlackNames({ clientFor: () => client });
+    expect(await names.teamName("TWORK")).toBe("Example Workspace");
+    expect(await names.teamName("TWORK")).toBe("Example Workspace");
+    expect(calls).toBe(1);
+    expect(await names.teamName("TOTHER")).toBeNull();
+    expect(await names.teamName("not-a-team")).toBeNull();
+    const noAuth: SlackNameClient = { conversations: client.conversations, users: client.users };
+    expect(await createSlackNames({ clientFor: () => noAuth }).teamName("TWORK")).toBeNull();
+  });
+
   it("resolves a channel to #name, caches it, and asks through the context's client", async () => {
     const { client, calls } = stubSlack({ channels: { CTEAM: { name: "team" } } });
     const seen: unknown[] = [];

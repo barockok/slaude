@@ -30,6 +30,8 @@
 export interface SlackNameClient {
   conversations: { info(args: { channel: string }): Promise<unknown> };
   users: { info(args: { user: string }): Promise<unknown> };
+  /** auth.test: the token's own workspace (`team`, `team_id`); needs no extra scope. */
+  auth?: { test(): Promise<unknown> };
 }
 
 /** Whose client resolves a name: the persona, and the app when known. */
@@ -44,6 +46,8 @@ export interface SlackNames {
   channelLabel(channelId: string, ctx?: NameContext): Promise<string | null>;
   /** A person's display name, or null. */
   userName(userId: string, ctx?: NameContext): Promise<string | null>;
+  /** A workspace's name, when a bot token of that workspace can say it (auth.test), or null. */
+  teamName(teamId: string, ctx?: NameContext): Promise<string | null>;
 }
 
 export interface SlackNamesOptions {
@@ -77,6 +81,7 @@ type Loaded = { value: string | null; cache: "hit" | "miss" | "none" };
 
 const CHANNEL_RE = /^[CGD][A-Z0-9]{2,}$/;
 const USER_RE = /^[UW][A-Z0-9]{2,}$/;
+const TEAM_RE = /^[TE][A-Z0-9]{2,}$/;
 
 const obj = (v: unknown): Record<string, unknown> | null => (v && typeof v === "object" ? (v as Record<string, unknown>) : null);
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
@@ -252,7 +257,21 @@ export function createSlackNames(opts: SlackNamesOptions): SlackNames {
     );
   }
 
-  return { channelLabel, userName };
+  function teamName(teamId: string, ctx: NameContext = {}): Promise<string | null> {
+    if (!TEAM_RE.test(teamId)) return Promise.resolve(null);
+    const c2 = { ...ctx, teamId };
+    return cached(`t:${teamId}`, `t:${appKey(c2)}:${teamId}`, null, () =>
+      settle(async () => {
+        const c = await client(c2);
+        if (!c.auth) return null;
+        const res = obj(await call(c, () => c.auth!.test()));
+        // Only the workspace the token belongs to: never another team's name.
+        return res && str(res.team_id) === teamId ? str(res.team) : null;
+      }),
+    );
+  }
+
+  return { channelLabel, userName, teamName };
 }
 
 /** Labels for many channels at once (each cached); the map holds only resolved ids. */

@@ -22,6 +22,9 @@
  * the victim's account — after which the attacker's messages would run on the
  * victim's credentials. GET /portal/link only renders a confirmation page.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import type { SlackNames } from "../panel/slack-names";
 import { env } from "../../config/env";
 import { linkSlackIdentity, unlinkSlackIdentity, slackIdentitiesForAccount } from "../../db/accounts";
 import { deleteCredential } from "../../db/mcp-credentials";
@@ -56,6 +59,8 @@ export interface PortalApiDeps {
   servers?: () => PortalServer[];
   /** Test seam: discovery, registration and the token endpoint. */
   connect?: PortalConnectDeps;
+  /** Workspace and Slack user names for display (ids stay the key). Absent: ids only. */
+  names?: Pick<SlackNames, "teamName" | "userName"> | null;
 }
 
 export interface PortalApi {
@@ -98,36 +103,85 @@ async function readJson(req: Request): Promise<Record<string, unknown> | null> {
   }
 }
 
-/** The confirmation page. The token is embedded as JSON, never concatenated
- *  into markup, and the button posts it with the anti-CSRF header. */
-function confirmPage(token: string, team: string, slackUser: string): string {
+/** The design tokens (src/web/ui/tokens.css), inlined into the server-rendered pages; "" when unreadable. */
+let tokensCss: string | null = null;
+function tokens(): string {
+  if (tokensCss === null) {
+    try {
+      tokensCss = readFileSync(join(import.meta.dir, "..", "..", "web", "ui", "tokens.css"), "utf8").replace(/<\/style/gi, "");
+    } catch {
+      tokensCss = "";
+    }
+  }
+  return tokensCss;
+}
+
+/** The page frame for the server-rendered portal pages: tokens inline, no SPA, light and dark. */
+function pageFrame(title: string, main: string, script = ""): string {
   return `<!doctype html>
+<html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Connect your account</title>
+<title>${title}</title>
 <style>
-  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; padding: 2rem; color: #1a1a1a; }
-  main { max-width: 32rem; margin: 0 auto; }
-  dl { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; }
-  dt { color: #555; }
-  code { font: 14px ui-monospace, monospace; }
-  button { font: inherit; padding: .6rem 1.2rem; cursor: pointer; }
-  #result { margin-top: 1rem; }
+${tokens()}
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: var(--sl-pad-lg, 1rem); background: var(--sl-page-bg, #fcfcfb); color: var(--sl-text, #0b0b0b); font: var(--sl-text-body, .875rem)/var(--sl-leading-body, 1.25rem) var(--sl-font-sans, system-ui, sans-serif); }
+  main { width: 100%; max-width: 28rem; padding: var(--sl-pad-xl, 1.5rem); border-radius: var(--sl-radius-panel, .75rem); background: var(--sl-surface-2, #fff); box-shadow: var(--sl-panel-shadow); }
+  .brand { display: flex; align-items: center; gap: .5rem; margin-bottom: var(--sl-gap-md, 1rem); font-weight: var(--sl-weight-semibold, 580); }
+  .brand span { color: var(--sl-text-muted); font-weight: var(--sl-weight-regular, 400); }
+  .mark { width: 1.125rem; height: 1.125rem; border-radius: .25rem; background: var(--sl-brand, #c6613f); }
+  h1 { margin: 0 0 var(--sl-pad-sm, .5rem); font-size: var(--sl-text-title, 1.375rem); line-height: var(--sl-leading-title, 1.75rem); font-weight: var(--sl-weight-semibold, 580); }
+  p { margin: 0 0 var(--sl-pad-md, .75rem); color: var(--sl-text-secondary); }
+  dl { margin: 0 0 var(--sl-pad-lg, 1rem); padding: var(--sl-pad-sm, .5rem) var(--sl-pad-md, .75rem); border-radius: var(--sl-radius, .5rem); background: var(--sl-surface-0); box-shadow: inset 0 0 0 1px var(--sl-border); }
+  .row { display: grid; grid-template-columns: 7rem 1fr; gap: var(--sl-gap-xs, .5rem); padding: var(--sl-pad-xs, .375rem) 0; }
+  .row + .row { border-top: 1px solid var(--sl-border); }
+  dt { color: var(--sl-text-secondary); }
+  dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+  .name { display: block; color: var(--sl-text); }
+  .id { display: block; font: var(--sl-text-caption, .75rem)/var(--sl-leading-caption, 1.0625rem) var(--sl-font-mono, ui-monospace, monospace); color: var(--sl-text-muted); }
+  button { font: inherit; height: var(--sl-control-h, 2rem); padding: 0 var(--sl-pad-md, .75rem); border: 0; border-radius: var(--sl-radius, .5rem); background: var(--sl-fill-primary, #0b0b0b); color: var(--sl-on-primary, #fff); cursor: pointer; font-weight: var(--sl-weight-medium, 500); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible { outline: none; box-shadow: var(--sl-focus-ring); }
+  #result { margin: var(--sl-pad-md, .75rem) 0 0; min-height: 1.25rem; }
+  #result.ok { color: var(--sl-text-success); }
+  #result.err { color: var(--sl-text-danger); }
 </style>
 <main>
-  <h1>Connect your account</h1>
+  <div class="brand"><div class="mark" aria-hidden="true"></div>slaude <span>portal</span></div>
+${main}
+</main>
+${script}
+</html>`;
+}
+
+/** The page for an invalid or expired link. */
+function expiredPage(): string {
+  return pageFrame("Link expired", `  <h1>This link has expired</h1>
+  <p>It is invalid or too old. Ask the agent for a new one: send /link to the agent as a message.</p>`);
+}
+
+/**
+ * The confirmation page. Every value is set with textContent from JSON, never
+ * concatenated into markup, and the button posts the token with the anti-CSRF
+ * header. Names are display only; the ids stay what the link binds.
+ */
+function confirmPage(token: string, team: string, slackUser: string, names: { teamName?: string; userName?: string } = {}): string {
+  const main = `  <h1>Connect your account</h1>
   <p>This links the Slack user below to the account you are signed in as. Any agent you message can then use the integrations you connect here.</p>
   <dl>
-    <dt>Workspace</dt><dd><code id="team"></code></dd>
-    <dt>Slack user</dt><dd><code id="user"></code></dd>
+    <div class="row"><dt>Workspace</dt><dd><span class="name" id="team-name"></span><span class="id" id="team"></span></dd></div>
+    <div class="row"><dt>Slack user</dt><dd><span class="name" id="user-name"></span><span class="id" id="user"></span></dd></div>
   </dl>
-  <p><button id="go">Connect</button></p>
-  <p id="result" role="status"></p>
-</main>
-<script>
+  <button id="go" type="button">Connect</button>
+  <p id="result" role="status"></p>`;
+  const script = `<script>
   const token = ${JSON.stringify(token)};
-  document.getElementById("team").textContent = ${JSON.stringify(team)};
-  document.getElementById("user").textContent = ${JSON.stringify(slackUser)};
+  const set = (id, v) => { const el = document.getElementById(id); if (v) el.textContent = v; else el.remove(); };
+  set("team-name", ${JSON.stringify(names.teamName ?? "")});
+  set("team", ${JSON.stringify(team)});
+  set("user-name", ${JSON.stringify(names.userName ?? "")});
+  set("user", ${JSON.stringify(slackUser)});
   document.getElementById("go").addEventListener("click", async () => {
     const res = await fetch("/portal/api/link", {
       method: "POST",
@@ -135,18 +189,30 @@ function confirmPage(token: string, team: string, slackUser: string): string {
       body: JSON.stringify({ token }),
     });
     const body = await res.json().catch(() => ({}));
-    document.getElementById("result").textContent = res.ok
-      ? "Connected. You can close this page."
-      : (body.error || "Could not connect.");
+    const out = document.getElementById("result");
+    out.textContent = res.ok ? "Connected. You can close this page." : (body.error || "Could not connect.");
+    out.className = res.ok ? "ok" : "err";
     document.getElementById("go").disabled = res.ok;
   });
 </script>`;
+  return pageFrame("Connect your account", main, script);
 }
 
 export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
   const authRoutes = deps.authRoutes ?? createPortalAuthRoutes();
   const servers = deps.servers ?? portalServers;
   const connectDeps = deps.connect ?? {};
+
+  /** Display names of a workspace and a Slack user; whatever resolved (never throws). */
+  async function identityNames(teamId: string, slackUserId: string): Promise<{ teamName?: string; userName?: string }> {
+    if (!deps.names) return {};
+    const ctx = { teamId };
+    const [teamName, userName] = await Promise.all([
+      deps.names.teamName(teamId, ctx).catch(() => null),
+      deps.names.userName(slackUserId, ctx).catch(() => null),
+    ]);
+    return { ...(teamName ? { teamName } : {}), ...(userName ? { userName } : {}) };
+  }
 
   async function fetch(req: Request): Promise<Response | null> {
     const url = new URL(req.url);
@@ -167,8 +233,9 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         if (!guarded.ok) return guarded.response;
         const token = url.searchParams.get("t");
         const verified = verifyLinkToken(token);
-        if (!verified.ok) return html(400, "<!doctype html><title>Link expired</title><p>This link is invalid or has expired. Ask the agent for a new one.</p>");
-        return html(200, confirmPage(token!, verified.claims.team, verified.claims.slackUser));
+        if (!verified.ok) return html(400, expiredPage());
+        const names = await identityNames(verified.claims.team, verified.claims.slackUser);
+        return html(200, confirmPage(token!, verified.claims.team, verified.claims.slackUser, names));
       }
 
       if (seg.length === 3 && seg[1] === "api" && seg[2] === "me") {
@@ -180,12 +247,15 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
           email: guarded.account.email,
           accountId: guarded.account.id,
           issuer: guarded.account.issuer,
-          slackIdentities: identities.map((s) => ({
-            teamId: s.team_id,
-            slackUserId: s.slack_user_id,
-            linkedAt: s.linked_at,
-            linkedVia: s.linked_via,
-          })),
+          slackIdentities: await Promise.all(
+            identities.map(async (s) => ({
+              teamId: s.team_id,
+              slackUserId: s.slack_user_id,
+              linkedAt: s.linked_at,
+              linkedVia: s.linked_via,
+              ...(await identityNames(s.team_id, s.slack_user_id)),
+            })),
+          ),
         } satisfies PortalMeResponse);
       }
 
@@ -196,7 +266,8 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         if (!guarded.ok) return guarded.response;
         const identities = await slackIdentitiesForAccount(guarded.account.id);
         const agents = await myAgents(identities.map((s) => ({ teamId: s.team_id, slackUserId: s.slack_user_id })));
-        return json(200, { agents } satisfies MyAgentsResponse);
+        const named = await Promise.all(agents.map(async (a) => ({ ...a, ...(await identityNames(a.teamId, a.slackUserId)) })));
+        return json(200, { agents: named } satisfies MyAgentsResponse);
       }
 
       if (seg.length === 3 && seg[1] === "api" && seg[2] === "link") {
