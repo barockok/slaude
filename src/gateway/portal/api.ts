@@ -6,6 +6,7 @@
  *   GET    /portal              the app shell (React, served statically)
  *   GET    /portal/auth/*      sign-in (./auth-routes)
  *   GET    /portal/api/me      the signed-in account and its Slack identities
+ *   GET    /portal/api/my-agents   agents my linked Slack identities hold a role on
  *   GET    /portal/link?t=…    confirmation page for an onboarding link
  *   POST   /portal/api/link    redeem a link: bind a Slack identity
  *   DELETE /portal/api/link    unlink one of your own bindings
@@ -32,6 +33,8 @@ import { verifyLinkToken } from "./link-token";
 import { configuredServer, integrationsFor, portalServers, type PortalServer } from "./integrations";
 import { finishPortalConnect, startPortalConnect, type PortalConnectDeps } from "./oauth";
 import { servePortalStatic } from "./static";
+import { myAgents } from "./my-agents";
+import type { MyAgentsResponse } from "./api-types";
 import {
   clearCookie,
   mintPortalOauthFlow,
@@ -179,6 +182,16 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
             linkedAt: s.linked_at,
           })),
         });
+      }
+
+      // GET /portal/api/my-agents: user-level roles of every linked identity.
+      if (seg.length === 3 && seg[1] === "api" && seg[2] === "my-agents") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const guarded = await guardPortal(req, { html: false });
+        if (!guarded.ok) return guarded.response;
+        const identities = await slackIdentitiesForAccount(guarded.account.id);
+        const agents = await myAgents(identities.map((s) => ({ teamId: s.team_id, slackUserId: s.slack_user_id })));
+        return json(200, { agents } satisfies MyAgentsResponse);
       }
 
       if (seg.length === 3 && seg[1] === "api" && seg[2] === "link") {
