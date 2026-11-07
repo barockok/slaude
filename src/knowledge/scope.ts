@@ -92,6 +92,24 @@ export function kbSourceId(label: string): string {
   return ("kb-" + label.toLowerCase().replace(/[^a-z0-9-]/g, "-")).slice(0, 32);
 }
 
+/**
+ * Memory store kinds (the user-facing name for brain sources), read off the
+ * source naming above: `agent` and `agent-<id>` private minds, `shared`,
+ * `public`, `user-<id>` personal slices, `profile-*` person profiles and
+ * `kb-<label>` libraries. Anything else (gbrain's own `default`) is `other`.
+ */
+export type StoreKind = "agent" | "shared" | "public" | "personal" | "profile" | "library" | "other";
+
+export function storeKind(sourceId: string): StoreKind {
+  if (sourceId === AGENT_SOURCE || sourceId.startsWith("agent-")) return "agent";
+  if (sourceId === SHARED_SOURCE) return "shared";
+  if (sourceId === PUBLIC_SOURCE) return "public";
+  if (sourceId.startsWith("user-")) return "personal";
+  if (sourceId.startsWith(PROFILE_PREFIX)) return "profile";
+  if (sourceId.startsWith("kb-")) return "library";
+  return "other";
+}
+
 export function channelTrustFor(channel: string, soul: SoulData): ChannelTrust {
   if (soul.trustedChannels.includes(channel)) return "trusted";
   if (soul.allowedChannels.includes(channel)) return "public";

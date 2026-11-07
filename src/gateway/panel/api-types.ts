@@ -148,3 +148,55 @@ export interface AuditPageResponse {
   /** Pass back as `cursor` for the next (older) page; null on the last page. */
   nextCursor: string | null;
 }
+
+// --- Memory (read-only) -----------------------------------------------------
+
+/** Store kinds, from the brain source naming. `other` is a source outside that
+ *  naming (the brain's own `default`). */
+export type MemoryStoreKind = "agent" | "shared" | "public" | "personal" | "profile" | "library" | "other";
+
+export interface MemoryStoreView {
+  id: string;
+  kind: MemoryStoreKind;
+  label: string;
+  pageCount: number;
+}
+
+export interface MemoryStoresResponse {
+  stores: MemoryStoreView[];
+}
+
+export interface MemoryPageSummaryView {
+  slug: string;
+  type: string;
+  title: string;
+  updatedAt: number | null;
+}
+
+/** GET /panel/api/memory/stores/:id/pages, ordered by slug. */
+export interface MemoryPagesResponse {
+  items: MemoryPageSummaryView[];
+  /** Opaque; pass back as `cursor`. Null on the last page. */
+  nextCursor: string | null;
+}
+
+export interface MemoryPageLinkView {
+  to: string;
+  type: string;
+  context: string;
+}
+
+/** GET /panel/api/memory/pages?store=&slug= */
+export interface MemoryPageResponse {
+  store: string;
+  slug: string;
+  type: string;
+  title: string;
+  content: string;
+  timeline: string;
+  frontmatter: Record<string, unknown>;
+  tags: string[];
+  links: MemoryPageLinkView[];
+  createdAt: number | null;
+  updatedAt: number | null;
+}

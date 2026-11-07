@@ -39,6 +39,9 @@
  *   DELETE /panel/api/agents/:name/grants/:id      revoke a console grant (superadmin)
  *   GET    /panel/api/audit?persona&action&actor&session&since&until&cursor&limit
  *   GET    /panel/api/sessions/:id/audit?cursor&limit
+ *   GET    /panel/api/memory/stores                memory stores (brain sources) with page counts
+ *   GET    /panel/api/memory/stores/:id/pages?cursor&limit
+ *   GET    /panel/api/memory/pages?store&slug      one page: content, type, tags, links
  */
 import { PanelVoiceRedactor } from "./voice-redact";
 import { z } from "zod";
@@ -74,7 +77,13 @@ import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
 import { agentDetail, agentSummaries, consoleGrantView, grantViews, isAgent } from "./console-views";
 import * as AuditEvents from "../../db/audit-events";
+import { agentStoreNames, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
+import { agentIdSync } from "../../knowledge/agent-identity";
+import { getPersonaRegistry } from "../../persona/registry";
 import type {
+  MemoryPageResponse,
+  MemoryPagesResponse,
+  MemoryStoresResponse,
   AuditPageResponse,
   AgentDetailResponse,
   AgentGrantsResponse,
@@ -198,6 +207,18 @@ const auditQuerySchema = z
   .strict();
 const pageQuerySchema = z.object(pageParams).strict();
 
+const STORE_ID_RE = /^[a-z0-9-]{1,32}$/;
+const MEMORY_PAGE_MAX = 100;
+const memoryPagesQuerySchema = z
+  .object({
+    cursor: z.string().regex(/^\d{1,9}$/, "invalid cursor").optional(),
+    limit: z.coerce.number().int().min(1).max(MEMORY_PAGE_MAX).optional(),
+  })
+  .strict();
+const memoryPageQuerySchema = z
+  .object({ store: z.string().regex(STORE_ID_RE, "invalid store id"), slug: z.string().min(1).max(512) })
+  .strict();
+
 /** Query string as an object; a repeated key keeps its last value. */
 const queryOf = (url: URL) => Object.fromEntries(url.searchParams.entries());
 
@@ -244,6 +265,8 @@ export interface PanelApiDeps {
    *  process). Decides how the persona view reports a persona's stdio MCP
    *  servers. Default `gateway`. */
   role?: PersonaViewRole;
+  /** Memory store browsing. Default: the local brain (when it is enabled and local). */
+  memory?: MemoryBrowser;
 }
 
 export interface PanelApi {
@@ -582,6 +605,52 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           { cursor, limit },
         );
         return json(200, page satisfies AuditPageResponse);
+      }
+
+      // --- Memory: brain sources and their pages, read-only, any operator.
+      if (seg[2] === "memory") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const unavailable = memoryUnavailableReason();
+        if (unavailable) return json(503, { error: unavailable });
+        const memory = deps.memory ?? localMemoryBrowser();
+
+        // GET /panel/api/memory/stores
+        if (seg.length === 4 && seg[3] === "stores") {
+          const r = getPersonaRegistry();
+          const agents = agentStoreNames([
+            { name: "default", agentId: agentIdSync() },
+            ...r.list().map((p) => ({ name: p.name, agentId: p.slackUserId })),
+          ]);
+          const stores = (await memory.stores()).map((s) => ({ ...s, label: storeLabel(s.id, agents) }));
+          return json(200, { stores } satisfies MemoryStoresResponse);
+        }
+
+        // GET /panel/api/memory/stores/:id/pages
+        if (seg.length === 6 && seg[3] === "stores" && seg[5] === "pages") {
+          const store = seg[4]!;
+          if (!STORE_ID_RE.test(store)) return json(400, { error: "invalid store id" });
+          const q = memoryPagesQuerySchema.safeParse(queryOf(url));
+          if (!q.success) return json(400, { error: issuesLine(q.error) });
+          const offset = Number(q.data.cursor ?? 0);
+          const limit = q.data.limit ?? 50;
+          // One row past the page says whether there is a next one.
+          const rows = await memory.pages(store, { offset, limit: limit + 1 });
+          const items = rows.slice(0, limit);
+          return json(200, {
+            items,
+            nextCursor: rows.length > limit ? String(offset + limit) : null,
+          } satisfies MemoryPagesResponse);
+        }
+
+        // GET /panel/api/memory/pages?store=&slug=
+        if (seg.length === 4 && seg[3] === "pages") {
+          const q = memoryPageQuerySchema.safeParse(queryOf(url));
+          if (!q.success) return json(400, { error: issuesLine(q.error) });
+          const page = await memory.page(q.data.store, q.data.slug);
+          if (!page) return json(404, { error: "no such page in that store" });
+          return json(200, page satisfies MemoryPageResponse);
+        }
+        return json(404, { error: "not found" });
       }
 
       // --- Runtime persona changes. Git is the source of truth; these are for
