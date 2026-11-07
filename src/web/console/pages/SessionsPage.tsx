@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { surfaceInfo } from "../lib/surfaces";
+import { isSyntheticThread, surfaceInfo } from "../lib/surfaces";
 import type { SurfaceId } from "../../../gateway/panel/api-types";
 import type { AgentsResponse, ModelSource, SessionActivity, SessionSummaryView, SessionsResponse } from "../../../gateway/panel/api-types";
 import { AuthRedirectError } from "../../lib/api";
@@ -42,7 +42,7 @@ export function ChannelThread({ channel, label, thread, title, surface }: { chan
         {label ? <span className="sl-truncate">{label}</span> : <span className="sl-mono">{channel}</span>}
         {dm && !label?.startsWith("DM") && <Badge>DM</Badge>}
       </span>
-      <span className="sl-caption sl-truncate">{title ?? (thread ? `${sf.conversation[0]!.toUpperCase()}${sf.conversation.slice(1)} ${thread}` : sf.hasChannels ? "Channel" : sf.label)}</span>
+      <span className="sl-caption sl-truncate">{title ?? (thread && !isSyntheticThread(thread) ? `${sf.conversation[0]!.toUpperCase()}${sf.conversation.slice(1)} ${thread}` : thread ? "Started by the agent" : sf.hasChannels ? "Channel" : sf.label)}</span>
     </span>
   );
 }

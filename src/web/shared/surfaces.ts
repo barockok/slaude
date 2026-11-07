@@ -54,9 +54,13 @@ const slack: SurfaceInfo = {
   describe(ref) {
     const where = ref.channelLabel || (ref.channelId ? `#${ref.channelId}` : null);
     if (!where) return "No thread";
-    return ref.threadRef ? `${where}, thread ${ref.threadRef}` : where;
+    // A heartbeat wake or a scheduled run keys on a synthetic thread: its label says it all.
+    return ref.threadRef && !isSyntheticThread(ref.threadRef) ? `${where}, thread ${ref.threadRef}` : where;
   },
 };
+
+/** A thread key a run nobody started uses (`wake:...`, `cron:...`), not a conversation thread. */
+export const isSyntheticThread = (threadRef: string | null | undefined): boolean => !!threadRef && /^(wake|cron):/.test(threadRef);
 
 const SURFACES: Readonly<Record<string, SurfaceInfo>> = { slack };
 

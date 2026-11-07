@@ -68,7 +68,7 @@ import { createAuthRoutes } from "./auth/routes";
 import { audit } from "./auth/audit";
 import { auditOneOnOne } from "../../audit/events";
 import type { PanelRole } from "./auth/roles";
-import { enumerateSessions, sessionModel } from "./enumerator";
+import { enumerateSessions, sessionModel, syntheticRunLabel } from "./enumerator";
 import { channelLabels, mentionNames, type SlackNames } from "./slack-names";
 import { activityOf, streamTurnInFlight, streamTurnsInFlight, type LocalSessions } from "./activity";
 import { sessionHistory } from "./history";
@@ -1151,9 +1151,10 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           const [lockedBy, live, label] = await Promise.all([
             deps.panelLock ? deps.panelLock.owner(id) : null,
             liveness(row),
-            deps.names && row.slack_channel_id
-              ? deps.names.channelLabel(row.slack_channel_id, { persona: row.persona_id, appId: row.slack_app_id ?? null, teamId: row.slack_team_id }).catch(() => null)
-              : null,
+            syntheticRunLabel(row.slack_thread_ts) ??
+              (deps.names && row.slack_channel_id
+                ? deps.names.channelLabel(row.slack_channel_id, { persona: row.persona_id, appId: row.slack_app_id ?? null, teamId: row.slack_team_id }).catch(() => null)
+                : null),
           ]);
           // Earlier turns: GET .../history (the durable conversation record);
           // the live tail is the SSE endpoint.

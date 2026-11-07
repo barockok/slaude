@@ -153,15 +153,34 @@ export async function enumerateSessions(
       /* lock lookup best-effort */
     }
   }
-  if (deps.names && out.length > 0) {
+  // A run nobody started (a heartbeat wake, a scheduled run) is named for
+  // what it is: its "channel" may be a person's id and its thread synthetic.
+  const real = out.filter((s) => {
+    const label = syntheticRunLabel(s.slack_thread_ts);
+    if (label) s.channel_label = label;
+    return !label;
+  });
+  if (deps.names && real.length > 0) {
     const labels = await channelLabels(
       deps.names,
-      out.map((s) => ({ channelId: s.slack_channel_id, ctx: { persona: s.persona_id, appId: appOf.get(s.id), teamId: s.slack_team_id } })),
+      real.map((s) => ({ channelId: s.slack_channel_id, ctx: { persona: s.persona_id, appId: appOf.get(s.id), teamId: s.slack_team_id } })),
     );
-    for (const s of out) {
+    for (const s of real) {
       const l = s.slack_channel_id ? labels.get(s.slack_channel_id) : undefined;
       if (l) s.channel_label = l;
     }
   }
   return out;
+}
+
+/**
+ * The label of a session keyed on a synthetic thread: `wake:<agent>:<slot>`
+ * (a heartbeat wake, keyed on the manager) or `cron:<id>` (a scheduled run).
+ * Null for a real conversation thread.
+ */
+export function syntheticRunLabel(threadTs: string | null | undefined): string | null {
+  if (!threadTs) return null;
+  if (threadTs.startsWith("wake:")) return "Heartbeat wake";
+  if (threadTs.startsWith("cron:")) return "Scheduled run";
+  return null;
 }
