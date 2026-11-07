@@ -549,7 +549,8 @@ async function guardEmbedding(engine: GuardEngine): Promise<void> {
   };
   const adopt = async (from: string, to: string, how: string): Promise<void> => {
     try {
-      await engine.setConfig?.("embedding_model", to);
+      // Tracked: a close waits for this write instead of disconnecting under it.
+      await trackBrainWork(Promise.resolve(engine.setConfig?.("embedding_model", to)));
       stored = to;
       console.log(`[brain] embedding record adopted: ${from} -> ${to} (${how})`);
     } catch (e) {
@@ -585,8 +586,10 @@ async function guardEmbedding(engine: GuardEngine): Promise<void> {
         trackDbWork: trackBrainWork,
         shouldStop: () => brainClosing() || generation !== probeGeneration,
       });
-      // A close (or a later boot) since: this result is for an engine that is gone.
-      if (generation !== probeGeneration) return;
+      // A close since (or one in progress): this result is for an engine that
+      // is going away. closeBrain bumps the generation before it waits, and
+      // nothing below may start a database write it would not wait for.
+      if (generation !== probeGeneration || brainClosing()) return;
       if (r.status === "match") await adopt(from, to, `probe ok: ${r.samples} sample(s), min cosine ${r.min.toFixed(4)}`);
       else if (r.status === "empty") await adopt(from, to, "no stored vectors");
       else if (r.status === "mixed") {
@@ -801,6 +804,8 @@ export async function closeBrain(): Promise<void> {
   // Not open from here on: the message hot path (brainCallIfOpen) stops now,
   // never reaching getBrain() while this close runs.
   openEngine = null;
+  // A probe that answers from here on must not write: bump before waiting.
+  probeGeneration++;
   // Background work (the gateway's boot-time import) holds the engine across
   // awaits: let it finish first (it stops between KBs while brainClosing()),
   // or it fails mid-import against a disconnected engine.
@@ -809,7 +814,6 @@ export async function closeBrain(): Promise<void> {
   embeddingRefusalText = null;
   chunkLabelModel = null;
   allowRealign = false;
-  probeGeneration++;
   probeInFlight = null;
   delete process.env.GBRAIN_EMBEDDING_MODEL;
   delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
