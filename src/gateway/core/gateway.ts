@@ -630,6 +630,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * Show a Slack message delivered to a session on the console's live tail.
    * Display only: it goes to the event stream, never to the agent's input
    * (the model gets the message through its turn).
+   *
+   * /1on1 asymmetry, on purpose: the live tail shows a locked thread's
+   * messages like any other (the agent's own events on that stream already
+   * show the conversation to operators watching it), while the console's
+   * history reads only the agent's own slice, so a /1on1 turn recorded in
+   * the person's slice never appears there.
    */
   function streamUserMessage(sessionId: string, m: { userId: string; userName?: string; text: string }): void {
     if (!panelInfra) return;
@@ -3463,8 +3469,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // AgentManager in mono). Extracted so the active-surface lock can defer
     // and later replay it verbatim.
     const runDispatch = async () => {
-      // Delivered now (a deferred message only when it is replayed).
-      streamUserMessage(session.id, { userId, userName, text: stripped });
+      // Delivered now (a deferred message only when it is replayed). A
+      // suppressed message (disengaged thread, a bystander in someone's
+      // thread) is recorded but never reaches the agent, and a voice turn's
+      // events stay off the stream: neither is shown.
+      if (!suppress && !voiceTurns.active(session.id)) streamUserMessage(session.id, { userId, userName, text: stripped });
       if (queueDispatch) {
         // Gateway role: the turn runs on a node (spec §2). Suppression rides on
         // the message so the node's suppress hook records without running the

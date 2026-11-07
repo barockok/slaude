@@ -9,6 +9,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createGateway, type GatewayHandle, type PanelInfra } from "../../../src/gateway/core/gateway";
 import { AgentManager } from "../../../src/agent/manager";
 import * as OneOnOne from "../../../src/db/one-on-one";
+import * as Sessions from "../../../src/db/sessions";
+import { voiceTurns } from "../../../src/voice/turn-flags";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 
 function transport() {
@@ -32,7 +34,12 @@ function transport() {
     await handlers.get("app_mention")?.({ ...args, event: { ...event, type: "app_mention" } });
     await handlers.get("message")!(args);
   };
-  return { t, mention };
+  /** A plain (no mention) reply in the thread. */
+  const reply = async (user: string, thread: string, ts: string, text: string) => {
+    const event = { type: "message", channel: "C0TEAM", channel_type: "channel", user, team: "T", ts, thread_ts: thread, text };
+    await handlers.get("message")!({ event, client, context: { teamId: "T" } });
+  };
+  return { t, mention, reply };
 }
 
 let appended: Array<{ sessionId: string; event: any }>;
@@ -101,6 +108,38 @@ describe("mono: the console's event stream", () => {
     const last = appended.at(-1)!;
     expect(last.sessionId).toBe(sid);
     expect(last.event).toEqual({ type: "toolCall", sessionId: sid, tool: "Bash", input: {}, toolUseId: "tu_1" });
+  });
+
+  test("a voice turn is kept off: no userMessage, and the agent's events are not appended", async () => {
+    const { t, mention } = transport();
+    h = createGateway(agent, t, { panel: infra() });
+    await mention("U0ALICE", "820.0", "820.1", "first");
+    await until(() => sent.length === 1);
+    const sid = sent[0]!.id;
+    appended = [];
+    voiceTurns.enter(sid);
+    try {
+      await mention("U0ALICE", "820.0", "820.2", "during the call");
+      await until(() => sent.length === 2);
+      agent.emit("event", { type: "assistantText", sessionId: sid, text: "voice answer" });
+      expect(appended).toEqual([]);
+    } finally {
+      voiceTurns.exit(sid);
+    }
+    agent.emit("event", { type: "assistantText", sessionId: sid, text: "after the call" });
+    expect(appended.map((a) => a.event.text)).toEqual(["after the call"]);
+  });
+
+  test("a suppressed message (disengaged thread) is recorded but not shown", async () => {
+    const { t, mention, reply } = transport();
+    h = createGateway(agent, t, { panel: infra() });
+    await mention("U0ALICE", "830.0", "830.1", "start");
+    await until(() => sent.length === 1);
+    await Sessions.setEngaged(sent[0]!.id, false);
+    appended = [];
+    await reply("U0BOB", "830.0", "830.2", "just chatting among ourselves");
+    await until(() => sent.length === 2); // recorded into the transcript, suppressed
+    expect(appended.filter((a) => a.event.type === "userMessage")).toEqual([]);
   });
 
   test("without the console nothing is appended", async () => {
