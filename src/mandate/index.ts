@@ -3,18 +3,24 @@
  * from what already exists (SOUL.md stays authoritative), never stored:
  *
  *  - `global`: the soul's `## Mandate` (trigger: any admitted message).
- *  - `channel:<id>`: each `## Channel` block with its own mandate, with that
- *    channel's effective approvers and its own `### Proactive` switch.
+ *  - `channel:<id>`: each `## Channel` block, with its own `### Proactive`
+ *    switch. A block with no mandate text (approvers or proactive only) is
+ *    listed with `inheritsGlobal`.
  *  - `heartbeat`: the `## Proactive` block when enabled.
  *  - `cron:<id>`: each active, unpaused `cron_jobs` row of the persona.
  *
+ * Approvers are who can actually approve at runtime: for a named persona the
+ * approval gate's resolution ({@link approversFor}, channel aware); for the
+ * default persona the soul's effective approvers for the channel, which the
+ * gate then narrows by scope per request (`approverNote`).
+ *
  * See docs/superpowers/specs/2026-11-07-agent-platform-design.md, "Mandate".
  */
+import { approversFor } from "../access/role";
 import * as CronJobs from "../db/cron-jobs";
 import { personaSoulText } from "../persona/soul-source";
 import type { Level } from "../proactive/levels";
-import type { ApproverEntry, SoulData } from "../soul/data";
-import { channelMandate, withManagerApprover } from "../soul/extract";
+import { channelMandate } from "../soul/extract";
 import { effectiveSoulForChannelFor, soulDataFor } from "../soul/per-persona";
 import { parseProactive, type ProactiveConfig } from "../soul/proactive";
 
@@ -31,16 +37,15 @@ export interface Mandate {
   schedule?: string;
   /** A channel block's own `### Proactive` switch, when it has one. */
   proactive?: { enabled: boolean; highest?: Level };
+  /** A channel block with no mandate text of its own: the global mandate applies there. */
+  inheritsGlobal?: boolean;
+  /** How the runtime narrows `approvers` (default persona: by scope, per request). */
+  approverNote?: string;
 }
+
+export const DEFAULT_APPROVER_NOTE = "scope-matched per request";
 
 const TITLE_MAX = 80;
-
-const ids = (approvers: ApproverEntry[]): string[] => approvers.map((a) => a.userId);
-
-/** Persona-level approvers: the global list with manager and backup appended. */
-function personaApprovers(soul: SoulData): string[] {
-  return ids(withManagerApprover(soul.approvers, soul));
-}
 
 /** The persona's `## Proactive` config from its soul text, or null when the text cannot be read. */
 function proactiveOf(persona: string): ProactiveConfig | null {
@@ -58,32 +63,32 @@ function cronTitle(prompt: string): string {
 
 export async function listMandates(personaName: string): Promise<Mandate[]> {
   const persona = personaName && personaName !== "default" ? personaName : "default";
+  const isDefault = persona === "default";
   const soul = soulDataFor(persona);
-  const approvers = personaApprovers(soul);
   const proactive = proactiveOf(persona);
+  const approversIn = async (channelId?: string): Promise<string[]> =>
+    isDefault ? effectiveSoulForChannelFor("default", channelId).approvers.map((a) => a.userId) : approversFor(persona, channelId);
   const out: Mandate[] = [];
 
   const global = soul.mandate?.trim();
   if (global) {
-    out.push({ id: "global", kind: "global", title: "Global mandate", instructions: global, triggers: ["any admitted message"], approvers, source: "soul" });
+    out.push({ id: "global", kind: "global", title: "Global mandate", instructions: global, triggers: ["any admitted message"], approvers: await approversIn(), source: "soul" });
   }
 
-  const blocks = [...soul.channelOverrides].sort((a, b) => (a.channel < b.channel ? -1 : 1));
-  for (const { channel: channelId, approvers: own } of blocks) {
-    const instructions = channelMandate(soul, channelId);
-    if (!instructions) continue;
+  const channels = [...new Set([...soul.channelOverrides.map((c) => c.channel), ...Object.keys(proactive?.channels ?? {})])].sort();
+  for (const channelId of channels) {
+    const own = channelMandate(soul, channelId);
     const m: Mandate = {
       id: `channel:${channelId}`,
       kind: "channel",
       title: `Mandate in <#${channelId}>`,
-      instructions,
+      instructions: own ?? "",
       triggers: [`messages in <#${channelId}>`],
-      // A block with its own approvers replaces the global list (manager and
-      // backup appended); one without inherits the persona-level list.
-      approvers: own.length ? ids(effectiveSoulForChannelFor(persona, channelId).approvers) : approvers,
+      approvers: await approversIn(channelId),
       source: "soul",
       channelId,
     };
+    if (!own) m.inheritsGlobal = true;
     const enabled = proactive?.channels[channelId];
     if (enabled !== undefined) {
       const highest = proactive!.channelHighest[channelId];
@@ -100,7 +105,7 @@ export async function listMandates(personaName: string): Promise<Mandate[]> {
       title: "Heartbeat",
       instructions: `Watches: ${watch}. Highest action: ${proactive.highest}.`,
       triggers: proactive.wake ? ["heartbeat round", "wake"] : ["heartbeat round"],
-      approvers,
+      approvers: await approversIn(),
       source: "proactive",
     });
   }
@@ -113,12 +118,12 @@ export async function listMandates(personaName: string): Promise<Mandate[]> {
       title: cronTitle(j.prompt),
       instructions: j.prompt,
       triggers: [`cron ${j.cronExpr}`],
-      approvers,
+      approvers: await approversIn(j.channelId),
       source: "cron",
       channelId: j.channelId,
       lastRunAt: j.lastRunAt,
       schedule: j.cronExpr,
     });
   }
-  return out;
+  return isDefault ? out.map((m) => ({ ...m, approverNote: DEFAULT_APPROVER_NOTE })) : out;
 }
