@@ -66,7 +66,7 @@ import type { LabelStatus } from "../../queue/label-status";
 import { guardRequest } from "./auth/guard";
 import { createAuthRoutes } from "./auth/routes";
 import { audit } from "./auth/audit";
-import { auditOneOnOne } from "../../audit/events";
+import { auditOneOnOne, auditSkill } from "../../audit/events";
 import type { PanelRole } from "./auth/roles";
 import { enumerateSessions, sessionModel, syntheticRunLabel } from "./enumerator";
 import { channelLabels, mentionNames, type SlackNames } from "./slack-names";
@@ -746,16 +746,17 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             : await restoreSkill(skillId, { by: operatorId });
           if (!res.ok) return json(res.status, { error: res.error });
           const owner = res.entry.owner ?? "default";
-          emitAudit({
-            tenantId: "default",
+          // The console moves the skill itself (not through the review or the
+          // Slack Restore button), so this is the one record of it.
+          auditSkill(verb === "retire" ? "skill.retired" : "skill.restored", {
             persona: owner,
             actorKind: "operator",
             actorId: operatorId,
-            action: verb === "retire" ? "skill.retired" : "skill.restored",
-            targetKind: "skill",
-            targetId: res.entry.slug,
-            summary: `${verb === "retire" ? "retired" : "restored"} skill ${res.entry.slug}`,
-            details: { skill: res.entry.slug, retiredId: res.retiredId, persona: owner, ...(reason ? { reason } : {}), operatorRole: role },
+            slug: res.entry.slug,
+            retiredId: res.retiredId,
+            ...(reason ? { reason } : {}),
+            via: "panel",
+            operatorRole: role,
           });
           return json(200, { ok: true, id: res.id } satisfies SkillActionResponse);
         }

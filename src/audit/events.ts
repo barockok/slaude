@@ -120,3 +120,41 @@ export function soulOverrideInput(
     },
   };
 }
+
+/**
+ * skill.retired | skill.restored, from every path that moves a skill: the
+ * weekly skill review (actor `agent`), a manager's Restore button in Slack
+ * (`slack_user`) and the console (`operator`). Each path records once.
+ */
+export function auditSkill(
+  action: "skill.retired" | "skill.restored",
+  a: {
+    persona: string;
+    actorKind: "agent" | "slack_user" | "operator";
+    actorId: string;
+    slug: string;
+    retiredId: string;
+    reason?: string;
+    via: "skill_review" | "slack" | "panel";
+    operatorRole?: string;
+  },
+): void {
+  emitAudit({
+    tenantId: "default",
+    persona: a.persona,
+    actorKind: a.actorKind,
+    actorId: a.actorId,
+    action,
+    targetKind: "skill",
+    targetId: a.slug,
+    summary: `${action === "skill.retired" ? "retired" : "restored"} skill ${a.slug}`,
+    details: {
+      skill: a.slug,
+      retiredId: a.retiredId,
+      persona: a.persona,
+      via: a.via,
+      ...(a.reason ? { reason: a.reason } : {}),
+      ...(a.operatorRole ? { operatorRole: a.operatorRole } : {}),
+    },
+  });
+}

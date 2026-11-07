@@ -25,6 +25,7 @@
  *   lesson-promotion  → the decision is recorded; the operator acts in git.
  * A write that fails puts the row back to open, so it can be clicked again.
  */
+import { auditSkill } from "../audit/events";
 import * as Proposals from "../db/proposals";
 import { emitAudit } from "../audit/emit";
 import { getPersonaRegistry } from "../persona/registry";
@@ -371,6 +372,7 @@ export async function restoreRetiredSkill(a: { id: string; by: string; from?: Cl
     const persona = typeof pl.persona === "string" && pl.persona !== "default" ? pl.persona : undefined;
     const back = skillOps.restore(pl.retiredId, persona);
     console.log(`[background] agent=${r.agentId}: ${a.by} restored skill ${back.slug} from ${pl.retiredId}`);
+    auditSkill("skill.restored", { persona: typeof pl.persona === "string" ? pl.persona : "default", actorKind: "slack_user", actorId: a.by, slug: back.slug, retiredId: pl.retiredId, via: "slack" });
     return { ok: true, line: `Restored \`${escapeMrkdwn(back.slug)}\` (by <@${a.by}>)` };
   } catch (e) {
     await Proposals.releaseSkillRestore(r.id, a.by, at).catch(() => {});
