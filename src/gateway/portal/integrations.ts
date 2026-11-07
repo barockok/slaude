@@ -18,6 +18,7 @@ import { connectableServers, loadExternalMcp, type ExternalMcp } from "../core/e
 import { credentialExpiries } from "../../db/mcp-credentials";
 import { oauthKey, type OAuthServerConfig } from "../../agent/mcp-oauth/store";
 import { getPersonaRegistry, type PersonaRegistry } from "../../persona/registry";
+import type { IntegrationView } from "./api-types";
 
 /** Server name → config, as one persona mounts them. */
 export type ConfiguredServers = Record<string, OAuthServerConfig>;
@@ -35,16 +36,7 @@ export interface PortalServer {
   usedBy: string[];
 }
 
-export interface IntegrationView {
-  id: string;
-  name: string;
-  /** Host only. Enough to recognise the service, without a query or userinfo. */
-  host: string;
-  connected: boolean;
-  /** Epoch ms, or null when not connected. Never a token. */
-  expiresAt: number | null;
-  usedBy: string[];
-}
+export type { IntegrationView } from "./api-types";
 
 /** Merge each persona's servers into one list. Two entries are the same server
  *  when their credential key matches (name, URL and headers), which is exactly

@@ -4,6 +4,7 @@ import { mintPortalSession, PORTAL_AT_COOKIE } from "../../../src/gateway/portal
 import { mintLinkToken } from "../../../src/gateway/portal/link-token";
 import { mintSession } from "../../../src/gateway/panel/auth/session";
 import * as Accounts from "../../../src/db/accounts";
+import type { PortalMeResponse } from "../../../src/gateway/portal/api-types";
 
 const ISS = "https://idp.example.com";
 const SECRET = "g".repeat(32);
@@ -30,6 +31,25 @@ beforeEach(async () => {
   process.env.SLAUDE_PANEL_OIDC_ISSUER = ISS;
   await Accounts._wipeForTests();
   await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+});
+
+describe("GET /portal/api/me", () => {
+  test("answers the account, its issuer and how each identity was linked", async () => {
+    const a = await Accounts.findAccountBySubject(ISS, "sub-1");
+    await Accounts.linkSlackIdentity({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1", accountId: a!.id, via: "signed-link" });
+
+    const res = await createPortalApi().fetch(
+      new Request("https://slaude.example.com/portal/api/me", { headers: { cookie: signedIn("sub-1", "alice@example.com") } }),
+    );
+
+    expect(res!.status).toBe(200);
+    const body = (await res!.json()) as PortalMeResponse;
+    expect(body.email).toBe("alice@example.com");
+    expect(body.issuer).toBe(ISS);
+    expect(body.slackIdentities).toEqual([
+      { teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1", linkedAt: expect.any(Number), linkedVia: "signed-link" },
+    ]);
+  });
 });
 
 describe("redeeming an onboarding link", () => {

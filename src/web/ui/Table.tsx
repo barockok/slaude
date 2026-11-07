@@ -36,7 +36,8 @@ export interface TableProps<T> {
 
 /**
  * A data table: header row in secondary text, 45 px rows on hairlines, skeleton
- * rows while loading. On narrow screens it scrolls sideways inside its own box
+ * rows while loading. Body cells carry their column header as `data-label`, so
+ * a page can restack rows on a phone. On narrow screens it scrolls sideways inside its own box
  * so the page never does.
  */
 export function Table<T>({
@@ -139,7 +140,7 @@ export function Table<T>({
                     </td>
                   )}
                   {columns.map((c) => (
-                    <td key={c.key} className={cx(c.align === "end" && "is-end")}>
+                    <td key={c.key} className={cx(c.align === "end" && "is-end")} data-label={typeof c.header === "string" ? c.header : undefined}>
                       {c.render(row)}
                     </td>
                   ))}

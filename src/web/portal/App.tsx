@@ -1,30 +1,39 @@
 /**
- * The personal portal, served at /portal. This change lays down the shell and
- * the navigation; each page is filled in by a later change.
+ * The personal portal, served at /portal, for every person on the deployment:
+ * their sign-in and linked Slack identities, the integrations they connect for
+ * agents to use on their behalf, and the agents they can work with.
  */
-import { createApi } from "../lib/api";
+import type { PortalMeResponse } from "../../gateway/portal/api-types";
 import { AppFrame, type Identity, type NavEntry } from "../shared/AppFrame";
 import { NotFoundPage, PlaceholderPage } from "../shared/PlaceholderPage";
+import { api } from "./client";
+import { AccountPage } from "./pages/AccountPage";
 
-export const api = createApi("portal");
+export { api };
 
 export const NAV: NavEntry[] = [
-  { label: "My account", to: "/", description: "Your sign-in and the Slack identities linked to it.", keywords: "slack identity" },
-  { label: "Integrations", to: "/integrations", description: "Connect the tools your agents use on your behalf.", keywords: "connect oauth" },
-  { label: "My agents", to: "/agents", description: "Agents you can work with, and your role on each.", keywords: "grants" },
+  { label: "My account", to: "/", description: "Your sign-in and the Slack identities linked to it.", keywords: "slack identity link unlink" },
+  { label: "Integrations", to: "/integrations", description: "Connect the tools your agents use on your behalf.", keywords: "connect oauth disconnect" },
+  { label: "My agents", to: "/agents", description: "Agents you can work with, and your role on each.", keywords: "grants roles" },
 ];
 
-/** GET /portal/api/me answers the signed-in account and its Slack identities. */
-interface PortalMe {
-  email: string;
-  accountId: string;
-  slackIdentities: Array<{ teamId: string; slackUserId: string; linkedAt: number }>;
-}
-
 async function loadIdentity(): Promise<Identity> {
-  const me = await api.get<PortalMe>("/api/me");
+  const me = await api.get<PortalMeResponse>("/api/me");
   const n = me.slackIdentities.length;
   return { name: me.email, detail: n === 0 ? "No Slack identity linked" : n === 1 ? "1 Slack identity linked" : `${n} Slack identities linked` };
+}
+
+function page(path: string) {
+  switch (path) {
+    case "/":
+      return <AccountPage />;
+    case "/integrations":
+      return <PlaceholderPage entry={NAV[1]!} />;
+    case "/agents":
+      return <PlaceholderPage entry={NAV[2]!} />;
+    default:
+      return <NotFoundPage home="/" />;
+  }
 }
 
 export function App() {
@@ -35,7 +44,7 @@ export function App() {
       nav={NAV}
       api={api}
       loadIdentity={loadIdentity}
-      renderPage={(_path, entry) => (entry ? <PlaceholderPage entry={entry} /> : <NotFoundPage home="/" />)}
+      renderPage={(path) => page(path)}
     />
   );
 }
