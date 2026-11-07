@@ -79,7 +79,9 @@ export function approvalTitle(p: Record<string, unknown> | null | undefined): st
   if (named) return named;
   const line = (str(q.summary) ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
   if (!line) return "approval";
-  return line.length > 80 ? `${line.slice(0, 79)}…` : line;
+  // By code points, so a clip never splits a surrogate pair (an emoji, CJK extension).
+  const points = [...line];
+  return points.length > 80 ? `${points.slice(0, 79).join("")}…` : line;
 }
 
 /** Target of a gate row: the tool for a permission prompt, the approval's

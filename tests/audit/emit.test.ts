@@ -87,6 +87,11 @@ describe("gate helpers", () => {
     expect(gateTarget(gate("approval", {}))).toEqual({ targetKind: "approval", targetId: "approval" });
     expect(gateTarget(gate("approval", { summary: "\n Deploy v2 to staging\nthen smoke test" }))).toEqual({ targetKind: "approval", targetId: "Deploy v2 to staging" });
     expect(gateTarget(gate("approval", { summary: "y".repeat(200) })).targetId).toHaveLength(80);
+    // Clipped by code points: an astral character is never cut in half.
+    const astral = gateTarget(gate("approval", { summary: "\u{1F680}".repeat(100) })).targetId;
+    expect([...astral]).toHaveLength(80);
+    expect(astral.endsWith("\u{1F680}…")).toBe(true);
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(astral)).toBe(false);
     expect(gateTarget(gate("mcp_connect", { serverName: "docs" }))).toEqual({ targetKind: "mcp_server", targetId: "docs" });
     expect(gateTarget(gate("mcp_connect", {}))).toEqual({ targetKind: "mcp_server", targetId: "g-mcp_connect" });
   });
