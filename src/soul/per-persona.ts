@@ -26,12 +26,28 @@ export function soulDataFor(persona?: string | null): SoulData {
 /** Personas whose soul_json failed to parse, warned once each per process. */
 const warnedUnparsed = new Set<string>();
 
+/** Parsed soul_json by the registry snapshot's own value: a new snapshot (a
+ *  sync) carries a new object, so the cache never outlives the registry. */
+const parsedSouls = new WeakMap<object, SoulData | null>();
+
+function parseSoul(raw: unknown): SoulData | null {
+  if (typeof raw !== "object" || raw === null) {
+    const parsed = SoulDataSchema.safeParse(raw);
+    return parsed.success ? parsed.data : null;
+  }
+  if (parsedSouls.has(raw)) return parsedSouls.get(raw)!;
+  const parsed = SoulDataSchema.safeParse(raw);
+  const out = parsed.success ? parsed.data : null;
+  parsedSouls.set(raw, out);
+  return out;
+}
+
 function ownSoul(persona: string): SoulData | null {
   try {
     const raw = getPersonaRegistry().lookupByName(persona)?.soulJson;
     if (raw == null) return null;
-    const parsed = SoulDataSchema.safeParse(raw);
-    if (parsed.success) return parsed.data;
+    const parsed = parseSoul(raw);
+    if (parsed) return parsed;
     if (!warnedUnparsed.has(persona)) {
       warnedUnparsed.add(persona);
       console.warn(`[soul] persona=${persona} structured soul does not parse; using the default soul's access fields`);
