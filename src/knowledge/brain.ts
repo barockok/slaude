@@ -9,7 +9,14 @@ import { getBackend } from "./backend";
 import { NodeDbAccessError } from "../db/client";
 import { BrainNotOpenError, brainClosing, settleBrainWork, whileClosing } from "./brain-work";
 import { keepingExitCode } from "../db/wasm-exit-code";
-import { EMBED_REFUSAL_HINT, embeddingGuardVerdict, installChunkModelStamp, normalizeEmbeddingModel } from "./embedding-guard";
+import {
+  EMBED_REFUSAL_HINT,
+  classifyEmbeddingRecord,
+  installChunkModelStamp,
+  normalizeEmbeddingModel,
+  probeEmbeddingRecord,
+  type ProbeEngine,
+} from "./embedding-guard";
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
 // types stay internal to it; slaude only needs lifecycle + handler dispatch.
@@ -480,12 +487,29 @@ function configuredEmbeddingDims(): number | null {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-type GuardEngine = Engine & { getConfig?: (k: string) => Promise<string | null> };
+type GuardEngine = Engine & {
+  getConfig?: (k: string) => Promise<string | null>;
+  setConfig?: (k: string, v: string) => Promise<void>;
+};
+
+/** Upper bound on the boot probe (one per boot); a slow provider never blocks the boot longer. */
+export const EMBED_PROBE_TIMEOUT_MS = 20_000;
 
 /**
- * Boot-time guard: refuse to embed when this process's embedding config
- * differs from the brain's record, then label every chunk write with the
- * brain's model (gbrain labels them with its compiled-in default otherwise).
+ * Boot-time guard, once per boot. Compares this process's embedding config
+ * with the brain's record (gbrain's `config` table):
+ * - same model: embed.
+ * - same model name and dimensions, another provider prefix: adopt the
+ *   configured name into the record and embed.
+ * - another model name: probe. Re-embed up to 5 stored chunk texts and
+ *   compare with their stored vectors; all >= 0.99 cosine (or no stored
+ *   vectors at all) adopts the configured name, a lower similarity refuses.
+ *   A probe that fails or times out does not refuse: embedding stays on and a
+ *   warning says so (a refusal of a healthy brain is worse than a late check).
+ * - other dimensions, or a gateway on another model: refuse.
+ * A refusal logs EMBEDDING REFUSED, resets the gateway and turns embeds off.
+ * Then every chunk write is labelled (installChunkModelStamp): with the
+ * configured model when this process embeds, else with the brain's record.
  */
 async function guardEmbedding(engine: GuardEngine): Promise<void> {
   embeddingRefusalText = null;
@@ -507,27 +531,72 @@ async function guardEmbedding(engine: GuardEngine): Promise<void> {
     console.warn("[brain] could not read the brain's embedding config:", e instanceof Error ? e.message : e);
   }
   const configured = configuredEmbeddingModel();
-  chunkLabelModel = configured ?? normalizeEmbeddingModel(stored);
-  const verdict = embeddingActiveFlag
-    ? embeddingGuardVerdict({
-        configured,
-        configuredDims: configuredEmbeddingDims(),
-        stored,
-        storedDims,
-        gateway: gatewayModel(),
-      })
-    : null;
-  if (verdict && allowRealign) {
-    console.warn(`[brain] ${verdict}; realign mode: the repair command re-embeds with ${configured}`);
-  } else if (verdict) {
-    embeddingRefusalText = verdict;
+  const refuse = (why: string): void => {
+    embeddingRefusalText = why;
     embeddingActiveFlag = false;
     // No gateway: gbrain's put_page then skips embedding (isAvailable false),
     // so nothing is embedded with a model the brain was not built for.
     gw.resetGateway?.();
-    console.error(`[brain] EMBEDDING REFUSED: ${verdict}. ${EMBED_REFUSAL_HINT}`);
+    console.error(`[brain] EMBEDDING REFUSED: ${why}. ${EMBED_REFUSAL_HINT}`);
+  };
+  const adopt = async (from: string, to: string, how: string): Promise<void> => {
+    try {
+      await engine.setConfig?.("embedding_model", to);
+      stored = to;
+      console.log(`[brain] embedding record adopted: ${from} -> ${to} (${how})`);
+    } catch (e) {
+      console.warn(`[brain] could not record ${to} as the brain's embedding model (embedding stays on):`, e instanceof Error ? e.message : e);
+    }
+  };
+  const verdict = embeddingActiveFlag
+    ? classifyEmbeddingRecord({ configured, configuredDims: configuredEmbeddingDims(), stored, storedDims, gateway: gatewayModel() })
+    : ({ kind: "ok" } as const);
+  if (verdict.kind !== "ok" && allowRealign) {
+    // The repair command decides; the boot changes nothing.
+    const what = verdict.kind === "refuse" ? verdict.message : `brain record ${verdict.from}, configured ${verdict.to}`;
+    console.warn(`[brain] ${what}; realign mode: the repair command decides`);
+  } else if (verdict.kind === "refuse") {
+    refuse(verdict.message);
+  } else if (verdict.kind === "adopt") {
+    await adopt(verdict.from, verdict.to, "provider prefix only");
+  } else if (verdict.kind === "probe") {
+    const r = await probeEmbeddingRecord(engine as unknown as ProbeEngine, {
+      embed: embedForProbe,
+      wrap: await titleWrapForProbe(),
+      timeoutMs: EMBED_PROBE_TIMEOUT_MS,
+    });
+    if (r.status === "match") await adopt(verdict.from, verdict.to, "probe ok");
+    else if (r.status === "empty") await adopt(verdict.from, verdict.to, "no stored vectors");
+    else if (r.status === "error") {
+      console.warn(
+        `[brain] embedding record names ${verdict.from}, configured is ${verdict.to}; the probe of stored vectors failed ` +
+          `(${r.error}). Embedding stays on; check with \`slaude brain reembed --model-mismatch\`.`,
+      );
+    } else {
+      refuse(
+        `brain embedding_model is ${verdict.from} but this process is configured for ${verdict.to}, and stored vectors ` +
+          `do not match the configured model (min cosine ${r.min.toFixed(3)} over ${r.samples} sample(s))`,
+      );
+    }
   }
-  installChunkModelStamp(engine, { brainModel: () => chunkLabelModel, gatewayModel });
+  // A label describes the vector: the configured model only where this
+  // process embeds; otherwise the brain's own record.
+  chunkLabelModel = embeddingActiveFlag ? configured : (normalizeEmbeddingModel(stored) ?? configured);
+  installChunkModelStamp(engine, { labelModel: () => chunkLabelModel, gatewayModel });
+}
+
+async function embedForProbe(texts: string[]): Promise<Float32Array[]> {
+  const { embedBatch } = (await gbrainImport("embedding")) as { embedBatch: (t: string[]) => Promise<Float32Array[]> };
+  return embedBatch(texts);
+}
+
+/** gbrain's title-tier embedding input (its default search mode wraps chunks with the page title). */
+async function titleWrapForProbe(): Promise<(title: string, text: string, source: string) => string | null> {
+  const ctx = (await import(join(import.meta.dir, "../../node_modules/gbrain/src/core/embedding-context.ts"))) as {
+    buildContextualPrefix: (t: string, s: string | null) => string | null;
+    wrapChunkForEmbedding: (t: string, p: string | null, s: string) => string;
+  };
+  return (title, text, source) => ctx.wrapChunkForEmbedding(text, ctx.buildContextualPrefix(title, null), source);
 }
 
 /** Runtime truth for "may sync attempt embeds": gateway configured AND the
@@ -685,6 +754,7 @@ export async function closeBrain(): Promise<void> {
   embeddingActiveFlag = false;
   embeddingRefusalText = null;
   chunkLabelModel = null;
+  allowRealign = false;
   delete process.env.GBRAIN_EMBEDDING_MODEL;
   delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
   try {
