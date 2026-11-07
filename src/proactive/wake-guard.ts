@@ -24,6 +24,9 @@ const ALLOWED: Readonly<Record<string, readonly string[] | "all">> = {
   connect: [],
 };
 
+/** The allow-list as data, for the console's guardrails view (read-only). */
+export const WAKE_TOOL_ALLOWLIST: Readonly<Record<string, readonly string[] | "all">> = ALLOWED;
+
 const CONTRACTS: Readonly<Record<string, ServerContract>> = {
   surface: surfaceContract,
   slack: slackContract,

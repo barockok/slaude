@@ -618,3 +618,66 @@ export interface SkillActionResponse {
   /** The id the skill has now (a retired copy's id, or the live skill's). */
   id: string;
 }
+
+// --- Resources: guardrails (read-only) ---------------------------------------
+
+/**
+ * Where an effective value comes from: an environment variable, the agent's
+ * soul, the persona's own config, a stored console grant, a rule the agent
+ * learned from a person, or the code's default or fixed rule.
+ */
+export type GuardrailSource = "env" | "soul" | "persona" | "console" | "learned" | "default" | "code";
+
+export interface GuardrailSetting {
+  key: string;
+  label: string;
+  value: string | number | boolean | string[] | null;
+  source: GuardrailSource;
+  /** The variable, soul section or constant it is read from. */
+  origin?: string;
+  note?: string;
+}
+
+export interface GuardrailTable {
+  columns: string[];
+  rows: string[][];
+}
+
+export type GuardrailFamilyId =
+  | "tool-permissions"
+  | "approvals"
+  | "admission"
+  | "memory-gating"
+  | "profile-guard"
+  | "policy"
+  | "redaction"
+  | "proactive"
+  | "learned-rules"
+  | "wake-tools"
+  | "budgets";
+
+export interface GuardrailFamily {
+  id: GuardrailFamilyId;
+  title: string;
+  /** One line: what it constrains. */
+  summary: string;
+  /** `agent`: this agent's own values; `deployment`: the same for every agent. */
+  scope: "agent" | "deployment";
+  /** `unavailable`: could not be read now (see note); `not-implemented`: designed, not in the code. */
+  status: "active" | "unavailable" | "not-implemented";
+  settings: GuardrailSetting[];
+  table?: GuardrailTable;
+  /** Governing prose (markdown): the soul's own section, or how the rule works. */
+  text?: string;
+  /** Where `text` comes from, e.g. "SOUL.md ## Proactive". */
+  textSource?: string;
+  note?: string;
+  /** A console page with more, e.g. the agent's Access tab. */
+  link?: { label: string; to: string };
+}
+
+/** GET /panel/api/guardrails?agent= */
+export interface GuardrailsResponse {
+  agent: string;
+  families: GuardrailFamily[];
+}

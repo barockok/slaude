@@ -81,6 +81,14 @@ const MANAGER_OPS = new Set([
   "schema_apply_mutations", "reload_schema_pack", "revert_version", "forget_fact",
 ]);
 
+/** The op classes classifyBrainOp reads, as data, for the console's guardrails view. */
+export const BRAIN_OP_CLASSES: Readonly<Record<"read" | "write" | "destructive" | "manager", readonly string[]>> = {
+  read: [...READ_OPS],
+  write: [...WRITE_OPS],
+  destructive: [...DESTRUCTIVE_OPS],
+  manager: [...MANAGER_OPS],
+};
+
 export function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): GateTier {
   if (READ_OPS.has(op)) return "auto";
   if (MANAGER_OPS.has(op)) return "manager";
@@ -182,7 +190,7 @@ export type GatedResult = { ok: true; result: unknown } | { ok: false; reason: s
 // manager-tier ops are never covered. See docs/findings/2026-06-14-brain-memoize-failure.md.
 // Read per-grant (not at import) so tests/ops can tune the window via env.
 // Explicit 0 disables the standing grant (every write cards); unset/invalid → 8h.
-const grantTtlMs = (): number => {
+export const grantTtlMs = (): number => {
   const n = Number(process.env.SLAUDE_KB_GRANT_TTL_MS);
   return Number.isFinite(n) && n >= 0 ? n : 8 * 60 * 60 * 1000;
 };

@@ -50,6 +50,7 @@
  *   GET    /panel/api/skills                       every skill: source, origin, agents, status, usage
  *   GET    /panel/api/skills/:id                   one skill: frontmatter, SKILL.md, files, provenance, usage, proposals
  *   POST   /panel/api/skills/:id/retire|restore    an agent-authored skill (superadmin; audited)
+ *   GET    /panel/api/guardrails?agent=            what constrains one agent, with each value's source
  *   GET    /panel/api/overview                     counts and the latest audit events
  */
 import { PanelVoiceRedactor } from "./voice-redact";
@@ -92,6 +93,7 @@ import { emitAudit } from "../../audit/emit";
 import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
 import { buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
+import { guardrailsFor, type GuardrailDeps } from "./guardrails-view";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
 import { agentStoreNames, displayTitle, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
@@ -115,6 +117,7 @@ import type {
   AgentsResponse,
   CreateGrantResponse,
   RevokeGrantResponse,
+  GuardrailsResponse,
   SkillActionResponse,
   SkillDetailResponse,
   SkillsResponse,
@@ -324,6 +327,8 @@ export interface PanelApiDeps {
   role?: PersonaViewRole;
   /** Memory store browsing. Default: the local brain (when it is enabled and local). */
   memory?: MemoryBrowser;
+  /** Guardrails view seams (tests): where learned proactive rules are read. */
+  guardrails?: GuardrailDeps;
   /** Mono: in-process session liveness (the AgentManager). Absent in the
    *  gateway role, where the warm registry and the event stream say it. */
   local?: LocalSessions | null;
@@ -755,6 +760,16 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           return json(200, { ok: true, id: res.id } satisfies SkillActionResponse);
         }
         return json(404, { error: "not found" });
+      }
+
+      // GET /panel/api/guardrails?agent=: what constrains one agent, each value
+      // with its source. Read-only, any operator.
+      if (seg.length === 3 && seg[2] === "guardrails") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const name = url.searchParams.get("agent") || "default";
+        if (!PERSONA_NAME_RE.test(name) && name !== "default") return json(422, { error: "invalid agent name" });
+        if (!isAgent(name)) return json(404, { error: `no agent named '${name}'` });
+        return json(200, (await guardrailsFor(name, deps.guardrails)) satisfies GuardrailsResponse);
       }
 
       // GET /panel/api/grants: every console grant across agents, for the
