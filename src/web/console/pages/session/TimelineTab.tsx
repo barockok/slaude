@@ -3,7 +3,8 @@ import { Avatar, Badge, Button, CodeBlock, EmptyState, IconChevronDown, IconChev
 import type { StreamEntry, StreamStatus } from "../../lib/sessionStream";
 import type { SessionHistory } from "./useSessionHistory";
 import { resultText, type Delivery, type Item } from "./timeline-model";
-import { ACTOR_KIND_LABEL, absoluteTime, actionLabel, clockTime, decisionLabel, decisionTone, duration } from "../../lib/format";
+import { absoluteTime, actionLabel, actorKindLabel, clockTime, decisionLabel, decisionTone, duration, shortDate } from "../../lib/format";
+import { SlackText } from "../../components/SlackText";
 
 /** One line that says what a tool call does: the command, the file, the pattern. */
 function inputSummary(input: unknown): string {
@@ -41,11 +42,11 @@ function Time({ at }: { at: number }) {
   );
 }
 
-/** The record keeps a turn's time; shown as a date and time, not a clock. */
-function EarlierTime({ at }: { at: number }) {
+/** The record keeps a turn's time; shown as a date and time, not a clock, or only the date when that is all it knows. */
+function EarlierTime({ at, dateOnly }: { at: number; dateOnly?: boolean }) {
   return (
-    <time className="sl-tl__time" dateTime={new Date(at).toISOString()} title={absoluteTime(at)}>
-      {absoluteTime(at)}
+    <time className="sl-tl__time" dateTime={new Date(at).toISOString().slice(0, dateOnly ? 10 : undefined)} title={dateOnly ? "Only the day of this line is recorded" : absoluteTime(at)}>
+      {dateOnly ? shortDate(at) : absoluteTime(at)}
     </time>
   );
 }
@@ -111,9 +112,11 @@ function ItemView({ it }: { it: Item }) {
               <span className="sl-tl__who">{it.who === "operator" ? `${it.name} (console)` : it.name}</span>
               {it.who === "user" && <span className="sl-caption">in Slack</span>}
               {it.delivery && <DeliveryMark delivery={it.delivery} target={it.target} />}
-              {it.earlier ? <EarlierTime at={it.at} /> : <Time at={it.at} />}
+              {it.earlier ? <EarlierTime at={it.at} dateOnly={it.dateOnly} /> : <Time at={it.at} />}
             </div>
-            <p className="sl-tl__text">{it.text}</p>
+            <p className="sl-tl__text">
+              <SlackText text={it.text} />
+            </p>
           </div>
         </div>
       );
@@ -206,7 +209,7 @@ function ItemView({ it }: { it: Item }) {
             <span className="sl-caption">
               {g.summary}
               {g.summary ? ". " : ""}
-              {ACTOR_KIND_LABEL[g.actorKind] ?? g.actorKind} <span className="sl-mono">{g.actorId}</span>
+              {actorKindLabel(g)} <span className="sl-mono">{g.actorId}</span>
             </span>
           </div>
           <Time at={g.at} />

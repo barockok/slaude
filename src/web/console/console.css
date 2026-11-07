@@ -795,6 +795,12 @@
   color: var(--sl-text-secondary);
 }
 
+/* A Slack @mention or #channel inside a message. */
+.sl-mention {
+  color: var(--sl-text-accent);
+  font-weight: var(--sl-weight-medium);
+}
+
 .sl-tl__label {
   flex: none;
   font-weight: var(--sl-weight-medium);

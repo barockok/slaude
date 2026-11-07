@@ -12,6 +12,8 @@ export interface SessionHistory {
   /** Why there is no history (memory off or remote), from the server. */
   note: string | null;
   error: string | null;
+  /** Names of the people mentioned in the loaded lines, as the gateway resolved them. */
+  users: Record<string, string>;
   loadMore: () => void;
 }
 
@@ -25,6 +27,7 @@ export function useSessionHistory(sessionId: string): SessionHistory {
   const [more, setMore] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [users, setUsers] = useState<Record<string, string>>({});
   const ctl = useRef<AbortController | null>(null);
 
   const fetchPage = useCallback(
@@ -40,6 +43,7 @@ export function useSessionHistory(sessionId: string): SessionHistory {
         setItems((xs) => (before ? [...r.items, ...xs] : r.items));
         setCursor(r.nextCursor);
         setNote(r.note ?? null);
+        if (r.users) setUsers((u) => ({ ...u, ...r.users }));
         setError(null);
       } catch (e) {
         if (c.signal.aborted) return;
@@ -59,6 +63,7 @@ export function useSessionHistory(sessionId: string): SessionHistory {
     setCursor(null);
     setNote(null);
     setError(null);
+    setUsers({});
     setLoading(true);
     void fetchPage(null);
     return () => ctl.current?.abort();
@@ -70,5 +75,5 @@ export function useSessionHistory(sessionId: string): SessionHistory {
     void fetchPage(cursor);
   }, [cursor, more, fetchPage]);
 
-  return { items, loading, more, hasMore: cursor !== null, note, error, loadMore };
+  return { items, loading, more, hasMore: cursor !== null, note, error, users, loadMore };
 }
