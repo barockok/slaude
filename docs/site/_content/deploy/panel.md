@@ -27,7 +27,7 @@ dark themes follow the browser, and every page works at phone width.
 | **Agents** | Every agent (persona) with its live state. An agent's page has four tabs: *Overview* (identity, model, the label it runs on), *Mandates* (its jobs: the soul's mandate, each channel block, each cron and the heartbeat, with triggers and the approvers who can actually approve), *Access* (effective grants from the soul and the console) and *Activity* (its audit events). |
 | **Sessions** | Live and recent sessions with filters by agent and status. A session has a *Timeline*, a *Chat* tab and its *Audit* events. |
 | **Approvals and audit** | Every permission and approval decision, refusal and expiry, and every console change, newest first, filterable by agent, action, actor, decision and time. |
-| **Access** | Console roles (read only, from the role file) and every stored agent grant. |
+| **Access** | Console roles (read only, from the role file; superadmins only, operators see a note) and every stored agent grant. |
 | **Memory** | Memory stores with page counts; a store lists its pages; a page shows its content, type, tags and links. Read only. |
 | **Environments** | Node pools (labels, live nodes, last heartbeat), each agent's placement label, and personal environments (secrets never shown). |
 
@@ -37,7 +37,12 @@ dark themes follow the browser, and every page works at phone width.
 change applies at once on the replica that made it and within a few seconds on
 the others. Grants are keyed by persona name, so a persona renamed in git is a
 new persona and its grants must be re-created. Operators see grants but cannot
-change them.
+change them. A stored approver grant applies in every channel, unlike the
+approvers in a SOUL.md `## Channel` block, which replace the global list in
+their channel only. A channel grant takes a channel id (`C` or `G`); for DMs,
+give the person a user member grant with DM only. A deny grant also removes
+the user from every approval card, the default persona's included. The console
+roles list (who may sign in, and as what) is visible to superadmins only.
 
 **Private memory stores.** Personal (`user-*`) and profile (`profile-*`)
 stores hold what one person told an agent. Only superadmins see them, and every

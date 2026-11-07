@@ -170,9 +170,22 @@ command checks (which today use the global soul's approvers, not channel-effecti
 `/soul` and `/heartbeat` manager checks, and approval-gate `#resolveApprovers` for named personas.
 For named personas `roleOf` returns approver without the default persona's scope keyword
 matching (`selectApproversFrom`), so a named persona's scoped approvers are eligible for every
-category in phase 1; the default persona keeps scope matching. For the approval gate, `roleOf`
-precedes the existing fallbacks (legacy category map,
-`SLAUDE_APPROVERS`, then "anyone" when no approver is configured), which stay unchanged.
+category in phase 1; the default persona keeps scope matching.
+
+The approval gate resolves approvers in two ways:
+
+- **A named persona** uses `approversFor(persona, channel)`: every user whose role on it
+  (channel-aware) is approver or manager. With none, the default persona's managers; with none
+  there either, nobody (the card times out denied). It has no legacy category map,
+  `SLAUDE_APPROVERS` or "anyone" fallback.
+- **The default persona** keeps its chain: the channel-effective soul approvers with scope
+  matching, then the legacy category map, then `SLAUDE_APPROVERS`, then "anyone". The resolved
+  list is then filtered by deny grants on the default persona (`loadGrants("default")`; a user
+  deny row excludes); when the filter empties a non-empty list, nobody may approve.
+
+At click time the gate refuses (`gate.approval.refused`) a clicker with a deny grant on the
+card's persona, for both kinds and also when the card admits anyone, so a deny added after the
+card was posted applies.
 
 ### Tool permission cards: who may click
 
