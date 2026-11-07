@@ -9,9 +9,9 @@ afterEach(() => {
 });
 
 describe("superadmin action set", () => {
-  it("gates exactly reset, mode, force-release, reload and the persona changes", () => {
+  it("gates exactly reset, mode, force-release, reload, the persona changes and grant changes", () => {
     expect([...SUPERADMIN_ACTIONS].sort()).toEqual([
-      "control.mode", "control.reset", "force-release", "persona.create", "persona.override", "reload",
+      "control.mode", "control.reset", "force-release", "grant.create", "grant.revoke", "persona.create", "persona.override", "reload",
     ]);
   });
 

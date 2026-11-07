@@ -29,6 +29,14 @@
  *   GET  /panel/api/personas/:name               one persona's definition: references and presence, never values
  *   PUT|DELETE /panel/api/personas/:name/overrides/:field   runtime override (superadmin; wiped by the next git sync)
  *   POST /panel/api/personas                     runtime onboard of a non-git persona (superadmin)
+ *
+ * Console API (agent platform; shapes in ./api-types). Reads: any operator.
+ * Mutations: superadmin, each one audited with actor_kind operator.
+ *   GET    /panel/api/agents                       agents with mandate and grant counts
+ *   GET    /panel/api/agents/:name                 one agent: mandates and effective grants
+ *   GET    /panel/api/agents/:name/grants          effective grants (soul and console)
+ *   POST   /panel/api/agents/:name/grants          store a console grant (superadmin)
+ *   DELETE /panel/api/agents/:name/grants/:id      revoke a console grant (superadmin)
  */
 import { PanelVoiceRedactor } from "./voice-redact";
 import { z } from "zod";
@@ -59,6 +67,17 @@ import { installedKbSourceIds } from "../../knowledge/persona-kb";
 import { discoverSkills } from "../../skills/loader";
 import { credentialExpiries } from "../../db/mcp-credentials";
 import { oauthKey } from "../../agent/mcp-oauth/store";
+import * as AgentGrants from "../../db/agent-grants";
+import { invalidateGrants } from "../../access/role";
+import { emitAudit } from "../../audit/emit";
+import { agentDetail, agentSummaries, consoleGrantView, grantViews, isAgent } from "./console-views";
+import type {
+  AgentDetailResponse,
+  AgentGrantsResponse,
+  AgentsResponse,
+  CreateGrantResponse,
+  RevokeGrantResponse,
+} from "./api-types";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -105,6 +124,8 @@ export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "control.reset",
   "control.mode",
   "force-release",
+  "grant.create",
+  "grant.revoke",
 ]);
 
 /** Returns the 403 to send, or null when the role suffices. */
@@ -129,6 +150,34 @@ const controlSchema = z
   .strict();
 
 const chatSchema = z.object({ text: z.string().min(1) }).strict();
+
+const createGrantSchema = z
+  .object({
+    subjectKind: z.enum(AgentGrants.SUBJECT_KINDS),
+    subjectId: z.string().trim().min(1).max(64),
+    role: z.enum(AgentGrants.GRANT_ROLES),
+    deny: z.boolean().optional(),
+    dmOnly: z.boolean().optional(),
+    expiresAt: z.number().int().positive().nullable().optional(),
+    note: z.string().max(500).nullable().optional(),
+  })
+  .strict();
+
+/** zod issues as one line: `path: message; ...`. */
+const issuesLine = (e: z.ZodError) => e.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
+
+/** What an audit row records of a stored grant. */
+const grantDetails = (g: AgentGrants.AgentGrantRow) => ({
+  grantId: g.id,
+  subjectKind: g.subjectKind,
+  subjectId: g.subjectId,
+  role: g.role,
+  deny: g.deny,
+  dmOnly: g.dmOnly,
+  expiresAt: g.expiresAt,
+  note: g.note,
+  createdBy: g.createdBy,
+});
 
 export interface PanelApiDeps {
   registry: Registry | null;
@@ -388,6 +437,102 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           200,
           (await deps.labels()).map((s) => ({ label: s.label, liveNodes: s.liveNodes, waiting: s.waiting, unserved: s.unserved })),
         );
+      }
+
+      // --- Agents: mandates and grants (console). Reads for any operator; grant
+      // changes are superadmin only and audited as grant.created / grant.revoked.
+      if (seg[2] === "agents") {
+        const liveness = { role: panelRole, registry: deps.registry };
+        if (seg.length === 3) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          return json(200, { agents: await agentSummaries(liveness) } satisfies AgentsResponse);
+        }
+        let name: string;
+        try { name = decodeURIComponent(seg[3]!); } catch { return json(422, { error: "invalid agent name" }); }
+        if (!PERSONA_NAME_RE.test(name)) return json(422, { error: "invalid agent name" });
+        if (!isAgent(name)) return json(404, { error: `no agent named '${name}'` });
+
+        // GET /panel/api/agents/:name
+        if (seg.length === 4) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          return json(200, (await agentDetail(name, liveness)) satisfies AgentDetailResponse);
+        }
+
+        if (seg[4] !== "grants" || seg.length > 6) return json(404, { error: "not found" });
+
+        // GET|POST /panel/api/agents/:name/grants
+        if (seg.length === 5) {
+          if (req.method === "GET") return json(200, { grants: await grantViews(name) } satisfies AgentGrantsResponse);
+          if (req.method !== "POST") return json(405, { error: "method not allowed" });
+          const denied = requireSuperadmin(role, { action: "grant.create", operator: operatorId });
+          if (denied) return denied;
+          let body: unknown;
+          try { body = await req.json(); } catch { return json(400, { error: "malformed JSON body" }); }
+          const parsed = createGrantSchema.safeParse(body);
+          if (!parsed.success) return json(400, { error: issuesLine(parsed.error) });
+          const b = parsed.data;
+          if (b.expiresAt != null && b.expiresAt <= Date.now()) return json(400, { error: "expiresAt must be in the future" });
+          let row: AgentGrants.AgentGrantRow;
+          try {
+            row = await AgentGrants.create({
+              tenantId: "default",
+              persona: name,
+              subjectKind: b.subjectKind,
+              subjectId: b.subjectId,
+              role: b.role,
+              deny: b.deny,
+              dmOnly: b.dmOnly,
+              createdBy: operatorId,
+              expiresAt: b.expiresAt ?? null,
+              note: b.note ?? null,
+            });
+          } catch (e) {
+            // The repository's own combination rules (e.g. a channel subject can
+            // only be a member): a request error, said plainly.
+            if (e instanceof Error && e.message.startsWith("agent grant: ")) {
+              return json(400, { error: e.message.slice("agent grant: ".length) });
+            }
+            throw e;
+          }
+          invalidateGrants(name);
+          const grant = consoleGrantView(row);
+          emitAudit({
+            tenantId: "default",
+            persona: name,
+            actorKind: "operator",
+            actorId: operatorId,
+            action: "grant.created",
+            targetKind: "grant",
+            targetId: row.id,
+            summary: `${row.deny ? "deny" : row.role} for ${row.subjectKind} ${row.subjectId}`,
+            details: { ...grantDetails(row), operatorRole: role },
+          });
+          return json(201, { grant } satisfies CreateGrantResponse);
+        }
+
+        // DELETE /panel/api/agents/:name/grants/:id
+        if (req.method !== "DELETE") return json(405, { error: "method not allowed" });
+        const denied = requireSuperadmin(role, { action: "grant.revoke", operator: operatorId });
+        if (denied) return denied;
+        let id: string;
+        try { id = decodeURIComponent(seg[5]!); } catch { return json(404, { error: "no such grant" }); }
+        const row = await AgentGrants.findById(id);
+        // A grant of another agent is not this agent's: same answer as none.
+        if (!row || row.persona !== name) return json(404, { error: "no such grant on this agent" });
+        if (!(await AgentGrants.revoke(id))) return json(404, { error: "no such grant on this agent" });
+        invalidateGrants(name);
+        emitAudit({
+          tenantId: "default",
+          persona: name,
+          actorKind: "operator",
+          actorId: operatorId,
+          action: "grant.revoked",
+          targetKind: "grant",
+          targetId: row.id,
+          summary: `revoked ${row.deny ? "deny" : row.role} for ${row.subjectKind} ${row.subjectId}`,
+          details: { ...grantDetails(row), operatorRole: role },
+        });
+        return json(200, { ok: true } satisfies RevokeGrantResponse);
       }
 
       // --- Runtime persona changes. Git is the source of truth; these are for

@@ -129,6 +129,12 @@ export async function listAll(tenant?: string): Promise<AgentGrantRow[]> {
   return rows.map(mapRow);
 }
 
+/** One stored grant by id, expired or not; null when there is none. */
+export async function findById(id: string): Promise<AgentGrantRow | null> {
+  const r = await db.one<Row>(`SELECT * FROM agent_grants WHERE id = ?`, [id]);
+  return r ? mapRow(r) : null;
+}
+
 /** Hard delete. True when a row was removed. */
 export async function revoke(id: string): Promise<boolean> {
   const r = await db.run(`DELETE FROM agent_grants WHERE id = ?`, [id]);
