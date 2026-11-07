@@ -213,6 +213,9 @@ describe("POST /panel/api/agents/:name/grants", () => {
     const chan = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subjectKind: "channel", subjectId: "UNEW", role: "member" });
     expect(chan.status).toBe(400);
     expect(chan.body.error).toContain("Slack channel id");
+    const dm = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subjectKind: "channel", subjectId: "DDIRECT", role: "member" });
+    expect(dm.status).toBe(400);
+    expect(dm.body.error).toContain("user member grant with dm_only");
     expect(await AgentGrants.listAll()).toEqual([]);
   });
 

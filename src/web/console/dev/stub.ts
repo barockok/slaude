@@ -16,10 +16,10 @@ import type {
 } from "../../../gateway/panel/api-types";
 import { allGrantsOf, createFixtures, sessionScript, type ConsoleFixtures } from "./fixtures";
 
-const ID_RE = { user: /^[UW][A-Z0-9]+$/, channel: /^[CGD][A-Z0-9]+$/, workspace: /^T[A-Z0-9]+$/ } as const;
+const ID_RE = { user: /^[UW][A-Z0-9]+$/, channel: /^[CG][A-Z0-9]+$/, workspace: /^T[A-Z0-9]+$/ } as const;
 const ID_SHAPE = {
   user: "a Slack user id (U or W followed by uppercase letters and digits)",
-  channel: "a Slack channel id (C, G or D followed by uppercase letters and digits)",
+  channel: "a Slack channel id (C or G followed by uppercase letters and digits)",
   workspace: "a Slack workspace id (T followed by uppercase letters and digits)",
 } as const;
 
@@ -43,6 +43,9 @@ function validateGrant(b: CreateGrantRequest): string | null {
     if (b.dmOnly) return `dm_only applies to user subjects only, not ${b.subjectKind}`;
   }
   const id = (b.subjectId ?? "").trim();
+  if (b.subjectKind === "channel" && /^D[A-Z0-9]+$/.test(id)) {
+    return `agent grant: a channel subject_id must be a channel, not a DM (${JSON.stringify(id)}); DMs are covered by a user member grant with dm_only`;
+  }
   if (!ID_RE[b.subjectKind].test(id)) return `a ${b.subjectKind} subject_id must be ${ID_SHAPE[b.subjectKind]}, got ${JSON.stringify(id)}`;
   return null;
 }

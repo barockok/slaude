@@ -14,9 +14,12 @@ export const SUBJECT_LABEL: Record<SubjectKind, string> = { user: "User", channe
 
 const ID_SHAPE: Record<SubjectKind, { re: RegExp; example: string; message: string }> = {
   user: { re: /^[UW][A-Z0-9]+$/, example: "U1234ABCD", message: "A Slack user id starts with U or W, then uppercase letters and digits." },
-  channel: { re: /^[CGD][A-Z0-9]+$/, example: "C1234ABCD", message: "A Slack channel id starts with C, G or D, then uppercase letters and digits." },
+  channel: { re: /^[CG][A-Z0-9]+$/, example: "C1234ABCD", message: "A Slack channel id starts with C or G, then uppercase letters and digits." },
   workspace: { re: /^T[A-Z0-9]+$/, example: "T1234ABCD", message: "A Slack workspace id starts with T, then uppercase letters and digits." },
 };
+
+/** A DM id given as a channel: DMs are covered by a user member grant with DM only. */
+export const DM_MESSAGE = "That is a DM, not a channel. To let someone DM the agent, give them a user member grant with DM only.";
 
 export const subjectPlaceholder = (k: SubjectKind) => `e.g. ${ID_SHAPE[k].example}`;
 
@@ -28,6 +31,7 @@ export function subjectIdError(kind: SubjectKind, id: string): string | null {
   const v = id.trim();
   if (!v) return "Enter a Slack id.";
   if (v.length > 64) return "That id is too long.";
+  if (kind === "channel" && /^D[A-Z0-9]+$/.test(v)) return DM_MESSAGE;
   if (!ID_SHAPE[kind].re.test(v)) return ID_SHAPE[kind].message;
   return null;
 }

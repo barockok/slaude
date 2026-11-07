@@ -99,6 +99,20 @@ test.describe("agent access tab", () => {
     await expect(page.getByRole("table", { name: "Grants on scout" }).getByRole("row").filter({ hasText: "UNEWPERSON" })).toHaveCount(1);
   });
 
+  test("a DM id is not a channel: the form points to a DM-only user grant", async ({ page }) => {
+    await page.goto("/panel/agents/scout/access");
+    await page.getByRole("button", { name: "Add grant" }).click();
+    const dialog = page.getByRole("dialog", { name: "Add grant" });
+    await dialog.getByLabel("Subject kind").selectOption("channel");
+    await dialog.getByLabel("Slack id").fill("DDIRECT");
+    await dialog.getByRole("button", { name: "Add grant" }).click();
+    await expect(dialog.getByText("That is a DM, not a channel.", { exact: false })).toBeVisible();
+    await dialog.getByLabel("Slack id").fill("GPRIV");
+    await dialog.getByRole("button", { name: "Add grant" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(toasts(page).getByText("Grant added")).toBeVisible();
+  });
+
   test("an operator sees grants but cannot add or revoke", async ({ page }) => {
     await page.goto("/panel/agents/scout/access?as=operator");
     await expect(page.getByRole("heading", { name: "Effective grants" })).toBeVisible();

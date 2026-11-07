@@ -59,7 +59,7 @@ describe("agent_grants repo", () => {
     // Slack id shape per kind: uppercase alphanumerics after the kind's prefix.
     for (const [kind, ok, bad] of [
       ["user", ["UALICE", "WGRID1"], ["alice", "ualice", "CTEAM", "U", "U-1"]],
-      ["channel", ["CTEAM", "GPRIV", "DDIRECT"], ["UALICE", "cteam", "#team"]],
+      ["channel", ["CTEAM", "GPRIV"], ["UALICE", "cteam", "#team"]],
       ["workspace", ["TWORK"], ["CTEAM", "twork"]],
     ] as const) {
       for (const id of bad) {
@@ -67,6 +67,10 @@ describe("agent_grants repo", () => {
       }
       for (const id of ok) await AgentGrants.revoke((await AgentGrants.create({ ...base, subjectKind: kind, subjectId: id })).id);
     }
+    // A DM is not a channel subject: a user member grant with dm_only covers it.
+    await expect(AgentGrants.create({ ...base, subjectKind: "channel", subjectId: "DDIRECT" })).rejects.toThrow(
+      /not a DM .*user member grant with dm_only/,
+    );
     for (const kind of ["channel", "workspace"] as const) {
       await expect(AgentGrants.create({ ...base, subjectKind: kind, subjectId: "CTEAM", role: "manager" })).rejects.toThrow(/only be granted member/);
       await expect(AgentGrants.create({ ...base, subjectKind: kind, subjectId: "CTEAM", role: "approver" })).rejects.toThrow(/only be granted member/);
