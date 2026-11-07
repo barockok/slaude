@@ -44,6 +44,7 @@
     "test": "bun test",
     "test:coverage": "bun test --coverage",
     "brain-backfill": "bun src/cli/brain-backfill.ts",
+    "brain-reembed": "bun src/cli/brain-reembed.ts",
     "migrate-sqlite": "bun src/cli/migrate-sqlite.ts",
     "test:pg": "SLAUDE_DB=pg bun test"
   },
