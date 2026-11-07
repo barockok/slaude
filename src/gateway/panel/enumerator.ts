@@ -44,10 +44,11 @@ export interface EnumerateDeps {
   registry?: Registry | null;
   /** Mono: in-process liveness, used instead of the registry (nothing registers there). */
   local?: LocalSessions | null;
-  /** Gateway: whether a warm session has a turn in flight (the event stream). */
-  turnInFlight?: (sessionId: string) => Promise<boolean | undefined>;
-  /** Panel active-surface lock owner lookup (optional enrichment). */
-  panelOwner?: (sessionId: string) => Promise<string | null>;
+  /** Gateway: whether each warm session has a turn in flight (the event
+   *  stream), for all of them in one batched call. */
+  turnsInFlight?: (sessionIds: string[]) => Promise<Map<string, boolean | undefined>>;
+  /** Panel active-surface lock owners, in order, for all rows in one call (optional enrichment). */
+  panelOwners?: (sessionIds: string[]) => Promise<Array<string | null>>;
 }
 
 function summarize(row: SessionRow): SessionSummary {
@@ -83,34 +84,41 @@ export async function enumerateSessions(
   deps: EnumerateDeps,
 ): Promise<SessionSummary[]> {
   const rows = await Sessions.listSessions(o);
-  return Promise.all(
-    rows.map(async (row) => {
-      const s = summarize(row);
-      if (deps.local) {
-        s.warm = deps.local.isWarm(row.id);
-        s.activity = activityOf(row.status, s.warm, s.warm && deps.local.turnInFlight(row.id));
-      } else if (deps.registry) {
-        try {
-          const loc = await deps.registry.lookup(row.id);
-          if (loc && loc.fresh) {
-            s.warm = true;
-            s.node = loc.node;
-          }
-        } catch {
-          /* cold/unknown — leave warm:false */
-        }
-        const inFlight = s.warm && deps.turnInFlight ? await deps.turnInFlight(row.id).catch(() => undefined) : undefined;
-        s.activity = activityOf(row.status, s.warm, inFlight);
+  const out = rows.map(summarize);
+  if (deps.local) {
+    for (const s of out) {
+      s.warm = deps.local.isWarm(s.id);
+      s.activity = activityOf(s.status, s.warm, s.warm && deps.local.turnInFlight(s.id));
+    }
+  } else if (deps.registry && out.length > 0) {
+    // One pipelined registry read for the page, then the stream reads for the
+    // warm rows (batched too): a bounded number of round trips per request.
+    let locs: Array<{ node: string; fresh: boolean } | null> = [];
+    try {
+      locs = await deps.registry.lookupMany(out.map((s) => s.id));
+    } catch {
+      /* cold/unknown: leave warm:false */
+    }
+    out.forEach((s, i) => {
+      const loc = locs[i];
+      if (loc && loc.fresh) {
+        s.warm = true;
+        s.node = loc.node;
       }
-      if (deps.panelOwner) {
-        try {
-          const owner = await deps.panelOwner(row.id);
-          if (owner) s.panel_locked_by = owner;
-        } catch {
-          /* lock lookup best-effort */
-        }
-      }
-      return s;
-    }),
-  );
+    });
+    const warm = out.filter((s) => s.warm).map((s) => s.id);
+    const inFlight = warm.length > 0 && deps.turnsInFlight ? await deps.turnsInFlight(warm).catch(() => new Map<string, boolean | undefined>()) : new Map<string, boolean | undefined>();
+    for (const s of out) s.activity = activityOf(s.status, s.warm, inFlight.get(s.id));
+  }
+  if (deps.panelOwners && out.length > 0) {
+    try {
+      const owners = await deps.panelOwners(out.map((s) => s.id));
+      out.forEach((s, i) => {
+        if (owners[i]) s.panel_locked_by = owners[i]!;
+      });
+    } catch {
+      /* lock lookup best-effort */
+    }
+  }
+  return out;
 }

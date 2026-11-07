@@ -65,7 +65,7 @@ import { audit } from "./auth/audit";
 import { auditOneOnOne } from "../../audit/events";
 import type { PanelRole } from "./auth/roles";
 import { enumerateSessions } from "./enumerator";
-import { activityOf, streamTurnInFlight, type LocalSessions } from "./activity";
+import { activityOf, streamTurnInFlight, streamTurnsInFlight, type LocalSessions } from "./activity";
 import { sessionHistory } from "./history";
 import { redactSecrets } from "../../redact";
 import { servePanelStatic } from "./static";
@@ -338,7 +338,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
     }
     let warm = false;
     try {
-      const loc = deps.registry ? await deps.registry.lookup(row.id) : null;
+      const loc = deps.registry ? ((await deps.registry.lookupMany([row.id]))[0] ?? null) : null;
       warm = !!loc && loc.fresh;
     } catch {
       /* unknown: cold */
@@ -1008,8 +1008,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           {
             registry: deps.registry,
             local: deps.local ?? null,
-            turnInFlight: (sid) => streamTurnInFlight(deps.pubsub, sid),
-            panelOwner: deps.panelLock ? (id) => deps.panelLock!.owner(id) : undefined,
+            turnsInFlight: (ids) => streamTurnsInFlight(deps.pubsub, ids),
+            panelOwners: deps.panelLock ? (ids) => deps.panelLock!.ownerMany(ids) : undefined,
           },
         );
         return json(200, { sessions } satisfies SessionsResponse);

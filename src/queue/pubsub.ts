@@ -189,6 +189,19 @@ export function makePubSub(opts: PubSubOpts) {
       return rows.map(([id, fields]) => ({ id, event: parseEventField(fields) }));
     },
 
+    /** recentEvents() for many sessions in ONE pipeline (one round trip), in order. */
+    async recentEventsMany(sessionIds: readonly string[], count: number): Promise<StreamEvent[][]> {
+      if (sessionIds.length === 0) return [];
+      const p = redis.pipeline();
+      for (const id of sessionIds) p.xrevrange(keys.eventsStream(id), "+", "-", "COUNT", count);
+      const res = (await p.exec()) ?? [];
+      return sessionIds.map((_, i) => {
+        const [err, rows] = res[i] ?? [null, null];
+        if (err || !Array.isArray(rows)) return [];
+        return (rows as Array<[string, string[]]>).map(([id, fields]) => ({ id, event: parseEventField(fields) }));
+      });
+    },
+
     /** Read events after `fromId` (exclusive), oldest first; omit for all. */
     async readEvents(sessionId: string, fromId?: string): Promise<StreamEvent[]> {
       const rows = await redis.xrange(keys.eventsStream(sessionId), fromId ? `(${fromId}` : "-", "+");

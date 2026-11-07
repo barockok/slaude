@@ -40,6 +40,20 @@ describe.skipIf(!realEnabled)("queue/registry against real Redis", () => {
     expect(await reg.lookup("s1")).toBeNull();
   });
 
+  test("lookupMany: one pipeline, in order, null for the cold; countWarm counts registered sessions", async () => {
+    await ready;
+    const reg = mkRegistry({ heartbeatSec: 10 });
+    await reg.register("m1", "nodeA");
+    await reg.register("m3", "nodeB");
+    const locs = await reg.lookupMany(["m1", "m2", "m3"]);
+    expect(locs.map((l) => l?.node ?? null)).toEqual(["nodeA", null, "nodeB"]);
+    expect(locs[0]!.fresh).toBe(true);
+    expect(await reg.lookupMany([])).toEqual([]);
+    expect(await reg.countWarm()).toBeGreaterThanOrEqual(2);
+    await reg.unregister("m1");
+    await reg.unregister("m3");
+  });
+
   test("TTL expiry: entry vanishes at 2× heartbeat without beats", async () => {
     await ready;
     const reg = mkRegistry({ heartbeatSec: 0.15 }); // TTL 300ms

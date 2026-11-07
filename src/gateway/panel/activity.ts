@@ -24,27 +24,54 @@ export interface LocalSessions {
   count(): number;
 }
 
-/** How far back the stream is read for the newest turn boundary. */
-const RECENT_EVENTS = 200;
+/** The stream window read first; a session with a long turn (many tool
+ *  events since its turnStart) is read again with the wider one. */
+const SMALL_WINDOW = 20;
+const WIDE_WINDOW = 200;
+
+/** The newest turn boundary in events newest first: true = a turn started, false = one ended, undefined = none. */
+export function turnBoundary(newestFirst: ReadonlyArray<{ event: unknown }>): boolean | undefined {
+  for (const { event } of newestFirst) {
+    const e = event as { type?: unknown; autoEvolve?: unknown } | null;
+    if (!e || typeof e !== "object") continue;
+    if (e.type === "turnStart") return true;
+    if (e.type === "error" || (e.type === "done" && !e.autoEvolve)) return false;
+  }
+  return undefined;
+}
 
 /**
- * Whether a turn is in flight per the session's event stream: the newest
- * turn boundary is a `turnStart`. Undefined when the stream has none in its
- * recent window or cannot be read.
+ * Whether a turn is in flight per each session's event stream (the newest
+ * turn boundary is a `turnStart`). One pipelined read of the last 20 events
+ * for all sessions, then one of the last 200 for those whose window had no
+ * boundary: at most two round trips, whatever the number of sessions.
+ * Undefined for a session with no boundary in reach or an unreadable stream.
  */
-export async function streamTurnInFlight(pubsub: PubSub | null, sessionId: string): Promise<boolean | undefined> {
-  if (!pubsub) return undefined;
+export async function streamTurnsInFlight(pubsub: PubSub | null, sessionIds: readonly string[]): Promise<Map<string, boolean | undefined>> {
+  const out = new Map<string, boolean | undefined>();
+  if (!pubsub || sessionIds.length === 0) return out;
   try {
-    for (const { event } of await pubsub.recentEvents(sessionId, RECENT_EVENTS)) {
-      const e = event as { type?: unknown; autoEvolve?: unknown } | null;
-      if (!e || typeof e !== "object") continue;
-      if (e.type === "turnStart") return true;
-      if (e.type === "error" || (e.type === "done" && !e.autoEvolve)) return false;
+    const small = await pubsub.recentEventsMany(sessionIds, SMALL_WINDOW);
+    const widen: string[] = [];
+    sessionIds.forEach((id, i) => {
+      const events = small[i] ?? [];
+      const b = turnBoundary(events);
+      out.set(id, b);
+      if (b === undefined && events.length >= SMALL_WINDOW) widen.push(id);
+    });
+    if (widen.length > 0) {
+      const wide = await pubsub.recentEventsMany(widen, WIDE_WINDOW);
+      widen.forEach((id, i) => out.set(id, turnBoundary(wide[i] ?? [])));
     }
   } catch {
     /* stream unreadable: unknown */
   }
-  return undefined;
+  return out;
+}
+
+/** streamTurnsInFlight for one session. */
+export async function streamTurnInFlight(pubsub: PubSub | null, sessionId: string): Promise<boolean | undefined> {
+  return (await streamTurnsInFlight(pubsub, [sessionId])).get(sessionId);
 }
 
 /** The console's activity from warmth, the in-flight flag and the stored status. */

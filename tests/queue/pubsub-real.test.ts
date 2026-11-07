@@ -140,6 +140,15 @@ describe.skipIf(!realEnabled)("queue/pubsub against real Redis", () => {
     expect(id1 < id2).toBe(true);
   });
 
+  test("events stream: recentEventsMany reads several streams in one pipeline", async () => {
+    await ready;
+    await ps.appendEvent("sessM1", { type: "turnStart" });
+    await ps.appendEvent("sessM1", { type: "done" });
+    const [a, b] = await ps.recentEventsMany(["sessM1", "sessM2"], 1);
+    expect(a!.map((e) => e.event)).toEqual([{ type: "done" }]);
+    expect(b).toEqual([]);
+  });
+
   test("events stream tolerates non-JSON and missing fields", async () => {
     await ready;
     await redis.xadd(keys.eventsStream("sessRaw"), "*", "event", "not json");

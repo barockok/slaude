@@ -5,6 +5,10 @@ import { enumerateSessions } from "../../src/gateway/panel/enumerator";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** A registry fake from a per-session lookup (the enumerator reads it batched). */
+const reg = (lookup: (id: string) => Promise<unknown>) =>
+  ({ lookupMany: async (ids: string[]) => Promise.all(ids.map(lookup)) }) as any;
+
 async function seed(persona: string, ch: string, ts: string, status?: string) {
   const row = await Sessions.createForThread({
     thread: { team_id: "T1", channel_id: ch, thread_ts: ts, persona_id: persona },
@@ -76,10 +80,8 @@ describe("enumerateSessions (registry join)", () => {
   it("marks warm/cold + owning node from the registry", async () => {
     const warm = await seed("default", "C1", "1.0");
     const cold = await seed("default", "C2", "2.0");
-    const registry = {
-      lookup: async (id: string) =>
-        id === warm.id ? { node: "node-A", since: 1, lastBeat: 2, fresh: true } : null,
-    } as any;
+    const registry = reg(async (id: string) =>
+        id === warm.id ? { node: "node-A", since: 1, lastBeat: 2, fresh: true } : null);
     const rows = await enumerateSessions({}, { registry });
     const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
     expect(byId[warm.id]!.warm).toBe(true);
@@ -90,9 +92,7 @@ describe("enumerateSessions (registry join)", () => {
 
   it("treats a stale registry entry (fresh:false) as cold", async () => {
     const s = await seed("default", "C1", "1.0");
-    const registry = {
-      lookup: async () => ({ node: "node-A", since: 1, lastBeat: 2, fresh: false }),
-    } as any;
+    const registry = reg(async () => ({ node: "node-A", since: 1, lastBeat: 2, fresh: false }));
     const rows = await enumerateSessions({}, { registry });
     expect(rows[0]!.warm).toBe(false);
   });
@@ -105,11 +105,7 @@ describe("enumerateSessions (registry join)", () => {
 
   it("swallows a registry lookup failure per row", async () => {
     await seed("default", "C1", "1.0");
-    const registry = {
-      lookup: async () => {
-        throw new Error("redis down");
-      },
-    } as any;
+    const registry = { lookupMany: async () => { throw new Error("redis down"); } } as any;
     const rows = await enumerateSessions({}, { registry });
     expect(rows[0]!.warm).toBe(false);
   });
@@ -118,7 +114,7 @@ describe("enumerateSessions (registry join)", () => {
     const s = await seed("default", "C1", "1.0");
     const rows = await enumerateSessions(
       {},
-      { registry: null, panelOwner: async (id) => (id === s.id ? "op@example.com" : null) },
+      { registry: null, panelOwners: async (ids) => ids.map((id) => (id === s.id ? "op@example.com" : null)) },
     );
     expect(rows[0]!.panel_locked_by).toBe("op@example.com");
   });
@@ -128,11 +124,9 @@ describe("enumerateSessions (registry join)", () => {
     const warm = await seed("default", "C2", "2.0", "running");
     const busy = await seed("default", "C3", "3.0", "running");
     const failed = await seed("default", "C4", "4.0", "error");
-    const registry = {
-      lookup: async (id: string) =>
-        id === warm.id || id === busy.id ? { node: "node-A", since: 1, lastBeat: 2, fresh: true } : null,
-    } as any;
-    const rows = await enumerateSessions({}, { registry, turnInFlight: async (id) => id === busy.id });
+    const registry = reg(async (id: string) =>
+        id === warm.id || id === busy.id ? { node: "node-A", since: 1, lastBeat: 2, fresh: true } : null);
+    const rows = await enumerateSessions({}, { registry, turnsInFlight: async (ids) => new Map(ids.map((id) => [id, id === busy.id])) });
     const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
     expect(byId[stale.id]!.activity).toBe("idle");
     expect(byId[stale.id]!.status).toBe("running"); // the stored status is untouched
@@ -144,7 +138,7 @@ describe("enumerateSessions (registry join)", () => {
   it("mono: liveness comes from the in-process sessions, not the registry", async () => {
     const live = await seed("default", "C1", "1.0", "running");
     const cold = await seed("default", "C2", "2.0", "running");
-    const registry = { lookup: async () => ({ node: "node-A", since: 1, lastBeat: 2, fresh: true }) } as any;
+    const registry = reg(async () => ({ node: "node-A", since: 1, lastBeat: 2, fresh: true }));
     const local = { isWarm: (id: string) => id === live.id, turnInFlight: () => true, count: () => 1 };
     const rows = await enumerateSessions({}, { registry, local });
     const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
@@ -156,7 +150,8 @@ describe("enumerateSessions (registry join)", () => {
 });
 
 describe("streamTurnInFlight", () => {
-  const pubsub = (events: unknown[]) => ({ recentEvents: async () => events.map((event, i) => ({ id: String(i), event })) }) as any;
+  const pubsub = (events: unknown[]) =>
+    ({ recentEventsMany: async (ids: string[]) => ids.map(() => events.map((event, i) => ({ id: String(i), event }))) }) as any;
   it("reads the newest turn boundary", async () => {
     const { streamTurnInFlight } = await import("../../src/gateway/panel/activity");
     expect(await streamTurnInFlight(pubsub([{ type: "toolCall" }, { type: "turnStart" }, { type: "done" }]), "s")).toBe(true);
@@ -166,7 +161,33 @@ describe("streamTurnInFlight", () => {
     expect(await streamTurnInFlight(pubsub([{ type: "error" }, { type: "turnStart" }]), "s")).toBe(false);
     expect(await streamTurnInFlight(pubsub([{ type: "assistantText" }]), "s")).toBeUndefined();
     expect(await streamTurnInFlight(null, "s")).toBeUndefined();
-    const broken = { recentEvents: async () => { throw new Error("redis down"); } } as any;
+    const broken = { recentEventsMany: async () => { throw new Error("redis down"); } } as any;
     expect(await streamTurnInFlight(broken, "s")).toBeUndefined();
+  });
+});
+
+describe("enumerateSessions round trips", () => {
+  it("reads the registry, the streams and the lock owners in a bounded number of batched calls", async () => {
+    for (let i = 0; i < 12; i++) await seed("default", `CB${i}`, `${i}.0`, "running");
+    const calls = { lookupMany: 0, lookup: 0, streams: 0, owners: 0 };
+    const registry = {
+      lookup: async () => { calls.lookup++; return null; },
+      lookupMany: async (ids: string[]) => { calls.lookupMany++; return ids.map((_, i) => (i % 2 ? { node: "n", since: 1, lastBeat: 2, fresh: true } : null)); },
+    } as any;
+    // A long turn: 20 tool events since its turnStart, so the small window
+    // has no boundary and one widened read follows.
+    const busyStream = [...Array.from({ length: 20 }, () => ({ id: "x", event: { type: "toolCall" } })), { id: "s", event: { type: "turnStart" } }];
+    const pubsub = {
+      recentEventsMany: async (ids: string[], count: number) => { calls.streams++; return ids.map(() => busyStream.slice(0, count)); },
+    } as any;
+    const { streamTurnsInFlight } = await import("../../src/gateway/panel/activity");
+    const rows = await enumerateSessions({}, {
+      registry,
+      turnsInFlight: (ids) => streamTurnsInFlight(pubsub, ids),
+      panelOwners: async (ids) => { calls.owners++; return ids.map(() => null); },
+    });
+    expect(rows).toHaveLength(12);
+    expect(rows.filter((r) => r.activity === "working")).toHaveLength(6);
+    expect(calls).toEqual({ lookupMany: 1, lookup: 0, streams: 2, owners: 1 });
   });
 });

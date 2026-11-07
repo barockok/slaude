@@ -185,8 +185,8 @@ describe("GET /panel/api/sessions/:id activity", () => {
     await Sessions.setStatus(stale.id, "running");
     const busy = await session();
     await Sessions.setStatus(busy.id, "running");
-    const registry = { lookup: async (id: string) => (id === busy.id ? { node: "node-a", since: 1, lastBeat: Date.now(), fresh: true } : null) } as any;
-    const pubsub = { recentEvents: async () => [{ id: "2", event: { type: "toolCall" } }, { id: "1", event: { type: "turnStart" } }] } as any;
+    const registry = { lookupMany: async (ids: string[]) => ids.map((id) => (id === busy.id ? { node: "node-a", since: 1, lastBeat: Date.now(), fresh: true } : null)) } as any;
+    const pubsub = { recentEventsMany: async (ids: string[]) => ids.map(() => [{ id: "2", event: { type: "toolCall" } }, { id: "1", event: { type: "turnStart" } }]) } as any;
     const api = createPanelApi({ registry, pubsub, panelLock: null, chat: async () => {} });
     const a = (await get<SessionDetailResponse>(api, `/panel/api/sessions/${stale.id}`)).body;
     expect(a.warm).toBe(false);
