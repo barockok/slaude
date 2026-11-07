@@ -33,8 +33,9 @@ Report one markdown table per scenario, then the evidence:
 
 | Step | Expected | Observed | Verdict |
 |---|---|---|---|
-| 1 | `11/11 transcripts passed` | `11/11 transcripts passed` | PASS |
-| 2 | `[slack-rx] drop ch=C0RANDOM user=U0BOB persona=default: not granted here` | line present | PASS |
+| 1 | unit floor: `0 fail` | `42 pass, 0 fail` | PASS |
+| 2 | `✓ .../02-member-grant-unlisted.yaml`, `1/1 transcripts passed` | `1/1 transcripts passed` | PASS |
+| 3 | `drop ch=C0RANDOM user=U0BOB persona=default: not granted here` | line present | PASS |
 
 Evidence:
 - step 1: command output (last 5 lines)
@@ -155,9 +156,11 @@ whole scenario as BLOCKED with the failing command and its output.
 Ports: gateway 8080 (panel, portal, `/slack/*`, `/metrics`), fake Slack 9091,
 mock LLM 9092, Keycloak 8081, Postgres 55432.
 
-B1. Postgres and Keycloak:
+B1. Postgres and Keycloak. Environment B uses Postgres, so first clear the
+sim's database path if environment A exported it in this shell:
 
 ```sh
+unset SLAUDE_DB_PATH
 docker run -d --name slaude-it-pg -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=slaude \
   -p 55432:5432 postgres:16
 cd "$REPO" && docker compose -f docker-compose.dev.yml up -d keycloak

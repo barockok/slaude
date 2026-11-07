@@ -58,7 +58,8 @@ sqlite3 "$SLAUDE_DB_PATH" "SELECT id, action FROM audit_events ORDER BY id;"
 
 ```sh
 SLAUDE_HOME="$(mktemp -d)" SLAUDE_HEALTH_PORT=0 SLAUDE_BRAIN_DISABLED=1 \
-  SLAUDE_AUDIT_RETENTION_DAYS=1 bun "$IT/hold-gateway.ts" > "$IT/hold.log" 2>&1
+  SLAUDE_AUDIT_RETENTION_DAYS=1 bun "$IT/hold-gateway.ts" > "$IT/hold.log" 2>&1 &
+until grep -q '\[hold\] done' "$IT/hold.log"; do sleep 15; done
 ```
 
 4. After `[hold] done` appears in `$IT/hold.log`:
