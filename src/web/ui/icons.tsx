@@ -93,6 +93,21 @@ export const IconTrash = make(
     <path d="M5 5.5l.7 9.6a1.5 1.5 0 0 0 1.5 1.4h5.6a1.5 1.5 0 0 0 1.5-1.4l.7-9.6M8.25 8.75v4.75M11.75 8.75v4.75" />
   </>,
 );
+export const IconHash = make("Hash", <path d="M8 3.5 6.5 16.5M13.5 3.5 12 16.5M4 7.5h12.5M3.5 12.5H16" />);
+export const IconBuilding = make(
+  "Building",
+  <>
+    <rect x="4" y="3" width="12" height="14" rx="1.5" />
+    <path d="M7.5 6.5h1.5M11 6.5h1.5M7.5 9.75h1.5M11 9.75h1.5M8.5 17v-3h3v3" />
+  </>,
+);
+export const IconLock = make(
+  "Lock",
+  <>
+    <rect x="4.5" y="9" width="11" height="8" rx="1.75" />
+    <path d="M7 9V6.5a3 3 0 0 1 6 0V9" />
+  </>,
+);
 export const IconArrowLeft = make("ArrowLeft", <path d="M16 10H4.5M9 5.5 4.5 10 9 14.5" />);
 export const IconBook = make(
   "Book",

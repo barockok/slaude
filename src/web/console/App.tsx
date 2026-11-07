@@ -2,9 +2,12 @@
  * The operator console, served at /panel: shell, navigation and the page for
  * each route. Pages not built yet render a placeholder.
  */
+import { matchPath } from "../lib/router";
 import { AppFrame, type Identity, type NavEntry } from "../shared/AppFrame";
 import { NotFoundPage, PlaceholderPage } from "../shared/PlaceholderPage";
 import { api } from "./client";
+import { AgentDetailPage, isAgentTab } from "./pages/agent/AgentDetailPage";
+import { AgentsPage } from "./pages/AgentsPage";
 import { OverviewPage } from "./pages/OverviewPage";
 
 export { api };
@@ -34,6 +37,13 @@ async function loadIdentity(): Promise<Identity> {
 
 function renderPage(path: string, entry: NavEntry | null) {
   if (path === "/") return <OverviewPage />;
+  if (path === "/agents") return <AgentsPage />;
+  const agent = matchPath("/agents/:name", path) ?? matchPath("/agents/:name/:tab", path);
+  if (agent) {
+    const tab = agent.tab ?? "overview";
+    if (isAgentTab(tab)) return <AgentDetailPage key={agent.name} name={agent.name!} tab={tab} />;
+  }
+  if (path.startsWith("/agents/")) return <NotFoundPage home="/agents" />;
   return entry ? <PlaceholderPage entry={entry} /> : <NotFoundPage home="/" />;
 }
 
