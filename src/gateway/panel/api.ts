@@ -17,6 +17,7 @@
  *
  *   GET  /panel/api/sessions                     list ∩ warm registry
  *   GET  /panel/api/sessions/:id                 one row + lock owner + activity
+ *   GET  /panel/api/sessions/:id/history         earlier turns (conversation record)
  *   GET  /panel/api/sessions/:id/events          SSE tail of events:<id>
  *   POST /panel/api/sessions/:id/chat            { text }        (acquires lock)
  *   POST /panel/api/sessions/:id/control         { action, ... }
@@ -65,6 +66,8 @@ import { auditOneOnOne } from "../../audit/events";
 import type { PanelRole } from "./auth/roles";
 import { enumerateSessions } from "./enumerator";
 import { activityOf, streamTurnInFlight, type LocalSessions } from "./activity";
+import { sessionHistory } from "./history";
+import { redactSecrets } from "../../redact";
 import { servePanelStatic } from "./static";
 import { publishConfigReload } from "../core/config-reload";
 import * as Personas from "../../db/personas";
@@ -100,6 +103,7 @@ import type {
   AgentDetailResponse,
   AgentGrantsResponse,
   SessionDetailResponse,
+  SessionHistoryResponse,
   SessionsResponse,
   AllGrantsResponse,
   AgentsResponse,
@@ -224,6 +228,14 @@ const auditQuerySchema = z
   })
   .strict();
 const pageQuerySchema = z.object(pageParams).strict();
+/** Turns per history page (each turn is a user line and an agent line). */
+const HISTORY_PAGE = 20;
+const historyQuerySchema = z
+  .object({
+    cursor: z.string().regex(/^\d{1,15}$/, "invalid cursor").optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+  })
+  .strict();
 
 const STORE_ID_RE = /^[a-z0-9-]{1,32}$/;
 /** Stores that hold one person's memory: superadmin only. */
@@ -1025,7 +1037,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         if (!sub) {
           if (req.method !== "GET") return json(405, { error: "method not allowed" });
           const [lockedBy, live] = await Promise.all([deps.panelLock ? deps.panelLock.owner(id) : null, liveness(row)]);
-          // The live tail is the SSE endpoint.
+          // Earlier turns: GET .../history (the durable conversation record);
+          // the live tail is the SSE endpoint.
           return json(200, {
             session: row,
             panel_locked_by: lockedBy ?? undefined,
@@ -1033,6 +1046,26 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             ...(live.inFlight !== undefined ? { turn_in_flight: live.inFlight } : {}),
             activity: activityOf(row.status, live.warm, live.inFlight),
           } satisfies SessionDetailResponse);
+        }
+
+        // GET /panel/api/sessions/:id/history: earlier turns from the session's
+        // conversation record. Same access as the session detail.
+        if (sub === "history" && seg.length === 5) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          const q = historyQuerySchema.safeParse(queryOf(url));
+          if (!q.success) return json(400, { error: issuesLine(q.error) });
+          const unavailable = deps.memory ? null : memoryUnavailableReason();
+          if (unavailable) return json(200, { items: [], nextCursor: null, note: unavailable } satisfies SessionHistoryResponse);
+          try {
+            const page = await sessionHistory(row, deps.memory ?? localMemoryBrowser(), {
+              before: q.data.cursor ? Number(q.data.cursor) : undefined,
+              limit: q.data.limit ?? HISTORY_PAGE,
+            });
+            return json(200, page satisfies SessionHistoryResponse);
+          } catch (e) {
+            console.error(`[panel] session history read failed session=${id}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+            return json(200, { items: [], nextCursor: null, note: "the conversation record could not be read" } satisfies SessionHistoryResponse);
+          }
         }
 
         // GET /panel/api/sessions/:id/events  (SSE)

@@ -3,7 +3,8 @@
  * stores with page counts, a store's pages, one page with its tags and links.
  *
  * Goes through gbrain's own surfaces only: the `sources_list` admin op (page
- * counts included) and the engine's listPages / getPage / getTags / getLinks,
+ * counts included) and the engine's listPages / getPage / getTags / getLinks /
+ * getTimeline,
  * each filtered to one source. No SQL against gbrain tables. The `list_pages`
  * op is not used because it exposes no offset, and the console pages.
  *
@@ -51,12 +52,25 @@ export interface MemoryPage {
   updatedAt: number | null;
 }
 
+/** One timeline row of a page (gbrain's timeline_entries). */
+export interface MemoryTimelineRow {
+  id: number;
+  /** YYYY-MM-DD. */
+  date: string;
+  summary: string;
+  detail: string;
+  /** Epoch ms the row was written, or null when unknown. */
+  createdAt: number | null;
+}
+
 export interface MemoryBrowser {
   stores(): Promise<Array<Omit<MemoryStore, "label">>>;
   /** Pages of one store by slug, `offset` rows in. */
   pages(store: string, opts: { offset: number; limit: number }): Promise<MemoryPageSummary[]>;
   /** One page, or null when the store has no such slug. */
   page(store: string, slug: string): Promise<MemoryPage | null>;
+  /** A page's timeline rows in one store, at most `limit`, in no set order. */
+  timeline?(store: string, slug: string, limit: number): Promise<MemoryTimelineRow[]>;
 }
 
 /** Why the console cannot browse memory here, or null when it can. */
@@ -110,6 +124,7 @@ interface BrowseEngine {
   getPage(slug: string, opts: { sourceId: string }): Promise<EnginePage | null>;
   getTags(slug: string, opts: { sourceId: string }): Promise<string[]>;
   getLinks(slug: string, opts: { sourceId: string }): Promise<Array<{ to_slug: string; link_type: string; context: string }>>;
+  getTimeline(slug: string, opts: { sourceId: string; limit: number }): Promise<Array<{ id: number; date: string | Date; summary: string; detail?: string | null; created_at?: Date | string | null }>>;
 }
 
 const ms = (v: Date | string | null | undefined): number | null => {
@@ -147,6 +162,16 @@ export function localMemoryBrowser(): MemoryBrowser {
         createdAt: ms(p.created_at),
         updatedAt: ms(p.updated_at),
       };
+    },
+    async timeline(store, slug, limit) {
+      const rows = await (await engine()).getTimeline(slug, { sourceId: store, limit });
+      return rows.map((r) => ({
+        id: Number(r.id),
+        date: r.date instanceof Date ? r.date.toISOString().slice(0, 10) : String(r.date).slice(0, 10),
+        summary: r.summary ?? "",
+        detail: r.detail ?? "",
+        createdAt: ms(r.created_at),
+      }));
     },
   };
 }

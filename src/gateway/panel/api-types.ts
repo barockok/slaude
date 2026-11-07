@@ -207,6 +207,29 @@ export interface SessionDetailResponse {
   activity: SessionActivity;
 }
 
+/** One earlier exchange line of a session, from its durable conversation record. */
+export interface SessionHistoryItem {
+  /** Epoch ms the turn was recorded (the agent's line shares its user line's time). */
+  at: number;
+  who: "user" | "agent";
+  /** Display name when the record has one (the Slack user name of a user line). */
+  name?: string;
+  /** Redacted text. */
+  text: string;
+}
+
+/**
+ * GET /panel/api/sessions/:id/history?cursor&limit: earlier turns, oldest
+ * first. `nextCursor` loads the page before this one; null on the first page.
+ * `note` says why there is no history to show (memory off or remote), so the
+ * console can say so instead of an empty list.
+ */
+export interface SessionHistoryResponse {
+  items: SessionHistoryItem[];
+  nextCursor: string | null;
+  note?: string;
+}
+
 export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk";
 
 /** Body of POST /panel/api/sessions/:id/control. `reset` and `mode` are superadmin only. */
