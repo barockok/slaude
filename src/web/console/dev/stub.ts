@@ -181,7 +181,7 @@ export function installStub(): void {
 
   function sessionSummary(r: ConsoleFixtures["sessions"][number]): SessionSummaryView {
     const { permission_mode: _p, slack_app_id: _a, ...rest } = r;
-    return { ...rest, panel_locked_by: fx.locks[r.id] };
+    return { ...rest, activity: r.warm ? "warm" : r.status === "error" ? "error" : "idle", panel_locked_by: fx.locks[r.id] };
   }
 
   function sessions(method: string, seg: string[], query: URLSearchParams, body: unknown, isSuper: boolean): Response {
@@ -202,8 +202,8 @@ export function installStub(): void {
     const row = fx.sessions.find((r) => r.id === id);
     if (!row) return json(404, { error: "session not found" });
     if (!sub) {
-      const { warm: _w, node: _n, ...session } = row;
-      return json(200, { session, panel_locked_by: fx.locks[id] });
+      const { warm, node: _n, ...session } = row;
+      return json(200, { session, panel_locked_by: fx.locks[id], warm, activity: warm ? "warm" : row.status === "error" ? "error" : "idle" });
     }
     if (sub === "events") return eventStream(id);
     if (method !== "POST") return json(405, { error: "method not allowed" });

@@ -122,4 +122,51 @@ describe("enumerateSessions (registry join)", () => {
     );
     expect(rows[0]!.panel_locked_by).toBe("op@example.com");
   });
+
+  it("activity: a stored running row no node holds is idle; a warm one is warm or working", async () => {
+    const stale = await seed("default", "C1", "1.0", "running"); // node restarted days ago
+    const warm = await seed("default", "C2", "2.0", "running");
+    const busy = await seed("default", "C3", "3.0", "running");
+    const failed = await seed("default", "C4", "4.0", "error");
+    const registry = {
+      lookup: async (id: string) =>
+        id === warm.id || id === busy.id ? { node: "node-A", since: 1, lastBeat: 2, fresh: true } : null,
+    } as any;
+    const rows = await enumerateSessions({}, { registry, turnInFlight: async (id) => id === busy.id });
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+    expect(byId[stale.id]!.activity).toBe("idle");
+    expect(byId[stale.id]!.status).toBe("running"); // the stored status is untouched
+    expect(byId[warm.id]!.activity).toBe("warm");
+    expect(byId[busy.id]!.activity).toBe("working");
+    expect(byId[failed.id]!.activity).toBe("error");
+  });
+
+  it("mono: liveness comes from the in-process sessions, not the registry", async () => {
+    const live = await seed("default", "C1", "1.0", "running");
+    const cold = await seed("default", "C2", "2.0", "running");
+    const registry = { lookup: async () => ({ node: "node-A", since: 1, lastBeat: 2, fresh: true }) } as any;
+    const local = { isWarm: (id: string) => id === live.id, turnInFlight: () => true, count: () => 1 };
+    const rows = await enumerateSessions({}, { registry, local });
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+    expect(byId[live.id]!.warm).toBe(true);
+    expect(byId[live.id]!.activity).toBe("working");
+    expect(byId[cold.id]!.warm).toBe(false);
+    expect(byId[cold.id]!.activity).toBe("idle");
+  });
+});
+
+describe("streamTurnInFlight", () => {
+  const pubsub = (events: unknown[]) => ({ recentEvents: async () => events.map((event, i) => ({ id: String(i), event })) }) as any;
+  it("reads the newest turn boundary", async () => {
+    const { streamTurnInFlight } = await import("../../src/gateway/panel/activity");
+    expect(await streamTurnInFlight(pubsub([{ type: "toolCall" }, { type: "turnStart" }, { type: "done" }]), "s")).toBe(true);
+    expect(await streamTurnInFlight(pubsub([{ type: "done" }, { type: "turnStart" }]), "s")).toBe(false);
+    // The skill check's done after a turn is not a boundary of its own.
+    expect(await streamTurnInFlight(pubsub([{ type: "done", autoEvolve: true }, { type: "turnStart" }]), "s")).toBe(true);
+    expect(await streamTurnInFlight(pubsub([{ type: "error" }, { type: "turnStart" }]), "s")).toBe(false);
+    expect(await streamTurnInFlight(pubsub([{ type: "assistantText" }]), "s")).toBeUndefined();
+    expect(await streamTurnInFlight(null, "s")).toBeUndefined();
+    const broken = { recentEvents: async () => { throw new Error("redis down"); } } as any;
+    expect(await streamTurnInFlight(broken, "s")).toBeUndefined();
+  });
 });

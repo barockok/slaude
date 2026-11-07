@@ -34,6 +34,17 @@ export interface PubSubOpts {
 
 export type PubSub = ReturnType<typeof makePubSub>;
 
+/** The `event` field of a stream entry, parsed (the raw string when it is not JSON). */
+function parseEventField(fields: string[]): unknown {
+  const i = fields.indexOf("event");
+  const raw = i >= 0 ? fields[i + 1]! : "null";
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
 export function makePubSub(opts: PubSubOpts) {
   const { redis, sub } = opts;
   const keys = opts.keys ?? makeKeys();
@@ -172,20 +183,16 @@ export function makePubSub(opts: PubSubOpts) {
       return rows[0]?.[0] ?? null;
     },
 
+    /** The newest `count` events, newest first (one XREVRANGE COUNT). */
+    async recentEvents(sessionId: string, count: number): Promise<StreamEvent[]> {
+      const rows = await redis.xrevrange(keys.eventsStream(sessionId), "+", "-", "COUNT", count);
+      return rows.map(([id, fields]) => ({ id, event: parseEventField(fields) }));
+    },
+
     /** Read events after `fromId` (exclusive), oldest first; omit for all. */
     async readEvents(sessionId: string, fromId?: string): Promise<StreamEvent[]> {
       const rows = await redis.xrange(keys.eventsStream(sessionId), fromId ? `(${fromId}` : "-", "+");
-      return rows.map(([id, fields]) => {
-        const i = fields.indexOf("event");
-        const raw = i >= 0 ? fields[i + 1]! : "null";
-        let event: unknown;
-        try {
-          event = JSON.parse(raw);
-        } catch {
-          event = raw;
-        }
-        return { id, event };
-      });
+      return rows.map(([id, fields]) => ({ id, event: parseEventField(fields) }));
     },
 
     /** Drop every subscription this instance registered. */

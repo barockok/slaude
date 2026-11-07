@@ -137,7 +137,11 @@ export interface SessionSummaryView {
   id: string;
   persona_id: string;
   model: string;
-  /** `running` while a turn is in flight, `idle` otherwise; other values pass through. */
+  /**
+   * The stored status. `running` means the session's CLI process was started
+   * and not yet closed, not that a turn is in flight, and a row can stay
+   * `running` after its node went away: show `activity` instead.
+   */
   status: string;
   claude_started: number;
   engaged: number;
@@ -149,13 +153,23 @@ export interface SessionSummaryView {
   created_at: number;
   updated_at: number;
   tenant_id?: string;
-  /** Warm on a node right now. */
+  /** Warm right now: in the node registry (gateway) or live in this process (mono). */
   warm: boolean;
+  /** What the session is doing now (see SessionActivity). */
+  activity: SessionActivity;
   /** Owning node id when warm. */
   node?: string;
   /** Operator driving the session from the console, if any. */
   panel_locked_by?: string;
 }
+
+/**
+ * `working`: a turn is in flight. `warm`: the CLI process is up and waiting
+ * for the next message. `idle`: nothing is running (a stored `running` row
+ * that no node or process holds is idle). `error`: the stored status says the
+ * session failed and nothing holds it.
+ */
+export type SessionActivity = "working" | "warm" | "idle" | "error";
 
 /** GET /panel/api/sessions?persona&status&limit&offset, newest first. */
 export interface SessionsResponse {
@@ -186,6 +200,11 @@ export interface SessionDetailResponse {
   session: SessionRowView;
   /** Operator holding the console lock; absent when nobody does. */
   panel_locked_by?: string;
+  /** Warm right now (see SessionSummaryView.warm). */
+  warm: boolean;
+  /** Whether a turn is in flight, when that can be told; absent otherwise. */
+  turn_in_flight?: boolean;
+  activity: SessionActivity;
 }
 
 export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk";
@@ -385,7 +404,8 @@ export interface ConsoleRolesResponse {
 export interface OverviewResponse {
   counts: {
     agents: number;
-    /** Sessions with a turn in flight. */
+    /** Active sessions: warm right now (in the node registry, or live in this
+     *  process on a single-process deployment), not the stored status. */
     liveSessions: number;
     /** Permission, approval and connect cards waiting on a decision. */
     pendingApprovals: number;

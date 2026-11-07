@@ -748,6 +748,11 @@ export class AgentManager extends EventEmitter {
     return this.#live.has(sessionId);
   }
 
+  /** Whether a live session has a turn in flight (an input is outstanding). */
+  turnInFlight(sessionId: string): boolean {
+    return (this.#live.get(sessionId)?.pendingInputs ?? 0) > 0;
+  }
+
   /** Get-or-create a session bound to a Slack thread. */
   async ensureSession(thread: ThreadKey, opts: { title?: string; workingDir?: string } = {}) {
     let row = await this.#store.findByThread(thread);

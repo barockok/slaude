@@ -114,6 +114,12 @@ export function makeRegistry(opts: RegistryOpts) {
       await redis.del(keys.sess(sessionId));
     },
 
+    /** How many sessions are warm on some node (SCAN of `sess:*`; each key
+     *  expires with its heartbeat, so a key that exists is a warm session). */
+    async countWarm(): Promise<number> {
+      return (await scanKeys(redis, keys.sessPattern())).length;
+    },
+
     /** Session ids currently registered to a node (SCAN — reaper cadence). */
     async listByNode(node: string): Promise<string[]> {
       const found: string[] = [];

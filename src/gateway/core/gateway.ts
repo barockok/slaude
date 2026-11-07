@@ -4424,6 +4424,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         onUnlock: (sessionId) => { agent.reload(sessionId); },
         // The persona view says where a persona's stdio MCP servers run.
         role: queueDispatch ? "gateway" : "mono",
+        // Mono: sessions run here, so liveness is the manager's live map
+        // (nothing registers in the node registry).
+        local: queueDispatch
+          ? null
+          : { isWarm: (id) => agent.isLive(id), turnInFlight: (id) => agent.turnInFlight(id), count: () => agent.liveCount() },
         // Label status (node labels spec §4.7): only with a node queue.
         labels: queueDispatch
           ? (() => {

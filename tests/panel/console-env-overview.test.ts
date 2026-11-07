@@ -21,6 +21,10 @@ const cookie = (email: string) => `${AT_COOKIE}=${mintSession({ sub: "s", email 
 const operator = cookie("alice@example.com");
 
 const nodes = {
+  /** Two sessions warm on nodes (the overview's active count). */
+  async countWarm() {
+    return 2;
+  },
   async liveNodeDetails() {
     return [
       { node: "node-a", labels: ["default"], lastBeat: 1000 },
@@ -175,10 +179,25 @@ describe("GET /panel/api/overview", () => {
     expect(r.status).toBe(200);
     const o = r.body as OverviewResponse;
     expect(o.counts.agents).toBe(3);
-    expect(o.counts.liveSessions - before.counts.liveSessions).toBe(1);
+    // Warm sessions from the registry, not stored `running` rows (s1 is one).
+    expect(o.counts.liveSessions).toBe(2);
+    expect(before.counts.liveSessions).toBe(2);
     expect(o.counts.pendingApprovals - before.counts.pendingApprovals).toBe(2);
     expect(o.counts.auditEvents24h).toBe(12);
     expect(o.recentAudit.map((e) => e.summary)).toEqual(["e0", "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8", "e9"]);
     await db.run("DELETE FROM audit_events");
+  });
+});
+
+describe("GET /panel/api/overview active sessions", () => {
+  test("mono counts the sessions live in this process; no registry and no local is zero", async () => {
+    const mono = createPanelApi({
+      registry: null, role: "mono", pubsub: null, panelLock: null, chat: async () => {},
+      local: { isWarm: () => true, turnInFlight: () => false, count: () => 4 },
+    });
+    const res = (await mono.fetch(new Request("https://panel.example.com/panel/api/overview", { headers: { cookie: operator } })))!;
+    expect(((await res.json()) as OverviewResponse).counts.liveSessions).toBe(4);
+    const none = (await get("/panel/api/overview", operator, { registry: null })).body as OverviewResponse;
+    expect(none.counts.liveSessions).toBe(0);
   });
 });

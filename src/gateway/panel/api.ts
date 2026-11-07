@@ -16,7 +16,7 @@
  * the in-process AgentManager in mono.
  *
  *   GET  /panel/api/sessions                     list ∩ warm registry
- *   GET  /panel/api/sessions/:id                 one row + lock owner
+ *   GET  /panel/api/sessions/:id                 one row + lock owner + activity
  *   GET  /panel/api/sessions/:id/events          SSE tail of events:<id>
  *   POST /panel/api/sessions/:id/chat            { text }        (acquires lock)
  *   POST /panel/api/sessions/:id/control         { action, ... }
@@ -64,6 +64,7 @@ import { audit } from "./auth/audit";
 import { auditOneOnOne } from "../../audit/events";
 import type { PanelRole } from "./auth/roles";
 import { enumerateSessions } from "./enumerator";
+import { activityOf, streamTurnInFlight, type LocalSessions } from "./activity";
 import { servePanelStatic } from "./static";
 import { publishConfigReload } from "../core/config-reload";
 import * as Personas from "../../db/personas";
@@ -289,6 +290,9 @@ export interface PanelApiDeps {
   role?: PersonaViewRole;
   /** Memory store browsing. Default: the local brain (when it is enabled and local). */
   memory?: MemoryBrowser;
+  /** Mono: in-process session liveness (the AgentManager). Absent in the
+   *  gateway role, where the warm registry and the event stream say it. */
+  local?: LocalSessions | null;
 }
 
 export interface PanelApi {
@@ -302,6 +306,33 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
   const extractSoul = deps.extractSoul ?? ((t: string) => extractSoulData(t, { strict: true }));
   const installedKbSources = deps.installedKbSources ?? installedKbSourceIds;
   const panelRole = deps.role ?? "gateway";
+
+  /** Warm sessions: in this process (mono) or in the node registry (gateway). */
+  async function warmCount(): Promise<number> {
+    if (deps.local) return deps.local.count();
+    if (!deps.registry) return 0;
+    try {
+      return await deps.registry.countWarm();
+    } catch {
+      return 0;
+    }
+  }
+
+  /** Whether a session is warm, and whether a turn is in flight when that can be told. */
+  async function liveness(row: SessionRow): Promise<{ warm: boolean; inFlight: boolean | undefined }> {
+    if (deps.local) {
+      const warm = deps.local.isWarm(row.id);
+      return { warm, inFlight: warm ? deps.local.turnInFlight(row.id) : false };
+    }
+    let warm = false;
+    try {
+      const loc = deps.registry ? await deps.registry.lookup(row.id) : null;
+      warm = !!loc && loc.fresh;
+    } catch {
+      /* unknown: cold */
+    }
+    return { warm, inFlight: warm ? await streamTurnInFlight(deps.pubsub, row.id) : undefined };
+  }
 
   async function handleEvents(req: Request, sessionId: string, expMs: number): Promise<Response> {
     if (!deps.pubsub) return json(503, { error: "event stream unavailable (no Redis)" });
@@ -659,7 +690,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         if (req.method !== "GET") return json(405, { error: "method not allowed" });
         const now = Date.now();
         const [liveSessions, pendingApprovals, auditEvents24h, recent] = await Promise.all([
-          Sessions.countByStatus("running"),
+          // Warm sessions, not stored `running` rows (which outlive their node).
+          warmCount(),
           PendingGates.countPending(now),
           AuditEvents.countSince(now - 24 * 60 * 60 * 1000),
           AuditEvents.list({}, { limit: 10 }),
@@ -963,6 +995,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           },
           {
             registry: deps.registry,
+            local: deps.local ?? null,
+            turnInFlight: (sid) => streamTurnInFlight(deps.pubsub, sid),
             panelOwner: deps.panelLock ? (id) => deps.panelLock!.owner(id) : undefined,
           },
         );
@@ -990,11 +1024,15 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         // GET /panel/api/sessions/:id
         if (!sub) {
           if (req.method !== "GET") return json(405, { error: "method not allowed" });
-          const lockedBy = deps.panelLock ? await deps.panelLock.owner(id) : null;
-          // TODO(transcript): the durable SDK transcript read from the RWX
-          // volume (design §2) attaches here as `transcript`; the live tail is
-          // the SSE endpoint. Left for the UI-driven follow-up.
-          return json(200, { session: row, panel_locked_by: lockedBy ?? undefined } satisfies SessionDetailResponse);
+          const [lockedBy, live] = await Promise.all([deps.panelLock ? deps.panelLock.owner(id) : null, liveness(row)]);
+          // The live tail is the SSE endpoint.
+          return json(200, {
+            session: row,
+            panel_locked_by: lockedBy ?? undefined,
+            warm: live.warm,
+            ...(live.inFlight !== undefined ? { turn_in_flight: live.inFlight } : {}),
+            activity: activityOf(row.status, live.warm, live.inFlight),
+          } satisfies SessionDetailResponse);
         }
 
         // GET /panel/api/sessions/:id/events  (SSE)

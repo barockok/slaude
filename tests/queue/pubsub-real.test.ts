@@ -128,6 +128,18 @@ describe.skipIf(!realEnabled)("queue/pubsub against real Redis", () => {
     expect(id1 < id2).toBe(true);
   });
 
+  test("events stream: recentEvents is the newest N, newest first", async () => {
+    await ready;
+    expect(await ps.recentEvents("sessR", 2)).toEqual([]);
+    const id1 = await ps.appendEvent("sessR", { type: "turnStart" });
+    const id2 = await ps.appendEvent("sessR", { type: "toolCall" });
+    const id3 = await ps.appendEvent("sessR", { type: "done" });
+    const recent = await ps.recentEvents("sessR", 2);
+    expect(recent.map((e) => e.id)).toEqual([id3, id2]);
+    expect(recent[0]!.event).toEqual({ type: "done" });
+    expect(id1 < id2).toBe(true);
+  });
+
   test("events stream tolerates non-JSON and missing fields", async () => {
     await ready;
     await redis.xadd(keys.eventsStream("sessRaw"), "*", "event", "not json");

@@ -11,6 +11,8 @@
 import * as Sessions from "../../db/sessions";
 import type { SessionRow } from "../../db/schema";
 import type { Registry } from "../../queue/registry";
+import { activityOf, type LocalSessions } from "./activity";
+import type { SessionActivity } from "./api-types";
 
 export interface SessionSummary {
   id: string;
@@ -28,8 +30,10 @@ export interface SessionSummary {
   updated_at: number;
   /** Postgres carries tenant_id (P1); sqlite does not — present only when the row has it. */
   tenant_id?: string;
-  /** Warm on a node right now (registry hit). */
+  /** Warm right now: a registry hit (gateway) or live in this process (mono). */
   warm: boolean;
+  /** What the session is doing now; a stored `running` row nothing holds is `idle`. */
+  activity: SessionActivity;
   /** Owning node id when warm. */
   node?: string;
   /** Operator currently driving this session via the panel, if any. */
@@ -38,6 +42,10 @@ export interface SessionSummary {
 
 export interface EnumerateDeps {
   registry?: Registry | null;
+  /** Mono: in-process liveness, used instead of the registry (nothing registers there). */
+  local?: LocalSessions | null;
+  /** Gateway: whether a warm session has a turn in flight (the event stream). */
+  turnInFlight?: (sessionId: string) => Promise<boolean | undefined>;
   /** Panel active-surface lock owner lookup (optional enrichment). */
   panelOwner?: (sessionId: string) => Promise<string | null>;
 }
@@ -58,6 +66,7 @@ function summarize(row: SessionRow): SessionSummary {
     created_at: row.created_at,
     updated_at: row.updated_at,
     warm: false,
+    activity: activityOf(row.status, false, undefined),
   };
   const tenant = (row as any).tenant_id;
   if (tenant !== undefined && tenant !== null) s.tenant_id = tenant;
@@ -77,7 +86,10 @@ export async function enumerateSessions(
   return Promise.all(
     rows.map(async (row) => {
       const s = summarize(row);
-      if (deps.registry) {
+      if (deps.local) {
+        s.warm = deps.local.isWarm(row.id);
+        s.activity = activityOf(row.status, s.warm, s.warm && deps.local.turnInFlight(row.id));
+      } else if (deps.registry) {
         try {
           const loc = await deps.registry.lookup(row.id);
           if (loc && loc.fresh) {
@@ -87,6 +99,8 @@ export async function enumerateSessions(
         } catch {
           /* cold/unknown — leave warm:false */
         }
+        const inFlight = s.warm && deps.turnInFlight ? await deps.turnInFlight(row.id).catch(() => undefined) : undefined;
+        s.activity = activityOf(row.status, s.warm, inFlight);
       }
       if (deps.panelOwner) {
         try {
