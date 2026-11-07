@@ -109,6 +109,20 @@ test.describe("agent access tab", () => {
   });
 });
 
+test.describe("console access page", () => {
+  test("an operator sees a note instead of the console roles, never a refusal", async ({ page }) => {
+    // The stub answers console-roles 403 to an operator (as the gateway does),
+    // so a call would show the forbidden error state.
+    await page.goto("/panel/access?as=operator");
+    await expect(h1(page)).toHaveText("Access");
+    await expect(page.getByText("Only superadmins can see who has console access.", { exact: false })).toBeVisible();
+    await settled(page);
+    await expect(page.getByRole("main").getByText("bob@example.com")).toHaveCount(0);
+    await expect(page.getByRole("heading", { name: "Agent grants" })).toBeVisible();
+    await expect(page.getByText("Your console role cannot see this.")).toHaveCount(0);
+  });
+});
+
 test.describe("approvals and audit", () => {
   test("filters write the URL and narrow the table", async ({ page }) => {
     await page.goto("/panel/audit");

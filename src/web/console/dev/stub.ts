@@ -109,7 +109,10 @@ export function installStub(): void {
         recentAudit: fx.audit.slice(0, 10),
       });
     }
-    if (path === "/api/console-roles") return json(200, fx.roles);
+    if (path === "/api/console-roles") {
+      if (!isSuper) return json(403, { error: "action 'console.roles.read' requires the superadmin role", required: "superadmin" });
+      return json(200, fx.roles);
+    }
     if (path === "/api/grants") return method === "GET" ? json(200, allGrantsOf(fx)) : json(405, { error: "method not allowed" });
     if (path === "/api/audit") {
       let items = fx.audit;

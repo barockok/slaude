@@ -45,7 +45,7 @@
  *   GET    /panel/api/memory/stores/:id/pages?cursor&limit
  *   GET    /panel/api/memory/pages?store&slug      one page: content, type, tags, links
  *   GET    /panel/api/environments                 node pools, persona runsOn, personal environments (no secrets)
- *   GET    /panel/api/console-roles                the console's email allowlist (read-only)
+ *   GET    /panel/api/console-roles                the console's email allowlist (read-only, superadmin)
  *   GET    /panel/api/overview                     counts and the latest audit events
  */
 import { PanelVoiceRedactor } from "./voice-redact";
@@ -154,6 +154,7 @@ export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "grant.create",
   "grant.revoke",
   "memory.private",
+  "console.roles.read",
 ]);
 
 /** Returns the 403 to send, or null when the role suffices. */
@@ -642,10 +643,13 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         return json(200, (await environmentsView({ role: panelRole, registry: deps.registry })) satisfies EnvironmentsResponse);
       }
 
-      // GET /panel/api/console-roles: the allowlist file (or env lists). It is
-      // edited where it lives, never here.
+      // GET /panel/api/console-roles: the allowlist file (or env lists), for
+      // superadmins only (it lists every console user's email). It is edited
+      // where it lives, never here.
       if (seg.length === 3 && seg[2] === "console-roles") {
         if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const denied = requireSuperadmin(role, { action: "console.roles.read", operator: operatorId });
+        if (denied) return denied;
         const cfg = loadRoleConfig();
         return json(200, { superadmin: [...cfg.superadmin], operator: [...cfg.operator] } satisfies ConsoleRolesResponse);
       }

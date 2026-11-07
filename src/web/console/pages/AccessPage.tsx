@@ -4,6 +4,7 @@ import { Avatar, Badge, Card, EmptyState, PageHeader, Skeleton, Table, type Colu
 import { ErrorState } from "../components/ErrorState";
 import { RoleBadge, Subject } from "../components/GrantParts";
 import { useApi } from "../hooks/useApi";
+import { useRole } from "../hooks/useRole";
 import { absoluteTime, expiryLabel, shortDate } from "../lib/format";
 import { agentPath } from "./agent/AgentDetailPage";
 
@@ -84,7 +85,10 @@ const COLUMNS: Column<PersonaConsoleGrantView>[] = [
 ];
 
 export function AccessPage() {
-  const roles = useApi<ConsoleRolesResponse>("/api/console-roles");
+  const role = useRole();
+  // Console roles list every console user's email: superadmins only. An
+  // operator never calls the endpoint and sees a note instead.
+  const roles = useApi<ConsoleRolesResponse>(role === "superadmin" ? "/api/console-roles" : null);
   const grants = useApi<AllGrantsResponse>("/api/grants");
 
   return (
@@ -98,7 +102,11 @@ export function AccessPage() {
             <p className="sl-caption">Read from the panel roles file on the gateway. Edit that file to change who can sign in.</p>
           </div>
         </div>
-        {roles.error && !roles.data ? (
+        {role === "operator" ? (
+          <Card>
+            <p className="sl-caption">Only superadmins can see who has console access. Ask a superadmin if you need a role changed.</p>
+          </Card>
+        ) : roles.error && !roles.data ? (
           <Card>
             <ErrorState what="Console roles" error={roles.error} onRetry={roles.reload} />
           </Card>

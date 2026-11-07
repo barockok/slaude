@@ -118,14 +118,20 @@ describe("GET /panel/api/environments", () => {
 });
 
 describe("GET /panel/api/console-roles", () => {
-  test("the allowlist, read-only", async () => {
-    const r = await get("/panel/api/console-roles");
+  test("the allowlist, read-only, for a superadmin", async () => {
+    const r = await get("/panel/api/console-roles", cookie("lead@example.com"));
     expect(r.status).toBe(200);
     expect(r.body as ConsoleRolesResponse).toEqual({ superadmin: ["lead@example.com"], operator: ["alice@example.com", "bob@example.com"] });
     const put = await panel().fetch(new Request("https://panel.example.com/panel/api/console-roles", {
       method: "PUT", headers: { cookie: cookie("lead@example.com"), "x-panel-csrf": "1" }, body: "{}",
     }));
     expect(put!.status).toBe(405);
+  });
+  test("refused to an operator: it lists every console user's email", async () => {
+    const r = await get("/panel/api/console-roles");
+    expect(r.status).toBe(403);
+    expect(r.body).toMatchObject({ required: "superadmin" });
+    expect(r.text).not.toContain("bob@example.com");
   });
 });
 
