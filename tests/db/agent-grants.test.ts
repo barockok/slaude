@@ -56,6 +56,17 @@ describe("agent_grants repo", () => {
     await expect(AgentGrants.create({ ...base, subjectKind: "group" as never })).rejects.toThrow(/subject_kind/);
     await expect(AgentGrants.create({ ...base, subjectId: "" })).rejects.toThrow(/subject_id/);
     await expect(AgentGrants.create({ ...base, persona: "" })).rejects.toThrow(/persona/);
+    // Slack id shape per kind: uppercase alphanumerics after the kind's prefix.
+    for (const [kind, ok, bad] of [
+      ["user", ["UALICE", "WGRID1"], ["alice", "ualice", "CTEAM", "U", "U-1"]],
+      ["channel", ["CTEAM", "GPRIV", "DDIRECT"], ["UALICE", "cteam", "#team"]],
+      ["workspace", ["TWORK"], ["CTEAM", "twork"]],
+    ] as const) {
+      for (const id of bad) {
+        await expect(AgentGrants.create({ ...base, subjectKind: kind, subjectId: id })).rejects.toThrow(new RegExp(`a ${kind} subject_id must be a Slack`));
+      }
+      for (const id of ok) await AgentGrants.revoke((await AgentGrants.create({ ...base, subjectKind: kind, subjectId: id })).id);
+    }
     for (const kind of ["channel", "workspace"] as const) {
       await expect(AgentGrants.create({ ...base, subjectKind: kind, subjectId: "CTEAM", role: "manager" })).rejects.toThrow(/only be granted member/);
       await expect(AgentGrants.create({ ...base, subjectKind: kind, subjectId: "CTEAM", role: "approver" })).rejects.toThrow(/only be granted member/);

@@ -106,8 +106,6 @@ export async function resolve(
   return rows.length ? mapRow(rows[0]) : null;
 }
 
-/** Expire every pending gate whose deadline passed. Returns the expired rows
- *  (boot sweep logs them; the recurring sweep ignores the result). */
 /** Gates still waiting on a decision: pending and not past their expiry. */
 export async function countPending(now: number = Date.now()): Promise<number> {
   const r = await db.one<{ n: number | string }>(
@@ -117,6 +115,8 @@ export async function countPending(now: number = Date.now()): Promise<number> {
   return Number(r?.n ?? 0);
 }
 
+/** Expire every pending gate whose deadline passed. Returns the expired rows
+ *  (boot sweep logs them; the recurring sweep ignores the result). */
 export async function sweepExpired(now: number = Date.now()): Promise<PendingGate[]> {
   const rows = await db.query<any>(
     `UPDATE pending_gates

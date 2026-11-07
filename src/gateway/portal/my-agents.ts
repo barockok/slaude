@@ -8,6 +8,7 @@
  * channel-scoped approvers count only where roleOf would count them without a
  * channel (the global ones), so this agrees with roleOf on user grants.
  */
+import type { Grant } from "../../access/grants";
 import { loadGrants, roleFromGrants } from "../../access/role";
 import { getPersonaRegistry } from "../../persona/registry";
 import type { MyAgentView } from "./api-types";
@@ -16,11 +17,21 @@ export async function myAgents(identities: ReadonlyArray<{ teamId: string; slack
   if (identities.length === 0) return [];
   const r = getPersonaRegistry();
   const personas = ["default", ...r.list().map((p) => p.name).filter((n) => n !== "default").sort()];
-  const grants = new Map(await Promise.all(personas.map(async (p) => [p, await loadGrants(p)] as const)));
+  const grants = new Map<string, Grant[]>();
+  await Promise.all(
+    personas.map(async (p) => {
+      try {
+        grants.set(p, (await loadGrants(p)).filter((g) => g.subjectKind === "user"));
+      } catch (e) {
+        console.error(`[portal] my-agents: grants for persona=${p} unreadable, skipped: ${e instanceof Error ? e.name : typeof e}`);
+      }
+    }),
+  );
   const out: MyAgentView[] = [];
   for (const id of identities) {
     for (const persona of personas) {
-      const userGrants = grants.get(persona)!.filter((g) => g.subjectKind === "user");
+      const userGrants = grants.get(persona);
+      if (!userGrants) continue;
       const role = roleFromGrants(userGrants, id.slackUserId);
       if (role) out.push({ persona, teamId: id.teamId, slackUserId: id.slackUserId, role });
     }

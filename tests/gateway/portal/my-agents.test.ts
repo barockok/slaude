@@ -2,7 +2,7 @@
  * GET /portal/api/my-agents: the agents each Slack identity linked to the
  * signed-in account holds a user-level role on.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createPortalApi } from "../../../src/gateway/portal/api";
 import { mintPortalSession, PORTAL_AT_COOKIE } from "../../../src/gateway/portal/session";
 import * as Accounts from "../../../src/db/accounts";
@@ -11,6 +11,7 @@ import { db } from "../../../src/db/schema";
 import { SoulDataSchema } from "../../../src/soul/data";
 import { __resetSoulDataMemo, setSoulData } from "../../../src/soul/extract";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../../src/persona/registry";
+import * as Role from "../../../src/access/role";
 import { __setGrantsReader } from "../../../src/access/role";
 import type { MyAgentsResponse } from "../../../src/gateway/portal/api-types";
 
@@ -95,5 +96,25 @@ describe("GET /portal/api/my-agents", () => {
     await Accounts.linkSlackIdentity({ teamId: "TTEAM", slackUserId: "UALICE", accountId: acct.id, via: "signed-link" });
     await AgentGrants.create({ persona: "scout", subjectKind: "user", subjectId: "UALICE", role: "member", deny: true, createdBy: "lead@example.com" });
     expect((await get(signedIn("sub-1", "alice@example.com"))).body.agents.map((a) => a.persona)).toEqual(["default"]);
+  });
+
+  test("a persona whose grants cannot be read is skipped, not a 500", async () => {
+    const acct = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    await Accounts.linkSlackIdentity({ teamId: "TTEAM", slackUserId: "UALICE", accountId: acct.id, via: "signed-link" });
+    const real = Role.loadGrants;
+    const spy = spyOn(Role, "loadGrants").mockImplementation(async (p) => {
+      if (p === "default") throw new Error("boom");
+      return real(p);
+    });
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const r = await get(signedIn("sub-1", "alice@example.com"));
+      expect(r.status).toBe(200);
+      expect(r.body.agents.map((a) => a.persona)).toEqual(["scout"]);
+      expect(err.mock.calls.some((c) => String(c[0]).includes("persona=default"))).toBe(true);
+    } finally {
+      spy.mockRestore();
+      err.mockRestore();
+    }
   });
 });

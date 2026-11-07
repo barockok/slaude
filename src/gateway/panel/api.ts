@@ -39,7 +39,8 @@
  *   DELETE /panel/api/agents/:name/grants/:id      revoke a console grant (superadmin)
  *   GET    /panel/api/audit?persona&action&actor&session&since&until&cursor&limit
  *   GET    /panel/api/sessions/:id/audit?cursor&limit
- *   GET    /panel/api/memory/stores                memory stores (brain sources) with page counts
+ *   GET    /panel/api/memory/stores                memory stores (brain sources) with page counts;
+ *                                                  personal and profile stores are superadmin only
  *   GET    /panel/api/memory/stores/:id/pages?cursor&limit
  *   GET    /panel/api/memory/pages?store&slug      one page: content, type, tags, links
  *   GET    /panel/api/environments                 node pools, persona runsOn, personal environments (no secrets)
@@ -84,6 +85,7 @@ import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
 import { agentStoreNames, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
 import { agentIdSync } from "../../knowledge/agent-identity";
+import { storeKind } from "../../knowledge/scope";
 import { getPersonaRegistry } from "../../persona/registry";
 import type {
   ConsoleRolesResponse,
@@ -147,6 +149,7 @@ export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "force-release",
   "grant.create",
   "grant.revoke",
+  "memory.private",
 ]);
 
 /** Returns the 403 to send, or null when the role suffices. */
@@ -204,10 +207,10 @@ const pageParams = {
 };
 const auditQuerySchema = z
   .object({
-    persona: z.string().min(1).optional(),
-    action: z.string().min(1).optional(),
-    actor: z.string().min(1).optional(),
-    session: z.string().min(1).optional(),
+    persona: z.string().min(1).max(128).optional(),
+    action: z.string().min(1).max(128).optional(),
+    actor: z.string().min(1).max(128).optional(),
+    session: z.string().min(1).max(128).optional(),
     since: timeParam.optional(),
     until: timeParam.optional(),
     ...pageParams,
@@ -216,6 +219,11 @@ const auditQuerySchema = z
 const pageQuerySchema = z.object(pageParams).strict();
 
 const STORE_ID_RE = /^[a-z0-9-]{1,32}$/;
+/** Stores that hold one person's memory: superadmin only. */
+const isPrivateStore = (id: string) => {
+  const k = storeKind(id);
+  return k === "personal" || k === "profile";
+};
 const MEMORY_PAGE_MAX = 100;
 const memoryPagesQuerySchema = z
   .object({
@@ -585,8 +593,9 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         const row = await AgentGrants.findById(id);
         // A grant of another agent is not this agent's: same answer as none.
         if (!row || row.persona !== name) return json(404, { error: "no such grant on this agent" });
+        // revoke() fires the repository's change hook, which clears the
+        // in-process grant cache (role.ts registers it at import).
         if (!(await AgentGrants.revoke(id))) return json(404, { error: "no such grant on this agent" });
-        invalidateGrants(name);
         emitAudit({
           tenantId: "default",
           persona: name,
@@ -645,7 +654,11 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         } satisfies OverviewResponse);
       }
 
-      // --- Memory: brain sources and their pages, read-only, any operator.
+      // --- Memory: brain sources and their pages, read-only. Personal (`user-*`)
+      // and profile (`profile-*`) stores hold what one person told an agent:
+      // superadmin only, hidden from an operator's store list, and every page
+      // a superadmin opens in one is audited (memory.page.viewed, no content).
+      // Other stores: any operator, not audited, like every other panel read.
       if (seg[2] === "memory") {
         if (req.method !== "GET") return json(405, { error: "method not allowed" });
         const unavailable = memoryUnavailableReason();
@@ -659,16 +672,22 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             { name: "default", agentId: agentIdSync() },
             ...r.list().map((p) => ({ name: p.name, agentId: p.slackUserId })),
           ]);
-          const stores = (await memory.stores()).map((s) => ({ ...s, label: storeLabel(s.id, agents) }));
+          const stores = (await memory.stores())
+            .filter((s) => role === "superadmin" || !isPrivateStore(s.id))
+            .map((s) => ({ ...s, label: storeLabel(s.id, agents) }));
           return json(200, { stores } satisfies MemoryStoresResponse);
         }
 
         // GET /panel/api/memory/stores/:id/pages
         if (seg.length === 6 && seg[3] === "stores" && seg[5] === "pages") {
           const store = seg[4]!;
-          if (!STORE_ID_RE.test(store)) return json(400, { error: "invalid store id" });
+          if (!STORE_ID_RE.test(store)) return json(422, { error: "invalid store id" });
           const q = memoryPagesQuerySchema.safeParse(queryOf(url));
           if (!q.success) return json(400, { error: issuesLine(q.error) });
+          if (isPrivateStore(store)) {
+            const denied = requireSuperadmin(role, { action: "memory.private", operator: operatorId });
+            if (denied) return denied;
+          }
           const offset = Number(q.data.cursor ?? 0);
           const limit = q.data.limit ?? 50;
           // One row past the page says whether there is a next one.
@@ -684,8 +703,25 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         if (seg.length === 4 && seg[3] === "pages") {
           const q = memoryPageQuerySchema.safeParse(queryOf(url));
           if (!q.success) return json(400, { error: issuesLine(q.error) });
+          const priv = isPrivateStore(q.data.store);
+          if (priv) {
+            const denied = requireSuperadmin(role, { action: "memory.private", operator: operatorId });
+            if (denied) return denied;
+          }
           const page = await memory.page(q.data.store, q.data.slug);
           if (!page) return json(404, { error: "no such page in that store" });
+          if (priv) {
+            emitAudit({
+              tenantId: "default",
+              actorKind: "operator",
+              actorId: operatorId,
+              action: "memory.page.viewed",
+              targetKind: "memory_page",
+              targetId: `${page.store}/${page.slug}`,
+              summary: `viewed a ${storeKind(page.store)} memory page`,
+              details: { store: page.store, slug: page.slug, storeKind: storeKind(page.store), operatorRole: role },
+            });
+          }
           return json(200, page satisfies MemoryPageResponse);
         }
         return json(404, { error: "not found" });

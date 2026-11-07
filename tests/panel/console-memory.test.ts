@@ -9,10 +9,14 @@ import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
 import type { MemoryBrowser, MemoryPage } from "../../src/knowledge/memory-browse";
 import type { MemoryPagesResponse, MemoryStoresResponse } from "../../src/gateway/panel/api-types";
+import { db } from "../../src/db/schema";
+import * as AuditEvents from "../../src/db/audit-events";
+import { flushAudits } from "../../src/audit/emit";
 
 const SECRET = "t".repeat(32);
 const cookie = (email: string) => `${AT_COOKIE}=${mintSession({ sub: "s", email }, "at", { secret: SECRET })}`;
 const operator = cookie("alice@example.com");
+const superadmin = cookie("lead@example.com");
 
 const SLUGS = ["notes/a", "notes/b", "notes/c", "notes/d", "notes/e"];
 const PAGE: MemoryPage = {
@@ -28,15 +32,21 @@ const stub: MemoryBrowser = {
       { id: "agent-uscout", kind: "agent", pageCount: 2 },
       { id: "kb-handbook", kind: "library", pageCount: 9 },
       { id: "profile-tteam-ualice", kind: "profile", pageCount: 1 },
+      { id: "user-ualice", kind: "personal", pageCount: 4 },
     ];
   },
   async pages(store, o) {
     calls.push({ store, ...o });
-    return store === "shared" ? SLUGS.slice(o.offset, o.offset + o.limit).map((slug) => ({ slug, type: "note", title: slug, updatedAt: 2 })) : [];
+    return store === "shared" || store === "user-ualice"
+      ? SLUGS.slice(o.offset, o.offset + o.limit).map((slug) => ({ slug, type: "note", title: slug, updatedAt: 2 }))
+      : [];
   },
   async page(store, slug) {
     calls.push({ store, slug });
-    return store === "shared" && slug === "notes/a" ? PAGE : null;
+    if (slug !== "notes/a") return null;
+    if (store === "shared") return PAGE;
+    if (store === "user-ualice" || store === "profile-tteam-ualice") return { ...PAGE, store, content: "PRIVATE-CONTENT" };
+    return null;
   },
 };
 
@@ -61,7 +71,9 @@ function registryWith(personas: Array<{ name: string; slackUserId: string }>): P
 
 const saved: Record<string, string | undefined> = {};
 const ENV = ["SLAUDE_PANEL_SECRET", "SLAUDE_PANEL_SUPERADMIN", "SLAUDE_PANEL_OPERATORS", "SLAUDE_BRAIN_DISABLED", "SLAUDE_BRAIN_MODE"];
-beforeEach(() => {
+beforeEach(async () => {
+  await flushAudits();
+  await db.run("DELETE FROM audit_events");
   for (const k of ENV) saved[k] = process.env[k];
   process.env.SLAUDE_PANEL_SECRET = SECRET;
   process.env.SLAUDE_PANEL_SUPERADMIN = "lead@example.com";
@@ -85,13 +97,14 @@ describe("memory API", () => {
   });
 
   test("stores with kind, label and page count; agent minds named after their persona", async () => {
-    const r = await get("/panel/api/memory/stores");
+    const r = await get("/panel/api/memory/stores", superadmin);
     expect(r.status).toBe(200);
     expect((r.body as MemoryStoresResponse).stores).toEqual([
       { id: "shared", kind: "shared", label: "Shared", pageCount: 5 },
       { id: "agent-uscout", kind: "agent", label: "Agent mind: scout", pageCount: 2 },
       { id: "kb-handbook", kind: "library", label: "Library: handbook", pageCount: 9 },
       { id: "profile-tteam-ualice", kind: "profile", label: "Profile", pageCount: 1 },
+      { id: "user-ualice", kind: "personal", label: "Personal: ualice", pageCount: 4 },
     ]);
   });
 
@@ -118,7 +131,7 @@ describe("memory API", () => {
     expect((await get("/panel/api/memory/pages?store=Bad%20Id&slug=x")).status).toBe(400);
     expect((await get("/panel/api/memory/stores/shared/pages?cursor=-1")).status).toBe(400);
     expect((await get("/panel/api/memory/stores/shared/pages?limit=101")).status).toBe(400);
-    expect((await get("/panel/api/memory/stores/BAD/pages")).status).toBe(400);
+    expect((await get("/panel/api/memory/stores/BAD/pages")).status).toBe(422);
     expect(calls).toEqual([]);
   });
 
@@ -139,5 +152,42 @@ describe("memory API", () => {
     const remote = await get("/panel/api/memory/pages?store=shared&slug=notes%2Fa");
     expect(remote.status).toBe(503);
     expect(remote.body.error).toContain("separate brain server");
+  });
+
+  test("an operator never sees personal or profile stores, their pages or a page in them", async () => {
+    const list = await get("/panel/api/memory/stores");
+    expect((list.body as MemoryStoresResponse).stores.map((s) => s.id)).toEqual(["shared", "agent-uscout", "kb-handbook"]);
+    for (const path of [
+      "/panel/api/memory/stores/user-ualice/pages",
+      "/panel/api/memory/stores/profile-tteam-ualice/pages",
+      "/panel/api/memory/pages?store=user-ualice&slug=notes%2Fa",
+      "/panel/api/memory/pages?store=profile-tteam-ualice&slug=notes%2Fa",
+    ]) {
+      const r = await get(path);
+      expect(r.status).toBe(403);
+      expect(r.body.required).toBe("superadmin");
+      expect(JSON.stringify(r.body)).not.toContain("PRIVATE-CONTENT");
+    }
+    expect(calls).toEqual([]);
+    await flushAudits();
+    expect((await AuditEvents.list({ action: "memory.page.viewed" })).items).toEqual([]);
+  });
+
+  test("a superadmin reads them, and each page read is audited without its content", async () => {
+    expect((await get("/panel/api/memory/stores/user-ualice/pages?limit=2", superadmin)).status).toBe(200);
+    const r = await get("/panel/api/memory/pages?store=user-ualice&slug=notes%2Fa", superadmin);
+    expect(r.status).toBe(200);
+    expect(r.body.content).toBe("PRIVATE-CONTENT");
+    expect((await get("/panel/api/memory/pages?store=profile-tteam-ualice&slug=notes%2Fa", superadmin)).status).toBe(200);
+    // A miss viewed nothing; a shared page is not audited.
+    expect((await get("/panel/api/memory/pages?store=user-ualice&slug=notes%2Fz", superadmin)).status).toBe(404);
+    expect((await get("/panel/api/memory/pages?store=shared&slug=notes%2Fa", superadmin)).status).toBe(200);
+    await flushAudits();
+    const rows = (await AuditEvents.list({ action: "memory.page.viewed" })).items;
+    expect(rows.map((e) => e.targetId).sort()).toEqual(["profile-tteam-ualice/notes/a", "user-ualice/notes/a"]);
+    const personal = rows.find((e) => e.targetId === "user-ualice/notes/a")!;
+    expect(personal).toMatchObject({ actorKind: "operator", actorId: "lead@example.com", targetKind: "memory_page" });
+    expect(personal.details).toMatchObject({ store: "user-ualice", slug: "notes/a", storeKind: "personal" });
+    expect(JSON.stringify(rows)).not.toContain("PRIVATE-CONTENT");
   });
 });

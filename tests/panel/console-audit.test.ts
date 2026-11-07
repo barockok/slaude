@@ -99,7 +99,7 @@ describe("GET /panel/api/audit", () => {
   });
 
   test("invalid parameters are a 400 naming the parameter", async () => {
-    for (const [q, name] of [["since=yesterday-ish", "since"], ["limit=0", "limit"], ["limit=abc", "limit"], ["limit=501", "limit"], ["bogus=1", "bogus"]] as const) {
+    for (const [q, name] of [["since=yesterday-ish", "since"], ["limit=0", "limit"], ["limit=abc", "limit"], ["limit=501", "limit"], ["bogus=1", "bogus"], [`actor=${"x".repeat(129)}`, "actor"], [`action=${"a".repeat(129)}`, "action"]] as const) {
       const r = await get(`/panel/api/audit?${q}`);
       expect(r.status).toBe(400);
       expect(r.body.error).toContain(name);

@@ -205,6 +205,16 @@ describe("POST /panel/api/agents/:name/grants", () => {
     expect(d.body.error).toContain("deny applies to user subjects only");
   });
 
+  test("a subject id of the wrong shape for its kind is a clear 400", async () => {
+    const user = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subjectKind: "user", subjectId: "alice", role: "member" });
+    expect(user.status).toBe(400);
+    expect(user.body.error).toContain("a user subject_id must be a Slack user id");
+    const chan = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subjectKind: "channel", subjectId: "UNEW", role: "member" });
+    expect(chan.status).toBe(400);
+    expect(chan.body.error).toContain("Slack channel id");
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
   test("an unknown persona is a 404", async () => {
     expect((await call("POST", "/panel/api/agents/ghost/grants", superadmin, body)).status).toBe(404);
   });

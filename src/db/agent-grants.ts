@@ -49,6 +49,17 @@ export interface CreateGrantInput {
 
 const DEFAULT_TENANT = "default";
 
+/**
+ * Slack id shape per subject kind: uppercase alphanumerics after the prefix
+ * Slack uses for that kind of object. user: U or W (Enterprise Grid); channel:
+ * C (public), G (private or group DM) or D (DM); workspace: T.
+ */
+const SUBJECT_ID_RE: Record<SubjectKind, { re: RegExp; shape: string }> = {
+  user: { re: /^[UW][A-Z0-9]+$/, shape: "a Slack user id (U or W followed by uppercase letters and digits)" },
+  channel: { re: /^[CGD][A-Z0-9]+$/, shape: "a Slack channel id (C, G or D followed by uppercase letters and digits)" },
+  workspace: { re: /^T[A-Z0-9]+$/, shape: "a Slack workspace id (T followed by uppercase letters and digits)" },
+};
+
 type ChangeListener = (persona: string | null) => void;
 const listeners = new Set<ChangeListener>();
 
@@ -76,6 +87,10 @@ export async function create(input: CreateGrantInput, now: number = Date.now()):
     if (input.role !== "member") throw new Error(`agent grant: a ${input.subjectKind} subject can only be granted member, not ${input.role}`);
     if (input.deny) throw new Error(`agent grant: deny applies to user subjects only, not ${input.subjectKind}`);
     if (input.dmOnly) throw new Error(`agent grant: dm_only applies to user subjects only, not ${input.subjectKind}`);
+  }
+  const idShape = SUBJECT_ID_RE[input.subjectKind];
+  if (!idShape.re.test(input.subjectId)) {
+    throw new Error(`agent grant: a ${input.subjectKind} subject_id must be ${idShape.shape}, got ${JSON.stringify(input.subjectId)}`);
   }
   const row: AgentGrantRow = {
     id: randomUUID(),
