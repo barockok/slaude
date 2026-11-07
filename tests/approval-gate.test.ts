@@ -182,6 +182,65 @@ describe("ApprovalGate", () => {
     }
   });
 
+  describe("a named persona with no approver or manager of its own", () => {
+    const withBare = async (fn: () => Promise<void>) => {
+      // No structured soul and a default soul with no manager: every unit falls back to an empty default.
+      const bare = { name: "bare", slackUserId: "UBAREP", outClient: null } as any;
+      setPersonaRegistry({
+        lookupByUserId: () => null, lookupByName: (n) => (n === "bare" ? bare : null), list: () => [bare],
+        isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+      });
+      __setGrantsReader(async () => []);
+      try {
+        await fn();
+      } finally {
+        __resetPersonaRegistry();
+        __setGrantsReader(null);
+        __resetSoulDataMemo();
+      }
+    };
+    const approveId = async (f: { posts: any[] }) =>
+      (await firstPost(f)).blocks.find((b: any) => b.type === "actions").elements.find((e: any) => e.action_id.includes("approve")).action_id;
+
+    test("never the legacy list or SLAUDE_APPROVERS: the default's manager decides", async () => {
+      await withBare(async () => {
+        // The legacy "category: ids" block and the env list name ULEGACY and UENV.
+        writeFileSync(paths.soul, "# Persona\n## Approvers\n- default: ULEGACY\n");
+        setSoulData(SoulDataSchema.parse({ manager: { userId: "UMGRDEF" } }));
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, ["UENV"]);
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x", persona: "bare" }).then((d) => ((resolved = true), d));
+        const id = await approveId(f);
+        await f.fire(id, "ULEGACY");
+        await f.fire(id, "UENV");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        await f.fire(id, "UMGRDEF");
+        expect(await p).toMatchObject({ approved: true, by: "UMGRDEF" });
+      });
+    });
+
+    test("never anyone: with no manager anywhere nobody may approve", async () => {
+      await withBare(async () => {
+        setSoulData(SoulDataSchema.parse({}));
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        const ac = new AbortController();
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x", persona: "bare" }, ac.signal).then((d) => ((resolved = true), d));
+        const card = JSON.stringify((await firstPost(f)).blocks);
+        expect(card).toContain("nobody (no manager is configured)");
+        expect(card).not.toContain("!nobody");
+        await f.fire(await approveId(f), "URANDOM");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        ac.abort();
+        expect((await p).approved).toBe(false);
+      });
+    });
+  });
+
   test("deny by authorized user", async () => {
     writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
     const f = fakeApp();

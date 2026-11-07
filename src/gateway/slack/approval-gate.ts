@@ -1,7 +1,7 @@
 import { clientForApp, type AppRef, type Transport, type WebClientLike } from "../core/transport";
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
 import { effectiveSoulForChannel } from "../../soul/extract";
-import { loadGrants, roleFromGrants } from "../../access/role";
+import { loadGrants, usersWithRole } from "../../access/role";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
@@ -29,6 +29,10 @@ export type ApprovalRequest = {
   /** Persona name, stamped into the row for its audit rows. */
   persona?: string | null;
 };
+
+/** An approver id no Slack user has: an approver set of just this admits
+ *  nobody (an empty set would admit anyone). Never rendered on the card. */
+const NOBODY = "!nobody";
 
 export type ApprovalDecision = {
   approved: boolean;
@@ -266,34 +270,38 @@ export class ApprovalGate {
     }
   }
 
-  /** Resolve who may approve. Order:
-   *   1. A named persona: every user whose role on it (roleOf, channel-aware)
-   *      is approver or manager, with no scope keyword matching (phase 1).
-   *      The default persona: LLM-extracted SoulData approvers, scope matched.
-   *   2. Default persona only: scope-described persona via regex parser.
+  /** Resolve who may approve.
+   *
+   *  A named persona: every user whose role on it (roleOf, channel-aware) is
+   *  approver or manager, with no scope keyword matching (phase 1); when it
+   *  has none, the default persona's managers. Never the legacy list, the env
+   *  list or "anyone": with no manager anywhere nobody may approve and the
+   *  card times out denied.
+   *
+   *  The default persona, in order:
+   *   1. LLM-extracted SoulData approvers, scope matched.
+   *   2. Scope-described persona via regex parser.
    *   3. Legacy "category: ids" persona: persona[category] → persona.default.
    *   4. env SLAUDE_APPROVERS.
    *   5. Empty (anyone may click). */
   async #resolveApprovers(req: ApprovalRequest): Promise<Set<string>> {
-    const named = req.persona && req.persona !== "default" ? req.persona : null;
-    if (named) {
-      const grants = await loadGrants(named);
-      const users = new Set(grants.filter((g) => g.subjectKind === "user" && !g.deny).map((g) => g.subjectId));
-      const ids = [...users].filter((u) => {
-        const r = roleFromGrants(grants, u, req.channel);
-        return r === "approver" || r === "manager";
-      });
-      if (ids.length) return new Set(ids);
-    } else {
-      const structured = effectiveSoulForChannel(req.channel).approvers;
-      if (structured.length) {
-        const ids = selectApproversFrom(structured, req.summary, req.category);
-        if (ids.length) return new Set(ids);
-      }
-
-      const scoped = selectApprovers(req.summary, req.category);
-      if (scoped.length) return new Set(scoped);
+    if (req.persona && req.persona !== "default") {
+      const own = usersWithRole(await loadGrants(req.persona), ["approver", "manager"], req.channel);
+      if (own.length) return new Set(own);
+      const managers = usersWithRole(await loadGrants("default"), ["manager"]);
+      if (managers.length) return new Set(managers);
+      console.warn(`[approval-gate] persona=${req.persona} has no approver or manager, nor does the default persona: nobody can approve`);
+      return new Set([NOBODY]);
     }
+
+    const structured = effectiveSoulForChannel(req.channel).approvers;
+    if (structured.length) {
+      const ids = selectApproversFrom(structured, req.summary, req.category);
+      if (ids.length) return new Set(ids);
+    }
+
+    const scoped = selectApprovers(req.summary, req.category);
+    if (scoped.length) return new Set(scoped);
 
     const legacy = loadApprovers();
     if (legacy) {
@@ -351,8 +359,9 @@ export class ApprovalGate {
     }
     if (approvers.size > 0) {
       const list = Array.from(approvers)
+        .filter((u) => u !== NOBODY)
         .map((u) => `<@${u}>`)
-        .join(" ");
+        .join(" ") || "nobody (no manager is configured)";
       sections.push({
         type: "context",
         elements: [{ type: "mrkdwn", text: `Approver(s): ${list}` }],
