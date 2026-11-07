@@ -500,6 +500,22 @@ describe("decision gate: messages the ingress drops never reach the adapter", ()
     expect(n.seen).toEqual([]);
     expect(doubts(g)).toEqual([]);
   });
+
+  it("a named persona's admission is its own: its channel reaches the adapter, the default's does not", async () => {
+    const ana = { name: "ana", slackUserId: "U0ANA", outClient: null, soulJson: { trustedChannels: ["C0ANA"] } } as any;
+    setPersonaRegistry({ ...anaRegistry(), lookupByName: (n) => (n === "ana" ? ana : null), list: () => [ana] });
+    try {
+      const n = alwaysNo();
+      const g = makeGw(runner("on", n.a));
+      await g.emit("message", msg(g.t.client, "<@U0ANA> can you look?", nextTs(), { channel: "C0ANA", user: "U0RANDOM" }));
+      expect(n.seen).toHaveLength(1);
+      await g.emit("message", msg(g.t.client, "<@U0ANA> and here?", nextTs(), { user: "U0RANDOM" }));
+      expect(n.seen).toHaveLength(1);
+      expect(g.sends).toEqual([]);
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
 });
 
 describe("decision gate: text slash commands bypass it", () => {
