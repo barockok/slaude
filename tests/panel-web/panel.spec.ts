@@ -1,5 +1,10 @@
 import { test, expect } from "@playwright/test";
 
+// TODO(Task 11): these specs drive the old panel UI (hash routes, ?op=, its
+// class names), which was replaced by the new console in src/web/console.
+// Skipped until the suite is retargeted at the new console with a fixture API.
+test.skip(true, "old panel UI removed; retarget in Task 11");
+
 const OP = "ops@slaude.dev";
 const list = (extra = "") => `/panel/?op=${encodeURIComponent(OP)}${extra}`;
 const detail = (id: string, extra = "") => `/panel/?op=${encodeURIComponent(OP)}${extra}#/s/${id}`;

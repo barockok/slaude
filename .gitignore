@@ -29,8 +29,8 @@ jsonl/
 test-results/
 bar/
 shots/
-src/gateway/panel/web/dist/
-src/gateway/portal/web/dist/
+src/web/console/dist/
+src/web/portal/dist/
 **/playwright-report/
 
 # Generated docs site (built by docs/site/build.mjs; published by .github/workflows/pages.yml)

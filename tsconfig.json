@@ -34,5 +34,5 @@
   // deploy/k8s-local/probe runs INSIDE a container and imports the image's own
   // /app/src paths, which do not resolve on a developer machine. It is verified
   // by running it, not by this typecheck. e2e/harness/in-pod is the same kind of file.
-  "exclude": ["src/web", "src/gateway/panel/web", "src/gateway/portal/web", "tests/panel-web", "deploy/k8s-local/probe", "e2e/harness/in-pod"]
+  "exclude": ["src/web", "tests/panel-web", "deploy/k8s-local/probe", "e2e/harness/in-pod"]
 }

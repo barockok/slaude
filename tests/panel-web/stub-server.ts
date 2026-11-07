@@ -13,7 +13,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FIXTURE_SESSIONS, SCRIPT, DETAIL_ID, FIXTURE_PERSONAS, fixturePersona } from "../../src/gateway/panel/web/app/fixtures";
+import { FIXTURE_SESSIONS, SCRIPT, DETAIL_ID, FIXTURE_PERSONAS, fixturePersona } from "./fixtures/fixtures";
 
 const PORT = Number(process.env.PORT ?? 4319);
 const ORIGIN = `http://localhost:${PORT}`;

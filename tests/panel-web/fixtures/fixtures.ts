@@ -1,6 +1,7 @@
-// Realistic fixture fleet + a scripted event stream. Shared by the in-browser
-// mock (?mock=1) and the Bun stub server that backs the e2e suite, so both
-// render identical data with no live backend.
+// Realistic fixture fleet + a scripted event stream, served by the Bun stub
+// server that backs the e2e suite (stub-server.ts). Moved here from the old
+// panel web app when it was removed; Task 11 retargets the suite at the new
+// console.
 import type { SessionSummary, AgentEvent, PersonaDetail, PersonaSummary } from "./types";
 
 // Anchored to load time so relative ages ("2m ago", "3h ago") read naturally

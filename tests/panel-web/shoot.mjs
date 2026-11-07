@@ -1,3 +1,4 @@
+// TODO(Task 11): targets the old panel UI (?mock=1), removed with the new console.
 // Renders the 5 panel views in light + dark against the fixture stub (mock
 // mode, no live backend) and writes 1440x900 @2x PNGs into shots/. These are
 // what the critic compares to bar/temporal-*.png.
