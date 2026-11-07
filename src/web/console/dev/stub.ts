@@ -15,7 +15,7 @@
 import type {
   AgentSummary, ConsoleGrantView, CreateGrantRequest, GrantView, SessionActivity, SessionControlRequest, SessionEvent, SessionSummaryView,
 } from "../../../gateway/panel/api-types";
-import { allGrantsOf, createFixtures, sessionHistory, sessionScript, type ConsoleFixtures } from "./fixtures";
+import { CHANNEL_LABELS, USER_NAMES, allGrantsOf, createFixtures, sessionHistory, sessionScript, type ConsoleFixtures } from "./fixtures";
 
 const ID_RE = { user: /^[UW][A-Z0-9]+$/, channel: /^[CG][A-Z0-9]+$/, workspace: /^T[A-Z0-9]+$/ } as const;
 const ID_SHAPE = {
@@ -186,7 +186,20 @@ export function installStub(): void {
 
   function sessionSummary(r: ConsoleFixtures["sessions"][number]): SessionSummaryView {
     const { permission_mode: _p, slack_app_id: _a, ...rest } = r;
-    return { ...rest, activity: activityOf(r), panel_locked_by: fx.locks[r.id] };
+    return { ...rest, activity: activityOf(r), panel_locked_by: fx.locks[r.id], ...modelOf(r), ...labelOf(r) };
+  }
+
+  /** The row's model, else the agent's configured one, else the deployment default (as the server). */
+  function modelOf(r: { model: string; persona_id: string }): Pick<SessionSummaryView, "effective_model" | "model_source"> {
+    if (r.model) return { effective_model: r.model, model_source: "session" };
+    const agent = fx.agents[r.persona_id]?.model;
+    return agent ? { effective_model: agent, model_source: "agent" } : { effective_model: null, model_source: "deployment" };
+  }
+
+  /** What the gateway's cached Slack lookup answers; an unknown channel keeps its id. */
+  function labelOf(r: { slack_channel_id: string | null }): { channel_label?: string } {
+    const l = r.slack_channel_id ? CHANNEL_LABELS[r.slack_channel_id] : undefined;
+    return l ? { channel_label: l } : {};
   }
 
   /** Warm rows are working while their scripted turn runs; a stored `running` row nothing holds is idle. */
@@ -202,7 +215,10 @@ export function installStub(): void {
       const rows = fx.sessions
         .filter((r) => (!persona || r.persona_id === persona) && (!status || r.status === status))
         .map(sessionSummary);
-      return json(200, { sessions: rows });
+      const limit = Math.min(499, Number(query.get("limit") ?? 50));
+      const offset = Number(query.get("offset") ?? 0);
+      const page = rows.slice(offset, offset + limit);
+      return json(200, { sessions: page, nextOffset: offset + limit < rows.length ? offset + limit : null });
     }
     const id = decodeURIComponent(seg[2]!);
     const sub = seg[3];
@@ -217,6 +233,7 @@ export function installStub(): void {
       return json(200, {
         session, panel_locked_by: fx.locks[id], warm, activity: activityOf(row),
         ...(warm ? { turn_in_flight: working.has(id) } : {}),
+        ...modelOf(row), ...labelOf(row),
       });
     }
     if (sub === "history") {
@@ -228,7 +245,10 @@ export function installStub(): void {
       const before = query.get("cursor") ? Number(query.get("cursor")) : turns.length;
       const limit = Number(query.get("limit") ?? 20);
       const start = Math.max(0, before - limit);
-      return json(200, { items: turns.slice(start, before).flat(), nextCursor: start > 0 ? String(start) : null });
+      const items = turns.slice(start, before).flat();
+      const users: Record<string, string> = {};
+      for (const it of items) for (const m of it.text.matchAll(/<@([UW][A-Z0-9]+)>/g)) if (USER_NAMES[m[1]!]) users[m[1]!] = USER_NAMES[m[1]!]!;
+      return json(200, { items, nextCursor: start > 0 ? String(start) : null, ...(Object.keys(users).length ? { users } : {}) });
     }
     if (sub === "events") return eventStream(id);
     if (method !== "POST") return json(405, { error: "method not allowed" });
