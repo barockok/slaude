@@ -25,6 +25,7 @@ import {
   type Replica,
 } from "./harness";
 import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
+import { flushAudits } from "../../src/audit/emit";
 
 const d = describe.skipIf(!realEnabled);
 
@@ -239,6 +240,8 @@ d("session control panel over real Redis", () => {
       });
       body = (await res.json()) as any;
       expect(res.status).toBe(200);
+      // The audit writer is fire-and-forget: let it land before un-capturing.
+      await flushAudits();
     } finally {
       console.log = orig;
     }
@@ -251,7 +254,12 @@ d("session control panel over real Redis", () => {
     const hbBody = (await hb.json()) as any;
     expect(hbBody.ok).toBe(false);
     expect(
-      logs.some((l) => l.includes('"action":"force-release"') && l.includes('"operator":"lead@example.com"')),
+      logs.some(
+        (l) =>
+          l.includes('"action":"panel.session.control"') &&
+          l.includes('"actor_id":"lead@example.com"') &&
+          l.includes('"panelAction":"force-release"'),
+      ),
     ).toBe(true);
     // An operator (non-superadmin) cannot force-release.
     const forbidden = await fetch(`${gw.url}/panel/api/sessions/${sessionId}/force-release`, {

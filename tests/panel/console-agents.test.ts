@@ -74,6 +74,9 @@ beforeEach(async () => {
   await flushAudits();
   await db.run("DELETE FROM agent_grants");
   await db.run("DELETE FROM audit_events");
+  // Shared databases (real Postgres in CI) keep cron rows from earlier test
+  // files; each would count as a mandate of the persona it names.
+  await db.run("DELETE FROM cron_jobs");
   setSoulData(SoulDataSchema.parse({ manager: { userId: "UMGR" }, mandate: "Help the team." }));
   setPersonaRegistry(registryWith([
     { name: "scout", soulJson: { manager: { userId: "USCOUT" }, mandate: "Scout things.", trustedChannels: ["CSCOUT"] } },
