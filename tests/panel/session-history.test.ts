@@ -94,6 +94,31 @@ describe("history line parsing", () => {
   });
 });
 
+describe("history line times", () => {
+  const withTs = (ts: string) =>
+    `<channel source="slack" channel_id="CCHAN" thread_ts="1.1" inbound_ts="${ts}" user_id="UALICE" user_name="alice" trust="trusted">\nhello\n</channel>`;
+
+  it("the user line carries its Slack message time; the agent line the record's write time", () => {
+    const [user, agent] = turnLines(turn(7, withTs("1762506060.000100"), "hi", 1_762_506_090_000));
+    expect(user!.at).toBe(1_762_506_060_000);
+    expect(user!.dateOnly).toBeUndefined();
+    expect(agent!.at).toBe(1_762_506_090_000);
+    expect(agent!.dateOnly).toBeUndefined();
+  });
+
+  it("a user line with no message time (cron, wake, an older row) is date only", () => {
+    const [user] = turnLines(turn(8, "<cron id=\"c1\">\nrun it\n</cron>", "done", 5_000));
+    expect(user).toMatchObject({ at: 5_000, dateOnly: true });
+  });
+
+  it("a row with no write time at all: both lines date only, on the record's day", () => {
+    const row = { ...turn(9, withTs("1762506060.000100"), "ok"), createdAt: null };
+    const [user, agent] = turnLines(row);
+    expect(user!.dateOnly).toBeUndefined();
+    expect(agent).toMatchObject({ at: Date.parse("2026-11-07T00:00:00Z"), dateOnly: true });
+  });
+});
+
 describe("GET /panel/api/sessions/:id/history", () => {
   it("returns the agent's own conversation record, oldest first, paged with a cursor", async () => {
     const row = await session();
@@ -108,7 +133,10 @@ describe("GET /panel/api/sessions/:id/history", () => {
     expect(first.status).toBe(200);
     expect(first.body.items.map((i) => `${i.who}:${i.text}`)).toEqual(["user:question 4", "agent:answer 4", "user:question 5", "agent:answer 5"]);
     expect(first.body.items[0]!.name).toBe("alice");
+    // The envelope's inbound_ts is not a Slack ts: only the record's write time, as a date.
     expect(first.body.items[0]!.at).toBe(4_000);
+    expect(first.body.items[0]!.dateOnly).toBe(true);
+    expect(first.body.items[1]!.dateOnly).toBeUndefined();
     expect(first.body.items.map((i) => i.id)).toEqual(["4:user", "4:agent", "5:user", "5:agent"]);
     expect(first.body.nextCursor).toBe("4");
     expect(seen[0]).toBe(`agent-uagent:${slug}`);
