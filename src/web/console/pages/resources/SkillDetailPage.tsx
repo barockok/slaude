@@ -79,8 +79,14 @@ function Body({ d, reload }: { d: SkillDetailResponse; reload: () => void }) {
   return (
     <div className="sl-memory-page">
       <div className="sl-memory-page__main">
-        <Card title="SKILL.md">
-          {d.raw.trim() ? <Markdown source={d.raw} copyLabel="Copy SKILL.md" /> : <EmptyState title="This skill has no SKILL.md text" />}
+        <Card title="SKILL.md" description={d.rawTruncated ? "Only the first 256 KB is shown." : undefined}>
+          {d.rawUnreadable ? (
+            <EmptyState title="SKILL.md was not read" description={`${d.rawUnreadable}. The console reads only a regular file inside the skill's directory.`} />
+          ) : d.raw.trim() ? (
+            <Markdown source={d.raw} copyLabel="Copy SKILL.md" />
+          ) : (
+            <EmptyState title="This skill has no SKILL.md text" />
+          )}
         </Card>
         <Card title="Usage" description={d.usageHistory.length ? "Per agent, as counted when the agent loaded it." : "No agent has used it yet."} flush={d.usageHistory.length > 0}>
           {d.usageHistory.length > 0 && (

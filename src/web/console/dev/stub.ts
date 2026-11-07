@@ -196,7 +196,7 @@ export function installStub(): void {
   function skillsRoute(method: string, seg: string[], isSuper: boolean): Response {
     if (seg.length === 2) {
       return json(200, {
-        skills: skills.map(({ frontmatter: _f, body: _b, raw: _r, files: _x, filesTruncated: _t, usageHistory: _u, proposals: _p, actions: _a, ...v }) => v),
+        skills: skills.map(({ frontmatter: _f, body: _b, raw: _r, rawTruncated: _rt, files: _x, filesTruncated: _t, usageHistory: _u, proposals: _p, actions: _a, ...v }) => v),
         notes: [],
       });
     }

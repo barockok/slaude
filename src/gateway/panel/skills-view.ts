@@ -26,7 +26,7 @@
  * `<plugin>:<directory>`, and its bare CLI name when no other skill answers
  * to that name.
  */
-import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { paths } from "../../config/home";
@@ -110,13 +110,50 @@ export function parseSkillMd(raw: string): { frontmatter: Record<string, unknown
   return { frontmatter: fm, body: m[2] ?? "" };
 }
 
-function readSkillMd(dir: string): string | null {
-  const file = join(dir, "SKILL.md");
+/** Most of a SKILL.md the console reads; past it the text is cut and flagged. */
+export const SKILL_MD_MAX_BYTES = 256 * 1024;
+
+export type SkillFileRead = { ok: true; text: string; truncated: boolean } | { ok: false; reason: string };
+
+/**
+ * Read a file the skills API returns content of, safely: it must be a regular
+ * file (never a symlink), its real path must stay inside the skill's real
+ * directory, and only the first SKILL_MD_MAX_BYTES are read (truncated set).
+ */
+export function readSkillFileSafe(dir: string, rel = "SKILL.md", max = SKILL_MD_MAX_BYTES): SkillFileRead {
+  const file = join(dir, rel);
+  let st;
   try {
-    return existsSync(file) ? readFileSync(file, "utf8") : null;
+    st = lstatSync(file);
   } catch {
-    return null;
+    return { ok: false, reason: "missing" };
   }
+  if (st.isSymbolicLink()) return { ok: false, reason: "a symlink, not read" };
+  if (!st.isFile()) return { ok: false, reason: "not a regular file" };
+  try {
+    const root = realpathSync(dir);
+    const real = realpathSync(file);
+    if (real !== root && !real.startsWith(root + sep)) return { ok: false, reason: "outside the skill directory, not read" };
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  }
+  let fd: number | null = null;
+  try {
+    fd = openSync(file, "r");
+    const size = Math.min(st.size, max);
+    const buf = Buffer.alloc(size);
+    const n = size > 0 ? readSync(fd, buf, 0, size, 0) : 0;
+    return { ok: true, text: buf.subarray(0, n).toString("utf8"), truncated: st.size > max };
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  } finally {
+    if (fd !== null) closeSync(fd);
+  }
+}
+
+function readSkillMd(dir: string): string | null {
+  const r = readSkillFileSafe(dir);
+  return r.ok ? r.text : null;
 }
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
@@ -190,11 +227,20 @@ export async function buildSkills(): Promise<Built> {
     notes.push(`built-in skills could not be listed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
+  // The loader read these for the runtime; what the console shows is read
+  // again under the API's rules (regular file inside the dir, size cap).
+  const safely = (sk: Skill): Skill => {
+    const r = readSkillFileSafe(sk.dir);
+    if (!r.ok) return { ...sk, name: sk.slug, description: `(SKILL.md ${r.reason})` };
+    const { frontmatter } = parseSkillMd(r.text);
+    return { ...sk, name: str(frontmatter.name) || sk.slug, description: str(frontmatter.description) };
+  };
+
   // Overlays first, so the base knows which agents its slugs are shadowed for.
   const overlay = new Map<string, Skill[]>();
   for (const p of named) overlay.set(p, discoverSkills(p).filter((s) => s.source === "persona"));
 
-  for (const s of discoverSkills()) {
+  for (const s of discoverSkills().map(safely)) {
     const shadowed = named.filter((p) => overlay.get(p)!.some((o) => o.slug === s.slug));
     const prov = skillProvenance(s, src);
     entries.push({
@@ -213,7 +259,7 @@ export async function buildSkills(): Promise<Built> {
     });
   }
   for (const [p, skills] of overlay) {
-    for (const s of skills) {
+    for (const s of skills.map(safely)) {
       const prov = skillProvenance(s, src);
       entries.push({
         id: `agent:${p}:${s.slug}`,
@@ -404,7 +450,8 @@ export async function skillDetail(id: string): Promise<SkillDetailResponse | nul
   const { entries } = await buildSkills();
   const e = entries.find((x) => x.id === id);
   if (!e) return null;
-  const raw = readSkillMd(e.dir) ?? "";
+  const read = readSkillFileSafe(e.dir);
+  const raw = read.ok ? read.text : "";
   const { frontmatter, body } = parseSkillMd(raw);
   const { files, truncated } = listFiles(e.dir);
   const ids = agentIdsByName();
@@ -447,6 +494,8 @@ export async function skillDetail(id: string): Promise<SkillDetailResponse | nul
     frontmatter,
     body,
     raw,
+    rawTruncated: read.ok && read.truncated,
+    ...(read.ok ? {} : { rawUnreadable: `SKILL.md is ${read.reason}` }),
     files,
     filesTruncated: truncated,
     usageHistory,

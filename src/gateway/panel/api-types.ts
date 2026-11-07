@@ -606,8 +606,12 @@ export interface SkillDetailResponse extends SkillSummaryView {
   frontmatter: Record<string, unknown>;
   /** The SKILL.md body, without frontmatter. */
   body: string;
-  /** The whole SKILL.md, as written. */
+  /** The whole SKILL.md, as written, up to 256 KB (see rawTruncated). */
   raw: string;
+  /** True when SKILL.md is larger than the 256 KB the console reads. */
+  rawTruncated: boolean;
+  /** Why SKILL.md was not read (a symlink, outside the skill directory), when it was not. */
+  rawUnreadable?: string;
   files: SkillFileView[];
   /** True when the file list was cut at its limit. */
   filesTruncated: boolean;

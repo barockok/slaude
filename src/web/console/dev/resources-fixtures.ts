@@ -10,9 +10,9 @@ const DAY = 24 * HOUR;
 
 const AGENTS = ["default", "scout", "triage"];
 
-const skill = (s: Omit<SkillDetailResponse, "frontmatter" | "body"> & { frontmatter?: Record<string, unknown> }): SkillDetailResponse => {
+const skill = (s: Omit<SkillDetailResponse, "frontmatter" | "body" | "rawTruncated"> & { frontmatter?: Record<string, unknown> }): SkillDetailResponse => {
   const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(s.raw);
-  return { frontmatter: s.frontmatter ?? { name: s.name, description: s.description }, body: m ? m[2]! : s.raw, ...s };
+  return { frontmatter: s.frontmatter ?? { name: s.name, description: s.description }, body: m ? m[2]! : s.raw, rawTruncated: false, ...s };
 };
 
 export function skillFixtures(now: number): SkillDetailResponse[] {

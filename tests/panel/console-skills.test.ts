@@ -5,7 +5,8 @@
  * and the superadmin retire and restore actions (agent-authored only, audited).
  */
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
+import { readSkillFileSafe } from "../../src/gateway/panel/skills-view";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPanelApi } from "../../src/gateway/panel/api";
@@ -163,6 +164,43 @@ describe("GET /panel/api/skills", () => {
     expect(d.usageHistory).toEqual([{ agent: "default", key: "triage-x", uses: 2, lastUsedAt: 2000, firstSeenAt: 1000 }]);
     expect(d.actions).toEqual({ retire: false, restore: false });
     expect((await call("GET", "/panel/api/skills/base%3Anope")).status).toBe(404);
+  });
+});
+
+describe("SKILL.md reads are confined", () => {
+  test("a symlinked SKILL.md pointing outside the skill dir is not read", async () => {
+    const outside = mkdtempSync(join(tmpdir(), "slaude-secret-"));
+    writeFileSync(join(outside, "secret.md"), "---\nname: leak\ndescription: TOP-SECRET-CONTENT\n---\nTOP-SECRET-CONTENT\n");
+    const dir = join(paths.skills, "linky-x");
+    mkdirSync(dir, { recursive: true });
+    symlinkSync(join(outside, "secret.md"), join(dir, "SKILL.md"));
+    made.push(dir, outside);
+    const list = await call("GET", "/panel/api/skills");
+    expect(JSON.stringify(list.body)).not.toContain("TOP-SECRET-CONTENT");
+    const d = (await call("GET", "/panel/api/skills/base%3Alinky-x")).body as SkillDetailResponse;
+    expect(d.raw).toBe("");
+    expect(d.rawUnreadable).toContain("symlink");
+    expect(JSON.stringify(d)).not.toContain("TOP-SECRET-CONTENT");
+  });
+
+  test("an oversized SKILL.md is cut at 256 KB and flagged", async () => {
+    const dir = join(paths.skills, "huge-x");
+    skill(dir, { name: "huge-x", description: "big" }, "x".repeat(300 * 1024));
+    made.push(dir);
+    const d = (await call("GET", "/panel/api/skills/base%3Ahuge-x")).body as SkillDetailResponse;
+    expect(d.rawTruncated).toBe(true);
+    expect(Buffer.byteLength(d.raw)).toBe(256 * 1024);
+    expect(d.description).toBe("big");
+  });
+
+  test("readSkillFileSafe refuses a file whose real path leaves the dir through a symlinked parent", () => {
+    const outside = mkdtempSync(join(tmpdir(), "slaude-out-"));
+    mkdirSync(join(outside, "sub"));
+    writeFileSync(join(outside, "sub", "SKILL.md"), "secret");
+    const dir = mkdtempSync(join(tmpdir(), "slaude-skill-"));
+    symlinkSync(join(outside, "sub"), join(dir, "sub"));
+    made.push(outside, dir);
+    expect(readSkillFileSafe(dir, "sub/SKILL.md")).toEqual({ ok: false, reason: "outside the skill directory, not read" });
   });
 });
 
