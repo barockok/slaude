@@ -1,7 +1,7 @@
 import { clientForApp, type AppRef, type Transport, type WebClientLike } from "../core/transport";
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
 import { effectiveSoulForChannel } from "../../soul/extract";
-import { approversFor } from "../../access/role";
+import { approversFor, isDenied, loadGrants } from "../../access/role";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
@@ -131,14 +131,14 @@ export class ApprovalGate {
             });
           } catch {}
         };
-        const notAllowed = async (pendingRow: PendingGates.PendingGate) => {
-          // The existing allowlist check refused the click; the row stays pending.
+        const notAllowed = async (pendingRow: PendingGates.PendingGate, denied = false) => {
+          // The allowlist or a deny grant refused the click; the row stays pending.
           auditGateRow(pendingRow, {
             verb: "refused",
             actorKind: "slack_user",
             actorId: userId,
             decision: "refused",
-            summary: `approval ${verb} refused: clicker is not an approver`,
+            summary: `approval ${verb} refused: ${denied ? "clicker is denied on this persona" : "clicker is not an approver"}`,
           });
           try {
             await respond({
@@ -148,6 +148,11 @@ export class ApprovalGate {
             });
           } catch {}
         };
+        // A deny grant on the card's persona refuses the clicker even when the
+        // card lists them or admits anyone (an empty allowlist). Read at click
+        // time, so a deny added after the card was posted applies too.
+        const deniedClicker = async (pendingRow: PendingGates.PendingGate): Promise<boolean> =>
+          isDenied(await loadGrants((pendingRow.payload.personaName as string | undefined) ?? "default"), userId);
         // Durable row is the source of truth for "still open?".
         const row = await PendingGates.get(id);
         if (!row || row.status !== "pending") {
@@ -186,6 +191,7 @@ export class ApprovalGate {
             // non-approver click never consumes the row.
             const approvers = new Set<string>((row.payload.approvers as string[] | undefined) ?? []);
             if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed(row));
+            if (await deniedClicker(row)) return void (await notAllowed(row, true));
             const resolved = await PendingGates.resolve(id, approved ? "approved" : "denied", userId);
             if (!resolved) return void (await stale());
             auditApprovalDecided(resolved, userId, approved);
@@ -219,6 +225,7 @@ export class ApprovalGate {
           (row.payload.approvers as string[] | undefined) ?? [...pending.approvers],
         );
         if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed(row));
+        if (await deniedClicker(row)) return void (await notAllowed(row, true));
 
         // Exactly one click wins the guarded UPDATE; a duplicate or a race
         // against the auto-deny timer sees null and is stale.
@@ -283,7 +290,10 @@ export class ApprovalGate {
    *   2. Scope-described persona via regex parser.
    *   3. Legacy "category: ids" persona: persona[category] → persona.default.
    *   4. env SLAUDE_APPROVERS.
-   *   5. Empty (anyone may click). */
+   *   5. Empty (anyone may click).
+   *  then minus every user with a deny grant on the default persona. When the
+   *  deny removes everyone the chain named, nobody may approve (never anyone).
+   *  An empty set stays "anyone"; the click handler refuses a denied clicker. */
   async #resolveApprovers(req: ApprovalRequest): Promise<Set<string>> {
     if (req.persona && req.persona !== "default") {
       const ids = await approversFor(req.persona, req.channel);
@@ -291,7 +301,18 @@ export class ApprovalGate {
       console.warn(`[approval-gate] persona=${req.persona} has no approver or manager, nor does the default persona: nobody can approve`);
       return new Set([NOBODY]);
     }
+    const chain = this.#defaultChain(req);
+    if (chain.size === 0) return chain;
+    const grants = await loadGrants("default");
+    const kept = [...chain].filter((u) => !isDenied(grants, u));
+    if (kept.length === chain.size) return chain;
+    if (kept.length) return new Set(kept);
+    console.warn("[approval-gate] every approver for this request is denied on the default persona: nobody can approve");
+    return new Set([NOBODY]);
+  }
 
+  /** The default persona's approver chain, before deny grants apply. */
+  #defaultChain(req: ApprovalRequest): Set<string> {
     const structured = effectiveSoulForChannel(req.channel).approvers;
     if (structured.length) {
       const ids = selectApproversFrom(structured, req.summary, req.category);

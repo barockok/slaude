@@ -34,6 +34,15 @@ export function roleFromGrants(grants: readonly Grant[], userId: string, channel
 }
 
 /**
+ * True when `userId` holds a user deny grant in `grants` (a soul blocked user
+ * or a stored deny row). A deny removes every role, so such a user may never
+ * approve, whatever list names them.
+ */
+export function isDenied(grants: readonly Grant[], userId: string): boolean {
+  return grants.some((g) => g.deny && g.subjectKind === "user" && g.subjectId === userId);
+}
+
+/**
  * Every user whose {@link roleFromGrants} on `channelId` is one of `roles`,
  * over already loaded grants (soul-derived and stored user grants). Sync.
  */

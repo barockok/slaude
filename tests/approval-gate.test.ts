@@ -8,7 +8,8 @@ import { SoulDataSchema } from "../src/soul/data";
 import * as AuditEvents from "../src/db/audit-events";
 import { flushAudits } from "../src/audit/emit";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../src/persona/registry";
-import { __setGrantsReader } from "../src/access/role";
+import { __setGrantsReader, invalidateGrants } from "../src/access/role";
+import type { Grant } from "../src/access/grants";
 
 type Handler = (a: any) => Promise<void>;
 
@@ -238,6 +239,123 @@ describe("ApprovalGate", () => {
         ac.abort();
         expect((await p).approved).toBe(false);
       });
+    });
+  });
+
+  describe("deny grants", () => {
+    const deny = (subjectId: string): Grant => ({
+      subjectKind: "user", subjectId, role: "member", deny: true, dmOnly: false, source: "console",
+    });
+    const approveId = async (f: { posts: any[] }) =>
+      (await firstPost(f)).blocks.find((b: any) => b.type === "actions").elements.find((e: any) => e.action_id.includes("approve")).action_id;
+    const refusedRows = async (sessionId: string) => {
+      for (let i = 0; ; i++) {
+        await flushAudits();
+        const items = (await AuditEvents.list({ sessionId, action: "gate.approval.refused" })).items;
+        if (items.length || i >= 200) return items;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    };
+    const withGrants = async (grants: () => Grant[], fn: () => Promise<void>) => {
+      __setGrantsReader(async (persona) => (persona === "default" ? grants() : []));
+      try {
+        await fn();
+      } finally {
+        __setGrantsReader(null);
+        __resetSoulDataMemo();
+      }
+    };
+
+    test("a denied soul approver of the default persona cannot approve; the others can", async () => {
+      await withGrants(() => [deny("U0DENIED1")], async () => {
+        setSoulData(SoulDataSchema.parse({
+          approvers: [
+            { userId: "U0DENIED1", scope: "anything", catchall: true },
+            { userId: "U0APPROV1", scope: "anything", catchall: true },
+          ],
+        }));
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x", sessionId: "SDENY1" }).then((d) => ((resolved = true), d));
+        const card = JSON.stringify((await firstPost(f)).blocks);
+        expect(card).toContain("<@U0APPROV1>");
+        expect(card).not.toContain("U0DENIED1");
+        const id = await approveId(f);
+        await f.fire(id, "U0DENIED1");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        await f.fire(id, "U0APPROV1");
+        expect(await p).toMatchObject({ approved: true, by: "U0APPROV1" });
+        const [ev] = await refusedRows("SDENY1");
+        expect(ev).toMatchObject({ actorId: "U0DENIED1", decision: "refused" });
+      });
+    });
+
+    test("when every approver the chain names is denied, nobody may approve (not anyone)", async () => {
+      await withGrants(() => [deny("U0DENIED1")], async () => {
+        setSoulData(SoulDataSchema.parse({ approvers: [{ userId: "U0DENIED1", scope: "anything", catchall: true }] }));
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        const ac = new AbortController();
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x" }, ac.signal).then((d) => ((resolved = true), d));
+        const id = await approveId(f);
+        await f.fire(id, "U0DENIED1");
+        await f.fire(id, "U0RANDOM1");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        ac.abort();
+        expect((await p).approved).toBe(false);
+      });
+    });
+
+    test("a card anyone may decide still refuses a denied clicker; others decide it", async () => {
+      await withGrants(() => [deny("U0DENIED1")], async () => {
+        writeFileSync(paths.soul, "# Persona\n");
+        setSoulData(SoulDataSchema.parse({}));
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x", sessionId: "SDENY2" }).then((d) => ((resolved = true), d));
+        const id = await approveId(f);
+        await f.fire(id, "U0DENIED1");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        const [ev] = await refusedRows("SDENY2");
+        expect(ev).toMatchObject({ actorId: "U0DENIED1", decision: "refused" });
+        expect(ev!.summary).toContain("denied");
+        await f.fire(id, "U0RANDOM1");
+        expect(await p).toMatchObject({ approved: true, by: "U0RANDOM1" });
+      });
+    });
+
+    test("a named persona: a deny added after the card was posted refuses the click", async () => {
+      const alpha = { name: "alpha", slackUserId: "U0ALPHAP", outClient: null, soulJson: { manager: { userId: "UALPHAMGR" }, approvers: [{ userId: "UALPHAAPP", scope: "anything", catchall: true }] } } as any;
+      setPersonaRegistry({
+        lookupByUserId: () => null, lookupByName: (n) => (n === "alpha" ? alpha : null), list: () => [alpha],
+        isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+      });
+      let stored: Grant[] = [];
+      __setGrantsReader(async (persona) => (persona === "alpha" ? stored : []));
+      try {
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x", persona: "alpha" }).then((d) => ((resolved = true), d));
+        const id = await approveId(f);
+        stored = [deny("UALPHAAPP")];
+        invalidateGrants("alpha");
+        await f.fire(id, "UALPHAAPP");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        await f.fire(id, "UALPHAMGR");
+        expect(await p).toMatchObject({ approved: true, by: "UALPHAMGR" });
+      } finally {
+        __resetPersonaRegistry();
+        __setGrantsReader(null);
+        __resetSoulDataMemo();
+      }
     });
   });
 
