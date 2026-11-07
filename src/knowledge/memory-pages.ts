@@ -1,6 +1,6 @@
 /**
  * Typed memory pages (spec §8.2, §8.3): compose and read the common
- * frontmatter `kb_memoize` writes, and read page records back. Pure, no I/O.
+ * frontmatter `memory_save` writes, and read page records back. Pure, no I/O.
  *
  * A typed page is `---`, then `type`, `as_of` and `confidence`, then
  * `source`, `subject`, `supersedes` and the type's own fields, then `---` and
@@ -25,7 +25,7 @@ export { PAGE_TYPES, type PageType };
 
 export type Confidence = "told" | "inferred";
 
-/** One kb_memoize page as the model sends it. */
+/** One memory_save page as the model sends it. */
 export interface TypedPageInput {
   slug: string;
   /** The page body for a typed page; the whole page (frontmatter and all) for an untyped one. */
@@ -178,7 +178,7 @@ function metaText(v: unknown): string | undefined {
 
 /**
  * A get_page result as frontmatter + body, or null for no page. Takes either
- * the whole page as `content` (the shape kb_memoize writes) or gbrain's page
+ * the whole page as `content` (the shape memory_save writes) or gbrain's page
  * record (`compiled_truth` body, parsed `frontmatter` object); the record's
  * own `tags` mark it superseded too. The one reader of page records: every
  * memory reader (memory_about, the per-turn memory context) goes through it.

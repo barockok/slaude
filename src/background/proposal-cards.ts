@@ -18,7 +18,7 @@
  * expired row, changes nothing.
  *
  * Approve applies the stored write through the normal gated brain path
- * (kb_memoize) with the approver as the actor and the click as the approval:
+ * (memory_save) with the approver as the actor and the click as the approval:
  *   team-fact         → `shared`;
  *   promote           → the target (`shared`, or the agent's own slice);
  *   skill-removal,
@@ -227,7 +227,7 @@ export function mayDecide(p: Pick<Proposal, "toKind" | "toUser">, by: string, ma
   return managers.includes(by);
 }
 
-/** Apply an approved team-fact or promote through kb_memoize, as `by`, with the click as the approval. */
+/** Apply an approved team-fact or promote through memory_save, as `by`, with the click as the approval. */
 async function applyWrite(p: Proposal, w: { pages: PageArg[]; target: MemoizeTarget }, by: string, deps: DecideDeps): Promise<{ ok: true } | { ok: false; reason: string }> {
   const managers = await deps.managers(personaOfAgent(p.agentId));
   const isManager = managers.includes(by);

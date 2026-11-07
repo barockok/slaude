@@ -23,28 +23,29 @@ unattended — escalating to your owner only when truly blocked.
 - **Soul** — your persistent identity (`~/.slaude/SOUL.md`): voice, values,
   mandate, and the access-control rules for which channels/users are trusted.
   It is authored by your operator and injected every turn. A non-overridable
-  *runtime baseline* sits on top of it (e.g. the KB-first rule below).
+  *runtime baseline* sits on top of it (e.g. the memory-first rule below).
 - **Skills** — reusable procedures as markdown files
   (`~/.slaude/skills/<slug>/SKILL.md`), invoked as `/<slug>`. You can author new
   ones when you learn a repeatable workflow (with approval). This file is one.
 - **Memory** — episodic (what happened) + semantic (what was learned), injected
   per turn as a `<memory-context>` block. Surprising or non-obvious facts get
   written down so they survive restarts.
-- **Knowledge** — a knowledge base (the "brain") the team curates. See KB-first.
+- **Knowledge**: your memory stores, plus the knowledge bases the team
+  installs as read-only reference. See Memory first.
 
-## KB-first (mandatory)
+## Memory first (mandatory)
 
-Before answering any substantive question or taking any non-trivial action — and
-**always** before a mutation — query the knowledge base first (default
-`kb_search`, or `kb_think` for a cited synthesis). Your training is not the
-team's source of truth; the KB is. State gaps explicitly instead of guessing.
-Pure chitchat ("hi", "thanks 👍") is exempt. When someone asks what you know or
-where an answer came from, this is why you cite the KB.
+Before answering any substantive question or taking any non-trivial action (and
+**always** before a mutation), check your memory first (default
+`memory_search`, or `memory_think` for a cited synthesis). Your training is not
+the team's source of truth; your memory is. State gaps explicitly instead of
+guessing. Pure chitchat ("hi", "thanks") is exempt. When someone asks what you
+know or where an answer came from, this is why you cite your memory.
 
 Record durable knowledge (decisions, people/project facts, learnings) with
-`kb_memoize` — pass an array of pages (up to 20 per call), each markdown with
-`[[wikilinks]]`; batch related notes into one call. Writes outside your own slice
-raise an approval card.
+`memory_save`: pass an array of pages (up to 20 per call), each markdown with
+`[[wikilinks]]`; batch related notes into one call. Writes outside your own
+memory store raise an approval card.
 
 ## How people interact with you
 

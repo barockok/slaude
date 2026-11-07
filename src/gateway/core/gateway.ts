@@ -1216,7 +1216,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   if (externalMcp.privateServices.length) {
     console.log(`[mcp] private (1on1-scoped) services: ${externalMcp.privateServices.join(", ")}`);
   }
-  // Brain source bootstrap — sources MUST exist before any kb_memoize write runs.
+  // Brain source bootstrap: sources MUST exist before any memory_save write runs.
   // KB wiki import runs after, in the background; failures are logged, not fatal.
   // In remote mode the separate brain-server process owns the engine, source
   // bootstrap and nightly maintenance; the gateway only proxies runtime calls.
@@ -1362,7 +1362,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // the rest of the turn write the /1on1 out to agent-<id>.
           scope: async () => turnBrainScope(await claimGate(), personaKbSourceIds(ctx.personaId)),
           gate: () => claimGate(),
-          // kb_thread_history: the memory read scope. On /v1 the job token is
+          // memory_thread_history: the memory read scope. On /v1 the job token is
           // authoritative, derived as the memory routes do; mono uses the live
           // identity, as its route above does.
           thread: async () => {
@@ -2565,7 +2565,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // runs the job; it points to the replacement. Code kept for now (see
         // knowledge/ingest.ts @deprecated); slated for removal.
         await reply(
-          ":warning: `/ingest` is *deprecated* — knowledge is captured automatically via brain memoize now, so the raw/→wiki synthesis no longer runs.",
+          ":warning: `/ingest` is *deprecated*: knowledge is saved to memory automatically now, so the raw/→wiki synthesis no longer runs.",
         );
         return;
       }

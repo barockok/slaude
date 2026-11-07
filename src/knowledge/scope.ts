@@ -162,7 +162,7 @@ function baseScope(i: ScopeInput): BrainScope {
   if (i.channelTrust === "trusted" || i.isManager) {
     // Default durable-write target is the agent's OWN private mind (auto-passes
     // the gate). Escalation to the shared team KB is explicit and deliberate —
-    // kb_memoize target:"shared" overrides sourceId to SHARED_SOURCE, which cards.
+    // memory_save target:"shared" overrides sourceId to SHARED_SOURCE, which cards.
     // clientId is the agent here (was the user pre-per-agent). gbrain uses
     // clientId only for takesHoldersAllowList (takes-visibility filtering), NOT
     // page authorship/created_by or access control — those key on sourceId — so

@@ -138,7 +138,7 @@ export function makeMemoryPlane(deps: {
 /**
  * The memory scope a turn's job token names: the more private of the live and
  * signed /1on1 lock, and the signed `runAs`. The one derivation the memory
- * routes and kb_thread_history share, so both read what the turn writes.
+ * routes and memory_thread_history share, so both read what the turn writes.
  */
 export function memoryScopeForClaims(gate: GateInput, claims: JobClaims): MemoryScope {
   // runAs is signed at dispatch: a cron created inside a /1on1 runs as its
