@@ -1,42 +1,9 @@
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { AuditEventView, SessionUsageSnapshot } from "../../../../gateway/panel/api-types";
-import { Avatar, Badge, CodeBlock, EmptyState, IconChevronDown, IconChevronRight, IconLock, cx } from "../../../ui";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Avatar, Badge, Button, CodeBlock, EmptyState, IconChevronDown, IconChevronRight, IconLock, cx } from "../../../ui";
 import type { StreamEntry, StreamStatus } from "../../lib/sessionStream";
+import type { SessionHistory } from "./useSessionHistory";
+import { resultText, type Delivery, type Item } from "./timeline-model";
 import { ACTOR_KIND_LABEL, absoluteTime, actionLabel, clockTime, decisionLabel, decisionTone, duration } from "../../lib/format";
-
-export interface OperatorMessage {
-  id: string;
-  at: number;
-  text: string;
-  by: string;
-}
-
-type Item =
-  | { kind: "turn"; key: string; at: number }
-  | { kind: "done"; key: string; at: number; ms: number | null }
-  | { kind: "text"; key: string; at: number; who: "agent" | "operator"; name: string; text: string }
-  | { kind: "thinking"; key: string; at: number; text: string }
-  | { kind: "tool"; key: string; at: number; tool: string; input: unknown; result?: unknown; resultAt?: number; isError?: boolean }
-  | { kind: "result"; key: string; at: number; tool: string; result: unknown; isError: boolean }
-  | { kind: "error"; key: string; at: number; message: string; code?: string }
-  | { kind: "compacting"; key: string; at: number; trigger: string }
-  | { kind: "gate"; key: string; at: number; event: AuditEventView };
-
-const isErrorResult = (r: unknown) => !!r && typeof r === "object" && (r as { is_error?: unknown }).is_error === true;
-
-/** The text worth showing of a tool result: its output string when it has one, JSON otherwise. */
-export function resultText(r: unknown): string {
-  if (typeof r === "string") return r;
-  if (r && typeof r === "object") {
-    const o = r as Record<string, unknown>;
-    for (const k of ["stdout", "content", "output", "text"]) if (typeof o[k] === "string" && o[k]) return o[k] as string;
-    if (Array.isArray(o.content)) {
-      const parts = o.content.map((c) => (c && typeof c === "object" && typeof (c as { text?: unknown }).text === "string" ? (c as { text: string }).text : "")).filter(Boolean);
-      if (parts.length) return parts.join("\n");
-    }
-  }
-  return JSON.stringify(r, null, 2) ?? "";
-}
 
 /** One line that says what a tool call does: the command, the file, the pattern. */
 function inputSummary(input: unknown): string {
@@ -47,66 +14,6 @@ function inputSummary(input: unknown): string {
     if (typeof o[k] === "string" && o[k]) return (o[k] as string).split("\n")[0]!;
   }
   return "";
-}
-
-export function buildItems(entries: StreamEntry[], gates: AuditEventView[], sent: OperatorMessage[], persona: string): Item[] {
-  const out: Item[] = [];
-  const open = new Map<string, number[]>(); // tool name -> indexes of calls awaiting a result
-  let turnAt: number | null = null;
-  for (const { id, at, event: e } of entries) {
-    if ("autoEvolve" in e && e.autoEvolve) continue; // the background skill check is not part of the conversation
-    switch (e.type) {
-      case "turnStart":
-        turnAt = at;
-        out.push({ kind: "turn", key: id, at });
-        break;
-      case "done":
-        out.push({ kind: "done", key: id, at, ms: turnAt == null ? null : at - turnAt });
-        turnAt = null;
-        break;
-      case "assistantText":
-        if (e.text.trim()) out.push({ kind: "text", key: id, at, who: "agent", name: persona, text: e.text });
-        break;
-      case "thinking":
-        if (e.text.trim()) out.push({ kind: "thinking", key: id, at, text: e.text });
-        break;
-      case "toolCall":
-        (open.get(e.tool) ?? open.set(e.tool, []).get(e.tool)!).push(out.length);
-        out.push({ kind: "tool", key: id, at, tool: e.tool, input: e.input });
-        break;
-      case "toolResult": {
-        const i = open.get(e.tool)?.shift();
-        const call = i === undefined ? null : out[i];
-        if (call && call.kind === "tool") {
-          out[i!] = { ...call, result: e.result, resultAt: at, isError: isErrorResult(e.result) };
-        } else {
-          out.push({ kind: "result", key: id, at, tool: e.tool, result: e.result, isError: isErrorResult(e.result) });
-        }
-        break;
-      }
-      case "error":
-        out.push({ kind: "error", key: id, at, message: e.error, code: e.code });
-        turnAt = null;
-        break;
-      case "compacting":
-        out.push({ kind: "compacting", key: id, at, trigger: e.trigger });
-        break;
-      case "tokenUsage":
-        break;
-    }
-  }
-  for (const g of gates) out.push({ kind: "gate", key: `gate-${g.id}`, at: g.at, event: g });
-  for (const m of sent) out.push({ kind: "text", key: m.id, at: m.at, who: "operator", name: m.by, text: m.text });
-  // Stable: stream items keep their order; gates and operator messages slot in by time.
-  return out.map((it, i) => [it, i] as const).sort((a, b) => a[0].at - b[0].at || a[1] - b[1]).map(([it]) => it);
-}
-
-export function latestUsage(entries: StreamEntry[]): SessionUsageSnapshot | null {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i]!.event;
-    if (e.type === "tokenUsage") return e.snapshot;
-  }
-  return null;
 }
 
 const STATUS_TEXT: Record<StreamStatus, string> = {
@@ -131,6 +38,32 @@ function Time({ at }: { at: number }) {
     <time className="sl-tl__time" dateTime={new Date(at).toISOString()} title={absoluteTime(at)}>
       {clockTime(at)}
     </time>
+  );
+}
+
+/** The record keeps a turn's time; shown as a date and time, not a clock. */
+function EarlierTime({ at }: { at: number }) {
+  return (
+    <time className="sl-tl__time" dateTime={new Date(at).toISOString()} title={absoluteTime(at)}>
+      {absoluteTime(at)}
+    </time>
+  );
+}
+
+const DELIVERY: Record<Delivery, { label: string; tone: "neutral" | "accent" | "warning" | "danger" | "success"; hint: string }> = {
+  sending: { label: "Sending", tone: "neutral", hint: "The reply tool has not answered yet" },
+  slack: { label: "Sent to Slack", tone: "success", hint: "Posted in the thread" },
+  held: { label: "Held in console", tone: "warning", hint: "An operator holds this session, so the reply stayed here and Slack never saw it" },
+  failed: { label: "Not sent", tone: "danger", hint: "The tool refused or failed; nobody in Slack saw this" },
+};
+
+/** Where an agent message went. */
+export function DeliveryMark({ delivery, target }: { delivery: Delivery; target?: string }) {
+  const d = DELIVERY[delivery];
+  return (
+    <span title={d.hint} className="sl-tl__delivery">
+      <Badge tone={d.tone}>{delivery === "slack" && target ? `Sent to ${target}` : d.label}</Badge>
+    </span>
   );
 }
 
@@ -171,12 +104,14 @@ function ItemView({ it }: { it: Item }) {
       );
     case "text":
       return (
-        <div className={cx("sl-tl__msg", it.who === "operator" && "is-operator")}>
+        <div className={cx("sl-tl__msg", it.who === "operator" && "is-operator", it.who === "user" && "is-user")}>
           <Avatar name={it.name} size="sm" />
           <div className="sl-tl__msg-body">
             <div className="sl-tl__meta">
               <span className="sl-tl__who">{it.who === "operator" ? `${it.name} (console)` : it.name}</span>
-              <Time at={it.at} />
+              {it.who === "user" && <span className="sl-caption">in Slack</span>}
+              {it.delivery && <DeliveryMark delivery={it.delivery} target={it.target} />}
+              {it.earlier ? <EarlierTime at={it.at} /> : <Time at={it.at} />}
             </div>
             <p className="sl-tl__text">{it.text}</p>
           </div>
@@ -281,22 +216,60 @@ function ItemView({ it }: { it: Item }) {
   }
 }
 
-export function TimelineTab({
-  items, status, detail,
-}: { items: Item[]; status: StreamStatus; detail: string | null }) {
+/** Earlier turns above the live ones: "Load earlier", the divider, and why there are none when there are none. */
+export function EarlierHeader({ history, count }: { history: SessionHistory; count: number }) {
+  if (history.loading) return <p className="sl-caption sl-tl__earlier-note" aria-busy="true">Loading earlier turns</p>;
+  if (count === 0) {
+    const why = history.error ? `Earlier turns could not be loaded: ${history.error}` : history.note ? `No earlier turns to show: ${history.note}.` : null;
+    return why ? <p className="sl-caption sl-tl__earlier-note">{why}</p> : null;
+  }
+  return (
+    <>
+      {history.hasMore && (
+        <div className="sl-more">
+          <Button size="sm" onClick={history.loadMore} loading={history.more}>
+            Load earlier
+          </Button>
+        </div>
+      )}
+      <div className="sl-tl__divider is-earlier" role="separator">
+        <span>Earlier in this session</span>
+      </div>
+    </>
+  );
+}
+
+/**
+ * Keeps a scroller at the bottom while the reader follows it, counts what
+ * arrived while they scrolled up, and holds the view still when older lines
+ * are added above.
+ */
+export function useFollow(liveCount: number, earlierCount: number) {
   const scroller = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
   const [unseen, setUnseen] = useState(0);
-  const lastCount = useRef(items.length);
+  const lastLive = useRef(liveCount);
+  const lastEarlier = useRef(earlierCount);
+  const heightBefore = useRef(0);
+  heightBefore.current = scroller.current?.scrollHeight ?? 0;
 
   useLayoutEffect(() => {
-    const added = items.length - lastCount.current;
-    lastCount.current = items.length;
     const el = scroller.current;
-    if (!el || added <= 0) return;
+    const addedLive = liveCount - lastLive.current;
+    const addedEarlier = earlierCount - lastEarlier.current;
+    const firstEarlier = lastEarlier.current === 0;
+    lastLive.current = liveCount;
+    lastEarlier.current = earlierCount;
+    if (!el) return;
+    if (addedEarlier > 0 && !firstEarlier && !following) {
+      // Older lines went in above: keep what the reader is looking at in place.
+      el.scrollTop += el.scrollHeight - heightBefore.current;
+      return;
+    }
+    if (addedLive <= 0 && addedEarlier <= 0) return;
     if (following) el.scrollTop = el.scrollHeight;
-    else setUnseen((n) => n + added);
-  }, [items.length, following]);
+    else if (addedLive > 0) setUnseen((n) => n + addedLive);
+  }, [liveCount, earlierCount, following]);
 
   const onScroll = () => {
     const el = scroller.current;
@@ -314,6 +287,15 @@ export function TimelineTab({
     setUnseen(0);
   };
 
+  return { scroller, following, unseen, onScroll, jump };
+}
+
+export function TimelineTab({
+  items, earlier, history, status, detail,
+}: { items: Item[]; earlier: Item[]; history: SessionHistory; status: StreamStatus; detail: string | null }) {
+  const { scroller, following, unseen, onScroll, jump } = useFollow(items.length, earlier.length);
+  const empty = items.length === 0 && earlier.length === 0;
+
   return (
     <div className="sl-tl">
       {(status === "reconnecting" || status === "unavailable" || status === "signed-out") && (
@@ -322,24 +304,41 @@ export function TimelineTab({
         </p>
       )}
       <div className="sl-tl__scroll" ref={scroller} onScroll={onScroll} tabIndex={0} aria-label="Session timeline">
-        {items.length === 0 ? (
+        <EarlierHeader history={history} count={earlier.length} />
+        {earlier.length > 0 && (
+          <ol className="sl-tl__list" aria-label="Earlier in this session">
+            {earlier.map((it) => (
+              <li key={it.key}>
+                <ItemView it={it} />
+              </li>
+            ))}
+          </ol>
+        )}
+        {earlier.length > 0 && items.length > 0 && (
+          <div className="sl-tl__divider" role="separator">
+            <span>Since you opened this page</span>
+          </div>
+        )}
+        {empty ? (
           <EmptyState
             title={status === "unavailable" ? "No live tail on this deployment" : "Waiting for activity"}
             description={
               status === "unavailable"
                 ? "Without an event bus the console cannot follow a session live. Tool permission decisions still appear here from the audit trail."
-                : "Messages, tool calls and decisions appear here as the agent works. Earlier turns are not replayed."
+                : "Messages, tool calls and decisions appear here as the agent works."
             }
           />
         ) : (
           <>
-            <ol className="sl-tl__list">
-              {items.map((it) => (
-                <li key={it.key}>
-                  <ItemView it={it} />
-                </li>
-              ))}
-            </ol>
+            {items.length > 0 && (
+              <ol className="sl-tl__list">
+                {items.map((it) => (
+                  <li key={it.key}>
+                    <ItemView it={it} />
+                  </li>
+                ))}
+              </ol>
+            )}
             {status === "live" && (
               <p className="sl-tl__listening">
                 <span className="sl-live is-live" aria-hidden="true">
@@ -351,7 +350,7 @@ export function TimelineTab({
           </>
         )}
       </div>
-      {!following && items.length > 0 && (
+      {!following && !empty && (
         <button type="button" className="sl-jump-pill" onClick={jump}>
           <IconChevronDown size={14} />
           Jump to latest{unseen > 0 ? ` (${unseen} new)` : ""}

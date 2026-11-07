@@ -742,10 +742,42 @@
 
 .sl-tl__meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  justify-content: space-between;
   gap: var(--sl-pad-sm);
   margin-bottom: 0.125rem;
+}
+
+.sl-tl__meta > .sl-tl__time {
+  margin-left: auto;
+}
+
+/* A message from someone in the Slack thread. */
+.sl-tl__msg.is-user .sl-tl__msg-body {
+  padding: var(--sl-pad-sm) var(--sl-pad-md);
+  border-radius: var(--sl-radius-lg);
+  background: var(--sl-surface-2);
+  box-shadow: inset 0 0 0 1px var(--sl-border);
+}
+
+.sl-tl__delivery {
+  display: inline-flex;
+  align-self: center;
+}
+
+/* Earlier turns (the conversation record) sit above the live tail. */
+.sl-tl__divider.is-earlier {
+  margin-bottom: var(--sl-pad-md);
+}
+
+.sl-tl__earlier-note {
+  padding: var(--sl-pad-sm) 0 var(--sl-pad-md);
+  text-align: center;
+}
+
+.sl-tl__scroll > .sl-tl__list + .sl-tl__divider,
+.sl-chat__log > .sl-chat__list + .sl-tl__divider {
+  margin: var(--sl-pad-md) 0;
 }
 
 .sl-tl__who {
@@ -973,6 +1005,18 @@
 .sl-chat__msg.is-operator .sl-chat__bubble {
   background: var(--sl-bg-accent);
   box-shadow: inset 0 0 0 1px var(--sl-border-accent);
+}
+
+.sl-chat__msg.is-user .sl-chat__bubble {
+  background: var(--sl-surface-0);
+}
+
+.sl-chat__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sl-pad-xs);
 }
 
 .sl-chat__time {

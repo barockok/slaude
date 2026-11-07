@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { AuditEventView, AuditPageResponse, SessionDetailResponse, SessionRowView } from "../../../../gateway/panel/api-types";
+import type { AuditEventView, AuditPageResponse, SessionDetailResponse, SessionRowView, SessionUsageSnapshot } from "../../../../gateway/panel/api-types";
 import { Link, navigate } from "../../../lib/router";
 import { useIdentity } from "../../../shared/AppFrame";
 import { Avatar, Badge, Button, Card, EmptyState, IconArrowLeft, Skeleton, Tabs } from "../../../ui";
@@ -15,8 +15,10 @@ import { auditHref, sessionPath } from "../../lib/format";
 import { StatusBadge } from "../SessionsPage";
 import { ChatTab } from "./ChatTab";
 import { ControlBar } from "./ControlBar";
-import { buildItems, latestUsage, StreamIndicator, TimelineTab, type OperatorMessage } from "./TimelineTab";
+import { StreamIndicator, TimelineTab } from "./TimelineTab";
+import { buildItems, contextLabel, historyItems, latestUsage, sessionActivityNow, turnRunning, type OperatorMessage } from "./timeline-model";
 import { useSessionEvents } from "./useSessionEvents";
+import { useSessionHistory } from "./useSessionHistory";
 import { useSessionLock } from "./useSessionLock";
 
 export const SESSION_TABS = ["timeline", "chat", "audit"] as const;
@@ -69,6 +71,14 @@ function SessionAudit({ sessionId }: { sessionId: string }) {
   );
 }
 
+function ContextMeter({ usage }: { usage: SessionUsageSnapshot }) {
+  return (
+    <span className="sl-caption sl-tl-toolbar__end" title={`${usage.totalInput.toLocaleString("en-US")} of ${usage.contextWindow.toLocaleString("en-US")} tokens`}>
+      {contextLabel(usage)}
+    </span>
+  );
+}
+
 function HeaderSkeleton() {
   return (
     <div className="sl-detail-skeleton" aria-busy="true" aria-label="Loading session">
@@ -88,6 +98,7 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
   const [sent, setSent] = useState<OperatorMessage[]>([]);
   const [gates, setGates] = useState<AuditEventView[]>([]);
   const events = useSessionEvents(id);
+  const history = useSessionHistory(id);
   const lock = useSessionLock(id, data ? data.panel_locked_by ?? null : undefined, me);
 
   useEffect(() => {
@@ -120,7 +131,9 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
   const persona = session?.persona_id ?? "agent";
   const items = useMemo(() => buildItems(events.entries, gates, sent, persona), [events.entries, gates, sent, persona]);
   const chat = useMemo(() => items.filter((i): i is Extract<typeof i, { kind: "text" }> => i.kind === "text"), [items]);
+  const earlier = useMemo(() => historyItems(history.items, persona), [history.items, persona]);
   const usage = latestUsage(events.entries);
+  const activity = sessionActivityNow(data, turnRunning(events.entries));
 
   const onSent = useCallback(
     (text: string) =>
@@ -172,7 +185,7 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
             <span className="sl-title-row">
               <Avatar name={session.persona_id} />
               <span className="sl-break">{session.title ?? (session.slack_channel_id ? `${session.persona_id} in ${session.slack_channel_id}` : `${session.persona_id} session`)}</span>
-              <StatusBadge status={session.status} />
+              <StatusBadge activity={activity} />
             </span>
           </h1>
           <p className="sl-page-header__desc sl-session-meta">
@@ -223,17 +236,13 @@ export function SessionDetailPage({ id, tab }: { id: string; tab: SessionTab }) 
             <span className="sl-caption">
               {events.entries.length} {events.entries.length === 1 ? "event" : "events"} since you opened this page
             </span>
-            {usage && (
-              <span className="sl-caption sl-tl-toolbar__end" title={`${usage.totalInput.toLocaleString()} of ${usage.contextWindow.toLocaleString()} tokens`}>
-                Context {Math.round(usage.pctUsed * 100)}% used
-              </span>
-            )}
+            {usage && <ContextMeter usage={usage} />}
           </div>
         )}
         {tab === "timeline" ? (
-          <TimelineTab items={items} status={events.status} detail={events.detail} />
+          <TimelineTab items={items} earlier={earlier} history={history} status={events.status} detail={events.detail} />
         ) : tab === "chat" ? (
-          <ChatTab sessionId={id} messages={chat} lock={lock} isSuperadmin={isSuper} onSent={onSent} />
+          <ChatTab sessionId={id} messages={chat} earlier={earlier} history={history} lock={lock} isSuperadmin={isSuper} onSent={onSent} />
         ) : (
           <SessionAudit sessionId={id} />
         )}

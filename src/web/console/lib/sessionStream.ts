@@ -6,7 +6,8 @@
  * Protocol (src/gateway/panel/api.ts handleEvents):
  * - frames are `id: <entry id>` + `data: <SessionEvent JSON>`; comments
  *   (": open", ": ping") keep the connection warm;
- * - the server starts at the newest entry, so earlier turns are not replayed;
+ * - the server starts at the newest entry, so earlier turns are not replayed
+ *   (the page reads those from GET .../history, the conversation record);
  * - `event: session-expired` ends the stream when the access token runs out:
  *   refresh, then reopen with `?lastId=` so nothing is lost;
  * - 503 means there is no event bus (no Redis): nothing to tail.

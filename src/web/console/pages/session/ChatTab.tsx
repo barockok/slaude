@@ -1,18 +1,22 @@
-import { useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import type { SessionChatResponse } from "../../../../gateway/panel/api-types";
 import { ApiError } from "../../../lib/api";
 import { Avatar, Button, Dialog, EmptyState, IconLock, cx } from "../../../ui";
 import { api } from "../../client";
 import { absoluteTime, clockTime } from "../../lib/format";
-import type { TimelineItem } from "./TimelineTab";
+import { DeliveryMark, EarlierHeader, useFollow, type TimelineItem } from "./TimelineTab";
+import type { SessionHistory } from "./useSessionHistory";
 import type { SessionLock } from "./useSessionLock";
 
 type ChatItem = Extract<TimelineItem, { kind: "text" }>;
 
 export interface ChatTabProps {
   sessionId: string;
-  /** Agent replies and operator messages, oldest first. */
+  /** Agent replies, Slack and operator messages since the page opened, oldest first. */
   messages: ChatItem[];
+  /** Earlier turns from the conversation record, oldest first. */
+  earlier: ChatItem[];
+  history: SessionHistory;
   lock: SessionLock;
   isSuperadmin: boolean;
   onSent: (text: string) => void;
@@ -33,16 +37,30 @@ function Banner({ tone, title, children, actions }: { tone: "neutral" | "accent"
   );
 }
 
-export function ChatTab({ sessionId, messages, lock, isSuperadmin, onSent }: ChatTabProps) {
+function Message({ m }: { m: ChatItem }) {
+  return (
+    <li className={cx("sl-chat__msg", m.who === "operator" && "is-operator", m.who === "user" && "is-user")}>
+      {m.who !== "operator" && <Avatar name={m.name} size="sm" />}
+      <div className="sl-chat__bubble">
+        <p className="sl-tl__text">{m.text}</p>
+        <span className="sl-chat__foot">
+          <time className="sl-chat__time" dateTime={new Date(m.at).toISOString()} title={absoluteTime(m.at)}>
+            {m.who !== "agent" ? `${m.name}${m.who === "user" ? " in Slack" : ""}, ` : ""}
+            {m.earlier ? absoluteTime(m.at) : clockTime(m.at)}
+          </time>
+          {m.delivery && <DeliveryMark delivery={m.delivery} target={m.target} />}
+        </span>
+      </div>
+    </li>
+  );
+}
+
+export function ChatTab({ sessionId, messages, earlier, history, lock, isSuperadmin, onSent }: ChatTabProps) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [confirmTakeover, setConfirmTakeover] = useState(false);
-  const log = useRef<HTMLDivElement>(null);
-
-  useLayoutEffect(() => {
-    if (log.current) log.current.scrollTop = log.current.scrollHeight;
-  }, [messages.length]);
+  const { scroller: log, onScroll } = useFollow(messages.length, earlier.length);
 
   // Only the lock endpoints answering 503 says there is no lock backend.
   const unsupported = lock.unsupported;
@@ -90,27 +108,35 @@ export function ChatTab({ sessionId, messages, lock, isSuperadmin, onSent }: Cha
 
   return (
     <div className="sl-chat">
-      <div className="sl-chat__log" ref={log} tabIndex={0} aria-label="Conversation" aria-live="polite">
-        {messages.length === 0 ? (
-          <EmptyState
-            title="No messages yet"
-            description="Replies from the agent and messages you send from here show up in this conversation."
-          />
-        ) : (
-          <ol className="sl-chat__list">
-            {messages.map((m) => (
-              <li key={m.key} className={cx("sl-chat__msg", m.who === "operator" && "is-operator")}>
-                {m.who === "agent" && <Avatar name={m.name} size="sm" />}
-                <div className="sl-chat__bubble">
-                  <p className="sl-tl__text">{m.text}</p>
-                  <time className="sl-chat__time" dateTime={new Date(m.at).toISOString()} title={absoluteTime(m.at)}>
-                    {m.who === "operator" ? `${m.name}, ` : ""}
-                    {clockTime(m.at)}
-                  </time>
-                </div>
-              </li>
+      <div className="sl-chat__log" ref={log} onScroll={onScroll} tabIndex={0} aria-label="Conversation" aria-live="polite">
+        <EarlierHeader history={history} count={earlier.length} />
+        {earlier.length > 0 && (
+          <ol className="sl-chat__list" aria-label="Earlier in this session">
+            {earlier.map((m) => (
+              <Message key={m.key} m={m} />
             ))}
           </ol>
+        )}
+        {messages.length === 0 && earlier.length === 0 ? (
+          <EmptyState
+            title="No messages yet"
+            description="Messages from Slack, the agent's replies and messages you send from here show up in this conversation."
+          />
+        ) : (
+          messages.length > 0 && (
+            <>
+              {earlier.length > 0 && (
+                <div className="sl-tl__divider" role="separator">
+                  <span>Since you opened this page</span>
+                </div>
+              )}
+              <ol className="sl-chat__list">
+                {messages.map((m) => (
+                  <Message key={m.key} m={m} />
+                ))}
+              </ol>
+            </>
+          )
         )}
       </div>
 

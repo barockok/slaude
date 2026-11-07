@@ -21,7 +21,7 @@ import { SessionsPage } from "./pages/SessionsPage";
 export { api };
 
 export const NAV: NavEntry[] = [
-  { label: "Overview", to: "/", description: "Agents, live sessions, pending approvals and recent activity at a glance." },
+  { label: "Overview", to: "/", description: "Agents, active sessions, pending approvals and recent activity at a glance." },
   { label: "Agents", to: "/agents", description: "Every agent on this deployment, its mandates and who can reach it.", keywords: "personas" },
   { label: "Sessions", to: "/sessions", description: "Live and recent conversations, with a timeline you can step into.", keywords: "threads" },
   { label: "Approvals and audit", to: "/audit", description: "Every permission decision and console change, newest first.", keywords: "log history" },
