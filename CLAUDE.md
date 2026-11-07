@@ -105,6 +105,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/site/_content/field-notes/<date>-<slug>.md` and publish to the docs site. Add a new file per significant finding/decision/mistake; index it below as one line (date, a short title with the key detail, the link; the full write-up lives in the note). Newest first.
 
+- [2026-11-08: Embedding provider: gbrain labels every chunk with its default model (`chunk.model || DEFAULT_EMBEDDING_MODEL`); writes now stamp the configured model, boot refuses to embed on a model mismatch, `slaude brain reembed --model-mismatch` repairs](docs/site/_content/field-notes/2026-11-08-embedding-provider.md)
 - [2026-11-07: Agent platform (per-persona soul, grants and `roleOf`, permission cards decided only by the requester or an approver, an audit trail, mandates, the new console and portal, `memory_*` tool names)](docs/site/_content/field-notes/2026-11-07-agent-platform.md)
 - [2026-11-03: Proactiveness: one switch; wakes see replies, save to memory and finish work; manager and mandates parsed without the soul cache](docs/site/_content/field-notes/2026-11-03-proactive-simple.md)
 - [2026-11-02 — Heartbeat wake: the agent itself wakes up, on the session runtime; round fixes (evidence dedupe, budget pools, notices)](docs/site/_content/field-notes/2026-11-02-heartbeat-wake.md)
