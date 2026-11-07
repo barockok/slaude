@@ -58,6 +58,11 @@ export function matchPath(pattern: string, path: string): Record<string, string>
   return params;
 }
 
+/** The current query string ("?a=1" or ""), re-read on every in-app navigation and Back. */
+export function useSearch(): string {
+  return useSyncExternalStore(subscribe, () => location.search);
+}
+
 export type Route<P extends string> = { path: string; pattern: P | null; params: Record<string, string> };
 
 /** The current path and the first pattern that matches it. */
