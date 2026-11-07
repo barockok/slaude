@@ -219,4 +219,44 @@ describe("listMandates", () => {
     const c = (await listMandates("scout")).find((m) => m.id === `cron:${j.id}`)!;
     expect(sorted(c.approvers)).toEqual(["UBACKUP", "UBOB", "USCOUT"]);
   });
+
+  test("filesystem persona (no soul_json): mandates from its soul text, heartbeat from a channel switch, its crons", async () => {
+    const md = `# Pilot
+
+## Mandate
+- Keep the release train on time.
+- Flag blockers early.
+
+## Channel <#CREL|release>
+### Mandate
+Post the release status every morning.
+### Proactive
+- Enabled: yes
+
+## Channel <#CMUTE|mute>
+### Proactive
+- Enabled: no
+`;
+    // A default soul with its own channel block must not leak into the persona's list.
+    setSoulData(SoulDataSchema.parse({ ...DEFAULT, channelOverrides: [{ channel: "CDEF", approvers: [{ userId: "UOPS", scope: "x", catchall: false }] }] }));
+    setPersonaRegistry(registryWith([{ name: "pilot", soulMd: md }]));
+    const j = await cron("pilot", "morning sweep", "*/30 * * * *", "CREL");
+    const ms = await listMandates("pilot");
+    expect(ms.map((m) => m.id)).toEqual(["global", "channel:CMUTE", "channel:CREL", "heartbeat", `cron:${j.id}`]);
+    expect(ms[0]!.instructions).toBe("Keep the release train on time. Flag blockers early.");
+    const rel = ms.find((m) => m.id === "channel:CREL")!;
+    expect(rel).toMatchObject({ instructions: "Post the release status every morning.", proactive: { enabled: true } });
+    expect(rel.inheritsGlobal).toBeUndefined();
+    expect(ms.find((m) => m.id === "channel:CMUTE")!).toMatchObject({ inheritsGlobal: true, proactive: { enabled: false } });
+    // Global `## Proactive` is absent: a channel's own `Enabled: yes` turns wakes on.
+    const hb = ms.find((m) => m.id === "heartbeat")!;
+    expect(hb.triggers).toEqual(["heartbeat round", "wake"]);
+    expect(hb.instructions).toBe("Works on its own in <#CREL>.");
+  });
+
+  test("filesystem persona with only a global proactive switch shows the heartbeat", async () => {
+    setPersonaRegistry(registryWith([{ name: "solo", soulMd: "# Solo\n\n## Proactive\n- Enabled: yes\n" }]));
+    const ms = await listMandates("solo");
+    expect(ms.map((m) => m.id)).toEqual(["heartbeat"]);
+  });
 });

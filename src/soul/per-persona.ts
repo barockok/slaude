@@ -42,6 +42,16 @@ function parseSoul(raw: unknown): SoulData | null {
   return out;
 }
 
+/**
+ * A named persona's own structured soul (its `soul_json`), with no fallback to
+ * the default soul; null for the default persona, a filesystem persona, or a
+ * soul_json that does not validate.
+ */
+export function ownSoulDataFor(persona?: string | null): SoulData | null {
+  if (!persona || persona === "default") return null;
+  return ownSoul(persona);
+}
+
 function ownSoul(persona: string): SoulData | null {
   try {
     const raw = getPersonaRegistry().lookupByName(persona)?.soulJson;

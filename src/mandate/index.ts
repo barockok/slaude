@@ -6,7 +6,8 @@
  *  - `channel:<id>`: each `## Channel` block, with its own `### Proactive`
  *    switch. A block with no mandate text (approvers or proactive only) is
  *    listed with `inheritsGlobal`.
- *  - `heartbeat`: the `## Proactive` block when enabled.
+ *  - `heartbeat`: when proactive wakes are on anywhere: the `## Proactive`
+ *    block, or any channel's own `### Proactive` with `Enabled: yes` (one switch).
  *  - `cron:<id>`: each active, unpaused `cron_jobs` row of the persona.
  *
  * Approvers are who can actually approve at runtime: for a named persona the
@@ -20,9 +21,10 @@ import { approversFor } from "../access/role";
 import * as CronJobs from "../db/cron-jobs";
 import { personaSoulText } from "../persona/soul-source";
 import type { Level } from "../proactive/levels";
-import { channelMandate } from "../soul/extract";
-import { effectiveSoulForChannelFor, soulDataFor } from "../soul/per-persona";
-import { parseProactive, type ProactiveConfig } from "../soul/proactive";
+import { cachedSoulData, channelMandate } from "../soul/extract";
+import { effectiveSoulForChannelFor, ownSoulDataFor, soulDataFor } from "../soul/per-persona";
+import { parseMandates, parseProactive, type ProactiveConfig } from "../soul/proactive";
+import type { SoulData } from "../soul/data";
 
 export interface Mandate {
   id: string;
@@ -56,6 +58,42 @@ function proactiveOf(persona: string): ProactiveConfig | null {
   }
 }
 
+/** The mandate text of a persona: the global mandate and each channel block's own. */
+interface MandateText {
+  global: string;
+  channels: Record<string, string | null>;
+}
+
+function fromSoul(soul: SoulData): MandateText {
+  const channels: Record<string, string | null> = {};
+  for (const c of soul.channelOverrides) channels[c.channel] = channelMandate(soul, c.channel);
+  return { global: soul.mandate?.trim() ?? "", channels };
+}
+
+/**
+ * Where a persona's mandates are written. The default persona: its effective
+ * soul. A named persona: its own structured soul (soul_json) when it has one;
+ * otherwise (a filesystem persona) the same soul-text fallback the scheduler
+ * uses (personaMandates): the extracted soul cache for its text, else the
+ * deterministic `## Mandate` / `### Mandate` parse. Never the default soul's
+ * channel blocks: those belong to the default persona.
+ */
+function mandateTextOf(persona: string, isDefault: boolean): MandateText {
+  if (isDefault) return fromSoul(soulDataFor("default"));
+  const own = ownSoulDataFor(persona);
+  if (own) return fromSoul(own);
+  let text: string;
+  try {
+    text = personaSoulText(persona);
+  } catch {
+    return { global: "", channels: {} };
+  }
+  const cached = cachedSoulData(text);
+  if (cached) return fromSoul(cached);
+  const parsed = parseMandates(text);
+  return { global: parsed.global.trim(), channels: parsed.channels };
+}
+
 function cronTitle(prompt: string): string {
   const first = prompt.trim().split(/\r?\n/, 1)[0]!.trim();
   return first.length > TITLE_MAX ? `${first.slice(0, TITLE_MAX - 3)}...` : first;
@@ -64,20 +102,20 @@ function cronTitle(prompt: string): string {
 export async function listMandates(personaName: string): Promise<Mandate[]> {
   const persona = personaName && personaName !== "default" ? personaName : "default";
   const isDefault = persona === "default";
-  const soul = soulDataFor(persona);
+  const text = mandateTextOf(persona, isDefault);
   const proactive = proactiveOf(persona);
   const approversIn = async (channelId?: string): Promise<string[]> =>
     isDefault ? effectiveSoulForChannelFor("default", channelId).approvers.map((a) => a.userId) : approversFor(persona, channelId);
   const out: Mandate[] = [];
 
-  const global = soul.mandate?.trim();
+  const global = text.global;
   if (global) {
     out.push({ id: "global", kind: "global", title: "Global mandate", instructions: global, triggers: ["any admitted message"], approvers: await approversIn(), source: "soul" });
   }
 
-  const channels = [...new Set([...soul.channelOverrides.map((c) => c.channel), ...Object.keys(proactive?.channels ?? {})])].sort();
+  const channels = [...new Set([...Object.keys(text.channels), ...Object.keys(proactive?.channels ?? {})])].sort();
   for (const channelId of channels) {
-    const own = channelMandate(soul, channelId);
+    const own = text.channels[channelId] ?? null;
     const m: Mandate = {
       id: `channel:${channelId}`,
       kind: "channel",
@@ -97,13 +135,20 @@ export async function listMandates(personaName: string): Promise<Mandate[]> {
     out.push(m);
   }
 
-  if (proactive?.enabled) {
-    const watch = proactive.watch.length ? proactive.watch.join(", ") : "no sources";
+  // One switch: wakes run when the global section or any channel turns them on.
+  const onChannels = proactive ? Object.entries(proactive.channels).filter(([, on]) => on).map(([id]) => id).sort() : [];
+  if (proactive && (proactive.enabled || onChannels.length > 0)) {
+    const parts: string[] = [];
+    if (proactive.enabled) {
+      parts.push(`Watches: ${proactive.watch.length ? proactive.watch.join(", ") : "no sources"}.`);
+      parts.push(`Highest action: ${proactive.highest}.`);
+    }
+    if (onChannels.length) parts.push(`Works on its own in ${onChannels.map((c) => `<#${c}>`).join(", ")}.`);
     out.push({
       id: "heartbeat",
       kind: "heartbeat",
       title: "Heartbeat",
-      instructions: `Watches: ${watch}. Highest action: ${proactive.highest}.`,
+      instructions: parts.join(" "),
       triggers: proactive.wake ? ["heartbeat round", "wake"] : ["heartbeat round"],
       approvers: await approversIn(),
       source: "proactive",
