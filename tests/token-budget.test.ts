@@ -217,4 +217,13 @@ describe("TokenBudget", () => {
     b.record("s1", { usage: usage(), modelUsage: modelUsage() });
     expect(b.snapshot("s1")!.totalInput).toBe(1600);
   });
+
+  test("record uses the noted prompt once: the next result without one falls back", () => {
+    const b = new TokenBudget();
+    b.notePrompt("s1", { input_tokens: 50_000 });
+    b.record("s1", { usage: usage(), modelUsage: modelUsage() });
+    expect(b.snapshot("s1")!.totalInput).toBe(50_000);
+    b.record("s1", { usage: usage(), modelUsage: modelUsage() });
+    expect(b.snapshot("s1")!.totalInput).toBe(1600);
+  });
 });

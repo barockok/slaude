@@ -87,6 +87,8 @@ export class TokenBudget {
   record(sessionId: string, input: RecordInput): void {
     // The last model call's prompt, not the turn's summed usage (see the header).
     const last = this.#lastPrompt.get(sessionId);
+    // Used once: the next turn measures from its own calls.
+    this.#lastPrompt.delete(sessionId);
     const u = last ? { ...last, output_tokens: input.usage.output_tokens } : input.usage;
     const totalInput =
       u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens;
