@@ -355,7 +355,7 @@ on `ioredis-mock`) and are gated on `SLAUDE_REDIS_TEST_URL`, mirroring the
 
 ### Control panel — operator web console <a id="panel"></a>
 
-What it does and how to enable it: [Control panel](../deploy/panel.md).
+What it does and how to enable it: [Console and portal](../deploy/panel.md).
 
 The panel mounts at `/panel` on the gateway's HTTP server for the `mono` and
 `gateway` roles (never `node`). It is its own OIDC relying party: it

@@ -427,7 +427,7 @@ They cannot be closed without moving the whole move into one Lua script, BullMQ'
 
 ## Control panel (`/panel`)
 
-The operator web panel mounts on the gateway tier (`mono`/`gateway` roles, never `node`) when `SLAUDE_PANEL=1` — see [Control panel](panel.md) for what it does, how to enable it, and OIDC setup.
+The operator web panel mounts on the gateway tier (`mono`/`gateway` roles, never `node`) when `SLAUDE_PANEL=1`. See [Console and portal](panel.md) for what it does, how to enable it, and OIDC setup.
 
 Cross-replica behaviour specific to this topology: the active-surface lock, the deferred-inbound replay, and the once-per-window "handled in ops panel" notice are all coordinated through Redis (the lock key, a `panel-resume` / `panel-hold` pub/sub pair, and a `panel-notice` NX guard), so an operator can drive a session on one replica while Slack traffic and node `/v1` posts land on another without double-posting or losing messages.
 

@@ -132,7 +132,7 @@ Batches are 100 pages or 1 MB. Each batch gets up to five attempts in total (fou
 
 1. Ask the persona something only the old agent knew; it should recall it from memory.
 2. Compare the printed counts with the inventory from the export. The client already fails with `MISMATCH agent slice: expected N pages, gateway accounted for M` when they differ.
-3. Compare the written and skipped counts with the export's inventory. The control panel's persona page shows the persona definition, not its memory, so it is not a check.
+3. Compare the written and skipped counts with the export's inventory. The console's *Memory* page lists each store with its page count, a quick cross-check on the agent store's size; it does not compare content.
 
 ## 9. Cleanup
 
