@@ -85,6 +85,16 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
   const expErr = expiryError(f.expires);
   const srvField = serverError ? serverField(serverError) : null;
   const show = (k: "subjectId" | "expires") => submitted || !!touched[k];
+  /**
+   * Mark a field touched when focus leaves it, except for a footer button:
+   * showing the error there would grow the dialog and move the button between
+   * press and release, so the click (Add grant or Cancel) would be lost. Add
+   * grant reports the error itself on submit.
+   */
+  const touch = (k: "subjectId" | "expires", next: EventTarget | null) => {
+    if (next instanceof Element && next.closest(".sl-dialog__foot")) return;
+    setTouched((t) => ({ ...t, [k]: true }));
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -169,7 +179,7 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
                 autoComplete="off"
                 spellCheck={false}
                 onChange={(e) => set("subjectId", e.target.value.toUpperCase())}
-                onBlur={() => setTouched((t) => ({ ...t, subjectId: true }))}
+                onBlur={(e) => touch("subjectId", e.relatedTarget)}
               />
             )}
           </Field>
@@ -225,7 +235,7 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
               min={localInputValue(Date.now())}
               value={f.expires}
               onChange={(e) => set("expires", e.target.value)}
-              onBlur={() => setTouched((t) => ({ ...t, expires: true }))}
+              onBlur={(e) => touch("expires", e.relatedTarget)}
             />
           )}
         </Field>
