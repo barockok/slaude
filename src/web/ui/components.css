@@ -909,6 +909,9 @@ textarea.sl-input {
 /* ---------------------------------------------------------------- table */
 
 .sl-table-wrap {
+  /* Contains absolutely positioned cell content (e.g. a visually hidden
+     header) so it scrolls with the table instead of widening the page. */
+  position: relative;
   width: 100%;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;

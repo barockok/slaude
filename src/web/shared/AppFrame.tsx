@@ -3,7 +3,7 @@
  * user menu, toasts, the signed-in identity, and the dev-only gallery route.
  * Each app supplies its nav, how to load "me", and how to render a page.
  */
-import { lazy, Suspense, useCallback, useEffect, useState, type ReactNode } from "react";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { ApiError, AuthRedirectError, type ApiClient } from "../lib/api";
 import { navigate, useRoute } from "../lib/router";
 import {
@@ -23,6 +23,15 @@ export interface NavEntry {
 export interface Identity {
   name: string;
   detail?: string;
+  /** App-specific role key, e.g. "superadmin" or "operator" in the console. */
+  role?: string;
+}
+
+const IdentityContext = createContext<Identity | null>(null);
+
+/** The signed-in identity, or null while it loads. */
+export function useIdentity(): Identity | null {
+  return useContext(IdentityContext);
 }
 
 export interface AppFrameProps {
@@ -100,42 +109,44 @@ export function AppFrame({ product, sidebarTitle, nav, api, loadIdentity, render
   const isGallery = Gallery !== null && path === "/_gallery";
 
   return (
-    <ToastProvider>
-      <AppShell
-        product={product}
-        routeKey={path}
-        search={
-          <JumpSearch
-            placeholder={`Search ${product}...`}
-            targets={nav.map((n) => ({ label: n.label, to: n.to, keywords: n.keywords }))}
-            onGo={(to) => navigate(to)}
-          />
-        }
-        topActions={<DocsLink href={DOCS_URL} />}
-        user={<UserMenu name={identity?.name ?? null} detail={identity?.detail} onSignOut={signOut} />}
-        sidebar={
-          <Sidebar title={sidebarTitle} label={`${sidebarTitle} navigation`}>
-            {nav.map((n) => (
-              <NavItem key={n.to} to={n.to} active={!isGallery && entry?.to === n.to}>
-                {n.label}
-              </NavItem>
-            ))}
-            {Gallery && (
-              <NavItem to="/_gallery" active={isGallery}>
-                Component gallery
-              </NavItem>
-            )}
-          </Sidebar>
-        }
-      >
-        {isGallery && Gallery ? (
-          <Suspense fallback={null}>
-            <Gallery />
-          </Suspense>
-        ) : (
-          renderPage(path, entry)
-        )}
-      </AppShell>
-    </ToastProvider>
+    <IdentityContext.Provider value={identity}>
+      <ToastProvider>
+        <AppShell
+          product={product}
+          routeKey={path}
+          search={
+            <JumpSearch
+              placeholder={`Search ${product}...`}
+              targets={nav.map((n) => ({ label: n.label, to: n.to, keywords: n.keywords }))}
+              onGo={(to) => navigate(to)}
+            />
+          }
+          topActions={<DocsLink href={DOCS_URL} />}
+          user={<UserMenu name={identity?.name ?? null} detail={identity?.detail} onSignOut={signOut} />}
+          sidebar={
+            <Sidebar title={sidebarTitle} label={`${sidebarTitle} navigation`}>
+              {nav.map((n) => (
+                <NavItem key={n.to} to={n.to} active={!isGallery && entry?.to === n.to}>
+                  {n.label}
+                </NavItem>
+              ))}
+              {Gallery && (
+                <NavItem to="/_gallery" active={isGallery}>
+                  Component gallery
+                </NavItem>
+              )}
+            </Sidebar>
+          }
+        >
+          {isGallery && Gallery ? (
+            <Suspense fallback={null}>
+              <Gallery />
+            </Suspense>
+          ) : (
+            renderPage(path, entry)
+          )}
+        </AppShell>
+      </ToastProvider>
+    </IdentityContext.Provider>
   );
 }

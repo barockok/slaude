@@ -1,12 +1,13 @@
 /**
- * The operator console, served at /panel. This change lays down the shell and
- * the navigation; each page is filled in by a later change.
+ * The operator console, served at /panel: shell, navigation and the page for
+ * each route. Pages not built yet render a placeholder.
  */
-import { createApi } from "../lib/api";
 import { AppFrame, type Identity, type NavEntry } from "../shared/AppFrame";
 import { NotFoundPage, PlaceholderPage } from "../shared/PlaceholderPage";
+import { api } from "./client";
+import { OverviewPage } from "./pages/OverviewPage";
 
-export const api = createApi("panel");
+export { api };
 
 export const NAV: NavEntry[] = [
   { label: "Overview", to: "/", description: "Agents, live sessions, pending approvals and recent activity at a glance." },
@@ -28,18 +29,16 @@ const ROLE_LABEL: Record<PanelMe["role"], string> = { superadmin: "Superadmin", 
 
 async function loadIdentity(): Promise<Identity> {
   const me = await api.get<PanelMe>("/auth/me");
-  return { name: me.email, detail: ROLE_LABEL[me.role] ?? me.role };
+  return { name: me.email, detail: ROLE_LABEL[me.role] ?? me.role, role: me.role };
+}
+
+function renderPage(path: string, entry: NavEntry | null) {
+  if (path === "/") return <OverviewPage />;
+  return entry ? <PlaceholderPage entry={entry} /> : <NotFoundPage home="/" />;
 }
 
 export function App() {
   return (
-    <AppFrame
-      product="console"
-      sidebarTitle="Console"
-      nav={NAV}
-      api={api}
-      loadIdentity={loadIdentity}
-      renderPage={(_path, entry) => (entry ? <PlaceholderPage entry={entry} /> : <NotFoundPage home="/" />)}
-    />
+    <AppFrame product="console" sidebarTitle="Console" nav={NAV} api={api} loadIdentity={loadIdentity} renderPage={renderPage} />
   );
 }
