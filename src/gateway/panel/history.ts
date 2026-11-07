@@ -78,7 +78,6 @@ const between = (s: string, tag: string): string | null => {
   return s.slice(start, close < 0 ? undefined : close);
 };
 
-/** A recorded turn as console lines: the user's message, then the agent's answer. */
 /**
  * A recorded turn as console lines: the user's message, then the agent's answer.
  *
