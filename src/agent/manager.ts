@@ -100,6 +100,9 @@ type LiveSession = {
   turn: { user: string; assistant: string[] };
   /** Tool names invoked during the current turn (cleared on result). */
   turnTools: string[];
+  /** Tool name per open tool_use id, so a tool result (which carries only the
+   *  id) can name its tool. Entries leave when their result arrives. */
+  toolNames: Map<string, string>;
   /** Set after we inject an auto-evolve synthetic prompt — the next result
    *  is the evolution turn itself; don't recurse into another auto-evolve. */
   inAutoEvolve: boolean;
@@ -159,8 +162,10 @@ type LiveSession = {
 // user-visible turn: the gateway shows no status or reaction for them (#131).
 export type AgentEvent =
   | { type: "assistantText"; sessionId: string; text: string; autoEvolve?: boolean }
-  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; autoEvolve?: boolean }
-  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; autoEvolve?: boolean }
+  // `toolUseId` (the SDK's tool_use block id) pairs a result with its call.
+  // A result's `tool` is the call's name when the id was seen, "" otherwise.
+  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; toolUseId?: string; autoEvolve?: boolean }
+  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; toolUseId?: string; autoEvolve?: boolean }
   | { type: "thinking"; sessionId: string; text: string; autoEvolve?: boolean }
   | { type: "turnStart"; sessionId: string }
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
@@ -212,6 +217,30 @@ export type PermissionResolver = (
 export type McpResolver = (
   sessionId: string,
 ) => Record<string, McpServerConfig> | undefined | Promise<Record<string, McpServerConfig> | undefined>;
+
+/** Reply tools whose `text` the user reads in the thread (deprecated alias included). */
+const REPLY_TOOLS = new Set(["mcp__slaude_surface__reply", "mcp__slaude_slack__reply"]);
+
+/** The text of a reply tool call, or null for any other tool. */
+export function replyToolText(tool: string, input: unknown): string | null {
+  if (!REPLY_TOOLS.has(tool)) return null;
+  const text = (input as { text?: unknown } | null | undefined)?.text;
+  return typeof text === "string" && text.trim() ? text : null;
+}
+
+/** The tool_use id a tool-result user message answers: the first
+ *  `tool_result` block's `tool_use_id` (the SDK sends one result per message). */
+export function toolResultId(message: unknown): string | undefined {
+  const content = (message as { content?: unknown } | null | undefined)?.content;
+  if (!Array.isArray(content)) return undefined;
+  for (const b of content) {
+    if (b && typeof b === "object" && (b as { type?: unknown }).type === "tool_result") {
+      const id = (b as { tool_use_id?: unknown }).tool_use_id;
+      if (typeof id === "string" && id) return id;
+    }
+  }
+  return undefined;
+}
 
 /** Plugin paths already reported by warnPluginsNamedLikeBuiltin (once per process). */
 const warnedSlaudeNamedPlugins = new Set<string>();
@@ -1564,6 +1593,7 @@ export class AgentManager extends EventEmitter {
       abort,
       turn: { user: firstText, assistant: [] },
       turnTools: [],
+      toolNames: new Map(),
       inAutoEvolve: false,
       channelId: row.slack_channel_id,
       workingDir: row.working_dir,
@@ -1785,12 +1815,19 @@ export class AgentManager extends EventEmitter {
             } satisfies AgentEvent);
           } else if (block.type === "tool_use") {
             if (live) live.turnTools.push(block.name);
+            const toolUseId = typeof block.id === "string" && block.id ? block.id : undefined;
+            if (live && toolUseId) live.toolNames.set(toolUseId, block.name);
+            // What the agent said through a reply tool is the turn's answer:
+            // the conversation record (memory sync) keeps it like text.
+            const replied = replyToolText(block.name, block.input);
+            if (live && replied && !live.inAutoEvolve) live.turn.assistant.push(replied);
             metric.toolCallsTotal.inc({ tool: block.name });
             this.emit("event", {
               type: "toolCall",
               sessionId,
               tool: block.name,
               input: block.input,
+              ...(toolUseId ? { toolUseId } : {}),
               ...evolve,
             } satisfies AgentEvent);
           }
@@ -1818,10 +1855,14 @@ export class AgentManager extends EventEmitter {
               this.#streamClosedCount.set(sessionId, prev + 1);
             }
           }
+          const toolUseId = toolResultId(msg.message);
+          const tool = toolUseId ? (live?.toolNames.get(toolUseId) ?? "") : "";
+          if (toolUseId) live?.toolNames.delete(toolUseId);
           this.emit("event", {
             type: "toolResult",
             sessionId,
-            tool: "",
+            tool,
+            ...(toolUseId ? { toolUseId } : {}),
             result: msg.tool_use_result,
             ...(live?.inAutoEvolve ? { autoEvolve: true } : {}),
           } satisfies AgentEvent);
@@ -1834,6 +1875,8 @@ export class AgentManager extends EventEmitter {
           // only after this handler returns, and reads the session again then.
           live.checkEnded?.resolve();
           live.checkEnded = undefined;
+          // A call still open when its turn ends never gets a result.
+          live.toolNames.clear();
           // The input this result ends: the oldest outstanding one.
           const endedSeq = live.inputSeq - live.pendingInputs + 1;
           const bgRun = live.bgRuns?.get(endedSeq);

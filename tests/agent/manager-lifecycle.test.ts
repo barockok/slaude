@@ -319,6 +319,62 @@ describe("AgentManager lifecycle", () => {
     expect(mgr.getTokenSnapshot(row.id)).toBeNull();
   });
 
+  it("pairs tool results by tool_use id, names the tool, and measures the context from the last prompt", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const synced: any[] = [];
+    mgr.setMemoryProvider({ prefetch: async () => null, syncTurn: async (t: any) => void synced.push(t) } as any);
+    const row = await mgr.ensureSession(thread());
+    const call = (id: string, name: string, input: unknown = {}) => ({ type: "tool_use", id, name, input });
+    const result = (id: string, r: unknown) => ({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "x" }] },
+      tool_use_result: r,
+    });
+    const usageAsst = (blocks: any[], usage: any) => ({ type: "assistant", message: { content: blocks, usage } });
+    plan((s) => {
+      s.onUser = () => {
+        // Two calls of the same tool in one message, results in reverse order.
+        s.emit(usageAsst([call("tu_a", "Bash", { command: "a" }), call("tu_b", "Bash", { command: "b" })], { input_tokens: 5, cache_read_input_tokens: 40_000, cache_creation_input_tokens: 0 }));
+        s.emit(result("tu_b", { stdout: "B" }));
+        s.emit(result("tu_a", { stdout: "A" }));
+        s.emit(usageAsst([call("tu_r", "mcp__slaude_surface__reply", { text: "the answer" })], { input_tokens: 5, cache_read_input_tokens: 50_000, cache_creation_input_tokens: 0 }));
+        s.emit(result("tu_r", [{ type: "text", text: "posted ref=panel-suppressed" }]));
+        // A result whose message carries no tool_result block: no id, no name.
+        s.emit({ type: "user", tool_use_result: { ok: 1 } });
+        s.emit(
+          res({
+            // Summed over three model calls: ~45% of the window, not the real fill.
+            usage: { input_tokens: 15, output_tokens: 30, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 0 },
+            modelUsage: { "claude-test": { contextWindow: 200_000 } },
+          }),
+        );
+      };
+    });
+    await mgr.sendMessage(row.id, "go");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+
+    const calls = events.filter((e) => e.type === "toolCall");
+    expect(calls.map((e) => e.toolUseId)).toEqual(["tu_a", "tu_b", "tu_r"]);
+    const results = events.filter((e) => e.type === "toolResult");
+    expect(results.map((e) => [e.toolUseId, e.tool])).toEqual([
+      ["tu_b", "Bash"],
+      ["tu_a", "Bash"],
+      ["tu_r", "mcp__slaude_surface__reply"],
+      [undefined, ""],
+    ]);
+    expect(results[0].result).toEqual({ stdout: "B" });
+
+    const usage = events.find((e) => e.type === "tokenUsage");
+    expect(usage.snapshot.totalInput).toBe(50_005);
+    expect(usage.snapshot.pctUsed).toBeCloseTo(0.25);
+
+    // The reply tool's text is the turn's answer in the conversation record.
+    await until(() => synced.length === 1, 3000, "memory sync");
+    expect(synced[0].assistant).toBe("the answer");
+    await shutdown(mgr, row.id);
+  });
+
   it("suppresses a resume-miss result(is_error) but still surfaces other turn errors", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);
