@@ -117,3 +117,34 @@ export interface CreateGrantResponse {
 export interface RevokeGrantResponse {
   ok: true;
 }
+
+// --- Audit ------------------------------------------------------------------
+
+export type AuditActorKind = "slack_user" | "operator" | "agent" | "system";
+
+export interface AuditEventView {
+  /** Time sortable; also the cursor. */
+  id: string;
+  tenantId?: string;
+  persona?: string | null;
+  at: number;
+  actorKind: AuditActorKind | string;
+  actorId: string;
+  /** Dotted verb, e.g. `gate.permission.decided`, `grant.created`. */
+  action: string;
+  targetKind?: string | null;
+  targetId?: string | null;
+  decision?: string | null;
+  sessionId?: string | null;
+  channelId?: string | null;
+  threadTs?: string | null;
+  summary: string;
+  details: Record<string, unknown>;
+}
+
+/** GET /panel/api/audit and GET /panel/api/sessions/:id/audit. Newest first. */
+export interface AuditPageResponse {
+  items: AuditEventView[];
+  /** Pass back as `cursor` for the next (older) page; null on the last page. */
+  nextCursor: string | null;
+}

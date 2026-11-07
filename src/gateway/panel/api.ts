@@ -37,6 +37,8 @@
  *   GET    /panel/api/agents/:name/grants          effective grants (soul and console)
  *   POST   /panel/api/agents/:name/grants          store a console grant (superadmin)
  *   DELETE /panel/api/agents/:name/grants/:id      revoke a console grant (superadmin)
+ *   GET    /panel/api/audit?persona&action&actor&session&since&until&cursor&limit
+ *   GET    /panel/api/sessions/:id/audit?cursor&limit
  */
 import { PanelVoiceRedactor } from "./voice-redact";
 import { z } from "zod";
@@ -71,7 +73,9 @@ import * as AgentGrants from "../../db/agent-grants";
 import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
 import { agentDetail, agentSummaries, consoleGrantView, grantViews, isAgent } from "./console-views";
+import * as AuditEvents from "../../db/audit-events";
 import type {
+  AuditPageResponse,
   AgentDetailResponse,
   AgentGrantsResponse,
   AgentsResponse,
@@ -165,6 +169,37 @@ const createGrantSchema = z
 
 /** zod issues as one line: `path: message; ...`. */
 const issuesLine = (e: z.ZodError) => e.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
+
+/** A time bound: epoch ms digits or an ISO 8601 date/time. */
+const timeParam = z
+  .string()
+  .transform((v, ctx) => {
+    const ms = /^\d+$/.test(v) ? Number(v) : Date.parse(v);
+    if (!Number.isFinite(ms)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "must be epoch ms or an ISO 8601 time" });
+      return z.NEVER;
+    }
+    return ms;
+  });
+const pageParams = {
+  cursor: z.string().min(1).max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+};
+const auditQuerySchema = z
+  .object({
+    persona: z.string().min(1).optional(),
+    action: z.string().min(1).optional(),
+    actor: z.string().min(1).optional(),
+    session: z.string().min(1).optional(),
+    since: timeParam.optional(),
+    until: timeParam.optional(),
+    ...pageParams,
+  })
+  .strict();
+const pageQuerySchema = z.object(pageParams).strict();
+
+/** Query string as an object; a repeated key keeps its last value. */
+const queryOf = (url: URL) => Object.fromEntries(url.searchParams.entries());
 
 /** What an audit row records of a stored grant. */
 const grantDetails = (g: AgentGrants.AgentGrantRow) => ({
@@ -535,6 +570,20 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         return json(200, { ok: true } satisfies RevokeGrantResponse);
       }
 
+      // GET /panel/api/audit: the durable audit trail, newest first. Read-only,
+      // any authenticated operator.
+      if (seg.length === 3 && seg[2] === "audit") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const q = auditQuerySchema.safeParse(queryOf(url));
+        if (!q.success) return json(400, { error: issuesLine(q.error) });
+        const { persona, action, actor, session, since, until, cursor, limit } = q.data;
+        const page = await AuditEvents.list(
+          { persona, action, actorId: actor, sessionId: session, since, until },
+          { cursor, limit },
+        );
+        return json(200, page satisfies AuditPageResponse);
+      }
+
       // --- Runtime persona changes. Git is the source of truth; these are for
       // quick experiments and every sync from git wipes them. CSRF already ran
       // above, before any route. Tenant is always "default".
@@ -765,6 +814,17 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
       if (seg.length >= 4 && seg[2] === "sessions") {
         const id = seg[3]!;
         const sub = seg[4];
+
+        // GET /panel/api/sessions/:id/audit, before the row lookup: the audit
+        // trail outlives a session row.
+        if (sub === "audit" && seg.length === 5) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          const q = pageQuerySchema.safeParse(queryOf(url));
+          if (!q.success) return json(400, { error: issuesLine(q.error) });
+          const page = await AuditEvents.list({ sessionId: id }, q.data);
+          return json(200, page satisfies AuditPageResponse);
+        }
+
         const row = await Sessions.findById(id);
         if (!row) return json(404, { error: "session not found" });
 
