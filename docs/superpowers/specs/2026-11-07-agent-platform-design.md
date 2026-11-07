@@ -106,9 +106,13 @@ Named personas have no structured soul at runtime today: `soulData()` and
 - managed tenants (Postgres): parse `personas.soul_json` (already extracted at sync,
   `persona/sync/run.ts`);
 - filesystem personas and sqlite: none in phase 1 (LLM extraction per persona is deferred).
-- Fallback is **field-level**: for each of manager, backup manager, trusted channels, allowed
-  channels, DM allowlist, blocked users and approvers, P uses its own value when non-empty and
-  the default persona's value otherwise (also when P has no structured soul at all). Invariant:
+- Fallback is **per unit**: P takes a unit whole from its own soul when it names any part of
+  it, and whole from the default persona otherwise (also when P has no structured soul at all).
+  The units: managers (manager and backup manager together), channels (trusted and allowed
+  channels together), the DM allowlist, blocked users, and approvers. Approvers are one unit
+  covering the global list and every channel block's approver list; a persona that names no
+  approver anywhere inherits the default's global and channel-block approvers, never the
+  default's channel mandates. Invariant:
   **with no stored grants, a named persona admits exactly what it admits today.** The truth table
   pins the case of a named persona whose `soul_json` carries only identity and mandate.
 - `/soul trust|allow|dm|block` keeps writing `soul_overrides` (no persona column) and applies

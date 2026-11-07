@@ -80,21 +80,43 @@ describe("soulDataFor", () => {
     expect(s.blockedUsers).toEqual(["UBAD"]);
   });
 
-  test("field-level: own values win where non-empty, the default fills the rest", () => {
+  test("by unit: naming one member of a unit takes the whole unit; the default fills the other units", () => {
     setPersonaRegistry(registryWith([{
       name: "scout",
       soulJson: { manager: { userId: "USCOUT" }, trustedChannels: ["CSCOUT"], approvers: [{ userId: "UREV", scope: "anything", catchall: true }] },
     }]));
     const s = soulDataFor("scout");
     expect(s.manager.userId).toBe("USCOUT");
-    expect(s.backupManager.userId).toBe("UBAK");
+    expect(s.backupManager.userId).toBeUndefined(); // managers are one unit
     expect(s.trustedChannels).toEqual(["CSCOUT"]);
-    expect(s.allowedChannels).toEqual(["CPUB"]);
+    expect(s.allowedChannels).toEqual([]); // channels are one unit
     expect(s.dmAllowedUsers).toEqual(["UDM"]);
     expect(s.blockedUsers).toEqual(["UBAD"]);
     // Own approvers: the default's channel approver blocks are not inherited.
     expect(s.approvers.map((a) => a.userId)).toEqual(["UREV"]);
     expect(s.channelOverrides).toEqual([]);
+  });
+
+  test("naming only a backup manager or only allowed channels also owns that unit", () => {
+    const s = withAclFallback(soul({ backupManager: { userId: "UB2" }, allowedChannels: ["CP2"] }), DEFAULT);
+    expect(s.manager.userId).toBeUndefined();
+    expect(s.backupManager.userId).toBe("UB2");
+    expect(s.trustedChannels).toEqual([]);
+    expect(s.allowedChannels).toEqual(["CP2"]);
+  });
+
+  test("an unparseable soul_json warns once per persona", () => {
+    setPersonaRegistry(registryWith([{ name: "broken2", soulJson: { manager: { userId: "bad" } } }]));
+    const warns: unknown[] = [];
+    const orig = console.warn;
+    console.warn = (...a: unknown[]) => warns.push(a);
+    try {
+      soulDataFor("broken2");
+      soulDataFor("broken2");
+    } finally {
+      console.warn = orig;
+    }
+    expect(warns.length).toBe(1);
   });
 
   test("own channel approvers count as own approvers; own channel mandates stay", () => {
@@ -123,7 +145,7 @@ describe("effectiveSoulForChannelFor", () => {
   test("named persona uses its own manager when appending", () => {
     setPersonaRegistry(registryWith([{ name: "scout", soulJson: { manager: { userId: "USCOUT" }, mandate: "m" } }]));
     const s = effectiveSoulForChannelFor("scout", "COPS");
-    expect(s.approvers.map((a) => a.userId)).toEqual(["UOPS", "USCOUT", "UBAK"]);
+    expect(s.approvers.map((a) => a.userId)).toEqual(["UOPS", "USCOUT"]); // own managers unit: no default backup
     expect(s.mandate).toBe("m");
   });
 

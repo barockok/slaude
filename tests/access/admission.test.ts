@@ -187,16 +187,16 @@ describe("named personas", () => {
     }
   });
 
-  test("own manager and channels are its own; empty fields take the default's", () => {
+  test("own manager and channels are its own units; other fields take the default's", () => {
     setPersonaRegistry(registryWith([{ name: "scout", soulJson: { manager: { userId: "USCOUT" }, trustedChannels: ["CSCOUT"] } }]));
     const grants = effectiveGrants("scout", []);
     const run = (u: string, c: string, isDM: boolean) => outcome(admit({ grants, userId: u, channelId: c, isDM }));
     expect(run("USCOUT", "CUNLISTED", false)).toBe("ok");
     expect(run("UMGR", "CUNLISTED", false)).toBe("whitelist"); // the default's manager is not scout's
-    expect(run("UBAK", "CUNLISTED", false)).toBe("ok"); // backup inherited
+    expect(run("UBAK", "CUNLISTED", false)).toBe("whitelist"); // managers are one unit: backup not inherited
     expect(run("URANDOM", "CSCOUT", false)).toBe("ok");
     expect(run("URANDOM", "CTEAM", false)).toBe("whitelist"); // own trusted list replaces the default's
-    expect(run("URANDOM", "CPUB", false)).toBe("ok"); // allowed list inherited
+    expect(run("URANDOM", "CPUB", false)).toBe("whitelist"); // channels are one unit: allowed list not inherited
     expect(run("UDM", "DDIRECT", true)).toBe("ok"); // DM allowlist inherited
     expect(run("UBAD", "CSCOUT", false)).toBe("blocked_user"); // blocklist inherited
   });

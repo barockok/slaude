@@ -23,12 +23,20 @@ export function soulDataFor(persona?: string | null): SoulData {
   return withAclFallback(ownSoul(persona), def);
 }
 
+/** Personas whose soul_json failed to parse, warned once each per process. */
+const warnedUnparsed = new Set<string>();
+
 function ownSoul(persona: string): SoulData | null {
   try {
     const raw = getPersonaRegistry().lookupByName(persona)?.soulJson;
     if (raw == null) return null;
     const parsed = SoulDataSchema.safeParse(raw);
-    return parsed.success ? parsed.data : null;
+    if (parsed.success) return parsed.data;
+    if (!warnedUnparsed.has(persona)) {
+      warnedUnparsed.add(persona);
+      console.warn(`[soul] persona=${persona} structured soul does not parse; using the default soul's access fields`);
+    }
+    return null;
   } catch {
     return null;
   }
@@ -37,25 +45,31 @@ function ownSoul(persona: string): SoulData | null {
 const EMPTY: SoulData = SoulDataSchema.parse({});
 
 /**
- * Field-level fallback: for manager, backup manager, trusted channels, allowed
- * channels, DM allowlist and blocked users, the persona's own value when
- * non-empty, else the default's. Approvers are one field covering the global
- * list and every channel block's list: a persona that names any approver keeps
- * its own; one that names none inherits the default's global approvers and its
- * channel blocks' approvers (never the default's mandates). Everything else
- * (identity, mandate, values, redaction, timeout) stays the persona's own.
- * `own` null (no structured soul) inherits every ACL field.
+ * Fallback by unit, each taken whole from the persona when it names any part
+ * of it, else whole from the default:
+ *  - managers: {manager, backup manager};
+ *  - channels: {trusted channels, allowed channels};
+ *  - DM allowlist; blocked users (separate fields);
+ *  - approvers: one field covering the global list and every channel block's
+ *    list. A persona that names none inherits the default's global approvers
+ *    and its channel blocks' approvers (never the default's mandates).
+ * Everything else (identity, mandate, values, redaction, timeout) stays the
+ * persona's own. `own` null (no structured soul) inherits every ACL unit.
  */
 export function withAclFallback(own: SoulData | null, def: SoulData): SoulData {
   const p = own ?? EMPTY;
   const list = <T>(mine: T[], theirs: T[]): T[] => (mine.length ? mine : theirs);
+  const ownsManagers = !!(p.manager.userId || p.backupManager.userId);
+  const ownsChannels = p.trustedChannels.length > 0 || p.allowedChannels.length > 0;
   const ownsApprovers = p.approvers.length > 0 || p.channelOverrides.some((c) => c.approvers.length > 0);
+  const managers = ownsManagers ? p : def;
+  const channels = ownsChannels ? p : def;
   return {
     ...p,
-    manager: p.manager.userId ? p.manager : def.manager,
-    backupManager: p.backupManager.userId ? p.backupManager : def.backupManager,
-    trustedChannels: list(p.trustedChannels, def.trustedChannels),
-    allowedChannels: list(p.allowedChannels, def.allowedChannels),
+    manager: managers.manager,
+    backupManager: managers.backupManager,
+    trustedChannels: channels.trustedChannels,
+    allowedChannels: channels.allowedChannels,
     dmAllowedUsers: list(p.dmAllowedUsers, def.dmAllowedUsers),
     blockedUsers: list(p.blockedUsers, def.blockedUsers),
     approvers: ownsApprovers ? p.approvers : def.approvers,
