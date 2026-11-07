@@ -89,7 +89,7 @@ import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrant
 import { loadRoleConfig } from "./auth/roles";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
-import { agentStoreNames, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
+import { agentStoreNames, displayTitle, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
 import { agentIdSync } from "../../knowledge/agent-identity";
 import { storeKind } from "../../knowledge/scope";
 import { getPersonaRegistry } from "../../persona/registry";
@@ -785,7 +785,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           const limit = q.data.limit ?? 50;
           // One row past the page says whether there is a next one.
           const rows = await memory.pages(store, { offset, limit: limit + 1 });
-          const items = rows.slice(0, limit);
+          const items = rows.slice(0, limit).map((p) => ({ slug: p.slug, type: p.type, title: displayTitle(p), updatedAt: p.updatedAt }));
           return json(200, {
             items,
             nextCursor: rows.length > limit ? String(offset + limit) : null,
@@ -815,7 +815,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
               details: { store: page.store, slug: page.slug, storeKind: storeKind(page.store), operatorRole: role },
             });
           }
-          return json(200, page satisfies MemoryPageResponse);
+          return json(200, { ...page, title: displayTitle({ ...page, frontmatterTitle: typeof page.frontmatter.title === "string" ? page.frontmatter.title : null }) } satisfies MemoryPageResponse);
         }
         return json(404, { error: "not found" });
       }
