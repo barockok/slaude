@@ -7,7 +7,7 @@ import { PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, type BrainScope } from "./sco
 import { isScopeWriteOp } from "./gated-dispatch";
 import { getBackend } from "./backend";
 import { NodeDbAccessError } from "../db/client";
-import { BrainNotOpenError, brainClosing, settleBrainWork, whileClosing } from "./brain-work";
+import { BrainNotOpenError, brainClosing, settleBrainWork, trackBrainWork, whileClosing } from "./brain-work";
 import { keepingExitCode } from "../db/wasm-exit-code";
 import {
   EMBED_REFUSAL_HINT,
@@ -461,6 +461,15 @@ let embeddingRefusalText: string | null = null;
 /** Brain model for chunk labels: this process's configured model, else the brain's own record. */
 let chunkLabelModel: string | null = null;
 let allowRealign = false;
+/** The boot's background probe (null: none running). closeBrain never waits for it. */
+let probeInFlight: Promise<void> | null = null;
+/** Bumped by closeBrain: a probe started before a close must not touch the next brain. */
+let probeGeneration = 0;
+
+/** Resolves when this boot's embedding probe (if any) has settled. For tests and status. */
+export function embeddingProbeSettled(): Promise<void> {
+  return probeInFlight ?? Promise.resolve();
+}
 
 /** Why this process refused to embed at boot (null: it did not refuse). */
 export function embeddingRefusal(): string | null {
@@ -525,8 +534,7 @@ async function guardEmbedding(engine: GuardEngine): Promise<void> {
   let storedDims: number | null = null;
   try {
     stored = (await engine.getConfig?.("embedding_model")) ?? null;
-    const d = Number((await engine.getConfig?.("embedding_dimensions")) ?? "");
-    storedDims = Number.isInteger(d) && d > 0 ? d : null;
+    storedDims = await brainVectorDims(engine);
   } catch (e) {
     console.warn("[brain] could not read the brain's embedding config:", e instanceof Error ? e.message : e);
   }
@@ -560,29 +568,75 @@ async function guardEmbedding(engine: GuardEngine): Promise<void> {
   } else if (verdict.kind === "adopt") {
     await adopt(verdict.from, verdict.to, "provider prefix only");
   } else if (verdict.kind === "probe") {
-    const r = await probeEmbeddingRecord(engine as unknown as ProbeEngine, {
-      embed: embedForProbe,
-      wrap: await titleWrapForProbe(),
-      timeoutMs: EMBED_PROBE_TIMEOUT_MS,
-    });
-    if (r.status === "match") await adopt(verdict.from, verdict.to, "probe ok");
-    else if (r.status === "empty") await adopt(verdict.from, verdict.to, "no stored vectors");
-    else if (r.status === "error") {
-      console.warn(
-        `[brain] embedding record names ${verdict.from}, configured is ${verdict.to}; the probe of stored vectors failed ` +
-          `(${r.error}). Embedding stays on; check with \`slaude brain reembed --model-mismatch\`.`,
-      );
-    } else {
-      refuse(
-        `brain embedding_model is ${verdict.from} but this process is configured for ${verdict.to}, and stored vectors ` +
-          `do not match the configured model (min cosine ${r.min.toFixed(3)} over ${r.samples} sample(s))`,
-      );
-    }
+    // Off the boot path: the boot does not wait for the provider. Embedding
+    // stays on meanwhile, as it was before this guard existed (the process
+    // already embedded with this config); a mismatch refuses when it is known.
+    const generation = probeGeneration;
+    const from = verdict.from;
+    const to = verdict.to;
+    const run = async (): Promise<void> => {
+      const r = await probeEmbeddingRecord(engine as unknown as ProbeEngine, {
+        embed: embedForProbe,
+        wrap: await titleWrapForProbe(),
+        defaultLabel: (gw as { DEFAULT_EMBEDDING_MODEL?: string }).DEFAULT_EMBEDDING_MODEL,
+        timeoutMs: EMBED_PROBE_TIMEOUT_MS,
+        // closeBrain waits for the short sampling reads (a close under an
+        // in-flight PGLite query is not safe), never for the provider call.
+        trackDbWork: trackBrainWork,
+        shouldStop: () => brainClosing() || generation !== probeGeneration,
+      });
+      // A close (or a later boot) since: this result is for an engine that is gone.
+      if (generation !== probeGeneration) return;
+      if (r.status === "match") await adopt(from, to, `probe ok: ${r.samples} sample(s), min cosine ${r.min.toFixed(4)}`);
+      else if (r.status === "empty") await adopt(from, to, "no stored vectors");
+      else if (r.status === "mixed") {
+        refuse(
+          `brain embedding_model is ${from} but this process is configured for ${to}, and the chunk labels ` +
+            `already name ${r.labels.length} models (${r.labels.join(", ")}): a mixed brain is never adopted automatically`,
+        );
+      } else if (r.status === "error") {
+        console.warn(
+          `[brain] embedding record names ${from}, configured is ${to}; the probe of stored vectors failed ` +
+            `(${r.error}). Embedding stays on; check with \`slaude brain reembed --model-mismatch\`.`,
+        );
+      } else {
+        refuse(
+          `brain embedding_model is ${from} but this process is configured for ${to}, and stored vectors ` +
+            `do not match the configured model (min cosine ${r.min.toFixed(3)} over ${r.samples} sample(s))`,
+        );
+      }
+      if (generation === probeGeneration) {
+        chunkLabelModel = embeddingActiveFlag ? configured : (normalizeEmbeddingModel(stored) ?? configured);
+      }
+    };
+    probeInFlight = run().catch((e) => console.warn("[brain] embedding probe failed:", e instanceof Error ? e.message : e));
   }
   // A label describes the vector: the configured model only where this
   // process embeds; otherwise the brain's own record.
   chunkLabelModel = embeddingActiveFlag ? configured : (normalizeEmbeddingModel(stored) ?? configured);
   installChunkModelStamp(engine, { labelModel: () => chunkLabelModel, gatewayModel });
+}
+
+/**
+ * The brain's vector width: the pgvector column's declared dimension (the
+ * authority, as in src/brain-migrate/embedding-info.ts), else the config row.
+ * Read-only catalog query; null when neither is known.
+ */
+export async function brainVectorDims(engine: {
+  executeRaw?: (sql: string) => Promise<Array<Record<string, unknown>>>;
+  getConfig?: (k: string) => Promise<string | null>;
+}): Promise<number | null> {
+  try {
+    const row = (await engine.executeRaw?.(
+      "SELECT atttypmod FROM pg_attribute WHERE attname = 'embedding' AND attrelid = 'content_chunks'::regclass",
+    ))?.[0];
+    const col = Number(row?.atttypmod);
+    if (Number.isInteger(col) && col > 0) return col;
+  } catch {
+    // no catalog access: fall back to the config row
+  }
+  const d = Number((await engine.getConfig?.("embedding_dimensions")) ?? "");
+  return Number.isInteger(d) && d > 0 ? d : null;
 }
 
 async function embedForProbe(texts: string[]): Promise<Float32Array[]> {
@@ -755,6 +809,8 @@ export async function closeBrain(): Promise<void> {
   embeddingRefusalText = null;
   chunkLabelModel = null;
   allowRealign = false;
+  probeGeneration++;
+  probeInFlight = null;
   delete process.env.GBRAIN_EMBEDDING_MODEL;
   delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
   try {

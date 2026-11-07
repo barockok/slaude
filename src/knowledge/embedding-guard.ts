@@ -91,61 +91,114 @@ export function cosineSimilarity(a: ArrayLike<number>, b: ArrayLike<number>): nu
   return na === 0 || nb === 0 ? 0 : dot / Math.sqrt(na * nb);
 }
 
+export type ProbeSort = "updated_asc" | "updated_desc" | "slug";
+
 export interface ProbeEngine {
   listAllSources(): Promise<Array<{ id: string }>>;
-  listPages(f: { sourceId: string; limit: number; offset: number; sort: "slug" }): Promise<Array<{ slug: string; title?: string | null }>>;
+  listPages(f: { sourceId: string; limit: number; offset: number; sort: ProbeSort }): Promise<Array<{ slug: string; title?: string | null }>>;
   getChunksWithEmbeddings(
     slug: string,
     o: { sourceId: string },
-  ): Promise<Array<{ chunk_text: string; chunk_source: string; embedding: ArrayLike<number> | null }>>;
+  ): Promise<Array<{ chunk_text: string; chunk_source: string; embedding: ArrayLike<number> | null; model?: string | null }>>;
 }
 
 export interface ProbeOptions {
   embed(texts: string[]): Promise<ArrayLike<number>[]>;
   /** The embedding input gbrain's import used for a chunk under the title tier (null: same as plain). */
   wrap?(title: string, text: string, chunkSource: string): string | null;
+  /** gbrain's default chunk label; it says nothing about the vector, so it never counts as a model. */
+  defaultLabel?: string;
   samples?: number;
   maxPages?: number;
   timeoutMs?: number;
   threshold?: number;
+  /**
+   * Wraps the database phase (sampling) so a caller can register it as brain
+   * work: a close then waits for these short reads, never for the provider.
+   */
+  trackDbWork?<T>(p: Promise<T>): Promise<T>;
+  /** Checked between page reads: true stops the sampling (the brain is closing). */
+  shouldStop?(): boolean;
 }
 
 export type ProbeResult =
   | { status: "match"; samples: number; min: number }
   | { status: "mismatch"; samples: number; min: number }
+  /** The chunk labels already name two or more models: never adopted automatically. */
+  | { status: "mixed"; labels: string[] }
   | { status: "empty"; samples: 0 }
   | { status: "error"; error: string };
 
+const PROBE_SORTS: readonly ProbeSort[] = ["updated_asc", "updated_desc", "slug"];
+
 /**
- * Re-embed up to `samples` stored chunk texts with the gateway and compare
- * with their stored vectors. A chunk matches when the plain text or the
- * title-wrapped text (gbrain's default contextual-retrieval tier wraps the
- * embedding input) reaches `threshold` cosine. Bounded by `timeoutMs` and
- * `maxPages`; any failure (including the timeout) is "error", never a verdict.
+ * Re-embed stored chunk texts with the gateway and compare with their stored
+ * vectors, to tell whether a brain's vectors came from the configured model.
+ * A brain may be mixed (an older model on older pages, a same-width model on
+ * newer ones), so the samples are spread: at most one chunk per page, pages
+ * taken round-robin from every source and from both ends of the update
+ * history (updated_asc, updated_desc) plus slug order. Every sample must
+ * reach `threshold` cosine (plain or title-wrapped input: gbrain's default
+ * contextual-retrieval tier wraps the embedding input); one miss is a
+ * mismatch. Chunk labels naming two or more models other than gbrain's
+ * default are "mixed", never a match. Bounded by `timeoutMs` and `maxPages`;
+ * any failure (including the timeout) is "error", never a verdict.
  */
 export async function probeEmbeddingRecord(engine: ProbeEngine, o: ProbeOptions): Promise<ProbeResult> {
-  const want = o.samples ?? 5;
-  const maxPages = o.maxPages ?? 50;
+  const want = o.samples ?? 6;
+  const maxPages = o.maxPages ?? 60;
   const threshold = o.threshold ?? 0.99;
+  const defaultLabel = normalizeEmbeddingModel(o.defaultLabel);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<ProbeResult>((resolve) => {
     timer = setTimeout(() => resolve({ status: "error", error: `probe timed out after ${o.timeoutMs ?? 20_000}ms` }), o.timeoutMs ?? 20_000);
     (timer as { unref?: () => void }).unref?.();
   });
-  const run = async (): Promise<ProbeResult> => {
-    const picked: Array<{ stored: ArrayLike<number>; inputs: string[] }> = [];
-    let pages = 0;
-    outer: for (const { id } of await engine.listAllSources()) {
-      for (const p of await engine.listPages({ sourceId: id, limit: maxPages, offset: 0, sort: "slug" })) {
-        if (++pages > maxPages) break outer;
-        for (const c of await engine.getChunksWithEmbeddings(p.slug, { sourceId: id })) {
-          if (!c.embedding || c.embedding.length === 0) continue;
-          const wrapped = o.wrap?.(p.title ?? "", c.chunk_text, c.chunk_source) ?? null;
-          picked.push({ stored: c.embedding, inputs: wrapped && wrapped !== c.chunk_text ? [c.chunk_text, wrapped] : [c.chunk_text] });
-          if (picked.length >= want) break outer;
-        }
+  type Sample = { stored: ArrayLike<number>; inputs: string[] };
+  const sample = async (): Promise<{ picked: Sample[]; labels: Set<string> } | null> => {
+    // One short list per (source, order); interleaved so the first samples
+    // already cover every source and both ends of the history.
+    const perList = Math.max(1, Math.ceil(want / PROBE_SORTS.length));
+    const lists: Array<Array<{ sourceId: string; slug: string; title: string }>> = [];
+    for (const { id } of await engine.listAllSources()) {
+      for (const sort of PROBE_SORTS) {
+        const pages = await engine.listPages({ sourceId: id, limit: perList * 4, offset: 0, sort });
+        lists.push(pages.map((p) => ({ sourceId: id, slug: p.slug, title: p.title ?? "" })));
       }
     }
+    const seen = new Set<string>();
+    const order: Array<{ sourceId: string; slug: string; title: string }> = [];
+    for (let i = 0; order.length < maxPages && lists.some((l) => i < l.length); i++) {
+      for (const l of lists) {
+        const p = l[i];
+        if (!p || seen.has(`${p.sourceId}\u0000${p.slug}`)) continue;
+        seen.add(`${p.sourceId}\u0000${p.slug}`);
+        order.push(p);
+        if (order.length >= maxPages) break;
+      }
+    }
+    const picked: Sample[] = [];
+    const labels = new Set<string>();
+    for (const p of order) {
+      if (picked.length >= want) break;
+      if (o.shouldStop?.()) return null;
+      const chunks = await engine.getChunksWithEmbeddings(p.slug, { sourceId: p.sourceId });
+      for (const c of chunks) {
+        const label = normalizeEmbeddingModel(c.model);
+        if (label && label !== defaultLabel && c.embedding) labels.add(label);
+      }
+      const c = chunks.find((x) => x.embedding && x.embedding.length > 0);
+      if (!c) continue;
+      const wrapped = o.wrap?.(p.title, c.chunk_text, c.chunk_source) ?? null;
+      picked.push({ stored: c.embedding!, inputs: wrapped && wrapped !== c.chunk_text ? [c.chunk_text, wrapped] : [c.chunk_text] });
+    }
+    return { picked, labels };
+  };
+  const run = async (): Promise<ProbeResult> => {
+    const sampled = await (o.trackDbWork ? o.trackDbWork(sample()) : sample());
+    if (!sampled) return { status: "error", error: "stopped: the brain is closing" };
+    const { picked, labels } = sampled;
+    if (labels.size >= 2) return { status: "mixed", labels: [...labels].sort() };
     if (picked.length === 0) return { status: "empty", samples: 0 };
     const vectors = await o.embed(picked.flatMap((s) => s.inputs));
     let at = 0;

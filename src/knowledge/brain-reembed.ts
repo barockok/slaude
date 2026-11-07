@@ -1,4 +1,4 @@
-import { allowEmbeddingRealign, configuredEmbeddingModel, embeddingActive, getBrain, runAdminOp } from "./brain";
+import { allowEmbeddingRealign, brainVectorDims, configuredEmbeddingModel, embeddingActive, getBrain, runAdminOp } from "./brain";
 import { brainMode } from "./brain-config";
 import { normalizeEmbeddingModel } from "./embedding-guard";
 
@@ -233,7 +233,7 @@ async function bootForRepair(): Promise<Booted> {
   const target = configuredEmbeddingModel();
   if (!target) throw new Error("no embedding model configured in this process: set EMBEDDING_PROVIDER / EMBEDDING_MODEL as on the gateway");
   const targetDims = Number(process.env.GBRAIN_EMBEDDING_DIMENSIONS) || null;
-  const storedDims = Number(await engine.getConfig("embedding_dimensions")) || null;
+  const storedDims = await brainVectorDims(engine);
   if (storedDims && targetDims && storedDims !== targetDims) {
     throw new Error(`brain embedding_dimensions is ${storedDims}, configured is ${targetDims}: neither re-embedding nor relabelling can change the vector column width`);
   }
