@@ -375,6 +375,7 @@ and roles come from a file or the env lists below.
 | `SLAUDE_PANEL_ROLES_FILE` | No | `""` | Path to a YAML role list (`superadmin:` / `operator:`), matched case-insensitively, superadmin winning when an identity is in both. Read at boot and re-read per request, so edits apply without a redeploy. |
 | `SLAUDE_PANEL_SUPERADMIN` | No | `""` | Comma-separated superadmin identities — the fallback when no role file is mounted. Superadmin gates the destructive controls (reset, mode, force-release). |
 | `SLAUDE_PANEL_OPERATORS` | No | `""` | Comma-separated operator identities. An identity in neither list authenticates but is not authorized (`403`). |
+| `SLAUDE_AUDIT_RETENTION_DAYS` | No | `365` | Days an audit event (`audit_events`: gate decisions, grant changes, console actions) is kept before the periodic sweep deletes it. Applies whether or not the panel is mounted. |
 | `SLAUDE_PORTAL` | No | `0` | `1`/`true`/`yes` mounts the end-user portal at `/portal` (onboarding, identity binding, MCP connections) on `mono` and `gateway`. It reuses the panel's OIDC client, public URL and `SLAUDE_PANEL_SECRET`, so those are required when it is on. See [The user portal](../deploy/panel.md#the-user-portal). |
 
 ¹ Required when `SLAUDE_PANEL=1`; ignored otherwise.
@@ -860,6 +861,8 @@ Fallback chain:
 1. `## Approvers` exists → keyword-matched entries from SOUL.md (or channel override when in that channel).
 2. No `## Approvers` → `SLAUDE_APPROVERS` env (comma-separated ids, no scopes — all treated as catchalls).
 3. Neither → any clicker accepted (only safe for solo / DM workspaces).
+
+This chain is the **default persona's**. A named persona's approvers are its users with the approver or manager role (from its own soul, or the default's approvers when its soul names none, plus console grants), channel-aware and without keyword matching; with none, the default persona's managers. A named persona never falls back to `SLAUDE_APPROVERS` or to any clicker, so with no manager anywhere its card times out denied.
 
 > **Grounding guard.** The extractor verifies every id it returns appears verbatim in the raw `SOUL.md` text (`assertIdsGroundedInPersona` in `extract.ts`). A hallucinated id is thrown rather than widening the allowlist.
 

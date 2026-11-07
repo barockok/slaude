@@ -207,7 +207,7 @@ Some actions should not happen without a human clicking yes. Slaude has two appr
 
 | Gate | When | Who clicks | Tool |
 |---|---|---|---|
-| **Permission gate** | Per SDK tool call (Bash, Write, Edit, WebFetch, etc.) | The user in the thread (Allow / Always / Deny buttons) | SDK `canUseTool` → Block Kit approval |
+| **Permission gate** | Per SDK tool call (Bash, Write, Edit, WebFetch, etc.) | The person whose message started the turn, the thread's `/1on1` lock owner, or an approver or manager of the persona (Allow / Always / Deny buttons). Anyone else gets an ephemeral refusal and the card stays pending. Turns with no single human sender (cron, heartbeat, console chat) need an approver or manager. | SDK `canUseTool` → Block Kit approval |
 | **Approval gate** | Per *task* — agent-initiated before a destructive batch | Approvers from SOUL.md (Allowlist-resolved) | `mcp__slaude_slack__request_approval` → Block Kit Approve / Deny |
 
 This section is about the second one.
@@ -265,6 +265,8 @@ The agent **never picks user IDs**. The gateway resolves who may click:
 3. **Legacy `category: ids` map**: `approvers[category]` then `approvers.default`.
 4. **Env fallback**: `SLAUDE_APPROVERS` (comma-separated `Uxxx` or `<@Uxxx>`).
 5. **Empty set**: anyone may click (solo/DM workspaces).
+
+That chain is the default persona's. A named persona's approvers are its users with the approver or manager role (soul-derived or granted in the console), with no keyword matching; with none, the default persona's managers. It never falls back to anyone.
 
 Manager and backup are always retained as catchall approvers even when a `## Channel <#Cxxx>` override replaces the global approver list — there is no lockout.
 
