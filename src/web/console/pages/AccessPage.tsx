@@ -48,7 +48,7 @@ const COLUMNS: Column<PersonaConsoleGrantView>[] = [
     key: "subject",
     header: "Subject",
     skeleton: 0.6,
-    render: (g) => <Subject kind={g.subjectKind} id={g.subjectId} sub={g.note} />,
+    render: (g) => <Subject kind={g.subjectKind} id={g.subjectId} label={g.subjectLabel} sub={g.note} />,
   },
   {
     key: "role",

@@ -90,7 +90,7 @@ import { oauthKey } from "../../agent/mcp-oauth/store";
 import * as AgentGrants from "../../db/agent-grants";
 import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
-import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent } from "./console-views";
+import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
 import { buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
 import { guardrailsFor, type GuardrailDeps } from "./guardrails-view";
@@ -639,7 +639,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
 
         // GET|POST /panel/api/agents/:name/grants
         if (seg.length === 5) {
-          if (req.method === "GET") return json(200, { grants: await grantViews(name) } satisfies AgentGrantsResponse);
+          if (req.method === "GET") return json(200, { grants: await labelGrants(await grantViews(name), name, deps.names ?? null) } satisfies AgentGrantsResponse);
           if (req.method !== "POST") return json(405, { error: "method not allowed" });
           const denied = requireSuperadmin(role, { action: "grant.create", operator: operatorId });
           if (denied) return denied;
@@ -776,7 +776,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
       // Access page. Read-only, any operator.
       if (seg.length === 3 && seg[2] === "grants") {
         if (req.method !== "GET") return json(405, { error: "method not allowed" });
-        return json(200, { grants: await allConsoleGrants() } satisfies AllGrantsResponse);
+        return json(200, { grants: await labelGrants(await allConsoleGrants(), null, deps.names ?? null) } satisfies AllGrantsResponse);
       }
 
       // GET /panel/api/audit: the durable audit trail, newest first. Read-only,

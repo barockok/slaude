@@ -32,7 +32,8 @@ function columns(canEdit: boolean, onRevoke: (g: ConsoleGrantView) => void): Col
         <Subject
           kind={g.subjectKind}
           id={g.subjectId}
-          sub={g.source === "soul" ? (g.channelId ? `In #${g.channelId} only` : null) : g.note}
+          label={g.subjectLabel}
+          sub={g.source === "soul" ? (g.channelId ? `In ${g.channelLabel ?? `#${g.channelId}`} only` : null) : g.note}
         />
       ),
     },

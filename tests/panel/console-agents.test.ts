@@ -149,6 +149,26 @@ describe("GET /panel/api/agents/:name", () => {
     expect(g.body.grants).toEqual(d.grants);
   });
 
+  test("grant subjects carry display names when they resolve; ids stay, unresolved ones keep only the id", async () => {
+    await AgentGrants.create({ persona: "scout", subjectKind: "user", subjectId: "UONE", role: "approver", createdBy: "lead@example.com" });
+    const asked: Array<{ id: string; persona?: string | null }> = [];
+    const names = {
+      userName: async (id: string, ctx?: { persona?: string | null }) => (asked.push({ id, persona: ctx?.persona }), id === "UONE" ? "Jane Doe" : null),
+      channelLabel: async (id: string) => (id === "CSCOUT" ? "#scouting" : null),
+      teamName: async () => null,
+    };
+    const api = createPanelApi({ registry: null, role: "mono", pubsub: null, panelLock: null, chat: async () => {}, names });
+    const res = await api.fetch(new Request("https://panel.example.com/panel/api/agents/scout", { headers: { cookie: operator } }));
+    const d = (await res!.json()) as AgentDetailResponse;
+    expect(d.grants.find((g) => g.subjectId === "UONE")?.subjectLabel).toBe("Jane Doe");
+    expect(d.grants.find((g) => g.subjectId === "CSCOUT")?.subjectLabel).toBe("#scouting");
+    expect(d.grants.find((g) => g.subjectId === "USCOUT")?.subjectLabel).toBeUndefined();
+    // Looked up through the agent's own app.
+    expect(asked.every((a) => a.persona === "scout")).toBe(true);
+    const all = await api.fetch(new Request("https://panel.example.com/panel/api/grants", { headers: { cookie: operator } }));
+    expect(((await all!.json()) as { grants: Array<{ subjectId: string; subjectLabel?: string }> }).grants.find((g) => g.subjectId === "UONE")?.subjectLabel).toBe("Jane Doe");
+  });
+
   test("an unknown agent is a 404; a malformed name a 422", async () => {
     expect((await call("GET", "/panel/api/agents/ghost", operator)).status).toBe(404);
     expect((await call("GET", "/panel/api/agents/ghost/grants", operator)).status).toBe(404);

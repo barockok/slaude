@@ -7,8 +7,8 @@ export { RoleBadge } from "../../shared/RoleBadge";
 
 const KIND_ICON = { user: IconUser, channel: IconHash, workspace: IconBuilding } as const;
 
-/** Kind icon, the Slack id, and an optional second line under the id. */
-export function Subject({ kind, id, sub }: { kind: SubjectKind; id: string; sub?: ReactNode }) {
+/** Kind icon, the subject's name over its Slack id (the id alone when no name resolved), and an optional line under it. */
+export function Subject({ kind, id, label, sub }: { kind: SubjectKind; id: string; label?: string; sub?: ReactNode }) {
   const Icon = KIND_ICON[kind];
   return (
     <span className="sl-subject">
@@ -16,7 +16,16 @@ export function Subject({ kind, id, sub }: { kind: SubjectKind; id: string; sub?
         <Icon size={14} title={SUBJECT_LABEL[kind]} />
       </span>
       <span className="sl-stack">
-        <span className="sl-mono">{id}</span>
+        {label ? (
+          <>
+            <span className="sl-truncate" title={label}>
+              {label}
+            </span>
+            <span className="sl-caption sl-mono">{id}</span>
+          </>
+        ) : (
+          <span className="sl-mono">{id}</span>
+        )}
         {sub && <span className="sl-caption sl-truncate">{sub}</span>}
       </span>
     </span>

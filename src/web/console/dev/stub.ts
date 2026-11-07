@@ -124,7 +124,7 @@ export function installStub(): void {
       if (!isSuper) return json(403, { error: "action 'console.roles.read' requires the superadmin role", required: "superadmin" });
       return json(200, fx.roles);
     }
-    if (path === "/api/grants") return method === "GET" ? json(200, allGrantsOf(fx)) : json(405, { error: "method not allowed" });
+    if (path === "/api/grants") return method === "GET" ? json(200, { grants: labelled(allGrantsOf(fx).grants) }) : json(405, { error: "method not allowed" });
     if (path === "/api/audit") {
       let items = fx.audit;
       const persona = query.get("persona"), action = query.get("action"), actor = query.get("actor"), session = query.get("session");
@@ -155,9 +155,9 @@ export function installStub(): void {
       if (seg.length === 2) return json(200, { agents: Object.values(fx.agents).map(summary) });
       const agent = fx.agents[decodeURIComponent(seg[2]!)];
       if (!agent) return json(404, { error: `no agent named '${decodeURIComponent(seg[2]!)}'` });
-      if (seg.length === 3) return json(200, { ...agent, ...summary(agent) });
+      if (seg.length === 3) return json(200, { ...agent, ...summary(agent), grants: labelled(agent.grants) });
       if (seg[3] !== "grants") return json(404, { error: "not found" });
-      if (seg.length === 4 && method === "GET") return json(200, { grants: agent.grants });
+      if (seg.length === 4 && method === "GET") return json(200, { grants: labelled(agent.grants) });
       if (!isSuper) {
         const action = method === "POST" ? "grant.create" : "grant.revoke";
         return json(403, { error: `action '${action}' requires the superadmin role`, required: "superadmin" });
@@ -229,6 +229,15 @@ export function installStub(): void {
       skills[i] = { ...sk, id: liveId, status: "active", agents: [owner], origin, actions: { retire: true, restore: false } };
     }
     return json(200, { ok: true, id: skills[i]!.id });
+  }
+
+  /** Grants with the names the gateway's Slack lookup would answer (an unknown id keeps only its id). */
+  function labelled<G extends { subjectKind: string; subjectId: string; channelId?: string | null }>(grants: G[]): G[] {
+    return grants.map((g) => {
+      const label = g.subjectKind === "user" ? USER_NAMES[g.subjectId] : g.subjectKind === "channel" ? CHANNEL_LABELS[g.subjectId] : undefined;
+      const ch = g.channelId ? CHANNEL_LABELS[g.channelId] : undefined;
+      return { ...g, ...(label ? { subjectLabel: label } : {}), ...(ch ? { channelLabel: ch } : {}) };
+    });
   }
 
   function sessionSummary(r: ConsoleFixtures["sessions"][number]): SessionSummaryView {

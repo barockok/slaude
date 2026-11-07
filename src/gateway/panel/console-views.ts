@@ -9,7 +9,7 @@ import { listMandates } from "../../mandate";
 import { getPersonaRegistry, labelsInUse, managedPersonaModel, runsOnFor, type PersonaRegistry } from "../../persona/registry";
 import { listAllEnvSummaries } from "../../db/environments";
 import type { Registry } from "../../queue/registry";
-import { channelLabels, plainChannelRefs, type SlackNames } from "./slack-names";
+import { channelLabels, MAX_PER_ANSWER, plainChannelRefs, type SlackNames } from "./slack-names";
 import type {
   AgentSummary,
   ConsoleGrantView,
@@ -67,6 +67,39 @@ export async function grantViews(name: string, now: number = Date.now()): Promis
   }));
   const stored = (await AgentGrants.listForPersona(name, now)).map(consoleGrantView);
   return [...soul, ...stored];
+}
+
+/**
+ * Grants with display names for their subjects (and a scoped approver's
+ * channel), looked up through the agent's own app. Ids stay the key; what does
+ * not resolve keeps its id alone.
+ */
+export async function labelGrants<G extends { subjectKind: string; subjectId: string; channelId?: string | null; persona?: string }>(
+  grants: G[],
+  persona: string | null,
+  names: SlackNames | null,
+): Promise<Array<G & { subjectLabel?: string; channelLabel?: string }>> {
+  if (!names || grants.length === 0) return grants;
+  const memo = new Map<string, Promise<string | null>>();
+  const look = (kind: string, id: string, p: string | null): Promise<string | null> => {
+    const key = `${kind}:${p ?? "-"}:${id}`;
+    let v = memo.get(key);
+    if (!v) {
+      // Bounded per answer: past MAX_PER_ANSWER distinct ids the rest keep their ids.
+      if (memo.size >= MAX_PER_ANSWER) return Promise.resolve(null);
+      const ctx = { persona: p };
+      v = (kind === "user" ? names.userName(id, ctx) : kind === "channel" ? names.channelLabel(id, ctx) : names.teamName(id, ctx)).catch(() => null);
+      memo.set(key, v);
+    }
+    return v;
+  };
+  return Promise.all(
+    grants.map(async (g) => {
+      const p = g.persona ?? persona;
+      const [subject, channel] = await Promise.all([look(g.subjectKind, g.subjectId, p), g.channelId ? look("channel", g.channelId, p) : null]);
+      return { ...g, ...(subject ? { subjectLabel: subject } : {}), ...(channel ? { channelLabel: channel } : {}) };
+    }),
+  );
 }
 
 export interface LivenessDeps {
@@ -129,8 +162,8 @@ export async function agentDetail(
   names: SlackNames | null = null,
 ): Promise<AgentSummary & { mandates: MandateView[]; grants: GrantView[] }> {
   const r = getPersonaRegistry();
-  const [live, raw, grants] = await Promise.all([liveCounts(deps), listMandates(name), grantViews(name, now)]);
-  const mandates = await readableMandates(raw, name, names);
+  const [live, raw, plain] = await Promise.all([liveCounts(deps), listMandates(name), grantViews(name, now)]);
+  const [mandates, grants] = await Promise.all([readableMandates(raw, name, names), labelGrants(plain, name, names)]);
   const consoleCount = grants.filter((g) => g.source === "console").length;
   return { ...summaryOf(name, r, live, deps.role, mandates.length, consoleCount), mandates, grants };
 }

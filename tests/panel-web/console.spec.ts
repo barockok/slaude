@@ -465,3 +465,9 @@ test.describe("resources", () => {
     await expect(content.locator("ol li").first()).toBeVisible();
   });
 });
+
+test("grant subjects show their names, ids as secondary text", async ({ page }) => {
+  await page.goto("/panel/agents/scout/access");
+  const table = page.getByRole("table", { name: "Grants on scout" });
+  await expect(table.getByRole("row").filter({ hasText: "#team" }).first()).toContainText("CTEAM");
+});

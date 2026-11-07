@@ -71,6 +71,9 @@ export interface SoulGrantView {
   dmOnly: boolean;
   /** Set for an approver scoped to one channel by a soul channel block. */
   channelId: string | null;
+  /** Display name of the subject (`#team`, `Jane Doe`, a workspace name) and of `channelId`, when resolvable. */
+  subjectLabel?: string;
+  channelLabel?: string;
 }
 
 /** A stored grant made in the console. Revocable by id. */
@@ -86,6 +89,8 @@ export interface ConsoleGrantView {
   createdAt: number;
   expiresAt: number | null;
   note: string | null;
+  /** Display name of the subject (`#team`, `Jane Doe`, a workspace name), when resolvable. */
+  subjectLabel?: string;
 }
 
 export type GrantView = SoulGrantView | ConsoleGrantView;
