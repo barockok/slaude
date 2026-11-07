@@ -16,7 +16,7 @@ export function SlackText({ text }: { text: string }) {
     <>
       {segs.map((s, i) =>
         s.kind === "link" ? (
-          <a key={i} className="sl-link sl-break" href={s.href} target="_blank" rel="noopener noreferrer">
+          <a key={i} className="sl-link sl-break" href={s.href} title={s.href} target="_blank" rel="noopener noreferrer">
             {s.text}
           </a>
         ) : s.kind === "user" || s.kind === "channel" ? (
