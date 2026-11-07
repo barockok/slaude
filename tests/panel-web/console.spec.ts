@@ -201,6 +201,71 @@ test("an empty deployment shows empty states", async ({ page }) => {
   await expect(page.getByText("No activity yet")).toBeVisible();
 });
 
+test.describe("session watch", () => {
+
+  test("the timeline shows earlier turns, the Slack message, the reply as the agent's message, and results paired by id", async ({ page }) => {
+    await page.goto("/panel/sessions/s_7f21");
+    const tl = page.locator(".sl-tl__scroll");
+    // Earlier turns from the conversation record, above the live tail.
+    await expect(tl.getByRole("separator").filter({ hasText: "Earlier in this session" })).toBeVisible();
+    await expect(tl.getByText("Last earlier answer: the checklist lives in docs/release-checklist.md.")).toBeVisible();
+    await expect(tl.getByText("Earliest question: where is the release checklist?")).toHaveCount(0);
+    await tl.getByRole("button", { name: "Load earlier" }).click();
+    await expect(tl.getByText("Earliest question: where is the release checklist?")).toBeVisible();
+    await expect(tl.getByRole("button", { name: "Load earlier" })).toHaveCount(0);
+
+    // The inbound Slack message on the live tail.
+    await expect(tl.getByText("Can you check the release checklist against the branch?")).toBeVisible();
+    // The reply tool's text is the agent's message, marked as sent; no raw reply tool row.
+    const reply = tl.locator(".sl-tl__msg").filter({ hasText: "Want me to draft the release notes next?" });
+    await expect(reply).toBeVisible();
+    await expect(reply.getByText("Sent to Slack")).toBeVisible();
+    await expect(tl.locator(".sl-tl__tool-name").filter({ hasText: "mcp__slaude_surface__reply" })).toHaveCount(0);
+
+    // Two parallel reads, results back in the other order: each sits under its own call.
+    const changelog = tl.locator(".sl-tl__tool").filter({ hasText: "CHANGELOG.md" });
+    await changelog.locator("summary").click();
+    await expect(changelog.getByText("Console session history", { exact: false })).toBeVisible();
+    await expect(changelog.getByText("Tests pass on the release branch", { exact: false })).toHaveCount(0);
+    const checklist = tl.locator(".sl-tl__tool").filter({ hasText: "docs/release-checklist.md" });
+    await checklist.locator("summary").click();
+    await expect(checklist.getByText("Tests pass on the release branch", { exact: false })).toBeVisible();
+  });
+
+  test("status reads Working during a turn, then Warm; a stored running row nothing holds is Idle", async ({ page }) => {
+    await page.goto("/panel/sessions/s_7f21?stubDelay=0");
+    await expect(h1(page).getByText("Working")).toBeVisible();
+    await expect(h1(page).getByText("Warm")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/Context 35% used \(70,200 tokens\)/)).toBeVisible();
+
+    await page.goto("/panel/sessions");
+    await settled(page, "Compare queue libraries");
+    const stale = page.getByRole("row").filter({ hasText: "DUALICE" });
+    await expect(stale.getByText("Idle")).toBeVisible();
+    await expect(page.getByRole("row").filter({ hasText: "Compare queue libraries" }).getByText("Warm")).toBeVisible();
+    await page.goto("/panel/");
+    await expect(page.getByRole("link", { name: /^Active sessions 2/ })).toBeVisible();
+  });
+
+  test("chat: the agent's reply to the operator is held in the console while they drive", async ({ page }) => {
+    await page.goto("/panel/sessions/s_5c11/chat");
+    const log = page.getByRole("log").or(page.getByLabel("Conversation")).first();
+    await expect(log.getByText("Earlier answer 2")).toBeVisible();
+    await page.getByRole("button", { name: "Take control" }).click();
+    await page.getByLabel("Message").fill("summarise the open items");
+    await page.getByRole("button", { name: "Send" }).click();
+    const reply = log.locator(".sl-chat__msg").filter({ hasText: "Got it. Working on: summarise the open items" });
+    await expect(reply).toBeVisible();
+    await expect(reply.getByText("Held in console")).toBeVisible();
+    await expect(log.getByRole("separator").filter({ hasText: "Earlier in this session" })).toBeVisible();
+  });
+
+  test("with memory off the timeline says why there is no history", async ({ page }) => {
+    await page.goto("/panel/sessions/s_6a02?stubNoHistory=1");
+    await expect(page.getByText("No earlier turns to show: memory is disabled", { exact: false })).toBeVisible();
+  });
+});
+
 test.describe("at 390 px wide", () => {
   test.use({ viewport: { width: 390, height: 844 } });
   for (const p of PAGES) {

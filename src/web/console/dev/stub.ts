@@ -10,11 +10,12 @@
  *   ?stubEmpty=1         no agents, grants or audit events
  *   ?stubHang=agents     never answer API paths containing the text (skeletons)
  *   ?stubMono=1          a single-process deployment: no node pools, no lock backend
+ *   ?stubNoHistory=1     memory is off: the history route answers a note, no turns
  */
 import type {
-  AgentSummary, ConsoleGrantView, CreateGrantRequest, GrantView, SessionControlRequest, SessionEvent, SessionSummaryView,
+  AgentSummary, ConsoleGrantView, CreateGrantRequest, GrantView, SessionActivity, SessionControlRequest, SessionEvent, SessionSummaryView,
 } from "../../../gateway/panel/api-types";
-import { allGrantsOf, createFixtures, sessionScript, type ConsoleFixtures } from "./fixtures";
+import { allGrantsOf, createFixtures, sessionHistory, sessionScript, type ConsoleFixtures } from "./fixtures";
 
 const ID_RE = { user: /^[UW][A-Z0-9]+$/, channel: /^[CG][A-Z0-9]+$/, workspace: /^T[A-Z0-9]+$/ } as const;
 const ID_SHAPE = {
@@ -66,8 +67,12 @@ export function installStub(): void {
   const hang = sticky("stubHang");
   const empty = sticky("stubEmpty") === "1";
   const mono = sticky("stubMono") === "1";
+  const noHistory = sticky("stubNoHistory") === "1";
+  /** Sessions with a scripted turn in flight right now (turnStart sent, done not yet). */
+  const working = new Set<string>();
 
   const fx = createFixtures();
+  const startedAt = Date.now();
   if (sticky("as") === "operator") fx.me = { email: "bob@example.com", role: "operator" };
   if (empty) {
     fx.agents = {};
@@ -181,7 +186,13 @@ export function installStub(): void {
 
   function sessionSummary(r: ConsoleFixtures["sessions"][number]): SessionSummaryView {
     const { permission_mode: _p, slack_app_id: _a, ...rest } = r;
-    return { ...rest, activity: r.warm ? "warm" : r.status === "error" ? "error" : "idle", panel_locked_by: fx.locks[r.id] };
+    return { ...rest, activity: activityOf(r), panel_locked_by: fx.locks[r.id] };
+  }
+
+  /** Warm rows are working while their scripted turn runs; a stored `running` row nothing holds is idle. */
+  function activityOf(r: ConsoleFixtures["sessions"][number]): SessionActivity {
+    if (r.warm) return working.has(r.id) ? "working" : "warm";
+    return r.status === "error" ? "error" : "idle";
   }
 
   function sessions(method: string, seg: string[], query: URLSearchParams, body: unknown, isSuper: boolean): Response {
@@ -203,7 +214,21 @@ export function installStub(): void {
     if (!row) return json(404, { error: "session not found" });
     if (!sub) {
       const { warm, node: _n, ...session } = row;
-      return json(200, { session, panel_locked_by: fx.locks[id], warm, activity: warm ? "warm" : row.status === "error" ? "error" : "idle" });
+      return json(200, {
+        session, panel_locked_by: fx.locks[id], warm, activity: activityOf(row),
+        ...(warm ? { turn_in_flight: working.has(id) } : {}),
+      });
+    }
+    if (sub === "history") {
+      if (noHistory) return json(200, { items: [], nextCursor: null, note: "memory is disabled on this deployment (SLAUDE_BRAIN_DISABLED=1)" });
+      const lines = sessionHistory(id, startedAt);
+      // One turn is a user line and the agent line after it; the cursor counts turns.
+      const turns: typeof lines[] = [];
+      for (let i = 0; i < lines.length; i += 2) turns.push(lines.slice(i, i + 2));
+      const before = query.get("cursor") ? Number(query.get("cursor")) : turns.length;
+      const limit = Number(query.get("limit") ?? 20);
+      const start = Math.max(0, before - limit);
+      return json(200, { items: turns.slice(start, before).flat(), nextCursor: start > 0 ? String(start) : null });
     }
     if (sub === "events") return eventStream(id);
     if (method !== "POST") return json(405, { error: "method not allowed" });
@@ -237,9 +262,14 @@ export function installStub(): void {
           fx.locks[id] = me;
         }
         const q = pendingEvents.get(id) ?? [];
+        // The agent answers with the reply tool; while the operator holds the
+        // session the reply is held in the console (Slack never sees it).
+        const call = `toolu_chat_${Date.now()}`;
+        const reply = `Got it. Working on: ${text.length > 80 ? `${text.slice(0, 80)}...` : text}`;
         q.push(
           { delay: 300, event: { type: "turnStart", sessionId: id } },
-          { delay: 700, event: { type: "assistantText", sessionId: id, text: `Got it. Working on: ${text.length > 80 ? `${text.slice(0, 80)}...` : text}` } },
+          { delay: 700, event: { type: "toolCall", sessionId: id, tool: "mcp__slaude_surface__reply", input: { text: reply }, toolUseId: call } },
+          { delay: 150, event: { type: "toolResult", sessionId: id, tool: "mcp__slaude_surface__reply", result: [{ type: "text", text: lockless ? "posted ref=1762506060.000900" : "posted ref=panel-suppressed" }], toolUseId: call } },
           { delay: 200, event: { type: "done", sessionId: id } },
         );
         pendingEvents.set(id, q);
@@ -279,7 +309,11 @@ export function installStub(): void {
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
         controller.enqueue(enc.encode(": open\n\n"));
-        const send = (event: SessionEvent) => controller.enqueue(enc.encode(`id: ${Date.now()}-${seq++}\ndata: ${JSON.stringify(event)}\n\n`));
+        const send = (event: SessionEvent) => {
+          if (event.type === "turnStart") working.add(id);
+          if (event.type === "done" || event.type === "error") working.delete(id);
+          controller.enqueue(enc.encode(`id: ${Date.now()}-${seq++}\ndata: ${JSON.stringify(event)}\n\n`));
+        };
         const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
         for (const f of script) {
           if (stopped) return;
