@@ -103,6 +103,17 @@ describe("a named persona on its own app", () => {
     expect(g.turns).toHaveLength(2);
   });
 
+  it("its own manager runs an admin command; the default's manager does not", async () => {
+    const g = setup();
+    await g.deliver("A0ALPHA", ALPHA_MGR, ALPHA_CH, "/cron-list");
+    expect(g.posts.at(-1)?.text).toBe("No active cron jobs.");
+    await g.deliver("A0ALPHA", WORLD.manager, ALPHA_CH, "/cron-list");
+    expect(g.posts.at(-1)?.text).toContain("only manager or approver can list cron jobs");
+    // On the default app the default's manager still may.
+    await g.deliver("A0MAIN", WORLD.manager, "C0TEAM", "/cron-list");
+    expect(g.posts.at(-1)?.text).toBe("No active cron jobs.");
+  });
+
   it("its own manager is admitted in a channel no soul lists", async () => {
     const g = setup();
     await g.deliver("A0ALPHA", ALPHA_MGR, "CELSEWHERE", "hello");

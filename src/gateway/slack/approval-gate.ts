@@ -1,6 +1,7 @@
 import { clientForApp, type AppRef, type Transport, type WebClientLike } from "../core/transport";
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
 import { effectiveSoulForChannel } from "../../soul/extract";
+import { loadGrants, roleFromGrants } from "../../access/role";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
@@ -266,20 +267,33 @@ export class ApprovalGate {
   }
 
   /** Resolve who may approve. Order:
-   *   1. LLM-extracted SoulData approvers (preferred when available).
-   *   2. Scope-described persona via regex parser.
+   *   1. A named persona: every user whose role on it (roleOf, channel-aware)
+   *      is approver or manager, with no scope keyword matching (phase 1).
+   *      The default persona: LLM-extracted SoulData approvers, scope matched.
+   *   2. Default persona only: scope-described persona via regex parser.
    *   3. Legacy "category: ids" persona: persona[category] → persona.default.
    *   4. env SLAUDE_APPROVERS.
    *   5. Empty (anyone may click). */
-  #resolveApprovers(req: ApprovalRequest): Set<string> {
-    const structured = effectiveSoulForChannel(req.channel).approvers;
-    if (structured.length) {
-      const ids = selectApproversFrom(structured, req.summary, req.category);
+  async #resolveApprovers(req: ApprovalRequest): Promise<Set<string>> {
+    const named = req.persona && req.persona !== "default" ? req.persona : null;
+    if (named) {
+      const grants = await loadGrants(named);
+      const users = new Set(grants.filter((g) => g.subjectKind === "user" && !g.deny).map((g) => g.subjectId));
+      const ids = [...users].filter((u) => {
+        const r = roleFromGrants(grants, u, req.channel);
+        return r === "approver" || r === "manager";
+      });
       if (ids.length) return new Set(ids);
-    }
+    } else {
+      const structured = effectiveSoulForChannel(req.channel).approvers;
+      if (structured.length) {
+        const ids = selectApproversFrom(structured, req.summary, req.category);
+        if (ids.length) return new Set(ids);
+      }
 
-    const scoped = selectApprovers(req.summary, req.category);
-    if (scoped.length) return new Set(scoped);
+      const scoped = selectApprovers(req.summary, req.category);
+      if (scoped.length) return new Set(scoped);
+    }
 
     const legacy = loadApprovers();
     if (legacy) {
@@ -370,7 +384,7 @@ export class ApprovalGate {
    */
   async open(req: ApprovalRequest): Promise<{ pendingId: string }> {
     const id = this.#mintId();
-    const approvers = this.#resolveApprovers(req);
+    const approvers = await this.#resolveApprovers(req);
     const timeoutSec = this.#timeoutSeconds();
     await PendingGates.create({
       id,
@@ -433,7 +447,7 @@ export class ApprovalGate {
 
   async request(req: ApprovalRequest, abortSignal?: AbortSignal): Promise<ApprovalDecision> {
     const id = this.#mintId();
-    const approvers = this.#resolveApprovers(req);
+    const approvers = await this.#resolveApprovers(req);
     const timeoutSec = this.#timeoutSeconds();
 
     // Durable pending state FIRST, then the in-process waiter, then the

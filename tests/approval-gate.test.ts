@@ -7,6 +7,8 @@ import { setSoulData, __resetSoulDataMemo } from "../src/soul/extract";
 import { SoulDataSchema } from "../src/soul/data";
 import * as AuditEvents from "../src/db/audit-events";
 import { flushAudits } from "../src/audit/emit";
+import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../src/persona/registry";
+import { __setGrantsReader } from "../src/access/role";
 
 type Handler = (a: any) => Promise<void>;
 
@@ -130,6 +132,52 @@ describe("ApprovalGate", () => {
       await f.fire(okId, "U0MGR00001"); // manager always retained
       expect((await p).approved).toBe(true);
     } finally {
+      __resetSoulDataMemo();
+    }
+  });
+
+  test("a named persona: its approvers and managers by role, with no scope matching; the default's approver is not", async () => {
+    const alpha = {
+      name: "alpha", slackUserId: "U0ALPHAP", outClient: null,
+      soulJson: { manager: { userId: "UALPHAMGR" }, approvers: [{ userId: "UALPHADBA", scope: "database schema changes", catchall: false }] },
+    } as any;
+    const reg: PersonaRegistry = {
+      lookupByUserId: () => null, lookupByName: (n) => (n === "alpha" ? alpha : null), list: () => [alpha],
+      isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+    };
+    setPersonaRegistry(reg);
+    __setGrantsReader(async () => []);
+    setSoulData(SoulDataSchema.parse({
+      manager: { userId: "UMGRDEF" },
+      approvers: [{ userId: "UGLOBALDEF", scope: "anything", catchall: true }],
+    }));
+    try {
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, []);
+      let resolved = false;
+      const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "deploy the frontend", persona: "alpha" })
+        .then((d) => { resolved = true; return d; });
+      const okId = (await firstPost(f)).blocks
+        .find((b: any) => b.type === "actions")
+        .elements.find((e: any) => e.action_id.includes("approve")).action_id;
+      await f.fire(okId, "UGLOBALDEF"); // the default persona's approver
+      await f.fire(okId, "UMGRDEF"); // the default persona's manager
+      await new Promise((r) => setTimeout(r, 5));
+      expect(resolved).toBe(false);
+      await f.fire(okId, "UALPHADBA"); // alpha's approver, though the scope does not match
+      expect(await p).toMatchObject({ approved: true, by: "UALPHADBA" });
+
+      const g2 = fakeApp();
+      const gate2 = new ApprovalGate(g2.app, []);
+      const p2 = gate2.request({ channel: "CPLAIN", threadTs: "T", summary: "x", persona: "alpha" });
+      const id2 = (await firstPost(g2)).blocks
+        .find((b: any) => b.type === "actions")
+        .elements.find((e: any) => e.action_id.includes("approve")).action_id;
+      await g2.fire(id2, "UALPHAMGR"); // alpha's manager
+      expect(await p2).toMatchObject({ approved: true, by: "UALPHAMGR" });
+    } finally {
+      __resetPersonaRegistry();
+      __setGrantsReader(null);
       __resetSoulDataMemo();
     }
   });

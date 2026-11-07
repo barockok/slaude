@@ -1,4 +1,4 @@
-import { interimRoleOf } from "./role-interim";
+import { roleOf } from "./role";
 
 export interface PermissionDeciderArgs {
   /** Slack user who clicked the card. */
@@ -9,7 +9,8 @@ export interface PermissionDeciderArgs {
   initiator: string | null;
   /** The thread's /1on1 lock owner, or null when the thread is not locked. */
   lockOwner: string | null;
-  /** Persona the card belongs to (gate row `personaName`). */
+  /** Persona NAME the card belongs to (gate row `personaName`); null is the
+   *  default persona. */
   persona: string | null;
   /** Channel the card was posted in. */
   channel: string | null;
@@ -19,12 +20,14 @@ export interface PermissionDeciderArgs {
  * Who may decide a tool permission card: the person who started the turn,
  * the thread's /1on1 lock owner, or an approver or manager of the persona
  * (channel-aware). A turn with no initiator therefore needs an approver or a
- * manager. The role check is `interimRoleOf` until the real `roleOf` lands.
+ * manager. The role is `roleOf` over the persona's effective grants (its own
+ * soul with per-unit fallback, plus stored grants), so approvers are
+ * channel-aware with replace semantics.
  */
-export function canDecidePermission(a: PermissionDeciderArgs): boolean {
+export async function canDecidePermission(a: PermissionDeciderArgs): Promise<boolean> {
   if (!a.clicker) return false;
   if (a.initiator && a.clicker === a.initiator) return true;
   if (a.lockOwner && a.clicker === a.lockOwner) return true;
-  const role = interimRoleOf(a.persona, a.clicker, a.channel);
+  const role = await roleOf(a.persona, a.clicker, a.channel);
   return role === "approver" || role === "manager";
 }

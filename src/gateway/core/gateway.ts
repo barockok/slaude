@@ -14,9 +14,9 @@ import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
-import { soulDataFor } from "../../soul/per-persona";
+import { effectiveSoulForChannelFor, soulDataFor } from "../../soul/per-persona";
 import { admit } from "../../access/admission";
-import { loadGrants } from "../../access/role";
+import { loadGrants, roleFromGrants, roleOf } from "../../access/role";
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
 import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
@@ -700,6 +700,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
     return undefined;
   };
+  /** The user's role on the persona the event runs as (roleOf: persona NAME,
+   *  channel-aware for approvers). */
+  const isManagerOf = async (personaId: string | null | undefined, userId: string | null | undefined): Promise<boolean> =>
+    !!userId && (await roleOf(personaId || "default", userId)) === "manager";
+  const isManagerOrApproverOf = async (personaId: string | null | undefined, userId: string, channelId?: string | null): Promise<boolean> => {
+    const r = await roleOf(personaId || "default", userId, channelId);
+    return r === "manager" || r === "approver";
+  };
   // Surfaces resolve their client on every call, so a sync that rotates,
   // removes or re-points a persona's userToken reaches surfaces built before
   // it, including the one the in-process surface MCP of a warm session holds
@@ -1285,7 +1293,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       })()),
       lockedUser,
       channelTrust: channelTrustFor(ctx.channel, soul),
-      isManager: !!ctx.userId && (ctx.userId === soul.manager.userId || ctx.userId === soul.backupManager.userId),
+      isManager: await isManagerOf(ctx.personaId, ctx.userId),
       agentId: personaAgentId,
       threadKey: `${ctx.channel}:${ctx.threadTs}`,
     };
@@ -1362,9 +1370,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
             return { sessionId, read: memoryScopeFor(await brainGateFor(ctx), { channel: ctx.channel, runAsUser: runAsUser ?? null }).read };
           },
-          managers: () => {
-            const soul = soulData();
-            return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
+          // The persona's managers (roleOf "manager": its soul's manager and
+          // backup plus stored manager grants, no deny).
+          managers: async () => {
+            const grants = await loadGrants(ctx.personaId || "default");
+            const ids = [...new Set(grants.filter((g) => g.subjectKind === "user" && g.role === "manager" && !g.deny).map((g) => g.subjectId))];
+            return ids.filter((u) => roleFromGrants(grants, u) === "manager");
           },
           requestApproval: (r) => surface.requestApproval(r),
           // A commitment written here is indexed for the promise scheduler (phase E).
@@ -1788,8 +1799,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       scope = "initiator";
     } else {
-      const soul = soulData();
-      if (userId !== soul.manager.userId && userId !== soul.backupManager.userId) {
+      if (!(await isManagerOf(ctx.personaId, userId))) {
         return ":lock: connecting the agent's shared identity is manager-only. Start a `/1on1` to connect your own MCP servers instead.";
       }
       scope = "global";
@@ -1858,7 +1868,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   /** The /remote handler's context for one thread and user: replies post as the
    *  thread's persona through `app`; private replies and the Connect button go
    *  ephemerally to `userId`. Shared by the typed command and the Connect modal. */
-  function remoteCommandCtx(i: {
+  async function remoteCommandCtx(i: {
     teamId: string;
     channelId: string;
     threadTs: string;
@@ -1866,7 +1876,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     sessionId: string;
     personaId?: string;
     app?: AppRef;
-  }): RemoteCommandCtx {
+  }): Promise<RemoteCommandCtx> {
     const { teamId, channelId, threadTs, userId, sessionId } = i;
     const surface = surfaceFactoryFor(i.personaId, i.app)({
       conversationId: channelId,
@@ -1881,10 +1891,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const reply = async (text: string) => {
       await outClientForPersona(i.personaId, i.app).chat.postMessage({ channel: channelId, thread_ts: threadTs, text, mrkdwn: true });
     };
-    const soul = soulData();
+    const isManager = await isManagerOf(i.personaId, userId);
     return {
       teamId, channelId, threadTs, userId, sessionId,
-      isManager: userId === soul.manager.userId || userId === soul.backupManager.userId,
+      isManager,
       reply,
       sayPrivately: async (text) => {
         if (canEphemeral) {
@@ -2031,7 +2041,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const session = await Sessions.findById(offer.sessionId);
     if (!session || session.slack_channel_id !== offer.channelId || session.slack_thread_ts !== offer.threadTs) return;
     const app: AppRef = { apiAppId: (body as any).api_app_id ?? offer.apiAppId, teamId: offer.teamId };
-    const ctx = remoteCommandCtx({ ...offer, personaId: session.persona_id ?? undefined, app });
+    const ctx = await remoteCommandCtx({ ...offer, personaId: session.persona_id ?? undefined, app });
     if (!decoded.ok) {
       await ctx.sayPrivately("That Connect form expired. Send `/remote` again for a new one.").catch(() => {});
       return;
@@ -2060,8 +2070,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (!lock || lock.locked_user !== ctx.userId) return;
     } else {
       if (await OneOnOne.find(ctx.channelId, ctx.threadTs)) return; // a lock appeared — global no longer applies
-      const soul = soulData();
-      if (ctx.userId !== soul.manager.userId && ctx.userId !== soul.backupManager.userId) return;
+      if (!(await isManagerOf(ctx.personaName, ctx.userId))) return;
     }
     // Look the server up BEFORE consuming the card: a card minted by an older
     // version can name a server this persona does not mount, and approving it
@@ -2425,8 +2434,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     {
       const lock = await OneOnOne.find(channelId, threadTs);
       if (lock) {
-        const soul = soulData();
-        const isMgr = userId === soul.manager.userId || userId === soul.backupManager.userId;
+        const isMgr = await isManagerOf(dispatch?.personaId, userId);
         // In open mode (open_scope !== null) anyone may speak; only locked mode enforces the initiator gate.
         if (lock.open_scope === null && userId !== lock.locked_user && !isMgr) {
           console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — 1on1 locked to ${lock.locked_user}`);
@@ -2519,7 +2527,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "heartbeat-status") {
         const persona = dispatch?.personaId ?? "default";
         const managerId = personaManager(persona);
-        if (!managerId || userId !== managerId) {
+        if (!(await isManagerOf(persona, userId))) {
           await reply(":no_entry: only this agent's manager can see this");
           return;
         }
@@ -2561,11 +2569,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       if (slash.kind === "remote") {
-        await handleRemoteCommand(slash, remoteCommandCtx({ teamId, channelId, threadTs, userId, sessionId: session.id, personaId: dispatch?.personaId, app }));
+        await handleRemoteCommand(slash, await remoteCommandCtx({ teamId, channelId, threadTs, userId, sessionId: session.id, personaId: dispatch?.personaId, app }));
         return;
       }
       if (slash.kind === "env") {
-        await handleEnvCommand(slash, remoteCommandCtx({ teamId, channelId, threadTs, userId, sessionId: session.id, personaId: dispatch?.personaId, app }));
+        await handleEnvCommand(slash, await remoteCommandCtx({ teamId, channelId, threadTs, userId, sessionId: session.id, personaId: dispatch?.personaId, app }));
         return;
       }
       if (slash.kind === "one-on-one") {
@@ -2609,7 +2617,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await reply("No active 1on1 in this thread.");
             return;
           }
-          if (existing.locked_user !== userId && !(() => { const s = soulData(); return userId === s.manager.userId || userId === s.backupManager.userId; })()) {
+          if (existing.locked_user !== userId && !(await isManagerOf(dispatch?.personaId, userId))) {
             await reply(`:lock: only the session owner (<@${existing.locked_user}>) can lock it.`);
             return;
           }
@@ -2652,8 +2660,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "soul" || slash.kind === "soul-list" || slash.kind === "soul-clear") {
         // Manager-only — primary manager, NOT backup (owner: "only Manager").
         // Gate on the signed inbound Slack user id before any mutation.
+        // /soul writes soul_overrides, which apply to the default persona's soul
+        // only, so the gate is the default persona's role, from any app.
         const soul = soulData();
-        if (!soul.manager.userId || userId !== soul.manager.userId) {
+        if (!soul.manager.userId || userId !== soul.manager.userId || !(await isManagerOf("default", userId))) {
           await reply(":lock: `/soul` is manager-only.");
           return;
         }
@@ -2759,8 +2769,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           scope = "initiator";
         } else {
-          const soul = soulData();
-          if (userId !== soul.manager.userId && userId !== soul.backupManager.userId) {
+          if (!(await isManagerOf(dispatch?.personaId, userId))) {
             await reply(":lock: global `/mcp` connect is manager-only — it wires the agent's shared identity. Run `/1on1` first to connect your *own* MCP servers instead.");
             return;
           }
@@ -2846,12 +2855,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "ignore" || slash.kind === "unignore") {
         if (slash.kind === "ignore") {
           if (slash.target === "user") {
-            const soul = soulData();
-            const managerId = soul.manager.userId;
-            const backupId = soul.backupManager.userId;
-            const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
-            const isApprover = soul.approvers.some((a) => a.userId === userId);
-            if (!isManager && !isApprover) {
+            if (!(await isManagerOrApproverOf(dispatch?.personaId, userId, channelId))) {
               await reply(":no_entry: only manager or approver can ignore users");
               return;
             }
@@ -2892,12 +2896,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
         if (slash.kind === "unignore") {
           if (slash.target === "user") {
-            const soul = soulData();
-            const managerId = soul.manager.userId;
-            const backupId = soul.backupManager.userId;
-            const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
-            const isApprover = soul.approvers.some((a) => a.userId === userId);
-            if (!isManager && !isApprover) {
+            if (!(await isManagerOrApproverOf(dispatch?.personaId, userId, channelId))) {
               await reply(":no_entry: only manager or approver can unignore users");
               return;
             }
@@ -2921,11 +2920,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         slash.kind === "cron-pause" ||
         slash.kind === "cron-resume"
       ) {
-        const soul = soulData();
-        const managerId = soul.manager.userId;
-        const backupId = soul.backupManager.userId;
-        const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
-        const isApprover = soul.approvers.some((a) => a.userId === userId);
+        const role = await roleOf(dispatch?.personaId || "default", userId, channelId);
+        const isManager = role === "manager";
+        const isApprover = role === "approver";
         const findJob = async (id: string) => {
           try {
             return await CronJobs.findByPrefix(id);
@@ -3118,8 +3115,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
 
       if (slash.kind === "model") {
-        const soul = effectiveSoulForChannel(channelId);
-        if (!canChangeModel(userId, soul)) {
+        const soul = effectiveSoulForChannelFor(dispatch?.personaId, channelId);
+        if (!(await isManagerOrApproverOf(dispatch?.personaId, userId, channelId)) && !canChangeModel(userId, { ...soul, approvers: [] })) {
           await reply(":lock: `/model` — manager, approver, or DM-allowed users only.");
           return;
         }
@@ -3204,11 +3201,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       if (slash.kind === "bash") {
-        const soul = soulData();
-        const managerId = soul.manager.userId;
-        const backupId = soul.backupManager.userId;
-        const isManager = (managerId && userId === managerId) || (backupId && userId === backupId);
-        if (!isManager) {
+        if (!(await isManagerOf(dispatch?.personaId, userId))) {
           await reply(":no_entry: `/bash` is manager-only");
           return;
         }
@@ -4198,7 +4191,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   async function postBridgeConnectCard(claims: JobClaims, server: string, scope: ConnectScope, reason: "connect" | "reauth"): Promise<void> {
     const personaId = claims.persona && claims.persona !== "default" ? claims.persona : undefined;
     const runAs = parseRunAs(claims.runAs);
-    const userId = scope === "initiator" ? (runAs?.kind === "user" ? runAs.slackUserId : "") : soulData().manager.userId;
+    const userId = scope === "initiator" ? (runAs?.kind === "user" ? runAs.slackUserId : "") : soulDataFor(personaId).manager.userId;
     if (!userId) return; // nobody could click it
     const text = `:warning: ${reason === "connect" ? connectText(server) : reauthText(server)}.`;
     const button = await connectButton(claims.session, {
@@ -4282,7 +4275,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // follow-up either merges into a waiting job (and joins its
           // senders) or waits for its own job and token, so a later message
           // cannot re-stamp this prompt or decide it with its own token.
-          turn: stampFromSenders(queueDispatch && claims.job ? await queueDispatch.turns.turnSenders(claims.job) : null, {
+          // A failed senders read stamps no initiator (an approver or manager
+          // must decide) rather than failing the open.
+          turn: stampFromSenders(queueDispatch && claims.job ? await queueDispatch.turns.turnSenders(claims.job).catch(() => null) : null, {
             origin: claims.origin,
             expect: claims.initiator,
           }),

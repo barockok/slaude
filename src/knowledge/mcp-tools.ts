@@ -80,8 +80,9 @@ export const kbHandlers = {
 export interface BrainToolDeps {
   scope: () => BrainScope | Promise<BrainScope>;
   gate: () => GateInput | Promise<GateInput>;
-  /** Manager + backup user ids — hard backstop for kb-admin approvals. */
-  managers: () => string[];
+  /** The persona's managers (manager, backup, stored manager grants): hard
+   *  backstop for kb-admin approvals. */
+  managers: () => string[] | Promise<string[]>;
   requestApproval: (r: ApprovalReq) => Promise<ApprovalRes>;
   /** This thread's session and the scope its turns may be read in (the memory
    *  read scope), per call. Absent: kb_thread_history is not offered. */
@@ -130,7 +131,7 @@ async function runGated(name: string, params: Record<string, unknown>, summary: 
     const r = await gatedBrainCall(name, {
       scope: await d.scope(),
       gate: await d.gate(),
-      managers: d.managers(),
+      managers: await d.managers(),
       requestApproval: d.requestApproval,
       call: async () => call(name, params, await d.scope()),
       describe: summary,
@@ -548,7 +549,7 @@ export const brainHandlers = {
       const r = await gatedBrainCall("put_page", {
         scope,
         gate,
-        managers: d.managers(),
+        managers: await d.managers(),
         requestApproval: d.requestApproval,
         call: async () => {
           // A page written again is current: drop a superseded tag it carries
