@@ -192,4 +192,20 @@ describe.skipIf(!realEnabled)("queue/registry against real Redis", () => {
       for (const n of ["h-a", "h-b", "h-gone"]) await reg.nodeDown(n);
     }
   });
+  test("liveNodeDetails: every live node with its labels and last heartbeat", async () => {
+    await ready;
+    const reg = mkRegistry();
+    const before = Date.now();
+    await reg.nodeUp("d-b", ["finance", "engineering"]);
+    await reg.nodeUp("d-a");
+    await reg.nodeUp("d-gone", ["engineering"]);
+    await redis.del(keys.node("d-gone")); // heartbeat lapsed: not live
+    try {
+      const mine = (await reg.liveNodeDetails()).filter((n) => n.node.startsWith("d-"));
+      expect(mine.map((n) => [n.node, n.labels])).toEqual([["d-a", ["default"]], ["d-b", ["engineering", "finance"]]]);
+      for (const n of mine) expect(n.lastBeat).toBeGreaterThanOrEqual(before);
+    } finally {
+      for (const n of ["d-a", "d-b", "d-gone"]) await reg.nodeDown(n);
+    }
+  });
 });

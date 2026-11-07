@@ -18,7 +18,7 @@
  * expired row, changes nothing.
  *
  * Approve applies the stored write through the normal gated brain path
- * (kb_memoize) with the approver as the actor and the click as the approval:
+ * (memory_save) with the approver as the actor and the click as the approval:
  *   team-fact         → `shared`;
  *   promote           → the target (`shared`, or the agent's own slice);
  *   skill-removal,
@@ -26,6 +26,8 @@
  * A write that fails puts the row back to open, so it can be clicked again.
  */
 import * as Proposals from "../db/proposals";
+import { emitAudit } from "../audit/emit";
+import { getPersonaRegistry } from "../persona/registry";
 import type { Proposal } from "../db/proposals";
 import { redactSecrets } from "../gateway/core/status-text";
 import { clientForApp, type AppRef, type Transport } from "../gateway/core/transport";
@@ -208,8 +210,9 @@ export async function postPersonProposals(a: { agentId: string; userId: string; 
 }
 
 export interface DecideDeps {
-  /** The manager and the backup manager (Slack user ids). */
-  managers: () => string[];
+  /** The managers (Slack user ids) of the persona named `personaName`: the
+   *  persona that owns the proposal. May be async; always awaited here. */
+  managers: (personaName: string) => string[] | Promise<string[]>;
   call: BrainOpCall;
   now: () => Date;
   /** The brain can take a write without booting (brainReady). Absent: assumed open. */
@@ -224,9 +227,9 @@ export function mayDecide(p: Pick<Proposal, "toKind" | "toUser">, by: string, ma
   return managers.includes(by);
 }
 
-/** Apply an approved team-fact or promote through kb_memoize, as `by`, with the click as the approval. */
+/** Apply an approved team-fact or promote through memory_save, as `by`, with the click as the approval. */
 async function applyWrite(p: Proposal, w: { pages: PageArg[]; target: MemoizeTarget }, by: string, deps: DecideDeps): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const managers = deps.managers();
+  const managers = await deps.managers(personaOfAgent(p.agentId));
   const isManager = managers.includes(by);
   // Shared memory is the team's: only the manager or backup ever writes it
   // from a card, whatever the gate below would allow.
@@ -268,9 +271,11 @@ async function forwardToManager(p: Proposal, by: string, at: number): Promise<Cl
     });
   } catch (e) {
     await Proposals.reopen(p.id, by, at).catch(() => {});
+    auditProposal(p, by, "allow", "reopened");
     console.error(`[background] proposal ${p.id}: approved by ${by} but could not be sent to the manager: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
     return { ok: false, text: ":warning: that did not reach the manager. The proposal is open again; try again." };
   }
+  auditProposal(p, by, "allow", "forwarded");
   return { ok: true, line: `Approved by <@${by}>; sent to the manager, who decides whether it goes into shared memory` };
 }
 
@@ -279,7 +284,7 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   const p = await Proposals.get(a.id);
   if (!p || p.kind === Proposals.SKILL_RETIRED_KIND) return { ok: false, text: ":grey_question: this proposal no longer exists" };
   if (!fromCardApp(p, a.from)) return { ok: false, text: WRONG_APP };
-  if (!mayDecide(p, a.by, deps.managers())) {
+  if (!mayDecide(p, a.by, await deps.managers(personaOfAgent(p.agentId)))) {
     return { ok: false, text: `:no_entry: <@${a.by}>, only ${p.toKind === "person" ? "the person it is for" : "the manager"} can decide this proposal. It stays open.` };
   }
   const at = deps.now().getTime();
@@ -288,6 +293,7 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   }
   if (a.verb === "reject") {
     if (!(await Proposals.decide(p.id, "rejected", a.by, at))) return { ok: false, text: ":lock: this proposal was already decided" };
+    auditProposal(p, a.by, "deny", "rejected");
     return { ok: true, line: `Rejected by <@${a.by}>` };
   }
   let w: { pages: PageArg[]; target: MemoizeTarget } | null = null;
@@ -302,7 +308,10 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   // Never boot the brain from a click: the proposal stays open for a later one.
   if (w && deps.ready && !deps.ready()) return { ok: false, text: ":hourglass: memory is not available right now; the proposal stays open, try again later." };
   if (!(await Proposals.decide(p.id, "approved", a.by, at))) return { ok: false, text: ":lock: this proposal was already decided" };
-  if (!w) return { ok: true, line: `Approved by <@${a.by}>; the operator makes the change in git` };
+  if (!w) {
+    auditProposal(p, a.by, "allow", "recorded");
+    return { ok: true, line: `Approved by <@${a.by}>; the operator makes the change in git` };
+  }
   let res: { ok: true } | { ok: false; reason: string };
   try {
     res = await applyWrite(p, w, a.by, deps);
@@ -311,17 +320,47 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   }
   if (!res.ok) {
     await Proposals.reopen(p.id, a.by, at).catch((e) => console.error(`[background] proposal ${p.id}: could not reopen after a failed write: ${e instanceof Error ? e.message : String(e)}`));
+    auditProposal(p, a.by, "allow", "reopened");
     console.error(`[background] proposal ${p.id}: approved by ${a.by} but the write failed: ${redactSecrets(res.reason)}`);
     return { ok: false, text: `:warning: the write did not land (${escapeMrkdwn(clip(redactSecrets(res.reason), 300))}). The proposal is open again; try again.` };
   }
+  auditProposal(p, a.by, "allow", "written");
   return { ok: true, line: `Approved by <@${a.by}>; written to ${w.target === "shared" ? "shared memory" : "the agent's own memory"}` };
 }
 
-/** A click on Restore: the manager or backup moves a retired skill back, once. */
+/** The persona whose agent id (its Slack user id) owns a proposal; "default" otherwise. */
+function personaOfAgent(agentId: string): string {
+  try {
+    return getPersonaRegistry().list().find((p) => p.slackUserId === agentId && p.name)?.name ?? "default";
+  } catch {
+    return "default";
+  }
+}
+
+/**
+ * proposal.decided, once per click that won `Proposals.decide`. `outcome`
+ * says what followed: rejected, recorded (operator acts in git), written,
+ * forwarded (to the manager), or reopened (the follow-up failed).
+ */
+function auditProposal(p: Proposal, by: string, decision: "allow" | "deny", outcome: string): void {
+  emitAudit({
+    persona: personaOfAgent(p.agentId),
+    actorKind: "slack_user",
+    actorId: by,
+    action: "proposal.decided",
+    targetKind: "proposal",
+    targetId: p.id,
+    decision,
+    summary: `${p.kind} proposal ${decision === "allow" ? "approved" : "rejected"} (${outcome})`,
+    details: { kind: p.kind, toKind: p.toKind, scope: p.scope, outcome, agentId: p.agentId },
+  });
+}
+
+/** A click on Restore: a manager of the persona that owns the retirement moves a retired skill back, once. */
 export async function restoreRetiredSkill(a: { id: string; by: string; from?: ClickOrigin }, deps: Pick<DecideDeps, "managers" | "now">): Promise<ClickResult> {
-  if (!deps.managers().includes(a.by)) return { ok: false, text: `:no_entry: <@${a.by}>, only the manager can restore a skill.` };
   const r = await Proposals.get(a.id);
   if (!r || r.kind !== Proposals.SKILL_RETIRED_KIND) return { ok: false, text: ":grey_question: this retirement no longer exists" };
+  if (!(await deps.managers(personaOfAgent(r.agentId))).includes(a.by)) return { ok: false, text: `:no_entry: <@${a.by}>, only the manager can restore a skill.` };
   if (!fromCardApp(r, a.from)) return { ok: false, text: WRONG_APP };
   if (r.status !== "approved") return { ok: false, text: ":lock: this skill was already restored" };
   const pl = r.payload as Partial<Proposals.SkillRetiredPayload>;

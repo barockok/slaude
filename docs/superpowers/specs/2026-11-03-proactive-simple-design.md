@@ -43,7 +43,7 @@ A scenario passes only on evidence from Slack, the brain or transcripts, across 
 |---|---|---|
 | E1 | A place with only `Enabled: yes` and a mandate wakes, with no heartbeat page | log `woke`, no page in the brain |
 | E2 | Work is finished: an artifact exists and any post points to it | file or KB page exists; post names it |
-| E3 | `kb_memoize` in a wake succeeds | transcript has no refusal; page in the brain |
+| E3 | `memory_save` (formerly `kb_memoize`) in a wake succeeds | transcript has no refusal; page in the brain |
 | E4 | A reply posted since the last wake appears in that wake's activity, and the notes agree | envelope and notes |
 | E5 | An approval in a thread leads to the approved thing being done | thread and artifact |
 | E6 | A new thread mentioning the agent knows its recent work | reply content |

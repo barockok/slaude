@@ -1,59 +1,81 @@
 ---
-title: Control panel
-description: The operator web console — see every session, take control from Slack, and chat it directly.
+title: Console and portal
+description: The operator console (agents, sessions, approvals and audit, access, memory, environments) and the end-user portal.
 ---
 
-# Control panel
+# Console and portal
 
-The control panel is an operator web console mounted at `/panel` on the
-gateway process (`mono` or `gateway` [role](index.md#horizontal-scale-gateway-nodes),
-never `node`). It's built for the moment Slack isn't the right surface — an
-operator needs to see what a session is doing, stop it, or drive it directly
-without a human relaying messages through a thread.
+The console is the operator web app mounted at `/panel` on the gateway
+process (`mono` or `gateway` [role](index.md#horizontal-scale-gateway-nodes),
+never `node`). It is built for the moment Slack is not the right surface: an
+operator needs to see what an agent may do and for whom, what a session is
+doing, who approved what, or to drive a session directly without a human
+relaying messages through a thread. The [portal](#the-user-portal) is its
+sibling for everyone else, at `/portal`.
 
-It's off by default (`SLAUDE_PANEL=1` to mount it) and works the same in a
+It is off by default (`SLAUDE_PANEL=1` to mount it) and works the same in a
 single `mono` container as it does across a fleet of gateway replicas.
 
 ## What it does
 
-**Fleet list.** Every session across every persona and node in one table —
-status-dot triage (running / idle / errored), warm vs. cold, a context-window
-meter that recolors as it fills, filters by persona/tenant/status, and summary
-chips for at-a-glance fleet health.
+The console has a top bar, a left navigation and one page per area. Light and
+dark themes follow the browser, and every page works at phone width.
 
-**Session detail.** Drill into one session: its identity (thread, persona,
-model, permission mode) with one-click copy, and the destructive controls
-(stop, reset, model switch, permission-mode change, `/1on1` unlock) fenced
-behind a confirm step.
+| Page | What you see |
+|---|---|
+| **Overview** | Counts of agents, live sessions, pending approvals and audit events in the last 24 h, and recent activity. |
+| **Agents** | Every agent (persona) with its live state. An agent's page has four tabs: *Overview* (identity, model, the label it runs on), *Mandates* (its jobs: the soul's mandate, each channel block, each cron and the heartbeat, with triggers and the approvers who can actually approve), *Access* (effective grants from the soul and the console) and *Activity* (its audit events). |
+| **Sessions** | Live and recent sessions with filters by agent and status. A session has a *Timeline*, a *Chat* tab and its *Audit* events. |
+| **Approvals and audit** | Every permission and approval decision, refusal and expiry, and every console change, newest first, filterable by agent, action, actor, decision and time. |
+| **Access** | Console roles (read only, from the role file; superadmins only, operators see a note) and every stored agent grant. |
+| **Memory** | Memory stores with page counts; a store lists its pages; a page shows its content, type, tags and links. Read only. |
+| **Environments** | Node pools (labels, live nodes, last heartbeat), each agent's placement label, and personal environments (secrets never shown). |
 
-**Event timeline.** A live, typed, colored view of the session's event stream
-— tool calls with duration bars, thinking/response chunks, relative
-timestamps and gap markers — streamed over SSE and resumable across a
-reconnect (`Last-Event-ID`).
+**Grants.** A superadmin adds or revokes an agent grant from the agent's
+*Access* tab: a user, a channel's members or a whole workspace gets the
+`member`, `approver` or `manager` role on that agent, or a user is denied. A
+change applies at once on the replica that made it and within a few seconds on
+the others. Grants are keyed by persona name, so a persona renamed in git is a
+new persona and its grants must be re-created. Operators see grants but cannot
+change them. A stored approver grant applies in every channel, unlike the
+approvers in a SOUL.md `## Channel` block, which replace the global list in
+their channel only. A channel grant takes a channel id (`C` or `G`); for DMs,
+give the person a user member grant with DM only. A deny grant also removes
+the user from every approval card, the default persona's included. The console
+roles list (who may sign in, and as what) is visible to superadmins only.
 
-**Chat.** Send messages into the session directly from the panel, bypassing
-Slack entirely.
+**Private memory stores.** Personal (`user-*`) and profile (`profile-*`)
+stores hold what one person told an agent. Only superadmins see them, and every
+page a superadmin opens in one is recorded in the audit trail
+(`memory.page.viewed`, store and slug, never content).
 
-**Take control.** Chatting or explicitly locking a session takes over its
-*active surface*: inbound Slack messages for that thread are deferred (and
-replayed once you release, with one thread notice so the thread isn't
+**Session timeline.** A live, typed view of the session's event stream (tool
+calls with duration, thinking and response chunks, relative timestamps and gap
+markers), streamed over SSE and resumable across a reconnect
+(`Last-Event-ID`). The session's controls (stop, model switch, permission-mode
+change, reset, `/1on1` unlock) sit behind a confirm step.
+
+**Chat and take control.** Chatting or explicitly locking a session takes over
+its *active surface*: inbound Slack messages for that thread are deferred (and
+replayed once you release, with one thread notice so the thread is not
 confused by the gap) and the agent's Slack-bound replies are suppressed while
 you drive it. The lock has a TTL and auto-releases if the operator's browser
-tab dies. `force-release` (superadmin only) *steals* the lock rather than
-handing it back to Slack — use `release` to give control back.
+tab dies. Taking over a session another operator is driving (`force-release`)
+is superadmin only and *steals* the lock rather than handing it back to Slack;
+use release to give control back.
 
-Reset, permission-mode changes, and `force-release` require the
-**superadmin** role; everything else — including stop, model switch, chat,
-and `unlock-1on1` — is open to any operator listed for the panel.
+Reset, permission-mode changes, taking over, and grant changes require the
+**superadmin** role; everything else, including stop, model switch, chat and
+`unlock-1on1`, is open to any operator listed for the console. Console actions
+are written to the audit trail.
 
-**Personas.** *Personas* in the header lists every persona (`#/p`); a row
-opens one persona's definition (`#/p/<name>`), which answers "what is this
+**Persona definitions.** `GET /panel/api/personas/<name>` answers "what is this
 agent, and where does it run" without reading the database or a node's disk.
-It is read only and open to any operator. Definitions change through git
-([personas as code](personas-as-code.md)); the runtime override endpoints are
-not surfaced here. The page shows:
+It is read only and open to any operator; the console's agent page shows the
+identity part of it, and the rest is API only for now. Definitions change
+through git ([personas as code](personas-as-code.md)). It returns:
 
-| Section | What you see |
+| Section | What it returns |
 |---|---|
 | Identity | origin (`git` or `runtime`), retired or not, Slack user id, the label it runs on (`default` when it names none), model from git and the live model, with an override marked |
 | Soul | its length, whether a runtime override replaced it, and the first 200 characters |
@@ -94,9 +116,8 @@ signed-in panel users only and the route logs nothing about the persona.
 Showing a reference tells an operator *which* secret a persona uses, which
 is the point; it does not let them read it.
 
-Persona pages need the persona tables, which exist on Postgres only: on a
-sqlite deployment the page says personas are not available (the API answers
-`409`), an unknown name shows a not-found state (`404`), and a string that is not a persona name is refused by the page before any request.
+Persona definitions need the persona tables, which exist on Postgres only: on
+a sqlite deployment the API answers `409`, and an unknown name answers `404`.
 
 ## Enabling it
 
@@ -195,9 +216,17 @@ Enabling it is two steps, and the second is easy to miss:
 There is no step three. The portal reuses the panel's issuer, client id,
 client secret, public URL and signing secret.
 
+### Portal pages
+
+The portal has three pages:
+
+- **My account**: the signed-in identity and the Slack identities linked to it.
+- **Integrations**: the MCP servers a person can connect (below).
+- **My agents**: the agents the person holds a grant on, with their role.
+
 ### The integrations page
 
-`/portal` is the page a person actually uses. It lists every HTTP MCP server
+The integrations page is the one a person uses most. It lists every HTTP MCP server
 that any agent on this deployment mounts, with a connect or disconnect button
 each, and it says plainly where those credentials apply: in a 1:1 with an agent
 and in what the person schedules there, not in a channel thread, where the agent
@@ -279,6 +308,9 @@ by the image's web stage and by CI). Until phase 4 they were not: `dist/` is
 gitignored and nothing built it, so a deployed image served Vite's source
 shell and the panel UI never worked in a container at all.
 
-The React app (`src/gateway/panel/web/`) builds with Vite (`bun run
-test:web` covers it under Playwright) — a browser toolchain kept separate
-from the Bun server, excluded from `bun test` and the server `tsc`.
+The console (`src/web/console/`, served at `/panel`) and the portal
+(`src/web/portal/`) build with Vite from one shared codebase (`src/web/`).
+It is a browser toolchain kept separate from the Bun server: excluded from
+`bun test` and the server `tsc`, and checked by its own
+`src/web/tsconfig.json`, which `bun run typecheck` also runs. `bun run
+test:web` drives the built app under Playwright.

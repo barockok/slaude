@@ -531,6 +531,13 @@ export const env = {
    */
   autoEvolve: () => opt("SLAUDE_AUTO_EVOLVE", "1") !== "0",
   /**
+   * Mount the deprecated kb_* aliases of the memory_* tools (kb_memoize,
+   * kb_search, list_kbs, ...) on the slaude_kb MCP server, in-process and on
+   * node shims. Set to "0" to offer only the memory_* names. The REST tool
+   * plane accepts the old names either way (a node on an older build).
+   */
+  memoryToolAliases: () => opt("SLAUDE_MEMORY_TOOL_ALIASES", "1") !== "0",
+  /**
    * Raw `SLAUDE_DECISION_CONFIG` JSON (decision gate, phase B); parsed and
    * validated by `parseDecisionConfig`. Gateway-only. Empty when unset.
    */
@@ -589,6 +596,8 @@ export const env = {
   wakeMaxMinutes: () => numberAtLeastZero("SLAUDE_WAKE_MAX_MINUTES", 15),
   /** How long a wake's session is kept (`SLAUDE_WAKE_KEEP_DAYS`, default 14). */
   wakeKeepDays: () => intAtLeastOne("SLAUDE_WAKE_KEEP_DAYS", 14),
+  /** How long audit events are kept (`SLAUDE_AUDIT_RETENTION_DAYS`, default 365). */
+  auditRetentionDays: () => intAtLeastOne("SLAUDE_AUDIT_RETENTION_DAYS", 365),
   /** The longest a waking agent may sleep, in hours (`SLAUDE_WAKE_MAX_SLEEP_HOURS`, default 24). */
   wakeMaxSleepHours: () => intAtLeastOne("SLAUDE_WAKE_MAX_SLEEP_HOURS", 24),
   /** Heartbeat pass interval in minutes (`SLAUDE_HEARTBEAT_MINUTES`, default 30; spec §10.3). */

@@ -1,13 +1,13 @@
 ---
 name: memory
 description: How to save what you learn about people, promises and investigations, and what never to save.
-trigger: Before kb_memoize
-governs: [mcp__slaude_kb__kb_memoize]
+trigger: Before memory_save
+governs: [mcp__slaude_kb__memory_save]
 version: "{{SLAUDE_VERSION}}"
 ---
-## Structured memory (`kb_memoize` with a type)
+## Structured memory (`memory_save` with a type)
 Each page carries a `type`, a `confidence` (`told` or `inferred`), a `source`,
-and optionally `supersedes`. `kb_memoize` fills the common frontmatter
+and optionally `supersedes`. `memory_save` fills the common frontmatter
 (`as_of` today, `source` defaults to `told by <speaker>` on a profile).
 Pass `subject` (the Slack user id) for any page about a person.
 
@@ -77,7 +77,7 @@ slug: a page cannot supersede itself, nor a page written in the same call. The
 old page must already exist in the same memory you are writing to.
 
 ### In a /1on1
-Anything you learn stays in that person's own slice or their profile.
+Anything you learn stays in that person's own memory store or their profile.
 `target:"shared"` is refused, and nothing reaches `agent-<id>` or another
 person's turn unless that person approves it in the /1on1.
 

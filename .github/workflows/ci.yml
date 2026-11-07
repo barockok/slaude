@@ -32,15 +32,10 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      # The web apps are excluded from the root typecheck (they need DOM libs),
-      # and a broken one used to fail only at image build time — or, before the
-      # Dockerfile built them at all, never. Both are checked and built here so a
-      # pull request cannot land an app the container cannot serve.
-      - name: Typecheck the web apps
-        run: |
-          bunx tsc --noEmit -p src/gateway/panel/web/tsconfig.json
-          bunx tsc --noEmit -p src/gateway/portal/web/tsconfig.json
-
+      # `bun run typecheck` above also checks the web apps (src/web, with its
+      # own DOM tsconfig). A broken app used to fail only at image build time,
+      # so it is built here too: a pull request cannot land an app the
+      # container cannot serve.
       - name: Build the web apps
         run: bun run web:build
 

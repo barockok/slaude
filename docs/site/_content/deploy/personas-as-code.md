@@ -293,7 +293,7 @@ exposes the routes below. They always act on the tenant `default`.
   soul text and model are shown, plus `runsOn` and a `kb.mode` summary
   (`all`, `none` or `list`).
 - `GET /panel/api/personas/<name>`: one persona's definition, references and
-  presence only (see [the control panel's persona page](panel.md)). Any
+  presence only (see [persona definitions](panel.md#what-it-does)). Any
   authenticated operator; `404` for an unknown name.
 - `PUT /panel/api/personas/<name>/overrides/<field>` with `{ "value": ... }`
   and `DELETE` of the same path. Superadmin only. `<field>` is `soul`, `model`

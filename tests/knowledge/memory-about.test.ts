@@ -328,10 +328,10 @@ describe("kb_memoize per-page subject (one batch, notes about two people)", () =
   test("the tool schema keeps a page's subject", async () => {
     const { z } = await import("zod");
     const { kbContract } = await import("../../src/tools/contracts/kb");
-    const parsed = z.object(kbContract.tools.kb_memoize.schema).parse({
+    const parsed = z.object(kbContract.tools.memory_save.schema).parse({
       pages: [{ slug: "people/u0alice", content: "x", summary: "s", type: "person-note", subject: "U0ALICE" }],
     }) as { pages: Array<{ subject?: string }> };
     expect(parsed.pages[0]!.subject).toBe("U0ALICE");
-    expect(kbContract.tools.kb_memoize.description).toContain("subject");
+    expect(kbContract.tools.memory_save.description).toContain("subject");
   });
 });

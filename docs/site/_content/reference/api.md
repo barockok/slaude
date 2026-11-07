@@ -195,31 +195,35 @@ Source: `src/knowledge/mcp-tools.ts` · SDK name `slaude_kb` · Backed by gbrain
 
 Per-source `gather()` fan-out prevents bulk corpora from drowning curated pages. Scope-aware: each call carries a `BrainScope` (`agent-<id>` private slice + `shared`).
 
-| Tool | Params | Description |
-|------|--------|-------------|
-| `list_kbs` | — | List the KBs this persona may read (its `kbSources`, see [Knowledge scope](../deploy/knowledge-scope.md)) — `{ label, description, tags, source }[]`, no disk path. |
-| `search_kbs` | `query: string`, `limit?: number` *(default 5)* | Ranked search over the same persona-filtered KBs by tag/label/description token score. Call before acting on service/domain queries to discover curated documentation. |
-| `kb_think` | `question: string` | Synthesized answer with `[Source: slug]` citations and explicit gaps. Prefer over `kb_search` when you need an answer. Includes per-source cross-check + rescue synthesis when initial gather returns 0. |
-| `kb_search` | `query: string`, `limit?: number` *(default 20)* | Raw ranked chunks `{ slug, score, snippet }` via per-source gather (not pooled gbrain search). |
-| `kb_get_page` | `slug: string` | Read a single brain page by slug (`people/alice`). |
-| `kb_list_pages` | `type?: string`, `tag?: string`, `limit?: number` *(default 50)* | List pages optionally filtered by type/tag. |
-| `kb_graph` | `slug: string` | Outgoing `[[wikilinks]]` and backlinks for a page. |
-| `kb_memoize` | `pages: { slug: string, content: string, summary: string }[]` *(1–N, max `KB_MEMOIZE_MAX_PAGES` per call)*, `target?: "mine" \| "shared"` | Write/update pages. Default `mine` = private agent slice, no approval. `shared` = team KB, requires manager approval (gated via `gatedBrainCall`). Content is markdown with optional YAML frontmatter; `[[wikilinks]]` become graph edges. |
-| `kb_delete_page` | `slug: string`, `reason: string` | Soft-delete (recoverable). Gated, requires approval. |
+Tool names: the memory tools carry `memory_*` names. Each old name (`kb_*`, `list_kbs`, `search_kbs`) stays mounted as a deprecated alias with the same schema and handler, because a session resumed from before the rename keeps calling the names it saw. `SLAUDE_AUTO_ALLOW_TOOLS` and the profile write guard accept either name; `SLAUDE_MEMORY_TOOL_ALIASES=0` stops mounting the aliases (see [Configuration](configuration.md#brain)), and the REST tool plane accepts the old names either way. Contract: `src/tools/contracts/kb.ts`.
+
+| Tool | Alias | Params | Description |
+|------|-------|--------|-------------|
+| `memory_stores` | `list_kbs` | none | List the knowledge bases (library memory stores) this persona may read (its `kbSources`, see [Knowledge scope](../deploy/knowledge-scope.md)): `{ label, description, tags, source }[]`, no disk path. |
+| `memory_search_stores` | `search_kbs` | `query: string`, `limit?: number` *(default 5)* | Ranked search over the same persona-filtered knowledge bases by tag, label and description token score. Call before acting on service or domain queries to discover curated documentation. |
+| `memory_think` | `kb_think` | `question: string` | Synthesized answer with `[Source: slug]` citations and explicit gaps. Prefer over `memory_search` when you need an answer. Includes a per-source cross-check and rescue synthesis when the initial gather returns nothing. |
+| `memory_search` | `kb_search` | `query: string`, `limit?: number` *(default 20)* | Raw ranked chunks `{ slug, score, snippet }` via per-source gather (not pooled gbrain search). |
+| `memory_get` | `kb_get_page` | `slug: string` | Read a single page by slug (`people/alice`). |
+| `memory_list` | `kb_list_pages` | `type?: string`, `tag?: string`, `limit?: number` *(default 50)* | List pages, optionally filtered by type or tag. |
+| `memory_graph` | `kb_graph` | `slug: string` | Outgoing `[[wikilinks]]` and backlinks for a page. |
+| `memory_save` | `kb_memoize` | `pages: { slug: string, content: string, summary: string }[]` *(1 to N, max `KB_MEMOIZE_MAX_PAGES` per call)*, `target?: "mine" \| "shared" \| "profile"` | Write or update pages. Default `mine` = the agent's private store (or the person's own store inside their `/1on1`), no approval. `shared` = team memory, requires manager approval (gated via `gatedBrainCall`). `profile` = what the current speaker said about themselves, on their own turn only. Content is markdown with optional YAML frontmatter; `[[wikilinks]]` become graph edges. |
+| `memory_delete` | `kb_delete_page` | `slug: string`, `reason: string` | Soft-delete (recoverable). Gated, requires approval. |
+| `memory_thread_history` | `kb_thread_history` | `limit?: number` *(1 to 50, default 20)*, `before?: string` | This thread's earlier turns, oldest first, paged with `before`. Only this thread. |
+| `memory_about` | none | `userId: string` | What the agent holds about the person asking; only for the current speaker. |
 
 Examples:
 
 ```ts
 // Discover relevant KB before answering
-await call("mcp__slaude_kb__search_kbs", { query: "service-a grafana alerts" })
+await call("mcp__slaude_kb__memory_search_stores", { query: "service-a grafana alerts" })
 // → ranked KBs with label "service-a"
 
 // Answer with citations
-await call("mcp__slaude_kb__kb_think", { question: "How does service-a handle on-call rotation?" })
+await call("mcp__slaude_kb__memory_think", { question: "How does service-a handle on-call rotation?" })
 // → synthesized answer + [Source: service-a/oncall.md] + Gaps: …
 
 // Bulk curated write — mine vs shared
-await call("mcp__slaude_kb__kb_memoize", {
+await call("mcp__slaude_kb__memory_save", {
   pages: [
     { slug: "people/alice", content: "# Alice\nBackend, on-call DRI.\n", summary: "Add Alice profile" },
     { slug: "decisions/2026-06-14-x", content: "# Decision …", summary: "Record x decision" }
@@ -227,13 +231,13 @@ await call("mcp__slaude_kb__kb_memoize", {
   target: "mine" // private slice, no approval card
 })
 
-await call("mcp__slaude_kb__kb_memoize", {
+await call("mcp__slaude_kb__memory_save", {
   pages: [{ slug: "runbooks/service-a-deploy", content: "# Deploy …", summary: "Publish deploy runbook" }],
   target: "shared" // team KB — approval gate
 })
 
 // Graph
-await call("mcp__slaude_kb__kb_graph", { slug: "service-a/oncall" })
+await call("mcp__slaude_kb__memory_graph", { slug: "service-a/oncall" })
 // → { out: ["people/alice", "pagerduty/rotation"], backlinks: ["incidents/2026-05-01"] }
 ```
 
@@ -498,8 +502,8 @@ Knowledge bases are wikis with a durable source→derived split. Operators edit 
 ```
 ~/.slaude/knowledge/<label>/
   raw/        # operator-authored markdown — the durable source of truth
-  wiki/       # agent-derived, indexed pages — what kb_search/kb_think retrieve
-  README.md   # KB description + tags used by search_kbs scoring
+  wiki/       # agent-derived, indexed pages: what memory_search/memory_think retrieve
+  README.md   # KB description + tags used by memory_search_stores scoring
 ```
 
 Source: `src/knowledge/ingest.ts` · `src/db/ingest-jobs.ts` (deprecated job row now superseded by brain, retained for reap logic) · `src/knowledge/loader.ts`
@@ -507,7 +511,7 @@ Source: `src/knowledge/ingest.ts` · `src/db/ingest-jobs.ts` (deprecated job row
 ### `/ingest` flow
 
 1. Trigger: `mcp__slaude_runtime__trigger_ingest`, `/ingest` slash command, or `runIngest({ triggeredBy })` programmatically. Requires manager/approver.
-2. Ingest scans `raw/` across all installed KBs, chunks, and writes normalized pages into `wiki/` (and the gbrain store when enabled). The wiki is what `kb_*` tools serve.
+2. Ingest scans `raw/` across all installed KBs, chunks, and writes normalized pages into `wiki/` (and the gbrain store when enabled). The wiki is what the `memory_*` tools serve.
 3. After ingest completes, `brainSync` / `brainBackfill` propagate to the shared slice.
 
 Manual invocation:
@@ -568,7 +572,7 @@ try {
 }
 ```
 
-> Note: `kb_ingest_jobs` is marked `@deprecated` in favor of gbrain's incremental `kb_memoize` path. New code should write via `kb_memoize` instead of bulk `/ingest`; the mutex row is retained until removal so in-flight `/ingest` calls remain safe.
+> Note: `kb_ingest_jobs` is marked `@deprecated` in favor of gbrain's incremental `memory_save` path (alias `kb_memoize`). New code should write via `memory_save` instead of bulk `/ingest`; the mutex row is retained until removal so in-flight `/ingest` calls remain safe.
 
 ---
 
@@ -599,7 +603,7 @@ Flags (`src/gateway/sim/cli.ts`):
 
 | Flag | Description |
 |------|-------------|
-| `--real` | Mount the real `AgentManager` + SDK loop instead of the stub agent. Use to verify live tool wiring (`reply`/`react`/`request_approval`/`kb_*`/external MCP) without Slack. |
+| `--real` | Mount the real `AgentManager` + SDK loop instead of the stub agent. Use to verify live tool wiring (`reply`/`react`/`request_approval`/`memory_*`/external MCP) without Slack. |
 | `--scenario <name>` | Run a named deterministic scenario from `src/gateway/sim/scenarios/` or `scenarios-real/`. |
 | `--soul <path>` | Load a fixture `SOUL.md` instead of `~/.slaude/SOUL.md`. |
 | `--headless` | No TUI — pipe transcript to stdout; useful in CI. |

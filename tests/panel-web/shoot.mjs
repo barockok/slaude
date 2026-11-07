@@ -1,96 +1,90 @@
-// Renders the 5 panel views in light + dark against the fixture stub (mock
-// mode, no live backend) and writes 1440x900 @2x PNGs into shots/. These are
-// what the critic compares to bar/temporal-*.png.
+// Screenshots of the console and portal main pages, light and dark, at 1440
+// and 390 px wide (deviceScaleFactor 1), on their dev stubs (VITE_STUB=1).
+//
+//   SHOTS_DIR=/some/dir bun run panel:shots
+//
+// SHOTS_DIR is required (screenshots never land in the repo). PW_CHROMIUM_PATH
+// optionally points at a local Chromium, as in playwright.config.ts.
 import { chromium } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const OUT = join(ROOT, "shots");
-const PORT = 4321;
-const BASE = `http://localhost:${PORT}`;
+if (!process.env.SHOTS_DIR) {
+  console.error("Set SHOTS_DIR to the directory the screenshots go to.");
+  process.exit(2);
+}
+const OUT = resolve(process.env.SHOTS_DIR);
 mkdirSync(OUT, { recursive: true });
 
-const stub = spawn("bun", ["tests/panel-web/stub-server.ts"], {
-  cwd: ROOT, env: { ...process.env, PORT: String(PORT) }, stdio: "inherit",
-});
-const die = () => { try { stub.kill(); } catch {} };
-process.on("exit", die);
+const APPS = [
+  {
+    name: "console", script: "panel:dev", port: 4330, base: "/panel/",
+    pages: [
+      ["overview", "", "Bash: run the test suite"],
+      ["agents", "agents", "triage"],
+      ["agent-access", "agents/scout/access", "Covering approvals this week"],
+      ["sessions", "sessions", "Compare queue libraries"],
+      ["session-timeline", "sessions/s_7f21", "Allowed Bash: run the test suite"],
+      ["audit", "audit", "Bash: run the test suite"],
+      ["access", "access", "bob@example.com"],
+      ["memory", "memory", "kb-handbook"],
+      ["memory-page", "memory/shared/page?slug=runbooks%2Fdeploy-rollback", "Announce the rollback"],
+      ["environments", "environments", "node-g1"],
+    ],
+  },
+  {
+    name: "portal", script: "portal:dev", port: 4331, base: "/portal/",
+    pages: [
+      ["account", "", "TSANDBOX"],
+      ["integrations", "integrations", "docs-wiki"],
+      ["my-agents", "agents", "triage"],
+    ],
+  },
+];
+const SIZES = [[1440, 900], [390, 844]];
+const THEMES = ["light", "dark"];
 
-async function waitUp() {
-  for (let i = 0; i < 60; i++) {
-    try { const r = await fetch(`${BASE}/panel/`); if (r.ok) return; } catch {}
+const servers = APPS.map((a) =>
+  spawn("bun", ["run", a.script, "--port", String(a.port), "--strictPort"], {
+    cwd: ROOT, env: { ...process.env, VITE_STUB: "1" }, stdio: "ignore",
+  }));
+const stop = () => servers.forEach((s) => { try { s.kill(); } catch {} });
+process.on("exit", stop);
+
+async function waitUp(url) {
+  for (let i = 0; i < 150; i++) {
+    try { if ((await fetch(url)).ok) return; } catch {}
     await new Promise((r) => setTimeout(r, 200));
   }
-  throw new Error("stub never came up");
+  throw new Error(`${url} never came up`);
 }
-
-const DETAIL = "s_ravi_9f3c21";
-const LOCKED = "s_lena_47ab08";
 
 async function run() {
-  await waitUp();
-  const browser = await chromium.launch();
-
-  for (const theme of ["light", "dark"]) {
-    const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
-    const page = await ctx.newPage();
-    let nonce = 0;
-    // unique nonce per nav so a hash-only change still forces a full reload
-    const q = () => `?mock=1&theme=${theme}&n=${++nonce}`;
-    const shot = (name) => page.screenshot({ path: join(OUT, `${name}-${theme}.png`) });
-    const settleTimeline = async () => {
-      // let the scripted SSE tail drain into nodes
-      await page.waitForSelector('[data-testid="tl-node"]');
-      await page.waitForFunction(() => document.querySelectorAll('[data-testid="tl-node"]').length >= 8, null, { timeout: 8000 }).catch(() => {});
-      await page.waitForTimeout(400);
-    };
-
-    // 1. list
-    await page.goto(`${BASE}/panel/${q()}`, { waitUntil: "networkidle" });
-    await page.waitForSelector("tbody tr[data-sid]");
-    await page.waitForTimeout(300);
-    await shot("list");
-
-    // 2. detail — identity + metadata + control bar + lock banner
-    await page.goto(`${BASE}/panel/${q()}#/s/${LOCKED}`, { waitUntil: "networkidle" });
-    await page.waitForSelector('[data-view="detail"]');
-    await page.waitForTimeout(500);
-    await shot("detail");
-
-    // 3. timeline — the visual event tail
-    await page.goto(`${BASE}/panel/${q()}#/s/${DETAIL}`, { waitUntil: "networkidle" });
-    await page.waitForSelector('[data-view="detail"]');
-    await settleTimeline();
-    await page.locator(".card[data-view='timeline']").scrollIntoViewIfNeeded().catch(() => {});
-    await page.waitForTimeout(300);
-    await shot("timeline");
-
-    // 4. controls — honest destructive control (reason-required stop modal)
-    await page.goto(`${BASE}/panel/${q()}#/s/${DETAIL}`, { waitUntil: "networkidle" });
-    await page.waitForSelector('[data-testid="controlbar"]');
-    await page.locator('[data-testid="btn-stop"]').click();
-    await page.waitForSelector(".modal");
-    await page.locator("#reason").fill("runaway tool loop, halting at next safe point");
-    await page.waitForTimeout(250);
-    await shot("controls");
-
-    // 5. chat — take control + conversation
-    await page.goto(`${BASE}/panel/${q()}#/s/${DETAIL}`, { waitUntil: "networkidle" });
-    await page.locator('[data-testid="tab-chat"]').click();
-    await page.locator('[data-testid="take-control"]').click().catch(() => {});
-    await page.waitForTimeout(400);
-    await page.locator('[data-testid="chat-input"]').fill("Post the diff in this thread first, then open the PR.").catch(() => {});
-    await page.waitForTimeout(500);
-    await shot("chat");
-
-    await ctx.close();
+  await Promise.all(APPS.map((a) => waitUp(`http://localhost:${a.port}${a.base}`)));
+  const browser = await chromium.launch({ executablePath: process.env.PW_CHROMIUM_PATH || undefined });
+  let n = 0;
+  for (const app of APPS) {
+    for (const theme of THEMES) {
+      for (const [width, height] of SIZES) {
+        const ctx = await browser.newContext({ viewport: { width, height }, deviceScaleFactor: 1, colorScheme: theme });
+        await ctx.addInitScript((t) => { try { localStorage.setItem("slaude.theme", t); } catch {} }, theme);
+        const page = await ctx.newPage();
+        for (const [name, path, ready] of app.pages) {
+          await page.goto(`http://localhost:${app.port}${app.base}${path}`);
+          await page.getByRole("main").getByText(ready).first().waitFor();
+          await page.waitForFunction(() => document.querySelectorAll(".sl-skeleton, tr.is-skeleton").length === 0);
+          await page.screenshot({ path: join(OUT, `${app.name}-${name}-${width}-${theme}.png`), fullPage: true });
+          n++;
+        }
+        await ctx.close();
+      }
+    }
   }
-
   await browser.close();
-  console.log("shots written to", OUT);
+  console.log(`${n} screenshots in ${OUT}`);
 }
 
-run().then(() => { die(); process.exit(0); }).catch((e) => { console.error(e); die(); process.exit(1); });
+run().then(() => { stop(); process.exit(0); }, (e) => { console.error(e); stop(); process.exit(1); });

@@ -1,0 +1,7 @@
+# Seed first: a stored dm-only member grant for U0BOB.
+# U0BOB is admitted in a DM.
+layer: dm
+as: outsider
+steps:
+  - send: { text: "outsider DM with a dm-only grant" }
+  - expect_reply: { contains: "ack: done" }

@@ -193,6 +193,24 @@ export function makeRegistry(opts: RegistryOpts) {
       return out;
     },
 
+    /** Every live node with all its labels (sorted) and its last heartbeat
+     *  (ms; null when the key went between the listing and the read), sorted
+     *  by node. Two MGETs over one listing. */
+    async liveNodeDetails(): Promise<Array<{ node: string; labels: string[]; lastBeat: number | null }>> {
+      const live = await listLive();
+      if (live.length === 0) return [];
+      const [beats, labels] = await Promise.all([
+        redis.mget(...live.map((n) => keys.node(n))),
+        redis.mget(...live.map((n) => keys.nodeLabels(n))),
+      ]);
+      return live
+        .map((node, i) => {
+          const b = beats[i] == null ? NaN : Number(beats[i]);
+          return { node, labels: [...decodeLabels(labels[i] ?? null)].sort(), lastBeat: Number.isFinite(b) ? b : null };
+        })
+        .sort((a, b) => a.node.localeCompare(b.node));
+    },
+
     /** Every label at least one live node carries. */
     async liveLabels(): Promise<Set<string>> {
       const live = await listLive();

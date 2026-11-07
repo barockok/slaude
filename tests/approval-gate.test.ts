@@ -5,6 +5,11 @@ import * as PendingGates from "../src/db/pending-gates";
 import { ApprovalGate } from "../src/gateway/slack/approval-gate";
 import { setSoulData, __resetSoulDataMemo } from "../src/soul/extract";
 import { SoulDataSchema } from "../src/soul/data";
+import * as AuditEvents from "../src/db/audit-events";
+import { flushAudits } from "../src/audit/emit";
+import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../src/persona/registry";
+import { __setGrantsReader, invalidateGrants } from "../src/access/role";
+import type { Grant } from "../src/access/grants";
 
 type Handler = (a: any) => Promise<void>;
 
@@ -130,6 +135,228 @@ describe("ApprovalGate", () => {
     } finally {
       __resetSoulDataMemo();
     }
+  });
+
+  test("a named persona: its approvers and managers by role, with no scope matching; the default's approver is not", async () => {
+    const alpha = {
+      name: "alpha", slackUserId: "U0ALPHAP", outClient: null,
+      soulJson: { manager: { userId: "UALPHAMGR" }, approvers: [{ userId: "UALPHADBA", scope: "database schema changes", catchall: false }] },
+    } as any;
+    const reg: PersonaRegistry = {
+      lookupByUserId: () => null, lookupByName: (n) => (n === "alpha" ? alpha : null), list: () => [alpha],
+      isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+    };
+    setPersonaRegistry(reg);
+    __setGrantsReader(async () => []);
+    setSoulData(SoulDataSchema.parse({
+      manager: { userId: "UMGRDEF" },
+      approvers: [{ userId: "UGLOBALDEF", scope: "anything", catchall: true }],
+    }));
+    try {
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, []);
+      let resolved = false;
+      const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "deploy the frontend", persona: "alpha" })
+        .then((d) => { resolved = true; return d; });
+      const okId = (await firstPost(f)).blocks
+        .find((b: any) => b.type === "actions")
+        .elements.find((e: any) => e.action_id.includes("approve")).action_id;
+      await f.fire(okId, "UGLOBALDEF"); // the default persona's approver
+      await f.fire(okId, "UMGRDEF"); // the default persona's manager
+      await new Promise((r) => setTimeout(r, 5));
+      expect(resolved).toBe(false);
+      await f.fire(okId, "UALPHADBA"); // alpha's approver, though the scope does not match
+      expect(await p).toMatchObject({ approved: true, by: "UALPHADBA" });
+
+      const g2 = fakeApp();
+      const gate2 = new ApprovalGate(g2.app, []);
+      const p2 = gate2.request({ channel: "CPLAIN", threadTs: "T", summary: "x", persona: "alpha" });
+      const id2 = (await firstPost(g2)).blocks
+        .find((b: any) => b.type === "actions")
+        .elements.find((e: any) => e.action_id.includes("approve")).action_id;
+      await g2.fire(id2, "UALPHAMGR"); // alpha's manager
+      expect(await p2).toMatchObject({ approved: true, by: "UALPHAMGR" });
+    } finally {
+      __resetPersonaRegistry();
+      __setGrantsReader(null);
+      __resetSoulDataMemo();
+    }
+  });
+
+  describe("a named persona with no approver or manager of its own", () => {
+    const withBare = async (fn: () => Promise<void>) => {
+      // No structured soul and a default soul with no manager: every unit falls back to an empty default.
+      const bare = { name: "bare", slackUserId: "UBAREP", outClient: null } as any;
+      setPersonaRegistry({
+        lookupByUserId: () => null, lookupByName: (n) => (n === "bare" ? bare : null), list: () => [bare],
+        isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+      });
+      __setGrantsReader(async () => []);
+      try {
+        await fn();
+      } finally {
+        __resetPersonaRegistry();
+        __setGrantsReader(null);
+        __resetSoulDataMemo();
+      }
+    };
+    const approveId = async (f: { posts: any[] }) =>
+      (await firstPost(f)).blocks.find((b: any) => b.type === "actions").elements.find((e: any) => e.action_id.includes("approve")).action_id;
+
+    test("never the legacy list or SLAUDE_APPROVERS: the default's manager decides", async () => {
+      await withBare(async () => {
+        // The legacy "category: ids" block and the env list name ULEGACY and UENV.
+        writeFileSync(paths.soul, "# Persona\n## Approvers\n- default: ULEGACY\n");
+        setSoulData(SoulDataSchema.parse({ manager: { userId: "UMGRDEF" } }));
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, ["UENV"]);
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x", persona: "bare" }).then((d) => ((resolved = true), d));
+        const id = await approveId(f);
+        await f.fire(id, "ULEGACY");
+        await f.fire(id, "UENV");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        await f.fire(id, "UMGRDEF");
+        expect(await p).toMatchObject({ approved: true, by: "UMGRDEF" });
+      });
+    });
+
+    test("never anyone: with no manager anywhere nobody may approve", async () => {
+      await withBare(async () => {
+        setSoulData(SoulDataSchema.parse({}));
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        const ac = new AbortController();
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x", persona: "bare" }, ac.signal).then((d) => ((resolved = true), d));
+        const card = JSON.stringify((await firstPost(f)).blocks);
+        expect(card).toContain("nobody (no manager is configured)");
+        expect(card).not.toContain("!nobody");
+        await f.fire(await approveId(f), "URANDOM");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        ac.abort();
+        expect((await p).approved).toBe(false);
+      });
+    });
+  });
+
+  describe("deny grants", () => {
+    const deny = (subjectId: string): Grant => ({
+      subjectKind: "user", subjectId, role: "member", deny: true, dmOnly: false, source: "console",
+    });
+    const approveId = async (f: { posts: any[] }) =>
+      (await firstPost(f)).blocks.find((b: any) => b.type === "actions").elements.find((e: any) => e.action_id.includes("approve")).action_id;
+    const refusedRows = async (sessionId: string) => {
+      for (let i = 0; ; i++) {
+        await flushAudits();
+        const items = (await AuditEvents.list({ sessionId, action: "gate.approval.refused" })).items;
+        if (items.length || i >= 200) return items;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    };
+    const withGrants = async (grants: () => Grant[], fn: () => Promise<void>) => {
+      __setGrantsReader(async (persona) => (persona === "default" ? grants() : []));
+      try {
+        await fn();
+      } finally {
+        __setGrantsReader(null);
+        __resetSoulDataMemo();
+      }
+    };
+
+    test("a denied soul approver of the default persona cannot approve; the others can", async () => {
+      await withGrants(() => [deny("U0DENIED1")], async () => {
+        setSoulData(SoulDataSchema.parse({
+          approvers: [
+            { userId: "U0DENIED1", scope: "anything", catchall: true },
+            { userId: "U0APPROV1", scope: "anything", catchall: true },
+          ],
+        }));
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x", sessionId: "SDENY1" }).then((d) => ((resolved = true), d));
+        const card = JSON.stringify((await firstPost(f)).blocks);
+        expect(card).toContain("<@U0APPROV1>");
+        expect(card).not.toContain("U0DENIED1");
+        const id = await approveId(f);
+        await f.fire(id, "U0DENIED1");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        await f.fire(id, "U0APPROV1");
+        expect(await p).toMatchObject({ approved: true, by: "U0APPROV1" });
+        const [ev] = await refusedRows("SDENY1");
+        expect(ev).toMatchObject({ actorId: "U0DENIED1", decision: "refused" });
+      });
+    });
+
+    test("when every approver the chain names is denied, nobody may approve (not anyone)", async () => {
+      await withGrants(() => [deny("U0DENIED1")], async () => {
+        setSoulData(SoulDataSchema.parse({ approvers: [{ userId: "U0DENIED1", scope: "anything", catchall: true }] }));
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        const ac = new AbortController();
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x" }, ac.signal).then((d) => ((resolved = true), d));
+        const id = await approveId(f);
+        await f.fire(id, "U0DENIED1");
+        await f.fire(id, "U0RANDOM1");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        ac.abort();
+        expect((await p).approved).toBe(false);
+      });
+    });
+
+    test("a card anyone may decide still refuses a denied clicker; others decide it", async () => {
+      await withGrants(() => [deny("U0DENIED1")], async () => {
+        writeFileSync(paths.soul, "# Persona\n");
+        setSoulData(SoulDataSchema.parse({}));
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x", sessionId: "SDENY2" }).then((d) => ((resolved = true), d));
+        const id = await approveId(f);
+        await f.fire(id, "U0DENIED1");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        const [ev] = await refusedRows("SDENY2");
+        expect(ev).toMatchObject({ actorId: "U0DENIED1", decision: "refused" });
+        expect(ev!.summary).toContain("denied");
+        await f.fire(id, "U0RANDOM1");
+        expect(await p).toMatchObject({ approved: true, by: "U0RANDOM1" });
+      });
+    });
+
+    test("a named persona: a deny added after the card was posted refuses the click", async () => {
+      const alpha = { name: "alpha", slackUserId: "U0ALPHAP", outClient: null, soulJson: { manager: { userId: "UALPHAMGR" }, approvers: [{ userId: "UALPHAAPP", scope: "anything", catchall: true }] } } as any;
+      setPersonaRegistry({
+        lookupByUserId: () => null, lookupByName: (n) => (n === "alpha" ? alpha : null), list: () => [alpha],
+        isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+      });
+      let stored: Grant[] = [];
+      __setGrantsReader(async (persona) => (persona === "alpha" ? stored : []));
+      try {
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x", persona: "alpha" }).then((d) => ((resolved = true), d));
+        const id = await approveId(f);
+        stored = [deny("UALPHAAPP")];
+        invalidateGrants("alpha");
+        await f.fire(id, "UALPHAAPP");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        await f.fire(id, "UALPHAMGR");
+        expect(await p).toMatchObject({ approved: true, by: "UALPHAMGR" });
+      } finally {
+        __resetPersonaRegistry();
+        __setGrantsReader(null);
+        __resetSoulDataMemo();
+      }
+    });
   });
 
   test("deny by authorized user", async () => {
@@ -377,5 +604,117 @@ describe("ApprovalGate", () => {
       .elements.find((e: any) => e.action_id.includes("approve")).action_id;
     await f.fire(id, "U400");
     expect((await p).approved).toBe(true);
+  });
+
+  describe("audit", () => {
+    // Fire-and-forget writes, some behind a guarded resolve: poll until the
+    // expected count lands (or a short deadline passes).
+    async function auditRows(sessionId: string, want = 1) {
+      for (let i = 0; ; i++) {
+        await flushAudits();
+        const items = (await AuditEvents.list({ sessionId, action: "gate.approval." })).items;
+        if (items.length >= want || i >= 200) return items;
+        await new Promise((r) => setTimeout(r, 5));
+      }
+    }
+    const buttonId = async (f: { posts: any[] }, verb: string) =>
+      (await firstPost(f)).blocks
+        .find((b: any) => b.type === "actions")
+        .elements.find((e: any) => e.action_id.includes(verb)).action_id;
+
+    test("a non-approver click is refused, the approver's click is decided", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, []);
+      const p = gate.request({ channel: "C", threadTs: "T", summary: "write shared page", category: "kb", sessionId: "SAPR1" });
+      const id = await buttonId(f, "approve");
+      await f.fire(id, "U999");
+      await f.fire(id, "U001");
+      await p;
+      const rows = await auditRows("SAPR1", 2);
+      expect(rows.map((r) => [r.action, r.decision, r.actorId]).sort()).toEqual([
+        ["gate.approval.decided", "allow", "U001"],
+        ["gate.approval.refused", "refused", "U999"],
+      ]);
+      for (const r of rows) {
+        expect(r).toMatchObject({ targetKind: "approval", targetId: "kb", persona: "default", channelId: "C", threadTs: "T" });
+        expect(r.details.category).toBe("kb");
+      }
+    });
+
+    test("the request's persona is stamped into the row and recorded", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, []);
+      const p = gate.request({ channel: "C", threadTs: "T", summary: "x", sessionId: "SAPRP", persona: "helper" });
+      await f.fire(await buttonId(f, "deny"), "U002");
+      await p;
+      const [ev] = await auditRows("SAPRP");
+      expect(ev!.persona).toBe("helper");
+    });
+
+    test("deny records decision deny", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, []);
+      const p = gate.request({ channel: "C", threadTs: "T", summary: "x", sessionId: "SAPR2" });
+      await f.fire(await buttonId(f, "deny"), "U002");
+      await p;
+      const [ev] = await auditRows("SAPR2");
+      expect(ev).toMatchObject({ action: "gate.approval.decided", decision: "deny", targetId: "plan" });
+    });
+
+    test("the auto-deny timer records gate.approval.expired once", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, [], { timeoutSeconds: () => 0.05 as any });
+      await gate.request({ channel: "C", threadTs: "T", summary: "stuck", sessionId: "SAPR3" });
+      const rows = await auditRows("SAPR3");
+      expect(rows.map((r) => [r.action, r.decision, r.actorKind])).toEqual([["gate.approval.expired", "expired", "system"]]);
+    });
+
+    test("open(): the timer records expired; a click on the poll row records decided", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, [], { timeoutSeconds: () => 0.05 as any });
+      await gate.open({ channel: "C", threadTs: "T", summary: "a", sessionId: "SAPR4" });
+      await auditRows("SAPR4");
+      const slow = new ApprovalGate(fakeApp().app, [], { timeoutSeconds: () => 0 });
+      const { pendingId } = await slow.open({ channel: "C", threadTs: "T", summary: "b", sessionId: "SAPR4" });
+      await f.fire(`slaude_appr:approve:${pendingId}`, "U999");
+      await f.fire(`slaude_appr:approve:${pendingId}`, "U001");
+      const rows = await auditRows("SAPR4", 3);
+      expect(rows.map((r) => r.action).sort()).toEqual([
+        "gate.approval.decided",
+        "gate.approval.expired",
+        "gate.approval.refused",
+      ]);
+    });
+
+    test("an abort records gate.approval.cancelled", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+      const f = fakeApp();
+      const gate = new ApprovalGate(f.app, []);
+      const ac = new AbortController();
+      const p = gate.request({ channel: "C", threadTs: "T", summary: "x", sessionId: "SAPR5" }, ac.signal);
+      await firstPost(f);
+      ac.abort();
+      await p;
+      const [ev] = await auditRows("SAPR5");
+      expect(ev).toMatchObject({ action: "gate.approval.cancelled", decision: "cancelled", actorKind: "system" });
+    });
+
+    test("a failed card post records gate.approval.cancelled on both paths", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+      const f = fakeApp();
+      f.app.client.chat.postMessage = async () => {
+        throw new Error("slack down");
+      };
+      const gate = new ApprovalGate(f.app, []);
+      await expect(gate.request({ channel: "C", threadTs: "T", summary: "x", sessionId: "SAPR6" })).rejects.toThrow();
+      await expect(gate.open({ channel: "C", threadTs: "T", summary: "y", sessionId: "SAPR6" })).rejects.toThrow();
+      const rows = await auditRows("SAPR6", 2);
+      expect(rows.map((r) => r.action)).toEqual(["gate.approval.cancelled", "gate.approval.cancelled"]);
+    });
   });
 });

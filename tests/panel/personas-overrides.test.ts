@@ -8,6 +8,8 @@ import * as P from "../../src/db/personas";
 import { __resetPersonaRegistry, whenPersonaRegistrySettled } from "../../src/persona/registry";
 import type { DesiredPersona } from "../../src/persona/effective";
 import { SoulExtractionError } from "../../src/soul/extract";
+import * as AuditEvents from "../../src/db/audit-events";
+import { flushAudits } from "../../src/audit/emit";
 
 // Postgres-only tables: run with SLAUDE_DB=pg (PGLite).
 const SECRET = "t".repeat(32);
@@ -106,6 +108,23 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("panel persona overrides", () =>
     expect((await panel.fetch(put(p, { value: "m" }, superadmin)))!.status).toBe(200);
     expect((await P.effectivePersonas("default"))[0]!.model).toBe("m");
     expect(reloads).toBe(1);
+  });
+
+  test("PUT and DELETE record soul.override.set and soul.override.cleared, once each", async () => {
+    await sync([row("ana")]);
+    await db.run("DELETE FROM audit_events");
+    const p = "/panel/api/personas/ana/overrides/model";
+    expect((await panel.fetch(put(p, { value: "m" }, superadmin)))!.status).toBe(200);
+    expect((await panel.fetch(del(p, superadmin)))!.status).toBe(200);
+    // A second DELETE removes nothing, so it records nothing.
+    expect((await panel.fetch(del(p, superadmin)))!.status).toBe(200);
+    await flushAudits();
+    const rows = (await AuditEvents.list({ action: "soul.override." })).items;
+    expect(rows.map((e) => e.action).sort()).toEqual(["soul.override.cleared", "soul.override.set"]);
+    for (const e of rows) {
+      expect(e).toMatchObject({ actorKind: "operator", actorId: "lead@example.com", persona: "ana", targetKind: "soul_field", targetId: "model" });
+      expect(e.details.panelAction).toBe("persona.override");
+    }
   });
 
   test("only soul, model and mcp are overridable", async () => {

@@ -1,0 +1,6 @@
+# An unlisted channel drops a user with no grant (reason whitelist).
+layer: restricted
+as: outsider
+steps:
+  - send: { text: "hello from an unlisted channel" }
+  - expect_drop: { reason: whitelist }

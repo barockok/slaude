@@ -160,39 +160,40 @@ export function soulSystemBlock(overlay?: string): string {
 }
 
 /**
- * The knowledge-base passages that differ by brain mode. \`list_kbs\` and
- * \`search_kbs\` return no disk path (WS-C §4.1.4), so with the brain disabled
- * the prompt itself names where a knowledge base's files are; with it enabled
- * the brain tools read them and no path is given.
+ * The memory passages that differ by brain mode. \`memory_stores\` and
+ * \`memory_search_stores\` return no disk path (WS-C §4.1.4), so with the brain
+ * disabled the prompt itself names where a knowledge base's files are; with it
+ * enabled the memory tools read them and no path is given. Only the memory_*
+ * names appear here; the deprecated kb_* aliases are never offered in text.
  */
 function knowledgeText(brain: boolean): Record<"KB_FALLBACK" | "KB_READ" | "KB_TOOLS", string> {
   if (brain) {
     return {
       KB_FALLBACK:
-        "\`list_kbs\` / \`search_kbs\` only name the knowledge bases you may read; the brain tools read them.",
+        "\`memory_stores\` / \`memory_search_stores\` only name the knowledge bases you may read; the memory tools read them.",
       KB_READ:
         "If tags match, read the relevant pages BEFORE calling external tools. Example: user asks\n" +
-        "  \"what do you know about service-a?\" → \`kb_think({question: \"...\"})\` or\n" +
-        "  \`kb_search({query: \"service-a\"})\` → read matching pages via\n" +
-        "  \`kb_get_page\` → only then decide whether Grafana or other tools are needed.",
+        "  \"what do you know about service-a?\" → \`memory_think({question: \"...\"})\` or\n" +
+        "  \`memory_search({query: \"service-a\"})\` → read matching pages via\n" +
+        "  \`memory_get\` → only then decide whether Grafana or other tools are needed.",
       KB_TOOLS:
-        "- Query the brain anytime via \`mcp__slaude_kb__{kb_think, kb_search,\n" +
-        "  kb_get_page, kb_list_pages, kb_graph, memory_about, kb_thread_history, list_kbs,\n" +
-        "  search_kbs}\` — all served\n" +
-        "  live from the brain DB. Reach for them whenever the answer plausibly\n" +
+        "- Query your memory anytime via \`mcp__slaude_kb__{memory_think, memory_search,\n" +
+        "  memory_get, memory_list, memory_graph, memory_about, memory_thread_history,\n" +
+        "  memory_stores, memory_search_stores}\`, all served\n" +
+        "  live from the memory database. Reach for them whenever the answer plausibly\n" +
         "  lives in operator-curated reference material or your own memory.",
     };
   }
   const dir = `${paths.knowledge}/<label>/`;
   return {
     KB_FALLBACK:
-      "The brain is disabled in this deployment, so the \`kb_*\` brain tools are absent: find the knowledge base with " +
-      `\`search_kbs\` (keyword/tag match) or \`list_kbs\`, then read its files with \`Grep\`/\`Read\` under \`${dir}\`, ` +
+      "Memory stores are disabled in this deployment, so the memory page tools are absent: find the knowledge base with " +
+      `\`memory_search_stores\` (keyword/tag match) or \`memory_stores\`, then read its files with \`Grep\`/\`Read\` under \`${dir}\`, ` +
       "where <label> is the \`label\` those tools return.",
     KB_READ:
       `If tags match, read its relevant files under \`${dir}\` with \`Grep\`/\`Read\` BEFORE calling external tools.`,
     KB_TOOLS:
-      "- The knowledge tools in this deployment are \`mcp__slaude_kb__{list_kbs, search_kbs}\`; they list only the\n" +
+      "- The knowledge tools in this deployment are \`mcp__slaude_kb__{memory_stores, memory_search_stores}\`; they list only the\n" +
       `  knowledge bases you may read, and their files are under \`${dir}\`.`,
   };
 }

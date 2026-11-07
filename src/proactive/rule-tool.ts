@@ -24,11 +24,11 @@
  */
 import { backgroundAgentId } from "../background/skill-check";
 import * as OneOnOne from "../db/one-on-one";
-import { isManagerOrApprover, type SlackContext } from "../gateway/slack/mcp-tools";
+import type { SlackContext } from "../gateway/slack/mcp-tools";
+import { loadGrants, usersWithRole } from "../access/role";
 import { brainCall } from "../knowledge/brain";
 import { SUPERSEDED_TAG, supersededSlugs, type BrainOpCall } from "../knowledge/memory-trail";
 import { agentSourceId, type BrainScope } from "../knowledge/scope";
-import { effectiveSoulForChannel, soulData } from "../soul/extract";
 import { proactiveFor } from "../soul/proactive";
 import { levelRank, type Level } from "./levels";
 import { composeRulePage, loadRules, resolveLevel } from "./rules";
@@ -57,17 +57,14 @@ export function __setRuleBrainCall(call: BrainOpCall | null): void {
 
 const mention = (id: string) => `<@${id}>`;
 
-/** Manager and backup (global and DM rules). */
-function managers(): string[] {
-  const s = soulData();
-  return [s.manager?.userId, s.backupManager?.userId].filter((u): u is string => !!u);
-}
-
-/** Who may approve a rule for this channel, as Slack mentions. */
-function approverNames(channel: string): string {
-  const ids = new Set(managers());
-  for (const a of effectiveSoulForChannel(channel).approvers ?? []) ids.add(a.userId);
-  return ids.size > 0 ? [...ids].map(mention).join(", ") : "the manager";
+/**
+ * Who may approve a rule, by role on the turn's persona (roleOf, the same
+ * check as the admin commands): its managers for global and DM rules, its
+ * managers and the channel's approvers for a channel rule.
+ */
+async function ruleApprovers(personaName: string | null | undefined, channel: string | null): Promise<string[]> {
+  const grants = await loadGrants(personaName);
+  return channel ? usersWithRole(grants, ["manager", "approver"], channel) : usersWithRole(grants, ["manager"]);
 }
 
 /** True when the running turn holds exactly one sender: this person, from Slack. */
@@ -154,16 +151,16 @@ export async function proactiveRule(
   }
 
   // Lowering here applies at once; raising, or any global rule, needs an approver for the scope.
-  const canApprove = (u: string) => (channel ? isManagerOrApprover(u, channel) : managers().includes(u));
+  const approvers = await ruleApprovers(ctx.personaId, channel);
+  const canApprove = (u: string) => approvers.includes(u);
   let approvedBy: string | undefined;
   if (((raising || scope === "global") && !canApprove(userId)) || unverified) {
     // Global and DM: only the manager or backup, and a card in this thread
     // would be addressed to the channel's approvers, so no card for anyone else.
     if (!channel && !canApprove(userId)) {
-      const m = managers();
-      return err(`refused: ask ${m.length > 0 ? m.map(mention).join(" or ") : "the manager"} to set this; only they can approve it here`);
+      return err(`refused: ask ${approvers.length > 0 ? approvers.map(mention).join(" or ") : "the manager"} to set this; only they can approve it here`);
     }
-    const who = channel ? approverNames(channel) : managers().map(mention).join(" or ") || "the manager";
+    const who = approvers.length > 0 ? approvers.map(mention).join(channel ? ", " : " or ") : "the manager";
     if (!ctx.requestApproval) return err(`refused: this needs approval from ${who}, and no approval card can be opened here`);
     const r = await ctx.requestApproval({
       summary: `Let me handle ${a.kind} at ${a.level} ${where}${how ? `: ${how}` : ""}`,

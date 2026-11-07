@@ -340,8 +340,9 @@ behavior documented on this page, unchanged.
   standalone in `mono` role — it doesn't require this topology.
 - **[Personas as code](personas-as-code.md)** — sync personas from a git
   repository with a CI job (`/deploy`, its own token, dry-run diff).
-- **[Control panel](panel.md)** — an operator web console (`SLAUDE_PANEL=1`):
-  fleet view, session control, take-control-from-Slack, and chat.
+- **[Console and portal](panel.md)**: the operator console (`SLAUDE_PANEL=1`:
+  agents and their mandates and grants, sessions with take-control-from-Slack
+  and chat, approvals and audit, memory, environments) and the end-user portal.
 - Architecture and invariants: `docs/internal/superpowers/specs/2026-08-24-horizontal-scale-design.md`.
 
 > The single-Deployment warning above does not apply to this topology:

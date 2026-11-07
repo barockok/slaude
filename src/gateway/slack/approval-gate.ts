@@ -1,9 +1,11 @@
 import { clientForApp, type AppRef, type Transport, type WebClientLike } from "../core/transport";
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
 import { effectiveSoulForChannel } from "../../soul/extract";
+import { approversFor, isDenied, loadGrants } from "../../access/role";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
+import { auditGateRow } from "../../audit/emit";
 
 export type ApprovalRequest = {
   channel: string;
@@ -24,7 +26,13 @@ export type ApprovalRequest = {
    *  timeout edit made, as this app. A click needs no client: it answers
    *  through the click's own response_url, which belongs to the posting app. */
   app?: AppRef;
+  /** Persona name, stamped into the row for its audit rows. */
+  persona?: string | null;
 };
+
+/** An approver id no Slack user has: an approver set of just this admits
+ *  nobody (an empty set would admit anyone). Never rendered on the card. */
+const NOBODY = "!nobody";
 
 export type ApprovalDecision = {
   approved: boolean;
@@ -123,7 +131,15 @@ export class ApprovalGate {
             });
           } catch {}
         };
-        const notAllowed = async () => {
+        const notAllowed = async (pendingRow: PendingGates.PendingGate, denied = false) => {
+          // The allowlist or a deny grant refused the click; the row stays pending.
+          auditGateRow(pendingRow, {
+            verb: "refused",
+            actorKind: "slack_user",
+            actorId: userId,
+            decision: "refused",
+            summary: `approval ${verb} refused: ${denied ? "clicker is denied on this persona" : "clicker is not an approver"}`,
+          });
           try {
             await respond({
               response_type: "ephemeral",
@@ -132,6 +148,11 @@ export class ApprovalGate {
             });
           } catch {}
         };
+        // A deny grant on the card's persona refuses the clicker even when the
+        // card lists them or admits anyone (an empty allowlist). Read at click
+        // time, so a deny added after the card was posted applies too.
+        const deniedClicker = async (pendingRow: PendingGates.PendingGate): Promise<boolean> =>
+          isDenied(await loadGrants((pendingRow.payload.personaName as string | undefined) ?? "default"), userId);
         // Durable row is the source of truth for "still open?".
         const row = await PendingGates.get(id);
         if (!row || row.status !== "pending") {
@@ -155,7 +176,8 @@ export class ApprovalGate {
           if (!isPollRow && row.instanceId === PendingGates.INSTANCE_ID) {
             // Our own in-process row with no waiter: the abort raced the
             // click. Settle the stray so it doesn't linger until expiry.
-            await PendingGates.resolve(id, "cancelled", userId);
+            const settled = await PendingGates.resolve(id, "cancelled", userId);
+            if (settled) auditApprovalCancelled(settled, "slack_user", userId, "click raced the turn's abort");
             await this.#publish(id);
             return void (await stale());
           }
@@ -168,9 +190,11 @@ export class ApprovalGate {
             // authorize the clicker — checked BEFORE the guarded resolve so a
             // non-approver click never consumes the row.
             const approvers = new Set<string>((row.payload.approvers as string[] | undefined) ?? []);
-            if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed());
+            if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed(row));
+            if (await deniedClicker(row)) return void (await notAllowed(row, true));
             const resolved = await PendingGates.resolve(id, approved ? "approved" : "denied", userId);
             if (!resolved) return void (await stale());
+            auditApprovalDecided(resolved, userId, approved);
             await this.#publish(id);
             try {
               await respond({
@@ -200,7 +224,8 @@ export class ApprovalGate {
         const approvers = new Set<string>(
           (row.payload.approvers as string[] | undefined) ?? [...pending.approvers],
         );
-        if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed());
+        if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed(row));
+        if (await deniedClicker(row)) return void (await notAllowed(row, true));
 
         // Exactly one click wins the guarded UPDATE; a duplicate or a race
         // against the auto-deny timer sees null and is stale.
@@ -220,6 +245,7 @@ export class ApprovalGate {
         if (pending.timer) clearTimeout(pending.timer);
         this.#pending.delete(id);
         void pending.unsub?.().catch(() => {});
+        auditApprovalDecided(resolved, userId, approved);
         await this.#publish(id);
         const label = approved ? "*Approved*" : "*Denied*";
         try {
@@ -251,13 +277,42 @@ export class ApprovalGate {
     }
   }
 
-  /** Resolve who may approve. Order:
-   *   1. LLM-extracted SoulData approvers (preferred when available).
+  /** Resolve who may approve.
+   *
+   *  A named persona: every user whose role on it (roleOf, channel-aware) is
+   *  approver or manager, with no scope keyword matching (phase 1); when it
+   *  has none, the default persona's managers. Never the legacy list, the env
+   *  list or "anyone": with no manager anywhere nobody may approve and the
+   *  card times out denied.
+   *
+   *  The default persona, in order:
+   *   1. LLM-extracted SoulData approvers, scope matched.
    *   2. Scope-described persona via regex parser.
    *   3. Legacy "category: ids" persona: persona[category] → persona.default.
    *   4. env SLAUDE_APPROVERS.
-   *   5. Empty (anyone may click). */
-  #resolveApprovers(req: ApprovalRequest): Set<string> {
+   *   5. Empty (anyone may click).
+   *  then minus every user with a deny grant on the default persona. When the
+   *  deny removes everyone the chain named, nobody may approve (never anyone).
+   *  An empty set stays "anyone"; the click handler refuses a denied clicker. */
+  async #resolveApprovers(req: ApprovalRequest): Promise<Set<string>> {
+    if (req.persona && req.persona !== "default") {
+      const ids = await approversFor(req.persona, req.channel);
+      if (ids.length) return new Set(ids);
+      console.warn(`[approval-gate] persona=${req.persona} has no approver or manager, nor does the default persona: nobody can approve`);
+      return new Set([NOBODY]);
+    }
+    const chain = this.#defaultChain(req);
+    if (chain.size === 0) return chain;
+    const grants = await loadGrants("default");
+    const kept = [...chain].filter((u) => !isDenied(grants, u));
+    if (kept.length === chain.size) return chain;
+    if (kept.length) return new Set(kept);
+    console.warn("[approval-gate] every approver for this request is denied on the default persona: nobody can approve");
+    return new Set([NOBODY]);
+  }
+
+  /** The default persona's approver chain, before deny grants apply. */
+  #defaultChain(req: ApprovalRequest): Set<string> {
     const structured = effectiveSoulForChannel(req.channel).approvers;
     if (structured.length) {
       const ids = selectApproversFrom(structured, req.summary, req.category);
@@ -323,8 +378,9 @@ export class ApprovalGate {
     }
     if (approvers.size > 0) {
       const list = Array.from(approvers)
+        .filter((u) => u !== NOBODY)
         .map((u) => `<@${u}>`)
-        .join(" ");
+        .join(" ") || "nobody (no manager is configured)";
       sections.push({
         type: "context",
         elements: [{ type: "mrkdwn", text: `Approver(s): ${list}` }],
@@ -356,7 +412,7 @@ export class ApprovalGate {
    */
   async open(req: ApprovalRequest): Promise<{ pendingId: string }> {
     const id = this.#mintId();
-    const approvers = this.#resolveApprovers(req);
+    const approvers = await this.#resolveApprovers(req);
     const timeoutSec = this.#timeoutSeconds();
     await PendingGates.create({
       id,
@@ -369,6 +425,7 @@ export class ApprovalGate {
         category: req.category ?? null,
         approvers: [...approvers],
         waiter: "poll",
+        ...(req.persona ? { personaName: req.persona } : {}),
       },
       expiresAt: timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : undefined,
     });
@@ -380,6 +437,7 @@ export class ApprovalGate {
         void (async () => {
           const row = await PendingGates.resolve(id, "expired", "system");
           if (!row) return; // a click won
+          auditApprovalExpired(row, timeoutSec);
           await this.#publish(id);
           if (cardTs) {
             void client.chat
@@ -406,7 +464,9 @@ export class ApprovalGate {
       cardTs = posted.ts as string | undefined;
     } catch (e) {
       // The card never reached Slack — settle the row and rethrow.
-      void PendingGates.resolve(id, "cancelled", "system").catch(() => {});
+      void PendingGates.resolve(id, "cancelled", "system")
+        .then((row) => row && auditApprovalCancelled(row, "system", "system", "card post failed"))
+        .catch(() => {});
       void this.#publish(id);
       throw e;
     }
@@ -415,7 +475,7 @@ export class ApprovalGate {
 
   async request(req: ApprovalRequest, abortSignal?: AbortSignal): Promise<ApprovalDecision> {
     const id = this.#mintId();
-    const approvers = this.#resolveApprovers(req);
+    const approvers = await this.#resolveApprovers(req);
     const timeoutSec = this.#timeoutSeconds();
 
     // Durable pending state FIRST, then the in-process waiter, then the
@@ -430,6 +490,7 @@ export class ApprovalGate {
         summary: req.summary,
         category: req.category ?? null,
         approvers: [...approvers],
+        ...(req.persona ? { personaName: req.persona } : {}),
       },
       expiresAt: timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : undefined,
     });
@@ -456,7 +517,10 @@ export class ApprovalGate {
           // cancelled, or even a purged row) is ours to finish: deny locally,
           // never hang.
           const row = await PendingGates.resolve(id, "expired", "system");
-          if (row) await this.#publish(id);
+          if (row) {
+            auditApprovalExpired(row, timeoutSec);
+            await this.#publish(id);
+          }
           if (!row) {
             const cur = await PendingGates.get(id);
             if (cur && (cur.status === "approved" || cur.status === "denied")) return;
@@ -507,7 +571,11 @@ export class ApprovalGate {
         this.#pending.delete(id);
         void p.unsub?.().catch(() => {});
         void PendingGates.resolve(id, "cancelled", "system")
-          .then((row) => (row ? this.#publish(id) : undefined))
+          .then((row) => {
+            if (!row) return;
+            auditApprovalCancelled(row, "system", "system", "turn aborted");
+            return this.#publish(id);
+          })
           .catch(() => {});
         p.resolve({ approved: false, by: "system", note: "aborted" });
       },
@@ -527,11 +595,54 @@ export class ApprovalGate {
       if (pending.timer) clearTimeout(pending.timer);
       this.#pending.delete(id);
       void pending.unsub?.().catch(() => {});
-      void PendingGates.resolve(id, "cancelled", "system").catch(() => {});
+      void PendingGates.resolve(id, "cancelled", "system")
+        .then((row) => row && auditApprovalCancelled(row, "system", "system", "card post failed"))
+        .catch(() => {});
       throw e;
     }
     return promise;
   }
+}
+
+// Audit helpers. Each is called only by the path whose guarded resolve won,
+// so every row is recorded once. Expiry: the in-process auto-deny timer owns
+// the rows it expires; rows a sweep expires (no timer alive) are audited by
+// the sweep's caller (auditExpiredGates).
+function auditApprovalDecided(row: PendingGates.PendingGate, userId: string, approved: boolean): void {
+  auditGateRow(row, {
+    verb: "decided",
+    actorKind: "slack_user",
+    actorId: userId,
+    decision: approved ? "allow" : "deny",
+    summary: `${approved ? "approved" : "denied"}: ${String(row.payload.summary ?? "")}`,
+  });
+}
+
+function auditApprovalExpired(row: PendingGates.PendingGate, timeoutSec: number): void {
+  auditGateRow(row, {
+    verb: "expired",
+    actorKind: "system",
+    actorId: "system",
+    decision: "expired",
+    summary: `auto-denied after ${timeoutSec}s: ${String(row.payload.summary ?? "")}`,
+    details: { timeoutSec },
+  });
+}
+
+function auditApprovalCancelled(
+  row: PendingGates.PendingGate,
+  actorKind: "slack_user" | "system",
+  actorId: string,
+  reason: string,
+): void {
+  auditGateRow(row, {
+    verb: "cancelled",
+    actorKind,
+    actorId,
+    decision: "cancelled",
+    summary: `cancelled (${reason}): ${String(row.payload.summary ?? "")}`,
+    details: { reason },
+  });
 }
 
 function truncate(s: string, n: number) {

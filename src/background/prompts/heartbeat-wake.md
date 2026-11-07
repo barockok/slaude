@@ -29,7 +29,7 @@ Rules people taught you (slug · kind · scope · level):
 Your posts of the last 7 days (when · where · topic · signal):
 {{RECENT_POSTS}}
 
-Pick what moves the goal most right now and finish it in this turn. Use your normal tools and skills, and save what you learn with kb_memoize (load slaude:memory first).
+Pick what moves the goal most right now and finish it in this turn. Use your normal tools and skills, and save what you learn with memory_save (load slaude:memory first).
 
 If someone approved something, do that first. If your mandate lets you do a thing without asking, do it; do not offer to. When something blocks one route, try another before you report it.
 

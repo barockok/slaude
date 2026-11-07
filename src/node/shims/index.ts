@@ -28,7 +28,8 @@ import { slackContract } from "../../tools/contracts/slack";
 import { runtimeContract } from "../../tools/contracts/runtime";
 import { connectContract } from "../../tools/contracts/connect";
 import { skillsContract } from "../../tools/contracts/skills";
-import { kbContract } from "../../tools/contracts/kb";
+import { isMemoryToolAlias, kbContract } from "../../tools/contracts/kb";
+import { env } from "../../config/env";
 import { mcpMountedTools, type ServerContract } from "../../tools/contracts/types";
 import { decisionFromApprovalRow } from "../../gateway/slack/approval-gate";
 import type { NodeClient, ToolResult } from "../client";
@@ -57,6 +58,14 @@ export interface ShimDeps {
   voiceActive?(sessionId: string): boolean;
 }
 
+/** The tools a shim mounts: the contract's MCP tools, less the deprecated
+ *  memory aliases when SLAUDE_MEMORY_TOOL_ALIASES=0 (as createKbMcp does). */
+export function shimMountedTools(contract: ServerContract) {
+  const tools = mcpMountedTools(contract);
+  if (contract.server !== kbContract.server || env.memoryToolAliases()) return tools;
+  return tools.filter((t) => !isMemoryToolAlias(t.name));
+}
+
 const errResult = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 
 function shimServer(contract: ServerContract, sessionId: string, deps: ShimDeps): McpServerConfig {
@@ -64,7 +73,7 @@ function shimServer(contract: ServerContract, sessionId: string, deps: ShimDeps)
   return createSdkMcpServer({
     name: contract.server,
     version: "0.1.0",
-    tools: mcpMountedTools(contract).map((t) =>
+    tools: shimMountedTools(contract).map((t) =>
       // Return type widened to the SDK's CallToolResult via `any`: our
       // ToolResult is the same MCP shape minus the SDK's index signature.
       tool(t.name, t.description, t.schema, async (args: Record<string, unknown>): Promise<any> => {

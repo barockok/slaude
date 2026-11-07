@@ -19,7 +19,7 @@
  * `propose` row instead (in user scope only kind `promote`, to that person).
  *
  * Tool results pass through redactSecrets, and a page or proposal carrying a
- * credential-like value is refused (CREDENTIAL_REFUSAL), as kb_memoize does.
+ * credential-like value is refused (CREDENTIAL_REFUSAL), as memory_save does.
  */
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
@@ -270,7 +270,7 @@ export const passHandlers = {
     }
     // gbrain stores slugs lowercased and chunks and reads them as given, so a
     // mixed-case slug (a person-note at people/<SlackId>) fails after its page
-    // row is written; the same normalisation as kb_memoize.
+    // row is written; the same normalisation as memory_save.
     const lower = (s: string | undefined) => (typeof s === "string" ? s.toLowerCase() : s);
     const pages = p.pages.map((pg) => ({ ...pg, slug: lower(pg.slug)!, supersedes: lower(pg.supersedes) }));
     // Compose every page before anything is written: one refusal stops the batch.

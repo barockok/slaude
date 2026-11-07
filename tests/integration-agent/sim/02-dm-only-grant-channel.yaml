@@ -1,0 +1,7 @@
+# Seed first: a stored dm-only member grant for U0BOB.
+# The dm-only grant does not admit U0BOB in an unlisted channel.
+layer: restricted
+as: outsider
+steps:
+  - send: { text: "outsider in a channel with a dm-only grant" }
+  - expect_drop: { reason: whitelist }

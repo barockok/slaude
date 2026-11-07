@@ -3,6 +3,7 @@ import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@
 import { surfaceContract } from "../../tools/contracts/surface";
 import type { Surface } from "./surface";
 import { mutateOverride, FIELD_ALIASES, type FieldAlias } from "../../soul/overrides";
+import { auditSoulOverride, type ThreadCtx } from "../../audit/events";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { soulData } from "../../soul/extract";
 import { redactSecrets } from "./status-text";
@@ -26,6 +27,9 @@ export interface SurfaceMcpOpts {
   /** Resolves the CURRENT turn's inbound platform user id (live getter — the
    *  gateway mutates ctx per turn). Required to mount manager-gated tools. */
   initiator?: () => string | undefined;
+  /** The current turn's persona, session and thread, for the audit rows the
+   *  manager-gated tools write. Live getter, like `initiator`. */
+  auditContext?: () => ThreadCtx;
   /** Manage 1on1 state on the current thread (gateway injects the engine).
    *  action="lock" → private (initiator+manager only); "open" → admit guests with
    *  optional scope description; "off" → fully release. */
@@ -170,10 +174,18 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
         }
         if (action === "clear") {
           await SoulOverrides.clear(FIELD_ALIASES[field as FieldAlias]);
+          auditSoulOverride("soul.override.cleared", {
+            ...opts.auditContext?.(), userId: who, field: FIELD_ALIASES[field as FieldAlias], via: "agent_tool",
+          });
           return ok(`cleared runtime overrides for ${field}`);
         }
         if (!value) return fail("value is required for add/remove");
         const res = await mutateOverride({ field: field as FieldAlias, action, value, by: who }, { managerId: soul.manager.userId });
+        if (res.ok) {
+          auditSoulOverride("soul.override.set", {
+            ...opts.auditContext?.(), userId: who, field: res.field, op: action, value: res.value, via: "agent_tool",
+          });
+        }
         return res.ok
           ? ok(`soul override applied: ${res.field} ${action} ${res.value} — effective immediately`)
           : fail(res.reason);

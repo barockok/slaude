@@ -2,8 +2,12 @@ import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { KB_SERVER, kbContract } from "../tools/contracts/kb";
 import { RUNTIME_SERVER, runtimeContract } from "../tools/contracts/runtime";
 
-/** kb_memoize as the CLI names it. */
+/** memory_save as the CLI names it. */
+export const MEMORY_SAVE_TOOL = `mcp__${KB_SERVER}__${kbContract.tools.memory_save.name}`;
+/** kb_memoize (the deprecated alias of memory_save) as the CLI names it. */
 export const KB_MEMOIZE_TOOL = `mcp__${KB_SERVER}__${kbContract.tools.kb_memoize.name}`;
+/** Both names of the memory write tool: a resumed session may call either. */
+export const MEMORY_WRITE_TOOLS: ReadonlySet<string> = new Set([MEMORY_SAVE_TOOL, KB_MEMOIZE_TOOL]);
 
 export const SYNTHETIC_PROFILE_DENIAL = "A profile is written only on that person's own turn.";
 
@@ -27,7 +31,7 @@ export function denySyntheticProfileWrite(isSynthetic: () => boolean): HookCallb
     // same way, so a synthetic turn never teaches one either.
     const reason = i.tool_name === PROACTIVE_RULE_TOOL
       ? SYNTHETIC_RULE_DENIAL
-      : i.tool_name === KB_MEMOIZE_TOOL && (i.tool_input as { target?: unknown } | null)?.target === "profile"
+      : MEMORY_WRITE_TOOLS.has(i.tool_name ?? "") && (i.tool_input as { target?: unknown } | null)?.target === "profile"
         ? SYNTHETIC_PROFILE_DENIAL
         : null;
     if (reason === null || !isSynthetic()) return {};

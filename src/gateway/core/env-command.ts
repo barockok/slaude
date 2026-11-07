@@ -6,6 +6,7 @@
  */
 import { env as config } from "../../config/env";
 import * as CronJobs from "../../db/cron-jobs";
+import { auditOneOnOne } from "../../audit/events";
 import * as Envs from "../../db/environments";
 import * as OneOnOne from "../../db/one-on-one";
 import * as Remote from "../../db/remote";
@@ -232,6 +233,7 @@ export async function useEnvironment(
     let lockByEnv = existing?.env.userId === userId && existing.binding.lock_by_env === 1;
     if (!lock) {
       await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
+      auditOneOnOne("one_on_one.locked", { userId, sessionId: ctx.sessionId, channelId, threadTs, lockedUser: userId, via: "env" });
       lockByEnv = true;
     }
     await Envs.bind({ channelId, threadTs, envId: env.id, dir: pf.dir, lockByEnv });
@@ -357,7 +359,10 @@ export async function handleEnvCommand(hit: EnvHit, ctx: EnvCommandCtx, deps: En
     }
     const { lockByRemote } = await endRemoteForThread(channelId, threadTs, { sessionId: ctx.sessionId, cleanup: deps.cleanup });
     // Only release a lock that is still this environment owner's: a stale row never unlocks someone else.
-    if (lockByRemote && b.env.userId === (await OneOnOne.find(channelId, threadTs))?.locked_user) await OneOnOne.unlock(channelId, threadTs);
+    if (lockByRemote && b.env.userId === (await OneOnOne.find(channelId, threadTs))?.locked_user) {
+      await OneOnOne.unlock(channelId, threadTs);
+      auditOneOnOne("one_on_one.unlocked", { userId: ctx.userId, sessionId: ctx.sessionId, channelId, threadTs, lockedUser: b.env.userId, via: "env" });
+    }
     forgetRemoteStatus(ctx.sessionId);
     ctx.reload();
     await ctx.reply(`:house: Environment *server* — tools run on the server again.${lockByRemote ? " 1on1 released." : ""}`);
@@ -523,7 +528,10 @@ export async function removeEnvironment(e: StoredEnv, ctx: EnvCommandCtx, deps: 
   for (const b of bindings) {
     const here = b.channel_id === ctx.channelId && b.thread_ts === ctx.threadTs;
     const { lockByRemote } = await endRemoteForThread(b.channel_id, b.thread_ts, here ? { sessionId: ctx.sessionId, cleanup: deps.cleanup } : {});
-    if (lockByRemote && e.userId === (await OneOnOne.find(b.channel_id, b.thread_ts))?.locked_user) await OneOnOne.unlock(b.channel_id, b.thread_ts);
+    if (lockByRemote && e.userId === (await OneOnOne.find(b.channel_id, b.thread_ts))?.locked_user) {
+      await OneOnOne.unlock(b.channel_id, b.thread_ts);
+      auditOneOnOne("one_on_one.unlocked", { userId: ctx.userId, sessionId: here ? ctx.sessionId : null, channelId: b.channel_id, threadTs: b.thread_ts, lockedUser: e.userId, via: "env" });
+    }
     if (here) {
       forgetRemoteStatus(ctx.sessionId);
       ctx.reload();

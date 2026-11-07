@@ -5,6 +5,8 @@ import { __resetMasterKeyCache } from "../../src/db/crypto";
 import * as P from "../../src/db/personas";
 import { runSync, SyncFailure, unservedLabelWarnings } from "../../src/persona/sync/run";
 import { SUPPORTED_PAYLOAD_VERSION } from "../../src/persona/sync/payload";
+import * as AuditEvents from "../../src/db/audit-events";
+import { flushAudits } from "../../src/audit/emit";
 
 const T = "default";
 const bare = (personas: unknown[], extra: object = {}) =>
@@ -26,6 +28,18 @@ beforeEach(async () => {
 });
 
 describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync", () => {
+  test("an applied sync records persona.sync with revision and counts; a dry run records nothing", async () => {
+    await db.run("DELETE FROM audit_events");
+    await runSync(T, payload([ana]), { dryRun: true, env, by: "ci", extract: okExtract });
+    await runSync(T, payload([ana]), { dryRun: false, env, by: "ci", extract: okExtract });
+    await flushAudits();
+    const rows = (await AuditEvents.list({ action: "persona.sync" })).items;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ actorKind: "system", actorId: "ci", tenantId: T, targetKind: "tenant", targetId: T, persona: "default" });
+    expect(rows[0]!.details).toMatchObject({ revision: "r1", counts: { created: 2, updated: 0, tombstoned: 0 } });
+    expect(JSON.stringify(rows[0])).not.toContain("user-token-1");
+  });
+
   test("applies a set: effective state equals the payload, variables resolved", async () => {
     await runSync(T, payload([ana]), { dryRun: false, env, by: "ci", extract: okExtract });
     const [p] = await P.effectivePersonas(T);
