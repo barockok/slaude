@@ -829,6 +829,11 @@ export async function closeBrain(): Promise<void> {
   ensureInFlight = null; // next boot may target a different brain home
   ensuredSources.clear();
   ensureGeneration++;
+  // A boot still pending when this close began ran its guard after the bump
+  // above; retire that probe too, so it neither writes to this engine nor
+  // refuses on the next brain.
+  probeGeneration++;
+  probeInFlight = null;
   await keepingExitCode(() => e.disconnect());
 }
 
