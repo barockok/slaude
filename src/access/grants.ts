@@ -39,12 +39,16 @@ const soulGrant = (subjectKind: SubjectKind, subjectId: string, role: GrantRole,
  */
 export function deriveSoulGrants(soul: SoulData, channelApprovers: Map<string, string[]>): Grant[] {
   const out: Grant[] = [];
-  for (const id of [soul.manager.userId, soul.backupManager.userId]) if (id) out.push(soulGrant("user", id, "manager"));
-  for (const a of soul.approvers) out.push(soulGrant("user", a.userId, "approver"));
-  for (const [channelId, ids] of channelApprovers) for (const id of ids) out.push(soulGrant("user", id, "approver", { channelId }));
-  for (const c of [...soul.trustedChannels, ...soul.allowedChannels]) out.push(soulGrant("channel", c, "member"));
-  for (const id of soul.dmAllowedUsers) out.push(soulGrant("user", id, "member", { dmOnly: true }));
-  for (const id of soul.blockedUsers) out.push(soulGrant("user", id, "member", { deny: true }));
+  const ids = (xs: Array<string | undefined>): string[] => xs.filter((x): x is string => !!x);
+  for (const id of ids([soul.manager.userId, soul.backupManager.userId])) out.push(soulGrant("user", id, "manager"));
+  for (const id of ids(soul.approvers.map((a) => a.userId))) out.push(soulGrant("user", id, "approver"));
+  for (const [channelId, users] of channelApprovers) {
+    if (!channelId) continue;
+    for (const id of ids(users)) out.push(soulGrant("user", id, "approver", { channelId }));
+  }
+  for (const c of ids([...soul.trustedChannels, ...soul.allowedChannels])) out.push(soulGrant("channel", c, "member"));
+  for (const id of ids(soul.dmAllowedUsers)) out.push(soulGrant("user", id, "member", { dmOnly: true }));
+  for (const id of ids(soul.blockedUsers)) out.push(soulGrant("user", id, "member", { deny: true }));
   return out;
 }
 

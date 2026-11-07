@@ -16,6 +16,10 @@ export type AdmitResult = { ok: true } | { ok: false; reason: "blocked_user" | "
  *
  * With soul-derived grants only, this is the old channel-mode rule plus the
  * blocklist. Stored grants only widen (member, workspace) or narrow (deny).
+ *
+ * `grants`: the persona's effective grants, i.e. `loadGrants(personaName)`
+ * from ./role (keyed by persona NAME, not id). `isDM`: Slack channel_type
+ * "im" only; a group DM ("mpim") counts as a channel, as today.
  */
 export function admit(o: { grants: readonly Grant[]; userId: string; channelId: string; isDM: boolean }): AdmitResult {
   const mine = o.grants.filter((g) => g.subjectKind === "user" && g.subjectId === o.userId);

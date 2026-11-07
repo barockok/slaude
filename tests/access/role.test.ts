@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { SoulDataSchema, type SoulData } from "../../src/soul/data";
 import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
-import { effectiveGrants, type Grant } from "../../src/access/grants";
+import { deriveSoulGrants, effectiveGrants, type Grant } from "../../src/access/grants";
 import { __setGrantsReader, invalidateGrants, loadGrants, roleFromGrants, roleOf } from "../../src/access/role";
 import { db } from "../../src/db/schema";
 import * as AgentGrants from "../../src/db/agent-grants";
@@ -139,10 +139,12 @@ describe("roleOf and the stored-grant loader", () => {
     expect(reads).toBe(2);
   });
 
-  test("a read failure degrades to soul-only, counts, and is not cached", async () => {
+  test("a read failure degrades to soul-only, counts, logs once, and is cached briefly", async () => {
     const before = failures();
     let fail = true;
+    let reads = 0;
     __setGrantsReader(async () => {
+      reads++;
       if (fail) throw new Error("db down");
       return [stored({ subjectKind: "user", subjectId: "UALICE" })];
     });
@@ -155,12 +157,39 @@ describe("roleOf and the stored-grant loader", () => {
       expect(await roleOf("default", "UALICE")).toBeNull();
       const grants = await loadGrants("default");
       expect(grants.every((g) => g.source === "soul")).toBe(true);
+      expect(reads).toBe(1); // the soul-only result is cached
+      expect(failures()).toBe(before + 1);
+      invalidateGrants("default"); // stands in for the 2 s failure TTL running out
+      await roleOf("default", "UALICE");
+      expect(failures()).toBe(before + 2);
     } finally {
       console.error = orig;
     }
-    expect(failures()).toBe(before + 4);
     expect(errs.length).toBe(1); // logged at most once a minute
     fail = false;
+    invalidateGrants("default");
     expect(await roleOf("default", "UALICE")).toBe("member");
+  });
+
+  test("a burst shares one in-flight read per persona", async () => {
+    let reads = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    __setGrantsReader(async () => {
+      reads++;
+      await gate;
+      return [stored({ subjectKind: "user", subjectId: "UALICE" })];
+    });
+    const burst = Promise.all([roleOf("default", "UALICE"), roleOf("default", "UBOB"), roleOf(undefined, "UALICE")]);
+    release();
+    expect(await burst).toEqual(["member", null, "member"]);
+    expect(reads).toBe(1);
+  });
+
+  test("soul derivation skips empty ids", () => {
+    const s = soul({ manager: {}, trustedChannels: [] });
+    const grants = deriveSoulGrants({ ...s, dmAllowedUsers: [""], blockedUsers: [""] }, new Map([["", ["UX"]], ["CX", ["", "UY"]]]));
+    expect(grants.every((g) => g.subjectId && (g.channelId === undefined || g.channelId))).toBe(true);
+    expect(grants.map((g) => g.subjectId)).toEqual(["UY"]);
   });
 });

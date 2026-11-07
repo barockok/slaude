@@ -72,6 +72,11 @@ export async function create(input: CreateGrantInput, now: number = Date.now()):
   if (!SUBJECT_KINDS.includes(input.subjectKind)) throw new Error(`agent grant: invalid subject_kind ${JSON.stringify(input.subjectKind)}`);
   if (!input.subjectId) throw new Error("agent grant: subject_id is required");
   if (!input.persona) throw new Error("agent grant: persona is required");
+  if (input.subjectKind !== "user") {
+    if (input.role !== "member") throw new Error(`agent grant: a ${input.subjectKind} subject can only be granted member, not ${input.role}`);
+    if (input.deny) throw new Error(`agent grant: deny applies to user subjects only, not ${input.subjectKind}`);
+    if (input.dmOnly) throw new Error(`agent grant: dm_only applies to user subjects only, not ${input.subjectKind}`);
+  }
   const row: AgentGrantRow = {
     id: randomUUID(),
     tenantId: input.tenantId ?? DEFAULT_TENANT,

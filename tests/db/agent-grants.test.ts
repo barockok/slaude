@@ -56,6 +56,20 @@ describe("agent_grants repo", () => {
     await expect(AgentGrants.create({ ...base, subjectKind: "group" as never })).rejects.toThrow(/subject_kind/);
     await expect(AgentGrants.create({ ...base, subjectId: "" })).rejects.toThrow(/subject_id/);
     await expect(AgentGrants.create({ ...base, persona: "" })).rejects.toThrow(/persona/);
+    for (const kind of ["channel", "workspace"] as const) {
+      await expect(AgentGrants.create({ ...base, subjectKind: kind, subjectId: "CTEAM", role: "manager" })).rejects.toThrow(/only be granted member/);
+      await expect(AgentGrants.create({ ...base, subjectKind: kind, subjectId: "CTEAM", role: "approver" })).rejects.toThrow(/only be granted member/);
+      await expect(AgentGrants.create({ ...base, subjectKind: kind, subjectId: "CTEAM", deny: true })).rejects.toThrow(/deny applies to user/);
+      await expect(AgentGrants.create({ ...base, subjectKind: kind, subjectId: "CTEAM", dmOnly: true })).rejects.toThrow(/dm_only applies to user/);
+    }
+    // Allowed combinations.
+    await AgentGrants.create({ ...base, subjectKind: "channel", subjectId: "CTEAM" });
+    await AgentGrants.create({ ...base, subjectKind: "workspace", subjectId: "TWORK" });
+    await AgentGrants.create({ ...base, role: "manager", deny: true });
+    await AgentGrants.create({ ...base, role: "approver" });
+    await AgentGrants.create({ ...base, dmOnly: true });
+    expect((await AgentGrants.listAll()).length).toBe(5);
+    await db.run("DELETE FROM agent_grants");
     expect(await AgentGrants.listAll()).toEqual([]);
   });
 

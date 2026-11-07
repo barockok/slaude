@@ -33,60 +33,95 @@ export function roleFromGrants(grants: readonly Grant[], userId: string, channel
   return viaChannel || viaWorkspace ? "member" : null;
 }
 
-/** Stored grants are cached per persona for this long; create and revoke in
- *  this process invalidate at once. */
+/**
+ * Stored grants are cached per persona for TTL_MS. A create or revoke in this
+ * process invalidates at once; other replicas (and direct database edits) see
+ * the change only when their entry expires, so a grant or a revoke can take up
+ * to TTL_MS to apply across the cluster. A failed read caches the soul-only
+ * result (no stored grants) for FAILURE_TTL_MS, so a database outage costs one
+ * query per persona per FAILURE_TTL_MS rather than one per message.
+ */
 const TTL_MS = 5_000;
+const FAILURE_TTL_MS = 2_000;
 const FAILURE_LOG_EVERY_MS = 60_000;
 
 type Reader = (persona: string, now: number) => Promise<Grant[]>;
 const defaultReader: Reader = async (persona, now) => (await AgentGrants.listForPersona(persona, now)).map(grantFromRow);
 let reader: Reader = defaultReader;
-const cache = new Map<string, { at: number; grants: Grant[] }>();
+const cache = new Map<string, { until: number; grants: Grant[] }>();
+/** One read in flight per persona: a burst of messages shares it. */
+const inflight = new Map<string, Promise<Grant[]>>();
 let generation = 0;
 let lastFailureLog = -Infinity;
 
 const key = (persona: string | null | undefined) => (persona ? persona : "default");
 
-/** Drop cached stored grants for one persona, or for all. */
+/** Drop cached stored grants for one persona, or for all. A read already in
+ *  flight finishes but neither caches its result nor serves later callers. */
 export function invalidateGrants(persona?: string | null): void {
   generation++;
-  if (persona) cache.delete(key(persona));
-  else cache.clear();
+  if (persona) {
+    cache.delete(key(persona));
+    inflight.delete(key(persona));
+  } else {
+    cache.clear();
+    inflight.clear();
+  }
 }
+// Registered at import: any module that reads grants through here also gets
+// invalidated by create/revoke in the same process, with no wiring by callers.
+// Revoke passes null (it does not read the row back), which clears every persona.
 AgentGrants.onGrantsChanged((p) => invalidateGrants(p));
 
 /**
  * A persona's stored grants, cached. A failed read degrades to none (so access
  * is soul-only, today's behaviour): it is counted in
- * slaude_grants_read_failures_total, logged at most once a minute, and not
- * cached, so the next call retries.
+ * slaude_grants_read_failures_total, logged at most once a minute, and cached
+ * for FAILURE_TTL_MS.
  */
-async function storedGrants(persona: string): Promise<Grant[]> {
+function storedGrants(persona: string): Promise<Grant[]> {
   const now = Date.now();
   const hit = cache.get(persona);
-  if (hit && now - hit.at < TTL_MS) return hit.grants;
+  if (hit && now < hit.until) return Promise.resolve(hit.grants);
+  const pending = inflight.get(persona);
+  if (pending) return pending;
   const gen = generation;
-  try {
-    const grants = await reader(persona, now);
-    if (gen === generation) cache.set(persona, { at: now, grants });
-    return grants;
-  } catch (e) {
-    m.grantsReadFailuresTotal.inc();
-    if (now - lastFailureLog >= FAILURE_LOG_EVERY_MS) {
-      lastFailureLog = now;
-      console.error(`[access] agent_grants read failed persona=${persona}; using soul-derived grants only: ${(e as Error)?.message ?? e}`);
+  const p = (async () => {
+    let grants: Grant[];
+    let ttl = TTL_MS;
+    try {
+      grants = await reader(persona, now);
+    } catch (e) {
+      m.grantsReadFailuresTotal.inc();
+      if (now - lastFailureLog >= FAILURE_LOG_EVERY_MS) {
+        lastFailureLog = now;
+        console.error(`[access] agent_grants read failed persona=${persona}; using soul-derived grants only: ${(e as Error)?.message ?? e}`);
+      }
+      grants = [];
+      ttl = FAILURE_TTL_MS;
     }
-    return [];
-  }
+    if (gen === generation) cache.set(persona, { until: Date.now() + ttl, grants });
+    return grants;
+  })();
+  inflight.set(persona, p);
+  void p.finally(() => {
+    if (inflight.get(persona) === p) inflight.delete(persona);
+  });
+  return p;
 }
 
-/** A persona's effective grants: soul-derived plus stored (cached). Never throws. */
+/**
+ * A persona's effective grants: soul-derived plus stored (cached). Never
+ * throws. `persona` is the persona NAME (agent_grants is keyed by name;
+ * null/undefined/"" mean "default"). Pass the result to `admit()` or
+ * `roleFromGrants()`.
+ */
 export async function loadGrants(persona: string | null | undefined): Promise<Grant[]> {
   const p = key(persona);
   return effectiveGrants(p, await storedGrants(p));
 }
 
-/** `roleFromGrants` over {@link loadGrants}. */
+/** `roleFromGrants` over {@link loadGrants}; `persona` is the persona NAME. */
 export async function roleOf(persona: string | null | undefined, userId: string, channelId?: string | null): Promise<Role | null> {
   return roleFromGrants(await loadGrants(persona), userId, channelId);
 }
