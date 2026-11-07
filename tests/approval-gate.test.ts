@@ -664,6 +664,23 @@ describe("ApprovalGate", () => {
       expect(asked).toEqual(["helper"]);
     });
 
+    test("the card's summary and its decided line are redacted with the persona's patterns", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
+      setSoulData(SoulDataSchema.parse({ approvers: [{ userId: "U002", scope: "anything", catchall: true }], redactPatterns: ["project-\\w+"] }));
+      try {
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        const p = gate.request({ channel: "C", threadTs: "T", summary: "Ship project-falcon", sessionId: "SAPRX" });
+        const card = await firstPost(f);
+        expect(JSON.stringify(card.blocks)).not.toContain("project-falcon");
+        expect(JSON.stringify(card.blocks)).toContain("Ship [REDACTED]");
+        await f.fire(await buttonId(f, "approve"), "U002");
+        await p;
+      } finally {
+        __resetSoulDataMemo();
+      }
+    });
+
     test("deny records decision deny", async () => {
       writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
       const f = fakeApp();

@@ -6,6 +6,8 @@ import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
 import { approvalTitle, auditGateRow } from "../../audit/emit";
+import { redactSlack } from "./redact";
+import { redactPatternsFor } from "../../soul/per-persona";
 
 export type ApprovalRequest = {
   channel: string;
@@ -37,9 +39,14 @@ const NOBODY = "!nobody";
 /** Slack's three escapes, so a request's own words never become markup. */
 const escapeMrkdwn = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-/** The card's decided line, named by the request itself: `Deploy to staging → *Approved* by @x`. */
+/**
+ * The card's decided line, named by the request itself (`Deploy to staging →
+ * *Approved* by @x`), redacted with the request persona's patterns.
+ */
 export function decidedLine(payload: Record<string, unknown> | null | undefined, approved: boolean, userId: string): string {
-  return `${escapeMrkdwn(approvalTitle(payload))} → ${approved ? "*Approved*" : "*Denied*"} by <@${userId}>`;
+  const persona = typeof payload?.personaName === "string" ? payload.personaName : undefined;
+  const line = `${escapeMrkdwn(approvalTitle(payload))} → ${approved ? "*Approved*" : "*Denied*"} by <@${userId}>`;
+  return redactSlack(line, redactPatternsFor(persona));
 }
 
 export type ApprovalDecision = {
@@ -358,7 +365,8 @@ export class ApprovalGate {
       },
       {
         type: "section",
-        text: { type: "mrkdwn", text: req.summary || "_(no summary)_" },
+        // The agent wrote the summary: redacted with its persona's patterns like any post.
+        text: { type: "mrkdwn", text: req.summary ? redactSlack(req.summary, redactPatternsFor(req.persona)) : "_(no summary)_" },
       },
     ];
     if (req.tools && req.tools.length) {

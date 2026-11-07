@@ -63,6 +63,18 @@ describe("approval card decided line", () => {
     expect(decidedLine({ summary: "Ship <v2> & tag" }, true, "UAPP")).toBe("Ship &lt;v2&gt; &amp; tag → *Approved* by <@UAPP>");
     expect(decidedLine({ category: "deploy", summary: "anything" }, false, "UAPP")).toBe("deploy → *Denied* by <@UAPP>");
   });
+
+  test("the decided line is redacted with the request persona's patterns", async () => {
+    const { decidedLine } = await import("../../src/gateway/slack/approval-gate");
+    const { setSoulData, __resetSoulDataMemo } = await import("../../src/soul/extract");
+    const { SoulDataSchema } = await import("../../src/soul/data");
+    setSoulData(SoulDataSchema.parse({ redactPatterns: ["project-\\w+"] }));
+    try {
+      expect(decidedLine({ summary: "Ship project-falcon now" }, true, "UAPP")).toBe("Ship [REDACTED] now → *Approved* by <@UAPP>");
+    } finally {
+      __resetSoulDataMemo();
+    }
+  });
 });
 
 describe("gate helpers", () => {
