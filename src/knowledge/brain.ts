@@ -9,6 +9,7 @@ import { getBackend } from "./backend";
 import { NodeDbAccessError } from "../db/client";
 import { BrainNotOpenError, brainClosing, settleBrainWork, whileClosing } from "./brain-work";
 import { keepingExitCode } from "../db/wasm-exit-code";
+import { EMBED_REFUSAL_HINT, embeddingGuardVerdict, installChunkModelStamp, normalizeEmbeddingModel } from "./embedding-guard";
 
 // Engine surface kept minimal on purpose: gbrain ships TS sources and its own
 // types stay internal to it; slaude only needs lifecycle + handler dispatch.
@@ -449,6 +450,85 @@ function takeoverStaleLock(dbDir: string): void {
 }
 
 let embeddingActiveFlag = false;
+let embeddingRefusalText: string | null = null;
+/** Brain model for chunk labels: this process's configured model, else the brain's own record. */
+let chunkLabelModel: string | null = null;
+let allowRealign = false;
+
+/** Why this process refused to embed at boot (null: it did not refuse). */
+export function embeddingRefusal(): string | null {
+  return embeddingRefusalText;
+}
+
+/**
+ * The repair command's escape: boot still logs a mismatch but keeps the
+ * gateway, so `slaude brain reembed --model-mismatch --apply` can re-embed every
+ * chunk with the configured model and then record it as the brain's model.
+ * Nothing else may set this.
+ */
+export function allowEmbeddingRealign(on = true): void {
+  allowRealign = on;
+}
+
+/** The embedding model this process resolved (EMBEDDING_* / config.json), null when none. */
+export function configuredEmbeddingModel(): string | null {
+  return normalizeEmbeddingModel(process.env.GBRAIN_EMBEDDING_MODEL);
+}
+
+function configuredEmbeddingDims(): number | null {
+  const n = Number(process.env.GBRAIN_EMBEDDING_DIMENSIONS);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
+type GuardEngine = Engine & { getConfig?: (k: string) => Promise<string | null> };
+
+/**
+ * Boot-time guard: refuse to embed when this process's embedding config
+ * differs from the brain's record, then label every chunk write with the
+ * brain's model (gbrain labels them with its compiled-in default otherwise).
+ */
+async function guardEmbedding(engine: GuardEngine): Promise<void> {
+  embeddingRefusalText = null;
+  const gw = (await gbrainImport("ai/gateway")) as { getEmbeddingModel: () => string; resetGateway?: () => void };
+  const gatewayModel = (): string | null => {
+    try {
+      return gw.getEmbeddingModel();
+    } catch {
+      return null; // gateway not configured
+    }
+  };
+  let stored: string | null = null;
+  let storedDims: number | null = null;
+  try {
+    stored = (await engine.getConfig?.("embedding_model")) ?? null;
+    const d = Number((await engine.getConfig?.("embedding_dimensions")) ?? "");
+    storedDims = Number.isInteger(d) && d > 0 ? d : null;
+  } catch (e) {
+    console.warn("[brain] could not read the brain's embedding config:", e instanceof Error ? e.message : e);
+  }
+  const configured = configuredEmbeddingModel();
+  chunkLabelModel = configured ?? normalizeEmbeddingModel(stored);
+  const verdict = embeddingActiveFlag
+    ? embeddingGuardVerdict({
+        configured,
+        configuredDims: configuredEmbeddingDims(),
+        stored,
+        storedDims,
+        gateway: gatewayModel(),
+      })
+    : null;
+  if (verdict && allowRealign) {
+    console.warn(`[brain] ${verdict}; realign mode: the repair command re-embeds with ${configured}`);
+  } else if (verdict) {
+    embeddingRefusalText = verdict;
+    embeddingActiveFlag = false;
+    // No gateway: gbrain's put_page then skips embedding (isAvailable false),
+    // so nothing is embedded with a model the brain was not built for.
+    gw.resetGateway?.();
+    console.error(`[brain] EMBEDDING REFUSED: ${verdict}. ${EMBED_REFUSAL_HINT}`);
+  }
+  installChunkModelStamp(engine, { brainModel: () => chunkLabelModel, gatewayModel });
+}
 
 /** Runtime truth for "may sync attempt embeds": gateway configured AND the
  *  provider's key env present. config.json alone isn't enough — gbrain's
@@ -564,6 +644,7 @@ async function boot(): Promise<Engine> {
     return e;
   });
   if (cfg.engine === "pglite") await clearStaleDbLocks(engine);
+  await guardEmbedding(engine);
   return engine;
 }
 
@@ -602,6 +683,8 @@ export async function closeBrain(): Promise<void> {
   // or it fails mid-import against a disconnected engine.
   await whileClosing(settleBrainWork);
   embeddingActiveFlag = false;
+  embeddingRefusalText = null;
+  chunkLabelModel = null;
   delete process.env.GBRAIN_EMBEDDING_MODEL;
   delete process.env.GBRAIN_EMBEDDING_DIMENSIONS;
   try {
