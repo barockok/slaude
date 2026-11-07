@@ -375,6 +375,101 @@ describe("AgentManager lifecycle", () => {
     await shutdown(mgr, row.id);
   });
 
+  describe("reply text in the turn record", () => {
+    const call = (id: string, name: string, input: unknown = {}) => ({ type: "tool_use", id, name, input });
+    const result = (id: string, r: unknown, isError = false) => ({
+      type: "user",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "x", ...(isError ? { is_error: true } : {}) }] },
+      tool_use_result: r,
+    });
+    const REPLY = "mcp__slaude_surface__reply";
+
+    /** One turn per scripted step list; returns what memory recorded per turn. */
+    async function turns(steps: Array<(s: FakeSession) => void>, env: Record<string, string> = {}) {
+      Object.assign(process.env, env);
+      const mgr = new AgentManager();
+      const events = record(mgr);
+      const synced: any[] = [];
+      mgr.setMemoryProvider({ prefetch: async () => null, syncTurn: async (t: any) => void synced.push(t) } as any);
+      const row = await mgr.ensureSession(thread());
+      let i = 0;
+      plan((s) => {
+        s.onUser = (um) => {
+          if (String(um.message.content).includes("<auto-evolve>")) return void steps.at(-1)!(s);
+          steps[i++]!(s);
+        };
+      });
+      for (let n = 0; n < steps.length - (env.SLAUDE_AUTO_EVOLVE === "1" ? 1 : 0); n++) {
+        const before = events.filter((e) => e.type === "done").length;
+        await mgr.sendMessage(row.id, `turn ${n}`);
+        await until(() => events.filter((e) => e.type === "done").length > before, 3000, `done ${n}`);
+      }
+      if (env.SLAUDE_AUTO_EVOLVE === "1") await until(() => events.filter((e) => e.type === "done").length === steps.length, 3000, "evolve done");
+      await Bun.sleep(20);
+      await shutdown(mgr, row.id);
+      return { synced, events };
+    }
+
+    it("records a delivered or held reply, never a refused or errored one", async () => {
+      const { synced } = await turns([
+        (s) => { s.emit(asst([call("a", REPLY, { text: "posted one" })])); s.emit(result("a", [{ type: "text", text: "posted ref=1.2" }])); s.emit(res()); },
+        (s) => { s.emit(asst([call("b", REPLY, { text: "held one" })])); s.emit(result("b", [{ type: "text", text: "posted ref=panel-suppressed" }])); s.emit(res()); },
+        (s) => { s.emit(asst([txt("thinking aloud"), call("c", REPLY, { text: "refused one" })])); s.emit(result("c", [{ type: "text", text: '{"refused":true}' }])); s.emit(res()); },
+        (s) => { s.emit(asst([txt("still here"), call("d", REPLY, { text: "errored one" })])); s.emit(result("d", [{ type: "text", text: "reply failed: channel_not_found" }], true)); s.emit(res()); },
+      ]);
+      expect(synced.map((t) => t.assistant)).toEqual(["posted one", "held one", "thinking aloud", "still here"]);
+    });
+
+    it("does not record the same text twice when the model also wrote it as text", async () => {
+      const { synced } = await turns([
+        (s) => { s.emit(asst([txt("Same answer."), call("a", REPLY, { text: "Same answer." })])); s.emit(result("a", "posted ref=1.2")); s.emit(res()); },
+      ]);
+      expect(synced[0].assistant).toBe("Same answer.");
+    });
+
+    it("never records the skill check's reply", async () => {
+      const { synced } = await turns(
+        [
+          (s) => { s.emit(asst([tool("Bash"), tool("Write"), tool("WebFetch"), tool("WebSearch"), call("u", REPLY, { text: "user answer" })])); s.emit(result("u", "posted ref=1")); s.emit(res()); },
+          (s) => { s.emit(asst([call("e", REPLY, { text: "evolve chatter" })])); s.emit(result("e", "posted ref=2")); s.emit(res()); },
+        ],
+        { SLAUDE_AUTO_EVOLVE: "1" },
+      );
+      expect(synced.map((t) => t.assistant).join("|")).not.toContain("evolve chatter");
+      expect(synced[0].assistant).toContain("user answer");
+    });
+
+    it("clears open calls at turn end: a late result names no tool and records no reply", async () => {
+      const { synced, events } = await turns([
+        // The call's result never arrives in its own turn.
+        (s) => { s.emit(asst([txt("first"), call("late", REPLY, { text: "late reply" })])); s.emit(res()); },
+        (s) => { s.emit(result("late", "posted ref=9")); s.emit(asst([txt("second")])); s.emit(res()); },
+      ]);
+      const r = events.find((e) => e.type === "toolResult");
+      expect(r.toolUseId).toBe("late");
+      expect(r.tool).toBe("");
+      expect(synced.map((t) => t.assistant)).toEqual(["first", "second"]);
+    });
+  });
+
+  it("a subagent's messages do not set the context fill", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    plan((s) => {
+      s.onUser = () => {
+        s.emit({ type: "assistant", message: { content: [txt("main")], usage: { input_tokens: 10, cache_read_input_tokens: 30_000 } } });
+        // A subagent's own context is much bigger; it must not count.
+        s.emit({ type: "assistant", parent_tool_use_id: "tu_task", message: { content: [txt("sub")], usage: { input_tokens: 10, cache_read_input_tokens: 150_000 } } });
+        s.emit(res({ usage: { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 180_000, cache_creation_input_tokens: 0 }, modelUsage: { m: { contextWindow: 200_000 } } }));
+      };
+    });
+    await mgr.sendMessage(row.id, "go");
+    await until(() => events.some((e) => e.type === "tokenUsage"), 3000, "usage");
+    expect(events.find((e) => e.type === "tokenUsage").snapshot.totalInput).toBe(30_010);
+    await shutdown(mgr, row.id);
+  });
+
   it("suppresses a resume-miss result(is_error) but still surfaces other turn errors", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);
