@@ -12,6 +12,8 @@ import { flushAudits } from "../src/audit/emit";
 import { db } from "../src/db/schema";
 import { setSoulData, __resetSoulDataMemo } from "../src/soul/extract";
 import { SoulDataSchema } from "../src/soul/data";
+import { soulData } from "../src/soul/extract";
+import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../src/persona/registry";
 
 const MANAGER = "U0MGR0001";
 const BACKUP = "U0BAK0001";
@@ -230,6 +232,50 @@ describe("adminHandlers authorization (isManagerOrApprover)", () => {
       prompt: "approver job",
     });
     expect(res.isError).toBeUndefined();
+  });
+});
+
+describe("adminHandlers authorization is the turn's persona's role", () => {
+  const ALPHA_MGR = "UALPHAMGR";
+  const withAlpha = async (soulJson: unknown, fn: () => Promise<void>) => {
+    const keep = soulData();
+    const alpha = { name: "alpha", slackUserId: "UALPHAP", outClient: null, soulJson } as any;
+    const reg: PersonaRegistry = {
+      lookupByUserId: () => null, lookupByName: (n) => (n === "alpha" ? alpha : null), list: () => [alpha],
+      isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+    };
+    setPersonaRegistry(reg);
+    try {
+      await fn();
+    } finally {
+      __resetPersonaRegistry();
+      setSoulData(keep);
+    }
+  };
+
+  test("a named persona's own manager may; the default's manager and approver may not", async () => {
+    await withAlpha({ manager: { userId: ALPHA_MGR }, approvers: [{ userId: "UALPHAAPP", scope: "all", catchall: true }] }, async () => {
+      const ctx = (userId: string) => makeCtx({ userId, personaId: "alpha" });
+      expect((await adminHandlers.listCronJobs(ctx(ALPHA_MGR))).isError).toBeUndefined();
+      expect((await adminHandlers.listCronJobs(ctx("UALPHAAPP"))).isError).toBeUndefined();
+      expect((await adminHandlers.listCronJobs(ctx(MANAGER))).isError).toBe(true);
+      expect((await adminHandlers.listCronJobs(ctx(APPROVER))).isError).toBe(true);
+      // The default persona is unchanged.
+      expect((await adminHandlers.listCronJobs(makeCtx({ userId: MANAGER }))).isError).toBeUndefined();
+    });
+  });
+
+  test("a global approver is not an approver in a channel whose block names its own", async () => {
+    const keep = soulData();
+    setSoulData({ ...keep, channelOverrides: [{ channel: "C0COV001", approvers: [{ userId: "UCHANAPP", scope: "all", catchall: true }] }] });
+    try {
+      expect((await adminHandlers.listCronJobs(makeCtx({ userId: APPROVER }))).isError).toBe(true);
+      expect((await adminHandlers.listCronJobs(makeCtx({ userId: "UCHANAPP" }))).isError).toBeUndefined();
+      expect((await adminHandlers.listCronJobs(makeCtx({ userId: APPROVER, channel: "COTHER" }))).isError).toBeUndefined();
+      expect((await adminHandlers.listCronJobs(makeCtx({ userId: BACKUP }))).isError).toBeUndefined();
+    } finally {
+      setSoulData(keep);
+    }
   });
 });
 

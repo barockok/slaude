@@ -13,6 +13,8 @@ import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { __setGrantsReader } from "../../../src/access/role";
 import type { Grant } from "../../../src/access/grants";
+import { writeSoulCacheEntry } from "../../../src/soul/extract";
+import { SoulDataSchema } from "../../../src/soul/data";
 
 const BOT = {
   A0MAIN: { user: "U0MAIN", bot: "B0MAIN", persona: "default" },
@@ -24,8 +26,8 @@ const ALPHA_MGR = "UALPHAMGR";
 const ALPHA_CH = "C0ALPHA"; // alpha's own trusted channel; WORLD trusts C0TEAM
 
 /** `alpha` carries a structured soul (managed persona): its own manager and channels. */
-const registry = (soulJson: unknown): PersonaRegistry => {
-  const alpha = { name: "alpha", slackUserId: "U0ALPHAP", config: { slackUserId: "U0ALPHAP", name: "alpha" }, outClient: null, soulJson } as any;
+const registry = (soulJson: unknown, extra: Record<string, unknown> = {}): PersonaRegistry => {
+  const alpha = { name: "alpha", slackUserId: "U0ALPHAP", config: { slackUserId: "U0ALPHAP", name: "alpha" }, outClient: null, soulJson, ...extra } as any;
   return {
     lookupByUserId: (id) => (id === alpha.slackUserId ? alpha : null),
     lookupByName: (name) => (name === "alpha" ? alpha : null),
@@ -167,3 +169,56 @@ describe("stored grants", () => {
     expect(g.turns).toHaveLength(1);
   });
 });
+
+describe("/heartbeat for a filesystem persona", () => {
+  it("its heartbeat recipient (its own SOUL.md manager) is never refused", async () => {
+    // The cached extraction is accepted only when its ids appear in the text.
+    const soulMd = "# SOUL\n\n## Identity\nAlpha on files.\n\n## Reporting\n- Manager: <@UFILEMGR>\n";
+    writeSoulCacheEntry(soulMd, SoulDataSchema.parse({ manager: { userId: "UFILEMGR" } }));
+    setPersonaRegistry(registry(undefined, { soulMd }));
+    writeSoulFixture(WORLD);
+    const g = setup();
+    // No structured soul: roleOf falls back to the default's managers, who may look.
+    await g.deliver("A0ALPHA", WORLD.manager, "C0TEAM", "/heartbeat");
+    expect(g.posts.at(-1)?.text).not.toContain("only this agent's manager");
+    // The recipient is not a manager by roleOf, and is still let in.
+    await g.deliver("A0ALPHA", "UFILEMGR", "C0TEAM", "/heartbeat");
+    expect(g.posts.at(-1)?.text).not.toContain("only this agent's manager");
+    await g.deliver("A0ALPHA", "U0BOB", "C0TEAM", "/heartbeat");
+    expect(g.posts.at(-1)?.text).toContain("only this agent's manager");
+  });
+});
+
+describe("pinned: approvers are channel-aware for admin commands", () => {
+  it("a global approver loses /cron in a channel whose block names its own approvers", async () => {
+    const { setSoulData, soulData } = await import("../../../src/soul/extract");
+    setSoulData({ ...soulData(), channelOverrides: [{ channel: "C0TEAM", approvers: [{ userId: "UCHANAPP", scope: "all", catchall: true }] }] });
+    const g = setup();
+    await g.deliver("A0MAIN", WORLD.approvers[0]!, "C0TEAM", "/cron-list");
+    expect(g.posts.at(-1)?.text).toContain("only manager or approver can list cron jobs");
+    await g.deliver("A0MAIN", "UCHANAPP", "C0TEAM", "/cron-list");
+    expect(g.posts.at(-1)?.text).toBe("No active cron jobs.");
+    await g.deliver("A0MAIN", WORLD.approvers[0]!, "C0PUB", "/cron-list");
+    expect(g.posts.at(-1)?.text).toBe("No active cron jobs.");
+  });
+});
+
+describe("a failed grants read", () => {
+  it("degrades to the soul: a soul-listed user is admitted, an unlisted one dropped", async () => {
+    __setGrantsReader(async () => { throw new Error("db down"); });
+    const err = console.error;
+    console.error = () => {};
+    try {
+      const g = setup();
+      await g.deliver("A0MAIN", "U0BOB", "C0TEAM", "hello");
+      expect(g.turns).toHaveLength(1);
+      await g.deliver("A0MAIN", "U0BOB", "CELSEWHERE", "hello");
+      expect(g.turns).toHaveLength(1);
+      await g.deliver("A0MAIN", WORLD.manager, "CELSEWHERE", "hello");
+      expect(g.turns).toHaveLength(2);
+    } finally {
+      console.error = err;
+    }
+  });
+});
+

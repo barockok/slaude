@@ -16,7 +16,7 @@ import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slac
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
 import { effectiveSoulForChannelFor, soulDataFor } from "../../soul/per-persona";
 import { admit } from "../../access/admission";
-import { loadGrants, roleFromGrants, roleOf } from "../../access/role";
+import { loadGrants, roleOf, usersWithRole } from "../../access/role";
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
 import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
@@ -35,7 +35,7 @@ import { drainVoiceCalls, endCallsOnSessionExit, makeMonoVoiceHost, voiceServers
 /** Mono shutdown: how long live voice calls get to say goodbye and end. */
 const VOICE_SHUTDOWN_GRACE_MS = 5_000;
 import { monoPersonaSoul } from "../../voice/mono-soul";
-import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration } from "../slack/mcp-tools";
+import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration, isManagerOrApprover } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus, redactSecrets } from "./status-text";
@@ -80,6 +80,7 @@ import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mc
 import { createV1Api } from "../api";
 import type { PendingSource } from "../api/pending-source";
 import type { JobClaims } from "../api/auth";
+import type { ToolPlaneDeps } from "../api/tools/deps";
 import { memoryScopeForClaims } from "../api/memory";
 import { defaultGateBus } from "../../queue/gate-bus";
 import { makeQueueDispatch, type QueueDispatch } from "./dispatch";
@@ -225,6 +226,9 @@ export interface GatewayHandle {
   /** TEST SEAM ONLY. The brain gate input a node turn's /v1 tools see for
    *  these (verified) job-token claims. */
   __brainGateForClaims?(claims: JobClaims): Promise<GateInput>;
+  /** TEST SEAM ONLY. Open a node turn's tool permission card, as the /v1
+   *  can_use_tool relay does for these (verified) job-token claims. */
+  __openPermissionForClaims?: ToolPlaneDeps["openPermission"];
   /** TEST SEAM ONLY. The panel's chat enqueue (what POST /panel chat calls
    *  after its own auth), without the panel's OIDC. */
   __panelChat?(session: SessionRow, text: string, operatorId: string): Promise<void>;
@@ -700,14 +704,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
     return undefined;
   };
-  /** The user's role on the persona the event runs as (roleOf: persona NAME,
-   *  channel-aware for approvers). */
-  const isManagerOf = async (personaId: string | null | undefined, userId: string | null | undefined): Promise<boolean> =>
-    !!userId && (await roleOf(personaId || "default", userId)) === "manager";
-  const isManagerOrApproverOf = async (personaId: string | null | undefined, userId: string, channelId?: string | null): Promise<boolean> => {
-    const r = await roleOf(personaId || "default", userId, channelId);
-    return r === "manager" || r === "approver";
-  };
+  /** Whether the user is a manager of the persona (roleOf; persona NAME, absent = default). */
+  const isManagerOf = async (personaName: string | null | undefined, userId: string | null | undefined): Promise<boolean> =>
+    !!userId && (await roleOf(personaName, userId)) === "manager";
   // Surfaces resolve their client on every call, so a sync that rotates,
   // removes or re-points a persona's userToken reaches surfaces built before
   // it, including the one the in-process surface MCP of a warm session holds
@@ -796,7 +795,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     managers: backgroundManagers,
     digestRecipient: () => digestRecipientOf(soulData()),
   };
-  registerProposalActions(t, { managers: backgroundManagers, call: brainCall, now: () => new Date(), ready: brainReady });
+  // A proposal is decided by the managers of the persona that owns it (roleOf "manager").
+  const proposalManagers = async (personaName: string): Promise<string[]> => usersWithRole(await loadGrants(personaName), ["manager"]);
+  registerProposalActions(t, { managers: proposalManagers, call: brainCall, now: () => new Date(), ready: brainReady });
   const ignoreGate = new IgnoreGate();
   // Boot sweep: auto-expire pending gates whose deadline passed while no
   // process was alive (a restart killed their auto-deny timers). Rows with no
@@ -1373,9 +1374,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // The persona's managers (roleOf "manager": its soul's manager and
           // backup plus stored manager grants, no deny).
           managers: async () => {
-            const grants = await loadGrants(ctx.personaId || "default");
-            const ids = [...new Set(grants.filter((g) => g.subjectKind === "user" && g.role === "manager" && !g.deny).map((g) => g.subjectId))];
-            return ids.filter((u) => roleFromGrants(grants, u) === "manager");
+            return usersWithRole(await loadGrants(ctx.personaId), ["manager"]);
           },
           requestApproval: (r) => surface.requestApproval(r),
           // A commitment written here is indexed for the promise scheduler (phase E).
@@ -2526,8 +2525,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       if (slash.kind === "heartbeat-status") {
         const persona = dispatch?.personaId ?? "default";
+        // The heartbeat recipient (scheduler's personaManager, which reads a
+        // filesystem persona's own SOUL.md) is never refused.
         const managerId = personaManager(persona);
-        if (!(await isManagerOf(persona, userId))) {
+        if (userId !== managerId && !(await isManagerOf(persona, userId))) {
           await reply(":no_entry: only this agent's manager can see this");
           return;
         }
@@ -2855,7 +2856,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "ignore" || slash.kind === "unignore") {
         if (slash.kind === "ignore") {
           if (slash.target === "user") {
-            if (!(await isManagerOrApproverOf(dispatch?.personaId, userId, channelId))) {
+            if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId))) {
               await reply(":no_entry: only manager or approver can ignore users");
               return;
             }
@@ -2896,7 +2897,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
         if (slash.kind === "unignore") {
           if (slash.target === "user") {
-            if (!(await isManagerOrApproverOf(dispatch?.personaId, userId, channelId))) {
+            if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId))) {
               await reply(":no_entry: only manager or approver can unignore users");
               return;
             }
@@ -2920,7 +2921,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         slash.kind === "cron-pause" ||
         slash.kind === "cron-resume"
       ) {
-        const role = await roleOf(dispatch?.personaId || "default", userId, channelId);
+        const role = await roleOf(dispatch?.personaId, userId, channelId);
         const isManager = role === "manager";
         const isApprover = role === "approver";
         const findJob = async (id: string) => {
@@ -3116,7 +3117,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
       if (slash.kind === "model") {
         const soul = effectiveSoulForChannelFor(dispatch?.personaId, channelId);
-        if (!(await isManagerOrApproverOf(dispatch?.personaId, userId, channelId)) && !canChangeModel(userId, { ...soul, approvers: [] })) {
+        if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId)) && !canChangeModel(userId, { ...soul, approvers: [] })) {
           await reply(":lock: `/model` — manager, approver, or DM-allowed users only.");
           return;
         }
@@ -3726,9 +3727,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // Approvers can still click Approve / Deny on request_approval blocks but
     // cannot chat on that right alone.
     {
-      const persona = o.personaId && o.personaId !== "default" ? o.personaId : "default";
-      const isDM_ = channelType === "im";
-      const verdict = admit({ grants: await loadGrants(persona), userId, channelId, isDM: isDM_ });
+      const persona = o.personaId || "default";
+      const verdict = admit({ grants: await loadGrants(persona), userId, channelId, isDM: channelType === "im" });
       if (!verdict.ok && verdict.reason === "blocked_user") {
         return { reason: "blocked_user", log: `[slack-rx] drop ch=${channelId} user=${userId} — blocked user` };
       }
@@ -3736,7 +3736,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return {
           reason: "whitelist",
           log:
-            `[slack-rx] drop ch=${channelId} user=${userId} — non-whitelist/DM accepts manager/backup${isDM_ ? "/dm-allowlist" : ""} only` +
+            `[slack-rx] drop ch=${channelId} user=${userId} persona=${persona}: not granted here` +
             (soulDataFor(persona).manager.userId ? "" : " (no manager set in SOUL.md)"),
         };
       }
@@ -4238,6 +4238,42 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     ctx.reloadSession = (prompt?) => agent.reload(claims.session, prompt);
     return ctx;
   };
+  /** A node turn's tool permission card (the /v1 can_use_tool relay). */
+  /** The job's recorded senders, or null (no queue, no job claim, or a failed read). */
+  const jobSenders = async (claims: JobClaims) => {
+    if (!queueDispatch || !claims.job) return null;
+    const job = claims.job;
+    try {
+      return await queueDispatch.turns.turnSenders(job);
+    } catch {
+      return null;
+    }
+  };
+  const nodeOpenPermission: ToolPlaneDeps["openPermission"] = async (claims, args) =>
+    permissions.open({
+      sessionId: claims.session,
+      toolName: args.toolName,
+      input: args.input,
+      toolUseId: args.toolUseId,
+      channel: claims.channel,
+      threadTs: claims.thread,
+      decisionReason: args.decisionReason,
+      suggestions: args.suggestions,
+      app: { apiAppId: claims.app, teamId: claims.team },
+      persona: claims.persona,
+      // The job's recorded senders (merged follow-ups included): the
+      // token's initiator only when it is the job's sole Slack sender.
+      // A node runs one job per session at a time (session lock), and a
+      // follow-up either merges into a waiting job (and joins its
+      // senders) or waits for its own job and token, so a later message
+      // cannot re-stamp this prompt or decide it with its own token.
+      // A failed senders read stamps no initiator (an approver or manager
+      // must decide) rather than failing the open.
+      turn: stampFromSenders(await jobSenders(claims), {
+        origin: claims.origin,
+        expect: claims.initiator,
+      }),
+    });
   const v1 = createV1Api({
     tools: {
       mcpBridge,
@@ -4257,31 +4293,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Non-blocking gate opens (spec §3 "Blocking tools"): the node long-polls
       // /v1/pending/:id; ANY replica's Block Kit click settles the durable row
       // and publishes gate:<id> for the instant wakeup.
-      openPermission: async (claims, args) =>
-        permissions.open({
-          sessionId: claims.session,
-          toolName: args.toolName,
-          input: args.input,
-          toolUseId: args.toolUseId,
-          channel: claims.channel,
-          threadTs: claims.thread,
-          decisionReason: args.decisionReason,
-          suggestions: args.suggestions,
-          app: { apiAppId: claims.app, teamId: claims.team },
-          persona: claims.persona,
-          // The job's recorded senders (merged follow-ups included): the
-          // token's initiator only when it is the job's sole Slack sender.
-          // A node runs one job per session at a time (session lock), and a
-          // follow-up either merges into a waiting job (and joins its
-          // senders) or waits for its own job and token, so a later message
-          // cannot re-stamp this prompt or decide it with its own token.
-          // A failed senders read stamps no initiator (an approver or manager
-          // must decide) rather than failing the open.
-          turn: stampFromSenders(queueDispatch && claims.job ? await queueDispatch.turns.turnSenders(claims.job).catch(() => null) : null, {
-            origin: claims.origin,
-            expect: claims.initiator,
-          }),
-        }),
+      openPermission: nodeOpenPermission,
       openApproval: (claims, args) =>
         approvals.open({
           channel: claims.channel,
@@ -4439,6 +4451,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return route ? brainGateFor(route.ctx) : undefined;
     },
     __brainGateForClaims: (claims: JobClaims) => brainGateFor(v1SlackCtx(claims)),
+    __openPermissionForClaims: nodeOpenPermission,
     __panelChat: (session: SessionRow, text: string, operatorId: string) => panelEnqueue(session, text, operatorId),
     __agentConnect: (sessionId: string, server: string) => {
       const route = routes.get(sessionId);

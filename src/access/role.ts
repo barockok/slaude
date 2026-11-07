@@ -34,6 +34,18 @@ export function roleFromGrants(grants: readonly Grant[], userId: string, channel
 }
 
 /**
+ * Every user whose {@link roleFromGrants} on `channelId` is one of `roles`,
+ * over already loaded grants (soul-derived and stored user grants). Sync.
+ */
+export function usersWithRole(grants: readonly Grant[], roles: readonly Role[], channelId?: string | null): string[] {
+  const users = new Set(grants.filter((g) => g.subjectKind === "user" && !g.deny).map((g) => g.subjectId));
+  return [...users].filter((u) => {
+    const r = roleFromGrants(grants, u, channelId);
+    return r !== null && roles.includes(r);
+  });
+}
+
+/**
  * Stored grants are cached per persona for TTL_MS. A create or revoke in this
  * process invalidates at once; other replicas (and direct database edits) see
  * the change only when their entry expires, so a grant or a revoke can take up
@@ -112,18 +124,18 @@ function storedGrants(persona: string): Promise<Grant[]> {
 
 /**
  * A persona's effective grants: soul-derived plus stored (cached). Never
- * throws. `persona` is the persona NAME (agent_grants is keyed by name;
+ * throws. `personaName` is the persona NAME (agent_grants is keyed by name;
  * null/undefined/"" mean "default"). Pass the result to `admit()` or
  * `roleFromGrants()`.
  */
-export async function loadGrants(persona: string | null | undefined): Promise<Grant[]> {
-  const p = key(persona);
+export async function loadGrants(personaName: string | null | undefined): Promise<Grant[]> {
+  const p = key(personaName);
   return effectiveGrants(p, await storedGrants(p));
 }
 
-/** `roleFromGrants` over {@link loadGrants}; `persona` is the persona NAME. */
-export async function roleOf(persona: string | null | undefined, userId: string, channelId?: string | null): Promise<Role | null> {
-  return roleFromGrants(await loadGrants(persona), userId, channelId);
+/** `roleFromGrants` over {@link loadGrants}; `personaName` is the persona NAME. */
+export async function roleOf(personaName: string | null | undefined, userId: string, channelId?: string | null): Promise<Role | null> {
+  return roleFromGrants(await loadGrants(personaName), userId, channelId);
 }
 
 /** Test seam: replace the stored-grant read (null restores). Clears the cache. */

@@ -613,7 +613,7 @@ describe("handleMessage early drops through the shared predicate", () => {
 
     const tUnlisted = nextTs();
     cases.push({ reason: "whitelist", ts: tUnlisted,
-      line: () => `[slack-rx] drop ch=C0SECRET user=U0RANDOM — non-whitelist/DM accepts manager/backup only`,
+      line: () => `[slack-rx] drop ch=C0SECRET user=U0RANDOM persona=default: not granted here`,
       run: () => appMention(g, msg(g.t.client, "<@USLAUDEBOT> hi", tUnlisted, { channel: "C0SECRET", user: "U0RANDOM" })) });
 
     const thread = nextTs();

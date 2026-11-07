@@ -210,8 +210,9 @@ export async function postPersonProposals(a: { agentId: string; userId: string; 
 }
 
 export interface DecideDeps {
-  /** The manager and the backup manager (Slack user ids). */
-  managers: () => string[];
+  /** The managers (Slack user ids) of the persona named `personaName`: the
+   *  persona that owns the proposal. May be async; always awaited here. */
+  managers: (personaName: string) => string[] | Promise<string[]>;
   call: BrainOpCall;
   now: () => Date;
   /** The brain can take a write without booting (brainReady). Absent: assumed open. */
@@ -228,7 +229,7 @@ export function mayDecide(p: Pick<Proposal, "toKind" | "toUser">, by: string, ma
 
 /** Apply an approved team-fact or promote through kb_memoize, as `by`, with the click as the approval. */
 async function applyWrite(p: Proposal, w: { pages: PageArg[]; target: MemoizeTarget }, by: string, deps: DecideDeps): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const managers = deps.managers();
+  const managers = await deps.managers(personaOfAgent(p.agentId));
   const isManager = managers.includes(by);
   // Shared memory is the team's: only the manager or backup ever writes it
   // from a card, whatever the gate below would allow.
@@ -283,7 +284,7 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   const p = await Proposals.get(a.id);
   if (!p || p.kind === Proposals.SKILL_RETIRED_KIND) return { ok: false, text: ":grey_question: this proposal no longer exists" };
   if (!fromCardApp(p, a.from)) return { ok: false, text: WRONG_APP };
-  if (!mayDecide(p, a.by, deps.managers())) {
+  if (!mayDecide(p, a.by, await deps.managers(personaOfAgent(p.agentId)))) {
     return { ok: false, text: `:no_entry: <@${a.by}>, only ${p.toKind === "person" ? "the person it is for" : "the manager"} can decide this proposal. It stays open.` };
   }
   const at = deps.now().getTime();
@@ -355,11 +356,11 @@ function auditProposal(p: Proposal, by: string, decision: "allow" | "deny", outc
   });
 }
 
-/** A click on Restore: the manager or backup moves a retired skill back, once. */
+/** A click on Restore: a manager of the persona that owns the retirement moves a retired skill back, once. */
 export async function restoreRetiredSkill(a: { id: string; by: string; from?: ClickOrigin }, deps: Pick<DecideDeps, "managers" | "now">): Promise<ClickResult> {
-  if (!deps.managers().includes(a.by)) return { ok: false, text: `:no_entry: <@${a.by}>, only the manager can restore a skill.` };
   const r = await Proposals.get(a.id);
   if (!r || r.kind !== Proposals.SKILL_RETIRED_KIND) return { ok: false, text: ":grey_question: this retirement no longer exists" };
+  if (!(await deps.managers(personaOfAgent(r.agentId))).includes(a.by)) return { ok: false, text: `:no_entry: <@${a.by}>, only the manager can restore a skill.` };
   if (!fromCardApp(r, a.from)) return { ok: false, text: WRONG_APP };
   if (r.status !== "approved") return { ok: false, text: ":lock: this skill was already restored" };
   const pl = r.payload as Partial<Proposals.SkillRetiredPayload>;
