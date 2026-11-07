@@ -5,7 +5,7 @@
  */
 import type {
   AgentDetailResponse, AllGrantsResponse, AuditEventView, ConsoleGrantView, ConsoleRolesResponse, EnvironmentsResponse, GrantView,
-  MandateView, MemoryPageResponse, MemoryStoreView, SessionEvent, SessionRowView, SessionSummaryView,
+  MandateView, MemoryPageResponse, MemoryStoreView, SessionEvent, SessionHistoryItem, SessionRowView, SessionSummaryView,
 } from "../../../gateway/panel/api-types";
 
 const MIN = 60_000;
@@ -149,7 +149,8 @@ export function createFixtures(now: number = Date.now()): ConsoleFixtures {
     roles: { superadmin: ["jane.doe@example.com", "alice@example.com"], operator: ["bob@example.com", "oncall@example.com"] },
     agents,
     audit: auditTrail(now),
-    counts: { liveSessions: 3, pendingApprovals: 2 },
+    // Active (warm) sessions: s_7f21 and s_5c90.
+    counts: { liveSessions: 2, pendingApprovals: 2 },
     sessions: sessionRows(now),
     locks: { s_7f21: "bob@example.com", s_5c90: "alice@example.com" },
     memory: memoryFixtures(now),
@@ -256,7 +257,8 @@ function sessionRows(now: number): ConsoleFixtures["sessions"] {
     row("s_6a02", "default", "COPS", TS(3), "idle", "claude-opus-4-1", 41 * MIN, { permission_mode: "acceptEdits" }),
     row("s_5c11", "default", "CTEAM", TS(4), "idle", "claude-opus-4-1", 3 * HOUR, { title: "Connect the issue tracker" }),
     row("s_4d77", "triage", "COPS", TS(5), "error", "claude-haiku-4-5", 14 * HOUR, { title: "Nightly alert sweep" }),
-    row("s_4a10", "default", "DUALICE", TS(6), "idle", "claude-opus-4-1", 20 * HOUR, { engaged: 0 }),
+    // Stored as running, but its node restarted long ago: nothing holds it (Idle).
+    row("s_4a10", "default", "DUALICE", TS(6), "running", "claude-opus-4-1", 20 * HOUR, { engaged: 0, warm: false, node: undefined }),
     row("s_3001", "scout", "CTEAM", TS(7), "idle", "claude-sonnet-4-5", 2 * DAY, { claude_started: 0 }),
     row("s_2ff0", "default", null, null, "idle", "claude-opus-4-1", 3 * DAY, { title: "Heartbeat round", engaged: 0 }),
   ];
@@ -269,19 +271,40 @@ function sessionRows(now: number): ConsoleFixtures["sessions"] {
 export function sessionScript(sessionId: string): Array<{ delay: number; event: SessionEvent }> {
   const e = <T extends Omit<SessionEvent, "sessionId">>(delay: number, ev: T) => ({ delay, event: { sessionId, ...ev } as SessionEvent });
   return [
+    e(60, { type: "userMessage", userId: "UALICE", userName: "alice", text: "Can you check the release checklist against the branch?", at: Date.now() }),
     e(60, { type: "turnStart" }),
     e(60, { type: "thinking", text: "The user wants the release checklist checked against the current branch. Start with the test suite, then read the checklist file and compare each item." }),
     e(60, { type: "assistantText", text: "Running the panel tests first, then I will go through the checklist item by item." }),
-    e(60, { type: "toolCall", tool: "Bash", input: { command: "bun test tests/panel", description: "Run the panel test suite", timeout: 120000 } }),
-    e(80, { type: "toolResult", tool: "Bash", result: { stdout: "bun test v1.3.0\n\ntests/panel/console-audit.test.ts:\n(pass) GET /panel/api/audit > newest first\n(pass) GET /panel/api/audit > filters\n\n 214 pass\n 0 fail\nRan 214 tests across 22 files. [8.41s]", is_error: false } }),
-    e(60, { type: "toolCall", tool: "Read", input: { file_path: "docs/release-checklist.md" } }),
-    e(60, { type: "toolResult", tool: "Read", result: "1. Tests pass on the release branch\n2. Release notes written under docs/site/_content/releases\n3. Version in package.json matches the tag\n4. Screenshots updated for changed pages" }),
+    e(60, { type: "toolCall", tool: "Bash", input: { command: "bun test tests/panel", description: "Run the panel test suite", timeout: 120000 }, toolUseId: "toolu_bash1" }),
+    e(80, { type: "toolResult", tool: "Bash", result: { stdout: "bun test v1.3.0\n\ntests/panel/console-audit.test.ts:\n(pass) GET /panel/api/audit > newest first\n(pass) GET /panel/api/audit > filters\n\n 214 pass\n 0 fail\nRan 214 tests across 22 files. [8.41s]", is_error: false }, toolUseId: "toolu_bash1" }),
+    // Two reads in parallel; their results come back in the other order and pair by id.
+    e(60, { type: "toolCall", tool: "Read", input: { file_path: "docs/release-checklist.md" }, toolUseId: "toolu_read1" }),
+    e(10, { type: "toolCall", tool: "Read", input: { file_path: "CHANGELOG.md" }, toolUseId: "toolu_read2" }),
+    e(60, { type: "toolResult", tool: "Read", result: "## 0.42.0 (unreleased)\n- Console session history", toolUseId: "toolu_read2" }),
+    e(60, { type: "toolResult", tool: "Read", result: "1. Tests pass on the release branch\n2. Release notes written under docs/site/_content/releases\n3. Version in package.json matches the tag\n4. Screenshots updated for changed pages", toolUseId: "toolu_read1" }),
     e(60, { type: "tokenUsage", snapshot: { inputTokens: 18200, outputTokens: 940, cacheReadInputTokens: 52000, cacheCreationInputTokens: 0, totalInput: 70200, contextWindow: 200000, pctUsed: 0.35, remaining: 129800 } }),
-    e(60, { type: "toolCall", tool: "Edit", input: { file_path: "package.json", old_string: "\"version\": \"0.41.0\"", new_string: "\"version\": \"0.42.0-rc.1\"" } }),
-    e(60, { type: "toolResult", tool: "Edit", result: { is_error: true, content: "Permission denied by UBOB in the thread" } }),
-    e(60, { type: "assistantText", text: "Tests pass (214 of 214). Release notes and screenshots are still open.\n\nThe version bump was declined in the thread, so package.json still says 0.41.0. Want me to draft the release notes next?" }),
+    e(60, { type: "toolCall", tool: "Edit", input: { file_path: "package.json", old_string: "\"version\": \"0.41.0\"", new_string: "\"version\": \"0.42.0-rc.1\"" }, toolUseId: "toolu_edit1" }),
+    e(60, { type: "toolResult", tool: "Edit", result: { is_error: true, content: "Permission denied by UBOB in the thread" }, toolUseId: "toolu_edit1" }),
+    e(60, { type: "toolCall", tool: "mcp__slaude_surface__reply", input: { text: "Tests pass (214 of 214). Release notes and screenshots are still open.\n\nThe version bump was declined in the thread, so package.json still says 0.41.0. Want me to draft the release notes next?" }, toolUseId: "toolu_reply1" }),
+    e(60, { type: "toolResult", tool: "mcp__slaude_surface__reply", result: [{ type: "text", text: "posted ref=1762506060.000300" }], toolUseId: "toolu_reply1" }),
     e(60, { type: "done" }),
   ];
+}
+
+/**
+ * A session's earlier turns as the history route answers them (oldest first),
+ * from the conversation record. s_7f21 has more than one page.
+ */
+export function sessionHistory(sessionId: string, now: number): SessionHistoryItem[] {
+  if (sessionId === "s_2ff0") return [];
+  const turns = sessionId === "s_7f21" ? 26 : 3;
+  const out: SessionHistoryItem[] = [];
+  for (let i = 1; i <= turns; i++) {
+    const at = now - (turns - i + 1) * 7 * MIN - 2 * HOUR;
+    out.push({ id: `${i}:user`, at, who: "user", name: i % 3 === 0 ? "bob" : "alice", text: i === 1 ? "Earliest question: where is the release checklist?" : `Earlier question ${i}` });
+    out.push({ id: `${i}:agent`, at, who: "agent", text: i === turns ? "Last earlier answer: the checklist lives in docs/release-checklist.md." : `Earlier answer ${i}` });
+  }
+  return out;
 }
 
 // --- Memory ------------------------------------------------------------------

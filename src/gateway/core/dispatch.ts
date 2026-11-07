@@ -201,6 +201,9 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
               lastId = entry.id;
               const e = entry.event as AgentEvent;
               if (!e || typeof e !== "object" || !("type" in e)) continue;
+              // The gateway's own display events (an inbound Slack message shown
+              // on the console's tail) are not agent events: never replayed.
+              if ((e as { type: string }).type === "userMessage") continue;
               // LABEL_MISMATCH is held back: the job's failure decides whether
               // the turn is re-dispatched (silently) or shown (see below).
               if (e.type === "error" && e.code === "LABEL_MISMATCH") continue;

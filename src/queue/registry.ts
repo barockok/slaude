@@ -109,9 +109,31 @@ export function makeRegistry(opts: RegistryOpts) {
       };
     },
 
+    /** lookup() for many sessions in ONE pipeline (one round trip), in order. */
+    async lookupMany(sessionIds: readonly string[]): Promise<Array<SessionLocation | null>> {
+      if (sessionIds.length === 0) return [];
+      const p = redis.pipeline();
+      for (const id of sessionIds) p.hgetall(keys.sess(id));
+      const res = (await p.exec()) ?? [];
+      const now = Date.now();
+      return sessionIds.map((_, i) => {
+        const [err, h] = res[i] ?? [null, null];
+        const row = (err ? null : h) as Record<string, string> | null;
+        if (!row?.node) return null;
+        const lastBeat = Number(row.lastBeat);
+        return { node: row.node, since: Number(row.since), lastBeat, fresh: now - lastBeat <= sessTtlMs };
+      });
+    },
+
     /** Idle expiry / drain: the node dropped its warm Query. */
     async unregister(sessionId: string): Promise<void> {
       await redis.del(keys.sess(sessionId));
+    },
+
+    /** How many sessions are warm on some node (SCAN of `sess:*`; each key
+     *  expires with its heartbeat, so a key that exists is a warm session). */
+    async countWarm(): Promise<number> {
+      return (await scanKeys(redis, keys.sessPattern())).length;
     },
 
     /** Session ids currently registered to a node (SCAN — reaper cadence). */

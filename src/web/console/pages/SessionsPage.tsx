@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { AgentsResponse, SessionSummaryView, SessionsResponse } from "../../../gateway/panel/api-types";
+import type { AgentsResponse, SessionActivity, SessionSummaryView, SessionsResponse } from "../../../gateway/panel/api-types";
 import { navigate } from "../../lib/router";
 import {
   Avatar, Badge, Button, Card, EmptyState, FilterChip, IconLock, PageHeader, SearchField, Table, type Column, type FilterOption,
@@ -8,13 +8,14 @@ import { ErrorState } from "../components/ErrorState";
 import { TimeAgo } from "../../shared/TimeAgo";
 import { useApi } from "../hooks/useApi";
 import { useIdentity } from "../../shared/AppFrame";
-import { sessionPath, sessionStatus } from "../lib/format";
+import { sessionActivity, sessionPath } from "../lib/format";
 
-type StatusFilter = "all" | "running" | "idle" | "error";
+type StatusFilter = "all" | SessionActivity;
 
 const STATUS_OPTIONS: FilterOption<StatusFilter>[] = [
   { value: "all", label: "All" },
-  { value: "running", label: "Running" },
+  { value: "working", label: "Working" },
+  { value: "warm", label: "Warm" },
   { value: "idle", label: "Idle" },
   { value: "error", label: "Error" },
 ];
@@ -41,13 +42,13 @@ export function ChannelThread({ channel, thread, title }: { channel: string | nu
   );
 }
 
-export function StatusBadge({ status, warm }: { status: string; warm?: boolean }) {
-  const s = sessionStatus(status);
+/** What a session is doing now: Working, Warm, Idle or Error (never the stored status). */
+export function StatusBadge({ activity }: { activity: string }) {
+  const s = sessionActivity(activity);
   return (
-    <Badge tone={s.tone}>
-      {s.label}
-      {warm === false && status === "running" ? " (cold)" : ""}
-    </Badge>
+    <span title={s.hint || undefined}>
+      <Badge tone={s.tone}>{s.label}</Badge>
+    </span>
   );
 }
 
@@ -71,7 +72,7 @@ function columns(me: string | null): Column<SessionSummaryView>[] {
       skeleton: 0.7,
       render: (s) => <ChannelThread channel={s.slack_channel_id} thread={s.slack_thread_ts} title={s.title} />,
     },
-    { key: "status", header: "Status", width: "8.5rem", skeleton: 0.5, render: (s) => <StatusBadge status={s.status} /> },
+    { key: "status", header: "Status", width: "8.5rem", skeleton: 0.5, render: (s) => <StatusBadge activity={s.activity} /> },
     { key: "model", header: "Model", width: "15%", skeleton: 0.7, render: (s) => <span className="sl-mono sl-truncate">{s.model}</span> },
     { key: "activity", header: "Last activity", width: "9rem", skeleton: 0.6, render: (s) => <TimeAgo at={s.updated_at} /> },
     {
@@ -100,7 +101,6 @@ export function SessionsPage() {
 
   const q = new URLSearchParams();
   if (agent !== "all") q.set("persona", agent);
-  if (status !== "all") q.set("status", status);
   q.set("limit", "200");
   const { data, loading, error, reload } = useApi<SessionsResponse>(`/api/sessions?${q}`);
   const agents = useApi<AgentsResponse>("/api/agents");
@@ -112,12 +112,13 @@ export function SessionsPage() {
 
   const rows = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const all = data?.sessions ?? [];
+    // Activity is filtered here: the stored status the server filters on is not it.
+    const all = (data?.sessions ?? []).filter((s) => status === "all" || s.activity === status);
     if (!needle) return all;
     return all.filter((s) =>
       [s.slack_channel_id, s.slack_thread_ts, s.title, s.id].some((v) => v?.toLowerCase().includes(needle)),
     );
-  }, [data, query]);
+  }, [data, query, status]);
 
   const filtered = agent !== "all" || status !== "all" || query.trim() !== "";
   const clear = () => {

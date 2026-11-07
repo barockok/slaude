@@ -28,6 +28,7 @@ import { ledgerTurnRun, type TurnPass } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
+import { personaAgentId as personaAgentIdFor } from "../../persona/agent-slice";
 import { VoiceCalls } from "../../voice/call";
 import { voiceBundleFromEnv, voiceConfigFromEnv, type VoiceConfig } from "../../voice/config";
 import { drainVoiceCalls, endCallsOnSessionExit, makeMonoVoiceHost, voiceServersFor } from "../../voice/hosts";
@@ -612,6 +613,41 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         panelHoldUnsub = unsub;
       })
       .catch((e) => console.error("[panel] hold subscribe failed:", e));
+  }
+
+  // The console's live tail reads events:<session>. On nodes the worker
+  // appends every agent event there; in mono nothing did, so the console
+  // showed no activity. Mono appends its own agent's events here.
+  if (panelInfra && !queueDispatch) {
+    const pubsub = panelInfra.pubsub;
+    agent.on("event", (e: AgentEvent) => {
+      if (voiceTurns.active(e.sessionId)) return;
+      void pubsub.appendEvent(e.sessionId, e).catch(() => {});
+    });
+  }
+
+  /**
+   * Show a Slack message delivered to a session on the console's live tail.
+   * Display only: it goes to the event stream, never to the agent's input
+   * (the model gets the message through its turn).
+   *
+   * /1on1 asymmetry, on purpose: the live tail shows a locked thread's
+   * messages like any other (the agent's own events on that stream already
+   * show the conversation to operators watching it), while the console's
+   * history reads only the agent's own slice, so a /1on1 turn recorded in
+   * the person's slice never appears there.
+   */
+  function streamUserMessage(sessionId: string, m: { userId: string; userName?: string; text: string }): void {
+    if (!panelInfra) return;
+    const event = {
+      type: "userMessage" as const,
+      sessionId,
+      userId: m.userId,
+      ...(m.userName ? { userName: redactSecrets(m.userName) } : {}),
+      text: redactSecrets(m.text),
+      at: Date.now(),
+    };
+    void panelInfra.pubsub.appendEvent(sessionId, event).catch(() => {});
   }
 
   // Sweeper: drain-driven off the deferred queue, not a local held map — so a
@@ -1282,14 +1318,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const brainGateFor = async (ctx: BrainGateCtx, known?: { lockedUser: string | null }): Promise<GateInput> => {
     const soul = soulData();
     const lockedUser = known ? known.lockedUser : ((await OneOnOne.find(ctx.channel, ctx.threadTs))?.locked_user ?? null);
-    // Use the persona's Slack user ID as the agent brain-slice key when in
-    // multi-persona mode; fall back to the process-level bot ID otherwise.
-    const personaId = ctx.personaId && ctx.personaId !== "default" ? ctx.personaId : null;
-    // Managed + not live: livePersona throws, so the gate refuses rather than
-    // reading or writing the default agent's private brain slice.
-    const personaAgentId = personaId
-      ? (livePersona(personaId)?.slackUserId ?? agentIdSync())
-      : agentIdSync();
+    // The persona's Slack user ID as the agent brain-slice key, the process
+    // agent otherwise (shared with the console's history reader). Managed +
+    // not live: it throws, so the gate refuses rather than reading or writing
+    // the default agent's private brain slice.
+    const personaAgentId = personaAgentIdFor(ctx.personaId);
     return {
       // A wake's initiator is the agent itself, and the agent is not a person
       // talking: it writes to its own mind like any background turn.
@@ -3436,6 +3469,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // AgentManager in mono). Extracted so the active-surface lock can defer
     // and later replay it verbatim.
     const runDispatch = async () => {
+      // Delivered now (a deferred message only when it is replayed). A
+      // suppressed message (disengaged thread, a bystander in someone's
+      // thread) is recorded but never reaches the agent, and a voice turn's
+      // events stay off the stream: neither is shown.
+      if (!suppress && !voiceTurns.active(session.id)) streamUserMessage(session.id, { userId, userName, text: stripped });
       if (queueDispatch) {
         // Gateway role: the turn runs on a node (spec §2). Suppression rides on
         // the message so the node's suppress hook records without running the
@@ -4424,6 +4462,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         onUnlock: (sessionId) => { agent.reload(sessionId); },
         // The persona view says where a persona's stdio MCP servers run.
         role: queueDispatch ? "gateway" : "mono",
+        // Mono: sessions run here, so liveness is the manager's live map
+        // (nothing registers in the node registry).
+        local: queueDispatch
+          ? null
+          : { isWarm: (id) => agent.isLive(id), turnInFlight: (id) => agent.turnInFlight(id), count: () => agent.liveCount() },
         // Label status (node labels spec §4.7): only with a node queue.
         labels: queueDispatch
           ? (() => {

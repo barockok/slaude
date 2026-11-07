@@ -119,6 +119,18 @@ export const PERMISSION_MODE_LABEL: Record<string, string> = {
   dontAsk: "Do not ask",
 };
 
+const SESSION_ACTIVITY: Record<string, { label: string; tone: "accent" | "neutral" | "danger" | "warning" | "success"; hint: string }> = {
+  working: { label: "Working", tone: "accent", hint: "A turn is in flight" },
+  warm: { label: "Warm", tone: "success", hint: "The agent process is up and waiting for the next message" },
+  idle: { label: "Idle", tone: "neutral", hint: "Nothing is running; the next message starts the agent again" },
+  error: { label: "Error", tone: "danger", hint: "The session failed and nothing is running" },
+};
+
+/** Label, tone and explanation for what a session is doing now (SessionActivity). */
+export function sessionActivity(activity: string): { label: string; tone: "accent" | "neutral" | "danger" | "warning" | "success"; hint: string } {
+  return SESSION_ACTIVITY[activity] ?? { ...sessionStatus(activity), hint: "" };
+}
+
 /** The session's page path. */
 export const sessionPath = (id: string, tab?: string) =>
   `/sessions/${encodeURIComponent(id)}${tab && tab !== "timeline" ? `/${tab}` : ""}`;

@@ -15,7 +15,7 @@ interface Stat {
 
 const STATS: Stat[] = [
   { key: "agents", label: "Agents", hint: "On this deployment", to: "/agents" },
-  { key: "liveSessions", label: "Live sessions", hint: "With a turn in flight", to: "/sessions" },
+  { key: "liveSessions", label: "Active sessions", hint: "Warm: the agent process is up", to: "/sessions" },
   { key: "pendingApprovals", label: "Pending approvals", hint: "Waiting on a decision", to: "/audit" },
   { key: "auditEvents24h", label: "Audit events in 24\u00a0h", hint: "Decisions and changes", to: "/audit" },
 ];
@@ -25,7 +25,7 @@ export function OverviewPage() {
 
   return (
     <>
-      <PageHeader title="Overview" description="Agents, live sessions, pending approvals and recent activity at a glance." />
+      <PageHeader title="Overview" description="Agents, active sessions, pending approvals and recent activity at a glance." />
 
       {error && !data ? (
         <Card>

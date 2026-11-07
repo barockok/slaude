@@ -137,7 +137,11 @@ export interface SessionSummaryView {
   id: string;
   persona_id: string;
   model: string;
-  /** `running` while a turn is in flight, `idle` otherwise; other values pass through. */
+  /**
+   * The stored status. `running` means the session's CLI process was started
+   * and not yet closed, not that a turn is in flight, and a row can stay
+   * `running` after its node went away: show `activity` instead.
+   */
   status: string;
   claude_started: number;
   engaged: number;
@@ -149,13 +153,23 @@ export interface SessionSummaryView {
   created_at: number;
   updated_at: number;
   tenant_id?: string;
-  /** Warm on a node right now. */
+  /** Warm right now: in the node registry (gateway) or live in this process (mono). */
   warm: boolean;
+  /** What the session is doing now (see SessionActivity). */
+  activity: SessionActivity;
   /** Owning node id when warm. */
   node?: string;
   /** Operator driving the session from the console, if any. */
   panel_locked_by?: string;
 }
+
+/**
+ * `working`: a turn is in flight. `warm`: the CLI process is up and waiting
+ * for the next message. `idle`: nothing is running (a stored `running` row
+ * that no node or process holds is idle). `error`: the stored status says the
+ * session failed and nothing holds it.
+ */
+export type SessionActivity = "working" | "warm" | "idle" | "error";
 
 /** GET /panel/api/sessions?persona&status&limit&offset, newest first. */
 export interface SessionsResponse {
@@ -186,6 +200,36 @@ export interface SessionDetailResponse {
   session: SessionRowView;
   /** Operator holding the console lock; absent when nobody does. */
   panel_locked_by?: string;
+  /** Warm right now (see SessionSummaryView.warm). */
+  warm: boolean;
+  /** Whether a turn is in flight, when that can be told; absent otherwise. */
+  turn_in_flight?: boolean;
+  activity: SessionActivity;
+}
+
+/** One earlier exchange line of a session, from its durable conversation record. */
+export interface SessionHistoryItem {
+  /** Stable per line: the record's row id and the side (`<row>:user`, `<row>:agent`). */
+  id: string;
+  /** Epoch ms the turn was recorded (the agent's line shares its user line's time). */
+  at: number;
+  who: "user" | "agent";
+  /** Display name when the record has one (the Slack user name of a user line). */
+  name?: string;
+  /** Redacted text. */
+  text: string;
+}
+
+/**
+ * GET /panel/api/sessions/:id/history?cursor&limit: earlier turns, oldest
+ * first. `nextCursor` loads the page before this one; null on the first page.
+ * `note` says why there is no history to show (memory off or remote), so the
+ * console can say so instead of an empty list.
+ */
+export interface SessionHistoryResponse {
+  items: SessionHistoryItem[];
+  nextCursor: string | null;
+  note?: string;
 }
 
 export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk";
@@ -251,14 +295,19 @@ export interface SessionUsageSnapshot {
  */
 export type SessionEvent =
   | { type: "assistantText"; sessionId: string; text: string; autoEvolve?: boolean }
-  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; autoEvolve?: boolean }
-  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; autoEvolve?: boolean }
+  // `toolUseId` pairs a result with its call; older events have none, and an
+  // older result's `tool` is "".
+  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; toolUseId?: string; autoEvolve?: boolean }
+  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; toolUseId?: string; autoEvolve?: boolean }
   | { type: "thinking"; sessionId: string; text: string; autoEvolve?: boolean }
   | { type: "turnStart"; sessionId: string }
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
   | { type: "error"; sessionId: string; error: string; code?: string; jobId?: string }
   | { type: "tokenUsage"; sessionId: string; snapshot: SessionUsageSnapshot }
-  | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
+  | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" }
+  // A Slack message delivered to the session (text redacted). Display only:
+  // the model gets the message through its turn, never through this event.
+  | { type: "userMessage"; sessionId: string; userId: string; userName?: string; text: string; at: number };
 
 // --- Audit ------------------------------------------------------------------
 
@@ -385,7 +434,8 @@ export interface ConsoleRolesResponse {
 export interface OverviewResponse {
   counts: {
     agents: number;
-    /** Sessions with a turn in flight. */
+    /** Active sessions: warm right now (in the node registry, or live in this
+     *  process on a single-process deployment), not the stored status. */
     liveSessions: number;
     /** Permission, approval and connect cards waiting on a decision. */
     pendingApprovals: number;

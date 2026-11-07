@@ -15,7 +15,7 @@ import {
 // so the mock applies even when an earlier module already imported the SDK —
 // no query-string re-import (which would split coverage off the canonical file).
 import * as agentSdk from "@anthropic-ai/claude-agent-sdk";
-import { TokenBudget, type ResultUsage, type UsageSnapshot } from "./token-budget";
+import { TokenBudget, type PromptUsage, type ResultUsage, type UsageSnapshot } from "./token-budget";
 import { SkillGate } from "./skill-gate";
 import { denySyntheticProfileWrite } from "./profile-write-guard";
 import { m as metric } from "../metrics";
@@ -100,6 +100,12 @@ type LiveSession = {
   turn: { user: string; assistant: string[] };
   /** Tool names invoked during the current turn (cleared on result). */
   turnTools: string[];
+  /** Tool name per open tool_use id, so a tool result (which carries only the
+   *  id) can name its tool. Entries leave when their result arrives. */
+  toolNames: Map<string, string>;
+  /** Text of reply tool calls awaiting their result, by tool_use id: it joins
+   *  the turn record only once the result says it was delivered. */
+  pendingReplies: Map<string, string>;
   /** Set after we inject an auto-evolve synthetic prompt — the next result
    *  is the evolution turn itself; don't recurse into another auto-evolve. */
   inAutoEvolve: boolean;
@@ -159,8 +165,10 @@ type LiveSession = {
 // user-visible turn: the gateway shows no status or reaction for them (#131).
 export type AgentEvent =
   | { type: "assistantText"; sessionId: string; text: string; autoEvolve?: boolean }
-  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; autoEvolve?: boolean }
-  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; autoEvolve?: boolean }
+  // `toolUseId` (the SDK's tool_use block id) pairs a result with its call.
+  // A result's `tool` is the call's name when the id was seen, "" otherwise.
+  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; toolUseId?: string; autoEvolve?: boolean }
+  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; toolUseId?: string; autoEvolve?: boolean }
   | { type: "thinking"; sessionId: string; text: string; autoEvolve?: boolean }
   | { type: "turnStart"; sessionId: string }
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
@@ -212,6 +220,65 @@ export type PermissionResolver = (
 export type McpResolver = (
   sessionId: string,
 ) => Record<string, McpServerConfig> | undefined | Promise<Record<string, McpServerConfig> | undefined>;
+
+/** Reply tools whose `text` the user reads in the thread (deprecated alias included). */
+const REPLY_TOOLS = new Set(["mcp__slaude_surface__reply", "mcp__slaude_slack__reply"]);
+
+/** The text of a reply tool call, or null for any other tool. */
+export function replyToolText(tool: string, input: unknown): string | null {
+  if (!REPLY_TOOLS.has(tool)) return null;
+  const text = (input as { text?: unknown } | null | undefined)?.text;
+  return typeof text === "string" && text.trim() ? text : null;
+}
+
+/** Add a line to the turn's answer unless the same text is already there (a
+ *  model that writes its reply as text AND sends it through the reply tool). */
+export function recordAnswer(answer: string[], text: string): void {
+  const t = text.trim();
+  if (!t || answer.some((a) => a.trim() === t)) return;
+  answer.push(text);
+}
+
+/** The text of a tool result (string, MCP content blocks, or `{content}`). */
+function toolResultText(r: unknown): string {
+  if (typeof r === "string") return r;
+  const blocks = Array.isArray(r) ? r : (r as { content?: unknown } | null)?.content;
+  if (typeof blocks === "string") return blocks;
+  if (!Array.isArray(blocks)) return "";
+  return blocks.map((b) => (typeof b === "string" ? b : typeof (b as { text?: unknown })?.text === "string" ? (b as { text: string }).text : "")).join("\n");
+}
+
+/**
+ * Whether a reply tool's result says the text reached someone: not an error
+ * (on the tool_result block or the result), not a refusal, not a failure.
+ * `posted ref=panel-suppressed` counts: the operator holding the session got it.
+ */
+export function replyDelivered(message: unknown, result: unknown): boolean {
+  const content = (message as { content?: unknown } | null | undefined)?.content;
+  if (Array.isArray(content) && content.some((b) => (b as { type?: unknown; is_error?: unknown })?.type === "tool_result" && (b as { is_error?: unknown }).is_error === true)) return false;
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    const o = result as { is_error?: unknown; isError?: unknown };
+    if (o.is_error === true || o.isError === true) return false;
+  }
+  const text = toolResultText(result);
+  if (/"refused"\s*:\s*true/.test(text)) return false;
+  if (/^\s*(refused|error|reply failed)\b/i.test(text)) return false;
+  return true;
+}
+
+/** The tool_use id a tool-result user message answers: the first
+ *  `tool_result` block's `tool_use_id` (the SDK sends one result per message). */
+export function toolResultId(message: unknown): string | undefined {
+  const content = (message as { content?: unknown } | null | undefined)?.content;
+  if (!Array.isArray(content)) return undefined;
+  for (const b of content) {
+    if (b && typeof b === "object" && (b as { type?: unknown }).type === "tool_result") {
+      const id = (b as { tool_use_id?: unknown }).tool_use_id;
+      if (typeof id === "string" && id) return id;
+    }
+  }
+  return undefined;
+}
 
 /** Plugin paths already reported by warnPluginsNamedLikeBuiltin (once per process). */
 const warnedSlaudeNamedPlugins = new Set<string>();
@@ -717,6 +784,11 @@ export class AgentManager extends EventEmitter {
   /** Whether a specific session has an active SDK Query loop right now. */
   isLive(sessionId: string): boolean {
     return this.#live.has(sessionId);
+  }
+
+  /** Whether a live session has a turn in flight (an input is outstanding). */
+  turnInFlight(sessionId: string): boolean {
+    return (this.#live.get(sessionId)?.pendingInputs ?? 0) > 0;
   }
 
   /** Get-or-create a session bound to a Slack thread. */
@@ -1564,6 +1636,8 @@ export class AgentManager extends EventEmitter {
       abort,
       turn: { user: firstText, assistant: [] },
       turnTools: [],
+      toolNames: new Map(),
+      pendingReplies: new Map(),
       inAutoEvolve: false,
       channelId: row.slack_channel_id,
       workingDir: row.working_dir,
@@ -1749,6 +1823,11 @@ export class AgentManager extends EventEmitter {
     switch (msg.type) {
       case "assistant": {
         void this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
+        // The context fill is this call's prompt, not the result's per-turn sum.
+        // A subagent's messages (parent_tool_use_id set) run in their own context.
+        if (!(msg as { parent_tool_use_id?: string | null }).parent_tool_use_id) {
+          this.#budget.notePrompt(sessionId, (msg.message as { usage?: PromptUsage }).usage);
+        }
         // The SDK's BetaContentBlock union types only text + tool_use, but the
         // model also emits thinking blocks at runtime. Widen so the thinking
         // branch type-checks (both the discriminant and `.thinking`).
@@ -1764,7 +1843,7 @@ export class AgentManager extends EventEmitter {
         >;
         for (const block of blocks) {
           if (block.type === "text") {
-            live?.turn.assistant.push(block.text);
+            if (live) recordAnswer(live.turn.assistant, block.text);
             this.emit("event", {
               type: "assistantText",
               sessionId,
@@ -1780,12 +1859,19 @@ export class AgentManager extends EventEmitter {
             } satisfies AgentEvent);
           } else if (block.type === "tool_use") {
             if (live) live.turnTools.push(block.name);
+            const toolUseId = typeof block.id === "string" && block.id ? block.id : undefined;
+            if (live && toolUseId) live.toolNames.set(toolUseId, block.name);
+            // What the agent said through a reply tool is the turn's answer:
+            // held here until its result says it was delivered (see toolResult).
+            const replied = replyToolText(block.name, block.input);
+            if (live && replied && toolUseId && !live.inAutoEvolve) live.pendingReplies.set(toolUseId, replied);
             metric.toolCallsTotal.inc({ tool: block.name });
             this.emit("event", {
               type: "toolCall",
               sessionId,
               tool: block.name,
               input: block.input,
+              ...(toolUseId ? { toolUseId } : {}),
               ...evolve,
             } satisfies AgentEvent);
           }
@@ -1813,10 +1899,22 @@ export class AgentManager extends EventEmitter {
               this.#streamClosedCount.set(sessionId, prev + 1);
             }
           }
+          const toolUseId = toolResultId(msg.message);
+          const tool = toolUseId ? (live?.toolNames.get(toolUseId) ?? "") : "";
+          if (toolUseId) live?.toolNames.delete(toolUseId);
+          // A reply joins the conversation record once delivered: posted, or
+          // held in the console (the operator got it). A refused or failed one
+          // reached nobody.
+          const pendingReply = toolUseId ? live?.pendingReplies.get(toolUseId) : undefined;
+          if (toolUseId && pendingReply !== undefined) {
+            live!.pendingReplies.delete(toolUseId);
+            if (replyDelivered(msg.message, msg.tool_use_result)) recordAnswer(live!.turn.assistant, pendingReply);
+          }
           this.emit("event", {
             type: "toolResult",
             sessionId,
-            tool: "",
+            tool,
+            ...(toolUseId ? { toolUseId } : {}),
             result: msg.tool_use_result,
             ...(live?.inAutoEvolve ? { autoEvolve: true } : {}),
           } satisfies AgentEvent);
@@ -1829,6 +1927,9 @@ export class AgentManager extends EventEmitter {
           // only after this handler returns, and reads the session again then.
           live.checkEnded?.resolve();
           live.checkEnded = undefined;
+          // A call still open when its turn ends never gets a result.
+          live.toolNames.clear();
+          live.pendingReplies.clear();
           // The input this result ends: the oldest outstanding one.
           const endedSeq = live.inputSeq - live.pendingInputs + 1;
           const bgRun = live.bgRuns?.get(endedSeq);

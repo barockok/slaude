@@ -11,6 +11,8 @@
 import * as Sessions from "../../db/sessions";
 import type { SessionRow } from "../../db/schema";
 import type { Registry } from "../../queue/registry";
+import { activityOf, type LocalSessions } from "./activity";
+import type { SessionActivity } from "./api-types";
 
 export interface SessionSummary {
   id: string;
@@ -28,8 +30,10 @@ export interface SessionSummary {
   updated_at: number;
   /** Postgres carries tenant_id (P1); sqlite does not — present only when the row has it. */
   tenant_id?: string;
-  /** Warm on a node right now (registry hit). */
+  /** Warm right now: a registry hit (gateway) or live in this process (mono). */
   warm: boolean;
+  /** What the session is doing now; a stored `running` row nothing holds is `idle`. */
+  activity: SessionActivity;
   /** Owning node id when warm. */
   node?: string;
   /** Operator currently driving this session via the panel, if any. */
@@ -38,8 +42,13 @@ export interface SessionSummary {
 
 export interface EnumerateDeps {
   registry?: Registry | null;
-  /** Panel active-surface lock owner lookup (optional enrichment). */
-  panelOwner?: (sessionId: string) => Promise<string | null>;
+  /** Mono: in-process liveness, used instead of the registry (nothing registers there). */
+  local?: LocalSessions | null;
+  /** Gateway: whether each warm session has a turn in flight (the event
+   *  stream), for all of them in one batched call. */
+  turnsInFlight?: (sessionIds: string[]) => Promise<Map<string, boolean | undefined>>;
+  /** Panel active-surface lock owners, in order, for all rows in one call (optional enrichment). */
+  panelOwners?: (sessionIds: string[]) => Promise<Array<string | null>>;
 }
 
 function summarize(row: SessionRow): SessionSummary {
@@ -58,6 +67,7 @@ function summarize(row: SessionRow): SessionSummary {
     created_at: row.created_at,
     updated_at: row.updated_at,
     warm: false,
+    activity: activityOf(row.status, false, undefined),
   };
   const tenant = (row as any).tenant_id;
   if (tenant !== undefined && tenant !== null) s.tenant_id = tenant;
@@ -74,29 +84,41 @@ export async function enumerateSessions(
   deps: EnumerateDeps,
 ): Promise<SessionSummary[]> {
   const rows = await Sessions.listSessions(o);
-  return Promise.all(
-    rows.map(async (row) => {
-      const s = summarize(row);
-      if (deps.registry) {
-        try {
-          const loc = await deps.registry.lookup(row.id);
-          if (loc && loc.fresh) {
-            s.warm = true;
-            s.node = loc.node;
-          }
-        } catch {
-          /* cold/unknown — leave warm:false */
-        }
+  const out = rows.map(summarize);
+  if (deps.local) {
+    for (const s of out) {
+      s.warm = deps.local.isWarm(s.id);
+      s.activity = activityOf(s.status, s.warm, s.warm && deps.local.turnInFlight(s.id));
+    }
+  } else if (deps.registry && out.length > 0) {
+    // One pipelined registry read for the page, then the stream reads for the
+    // warm rows (batched too): a bounded number of round trips per request.
+    let locs: Array<{ node: string; fresh: boolean } | null> = [];
+    try {
+      locs = await deps.registry.lookupMany(out.map((s) => s.id));
+    } catch {
+      /* cold/unknown: leave warm:false */
+    }
+    out.forEach((s, i) => {
+      const loc = locs[i];
+      if (loc && loc.fresh) {
+        s.warm = true;
+        s.node = loc.node;
       }
-      if (deps.panelOwner) {
-        try {
-          const owner = await deps.panelOwner(row.id);
-          if (owner) s.panel_locked_by = owner;
-        } catch {
-          /* lock lookup best-effort */
-        }
-      }
-      return s;
-    }),
-  );
+    });
+    const warm = out.filter((s) => s.warm).map((s) => s.id);
+    const inFlight = warm.length > 0 && deps.turnsInFlight ? await deps.turnsInFlight(warm).catch(() => new Map<string, boolean | undefined>()) : new Map<string, boolean | undefined>();
+    for (const s of out) s.activity = activityOf(s.status, s.warm, inFlight.get(s.id));
+  }
+  if (deps.panelOwners && out.length > 0) {
+    try {
+      const owners = await deps.panelOwners(out.map((s) => s.id));
+      out.forEach((s, i) => {
+        if (owners[i]) s.panel_locked_by = owners[i]!;
+      });
+    } catch {
+      /* lock lookup best-effort */
+    }
+  }
+  return out;
 }
