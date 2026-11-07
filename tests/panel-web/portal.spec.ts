@@ -101,7 +101,16 @@ test("an empty account shows empty states", async ({ page }) => {
   await page.goto("/portal/integrations");
   await expect(page.getByText("No integrations to connect")).toBeVisible();
   await page.goto("/portal/agents");
+  // No Slack identity linked: say so and how to link, not "ask a manager".
+  await expect(page.getByText("No Slack identity linked", { exact: true })).toBeVisible();
+  await expect(page.getByRole("main")).toContainText("Run /link in Slack");
+  await expect(page.getByText("Ask an agent's manager")).toHaveCount(0);
+});
+
+test("linked identities with no grants keep the ask-a-manager empty state", async ({ page }) => {
+  await page.goto("/portal/agents?stubNoAgents=1");
   await expect(page.getByText("No agents yet")).toBeVisible();
+  await expect(page.getByText("Ask an agent's manager to grant you access.")).toBeVisible();
 });
 
 test("a failed load offers Try again", async ({ page }) => {

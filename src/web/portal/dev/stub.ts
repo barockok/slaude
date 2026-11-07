@@ -7,6 +7,7 @@
  *   ?stubDelay=800        response delay in ms (default 250; 0 for none)
  *   ?stubFail=integrations answer 500 for API paths containing the text
  *   ?stubEmpty=1          no linked identities, integrations or agents
+ *   ?stubNoAgents=1       identities linked, but no agent grants any role
  *   ?stubHang=my-agents   never answer API paths containing the text (skeletons)
  *   ?stubConnect=exchange-failed  the result a Connect comes back with (default connected)
  *
@@ -35,6 +36,7 @@ export function installStub(): void {
   const fail = sticky("stubFail");
   const hang = sticky("stubHang");
   const empty = sticky("stubEmpty") === "1";
+  const noAgents = sticky("stubNoAgents") === "1";
   const connectResult = sticky("stubConnect") ?? "connected";
 
   const fx = createFixtures();
@@ -43,6 +45,7 @@ export function installStub(): void {
     fx.integrations = [];
     fx.agents = [];
   }
+  if (noAgents) fx.agents = [];
   // A connect leaves the page, so remember what it connected for the reload.
   const CONNECTED = "slaude.stub.portalConnected";
   try {
