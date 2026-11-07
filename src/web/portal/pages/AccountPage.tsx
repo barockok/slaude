@@ -26,7 +26,7 @@ function columns(onUnlink: (s: PortalSlackIdentityView) => void): Column<PortalS
       render: (s) => (
         <span className="sl-subject">
           <span className="sl-subject__icon" title="Slack workspace">
-            <IconBuilding size={14} title="Slack workspace" />
+            <IconBuilding size={14} />
           </span>
           <span className="sl-mono">{s.teamId}</span>
         </span>

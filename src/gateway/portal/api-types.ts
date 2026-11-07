@@ -85,6 +85,8 @@ export interface DisconnectIntegrationResponse {
 /**
  * `?connect=` on the redirect /portal/oauth/callback sends back to `/portal`:
  * `connected`, `expired` (the flow cookie was missing or stale), `failed` (no
- * code), or a finish failure.
+ * code), or one of the three finish failures: `no-flow` (the flow was already
+ * used or has expired), `state-mismatch` (the provider's state did not match
+ * the request) or `exchange-failed` (the provider refused the code exchange).
  */
 export type ConnectResult = "connected" | "expired" | "failed" | "no-flow" | "state-mismatch" | "exchange-failed";

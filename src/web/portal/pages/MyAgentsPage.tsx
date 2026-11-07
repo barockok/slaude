@@ -24,7 +24,7 @@ const COLUMNS: Column<MyAgentView>[] = [
     render: (a) => (
       <span className="sl-subject">
         <span className="sl-subject__icon" title="Slack workspace">
-          <IconBuilding size={14} title="Slack workspace" />
+          <IconBuilding size={14} />
         </span>
         <span className="sl-mono">{a.teamId}</span>
       </span>
