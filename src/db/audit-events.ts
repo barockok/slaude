@@ -138,6 +138,18 @@ export async function list(filter: AuditFilter, opts: { cursor?: string; limit?:
   return { items, nextCursor: more ? items[items.length - 1]!.id : null };
 }
 
+/** Rows at or after `since` (epoch ms), keyed on the time-sortable id. */
+export async function countSince(since: number, tenantId?: string): Promise<number> {
+  const where = ["id >= ?"];
+  const params: unknown[] = [timeKey(since)];
+  if (tenantId && dbDialect() === "pg") {
+    where.push("tenant_id = ?");
+    params.push(tenantId);
+  }
+  const r = await db.one<{ n: number | string }>(`SELECT COUNT(*) AS n FROM audit_events WHERE ${where.join(" AND ")}`, params);
+  return Number(r?.n ?? 0);
+}
+
 /** Retention: delete rows older than `maxAgeMs`. The only delete path. */
 export async function purgeOlderThan(maxAgeMs: number, now: number = Date.now()): Promise<number> {
   const r = await db.run(`DELETE FROM audit_events WHERE id < ?`, [timeKey(now - maxAgeMs)]);

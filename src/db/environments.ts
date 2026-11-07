@@ -128,6 +128,29 @@ export async function listEnvs(teamId: string, userId: string): Promise<StoredEn
   return rows.map(toEnv);
 }
 
+/** Every saved environment, without config, secrets or endpoints: only the
+ *  columns safe to show an operator (the console's Environments page). Nothing
+ *  is decrypted. */
+export interface EnvSummary {
+  id: string;
+  teamId: string;
+  userId: string;
+  name: string;
+  kind: string;
+  defaultDir: string | null;
+  createdAt: number;
+}
+
+export async function listAllEnvSummaries(): Promise<EnvSummary[]> {
+  const rows = await db.query<Pick<EnvRow, "id" | "team_id" | "user_id" | "name" | "kind" | "default_dir" | "created_at">>(
+    "SELECT id, team_id, user_id, name, kind, default_dir, created_at FROM environments ORDER BY team_id, user_id, name",
+  );
+  return rows.map((r) => ({
+    id: r.id, teamId: r.team_id, userId: r.user_id, name: r.name, kind: r.kind,
+    defaultDir: r.default_dir, createdAt: Number(r.created_at),
+  }));
+}
+
 /** The owner's tailcat environment for an address, if one exists. */
 export async function findTailcatEnvByAddr(teamId: string, userId: string, addr: string): Promise<StoredEnv | null> {
   const all = await listEnvs(teamId, userId);

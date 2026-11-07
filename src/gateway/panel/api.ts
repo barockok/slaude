@@ -42,6 +42,9 @@
  *   GET    /panel/api/memory/stores                memory stores (brain sources) with page counts
  *   GET    /panel/api/memory/stores/:id/pages?cursor&limit
  *   GET    /panel/api/memory/pages?store&slug      one page: content, type, tags, links
+ *   GET    /panel/api/environments                 node pools, persona runsOn, personal environments (no secrets)
+ *   GET    /panel/api/console-roles                the console's email allowlist (read-only)
+ *   GET    /panel/api/overview                     counts and the latest audit events
  */
 import { PanelVoiceRedactor } from "./voice-redact";
 import { z } from "zod";
@@ -75,12 +78,17 @@ import { oauthKey } from "../../agent/mcp-oauth/store";
 import * as AgentGrants from "../../db/agent-grants";
 import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
-import { agentDetail, agentSummaries, consoleGrantView, grantViews, isAgent } from "./console-views";
+import { agentDetail, agentNames, agentSummaries, consoleGrantView, environmentsView, grantViews, isAgent } from "./console-views";
+import { loadRoleConfig } from "./auth/roles";
+import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
 import { agentStoreNames, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
 import { agentIdSync } from "../../knowledge/agent-identity";
 import { getPersonaRegistry } from "../../persona/registry";
 import type {
+  ConsoleRolesResponse,
+  EnvironmentsResponse,
+  OverviewResponse,
   MemoryPageResponse,
   MemoryPagesResponse,
   MemoryStoresResponse,
@@ -605,6 +613,36 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           { cursor, limit },
         );
         return json(200, page satisfies AuditPageResponse);
+      }
+
+      // GET /panel/api/environments: where agents run. Read-only, any operator.
+      if (seg.length === 3 && seg[2] === "environments") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        return json(200, (await environmentsView({ role: panelRole, registry: deps.registry })) satisfies EnvironmentsResponse);
+      }
+
+      // GET /panel/api/console-roles: the allowlist file (or env lists). It is
+      // edited where it lives, never here.
+      if (seg.length === 3 && seg[2] === "console-roles") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const cfg = loadRoleConfig();
+        return json(200, { superadmin: [...cfg.superadmin], operator: [...cfg.operator] } satisfies ConsoleRolesResponse);
+      }
+
+      // GET /panel/api/overview: headline counts and the latest audit events.
+      if (seg.length === 3 && seg[2] === "overview") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const now = Date.now();
+        const [liveSessions, pendingApprovals, auditEvents24h, recent] = await Promise.all([
+          Sessions.countByStatus("running"),
+          PendingGates.countPending(now),
+          AuditEvents.countSince(now - 24 * 60 * 60 * 1000),
+          AuditEvents.list({}, { limit: 10 }),
+        ]);
+        return json(200, {
+          counts: { agents: agentNames().length, liveSessions, pendingApprovals, auditEvents24h },
+          recentAudit: recent.items,
+        } satisfies OverviewResponse);
       }
 
       // --- Memory: brain sources and their pages, read-only, any operator.

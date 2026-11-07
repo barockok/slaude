@@ -6,9 +6,18 @@
 import * as AgentGrants from "../../db/agent-grants";
 import { effectiveGrants } from "../../access/grants";
 import { listMandates } from "../../mandate";
-import { getPersonaRegistry, managedPersonaModel, runsOnFor, type PersonaRegistry } from "../../persona/registry";
+import { getPersonaRegistry, labelsInUse, managedPersonaModel, runsOnFor, type PersonaRegistry } from "../../persona/registry";
+import { listAllEnvSummaries } from "../../db/environments";
 import type { Registry } from "../../queue/registry";
-import type { AgentSummary, ConsoleGrantView, GrantView, MandateView, SoulGrantView } from "./api-types";
+import type {
+  AgentSummary,
+  ConsoleGrantView,
+  EnvironmentsResponse,
+  GrantView,
+  MandateView,
+  NodePoolView,
+  SoulGrantView,
+} from "./api-types";
 
 /** Every live agent name: `default` first, then the registry's personas by name. */
 export function agentNames(r: PersonaRegistry = getPersonaRegistry()): string[] {
@@ -113,4 +122,47 @@ export async function agentDetail(
   const [live, mandates, grants] = await Promise.all([liveCounts(deps), listMandates(name), grantViews(name, now)]);
   const consoleCount = grants.filter((g) => g.source === "console").length;
   return { ...summaryOf(name, r, live, deps.role, mandates.length, consoleCount), mandates, grants };
+}
+
+/**
+ * Node pools: every label a live node carries or a persona runs on, with the
+ * live nodes carrying it. Empty in mono (no node queue) or without a registry.
+ */
+export async function nodePools(
+  deps: { role: "gateway" | "mono"; registry: Pick<Registry, "liveNodeDetails"> | null },
+  r: PersonaRegistry = getPersonaRegistry(),
+): Promise<NodePoolView[]> {
+  if (deps.role === "mono" || !deps.registry) return [];
+  const nodes = await deps.registry.liveNodeDetails();
+  const pools = new Map<string, NodePoolView>(labelsInUse(r).map((l) => [l, { label: l, nodes: [] }]));
+  for (const n of nodes) {
+    for (const l of n.labels) {
+      if (!pools.has(l)) pools.set(l, { label: l, nodes: [] });
+      pools.get(l)!.nodes.push({ id: n.node, lastSeen: n.lastBeat });
+    }
+  }
+  return [...pools.values()].sort((a, b) => a.label.localeCompare(b.label));
+}
+
+/**
+ * The Environments page. Built field by field from the safe columns only: no
+ * config, secrets or endpoints, so nothing secret can ride along.
+ */
+export async function environmentsView(deps: {
+  role: "gateway" | "mono";
+  registry: Pick<Registry, "liveNodeDetails"> | null;
+}): Promise<EnvironmentsResponse> {
+  const r = getPersonaRegistry();
+  return {
+    nodePools: await nodePools(deps, r),
+    personas: agentNames(r).map((name) => ({ name, runsOn: runsOnFor(name, r) })),
+    personal: (await listAllEnvSummaries()).map((e) => ({
+      id: e.id,
+      owner: { teamId: e.teamId, userId: e.userId },
+      name: e.name,
+      kind: e.kind,
+      defaultDir: e.defaultDir,
+      createdAt: e.createdAt,
+    })),
+  };
 }

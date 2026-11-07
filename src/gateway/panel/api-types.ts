@@ -200,3 +200,55 @@ export interface MemoryPageResponse {
   createdAt: number | null;
   updatedAt: number | null;
 }
+
+// --- Environments, console roles, overview ----------------------------------
+
+export interface NodeView {
+  id: string;
+  /** Last heartbeat (epoch ms), or null when it could not be read. */
+  lastSeen: number | null;
+}
+
+export interface NodePoolView {
+  /** Node label. A label a persona runs on with no live node has `nodes: []`. */
+  label: string;
+  nodes: NodeView[];
+}
+
+/** A person's saved execution environment. Never carries config, secrets or endpoints. */
+export interface PersonalEnvironmentView {
+  id: string;
+  owner: { teamId: string; userId: string };
+  name: string;
+  kind: string;
+  defaultDir: string | null;
+  createdAt: number;
+}
+
+/** GET /panel/api/environments */
+export interface EnvironmentsResponse {
+  /** Empty in a single-process deployment or without Redis. */
+  nodePools: NodePoolView[];
+  personas: Array<{ name: string; runsOn: string }>;
+  personal: PersonalEnvironmentView[];
+}
+
+/** GET /panel/api/console-roles: the console's email allowlist (read-only). */
+export interface ConsoleRolesResponse {
+  superadmin: string[];
+  operator: string[];
+}
+
+/** GET /panel/api/overview */
+export interface OverviewResponse {
+  counts: {
+    agents: number;
+    /** Sessions with a turn in flight. */
+    liveSessions: number;
+    /** Permission, approval and connect cards waiting on a decision. */
+    pendingApprovals: number;
+    auditEvents24h: number;
+  };
+  /** The 10 most recent audit events, newest first. */
+  recentAudit: AuditEventView[];
+}
