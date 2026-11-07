@@ -324,9 +324,15 @@ onboarding link that only that Slack user can see. A portal session is never
 an operator session — different token type, different cookie path — so the
 panel's role check is untouched.
 
-**Binding is user-driven.** A person types `/link` in a thread with the agent
-and gets a private, 15-minute link; opening it while signed in to the portal
-binds the two identities. Replies to `/link` are always ephemeral, and a
+**Binding is user-driven.** A person sends `/link` to the agent as a message
+and gets a private, 15-minute link. In Slack, put a space before it or mention
+the agent (`@agent /link`): Slack treats a message that starts with `/` as one
+of its own slash commands and rejects `/link` as not a valid command, while
+slaude reads its commands from the message text. The generated Slack app
+manifest registers no slash commands, because the gateway handles none (it
+has no slash-command endpoint). Opening the link while signed in to the portal
+binds the two identities; the confirmation page shows the workspace and Slack
+user names when the gateway can resolve them, with the ids beneath. Replies to `/link` are always ephemeral, and a
 surface that cannot reply privately gets a refusal rather than a public post.
 A Slack user already bound to one account cannot be rebound to another; the
 person unlinks from the portal first.

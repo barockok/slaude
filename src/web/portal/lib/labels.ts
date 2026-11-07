@@ -6,10 +6,10 @@ import type { ConnectResult } from "../../../gateway/portal/api-types";
 import { relativeFuture, shortDate } from "../../shared/time";
 
 const LINKED_VIA: Record<string, string> = {
-  "signed-link": "/link in Slack",
+  "signed-link": "/link",
 };
 
-/** "/link in Slack" for the signed link; other methods in sentence case. */
+/** "/link" for the signed link (sent to an agent on any surface); other methods in sentence case. */
 export function linkedViaLabel(via: string): string {
   const known = LINKED_VIA[via];
   if (known) return known;

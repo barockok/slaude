@@ -1721,7 +1721,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         slackUserId: a.userId, serverName: a.serverName, cfg: a.serverConfig, tokens,
       });
       if (!r.ok) {
-        throw new Error("your Slack user isn't connected to an account yet — run `/link`, sign in, then connect again");
+        throw new Error("your Slack user isn't connected to an account yet: send me ` /link` as a message (with a space before it, or after mentioning me), sign in, then connect again");
       }
       agent.noteSessionEvent(a.sessionId, `Connected MCP server \`${a.serverName}\`${a.scope === "global" ? " (agent's shared identity)" : ""}.`);
       agent.reload(a.sessionId);

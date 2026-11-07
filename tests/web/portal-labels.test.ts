@@ -9,7 +9,7 @@ const DAY = 24 * HOUR;
 
 describe("linkedViaLabel", () => {
   test("names the signed link", () => {
-    expect(linkedViaLabel("signed-link")).toBe("/link in Slack");
+    expect(linkedViaLabel("signed-link")).toBe("/link");
   });
   test("sentence-cases an unknown method", () => {
     expect(linkedViaLabel("admin_import")).toBe("Admin import");
