@@ -57,6 +57,8 @@ export interface MandateView {
   proactive?: { enabled: boolean; highest?: ProactiveLevel };
   inheritsGlobal?: boolean;
   approverNote?: string;
+  /** `#name` of `channelId` when the gateway could resolve it. Titles and triggers already use it. */
+  channelLabel?: string;
 }
 
 /** A grant derived from the persona's soul. Read-only. */
@@ -161,7 +163,19 @@ export interface SessionSummaryView {
   node?: string;
   /** Operator driving the session from the console, if any. */
   panel_locked_by?: string;
+  /** See {@link SessionModelView}. */
+  effective_model: string | null;
+  model_source: ModelSource;
+  /** The Slack channel's display label (`#name`, `DM with Jane Doe`, `DM`) when the gateway could resolve it. */
+  channel_label?: string;
 }
+
+/**
+ * Where a session's shown model comes from: the session row (`session`), the
+ * agent's configured model (`agent`), or the deployment default
+ * (`deployment`, `effective_model` is SLAUDE_MODEL when set, else null).
+ */
+export type ModelSource = "session" | "agent" | "deployment";
 
 /**
  * `working`: a turn is in flight. `warm`: the CLI process is up and waiting
@@ -171,9 +185,11 @@ export interface SessionSummaryView {
  */
 export type SessionActivity = "working" | "warm" | "idle" | "error";
 
-/** GET /panel/api/sessions?persona&status&limit&offset, newest first. */
+/** GET /panel/api/sessions?persona&status&limit&offset, newest first. `limit` defaults to 50. */
 export interface SessionsResponse {
   sessions: SessionSummaryView[];
+  /** Pass back as `offset` for the next (older) page; null on the last page. */
+  nextOffset: number | null;
 }
 
 /** The stored session row. */
@@ -205,14 +221,24 @@ export interface SessionDetailResponse {
   /** Whether a turn is in flight, when that can be told; absent otherwise. */
   turn_in_flight?: boolean;
   activity: SessionActivity;
+  effective_model: string | null;
+  model_source: ModelSource;
+  /** The Slack channel's display label, when it could be resolved. */
+  channel_label?: string;
 }
 
 /** One earlier exchange line of a session, from its durable conversation record. */
 export interface SessionHistoryItem {
   /** Stable per line: the record's row id and the side (`<row>:user`, `<row>:agent`). */
   id: string;
-  /** Epoch ms the turn was recorded (the agent's line shares its user line's time). */
+  /**
+   * Epoch ms. A user line carries its Slack message time when the record has
+   * it; an agent line carries the time the turn was recorded (just after the
+   * reply). When only the record's day is known, `dateOnly` is set and the
+   * console shows the date, not a clock time.
+   */
   at: number;
+  dateOnly?: boolean;
   who: "user" | "agent";
   /** Display name when the record has one (the Slack user name of a user line). */
   name?: string;
@@ -230,6 +256,8 @@ export interface SessionHistoryResponse {
   items: SessionHistoryItem[];
   nextCursor: string | null;
   note?: string;
+  /** Slack user id -> display name for the `<@U…>` mentions in these items that resolved. */
+  users?: Record<string, string>;
 }
 
 export type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk";
@@ -331,6 +359,10 @@ export interface AuditEventView {
   threadTs?: string | null;
   summary: string;
   details: Record<string, unknown>;
+  /** Display label of `channelId` (`#name`, `DM with ...`) when resolvable. */
+  channelLabel?: string;
+  /** Display label of the target when it is a channel and resolvable. */
+  targetLabel?: string;
 }
 
 /** GET /panel/api/audit and GET /panel/api/sessions/:id/audit. Newest first. */

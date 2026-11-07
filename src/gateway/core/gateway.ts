@@ -170,7 +170,8 @@ import { startCronLeader } from "./cron-leader";
 import { defaultSchedulerDeps, leaderElect, personaManager, startBackgroundScheduler, wakeNow, type SchedulerSlack } from "../../background/scheduler";
 import { budgetConfigFor } from "../../background/config";
 import { cardPoster, registerProposalActions } from "../../background/proposal-cards";
-import { digestRecipientOf } from "../../background/digest";
+import { digestRecipientOf, personaApp } from "../../background/digest";
+import { createSlackNames, type NameContext } from "../panel/slack-names";
 import type { LeaderHandle } from "../../queue/locks";
 import { getNextRun } from "../slack/cron-parser";
 import { clientForApp, type AppRef, type Transport } from "./transport";
@@ -730,6 +731,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // registration gets without `--persona`), a persona that is not live, and a transport that carries no per-app
   // persona all give undefined: the default persona, exactly as before.
   const warnedAppPersona = new Set<string>();
+  // The client the console's name lookups use: the bot of the app the row was
+  // recorded with, else the persona's latest app, else the persona's own client.
+  const panelNameClient = async (ctx: NameContext): Promise<any> => {
+    const persona = ctx.persona && ctx.persona !== "default" ? ctx.persona : undefined;
+    if (ctx.appId) return botClientFor({ apiAppId: ctx.appId, ...(ctx.teamId ? { teamId: ctx.teamId } : {}) });
+    const app = await personaApp(persona ?? "default").catch(() => undefined);
+    if (app) return botClientFor(app);
+    if (persona) return livePersona(persona)?.outClient ?? null;
+    return botClientFor(ctx.teamId ? { teamId: ctx.teamId } : undefined);
+  };
   const appPersonaOf = (args: any): string | undefined => {
     const id: unknown = args?.context?.personaId;
     if (typeof id !== "string" || !id || id === "default") return undefined;
@@ -4462,6 +4473,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         onUnlock: (sessionId) => { agent.reload(sessionId); },
         // The persona view says where a persona's stdio MCP servers run.
         role: queueDispatch ? "gateway" : "mono",
+        // Channel and user names for display, looked up through the bot of the
+        // row's app (or the persona's latest app), cached.
+        names: createSlackNames({ clientFor: panelNameClient }),
         // Mono: sessions run here, so liveness is the manager's live map
         // (nothing registers in the node registry).
         local: queueDispatch

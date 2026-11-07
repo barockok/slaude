@@ -64,7 +64,8 @@ import { createAuthRoutes } from "./auth/routes";
 import { audit } from "./auth/audit";
 import { auditOneOnOne } from "../../audit/events";
 import type { PanelRole } from "./auth/roles";
-import { enumerateSessions } from "./enumerator";
+import { enumerateSessions, sessionModel } from "./enumerator";
+import { channelLabels, mentionNames, type SlackNames } from "./slack-names";
 import { activityOf, streamTurnInFlight, streamTurnsInFlight, type LocalSessions } from "./activity";
 import { sessionHistory } from "./history";
 import { redactSecrets } from "../../redact";
@@ -228,6 +229,17 @@ const auditQuerySchema = z
   })
   .strict();
 const pageQuerySchema = z.object(pageParams).strict();
+/** Sessions per list page when the console does not say. */
+export const SESSIONS_PAGE = 50;
+const sessionsQuerySchema = z
+  .object({
+    persona: z.string().min(1).max(128).optional(),
+    status: z.string().min(1).max(32).optional(),
+    tenant: z.string().min(1).max(128).optional(),
+    // listSessions caps at 500; one more row is read to see a next page.
+    limit: z.coerce.number().int().min(1).max(499).optional(),
+    offset: z.coerce.number().int().min(0).max(1_000_000).optional(),
+  });
 /** Turns per history page (each turn is a user line and an agent line). */
 const HISTORY_PAGE = 20;
 const historyQuerySchema = z
@@ -305,6 +317,9 @@ export interface PanelApiDeps {
   /** Mono: in-process session liveness (the AgentManager). Absent in the
    *  gateway role, where the warm registry and the event stream say it. */
   local?: LocalSessions | null;
+  /** Slack channel and user names for display (cached gateway-side lookups).
+   *  Absent: ids are shown as they are. */
+  names?: SlackNames | null;
 }
 
 export interface PanelApi {
@@ -318,6 +333,24 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
   const extractSoul = deps.extractSoul ?? ((t: string) => extractSoulData(t, { strict: true }));
   const installedKbSources = deps.installedKbSources ?? installedKbSourceIds;
   const panelRole = deps.role ?? "gateway";
+
+  /** Audit rows with channel labels (`#name`) where the gateway can resolve them. */
+  async function labelAudit<T extends { persona?: string | null; channelId?: string | null; targetKind?: string | null; targetId?: string | null }>(
+    items: T[],
+  ): Promise<Array<T & { channelLabel?: string; targetLabel?: string }>> {
+    if (!deps.names || items.length === 0) return items;
+    const targetChannel = (e: T) => (e.targetKind === "channel" && e.targetId ? e.targetId : null);
+    const labels = await channelLabels(deps.names, items.flatMap((e) => [
+      { channelId: e.channelId, ctx: { persona: e.persona } },
+      { channelId: targetChannel(e), ctx: { persona: e.persona } },
+    ]));
+    return items.map((e) => {
+      const c = e.channelId ? labels.get(e.channelId) : undefined;
+      const tc = targetChannel(e);
+      const t = tc ? labels.get(tc) : undefined;
+      return { ...e, ...(c ? { channelLabel: c } : {}), ...(t ? { targetLabel: t } : {}) };
+    });
+  }
 
   /** Warm sessions: in this process (mono) or in the node registry (gateway). */
   async function warmCount(): Promise<number> {
@@ -578,7 +611,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         // GET /panel/api/agents/:name
         if (seg.length === 4) {
           if (req.method !== "GET") return json(405, { error: "method not allowed" });
-          return json(200, (await agentDetail(name, liveness)) satisfies AgentDetailResponse);
+          return json(200, (await agentDetail(name, liveness, Date.now(), deps.names ?? null)) satisfies AgentDetailResponse);
         }
 
         if (seg[4] !== "grants" || seg.length > 6) return json(404, { error: "not found" });
@@ -677,7 +710,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           { persona, action, actorId: actor, sessionId: session, decision, since, until },
           { cursor, limit },
         );
-        return json(200, page satisfies AuditPageResponse);
+        return json(200, { ...page, items: await labelAudit(page.items) } satisfies AuditPageResponse);
       }
 
       // GET /panel/api/environments: where agents run. Read-only, any operator.
@@ -710,7 +743,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         ]);
         return json(200, {
           counts: { agents: agentNames().length, liveSessions, pendingApprovals, auditEvents24h },
-          recentAudit: recent.items,
+          recentAudit: await labelAudit(recent.items),
         } satisfies OverviewResponse);
       }
 
@@ -994,25 +1027,24 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
       // GET /panel/api/sessions
       if (seg.length === 3 && seg[2] === "sessions") {
         if (req.method !== "GET") return json(405, { error: "method not allowed" });
-        const q = url.searchParams;
-        const limit = q.get("limit") ? Number(q.get("limit")) : undefined;
-        const offset = q.get("offset") ? Number(q.get("offset")) : undefined;
-        const sessions = await enumerateSessions(
-          {
-            persona: q.get("persona") ?? undefined,
-            status: q.get("status") ?? undefined,
-            tenant: q.get("tenant") ?? undefined,
-            limit: Number.isFinite(limit) ? limit : undefined,
-            offset: Number.isFinite(offset) ? offset : undefined,
-          },
+        const q = sessionsQuerySchema.safeParse(queryOf(url));
+        if (!q.success) return json(400, { error: issuesLine(q.error) });
+        const limit = q.data.limit ?? SESSIONS_PAGE;
+        const offset = q.data.offset ?? 0;
+        // One row past the page says whether there is a next one.
+        const rows = await enumerateSessions(
+          { persona: q.data.persona, status: q.data.status, tenant: q.data.tenant, limit: limit + 1, offset },
           {
             registry: deps.registry,
             local: deps.local ?? null,
             turnsInFlight: (ids) => streamTurnsInFlight(deps.pubsub, ids),
             panelOwners: deps.panelLock ? (ids) => deps.panelLock!.ownerMany(ids) : undefined,
+            names: deps.names ?? null,
           },
         );
-        return json(200, { sessions } satisfies SessionsResponse);
+        const sessions = rows.slice(0, limit);
+        const nextOffset = rows.length > limit ? offset + limit : null;
+        return json(200, { sessions, nextOffset } satisfies SessionsResponse);
       }
 
       // /panel/api/sessions/:id[/sub]
@@ -1027,7 +1059,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           const q = pageQuerySchema.safeParse(queryOf(url));
           if (!q.success) return json(400, { error: issuesLine(q.error) });
           const page = await AuditEvents.list({ sessionId: id }, q.data);
-          return json(200, page satisfies AuditPageResponse);
+          return json(200, { ...page, items: await labelAudit(page.items) } satisfies AuditPageResponse);
         }
 
         const row = await Sessions.findById(id);
@@ -1036,7 +1068,13 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         // GET /panel/api/sessions/:id
         if (!sub) {
           if (req.method !== "GET") return json(405, { error: "method not allowed" });
-          const [lockedBy, live] = await Promise.all([deps.panelLock ? deps.panelLock.owner(id) : null, liveness(row)]);
+          const [lockedBy, live, label] = await Promise.all([
+            deps.panelLock ? deps.panelLock.owner(id) : null,
+            liveness(row),
+            deps.names && row.slack_channel_id
+              ? deps.names.channelLabel(row.slack_channel_id, { persona: row.persona_id, appId: row.slack_app_id ?? null, teamId: row.slack_team_id }).catch(() => null)
+              : null,
+          ]);
           // Earlier turns: GET .../history (the durable conversation record);
           // the live tail is the SSE endpoint.
           return json(200, {
@@ -1045,6 +1083,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             warm: live.warm,
             ...(live.inFlight !== undefined ? { turn_in_flight: live.inFlight } : {}),
             activity: activityOf(row.status, live.warm, live.inFlight),
+            ...sessionModel(row),
+            ...(label ? { channel_label: label } : {}),
           } satisfies SessionDetailResponse);
         }
 
@@ -1061,7 +1101,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
               before: q.data.cursor ? Number(q.data.cursor) : undefined,
               limit: q.data.limit ?? HISTORY_PAGE,
             });
-            return json(200, page satisfies SessionHistoryResponse);
+            const users = await mentionNames(deps.names, page.items, { persona: row.persona_id, appId: row.slack_app_id ?? null, teamId: row.slack_team_id });
+            return json(200, (users ? { ...page, users } : page) satisfies SessionHistoryResponse);
           } catch (e) {
             console.error(`[panel] session history read failed session=${id}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
             return json(200, { items: [], nextCursor: null, note: "the conversation record could not be read" } satisfies SessionHistoryResponse);

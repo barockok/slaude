@@ -9,6 +9,7 @@ import { listMandates } from "../../mandate";
 import { getPersonaRegistry, labelsInUse, managedPersonaModel, runsOnFor, type PersonaRegistry } from "../../persona/registry";
 import { listAllEnvSummaries } from "../../db/environments";
 import type { Registry } from "../../queue/registry";
+import { channelLabels, plainChannelRefs, type SlackNames } from "./slack-names";
 import type {
   AgentSummary,
   ConsoleGrantView,
@@ -125,11 +126,39 @@ export async function agentDetail(
   name: string,
   deps: LivenessDeps,
   now: number = Date.now(),
+  names: SlackNames | null = null,
 ): Promise<AgentSummary & { mandates: MandateView[]; grants: GrantView[] }> {
   const r = getPersonaRegistry();
-  const [live, mandates, grants] = await Promise.all([liveCounts(deps), listMandates(name), grantViews(name, now)]);
+  const [live, raw, grants] = await Promise.all([liveCounts(deps), listMandates(name), grantViews(name, now)]);
+  const mandates = await readableMandates(raw, name, names);
   const consoleCount = grants.filter((g) => g.source === "console").length;
   return { ...summaryOf(name, r, live, deps.role, mandates.length, consoleCount), mandates, grants };
+}
+
+const CHANNEL_REF = /<#([A-Z0-9]+)(?:\|[^>]*)?>/g;
+
+/**
+ * Mandates as the console shows them: Slack channel references (`<#C123>`) in
+ * titles, triggers and instructions become `#name` when the gateway can
+ * resolve the channel, else `#C123`; a channel mandate carries its label.
+ */
+export async function readableMandates(mandates: MandateView[], persona: string, names: SlackNames | null): Promise<MandateView[]> {
+  const ids = new Set<string>();
+  for (const m of mandates) {
+    if (m.channelId) ids.add(m.channelId);
+    for (const t of [m.title, m.instructions, ...m.triggers]) for (const x of t.matchAll(CHANNEL_REF)) ids.add(x[1]!);
+  }
+  const labels = await channelLabels(names, [...ids].map((channelId) => ({ channelId, ctx: { persona } })));
+  return mandates.map((m) => {
+    const label = m.channelId ? labels.get(m.channelId) : undefined;
+    return {
+      ...m,
+      title: plainChannelRefs(m.title, labels),
+      instructions: plainChannelRefs(m.instructions, labels),
+      triggers: m.triggers.map((t) => plainChannelRefs(t, labels)),
+      ...(label ? { channelLabel: label } : {}),
+    };
+  });
 }
 
 /**
