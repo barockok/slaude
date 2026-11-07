@@ -9,7 +9,8 @@ import { __resetRoleCache } from "../../src/gateway/panel/auth/roles";
 import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
 import { db } from "../../src/db/schema";
 import * as Sessions from "../../src/db/sessions";
-import { createSlackNames, mentionNames, plainChannelRefs, type SlackNameClient } from "../../src/gateway/panel/slack-names";
+import { MAX_CONCURRENT, MAX_PER_ANSWER, channelLabels, createSlackNames, mentionNames, plainChannelRefs, type SlackNameClient } from "../../src/gateway/panel/slack-names";
+import { createLookupClients } from "../../src/gateway/panel/lookup-clients";
 import { readableMandates } from "../../src/gateway/panel/console-views";
 import { sessionModel } from "../../src/gateway/panel/enumerator";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
@@ -77,7 +78,7 @@ describe("createSlackNames", () => {
     expect(await names.channelLabel("not-an-id")).toBeNull();
 
     const slow: SlackNameClient = { conversations: { info: () => new Promise(() => undefined) }, users: { info: () => new Promise(() => undefined) } };
-    expect(await createSlackNames({ clientFor: () => slow, timeoutMs: 20 }).channelLabel("CSLOW")).toBeNull();
+    expect(await createSlackNames({ clientFor: () => slow, deadlineMs: 20 }).channelLabel("CSLOW")).toBeNull();
   });
 
   it("concurrent lookups of one id share one call", async () => {
@@ -95,6 +96,113 @@ describe("createSlackNames", () => {
     expect(await mentionNames(null, [{ text: "<@UALICE>" }])).toBeUndefined();
     const labels = new Map([["CTEAM", "#team"]]);
     expect(plainChannelRefs("in <#CTEAM> and <#COPS|ops> and <#CX>", labels)).toBe("in #team and #ops and #CX");
+  });
+});
+
+describe("createSlackNames bounds", () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it("one overall deadline: past it the id (or DM) is answered, and the late answer fills the cache", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const client: SlackNameClient = {
+      conversations: { info: async ({ channel }) => (await gate, { ok: true, channel: channel.startsWith("D") ? { is_im: true, user: "UALICE" } : { name: "late" } }) },
+      users: { info: async () => (await gate, { ok: true, user: { name: "jane" } }) },
+    };
+    // The client resolution itself (a DB read on the gateway) counts toward the deadline.
+    const names = createSlackNames({ clientFor: async () => (await sleep(5), client), deadlineMs: 30 });
+    expect(await names.channelLabel("CLATE")).toBeNull();
+    expect(await names.channelLabel("DLATE")).toBe("DM");
+    release();
+    await sleep(10);
+    expect(await names.channelLabel("CLATE")).toBe("#late");
+  });
+
+  it("a slow client lookup alone hits the deadline", async () => {
+    const { client } = stubSlack({ channels: { CTEAM: { name: "team" } } });
+    const names = createSlackNames({ clientFor: async () => (await sleep(80), client), deadlineMs: 20 });
+    expect(await names.channelLabel("CTEAM")).toBeNull();
+    await sleep(80);
+    expect(await names.channelLabel("CTEAM")).toBe("#team");
+  });
+
+  it(`at most ${MAX_CONCURRENT} Slack calls at once`, async () => {
+    let now = 0;
+    let peak = 0;
+    const client: SlackNameClient = {
+      conversations: { info: async ({ channel }) => {
+        now++;
+        peak = Math.max(peak, now);
+        await sleep(5);
+        now--;
+        return { ok: true, channel: { name: channel.toLowerCase() } };
+      } },
+      users: { info: async () => ({ ok: false }) },
+    };
+    const names = createSlackNames({ clientFor: () => client });
+    const ids = Array.from({ length: 20 }, (_, i) => `CCH${i}`);
+    const labels = await Promise.all(ids.map((id) => names.channelLabel(id)));
+    expect(labels.every((l) => l?.startsWith("#"))).toBe(true);
+    expect(peak).toBe(MAX_CONCURRENT);
+  });
+
+  it(`at most ${MAX_PER_ANSWER} ids per answer; the rest keep their ids`, async () => {
+    const { client, calls } = stubSlack({ channels: Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`CX${i}`, { name: `x${i}` }])) });
+    const names = createSlackNames({ clientFor: () => client });
+    const labels = await channelLabels(names, Array.from({ length: 60 }, (_, i) => ({ channelId: `CX${i}` })));
+    expect(labels.size).toBe(MAX_PER_ANSWER);
+    expect(calls.length).toBe(MAX_PER_ANSWER);
+  });
+
+  it("a 429 pauses that client for Retry-After and is never cached as not found", async () => {
+    let t = 0;
+    let limited = true;
+    const calls: string[] = [];
+    const client: SlackNameClient = {
+      conversations: { info: async ({ channel }) => {
+        calls.push(channel);
+        if (limited) throw Object.assign(new Error("rate limited"), { code: "slack_webapi_rate_limited_error", retryAfter: 10 });
+        return { ok: true, channel: { name: "team" } };
+      } },
+      users: { info: async () => ({ ok: false }) },
+    };
+    const names = createSlackNames({ clientFor: () => client, now: () => t });
+    expect(await names.channelLabel("CTEAM")).toBeNull();
+    // Paused: no call while Retry-After runs.
+    expect(await names.channelLabel("COTHER")).toBeNull();
+    expect(calls).toEqual(["CTEAM"]);
+    limited = false;
+    t = 11_000;
+    // Not remembered as a miss: asked again, and resolved.
+    expect(await names.channelLabel("CTEAM")).toBe("#team");
+  });
+
+  it("a miss is remembered per app: another app can still resolve the channel", async () => {
+    const blind = stubSlack({});
+    const member = stubSlack({ channels: { CPRIV: { name: "private" } } });
+    const names = createSlackNames({ clientFor: (ctx) => (ctx.appId === "AMEMBER" ? member.client : blind.client) });
+    expect(await names.channelLabel("CPRIV", { appId: "ABLIND" })).toBeNull();
+    expect(await names.channelLabel("CPRIV", { appId: "AMEMBER" })).toBe("#private");
+    // A name, once known, serves every app.
+    expect(await names.channelLabel("CPRIV", { appId: "ABLIND" })).toBe("#private");
+  });
+});
+
+describe("lookup clients", () => {
+  it("one dedicated client per token, none without a token", () => {
+    const made: string[] = [];
+    const clients = createLookupClients((token) => (made.push(token), stubSlack().client));
+    const a = clients.forToken("t-one");
+    expect(clients.forToken("t-one")).toBe(a);
+    expect(clients.forToken("t-two")).not.toBe(a);
+    expect(clients.forToken(undefined)).toBeNull();
+    expect(made).toEqual(["t-one", "t-two"]);
+  });
+
+  it("the real client never retries and rejects rate-limited calls", () => {
+    const c = createLookupClients().forToken("placeholder-token") as unknown as { rejectRateLimitedCalls?: boolean; retryConfig?: { retries?: number } };
+    expect(c.rejectRateLimitedCalls).toBe(true);
+    expect(c.retryConfig?.retries).toBe(0);
   });
 });
 
