@@ -1423,3 +1423,13 @@
     display: none;
   }
 }
+
+/* A wide table on a phone scrolls inside its box; keep its empty state in view. */
+@media (max-width: 768px) {
+  .sl-table tr.is-empty td > * {
+    position: sticky;
+    left: 0;
+    width: calc(100vw - 2 * var(--sl-pad-lg));
+    max-width: 100%;
+  }
+}
