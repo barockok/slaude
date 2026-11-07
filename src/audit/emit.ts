@@ -67,12 +67,29 @@ export function gateActionKind(kind: string): string {
   return kind === "perm" ? "permission" : kind;
 }
 
-/** Target of a gate row: the tool for a permission prompt, the scope or
- *  category for an approval, the server for an /mcp connect card. */
+/**
+ * A short title for an approval request: its scope or category when it names
+ * one, else the first line of its own summary (clipped), else "approval". Used
+ * for the audit target and the card's decided line, so a generic request is
+ * named by what it asked, never a fixed word.
+ */
+export function approvalTitle(p: Record<string, unknown> | null | undefined): string {
+  const q = p ?? {};
+  const named = str(q.scope) ?? str(q.category);
+  if (named) return named;
+  const line = (str(q.summary) ?? "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
+  if (!line) return "approval";
+  // By code points, so a clip never splits a surrogate pair (an emoji, CJK extension).
+  const points = [...line];
+  return points.length > 80 ? `${points.slice(0, 79).join("")}…` : line;
+}
+
+/** Target of a gate row: the tool for a permission prompt, the approval's
+ *  title (approvalTitle) for an approval, the server for an /mcp connect card. */
 export function gateTarget(row: Pick<PendingGate, "kind" | "id" | "payload">): { targetKind: string; targetId: string } {
   const p = row.payload ?? {};
   if (row.kind === "perm") return { targetKind: "tool", targetId: str(p.toolName) ?? "unknown" };
-  if (row.kind === "approval") return { targetKind: "approval", targetId: str(p.scope) ?? str(p.category) ?? "plan" };
+  if (row.kind === "approval") return { targetKind: "approval", targetId: approvalTitle(p) };
   return { targetKind: "mcp_server", targetId: str(p.serverName) ?? row.id };
 }
 

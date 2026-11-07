@@ -394,6 +394,10 @@ describe("Restore a retired skill", () => {
     expect(discoverSkills().some((s) => s.slug === "old-helper")).toBe(true);
     expect((await Proposals.get(row))!.status).toBe("rejected");
     expect(await restoreRetiredSkill({ id: row, by: BACKUP }, deps)).toEqual({ ok: false, text: ":lock: this skill was already restored" });
+    // One audit row, for the restore that happened, as the manager who clicked.
+    await flushAudits();
+    const audit = (await AuditEvents.list({ action: "skill.restored" })).items.filter((e) => e.targetId === "old-helper");
+    expect(audit.map((e) => [e.actorKind, e.actorId, e.details.via])).toEqual([["slack_user", MANAGER, "slack"]]);
   });
 
   test("refused while a live skill holds the slug; the retirement stays restorable", async () => {

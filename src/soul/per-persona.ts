@@ -133,3 +133,35 @@ export function channelApproversOf(soul: SoulData): Map<string, string[]> {
   }
   return out;
 }
+
+/**
+ * The redaction patterns for what an agent posts: the default persona's,
+ * plus the agent's own, deduplicated. A union, never a replacement: an agent's
+ * soul can only add redaction. Read per post, so a soul change applies at once.
+ */
+export function redactPatternsFor(persona?: string | null): string[] {
+  const def = soulData().redactPatterns;
+  if (!persona || persona === "default") return [...new Set(def)];
+  let own: string[] = [];
+  try {
+    own = soulDataFor(persona).redactPatterns;
+  } catch {
+    own = [];
+  }
+  return [...new Set([...def, ...own])];
+}
+
+/**
+ * An agent's approval timeout in seconds: its own soul's when it sets one,
+ * else the default persona's; 0 when neither does (the caller's default applies).
+ */
+export function approvalTimeoutFor(persona?: string | null): number {
+  const def = soulData().approvalTimeoutSeconds;
+  if (!persona || persona === "default") return def;
+  try {
+    const own = soulDataFor(persona).approvalTimeoutSeconds;
+    return own > 0 ? own : def;
+  } catch {
+    return def;
+  }
+}

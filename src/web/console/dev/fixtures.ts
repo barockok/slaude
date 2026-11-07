@@ -313,7 +313,7 @@ function sessionRows(now: number): ConsoleFixtures["sessions"] {
 export function sessionScript(sessionId: string): Array<{ delay: number; event: SessionEvent }> {
   const e = <T extends Omit<SessionEvent, "sessionId">>(delay: number, ev: T) => ({ delay, event: { sessionId, ...ev } as SessionEvent });
   return [
-    e(60, { type: "userMessage", userId: "UALICE", userName: "alice", text: "Can you check the release checklist against the branch?", at: Date.now() }),
+    e(60, { type: "userMessage", userId: "UALICE", userName: "alice", text: "Can you check the release checklist against the branch?", at: Date.now(), surface: "slack" }),
     e(60, { type: "turnStart" }),
     e(60, { type: "thinking", text: "The user wants the release checklist checked against the current branch. Start with the test suite, then read the checklist file and compare each item." }),
     e(60, { type: "assistantText", text: "Running the panel tests first, then I will go through the checklist item by item." }),
@@ -337,6 +337,9 @@ export function sessionScript(sessionId: string): Array<{ delay: number; event: 
  * A session's earlier turns as the history route answers them (oldest first),
  * from the conversation record. s_7f21 has more than one page.
  */
+/** An agent reply written in markdown, as agents write them (rendered in the timeline and chat). */
+export const AGENT_MARKDOWN = "Here is the **release plan**:\n\n1. Run the panel tests\n2. Tag `v0.41.0`\n\nSee [the runbook](https://example.com/runbook).";
+
 export function sessionHistory(sessionId: string, now: number): SessionHistoryItem[] {
   if (sessionId === "s_2ff0") return [];
   const turns = sessionId === "s_7f21" ? 26 : 3;
@@ -349,8 +352,8 @@ export function sessionHistory(sessionId: string, now: number): SessionHistoryIt
       : `Earlier question ${i}`;
     // A line from a scheduled run has no message time of its own: only its day is known.
     const userAt = i === 2 ? { at, dateOnly: true } : { at: at - 40_000 };
-    out.push({ id: `${i}:user`, ...userAt, who: "user", name: i % 3 === 0 ? "bob" : "alice", text: userText });
-    out.push({ id: `${i}:agent`, at, who: "agent", text: i === turns ? "Last earlier answer: the checklist lives in docs/release-checklist.md." : `Earlier answer ${i}` });
+    out.push({ id: `${i}:user`, ...userAt, who: "user", name: i % 3 === 0 ? "bob" : "alice", text: userText, surface: "slack" });
+    out.push({ id: `${i}:agent`, at, who: "agent", text: i === turns ? "Last earlier answer: the checklist lives in docs/release-checklist.md." : turns > 3 && i === turns - 1 ? AGENT_MARKDOWN : `Earlier answer ${i}`, surface: "slack" });
   }
   return out;
 }

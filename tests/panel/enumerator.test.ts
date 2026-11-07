@@ -203,3 +203,14 @@ describe("enumerateSessions round trips", () => {
     expect(calls).toEqual({ lookupMany: 1, lookup: 0, streams: 2, owners: 1 });
   });
 });
+
+import { syntheticRunLabel } from "../../src/gateway/panel/enumerator";
+
+describe("syntheticRunLabel", () => {
+  it("a heartbeat wake and a scheduled run are named; a real thread is not", () => {
+    expect(syntheticRunLabel("wake:UAGENT:2026-11-07T09:00")).toBe("Heartbeat wake");
+    expect(syntheticRunLabel("cron:job-1")).toBe("Scheduled run");
+    expect(syntheticRunLabel("1762506060.000101")).toBeNull();
+    expect(syntheticRunLabel(null)).toBeNull();
+  });
+});

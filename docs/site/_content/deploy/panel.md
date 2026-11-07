@@ -30,6 +30,8 @@ dark themes follow the browser, and every page works at phone width.
 | **Access** | Console roles (read only, from the role file; superadmins only, operators see a note) and every stored agent grant. |
 | **Memory** | Memory stores with page counts; a store lists its pages; a page shows its content, type, tags and links. Read only. |
 | **Environments** | Node pools (labels, live nodes, last heartbeat), each agent's placement label, and personal environments (secrets never shown). |
+| **Resources: Skills** | Every skill an agent can use, filterable by source, agent and status, with search. A skill's page shows its `SKILL.md` rendered (raw and copy too), where it came from, which agents have it, its files, per-agent usage and related proposals. |
+| **Resources: Guardrails** | For one agent at a time, every guardrail family with its effective values and where each comes from. Read only. |
 
 **Grants.** A superadmin adds or revokes an agent grant from the agent's
 *Access* tab: a user, a channel's members or a whole workspace gets the
@@ -43,6 +45,62 @@ their channel only. A channel grant takes a channel id (`C` or `G`); for DMs,
 give the person a user member grant with DM only. A deny grant also removes
 the user from every approval card, the default persona's included. The console
 roles list (who may sign in, and as what) is visible to superadmins only.
+
+**Markdown.** Memory pages, `SKILL.md` files, mandate text, the soul's own
+guardrail sections and the agent's messages in a session's timeline and chat
+are shown rendered. Every one has a *Rendered* or *Raw* switch (each viewer's
+choice, remembered in the browser) and a copy button. Rendering never passes
+HTML through: raw HTML in the text shows as text, and only `http`, `https` and
+`mailto` targets become links. People's own messages keep Slack's formatting
+(links, mentions) rather than markdown.
+
+**Skills.** Each skill has one source:
+
+- *Built-in*: slaude's own `slaude:*` skills, part of every session.
+- *Installed*: in the shared skills root (`$SLAUDE_HOME/skills`) or an agent's
+  own root, put there by the dependency manifest (`slaude.json`, pinned in
+  `slaude.lock`: the page shows the repository, ref and commit), shipped with
+  the release, or placed by hand (in no lock).
+- *Plugin*: from a Claude Code plugin installed from the manifest; every
+  session mounts it.
+- *Agent-authored*: written by the agent with `write_skill`. The default
+  agent writes to the shared root, so every agent sees it; a named agent
+  writes to its own root (`$SLAUDE_HOME/personas/<name>/skills`), which
+  shadows a shared skill of the same name for that agent only.
+
+Uses come from the `skill_usage` table (a counted load of the skill), keyed by
+the name the agent called the skill with: a shared or own skill by its name, a
+built-in as `slaude:<name>`, and a plugin skill as `<plugin>:<name>` (the
+name in its frontmatter, as the plugin lists it), `<plugin>:<directory>`, or
+its bare name when no other skill has that name. A
+superadmin can **retire** an agent-authored skill (it moves to `.retired/` and
+stops reaching the agent, the same path the weekly skill review takes, so the
+next digest lists it and the manager can restore it from Slack) and **restore**
+a retired copy. Both are recorded in the audit trail (`skill.retired`,
+`skill.restored`). Installed, plugin and built-in skills are changed where they
+come from (the manifest, the personas repo), never from the console.
+
+**Guardrails.** One card per family: tool permissions (always-allowed tools
+from `SLAUDE_AUTO_ALLOW_TOOLS`, the default permission mode, who may decide a
+card), approvals (who may approve for this agent, and the approval timeout),
+admission and grants, memory write gating (what is read freely, written
+freely, needs approval or a manager), the profile write guard, redaction (the
+default soul's patterns plus the agent's own; the patterns themselves are
+shown to superadmins only, operators see a count),
+proactive restraint (from the soul's `## Proactive` block and the code's
+caps), learned proactive rules (from the agent's memory), the wake tool
+allow-list and the background and wake budgets. Each value has a source badge:
+*Env*, *Soul*, *Persona* (its config in git), *Console* (a stored grant),
+*Learned*, *Default* or *Fixed* (in the code). Change a value where its badge
+points; the page never edits. Policy guardrails (a written policy checked on
+every call) are designed but not implemented, and the page says so.
+
+**Surfaces.** Slack is the only chat surface today, but the console names it
+from a small registry (label, its word for a conversation, how to show a
+conversation id), and session views, history lines, live messages and audit
+events say which surface they came from. Words that are Slack-only stay where
+the feature is Slack-only: grants (Slack user, channel and workspace ids), an
+agent's Slack user, and `/env`.
 
 **Private memory stores.** Personal (`user-*`) and profile (`profile-*`)
 stores hold what one person told an agent. Only superadmins see them, and every
@@ -272,9 +330,15 @@ onboarding link that only that Slack user can see. A portal session is never
 an operator session — different token type, different cookie path — so the
 panel's role check is untouched.
 
-**Binding is user-driven.** A person types `/link` in a thread with the agent
-and gets a private, 15-minute link; opening it while signed in to the portal
-binds the two identities. Replies to `/link` are always ephemeral, and a
+**Binding is user-driven.** A person sends `/link` to the agent as a message
+and gets a private, 15-minute link. In Slack, put a space before it or mention
+the agent (`@agent /link`): Slack treats a message that starts with `/` as one
+of its own slash commands and rejects `/link` as not a valid command, while
+slaude reads its commands from the message text. The generated Slack app
+manifest registers no slash commands, because the gateway handles none (it
+has no slash-command endpoint). Opening the link while signed in to the portal
+binds the two identities; the confirmation page shows the workspace and Slack
+user names when the gateway can resolve them, with the ids beneath. Replies to `/link` are always ephemeral, and a
 surface that cannot reply privately gets a refusal rather than a public post.
 A Slack user already bound to one account cannot be rebound to another; the
 person unlinks from the portal first.

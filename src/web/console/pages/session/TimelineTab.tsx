@@ -4,7 +4,8 @@ import type { StreamEntry, StreamStatus } from "../../lib/sessionStream";
 import type { SessionHistory } from "./useSessionHistory";
 import { resultText, type Delivery, type Item } from "./timeline-model";
 import { absoluteTime, actionLabel, actorKindLabel, clockTime, decisionLabel, decisionTone, duration, shortDate } from "../../lib/format";
-import { SlackText } from "../../components/SlackText";
+import { AgentText, SlackText } from "../../components/SlackText";
+import { useSessionSurface } from "../../lib/surfaces";
 
 /** One line that says what a tool call does: the command, the file, the pattern. */
 function inputSummary(input: unknown): string {
@@ -53,17 +54,19 @@ function EarlierTime({ at, dateOnly }: { at: number; dateOnly?: boolean }) {
 
 const DELIVERY: Record<Delivery, { label: string; tone: "neutral" | "accent" | "warning" | "danger" | "success"; hint: string }> = {
   sending: { label: "Sending", tone: "neutral", hint: "The reply tool has not answered yet" },
-  slack: { label: "Sent to Slack", tone: "success", hint: "Posted in the thread" },
-  held: { label: "Held in console", tone: "warning", hint: "An operator holds this session, so the reply stayed here and Slack never saw it" },
-  failed: { label: "Not sent", tone: "danger", hint: "The tool refused or failed; nobody in Slack saw this" },
+  posted: { label: "Posted", tone: "success", hint: "Posted in the conversation" },
+  held: { label: "Held in console", tone: "warning", hint: "An operator holds this session, so the reply stayed here and never reached the conversation" },
+  failed: { label: "Not sent", tone: "danger", hint: "The tool refused or failed; nobody in the conversation saw this" },
 };
 
 /** Where an agent message went. */
 export function DeliveryMark({ delivery, target }: { delivery: Delivery; target?: string }) {
   const d = DELIVERY[delivery];
+  const surface = useSessionSurface();
+  const label = delivery === "posted" ? `Sent to ${target ?? surface.label}` : d.label;
   return (
     <span title={d.hint} className="sl-tl__delivery">
-      <Badge tone={d.tone}>{delivery === "slack" && target ? `Sent to ${target}` : d.label}</Badge>
+      <Badge tone={d.tone}>{label}</Badge>
     </span>
   );
 }
@@ -82,6 +85,7 @@ function Fold({ summary, children, className }: { summary: ReactNode; children: 
 }
 
 function ItemView({ it }: { it: Item }) {
+  const surface = useSessionSurface();
   switch (it.kind) {
     case "turn":
       return (
@@ -110,13 +114,17 @@ function ItemView({ it }: { it: Item }) {
           <div className="sl-tl__msg-body">
             <div className="sl-tl__meta">
               <span className="sl-tl__who">{it.who === "operator" ? `${it.name} (console)` : it.name}</span>
-              {it.who === "user" && <span className="sl-caption">in Slack</span>}
+              {it.who === "user" && <span className="sl-caption">in {surface.label}</span>}
               {it.delivery && <DeliveryMark delivery={it.delivery} target={it.target} />}
               {it.earlier ? <EarlierTime at={it.at} dateOnly={it.dateOnly} /> : <Time at={it.at} />}
             </div>
-            <p className="sl-tl__text">
-              <SlackText text={it.text} />
-            </p>
+            {it.who === "agent" ? (
+              <AgentText text={it.text} />
+            ) : (
+              <p className="sl-tl__text">
+                <SlackText text={it.text} />
+              </p>
+            )}
           </div>
         </div>
       );

@@ -6,6 +6,8 @@ import { ErrorState } from "../../shared/ErrorState";
 import { absoluteTime, shortDate } from "../../shared/time";
 import { api, useApi } from "../client";
 import { linkedViaLabel } from "../lib/labels";
+import { NamedId } from "../../shared/NamedId";
+import { capitalize, sendCommandGuidance } from "../../shared/surfaces";
 
 const idKey = (s: PortalSlackIdentityView) => `${s.teamId}:${s.slackUserId}`;
 
@@ -28,11 +30,11 @@ function columns(onUnlink: (s: PortalSlackIdentityView) => void): Column<PortalS
           <span className="sl-subject__icon" title="Slack workspace">
             <IconBuilding size={14} />
           </span>
-          <span className="sl-mono">{s.teamId}</span>
+          <NamedId name={s.teamName} id={s.teamId} />
         </span>
       ),
     },
-    { key: "user", header: "Slack user", width: "22%", skeleton: 0.6, render: (s) => <span className="sl-mono">{s.slackUserId}</span> },
+    { key: "user", header: "Slack user", width: "22%", skeleton: 0.6, render: (s) => <NamedId name={s.userName} id={s.slackUserId} /> },
     { key: "via", header: "Linked via", width: "20%", skeleton: 0.6, render: (s) => <span className="sl-nowrap">{linkedViaLabel(s.linkedVia)}</span> },
     {
       key: "at",
@@ -146,7 +148,7 @@ export function AccountPage() {
                   title="No Slack identity linked yet"
                   description={
                     <>
-                      Run <code className="sl-mono">/link</code> in Slack, in a conversation with any agent. It replies with a private link; open it while
+                      {capitalize(sendCommandGuidance("/link"))}, in a conversation with any agent. It replies with a private link; open it while
                       signed in here and confirm.
                     </>
                   }
@@ -164,7 +166,7 @@ export function AccountPage() {
         title="Unlink this Slack identity?"
         description={
           unlinking
-            ? `Slack user ${unlinking.slackUserId} in ${unlinking.teamId} stops resolving to your account. Agents working for that user no longer use your integrations. Run /link in Slack to link it again.`
+            ? `Slack user ${unlinking.userName ?? unlinking.slackUserId} in ${unlinking.teamName ?? unlinking.teamId} stops resolving to your account. Agents working for that user no longer use your integrations. To link it again, ${sendCommandGuidance("/link")}.`
             : undefined
         }
         footer={

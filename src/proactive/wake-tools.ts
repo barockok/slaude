@@ -156,7 +156,7 @@ export async function proactivePostTool(c: WakeToolContext, a: ProactivePostTool
 }
 
 /** Messages in a row an agent may leave in a thread with nobody answering: its post and one follow-up. */
-const MAX_UNANSWERED = 2;
+export const MAX_UNANSWERED = 2;
 
 /** How many of the thread's last messages in a row are this agent's. */
 async function unansweredRun(client: WebClient, channel: string, threadTs: string, agentId: string): Promise<number> {

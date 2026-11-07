@@ -18,6 +18,7 @@ import { PersonaNotLiveError } from "../../persona/registry";
 import { personaAgentId } from "../../persona/agent-slice";
 import { redactSecrets } from "../../redact";
 import type { SessionHistoryItem, SessionHistoryResponse } from "./api-types";
+import { surfaceOfSession } from "../core/surface";
 
 /** Rows read per request: the page is cut from these. */
 export const MAX_ROWS = 1000;
@@ -87,7 +88,7 @@ const between = (s: string, tag: string): string | null => {
  * older row with only a day) is marked `dateOnly` rather than shown with a
  * clock time it never had.
  */
-export function turnLines(row: MemoryTimelineRow): SessionHistoryItem[] {
+export function turnLines(row: MemoryTimelineRow, surface: string = surfaceOfSession()): SessionHistoryItem[] {
   const day = Date.parse(`${row.date}T00:00:00Z`) || 0;
   const detail = row.detail ?? "";
   const userRaw = between(detail, "user") ?? row.summary ?? "";
@@ -96,12 +97,12 @@ export function turnLines(row: MemoryTimelineRow): SessionHistoryItem[] {
   const user = parseUserLine(userRaw);
   if (user.text) {
     const when = user.at !== undefined ? { at: user.at } : { at: row.createdAt ?? day, dateOnly: true };
-    out.push({ id: `${row.id}:user`, ...when, who: "user", ...(user.name ? { name: redactSecrets(user.name) } : {}), text: redactSecrets(user.text) });
+    out.push({ id: `${row.id}:user`, ...when, who: "user", ...(user.name ? { name: redactSecrets(user.name) } : {}), text: redactSecrets(user.text), surface });
   }
   const agent = agentRaw.trim();
   if (agent) {
     const when = row.createdAt != null ? { at: row.createdAt } : { at: day, dateOnly: true };
-    out.push({ id: `${row.id}:agent`, ...when, who: "agent", text: redactSecrets(agent) });
+    out.push({ id: `${row.id}:agent`, ...when, who: "agent", text: redactSecrets(agent), surface });
   }
   return out;
 }
@@ -130,7 +131,7 @@ export async function sessionHistory(
   const capped = rows.length >= MAX_ROWS;
   const nextCursor = older.length > page.length && page.length > 0 ? String(page[0]!.id) : null;
   return {
-    items: page.flatMap(turnLines),
+    items: page.flatMap((r) => turnLines(r)),
     nextCursor,
     ...(capped && nextCursor === null ? { note: `only the latest ${MAX_ROWS} turns of this session can be shown; older turns are not` } : {}),
   };

@@ -4,20 +4,24 @@ import { ApiError } from "../../../lib/api";
 import { Avatar, Button, Dialog, EmptyState, IconLock, cx } from "../../../ui";
 import { api } from "../../client";
 import { absoluteTime, clockTime, shortDate } from "../../lib/format";
-import { SlackText } from "../../components/SlackText";
+import { AgentText, SlackText } from "../../components/SlackText";
 import { DeliveryMark, EarlierHeader, useFollow, type TimelineItem } from "./TimelineTab";
 import type { SessionHistory } from "./useSessionHistory";
 import type { SessionLock } from "./useSessionLock";
+import type { SurfaceId } from "../../../../gateway/panel/api-types";
+import { surfaceInfo, type SurfaceInfo } from "../../lib/surfaces";
 
 type ChatItem = Extract<TimelineItem, { kind: "text" }>;
 
 export interface ChatTabProps {
   sessionId: string;
-  /** Agent replies, Slack and operator messages since the page opened, oldest first. */
+  /** Agent replies, people's and operator messages since the page opened, oldest first. */
   messages: ChatItem[];
   /** Earlier turns from the conversation record, oldest first. */
   earlier: ChatItem[];
   history: SessionHistory;
+  /** The surface the conversation is on (words come from the surface registry). */
+  surface?: SurfaceId;
   lock: SessionLock;
   isSuperadmin: boolean;
   onSent: (text: string) => void;
@@ -38,17 +42,21 @@ function Banner({ tone, title, children, actions }: { tone: "neutral" | "accent"
   );
 }
 
-function Message({ m }: { m: ChatItem }) {
+function Message({ m, surface }: { m: ChatItem; surface: SurfaceInfo }) {
   return (
     <li className={cx("sl-chat__msg", m.who === "operator" && "is-operator", m.who === "user" && "is-user")}>
       {m.who !== "operator" && <Avatar name={m.name} size="sm" />}
       <div className="sl-chat__bubble">
-        <p className="sl-tl__text">
-          <SlackText text={m.text} />
-        </p>
+        {m.who === "agent" ? (
+          <AgentText text={m.text} />
+        ) : (
+          <p className="sl-tl__text">
+            <SlackText text={m.text} />
+          </p>
+        )}
         <span className="sl-chat__foot">
           <time className="sl-chat__time" dateTime={new Date(m.at).toISOString()} title={m.dateOnly ? "Only the day of this line is recorded" : absoluteTime(m.at)}>
-            {m.who !== "agent" ? `${m.name}${m.who === "user" ? " in Slack" : ""}, ` : ""}
+            {m.who !== "agent" ? `${m.name}${m.who === "user" ? ` in ${surface.label}` : ""}, ` : ""}
             {m.earlier ? (m.dateOnly ? shortDate(m.at) : absoluteTime(m.at)) : clockTime(m.at)}
           </time>
           {m.delivery && <DeliveryMark delivery={m.delivery} target={m.target} />}
@@ -58,7 +66,8 @@ function Message({ m }: { m: ChatItem }) {
   );
 }
 
-export function ChatTab({ sessionId, messages, earlier, history, lock, isSuperadmin, onSent }: ChatTabProps) {
+export function ChatTab({ sessionId, messages, earlier, history, surface, lock, isSuperadmin, onSent }: ChatTabProps) {
+  const sf = surfaceInfo(surface);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -116,14 +125,14 @@ export function ChatTab({ sessionId, messages, earlier, history, lock, isSuperad
         {earlier.length > 0 && (
           <ol className="sl-chat__list" aria-label="Earlier in this session">
             {earlier.map((m) => (
-              <Message key={m.key} m={m} />
+              <Message key={m.key} m={m} surface={sf} />
             ))}
           </ol>
         )}
         {messages.length === 0 && earlier.length === 0 ? (
           <EmptyState
             title="No messages yet"
-            description="Messages from Slack, the agent's replies and messages you send from here show up in this conversation."
+            description={`Messages from ${sf.label}, the agent's replies and messages you send from here show up in this conversation.`}
           />
         ) : (
           messages.length > 0 && (
@@ -135,7 +144,7 @@ export function ChatTab({ sessionId, messages, earlier, history, lock, isSuperad
               )}
               <ol className="sl-chat__list">
                 {messages.map((m) => (
-                  <Message key={m.key} m={m} />
+                  <Message key={m.key} m={m} surface={sf} />
                 ))}
               </ol>
             </>
@@ -154,13 +163,13 @@ export function ChatTab({ sessionId, messages, earlier, history, lock, isSuperad
               </Button>
             }
           >
-            The lock expired or was released elsewhere, so Slack replies in the thread have resumed.
+            The lock expired or was released elsewhere, so replies in the {sf.label} {sf.conversation} have resumed.
           </Banner>
         )}
 
         {unsupported ? (
           <Banner tone="neutral" title="Messages go straight to the agent">
-            This deployment has no lock backend, so sending from here does not pause Slack. People in the thread may be talking to
+            This deployment has no lock backend, so sending from here does not pause {sf.label}. People in the {sf.conversation} may be talking to
             the agent at the same time.
           </Banner>
         ) : lock.mine ? (
@@ -173,7 +182,7 @@ export function ChatTab({ sessionId, messages, earlier, history, lock, isSuperad
               </Button>
             }
           >
-            Slack replies in the thread are paused until you release it or leave this page.
+            Replies in the {sf.label} {sf.conversation} are paused until you release it or leave this page.
           </Banner>
         ) : someoneElse ? (
           <Banner
@@ -192,10 +201,10 @@ export function ChatTab({ sessionId, messages, earlier, history, lock, isSuperad
             }
           >
             {stolen
-              ? `${lock.owner} took control from you, so your messages no longer reach the agent. Slack stays paused while they drive it.`
+              ? `${lock.owner} took control from you, so your messages no longer reach the agent. ${sf.label} stays paused while they drive it.`
               : isSuperadmin
-              ? "Slack is paused for them. Taking over moves control to you and is recorded in the audit trail."
-              : "Slack is paused for them. Only a superadmin can take over; ask them to release it."}
+              ? `${sf.label} is paused for them. Taking over moves control to you and is recorded in the audit trail.`
+              : `${sf.label} is paused for them. Only a superadmin can take over; ask them to release it.`}
           </Banner>
         ) : (
           !lock.lost && (
@@ -208,7 +217,7 @@ export function ChatTab({ sessionId, messages, earlier, history, lock, isSuperad
                 </Button>
               }
             >
-              While you hold it, the agent's replies stay in the console and messages from Slack wait until you release it.
+              While you hold it, the agent's replies stay in the console and messages from {sf.label} wait until you release it.
             </Banner>
           )
         )}

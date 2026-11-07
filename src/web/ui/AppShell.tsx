@@ -143,6 +143,15 @@ export function NavItem({ to, active, icon, children }: NavItemProps) {
   );
 }
 
+/** A heading over the nav entries that follow it (e.g. "Resources"). */
+export function NavGroup({ label }: { label: string }) {
+  return (
+    <li className="sl-nav-group">
+      {label}
+    </li>
+  );
+}
+
 /** Top-bar link to the documentation site. Collapses to its icon on narrow screens. */
 export function DocsLink({ href }: { href: string }) {
   return (

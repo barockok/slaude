@@ -1,4 +1,4 @@
-export { AppShell, Sidebar, NavItem, DocsLink, UserMenu } from "./AppShell";
+export { AppShell, Sidebar, NavItem, NavGroup, DocsLink, UserMenu } from "./AppShell";
 export type { AppShellProps, SidebarProps, NavItemProps, UserMenuProps } from "./AppShell";
 export { Button, IconButton } from "./Button";
 export type { ButtonProps, ButtonVariant, ButtonSize, IconButtonProps } from "./Button";
@@ -15,6 +15,10 @@ export { Tabs } from "./Tabs";
 export { Dialog } from "./Dialog";
 export { ToastProvider, useToast } from "./Toast";
 export { CodeBlock } from "./CodeBlock";
+export { Markdown, MarkdownBody, useMarkdownView, setMarkdownView } from "./Markdown";
+export type { MarkdownProps, MarkdownView } from "./Markdown";
+export { parseMarkdown } from "./md-parse";
+export type { MdDoc } from "./md-parse";
 export { ThemeToggle } from "./ThemeToggle";
 export { JumpSearch } from "./JumpSearch";
 export type { JumpTarget } from "./JumpSearch";

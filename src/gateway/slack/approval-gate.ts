@@ -5,7 +5,9 @@ import { approversFor, isDenied, loadGrants } from "../../access/role";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
-import { auditGateRow } from "../../audit/emit";
+import { approvalTitle, auditGateRow } from "../../audit/emit";
+import { redactSlack } from "./redact";
+import { redactPatternsFor } from "../../soul/per-persona";
 
 export type ApprovalRequest = {
   channel: string;
@@ -33,6 +35,19 @@ export type ApprovalRequest = {
 /** An approver id no Slack user has: an approver set of just this admits
  *  nobody (an empty set would admit anyone). Never rendered on the card. */
 const NOBODY = "!nobody";
+
+/** Slack's three escapes, so a request's own words never become markup. */
+const escapeMrkdwn = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/**
+ * The card's decided line, named by the request itself (`Deploy to staging →
+ * *Approved* by @x`), redacted with the request persona's patterns.
+ */
+export function decidedLine(payload: Record<string, unknown> | null | undefined, approved: boolean, userId: string): string {
+  const persona = typeof payload?.personaName === "string" ? payload.personaName : undefined;
+  const line = `${escapeMrkdwn(approvalTitle(payload))} → ${approved ? "*Approved*" : "*Denied*"} by <@${userId}>`;
+  return redactSlack(line, redactPatternsFor(persona));
+}
 
 export type ApprovalDecision = {
   approved: boolean;
@@ -91,15 +106,15 @@ export class ApprovalGate {
   /** Env-derived fallback allowlist. Used when persona has no approvers block
    *  or no matching category and no 'default' key either. */
   #envApprovers: Set<string>;
-  /** Source for the per-request timeout. Injected so tests can override. */
-  #timeoutSeconds: () => number;
+  /** Source for the per-request timeout, given the request's persona. Injected so tests can override. */
+  #timeoutSeconds: (persona?: string | null) => number;
   /** Explicit bus override (tests/sim); undefined = env-driven default. */
   #busOverride: GateBus | null | undefined;
 
   constructor(
     transport: Transport,
     envApprovers: string[],
-    opts: { timeoutSeconds?: () => number; gateBus?: GateBus | null } = {},
+    opts: { timeoutSeconds?: (persona?: string | null) => number; gateBus?: GateBus | null } = {},
   ) {
     this.#transport = transport;
     this.#envApprovers = new Set(envApprovers);
@@ -199,7 +214,7 @@ export class ApprovalGate {
             try {
               await respond({
                 replace_original: true,
-                text: `Plan → ${approved ? "*Approved*" : "*Denied*"} by <@${userId}>`,
+                text: decidedLine(resolved.payload, approved, userId),
                 blocks: [],
               });
             } catch {}
@@ -247,11 +262,10 @@ export class ApprovalGate {
         void pending.unsub?.().catch(() => {});
         auditApprovalDecided(resolved, userId, approved);
         await this.#publish(id);
-        const label = approved ? "*Approved*" : "*Denied*";
         try {
           await respond({
             replace_original: true,
-            text: `Plan → ${label} by <@${userId}>`,
+            text: decidedLine(resolved.payload, approved, userId),
             blocks: [],
           });
         } catch {}
@@ -351,7 +365,8 @@ export class ApprovalGate {
       },
       {
         type: "section",
-        text: { type: "mrkdwn", text: req.summary || "_(no summary)_" },
+        // The agent wrote the summary: redacted with its persona's patterns like any post.
+        text: { type: "mrkdwn", text: req.summary ? redactSlack(req.summary, redactPatternsFor(req.persona)) : "_(no summary)_" },
       },
     ];
     if (req.tools && req.tools.length) {
@@ -413,7 +428,7 @@ export class ApprovalGate {
   async open(req: ApprovalRequest): Promise<{ pendingId: string }> {
     const id = this.#mintId();
     const approvers = await this.#resolveApprovers(req);
-    const timeoutSec = this.#timeoutSeconds();
+    const timeoutSec = this.#timeoutSeconds(req.persona);
     await PendingGates.create({
       id,
       kind: "approval",
@@ -476,7 +491,7 @@ export class ApprovalGate {
   async request(req: ApprovalRequest, abortSignal?: AbortSignal): Promise<ApprovalDecision> {
     const id = this.#mintId();
     const approvers = await this.#resolveApprovers(req);
-    const timeoutSec = this.#timeoutSeconds();
+    const timeoutSec = this.#timeoutSeconds(req.persona);
 
     // Durable pending state FIRST, then the in-process waiter, then the
     // buttons — by the time a click can exist, both stores are in place.

@@ -124,6 +124,68 @@ describe("redeeming an onboarding link", () => {
     expect(await Accounts.accountForSlackUser("TTESTTEAM1", "UTESTUSER1")).toBeNull();
   });
 
+  const linkPage = async (names: Parameters<typeof createPortalApi>[0] extends infer D ? (D extends { names?: infer N } ? N : never) : never) => {
+    const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
+    const res = await createPortalApi({ names }).fetch(
+      new Request(`https://slaude.example.com/portal/link?t=${t}`, { headers: { cookie: signedIn("sub-1", "alice@example.com") } }),
+    );
+    return { res: res!, page: await res!.text(), token: t };
+  };
+
+  test("the confirmation page is styled with the design tokens and shows names, ids as secondary text", async () => {
+    const { res, page, token } = await linkPage({
+      teamName: async (id: string) => (id === "TTESTTEAM1" ? "Example Workspace" : null),
+      userName: async (id: string) => (id === "UTESTUSER1" ? "Jane Doe" : null),
+    });
+    expect(res.status).toBe(200);
+    expect(page).toContain("--sl-page-bg");
+    expect(page).toContain('data-team-name="Example Workspace"');
+    expect(page).toContain('data-user-name="Jane Doe"');
+    expect(page).toContain('data-team="TTESTTEAM1"');
+    expect(page).toContain(`data-token="${token}"`);
+    expect(await Accounts.accountForSlackUser("TTESTTEAM1", "UTESTUSER1")).toBeNull();
+  });
+
+  test("names from Slack cannot inject markup or script: escaped into attributes, nothing interpolated into the script", async () => {
+    const evil = `</script><img src=x onerror="alert(1)">'"&`;
+    const { page } = await linkPage({ teamName: async () => evil, userName: async () => `</style><script>alert(2)</script>` });
+    expect(page).not.toContain("<img");
+    expect(page).not.toContain("alert(2)</script>");
+    expect(page).toContain('data-team-name="&lt;/script&gt;&lt;img src=x onerror=&quot;alert(1)&quot;&gt;&#39;&quot;&amp;"');
+    // Exactly one script element, whose body names no value.
+    const scripts = [...page.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)];
+    expect(scripts).toHaveLength(1);
+    expect(scripts[0]![1]).not.toContain("TTESTTEAM1");
+    expect(scripts[0]![1]).not.toContain("onerror");
+  });
+
+  test("the page carries a strict CSP with one nonce for its style and its script", async () => {
+    const { res, page } = await linkPage({ teamName: async () => null, userName: async () => null });
+    const csp = res.headers.get("content-security-policy")!;
+    const nonce = /script-src 'nonce-([^']+)'/.exec(csp)![1]!;
+    expect(csp).toBe(`default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; img-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'none'`);
+    expect(page).toContain(`<script nonce="${nonce}">`);
+    expect(page).toContain(`<style nonce="${nonce}">`);
+    // A fresh nonce per response.
+    const again = await linkPage({ teamName: async () => null, userName: async () => null });
+    expect(again.res.headers.get("content-security-policy")).not.toContain(nonce);
+  });
+
+  test("names that cannot be resolved leave the ids alone", async () => {
+    const { res, page } = await linkPage({ teamName: async () => { throw new Error("slack down"); }, userName: async () => null });
+    expect(res.status).toBe(200);
+    expect(page).toContain('data-team-name=""');
+    expect(page).toContain('data-team="TTESTTEAM1"');
+  });
+
+  test("an expired link page has the same CSP", async () => {
+    const res = await createPortalApi().fetch(
+      new Request("https://slaude.example.com/portal/link?t=bogus", { headers: { cookie: signedIn("sub-1", "alice@example.com") } }),
+    );
+    expect(res!.status).toBe(400);
+    expect(res!.headers.get("content-security-policy")).toContain("default-src 'none'");
+  });
+
   test("the confirmation page sends an anonymous visitor to login, preserving the token", async () => {
     const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
 

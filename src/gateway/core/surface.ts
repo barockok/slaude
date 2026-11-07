@@ -64,3 +64,17 @@ export interface SessionBinding {
 }
 
 export type SurfaceFactory = (b: SessionBinding) => Surface;
+
+/** The id of the Slack surface (SlackSurface.id). */
+export const SLACK_SURFACE_ID = "slack";
+
+/**
+ * The surface a session's conversation is on. Every session is created for a
+ * Slack thread today (Sessions.createForThread keys rows by team, channel and
+ * thread), so this is the one place that says so: the panel's session views,
+ * history lines, live-tail user messages and audit context all read it here.
+ * When a second surface lands, sessions carry their own and this reads it.
+ */
+export function surfaceOfSession(_row?: { slack_channel_id?: string | null } | null): typeof SLACK_SURFACE_ID {
+  return SLACK_SURFACE_ID;
+}

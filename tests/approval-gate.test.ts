@@ -653,6 +653,34 @@ describe("ApprovalGate", () => {
       expect(ev!.persona).toBe("helper");
     });
 
+    test("the timeout is asked for the request's own persona", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
+      const f = fakeApp();
+      const asked: Array<string | null | undefined> = [];
+      const gate = new ApprovalGate(f.app, [], { timeoutSeconds: (persona) => (asked.push(persona), 0) });
+      const p = gate.request({ channel: "C", threadTs: "T", summary: "x", sessionId: "SAPRT", persona: "helper" });
+      await f.fire(await buttonId(f, "deny"), "U002");
+      await p;
+      expect(asked).toEqual(["helper"]);
+    });
+
+    test("the card's summary and its decided line are redacted with the persona's patterns", async () => {
+      writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
+      setSoulData(SoulDataSchema.parse({ approvers: [{ userId: "U002", scope: "anything", catchall: true }], redactPatterns: ["project-\\w+"] }));
+      try {
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        const p = gate.request({ channel: "C", threadTs: "T", summary: "Ship project-falcon", sessionId: "SAPRX" });
+        const card = await firstPost(f);
+        expect(JSON.stringify(card.blocks)).not.toContain("project-falcon");
+        expect(JSON.stringify(card.blocks)).toContain("Ship [REDACTED]");
+        await f.fire(await buttonId(f, "approve"), "U002");
+        await p;
+      } finally {
+        __resetSoulDataMemo();
+      }
+    });
+
     test("deny records decision deny", async () => {
       writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U002>: anything\n");
       const f = fakeApp();
@@ -661,7 +689,8 @@ describe("ApprovalGate", () => {
       await f.fire(await buttonId(f, "deny"), "U002");
       await p;
       const [ev] = await auditRows("SAPR2");
-      expect(ev).toMatchObject({ action: "gate.approval.decided", decision: "deny", targetId: "plan" });
+      // A request with no scope or category is named by its own summary.
+      expect(ev).toMatchObject({ action: "gate.approval.decided", decision: "deny", targetId: "x" });
     });
 
     test("the auto-deny timer records gate.approval.expired once", async () => {

@@ -14,7 +14,7 @@ import { ApprovalGate } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
-import { effectiveSoulForChannelFor, soulDataFor } from "../../soul/per-persona";
+import { approvalTimeoutFor, effectiveSoulForChannelFor, soulDataFor } from "../../soul/per-persona";
 import { admit } from "../../access/admission";
 import { loadGrants, roleOf, usersWithRole } from "../../access/role";
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
@@ -75,6 +75,7 @@ import { activeRemoteTarget } from "../../remote/active";
 import { sweepIdleSandboxes } from "../../remote/env-runtime";
 import { makeMonoRemoteFactory, monoRemoteResolver } from "../../remote/mono";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
+import { surfaceOfSession } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
@@ -648,6 +649,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       ...(m.userName ? { userName: redactSecrets(m.userName) } : {}),
       text: redactSecrets(m.text),
       at: Date.now(),
+      surface: surfaceOfSession(),
     };
     void panelInfra.pubsub.appendEvent(sessionId, event).catch(() => {});
   }
@@ -785,14 +787,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const surfaceFactoryFor = (personaId?: string, app?: AppRef): SurfaceFactory => {
     if (opts.surfaceFactory) return opts.surfaceFactory;
     const named = personaId && personaId !== "default" ? personaId : undefined;
-    return makeSlackSurfaceFactory(() => outClientForPersona(named, app));
+    return makeSlackSurfaceFactory(() => outClientForPersona(named, app), named);
   };
   // A session's surface follows its context: the persona's current client, as
   // the app the context currently names.
   const surfaceForCtx = (ctx: SlackContext): Surface =>
     opts.surfaceFactory
       ? opts.surfaceFactory(bindingFor(ctx))
-      : makeSlackSurfaceFactory(() => outClientForPersona(ctx.personaId, appOf(ctx)))(bindingFor(ctx));
+      : makeSlackSurfaceFactory(() => outClientForPersona(ctx.personaId, appOf(ctx)), ctx.personaId)(bindingFor(ctx));
 
   // Resolve per-session client: persona xoxp when available, bot token as fallback.
   // routes Map is populated lazily (after this line), but the resolver is called
@@ -813,7 +815,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     turnOf: (sessionId) => liveTurnStamp(agent, sessionId, routes.get(sessionId)?.ctx.origin),
   });
   const approvals = new ApprovalGate(t, env.slack.approvers(), {
-    timeoutSeconds: () => soulData().approvalTimeoutSeconds || 300,
+    // The agent's own soul timeout, else the default persona's, else 5 minutes.
+    timeoutSeconds: (persona) => approvalTimeoutFor(persona) || 300,
   });
   // Background-learning messages (phase D): the weekly digest to the manager
   // and a person's proposals to their DM. Both carry buttons, so they go out
@@ -1719,7 +1722,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         slackUserId: a.userId, serverName: a.serverName, cfg: a.serverConfig, tokens,
       });
       if (!r.ok) {
-        throw new Error("your Slack user isn't connected to an account yet — run `/link`, sign in, then connect again");
+        throw new Error("your Slack user isn't connected to an account yet: send me ` /link` as a message (with a space before it, or after mentioning me), sign in, then connect again");
       }
       agent.noteSessionEvent(a.sessionId, `Connected MCP server \`${a.serverName}\`${a.scope === "global" ? " (agent's shared identity)" : ""}.`);
       agent.reload(a.sessionId);
@@ -4468,7 +4471,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // The end-user portal is its own mount with its own guard: an ordinary user
   // never reaches an operator route, and the panel's guard is not relaxed.
   // createPortalApi returns null for every request while SLAUDE_PORTAL is off.
-  const portalApi = createPortalApi();
+  // Channel, user and workspace names for display in the console and the
+  // portal, looked up through the bot of the row's app (or the persona's
+  // latest app), cached. One instance, one cache.
+  const slackNames = createSlackNames({ clientFor: panelNameClient });
+  const portalApi = createPortalApi({ names: slackNames });
   // Reuses whichever pub/sub this gateway already holds; with none (mono, no
   // Redis) the reload is local-only, which is all there is to notify.
   // With a queue, a persona whose runsOn no live node carries is reported as a
@@ -4495,9 +4502,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         onUnlock: (sessionId) => { agent.reload(sessionId); },
         // The persona view says where a persona's stdio MCP servers run.
         role: queueDispatch ? "gateway" : "mono",
-        // Channel and user names for display, looked up through the bot of the
-        // row's app (or the persona's latest app), cached.
-        names: createSlackNames({ clientFor: panelNameClient }),
+        names: slackNames,
         // Mono: sessions run here, so liveness is the manager's live map
         // (nothing registers in the node registry).
         local: queueDispatch

@@ -74,3 +74,13 @@ export async function allAgents(): Promise<Map<string, SkillUsage>> {
   );
   return new Map(rows.map((r) => [r.skill, toUsage(r)]));
 }
+
+export interface SkillUsageRow extends SkillUsage {
+  agentId: string;
+}
+
+/** Every usage row, per agent (the console's skills list). Numbers only, never content. */
+export async function allRows(): Promise<SkillUsageRow[]> {
+  const rows = await db.query<Row & { agent_id: string }>("SELECT agent_id, skill, uses, last_used_at, first_seen_at FROM skill_usage");
+  return rows.map((r) => ({ agentId: r.agent_id, ...toUsage(r) }));
+}

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { SlackSurface, makeSlackSurfaceFactory } from "../src/gateway/slack/surface";
 import type { SessionBinding } from "../src/gateway/core/surface";
+import { SoulDataSchema } from "../src/soul/data";
+import { __resetSoulDataMemo, setSoulData } from "../src/soul/extract";
+import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../src/persona/registry";
 
 function fakeClient(impl: any = {}) {
   return {
@@ -135,5 +138,31 @@ describe("SlackSurface", () => {
   test("factory builds a SlackSurface bound to the client", () => {
     const f = makeSlackSurfaceFactory(fakeClient());
     expect(f(binding())).toBeInstanceOf(SlackSurface);
+  });
+});
+
+describe("SlackSurface redaction", () => {
+  test("a reply is redacted with the default patterns plus the posting agent's own", async () => {
+    setSoulData(SoulDataSchema.parse({ redactPatterns: ["default-secret"] }));
+    const own = { name: "own", slackUserId: "UOWN", soulJson: { redactPatterns: ["own-secret"] }, config: { slackUserId: "UX", name: "own" }, outClient: null } as unknown as Persona;
+    setPersonaRegistry({
+      lookupByUserId: () => null,
+      lookupByName: (n: string) => (n === "own" ? own : null),
+      list: () => [own],
+      isMultiPersonaMode: () => true,
+      isManaged: () => true,
+      tombstonedPersonaFor: () => null,
+    } as unknown as PersonaRegistry);
+    try {
+      const sent: string[] = [];
+      const client = fakeClient({});
+      client.chat.postMessage = async (a: { text: string }) => (sent.push(a.text), { ts: "1.0" });
+      await makeSlackSurfaceFactory(client, "own")(binding()).reply({ text: "own-secret and default-secret" });
+      await makeSlackSurfaceFactory(client)(binding()).reply({ text: "own-secret and default-secret" });
+      expect(sent).toEqual(["[REDACTED] and [REDACTED]", "own-secret and [REDACTED]"]);
+    } finally {
+      __resetPersonaRegistry();
+      __resetSoulDataMemo();
+    }
   });
 });

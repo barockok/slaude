@@ -1,4 +1,5 @@
 import type { AuditEventView } from "../../../gateway/panel/api-types";
+import { surfaceInfo } from "../lib/surfaces";
 import { Link } from "../../lib/router";
 import { Badge, CodeBlock, KeyValue } from "../../ui";
 import { absoluteTime, actionLabel, actorKindLabel, auditAgent, decisionLabel, decisionTone, relativeTime, sessionPath } from "../lib/format";
@@ -92,7 +93,10 @@ export function AuditDrawer({ event, onClose }: { event: AuditEventView | null; 
                   none
                 ),
               },
-              ...(e.threadTs ? [{ key: "thread", label: "Thread", value: <span className="sl-mono">{e.threadTs}</span> }] : []),
+              ...(e.surface ? [{ key: "surface", label: "Surface", value: <span>{surfaceInfo(e.surface).label}</span> }] : []),
+              ...(e.threadTs
+                ? [{ key: "thread", label: surfaceInfo(e.surface).hasThreads ? "Thread" : "Conversation", value: <span className="sl-mono">{e.threadTs}</span> }]
+                : []),
               { key: "id", label: "Event id", value: <span className="sl-mono sl-break">{e.id}</span> },
             ]}
           />

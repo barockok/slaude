@@ -103,7 +103,7 @@ test("an empty account shows empty states", async ({ page }) => {
   await page.goto("/portal/agents");
   // No Slack identity linked: say so and how to link, not "ask a manager".
   await expect(page.getByText("No Slack identity linked", { exact: true })).toBeVisible();
-  await expect(page.getByRole("main")).toContainText("Run /link in Slack");
+  await expect(page.getByRole("main")).toContainText("Send /link to the agent as a message (in Slack, put a space before it or mention the agent");
   await expect(page.getByText("Ask an agent's manager")).toHaveCount(0);
 });
 
@@ -129,4 +129,17 @@ test.describe("at 390 px wide", () => {
       expect(await page.evaluate(() => document.scrollingElement!.scrollWidth <= window.innerWidth)).toBe(true);
     });
   }
+});
+
+test("identities and agents show workspace and user names, ids as secondary text", async ({ page }) => {
+  await page.goto("/portal/");
+  await settled(page, "TSANDBOX");
+  const row = page.getByRole("row").filter({ hasText: "Example Workspace" });
+  await expect(row).toContainText("TWORKSPACE");
+  await expect(row).toContainText("Alice");
+  await expect(row).toContainText("UALICE");
+  // No name resolved: the id alone.
+  await expect(page.getByRole("row").filter({ hasText: "TSANDBOX" })).toContainText("UJANEDOE");
+  await page.goto("/portal/agents");
+  await expect(page.getByRole("row").filter({ hasText: "triage" })).toContainText("Example Workspace");
 });

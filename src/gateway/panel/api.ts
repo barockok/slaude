@@ -47,6 +47,10 @@
  *   GET    /panel/api/memory/pages?store&slug      one page: content, type, tags, links
  *   GET    /panel/api/environments                 node pools, persona runsOn, personal environments (no secrets)
  *   GET    /panel/api/console-roles                the console's email allowlist (read-only, superadmin)
+ *   GET    /panel/api/skills                       every skill: source, origin, agents, status, usage
+ *   GET    /panel/api/skills/:id                   one skill: frontmatter, SKILL.md, files, provenance, usage, proposals
+ *   POST   /panel/api/skills/:id/retire|restore    an agent-authored skill (superadmin; audited)
+ *   GET    /panel/api/guardrails?agent=            what constrains one agent, with each value's source
  *   GET    /panel/api/overview                     counts and the latest audit events
  */
 import { PanelVoiceRedactor } from "./voice-redact";
@@ -62,12 +66,13 @@ import type { LabelStatus } from "../../queue/label-status";
 import { guardRequest } from "./auth/guard";
 import { createAuthRoutes } from "./auth/routes";
 import { audit } from "./auth/audit";
-import { auditOneOnOne } from "../../audit/events";
+import { auditOneOnOne, auditSkill } from "../../audit/events";
 import type { PanelRole } from "./auth/roles";
-import { enumerateSessions, sessionModel } from "./enumerator";
+import { enumerateSessions, sessionModel, syntheticRunLabel } from "./enumerator";
 import { channelLabels, mentionNames, type SlackNames } from "./slack-names";
 import { activityOf, streamTurnInFlight, streamTurnsInFlight, type LocalSessions } from "./activity";
 import { sessionHistory } from "./history";
+import { surfaceOfSession } from "../core/surface";
 import { redactSecrets } from "../../redact";
 import { servePanelStatic } from "./static";
 import { publishConfigReload } from "../core/config-reload";
@@ -85,8 +90,10 @@ import { oauthKey } from "../../agent/mcp-oauth/store";
 import * as AgentGrants from "../../db/agent-grants";
 import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
-import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent } from "./console-views";
+import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
+import { buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
+import { guardrailsFor, type GuardrailDeps } from "./guardrails-view";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
 import { agentStoreNames, displayTitle, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
@@ -110,6 +117,10 @@ import type {
   AgentsResponse,
   CreateGrantResponse,
   RevokeGrantResponse,
+  GuardrailsResponse,
+  SkillActionResponse,
+  SkillDetailResponse,
+  SkillsResponse,
 } from "./api-types";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
@@ -161,6 +172,8 @@ export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "grant.revoke",
   "memory.private",
   "console.roles.read",
+  "skill.retire",
+  "skill.restore",
 ]);
 
 /** Returns the 403 to send, or null when the role suffices. */
@@ -314,6 +327,8 @@ export interface PanelApiDeps {
   role?: PersonaViewRole;
   /** Memory store browsing. Default: the local brain (when it is enabled and local). */
   memory?: MemoryBrowser;
+  /** Guardrails view seams (tests): where learned proactive rules are read. */
+  guardrails?: GuardrailDeps;
   /** Mono: in-process session liveness (the AgentManager). Absent in the
    *  gateway role, where the warm registry and the event stream say it. */
   local?: LocalSessions | null;
@@ -335,9 +350,10 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
   const panelRole = deps.role ?? "gateway";
 
   /** Audit rows with channel labels (`#name`) where the gateway can resolve them. */
-  async function labelAudit<T extends { persona?: string | null; channelId?: string | null; targetKind?: string | null; targetId?: string | null }>(
-    items: T[],
-  ): Promise<Array<T & { channelLabel?: string; targetLabel?: string }>> {
+  async function labelAudit<T extends { persona?: string | null; channelId?: string | null; sessionId?: string | null; targetKind?: string | null; targetId?: string | null }>(
+    raw: T[],
+  ): Promise<Array<T & { channelLabel?: string; targetLabel?: string; surface?: string }>> {
+    const items = withSurface(raw);
     if (!deps.names || items.length === 0) return items;
     const targetChannel = (e: T) => (e.targetKind === "channel" && e.targetId ? e.targetId : null);
     const labels = await channelLabels(deps.names, items.flatMap((e) => [
@@ -350,6 +366,11 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
       const t = tc ? labels.get(tc) : undefined;
       return { ...e, ...(c ? { channelLabel: c } : {}), ...(t ? { targetLabel: t } : {}) };
     });
+  }
+
+  /** Audit events that happened in a conversation (a channel or a session) carry its surface. */
+  function withSurface<T extends { channelId?: string | null; sessionId?: string | null }>(items: T[]): Array<T & { surface?: string }> {
+    return items.map((e) => (e.channelId || e.sessionId ? { ...e, surface: surfaceOfSession() } : e));
   }
 
   /** Warm sessions: in this process (mono) or in the node registry (gateway). */
@@ -618,7 +639,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
 
         // GET|POST /panel/api/agents/:name/grants
         if (seg.length === 5) {
-          if (req.method === "GET") return json(200, { grants: await grantViews(name) } satisfies AgentGrantsResponse);
+          if (req.method === "GET") return json(200, { grants: await labelGrants(await grantViews(name), name, deps.names ?? null) } satisfies AgentGrantsResponse);
           if (req.method !== "POST") return json(405, { error: "method not allowed" });
           const denied = requireSuperadmin(role, { action: "grant.create", operator: operatorId });
           if (denied) return denied;
@@ -692,11 +713,71 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         return json(200, { ok: true } satisfies RevokeGrantResponse);
       }
 
+      // --- Resources: skills. Reads for any operator; retire and restore are
+      // superadmin only, only for skills the agent wrote itself, and audited
+      // as skill.retired / skill.restored.
+      if (seg[2] === "skills") {
+        if (seg.length === 3) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          const { entries, notes } = await buildSkills();
+          return json(200, { skills: entries.map(summaryOf), notes } satisfies SkillsResponse);
+        }
+        let skillId: string;
+        try { skillId = decodeURIComponent(seg[3]!); } catch { return json(404, { error: "no such skill" }); }
+        if (seg.length === 4) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          const detail = await skillDetail(skillId);
+          return detail ? json(200, detail satisfies SkillDetailResponse) : json(404, { error: "no such skill" });
+        }
+        if (seg.length === 5 && (seg[4] === "retire" || seg[4] === "restore")) {
+          if (req.method !== "POST") return json(405, { error: "method not allowed" });
+          const verb = seg[4];
+          const denied = requireSuperadmin(role, { action: `skill.${verb}`, operator: operatorId });
+          if (denied) return denied;
+          let reason = "";
+          if (verb === "retire") {
+            let body: unknown = {};
+            try { body = await req.json(); } catch { body = {}; }
+            const r = (body as { reason?: unknown })?.reason;
+            reason = typeof r === "string" ? r.trim().slice(0, 300) : "";
+          }
+          const res = verb === "retire"
+            ? await retireSkill(skillId, { by: operatorId, reason: reason || `retired from the console by ${operatorId}` })
+            : await restoreSkill(skillId, { by: operatorId });
+          if (!res.ok) return json(res.status, { error: res.error });
+          const owner = res.entry.owner ?? "default";
+          // The console moves the skill itself (not through the review or the
+          // Slack Restore button), so this is the one record of it.
+          auditSkill(verb === "retire" ? "skill.retired" : "skill.restored", {
+            persona: owner,
+            actorKind: "operator",
+            actorId: operatorId,
+            slug: res.entry.slug,
+            retiredId: res.retiredId,
+            ...(reason ? { reason } : {}),
+            via: "panel",
+            operatorRole: role,
+          });
+          return json(200, { ok: true, id: res.id } satisfies SkillActionResponse);
+        }
+        return json(404, { error: "not found" });
+      }
+
+      // GET /panel/api/guardrails?agent=: what constrains one agent, each value
+      // with its source. Read-only, any operator.
+      if (seg.length === 3 && seg[2] === "guardrails") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const name = url.searchParams.get("agent") || "default";
+        if (!PERSONA_NAME_RE.test(name) && name !== "default") return json(422, { error: "invalid agent name" });
+        if (!isAgent(name)) return json(404, { error: `no agent named '${name}'` });
+        return json(200, (await guardrailsFor(name, deps.guardrails, { role })) satisfies GuardrailsResponse);
+      }
+
       // GET /panel/api/grants: every console grant across agents, for the
       // Access page. Read-only, any operator.
       if (seg.length === 3 && seg[2] === "grants") {
         if (req.method !== "GET") return json(405, { error: "method not allowed" });
-        return json(200, { grants: await allConsoleGrants() } satisfies AllGrantsResponse);
+        return json(200, { grants: await labelGrants(await allConsoleGrants(), null, deps.names ?? null) } satisfies AllGrantsResponse);
       }
 
       // GET /panel/api/audit: the durable audit trail, newest first. Read-only,
@@ -1071,9 +1152,10 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           const [lockedBy, live, label] = await Promise.all([
             deps.panelLock ? deps.panelLock.owner(id) : null,
             liveness(row),
-            deps.names && row.slack_channel_id
-              ? deps.names.channelLabel(row.slack_channel_id, { persona: row.persona_id, appId: row.slack_app_id ?? null, teamId: row.slack_team_id }).catch(() => null)
-              : null,
+            syntheticRunLabel(row.slack_thread_ts) ??
+              (deps.names && row.slack_channel_id
+                ? deps.names.channelLabel(row.slack_channel_id, { persona: row.persona_id, appId: row.slack_app_id ?? null, teamId: row.slack_team_id }).catch(() => null)
+                : null),
           ]);
           // Earlier turns: GET .../history (the durable conversation record);
           // the live tail is the SSE endpoint.
@@ -1085,6 +1167,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             activity: activityOf(row.status, live.warm, live.inFlight),
             ...sessionModel(row),
             ...(label ? { channel_label: label } : {}),
+            surface: surfaceOfSession(row),
           } satisfies SessionDetailResponse);
         }
 

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { SoulDataSchema, type SoulData } from "../../src/soul/data";
 import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
-import { channelApproversOf, effectiveSoulForChannelFor, soulDataFor, withAclFallback } from "../../src/soul/per-persona";
+import { approvalTimeoutFor, channelApproversOf, effectiveSoulForChannelFor, redactPatternsFor, soulDataFor, withAclFallback } from "../../src/soul/per-persona";
 import * as SO from "../../src/db/soul-overrides";
 
 const soul = (d: Partial<SoulData> | Record<string, unknown>): SoulData => SoulDataSchema.parse(d);
@@ -151,5 +151,24 @@ describe("effectiveSoulForChannelFor", () => {
 
   test("channelApproversOf maps every replacing channel block", () => {
     expect([...channelApproversOf(DEFAULT)]).toEqual([["COPS", ["UOPS", "UMGR", "UBAK"]]]);
+  });
+});
+
+describe("per-agent redaction and approval timeout", () => {
+  test("an agent's own redaction patterns and timeout win; none of its own falls back to the default's", () => {
+    setSoulData(soul({ ...DEFAULT, redactPatterns: ["default-\\d+"], approvalTimeoutSeconds: 120 }));
+    setPersonaRegistry(registryWith([
+      { name: "own", soulJson: { identity: { name: "Own" }, redactPatterns: ["own-secret", "default-\\d+"], approvalTimeoutSeconds: 30 } },
+      { name: "bare", soulJson: { identity: { name: "Bare" } } },
+      { name: "files" },
+    ]));
+    // Own patterns add to the default's, never replace them; duplicates collapse.
+    expect(redactPatternsFor("own")).toEqual(["default-\\d+", "own-secret"]);
+    expect(redactPatternsFor("bare")).toEqual(["default-\\d+"]);
+    expect(redactPatternsFor("files")).toEqual(["default-\\d+"]);
+    expect(redactPatternsFor(undefined)).toEqual(["default-\\d+"]);
+    expect(approvalTimeoutFor("own")).toBe(30);
+    expect(approvalTimeoutFor("bare")).toBe(120);
+    expect(approvalTimeoutFor("default")).toBe(120);
   });
 });

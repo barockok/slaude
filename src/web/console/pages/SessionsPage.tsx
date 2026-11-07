@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { isSyntheticThread, surfaceInfo } from "../lib/surfaces";
+import type { SurfaceId } from "../../../gateway/panel/api-types";
 import type { AgentsResponse, ModelSource, SessionActivity, SessionSummaryView, SessionsResponse } from "../../../gateway/panel/api-types";
 import { AuthRedirectError } from "../../lib/api";
 import { api } from "../client";
@@ -22,12 +24,13 @@ const STATUS_OPTIONS: FilterOption<StatusFilter>[] = [
   { value: "error", label: "Error" },
 ];
 
-/** "#team" (or the id when the name is unknown) over "thread 1762506060.000101", or a DM, or no Slack thread at all. */
-export function ChannelThread({ channel, label, thread, title }: { channel: string | null; label?: string; thread: string | null; title?: string | null }) {
+/** "#team" (or the id when the name is unknown) over "thread 1762506060.000101", or a DM, or no conversation at all. */
+export function ChannelThread({ channel, label, thread, title, surface }: { channel: string | null; label?: string; thread: string | null; title?: string | null; surface?: SurfaceId }) {
+  const sf = surfaceInfo(surface);
   if (!channel) {
     return (
       <span className="sl-stack">
-        <span className="sl-faint">No Slack thread</span>
+        <span className="sl-faint">No {sf.conversation}</span>
         {title && <span className="sl-caption sl-truncate">{title}</span>}
       </span>
     );
@@ -39,7 +42,7 @@ export function ChannelThread({ channel, label, thread, title }: { channel: stri
         {label ? <span className="sl-truncate">{label}</span> : <span className="sl-mono">{channel}</span>}
         {dm && !label?.startsWith("DM") && <Badge>DM</Badge>}
       </span>
-      <span className="sl-caption sl-truncate">{title ?? (thread ? `Thread ${thread}` : "Channel")}</span>
+      <span className="sl-caption sl-truncate">{title ?? (thread && !isSyntheticThread(thread) ? `${sf.conversation[0]!.toUpperCase()}${sf.conversation.slice(1)} ${thread}` : thread ? "Started by the agent" : sf.hasChannels ? "Channel" : sf.label)}</span>
     </span>
   );
 }
@@ -87,9 +90,9 @@ function columns(me: string | null): Column<SessionSummaryView>[] {
     },
     {
       key: "where",
-      header: "Channel and thread",
+      header: "Conversation",
       skeleton: 0.7,
-      render: (s) => <ChannelThread channel={s.slack_channel_id} label={s.channel_label} thread={s.slack_thread_ts} title={s.title} />,
+      render: (s) => <ChannelThread channel={s.slack_channel_id} label={s.channel_label} thread={s.slack_thread_ts} title={s.title} surface={s.surface} />,
     },
     { key: "status", header: "Status", width: "8.5rem", skeleton: 0.5, render: (s) => <StatusBadge activity={s.activity} /> },
     { key: "model", header: "Model", width: "15%", skeleton: 0.7, render: (s) => <ModelName effective_model={s.effective_model} model_source={s.model_source} /> },
@@ -101,7 +104,7 @@ function columns(me: string | null): Column<SessionSummaryView>[] {
       skeleton: 0.5,
       render: (s) =>
         s.panel_locked_by ? (
-          <span className="sl-inline sl-nowrap" title="Driven from the console; Slack is paused for this thread">
+          <span className="sl-inline sl-nowrap" title={`Driven from the console; ${surfaceInfo(s.surface).label} is paused for this ${surfaceInfo(s.surface).conversation}`}>
             <IconLock size={14} className="sl-faint" />
             <span className="sl-truncate">{s.panel_locked_by === me ? "You" : s.panel_locked_by}</span>
           </span>
@@ -259,7 +262,7 @@ export function SessionsPage() {
               ) : (
                 <EmptyState
                   title="No sessions yet"
-                  description="A session starts when someone talks to an agent in Slack. It shows up here with its live timeline."
+                  description="A session starts when someone talks to an agent. It shows up here with its live timeline."
                 />
               )
             }

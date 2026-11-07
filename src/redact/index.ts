@@ -17,6 +17,9 @@ const SECRET_PATTERNS: RegExp[] = [
   /\beyJ[A-Za-z0-9._-]{10,}/g, // JWT
 ];
 
+/** How many secret shapes redactSecrets masks (the console lists the family, not the regexes). */
+export const SECRET_PATTERN_COUNT = SECRET_PATTERNS.length;
+
 /** Deterministic regex backstop: mask anything secret-shaped. */
 export function redactSecrets(s: string): string {
   let out = s;

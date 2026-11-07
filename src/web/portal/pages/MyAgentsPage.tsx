@@ -3,6 +3,8 @@ import { Avatar, Card, EmptyState, IconBuilding, PageHeader, Table, type Column 
 import { ErrorState } from "../../shared/ErrorState";
 import { RoleBadge } from "../../shared/RoleBadge";
 import { useApi } from "../client";
+import { NamedId } from "../../shared/NamedId";
+import { capitalize, sendCommandGuidance } from "../../shared/surfaces";
 
 const COLUMNS: Column<MyAgentView>[] = [
   {
@@ -26,11 +28,11 @@ const COLUMNS: Column<MyAgentView>[] = [
         <span className="sl-subject__icon" title="Slack workspace">
           <IconBuilding size={14} />
         </span>
-        <span className="sl-mono">{a.teamId}</span>
+        <NamedId name={a.teamName} id={a.teamId} />
       </span>
     ),
   },
-  { key: "user", header: "As Slack user", width: "20%", skeleton: 0.6, render: (a) => <span className="sl-mono">{a.slackUserId}</span> },
+  { key: "user", header: "As Slack user", width: "20%", skeleton: 0.6, render: (a) => <NamedId name={a.userName} id={a.slackUserId} /> },
   { key: "role", header: "Your role", width: "9rem", skeleton: 0.5, render: (a) => <RoleBadge role={a.role} /> },
 ];
 
@@ -46,7 +48,7 @@ export function NoAgents({ me }: { me: PortalMeResponse | null }) {
         title="No Slack identity linked"
         description={
           <>
-            Roles are granted to your Slack user, and your account has none linked yet. Run <code className="sl-mono">/link</code> in Slack, in a
+            Roles are granted to your Slack user, and your account has none linked yet. {capitalize(sendCommandGuidance("/link"))}, in a
             conversation with any agent. It replies with a private link; open it while signed in here and confirm. Your agents show up here afterwards.
           </>
         }

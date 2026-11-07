@@ -12,6 +12,9 @@ export interface MyAgentView {
   persona: string;
   teamId: string;
   slackUserId: string;
+  /** The workspace's and the Slack user's names, when the gateway could resolve them. */
+  teamName?: string;
+  userName?: string;
   role: AgentRole;
 }
 
@@ -28,6 +31,9 @@ export interface PortalSlackIdentityView {
   linkedAt: number;
   /** How the binding was made, e.g. `signed-link` (the link `/link` sends). */
   linkedVia: string;
+  /** The workspace's and the Slack user's names, when the gateway could resolve them. */
+  teamName?: string;
+  userName?: string;
 }
 
 /** GET /portal/api/me */

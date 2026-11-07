@@ -75,3 +75,18 @@ export function parseSlackMarkup(text: string, users: Readonly<Record<string, st
 export function plainSlackText(text: string, users: Readonly<Record<string, string>> = {}): string {
   return parseSlackMarkup(text, users).map((s) => s.text).join("");
 }
+
+/**
+ * Agent text as markdown: the agent writes markdown, but what reached Slack
+ * may also carry Slack's own link and mention markup. Links become markdown
+ * links, mentions their names; the rest is left for the markdown renderer.
+ */
+export function slackToMarkdown(text: string, users: Readonly<Record<string, string>> = {}): string {
+  return parseSlackMarkup(text, users)
+    .map((s) => {
+      if (s.kind !== "link") return s.text;
+      const label = s.text.replace(/([[\]\\])/g, "\\$1");
+      return `[${label}](<${s.href.replace(/[<>]/g, encodeURIComponent)}>)`;
+    })
+    .join("");
+}

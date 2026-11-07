@@ -222,7 +222,7 @@ describe("real gateway + HTTP transport + fake Slack", () => {
     expect(click.delivery.finalStatus).toBe(200);
     await until(async () => (await botMessages("D0MGR")).find((m) => m.text.includes("approved by <@U0APP>")), { timeoutMs: WAIT_MS, what: "the post-approval reply" });
     const decided = (await respond())[1]!;
-    expect(decided.detail).toMatchObject({ applied: "replace_original", body: { replace_original: true, text: "Plan → *Approved* by <@U0APP>", blocks: [] } });
+    expect(decided.detail).toMatchObject({ applied: "replace_original", body: { replace_original: true, text: "deploy prod → *Approved* by <@U0APP>", blocks: [] } });
 
     // a second click on the same card is answered as stale through response_url, not applied again
     await ctl.click({ app: "A0FAKE", target: base, user: "U0APP", channel: "D0MGR", messageTs: card.ts, actionId: approveId! });

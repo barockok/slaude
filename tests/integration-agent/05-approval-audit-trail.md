@@ -85,7 +85,7 @@ Environment B:
 6. The ephemeral body text is
    `:no_entry: <@UBOB>, you are not on the approver allowlist for this plan. The plan stays pending.`
 7. `pending`.
-8. The card text becomes `Plan → *Approved* by <@UAPPR>`; the turn continues
+8. The card text becomes `<the request's title> → *Approved* by <@UAPPR>` (its category, else the first line of its summary); the turn continues
    past the gate (`toolran $M`, `M` from step 5, prints 1 or more within 30 s).
 9. Denied.
 10. After 60 s the plan auto-denies.

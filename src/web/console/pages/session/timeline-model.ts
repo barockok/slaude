@@ -19,8 +19,8 @@ export interface OperatorMessage {
   by: string;
 }
 
-/** Where an agent message went: still sending, posted to Slack, held in the console, or not sent. */
-export type Delivery = "sending" | "slack" | "held" | "failed";
+/** Where an agent message went: still sending, posted to the conversation, held in the console, or not sent. */
+export type Delivery = "sending" | "posted" | "held" | "failed";
 
 export type Item =
   | { kind: "turn"; key: string; at: number }
@@ -92,7 +92,7 @@ export function deliveryOf(result: unknown): Delivery {
   const text = resultText(result);
   if (/panel-suppressed/.test(text)) return "held";
   if (/"refused"\s*:\s*true|^\s*(refused|error)\b/i.test(text)) return "failed";
-  return "slack";
+  return "posted";
 }
 
 type Open = { index: number; id?: string; tool: string };

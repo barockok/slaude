@@ -13,7 +13,8 @@ import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
 import { redactSlack } from "./redact";
-import { soulData, effectiveSoulForChannel } from "../../soul/extract";
+import { redactPatternsFor } from "../../soul/per-persona";
+import { effectiveSoulForChannel } from "../../soul/extract";
 import * as Ignores from "../../db/ignores";
 import { roleOf } from "../../access/role";
 import * as CronJobs from "../../db/cron-jobs";
@@ -25,8 +26,9 @@ import { runtimeContract } from "../../tools/contracts/runtime";
 import { connectContract } from "../../tools/contracts/connect";
 import { proactiveRule } from "../../proactive/rule-tool";
 
-function format(text: string): string {
-  return redactSlack(mdToMrkdwn(text), soulData().redactPatterns);
+/** Outbound formatting: markdown to mrkdwn, then the posting agent's own redaction patterns. */
+function format(text: string, persona?: string | null): string {
+  return redactSlack(mdToMrkdwn(text), redactPatternsFor(persona));
 }
 
 type ToolResult = {
@@ -105,7 +107,7 @@ export const slackHandlers = {
       const r = await ctx.client.chat.postMessage({
         channel: ctx.channel,
         thread_ts: ctx.postTarget === "channel" ? undefined : ctx.threadTs,
-        text: format(text),
+        text: format(text, ctx.personaId),
         mrkdwn: true,
       });
       return ok(`posted ts=${r.ts}`);
@@ -119,7 +121,7 @@ export const slackHandlers = {
       await ctx.client.chat.update({
         channel: ctx.channel,
         ts,
-        text: format(text),
+        text: format(text, ctx.personaId),
       });
       return ok("edited");
     } catch (e: any) {
@@ -208,7 +210,7 @@ export const slackHandlers = {
         file: createReadStream(path),
         filename,
         title: title ?? filename,
-        ...(initial_comment ? { initial_comment: format(initial_comment) } : {}),
+        ...(initial_comment ? { initial_comment: format(initial_comment, ctx.personaId) } : {}),
         ...(alt_text ? { alt_text } : {}),
       } as any);
       const ids = ((r as any).files ?? [])
@@ -371,7 +373,7 @@ export const slackHandlers = {
       const replyOpts = thread_ts ? (broadcast ? { thread_ts, reply_broadcast: true as const } : { thread_ts }) : {};
       const r = await ctx.client.chat.postMessage({
         channel,
-        text: format(text),
+        text: format(text, ctx.personaId),
         mrkdwn: true,
         ...replyOpts,
       });
@@ -399,7 +401,7 @@ export const slackHandlers = {
         channel: channel ?? ctx.channel,
         user,
         thread_ts,
-        text: format(text),
+        text: format(text, ctx.personaId),
       });
       return ok(`posted ephemeral ts=${r.message_ts ?? ""}`);
     } catch (e: any) {

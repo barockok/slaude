@@ -22,7 +22,7 @@ export function createFixtures(now: number = Date.now()): PortalFixtures {
       accountId: "acct_01",
       issuer: "https://idp.example.com/realms/team",
       slackIdentities: [
-        { teamId: "TWORKSPACE", slackUserId: "UALICE", linkedAt: now - 41 * DAY, linkedVia: "signed-link" },
+        { teamId: "TWORKSPACE", slackUserId: "UALICE", linkedAt: now - 41 * DAY, linkedVia: "signed-link", teamName: "Example Workspace", userName: "Alice" },
         { teamId: "TSANDBOX", slackUserId: "UJANEDOE", linkedAt: now - 3 * DAY, linkedVia: "signed-link" },
       ],
     },
@@ -41,9 +41,9 @@ export function createFixtures(now: number = Date.now()): PortalFixtures {
       },
     ],
     agents: [
-      { persona: "default", teamId: "TWORKSPACE", slackUserId: "UALICE", role: "manager" },
-      { persona: "scout", teamId: "TWORKSPACE", slackUserId: "UALICE", role: "approver" },
-      { persona: "triage", teamId: "TWORKSPACE", slackUserId: "UALICE", role: "member" },
+      { persona: "default", teamId: "TWORKSPACE", slackUserId: "UALICE", teamName: "Example Workspace", userName: "Alice", role: "manager" },
+      { persona: "scout", teamId: "TWORKSPACE", slackUserId: "UALICE", teamName: "Example Workspace", userName: "Alice", role: "approver" },
+      { persona: "triage", teamId: "TWORKSPACE", slackUserId: "UALICE", teamName: "Example Workspace", userName: "Alice", role: "member" },
       { persona: "scout", teamId: "TSANDBOX", slackUserId: "UJANEDOE", role: "member" },
     ],
   };

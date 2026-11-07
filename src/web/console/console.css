@@ -160,17 +160,13 @@
   gap: var(--sl-pad-xs);
 }
 
-.sl-mandate__instructions p {
+.sl-mandate__instructions .sl-md {
   color: var(--sl-text-secondary);
-  white-space: pre-line;
-  overflow-wrap: anywhere;
 }
 
-.sl-mandate__instructions p.is-clamped {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
-  line-clamp: 4;
+.sl-mandate__instructions .is-clamped .sl-md,
+.sl-mandate__instructions .is-clamped .sl-md-raw {
+  max-height: 6.5rem;
   overflow: hidden;
 }
 
@@ -1305,4 +1301,93 @@
   .sl-session-head .sl-title-row .sl-avatar {
     display: none;
   }
+}
+
+/* An agent message rendered as markdown inside the timeline and chat. */
+.sl-agent-md .sl-md {
+  line-height: var(--sl-leading-body);
+}
+
+.sl-agent-md .sl-md__p {
+  margin-bottom: var(--sl-pad-xs);
+}
+
+/* ---------------------------------------------------------------- resources */
+
+.sl-strong {
+  font-weight: var(--sl-weight-medium);
+  color: var(--sl-text);
+}
+
+/* A plain read-only table inside a card (usage rows, guardrail tables). */
+.sl-simple-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--sl-text-footnote);
+}
+
+.sl-simple-table th,
+.sl-simple-table td {
+  padding: var(--sl-pad-xs) var(--sl-pad-md);
+  border-bottom: 1px solid var(--sl-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.sl-simple-table th {
+  font-weight: var(--sl-weight-medium);
+  color: var(--sl-text-secondary);
+  background: var(--sl-surface-0);
+}
+
+.sl-simple-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.sl-simple-table .is-end {
+  text-align: right;
+}
+
+.sl-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sl-pad-xs);
+}
+
+.sl-file-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sl-gap-xs);
+  min-width: 0;
+}
+
+.sl-gr-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sl-pad-xs) var(--sl-gap-xs);
+  min-width: 0;
+}
+
+.sl-gr-value__main {
+  min-width: 0;
+}
+
+.sl-gr-value__note {
+  flex-basis: 100%;
+}
+
+.sl-gr-source {
+  display: inline-flex;
+  flex: none;
+}
+
+/* A wide table that scrolls inside its card instead of widening the page. */
+.sl-scroll-x {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.sl-scroll-x:focus-visible {
+  box-shadow: var(--sl-focus-ring);
 }
