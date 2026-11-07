@@ -337,6 +337,9 @@ export function sessionScript(sessionId: string): Array<{ delay: number; event: 
  * A session's earlier turns as the history route answers them (oldest first),
  * from the conversation record. s_7f21 has more than one page.
  */
+/** An agent reply written in markdown, as agents write them (rendered in the timeline and chat). */
+export const AGENT_MARKDOWN = "Here is the **release plan**:\n\n1. Run the panel tests\n2. Tag `v0.41.0`\n\nSee [the runbook](https://example.com/runbook).";
+
 export function sessionHistory(sessionId: string, now: number): SessionHistoryItem[] {
   if (sessionId === "s_2ff0") return [];
   const turns = sessionId === "s_7f21" ? 26 : 3;
@@ -350,7 +353,7 @@ export function sessionHistory(sessionId: string, now: number): SessionHistoryIt
     // A line from a scheduled run has no message time of its own: only its day is known.
     const userAt = i === 2 ? { at, dateOnly: true } : { at: at - 40_000 };
     out.push({ id: `${i}:user`, ...userAt, who: "user", name: i % 3 === 0 ? "bob" : "alice", text: userText, surface: "slack" });
-    out.push({ id: `${i}:agent`, at, who: "agent", text: i === turns ? "Last earlier answer: the checklist lives in docs/release-checklist.md." : `Earlier answer ${i}`, surface: "slack" });
+    out.push({ id: `${i}:agent`, at, who: "agent", text: i === turns ? "Last earlier answer: the checklist lives in docs/release-checklist.md." : turns > 3 && i === turns - 1 ? AGENT_MARKDOWN : `Earlier answer ${i}`, surface: "slack" });
   }
   return out;
 }

@@ -15,6 +15,7 @@
 import type {
   AgentSummary, ConsoleGrantView, CreateGrantRequest, GrantView, SessionActivity, SessionControlRequest, SessionEvent, SessionSummaryView,
 } from "../../../gateway/panel/api-types";
+import { guardrailFixtures, skillFixtures } from "./resources-fixtures";
 import { CHANNEL_LABELS, USER_NAMES, allGrantsOf, createFixtures, sessionHistory, sessionScript, type ConsoleFixtures } from "./fixtures";
 
 const ID_RE = { user: /^[UW][A-Z0-9]+$/, channel: /^[CG][A-Z0-9]+$/, workspace: /^T[A-Z0-9]+$/ } as const;
@@ -73,6 +74,7 @@ export function installStub(): void {
 
   const fx = createFixtures();
   const startedAt = Date.now();
+  let skills = skillFixtures(startedAt);
   if (sticky("as") === "operator") fx.me = { email: "bob@example.com", role: "operator" };
   if (empty) {
     fx.agents = {};
@@ -82,6 +84,7 @@ export function installStub(): void {
     fx.locks = {};
     fx.memory = { stores: [], pages: {} };
     fx.environments = { nodePools: [], personas: [], personal: [] };
+    skills = [];
   }
   if (mono) {
     fx.environments = {
@@ -142,6 +145,12 @@ export function installStub(): void {
     if (seg[1] === "sessions") return sessions(method, seg, query, body, isSuper);
     if (seg[1] === "memory") return memory(seg, query, isSuper);
     if (path === "/api/environments") return json(200, fx.environments);
+    if (seg[1] === "skills") return skillsRoute(method, seg, isSuper);
+    if (path === "/api/guardrails") {
+      const agent = query.get("agent") || "default";
+      if (agent !== "default" && !fx.agents[agent]) return json(404, { error: `no agent named '${agent}'` });
+      return json(200, guardrailFixtures(agent));
+    }
     if (seg[1] === "agents") {
       if (seg.length === 2) return json(200, { agents: Object.values(fx.agents).map(summary) });
       const agent = fx.agents[decodeURIComponent(seg[2]!)];
@@ -182,6 +191,44 @@ export function installStub(): void {
       return json(405, { error: "method not allowed" });
     }
     return json(404, { error: "not found" });
+  }
+
+  function skillsRoute(method: string, seg: string[], isSuper: boolean): Response {
+    if (seg.length === 2) {
+      return json(200, {
+        skills: skills.map(({ frontmatter: _f, body: _b, raw: _r, files: _x, filesTruncated: _t, usageHistory: _u, proposals: _p, actions: _a, ...v }) => v),
+        notes: [],
+      });
+    }
+    const id = decodeURIComponent(seg[2]!);
+    const i = skills.findIndex((x) => x.id === id);
+    if (i < 0) return json(404, { error: "no such skill" });
+    const sk = skills[i]!;
+    if (seg.length === 3) return method === "GET" ? json(200, sk) : json(405, { error: "method not allowed" });
+    const verb = seg[3];
+    if (method !== "POST" || (verb !== "retire" && verb !== "restore")) return json(404, { error: "not found" });
+    if (!isSuper) return json(403, { error: `action 'skill.${verb}' requires the superadmin role`, required: "superadmin" });
+    if (!sk.actions[verb]) return json(409, { error: verb === "retire" ? "only an active skill the agent wrote itself can be retired" : "a live skill holds its slug" });
+    const owner = sk.origin.authoredBy ?? "default";
+    const now = Date.now();
+    if (verb === "retire") {
+      const stamp = new Date(now).toISOString().replace(/\.\d{3}Z$/, "Z").replace(/[-:]/g, "");
+      const rid = `${sk.slug}-${stamp}`;
+      skills[i] = {
+        ...sk,
+        id: `retired:${owner}:${rid}`,
+        status: "retired",
+        agents: [],
+        origin: { ...sk.origin, retiredAt: now, retiredId: rid },
+        actions: { retire: false, restore: true },
+        proposals: [{ id: `p_${now}`, kind: "skill-retired", status: "approved", agent: owner, createdAt: now, decidedBy: "skill-review", decidedAt: now, reason: "retired from the console" }, ...sk.proposals],
+      };
+    } else {
+      const liveId = owner === "default" ? `base:${sk.slug}` : `agent:${owner}:${sk.slug}`;
+      const { retiredAt: _ra, retiredId: _ri, ...origin } = sk.origin;
+      skills[i] = { ...sk, id: liveId, status: "active", agents: [owner], origin, actions: { retire: true, restore: false } };
+    }
+    return json(200, { ok: true, id: skills[i]!.id });
   }
 
   function sessionSummary(r: ConsoleFixtures["sessions"][number]): SessionSummaryView {

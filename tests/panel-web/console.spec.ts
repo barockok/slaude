@@ -30,6 +30,11 @@ const PAGES: Array<{ path: string; heading: string | RegExp; ready: string; sub?
   { path: "/panel/memory/shared", heading: /Shared/, ready: "decisions/queue-library" },
   { path: "/panel/memory/shared/page?slug=runbooks%2Fdeploy-rollback", heading: "Rolling back a deploy", ready: "Announce the rollback", sub: "Content" },
   { path: "/panel/environments", heading: "Environments", ready: "node-g1", sub: "Node pools" },
+  { path: "/panel/skills", heading: "Skills", ready: "release-notes" },
+  { path: "/panel/skills/base%3Arelease-notes", heading: /release-notes/, ready: "Pinned commit", sub: "SKILL.md" },
+  { path: "/panel/skills/retired%3Adefault%3Astandup-notes-20261020T090000Z", heading: /standup-notes/, ready: "Unused for 60 days.", sub: "Provenance" },
+  { path: "/panel/guardrails", heading: "Guardrails", ready: "SLAUDE_AUTO_ALLOW_TOOLS", sub: "Tool permissions" },
+  { path: "/panel/guardrails?agent=scout", heading: "Guardrails", ready: "UBOB", sub: "Approvals" },
 ];
 
 test("the shell loads with the signed-in superadmin", async ({ page }) => {
@@ -43,7 +48,7 @@ test("the shell loads with the signed-in superadmin", async ({ page }) => {
 test("the sidebar reaches every top-level page", async ({ page }) => {
   await page.goto("/panel/");
   const nav = page.getByRole("navigation", { name: "Console navigation" });
-  for (const name of ["Agents", "Sessions", "Approvals and audit", "Access", "Memory", "Environments", "Overview"]) {
+  for (const name of ["Agents", "Sessions", "Approvals and audit", "Access", "Memory", "Environments", "Skills", "Guardrails", "Overview"]) {
     await nav.getByRole("link", { name, exact: true }).click();
     await expect(h1(page)).toHaveText(name);
   }
@@ -345,4 +350,118 @@ test.describe("at 390 px wide", () => {
       expect(await fits()).toBe(true);
     });
   }
+});
+
+test.describe("resources", () => {
+  test("the sidebar groups Skills and Guardrails under Resources", async ({ page }) => {
+    await page.goto("/panel/");
+    const nav = page.getByRole("navigation", { name: "Console navigation" });
+    await expect(nav.getByText("Resources", { exact: true })).toBeVisible();
+    const items = await nav.locator("li").allInnerTexts();
+    const at = items.indexOf("Resources");
+    expect(items.slice(at, at + 3)).toEqual(["Resources", "Skills", "Guardrails"]);
+  });
+
+  test("skills filter by source, agent and status, and search", async ({ page }) => {
+    await page.goto("/panel/skills");
+    await settled(page, "release-notes");
+    const table = page.getByRole("table", { name: "Skills" });
+    await page.getByRole("button", { name: /^Source: / }).click();
+    await page.getByRole("menuitemradio", { name: "Plugin" }).click();
+    await expect(table.getByRole("row").filter({ hasText: "search-docs" })).toHaveCount(1);
+    await expect(table.getByRole("row").filter({ hasText: "release-notes" })).toHaveCount(0);
+    await page.getByRole("button", { name: /^Source: / }).click();
+    await page.getByRole("menuitemradio", { name: "All", exact: true }).click();
+    await page.getByRole("button", { name: /^Status: / }).click();
+    await page.getByRole("menuitemradio", { name: "Retired" }).click();
+    await expect(table.getByRole("row").filter({ hasText: "standup-notes" })).toHaveCount(1);
+    await expect(table.getByRole("row").filter({ hasText: "release-notes" })).toHaveCount(0);
+    await page.getByRole("button", { name: /^Status: / }).click();
+    await page.getByRole("menuitemradio", { name: "All", exact: true }).click();
+    await page.getByRole("button", { name: /^Agent: / }).click();
+    await page.getByRole("menuitemradio", { name: "scout" }).click();
+    await expect(table.getByRole("row").filter({ hasText: "weekly-digest" })).toHaveCount(1);
+    await expect(table.getByRole("row").filter({ hasText: "release-notes" })).toHaveCount(0);
+    await page.getByLabel("Search skills").fill("summarise");
+    await expect(table.getByRole("row").filter({ hasText: "weekly-digest" })).toHaveCount(1);
+    await page.getByLabel("Search skills").fill("nothing like this");
+    await expect(page.getByText("No matching skills")).toBeVisible();
+  });
+
+  test("a skill's SKILL.md renders as markdown, with frontmatter, and switches to raw (remembered)", async ({ page }) => {
+    await page.goto("/panel/skills/base%3Arelease-notes");
+    const md = page.locator(".sl-markdown").first();
+    // Frontmatter as key and value, body rendered: heading, table, task list, code, a safe link.
+    await expect(md.locator(".sl-md__frontmatter")).toContainText("Draft release notes from merged pull requests.");
+    await expect(md.getByRole("heading", { name: "Release notes" })).toBeVisible();
+    await expect(md.getByRole("table")).toContainText("Features");
+    await expect(md.getByRole("checkbox", { name: "Done", exact: true })).toBeChecked();
+    await expect(md.locator(".sl-code")).toContainText("git log --oneline v1.0.0..HEAD");
+    const link = md.getByRole("link", { name: "the style guide" });
+    await expect(link).toHaveAttribute("href", "https://example.com/style");
+    await expect(link).toHaveAttribute("title", "https://example.com/style");
+    await expect(link).toHaveAttribute("rel", /noopener/);
+    // Raw shows the text as written, and the choice survives a reload.
+    await md.getByRole("button", { name: "Raw" }).click();
+    await expect(md.locator(".sl-md-raw")).toContainText("| Section | Required |");
+    await page.reload();
+    await expect(page.locator(".sl-markdown").first().locator(".sl-md-raw")).toContainText("- [x] Link each pull request once");
+    await page.locator(".sl-markdown").first().getByRole("button", { name: "Rendered" }).click();
+    await expect(page.locator(".sl-markdown").first().getByRole("heading", { name: "Release notes" })).toBeVisible();
+  });
+
+  test("a superadmin retires an agent-authored skill and restores it", async ({ page }) => {
+    await page.goto("/panel/skills/agent%3Ascout%3Aweekly-digest");
+    await page.getByRole("button", { name: "Retire skill" }).click();
+    const dialog = page.getByRole("dialog", { name: "Retire this skill?" });
+    await dialog.getByLabel("Reason").fill("replaced by release-notes");
+    await dialog.getByRole("button", { name: "Retire" }).click();
+    await expect(toasts(page).getByText("Skill retired")).toBeVisible();
+    await expect(page).toHaveURL(/\/skills\/retired%3Ascout%3Aweekly-digest-/);
+    await expect(h1(page)).toContainText("Retired");
+    await page.getByRole("button", { name: "Restore skill" }).click();
+    await page.getByRole("dialog", { name: "Restore this skill?" }).getByRole("button", { name: "Restore" }).click();
+    await expect(toasts(page).getByText("Skill restored")).toBeVisible();
+    await expect(page).toHaveURL(/\/skills\/agent%3Ascout%3Aweekly-digest$/);
+  });
+
+  test("an operator cannot retire a skill", async ({ page }) => {
+    await page.goto("/panel/skills/agent%3Ascout%3Aweekly-digest?as=operator");
+    await expect(page.getByText("Only a superadmin can retire or restore a skill.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Retire skill" })).toBeDisabled();
+  });
+
+  test("guardrails show each value's source and the soul's own text, per agent", async ({ page }) => {
+    await page.goto("/panel/guardrails");
+    const tools = page.locator("#guardrail-tool-permissions");
+    await expect(tools.getByText("Env", { exact: true })).toBeVisible();
+    await expect(page.locator("#guardrail-policy").getByText("Not implemented")).toBeVisible();
+    const proactive = page.locator("#guardrail-proactive");
+    await expect(proactive.getByText("22:00 to 07:00")).toBeVisible();
+    await expect(proactive.getByRole("heading", { name: "Proactive", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: /^Agent: / }).click();
+    await page.getByRole("menuitemradio", { name: "scout" }).click();
+    await expect(page).toHaveURL(/\/guardrails\?agent=scout$/);
+    await expect(page.locator("#guardrail-approvals").getByText("UBOB")).toBeVisible();
+    await expect(page.locator("#guardrail-admission").getByRole("link", { name: "Grants on the Access tab" })).toHaveAttribute("href", "/panel/agents/scout/access");
+  });
+
+  test("agent messages render as markdown in the timeline and chat; user messages stay Slack text", async ({ page }) => {
+    await page.goto("/panel/sessions/s_7f21");
+    const tl = page.locator(".sl-tl__scroll");
+    const msg = tl.locator(".sl-tl__msg").filter({ hasText: "release plan" });
+    await expect(msg.locator("strong").filter({ hasText: "release plan" })).toBeVisible();
+    await expect(msg.getByRole("link", { name: "the runbook" })).toHaveAttribute("href", "https://example.com/runbook");
+    await expect(tl.locator(".sl-tl__msg.is-user").first().locator(".sl-md")).toHaveCount(0);
+    await expect(tl.locator(".sl-tl__msg.is-user").first().getByText("in Slack")).toBeVisible();
+    await page.goto("/panel/sessions/s_7f21/chat");
+    await expect(page.locator(".sl-chat__msg").filter({ hasText: "release plan" }).locator("code").filter({ hasText: "v0.41.0" })).toBeVisible();
+  });
+
+  test("a memory page renders its markdown", async ({ page }) => {
+    await page.goto("/panel/memory/shared/page?slug=runbooks%2Fdeploy-rollback");
+    const content = page.locator(".sl-markdown").first();
+    await expect(content.getByRole("heading", { name: "Steps" })).toBeVisible();
+    await expect(content.locator("ol li").first()).toBeVisible();
+  });
 });
