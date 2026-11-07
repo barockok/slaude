@@ -522,9 +522,11 @@ section "web apps built into the image"
 
 gw_pod="$(pods "$GW_SEL" | awk '{print $1}')"
 for app in panel portal; do
-  shell="$(k exec "$gw_pod" -- cat "src/gateway/$app/web/dist/index.html" 2>/dev/null || true)"
+  # /panel serves the console build, /portal the portal build (src/web).
+  if [[ "$app" == panel ]]; then dist="src/web/console/dist"; else dist="src/web/portal/dist"; fi
+  shell="$(k exec "$gw_pod" -- cat "$dist/index.html" 2>/dev/null || true)"
   expect "/$app has a built shell in the image" \
-    "src/gateway/$app/web/dist/index.html is missing — the image never built it" \
+    "$dist/index.html is missing: the image never built it" \
     [ -n "$shell" ]
   [[ -n "$shell" ]] || continue
   expect "/$app shell references hashed assets" \

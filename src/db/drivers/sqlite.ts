@@ -389,6 +389,41 @@ CREATE TABLE IF NOT EXISTS seen_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_seen_events_ts ON seen_events (ts);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+  id          TEXT    PRIMARY KEY,
+  persona     TEXT,
+  at          INTEGER NOT NULL,
+  actor_kind  TEXT    NOT NULL,
+  actor_id    TEXT    NOT NULL,
+  action      TEXT    NOT NULL,
+  target_kind TEXT,
+  target_id   TEXT,
+  decision    TEXT,
+  session_id  TEXT,
+  channel_id  TEXT,
+  thread_ts   TEXT,
+  summary     TEXT    NOT NULL DEFAULT '',
+  details     TEXT    NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_scope ON audit_events (persona, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events (session_id, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events (actor_id, id);
+
+CREATE TABLE IF NOT EXISTS agent_grants (
+  id           TEXT    PRIMARY KEY,
+  persona      TEXT    NOT NULL,
+  subject_kind TEXT    NOT NULL,
+  subject_id   TEXT    NOT NULL,
+  role         TEXT    NOT NULL,
+  deny         INTEGER NOT NULL DEFAULT 0,
+  dm_only      INTEGER NOT NULL DEFAULT 0,
+  created_by   TEXT    NOT NULL,
+  created_at   INTEGER NOT NULL,
+  expires_at   INTEGER,
+  note         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_grants_persona ON agent_grants (persona);
 `;
 
 /** Create tables + apply the incremental column migrations on an existing sqlite file. */

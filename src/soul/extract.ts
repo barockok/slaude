@@ -334,7 +334,7 @@ export function soulData(): SoulData {
  * in that channel. Manager/backup are appended as catchalls (always eligible)
  * unless already present in the override list.
  */
-function withManagerApprover(approvers: ApproverEntry[], base: SoulData): ApproverEntry[] {
+export function withManagerApprover(approvers: ApproverEntry[], base: SoulData): ApproverEntry[] {
   const out = [...approvers];
   const have = new Set(out.map((a) => a.userId));
   for (const id of [base.manager?.userId, base.backupManager?.userId]) {

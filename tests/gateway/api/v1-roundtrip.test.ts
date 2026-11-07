@@ -147,6 +147,17 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     memory_about: { input: { userId: "U0ALICE" }, expect: "not_mounted" },
     kb_thread_history: { input: {}, expect: "not_mounted" },
     kb_delete_page: { input: { slug: "s", reason: "r" }, expect: "not_mounted" },
+    // memory_* names: the same handlers as the kb_* aliases above.
+    memory_stores: { input: {} },
+    memory_search_stores: { input: { query: "roundtrip" } },
+    memory_think: { input: { question: "q" }, expect: "not_mounted" },
+    memory_search: { input: { query: "q" }, expect: "not_mounted" },
+    memory_get: { input: { slug: "s" }, expect: "not_mounted" },
+    memory_list: { input: {}, expect: "not_mounted" },
+    memory_graph: { input: { slug: "s" }, expect: "not_mounted" },
+    memory_save: { input: { pages: [{ slug: "s", content: "c", summary: "m" }] }, expect: "not_mounted" },
+    memory_thread_history: { input: {}, expect: "not_mounted" },
+    memory_delete: { input: { slug: "s", reason: "r" }, expect: "not_mounted" },
   },
 };
 

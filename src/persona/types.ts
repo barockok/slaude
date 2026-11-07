@@ -39,4 +39,8 @@ export interface Persona {
   /** Managed personas only: background-learning budget and timezone, or null
    *  for the environment default and UTC. Undefined for filesystem personas. */
   background?: PersonaBackground | null;
+  /** Managed personas only: the structured soul extracted at sync
+   *  (`personas.soul_json`), unvalidated; null when the sync stored none.
+   *  Undefined for filesystem personas (no structured soul in phase 1). */
+  soulJson?: unknown;
 }

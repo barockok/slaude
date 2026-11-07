@@ -289,7 +289,7 @@ A managed persona's `provider` references are resolved by the gateway at runtime
 |------|----------|---------|-------------|
 | `SLACK_USER_TOKEN` | No | `""` | `xoxp-…` user token. Used for `users.profile.set` presence; also the post-as-user token when `SLACK_POST_AS_USER=true`. |
 | `SLACK_POST_AS_USER` | No | `false` | `true` (case-insensitive) enables posting as the real Slack user. Requires `SLACK_USER_TOKEN`. |
-| `SLAUDE_APPROVERS` | No | `""` | Comma-separated Slack user ids allowed to click **Approve / Deny** on `request_approval` plans. **Fallback only** — used when `SOUL.md` has no `## Approvers` section. Empty means any clicker is accepted (only safe for solo / DM workspaces). Trimmed, comma-split, empty entries dropped. |
+| `SLAUDE_APPROVERS` | No | `""` | Comma-separated Slack user ids allowed to click **Approve / Deny** on `request_approval` plans. **Fallback only** — used when `SOUL.md` has no `## Approvers` section. Empty means any clicker is accepted (only safe for solo / DM workspaces). A user with a deny grant on the default persona is never accepted, from this list or as "any clicker". Trimmed, comma-split, empty entries dropped. |
 | `SLAUDE_SLACK_MODE` | No | `socket` | Slack ingress: `socket` (Bolt Socket Mode, single app from `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN`) or `http` (Events API receiver — Slack POSTs signed requests to `/slack/events` and `/slack/interactions`). `http` requires `SLAUDE_DB=pg` and `SLAUDE_MASTER_KEY`: apps are resolved per-request from the `slack_apps` registry (`bun run slack-app add`), and `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` are not read. Emit the matching app manifest with `bun run manifest --mode http --url https://<host>`. Setup walkthrough: [Webhook (Events API) mode](../deploy/webhook-mode.md). |
 | `SLAUDE_HTTP_PORT` | No | `8080` | Listen port for `SLAUDE_SLACK_MODE=http`. This single port serves `/slack/*` **and** `/healthz` `/readyz` `/metrics`; the standalone `SLAUDE_HEALTH_PORT` server is not started in http mode. |
 | `SLAUDE_HTTP_MAX_BODY_BYTES` | No | `1000000` | Max accepted request-body size on `/slack/*` (bytes). Oversize requests get `413` before any buffering completes or signature work runs. Positive integer. |
@@ -355,7 +355,7 @@ on `ioredis-mock`) and are gated on `SLAUDE_REDIS_TEST_URL`, mirroring the
 
 ### Control panel — operator web console <a id="panel"></a>
 
-What it does and how to enable it: [Control panel](../deploy/panel.md).
+What it does and how to enable it: [Console and portal](../deploy/panel.md).
 
 The panel mounts at `/panel` on the gateway's HTTP server for the `mono` and
 `gateway` roles (never `node`). It is its own OIDC relying party: it
@@ -375,6 +375,7 @@ and roles come from a file or the env lists below.
 | `SLAUDE_PANEL_ROLES_FILE` | No | `""` | Path to a YAML role list (`superadmin:` / `operator:`), matched case-insensitively, superadmin winning when an identity is in both. Read at boot and re-read per request, so edits apply without a redeploy. |
 | `SLAUDE_PANEL_SUPERADMIN` | No | `""` | Comma-separated superadmin identities — the fallback when no role file is mounted. Superadmin gates the destructive controls (reset, mode, force-release). |
 | `SLAUDE_PANEL_OPERATORS` | No | `""` | Comma-separated operator identities. An identity in neither list authenticates but is not authorized (`403`). |
+| `SLAUDE_AUDIT_RETENTION_DAYS` | No | `365` | Days an audit event (`audit_events`: gate decisions, grant changes, console actions) is kept before the periodic sweep deletes it. Applies whether or not the panel is mounted. |
 | `SLAUDE_PORTAL` | No | `0` | `1`/`true`/`yes` mounts the end-user portal at `/portal` (onboarding, identity binding, MCP connections) on `mono` and `gateway`. It reuses the panel's OIDC client, public URL and `SLAUDE_PANEL_SECRET`, so those are required when it is on. See [The user portal](../deploy/panel.md#the-user-portal). |
 
 ¹ Required when `SLAUDE_PANEL=1`; ignored otherwise.
@@ -499,11 +500,12 @@ Gateway-side limits of the [MCP bridge](../deploy/mcp-bridge.md) (gateway role o
 
 ### Brain (knowledge base and memory) <a id="brain"></a>
 
-The brain is the gbrain engine behind the `kb_*` tools and episodic memory (`src/knowledge/`). In the gateway topology it runs on gateways only; nodes reach it through `/v1/tools/kb/*` and `/v1/tools/memory/*`.
+The brain is the gbrain engine behind the memory tools (`memory_*`, with `kb_*` aliases) and episodic memory (`src/knowledge/`). In the gateway topology it runs on gateways only; nodes reach it through `/v1/tools/kb/*` and `/v1/tools/memory/*`.
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `SLAUDE_BRAIN_DISABLED` | No | unset | `1` turns the brain off: no `kb_*` tools and the flat sqlite memory store. |
+| `SLAUDE_BRAIN_DISABLED` | No | unset | `1` turns the brain off: no memory page tools (only `memory_stores` / `memory_search_stores`) and the flat sqlite memory store. |
+| `SLAUDE_MEMORY_TOOL_ALIASES` | No | `1` | `0` stops mounting the deprecated `kb_*` aliases of the memory tools (`kb_memoize`, `kb_search`, `list_kbs`, ...) on the `slaude_kb` MCP server, in-process and on nodes, so the model sees only the `memory_*` names (set it on gateways and nodes alike). Leave it on while sessions started before the rename may resume: they call the old names. The REST tool plane (`/v1/tools/kb/<name>`) accepts the old names either way. |
 | `SLAUDE_BRAIN_ENGINE` | Gateway topology | `pglite` | `pglite` (embedded, single writer, in `SLAUDE_BRAIN_HOME`) or `postgres`. A gateway refuses to boot on `pglite`: it is single-writer and clears locks it finds at boot, so replicas on the shared volume would corrupt it. |
 | `SLAUDE_BRAIN_DATABASE_URL` | With `postgres` | none | **Gateway only.** The brain's own database (the `vector`, `pg_trgm` and `pgcrypto` extensions; see `deploy/postgres-init/10-brain-database.sql`). Kept separate from slaude's schema. |
 | `SLAUDE_BRAIN_HOME` | No | `$SLAUDE_HOME/brain` | The brain's home: gbrain's `config.json` and, on `pglite`, its database. |
@@ -859,6 +861,8 @@ Fallback chain:
 1. `## Approvers` exists → keyword-matched entries from SOUL.md (or channel override when in that channel).
 2. No `## Approvers` → `SLAUDE_APPROVERS` env (comma-separated ids, no scopes — all treated as catchalls).
 3. Neither → any clicker accepted (only safe for solo / DM workspaces).
+
+This chain is the **default persona's**. A named persona's approvers are its users with the approver or manager role (from its own soul, or the default's approvers when its soul names none, plus console grants), channel-aware and without keyword matching; with none, the default persona's managers. A named persona never falls back to `SLAUDE_APPROVERS` or to any clicker, so with no manager anywhere its card times out denied.
 
 > **Grounding guard.** The extractor verifies every id it returns appears verbatim in the raw `SOUL.md` text (`assertIdsGroundedInPersona` in `extract.ts`). A hallucinated id is thrown rather than widening the allowlist.
 

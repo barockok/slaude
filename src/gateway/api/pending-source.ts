@@ -8,6 +8,7 @@
  * remains for unit tests that don't want a DB.
  */
 import * as PendingGates from "../../db/pending-gates";
+import { auditExpiredGates } from "../../audit/emit";
 
 export type PendingGateKind = "perm" | "approval" | "mcp_connect";
 
@@ -107,7 +108,10 @@ export class DbPendingSource implements PendingSource {
   }
 
   async sweepExpired(): Promise<number> {
-    return (await PendingGates.sweepExpired()).length;
+    // Audited here, the caller of the sweep (src/db stays free of audit imports).
+    const rows = await PendingGates.sweepExpired();
+    auditExpiredGates(rows);
+    return rows.length;
   }
 }
 

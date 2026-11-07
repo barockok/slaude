@@ -289,6 +289,6 @@ export async function createRuntimePersona(tenant: string, row: DesiredPersona, 
        providerJson(row.provider), row.runsOn ?? null, kbSourcesJson(row.kbSources), backgroundJson(row.background), row.slackUserId, row.userToken ? encrypt(row.userToken) : null, now, now]);
     // A git row appeared after the read above: never overwrite it.
     if (!written.length) throw new NameTakenError(row.name);
-    void by; // recorded in the audit log by the caller (Task 7)
+    void by; // audited by the caller: the panel records panel.persona.onboard
   });
 }

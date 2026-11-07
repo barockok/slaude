@@ -6,6 +6,7 @@
  *   GET    /portal              the app shell (React, served statically)
  *   GET    /portal/auth/*      sign-in (./auth-routes)
  *   GET    /portal/api/me      the signed-in account and its Slack identities
+ *   GET    /portal/api/my-agents   agents my linked Slack identities hold a role on
  *   GET    /portal/link?t=…    confirmation page for an onboarding link
  *   POST   /portal/api/link    redeem a link: bind a Slack identity
  *   DELETE /portal/api/link    unlink one of your own bindings
@@ -32,6 +33,11 @@ import { verifyLinkToken } from "./link-token";
 import { configuredServer, integrationsFor, portalServers, type PortalServer } from "./integrations";
 import { finishPortalConnect, startPortalConnect, type PortalConnectDeps } from "./oauth";
 import { servePortalStatic } from "./static";
+import { myAgents } from "./my-agents";
+import type {
+  ConnectIntegrationResponse, ConnectResult, DisconnectIntegrationResponse, IntegrationsResponse, MyAgentsResponse, PortalMeResponse,
+  PortalOkResponse,
+} from "./api-types";
 import {
   clearCookie,
   mintPortalOauthFlow,
@@ -173,12 +179,24 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         return json(200, {
           email: guarded.account.email,
           accountId: guarded.account.id,
+          issuer: guarded.account.issuer,
           slackIdentities: identities.map((s) => ({
             teamId: s.team_id,
             slackUserId: s.slack_user_id,
             linkedAt: s.linked_at,
+            linkedVia: s.linked_via,
           })),
-        });
+        } satisfies PortalMeResponse);
+      }
+
+      // GET /portal/api/my-agents: user-level roles of every linked identity.
+      if (seg.length === 3 && seg[1] === "api" && seg[2] === "my-agents") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const guarded = await guardPortal(req, { html: false });
+        if (!guarded.ok) return guarded.response;
+        const identities = await slackIdentitiesForAccount(guarded.account.id);
+        const agents = await myAgents(identities.map((s) => ({ teamId: s.team_id, slackUserId: s.slack_user_id })));
+        return json(200, { agents } satisfies MyAgentsResponse);
       }
 
       if (seg.length === 3 && seg[1] === "api" && seg[2] === "link") {
@@ -220,7 +238,7 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
           // another's binding.
           const removed = await unlinkSlackIdentity(teamId, slackUserId, guarded.account.id);
           if (removed) await bumpMcpCredEpoch([{ kind: "user", team: teamId, slackUserId }]);
-          return removed ? json(200, { ok: true }) : json(404, { error: "no such connection on your account" });
+          return removed ? json(200, { ok: true } satisfies PortalOkResponse) : json(404, { error: "no such connection on your account" });
         }
 
         return json(405, { error: "method not allowed" });
@@ -231,7 +249,7 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         if (req.method !== "GET") return json(405, { error: "method not allowed" });
         const guarded = await guardPortal(req, { html: false });
         if (!guarded.ok) return guarded.response;
-        return json(200, { integrations: await integrationsFor(guarded.account.id, servers()) });
+        return json(200, { integrations: await integrationsFor(guarded.account.id, servers()) } satisfies IntegrationsResponse);
       }
 
       // POST /portal/api/integrations/:name/connect
@@ -251,7 +269,7 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         // The server's own name, not the id: the credential is keyed on the name
         // the agents use, and the id is only how the page refers to the row.
         const started = await startPortalConnect(guarded.account.id, server.name, server.cfg, connectDeps);
-        const res = json(200, { authorizeUrl: started.authorizeUrl });
+        const res = json(200, { authorizeUrl: started.authorizeUrl } satisfies ConnectIntegrationResponse);
         res.headers.append(
           "set-cookie",
           setCookie(PORTAL_OAUTH_COOKIE, mintPortalOauthFlow(started.flowId), {
@@ -277,7 +295,7 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         // another's integration.
         const removed = await deleteCredential({ kind: "account", accountId: guarded.account.id }, oauthKey(server.name, server.cfg));
         if (removed) await bumpMcpCredEpoch({ kind: "account", accountId: guarded.account.id });
-        return json(200, { ok: true, removed });
+        return json(200, { ok: true, removed } satisfies DisconnectIntegrationResponse);
       }
 
       // GET /portal/oauth/callback?code&state — the provider's redirect.
@@ -294,7 +312,7 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
         // Every outcome lands back in the app with a result it can render, and
         // the cookie is cleared either way — the flow row is single use, so the
         // cookie has nothing left to refer to.
-        const back = (result: string) => {
+        const back = (result: ConnectResult) => {
           return new Response(null, {
             status: 302,
             headers: {

@@ -225,7 +225,7 @@ export const m = {
     "/v1 requests the label gate refused with 403 (the job's label is not among the node's labels), labeled by route-table route name.",
   ),
   memoryGatewayFailuresTotal: metrics.counter("slaude_memory_gateway_failures_total", "Node memory calls to the gateway that failed, labeled by kind (<op>:<status>|timeout|network|unsupported). The turn runs without memory."),
-  v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server + tool."),
+  v1ToolCallsTotal: metrics.counter("slaude_v1_tool_calls_total", "REST tool-plane invocations on /v1/tools/<server>/<tool>, labeled by server, tool (a memory tool under its memory_* name) and alias (true when called by its deprecated kb_* name)."),
   // Node runtime (spec §6).
   nodeSessionsLive: metrics.gauge("slaude_node_sessions_live", "Warm SDK Query sessions held by this node."),
   nodeAuthPaused: metrics.gauge(
@@ -275,5 +275,7 @@ export const m = {
   wakeDurationSeconds: metrics.histogram("slaude_wake_duration_seconds", "How long one heartbeat wake ran, labeled by agent.", [10, 30, 60, 120, 300, 600, 900, 1800]),
   wakeCapHitTotal: metrics.counter("slaude_wake_cap_hit_total", "Heartbeat wakes a cap stopped, labeled by agent and cap (usd|turns|minutes)."),
   wakePostsTotal: metrics.counter("slaude_wake_posts_total", "Heartbeat wake posts, labeled by agent and result (posted, or the refusal)."),
+  grantsReadFailuresTotal: metrics.counter("slaude_grants_read_failures_total", "Stored agent grant reads that failed; access fell back to the soul-derived grants alone."),
+  auditWriteFailuresTotal: metrics.counter("slaude_audit_write_failures_total", "Audit events that could not be written (database row or stdout line). The decision they record still stands."),
   backgroundRunsTotal: metrics.counter("slaude_background_runs_total", "Background learning pass runs, labeled by agent, pass and outcome (ok|skipped-budget|stopped-budget|error)."),
 };

@@ -1,0 +1,9 @@
+# The approver denies the plan (the stub always asks to "deploy prod").
+layer: trusted
+as: member
+agent_behavior: request_approval
+steps:
+  - send: { text: "deploy prod" }
+  - expect_card: { kind: approval }
+  - click: { as: U0APP, action: deny }
+  - expect_reply: { contains: "denied by" }

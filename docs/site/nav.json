@@ -63,7 +63,7 @@
           "items": [
             { "path": "deploy/index", "label": "Deployment overview" },
             { "path": "deploy/webhook-mode", "label": "Webhook (Events API) mode" },
-            { "path": "deploy/panel", "label": "Control panel" },
+            { "path": "deploy/panel", "label": "Console and portal" },
             { "path": "deploy/multi-node", "label": "Multi-node scale-out" },
             { "path": "deploy/node-manifest", "label": "Node MCP manifest" },
             { "path": "deploy/scale-operations", "label": "Scale operations" },

@@ -162,9 +162,9 @@ describe("loadApproverEntries + selectApprovers", () => {
     expect(out).toEqual(["U0XXXXXXXXX"]);
   });
 
-  test("baseline names kb_memoize as the one write path, not the raw//ingest flow", () => {
+  test("baseline names memory_save as the one write path, not the raw//ingest flow", () => {
     const block = soulSystemBlock();
-    expect(block).toMatch(/kb_memoize/);
+    expect(block).toMatch(/memory_save/);
     expect(block).toMatch(/ONE write path/);
     // the pre-gbrain raw/→/ingest write path is dormant — the baseline must not
     // STEER the agent to it (the corrective text may still name it to forbid it).
@@ -173,9 +173,9 @@ describe("loadApproverEntries + selectApprovers", () => {
     expect(block).not.toMatch(/dropping new `raw\//);
   });
 
-  test("baseline forbids papering over a failed brain write", () => {
+  test("baseline forbids papering over a failed memory write", () => {
     const block = soulSystemBlock();
-    expect(block).toMatch(/failed brain write is a failure/i);
+    expect(block).toMatch(/failed memory write is a failure/i);
     expect(block).toMatch(/did not land/i);
   });
 
@@ -189,7 +189,7 @@ describe("loadApproverEntries + selectApprovers", () => {
   });
 });
 
-// list_kbs returns no disk path (WS-C §4.1.4), so with the brain disabled the
+// memory_stores returns no disk path (WS-C §4.1.4), so with the brain disabled the
 // prompt itself must say where a knowledge base's files are.
 describe("the knowledge section follows the brain mode", () => {
   const saved = process.env.SLAUDE_BRAIN_DISABLED;
@@ -206,19 +206,31 @@ describe("the knowledge section follows the brain mode", () => {
     withBrain(true, () => {
       const block = soulSystemBlock("# P");
       expect(block).toContain(`${paths.knowledge}/<label>/`);
-      expect(block).toMatch(/brain is disabled/i);
+      expect(block).toMatch(/memory stores are disabled/i);
       expect(block).not.toContain("open_kb");
       expect(block).not.toMatch(/open the KB/);
-      expect(block).not.toContain("kb_get_page");
-      expect(block).not.toContain("mcp__slaude_kb__{kb_think");
+      expect(block).not.toContain("memory_get");
+      expect(block).not.toContain("mcp__slaude_kb__{memory_think");
     });
+  });
+
+  test("both modes: the prompt offers memory_* names and never an old kb_* name", () => {
+    const old = /\b(kb_search|kb_think|kb_get_page|kb_list_pages|kb_memoize|kb_delete_page|kb_graph|kb_thread_history|list_kbs|search_kbs)\b/;
+    for (const disabled of [true, false]) {
+      withBrain(disabled, () => {
+        const block = soulSystemBlock("# P");
+        expect(block).not.toMatch(old);
+        expect(block).toContain("memory_save");
+        expect(block).toContain("memory_search_stores");
+      });
+    }
   });
 
   test("brain enabled: the brain tools, and no file-path fallback", () => {
     withBrain(false, () => {
       const block = soulSystemBlock("# P");
-      expect(block).toContain("kb_search");
-      expect(block).toContain("kb_get_page");
+      expect(block).toContain("memory_search");
+      expect(block).toContain("memory_get");
       expect(block).not.toContain(`${paths.knowledge}/<label>/`);
       expect(block).not.toContain("open_kb");
       expect(block).not.toMatch(/open the KB/);

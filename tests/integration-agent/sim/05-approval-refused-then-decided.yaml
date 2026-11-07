@@ -1,0 +1,11 @@
+# A bystander click is refused and leaves the card pending; the approver decides.
+layer: trusted
+as: member
+agent_behavior: request_approval
+steps:
+  - send: { text: "deploy prod" }
+  - expect_card: { kind: approval }
+  - click: { as: U0BOB, action: approve }
+  - expect_pending: {}
+  - click: { as: U0APP, action: approve }
+  - expect_reply: { contains: "approved by" }

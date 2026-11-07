@@ -1,0 +1,6 @@
+# Anyone in a trusted channel is admitted.
+layer: trusted
+as: member
+steps:
+  - send: { text: "hello from a trusted channel" }
+  - expect_reply: { contains: "ack: done" }

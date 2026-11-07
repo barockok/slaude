@@ -40,7 +40,7 @@ Zidni Mubarok <zidmubarock@gmail.com>. Telegram bridge available — use for blo
   - Irreversible action needed
   - Architecture fork-in-the-road
   - Secret/credential required
-- **Memory — KB only (overrides harness default):** All memory writes go to `kb_memoize`. Never write to `memory/` files — the `# auto memory` harness instructions are superseded by this rule. For reads, `kb_search`/`kb_think` are primary; treat injected MEMORY.md context as legacy.
+- **Memory — KB only (overrides harness default):** All memory writes go to `memory_save`. Never write to `memory/` files — the `# auto memory` harness instructions are superseded by this rule. For reads, `memory_search`/`memory_think` are primary; treat injected MEMORY.md context as legacy. The old `kb_memoize`/`kb_search`/`kb_think` names still work as aliases.
 - Releases: every release ships a hand-written `docs/site/_content/releases/<tag>.md` with decent markdown notes — group by category (Features / Fixes / Docs / Internal), explain the *why* not just the commit subject, link findings docs when relevant. The release workflow prefers this file over auto-generated git-log dumps.
 - **Release candidates.** Anything touching `install.sh`, the dist/version layout, the DB schema, or the agent loop goes out as `vX.Y.Z-rc.N` first. The RC publishes as a GitHub pre-release (auto-detected from the `-` in the tag) so `install.sh` never resolves it as `latest`; install it explicitly with `SLAUDE_VERSION=X.Y.Z-rc.N`. Soak, then `scripts/promote-rc.sh vX.Y.Z-rc.N` to bump, tag, and push the stable release. Notes live under the *stable* name (`docs/site/_content/releases/vX.Y.Z.md`) from the first RC onward. Tag and `package.json` must always agree — `release.yml` fails the build otherwise. Full procedure: `.claude/skills/release-prep/SKILL.md`.
 
@@ -105,6 +105,7 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 
 Entries live in `docs/site/_content/field-notes/<date>-<slug>.md` and publish to the docs site. Add a new file per significant finding/decision/mistake; index it below as one line (date, a short title with the key detail, the link; the full write-up lives in the note). Newest first.
 
+- [2026-11-07: Agent platform (per-persona soul, grants and `roleOf`, permission cards decided only by the requester or an approver, an audit trail, mandates, the new console and portal, `memory_*` tool names)](docs/site/_content/field-notes/2026-11-07-agent-platform.md)
 - [2026-11-02 — Heartbeat wake: the agent itself wakes up, on the session runtime; round fixes (evidence dedupe, budget pools, notices)](docs/site/_content/field-notes/2026-11-02-heartbeat-wake.md)
 - [2026-11-01 — One Slack app per persona: the receiving app picks the persona (`slack_apps.persona_id` was stored but never read; DMs and mentions of a persona's app ran as default)](docs/site/_content/field-notes/2026-11-01-app-persona-routing.md)
 - [2026-10-28 — Heartbeat mandates and one proactive folder: triage sees each channel's mandate; proactive threads share a folder, one turn at a time (in-process claim, Redis lock on nodes)](docs/site/_content/field-notes/2026-10-28-heartbeat-mandates-and-workspace.md)

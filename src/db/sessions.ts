@@ -122,6 +122,12 @@ export async function listSessions(o: ListSessionsOpts = {}): Promise<SessionRow
   );
 }
 
+/** How many sessions have this status (e.g. "running": a turn in flight). */
+export async function countByStatus(status: string): Promise<number> {
+  const r = await db.one<{ n: number | string }>(`SELECT COUNT(*) AS n FROM sessions WHERE status = ?`, [status]);
+  return Number(r?.n ?? 0);
+}
+
 export async function markStarted(id: string): Promise<void> {
   await db.run(`UPDATE sessions SET claude_started = 1, updated_at = ? WHERE id = ?`, [
     Date.now(),

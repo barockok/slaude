@@ -7,6 +7,8 @@ import * as Sessions from "../../src/db/sessions";
 import * as OneOnOne from "../../src/db/one-on-one";
 import * as Remote from "../../src/db/remote";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
+import * as AuditEvents from "../../src/db/audit-events";
+import { flushAudits } from "../../src/audit/emit";
 
 const SECRET = "t".repeat(32);
 
@@ -54,6 +56,23 @@ describe("panel unlock-1on1", () => {
     expect(await OneOnOne.find("C_PU", "9.1")).toBeNull();
     expect(await Remote.findTarget("C_PU", "9.1")).toBeNull();
     expect(unlocked).toEqual([row.id]);
+    await flushAudits();
+    const rows = (await AuditEvents.list({ sessionId: row.id })).items;
+    // One row for the control: one_on_one.unlocked, not a second panel.session.control.
+    expect(rows.map((e) => [e.action, e.actorKind, e.actorId])).toEqual([["one_on_one.unlocked", "operator", "op@example.com"]]);
+    expect(rows[0]).toMatchObject({ channelId: "C_PU", threadTs: "9.1", persona: "default" });
+    expect(rows[0]!.details).toMatchObject({ via: "panel", lockedUser: "U_A" });
+  });
+
+  it("an unlock with no lock held records nothing", async () => {
+    const row = await Sessions.createForThread({
+      thread: { team_id: "T1", channel_id: "C_PU", thread_ts: "9.4" },
+      model: "m",
+      working_dir: "/tmp/x",
+    });
+    expect((await unlock(row.id, [])).status).toBe(200);
+    await flushAudits();
+    expect((await AuditEvents.list({ sessionId: row.id })).items).toEqual([]);
   });
 
   it("a throwing reload hook does not fail the request; the unlock stands", async () => {

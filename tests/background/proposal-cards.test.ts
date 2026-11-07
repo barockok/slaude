@@ -39,6 +39,9 @@ import { runDigest } from "../../src/background/digest";
 import { passHandlers } from "../../src/background/pass-tools";
 import { CONVERSATION_REFUSAL, LESSONS_PAGE_REFUSAL, LESSONS_REFUSAL, PROFILE_PAGE_REFUSAL, SLUG_SEGMENT_REFUSAL } from "../../src/background/proposal-payload";
 import { CREDENTIAL_REFUSAL } from "../../src/knowledge/memory-pages";
+import * as AuditEvents from "../../src/db/audit-events";
+import { flushAudits } from "../../src/audit/emit";
+import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
 
 const AGENT = "U0AGENT";
 const MANAGER = "U0MANAGER";
@@ -189,6 +192,32 @@ describe("approving and rejecting", () => {
     expect(brain.calls.length).toBe(0);
   });
 
+  test("each won decision records one proposal.decided row; refusals and repeat clicks record none", async () => {
+    await db.run("DELETE FROM audit_events WHERE action = 'proposal.decided'");
+    const { deps } = setup();
+    const written = await teamFact();
+    await decideProposal({ id: written, verb: "approve", by: ALICE }, deps); // refused
+    await decideProposal({ id: written, verb: "approve", by: MANAGER }, deps);
+    await decideProposal({ id: written, verb: "approve", by: BACKUP }, deps); // already decided
+    const rejected = await teamFact();
+    await decideProposal({ id: rejected, verb: "reject", by: BACKUP }, deps);
+    const forwarded = await promote();
+    await decideProposal({ id: forwarded, verb: "approve", by: ALICE }, deps);
+    const recorded = await Proposals.insert({ agentId: AGENT, kind: "skill-removal", toKind: "manager", toUser: null, scope: "agent", payload: { slug: "s" }, createdAt: NOW - DAY });
+    await decideProposal({ id: recorded, verb: "approve", by: MANAGER }, deps);
+    await flushAudits();
+    const rows = (await AuditEvents.list({ action: "proposal.decided" })).items;
+    const by = Object.fromEntries(rows.map((r) => [r.targetId, [r.decision, r.actorId, r.details.outcome]]));
+    expect(rows).toHaveLength(4);
+    expect(by).toEqual({
+      [written]: ["allow", MANAGER, "written"],
+      [rejected]: ["deny", BACKUP, "rejected"],
+      [forwarded]: ["allow", ALICE, "forwarded"],
+      [recorded]: ["allow", MANAGER, "recorded"],
+    });
+    for (const r of rows) expect(r).toMatchObject({ actorKind: "slack_user", targetKind: "proposal", persona: "default" });
+  });
+
   test("an expired proposal cannot be decided", async () => {
     const { deps } = setup({ now: () => new Date(NOW + 14 * DAY) });
     const id = await teamFact();
@@ -211,6 +240,9 @@ describe("approving and rejecting", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.text).toContain("open again");
     expect((await Proposals.get(id))!.status).toBe("open");
+    await flushAudits();
+    const [ev] = (await AuditEvents.list({ action: "proposal.decided" })).items.filter((e) => e.targetId === id);
+    expect(ev?.details.outcome).toBe("reopened");
   });
 
   test("with the brain not open nothing is decided", async () => {
@@ -524,3 +556,50 @@ describe("posting as the right Slack app", () => {
     expect(String(ok[0]!.text)).toContain("Approved");
   });
 });
+
+describe("managers are the proposal's persona's", () => {
+  const ALPHA_AGENT = "UALPHAAGENT";
+  const ALPHA_MGR = "UALPHAMGR";
+  const reg = (): PersonaRegistry => {
+    const alpha = { name: "alpha", slackUserId: ALPHA_AGENT, outClient: null } as any;
+    return {
+      lookupByUserId: (id) => (id === ALPHA_AGENT ? alpha : null), lookupByName: (n) => (n === "alpha" ? alpha : null), list: () => [alpha],
+      isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+    };
+  };
+  const asked: string[] = [];
+  const managers = async (personaName: string) => (asked.push(personaName), personaName === "alpha" ? [ALPHA_MGR] : [MANAGER, BACKUP]);
+
+  test("a named persona's proposal is decided by its managers, not the default's", async () => {
+    setPersonaRegistry(reg());
+    try {
+      asked.length = 0;
+      const { deps } = setup({ managers });
+      const id = await Proposals.insert({ agentId: ALPHA_AGENT, kind: "team-fact", toKind: "manager", toUser: null, scope: "agent", payload: fact, createdAt: NOW - DAY });
+      expect((await decideProposal({ id, verb: "reject", by: MANAGER }, deps)).ok).toBe(false);
+      expect(await decideProposal({ id, verb: "reject", by: ALPHA_MGR }, deps)).toEqual({ ok: true, line: `Rejected by <@${ALPHA_MGR}>` });
+      expect(asked).toEqual(["alpha", "alpha"]);
+      // The default persona's proposal still goes to the default's managers.
+      const def = await teamFact();
+      expect((await decideProposal({ id: def, verb: "reject", by: ALPHA_MGR }, deps)).ok).toBe(false);
+      expect((await decideProposal({ id: def, verb: "reject", by: MANAGER }, deps)).ok).toBe(true);
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+
+  test("a named persona's retired skill is restored by its managers only", async () => {
+    setPersonaRegistry(reg());
+    try {
+      const row = await Proposals.recordSkillRetired({ agentId: ALPHA_AGENT, payload: { slug: "x", retiredId: "missing", persona: "alpha", reason: "unused", uses: 0, lastUsedAt: null }, at: NOW - DAY });
+      const deps = { managers, now: () => new Date(NOW) };
+      expect(await restoreRetiredSkill({ id: row, by: MANAGER }, deps)).toEqual({ ok: false, text: `:no_entry: <@${MANAGER}>, only the manager can restore a skill.` });
+      // Its manager passes the role check (the retired copy is missing, so the restore itself fails).
+      const r = await restoreRetiredSkill({ id: row, by: ALPHA_MGR }, deps);
+      expect(r.ok ? r.line : r.text).not.toContain("only the manager");
+    } finally {
+      __resetPersonaRegistry();
+    }
+  });
+});
+

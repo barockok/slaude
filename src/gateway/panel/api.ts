@@ -29,6 +29,24 @@
  *   GET  /panel/api/personas/:name               one persona's definition: references and presence, never values
  *   PUT|DELETE /panel/api/personas/:name/overrides/:field   runtime override (superadmin; wiped by the next git sync)
  *   POST /panel/api/personas                     runtime onboard of a non-git persona (superadmin)
+ *
+ * Console API (agent platform; shapes in ./api-types). Reads: any operator.
+ * Mutations: superadmin, each one audited with actor_kind operator.
+ *   GET    /panel/api/agents                       agents with mandate and grant counts
+ *   GET    /panel/api/agents/:name                 one agent: mandates and effective grants
+ *   GET    /panel/api/agents/:name/grants          effective grants (soul and console)
+ *   POST   /panel/api/agents/:name/grants          store a console grant (superadmin)
+ *   DELETE /panel/api/agents/:name/grants/:id      revoke a console grant (superadmin)
+ *   GET    /panel/api/grants                       every unexpired console grant, with its persona
+ *   GET    /panel/api/audit?persona&action&actor&session&decision&since&until&cursor&limit
+ *   GET    /panel/api/sessions/:id/audit?cursor&limit
+ *   GET    /panel/api/memory/stores                memory stores (brain sources) with page counts;
+ *                                                  personal and profile stores are superadmin only
+ *   GET    /panel/api/memory/stores/:id/pages?cursor&limit
+ *   GET    /panel/api/memory/pages?store&slug      one page: content, type, tags, links
+ *   GET    /panel/api/environments                 node pools, persona runsOn, personal environments (no secrets)
+ *   GET    /panel/api/console-roles                the console's email allowlist (read-only, superadmin)
+ *   GET    /panel/api/overview                     counts and the latest audit events
  */
 import { PanelVoiceRedactor } from "./voice-redact";
 import { z } from "zod";
@@ -43,6 +61,7 @@ import type { LabelStatus } from "../../queue/label-status";
 import { guardRequest } from "./auth/guard";
 import { createAuthRoutes } from "./auth/routes";
 import { audit } from "./auth/audit";
+import { auditOneOnOne } from "../../audit/events";
 import type { PanelRole } from "./auth/roles";
 import { enumerateSessions } from "./enumerator";
 import { servePanelStatic } from "./static";
@@ -58,6 +77,34 @@ import { installedKbSourceIds } from "../../knowledge/persona-kb";
 import { discoverSkills } from "../../skills/loader";
 import { credentialExpiries } from "../../db/mcp-credentials";
 import { oauthKey } from "../../agent/mcp-oauth/store";
+import * as AgentGrants from "../../db/agent-grants";
+import { invalidateGrants } from "../../access/role";
+import { emitAudit } from "../../audit/emit";
+import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent } from "./console-views";
+import { loadRoleConfig } from "./auth/roles";
+import * as PendingGates from "../../db/pending-gates";
+import * as AuditEvents from "../../db/audit-events";
+import { agentStoreNames, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
+import { agentIdSync } from "../../knowledge/agent-identity";
+import { storeKind } from "../../knowledge/scope";
+import { getPersonaRegistry } from "../../persona/registry";
+import type {
+  ConsoleRolesResponse,
+  EnvironmentsResponse,
+  OverviewResponse,
+  MemoryPageResponse,
+  MemoryPagesResponse,
+  MemoryStoresResponse,
+  AuditPageResponse,
+  AgentDetailResponse,
+  AgentGrantsResponse,
+  SessionDetailResponse,
+  SessionsResponse,
+  AllGrantsResponse,
+  AgentsResponse,
+  CreateGrantResponse,
+  RevokeGrantResponse,
+} from "./api-types";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -104,6 +151,10 @@ export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "control.reset",
   "control.mode",
   "force-release",
+  "grant.create",
+  "grant.revoke",
+  "memory.private",
+  "console.roles.read",
 ]);
 
 /** Returns the 403 to send, or null when the role suffices. */
@@ -128,6 +179,83 @@ const controlSchema = z
   .strict();
 
 const chatSchema = z.object({ text: z.string().min(1) }).strict();
+
+const createGrantSchema = z
+  .object({
+    subjectKind: z.enum(AgentGrants.SUBJECT_KINDS),
+    subjectId: z.string().trim().min(1).max(64),
+    role: z.enum(AgentGrants.GRANT_ROLES),
+    deny: z.boolean().optional(),
+    dmOnly: z.boolean().optional(),
+    expiresAt: z.number().int().positive().nullable().optional(),
+    note: z.string().max(500).nullable().optional(),
+  })
+  .strict();
+
+/** zod issues as one line: `path: message; ...`. */
+const issuesLine = (e: z.ZodError) => e.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
+
+/** A time bound: epoch ms digits or an ISO 8601 date/time. */
+const timeParam = z
+  .string()
+  .transform((v, ctx) => {
+    const ms = /^\d+$/.test(v) ? Number(v) : Date.parse(v);
+    if (!Number.isFinite(ms)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "must be epoch ms or an ISO 8601 time" });
+      return z.NEVER;
+    }
+    return ms;
+  });
+const pageParams = {
+  cursor: z.string().min(1).max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+};
+const auditQuerySchema = z
+  .object({
+    persona: z.string().min(1).max(128).optional(),
+    action: z.string().min(1).max(128).optional(),
+    actor: z.string().min(1).max(128).optional(),
+    session: z.string().min(1).max(128).optional(),
+    decision: z.string().min(1).max(32).optional(),
+    since: timeParam.optional(),
+    until: timeParam.optional(),
+    ...pageParams,
+  })
+  .strict();
+const pageQuerySchema = z.object(pageParams).strict();
+
+const STORE_ID_RE = /^[a-z0-9-]{1,32}$/;
+/** Stores that hold one person's memory: superadmin only. */
+const isPrivateStore = (id: string) => {
+  const k = storeKind(id);
+  return k === "personal" || k === "profile";
+};
+const MEMORY_PAGE_MAX = 100;
+const memoryPagesQuerySchema = z
+  .object({
+    cursor: z.string().regex(/^\d{1,9}$/, "invalid cursor").optional(),
+    limit: z.coerce.number().int().min(1).max(MEMORY_PAGE_MAX).optional(),
+  })
+  .strict();
+const memoryPageQuerySchema = z
+  .object({ store: z.string().regex(STORE_ID_RE, "invalid store id"), slug: z.string().min(1).max(512) })
+  .strict();
+
+/** Query string as an object; a repeated key keeps its last value. */
+const queryOf = (url: URL) => Object.fromEntries(url.searchParams.entries());
+
+/** What an audit row records of a stored grant. */
+const grantDetails = (g: AgentGrants.AgentGrantRow) => ({
+  grantId: g.id,
+  subjectKind: g.subjectKind,
+  subjectId: g.subjectId,
+  role: g.role,
+  deny: g.deny,
+  dmOnly: g.dmOnly,
+  expiresAt: g.expiresAt,
+  note: g.note,
+  createdBy: g.createdBy,
+});
 
 export interface PanelApiDeps {
   registry: Registry | null;
@@ -159,6 +287,8 @@ export interface PanelApiDeps {
    *  process). Decides how the persona view reports a persona's stdio MCP
    *  servers. Default `gateway`. */
   role?: PersonaViewRole;
+  /** Memory store browsing. Default: the local brain (when it is enabled and local). */
+  memory?: MemoryBrowser;
 }
 
 export interface PanelApi {
@@ -294,10 +424,19 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         if (!row.slack_channel_id || !row.slack_thread_ts) {
           return json(400, { error: "session has no Slack thread to unlock" });
         }
+        const held = await OneOnOne.find(row.slack_channel_id, row.slack_thread_ts);
         // Unlocking must also end remote mode: a surviving target would come back to
         // life on the next lock by the same user.
         await endRemoteForThread(row.slack_channel_id, row.slack_thread_ts, { sessionId: row.id, userMachineOnly: true });
         await OneOnOne.unlock(row.slack_channel_id, row.slack_thread_ts);
+        // One row for this control, and only when a lock was released.
+        if (held) {
+          auditOneOnOne("one_on_one.unlocked", {
+            operator: operatorId, persona: row.persona_id, sessionId: row.id,
+            channelId: row.slack_channel_id, threadTs: row.slack_thread_ts,
+            lockedUser: held.locked_user, via: "panel",
+          });
+        }
         // The unlock has applied; a failed reload must not turn it into a 500.
         try {
           deps.onUnlock?.(row.id);
@@ -307,7 +446,10 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         break;
       }
     }
-    audit({ action: `control.${action}`, operator: operatorId, role, session: row.id, detail: { model, mode } });
+    // unlock-1on1 is recorded above as one_on_one.unlocked (one row, not two).
+    if (action !== "unlock-1on1") {
+      audit({ action: `control.${action}`, operator: operatorId, role, session: row.id, detail: { model, mode } });
+    }
     const fresh = await Sessions.findById(row.id);
     return json(200, { ok: true, session: fresh });
   }
@@ -375,6 +517,230 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           200,
           (await deps.labels()).map((s) => ({ label: s.label, liveNodes: s.liveNodes, waiting: s.waiting, unserved: s.unserved })),
         );
+      }
+
+      // --- Agents: mandates and grants (console). Reads for any operator; grant
+      // changes are superadmin only and audited as grant.created / grant.revoked.
+      if (seg[2] === "agents") {
+        const liveness = { role: panelRole, registry: deps.registry };
+        if (seg.length === 3) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          return json(200, { agents: await agentSummaries(liveness) } satisfies AgentsResponse);
+        }
+        let name: string;
+        try { name = decodeURIComponent(seg[3]!); } catch { return json(422, { error: "invalid agent name" }); }
+        if (!PERSONA_NAME_RE.test(name)) return json(422, { error: "invalid agent name" });
+        if (!isAgent(name)) return json(404, { error: `no agent named '${name}'` });
+
+        // GET /panel/api/agents/:name
+        if (seg.length === 4) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          return json(200, (await agentDetail(name, liveness)) satisfies AgentDetailResponse);
+        }
+
+        if (seg[4] !== "grants" || seg.length > 6) return json(404, { error: "not found" });
+
+        // GET|POST /panel/api/agents/:name/grants
+        if (seg.length === 5) {
+          if (req.method === "GET") return json(200, { grants: await grantViews(name) } satisfies AgentGrantsResponse);
+          if (req.method !== "POST") return json(405, { error: "method not allowed" });
+          const denied = requireSuperadmin(role, { action: "grant.create", operator: operatorId });
+          if (denied) return denied;
+          let body: unknown;
+          try { body = await req.json(); } catch { return json(400, { error: "malformed JSON body" }); }
+          const parsed = createGrantSchema.safeParse(body);
+          if (!parsed.success) return json(400, { error: issuesLine(parsed.error) });
+          const b = parsed.data;
+          if (b.expiresAt != null && b.expiresAt <= Date.now()) return json(400, { error: "expiresAt must be in the future" });
+          let row: AgentGrants.AgentGrantRow;
+          try {
+            row = await AgentGrants.create({
+              tenantId: "default",
+              persona: name,
+              subjectKind: b.subjectKind,
+              subjectId: b.subjectId,
+              role: b.role,
+              deny: b.deny,
+              dmOnly: b.dmOnly,
+              createdBy: operatorId,
+              expiresAt: b.expiresAt ?? null,
+              note: b.note ?? null,
+            });
+          } catch (e) {
+            // The repository's own combination rules (e.g. a channel subject can
+            // only be a member): a request error, said plainly.
+            if (e instanceof Error && e.message.startsWith("agent grant: ")) {
+              return json(400, { error: e.message.slice("agent grant: ".length) });
+            }
+            throw e;
+          }
+          invalidateGrants(name);
+          const grant = consoleGrantView(row);
+          emitAudit({
+            tenantId: "default",
+            persona: name,
+            actorKind: "operator",
+            actorId: operatorId,
+            action: "grant.created",
+            targetKind: "grant",
+            targetId: row.id,
+            summary: `${row.deny ? "deny" : row.role} for ${row.subjectKind} ${row.subjectId}`,
+            details: { ...grantDetails(row), operatorRole: role },
+          });
+          return json(201, { grant } satisfies CreateGrantResponse);
+        }
+
+        // DELETE /panel/api/agents/:name/grants/:id
+        if (req.method !== "DELETE") return json(405, { error: "method not allowed" });
+        const denied = requireSuperadmin(role, { action: "grant.revoke", operator: operatorId });
+        if (denied) return denied;
+        let id: string;
+        try { id = decodeURIComponent(seg[5]!); } catch { return json(404, { error: "no such grant" }); }
+        const row = await AgentGrants.findById(id);
+        // A grant of another agent is not this agent's: same answer as none.
+        if (!row || row.persona !== name) return json(404, { error: "no such grant on this agent" });
+        // revoke() fires the repository's change hook, which clears the
+        // in-process grant cache (role.ts registers it at import).
+        if (!(await AgentGrants.revoke(id))) return json(404, { error: "no such grant on this agent" });
+        emitAudit({
+          tenantId: "default",
+          persona: name,
+          actorKind: "operator",
+          actorId: operatorId,
+          action: "grant.revoked",
+          targetKind: "grant",
+          targetId: row.id,
+          summary: `revoked ${row.deny ? "deny" : row.role} for ${row.subjectKind} ${row.subjectId}`,
+          details: { ...grantDetails(row), operatorRole: role },
+        });
+        return json(200, { ok: true } satisfies RevokeGrantResponse);
+      }
+
+      // GET /panel/api/grants: every console grant across agents, for the
+      // Access page. Read-only, any operator.
+      if (seg.length === 3 && seg[2] === "grants") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        return json(200, { grants: await allConsoleGrants() } satisfies AllGrantsResponse);
+      }
+
+      // GET /panel/api/audit: the durable audit trail, newest first. Read-only,
+      // any authenticated operator.
+      if (seg.length === 3 && seg[2] === "audit") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const q = auditQuerySchema.safeParse(queryOf(url));
+        if (!q.success) return json(400, { error: issuesLine(q.error) });
+        const { persona, action, actor, session, decision, since, until, cursor, limit } = q.data;
+        const page = await AuditEvents.list(
+          { persona, action, actorId: actor, sessionId: session, decision, since, until },
+          { cursor, limit },
+        );
+        return json(200, page satisfies AuditPageResponse);
+      }
+
+      // GET /panel/api/environments: where agents run. Read-only, any operator.
+      if (seg.length === 3 && seg[2] === "environments") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        return json(200, (await environmentsView({ role: panelRole, registry: deps.registry })) satisfies EnvironmentsResponse);
+      }
+
+      // GET /panel/api/console-roles: the allowlist file (or env lists), for
+      // superadmins only (it lists every console user's email). It is edited
+      // where it lives, never here.
+      if (seg.length === 3 && seg[2] === "console-roles") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const denied = requireSuperadmin(role, { action: "console.roles.read", operator: operatorId });
+        if (denied) return denied;
+        const cfg = loadRoleConfig();
+        return json(200, { superadmin: [...cfg.superadmin], operator: [...cfg.operator] } satisfies ConsoleRolesResponse);
+      }
+
+      // GET /panel/api/overview: headline counts and the latest audit events.
+      if (seg.length === 3 && seg[2] === "overview") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const now = Date.now();
+        const [liveSessions, pendingApprovals, auditEvents24h, recent] = await Promise.all([
+          Sessions.countByStatus("running"),
+          PendingGates.countPending(now),
+          AuditEvents.countSince(now - 24 * 60 * 60 * 1000),
+          AuditEvents.list({}, { limit: 10 }),
+        ]);
+        return json(200, {
+          counts: { agents: agentNames().length, liveSessions, pendingApprovals, auditEvents24h },
+          recentAudit: recent.items,
+        } satisfies OverviewResponse);
+      }
+
+      // --- Memory: brain sources and their pages, read-only. Personal (`user-*`)
+      // and profile (`profile-*`) stores hold what one person told an agent:
+      // superadmin only, hidden from an operator's store list, and every page
+      // a superadmin opens in one is audited (memory.page.viewed, no content).
+      // Other stores: any operator, not audited, like every other panel read.
+      if (seg[2] === "memory") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const unavailable = memoryUnavailableReason();
+        if (unavailable) return json(503, { error: unavailable });
+        const memory = deps.memory ?? localMemoryBrowser();
+
+        // GET /panel/api/memory/stores
+        if (seg.length === 4 && seg[3] === "stores") {
+          const r = getPersonaRegistry();
+          const agents = agentStoreNames([
+            { name: "default", agentId: agentIdSync() },
+            ...r.list().map((p) => ({ name: p.name, agentId: p.slackUserId })),
+          ]);
+          const stores = (await memory.stores())
+            .filter((s) => role === "superadmin" || !isPrivateStore(s.id))
+            .map((s) => ({ ...s, label: storeLabel(s.id, agents) }));
+          return json(200, { stores } satisfies MemoryStoresResponse);
+        }
+
+        // GET /panel/api/memory/stores/:id/pages
+        if (seg.length === 6 && seg[3] === "stores" && seg[5] === "pages") {
+          const store = seg[4]!;
+          if (!STORE_ID_RE.test(store)) return json(422, { error: "invalid store id" });
+          const q = memoryPagesQuerySchema.safeParse(queryOf(url));
+          if (!q.success) return json(400, { error: issuesLine(q.error) });
+          if (isPrivateStore(store)) {
+            const denied = requireSuperadmin(role, { action: "memory.private", operator: operatorId });
+            if (denied) return denied;
+          }
+          const offset = Number(q.data.cursor ?? 0);
+          const limit = q.data.limit ?? 50;
+          // One row past the page says whether there is a next one.
+          const rows = await memory.pages(store, { offset, limit: limit + 1 });
+          const items = rows.slice(0, limit);
+          return json(200, {
+            items,
+            nextCursor: rows.length > limit ? String(offset + limit) : null,
+          } satisfies MemoryPagesResponse);
+        }
+
+        // GET /panel/api/memory/pages?store=&slug=
+        if (seg.length === 4 && seg[3] === "pages") {
+          const q = memoryPageQuerySchema.safeParse(queryOf(url));
+          if (!q.success) return json(400, { error: issuesLine(q.error) });
+          const priv = isPrivateStore(q.data.store);
+          if (priv) {
+            const denied = requireSuperadmin(role, { action: "memory.private", operator: operatorId });
+            if (denied) return denied;
+          }
+          const page = await memory.page(q.data.store, q.data.slug);
+          if (!page) return json(404, { error: "no such page in that store" });
+          if (priv) {
+            emitAudit({
+              tenantId: "default",
+              actorKind: "operator",
+              actorId: operatorId,
+              action: "memory.page.viewed",
+              targetKind: "memory_page",
+              targetId: `${page.store}/${page.slug}`,
+              summary: `viewed a ${storeKind(page.store)} memory page`,
+              details: { store: page.store, slug: page.slug, storeKind: storeKind(page.store), operatorRole: role },
+            });
+          }
+          return json(200, page satisfies MemoryPageResponse);
+        }
+        return json(404, { error: "not found" });
       }
 
       // --- Runtime persona changes. Git is the source of truth; these are for
@@ -569,10 +935,13 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             throw e;
           }
           const reload = await publishConfigReload(deps.pubsub, tenant);
-          audit({
-            action: "persona.override", operator: operatorId, role, outcome: "ok",
-            detail: { tenantId: tenant, persona: name, field, op: req.method === "PUT" ? "set" : "clear" },
-          });
+          // A DELETE that removed nothing changed nothing: no audit row.
+          if (req.method === "PUT" || removed) {
+            audit({
+              action: "persona.override", operator: operatorId, role, outcome: "ok",
+              detail: { tenantId: tenant, persona: name, field, op: req.method === "PUT" ? "set" : "clear" },
+            });
+          }
           return json(200, { ok: true, ...(removed !== undefined ? { removed } : {}), ...reload });
         }
         return json(404, { error: "not found" });
@@ -597,13 +966,24 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             panelOwner: deps.panelLock ? (id) => deps.panelLock!.owner(id) : undefined,
           },
         );
-        return json(200, { sessions });
+        return json(200, { sessions } satisfies SessionsResponse);
       }
 
       // /panel/api/sessions/:id[/sub]
       if (seg.length >= 4 && seg[2] === "sessions") {
         const id = seg[3]!;
         const sub = seg[4];
+
+        // GET /panel/api/sessions/:id/audit, before the row lookup: the audit
+        // trail outlives a session row.
+        if (sub === "audit" && seg.length === 5) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          const q = pageQuerySchema.safeParse(queryOf(url));
+          if (!q.success) return json(400, { error: issuesLine(q.error) });
+          const page = await AuditEvents.list({ sessionId: id }, q.data);
+          return json(200, page satisfies AuditPageResponse);
+        }
+
         const row = await Sessions.findById(id);
         if (!row) return json(404, { error: "session not found" });
 
@@ -614,7 +994,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           // TODO(transcript): the durable SDK transcript read from the RWX
           // volume (design §2) attaches here as `transcript`; the live tail is
           // the SSE endpoint. Left for the UI-driven follow-up.
-          return json(200, { session: row, panel_locked_by: lockedBy ?? undefined });
+          return json(200, { session: row, panel_locked_by: lockedBy ?? undefined } satisfies SessionDetailResponse);
         }
 
         // GET /panel/api/sessions/:id/events  (SSE)

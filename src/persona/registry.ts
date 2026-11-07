@@ -159,6 +159,7 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
       runsOn: p.runsOn ?? null,
       kbSources: p.kbSources ?? null,
       background: p.background ?? null,
+      soulJson: p.soulJson ?? null,
     }));
   const def = all.find((p) => p.name === "default") ?? null;
   const defaultFields = def

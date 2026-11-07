@@ -8,6 +8,7 @@ import type { SlackContext } from "../../src/gateway/slack/mcp-tools";
 import { NOT_OWN_TURN_REFUSAL, ONE_ON_ONE_REFUSAL, proactiveRule } from "../../src/proactive/rule-tool";
 import { __setProactiveSoulSource } from "../../src/soul/proactive";
 import { fakeBrain } from "../memory/fake-brain";
+import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
 
 const NOW = new Date("2026-10-27T10:00:00Z");
 // Global ceiling `ask`; C0TEAM's own ceiling `act`; C0PUB inherits `ask`.
@@ -313,5 +314,26 @@ describe("proactive_rule", () => {
     expect(r.isError).toBeUndefined();
     expect(page(slug)!.meta.level).toBe("ignore");
     expect(brain.tagsOf(source, slug)).toEqual([]);
+  });
+});
+
+describe("proactive_rule for a named persona", () => {
+  test("its own manager sets a global rule; the default's manager is refused, naming the persona's", async () => {
+    const alpha = { name: "alpha", slackUserId: "UALPHAP", outClient: null, soulJson: { manager: { userId: "UALPHAMGR" } } } as any;
+    const reg: PersonaRegistry = {
+      lookupByUserId: (id) => (id === "UALPHAP" ? alpha : null), lookupByName: (n) => (n === "alpha" ? alpha : null), list: () => [alpha],
+      isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+    };
+    setPersonaRegistry(reg);
+    try {
+      const args = { kind: "invoice emails", scope: "global" as const, level: "ask" as const, quote: "ask" };
+      const refused = await proactiveRule(ctx({ userId: WORLD.manager, personaId: "alpha" }), args, deps());
+      expect(text(refused)).toBe("refused: ask <@UALPHAMGR> to set this; only they can approve it here");
+      const ok = await proactiveRule(ctx({ userId: "UALPHAMGR", personaId: "alpha" }), args, deps());
+      expect(ok.isError).toBeUndefined();
+    } finally {
+      __resetPersonaRegistry();
+      writeSoulFixture(WORLD);
+    }
   });
 });

@@ -1,0 +1,48 @@
+/* Dev-only gallery layout. Ships only in the dev server's lazy chunk. */
+
+.sl-gallery__section {
+  margin-bottom: var(--sl-gap-xl);
+}
+
+.sl-gallery__title {
+  margin-bottom: var(--sl-pad-md);
+  font-size: var(--sl-text-heading);
+  line-height: var(--sl-leading-heading);
+  font-weight: var(--sl-weight-semibold);
+}
+
+.sl-gallery__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sl-gap-xs);
+  margin-bottom: var(--sl-pad-md);
+}
+
+.sl-gallery__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: var(--sl-gap-md);
+  align-items: start;
+}
+
+.sl-gallery__stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sl-pad-md);
+}
+
+.sl-gallery__gap {
+  height: var(--sl-gap-lg);
+}
+
+.sl-gallery__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--sl-radius);
+  box-shadow: inset 0 0 0 1px var(--sl-border);
+  color: var(--sl-text-secondary);
+}
