@@ -28,6 +28,7 @@ import { ledgerTurnRun, type TurnPass } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { quietForVoice, voiceTurns } from "../../voice/turn-flags";
+import { personaAgentId as personaAgentIdFor } from "../../persona/agent-slice";
 import { VoiceCalls } from "../../voice/call";
 import { voiceBundleFromEnv, voiceConfigFromEnv, type VoiceConfig } from "../../voice/config";
 import { drainVoiceCalls, endCallsOnSessionExit, makeMonoVoiceHost, voiceServersFor } from "../../voice/hosts";
@@ -1311,14 +1312,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const brainGateFor = async (ctx: BrainGateCtx, known?: { lockedUser: string | null }): Promise<GateInput> => {
     const soul = soulData();
     const lockedUser = known ? known.lockedUser : ((await OneOnOne.find(ctx.channel, ctx.threadTs))?.locked_user ?? null);
-    // Use the persona's Slack user ID as the agent brain-slice key when in
-    // multi-persona mode; fall back to the process-level bot ID otherwise.
-    const personaId = ctx.personaId && ctx.personaId !== "default" ? ctx.personaId : null;
-    // Managed + not live: livePersona throws, so the gate refuses rather than
-    // reading or writing the default agent's private brain slice.
-    const personaAgentId = personaId
-      ? (livePersona(personaId)?.slackUserId ?? agentIdSync())
-      : agentIdSync();
+    // The persona's Slack user ID as the agent brain-slice key, the process
+    // agent otherwise (shared with the console's history reader). Managed +
+    // not live: it throws, so the gate refuses rather than reading or writing
+    // the default agent's private brain slice.
+    const personaAgentId = personaAgentIdFor(ctx.personaId);
     return {
       // A wake's initiator is the agent itself, and the agent is not a person
       // talking: it writes to its own mind like any background turn.

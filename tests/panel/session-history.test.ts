@@ -36,14 +36,14 @@ function memoryWith(bySource: Record<string, Record<string, MemoryTimelineRow[]>
   };
 }
 
-function registryWith(personas: Array<{ name: string; slackUserId: string }>): PersonaRegistry {
+function registryWith(personas: Array<{ name: string; slackUserId: string }>, managed = true): PersonaRegistry {
   const full = personas.map((p) => ({ config: { slackUserId: p.slackUserId, name: p.name }, outClient: null, ...p }) as unknown as Persona);
   return {
     lookupByUserId: (id) => full.find((p) => p.slackUserId === id) ?? null,
     lookupByName: (n) => full.find((p) => p.name === n) ?? null,
     list: () => full,
     isMultiPersonaMode: () => full.length > 0,
-    isManaged: () => true,
+    isManaged: () => managed,
     tombstonedPersonaFor: () => null,
     defaultPersona: () => ({ model: null, mcp: null, runsOn: null }),
   };
@@ -145,6 +145,25 @@ describe("GET /panel/api/sessions/:id/history", () => {
     const r = await get<SessionHistoryResponse>(api, `/panel/api/sessions/${row.id}/history`);
     expect(r.body.items.map((i) => i.text)).toEqual(["q", "a"]);
     expect(seen.every((s) => s.startsWith("agent-uscout:"))).toBe(true);
+  });
+
+  it("resolves the slice as the writer does: an unmanaged registry's unknown persona is the process agent; a managed one not live has none", async () => {
+    setPersonaRegistry(registryWith([], false));
+    const row = await session("ghost");
+    const slug = `conversations/${row.id.toLowerCase()}`;
+    const seen: string[] = [];
+    const api = createPanelApi({
+      registry: null, pubsub: null, panelLock: null, chat: async () => {},
+      memory: memoryWith({ "agent-uagent": { [slug]: [turn(1, envelope("q"), "a")] } }, seen),
+    });
+    const r = await get<SessionHistoryResponse>(api, `/panel/api/sessions/${row.id}/history`);
+    expect(r.body.items.map((i) => i.text)).toEqual(["q", "a"]);
+
+    setPersonaRegistry(registryWith([], true));
+    seen.length = 0;
+    const gone = await get<SessionHistoryResponse>(api, `/panel/api/sessions/${row.id}/history`);
+    expect(gone.body.items).toEqual([]);
+    expect(seen).toEqual([]);
   });
 
   it("degrades to a note when memory is off, and when the read fails", async () => {

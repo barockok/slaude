@@ -14,19 +14,29 @@ import type { MemoryBrowser, MemoryTimelineRow } from "../../knowledge/memory-br
 import { agentIdSync } from "../../knowledge/agent-identity";
 import { AGENT_SOURCE, agentSourceId } from "../../knowledge/scope";
 import { conversationSlug } from "../../memory/brain-provider";
-import { getPersonaRegistry } from "../../persona/registry";
+import { PersonaNotLiveError } from "../../persona/registry";
+import { personaAgentId } from "../../persona/agent-slice";
 import { redactSecrets } from "../../redact";
 import type { SessionHistoryItem, SessionHistoryResponse } from "./api-types";
 
 /** Rows read per request: the page is cut from these. */
 const MAX_ROWS = 1000;
 
-/** The agent sources a session's conversation page may live in, own slice first. */
+/**
+ * The agent sources a session's conversation page may live in, own slice
+ * first: the slice the writer resolves (personaAgentId), and the legacy
+ * `agent` source when that is the process agent. A managed persona that is
+ * not live has none.
+ */
 export function agentSourcesFor(personaId: string | null | undefined): string[] {
-  const persona = personaId && personaId !== "default" ? getPersonaRegistry().lookupByName(personaId) : null;
-  if (persona) return [agentSourceId(persona.slackUserId)];
-  if (personaId && personaId !== "default") return [];
-  return [agentSourceId(agentIdSync()), AGENT_SOURCE];
+  let id: string;
+  try {
+    id = personaAgentId(personaId);
+  } catch (e) {
+    if (e instanceof PersonaNotLiveError) return [];
+    throw e;
+  }
+  return id === agentIdSync() ? [agentSourceId(id), AGENT_SOURCE] : [agentSourceId(id)];
 }
 
 const attr = (open: string, name: string): string | undefined => {
