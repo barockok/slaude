@@ -274,7 +274,7 @@ describe("kb_memoize supersedes", () => {
     s.deps.requestApproval = async (r) => { asked.push(r.summary); return { approved: false, by: "U0MGR" }; };
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "team/new", content: "new", summary: "newer fact", type: "team-fact", supersedes: "team/old" }], target: "shared" }, s.deps);
     expect(r.isError).toBe(true);
-    expect(asked).toEqual([`KB write → shared: team/new — newer fact (and tags team/old as ${SUPERSEDED_TAG})`]);
+    expect(asked).toEqual([`Memory write → shared: team/new — newer fact (and tags team/old as ${SUPERSEDED_TAG})`]);
     expect(s.writes).toEqual([]);
     expect(s.brain.tagsOf(SHARED_SOURCE, "team/old")).toEqual([]);
   });
@@ -289,7 +289,7 @@ describe("kb_memoize supersedes", () => {
     };
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/new", content: "New", summary: "s", type: "outcome", supersedes: "notes/old" }] }, s.deps);
     expect(r.isError).toBe(true);
-    expect(text(r)).toContain("kb_memoize wrote notes/new, but tagging notes/old as superseded failed (engine went away)");
+    expect(text(r)).toContain("memory_save wrote notes/new, but tagging notes/old as superseded failed (engine went away)");
     expect(s.brain.contentOf(mine, "notes/new")).toBeDefined();
   });
 });

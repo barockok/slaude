@@ -14,6 +14,7 @@ import { auditGateRow } from "../../audit/emit";
 import * as OneOnOne from "../../db/one-on-one";
 import { canDecidePermission } from "../../access/permission-auth";
 import type { TurnOrigin } from "../../knowledge/gated-dispatch";
+import { memoryToolIdTwin, memoryToolTwin } from "../../tools/contracts/kb";
 
 type PendingKey = string; // toolUseID
 
@@ -100,14 +101,19 @@ export const PERM_REFUSED_TEXT = "Only the person who asked or an approver can d
 
 export type PermissionDecision = Awaited<ReturnType<CanUseTool>>;
 
-/** Comma-separated SLAUDE_AUTO_ALLOW_TOOLS → set. Shared by gateway + node. */
+/** Comma-separated SLAUDE_AUTO_ALLOW_TOOLS → set. Shared by gateway + node.
+ *  A memory tool listed under either name (memory_save or its deprecated alias
+ *  kb_memoize, bare or as `mcp__slaude_kb__<name>`) allows both names. */
 export function autoAllowFromEnv(): Set<string> {
-  return new Set(
-    (process.env.SLAUDE_AUTO_ALLOW_TOOLS ?? "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
+  const out = new Set<string>();
+  for (const raw of (process.env.SLAUDE_AUTO_ALLOW_TOOLS ?? "").split(",")) {
+    const name = raw.trim();
+    if (!name) continue;
+    out.add(name);
+    const twin = memoryToolIdTwin(name) ?? memoryToolTwin(name);
+    if (twin) out.add(twin);
+  }
+  return out;
 }
 
 const VOICE_MID_CALL_TOOLS = new Set([
@@ -180,8 +186,8 @@ export function permissionPolicy(
   if (toolName.startsWith("mcp__slaude_session__")) {
     return { behavior: "allow", updatedInput: input };
   }
-  // KB introspection is read-only — agent uses it to discover and read
-  // knowledge bases without spamming the user.
+  // Memory tools (memory_* and their kb_* aliases): reads never card, and
+  // writes that need one are carded by the gated dispatch, not here.
   if (toolName.startsWith("mcp__slaude_kb__")) {
     return { behavior: "allow", updatedInput: input };
   }

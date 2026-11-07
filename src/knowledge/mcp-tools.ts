@@ -469,7 +469,7 @@ export const brainHandlers = {
   },
   kb_memoize: async (p: KbMemoizeArgs, d: BrainToolDeps): Promise<ToolResult> => {
     if (!Array.isArray(p.pages) || p.pages.length === 0) {
-      return err("kb_memoize requires at least one page");
+      return err("memory_save requires at least one page");
     }
     // gbrain stores a page under its lowercased slug, then chunks it under the
     // slug as given, so a mixed-case slug fails with "Page not found" after the
@@ -478,7 +478,7 @@ export const brainHandlers = {
     const lower = (s: string | undefined) => (typeof s === "string" ? s.toLowerCase() : s);
     const pages = p.pages.map((pg) => ({ ...pg, slug: lower(pg.slug)!, supersedes: lower(pg.supersedes) }));
     if (pages.length > KB_MEMOIZE_MAX_PAGES) {
-      return err(`kb_memoize accepts at most ${KB_MEMOIZE_MAX_PAGES} pages per call (got ${pages.length})`);
+      return err(`memory_save accepts at most ${KB_MEMOIZE_MAX_PAGES} pages per call (got ${pages.length})`);
     }
     // C1: settle the agent identity before resolving the write scope, so a write
     // in the boot window (before auth.test lands) targets the real `agent-<id>`
@@ -528,8 +528,8 @@ export const brainHandlers = {
     }
     const trail = retired.length > 0 ? ` (and tags ${retired.join(", ")} as ${SUPERSEDED_TAG})` : "";
     const describe = pages.length === 1
-      ? `KB write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}${trail}`
-      : `KB write ${label}: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}${trail}`;
+      ? `Memory write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}${trail}`
+      : `Memory write ${label}: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}${trail}`;
     try {
       const call = d.call ?? brainCall;
       // Supersede check, before any write: the older page must exist in the
@@ -566,7 +566,7 @@ export const brainHandlers = {
               results.push(await call("remove_tag", { slug, tag: SUPERSEDED_TAG }, scope));
             } catch (e) {
               throw new TrailError(
-                `kb_memoize wrote ${slug}, but removing its ${SUPERSEDED_TAG} tag failed (${e instanceof Error ? e.message : String(e)}); readers still treat it as superseded. Retry the same kb_memoize call.`,
+                `memory_save wrote ${slug}, but removing its ${SUPERSEDED_TAG} tag failed (${e instanceof Error ? e.message : String(e)}); readers still treat it as superseded. Retry the same memory_save call.`,
               );
             }
           }
@@ -576,7 +576,7 @@ export const brainHandlers = {
               results.push(await call("add_tag", { slug: pg.supersedes, tag: SUPERSEDED_TAG }, scope));
             } catch (e) {
               throw new TrailError(
-                `kb_memoize wrote ${pg.slug}, but tagging ${pg.supersedes} as ${SUPERSEDED_TAG} failed (${e instanceof Error ? e.message : String(e)}). ${pg.slug} already says it supersedes ${pg.supersedes}; retry kb_memoize for ${pg.slug} with the same supersedes to finish the trail.`,
+                `memory_save wrote ${pg.slug}, but tagging ${pg.supersedes} as ${SUPERSEDED_TAG} failed (${e instanceof Error ? e.message : String(e)}). ${pg.slug} already says it supersedes ${pg.supersedes}; retry memory_save for ${pg.slug} with the same supersedes to finish the trail.`,
               );
             }
           }
@@ -620,7 +620,7 @@ export const brainHandlers = {
       // A row without an id is keyed by its position, so paging stays consistent.
       let rows = orderTimeline(raw ?? []).map((r, i) => ({ r, id: r.id ?? i + 1 }));
       if (p.before !== undefined) {
-        if (!/^\d+$/.test(p.before)) return err("kb_thread_history: before must be an entry id from the footer of a previous call");
+        if (!/^\d+$/.test(p.before)) return err("memory_thread_history: before must be an entry id from the footer of a previous call");
         const before = Number(p.before);
         rows = rows.filter((x) => x.id < before);
       }
@@ -651,11 +651,11 @@ export const brainHandlers = {
       }
       return ok(out.join("\n"));
     } catch (e) {
-      return err(humanizeBrainError("kb_thread_history", e));
+      return err(humanizeBrainError("memory_thread_history", e));
     }
   },
   kb_delete_page: (p: { slug: string; reason: string }, d: BrainToolDeps) =>
-    runGated("delete_page", { slug: p.slug }, `KB delete: ${p.slug} — ${p.reason}`, d),
+    runGated("delete_page", { slug: p.slug }, `Memory delete: ${p.slug} — ${p.reason}`, d),
 };
 
 /** `kbs`: the session persona's readable KBs, resolved per call (personaKbs);
@@ -663,26 +663,28 @@ export const brainHandlers = {
 export function createKbMcp(deps?: BrainToolDeps, opts: { kbs?: () => KbEntry[] } = {}): McpSdkServerConfigWithInstance {
   const kbs = opts.kbs ?? loadKbs;
   const c = kbContract.tools;
+  // Each memory tool mounts under its memory_* name and its deprecated kb_*
+  // alias: one handler and one schema for both (contract MEMORY_TOOL_ALIASES).
   const brainTools = deps && brainEnabled()
     ? [
-        tool(c.kb_think.name, c.kb_think.description, c.kb_think.schema,
-          (a: { question: string }) => brainHandlers.kb_think(a, deps)),
-        tool(c.kb_search.name, c.kb_search.description, c.kb_search.schema,
-          (a: { query: string; limit?: number }) => brainHandlers.kb_search(a, deps)),
-        tool(c.kb_get_page.name, c.kb_get_page.description, c.kb_get_page.schema,
-          (a: { slug: string }) => brainHandlers.kb_get_page(a, deps)),
-        tool(c.kb_list_pages.name, c.kb_list_pages.description, c.kb_list_pages.schema,
-          (a: { type?: string; tag?: string; limit?: number }) => brainHandlers.kb_list_pages(a, deps)),
-        tool(c.kb_graph.name, c.kb_graph.description, c.kb_graph.schema,
-          (a: { slug: string }) => brainHandlers.kb_graph(a, deps)),
-        tool(c.kb_memoize.name, c.kb_memoize.description, c.kb_memoize.schema,
-          (a: KbMemoizeArgs) => brainHandlers.kb_memoize(a, deps)),
+        ...[c.memory_think, c.kb_think].map((t) => tool(t.name, t.description, t.schema,
+          (a: { question: string }) => brainHandlers.kb_think(a, deps))),
+        ...[c.memory_search, c.kb_search].map((t) => tool(t.name, t.description, t.schema,
+          (a: { query: string; limit?: number }) => brainHandlers.kb_search(a, deps))),
+        ...[c.memory_get, c.kb_get_page].map((t) => tool(t.name, t.description, t.schema,
+          (a: { slug: string }) => brainHandlers.kb_get_page(a, deps))),
+        ...[c.memory_list, c.kb_list_pages].map((t) => tool(t.name, t.description, t.schema,
+          (a: { type?: string; tag?: string; limit?: number }) => brainHandlers.kb_list_pages(a, deps))),
+        ...[c.memory_graph, c.kb_graph].map((t) => tool(t.name, t.description, t.schema,
+          (a: { slug: string }) => brainHandlers.kb_graph(a, deps))),
+        ...[c.memory_save, c.kb_memoize].map((t) => tool(t.name, t.description, t.schema,
+          (a: KbMemoizeArgs) => brainHandlers.kb_memoize(a, deps))),
         tool(c.memory_about.name, c.memory_about.description, c.memory_about.schema,
           (a: { userId: string }) => brainHandlers.memory_about(a, deps)),
-        tool(c.kb_thread_history.name, c.kb_thread_history.description, c.kb_thread_history.schema,
-          (a: { limit?: number; before?: string }) => brainHandlers.kb_thread_history(a, deps)),
-        tool(c.kb_delete_page.name, c.kb_delete_page.description, c.kb_delete_page.schema,
-          (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps)),
+        ...[c.memory_thread_history, c.kb_thread_history].map((t) => tool(t.name, t.description, t.schema,
+          (a: { limit?: number; before?: string }) => brainHandlers.kb_thread_history(a, deps))),
+        ...[c.memory_delete, c.kb_delete_page].map((t) => tool(t.name, t.description, t.schema,
+          (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps))),
       ]
     : [];
 
@@ -691,9 +693,9 @@ export function createKbMcp(deps?: BrainToolDeps, opts: { kbs?: () => KbEntry[] 
     version: "0.2.0",
     tools: [
       ...brainTools,
-      tool(c.list_kbs.name, c.list_kbs.description, c.list_kbs.schema, () => kbHandlers.list_kbs(kbs())),
-      tool(c.search_kbs.name, c.search_kbs.description, c.search_kbs.schema,
-        (a: { query: string; limit?: number }) => kbHandlers.search_kbs(a, kbs())),
+      ...[c.memory_stores, c.list_kbs].map((t) => tool(t.name, t.description, t.schema, () => kbHandlers.list_kbs(kbs()))),
+      ...[c.memory_search_stores, c.search_kbs].map((t) => tool(t.name, t.description, t.schema,
+        (a: { query: string; limit?: number }) => kbHandlers.search_kbs(a, kbs()))),
     ],
   });
 }

@@ -161,7 +161,7 @@ describe("contract snapshots — MCP servers register exactly what the contracts
     process.env.SLAUDE_BRAIN_DISABLED = "1";
     try {
       const registered = await listRegistered(createKbMcp(fakeBrainDeps));
-      expect([...registered.keys()].sort()).toEqual(["list_kbs", "search_kbs"]);
+      expect([...registered.keys()].sort()).toEqual(["list_kbs", "memory_search_stores", "memory_stores", "search_kbs"]);
     } finally {
       delete process.env.SLAUDE_BRAIN_DISABLED;
     }
