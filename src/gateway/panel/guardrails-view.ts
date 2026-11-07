@@ -50,6 +50,11 @@ export interface GuardrailDeps {
   rules?: (agentId: string) => Promise<ProactiveRule[]>;
 }
 
+export interface GuardrailViewer {
+  /** Superadmins see redaction pattern values; operators see counts. */
+  role: "superadmin" | "operator";
+}
+
 const RULES_TIMEOUT_MS = 3000;
 
 /** Set and not blank: the value came from the environment. */
@@ -311,25 +316,34 @@ function policy(): GuardrailFamily {
   };
 }
 
-function redaction(name: string, text: string): GuardrailFamily {
+function redaction(name: string, text: string, canSeeValues: boolean): GuardrailFamily {
   const def = soulData().redactPatterns;
-  const own = name === "default" ? def : soulDataFor(name).redactPatterns;
+  const own = name === "default" ? [] : soulDataFor(name).redactPatterns;
   const effective = redactPatternsFor(name);
-  const inherited = name !== "default" && own.length === 0 && def.length > 0;
-  const prose = soulSections(text, /redact/i);
+  // A pattern can name what it hides (a project, a customer): values for
+  // superadmins, a count for everyone else.
+  const shown = (xs: string[]): GuardrailSetting["value"] => (canSeeValues ? list(xs) : `${xs.length} ${xs.length === 1 ? "pattern" : "patterns"}`);
+  const hidden = canSeeValues ? undefined : "Only superadmins see the patterns themselves.";
+  const settings = [
+    setting("patterns", "Redacted from replies (default + own)", shown(effective), effective.length ? "soul" : "default", "the default agent's soul plus this agent's own",
+      `Matches are replaced with [REDACTED] in what the agent posts. An agent's own patterns add to the default's, never replace them.${hidden ? ` ${hidden}` : ""}`),
+  ];
+  if (name !== "default") {
+    settings.push(
+      setting("default-patterns", "From the default agent", shown(def), def.length ? "soul" : "default", "the default agent's soul (redact patterns)"),
+      setting("own-patterns", "This agent's own", shown(own), own.length ? "soul" : "default", "this agent's soul (redact patterns)"),
+    );
+  }
+  settings.push(setting("secrets", "Secret shapes masked", `${SECRET_PATTERN_COUNT} kinds (keys, tokens, bearer headers, JWTs)`, "code", "redact/index.ts",
+    "Masked in the status line, approval cards, the audit trail and console views."));
+  const prose = canSeeValues ? soulSections(text, /redact/i) : "";
   return {
     id: "redaction",
     title: "Redaction",
     summary: "Text that never leaves in a reply or a console view.",
     scope: "agent",
     status: "active",
-    settings: [
-      setting("patterns", "Redacted from replies", list(effective), effective.length ? "soul" : "default",
-        inherited ? "the default agent's soul (redact patterns)" : "this agent's soul (redact patterns)",
-        inherited ? "This agent names none, so the default agent's apply. Matches are replaced with [REDACTED]." : "Matches are replaced with [REDACTED] in what the agent posts."),
-      setting("secrets", "Secret shapes masked", `${SECRET_PATTERN_COUNT} kinds (keys, tokens, bearer headers, JWTs)`, "code", "redact/index.ts",
-        "Masked in the status line, approval cards, the audit trail and console views."),
-    ],
+    settings,
     ...(prose ? { text: prose, textSource: "SOUL.md" } : {}),
   };
 }
@@ -462,7 +476,7 @@ function budgets(name: string): GuardrailFamily {
 }
 
 /** Every guardrail family for one agent. */
-export async function guardrailsFor(name: string, deps: GuardrailDeps = {}): Promise<GuardrailsResponse> {
+export async function guardrailsFor(name: string, deps: GuardrailDeps = {}, viewer: GuardrailViewer = { role: "operator" }): Promise<GuardrailsResponse> {
   const text = soulText(name);
   const families = await Promise.all([
     toolPermissions(name),
@@ -471,7 +485,7 @@ export async function guardrailsFor(name: string, deps: GuardrailDeps = {}): Pro
     Promise.resolve(memoryGating(name)),
     Promise.resolve(profileGuard()),
     Promise.resolve(policy()),
-    Promise.resolve(redaction(name, text)),
+    Promise.resolve(redaction(name, text, viewer.role === "superadmin")),
     Promise.resolve(proactive(text)),
     learnedRules(name, deps),
     Promise.resolve(wakeTools()),

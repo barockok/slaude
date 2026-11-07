@@ -770,7 +770,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         const name = url.searchParams.get("agent") || "default";
         if (!PERSONA_NAME_RE.test(name) && name !== "default") return json(422, { error: "invalid agent name" });
         if (!isAgent(name)) return json(404, { error: `no agent named '${name}'` });
-        return json(200, (await guardrailsFor(name, deps.guardrails)) satisfies GuardrailsResponse);
+        return json(200, (await guardrailsFor(name, deps.guardrails, { role })) satisfies GuardrailsResponse);
       }
 
       // GET /panel/api/grants: every console grant across agents, for the

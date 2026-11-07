@@ -142,7 +142,7 @@ describe("SlackSurface", () => {
 });
 
 describe("SlackSurface redaction", () => {
-  test("a reply is redacted with the posting agent's own patterns, else the default's", async () => {
+  test("a reply is redacted with the default patterns plus the posting agent's own", async () => {
     setSoulData(SoulDataSchema.parse({ redactPatterns: ["default-secret"] }));
     const own = { name: "own", slackUserId: "UOWN", soulJson: { redactPatterns: ["own-secret"] }, config: { slackUserId: "UX", name: "own" }, outClient: null } as unknown as Persona;
     setPersonaRegistry({
@@ -159,7 +159,7 @@ describe("SlackSurface redaction", () => {
       client.chat.postMessage = async (a: { text: string }) => (sent.push(a.text), { ts: "1.0" });
       await makeSlackSurfaceFactory(client, "own")(binding()).reply({ text: "own-secret and default-secret" });
       await makeSlackSurfaceFactory(client)(binding()).reply({ text: "own-secret and default-secret" });
-      expect(sent).toEqual(["[REDACTED] and default-secret", "own-secret and [REDACTED]"]);
+      expect(sent).toEqual(["[REDACTED] and [REDACTED]", "own-secret and [REDACTED]"]);
     } finally {
       __resetPersonaRegistry();
       __resetSoulDataMemo();

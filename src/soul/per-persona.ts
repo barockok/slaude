@@ -135,19 +135,20 @@ export function channelApproversOf(soul: SoulData): Map<string, string[]> {
 }
 
 /**
- * The redaction patterns for what an agent posts: its own soul's when it
- * names any, else the default persona's. Read per post, so a soul change
- * applies at once.
+ * The redaction patterns for what an agent posts: the default persona's,
+ * plus the agent's own, deduplicated. A union, never a replacement: an agent's
+ * soul can only add redaction. Read per post, so a soul change applies at once.
  */
 export function redactPatternsFor(persona?: string | null): string[] {
   const def = soulData().redactPatterns;
-  if (!persona || persona === "default") return def;
+  if (!persona || persona === "default") return [...new Set(def)];
+  let own: string[] = [];
   try {
-    const own = soulDataFor(persona).redactPatterns;
-    return own.length ? own : def;
+    own = soulDataFor(persona).redactPatterns;
   } catch {
-    return def;
+    own = [];
   }
+  return [...new Set([...def, ...own])];
 }
 
 /**

@@ -158,11 +158,12 @@ describe("per-agent redaction and approval timeout", () => {
   test("an agent's own redaction patterns and timeout win; none of its own falls back to the default's", () => {
     setSoulData(soul({ ...DEFAULT, redactPatterns: ["default-\\d+"], approvalTimeoutSeconds: 120 }));
     setPersonaRegistry(registryWith([
-      { name: "own", soulJson: { identity: { name: "Own" }, redactPatterns: ["own-secret"], approvalTimeoutSeconds: 30 } },
+      { name: "own", soulJson: { identity: { name: "Own" }, redactPatterns: ["own-secret", "default-\\d+"], approvalTimeoutSeconds: 30 } },
       { name: "bare", soulJson: { identity: { name: "Bare" } } },
       { name: "files" },
     ]));
-    expect(redactPatternsFor("own")).toEqual(["own-secret"]);
+    // Own patterns add to the default's, never replace them; duplicates collapse.
+    expect(redactPatternsFor("own")).toEqual(["default-\\d+", "own-secret"]);
     expect(redactPatternsFor("bare")).toEqual(["default-\\d+"]);
     expect(redactPatternsFor("files")).toEqual(["default-\\d+"]);
     expect(redactPatternsFor(undefined)).toEqual(["default-\\d+"]);

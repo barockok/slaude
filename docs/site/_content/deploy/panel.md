@@ -84,7 +84,9 @@ come from (the manifest, the personas repo), never from the console.
 from `SLAUDE_AUTO_ALLOW_TOOLS`, the default permission mode, who may decide a
 card), approvals (who may approve for this agent, and the approval timeout),
 admission and grants, memory write gating (what is read freely, written
-freely, needs approval or a manager), the profile write guard, redaction,
+freely, needs approval or a manager), the profile write guard, redaction (the
+default soul's patterns plus the agent's own; the patterns themselves are
+shown to superadmins only, operators see a count),
 proactive restraint (from the soul's `## Proactive` block and the code's
 caps), learned proactive rules (from the agent's memory), the wake tool
 allow-list and the background and wake budgets. Each value has a source badge:

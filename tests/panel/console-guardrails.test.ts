@@ -20,6 +20,7 @@ import type { ProactiveRule } from "../../src/proactive/rules";
 
 const SECRET = "t".repeat(32);
 const operator = `${AT_COOKIE}=${mintSession({ sub: "s", email: "alice@example.com" }, "at", { secret: SECRET })}`;
+const superadmin = `${AT_COOKIE}=${mintSession({ sub: "s", email: "lead@example.com" }, "at", { secret: SECRET })}`;
 
 const SOUL = `# Ada
 
@@ -61,20 +62,22 @@ function registryWith(): PersonaRegistry {
   };
 }
 
-const get = async (path: string, rules: (id: string) => Promise<ProactiveRule[]> = async () => [rule]) => {
+const get = async (path: string, rules: (id: string) => Promise<ProactiveRule[]> = async () => [rule], who: string = operator) => {
   const api = createPanelApi({ registry: null, role: "mono", pubsub: null, panelLock: null, chat: async () => {}, guardrails: { rules } });
-  const res = (await api.fetch(new Request(`https://panel.example.com${path}`, { headers: { cookie: operator } })))!;
-  return { status: res.status, body: JSON.parse(await res.text()) };
+  const res = (await api.fetch(new Request(`https://panel.example.com${path}`, { headers: { cookie: who } })))!;
+  const text = await res.text();
+  return { status: res.status, body: JSON.parse(text), text };
 };
 const family = (r: GuardrailsResponse, id: GuardrailFamily["id"]) => r.families.find((f) => f.id === id)!;
 const value = (f: GuardrailFamily, key: string) => f.settings.find((s) => s.key === key)!;
 
-const ENV = ["SLAUDE_PANEL_SECRET", "SLAUDE_PANEL_OPERATORS", "SLAUDE_AUTO_ALLOW_TOOLS", "SLAUDE_WAKE_MAX_USD", "SLAUDE_DEFAULT_MODE", "SLAUDE_APPROVERS"];
+const ENV = ["SLAUDE_PANEL_SECRET", "SLAUDE_PANEL_OPERATORS", "SLAUDE_PANEL_SUPERADMIN", "ANTHROPIC_API_KEY", "SLACK_BOT_TOKEN", "SLAUDE_AUTO_ALLOW_TOOLS", "SLAUDE_WAKE_MAX_USD", "SLAUDE_DEFAULT_MODE", "SLAUDE_APPROVERS"];
 const saved: Record<string, string | undefined> = {};
 beforeEach(async () => {
   for (const k of ENV) saved[k] = process.env[k];
   process.env.SLAUDE_PANEL_SECRET = SECRET;
   process.env.SLAUDE_PANEL_OPERATORS = "alice@example.com";
+  process.env.SLAUDE_PANEL_SUPERADMIN = "lead@example.com";
   process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Read, memory_save";
   process.env.SLAUDE_WAKE_MAX_USD = "2";
   delete process.env.SLAUDE_DEFAULT_MODE;
@@ -131,7 +134,9 @@ describe("GET /panel/api/guardrails", () => {
 
     expect(value(family(g, "memory-gating"), "own-slice").value).toBe("agent-udefault");
     expect(family(g, "policy").status).toBe("not-implemented");
-    expect(value(family(g, "redaction"), "patterns")).toMatchObject({ source: "soul", value: ["secret-\\d+"] });
+    // An operator sees how many patterns, never the patterns.
+    expect(value(family(g, "redaction"), "patterns")).toMatchObject({ source: "soul", value: "1 pattern" });
+    expect(r.text).not.toContain("secret-");
 
     const pro = family(g, "proactive");
     expect(value(pro, "enabled")).toMatchObject({ value: true, source: "soul" });
@@ -160,7 +165,7 @@ describe("GET /panel/api/guardrails", () => {
     expect(value(family(g, "proactive"), "enabled")).toMatchObject({ value: false, source: "default" });
     expect(value(family(g, "memory-gating"), "own-slice").value).toBe("agent-upscout");
     // scout's soul names no redaction patterns or timeout: the default agent's apply, and the page says so.
-    expect(value(family(g, "redaction"), "patterns")).toMatchObject({ value: ["secret-\\d+"], origin: "the default agent's soul (redact patterns)" });
+    expect(value(family(g, "redaction"), "own-patterns")).toMatchObject({ value: "0 patterns", source: "default" });
     expect(value(family(g, "approvals"), "timeout")).toMatchObject({ value: "300 seconds", source: "default" });
   });
 
@@ -171,6 +176,25 @@ describe("GET /panel/api/guardrails", () => {
 
   test("an unknown agent is a 404", async () => {
     expect((await get("/panel/api/guardrails?agent=nobody")).status).toBe(404);
+  });
+});
+
+describe("guardrails never show secrets", () => {
+  test("a superadmin sees the redaction patterns (default + own); no env secret value appears for anyone", async () => {
+    process.env.ANTHROPIC_API_KEY = "sk-test-xxxxxxxxxxxxxxxxxxxx";
+    process.env.SLACK_BOT_TOKEN = "xoxb-test-0000000000";
+    process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Read";
+    for (const who of [operator, superadmin]) {
+      for (const agent of ["default", "scout"]) {
+        const r = await get(`/panel/api/guardrails?agent=${agent}`, undefined, who);
+        expect(r.status).toBe(200);
+        expect(r.text).not.toContain("sk-test-");
+        expect(r.text).not.toContain("xoxb-test");
+      }
+    }
+    const g = (await get("/panel/api/guardrails?agent=scout", undefined, superadmin)).body as GuardrailsResponse;
+    expect(value(family(g, "redaction"), "patterns")).toMatchObject({ value: ["secret-\\d+"] });
+    expect(value(family(g, "redaction"), "default-patterns")).toMatchObject({ value: ["secret-\\d+"] });
   });
 });
 
