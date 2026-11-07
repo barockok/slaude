@@ -46,6 +46,18 @@ describe("listSessions", () => {
     expect(page2.length).toBe(1);
   });
 
+  it("rows with the same updated_at page in a stable order (id breaks the tie)", async () => {
+    const rows = [];
+    for (let i = 0; i < 5; i++) rows.push(await seed("default", `C${i}`, `${i}.0`));
+    await db.run("UPDATE sessions SET updated_at = 1000");
+    const pages = [
+      ...(await Sessions.listSessions({ limit: 2, offset: 0 })),
+      ...(await Sessions.listSessions({ limit: 2, offset: 2 })),
+      ...(await Sessions.listSessions({ limit: 2, offset: 4 })),
+    ].map((r) => r.id);
+    expect(pages).toEqual(rows.map((r) => r.id).sort().reverse());
+  });
+
   it("filters by persona", async () => {
     await seed("default", "C1", "1.0");
     await seed("noah", "C2", "2.0");
