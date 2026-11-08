@@ -714,13 +714,13 @@ export class PermissionGate {
     /** Who started the turn (from the job token), stamped for click authorisation. */
     turn?: TurnStamp;
     /** An owner guardrail asks for this card (already re-evaluated by the
-     *  caller): no auto-allow policy, no "always allow", expires within ttlMs. */
+     *  caller): the policy's allows are skipped (its denies hold), no "always allow", expires within ttlMs. */
     forced?: ForcedCard & { ttlMs?: number };
   }): Promise<{ decision: PermissionDecision } | { pendingId: string }> {
-    if (!args.forced) {
-      const policy = permissionPolicy(args.toolName, args.input, this.#autoAllow, gateVoiceAudio(args.toolName));
-      if (policy) return { decision: policy };
-    }
+    // A forced card skips only the policy's allows; its hard denies (the
+    // synthesized OAuth tools, voice_start's checks) still hold.
+    const policy = permissionPolicy(args.toolName, args.input, this.#autoAllow, gateVoiceAudio(args.toolName));
+    if (policy && (!args.forced || policy.behavior === "deny")) return { decision: policy };
     const ttl = Math.min(PERM_GATE_TTL_MS, args.forced?.ttlMs ?? PERM_GATE_TTL_MS);
 
     await PendingGates.create({
@@ -766,10 +766,9 @@ export class PermissionGate {
     // An owner guardrail's approve rule forces the card: the auto-allow
     // policy does not apply to it (the rule is the owner's, the policy ours).
     const forced = (ctx as PermissionContext).ownerApproval;
-    if (!forced) {
-      const policy = permissionPolicy(toolName, input, this.#autoAllow, gateVoiceAudio(toolName));
-      if (policy) return policy;
-    }
+    // Only the policy's allows are skipped: its hard denies still hold.
+    const policy = permissionPolicy(toolName, input, this.#autoAllow, gateVoiceAudio(toolName));
+    if (policy && (!forced || policy.behavior === "deny")) return policy;
     const route = this.#routes.get(sessionId);
     if (!route) {
       // No live thread — fail closed so we don't silently grant ops.

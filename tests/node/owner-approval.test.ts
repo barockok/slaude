@@ -61,6 +61,13 @@ describe("the node's resolver", () => {
     expect(sent).toHaveLength(1);
   });
 
+  it("an owner approval keeps the local policy's hard denies: never asked", async () => {
+    const client: any = { postTool: async () => { throw new Error("must not ask"); } };
+    const r = makeNodePermissionResolver({ client, tokenFor: () => "tok" });
+    const out = await r("S1", "mcp__mail__authenticate", {}, { signal: new AbortController().signal, toolUseID: "tu-n4", ownerApproval: owner } as any);
+    expect(out.behavior).toBe("deny");
+  });
+
   it("a wake is refused before anything, owner approval or not", async () => {
     const client: any = { postTool: async () => { throw new Error("must not ask"); } };
     const r = makeNodePermissionResolver({ client, tokenFor: () => "tok", wakeFor: () => true });

@@ -1014,6 +1014,23 @@ describe("PermissionGate", () => {
 
 describe("PermissionGate: owner guardrail cards (forced)", () => {
   afterAll(() => { delete process.env.SLAUDE_AUTO_ALLOW_TOOLS; });
+  test("a forced card keeps the policy's hard denies: synthesized OAuth tools and voice_start are denied with no card", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app, AS_USR);
+    gate.bindSession("SFD", "C", "T");
+    const ac = new AbortController();
+    const a = { ruleId: "r#x", message: "m", deadline: Date.now() + 60_000 };
+    const oauth = (await gate.resolver("SFD", "mcp__x__authenticate", {}, { ...ctx("UFD1", ac.signal), ownerApproval: a })) as any;
+    expect(oauth.behavior).toBe("deny");
+    expect(oauth.message).toContain("OAuth connect must go through");
+    const voice = (await gate.resolver("SFD", "mcp__slaude_voice__voice_start", { brief: "x" }, { ...ctx("UFD2", ac.signal), ownerApproval: a })) as any;
+    expect(voice.behavior).toBe("deny");
+    const viaOpen = await gate.open({ sessionId: "SFD", toolName: "mcp__x__complete_authentication", input: {}, toolUseId: "UFD3", channel: "C", threadTs: "T", forced: { ruleId: "r#x", message: "m", ttlMs: 1000 } });
+    expect((viaOpen as any).decision.behavior).toBe("deny");
+    expect(f.posts).toHaveLength(0);
+    expect(await PendingGates.get("UFD1")).toBeNull();
+  });
+
   const approval = (ms = 60_000) => ({ ruleId: "deploys#ask", message: "Deploys need an approver. <!channel>", deadline: Date.now() + ms });
   test("a forced card skips the auto-allow policy, offers no Always, names the rule, and expires at the deadline", async () => {
     process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Bash";

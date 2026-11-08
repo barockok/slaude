@@ -12,7 +12,7 @@
  * tool in the node's SLAUDE_AUTO_ALLOW_TOOLS would run in a wake.
  *
  * An owner guardrail's approve rule (ctx.ownerApproval, set by the owner
- * guardrails hook) skips the local policy and asks the gateway with
+ * guardrails hook) skips the local policy's allows (its denies still hold) and asks the gateway with
  * force_card and rule_id; the gateway re-evaluates the rule from its own
  * verified set before it opens the card. ttl_ms is the hook's inner deadline,
  * so the card never outlives the wait (or the job token polling it).
@@ -52,10 +52,9 @@ export function makeNodePermissionResolver(deps: NodePermissionDeps): Permission
   return async (sessionId, toolName, input, ctx) => {
     if (deps.wakeFor?.(sessionId)) return { behavior: "deny", message: wakeRefusal(toolName) };
     const forced = (ctx as PermissionContext).ownerApproval;
-    if (!forced) {
-      const local = permissionPolicy(toolName, input, autoAllow);
-      if (local) return local;
-    }
+    // An owner card skips only the local policy's allows, never its denies.
+    const local = permissionPolicy(toolName, input, autoAllow);
+    if (local && (!forced || local.behavior === "deny")) return local;
 
     const token = deps.tokenFor(sessionId);
     if (!token) return { behavior: "deny", message: "no job token for this session — cannot ask for permission" };
