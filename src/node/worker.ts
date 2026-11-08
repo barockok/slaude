@@ -46,7 +46,7 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { makeNodeSkillCheckBudget, makeNodeSkillUsageRecorder } from "./background";
 import type { ModelTokens } from "../background/prices";
 import { makeNodeMemoryProvider } from "./memory";
-import { makeNodePermissionResolver } from "./shims/permission";
+import { isWakeTurn, makeNodePermissionResolver } from "./shims/permission";
 import { makeNodeStopGuard } from "./stop-guard";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
@@ -512,7 +512,15 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // removing it here means updating both.
   const stopGuard = makeNodeStopGuard({ voiceActive: (id) => voiceTurns.active(id) });
   agent.setStopGuard(stopGuard.guard);
-  agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id) }));
+  /** Sessions whose current job is a wake, from the job payload: the fallback
+   *  when the bound token's claims cannot be read. */
+  const wakeJobs = new Set<string>();
+  // A wake's turn refuses every permission request before the node's local
+  // policy, as mono does. The signed `wake` claim of the session's bound token
+  // decides; the next job binds its own token, so a later normal turn on the
+  // same session is not a wake.
+  const wakeFor = (sessionId: string): boolean => isWakeTurn(store.tokenFor(sessionId), wakeJobs.has(sessionId));
+  agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id), wakeFor }));
   // The post-turn skill check is budgeted on the gateway's ledger (spec §9.3);
   // a refused or failed start skips it.
   agent.setBackgroundBudget(makeNodeSkillCheckBudget({ client, withToken: (id, call) => store.withToken(id, call) }));
@@ -768,9 +776,11 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       const warmDir = existingSessionConfigDir(sessionId, configRoot);
       if (warmDir) await seeder.atTurn(sessionId, warmDir);
       recovery.resetTurn(sessionId);
-      // Whether the Stop guard may send this job's turn back. Read from the
-      // token bound for this job (runLockedTurn binds it before this runs), so
-      // nothing carries over from the session's last job.
+      // This job's turn: a wake or not, and whether the Stop guard may send it
+      // back. Read from the token bound for this job (runLockedTurn binds it
+      // before this runs), so nothing carries over from the session's last job.
+      if (data.wake) wakeJobs.add(sessionId);
+      else wakeJobs.delete(sessionId);
       const bound = store.tokenFor(sessionId) ?? data.jobToken;
       stopGuard.beginTurn(sessionId, { claims: decodeClaims(bound), bgRun: data.bgRun, wake: data.wake });
 
@@ -831,6 +841,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           // credentials must not outlive it in this node's memory.
           evictBundle(sessionId);
           stopGuard.forget(sessionId);
+          wakeJobs.delete(sessionId);
           if (warm.delete(sessionId)) await registry.unregister(sessionId);
         }
       } catch (e) {
