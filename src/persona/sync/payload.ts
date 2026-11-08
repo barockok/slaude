@@ -17,6 +17,8 @@ import { LABEL_RE } from "../../queue/keys";
 import { parseRef } from "../../secrets/ref";
 import { baseUrlProblem, internalHostsFrom } from "../provider-base-url";
 import { PayloadError } from "./errors";
+import { GUARDRAIL_SLUG_RE, MAX_GUARDRAIL_BYTES, RESERVED_SLUGS } from "../../guardrails/format";
+import { MAX_GUARDRAILS } from "../../guardrails/files";
 
 export { PayloadError };
 
@@ -36,6 +38,7 @@ export class UnresolvedVarError extends PayloadError {
  *   2  adds `provider` (WS-A) and `runsOn` (node labels spec §4.5)
  *   3  adds `kbSources` (WS-C §4.1)
  *   4  adds `background` (background learning budget and timezone)
+ *   5  adds a top-level `guardrails` list (owner guardrails, GUARDRAIL.md text)
  *
  * Each persona field newer than version 1 is one entry in PERSONA_FIELD_VERSION.
  * `render` writes the highest version any field a persona sets needs, so a
@@ -44,11 +47,17 @@ export class UnresolvedVarError extends PayloadError {
  * to every KB); a payload that sets none stays 1 and deploys to any gateway.
  */
 export const PERSONA_FIELD_VERSION = { provider: 2, runsOn: 2, kbSources: 3, background: 4 } as const;
-export const SUPPORTED_PAYLOAD_VERSION = 4;
+export const SUPPORTED_PAYLOAD_VERSION = 5;
+/** The payload version a non-empty top-level `guardrails` list needs. */
+export const GUARDRAILS_PAYLOAD_VERSION = 5;
 
-/** The version a payload needs: the highest of any field a persona sets, 1 when none. */
-export function payloadVersionFor(personas: ReadonlyArray<object>): number {
-  let v = 1;
+/**
+ * The version a payload needs: the highest of any field a persona sets, and 5
+ * when it carries any guardrail; 1 when none. An empty `guardrails` list
+ * needs no newer gateway (an older one has no guardrails to remove).
+ */
+export function payloadVersionFor(personas: ReadonlyArray<object>, guardrails: ReadonlyArray<unknown> = []): number {
+  let v = guardrails.length > 0 ? GUARDRAILS_PAYLOAD_VERSION : 1;
   for (const p of personas) {
     for (const [field, need] of Object.entries(PERSONA_FIELD_VERSION)) {
       if ((p as Record<string, unknown>)[field] !== undefined) v = Math.max(v, need);
@@ -151,12 +160,24 @@ export function kbSourceWarnings(payload: Pick<SyncPayload, "personas">, install
   return out;
 }
 
+/** One owner guardrail as the deploy repo carries it: `guardrails/<slug>/GUARDRAIL.md`. */
+const guardrailSpec = z
+  .object({
+    slug: z.string().regex(GUARDRAIL_SLUG_RE, `guardrail slug must match ${GUARDRAIL_SLUG_RE.source}`),
+    md: z.string().max(MAX_GUARDRAIL_BYTES, `a GUARDRAIL.md is at most ${MAX_GUARDRAIL_BYTES} characters`),
+  })
+  .strict();
+export type GuardrailSpec = z.infer<typeof guardrailSpec>;
+
 const payloadSchema = z.object({
   version: z.number().int().min(1).default(1),
   revision: z.string().min(1),
   committedAt: z.string().refine((s) => !Number.isNaN(Date.parse(s)), "committedAt must be an ISO 8601 instant"),
   allowEmpty: z.boolean().default(false),
   personas: z.array(personaSpec),
+  // Absent: the stored git guardrails are left as they are. Present (even
+  // empty): the deploy repo's whole set; a git guardrail it no longer lists is removed.
+  guardrails: z.array(guardrailSpec).max(MAX_GUARDRAILS, `at most ${MAX_GUARDRAILS} guardrails`).optional(),
 });
 export type SyncPayload = Omit<z.infer<typeof payloadSchema>, "personas"> & { personas: PersonaSpec[] };
 
@@ -284,6 +305,17 @@ export function parsePayload(
       return { ...rest, ...(parsed ? { provider: parsed } : {}), ...(kb ? { kbSources: kb } : {}) };
     }),
   };
+  if (p.guardrails) {
+    if (p.guardrails.length > 0 && (p.version ?? 1) < GUARDRAILS_PAYLOAD_VERSION) {
+      throw new PayloadError(`guardrails need payload version ${GUARDRAILS_PAYLOAD_VERSION} (this payload says ${p.version})`);
+    }
+    const slugs = new Set<string>();
+    for (const g of p.guardrails) {
+      if (RESERVED_SLUGS.has(g.slug)) throw new PayloadError(`guardrail '${g.slug}' uses a reserved name`);
+      if (slugs.has(g.slug)) throw new PayloadError(`duplicate guardrail '${g.slug}'`);
+      slugs.add(g.slug);
+    }
+  }
   const names = new Set<string>();
   const users = new Set<string>();
   for (const s of p.personas) {

@@ -671,3 +671,37 @@ describe("decision gate KB lookup and profiles", () => {
     }
   });
 });
+
+describe("an owner inbound guardrail and the gate", () => {
+  const GUARD = "---\nname: no-passwords\n---\n```rules\n- id: r\n  on: inbound\n  match: { text: '(?i)password\\s*[:=]' }\n  action: deny\n  message: Please do not paste passwords here.\n```";
+  beforeEach(async () => {
+    (await import("../../guardrails/helpers")).ensureGuardrailKeyForPg();
+    const { __clearGuardrailsForTests, applyGuardrailChange } = await import("../../../src/db/guardrails");
+    const { __resetGuardrailSnapshotsForTests, refreshGuardrails } = await import("../../../src/guardrails/snapshot");
+    await __clearGuardrailsForTests();
+    __resetGuardrailSnapshotsForTests();
+    await applyGuardrailChange("default", { upsert: [{ slug: "no-passwords", md: GUARD, source: "file" }], by: "test" });
+    await refreshGuardrails();
+  });
+  afterEach(async () => {
+    const { __clearGuardrailsForTests } = await import("../../../src/db/guardrails");
+    const { __resetGuardrailSnapshotsForTests } = await import("../../../src/guardrails/snapshot");
+    await __clearGuardrailsForTests();
+    __resetGuardrailSnapshotsForTests();
+  });
+
+  it("the gate never sees the message and never posts; the ingress replies once and records it once", async () => {
+    await db.run("DELETE FROM audit_events WHERE action LIKE 'guardrail.%'");
+    const n = alwaysNo();
+    const g = makeGw(runner("on", n.a));
+    await mention(g, nextTs(), "<@USLAUDEBOT> my password: hunter2");
+    expect(n.seen).toEqual([]);
+    expect(doubts(g)).toEqual([]);
+    expect(g.sends).toEqual([]);
+    expect(g.posts.map((p: any) => p.text)).toEqual(["Please do not paste passwords here."]);
+    const { flushAudits } = await import("../../../src/audit/emit");
+    await flushAudits();
+    const rows = await db.query<{ action: string }>(`SELECT action FROM audit_events WHERE action LIKE 'guardrail.%'`);
+    expect(rows.map((r) => r.action)).toEqual(["guardrail.inbound.denied"]);
+  });
+});

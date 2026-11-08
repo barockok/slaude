@@ -1,6 +1,6 @@
 {
   "name": "slaude",
-  "version": "0.46.0-rc.8",
+  "version": "0.46.0-rc.9",
   "type": "module",
   "private": true,
   "description": "Slack-native Claude Code runtime. Onboard AI agent as team member.",
@@ -71,6 +71,7 @@
     "bullmq": "^6.2.0",
     "gbrain": "github:garrytan/gbrain#03ffc6ebdbc7dd8b29e5bfd0c3a9a6c983b54f01",
     "ioredis": "^6.0.0",
+    "re2js": "^2.9.1",
     "react": "^19.2.7",
     "ssh2": "^1.17.0",
     "yaml": "^2.6.0",

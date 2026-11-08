@@ -1,7 +1,10 @@
 /**
- * Console API: Resources > Guardrails. One agent's effective values, each
+ * Console API: the soul and access settings under Resources > Guardrails
+ * (GET /panel/api/guardrails/settings). One agent's effective values, each
  * with its source (env, soul, default, learned rule, code), read from the
- * code paths that enforce them.
+ * code paths that enforce them. The runtime layer (the guardrail registry)
+ * is code only since the owner guardrails design; its details are checked
+ * here against the registry itself.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createPanelApi } from "../../src/gateway/panel/api";
@@ -15,13 +18,20 @@ import { invalidateGrants } from "../../src/access/role";
 import { setAgentId, resetAgentId } from "../../src/knowledge/agent-identity";
 import { soulSections } from "../../src/gateway/panel/guardrails-view";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
-import type { GuardrailFamily, GuardrailsResponse } from "../../src/gateway/panel/api-types";
+import type { GuardrailFamily, GuardrailSettingsResponse } from "../../src/gateway/panel/api-types";
 import type { ProactiveRule } from "../../src/proactive/rules";
-import { NODE_RUNTIME, type GuardrailRuntime } from "../../src/agent/guardrails";
-import { paths } from "../../src/config/home";
+import { GUARDRAILS, NODE_RUNTIME, type GuardrailCtx, type GuardrailRuntime } from "../../src/agent/guardrails";
 import { readFileSync } from "node:fs";
 
-const entry = (r: GuardrailsResponse, id: string) => r.guardrails.flatMap((g) => g.entries).find((e) => e.id === id)!;
+type GuardrailsResponse = GuardrailSettingsResponse;
+/** A registry entry as it describes itself for a set of runtime facts (code only, no API). */
+const entry = (runtime: GuardrailRuntime, id: string, role: "operator" | "superadmin" = "operator") => {
+  const g = GUARDRAILS.find((x) => x.id === id)!;
+  const ctx: GuardrailCtx = { agent: "default", ...runtime };
+  return { state: g.notBuilt ? "not-built" : g.state(ctx), details: g.details?.(ctx, { role }) ?? [], fieldNote: g.fieldNote };
+};
+const UNKNOWN: GuardrailRuntime = { stopGuard: false, permissionResolver: false, turnsRunOn: "this-process" };
+const MONO: GuardrailRuntime = { stopGuard: true, permissionResolver: true, turnsRunOn: "this-process" };
 
 const SECRET = "t".repeat(32);
 const operator = `${AT_COOKIE}=${mintSession({ sub: "s", email: "alice@example.com" }, "at", { secret: SECRET })}`;
@@ -67,8 +77,8 @@ function registryWith(): PersonaRegistry {
   };
 }
 
-const get = async (path: string, rules: (id: string) => Promise<ProactiveRule[]> = async () => [rule], who: string = operator, runtime?: () => GuardrailRuntime) => {
-  const api = createPanelApi({ registry: null, role: "mono", pubsub: null, panelLock: null, chat: async () => {}, guardrails: { rules, ...(runtime ? { runtime } : {}) } });
+const get = async (path: string, rules: (id: string) => Promise<ProactiveRule[]> = async () => [rule], who: string = operator) => {
+  const api = createPanelApi({ registry: null, role: "mono", pubsub: null, panelLock: null, chat: async () => {}, guardrails: { rules } });
   const res = (await api.fetch(new Request(`https://panel.example.com${path}`, { headers: { cookie: who } })))!;
   const text = await res.text();
   return { status: res.status, body: JSON.parse(text), text };
@@ -111,9 +121,9 @@ afterEach(() => {
   invalidateGrants();
 });
 
-describe("GET /panel/api/guardrails", () => {
+describe("GET /panel/api/guardrails/settings", () => {
   test("the default agent: every family, values and sources", async () => {
-    const r = await get("/panel/api/guardrails");
+    const r = await get("/panel/api/guardrails/settings");
     expect(r.status).toBe(200);
     const g = r.body as GuardrailsResponse;
     expect(g.agent).toBe("default");
@@ -163,7 +173,7 @@ describe("GET /panel/api/guardrails", () => {
   });
 
   test("a named agent: approvers fall back to the default managers; redaction notes the default soul", async () => {
-    const g = (await get("/panel/api/guardrails?agent=scout")).body as GuardrailsResponse;
+    const g = (await get("/panel/api/guardrails/settings?agent=scout")).body as GuardrailsResponse;
     expect(g.agent).toBe("scout");
     // scout's soul names no manager or approver: it inherits the default's (per unit), so they are soul grants.
     expect(value(family(g, "approvals"), "approvers").value).toEqual(expect.arrayContaining(["UMGR"]));
@@ -175,12 +185,12 @@ describe("GET /panel/api/guardrails", () => {
   });
 
   test("learned rules that cannot be read say so instead of failing the page", async () => {
-    const g = (await get("/panel/api/guardrails", async () => { throw new Error("brain down"); })).body as GuardrailsResponse;
+    const g = (await get("/panel/api/guardrails/settings", async () => { throw new Error("brain down"); })).body as GuardrailsResponse;
     expect(family(g, "learned-rules")).toMatchObject({ status: "unavailable", note: "brain down" });
   });
 
   test("an unknown agent is a 404", async () => {
-    expect((await get("/panel/api/guardrails?agent=nobody")).status).toBe(404);
+    expect((await get("/panel/api/guardrails/settings?agent=nobody")).status).toBe(404);
   });
 });
 
@@ -191,100 +201,78 @@ describe("guardrails never show secrets", () => {
     process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Read";
     for (const who of [operator, superadmin]) {
       for (const agent of ["default", "scout"]) {
-        const r = await get(`/panel/api/guardrails?agent=${agent}`, undefined, who);
+        const r = await get(`/panel/api/guardrails/settings?agent=${agent}`, undefined, who);
         expect(r.status).toBe(200);
         expect(r.text).not.toContain("sk-test-");
         expect(r.text).not.toContain("xoxb-test");
       }
     }
-    const g = (await get("/panel/api/guardrails?agent=scout", undefined, superadmin)).body as GuardrailsResponse;
+    const g = (await get("/panel/api/guardrails/settings?agent=scout", undefined, superadmin)).body as GuardrailsResponse;
     expect(value(family(g, "redaction"), "patterns")).toMatchObject({ value: ["secret-\\d+"] });
     expect(value(family(g, "redaction"), "default-patterns")).toMatchObject({ value: ["secret-\\d+"] });
   });
 });
 
-describe("the runtime layer", () => {
-  test("prompt stack, baseline, built-in skills and the registry sit beside the families", async () => {
-    const r = await get("/panel/api/guardrails");
-    const g = r.body as GuardrailsResponse;
-    expect(g.promptStack.layers.map((l) => l.id)).toEqual(["preset", "runtime-baseline", "persona", "channel-mandate", "session-mode", "mcp-servers", "memory-context"]);
-    expect(g.promptStack.layers.filter((l) => l.overridable).map((l) => l.id)).toEqual(["persona", "channel-mandate"]);
-    expect(g.promptStack.layers.find((l) => l.id === "persona")!.link?.to).toBe("/agents/default/mandates");
-    expect(g.promptStack.perTurn.map((p) => p.id)).toContain("session-notes");
-    expect(g.baseline.deploymentWide).toBe(true);
-    expect(g.baseline.blocks[0]!.id).toBe("preamble");
-    expect(g.baseline.blocks.map((b) => b.title)).toContain("Channel trust");
-    expect(g.builtinSkills.some((s) => s.qualified === "slaude:skill-authoring" && s.governs.length > 0)).toBe(true);
-    expect(g.guardrails.map((x) => x.kind)).toEqual(["hook", "gate", "deny-list", "limit", "redaction", "observability"]);
-    expect(entry(g, "hook.stop.kb-first").state).toBe("not-built");
-    expect(entry(g, "hook.stop.kb-first").fieldNote?.href).toContain("2026-06-13-kb-first-enforcement");
-    // The families are still there in this release.
-    expect(g.families).toHaveLength(11);
+describe("the runtime layer is code only", () => {
+  test("the settings response carries no runtime-layer field; an unknown or bad agent is refused", async () => {
+    const r = await get("/panel/api/guardrails/settings");
+    expect(Object.keys(r.body).sort()).toEqual(["agent", "families"]);
+    expect(r.body.families).toHaveLength(11);
+    expect((await get("/panel/api/guardrails/settings?agent=Bad%20Name")).status).toBe(422);
   });
 
-  test("states come from the injected runtime facts; absent, nothing is assumed wired", async () => {
-    const none = (await get("/panel/api/guardrails")).body as GuardrailsResponse;
-    expect(entry(none, "hook.stop.must-reply").state).toBe("not-wired");
-    expect(entry(none, "gate.can-use-tool.permission").state).toBe("not-wired");
-    const mono = (await get("/panel/api/guardrails", undefined, operator, () => ({ stopGuard: true, permissionResolver: true, turnsRunOn: "this-process" }))).body as GuardrailsResponse;
-    expect(entry(mono, "hook.stop.must-reply").state).toBe("enforcing");
-    expect(entry(mono, "gate.can-use-tool.permission").state).toBe("enforcing");
+  test("registry states come from the runtime facts; absent, nothing is assumed wired", () => {
+    expect(entry(UNKNOWN, "hook.stop.must-reply").state).toBe("not-wired");
+    expect(entry(UNKNOWN, "gate.can-use-tool.permission").state).toBe("not-wired");
+    expect(entry(MONO, "hook.stop.must-reply").state).toBe("enforcing");
+    expect(entry(MONO, "gate.can-use-tool.permission").state).toBe("enforcing");
+    expect(entry(MONO, "hook.stop.kb-first").state).toBe("not-built");
+    expect(entry(MONO, "hook.stop.kb-first").fieldNote?.href).toContain("2026-06-13-kb-first-enforcement");
+    expect(entry(MONO, "hook.pre-tool.owner-guardrails").state).toBe("enforcing");
+    expect(entry(MONO, "hook.pre-tool.guardrail-files").state).toBe("enforcing");
   });
 
-  test("agent= scopes the agent-level parts: the soul links and channel mandates", async () => {
-    const g = (await get("/panel/api/guardrails?agent=scout")).body as GuardrailsResponse;
-    expect(g.agent).toBe("scout");
-    expect(g.promptStack.layers.find((l) => l.id === "channel-mandate")!.link?.to).toBe("/agents/scout/mandates");
-    expect((await get("/panel/api/guardrails?agent=nobody")).status).toBe(404);
-    expect((await get("/panel/api/guardrails?agent=Bad%20Name")).status).toBe(422);
+  test("an operator sees redaction counts, never pattern strings; a superadmin sees the patterns", () => {
+    expect(entry(MONO, "redact.soul-patterns").details).toEqual([{ label: "Patterns", value: "1 pattern" }]);
+    expect(entry(MONO, "redact.soul-patterns", "superadmin").details).toEqual([{ label: "Patterns", value: ["secret-\\d+"] }]);
   });
 
-  test("an operator sees redaction counts, never pattern strings; a superadmin sees the patterns", async () => {
-    const op = await get("/panel/api/guardrails", undefined, operator);
-    expect(op.text).not.toContain("secret-");
-    expect(entry(op.body, "redact.soul-patterns").details).toEqual([{ label: "Patterns", value: "1 pattern" }]);
-    const sa = await get("/panel/api/guardrails", undefined, superadmin);
-    expect(entry(sa.body, "redact.soul-patterns").details).toEqual([{ label: "Patterns", value: ["secret-\\d+"] }]);
-  });
-
-  test("no absolute home path in the baseline, and env values only as on/off, mode or cap", async () => {
+  test("env values only as on/off, mode or cap", () => {
     process.env.SLAUDE_DECISION_CONFIG = JSON.stringify({ gate: { mode: "shadow" }, adapter: { endpoint: "https://adapter.example.com/x" } });
     process.env.SLAUDE_OUTBOUND_ALLOWED_HOSTS = "idp.example.com";
     try {
-      const r = await get("/panel/api/guardrails", undefined, superadmin);
-      expect(r.text).not.toContain(paths.home);
-      expect(r.text).not.toContain("adapter.example.com");
-      expect(r.text).not.toContain("idp.example.com");
-      expect(entry(r.body, "gate.dispatch.decision")).toMatchObject({ state: "shadow", details: [{ label: "Mode", value: "shadow" }] });
-      expect(entry(r.body, "gate.outbound.ssrf").details).toContainEqual({ label: "Allowed hosts list", value: "on" });
+      const all = JSON.stringify(GUARDRAILS.map((g) => g.details?.({ agent: "default", ...MONO }, { role: "superadmin" }) ?? []));
+      expect(all).not.toContain("adapter.example.com");
+      expect(all).not.toContain("idp.example.com");
+      expect(entry(MONO, "gate.dispatch.decision")).toMatchObject({ state: "shadow", details: [{ label: "Mode", value: "shadow" }] });
+      expect(entry(MONO, "gate.outbound.ssrf").details).toContainEqual({ label: "Allowed hosts list", value: "on" });
     } finally {
       delete process.env.SLAUDE_DECISION_CONFIG;
       delete process.env.SLAUDE_OUTBOUND_ALLOWED_HOSTS;
     }
   });
 
-  test("in the gateway role the node caveats are shown: wake refusal order, env allow-list, wall clock, remote scope", async () => {
-    const nodes = (await get("/panel/api/guardrails", undefined, operator, () => NODE_RUNTIME)).body as GuardrailsResponse;
-    const wake = entry(nodes, "gate.can-use-tool.wake-refusal");
+  test("on nodes the caveats are described: wake refusal order, env allow-list, wall clock, remote scope", () => {
+    const wake = entry(NODE_RUNTIME, "gate.can-use-tool.wake-refusal");
     expect(wake.state).toBe("enforcing");
     expect(wake.details[0]!.label).toBe("On nodes");
     expect(String(wake.details[0]!.value)).toContain("refused on the node before its local policy");
-    expect(entry(nodes, "hook.stop.must-reply").state).toBe("enforcing");
-    expect(entry(nodes, "gate.can-use-tool.permission").details[0]).toMatchObject({ label: "Gateway env allow-list (SLAUDE_AUTO_ALLOW_TOOLS)" });
-    expect(String(entry(nodes, "gate.can-use-tool.permission").details[0]!.value)).toContain("each node reads its own");
-    expect(String(entry(nodes, "limit.wake-caps").details.find((d) => d.label === "Wall clock")!.value)).toContain("(nodes clamp to their turn timeout)");
+    expect(entry(NODE_RUNTIME, "hook.stop.must-reply").state).toBe("enforcing");
+    expect(entry(NODE_RUNTIME, "gate.can-use-tool.permission").details[0]).toMatchObject({ label: "Gateway env allow-list (SLAUDE_AUTO_ALLOW_TOOLS)" });
+    expect(String(entry(NODE_RUNTIME, "gate.can-use-tool.permission").details[0]!.value)).toContain("each node reads its own");
+    expect(String(entry(NODE_RUNTIME, "limit.wake-caps").details.find((d) => d.label === "Wall clock")!.value)).toContain("(nodes clamp to their turn timeout)");
     for (const id of ["hook.pre-tool.remote-deny-local", "gate.can-use-tool.remote", "deny.remote-local-tools"]) {
-      expect(String(entry(nodes, id).details[0]!.value)).toContain("threads bound with /remote");
+      expect(String(entry(NODE_RUNTIME, id).details[0]!.value)).toContain("threads bound with /remote");
     }
-    const mono = (await get("/panel/api/guardrails", undefined, operator, () => ({ stopGuard: true, permissionResolver: true, turnsRunOn: "this-process" }))).body as GuardrailsResponse;
-    expect(entry(mono, "gate.can-use-tool.wake-refusal").details[0]!.label).toBe("In this process");
-    expect(String(entry(mono, "limit.wake-caps").details.find((d) => d.label === "Wall clock")!.value)).not.toContain("nodes");
+    expect(entry(MONO, "gate.can-use-tool.wake-refusal").details[0]!.label).toBe("In this process");
+    expect(String(entry(MONO, "limit.wake-caps").details.find((d) => d.label === "Wall clock")!.value)).not.toContain("nodes");
   });
 
   test("the node facts match what the node worker installs", () => {
     const worker = readFileSync(new URL("../../src/node/worker.ts", import.meta.url), "utf8");
     expect(worker).toContain("agent.setPermissionResolver(");
     expect(worker).toContain("agent.setStopGuard(");
+    expect(worker).toContain("agent.setGuardrailResolver(");
     expect(NODE_RUNTIME).toMatchObject({ stopGuard: true, permissionResolver: true });
   });
 });

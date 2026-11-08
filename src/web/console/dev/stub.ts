@@ -15,7 +15,7 @@
 import type {
   AgentSummary, ConsoleGrantView, CreateGrantRequest, GrantView, SessionActivity, SessionControlRequest, SessionEvent, SessionSummaryView,
 } from "../../../gateway/panel/api-types";
-import { guardrailFixtures, skillFixtures } from "./resources-fixtures";
+import { agentGuardrailFixtures, guardrailSettingsFixtures, ownerGuardrailDetail, ownerGuardrailList, setOwnerGuardrailEnabled, skillFixtures } from "./resources-fixtures";
 import { CHANNEL_LABELS, USER_NAMES, allGrantsOf, createFixtures, sessionHistory, sessionScript, type ConsoleFixtures } from "./fixtures";
 
 const ID_RE = { user: /^[UW][A-Z0-9]+$/, channel: /^[CG][A-Z0-9]+$/, workspace: /^T[A-Z0-9]+$/ } as const;
@@ -146,16 +146,30 @@ export function installStub(): void {
     if (seg[1] === "memory") return memory(seg, query, isSuper);
     if (path === "/api/environments") return json(200, fx.environments);
     if (seg[1] === "skills") return skillsRoute(method, seg, isSuper);
-    if (path === "/api/guardrails") {
+    if (path === "/api/guardrails") return json(200, ownerGuardrailList(Date.now(), isSuper));
+    if (path === "/api/guardrails/settings") {
       const agent = query.get("agent") || "default";
       if (agent !== "default" && !fx.agents[agent]) return json(404, { error: `no agent named '${agent}'` });
-      return json(200, guardrailFixtures(agent, isSuper));
+      return json(200, guardrailSettingsFixtures(agent, isSuper));
+    }
+    if (seg[1] === "guardrails" && seg.length === 3) {
+      const d = ownerGuardrailDetail(decodeURIComponent(seg[2]!), Date.now(), isSuper);
+      return d ? json(200, d) : json(404, { error: "no such guardrail" });
+    }
+    if (seg[1] === "guardrails" && seg.length === 4 && seg[3] === "enabled" && method === "PUT") {
+      if (!isSuper) return json(403, { error: "action 'guardrail.toggle' requires the superadmin role", required: "superadmin" });
+      const slug = decodeURIComponent(seg[2]!);
+      const enabled = (body as { enabled?: unknown })?.enabled;
+      if (typeof enabled !== "boolean") return json(400, { error: "body must be { enabled: boolean }" });
+      if (!setOwnerGuardrailEnabled(slug, enabled)) return json(404, { error: "no such guardrail" });
+      return json(200, { ok: true, slug, enabled, version: 8 });
     }
     if (seg[1] === "agents") {
       if (seg.length === 2) return json(200, { agents: Object.values(fx.agents).map(summary) });
       const agent = fx.agents[decodeURIComponent(seg[2]!)];
       if (!agent) return json(404, { error: `no agent named '${decodeURIComponent(seg[2]!)}'` });
       if (seg.length === 3) return json(200, { ...agent, ...summary(agent), grants: labelled(agent.grants) });
+      if (seg.length === 4 && seg[3] === "guardrails") return json(200, agentGuardrailFixtures(decodeURIComponent(seg[2]!), Date.now()));
       if (seg[3] !== "grants") return json(404, { error: "not found" });
       if (seg.length === 4 && method === "GET") return json(200, { grants: labelled(agent.grants) });
       if (!isSuper) {

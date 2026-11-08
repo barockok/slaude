@@ -1,5 +1,5 @@
 // tests/persona/run-sync.test.ts
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import * as P from "../../src/db/personas";
@@ -7,6 +7,8 @@ import { runSync, SyncFailure, unservedLabelWarnings } from "../../src/persona/s
 import { SUPPORTED_PAYLOAD_VERSION } from "../../src/persona/sync/payload";
 import * as AuditEvents from "../../src/db/audit-events";
 import { flushAudits } from "../../src/audit/emit";
+import { __clearGuardrailsForTests, __setOverrideForTests, applyGuardrailChange, readGuardrails, sha256 } from "../../src/db/guardrails";
+import { loadTenantSnapshot } from "../../src/guardrails/snapshot";
 
 const T = "default";
 const bare = (personas: unknown[], extra: object = {}) =>
@@ -432,4 +434,108 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync provider references (WS
       await db.run(`ALTER TABLE personas ADD COLUMN IF NOT EXISTS provider_json JSONB`);
     }
   });
+});
+
+describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync: guardrails", () => {
+  const g = (slug: string, body = "prose", front = "") => ({ slug, md: `---\nname: ${slug}\n${front}---\n${body}\n` });
+  const v5 = (guardrails: unknown[], extra: object = {}) => payload([ana], { version: 5, guardrails, ...extra });
+  let rev = 0;
+  const next = () => ({ revision: `g${++rev}`, committedAt: new Date(Date.parse("2026-10-02T00:00:00Z") + rev * 1000).toISOString() });
+  beforeEach(() => __clearGuardrailsForTests());
+
+  test("the payload's list becomes the git set: created, unchanged, removed; signed and audited", async () => {
+    await db.run("DELETE FROM audit_events");
+    const r1 = await runSync(T, v5([g("a"), g("b")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r1.guardrails).toMatchObject({ created: ["a", "b"], removed: [] });
+    const r2 = await runSync(T, v5([g("a")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r2.guardrails).toMatchObject({ unchanged: ["a"], removed: ["b"] });
+    expect((await readGuardrails()).rows.map((r) => [r.slug, r.source])).toEqual([["a", "git"]]);
+    expect((await loadTenantSnapshot(T)).resolved.map((x) => x.slug)).toEqual(["a"]);
+    await flushAudits();
+    const acts = (await AuditEvents.list({ action: "guardrail." })).items.map((e) => `${e.action}:${e.targetId}`).sort();
+    expect(acts).toEqual(["guardrail.created:a", "guardrail.created:b", "guardrail.deleted:b"]);
+  });
+
+  test("absent leaves the git set alone; a dry run reports and writes nothing", async () => {
+    await runSync(T, v5([g("a")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    const absent = await runSync(T, payload([ana], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(absent.guardrails).toBeUndefined();
+    expect((await readGuardrails()).rows).toHaveLength(1);
+    const dry = await runSync(T, v5([g("a", "changed"), g("c")], next()), { dryRun: true, env, by: "ci", extract: okExtract });
+    expect(dry.guardrails).toMatchObject({ created: ["c"], updated: ["a"] });
+    expect((await readGuardrails()).rows.map((r) => r.slug)).toEqual(["a"]);
+  });
+
+  test("an override is kept and reported behind source; host-file and unknown agents are reported", async () => {
+    await applyGuardrailChange(T, { upsert: [{ slug: "host", md: g("host").md, source: "file" }], by: "cli" });
+    await runSync(T, v5([g("a")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    await __setOverrideForTests(T, { slug: "a", md: g("a", "mine").md, baseSha: sha256(g("a").md), author: "op" });
+    const r = await runSync(T, v5([g("a", "moved"), g("lonely", "p", "scope: agents\nagents: [nobody]\n")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r.guardrails!.behindSource).toEqual(["a"]);
+    expect(r.warnings.join("\n")).toContain("names agent 'nobody'");
+    expect(r.warnings.join("\n")).toContain("guardrail 'a' has a console override");
+    const s = await loadTenantSnapshot(T);
+    expect(s.resolved.find((x) => x.slug === "a")!.doc).toMatchObject({ override: true, behindSource: true });
+    expect(s.resolved.find((x) => x.slug === "host")!.doc.source).toBe("file");
+    // A git guardrail named like a host file takes it over; the host file one stays only if git does not list it.
+    expect((await readGuardrails()).rows.map((x) => x.slug)).toEqual(["a", "host", "lonely"]);
+  });
+
+  test("a rule that fails to parse refuses the whole sync with a 422, before anything is applied", async () => {
+    const bad = g("broken", "p", "") ;
+    bad.md += "\n```rules\n- id: r\n  on: tool\n  match: { tool: Bash, input: '(' }\n  action: deny\n```\n";
+    const e = await runSync(T, v5([g("fine"), bad], next()), { dryRun: false, env, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(e).toBeInstanceOf(SyncFailure);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("guardrail 'broken'");
+    expect((await readGuardrails()).rows).toEqual([]);
+    const noFront = { slug: "nofront", md: "```rules\n- id: r\n  on: inbound\n  match: { text: x }\n  action: deny\n```" };
+    const e2 = await runSync(T, v5([noFront], next()), { dryRun: true, env, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(e2.status).toBe(422);
+    expect(e2.message).toContain("rules would apply to nobody");
+  });
+
+  test("on Postgres without SLAUDE_MASTER_KEY a guardrail change is a 422 before anything is applied; an unchanged set is not", async () => {
+    const plain = (guardrails: unknown[], extra: object = {}) => bare([def], { version: 5, guardrails, ...extra });
+    // A persona set that stores no secret (no userToken), so only the guardrails need the key.
+    await runSync(T, plain([g("a")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    const before = (await P.syncState(T))!.revision;
+    const saved = process.env.SLAUDE_MASTER_KEY;
+    delete process.env.SLAUDE_MASTER_KEY;
+    __resetMasterKeyCache();
+    try {
+      const e = await runSync(T, plain([g("a"), g("b")], next()), { dryRun: false, env, by: "ci", extract: okExtract }).catch((x) => x);
+      expect(e).toBeInstanceOf(SyncFailure);
+      expect(e.status).toBe(422);
+      expect(e.message).toBe("guardrails on Postgres need SLAUDE_MASTER_KEY");
+      // The personas were not applied: the live revision is the one before.
+      expect((await P.syncState(T))!.revision).toBe(before);
+      const removing = await runSync(T, plain([], next()), { dryRun: false, env, by: "ci", extract: okExtract }).catch((x) => x);
+      expect(removing.status).toBe(422);
+      // Nothing to change in the guardrails: the personas sync goes through.
+      const same = await runSync(T, plain([g("a")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+      expect(same.guardrails!.unchanged).toEqual(["a"]);
+    } finally {
+      process.env.SLAUDE_MASTER_KEY = saved;
+      __resetMasterKeyCache();
+    }
+  });
+
+  test("a host-file guardrail taken over by the deploy repo is reported", async () => {
+    await applyGuardrailChange(T, { upsert: [{ slug: "host", md: g("host").md, source: "file" }], by: "cli" });
+    const r = await runSync(T, v5([g("host", "from git")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r.guardrails!.takenOver).toEqual(["host"]);
+    expect(r.warnings.join("\n")).toContain("guardrail 'host' was imported from host files");
+    expect((await readGuardrails()).rows.map((x) => [x.slug, x.source])).toEqual([["host", "git"]]);
+  });
+
+  test("an invalid guardrail is stored and reported, the sync still applies", async () => {
+    const r = await runSync(T, v5([{ slug: "bad", md: "no frontmatter" }], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r.guardrails!.invalid[0]!.slug).toBe("bad");
+    expect((await readGuardrails()).rows.map((x) => x.slug)).toEqual(["bad"]);
+  });
+});
+
+afterAll(async () => {
+  if (process.env.SLAUDE_DB === "pg") await __clearGuardrailsForTests();
 });

@@ -164,6 +164,35 @@ export const runtimeContract = {
           .describe("SDK PermissionUpdate suggestions, persisted so an 'always allow' click can be honored node-side."),
       },
     },
+    guardrail_event: {
+      name: "guardrail_event",
+      description:
+        "REST-only (never mounted for the model): a node worker reports owner guardrail firings and Guidance deliveries of its turn. The gateway checks each against its own verified guardrail set for the token's agent and records the audit rows with the token's session, channel and thread. Names only: never tool input or message text.",
+      restOnly: true,
+      schema: {
+        kind: z.enum(["firing", "delivery"]),
+        session_kind: z.enum(["interactive", "wake", "remote"]).optional(),
+        events: z
+          .array(
+            z
+              .object({
+                on: z.literal("tool"),
+                slug: z.string().max(64),
+                rule_id: z.string().max(64),
+                action: z.enum(["deny", "approve", "audit"]),
+                applied: z.enum(["deny", "audit"]),
+                deciding: z.boolean(),
+                tool_name: z.string().max(256).optional(),
+              })
+              .strict(),
+          )
+          .max(100)
+          .optional(),
+        slugs: z.array(z.string().max(64)).max(100).optional(),
+        via: z.enum(["tool", "inbound"]).optional(),
+        tool_name: z.string().max(256).optional(),
+      },
+    },
     reload_session: {
       name: "reload_session",
       description:

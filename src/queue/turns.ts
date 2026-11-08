@@ -39,6 +39,10 @@ export interface TurnMessage {
    *  the transcript via the suppress hook without running the model. A turn
    *  runs suppressed only when EVERY coalesced message is suppressed. */
   suppress?: boolean;
+  /** On-match owner Guidance this message's text triggered. The gateway
+   *  matches the trigger; the node hands it to the session, which takes each
+   *  guardrail at most once per boot. */
+  guidance?: Array<{ slug: string; name: string; body: string }>;
 }
 
 /** Who sent one of a turn's messages, as the gateway saw it at dispatch. */
@@ -85,6 +89,11 @@ export interface TurnJob {
   /** Short-lived JWT minted by the gateway; nodes present it on tool calls. */
   jobToken: string;
   enqueuedAt: number;
+  /** Capabilities the node running this turn must advertise (an agent with
+   *  enforced owner guardrails: `guardrails/1`). The reaper moves such a job
+   *  only to a live node that has them, never to the label queue an older
+   *  node also consumes. Absent = none. */
+  requiresCaps?: string[];
   /** How many times the gateway re-dispatched this turn after a
    *  LABEL_MISMATCH failure (node labels spec §4.6). Bounded at one: a second
    *  mismatch is shown to the user instead. Absent = 0. */
@@ -194,6 +203,8 @@ export interface MoveOpts {
   claimed?: boolean;
   /** Also move an ACTIVE job whose lock is gone (a dead node's own queue). */
   rescueActive?: boolean;
+  /** Move to this queue instead of the label's (a capable node's own queue). */
+  queue?: string;
 }
 
 /** The larger relabelAttempts of two jobs being merged (absent = 0). */
@@ -815,7 +826,7 @@ export class TurnQueues {
    * moved too; one whose lock is live is left alone.
    */
   async moveTo(job: Job, label: string, opts: MoveOpts = {}): Promise<EnqueueResult> {
-    const target = labelTurnsQueue(label);
+    const target = opts.queue ?? labelTurnsQueue(label);
     const from = job.queueName;
     const id = String(job.id);
     if (from === target) return { jobId: id, queue: target, coalesced: false };

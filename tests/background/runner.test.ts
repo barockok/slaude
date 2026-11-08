@@ -415,6 +415,31 @@ describe("runPass", () => {
     expect((await runPass(spec(), deps(fakeQuery([assistant("m1")]).query, 5))).outcome).toBe("error");
   });
 
+  test("owner guardrails: a pass tool an owner rule denies stays denied; Guidance refusals do not eat the cap; an unreadable set fails the pass", async () => {
+    const { resolveDocs, sessionGuardrails } = await import("../../src/guardrails/resolve");
+    const set = resolveDocs([
+      { slug: "no-propose", md: "---\nname: no-propose\n---\n```rules\n- id: r\n  on: tool\n  match: { tool: 'mcp__slaude_pass__propose' }\n  action: deny\n  message: Not in background.\n```", source: "file", override: false, behindSource: false, enabled: true },
+      { slug: "care", md: "---\nname: care\nload: on-match\ntriggers: { tool: 'mcp__slaude_pass__memoize' }\n---\nWrite short pages.", source: "file", override: false, behindSource: false, enabled: true },
+    ]);
+    const { query, state } = fakeQuery([result()]);
+    await runPass(spec({ pass: "lessons-upkeep" }), { ...deps(query, 5), guardrails: async (p) => sessionGuardrails(set, p, null, { version: 1, proseMax: 4000 }) });
+    const o = state.calls[0]!.options;
+    expect(o.maxTurns).toBe(7);
+    const hooks = (o.hooks as { PreToolUse: Array<{ hooks: Array<(i: unknown) => Promise<any>> }> }).PreToolUse[0]!.hooks;
+    const owner = hooks[0]!;
+    expect((await owner({ hook_event_name: "PreToolUse", tool_name: passToolId("propose"), tool_input: {} })).hookSpecificOutput.permissionDecisionReason).toBe("Not in background.");
+    expect((await owner({ hook_event_name: "PreToolUse", tool_name: passToolId("memoize"), tool_input: {} })).hookSpecificOutput.permissionDecisionReason).toContain("Write short pages.");
+    expect(await owner({ hook_event_name: "PreToolUse", tool_name: passToolId("memoize"), tool_input: {} })).toEqual({});
+    const tenants: string[] = [];
+    await runPass({ ...spec(), tenantId: "t-two" }, { ...deps(fakeQuery([result()]).query, 5), guardrails: async (_p, t) => (tenants.push(t), null) });
+    await runPass(spec(), { ...deps(fakeQuery([result()]).query, 5), guardrails: async (_p, t) => (tenants.push(t), null) });
+    expect(tenants).toEqual(["t-two", "default"]);
+    const failing = fakeQuery([result()]);
+    const r = await runPass(spec(), { ...deps(failing.query, 5), guardrails: async () => { throw new Error("integrity"); } });
+    expect(r.outcome).toBe("error");
+    expect(failing.state.calls).toHaveLength(0);
+  });
+
   test("the lockdown options are passed", async () => {
     process.env.SLAUDE_REDIS_URL = "redis://example.invalid:6379";
     process.env.SLAUDE_NODE_TOKEN = "node-token-for-test";
@@ -441,7 +466,7 @@ describe("runPass", () => {
       expect(childEnv.SLAUDE_NODE_TOKEN).toBeUndefined();
       expect(childEnv.SLAUDE_HOME).toBe(process.env.SLAUDE_HOME);
       // The PreToolUse hook denies anything but the pass's own tools.
-      const hook = (o.hooks as { PreToolUse: Array<{ hooks: Array<(i: unknown) => Promise<Record<string, unknown>>> }> }).PreToolUse[0]!.hooks[0]!;
+      const hook = (o.hooks as { PreToolUse: Array<{ hooks: Array<(i: unknown) => Promise<Record<string, unknown>>> }> }).PreToolUse[0]!.hooks.at(-1)!;
       expect(await hook({ hook_event_name: "PreToolUse", tool_name: passToolId("memoize") })).toEqual({});
       for (const name of ["Bash", "mcp__slaude_kb__kb_memoize", "Monitor"]) {
         const out = (await hook({ hook_event_name: "PreToolUse", tool_name: name })) as { hookSpecificOutput?: { permissionDecision?: string } };

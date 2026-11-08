@@ -1,6 +1,7 @@
 /**
- * Read model behind the console's Resources > Guardrails page: what constrains
- * one agent today, each value with where it comes from. Every value is read
+ * Read model behind the Guardrails page's collapsed "Soul and access settings"
+ * section: what the soul and access settings constrain for one agent, each
+ * value with where it comes from (they move to the agent's own tabs later). Every value is read
  * from the code path that enforces it (or the data it reads); nothing here
  * decides or writes.
  *
@@ -43,31 +44,11 @@ import { memoryUnavailableReason } from "../../knowledge/memory-browse";
 import { budgetConfigFor } from "../../background/config";
 import { getPersonaRegistry } from "../../persona/registry";
 import { agentIdsByName } from "./skills-view";
-import { paths } from "../../config/home";
-import { brainEnabled } from "../../knowledge/brain";
-import { runtimeBaseline } from "../../soul/loader";
-import { splitBaseline } from "../../soul/runtime/blocks";
-import { listBuiltinSkills } from "../../soul/builtin";
-import { GUARDRAILS, UNKNOWN_RUNTIME, type GuardrailCtx, type GuardrailRuntime } from "../../agent/guardrails";
-import type {
-  BaselineBlockView,
-  BuiltinSkillView,
-  GuardrailFamily,
-  GuardrailGroup,
-  GuardrailKind,
-  GuardrailSetting,
-  GuardrailSource,
-  GuardrailsResponse,
-  PromptInjection,
-  PromptLayer,
-} from "./api-types";
+import type { GuardrailFamily, GuardrailSetting, GuardrailSettingsResponse, GuardrailSource } from "./api-types";
 
 export interface GuardrailDeps {
   /** The agent's learned proactive rules (default: its brain pages). */
   rules?: (agentId: string) => Promise<ProactiveRule[]>;
-  /** Facts about where turns run: whether a Stop guard and a permission
-   *  resolver are installed. Absent, nothing is assumed wired. */
-  runtime?: () => GuardrailRuntime;
 }
 
 export interface GuardrailViewer {
@@ -495,112 +476,8 @@ function budgets(name: string): GuardrailFamily {
   };
 }
 
-// --- The runtime layer: prompt stack, baseline, built-in skills, registry ----
-
-const mandatesTab = (name: string) => ({ label: "Mandates tab", to: `/agents/${encodeURIComponent(name)}/mandates` });
-
-/** Channels whose mandate differs from the soul's own (what gets a <channel-mandate> block). */
-function channelMandateCount(name: string): number {
-  try {
-    const d = name === "default" ? soulData() : soulDataFor(name);
-    const base = d.mandate?.trim();
-    return d.channelOverrides.filter((c) => {
-      const m = c.mandate?.trim();
-      return !!m && m !== base;
-    }).length;
-  } catch {
-    return 0;
-  }
-}
-
-function promptStack(name: string, text: string): GuardrailsResponse["promptStack"] {
-  const mandates = channelMandateCount(name);
-  const layers: PromptLayer[] = [
-    { id: "preset", title: "Claude Code preset", overridable: false, source: "SDK systemPrompt preset claude_code (slaude only appends)", present: true },
-    { id: "runtime-baseline", title: "Runtime baseline", overridable: false, source: "soul/runtime/core.md via runtimeBaseline()", present: true,
-      note: "The same for every agent of this deployment; blocks below." },
-    { id: "persona", title: "Persona (the soul)", overridable: true, source: name === "default" ? "the default agent's soul" : `${name}'s soul`, present: !!text.trim(),
-      link: mandatesTab(name) },
-    { id: "channel-mandate", title: "Channel mandate", overridable: true, source: "the soul's ## Channel blocks", present: mandates > 0, count: mandates,
-      note: "Replaces the soul's Mandate for that channel only.", link: mandatesTab(name) },
-    { id: "session-mode", title: "Session mode", overridable: false, source: "agent/session-mode.ts sessionModeBlock", present: true,
-      note: "Only in a /1on1 or remote thread." },
-    { id: "mcp-servers", title: "MCP servers", overridable: false, source: "agent/manager.ts #buildSystemAppend", present: true,
-      note: "The namespaces mounted for the session." },
-    { id: "memory-context", title: "Memory context", overridable: false, source: "memory provider prefetch", present: true,
-      note: "When memory has something for the thread." },
-  ];
-  const perTurn: PromptInjection[] = [
-    { id: "channel-envelope", title: "Channel envelope", summary: "Each inbound message is wrapped with the channel's trust (trusted, allowed, restricted), set by the gateway from the soul.",
-      source: "gateway/core/gateway.ts" },
-    { id: "session-notes", title: "Session notes", summary: "Out-of-band changes (MCP connect, /model, /mode, /soul, /cron) added to the next turn once.",
-      source: "agent/manager.ts makeUserPromptHook; agent/session-notes.ts" },
-    { id: "runtime-check", title: "Runtime checks", summary: "`<runtime-check>` turns from the runtime, never a person: wake, commitment, auto-evolve.",
-      source: "agent/manager.ts; proactive/" },
-    { id: "proactive-context", title: "Proactive context", summary: "`<proactive-context>` on a reply to one of the agent's own proactive posts.",
-      source: "proactive/reply-context.ts" },
-  ];
-  return { layers, perTurn };
-}
-
-/** On-disk paths as the operator would write them, for display only. */
-function displayPaths(md: string): string {
-  return md.split(paths.knowledge).join("$SLAUDE_HOME/knowledge").split(paths.home).join("$SLAUDE_HOME");
-}
-
-function baselineView(): GuardrailsResponse["baseline"] {
-  const brain = brainEnabled();
-  let blocks: BaselineBlockView[] = [];
-  try {
-    blocks = splitBaseline(runtimeBaseline(brain)).map((b) => ({ id: b.id, title: b.title, markdown: displayPaths(b.markdown) }));
-  } catch (e) {
-    console.warn(`[panel] runtime baseline did not render: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  return { deploymentWide: true, brain, blocks };
-}
-
-function builtinSkillsView(): BuiltinSkillView[] {
-  try {
-    return listBuiltinSkills().map((s) => ({ name: s.name, qualified: s.qualified, trigger: s.trigger, governs: [...s.governs] }));
-  } catch {
-    return [];
-  }
-}
-
-const KIND_ORDER: GuardrailKind[] = ["hook", "gate", "deny-list", "limit", "redaction", "observability", "prompt"];
-
-function registryView(ctx: GuardrailCtx, viewer: GuardrailViewer): GuardrailGroup[] {
-  const groups: GuardrailGroup[] = [];
-  for (const kind of KIND_ORDER) {
-    const entries = GUARDRAILS.filter((g) => g.kind === kind).map((g) => {
-      let details: GuardrailGroup["entries"][number]["details"] = [];
-      try {
-        details = g.details?.(ctx, viewer) ?? [];
-      } catch {
-        details = [];
-      }
-      return {
-        id: g.id,
-        kind: g.kind,
-        title: g.title,
-        summary: g.summary,
-        ...(g.event ? { event: g.event } : {}),
-        effect: g.effect,
-        appliesTo: [...g.appliesTo],
-        state: g.notBuilt ? ("not-built" as const) : g.state(ctx),
-        toggle: g.toggle ?? { source: "none" as const },
-        details,
-        source: g.source,
-        ...(g.fieldNote ? { fieldNote: g.fieldNote } : {}),
-      };
-    });
-    if (entries.length) groups.push({ kind, entries });
-  }
-  return groups;
-}
-
-/** Every guardrail family for one agent. */
-export async function guardrailsFor(name: string, deps: GuardrailDeps = {}, viewer: GuardrailViewer = { role: "operator" }): Promise<GuardrailsResponse> {
+/** The soul and access settings that constrain one agent. */
+export async function guardrailSettingsFor(name: string, deps: GuardrailDeps = {}, viewer: GuardrailViewer = { role: "operator" }): Promise<GuardrailSettingsResponse> {
   const text = soulText(name);
   const families = await Promise.all([
     toolPermissions(name),
@@ -615,13 +492,5 @@ export async function guardrailsFor(name: string, deps: GuardrailDeps = {}, view
     Promise.resolve(wakeTools()),
     Promise.resolve(budgets(name)),
   ]);
-  const ctx: GuardrailCtx = { agent: name, ...(deps.runtime?.() ?? UNKNOWN_RUNTIME) };
-  return {
-    agent: name,
-    promptStack: promptStack(name, text),
-    baseline: baselineView(),
-    builtinSkills: builtinSkillsView(),
-    guardrails: registryView(ctx, viewer),
-    families,
-  };
+  return { agent: name, families };
 }

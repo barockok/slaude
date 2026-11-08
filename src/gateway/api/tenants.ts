@@ -35,6 +35,8 @@ import { skillRootsFor } from "../../skills/loader";
 import { json, notFound } from "./http";
 import { bridgedServerNames } from "../core/external-mcp";
 import { voiceBundleFromEnv, type VoiceBundle } from "../../voice/config";
+import { bundleGuardrailsFor, CAPABILITIES_HEADER, GUARDRAILS_CAPABILITY, hasCapability, type BundleGuardrails } from "../../guardrails/node";
+import { emitAudit } from "../../audit/emit";
 
 export interface RuntimeBundle {
   tenantId: string;
@@ -74,6 +76,12 @@ export interface RuntimeBundle {
    *  node, only for authorized tenants (SLAUDE_VOICE_TENANTS gating). Holds a
    *  plaintext key; added after buildBundle, outside the bundle cache. */
   voice?: VoiceBundle | null;
+  /** Owner guardrails that apply to the persona (src/guardrails/node.ts).
+   *  Present only when the tenant has a guardrail set, so other bundles and
+   *  their ETags are exactly as before. An older node ignores it, which is
+   *  why a persona with enforced rules is refused to a node that does not
+   *  advertise the capability. */
+  guardrails?: BundleGuardrails;
 }
 
 type PersonaRow = {
@@ -449,6 +457,7 @@ export async function handleTenantRuntime(
   req: Request,
   tenantId: string,
   personaId: string,
+  ctx: { nodeId?: string; sessionId?: string | null } = {},
 ): Promise<Response> {
   let bundle: RuntimeBundle | null;
   try {
@@ -469,6 +478,38 @@ export async function handleTenantRuntime(
     throw e;
   }
   if (!bundle) return notFound("unknown tenant or persona");
+  // Owner guardrails: from the verified snapshot. A set that cannot be read or
+  // verified refuses the bundle (the node's boot fails closed), never ships
+  // an empty one.
+  let guardrails: BundleGuardrails | null;
+  try {
+    guardrails = await bundleGuardrailsFor(tenantId, bundle.personaId);
+  } catch {
+    return new Response(JSON.stringify({ error: "guardrails unavailable", code: "GUARDRAILS_UNAVAILABLE", transient: false }), {
+      status: 503,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (guardrails?.enforced && !hasCapability(req.headers.get(CAPABILITIES_HEADER))) {
+    emitAudit({
+      tenantId,
+      persona: bundle.personaId,
+      actorKind: "system",
+      actorId: ctx.nodeId ?? "node",
+      action: "guardrail.node.unsupported",
+      targetKind: "node",
+      targetId: ctx.nodeId ?? "unknown",
+      decision: "refused",
+      sessionId: ctx.sessionId ?? null,
+      summary: `a node without the ${GUARDRAILS_CAPABILITY} capability asked for an agent with enforced guardrails; refused`,
+      details: { agent: bundle.personaId, capability: GUARDRAILS_CAPABILITY },
+    });
+    return new Response(JSON.stringify({ error: "this node does not apply owner guardrails", code: "GUARDRAILS_UNSUPPORTED", transient: false }), {
+      status: 409,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (guardrails) bundle = { ...bundle, guardrails };
   let voiceBundle: VoiceBundle | null = null;
   // Tenant isolation (PF49): only ship voice config to authorized tenants.
   const allowedTenants = env.voice.tenants();
@@ -482,7 +523,10 @@ export async function handleTenantRuntime(
     }
   }
   const body = JSON.stringify({ ...bundle, voice: voiceBundle });
-  const etag = `"${bundleEtag(body)}"`;
+  // The guardrail version is an explicit ETag input (beside the body that
+  // already carries it): any guardrail change, an override alone included,
+  // busts every node's cached bundle.
+  const etag = `"${bundleEtag(guardrails ? `${body}\nguardrails:${guardrails.version}` : body)}"`;
   const inm = req.headers.get("if-none-match");
   // RFC 7232 §3.2: "*" matches any current representation; otherwise compare
   // against each listed entity-tag.

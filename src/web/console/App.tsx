@@ -17,6 +17,7 @@ import { MemoryStoresPage } from "./pages/memory/MemoryStoresPage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { SessionDetailPage, isSessionTab } from "./pages/session/SessionDetailPage";
 import { SessionsPage } from "./pages/SessionsPage";
+import { GuardrailDetailPage } from "./pages/resources/GuardrailDetailPage";
 import { GuardrailsPage } from "./pages/resources/GuardrailsPage";
 import { SkillDetailPage } from "./pages/resources/SkillDetailPage";
 import { SkillsPage } from "./pages/resources/SkillsPage";
@@ -32,7 +33,7 @@ export const NAV: NavEntry[] = [
   { label: "Memory", to: "/memory", description: "Browse the memory stores your agents read and write.", keywords: "brain pages stores" },
   { label: "Environments", to: "/environments", description: "Where agents run: node pools, placement and personal environments.", keywords: "nodes" },
   { label: "Skills", to: "/skills", group: "Resources", description: "Every skill your agents can use, where it came from and how often it is used.", keywords: "plugins resources" },
-  { label: "Guardrails", to: "/guardrails", group: "Resources", description: "What constrains each agent: permissions, approvals, memory gating, restraint and budgets.", keywords: "policy limits resources" },
+  { label: "Guardrails", to: "/guardrails", group: "Resources", description: "The rules you set for your agents: enforced tool and message rules, and Guidance they read.", keywords: "policy rules limits resources" },
 ];
 
 /** GET /panel/auth/me answers { email, role } for the signed-in operator. */
@@ -61,6 +62,9 @@ function renderPage(path: string, entry: NavEntry | null) {
   const skill = matchPath("/skills/:id", path);
   if (skill) return <SkillDetailPage key={skill.id} id={skill.id!} />;
   if (path.startsWith("/skills/")) return <NotFoundPage home="/skills" />;
+  const guardrail = matchPath("/guardrails/:slug", path);
+  if (guardrail) return <GuardrailDetailPage key={guardrail.slug} slug={guardrail.slug!} />;
+  if (path.startsWith("/guardrails/")) return <NotFoundPage home="/guardrails" />;
   const session = matchPath("/sessions/:id", path) ?? matchPath("/sessions/:id/:tab", path);
   if (session) {
     const tab = session.tab ?? "timeline";

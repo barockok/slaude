@@ -59,9 +59,10 @@ export async function executeToolCall(
   // caller used the deprecated kb_* name (a session resumed from before the rename).
   const alias = server === "kb" && isMemoryToolAlias(tool);
   metric.v1ToolCallsTotal.inc({ server, tool: server === "kb" ? canonicalMemoryTool(tool) : tool, alias: alias ? "true" : "false" });
-  // A wake's allow-list, from the signed claim. can_use_tool is the node's
-  // permission plumbing, not a model's call: it answers for itself (a refusal).
-  if (claims.wake && tool !== "can_use_tool" && !wakeAllows(server, tool)) {
+  // A wake's allow-list, from the signed claim. can_use_tool and
+  // guardrail_event are the node's plumbing, not a model's call: the first
+  // answers for itself (a refusal), the second only records.
+  if (claims.wake && tool !== "can_use_tool" && tool !== "guardrail_event" && !wakeAllows(server, tool)) {
     return json(200, { content: [{ type: "text", text: wakeRefusal(tool) }], isError: true });
   }
   let result: ToolResult | null;

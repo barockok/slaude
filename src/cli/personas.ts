@@ -4,6 +4,8 @@
  *   personas render <dir> [--revision <sha>] [--committed-at <iso>] [--check]
  *       Repository → sync payload, validated exactly as the gateway validates
  *       it, so a malformed file fails the pull request rather than the deploy.
+ *       A guardrails/<slug>/GUARDRAIL.md folder rides along (payload version 5
+ *       when it holds any); a guardrail's own validation errors are warnings.
  *   personas export [--out <dir>]
  *       $SLAUDE_HOME → repository layout. Every userToken, header and env value
  *       is replaced by a ${PERSONA_*} placeholder and the variables are listed.
@@ -16,6 +18,8 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { LABEL_RE } from "../queue/keys";
+import { readGuardrailDir } from "../guardrails/files";
+import { parseGuardrail } from "../guardrails/format";
 import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
@@ -82,7 +86,27 @@ export function renderDir(
   if (personas.length > 0 && !personas.some((p) => p.name === "default")) {
     throw new PayloadError("personas/ has personas but no default/ — a non-empty sync must include a persona named 'default'");
   }
-  const payload = parsePayload({ version: payloadVersionFor(personas), ...meta, personas });
+  // guardrails/<slug>/GUARDRAIL.md: the deploy's owner guardrails. A folder
+  // that exists (even empty) is the whole set; no folder leaves the stored
+  // git guardrails as they are.
+  let guardrails: Array<{ slug: string; md: string }> | undefined;
+  if (existsSync(join(dir, "guardrails"))) {
+    try {
+      guardrails = readGuardrailDir(join(dir, "guardrails"));
+    } catch (e) {
+      throw new PayloadError((e as Error).message);
+    }
+    // A rule that fails to parse fails the pull request (the gateway refuses it too);
+    // other problems are warnings.
+    const parsed = guardrails.map((g) => ({ slug: g.slug, p: parseGuardrail(g.slug, g.md) }));
+    const refused = parsed.filter((x) => x.p.blocking.length).map((x) => `guardrail '${x.slug}': ${x.p.blocking.join("; ")}`);
+    if (refused.length) throw new PayloadError(refused.join(" | "));
+    if (onWarnings) {
+      const bad = parsed.flatMap((x) => x.p.errors.map((err) => `guardrail '${x.slug}': ${err}`));
+      if (bad.length) onWarnings(bad);
+    }
+  }
+  const payload = parsePayload({ version: payloadVersionFor(personas, guardrails), ...meta, personas, ...(guardrails ? { guardrails } : {}) });
   if (unknown.length) onUnknown?.(capPaths(unknown));
   const warnings = providerWarnings(payload);
   if (warnings.length) onWarnings?.(warnings);

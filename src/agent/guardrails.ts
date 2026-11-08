@@ -1,7 +1,9 @@
 /**
  * The guardrail registry: every piece of the runtime's own layer that blocks,
  * rewrites or stops the agent, described in one typed list. It describes; it
- * builds nothing. agent/manager.ts and background/runner.ts keep wiring their
+ * builds nothing. Code only: the console shows the owner's guardrails, not
+ * this layer (owner guardrails design, 2026-11-08); this list stays as an
+ * internal drift check. agent/manager.ts and background/runner.ts keep wiring their
  * hooks as they always have and mark each callback with its id (hook-tags.ts);
  * tests/agent/guardrails-agreement.test.ts builds real session options and
  * checks that the hooks there are exactly the hook entries below, in order.
@@ -15,14 +17,28 @@
  * as on/off, a mode or a cap, and anything a redaction pattern names only to a
  * superadmin.
  */
-import type {
-  GuardrailAppliesTo,
-  GuardrailDetail,
-  GuardrailEvent,
-  GuardrailKind,
-  GuardrailState,
-  GuardrailToggle,
-} from "../gateway/panel/api-types";
+/** What a registry entry is. `observability` hooks count or report; they never block. */
+export type GuardrailKind = "prompt" | "hook" | "gate" | "deny-list" | "limit" | "redaction" | "observability";
+/** `not-wired`: the code exists but this process does not install it; `not-built`: designed only. */
+export type GuardrailState = "enforcing" | "shadow" | "off" | "not-built" | "not-wired";
+/** Where a guardrail applies. Voice is an interactive session on a call. */
+export type GuardrailAppliesTo = "interactive" | "wake" | "remote" | "voice" | "background" | "deployment";
+export type GuardrailEvent = "Stop" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PreCompact" | "canUseTool" | "dispatch";
+
+export interface GuardrailToggle {
+  /** `none`: always on, nothing turns it off. */
+  source: "env" | "config" | "thread" | "none";
+  /** The variable or command, e.g. `SLAUDE_REMOTE` or `/remote`. */
+  key?: string;
+  /** The value when nothing sets it. */
+  default?: string;
+}
+
+/** One fact about a guardrail. Env values appear only as on/off, a mode or a cap. */
+export interface GuardrailDetail {
+  label: string;
+  value: string | number | boolean | string[];
+}
 import { env } from "../config/env";
 import { parseDecisionConfig } from "../decision/config";
 import { listBuiltinSkills } from "../soul/builtin";
@@ -174,6 +190,30 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
     toggle: { source: "env", key: "SLAUDE_REMOTE", default: "off" },
     details: () => [REMOTE_SCOPE, { label: "Denied tools", value: [...REMOTE_DENIED_LOCAL_TOOLS] }],
     source: "remote/mcp.ts denyLocalBuiltins",
+  },
+  {
+    id: HOOK_IDS.guardrailFiles,
+    kind: "hook",
+    title: "Guardrail files are not editable",
+    summary: "A session cannot write the owner's guardrail files or the runtime database with the file tools.",
+    event: "PreToolUse",
+    effect: "Denies Write, Edit, MultiEdit and NotebookEdit under $SLAUDE_HOME/guardrails and on the database file, and Read, Grep and Glob of the signing key file (paths compared case-insensitively where the volume is). Bash is not covered: files are never read at runtime and stored rows are signed.",
+    appliesTo: MANAGER_SESSIONS,
+    state: enforcing,
+    toggle: ALWAYS,
+    source: "guardrails/hooks.ts guardrailFilesHook",
+  },
+  {
+    id: HOOK_IDS.ownerGuardrails,
+    kind: "hook",
+    title: "Owner guardrails (tool rules)",
+    summary: "The owner's enforced tool rules, and on-match Guidance delivered once per session.",
+    event: "PreToolUse",
+    effect: "Denies a call an owner rule denies (approve is enforced as deny until approval cards exist), records audit rules, and refuses the first call a Guidance trigger matches once, with the Guidance text.",
+    appliesTo: [...MANAGER_SESSIONS, "background"],
+    state: enforcing,
+    toggle: { source: "config", key: "each owner guardrail's enabled switch" },
+    source: "guardrails/hooks.ts ownerGuardrailsHook",
   },
   {
     id: HOOK_IDS.skillGate,

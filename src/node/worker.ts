@@ -26,10 +26,13 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Worker, DelayedError, UnrecoverableError, type Job } from "bullmq";
 import type { Redis } from "ioredis";
-import { AgentManager, type AgentEvent } from "../agent/manager";
+import { AgentManager, type AgentEvent, type GuardrailSink } from "../agent/manager";
 import { createSessionMcp, SESSION_MCP_NAME } from "../agent/session-mcp";
 import { env } from "../config/env";
 import { m as metric, metrics } from "../metrics";
+import { bundleSessionGuardrails } from "../guardrails/node";
+import { GUARDRAILS_CAPABILITY } from "../guardrails/capability";
+import type { SessionGuardrails } from "../guardrails/resolve";
 import { assertNodeIdUsable, DEFAULT_LABEL, LABEL_RE, labelTurnsQueue, makeKeys, nodeTurnsQueue, type Keys } from "../queue/keys";
 import { createRedis, heartbeatSec as envHeartbeatSec, nodeDrainSec, redisUrl } from "../queue/redis";
 import { makeRegistry, type Registry } from "../queue/registry";
@@ -357,6 +360,43 @@ export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: st
   };
 }
 
+/** What this node advertises on its heartbeat (and on every bundle fetch). */
+export const NODE_CAPS: readonly string[] = [GUARDRAILS_CAPABILITY];
+
+/** The session's owner guardrails from its runtime bundle (none when the
+ *  gateway sends none). A refused bundle (GUARDRAILS_UNAVAILABLE) fails the boot. */
+export function makeBundleGuardrailResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined, channel: string | null) => Promise<SessionGuardrails | null> {
+  return async (sessionId, persona, channel) => {
+    let bundle: RuntimeBundle;
+    try {
+      bundle = await sessionBundle(deps, sessionId, persona);
+    } catch (e) {
+      throw e instanceof BootFailure ? e : bundleFetchFailure(e);
+    }
+    return bundleSessionGuardrails(bundle.guardrails, persona ?? "default", channel);
+  };
+}
+
+/** Where a node sends guardrail firings: the gateway records them (runtime/guardrail_event). Best effort, never awaited by a decision. */
+export function makeNodeGuardrailSink(deps: { client: Pick<NodeClient, "request">; tokenFor: (sessionId: string) => string | undefined }): GuardrailSink {
+  const post = (sessionId: string, body: Record<string, unknown>) => {
+    const jobToken = deps.tokenFor(sessionId);
+    if (!jobToken) return;
+    void deps.client
+      .request("/v1/tools/runtime/guardrail_event", { method: "POST", body, jobToken, retry: false })
+      .catch((e) => console.warn(`[node] guardrail event not recorded session=${sessionId}: ${(e as Error)?.message ?? String(e)}`));
+  };
+  return {
+    firing: (sessionId, events, ctx) =>
+      post(sessionId, {
+        kind: "firing",
+        session_kind: ctx.kind,
+        events: events.map((e) => ({ on: e.on, slug: e.slug, rule_id: e.ruleId, action: e.action, applied: e.applied, deciding: e.deciding, ...(e.toolName ? { tool_name: e.toolName } : {}) })),
+      }),
+    delivered: (sessionId, slugs, ctx) => post(sessionId, { kind: "delivery", session_kind: ctx.kind, slugs, via: ctx.via, ...(ctx.toolName ? { tool_name: ctx.toolName } : {}) }),
+  };
+}
+
 /** The persona's default model from a MANAGED bundle (its effective model, or
  *  SLAUDE_MODEL on the gateway when it sets none). An unmanaged bundle yields
  *  undefined, so the row's model stands exactly as before. The manager only
@@ -639,6 +679,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     personaFor: (id) => personas.get(id),
   };
   agent.setPersonaSoulResolver(makeBundleSoulResolver(bundleDeps));
+  // Owner guardrails come from the same bundle; a refused or unreadable set
+  // fails the boot. Firings and deliveries are recorded by the gateway.
+  agent.setGuardrailResolver(makeBundleGuardrailResolver(bundleDeps));
+  agent.setGuardrailSink(makeNodeGuardrailSink({ client, tokenFor: (id) => store.tokenFor(id) }));
   // The persona's model (git or override) also comes from the bundle; a
   // per-thread /model on the session row still wins (see AgentManager).
   agent.setPersonaModelResolver(makeBundleModelResolver(bundleDeps));
@@ -697,7 +741,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         }
       }
       if (stopped) return;
-      await registry.nodeUp(nodeId, labels).catch(() => {});
+      await registry.nodeUp(nodeId, labels, NODE_CAPS).catch(() => {});
       for (const w of claimWorkers) w.resume();
       authPaused = false;
       metric.nodeAuthPaused.set(0);
@@ -773,6 +817,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       const text = data.messages.map((m) => m.text).join("\n\n");
       const suppress = data.messages.length > 0 && data.messages.every((m) => (m as any).suppress === true);
       if (suppress) agent.suppressNextTurn(sessionId);
+      // Inbound-triggered owner Guidance, matched on the gateway.
+      agent.offerGuidance(sessionId, data.messages.flatMap((m) => m.guidance ?? []));
 
       // A warm session picks up tokens the gateway refreshed since it booted:
       // the agent reads the file on every call. A session that is not booted
@@ -1030,7 +1076,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   };
 
   // Announce liveness (and the labels, same transaction) BEFORE claiming anything.
-  await registry.nodeUp(nodeId, labels);
+  await registry.nodeUp(nodeId, labels, NODE_CAPS);
 
   // One BullMQ worker per label plus this node's own queue, each on its own
   // connection (blocking claims must never share) with its own concurrency.
@@ -1070,7 +1116,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       // Paused on a 401: not serving, so not announced (pauseForAuth).
       if (authPaused) return;
       try {
-        await registry.beatNode(nodeId, labels);
+        await registry.beatNode(nodeId, labels, NODE_CAPS);
         metric.nodeSessionsLive.set(agent.liveCount());
         for (const sessionId of [...warm]) {
           if (agent.isLive(sessionId)) {
