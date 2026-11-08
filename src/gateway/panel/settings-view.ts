@@ -1,9 +1,15 @@
 /**
- * Read model behind the Guardrails page's collapsed "Soul and access settings"
- * section: what the soul and access settings constrain for one agent, each
- * value with where it comes from (they move to the agent's own tabs later). Every value is read
- * from the code path that enforces it (or the data it reads); nothing here
- * decides or writes.
+ * Read model behind the agent settings the console shows where they belong
+ * (phase B moved them off the Guardrails page): what the soul and access
+ * settings constrain for one agent, each value with where it comes from.
+ * Every value is read from the code path that enforces it (or the data it
+ * reads); nothing here decides or writes.
+ *
+ *   access         Access tab: approvals, permission cards, admission, redaction
+ *   memory         Memory page, Write rules: memory write tiers, profile guard
+ *   mandates       Mandates tab: proactive restraint and caps, wake tools, budgets
+ *   learned-rules  Mandates tab, its own request (the brain read has a timeout)
+ *
  *
  *   tool permissions   permission-gate.ts permissionPolicy, autoAllowFromEnv;
  *                      sessions.permission_mode; access/permission-auth.ts
@@ -12,7 +18,6 @@
  *   admission          access/admission.ts admit over access/role.ts loadGrants
  *   memory gating      knowledge/gated-dispatch.ts classifyBrainOp
  *   profile guard      agent/profile-write-guard.ts
- *   policy guardrails  designed (2026-05-21 field note), not implemented
  *   redaction          gateway/slack/redact.ts (soul patterns), redact/index.ts
  *   proactive          soul/proactive.ts parseProactive, proactive/restraint.ts,
  *                      heartbeat.ts and wake-tools.ts caps
@@ -44,14 +49,14 @@ import { memoryUnavailableReason } from "../../knowledge/memory-browse";
 import { budgetConfigFor } from "../../background/config";
 import { getPersonaRegistry } from "../../persona/registry";
 import { agentIdsByName } from "./skills-view";
-import type { GuardrailFamily, GuardrailSetting, GuardrailSettingsResponse, GuardrailSource } from "./api-types";
+import type { AgentSettingsGroup, AgentSettingsResponse, SettingsFamily, SettingsValue, SettingsSource } from "./api-types";
 
-export interface GuardrailDeps {
+export interface SettingsDeps {
   /** The agent's learned proactive rules (default: its brain pages). */
   rules?: (agentId: string) => Promise<ProactiveRule[]>;
 }
 
-export interface GuardrailViewer {
+export interface SettingsViewer {
   /** Superadmins see redaction pattern values; operators see counts. */
   role: "superadmin" | "operator";
 }
@@ -59,9 +64,9 @@ export interface GuardrailViewer {
 const RULES_TIMEOUT_MS = 3000;
 
 /** Set and not blank: the value came from the environment. */
-const fromEnv = (name: string): GuardrailSource => ((process.env[name] ?? "").trim() ? "env" : "default");
+const fromEnv = (name: string): SettingsSource => ((process.env[name] ?? "").trim() ? "env" : "default");
 
-const setting = (key: string, label: string, value: GuardrailSetting["value"], source: GuardrailSource, origin?: string, note?: string): GuardrailSetting => ({
+const setting = (key: string, label: string, value: SettingsValue["value"], source: SettingsSource, origin?: string, note?: string): SettingsValue => ({
   key,
   label,
   value,
@@ -135,12 +140,12 @@ async function modeCounts(name: string): Promise<string[][]> {
   }
 }
 
-async function toolPermissions(name: string): Promise<GuardrailFamily> {
+async function toolPermissions(name: string): Promise<SettingsFamily> {
   const auto = [...autoAllowFromEnv()].sort();
   const modes = await modeCounts(name);
   return {
     id: "tool-permissions",
-    title: "Tool permissions",
+    title: "Permission cards",
     summary: "Which tool calls run without asking, and who may decide a permission card.",
     scope: "deployment",
     status: "active",
@@ -170,9 +175,9 @@ async function toolPermissions(name: string): Promise<GuardrailFamily> {
   };
 }
 
-async function approvals(name: string, text: string): Promise<GuardrailFamily> {
-  const settings: GuardrailSetting[] = [];
-  let table: GuardrailFamily["table"];
+async function approvals(name: string, text: string): Promise<SettingsFamily> {
+  const settings: SettingsValue[] = [];
+  let table: SettingsFamily["table"];
   const def = soulData();
   if (name !== "default") {
     const grants = await loadGrants(name);
@@ -224,7 +229,7 @@ async function approvals(name: string, text: string): Promise<GuardrailFamily> {
   };
 }
 
-async function admission(name: string): Promise<GuardrailFamily> {
+async function admission(name: string): Promise<SettingsFamily> {
   const grants = await loadGrants(name);
   const users = (pred: (g: (typeof grants)[number]) => boolean) => [...new Set(grants.filter(pred).map((g) => g.subjectId))].sort();
   const consoleCount = grants.filter((g) => g.source === "console").length;
@@ -252,11 +257,10 @@ async function admission(name: string): Promise<GuardrailFamily> {
       "5. anything else is dropped without a reply.",
     ].join("\n"),
     textSource: "access/admission.ts admit",
-    link: { label: "Grants on the Access tab", to: `/agents/${encodeURIComponent(name)}/access` },
   };
 }
 
-function memoryGating(name: string): GuardrailFamily {
+function memoryGating(name: string): SettingsFamily {
   const agentId = agentIdsByName([name]).get(name);
   const ops = BRAIN_OP_CLASSES;
   const ttl = grantTtlMs();
@@ -288,7 +292,7 @@ function memoryGating(name: string): GuardrailFamily {
   };
 }
 
-function profileGuard(): GuardrailFamily {
+function profileGuard(): SettingsFamily {
   return {
     id: "profile-guard",
     title: "Profile write guard",
@@ -304,26 +308,13 @@ function profileGuard(): GuardrailFamily {
   };
 }
 
-function policy(): GuardrailFamily {
-  return {
-    id: "policy",
-    title: "Policy guardrails",
-    summary: "A written policy checked on every tool call and reply.",
-    scope: "deployment",
-    status: "not-implemented",
-    settings: [],
-    text: "Designed in the 2026-05-21 policy guardrails field note (a policy service, a `POLICY.md`, and a check on SDK hooks). No code implements it in this release, so nothing here constrains the agent yet.",
-    textSource: "docs: field notes, 2026-05-21",
-  };
-}
-
-function redaction(name: string, text: string, canSeeValues: boolean): GuardrailFamily {
+function redaction(name: string, text: string, canSeeValues: boolean): SettingsFamily {
   const def = soulData().redactPatterns;
   const own = name === "default" ? [] : soulDataFor(name).redactPatterns;
   const effective = redactPatternsFor(name);
   // A pattern can name what it hides (a project, a customer): values for
   // superadmins, a count for everyone else.
-  const shown = (xs: string[]): GuardrailSetting["value"] => (canSeeValues ? list(xs) : `${xs.length} ${xs.length === 1 ? "pattern" : "patterns"}`);
+  const shown = (xs: string[]): SettingsValue["value"] => (canSeeValues ? list(xs) : `${xs.length} ${xs.length === 1 ? "pattern" : "patterns"}`);
   const hidden = canSeeValues ? undefined : "Only superadmins see the patterns themselves.";
   const settings = [
     setting("patterns", "Redacted from replies (default + own)", shown(effective), effective.length ? "soul" : "default", "the default agent's soul plus this agent's own",
@@ -349,10 +340,10 @@ function redaction(name: string, text: string, canSeeValues: boolean): Guardrail
   };
 }
 
-function proactive(text: string): GuardrailFamily {
+function proactive(text: string): SettingsFamily {
   const cfg = parseProactive(text);
   const section = soulSections(text, /^proactive$/i);
-  const src = (...keys: string[]): GuardrailSource => (section && hasKey(section, ...keys) ? "soul" : "default");
+  const src = (...keys: string[]): SettingsSource => (section && hasKey(section, ...keys) ? "soul" : "default");
   const channels = [...new Set([...Object.keys(cfg.channels), ...Object.keys(cfg.channelHighest), ...Object.keys(cfg.channelCooldownHours), ...Object.keys(cfg.channelMaxPerDay)])].sort();
   const channelText = channelProactiveSections(text);
   const prose = [section, channelText].filter(Boolean).join("\n\n");
@@ -395,13 +386,13 @@ function proactive(text: string): GuardrailFamily {
   };
 }
 
-async function learnedRules(name: string, deps: GuardrailDeps): Promise<GuardrailFamily> {
+async function learnedRules(name: string, deps: SettingsDeps): Promise<SettingsFamily> {
   const base = {
     id: "learned-rules" as const,
     title: "Learned proactive rules",
     summary: "How people told the agent to react to things; a rule can only lower how far it goes.",
     scope: "agent" as const,
-    settings: [] as GuardrailSetting[],
+    settings: [] as SettingsValue[],
     text: "Taught with `proactive_rule` on a person's own turn, never in a /1on1. Raising a level needs an approver (the manager for global and DM rules) and is capped by the soul's highest action; raising to *act* needs the person's words quoted.",
     textSource: "proactive/rule-tool.ts",
   };
@@ -428,7 +419,7 @@ async function learnedRules(name: string, deps: GuardrailDeps): Promise<Guardrai
   }
 }
 
-function wakeTools(): GuardrailFamily {
+function wakeTools(): SettingsFamily {
   return {
     id: "wake-tools",
     title: "Wake tool allow-list",
@@ -445,7 +436,7 @@ function wakeTools(): GuardrailFamily {
   };
 }
 
-function budgets(name: string): GuardrailFamily {
+function budgets(name: string): SettingsFamily {
   const cfg = budgetConfigFor(name);
   let bg: { budgetUsd?: number; timezone?: string } | null | undefined;
   try {
@@ -476,21 +467,31 @@ function budgets(name: string): GuardrailFamily {
   };
 }
 
-/** The soul and access settings that constrain one agent. */
-export async function guardrailSettingsFor(name: string, deps: GuardrailDeps = {}, viewer: GuardrailViewer = { role: "operator" }): Promise<GuardrailSettingsResponse> {
-  const text = soulText(name);
-  const families = await Promise.all([
-    toolPermissions(name),
-    approvals(name, text),
-    admission(name),
-    Promise.resolve(memoryGating(name)),
-    Promise.resolve(profileGuard()),
-    Promise.resolve(policy()),
-    Promise.resolve(redaction(name, text, viewer.role === "superadmin")),
-    Promise.resolve(proactive(text)),
-    learnedRules(name, deps),
-    Promise.resolve(wakeTools()),
-    Promise.resolve(budgets(name)),
-  ]);
-  return { agent: name, families };
+export const SETTINGS_GROUPS: readonly AgentSettingsGroup[] = ["access", "memory", "mandates", "learned-rules"];
+
+/** One group of the settings that constrain an agent (see the header for where each is shown). */
+export async function agentSettings(
+  name: string,
+  group: AgentSettingsGroup,
+  deps: SettingsDeps = {},
+  viewer: SettingsViewer = { role: "operator" },
+): Promise<AgentSettingsResponse> {
+  let families: SettingsFamily[];
+  switch (group) {
+    case "access": {
+      const text = soulText(name);
+      families = await Promise.all([approvals(name, text), toolPermissions(name), admission(name), Promise.resolve(redaction(name, text, viewer.role === "superadmin"))]);
+      break;
+    }
+    case "memory":
+      families = [memoryGating(name), profileGuard()];
+      break;
+    case "mandates":
+      families = [proactive(soulText(name)), wakeTools(), budgets(name)];
+      break;
+    case "learned-rules":
+      families = [await learnedRules(name, deps)];
+      break;
+  }
+  return { agent: name, group, families };
 }

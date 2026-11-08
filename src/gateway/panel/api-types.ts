@@ -630,45 +630,44 @@ export interface SkillActionResponse {
   id: string;
 }
 
-// --- Resources: guardrails (read-only) ---------------------------------------
+// --- Agent settings: what the soul and access settings constrain (read-only) --
 
 /**
  * Where an effective value comes from: an environment variable, the agent's
  * soul, the persona's own config, a stored console grant, a rule the agent
  * learned from a person, or the code's default or fixed rule.
  */
-export type GuardrailSource = "env" | "soul" | "persona" | "console" | "learned" | "default" | "code";
+export type SettingsSource = "env" | "soul" | "persona" | "console" | "learned" | "default" | "code";
 
-export interface GuardrailSetting {
+export interface SettingsValue {
   key: string;
   label: string;
   value: string | number | boolean | string[] | null;
-  source: GuardrailSource;
+  source: SettingsSource;
   /** The variable, soul section or constant it is read from. */
   origin?: string;
   note?: string;
 }
 
-export interface GuardrailTable {
+export interface SettingsTable {
   columns: string[];
   rows: string[][];
 }
 
-export type GuardrailFamilyId =
+export type SettingsFamilyId =
   | "tool-permissions"
   | "approvals"
   | "admission"
   | "memory-gating"
   | "profile-guard"
-  | "policy"
   | "redaction"
   | "proactive"
   | "learned-rules"
   | "wake-tools"
   | "budgets";
 
-export interface GuardrailFamily {
-  id: GuardrailFamilyId;
+export interface SettingsFamily {
+  id: SettingsFamilyId;
   title: string;
   /** One line: what it constrains. */
   summary: string;
@@ -676,8 +675,8 @@ export interface GuardrailFamily {
   scope: "agent" | "deployment";
   /** `unavailable`: could not be read now (see note); `not-implemented`: designed, not in the code. */
   status: "active" | "unavailable" | "not-implemented";
-  settings: GuardrailSetting[];
-  table?: GuardrailTable;
+  settings: SettingsValue[];
+  table?: SettingsTable;
   /** Governing prose (markdown): the soul's own section, or how the rule works. */
   text?: string;
   /** Where `text` comes from, e.g. "SOUL.md ## Proactive". */
@@ -687,12 +686,21 @@ export interface GuardrailFamily {
   link?: { label: string; to: string };
 }
 
-/** GET /panel/api/guardrails/settings?agent=: the soul and access settings
- *  that constrain one agent (a collapsed section of the Guardrails page until
- *  they move to the agent's own tabs). */
-export interface GuardrailSettingsResponse {
+/**
+ * Which page shows a group of settings (phase B moved them off the Guardrails
+ * page, the rc.7 spec's phase 2):
+ *   access         the agent's Access tab: approvals, permission cards, admission, redaction
+ *   memory         the Memory page's Write rules: memory write tiers, the profile guard
+ *   mandates       the agent's Mandates tab: proactive restraint and caps, wake tools, budgets
+ *   learned-rules  the Mandates tab's learned rules (their own request: a brain read can time out)
+ */
+export type AgentSettingsGroup = "access" | "memory" | "mandates" | "learned-rules";
+
+/** GET /panel/api/agents/:name/settings/:group */
+export interface AgentSettingsResponse {
   agent: string;
-  families: GuardrailFamily[];
+  group: AgentSettingsGroup;
+  families: SettingsFamily[];
 }
 
 // --- Resources: owner guardrails ---------------------------------------------

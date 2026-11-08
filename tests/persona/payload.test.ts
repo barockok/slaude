@@ -348,7 +348,8 @@ describe("guardrails (payload version 5)", () => {
   test("slugs: valid, not reserved, not repeated; entries strict and size capped", () => {
     const v5 = (guardrails: unknown[]) => ({ ...base([ana]), version: 5, guardrails });
     expect(() => parsePayload(v5([{ slug: "Bad", md: "x" }]))).toThrow(/guardrail slug/);
-    expect(() => parsePayload(v5([g("settings")]))).toThrow(/reserved/);
+    expect(() => parsePayload(v5([g("new")]))).toThrow(/reserved/);
+    expect(() => parsePayload(v5([g("test")]))).toThrow(/reserved/);
     expect(() => parsePayload(v5([g("a"), g("a")]))).toThrow(/duplicate guardrail 'a'/);
     expect(() => parsePayload(v5([{ ...g("a"), extra: 1 }]))).toThrow(PayloadError);
     expect(() => parsePayload(v5([{ slug: "a", md: "x".repeat(64 * 1024 + 1) }]))).toThrow(/at most/);

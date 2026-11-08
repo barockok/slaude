@@ -35,7 +35,7 @@ export const GUARDRAIL_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
  * Slugs the console uses for its own pages (/guardrails/new creates one,
  * /guardrails/test is the Test box), so no guardrail can shadow them.
  */
-export const RESERVED_SLUGS = new Set(["settings", "new", "test"]);
+export const RESERVED_SLUGS = new Set(["new", "test"]);
 /** Largest GUARDRAIL.md accepted (bytes). */
 export const MAX_GUARDRAIL_BYTES = 64 * 1024;
 /** Most rules one guardrail may carry; the rest are rejected. */

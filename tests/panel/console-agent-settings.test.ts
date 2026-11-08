@@ -1,10 +1,13 @@
 /**
- * Console API: the soul and access settings under Resources > Guardrails
- * (GET /panel/api/guardrails/settings). One agent's effective values, each
- * with its source (env, soul, default, learned rule, code), read from the
- * code paths that enforce them. The runtime layer (the guardrail registry)
- * is code only since the owner guardrails design; its details are checked
- * here against the registry itself.
+ * Console API: the soul and access settings that constrain one agent, moved
+ * off the Guardrails page in phase B (GET /panel/api/agents/:name/settings/
+ * :group): access for the Access tab, memory for the Memory page's Write
+ * rules, mandates and learned-rules for the Mandates tab. One agent's
+ * effective values, each with its source (env, soul, default, learned rule,
+ * code), read from the code paths that enforce them; the same data the old
+ * /guardrails/settings route returned. The runtime layer (the guardrail
+ * registry) is code only since the owner guardrails design; its details are
+ * checked here against the registry itself.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createPanelApi } from "../../src/gateway/panel/api";
@@ -16,14 +19,14 @@ import { SoulDataSchema } from "../../src/soul/data";
 import { setManagedDefaultSoul } from "../../src/persona/soul-source";
 import { invalidateGrants } from "../../src/access/role";
 import { setAgentId, resetAgentId } from "../../src/knowledge/agent-identity";
-import { soulSections } from "../../src/gateway/panel/guardrails-view";
+import { soulSections } from "../../src/gateway/panel/settings-view";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
-import type { GuardrailFamily, GuardrailSettingsResponse } from "../../src/gateway/panel/api-types";
+import type { AgentSettingsResponse, SettingsFamily } from "../../src/gateway/panel/api-types";
 import type { ProactiveRule } from "../../src/proactive/rules";
 import { GUARDRAILS, NODE_RUNTIME, type GuardrailCtx, type GuardrailRuntime } from "../../src/agent/guardrails";
 import { readFileSync } from "node:fs";
 
-type GuardrailsResponse = GuardrailSettingsResponse;
+type GuardrailsResponse = AgentSettingsResponse;
 /** A registry entry as it describes itself for a set of runtime facts (code only, no API). */
 const entry = (runtime: GuardrailRuntime, id: string, role: "operator" | "superadmin" = "operator") => {
   const g = GUARDRAILS.find((x) => x.id === id)!;
@@ -78,13 +81,13 @@ function registryWith(): PersonaRegistry {
 }
 
 const get = async (path: string, rules: (id: string) => Promise<ProactiveRule[]> = async () => [rule], who: string = operator) => {
-  const api = createPanelApi({ registry: null, role: "mono", pubsub: null, panelLock: null, chat: async () => {}, guardrails: { rules } });
+  const api = createPanelApi({ registry: null, role: "mono", pubsub: null, panelLock: null, chat: async () => {}, settings: { rules } });
   const res = (await api.fetch(new Request(`https://panel.example.com${path}`, { headers: { cookie: who } })))!;
   const text = await res.text();
   return { status: res.status, body: JSON.parse(text), text };
 };
-const family = (r: GuardrailsResponse, id: GuardrailFamily["id"]) => r.families.find((f) => f.id === id)!;
-const value = (f: GuardrailFamily, key: string) => f.settings.find((s) => s.key === key)!;
+const family = (r: GuardrailsResponse, id: SettingsFamily["id"]) => r.families.find((f) => f.id === id)!;
+const value = (f: SettingsFamily, key: string) => f.settings.find((s) => s.key === key)!;
 
 const ENV = ["SLAUDE_PANEL_SECRET", "SLAUDE_PANEL_OPERATORS", "SLAUDE_PANEL_SUPERADMIN", "ANTHROPIC_API_KEY", "SLACK_BOT_TOKEN", "SLAUDE_AUTO_ALLOW_TOOLS", "SLAUDE_WAKE_MAX_USD", "SLAUDE_DEFAULT_MODE", "SLAUDE_APPROVERS"];
 const saved: Record<string, string | undefined> = {};
@@ -121,34 +124,57 @@ afterEach(() => {
   invalidateGrants();
 });
 
-describe("GET /panel/api/guardrails/settings", () => {
-  test("the default agent: every family, values and sources", async () => {
-    const r = await get("/panel/api/guardrails/settings");
+/** Every group of one agent, merged in the order the old Guardrails section listed them. */
+const all = async (agent = "default", rules?: (id: string) => Promise<ProactiveRule[]>, who: string = operator) => {
+  const families: SettingsFamily[] = [];
+  const texts: string[] = [];
+  for (const g of ["access", "memory", "mandates", "learned-rules"]) {
+    const r = await get(`/panel/api/agents/${agent}/settings/${g}`, rules, who);
     expect(r.status).toBe(200);
-    const g = r.body as GuardrailsResponse;
-    expect(g.agent).toBe("default");
-    expect(g.families.map((f) => f.id)).toEqual([
-      "tool-permissions", "approvals", "admission", "memory-gating", "profile-guard", "policy", "redaction", "proactive", "learned-rules", "wake-tools", "budgets",
-    ]);
+    expect(r.body.group).toBe(g);
+    expect(r.body.agent).toBe(agent);
+    families.push(...(r.body as GuardrailsResponse).families);
+    texts.push(r.text);
+  }
+  return { body: { agent, group: "access", families } as GuardrailsResponse, text: texts.join("\n") };
+};
 
+describe("GET /panel/api/agents/:name/settings/:group", () => {
+  test("each group lands on its page: access, memory, mandates, learned rules", async () => {
+    const ids = async (g: string) => ((await get(`/panel/api/agents/default/settings/${g}`)).body as GuardrailsResponse).families.map((f) => f.id);
+    expect(await ids("access")).toEqual(["approvals", "tool-permissions", "admission", "redaction"]);
+    expect(await ids("memory")).toEqual(["memory-gating", "profile-guard"]);
+    expect(await ids("mandates")).toEqual(["proactive", "wake-tools", "budgets"]);
+    expect(await ids("learned-rules")).toEqual(["learned-rules"]);
+  });
+
+  test("the default agent: every family, values and sources, as the Guardrails page showed them", async () => {
+    const r = await all();
+    const g = r.body;
     const tools = family(g, "tool-permissions");
+    expect(tools.title).toBe("Permission cards");
     // The alias twin is listed too, from the env.
     expect(value(tools, "auto-allow")).toMatchObject({ source: "env", value: ["Read", "kb_memoize", "memory_save"] });
     expect(value(tools, "default-mode")).toMatchObject({ source: "default", value: "default" });
+    expect(value(tools, "deciders").value).toContain("approver or manager");
 
     const approvals = family(g, "approvals");
     expect(value(approvals, "approvers")).toMatchObject({ source: "soul", value: ["UAPP"] });
     expect(approvals.table?.rows).toEqual([["UAPP", "deploys"]]);
     expect(approvals.text).toContain("## Approvers");
+    expect(value(approvals, "timeout")).toMatchObject({ value: "300 seconds" });
 
     const admission = family(g, "admission");
     expect(value(admission, "managers").value).toEqual(["UMGR"]);
     expect(value(admission, "channels").value).toEqual(["COPS"]);
     expect(value(admission, "blocked").value).toEqual(["UBAD"]);
-    expect(admission.link?.to).toBe("/agents/default/access");
+    // It is on the Access tab now: no link to itself.
+    expect(admission.link).toBeUndefined();
 
     expect(value(family(g, "memory-gating"), "own-slice").value).toBe("agent-udefault");
-    expect(family(g, "policy").status).toBe("not-implemented");
+    expect(family(g, "memory-gating").table?.rows.map((x) => x[0])).toEqual(["Reads", "Own writes", "Shared writes", "Profile", "/1on1", "Destructive", "Admin"]);
+    // The unbuilt policy family is gone: owner guardrails are the policy now.
+    expect(g.families.some((f) => (f.id as string) === "policy")).toBe(false);
     // An operator sees how many patterns, never the patterns.
     expect(value(family(g, "redaction"), "patterns")).toMatchObject({ source: "soul", value: "1 pattern" });
     expect(r.text).not.toContain("secret-");
@@ -172,9 +198,27 @@ describe("GET /panel/api/guardrails/settings", () => {
     expect(value(budgets, "background")).toMatchObject({ source: "default" });
   });
 
+  test("permission cards count this agent's threads per permission mode", async () => {
+    const now = Date.now();
+    const ids = ["s-perm-a", "s-perm-b", "s-perm-c"];
+    await db.run(`DELETE FROM sessions WHERE id IN (${ids.map(() => "?").join(", ")})`, ids);
+    for (const [id, mode] of [["s-perm-a", "default"], ["s-perm-b", "default"], ["s-perm-c", "bypassPermissions"]] as const) {
+      await db.run("INSERT INTO sessions (id, persona_id, permission_mode, created_at, updated_at, model, working_dir) VALUES (?, 'scout', ?, ?, ?, 'm', '/tmp')", [id, mode, now, now]);
+    }
+    try {
+      const want = await db.query<{ mode: string; n: number | string }>("SELECT permission_mode AS mode, COUNT(*) AS n FROM sessions WHERE persona_id = 'scout' GROUP BY permission_mode ORDER BY permission_mode");
+      const g = (await get("/panel/api/agents/scout/settings/access")).body as GuardrailsResponse;
+      const table = family(g, "tool-permissions").table!;
+      expect(table.columns).toEqual(["Permission mode", "Threads of this agent"]);
+      expect(table.rows).toEqual(want.map((r) => [r.mode, String(Number(r.n))]));
+      expect(table.rows.find((r) => r[0] === "bypassPermissions")).toBeDefined();
+    } finally {
+      await db.run(`DELETE FROM sessions WHERE id IN (${ids.map(() => "?").join(", ")})`, ids);
+    }
+  });
+
   test("a named agent: approvers fall back to the default managers; redaction notes the default soul", async () => {
-    const g = (await get("/panel/api/guardrails/settings?agent=scout")).body as GuardrailsResponse;
-    expect(g.agent).toBe("scout");
+    const g = (await all("scout")).body;
     // scout's soul names no manager or approver: it inherits the default's (per unit), so they are soul grants.
     expect(value(family(g, "approvals"), "approvers").value).toEqual(expect.arrayContaining(["UMGR"]));
     expect(value(family(g, "proactive"), "enabled")).toMatchObject({ value: false, source: "default" });
@@ -184,13 +228,16 @@ describe("GET /panel/api/guardrails/settings", () => {
     expect(value(family(g, "approvals"), "timeout")).toMatchObject({ value: "300 seconds", source: "default" });
   });
 
-  test("learned rules that cannot be read say so instead of failing the page", async () => {
-    const g = (await get("/panel/api/guardrails/settings", async () => { throw new Error("brain down"); })).body as GuardrailsResponse;
+  test("learned rules that cannot be read say so instead of failing the tab", async () => {
+    const g = (await get("/panel/api/agents/default/settings/learned-rules", async () => { throw new Error("brain down"); })).body as GuardrailsResponse;
     expect(family(g, "learned-rules")).toMatchObject({ status: "unavailable", note: "brain down" });
   });
 
-  test("an unknown agent is a 404", async () => {
-    expect((await get("/panel/api/guardrails/settings?agent=nobody")).status).toBe(404);
+  test("an unknown agent is a 404, an unknown group a 404, a write a 405; the old route is gone", async () => {
+    expect((await get("/panel/api/agents/nobody/settings/access")).status).toBe(404);
+    expect((await get("/panel/api/agents/default/settings/everything")).status).toBe(404);
+    expect((await get("/panel/api/agents/Bad%20Name/settings/access")).status).toBe(422);
+    expect((await get("/panel/api/guardrails/settings")).status).toBe(404);
   });
 });
 
@@ -201,24 +248,22 @@ describe("guardrails never show secrets", () => {
     process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Read";
     for (const who of [operator, superadmin]) {
       for (const agent of ["default", "scout"]) {
-        const r = await get(`/panel/api/guardrails/settings?agent=${agent}`, undefined, who);
-        expect(r.status).toBe(200);
+        const r = await all(agent, undefined, who);
         expect(r.text).not.toContain("sk-test-");
         expect(r.text).not.toContain("xoxb-test");
       }
     }
-    const g = (await get("/panel/api/guardrails/settings?agent=scout", undefined, superadmin)).body as GuardrailsResponse;
+    const g = (await get("/panel/api/agents/scout/settings/access", undefined, superadmin)).body as GuardrailsResponse;
     expect(value(family(g, "redaction"), "patterns")).toMatchObject({ value: ["secret-\\d+"] });
     expect(value(family(g, "redaction"), "default-patterns")).toMatchObject({ value: ["secret-\\d+"] });
   });
 });
 
 describe("the runtime layer is code only", () => {
-  test("the settings response carries no runtime-layer field; an unknown or bad agent is refused", async () => {
-    const r = await get("/panel/api/guardrails/settings");
-    expect(Object.keys(r.body).sort()).toEqual(["agent", "families"]);
-    expect(r.body.families).toHaveLength(11);
-    expect((await get("/panel/api/guardrails/settings?agent=Bad%20Name")).status).toBe(422);
+  test("the settings responses carry no runtime-layer field", async () => {
+    const r = await get("/panel/api/agents/default/settings/access");
+    expect(Object.keys(r.body).sort()).toEqual(["agent", "families", "group"]);
+    expect((await all()).body.families).toHaveLength(10);
   });
 
   test("registry states come from the runtime facts; absent, nothing is assumed wired", () => {

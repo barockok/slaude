@@ -78,7 +78,9 @@ describe("slaude guardrails import", () => {
   test("bad folder names, reserved names, oversized files and a missing folder refuse the whole import", async () => {
     expect(() => readGuardrailDir("/nonexistent/dir")).toThrow(GuardrailFilesError);
     expect(() => readGuardrailDir(folder({ "Bad Name": gmd("x") }))).toThrow(/not a guardrail name/);
-    expect(() => checkSlug("settings")).toThrow(/reserved/);
+    expect(() => checkSlug("new")).toThrow(/reserved/);
+    expect(() => checkSlug("test")).toThrow(/reserved/);
+    expect(() => checkSlug("settings")).not.toThrow();
     expect(() => readGuardrailDir(folder({ big: "x".repeat(MAX_GUARDRAIL_BYTES + 1) }))).toThrow(/bytes; at most/);
     expect((await readGuardrails()).rows).toEqual([]);
   });

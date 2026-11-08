@@ -59,7 +59,9 @@
  *   DELETE /panel/api/guardrails/:slug?revision=  delete a console-created guardrail (superadmin)
  *   POST   /panel/api/guardrails/validate          { slug, md } the server parser's verdict on a draft (no write)
  *   POST   /panel/api/guardrails/test              the Test box: one event through an agent's effective set (no side effect)
- *   GET    /panel/api/guardrails/settings?agent=   the soul and access settings that constrain one agent, with each value's source
+ *   GET    /panel/api/agents/:name/settings/:group the soul and access settings that constrain one agent, each value with its
+ *                                                  source: access (Access tab), memory (Memory page), mandates and
+ *                                                  learned-rules (Mandates tab)
  *   GET    /panel/api/agents/:name/guardrails      the owner guardrails that apply to one agent
  *   GET    /panel/api/overview                     counts and the latest audit events
  */
@@ -103,7 +105,7 @@ import { emitAudit } from "../../audit/emit";
 import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
 import { agentIdsByName, buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
-import { guardrailSettingsFor, type GuardrailDeps } from "./guardrails-view";
+import { agentSettings, SETTINGS_GROUPS, type SettingsDeps } from "./settings-view";
 import {
   agentGuardrails, clearGuardrailOverride, createGuardrail, deleteGuardrail, editGuardrail, guardrailDetail, GuardrailWriteRefused, listGuardrails,
   setGuardrailEnabled, testGuardrails, validateGuardrailDraft, type GuardrailApiDeps,
@@ -134,7 +136,8 @@ import type {
   CreateGrantResponse,
   RevokeGrantResponse,
   AgentGuardrailsResponse,
-  GuardrailSettingsResponse,
+  AgentSettingsGroup,
+  AgentSettingsResponse,
   OwnerGuardrailDetail,
   OwnerGuardrailsResponse,
   OwnerGuardrailToggleResponse,
@@ -376,8 +379,8 @@ export interface PanelApiDeps {
   role?: PersonaViewRole;
   /** Memory store browsing. Default: the local brain (when it is enabled and local). */
   memory?: MemoryBrowser;
-  /** Guardrails view seams (tests): where learned proactive rules are read. */
-  guardrails?: GuardrailDeps;
+  /** Agent settings seams (tests): where learned proactive rules are read. */
+  settings?: SettingsDeps;
   /** Mono: in-process session liveness (the AgentManager). Absent in the
    *  gateway role, where the warm registry and the event stream say it. */
   local?: LocalSessions | null;
@@ -716,6 +719,14 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           return json(200, (await agentGuardrails(name, guardrailApiDeps())) satisfies AgentGuardrailsResponse);
         }
 
+        // GET /panel/api/agents/:name/settings/:group: what its soul and access settings constrain.
+        if (seg.length === 6 && seg[4] === "settings") {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          const group = seg[5] as AgentSettingsGroup;
+          if (!SETTINGS_GROUPS.includes(group)) return json(404, { error: "not found" });
+          return json(200, (await agentSettings(name, group, deps.settings, { role })) satisfies AgentSettingsResponse);
+        }
+
         if (seg[4] !== "grants" || seg.length > 6) return json(404, { error: "not found" });
 
         // GET|POST /panel/api/agents/:name/grants
@@ -896,13 +907,6 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           if (b instanceof Response) return b;
           if (!isAgent(b.agent)) return json(404, { error: `no agent named '${b.agent}'` });
           try { return json(200, (await testGuardrails(b, operatorId)) satisfies GuardrailTestResponse); } catch (e) { return refused(e); }
-        }
-        // GET /panel/api/guardrails/settings?agent=
-        if (seg.length === 4 && seg[3] === "settings" && req.method === "GET") {
-          const name = url.searchParams.get("agent") || "default";
-          if (!PERSONA_NAME_RE.test(name) && name !== "default") return json(422, { error: "invalid agent name" });
-          if (!isAgent(name)) return json(404, { error: `no agent named '${name}'` });
-          return json(200, (await guardrailSettingsFor(name, deps.guardrails, { role })) satisfies GuardrailSettingsResponse);
         }
         let slug: string;
         try { slug = decodeURIComponent(seg[3]!); } catch { return json(422, { error: "invalid guardrail name" }); }
