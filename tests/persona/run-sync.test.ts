@@ -481,6 +481,28 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync: guardrails", () => {
     expect((await readGuardrails()).rows.map((x) => x.slug)).toEqual(["a", "host", "lonely"]);
   });
 
+  test("a rule that fails to parse refuses the whole sync with a 422, before anything is applied", async () => {
+    const bad = g("broken", "p", "") ;
+    bad.md += "\n```rules\n- id: r\n  on: tool\n  match: { tool: Bash, input: '(' }\n  action: deny\n```\n";
+    const e = await runSync(T, v5([g("fine"), bad], next()), { dryRun: false, env, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(e).toBeInstanceOf(SyncFailure);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("guardrail 'broken'");
+    expect((await readGuardrails()).rows).toEqual([]);
+    const noFront = { slug: "nofront", md: "```rules\n- id: r\n  on: inbound\n  match: { text: x }\n  action: deny\n```" };
+    const e2 = await runSync(T, v5([noFront], next()), { dryRun: true, env, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(e2.status).toBe(422);
+    expect(e2.message).toContain("rules would apply to nobody");
+  });
+
+  test("a host-file guardrail taken over by the deploy repo is reported", async () => {
+    await applyGuardrailChange(T, { upsert: [{ slug: "host", md: g("host").md, source: "file" }], by: "cli" });
+    const r = await runSync(T, v5([g("host", "from git")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r.guardrails!.takenOver).toEqual(["host"]);
+    expect(r.warnings.join("\n")).toContain("guardrail 'host' was imported from host files");
+    expect((await readGuardrails()).rows.map((x) => [x.slug, x.source])).toEqual([["host", "git"]]);
+  });
+
   test("an invalid guardrail is stored and reported, the sync still applies", async () => {
     const r = await runSync(T, v5([{ slug: "bad", md: "no frontmatter" }], next()), { dryRun: false, env, by: "ci", extract: okExtract });
     expect(r.guardrails!.invalid[0]!.slug).toBe("bad");

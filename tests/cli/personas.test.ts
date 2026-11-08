@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportHome, renderDir } from "../../src/cli/personas";
@@ -450,6 +450,10 @@ describe("personas render: the guardrails folder", () => {
     expect(p.version).toBe(5);
     expect(p.guardrails!.map((g) => g.slug)).toEqual(["no-send"]);
     expect(warnings.join()).toContain("guardrail 'no-send': frontmatter: scope agents needs at least one name");
+    mkdirSync(join(out, "guardrails", "broken"));
+    writeFileSync(join(out, "guardrails", "broken", "GUARDRAIL.md"), "---\nname: broken\n---\n```rules\n- id: r\n  on: tool\n  action: deny\n```\n");
+    expect(() => renderDir(out, meta)).toThrow(/guardrail 'broken'/);
+    rmSync(join(out, "guardrails", "broken"), { recursive: true });
     mkdirSync(join(out, "guardrails", "Bad Name"));
     writeFileSync(join(out, "guardrails", "Bad Name", "GUARDRAIL.md"), "x");
     expect(() => renderDir(out, meta)).toThrow(PayloadError);

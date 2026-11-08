@@ -35,10 +35,12 @@ export interface GuardrailSyncReport {
   updated: string[];
   unchanged: string[];
   removed: string[];
-  /** Guardrails stored with validation errors (their valid rules and prose apply). */
+  /** Guardrails stored with validation problems that do not touch their rules (their rules and prose apply). */
   invalid: Array<{ slug: string; errors: string[] }>;
-  /** Slugs held by another source (a host file or the console), left alone. */
+  /** Slugs held by the console, left alone. */
   skipped: string[];
+  /** Slugs a host-file import held, now taken over by the deploy repo (reported as a warning). */
+  takenOver: string[];
   /** Overrides kept although their source changed (shown behind source). */
   behindSource: string[];
 }
@@ -294,7 +296,9 @@ export async function runSync(
 /**
  * The guardrail half of a sync: the payload's list is the deploy repo's whole
  * set (source `git`). A git guardrail it no longer lists is removed; a slug
- * held by a host file or the console is left alone and reported. Overrides
+ * held by the console is left alone, and one held by a host-file import is
+ * taken over by the deploy repo; both are reported. A rule that fails to
+ * parse refuses the whole sync (422) before anything is applied. Overrides
  * are kept (never wiped like soul overrides) and reported behind source when
  * the text they were written against changes. Names in `agents:` that match
  * no persona of the payload are warnings, not errors.
@@ -303,7 +307,8 @@ async function planGuardrails(tenant: string, list: GuardrailSpec[], personaName
   const stored = await readGuardrails(tenant);
   const bySlug = new Map(stored.rows.map((r) => [r.slug, r]));
   const overridden = new Map(stored.overrides.map((o) => [o.slug, o]));
-  const report: GuardrailSyncReport = { created: [], updated: [], unchanged: [], removed: [], invalid: [], skipped: [], behindSource: [] };
+  const report: GuardrailSyncReport = { created: [], updated: [], unchanged: [], removed: [], invalid: [], skipped: [], takenOver: [], behindSource: [] };
+  const refused: string[] = [];
   const upsert: Array<{ slug: string; md: string; source: "git" }> = [];
   const names = new Set(personaNames);
   for (const g of list) {
@@ -314,7 +319,15 @@ async function planGuardrails(tenant: string, list: GuardrailSpec[], personaName
       continue;
     }
     const parsed = parseGuardrail(g.slug, g.md);
+    if (parsed.blocking.length) {
+      refused.push(`guardrail '${g.slug}': ${parsed.blocking.join("; ")}`);
+      continue;
+    }
     if (parsed.errors.length) report.invalid.push({ slug: g.slug, errors: parsed.errors });
+    if (prev && prev.source === "file") {
+      report.takenOver.push(g.slug);
+      warnings.push(`guardrail '${g.slug}' was imported from host files; the deploy repo's copy now replaces it`);
+    }
     for (const a of parsed.meta?.scope === "agents" ? parsed.meta.agents : []) {
       if (!names.has(a)) warnings.push(`guardrail '${g.slug}' names agent '${a}', which this deploy does not have`);
     }
@@ -326,6 +339,8 @@ async function planGuardrails(tenant: string, list: GuardrailSpec[], personaName
     }
     upsert.push({ slug: g.slug, md: g.md, source: "git" });
   }
+  // A rule the owner wrote and the parser cannot read is never stored silently dropped.
+  if (refused.length) throw new SyncFailure(422, `guardrails refused (fix the rules, then deploy again): ${refused.join(" | ")}`);
   const listed = new Set(list.map((g) => g.slug));
   const remove = stored.rows.filter((r) => r.source === "git" && !listed.has(r.slug)).map((r) => r.slug);
   report.removed = remove;

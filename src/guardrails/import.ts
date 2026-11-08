@@ -3,9 +3,9 @@
  * guardrails table (source `file`), run by a person, audited. The files stay
  * authoring input: the runtime reads only the table.
  *
- * A guardrail with validation errors is still imported (its valid rules and
- * prose apply, the console shows the errors); a bad folder name or an
- * oversized file refuses the whole import. `--prune` removes `file`
+ * A guardrail whose only problems leave its rules intact (a name mismatch, a
+ * trigger) is still imported and the console shows them; a rule that fails to
+ * parse, a bad folder name or an oversized file refuses the whole import. `--prune` removes `file`
  * guardrails the folder no longer has; git and console guardrails are never
  * touched by an import.
  */
@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { applyGuardrailChange, readGuardrails, type ChangeResult } from "../db/guardrails";
 import { auditChange } from "./audit";
 import { emitAudit } from "../audit/emit";
-import { readGuardrailDir } from "./files";
+import { GuardrailFilesError, readGuardrailDir } from "./files";
 import { parseGuardrail } from "./format";
 
 export interface ImportReport extends ChangeResult {
@@ -33,9 +33,11 @@ export async function importGuardrails(
   // A deploy repo checkout works as is: its guardrails/ folder is used.
   const root = existsSync(join(dir, "guardrails")) && !existsSync(join(dir, "GUARDRAIL.md")) ? join(dir, "guardrails") : dir;
   const files = readGuardrailDir(root);
-  const invalid = files
-    .map((f) => ({ slug: f.slug, errors: parseGuardrail(f.slug, f.md).errors }))
-    .filter((x) => x.errors.length > 0);
+  const parsed = files.map((f) => ({ slug: f.slug, p: parseGuardrail(f.slug, f.md) }));
+  // A rule that fails to parse refuses the whole import: never stored silently dropped.
+  const refused = parsed.filter((x) => x.p.blocking.length).map((x) => `${x.slug}: ${x.p.blocking.join("; ")}`);
+  if (refused.length) throw new GuardrailFilesError(`guardrails refused (fix the rules, then import again): ${refused.join(" | ")}`);
+  const invalid = parsed.map((x) => ({ slug: x.slug, errors: x.p.errors })).filter((x) => x.errors.length > 0);
   const stored = await readGuardrails(tenant);
   const owners = new Map(stored.rows.map((r) => [r.slug, r.source]));
   const skipped = files.filter((f) => owners.has(f.slug) && owners.get(f.slug) !== "file").map((f) => f.slug);

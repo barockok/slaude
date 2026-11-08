@@ -96,8 +96,13 @@ export function renderDir(
     } catch (e) {
       throw new PayloadError((e as Error).message);
     }
+    // A rule that fails to parse fails the pull request (the gateway refuses it too);
+    // other problems are warnings.
+    const parsed = guardrails.map((g) => ({ slug: g.slug, p: parseGuardrail(g.slug, g.md) }));
+    const refused = parsed.filter((x) => x.p.blocking.length).map((x) => `guardrail '${x.slug}': ${x.p.blocking.join("; ")}`);
+    if (refused.length) throw new PayloadError(refused.join(" | "));
     if (onWarnings) {
-      const bad = guardrails.flatMap((g) => parseGuardrail(g.slug, g.md).errors.map((err) => `guardrail '${g.slug}': ${err}`));
+      const bad = parsed.flatMap((x) => x.p.errors.map((err) => `guardrail '${x.slug}': ${err}`));
       if (bad.length) onWarnings(bad);
     }
   }

@@ -68,6 +68,13 @@ describe("slaude guardrails import", () => {
     expect((await importGuardrails(d2, { by: "x", dryRun: true })).updated).toEqual(["fresh"]);
   });
 
+  test("a rule that fails to parse refuses the whole import (exit 1); nothing is stored", async () => {
+    const d = folder({ ok: gmd("ok"), bad: "---\nname: bad\n---\n```rules\n- id: r\n  on: inbound\n  match: { text: '(' }\n  action: deny\n```\n" });
+    await expect(importGuardrails(d, { by: "x" })).rejects.toThrow(/guardrails refused.*bad: rule r match.text is not a valid pattern/);
+    expect(await main(["import", d])).toBe(1);
+    expect((await readGuardrails()).rows).toEqual([]);
+  });
+
   test("bad folder names, reserved names, oversized files and a missing folder refuse the whole import", async () => {
     expect(() => readGuardrailDir("/nonexistent/dir")).toThrow(GuardrailFilesError);
     expect(() => readGuardrailDir(folder({ "Bad Name": gmd("x") }))).toThrow(/not a guardrail name/);
