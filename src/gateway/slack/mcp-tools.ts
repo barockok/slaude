@@ -37,7 +37,7 @@ function outOpts(ctx: SlackContext, kind: OutboundKind, channel?: string): Outbo
     thread: { channel: ctx.channel, threadTs: ctx.postTarget === "channel" ? null : ctx.threadTs },
     ...(ctx.apiAppId || ctx.teamId ? { app: { apiAppId: ctx.apiAppId, teamId: ctx.teamId } } : {}),
     sessionId: ctx.sessionId ?? null,
-    unattended: !!ctx.wake,
+    unattended: !!ctx.wake || ctx.unattended === true,
   };
 }
 
@@ -86,6 +86,8 @@ export type SlackContext = {
   teamId?: string;
   /** Set on a heartbeat wake's turn (the route, or the signed `wake` claim). */
   wake?: WakeTurn;
+  /** Nobody is in this turn (a signed wake claim): an owner approve rule on a post is a deny. */
+  unattended?: boolean;
   /** What started the route's current job (a person's Slack message, the
    *  panel, or cron). Drives GateInput.interactive; absent = not interactive.
    *  A synthetic turn the runtime injects afterwards (auto-evolve, a

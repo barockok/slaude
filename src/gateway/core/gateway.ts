@@ -437,7 +437,7 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
     reloadSession: (prompt?) => ctx.reloadSession?.(prompt) ?? false,
     get sessionId() { return ctx.sessionId; },
     // A wake's turn has nobody to approve a held reply.
-    get unattended() { return !!ctx.wake; },
+    get unattended() { return !!ctx.wake || ctx.unattended === true; },
     get appId() { return ctx.apiAppId; },
   };
 }
@@ -4414,6 +4414,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       ? refuseApprovalInWake
       : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, app, ...req, persona: ctx.personaId });
     if (claims.wake && claims.bgRun) ctx.wake = { runId: claims.bgRun, deps: wakeToolDeps };
+    // A signed wake has nobody to approve a held reply, with or without a run.
+    if (claims.wake) ctx.unattended = true;
     ctx.reloadSession = (prompt?) => agent.reload(claims.session, prompt);
     return ctx;
   };

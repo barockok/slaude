@@ -297,6 +297,10 @@ describe("the legacy slack tools", () => {
     const r = await slackHandlers.reply(ctx(client, { wake: { runId: "r", deps: {} as any } }), { text: "The price is $3" });
     expect(r.isError).toBe(true);
     expect(log).toEqual([]);
+    // A signed wake claim without a run is unattended too.
+    expect((await slackHandlers.post_message(ctx(client, { unattended: true }), { channel: "C2", text: "The price is $3" })).isError).toBe(true);
+    expect(log).toEqual([]);
+    expect(held).toEqual([]);
   });
 });
 
