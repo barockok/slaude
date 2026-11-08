@@ -49,7 +49,7 @@ export async function importGuardrails(
     const created = upsert.filter((u) => !bySlug.has(u.slug)).map((u) => u.slug);
     const unchanged = upsert.filter((u) => bySlug.get(u.slug)?.md === u.md).map((u) => u.slug);
     const updated = upsert.filter((u) => bySlug.has(u.slug) && !unchanged.includes(u.slug)).map((u) => u.slug);
-    return { version: stored.manifest?.version ?? 0, created, updated, unchanged, removed: remove, toggled: [], dryRun: true, invalid, skipped };
+    return { version: stored.manifest?.version ?? 0, created, updated, unchanged, removed: remove, toggled: [], overrideSet: [], overrideCleared: [], dryRun: true, invalid, skipped };
   }
   const r = await applyGuardrailChange(tenant, { upsert, remove, by: opts.by, ...(opts.repair ? { repair: true } : {}) });
   auditChange(r, { tenantId: tenant, actorKind: "operator", actorId: opts.by, via: "cli" });

@@ -88,6 +88,20 @@ export interface GuardrailChange {
   remove?: string[];
   /** Flip the console kill switch. */
   setEnabled?: Array<{ slug: string; enabled: boolean }>;
+  /**
+   * Write a console override of these guardrails (their source row stays as
+   * synced). base_sha is the source row's sha at the time of the write, so a
+   * later sync that changes the source shows the override behind source.
+   */
+  setOverride?: Array<{ slug: string; md: string }>;
+  /** Drop these guardrails' console overrides (the source text applies again). */
+  clearOverride?: string[];
+  /**
+   * Optimistic concurrency: each slug's revision must still be the one the
+   * writer read (null: the guardrail must not exist yet). Checked inside the
+   * transaction, so a concurrent write is a StaleGuardrailError, never lost.
+   */
+  expect?: Array<{ slug: string; revision: number | null }>;
   /** Who made the change (operator id, "pipeline", "cli:<user>"). */
   by: string;
   /**
@@ -106,6 +120,10 @@ export interface ChangeResult {
   unchanged: string[];
   removed: string[];
   toggled: string[];
+  /** Overrides written or replaced. */
+  overrideSet: string[];
+  /** Overrides dropped (a removed guardrail's override is not listed here). */
+  overrideCleared: string[];
   /** Repair only: rows and overrides re-signed as stored (check them). */
   resigned?: string[];
 }
@@ -114,6 +132,29 @@ export class UnknownGuardrailError extends Error {
   constructor(readonly slug: string) {
     super(`no guardrail named '${slug}'`);
   }
+}
+
+/** A write against a revision that is no longer current (someone else wrote first). */
+export class StaleGuardrailError extends Error {
+  constructor(readonly slug: string, readonly expected: number | null, readonly current: number | null) {
+    super(
+      current === null
+        ? `guardrail '${slug}' no longer exists`
+        : expected === null
+          ? `a guardrail named '${slug}' already exists`
+          : `guardrail '${slug}' changed since it was loaded (revision ${expected}, now ${current})`,
+    );
+  }
+}
+
+/**
+ * A guardrail's revision: the manifest version of its last write, its source
+ * row's or its override's, whichever is later. Moves on every change to the
+ * text, the source, the override or the switch.
+ */
+export function guardrailRevision(row: Pick<GuardrailRow, "version"> | undefined, override: Pick<GuardrailOverrideRow, "version"> | undefined): number | null {
+  if (!row) return null;
+  return Math.max(row.version, override?.version ?? 0);
 }
 
 /**
@@ -142,7 +183,12 @@ function writeChange(tenant: string, change: GuardrailChange, now: number): Prom
       verifySet(tenant, cur);
       await checkHighWater(tenant, stored);
     }
-    const res: ChangeResult = { version: stored, created: [], updated: [], unchanged: [], removed: [], toggled: [] };
+    for (const e of change.expect ?? []) {
+      const row = cur.rows.find((r) => r.slug === e.slug);
+      const now_ = guardrailRevision(row, cur.overrides.find((o) => o.slug === e.slug));
+      if (now_ !== e.revision) throw new StaleGuardrailError(e.slug, e.revision, now_);
+    }
+    const res: ChangeResult = { version: stored, created: [], updated: [], unchanged: [], removed: [], toggled: [], overrideSet: [], overrideCleared: [] };
     const version = (change.repair ? Math.max(stored, await highWater(tenant)) : stored) + 1;
     const bySlug = new Map(cur.rows.map((r) => [r.slug, r]));
     const writes: GuardrailRow[] = [];
@@ -175,6 +221,26 @@ function writeChange(tenant: string, change: GuardrailChange, now: number): Prom
     }
     const removed = (change.remove ?? []).filter((s) => bySlug.has(s));
     let overrides = cur.overrides.filter((o) => !removed.includes(o.slug));
+    const overrideWrites: GuardrailOverrideRow[] = [];
+    const overrideDeletes: string[] = [];
+    for (const slug of change.clearOverride ?? []) {
+      if (!bySlug.has(slug)) throw new UnknownGuardrailError(slug);
+      if (!overrides.some((o) => o.slug === slug)) continue;
+      overrides = overrides.filter((o) => o.slug !== slug);
+      overrideDeletes.push(slug);
+      res.overrideCleared.push(slug);
+    }
+    for (const o of change.setOverride ?? []) {
+      const src = bySlug.get(o.slug);
+      if (!src) throw new UnknownGuardrailError(o.slug);
+      const prev = overrides.find((x) => x.slug === o.slug);
+      if (prev && prev.md === o.md && prev.baseSha === src.sha) continue;
+      const row: GuardrailOverrideRow = { slug: o.slug, md: o.md, baseSha: src.sha, version, author: change.by, hmac: "", updatedAt: now };
+      row.hmac = overrideMac(tenant, row);
+      overrides = [...overrides.filter((x) => x.slug !== o.slug), row];
+      overrideWrites.push(row);
+      res.overrideSet.push(o.slug);
+    }
     if (change.repair) {
       // Every row the change did not write, and every override, re-signed as stored.
       res.resigned = [];
@@ -191,7 +257,7 @@ function writeChange(tenant: string, change: GuardrailChange, now: number): Prom
         await tx.run(`UPDATE guardrail_overrides SET version = ?, hmac = ?, updated_at = ? WHERE slug = ?${pg() ? " AND tenant_id = ?" : ""}`, [o.version, o.hmac, now, o.slug, ...tenantParams(tenant)]);
         res.resigned.push(`${o.slug} (override)`);
       }
-    } else if (writes.length === 0 && removed.length === 0) {
+    } else if (writes.length === 0 && removed.length === 0 && overrideWrites.length === 0 && overrideDeletes.length === 0) {
       return res;
     }
 
@@ -206,6 +272,22 @@ function writeChange(tenant: string, change: GuardrailChange, now: number): Prom
       const set = cols.filter((c) => c !== "tenant_id" && c !== "slug").map((c) => `${c} = excluded.${c}`).join(", ");
       await tx.run(
         `INSERT INTO guardrails (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")}) ON CONFLICT (${pg() ? "tenant_id, slug" : "slug"}) DO UPDATE SET ${set}`,
+        params,
+      );
+    }
+    for (const slug of overrideDeletes) {
+      await tx.run(`DELETE FROM guardrail_overrides WHERE slug = ?${pg() ? " AND tenant_id = ?" : ""}`, [slug, ...tenantParams(tenant)]);
+    }
+    for (const o of overrideWrites) {
+      const cols = ["slug", "md", "base_sha", "version", "author", "hmac", "updated_at"];
+      const params: unknown[] = [o.slug, o.md, o.baseSha, o.version, o.author, o.hmac, o.updatedAt];
+      if (pg()) {
+        cols.unshift("tenant_id");
+        params.unshift(tenant);
+      }
+      const set = cols.filter((c) => c !== "tenant_id" && c !== "slug").map((c) => `${c} = excluded.${c}`).join(", ");
+      await tx.run(
+        `INSERT INTO guardrail_overrides (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")}) ON CONFLICT (${pg() ? "tenant_id, slug" : "slug"}) DO UPDATE SET ${set}`,
         params,
       );
     }
