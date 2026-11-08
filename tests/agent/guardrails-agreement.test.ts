@@ -216,10 +216,10 @@ describe("state from runtime facts and toggles", () => {
     }
   });
 
-  it("the must-reply guard is not wired without a Stop guard (nodes install none)", () => {
+  it("the must-reply guard is not wired without a Stop guard; nodes install one", () => {
     expect(byId("hook.stop.must-reply").state(ctx())).toBe("enforcing");
     expect(byId("hook.stop.must-reply").state(ctx({ stopGuard: false }))).toBe("not-wired");
-    expect(byId("hook.stop.must-reply").state({ agent: "default", ...NODE_RUNTIME })).toBe("not-wired");
+    expect(byId("hook.stop.must-reply").state({ agent: "default", ...NODE_RUNTIME })).toBe("enforcing");
   });
   it("the permission and wake gates are not wired without a resolver", () => {
     for (const id of ["gate.can-use-tool.permission", "gate.can-use-tool.wake-refusal"]) {
