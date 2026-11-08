@@ -79,10 +79,12 @@ Advisory: the model is asked to follow it; nothing in code enforces prose. The r
   - `reply`: deny, approve, redact, audit.
   - `inbound`: deny, audit. (approve on inbound would hold a person's message; out of scope for v1.)
 - Regexes run on a linear-time engine (`re2js`), so no pattern can backtrack catastrophically; patterns are
-  length-capped and compiled once. Matched text is size-capped (tool input JSON is truncated to a fixed
-  budget before matching, e.g. large `Write` contents), and each guardrail has a rule-count cap. A rule that
-  fails validation is rejected with a clear error and the guardrail is marked invalid (its other valid rules
-  still load, its prose still applies).
+  length-capped and compiled once. Strings are matched whole up to a large cap (1 MB each); the walk over a
+  tool input is bounded (values, depth, total text). Past any bound the input is too large to check, and that
+  counts as a match for deny and approve rules (fail closed, "too large to check"); audit rules stay best
+  effort. Padding therefore cannot hide a value. Each guardrail has a rule-count cap. A rule that fails to
+  parse refuses the write (a `/deploy` 422, an import exit 1); other validation problems mark the guardrail
+  invalid while its rules and prose still apply.
 
 ## 1b. Two kinds of rule, and how each loads
 
@@ -122,7 +124,14 @@ The agent must never be able to change its own guardrails. Agent sessions can wr
   single `guardrails_manifest` row carries an HMAC over the sorted list of (slug, version, enabled) plus the
   override set, written in the same transaction as every row change. Resolution verifies the manifest first,
   then each row; a row missing from or extra to the manifest, or a version mismatch, fails the boot the same
-  way.
+  way. A whole older signed set (a rollback) and a deleted set (no manifest after one existed) verify on their
+  own, so a per-tenant high-water mark of the manifest version is kept outside the database (in memory, in a
+  file beside the key, and in Redis when the deployment has one); a set below it fails closed. Residual risk:
+  on a cold start of a single process without Redis, whoever can rewrite both the database and the mark file
+  can roll back undetected. A write verifies the stored set before re-signing, so it can never launder
+  tampering; the owner's explicit `slaude guardrails import --repair` re-signs a set that failed (audited).
+  The key is the master key's subkey; on sqlite without a master key a key file is created on the first write,
+  and Postgres requires the master key. A deployment with no guardrails never reads or creates the key.
 - **Threat model, stated honestly:** on a single-process deployment with the default sqlite database under
   `$SLAUDE_HOME`, a session's Bash can reach the database file. There the design protects against drift and
   accidental edits, and the HMAC makes tampering detectable (fail closed), but it does not stop an
@@ -137,7 +146,8 @@ The agent must never be able to change its own guardrails. Agent sessions can wr
      `guardrails: []` (payload version 5 when non-empty; `payloadVersionFor` in `src/persona/sync/payload.ts`
      extended beyond persona fields).
   2. Console edits (phase B), superadmin only, audited.
-  3. Operator CLI `slaude guardrails import <dir>` for host files (explicit, run by a person, audited).
+  3. Operator CLI `slaude guardrails import <dir>` for host files (explicit, run by a person, audited;
+     `--repair` re-signs a set that failed its integrity check).
 - **No MCP tool writes guardrail rows.** Defence in depth: a tagged PreToolUse deny
   (`hook.pre-tool.guardrail-files`) refuses `Write|Edit|MultiEdit|NotebookEdit` under
   `$SLAUDE_HOME/guardrails` and the database file path. Bash is not covered, which is why files are never the
