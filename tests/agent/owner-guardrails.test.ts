@@ -204,6 +204,19 @@ describe("a booted session", () => {
     await until(() => !mgr.isLive(row.id), 3000, "shutdown");
   });
 
+  it("a guardrail change reloads warm sessions booted on another version, after their turn", async () => {
+    const mgr = new AgentManager();
+    mgr.setGuardrailResolver(resolver);
+    const row = await mgr.ensureSession(thread());
+    reply = true;
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => lastOptions !== undefined && !mgr.turnInFlight(row.id), 3000, "boot and turn");
+    expect(mgr.reloadForGuardrails(3)).toBe(0);
+    expect(mgr.isLive(row.id)).toBe(true);
+    expect(mgr.reloadForGuardrails(4)).toBe(1);
+    await until(() => !mgr.isLive(row.id), 3000, "reload");
+  });
+
   it("a wake's turn cap grows by what Guidance refusals can cost", async () => {
     const mgr = new AgentManager();
     mgr.setGuardrailResolver(resolver);
