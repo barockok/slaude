@@ -9,6 +9,7 @@ import { brainCall, closeBrain, ensureSources, getBrain } from "../../src/knowle
 import { resetBackend } from "../../src/knowledge/backend";
 import { localMemoryBrowser, memoryUnavailableReason, storeLabel } from "../../src/knowledge/memory-browse";
 import { storeKind, type BrainScope } from "../../src/knowledge/scope";
+import { seedBrainHome } from "../helpers/brain-template";
 
 const home = mkdtempSync(join(tmpdir(), "memory-browse-"));
 const saved = { home: process.env.SLAUDE_BRAIN_HOME, mode: process.env.SLAUDE_BRAIN_MODE, off: process.env.SLAUDE_BRAIN_DISABLED };
@@ -20,6 +21,8 @@ beforeAll(async () => {
   resetBackend();
   delete process.env.SLAUDE_BRAIN_MODE;
   delete process.env.SLAUDE_BRAIN_DISABLED;
+  // A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+  await seedBrainHome(home);
   process.env.SLAUDE_BRAIN_HOME = home;
   await getBrain();
   await ensureSources(["user-ualice"]);

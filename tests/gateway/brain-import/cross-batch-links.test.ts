@@ -6,8 +6,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TEST_DIMS, vec } from "../../brain-migrate/seed";
+import { freshBrainHome } from "../../helpers/brain-template";
 
-const home = mkdtempSync(join(tmpdir(), "bm-cross-batch-"));
+// A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+const home = await freshBrainHome("bm-cross-batch-");
 const bundleDir = mkdtempSync(join(tmpdir(), "bm-cross-batch-bundle-"));
 process.env.SLAUDE_BRAIN_HOME = home;
 import { closeBrain, getBrain } from "../../../src/knowledge/brain";
@@ -15,7 +17,8 @@ import { createBrainImportApi } from "../../../src/gateway/brain-import/api";
 import { BundleWriter, type BundlePage } from "../../../src/brain-migrate/bundle";
 import { hasProblems, runImport } from "../../../src/brain-migrate/client";
 
-afterAll(async () => { await closeBrain(); rmSync(home, { recursive: true, force: true }); rmSync(bundleDir, { recursive: true, force: true }); });
+// Unset the home too: a gateway in a later file would boot a fresh brain into the deleted dir.
+afterAll(async () => { await closeBrain(); delete process.env.SLAUDE_BRAIN_HOME; rmSync(home, { recursive: true, force: true }); rmSync(bundleDir, { recursive: true, force: true }); });
 
 const TOKEN = "x".repeat(40);
 const N = 105;

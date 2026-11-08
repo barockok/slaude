@@ -1,20 +1,21 @@
 // tests/brain-migrate/apply.test.ts
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { TEST_DIMS, vec } from "./seed";
 
-const home = mkdtempSync(join(tmpdir(), "bm-apply-"));
+// A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+const home = await freshBrainHome("bm-apply-");
 process.env.SLAUDE_BRAIN_HOME = home;
 import { closeBrain, ensureSource, getBrain } from "../../src/knowledge/brain";
 import { applyLinks, applyPage } from "../../src/brain-migrate/apply";
 import type { MigrateEngine } from "../../src/brain-migrate/engine-types";
 import type { BundlePage } from "../../src/brain-migrate/bundle";
+import { freshBrainHome } from "../helpers/brain-template";
 
 let engine: MigrateEngine;
 beforeAll(async () => { engine = (await getBrain()) as unknown as MigrateEngine; }, 60_000);
-afterAll(async () => { await closeBrain(); rmSync(home, { recursive: true, force: true }); });
+// Unset the home too: a gateway in a later file would boot a fresh brain into the deleted dir.
+afterAll(async () => { await closeBrain(); delete process.env.SLAUDE_BRAIN_HOME; rmSync(home, { recursive: true, force: true }); });
 
 const mk = (slug: string, truth: string, over: Partial<BundlePage> = {}): BundlePage => ({
   source: "agent-default", slug, type: "note", title: slug, compiledTruth: truth, timeline: "", frontmatter: {}, contentHash: null,

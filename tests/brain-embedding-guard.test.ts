@@ -1,6 +1,5 @@
-import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   allowEmbeddingRealign,
@@ -35,6 +34,7 @@ import { applyPage } from "../src/brain-migrate/apply";
 import { trackBrainWork } from "../src/knowledge/brain-work";
 import type { BundlePage } from "../src/brain-migrate/bundle";
 import type { MigrateEngine } from "../src/brain-migrate/engine-types";
+import { freshBrainHome } from "./helpers/brain-template";
 
 const OPENAI = "openai:text-embedding-3-small";
 const DEFAULT_LABEL = "zeroentropyai:zembed-1";
@@ -67,39 +67,25 @@ afterEach(async () => {
 });
 
 /**
- * One freshly initialised brain per file, copied for each test. A fresh
- * PGLite initdb gets slower with every one a process has run and falls off a
- * cliff after about two dozen (each then takes over 20 s under coverage),
- * while opening an existing data dir stays fast. The suite runs every file in
- * one process, so a file that initialises a brain per test slows the first
- * boots of every later file. Copying a template keeps this file at one initdb.
+ * A new brain home: a copy of the shared template brain for this embedding
+ * setup (tests/helpers/brain-template.ts), so this file adds at most one
+ * initdb to the process. `withConfig: false` drops its config.json files.
  */
-let template: string | null = null;
-async function templateHome(): Promise<string> {
-  if (template) return template;
-  const t = mkdtempSync(join(tmpdir(), "slaude-embedguard-tpl-"));
-  process.env.SLAUDE_BRAIN_HOME = t;
-  setEmbeddingEnv();
-  await quiet(() => getBrain());
-  await closeBrain();
-  template = t;
-  return t;
-}
-afterAll(() => {
-  if (template) rmSync(template, { recursive: true, force: true });
-});
-
-/** A new brain home: a copy of the template (`withConfig: false` drops its config.json files). */
 async function newHome(withConfig = true): Promise<string> {
-  const tpl = await templateHome();
-  const h = mkdtempSync(join(tmpdir(), "slaude-embedguard-"));
-  cpSync(tpl, h, { recursive: true });
+  const h = await freshBrainHome("slaude-embedguard-", TEMPLATE_ENV);
   if (!withConfig) {
     rmSync(join(h, "config.json"), { force: true });
     rmSync(join(h, ".gbrain"), { recursive: true, force: true });
   }
   return h;
 }
+
+const TEMPLATE_ENV = {
+  EMBEDDING_PROVIDER: "openai",
+  EMBEDDING_MODEL: "text-embedding-3-small",
+  EMBEDDING_DIMENSIONS: String(DIMS),
+  EMBEDDING_API_KEY: "sk-test-placeholder",
+};
 
 function setEmbeddingEnv(provider = "openai"): void {
   process.env.EMBEDDING_PROVIDER = provider;

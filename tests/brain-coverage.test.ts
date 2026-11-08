@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../src/config/home";
 import { db } from "../src/db/schema";
@@ -9,6 +8,7 @@ import { closeBrain, embeddingActive, ensureSources, getBrain } from "../src/kno
 import { backfillMemoryTurns, embedStaleChunks } from "../src/knowledge/brain-backfill";
 import { parseCycleTime, runNightlyMaintenance, scheduleNightlyMaintenance } from "../src/knowledge/brain-cycle";
 import { kbSourceId } from "../src/knowledge/scope";
+import { SMALL_EMBEDDING_ENV, freshBrainHome } from "./helpers/brain-template";
 
 // Failure-path coverage for brain-cycle / brain-backfill. Strategy: boot one
 // real brain with an ACTIVE embedding gateway (keyless litellm recipe — see
@@ -17,7 +17,9 @@ import { kbSourceId } from "../src/knowledge/scope";
 // WITHOUT closeBrain so every subsequent phase fails and the catch branches
 // report instead of throwing. Tests in this file are order-dependent.
 
-const brainDir = mkdtempSync(join(tmpdir(), "slaude-braincov-"));
+// A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+// The env below canonicalizes to the same model and width as SMALL_EMBEDDING_ENV.
+const brainDir = await freshBrainHome("slaude-braincov-", SMALL_EMBEDDING_ENV);
 process.env.SLAUDE_BRAIN_HOME = brainDir;
 process.env.EMBEDDING_URL = "http://127.0.0.1:9"; // never contacted — zero stale chunks
 process.env.EMBEDDING_MODEL = "test-embed";

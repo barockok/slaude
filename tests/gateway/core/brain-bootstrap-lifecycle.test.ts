@@ -19,6 +19,7 @@ import { closeBrain } from "../../../src/knowledge/brain";
 import * as Cycle from "../../../src/knowledge/brain-cycle";
 import { pendingBrainWork } from "../../../src/knowledge/brain-work";
 import { SimSession } from "../../../src/gateway/sim/engine";
+import { seedBrainHome } from "../../helpers/brain-template";
 
 const KB = "lifecycle-kb";
 const kbDir = join(paths.knowledge, KB);
@@ -27,11 +28,13 @@ const savedBrainHome = process.env.SLAUDE_BRAIN_HOME;
 
 beforeAll(async () => {
   await closeBrain();
+  // A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+  await seedBrainHome(brainDir);
   process.env.SLAUDE_BRAIN_HOME = brainDir;
   mkdirSync(kbDir, { recursive: true });
   writeFileSync(join(kbDir, "README.md"), "---\ndescription: lifecycle kb\n---\n# Lifecycle\nA page to import.\n");
   clearKbCache();
-});
+}, 60_000); // builds the template brain when no earlier file in this process has
 
 afterAll(async () => {
   await closeBrain();
