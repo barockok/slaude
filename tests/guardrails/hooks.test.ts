@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deliveryTurnAllowance, deniedMessage, guardrailFilesHook, isProtectedPath, ownerGuardrailsHook } from "../../src/guardrails/hooks";
+import { aliasNames, deliveryTurnAllowance, deniedMessage, guardrailFilesHook, isProtectedPath, ownerGuardrailsHook } from "../../src/guardrails/hooks";
 import { resolveDocs, sessionGuardrails, type GuardrailDoc } from "../../src/guardrails/resolve";
 import type { FiringEvent } from "../../src/guardrails/audit";
 import { firingAction } from "../../src/guardrails/audit";
@@ -81,6 +81,32 @@ describe("hook.pre-tool.owner-guardrails", () => {
     expect(delivered).toHaveLength(0);
     const deliveredNow: any = await hook(pre("Bash", { command: "ls" }), "t1", sig);
     expect(deliveredNow.hookSpecificOutput.permissionDecisionReason).toContain("Be careful with the shell.");
+  });
+
+  test("remote mode: a rule on the builtin matches its alias, a rule on the alias matches the builtin; triggers too", async () => {
+    const names = aliasNames({ Bash: "mcp__remote__bash", Write: "mcp__remote__write" });
+    expect(names("mcp__remote__bash")).toEqual(["mcp__remote__bash", "Bash"]);
+    expect(names("Write")).toEqual(["Write", "mcp__remote__write"]);
+    expect(names("Read")).toEqual(["Read"]);
+    const g = sessionGuardrails(resolveDocs([
+      doc("no-shell", "", rules("- id: r\n  on: tool\n  match: { tool: Bash }\n  action: deny\n  message: no shell")),
+      doc("no-remote-write", "", rules("- id: w\n  on: tool\n  match: { tool: 'mcp__remote__write' }\n  action: deny\n  message: no write")),
+      doc("care", "load: on-match\ntriggers: { tool: Bash }", "Shell care."),
+    ]), "default", null, { version: 1, proseMax: 4000 });
+    const seen = new Set<string>(["care"]);
+    const hook = ownerGuardrailsHook({ guardrails: () => g, channel: () => null, delivered: () => seen, onFiring: () => {}, onDelivered: () => {}, toolNames: names });
+    expect(((await hook(pre("mcp__remote__bash", { command: "ls" }), "t", sig)) as any).hookSpecificOutput.permissionDecisionReason).toBe("no shell");
+    expect(((await hook(pre("Write", { file_path: "/x" }), "t", sig)) as any).hookSpecificOutput.permissionDecisionReason).toBe("no write");
+    const fresh = new Set<string>();
+    const g2 = sessionGuardrails(resolveDocs([doc("care", "load: on-match\ntriggers: { tool: Bash }", "Shell care.")]), "default", null, { version: 1, proseMax: 4000 });
+    const h2 = ownerGuardrailsHook({ guardrails: () => g2, channel: () => null, delivered: () => fresh, onFiring: () => {}, onDelivered: () => {}, toolNames: names });
+    expect(((await h2(pre("mcp__remote__bash"), "t", sig)) as any).hookSpecificOutput.permissionDecisionReason).toContain("Shell care.");
+  });
+
+  test("an input too large to check is refused by a deny rule", async () => {
+    const { hook } = setup([doc("r", "", rules("- id: a\n  on: tool\n  match: { tool: Write, input: { content: 'secret' } }\n  action: deny\n  message: no"))]);
+    const out: any = await hook(pre("Write", { content: "x".repeat(1024 * 1024 + 1) }), "t1", sig);
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/too large for the owner's guardrail r to check/);
   });
 
   test("no guardrails, or another event: a no-op", async () => {

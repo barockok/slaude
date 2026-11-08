@@ -59,7 +59,7 @@ import { turnModelTokens, type SkillCheckBudget } from "../background/skill-chec
 import { skillUsageHook, type SkillUsageRecorder } from "./skill-usage-hook";
 import { passEndsTurnHook } from "./pass-stop-hook";
 import { HOOK_IDS, tagHook } from "./hook-tags";
-import { deliveryTurnAllowance, guardrailFilesHook, ownerGuardrailsHook } from "../guardrails/hooks";
+import { aliasNames, deliveryTurnAllowance, guardrailFilesHook, ownerGuardrailsHook } from "../guardrails/hooks";
 import { guidanceText, type SessionGuardrails } from "../guardrails/resolve";
 import type { FiringEvent } from "../guardrails/audit";
 import { GUARDRAILS_DIR } from "../guardrails/integrity";
@@ -1668,6 +1668,9 @@ export class AgentManager extends EventEmitter {
       },
       onFiring: (events) => this.#guardrailSink?.firing(sessionId, events, guardrailCtx()),
       onDelivered: (items, toolName) => this.#guardrailSink?.delivered(sessionId, items.map((i) => i.slug), { ...guardrailCtx(), via: "tool", toolName }),
+      // Remote mode: the CLI reports the alias (mcp__remote__bash); a rule
+      // written for the builtin (Bash) must still match, and the other way round.
+      toolNames: (name) => (remoteHandle ? remoteToolNames(name) : [name]),
     });
     const guardrailFiles = guardrailFilesHook(
       () => row.working_dir,
@@ -2422,6 +2425,8 @@ const AUTO_EVOLVE_IGNORE = new Set([
 ]);
 
 /** `/remote` alias (`mcp__remote__read`) → the built-in it stands for (`Read`). */
+/** A tool's names in a remote session: the alias and the builtin it stands for. */
+const remoteToolNames = aliasNames(REMOTE_TOOL_ALIASES);
 const REMOTE_ALIAS_BUILTIN = new Map(Object.entries(REMOTE_TOOL_ALIASES).map(([builtin, alias]) => [alias, builtin]));
 
 /** Built-in tools that mutate state; any external `mcp__` tool also counts. */

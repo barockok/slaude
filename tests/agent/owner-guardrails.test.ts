@@ -149,6 +149,21 @@ describe("a booted session", () => {
     expect(mgr.guardrailsFor(row.id)).toBeNull();
   });
 
+  it("in a remote thread a rule on Bash denies the remote alias the CLI reports", async () => {
+    const mgr = new AgentManager();
+    mgr.setGuardrailResolver(resolver);
+    const noopExec = async () => ({ stdout: "", stderr: "", code: 0, truncated: false, timedOut: false });
+    mgr.setRemote(async () => ({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" }), () => ({ exec: noopExec, release: async () => {}, dispose: async () => {} }));
+    const row = await mgr.ensureSession(thread());
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => lastOptions !== undefined, 3000, "boot");
+    expect(lastOptions.toolAliases.Bash).toBe("mcp__remote__bash");
+    const out = await runPre(lastOptions, pre("mcp__remote__bash", { command: "ls" }));
+    expect(out.some((o) => o?.hookSpecificOutput?.permissionDecisionReason === "The owner does not allow the shell.")).toBe(true);
+    mgr.reload(row.id);
+    await until(() => !mgr.isLive(row.id), 3000, "shutdown");
+  });
+
   it("tool-triggered Guidance is delivered once per boot, again after a reboot", async () => {
     const mgr = new AgentManager();
     mgr.setGuardrailResolver(resolver);
