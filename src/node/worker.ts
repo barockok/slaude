@@ -504,6 +504,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // Episodic memory runs on the gateway, scoped by the job token (a node has
   // no database or brain); a failure only costs the turn its memory.
   agent.setMemoryProvider(makeNodeMemoryProvider({ client, tokenFor: (id) => store.tokenFor(id) }));
+  // No Stop guard is installed on a node. The console's guardrail registry
+  // describes that (NODE_RUNTIME in src/agent/guardrails.ts, checked by
+  // tests/panel/console-guardrails.test.ts): adding one here means updating both.
   agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id) }));
   // The post-turn skill check is budgeted on the gateway's ledger (spec §9.3);
   // a refused or failed start skips it.

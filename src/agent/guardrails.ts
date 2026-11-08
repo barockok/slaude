@@ -58,6 +58,10 @@ export interface GuardrailRuntime {
  * A node worker (src/node/worker.ts) installs a permission resolver
  * (makeNodePermissionResolver) and no Stop guard. In the gateway role, turns
  * run there, so these are the facts that hold for them.
+ *
+ * Keep in step with src/node/worker.ts: tests/panel/console-guardrails.test.ts
+ * checks the worker's source for these two calls. A node that starts
+ * installing a Stop guard must flip `stopGuard` here (and that test).
  */
 export const NODE_RUNTIME: GuardrailRuntime = { stopGuard: false, permissionResolver: true, turnsRunOn: "nodes" };
 
@@ -96,6 +100,12 @@ const enforcing = (): GuardrailState => "enforcing";
 const onOff = (v: boolean): string => (v ? "on" : "off");
 const cap = (n: number, unit: string): string => (n > 0 ? `${n} ${unit}` : "off");
 const DOCS = "https://barockok.github.io/slaude/field-notes";
+
+/** Remote rows: who turns remote mode on, and where the page reads it from. */
+const REMOTE_SCOPE: GuardrailDetail = {
+  label: "Scope",
+  value: "Applies to threads bound with /remote; read from the gateway's SLAUDE_REMOTE (nodes follow the signed claim)",
+};
 
 /** The decision gate's mode only (never the adapter, never a value). */
 export function decisionMode(): "off" | "shadow" | "on" {
@@ -157,7 +167,7 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
     appliesTo: ["remote"],
     state: () => (env.remote.enabled() ? "enforcing" : "off"),
     toggle: { source: "env", key: "SLAUDE_REMOTE", default: "off" },
-    details: () => [{ label: "Denied tools", value: [...REMOTE_DENIED_LOCAL_TOOLS] }],
+    details: () => [REMOTE_SCOPE, { label: "Denied tools", value: [...REMOTE_DENIED_LOCAL_TOOLS] }],
     source: "remote/mcp.ts denyLocalBuiltins",
   },
   {
@@ -273,8 +283,10 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
     appliesTo: ["interactive", "remote", "voice"],
     state: (ctx) => (ctx.permissionResolver ? "enforcing" : "not-wired"),
     toggle: { source: "thread", key: "/mode", default: env.defaultPermissionMode() },
-    details: () => [
-      { label: "Env allow-list (SLAUDE_AUTO_ALLOW_TOOLS)", value: `${autoAllowFromEnv().size} tools` },
+    details: (ctx) => [
+      ctx.turnsRunOn === "nodes"
+        ? { label: "Gateway env allow-list (SLAUDE_AUTO_ALLOW_TOOLS)", value: `${autoAllowFromEnv().size} tools; each node reads its own` }
+        : { label: "Env allow-list (SLAUDE_AUTO_ALLOW_TOOLS)", value: `${autoAllowFromEnv().size} tools` },
       { label: "Default mode of a new thread", value: env.defaultPermissionMode() },
       { label: "A card waits for", value: `${PERM_GATE_TTL_MS / 60_000} minutes` },
     ],
@@ -288,9 +300,21 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
     event: "canUseTool",
     effect: "Denies with a refusal naming proactive_post and post_message; the node tool plane refuses the same from the signed wake claim.",
     appliesTo: ["wake"],
+    // Enforcing for every call that reaches the gateway. On nodes the node's
+    // own permissionPolicy answers first (src/node/shims/permission.ts), so a
+    // tool it auto-allows never reaches this refusal: the first detail says so.
     state: (ctx) => (ctx.permissionResolver ? "enforcing" : "not-wired"),
     toggle: ALWAYS,
-    source: "gateway/core/gateway.ts (resolver wrapper); gateway/api/tools/index.ts (wake claim)",
+    details: (ctx) =>
+      ctx.turnsRunOn === "nodes"
+        ? [
+            {
+              label: "On nodes",
+              value: "The node's local policy (including its SLAUDE_AUTO_ALLOW_TOOLS) runs first; only calls that reach the gateway are refused. The tool plane's wake check covers slaude's own tools only.",
+            },
+          ]
+        : [{ label: "In this process", value: "Every permission request during a wake is refused before any policy runs." }],
+    source: "gateway/core/gateway.ts (resolver wrapper); gateway/api/tools/index.ts (wake claim); node/shims/permission.ts (node order)",
   },
   {
     id: "gate.can-use-tool.remote",
@@ -302,6 +326,7 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
     appliesTo: ["remote"],
     state: () => (env.remote.enabled() ? "enforcing" : "off"),
     toggle: { source: "env", key: "SLAUDE_REMOTE", default: "off" },
+    details: () => [REMOTE_SCOPE],
     source: "remote/mcp.ts makeRemoteCanUseTool",
   },
   {
@@ -387,7 +412,7 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
     appliesTo: ["remote"],
     state: () => (env.remote.enabled() ? "enforcing" : "off"),
     toggle: { source: "env", key: "SLAUDE_REMOTE", default: "off" },
-    details: () => [{ label: "Removed", value: [...REMOTE_DENIED_LOCAL_TOOLS] }],
+    details: () => [REMOTE_SCOPE, { label: "Removed", value: [...REMOTE_DENIED_LOCAL_TOOLS] }],
     source: "remote/mcp.ts REMOTE_DENIED_LOCAL_TOOLS",
   },
   {
@@ -452,10 +477,13 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
     appliesTo: ["wake"],
     state: enforcing,
     toggle: { source: "env", key: "SLAUDE_WAKE_MAX_USD, SLAUDE_WAKE_MAX_TURNS, SLAUDE_WAKE_MAX_MINUTES" },
-    details: () => [
+    details: (ctx) => [
       { label: "Spend", value: cap(env.wakeMaxUsd(), "USD") },
       { label: "Turns", value: cap(env.wakeMaxTurns(), "turns") },
-      { label: "Wall clock", value: cap(env.wakeMaxMinutes(), "minutes") },
+      {
+        label: "Wall clock",
+        value: `${cap(env.wakeMaxMinutes(), "minutes")}${ctx.turnsRunOn === "nodes" ? " (nodes clamp to their turn timeout)" : ""}`,
+      },
     ],
     source: "agent/manager.ts #bootSession (wake options)",
   },

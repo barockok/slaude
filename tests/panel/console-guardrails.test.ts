@@ -17,7 +17,7 @@ import { soulSections } from "../../src/gateway/panel/guardrails-view";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
 import type { GuardrailFamily, GuardrailsResponse } from "../../src/gateway/panel/api-types";
 import type { ProactiveRule } from "../../src/proactive/rules";
-import type { GuardrailRuntime } from "../../src/agent/guardrails";
+import { NODE_RUNTIME, type GuardrailRuntime } from "../../src/agent/guardrails";
 import { paths } from "../../src/config/home";
 import { readFileSync } from "node:fs";
 
@@ -261,6 +261,23 @@ describe("the runtime layer", () => {
       delete process.env.SLAUDE_DECISION_CONFIG;
       delete process.env.SLAUDE_OUTBOUND_ALLOWED_HOSTS;
     }
+  });
+
+  test("in the gateway role the node caveats are shown: wake refusal order, env allow-list, wall clock, remote scope", async () => {
+    const nodes = (await get("/panel/api/guardrails", undefined, operator, () => NODE_RUNTIME)).body as GuardrailsResponse;
+    const wake = entry(nodes, "gate.can-use-tool.wake-refusal");
+    expect(wake.state).toBe("enforcing");
+    expect(wake.details[0]!.label).toBe("On nodes");
+    expect(String(wake.details[0]!.value)).toContain("only calls that reach the gateway are refused");
+    expect(entry(nodes, "gate.can-use-tool.permission").details[0]).toMatchObject({ label: "Gateway env allow-list (SLAUDE_AUTO_ALLOW_TOOLS)" });
+    expect(String(entry(nodes, "gate.can-use-tool.permission").details[0]!.value)).toContain("each node reads its own");
+    expect(String(entry(nodes, "limit.wake-caps").details.find((d) => d.label === "Wall clock")!.value)).toContain("(nodes clamp to their turn timeout)");
+    for (const id of ["hook.pre-tool.remote-deny-local", "gate.can-use-tool.remote", "deny.remote-local-tools"]) {
+      expect(String(entry(nodes, id).details[0]!.value)).toContain("threads bound with /remote");
+    }
+    const mono = (await get("/panel/api/guardrails", undefined, operator, () => ({ stopGuard: true, permissionResolver: true, turnsRunOn: "this-process" }))).body as GuardrailsResponse;
+    expect(entry(mono, "gate.can-use-tool.wake-refusal").details[0]!.label).toBe("In this process");
+    expect(String(entry(mono, "limit.wake-caps").details.find((d) => d.label === "Wall clock")!.value)).not.toContain("nodes");
   });
 
   test("the node facts match what the node worker installs", () => {
