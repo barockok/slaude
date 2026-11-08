@@ -398,6 +398,15 @@ export class NodeClient {
    * long-poll IS the retry loop, and a network error should surface to the
    * caller's loop rather than double-wait.
    */
+  /** Cancel a poll row this session opened (an owner card the node stopped waiting on). Best effort: never throws. */
+  async cancelPending(id: string, jobToken: string): Promise<void> {
+    try {
+      await this.request(`/v1/pending/${id}`, { method: "DELETE", jobToken, retry: false });
+    } catch {
+      /* the row expires at its own deadline anyway */
+    }
+  }
+
   async getPending(id: string, jobToken?: string): Promise<PendingView | "timeout" | "notfound"> {
     // The job token binds the poll to this turn's session (node labels spec
     // §4.4); only a legacy node may poll without one, and only for a while.

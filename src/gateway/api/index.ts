@@ -51,7 +51,7 @@ import { handleMcpCredentials, handleMcpCredentialRefresh, type CredentialRefres
 import { handleRemoteKey } from "./remote-key";
 import { handleRemoteEnv } from "./remote-env";
 import { defaultCredentialRefresher } from "../core/credential-refresh";
-import { handlePending, type PendingOptions } from "./pending";
+import { handlePending, handlePendingCancel, type PendingOptions } from "./pending";
 import { handleJobEvent, handleTokenRefresh, handleTokenReissue, REFRESH_GRACE_SEC, type JobLookup, type JobMovedTo } from "./jobs";
 import { executeToolCall } from "./tools";
 import { handleMcpx } from "./tools/mcpx";
@@ -226,12 +226,16 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       // here, so a tokenless call is accepted only from the legacy identity,
       // and only while SLAUDE_NODE_ALLOW_TOKENLESS_PENDING is on.
       name: "pending",
-      methods: ["GET"],
+      methods: ["GET", "DELETE"],
       pattern: ["pending", ":id"],
       auth: "node+job",
       gate: "label",
       jobOptional: true,
-      handle: async ({ seg, node, claims }) => {
+      handle: async ({ req, seg, node, claims }) => {
+        // DELETE: a node gave up waiting on an owner guardrail's card (its
+        // deadline, the turn stopped): the row is cancelled so a late click
+        // cannot show Approved on a call that was refused. Job token only.
+        if (req.method === "DELETE") return claims ? handlePendingCancel(seg[1]!, claims.session) : json(401, { error: "invalid job token: missing" });
         if (claims) return handlePending(seg[1]!, pendingSource, opts.pending, claims.session);
         if (!node.legacy || !env.allowTokenlessPending()) {
           return json(401, { error: "invalid job token: missing" });

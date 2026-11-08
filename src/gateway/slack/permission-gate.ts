@@ -98,6 +98,9 @@ function stampPayload(stamp: TurnStamp | undefined): Record<string, unknown> {
   return { initiator: stamp?.initiator ?? null, ...(stamp?.origin ? { origin: stamp.origin } : {}) };
 }
 
+/** Who may decide a card, as canDecidePermission admits them. */
+export const FORCED_DECIDERS = "The person who asked, the thread's /1on1 owner, or an approver or manager of this agent can decide.";
+
 export const PERM_REFUSED_TEXT = "Only the person who asked or an approver can decide this.";
 
 export type PermissionDecision = Awaited<ReturnType<CanUseTool>>;
@@ -418,7 +421,7 @@ function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId:
       ? [
           {
             type: "context",
-            elements: [{ type: "mrkdwn", text: `Owner guardrail \`${cardLiteral(forced.ruleId)}\`: ${escapeCardText(forced.message)} Only the person who asked or an approver can decide.` }],
+            elements: [{ type: "mrkdwn", text: `Owner guardrail \`${cardLiteral(forced.ruleId)}\`: ${escapeCardText(forced.message)} ${FORCED_DECIDERS}` }],
           },
         ]
       : decisionReason
@@ -518,7 +521,7 @@ export class PermissionGate {
           // No clicker identity: nobody to authorise, so nothing is decided.
           console.warn(`[permission-gate] click on ${toolUseId} without a user id refused`);
           try {
-            await respond({ response_type: "ephemeral", replace_original: false, text: PERM_REFUSED_TEXT });
+            await respond({ response_type: "ephemeral", replace_original: false, text: PERM_REFUSED_TEXT }); // runtime-ui: permission card
           } catch {}
           return;
         }
@@ -529,7 +532,7 @@ export class PermissionGate {
           // ephemerally and leave the card alone: a decided card's rewrite is
           // the only visible record. Expired/cancelled rows were never decided.
           try {
-            await respond({
+            await respond({ // runtime-ui: permission card
               response_type: "ephemeral",
               replace_original: false,
               text:
@@ -565,7 +568,7 @@ export class PermissionGate {
           if (ok) return false;
           auditPermRefused(row, userId, decision, failure);
           try {
-            await respond({ response_type: "ephemeral", replace_original: false, text: PERM_REFUSED_TEXT });
+            await respond({ response_type: "ephemeral", replace_original: false, text: PERM_REFUSED_TEXT }); // runtime-ui: permission card
           } catch {}
           return true;
         };
@@ -598,7 +601,7 @@ export class PermissionGate {
             auditPermDecided(row, userId, decision);
             await this.#publish(toolUseId);
             try {
-              await respond({
+              await respond({ // runtime-ui: permission card
                 replace_original: true,
                 text: decidedText(String((cur.payload as any)?.toolName ?? "tool")),
                 blocks: [],
@@ -610,7 +613,7 @@ export class PermissionGate {
           // holding the waiter with no way to wake it from here — never cancel
           // it. Tell the clicker where the gate lives and keep the buttons.
           try {
-            await respond({
+            await respond({ // runtime-ui: permission card
               response_type: "ephemeral",
               replace_original: false,
               text: ":hourglass: This approval is pending on another replica — it will be decided there (or auto-expire).",
@@ -643,7 +646,7 @@ export class PermissionGate {
         // faster than chat.update, so the buttons disappear before the user
         // has a chance to double-click.
         try {
-          await respond({
+          await respond({ // runtime-ui: permission card
             replace_original: true,
             text: decidedText(pend.toolName),
             blocks: [],
@@ -740,7 +743,7 @@ export class PermissionGate {
       expiresAt: Date.now() + ttl,
     });
     try {
-      await clientForApp(this.#transport, args.app).chat.postMessage({
+      await clientForApp(this.#transport, args.app).chat.postMessage({ // runtime-ui: permission card
         channel: args.channel,
         thread_ts: args.threadTs,
         text: `:lock: Approval needed: \`${args.toolName}\``,
@@ -848,7 +851,7 @@ export class PermissionGate {
     );
 
     try {
-      const posted = await clientForApp(this.#transport, route.app).chat.postMessage({
+      const posted = await clientForApp(this.#transport, route.app).chat.postMessage({ // runtime-ui: permission card
         channel: route.channel,
         thread_ts: route.threadTs,
         text: `:lock: Approval needed: \`${toolName}\``,

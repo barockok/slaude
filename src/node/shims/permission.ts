@@ -90,7 +90,13 @@ export function makeNodePermissionResolver(deps: NodePermissionDeps): Permission
       signal: ctx.signal,
       jobToken: () => deps.tokenFor(sessionId) ?? token,
     });
-    if (outcome === "aborted") return { behavior: "deny", message: "aborted" };
+    if (outcome === "aborted") {
+      // An owner card the hook stopped waiting on (its deadline, the turn
+      // stopped): cancel it, so a late click cannot show Approved on a call
+      // that was refused.
+      if (forced && deps.client.cancelPending) await deps.client.cancelPending(opened.pendingId, deps.tokenFor(sessionId) ?? token);
+      return { behavior: "deny", message: "aborted" };
+    }
     if (outcome === "notfound") return { behavior: "deny", message: "permission gate disappeared before a decision" };
     if ("refused" in outcome) {
       return { behavior: "deny", message: `the gateway refused the permission poll (${outcome.refused.status})` };

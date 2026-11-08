@@ -1046,6 +1046,7 @@ describe("PermissionGate: owner guardrail cards (forced)", () => {
     const ctxLine = post.blocks.find((b: any) => b.type === "context").elements[0].text;
     expect(ctxLine).toContain("deploys#ask");
     expect(ctxLine).toContain("&lt;!channel&gt;");
+    expect(ctxLine).toContain("the thread's /1on1 owner, or an approver or manager");
     const row = await PendingGates.get("UF1");
     expect(row?.payload.guardrail).toBe("deploys#ask");
     expect(row?.expiresAt).toBe(a.deadline);

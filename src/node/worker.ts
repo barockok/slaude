@@ -33,6 +33,7 @@ import { m as metric, metrics } from "../metrics";
 import { bundleSessionGuardrails } from "../guardrails/node";
 import { GUARDRAILS_CAPABILITY } from "../guardrails/capability";
 import type { SessionGuardrails } from "../guardrails/resolve";
+import type { FiringEvent } from "../guardrails/audit";
 import { assertNodeIdUsable, DEFAULT_LABEL, LABEL_RE, labelTurnsQueue, makeKeys, nodeTurnsQueue, type Keys } from "../queue/keys";
 import { createRedis, heartbeatSec as envHeartbeatSec, nodeDrainSec, redisUrl } from "../queue/redis";
 import { makeRegistry, type Registry } from "../queue/registry";
@@ -387,12 +388,15 @@ export function makeNodeGuardrailSink(deps: { client: Pick<NodeClient, "request"
       .catch((e) => console.warn(`[node] guardrail event not recorded session=${sessionId}: ${(e as Error)?.message ?? String(e)}`));
   };
   return {
-    firing: (sessionId, events, ctx) =>
-      post(sessionId, {
-        kind: "firing",
-        session_kind: ctx.kind,
-        events: events.map((e) => ({ on: e.on, slug: e.slug, rule_id: e.ruleId, action: e.action, applied: e.applied, deciding: e.deciding, ...(e.toolName ? { tool_name: e.toolName } : {}) })),
-      }),
+    firing: (sessionId, events, ctx) => {
+      // An approve card's outcome (approved, refused) is new in rc.10; an rc.9
+      // gateway's strict schema would reject a whole batch carrying one, so
+      // those go in their own batch and the rest is recorded either way.
+      const wire = (e: FiringEvent) => ({ on: e.on, slug: e.slug, rule_id: e.ruleId, action: e.action, applied: e.applied, deciding: e.deciding, ...(e.toolName ? { tool_name: e.toolName } : {}) });
+      const newer = events.filter((e) => e.applied === "approved" || e.applied === "refused");
+      const older = events.filter((e) => !newer.includes(e));
+      for (const batch of [older, newer]) if (batch.length) post(sessionId, { kind: "firing", session_kind: ctx.kind, events: batch.map(wire) });
+    },
     delivered: (sessionId, slugs, ctx) => post(sessionId, { kind: "delivery", session_kind: ctx.kind, slugs, via: ctx.via, ...(ctx.toolName ? { tool_name: ctx.toolName } : {}) }),
   };
 }
