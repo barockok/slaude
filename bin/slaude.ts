@@ -65,6 +65,10 @@ switch (sub) {
     console.error("usage: slaude brain connect | slaude brain reembed (--model-mismatch | --adopt) [--apply]");
     process.exit(2);
     break;
+  case "guardrails":
+    entry = "src/cli/guardrails.ts";
+    rest = argv.slice(1);
+    break;
   case "-h":
   case "--help":
     console.log(
@@ -78,6 +82,7 @@ switch (sub) {
         "  slaude voice-loop     (internal) realtime voice loop child for a call",
         "  slaude brain connect  OAuth-bootstrap the remote brain link (SLAUDE_BRAIN_URL)",
         "  slaude brain reembed --model-mismatch|--adopt [--apply]  repair embedding labels or the brain record (dry run by default)",
+        "  slaude guardrails import <dir> [--prune] [--dry-run]  store GUARDRAIL.md folders as owner guardrails",
         "",
         "SLAUDE_HOME resolves to $SLAUDE_HOME, else the cwd if it has SOUL.md, else ~/.slaude.",
       ].join("\n"),
