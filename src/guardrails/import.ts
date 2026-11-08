@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { applyGuardrailChange, readGuardrails, type ChangeResult } from "../db/guardrails";
 import { auditChange } from "./audit";
+import { emitAudit } from "../audit/emit";
 import { readGuardrailDir } from "./files";
 import { parseGuardrail } from "./format";
 
@@ -26,7 +27,7 @@ export interface ImportReport extends ChangeResult {
 
 export async function importGuardrails(
   dir: string,
-  opts: { by: string; prune?: boolean; dryRun?: boolean; tenant?: string },
+  opts: { by: string; prune?: boolean; dryRun?: boolean; tenant?: string; repair?: boolean },
 ): Promise<ImportReport> {
   const tenant = opts.tenant ?? "default";
   // A deploy repo checkout works as is: its guardrails/ folder is used.
@@ -48,8 +49,21 @@ export async function importGuardrails(
     const updated = upsert.filter((u) => bySlug.has(u.slug) && !unchanged.includes(u.slug)).map((u) => u.slug);
     return { version: stored.manifest?.version ?? 0, created, updated, unchanged, removed: remove, toggled: [], dryRun: true, invalid, skipped };
   }
-  const r = await applyGuardrailChange(tenant, { upsert, remove, by: opts.by });
+  const r = await applyGuardrailChange(tenant, { upsert, remove, by: opts.by, ...(opts.repair ? { repair: true } : {}) });
   auditChange(r, { tenantId: tenant, actorKind: "operator", actorId: opts.by, via: "cli" });
+  if (opts.repair) {
+    emitAudit({
+      tenantId: tenant,
+      consoleWide: true,
+      actorKind: "operator",
+      actorId: opts.by,
+      action: "guardrail.repaired",
+      targetKind: "guardrails",
+      targetId: tenant,
+      summary: `guardrail set re-signed by an owner repair at version ${r.version}`,
+      details: { version: r.version, resigned: r.resigned ?? [] },
+    });
+  }
   return { ...r, dryRun: false, invalid, skipped };
 }
 
@@ -58,6 +72,7 @@ export function formatImportReport(r: ImportReport): string {
     `${r.dryRun ? "[dry run] " : ""}guardrails: ${r.created.length} created, ${r.updated.length} updated, ${r.unchanged.length} unchanged, ${r.removed.length} removed (version ${r.version})`,
   ];
   for (const s of r.skipped) lines.push(`  skipped ${s}: it comes from the deploy repo or the console, not from files`);
+  if (r.resigned?.length) lines.push(`  re-signed as stored (check them, then re-run /deploy for deploy repo guardrails): ${r.resigned.join(", ")}`);
   for (const i of r.invalid) {
     lines.push(`  ${i.slug} has problems (its valid rules and prose still apply):`);
     for (const e of i.errors) lines.push(`    - ${e}`);

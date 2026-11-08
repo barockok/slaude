@@ -1,7 +1,12 @@
 // Owner guardrails from host files. Runs where the deployment's database is
 // reachable (the gateway or mono host), never on a node.
 //
-//   slaude guardrails import <dir> [--prune] [--dry-run]
+//   slaude guardrails import <dir> [--prune] [--dry-run] [--repair]
+//
+// --repair: the stored set failed its integrity check (sessions refuse to
+// start) and you, the owner, have checked it. Imports <dir> and re-signs every
+// stored guardrail as it is, at a version above any seen. Audited
+// (guardrail.repaired).
 //
 // <dir> holds <slug>/GUARDRAIL.md folders (or is a deploy repo with a
 // guardrails/ folder). A running server picks the change up within its poll
@@ -11,12 +16,12 @@ import { userInfo } from "node:os";
 import { flushAudits } from "../audit/emit";
 import { formatImportReport, importGuardrails } from "../guardrails/import";
 
-const USAGE = "usage: slaude guardrails import <dir> [--prune] [--dry-run]";
+const USAGE = "usage: slaude guardrails import <dir> [--prune] [--dry-run] [--repair]";
 
 export async function main(argv: string[]): Promise<number> {
-  let parsed: { values: { prune?: boolean; "dry-run"?: boolean }; positionals: string[] };
+  let parsed: { values: { prune?: boolean; "dry-run"?: boolean; repair?: boolean }; positionals: string[] };
   try {
-    parsed = parseArgs({ args: argv, allowPositionals: true, options: { prune: { type: "boolean" }, "dry-run": { type: "boolean" } } });
+    parsed = parseArgs({ args: argv, allowPositionals: true, options: { prune: { type: "boolean" }, "dry-run": { type: "boolean" }, repair: { type: "boolean" } } });
   } catch (e) {
     console.error(`${e instanceof Error ? e.message : String(e)}\n${USAGE}`);
     return 2;
@@ -37,7 +42,7 @@ export async function main(argv: string[]): Promise<number> {
     /* no passwd entry */
   }
   try {
-    const r = await importGuardrails(dir, { by: `cli:${who}`, prune: !!parsed.values.prune, dryRun: !!parsed.values["dry-run"] });
+    const r = await importGuardrails(dir, { by: `cli:${who}`, prune: !!parsed.values.prune, dryRun: !!parsed.values["dry-run"], repair: !!parsed.values.repair });
     console.log(formatImportReport(r));
   } catch (e) {
     console.error(`guardrails import failed: ${e instanceof Error ? e.message : String(e)}`);

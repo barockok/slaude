@@ -11,7 +11,8 @@
  */
 import { createHash } from "node:crypto";
 import { db, dbDialect, type DbClient } from "./client";
-import { manifestEntries, manifestMac, overrideMac, rowMac, type StoredSet } from "../guardrails/integrity";
+import { manifestEntries, manifestMac, overrideMac, rowMac, verifySet, type StoredSet } from "../guardrails/integrity";
+import { __resetHighWaterForTests, checkHighWater, highWater, raiseHighWater } from "../guardrails/high-water";
 
 export type GuardrailSource = "file" | "git" | "console";
 
@@ -89,6 +90,13 @@ export interface GuardrailChange {
   setEnabled?: Array<{ slug: string; enabled: boolean }>;
   /** Who made the change (operator id, "pipeline", "cli:<user>"). */
   by: string;
+  /**
+   * The owner's repair (`slaude guardrails import --repair`): skip the check
+   * of the stored set and re-sign every row and override as stored, at a
+   * version above anything seen. Without it a write refuses a set that does
+   * not verify, so a write can never launder tampering.
+   */
+  repair?: boolean;
 }
 
 export interface ChangeResult {
@@ -98,6 +106,8 @@ export interface ChangeResult {
   unchanged: string[];
   removed: string[];
   toggled: string[];
+  /** Repair only: rows and overrides re-signed as stored (check them). */
+  resigned?: string[];
 }
 
 export class UnknownGuardrailError extends Error {
@@ -111,6 +121,12 @@ export class UnknownGuardrailError extends Error {
  * nothing writes nothing (the version does not move).
  */
 export async function applyGuardrailChange(tenant: string, change: GuardrailChange, now = Date.now()): Promise<ChangeResult> {
+  const r = await writeChange(tenant, change, now);
+  await raiseHighWater(tenant, r.version);
+  return r;
+}
+
+function writeChange(tenant: string, change: GuardrailChange, now: number): Promise<ChangeResult> {
   return db.transaction(async (tx) => {
     if (pg()) {
       await tx.run(
@@ -119,14 +135,22 @@ export async function applyGuardrailChange(tenant: string, change: GuardrailChan
       );
     }
     const cur = await readWith(tx, tenant, true);
-    const res: ChangeResult = { version: cur.manifest?.version ?? 0, created: [], updated: [], unchanged: [], removed: [], toggled: [] };
-    const version = res.version + 1;
+    const stored = cur.manifest?.version ?? 0;
+    // Never re-sign over a set that does not verify (or is older than one seen
+    // before): that would launder tampering into a valid signature.
+    if (!change.repair) {
+      verifySet(tenant, cur);
+      await checkHighWater(tenant, stored);
+    }
+    const res: ChangeResult = { version: stored, created: [], updated: [], unchanged: [], removed: [], toggled: [] };
+    const version = (change.repair ? Math.max(stored, await highWater(tenant)) : stored) + 1;
     const bySlug = new Map(cur.rows.map((r) => [r.slug, r]));
     const writes: GuardrailRow[] = [];
     for (const u of change.upsert ?? []) {
       const prev = bySlug.get(u.slug);
       const sha = sha256(u.md);
-      if (prev && prev.sha === sha && prev.source === u.source) {
+      // The text itself, not the stored sha: a repair must replace a row whose text was edited under its old sha.
+      if (prev && prev.md === u.md && prev.sha === sha && prev.source === u.source) {
         res.unchanged.push(u.slug);
         continue;
       }
@@ -150,7 +174,26 @@ export async function applyGuardrailChange(tenant: string, change: GuardrailChan
       res.toggled.push(t.slug);
     }
     const removed = (change.remove ?? []).filter((s) => bySlug.has(s));
-    if (writes.length === 0 && removed.length === 0) return res;
+    let overrides = cur.overrides.filter((o) => !removed.includes(o.slug));
+    if (change.repair) {
+      // Every row the change did not write, and every override, re-signed as stored.
+      res.resigned = [];
+      for (const r of cur.rows) {
+        if (removed.includes(r.slug) || writes.some((w) => w.slug === r.slug)) continue;
+        const row: GuardrailRow = { ...r, sha: sha256(r.md), version, hmac: "", updatedAt: now, updatedBy: change.by };
+        row.hmac = rowMac(tenant, row);
+        writes.push(row);
+        bySlug.set(r.slug, row);
+        res.resigned.push(r.slug);
+      }
+      overrides = overrides.map((o) => ({ ...o, version, hmac: overrideMac(tenant, { ...o, version }) }));
+      for (const o of overrides) {
+        await tx.run(`UPDATE guardrail_overrides SET version = ?, hmac = ?, updated_at = ? WHERE slug = ?${pg() ? " AND tenant_id = ?" : ""}`, [o.version, o.hmac, now, o.slug, ...tenantParams(tenant)]);
+        res.resigned.push(`${o.slug} (override)`);
+      }
+    } else if (writes.length === 0 && removed.length === 0) {
+      return res;
+    }
 
     const bool = (b: boolean) => (pg() ? b : b ? 1 : 0);
     for (const w of writes) {
@@ -172,7 +215,7 @@ export async function applyGuardrailChange(tenant: string, change: GuardrailChan
       bySlug.delete(slug);
       res.removed.push(slug);
     }
-    const overrides = cur.overrides.filter((o) => bySlug.has(o.slug));
+    overrides = overrides.filter((o) => bySlug.has(o.slug));
     const entries = manifestEntries([...bySlug.values()], overrides);
     const hmac = manifestMac(tenant, version, entries);
     if (pg()) {
@@ -220,4 +263,5 @@ export async function __setOverrideForTests(tenant: string, o: { slug: string; m
 /** TEST SEAM: every guardrail table emptied (persistent test Postgres). */
 export async function __clearGuardrailsForTests(): Promise<void> {
   for (const t of ["guardrails", "guardrail_overrides", "guardrails_manifest"]) await db.run(`DELETE FROM ${t}`);
+  await __resetHighWaterForTests();
 }
