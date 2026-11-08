@@ -596,6 +596,10 @@ export const env = {
   wakeMaxMinutes: () => numberAtLeastZero("SLAUDE_WAKE_MAX_MINUTES", 15),
   /** How long a wake's session is kept (`SLAUDE_WAKE_KEEP_DAYS`, default 14). */
   wakeKeepDays: () => intAtLeastOne("SLAUDE_WAKE_KEEP_DAYS", 14),
+  /** Most always-loaded owner guardrail prose per agent (`SLAUDE_GUARDRAIL_PROSE_MAX`, characters, default 4000). */
+  guardrailProseMax: () => intAtLeastOne("SLAUDE_GUARDRAIL_PROSE_MAX", 4000),
+  /** How long an inbound guardrail's reply stays quiet for the same person in the same thread (`SLAUDE_GUARDRAIL_REPLY_QUIET_SECS`, default 600). */
+  guardrailReplyQuietSec: () => intAtLeastOne("SLAUDE_GUARDRAIL_REPLY_QUIET_SECS", 600),
   /** How long audit events are kept (`SLAUDE_AUDIT_RETENTION_DAYS`, default 365). */
   auditRetentionDays: () => intAtLeastOne("SLAUDE_AUDIT_RETENTION_DAYS", 365),
   /** The longest a waking agent may sleep, in hours (`SLAUDE_WAKE_MAX_SLEEP_HOURS`, default 24). */
