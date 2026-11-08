@@ -81,6 +81,10 @@ export interface Keys {
    *  written with every heartbeat; TTL max(node TTL, 3× heartbeat). Absent for a node that
    *  predates labels: it counts as `{default}`. */
   nodeLabels(nodeId: string): string;
+  /** `nodecaps:<nodeId>` — the capabilities a live node advertises (e.g.
+   *  `guardrails/1`), comma-joined, written beside its labels. Absent for a
+   *  node that predates capabilities: it has none. */
+  nodeCaps(nodeId: string): string;
   /** Set of every nodeId that ever registered — reaper work list. */
   nodeSet(): string;
   /** `lock:session:<sessionId>` — one turn at a time per session. */
@@ -156,6 +160,7 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     node: (nodeId) => `${prefix}:nodes:${nodeId}`,
     nodePattern: () => `${prefix}:nodes:*`,
     nodeLabels: (nodeId) => `${prefix}:nodelabels:${nodeId}`,
+    nodeCaps: (nodeId) => `${prefix}:nodecaps:${nodeId}`,
     nodeSet: () => `${prefix}:nodeset`,
     sessionLock: (sessionId) => `${prefix}:lock:session:${sessionId}`,
     workspaceLock: (dir) => `${prefix}:lock:workspace:${createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 32)}`,

@@ -139,6 +139,24 @@ describe.skipIf(!realEnabled)("queue/registry against real Redis", () => {
   // Review R1-F4 / R2-5: the labels key lives at least as long as the node key
   // AND as long as a warm session (2× heartbeat) with margin (3× heartbeat),
   // so a fresh warm session never sits on a node whose labels have expired.
+  test("capabilities ride the heartbeat; an older node (no caps key) has none; nodeDown clears them", async () => {
+    await ready;
+    const reg = mkRegistry({ heartbeatSec: 10 });
+    await reg.nodeUp("n-cap-new", ["default"], ["guardrails/1"]);
+    await reg.nodeUp("n-cap-old", ["default"]);
+    await reg.nodeUp("n-cap-other", ["finance"], ["guardrails/1"]);
+    expect([...(await reg.nodeCaps("n-cap-new"))]).toEqual(["guardrails/1"]);
+    expect([...(await reg.nodeCaps("n-cap-old"))]).toEqual([]);
+    const pool = (await reg.liveNodesWithCap("default", "guardrails/1")).filter((n) => n.node.startsWith("n-cap-"));
+    expect(pool).toEqual([{ node: "n-cap-new", has: true }, { node: "n-cap-old", has: false }]);
+    await reg.beatNode("n-cap-old", ["default"], ["guardrails/1"]);
+    expect([...(await reg.nodeCaps("n-cap-old"))]).toEqual(["guardrails/1"]);
+    await reg.beatNode("n-cap-old", undefined, ["guardrails/1"]);
+    await reg.nodeDown("n-cap-new");
+    expect(await redis.exists(keys.nodeCaps("n-cap-new"))).toBe(0);
+    for (const n of ["n-cap-old", "n-cap-other"]) await reg.nodeDown(n);
+  });
+
   test("the labels key TTL is max(node TTL, 3× heartbeat), set on nodeUp and every beat", async () => {
     await ready;
     const short = mkRegistry({ nodeTtlSec: 30, heartbeatSec: 5 });
