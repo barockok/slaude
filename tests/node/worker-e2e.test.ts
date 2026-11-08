@@ -220,6 +220,11 @@ beforeAll(async () => {
       this.aborts.get(id)?.abort();
     }
     override suppressNextTurn(_id: string) {}
+    permissionResolver?: (sessionId: string, toolName: string, input: any, ctx: any) => Promise<any>;
+    override setPermissionResolver(r: any) {
+      super.setPermissionResolver(r);
+      this.permissionResolver = r;
+    }
     stopGuard?: (sessionId: string) => string | null;
     override setStopGuard(g: any) {
       super.setStopGuard(g);
@@ -267,6 +272,10 @@ beforeAll(async () => {
   // agent never calls its child-env resolver, so no other case depends on it).
   const savedFallback = process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
   process.env.SLAUDE_PROVIDER_ENV_FALLBACK = "0";
+  // The node's own auto-allow list, read once when its resolver is built (the
+  // gateway above was created without it).
+  const savedAutoAllow = process.env.SLAUDE_AUTO_ALLOW_TOOLS;
+  process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Bash";
   workerHandle = await startNodeWorker({
     nodeId: NODE_ID,
     client,
@@ -294,6 +303,8 @@ beforeAll(async () => {
   });
   if (savedFallback === undefined) delete process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
   else process.env.SLAUDE_PROVIDER_ENV_FALLBACK = savedFallback;
+  if (savedAutoAllow === undefined) delete process.env.SLAUDE_AUTO_ALLOW_TOOLS;
+  else process.env.SLAUDE_AUTO_ALLOW_TOOLS = savedAutoAllow;
 });
 
 afterAll(async () => {
@@ -389,6 +400,58 @@ d("gateway↔node E2E (real Redis)", () => {
       behavior = prev;
     }
   }, 30_000);
+
+  // The wake refusal on a node (v0.46.0-rc.8), through the worker's own wiring
+  // (the job's wake flag, the bound token's signed claim, per-job reset): a
+  // tool the node auto-allows is refused in a wake's turn and allowed again in
+  // the next normal turn on the same session.
+  test("a wake job refuses a node-auto-allowed tool; the next normal job on the session allows it", async () => {
+    const { wakeRefusal } = await import("../../src/proactive/wake-guard");
+    const WAKE_THREAD = "9007.0";
+    const prev = behavior;
+    const decisions: Array<{ text: string; decision: any }> = [];
+    behavior = async ({ sessionId, text, servers }) => {
+      const decision = await stub.permissionResolver!(sessionId, "Bash", { command: "ls" }, { signal: new AbortController().signal, toolUseID: "tu-1" });
+      decisions.push({ text, decision });
+      if (!text.startsWith("[wake]")) await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
+    };
+    try {
+      posts.length = 0;
+      reacts.length = 0;
+      await emitSlack("message", msg(WAKE_THREAD, "9007.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9007.1"), 15_000);
+      const Sessions = await import("../../src/db/sessions");
+      const session = (await Sessions.findById(await sessionIdOf(WAKE_THREAD)))!;
+      // A heartbeat wake on the thread, dispatched as the gateway dispatches one.
+      await qd.dispatch(session, "[wake] look around", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WAKE_THREAD,
+        eventTs: "9007.2",
+        userId: "USLAUDE",
+        origin: "cron",
+        backgroundRunId: "run-e2e-wake",
+        wake: { maxTurns: 3 },
+      });
+      await until(() => decisions.some((d) => d.text.startsWith("[wake]")), 15_000);
+      await until(async () => !(await turnsQ.hasPending(session.id)), 10_000);
+      // The wake's turn has ended (its lock is free) before the next message.
+      await until(async () => (await redis.exists(keys.sessionLock(session.id))) === 0, 10_000);
+      await emitSlack("message", msg(WAKE_THREAD, "9007.3", "<@USLAUDE> after the wake"));
+      await until(() => decisions.some((d) => d.text.includes("after the wake")), 15_000);
+
+      const [first, wake, after] = [
+        decisions.find((d) => d.text.includes("first"))!,
+        decisions.find((d) => d.text.startsWith("[wake]"))!,
+        decisions.find((d) => d.text.includes("after the wake"))!,
+      ];
+      expect(first.decision.behavior).toBe("allow");
+      expect(wake.decision).toEqual({ behavior: "deny", message: wakeRefusal("Bash") });
+      expect(after.decision.behavior).toBe("allow");
+    } finally {
+      behavior = prev;
+    }
+  }, 45_000);
 
   test("an acked job's turn-senders record is deleted, not left to its TTL", async () => {
     posts.length = 0;
