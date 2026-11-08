@@ -59,7 +59,7 @@ import { turnModelTokens, type SkillCheckBudget } from "../background/skill-chec
 import { skillUsageHook, type SkillUsageRecorder } from "./skill-usage-hook";
 import { passEndsTurnHook } from "./pass-stop-hook";
 import { HOOK_IDS, tagHook } from "./hook-tags";
-import { aliasNames, deliveryTurnAllowance, guardrailFilesHook, ownerGuardrailsHook } from "../guardrails/hooks";
+import { aliasNames, approveMatcherTimeoutSec, deliveryTurnAllowance, guardrailFilesHook, ownerGuardrailsHook, type ApproveOutcome, type ApproveRequest, type OwnerApproval } from "../guardrails/hooks";
 import { guidanceText, type SessionGuardrails } from "../guardrails/resolve";
 import type { FiringEvent } from "../guardrails/audit";
 import { GUARDRAILS_DIR } from "../guardrails/integrity";
@@ -219,8 +219,13 @@ export type PermissionResolver = (
   sessionId: string,
   toolName: string,
   input: Record<string, unknown>,
-  ctx: Parameters<CanUseTool>[2],
+  ctx: PermissionContext,
 ) => ReturnType<CanUseTool>;
+
+/** The SDK's canUseTool context, plus the owner-approval marker the owner
+ *  guardrails hook sets: the card is forced (no auto-allow policy), carries
+ *  the rule, offers no "always allow" and expires at the deadline. */
+export type PermissionContext = Parameters<CanUseTool>[2] & { ownerApproval?: OwnerApproval };
 
 /** Returns transport-supplied MCP servers for a fresh session. */
 export type McpResolver = (
@@ -460,6 +465,7 @@ export class AgentManager extends EventEmitter {
     | ChildEnvResolver
     | undefined;
   #resolver: PermissionResolver | undefined;
+  #turnDeadline: ((sessionId: string) => number | null) | undefined;
   /** Optional per-session CLAUDE_CONFIG_DIR override. Node workers install one
    *  to give every session a pod-local home seeded from the gateway; unset =
    *  today's resolution (persona home / per-initiator home / inherited). */
@@ -674,6 +680,37 @@ export class AgentManager extends EventEmitter {
   /** Install a transport-level permission resolver (e.g. Slack approval gate). */
   setPermissionResolver(resolver: PermissionResolver | undefined) {
     this.#resolver = resolver;
+  }
+
+  /** The live session's abort signal (a stopped turn aborts it), or undefined when none is live. */
+  sessionSignal(sessionId: string): AbortSignal | undefined {
+    return this.#live.get(sessionId)?.abort.signal;
+  }
+
+  /** Node only: the epoch ms a session's current turn must end by (its hard
+   *  turn deadline). An owner tool card ends before it. */
+  setTurnDeadline(fn: ((sessionId: string) => number | null) | undefined) {
+    this.#turnDeadline = fn;
+  }
+
+  /**
+   * Hold one call on an owner approve rule's card through the permission
+   * resolver (the gateway's wrapper in mono, the node's resolver on a node).
+   * A wake has nobody to ask: refused before any card.
+   */
+  async #ownerApprove(sessionId: string, req: ApproveRequest): Promise<ApproveOutcome> {
+    if (this.#wakes.has(sessionId)) return { allow: false, reason: "nobody is in this turn to approve it (you woke on your own)" };
+    const resolver = this.#resolver;
+    if (!resolver) return { allow: false, reason: "no approval card can be shown in this session" };
+    const r = await resolver(sessionId, req.toolName, req.input, {
+      signal: req.signal,
+      suggestions: [],
+      toolUseID: req.toolUseId,
+      decisionReason: req.approval.message,
+      ownerApproval: req.approval,
+    } as PermissionContext);
+    if (r.behavior === "allow") return { allow: true, reason: "allowed on the approval card" };
+    return { allow: false, reason: r.message || "denied" };
   }
 
   /** Install a transport-level MCP server resolver. Called once per session start. */
@@ -1671,6 +1708,11 @@ export class AgentManager extends EventEmitter {
       // Remote mode: the CLI reports the alias (mcp__remote__bash); a rule
       // written for the builtin (Bash) must still match, and the other way round.
       toolNames: (name) => (remoteHandle ? remoteToolNames(name) : [name]),
+      // approve: the card through the permission resolver, bounded by the
+      // approve cap and (on a node) the turn deadline; a wake is refused.
+      approve: (req) => this.#ownerApprove(sessionId, req),
+      approveCapMs: () => env.guardrailApproveTimeoutSec() * 1000,
+      turnDeadline: () => this.#turnDeadline?.(sessionId) ?? null,
     });
     const guardrailFiles = guardrailFilesHook(
       () => row.working_dir,
@@ -1756,7 +1798,10 @@ export class AgentManager extends EventEmitter {
           PreCompact: [{ hooks: [tagHook(HOOK_IDS.preCompact, preCompact)] }],
           Stop: [{ hooks: [tagHook(HOOK_IDS.stopMustReply, stopHook)] }],
           UserPromptSubmit: [{ hooks: [tagHook(HOOK_IDS.userPromptSuppress, userPromptHook)] }],
+          // The timeout sits above the owner approve card's inner deadline
+          // (spike: a hook may wait as long as its matcher allows).
           PreToolUse: [{
+            timeout: approveMatcherTimeoutSec(env.guardrailApproveTimeoutSec()),
             hooks: [
               ...(remoteHandle ? [tagHook(HOOK_IDS.remoteDenyLocal, denyLocalBuiltins)] : []),
               tagHook(HOOK_IDS.guardrailFiles, guardrailFiles),

@@ -30,6 +30,12 @@ export type ApprovalRequest = {
   app?: AppRef;
   /** Persona name, stamped into the row for its audit rows. */
   persona?: string | null;
+  /** Sent privately (a DM) to each approver after the card is posted, never
+   *  into the thread: a reply an owner guardrail holds. With it, a request
+   *  with no named approver is refused rather than left to anyone. */
+  privateDetail?: string;
+  /** A shorter limit than the persona's own timeout (never a longer one). */
+  timeoutSeconds?: number;
 };
 
 /** An approver id no Slack user has: an approver set of just this admits
@@ -136,7 +142,7 @@ export class ApprovalGate {
           try {
             // Ephemeral note only: a decided card is the visible record. An
             // expired/cancelled row was never decided, so don't say it was.
-            await respond({
+            await respond({ // runtime-ui: approval card
               response_type: "ephemeral",
               replace_original: false,
               text:
@@ -156,7 +162,7 @@ export class ApprovalGate {
             summary: `approval ${verb} refused: ${denied ? "clicker is denied on this persona" : "clicker is not an approver"}`,
           });
           try {
-            await respond({
+            await respond({ // runtime-ui: approval card
               response_type: "ephemeral",
               replace_original: false,
               text: `:no_entry: <@${userId}>, you are not on the approver allowlist for this plan. The plan stays pending.`,
@@ -212,7 +218,7 @@ export class ApprovalGate {
             auditApprovalDecided(resolved, userId, approved);
             await this.#publish(id);
             try {
-              await respond({
+              await respond({ // runtime-ui: approval card
                 replace_original: true,
                 text: decidedLine(resolved.payload, approved, userId),
                 blocks: [],
@@ -225,7 +231,7 @@ export class ApprovalGate {
           // would leave the legit approver with "already decided" while the
           // sibling hangs forever. Keep the buttons, tell the clicker.
           try {
-            await respond({
+            await respond({ // runtime-ui: approval card
               response_type: "ephemeral",
               replace_original: false,
               text: ":hourglass: This approval is pending on another replica — it will be decided there (or auto-expire).",
@@ -263,7 +269,7 @@ export class ApprovalGate {
         auditApprovalDecided(resolved, userId, approved);
         await this.#publish(id);
         try {
-          await respond({
+          await respond({ // runtime-ui: approval card
             replace_original: true,
             text: decidedLine(resolved.payload, approved, userId),
             blocks: [],
@@ -470,7 +476,7 @@ export class ApprovalGate {
     }
 
     try {
-      const posted = await client.chat.postMessage({
+      const posted = await client.chat.postMessage({ // runtime-ui: approval card
         channel: req.channel,
         thread_ts: req.threadTs,
         text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
@@ -488,10 +494,34 @@ export class ApprovalGate {
     return { pendingId: id };
   }
 
+  /** Who may decide `req` (the set the card would name). Empty: anyone may click. */
+  async approversFor(req: ApprovalRequest): Promise<string[]> {
+    return [...(await this.#resolveApprovers(req))].filter((a) => a !== NOBODY);
+  }
+
+  /** The held text, to each approver's DM (best effort: an approver who cannot be reached can still deny). */
+  async #sendDetail(client: WebClientLike, req: ApprovalRequest, approvers: Set<string>): Promise<void> {
+    const where = `<#${req.channel}>`;
+    for (const a of approvers) {
+      if (a === NOBODY) continue;
+      try {
+        await client.chat.postMessage({ channel: a, text: `Held for your approval in ${where} (${escapeMrkdwn(req.summary)}):\n\n${req.privateDetail}` }); // runtime-ui: a held text to an approver's DM (already judged by deliver())
+      } catch (e) {
+        console.warn(`[approval-gate] could not send the held text to an approver: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+
   async request(req: ApprovalRequest, abortSignal?: AbortSignal): Promise<ApprovalDecision> {
-    const id = this.#mintId();
     const approvers = await this.#resolveApprovers(req);
-    const timeoutSec = this.#timeoutSeconds(req.persona);
+    // A held text is for named approvers only: "anyone may click" would let
+    // the thread approve what it was held from.
+    if (req.privateDetail !== undefined && (approvers.size === 0 || [...approvers].every((a) => a === NOBODY))) {
+      throw new Error("this agent has no approver to ask");
+    }
+    const id = this.#mintId();
+    const own = this.#timeoutSeconds(req.persona);
+    const timeoutSec = req.timeoutSeconds && req.timeoutSeconds > 0 ? (own > 0 ? Math.min(own, req.timeoutSeconds) : req.timeoutSeconds) : own;
 
     // Durable pending state FIRST, then the in-process waiter, then the
     // buttons — by the time a click can exist, both stores are in place.
@@ -598,13 +628,14 @@ export class ApprovalGate {
     );
 
     try {
-      const posted = await pending.client.chat.postMessage({
+      const posted = await pending.client.chat.postMessage({ // runtime-ui: approval card
         channel: req.channel,
-        thread_ts: req.threadTs,
+        thread_ts: req.threadTs || undefined,
         text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
         blocks: this.#card(req, approvers, id, timeoutSec),
       });
       pending.ts = posted.ts as string | undefined;
+      if (req.privateDetail !== undefined) await this.#sendDetail(pending.client, req, approvers);
     } catch (e) {
       // The prompt never reached Slack — tear both stores down and rethrow.
       if (pending.timer) clearTimeout(pending.timer);

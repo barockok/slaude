@@ -55,15 +55,14 @@ export const ALLOWED_ACTIONS: Record<RuleOn, readonly RuleAction[]> = {
 };
 
 /**
- * Whether code enforces a rule in this release. Reply rules need the single
- * outbound choke point (phase A2), so they are parsed, stored and shown, but
- * not yet applied. A tool `approve` (an approval card, phase A2) is enforced
- * as a deny until then: holding the call is not built, and letting it run
- * would be the opposite of what the owner asked.
+ * Whether code enforces a rule in this release. Since rc.10 every kind is:
+ * reply rules run at the outbound choke point (src/gateway/slack/outbound.ts)
+ * and a tool `approve` holds the call on a card. "pending" stays in the type
+ * for documents and API clients from rc.9.
  */
 export type RuleStatus = "enforced" | "pending";
-export function ruleStatus(on: RuleOn): RuleStatus {
-  return on === "reply" ? "pending" : "enforced";
+export function ruleStatus(_on: RuleOn): RuleStatus {
+  return "enforced";
 }
 
 export interface ToolMatch {

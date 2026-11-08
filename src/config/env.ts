@@ -600,6 +600,8 @@ export const env = {
   guardrailProseMax: () => intAtLeastOne("SLAUDE_GUARDRAIL_PROSE_MAX", 4000),
   /** How long an inbound guardrail's reply stays quiet for the same person in the same thread (`SLAUDE_GUARDRAIL_REPLY_QUIET_SECS`, default 600). */
   guardrailReplyQuietSec: () => intAtLeastOne("SLAUDE_GUARDRAIL_REPLY_QUIET_SECS", 600),
+  /** How long an owner guardrail's approval card waits, tool calls and held replies (`SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC`, default 600, at most 3600). */
+  guardrailApproveTimeoutSec: () => Math.min(3600, intAtLeastOne("SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC", 600)),
   /** How long audit events are kept (`SLAUDE_AUDIT_RETENTION_DAYS`, default 365). */
   auditRetentionDays: () => intAtLeastOne("SLAUDE_AUDIT_RETENTION_DAYS", 365),
   /** The longest a waking agent may sleep, in hours (`SLAUDE_WAKE_MAX_SLEEP_HOURS`, default 24). */

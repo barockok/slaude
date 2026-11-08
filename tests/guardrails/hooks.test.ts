@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { aliasNames, deliveryTurnAllowance, deniedMessage, guardrailFilesHook, isProtectedPath, ownerGuardrailsHook, readsKey } from "../../src/guardrails/hooks";
+import { aliasNames, approveMatcherTimeoutSec, deliveryTurnAllowance, deniedMessage, guardrailFilesHook, isProtectedPath, ownerGuardrailsHook, readsKey } from "../../src/guardrails/hooks";
 import { resolveDocs, sessionGuardrails, type GuardrailDoc } from "../../src/guardrails/resolve";
 import type { FiringEvent } from "../../src/guardrails/audit";
 import { firingAction } from "../../src/guardrails/audit";
@@ -46,7 +46,7 @@ describe("hook.pre-tool.owner-guardrails", () => {
     expect(firingAction(firings[0]![1]!)).toBe("guardrail.tool.audited");
   });
 
-  test("audit: the call goes on; no match: nothing at all; approve is enforced as deny", async () => {
+  test("audit: the call goes on; no match: nothing at all; approve with nobody to ask is refused", async () => {
     const { hook, firings } = setup([doc("w", "", rules("- id: a\n  on: tool\n  match: { tool: Bash }\n  action: audit\n- id: ok\n  on: tool\n  match: { tool: Deploy }\n  action: approve"))]);
     expect(await hook(pre("Bash", { command: "ls" }), "t1", sig)).toEqual({});
     expect(firings).toHaveLength(1);
@@ -54,8 +54,10 @@ describe("hook.pre-tool.owner-guardrails", () => {
     expect(firings).toHaveLength(1);
     const out: any = await hook(pre("Deploy"), "t1", sig);
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
-    expect(out.hookSpecificOutput.permissionDecisionReason).toBe(deniedMessage("w", ""));
-    expect(firings[1]![0]).toMatchObject({ action: "approve", applied: "deny" });
+    expect(out.hookSpecificOutput.permissionDecisionReason).toBe("The owner's guardrail w needs an approver for this. Not approved: nobody can be asked in this session.");
+    expect(firings[1]![0]).toMatchObject({ action: "approve", applied: "refused" });
+    expect(firingAction(firings[1]![0]!)).toBe("guardrail.tool.refused");
+    expect(deniedMessage("w", "")).toBe("Blocked by the owner's guardrail w.");
   });
 
   test("on-match Guidance: the first matching call is refused once with the body; the retry proceeds", async () => {
@@ -183,5 +185,127 @@ describe("hook.pre-tool.guardrail-files", () => {
     expect(await hook(pre("Write", {}), "t", sig)).toEqual({});
     expect(await hook(pre("Write", null), "t", sig)).toEqual({});
     expect(await hook({ hook_event_name: "Stop" } as any, "t", sig)).toEqual({});
+  });
+});
+
+describe("hook.pre-tool.owner-guardrails: approve (an approval card)", () => {
+  const APPROVE = [doc("deploys", "", rules("- id: ask\n  on: tool\n  match: { tool: Deploy }\n  action: approve\n  message: Deploys need an approver.\n- id: watch\n  on: tool\n  match: { tool: Deploy }\n  action: audit"))];
+  function withApprove(approve: NonNullable<Parameters<typeof ownerGuardrailsHook>[0]["approve"]>, extra: Partial<Parameters<typeof ownerGuardrailsHook>[0]> = {}) {
+    const g = sessionGuardrails(resolveDocs(APPROVE), "default", null, { version: 1, proseMax: 4000 });
+    const firings: FiringEvent[][] = [];
+    const asked: any[] = [];
+    const hook = ownerGuardrailsHook({
+      guardrails: () => g,
+      channel: () => null,
+      delivered: () => new Set(),
+      onFiring: (e) => firings.push(e),
+      onDelivered: () => {},
+      approve: (req) => {
+        asked.push(req);
+        return approve(req);
+      },
+      ...extra,
+    });
+    return { hook, firings, asked };
+  }
+
+  test("allowed on the card: the hook allows (no second card) and records approved", async () => {
+    const { hook, firings, asked } = withApprove(async () => ({ allow: true, reason: "allowed on the approval card" }));
+    const out: any = await hook(pre("Deploy", { env: "prod" }), "tu-1", sig);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(asked[0]).toMatchObject({ toolName: "Deploy", input: { env: "prod" }, toolUseId: "tu-1", approval: { ruleId: "deploys#ask", message: "Deploys need an approver." } });
+    expect(asked[0].approval.deadline).toBeGreaterThan(Date.now());
+    expect(firings[0]!.map((e) => [e.ruleId, e.applied, e.deciding])).toEqual([["ask", "approved", true], ["watch", "audit", false]]);
+    expect(firingAction(firings[0]![0]!)).toBe("guardrail.tool.approved");
+  });
+
+  test("denied on the card: refused with the rule's message and who decided", async () => {
+    const { hook, firings } = withApprove(async () => ({ allow: false, reason: "Denied by <@U2>" }));
+    const out: any = await hook(pre("Deploy"), "tu-2", sig);
+    expect(out.hookSpecificOutput).toEqual({ hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "Deploys need an approver. Not approved: Denied by <@U2>." });
+    expect(firings[0]![0]).toMatchObject({ applied: "refused", deciding: true });
+  });
+
+  test("too little of the turn left: refused before any card", async () => {
+    let aborted = false;
+    const { hook, firings } = withApprove(
+      (req) => new Promise(() => req.signal.addEventListener("abort", () => (aborted = true))),
+      { approveCapMs: () => 6000, now: () => 0, turnDeadline: () => 30_060 },
+    );
+    // deadline = min(0 + 6000, 30060 - 30000 margin) = 60 ms: under the
+    // minimum, so nothing is asked at all.
+    const short: any = await hook(pre("Deploy"), "tu-3", sig);
+    expect(short.hookSpecificOutput.permissionDecisionReason).toContain("Not approved: not enough time left in this turn to ask.");
+    expect(firings[0]![0]!.applied).toBe("refused");
+    expect(aborted).toBe(false);
+  });
+
+  test("the inner deadline fires: deny, signal aborted", async () => {
+    let aborted = false;
+    const { hook } = withApprove(
+      (req) => new Promise(() => req.signal.addEventListener("abort", () => (aborted = true))),
+      { approveCapMs: () => 5_050, now: () => 1_000_000 },
+    );
+    const started = Date.now();
+    const out: any = await hook(pre("Deploy"), "tu-4", sig);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(5_000);
+    expect(out.hookSpecificOutput.permissionDecisionReason).toBe("Deploys need an approver. Not approved: no decision in time.");
+    expect(aborted).toBe(true);
+  }, 15_000);
+
+  test("the turn is stopped while the card is open: deny", async () => {
+    const ac = new AbortController();
+    const { hook } = withApprove((req) => new Promise((_r) => req.signal.addEventListener("abort", () => {})));
+    const p = hook(pre("Deploy"), "tu-5", { signal: ac.signal });
+    ac.abort();
+    const out: any = await p;
+    expect(out.hookSpecificOutput.permissionDecisionReason).toBe("Deploys need an approver. Not approved: the turn was stopped.");
+    const pre2 = new AbortController();
+    pre2.abort();
+    const again: any = await hook(pre("Deploy"), "tu-6", { signal: pre2.signal });
+    expect(again.hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  test("a card that throws, or answers nonsense, is a deny", async () => {
+    const threw = withApprove(async () => { throw new Error("post failed"); });
+    const a: any = await threw.hook(pre("Deploy"), "tu-7", sig);
+    expect(a.hookSpecificOutput.permissionDecisionReason).toBe("Deploys need an approver. Not approved: the card failed (post failed).");
+    const odd = withApprove(async () => (null as any));
+    const b: any = await odd.hook(pre("Deploy"), "tu-8", sig);
+    expect(b.hookSpecificOutput.permissionDecisionReason).toBe("Deploys need an approver. Not approved: refused.");
+  });
+
+  test("anything thrown inside the hook is a deny, never a fall-through", async () => {
+    const hook = ownerGuardrailsHook({
+      guardrails: () => { throw new Error("snapshot gone"); },
+      channel: () => null,
+      delivered: () => new Set(),
+      onFiring: () => {},
+      onDelivered: () => {},
+    });
+    const out: any = await hook(pre("Deploy"), "tu-9", sig);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain("snapshot gone");
+  });
+
+  test("on-match Guidance goes first: no card while the call is refused for delivery", async () => {
+    const g = sessionGuardrails(resolveDocs([...APPROVE, doc("deploy-care", "load: on-match\ntriggers: { tool: Deploy }", "Check the change log.")]), "default", null, { version: 1, proseMax: 4000 });
+    const asked: unknown[] = [];
+    const firings: FiringEvent[][] = [];
+    const hook = ownerGuardrailsHook({
+      guardrails: () => g, channel: () => null, delivered: (() => { const s = new Set<string>(); return () => s; })(),
+      onFiring: (e) => firings.push(e), onDelivered: () => {},
+      approve: async (r) => { asked.push(r); return { allow: true, reason: "ok" }; },
+    });
+    const first: any = await hook(pre("Deploy"), "tu-10", sig);
+    expect(first.hookSpecificOutput.permissionDecisionReason).toContain("Read guardrail deploy-care first");
+    expect(asked).toHaveLength(0);
+    const second: any = await hook(pre("Deploy"), "tu-11", sig);
+    expect(second.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(asked).toHaveLength(1);
+  });
+
+  test("the matcher timeout sits above the cap", () => {
+    expect(approveMatcherTimeoutSec(600)).toBe(660);
   });
 });

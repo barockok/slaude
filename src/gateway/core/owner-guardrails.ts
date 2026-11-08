@@ -13,7 +13,9 @@
 import type { AgentManager, GuardrailSink } from "../../agent/manager";
 import { env } from "../../config/env";
 import { auditDelivery, auditFiring, firingEvents, type FiringEvent } from "../../guardrails/audit";
-import { combine, hitMessage, textHits } from "../../guardrails/match";
+import { combine, hitMessage, textHits, toolHits } from "../../guardrails/match";
+import { aliasNames, APPROVE_TIMEOUT_MAX_SEC } from "../../guardrails/hooks";
+import { REMOTE_TOOL_ALIASES } from "../../remote/mcp";
 import { failureText } from "./failure-codes";
 import { appliesToAgent, inboundTriggered, sessionGuardrails, type SessionGuardrails } from "../../guardrails/resolve";
 import { cachedGuardrails, currentGuardrails, onGuardrailsChanged, refreshGuardrails, startGuardrailRevalidation } from "../../guardrails/snapshot";
@@ -178,8 +180,12 @@ export async function recordNodeGuardrailEvent(
       const rule = applies.get(e.slug)?.rules.find((x) => x.id === e.ruleId && x.on === "tool");
       if (!rule) continue;
       const action = rule.action as FiringEvent["action"];
-      const own: FiringEvent = { on: "tool", slug: e.slug, ruleId: rule.id, action, applied: action === "audit" ? "audit" : "deny", deciding: e.deciding, ...(e.toolName ? { toolName: e.toolName } : {}) };
-      if (!admit(`f\u0000${own.slug}\u0000${own.ruleId}\u0000${own.toolName ?? ""}\u0000${own.deciding}`)) continue;
+      // The action is the gateway's own. For an approve rule the node says how
+      // the card ended (the card's own audit row records who decided); any
+      // other value reads as refused.
+      const applied: FiringEvent["applied"] = action === "audit" ? "audit" : action === "approve" ? (e.applied === "approved" ? "approved" : "refused") : "deny";
+      const own: FiringEvent = { on: "tool", slug: e.slug, ruleId: rule.id, action, applied, deciding: e.deciding, ...(e.toolName ? { toolName: e.toolName } : {}) };
+      if (!admit(`f\u0000${own.slug}\u0000${own.ruleId}\u0000${own.toolName ?? ""}\u0000${own.deciding}\u0000${own.applied}`)) continue;
       auditFiring(own, ctx);
       recorded++;
     }
@@ -190,6 +196,37 @@ export async function recordNodeGuardrailEvent(
   }
   if (dropped) console.warn(`[guardrails] session=${claims.session}: ${dropped} node guardrail event(s) over the rate limit, not recorded`);
   return { content: [{ type: "text", text: JSON.stringify({ recorded, ...(dropped ? { dropped } : {}) }) }] };
+}
+
+/**
+ * A node asks for an owner approve card (runtime/can_use_tool with
+ * force_card). The node is trusted to name the rule, nothing more: the
+ * gateway checks its own verified set. The card opens only when that rule
+ * applies to the token's agent in the token's channel, is a tool approve rule,
+ * matches this call (a remote alias counts as its builtin, as on the node),
+ * and no deny rule decides the call first. Anything else, an unavailable set
+ * included, is a deny with the reason.
+ */
+export async function verifyForcedCard(
+  claims: { tenant: string; persona: string; channel: string },
+  a: { toolName: string; input: Record<string, unknown>; ruleId: string | undefined; ttlMs: number | undefined },
+  capSec: number = env.guardrailApproveTimeoutSec(),
+): Promise<{ ok: true; ruleId: string; message: string; ttlMs: number } | { ok: false; message: string }> {
+  if (!a.ruleId) return { ok: false, message: "an owner approval card needs the rule that asks for it" };
+  let g: SessionGuardrails;
+  try {
+    g = await gatewaySessionGuardrails(claims.persona || "default", claims.channel || null, { tenant: claims.tenant || "default" });
+  } catch {
+    return { ok: false, message: failureText("GUARDRAILS_UNAVAILABLE") };
+  }
+  const names = aliasNames(REMOTE_TOOL_ALIASES)(a.toolName);
+  const d = combine(toolHits(g.toolRules, names, a.input));
+  if (!d) return { ok: false, message: `the owner's guardrails do not ask for a card on ${a.toolName}` };
+  if (d.action === "deny") return { ok: false, message: hitMessage(d.deciding) };
+  const hit = d.hits.find((h) => `${h.slug}#${h.rule.id}` === a.ruleId && h.rule.action === "approve");
+  if (!hit || d.action !== "approve") return { ok: false, message: `the owner's guardrails do not ask for a card on ${a.toolName} under ${a.ruleId}` };
+  const cap = Math.min(capSec, APPROVE_TIMEOUT_MAX_SEC) * 1000;
+  return { ok: true, ruleId: a.ruleId, message: hitMessage(hit), ttlMs: Math.max(1, Math.min(cap, a.ttlMs ?? cap)) };
 }
 
 export interface NodeEventLimits {

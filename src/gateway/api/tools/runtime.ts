@@ -13,7 +13,7 @@ import { runtimeContract } from "../../../tools/contracts/runtime";
 import { parseToolArgs } from "../../../tools/contracts/types";
 import type { JobClaims } from "../auth";
 import type { ToolPlaneDeps, ToolResult } from "./deps";
-import { recordNodeGuardrailEvent } from "../../core/owner-guardrails";
+import { recordNodeGuardrailEvent, verifyForcedCard } from "../../core/owner-guardrails";
 
 const c = runtimeContract.tools;
 
@@ -84,12 +84,21 @@ export async function executeRuntimeTool(
       if (claims.wake) {
         return { content: [{ type: "text", text: JSON.stringify({ decision: { behavior: "deny", message: wakeRefusal(a.tool_name) } }) }] };
       }
+      const input = (a.input ?? {}) as Record<string, unknown>;
+      let forced: { ruleId: string; message: string; ttlMs: number } | undefined;
+      if (a.force_card) {
+        // An owner approve card: re-evaluated from this gateway's own set.
+        const v = await verifyForcedCard(claims, { toolName: a.tool_name, input, ruleId: a.rule_id, ttlMs: a.ttl_ms });
+        if (!v.ok) return { content: [{ type: "text", text: JSON.stringify({ decision: { behavior: "deny", message: v.message } }) }] };
+        forced = { ruleId: v.ruleId, message: v.message, ttlMs: v.ttlMs };
+      }
       const res = await deps.openPermission(claims, {
         toolName: a.tool_name,
-        input: (a.input ?? {}) as Record<string, unknown>,
+        input,
         toolUseId: a.tool_use_id,
         decisionReason: a.decision_reason,
         suggestions: a.suggestions,
+        ...(forced ? { forced } : {}),
       });
       return { content: [{ type: "text", text: JSON.stringify(res) }] };
     }

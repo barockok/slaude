@@ -54,6 +54,11 @@ export async function highWater(tenant: string): Promise<number> {
   return v;
 }
 
+/** This process's own mark (no file or Redis read). */
+export function highWaterInMemory(tenant: string): number {
+  return memory.get(tenant) ?? 0;
+}
+
 /** Raise the mark to `version` (never lowers it). The file and Redis are best effort. */
 export async function raiseHighWater(tenant: string, version: number): Promise<void> {
   if (version <= 0) return;

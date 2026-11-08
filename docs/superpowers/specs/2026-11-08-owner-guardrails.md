@@ -186,7 +186,13 @@ rule's.
     with remote mode's deny list.
   - Background passes build their own hooks (`src/background/runner.ts`); owner tool rules are added there
     too.
-  - approve (phase A2): the SDK's hook timeout defaults to 60 s and a timed-out hook lets the tool run, while
+  - approve (phase A2, decided by the spike in `2026-11-08-owner-guardrails-a2-spike.md`): the hook awaits
+    the card itself. The spike found no 60 s default for in-process hooks and that a timed-out hook does not
+    run the tool, but that a thrown hook does; the hook therefore catches every error as a deny and owns its
+    deadline (`SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC`, default 600 s; the matcher timeout is 60 s above it).
+    On nodes the job token is not extended: the card ends 30 s before the turn deadline (the token's 15
+    minutes). An approval returns allow (one card, `canUseTool` skipped); the card offers no "always allow".
+    The original plan, kept for the record: the SDK's hook timeout defaults to 60 s and a timed-out hook lets the tool run, while
     a card lives up to an hour. Approach, to be confirmed by a spike before building: set this matcher's
     `timeout` to the card TTL plus a margin and call the gateway's resolver wrapper (which already refuses in
     a wake) with the requester stamp (`stampFromSenders` / `liveTurnStamp`), aborting on session abort. On
@@ -206,7 +212,11 @@ rule's.
   funnel through the tool plane's surface executor.
   - deny: the tool returns an error with the rule's message; nothing is posted.
   - approve: a "waiting for approval" placeholder is posted, an approval card goes to the agent's approvers,
-    and the placeholder is edited to the reply on allow or to a refusal note on deny or timeout.
+    and the placeholder is edited to the reply on allow or to a refusal note on deny or timeout. (Built in
+    rc.10: the held text goes to each approver privately, never into the thread; an agent with no named
+    approver, a wake, a proactive post and a proposal preview have nobody to ask, so approve is a deny
+    there. The covered paths and the runtime UI that is not covered are enumerated in `OUTBOUND_SITES`
+    in `src/gateway/slack/outbound.ts`, checked by a test.)
   - redact: matches replaced with `[REDACTED]`.
   - Streamed replies (a message edited per chunk): rules run on the full accumulated text at each edit and
     the whole message is replaced, so a pattern split across chunks is still caught and redaction stays in

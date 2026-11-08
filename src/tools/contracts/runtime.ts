@@ -162,6 +162,12 @@ export const runtimeContract = {
           .array(z.unknown())
           .optional()
           .describe("SDK PermissionUpdate suggestions, persisted so an 'always allow' click can be honored node-side."),
+        force_card: z
+          .boolean()
+          .optional()
+          .describe("An owner guardrail tool rule with action approve asks for this card: the auto-allow policy is skipped. The gateway re-evaluates rule_id from its own verified set before it opens the card."),
+        rule_id: z.string().max(140).optional().describe("With force_card: the deciding rule, as <guardrail slug>#<rule id>."),
+        ttl_ms: z.number().int().positive().optional().describe("With force_card: how long the node can wait (its inner deadline); the card expires no later."),
       },
     },
     guardrail_event: {
@@ -180,7 +186,7 @@ export const runtimeContract = {
                 slug: z.string().max(64),
                 rule_id: z.string().max(64),
                 action: z.enum(["deny", "approve", "audit"]),
-                applied: z.enum(["deny", "audit"]),
+                applied: z.enum(["deny", "approved", "refused", "audit"]),
                 deciding: z.boolean(),
                 tool_name: z.string().max(256).optional(),
               })

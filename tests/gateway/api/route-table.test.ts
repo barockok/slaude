@@ -207,7 +207,8 @@ describe("routing is behaviour-identical to the old if-chain", () => {
     if (seg.length === 6 && seg[1] === "tenants" && seg[3] === "personas" && seg[5] === "runtime") {
       return only("GET")("tenants.personas.runtime");
     }
-    if (seg.length === 3 && seg[1] === "pending") return only("GET")("pending");
+    // rc.10 adds DELETE (a node cancels an owner card it stopped waiting on).
+    if (seg.length === 3 && seg[1] === "pending") return only("GET", "DELETE")("pending");
     if (seg.length === 4 && seg[1] === "jobs" && (seg[3] === "ack" || seg[3] === "fail")) return only("POST")("jobs.event");
     if (seg.length === 4 && seg[1] === "jobs" && seg[3] === "token-refresh") return only("POST")("jobs.token-refresh");
     if (seg.length === 4 && seg[1] === "tools") return only("POST")("tools");

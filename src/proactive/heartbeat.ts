@@ -20,6 +20,7 @@ import { randomUUID } from "node:crypto";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { AppRef } from "../gateway/core/transport";
+import { outbound } from "../gateway/slack/outbound";
 import { redactSecrets } from "../gateway/core/status-text";
 import { bridgeExternalMcp, type ExternalMcp } from "../gateway/core/external-mcp";
 import * as Posts from "../db/proactive-posts";
@@ -100,14 +101,19 @@ export async function sendProactive(a: ProactivePostArgs, ctx: ProactivePostCont
   const no = (error: string): Sent => ({ ok: false, error, kind: "invalid" });
   if (state.posts >= HEARTBEAT_MAX_POSTS) return { ok: false, error: `refused: at most ${HEARTBEAT_MAX_POSTS} posts per heartbeat`, kind: "cap" };
   if (!a.evidence?.trim()) return no("refused: a proactive post needs evidence (a page slug or link it rests on)");
-  const text = redactSecrets((a.text ?? "").trim());
+  const raw = (a.text ?? "").trim();
   const topic = (a.topic ?? "").trim();
-  if (!text || text.length > MAX_POST_CHARS) return no(`refused: text must be 1..${MAX_POST_CHARS} characters`);
+  if (!raw || raw.length > MAX_POST_CHARS) return no(`refused: text must be 1..${MAX_POST_CHARS} characters`);
   if (!topic) return no("refused: a proactive post needs a topic");
   const recipient = a.audience === "manager" ? (a.recipient?.trim() || ctx.managerId || "") : (a.recipient ?? "").trim();
   if (a.audience === "channel" ? !CHANNEL_ID.test(recipient) : !USER_ID.test(recipient)) {
     return no(`refused: recipient must be a ${a.audience === "channel" ? "channel id (C…/G…)" : "user id (U…/W…)"}`);
   }
+  // The outbound choke point: secret masking, then the owner's reply rules.
+  // Nobody is in a proactive turn, so an approve rule refuses the post.
+  const v = await outbound(raw, { kind: "proactive_post", persona: ctx.personaId, channel: a.audience === "channel" ? recipient : null, unattended: true, ...(ctx.app ? { app: ctx.app } : {}) });
+  if (v.action !== "send") return { ok: false, error: `refused: ${v.action === "deny" ? v.message : "this post needs an approver"}; do not rephrase it to get around the owner's guardrail`, kind: "invalid" };
+  const text = v.text;
   const now = ctx.now();
   const prefs = a.audience === "channel" ? NO_PREFS : await readPingPrefs(ctx.call, ctx.app?.teamId ?? null, recipient);
   const history = await Posts.recentFor(ctx.agentId, recipient, now.getTime() - UNCHANGED_WINDOW_MS);

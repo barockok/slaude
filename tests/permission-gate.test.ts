@@ -1011,3 +1011,83 @@ describe("PermissionGate", () => {
     });
   });
 });
+
+describe("PermissionGate: owner guardrail cards (forced)", () => {
+  afterAll(() => { delete process.env.SLAUDE_AUTO_ALLOW_TOOLS; });
+  test("a forced card keeps the policy's hard denies: synthesized OAuth tools and voice_start are denied with no card", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app, AS_USR);
+    gate.bindSession("SFD", "C", "T");
+    const ac = new AbortController();
+    const a = { ruleId: "r#x", message: "m", deadline: Date.now() + 60_000 };
+    const oauth = (await gate.resolver("SFD", "mcp__x__authenticate", {}, { ...ctx("UFD1", ac.signal), ownerApproval: a })) as any;
+    expect(oauth.behavior).toBe("deny");
+    expect(oauth.message).toContain("OAuth connect must go through");
+    const voice = (await gate.resolver("SFD", "mcp__slaude_voice__voice_start", { brief: "x" }, { ...ctx("UFD2", ac.signal), ownerApproval: a })) as any;
+    expect(voice.behavior).toBe("deny");
+    const viaOpen = await gate.open({ sessionId: "SFD", toolName: "mcp__x__complete_authentication", input: {}, toolUseId: "UFD3", channel: "C", threadTs: "T", forced: { ruleId: "r#x", message: "m", ttlMs: 1000 } });
+    expect((viaOpen as any).decision.behavior).toBe("deny");
+    expect(f.posts).toHaveLength(0);
+    expect(await PendingGates.get("UFD1")).toBeNull();
+  });
+
+  const approval = (ms = 60_000) => ({ ruleId: "deploys#ask", message: "Deploys need an approver. <!channel>", deadline: Date.now() + ms });
+  test("a forced card skips the auto-allow policy, offers no Always, names the rule, and expires at the deadline", async () => {
+    process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Bash";
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app, AS_USR);
+    gate.bindSession("SF", "C", "T");
+    const ac = new AbortController();
+    const a = approval();
+    const p = gate.resolver("SF", "Bash", { command: "ls" }, { ...ctx("UF1", ac.signal), ownerApproval: a });
+    const post = await firstPost(f);
+    const actions = post.blocks.find((b: any) => b.type === "actions").elements.map((e: any) => e.action_id);
+    expect(actions.some((x: string) => x.includes("always:"))).toBe(false);
+    const ctxLine = post.blocks.find((b: any) => b.type === "context").elements[0].text;
+    expect(ctxLine).toContain("deploys#ask");
+    expect(ctxLine).toContain("&lt;!channel&gt;");
+    expect(ctxLine).toContain("the thread's /1on1 owner, or an approver or manager");
+    const row = await PendingGates.get("UF1");
+    expect(row?.payload.guardrail).toBe("deploys#ask");
+    expect(row?.expiresAt).toBe(a.deadline);
+    // A bystander cannot decide; the requester can.
+    const refused = await f.fire("slaude_perm:allow:UF1", "BYSTANDER");
+    expect(refused[0].text).toBe(PERM_REFUSED_TEXT);
+    // A crafted "always" grants this call only.
+    await f.fire("slaude_perm:always:UF1", "USR");
+    const r = (await p) as any;
+    expect(r.behavior).toBe("allow");
+    expect(r.updatedPermissions).toBeUndefined();
+  });
+
+  test("the hook's deadline aborts the card: the row is cancelled and the answer is deny", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app, AS_USR);
+    gate.bindSession("SF2", "C", "T");
+    const ac = new AbortController();
+    const p = gate.resolver("SF2", "mcp__slaude_surface__reply", { text: "x" }, { ...ctx("UF2", ac.signal), ownerApproval: approval() });
+    await firstPost(f);
+    ac.abort();
+    expect(((await p) as any).behavior).toBe("deny");
+    for (let i = 0; i < 100 && (await PendingGates.get("UF2"))?.status === "pending"; i++) await new Promise((r) => setTimeout(r, 2));
+    expect((await PendingGates.get("UF2"))?.status).toBe("cancelled");
+  });
+
+  test("open() for a node: forced skips the policy, carries the rule and a short expiry; a poll row's always grants once", async () => {
+    process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Bash";
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app, AS_USR);
+    const before = Date.now();
+    const r = await gate.open({ sessionId: "SF3", toolName: "Bash", input: {}, toolUseId: "UF3", channel: "C", threadTs: "T", turn: USR_TURN, forced: { ruleId: "deploys#ask", message: "m", ttlMs: 30_000 } });
+    expect(r).toEqual({ pendingId: "UF3" });
+    const row = await PendingGates.get("UF3");
+    expect(row?.payload.guardrail).toBe("deploys#ask");
+    expect(row!.expiresAt!).toBeLessThanOrEqual(before + 30_000 + 50);
+    expect(f.posts[0].blocks.find((b: any) => b.type === "actions").elements).toHaveLength(2);
+    const { decisionFromPermRow } = await import("../src/gateway/slack/permission-gate");
+    expect((decisionFromPermRow({ status: "approved", resolvedBy: "USR", payload: { decision: "always", guardrail: "deploys#ask" } }, "Bash", {}, undefined) as any).updatedPermissions).toBeUndefined();
+    expect((decisionFromPermRow({ status: "approved", resolvedBy: "USR", payload: { decision: "always" } }, "Bash", {}, undefined) as any).updatedPermissions).toBeDefined();
+    // Without force the same tool is auto-allowed.
+    expect(await gate.open({ sessionId: "SF3", toolName: "Bash", input: {}, toolUseId: "UF4", channel: "C", threadTs: "T" })).toEqual({ decision: { behavior: "allow", updatedInput: {} } });
+  });
+});

@@ -1,9 +1,7 @@
 import type { WebClient } from "@slack/web-api";
 import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
-import { mdToMrkdwn } from "./format";
-import { redactSlack } from "./redact";
-import { redactPatternsFor } from "../../soul/per-persona";
+import { deliver, formatOutbound, outbound, OutboundRefusal, TRACKER_HIDDEN, type OutboundKind, type OutboundOptions } from "./outbound";
 import { SLACK_SURFACE_ID } from "../core/surface";
 import type {
   ApprovalRequest,
@@ -15,11 +13,9 @@ import type {
   SurfaceFactory,
 } from "../core/surface";
 
-// Same outbound formatting the legacy slack tools used: markdown to mrkdwn, then the
-// posting agent's own soul redaction (the default persona's when it names none).
-function format(text: string, persona?: string): string {
-  return redactSlack(mdToMrkdwn(text), redactPatternsFor(persona));
-}
+// Agent text goes through the outbound choke point (formatting, the soul's
+// redaction, the owner's reply rules); the runtime's own text through a
+// surface (runtime: true, sayEphemeral) gets the formatting only.
 
 /** Surface implementation over the Slack Web API. Bound to one conversation/thread per
  *  session. The sim drives this exact class over a fake WebClient, so the agent sees an
@@ -46,14 +42,42 @@ export class SlackSurface implements Surface {
     return this.#resolve();
   }
 
-  async reply({ text }: { text: string }): Promise<{ ref: string }> {
-    const r = await this.#client.chat.postMessage({
-      channel: this.#b.conversationId,
-      thread_ts: this.#b.threadRef,
-      text: format(text, this.#persona),
-      mrkdwn: true,
-    });
-    return { ref: String(r.ts) };
+  #opts(kind: OutboundKind): OutboundOptions {
+    const b = this.#b;
+    return {
+      kind,
+      persona: this.#persona ?? null,
+      channel: b.conversationId,
+      thread: { channel: b.conversationId, threadTs: b.threadRef ?? null },
+      ...(b.appId || b.teamId ? { app: { apiAppId: b.appId, teamId: b.teamId } } : {}),
+      sessionId: b.sessionId ?? null,
+      unattended: b.unattended === true,
+      ...(b.turnSignal ? { signal: b.turnSignal } : {}),
+      ...(b.turnDeadline !== undefined ? { deadline: b.turnDeadline } : {}),
+    };
+  }
+
+  async #post(text: string): Promise<string> {
+    const r = await this.#client.chat.postMessage({ channel: this.#b.conversationId, thread_ts: this.#b.threadRef, text, mrkdwn: true }); // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
+    return String(r.ts);
+  }
+
+  async #update(ref: string, text: string): Promise<void> {
+    await this.#client.chat.update({ channel: this.#b.conversationId, ts: ref, text }); // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
+  }
+
+  /** A todo or task list: model-written items through the reply rules; nobody holds it, so a deny or approve hides it. */
+  async #tracker(text: string): Promise<string> {
+    const v = await outbound(text, { ...this.#opts("todo"), unattended: true });
+    return v.action === "send" ? v.text : formatOutbound(TRACKER_HIDDEN, "runtime", this.#persona);
+  }
+
+  async reply({ text, runtime, tracker }: { text: string; runtime?: boolean; tracker?: boolean }): Promise<{ ref: string; note?: string }> {
+    if (tracker) return { ref: await this.#post(await this.#tracker(text)) };
+    if (runtime) return { ref: await this.#post(formatOutbound(text, "runtime", this.#persona)) };
+    const r = await deliver(text, this.#opts("reply"), { post: (t) => this.#post(t), edit: (ref, t) => this.#update(ref, t) });
+    if (!r.ok) throw new OutboundRefusal(r.error);
+    return { ref: r.ref ?? "", ...(r.note ? { note: r.note } : {}) };
   }
 
   async getHistory({ limit, includeReplies }: { limit?: number; includeReplies?: boolean }): Promise<{ messages: HistoryItem[]; hasMore: boolean }> {
@@ -84,17 +108,26 @@ export class SlackSurface implements Surface {
   async sayEphemeral(i: { text: string; userId?: string; blocks?: unknown[] }): Promise<void> {
     const user = i.userId ?? this.#b.userId;
     if (!user) throw new Error("sayEphemeral needs a user: refusing to post publicly");
-    await this.#client.chat.postEphemeral({
+    await this.#client.chat.postEphemeral({ // runtime-ui: sayEphemeral (the runtime's own private notices), formatted only
       channel: this.#b.conversationId,
       user,
-      text: format(i.text, this.#persona),
+      text: formatOutbound(i.text, "runtime", this.#persona),
       ...(i.blocks ? { blocks: i.blocks } : {}),
       ...(this.#b.threadRef ? { thread_ts: this.#b.threadRef } : {}),
     });
   }
 
-  async edit({ ref, text }: { ref: string; text: string }): Promise<void> {
-    await this.#client.chat.update({ channel: this.#b.conversationId, ts: ref, text: format(text, this.#persona) });
+  /** An edit is judged on the whole new text (a streamed message re-checked in full at every edit). */
+  async edit({ ref, text, runtime, tracker }: { ref: string; text: string; runtime?: boolean; tracker?: boolean }): Promise<void | { note?: string }> {
+    if (tracker) return this.#update(ref, await this.#tracker(text));
+    if (runtime) return this.#update(ref, formatOutbound(text, "runtime", this.#persona));
+    const write = async (t: string) => {
+      await this.#update(ref, t);
+      return ref;
+    };
+    const r = await deliver(text, { ...this.#opts("edit"), ref }, { post: write, edit: (_r, t) => this.#update(ref, t) });
+    if (!r.ok) throw new OutboundRefusal(r.error);
+    return r.note ? { note: r.note } : undefined;
   }
 
   async react({ name, ref }: { name: string; ref?: string }): Promise<void> {
@@ -114,15 +147,22 @@ export class SlackSurface implements Surface {
   async upload({ path, title, comment, altText }: { path: string; title?: string; comment?: string; altText?: string }): Promise<void> {
     statSync(path); // throws if missing
     const filename = basename(path);
-    await this.#client.files.uploadV2({
-      channel_id: this.#b.conversationId,
-      thread_ts: this.#b.threadRef,
-      file: createReadStream(path),
-      filename,
-      title: title ?? filename,
-      ...(comment ? { initial_comment: format(comment, this.#persona) } : {}),
-      ...(altText ? { alt_text: altText } : {}),
-    } as any);
+    const send = async (caption: string | undefined) => {
+      await this.#client.files.uploadV2({ // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
+        channel_id: this.#b.conversationId,
+        thread_ts: this.#b.threadRef,
+        file: createReadStream(path),
+        filename,
+        title: title ?? filename,
+        ...(caption ? { initial_comment: caption } : {}),
+        ...(altText ? { alt_text: altText } : {}),
+      } as any);
+      return undefined;
+    };
+    if (!comment) return void (await send(undefined));
+    // No message to hold in place: a held caption waits for the card, then the file goes out with it.
+    const r = await deliver(comment, this.#opts("upload_caption"), { post: send });
+    if (!r.ok) throw new OutboundRefusal(r.error);
   }
 }
 

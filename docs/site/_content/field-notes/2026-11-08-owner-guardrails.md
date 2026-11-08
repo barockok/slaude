@@ -7,7 +7,8 @@ date: 2026-11-08
 
 **Date:** 2026-11-08
 **Status:** Phase A1 shipped in `v0.46.0-rc.9` (branch `feat/owner-guardrails`).
-Phase A2 (tool approve cards, one outbound choke point, reply rules) is rc.10;
+Phase A2 (tool approve cards, one outbound choke point, reply rules) shipped in
+`v0.46.0-rc.10` (branch `feat/owner-guardrails-a2`, section below);
 phase B (console editing, the Test box, moving the soul and access settings to
 the agent's tabs) is rc.11. Design:
 `docs/superpowers/specs/2026-11-08-owner-guardrails.md`. Operator reference:
@@ -94,7 +95,7 @@ travels on the job's message; the node's session takes each guardrail at most
 once per boot, which also dedupes a guardrail whose tool trigger already
 delivered it.
 
-**A tool `approve` is enforced as a deny in this release.** Approval cards
+**A tool `approve` is enforced as a deny in rc.9** (rc.10 holds it on a card, below). Approval cards
 for tool rules need a spike (the SDK's hook timeout is shorter than a card's
 life). Letting the call run until rc.10 would be the opposite of what the
 owner wrote; denying it is the safe reading. Reply rules are parsed, stored and
@@ -158,3 +159,91 @@ Tool rules are a policy on named tools: a shell or fetch tool reaches the same
 service another way, so a deny on an MCP send tool should be paired with a
 Bash or WebFetch input rule. Inbound rules do not cover cron dispatch, panel
 chat or `/compact`. The inbound reply's quiet window is per process.
+
+## Phase A2 (rc.10): approval cards and the outbound choke point
+
+**The SDK premise was wrong, and the spike said so.** The design assumed the
+SDK's hook timeout defaults to 60 s and that a timed-out hook lets the tool
+run, so a card could never outlive its hook. A spike drove the real CLI
+through `query()` against a small fake of the Messages API
+(`tests/spike/`): an in-process callback hook waited 65 s with no matcher
+timeout and its deny was honoured; a hook past its matcher timeout had its
+signal aborted and the tool did not run. Two findings mattered more: a hook
+that **throws** falls through and the tool runs, and hooks run concurrently
+(a deny from any hook beats a slow allow). `ask` did reach `canUseTool` under
+`bypassPermissions`, so both candidate approaches worked; the hook awaiting
+the card won because it depends on the least SDK behaviour (an `ask` path
+would also have had to force past our own auto-allow policy through a side
+channel). Every finding is pinned by a test, so an SDK upgrade that changes
+one fails CI. Full table: `docs/superpowers/specs/2026-11-08-owner-guardrails-a2-spike.md`.
+
+**A timeout is our deny, not the SDK's.** The hook owns an inner deadline
+(`SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC`, default 600 s) and the matcher timeout
+sits 60 s above it, so the deny always carries the rule's message whatever the
+SDK does at its own timeout. Every path out of the hook (the deadline, the
+turn's abort, a thrown card, a resolver that answers nonsense) is a deny; the
+whole hook body is wrapped so nothing can throw past it.
+
+**On nodes the token is not extended.** The job token's 15 minutes is also
+the node's hard turn deadline. Extending the token while a card waits would
+have meant a second refresh path for a rare case; instead the node hands its
+turn deadline to the hook, and a card ends 30 s before it (or is not opened
+with under 5 s left). The node names the rule when it asks
+(`force_card`, `rule_id`), and the gateway re-evaluates it from its own
+verified set: a node cannot force a card the owner did not ask for.
+
+**One card, not two.** Approving returns `allow` from the hook, which skips
+`canUseTool`; otherwise in `default` mode the same call would ask again on an
+ordinary card. The owner's card offers no *Always allow*: the rule asks every
+time.
+
+**The choke point is a registry as much as a function.** `outbound()` keeps
+each path's old formatting (the surface and legacy slack tools convert to
+mrkdwn and apply the soul's patterns; proactive posts and proposal previews
+mask secrets; canvases were raw) so nothing changes until an owner rule
+matches. What makes "every agent-authored path" checkable is
+`OUTBOUND_SITES`: every Slack write call in `src/`, counted per file and
+classified as agent text or runtime UI. A test scans the code and fails on a
+new or moved call. The runtime's own texts that went through the surface (the
+todo list, connect notices) pass `runtime: true` and are formatted only.
+
+**A held reply must not appear where it was held from.** The approval card
+goes to the session's thread, but the text goes to each approver privately;
+an agent with no named approver (where the ApprovalGate would let anyone
+click) refuses the hold instead. Wakes, proactive posts and proposal previews
+have nobody to ask, so approve is a deny there.
+
+**Streaming is edits.** There is no chunk stream to Slack: a "streamed"
+reply is the agent editing one message. Each edit is judged on the whole new
+text and replaces the message, so a pattern split across edits is caught and
+redaction stays in sync. A pattern split across two messages is not, and the
+reference says so.
+
+### Review fixes before merge (A2)
+
+- **A forced card skipped the policy's denies too.** Skipping the auto-allow
+  policy for an owner card also skipped its hard denies (the synthesized OAuth
+  tools, `voice_start`'s checks). Only the allows are skipped now, in the
+  gateway's resolver, its node `open()` and the node resolver.
+- **A held reply could outlive its turn.** The card now waits at most what is
+  left of the turn (the job token's expiry less 30 s on the tool plane; the
+  session's abort in mono), refuses with under 5 s left, and a reply is never
+  posted after its turn ended, even when the approval comes later. A node that
+  stops waiting on a tool card cancels it, so a late click cannot read
+  *Approved*.
+- **A streamed message re-held at every edit.** The decision is remembered per
+  message and rule: an approved phrase stays approved while its matched text
+  is unchanged; a declined one keeps the refusal note without new cards.
+- **No approver meant a flashing placeholder.** Approvers are resolved first;
+  with none named the reply is refused up front and audited as denied.
+- **No guardrails, but every reply refused.** A failed or not-yet-loaded read
+  refused replies on a deployment that has no guardrails at all. Only a set
+  that exists (a stored version, or a high-water mark) fails closed now.
+- **The trackers carried model text as runtime UI.** The todo and task lists
+  go through the reply rules (kind `todo`).
+- **Coverage by call, not by count.** Each Slack write line carries an
+  `outbound:` or `runtime-ui:` marker, checked by the test.
+- **Mixed versions.** An rc.9 gateway rejects a whole firing batch with the
+  new `approved`/`refused` values; the node sends those separately. Upgrade
+  gateways first.
+

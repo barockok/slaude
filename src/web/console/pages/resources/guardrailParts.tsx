@@ -55,19 +55,12 @@ export function GuardrailStatus({ g }: { g: OwnerGuardrailSummary }) {
 
 /** Enforced rule counts, and the Guidance label. */
 export function RuleCounts({ g }: { g: OwnerGuardrailSummary }) {
-  const enforced = g.ruleCounts.tool + g.ruleCounts.inbound;
+  const enforced = g.ruleCounts.tool + g.ruleCounts.inbound + g.ruleCounts.reply;
   const parts: ReactNode[] = [];
   if (enforced) {
     parts.push(
-      <span key="e" title={`${g.ruleCounts.tool} tool, ${g.ruleCounts.inbound} inbound`}>
+      <span key="e" title={`${g.ruleCounts.tool} tool, ${g.ruleCounts.reply} reply, ${g.ruleCounts.inbound} inbound`}>
         <Badge tone="success">{`Enforced: ${enforced}`}</Badge>
-      </span>,
-    );
-  }
-  if (g.ruleCounts.reply) {
-    parts.push(
-      <span key="r" title="Reply rules are stored and shown; they are enforced from a later release">
-        <Badge tone="warning">{`Not yet enforced: ${g.ruleCounts.reply}`}</Badge>
       </span>,
     );
   }
@@ -108,16 +101,21 @@ export function AppliesTo({ g }: { g: OwnerGuardrailSummary }) {
 }
 
 export function RuleStatusBadge({ r }: { r: OwnerGuardrailRule }) {
+  // An rc.9 gateway still reports reply rules as pending.
   if (r.status === "pending") {
     return (
-      <span title="Stored and shown; reply rules are enforced from a later release">
+      <span title="Stored and shown; this gateway does not enforce it yet">
         <Badge tone="warning">Not yet enforced</Badge>
       </span>
     );
   }
+  const title =
+    r.action === "approve"
+      ? "Held on an approval card for the requester or an approver; a timeout, a wake or no approver is a deny"
+      : "Checked by code on every event; never in the prompt";
   return (
-    <span title={r.action === "approve" ? "Enforced as a deny until approval cards arrive" : "Checked by code on every event; never in the prompt"}>
-      <Badge tone="success">{r.action === "approve" ? "Enforced (as deny)" : "Enforced"}</Badge>
+    <span title={title}>
+      <Badge tone="success">Enforced</Badge>
     </span>
   );
 }

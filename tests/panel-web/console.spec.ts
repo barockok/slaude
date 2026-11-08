@@ -488,8 +488,8 @@ test.describe("resources", () => {
     const table = page.getByRole("table", { name: "Guardrails" });
     const mail = table.getByRole("row").filter({ hasText: "no-outbound-email" });
     await expect(mail).toContainText("Every agent");
-    await expect(mail).toContainText("Enforced: 1");
-    await expect(mail).toContainText("Not yet enforced: 1");
+    await expect(mail).toContainText("Enforced: 2");
+    await expect(mail).not.toContainText("Not yet enforced");
     await expect(mail).toContainText("Guidance");
     await expect(mail).toContainText("Deploy repo");
     await expect(mail).toContainText("On");
@@ -511,7 +511,8 @@ test.describe("resources", () => {
     await expect(h1(page)).toHaveText("no-outbound-email");
     const rules = page.getByRole("table", { name: "Rules" });
     await expect(rules.getByRole("row").filter({ hasText: "no-send" })).toContainText("Enforced");
-    await expect(rules.getByRole("row").filter({ hasText: "no-prices" })).toContainText("Not yet enforced");
+    await expect(rules.getByRole("row").filter({ hasText: "no-prices" })).toContainText("Enforced");
+    await expect(rules.getByRole("row").filter({ hasText: "no-prices" })).not.toContainText("Not yet");
     await expect(page.getByText("Advisory", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Copy GUARDRAIL.md" })).toBeVisible();
     const card = page.locator(".sl-card").filter({ has: page.getByRole("button", { name: "Copy GUARDRAIL.md" }) });

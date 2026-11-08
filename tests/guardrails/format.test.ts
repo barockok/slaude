@@ -41,7 +41,7 @@ describe("parseGuardrail", () => {
     expect(g.prose).toBe("Draft email, never send it.");
     expect(g.rules.map((r) => [r.id, r.on, r.action, r.status])).toEqual([
       ["no-send", "tool", "deny", "enforced"],
-      ["no-prices", "reply", "approve", "pending"],
+      ["no-prices", "reply", "approve", "enforced"],
       ["no-secrets-in", "inbound", "deny", "enforced"],
     ]);
     expect(ruleView(g.rules[0]!)).toEqual({
