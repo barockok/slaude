@@ -18,7 +18,7 @@ import { db } from "../../src/db/schema";
 import { flushAudits } from "../../src/audit/emit";
 import { bundleFetchFailure, NodeApiError } from "../../src/node/client";
 import { makeBundleGuardrailResolver, makeNodeGuardrailSink, NODE_CAPS } from "../../src/node/worker";
-import { recordNodeGuardrailEvent } from "../../src/gateway/core/owner-guardrails";
+import { makeNodeEventLimits, recordNodeGuardrailEvent } from "../../src/gateway/core/owner-guardrails";
 import { BootFailure } from "../../src/gateway/core/failure-codes";
 import { ensureGuardrailKeyForPg } from "../guardrails/helpers";
 
@@ -147,6 +147,62 @@ describe("the node side", () => {
       { action: "guardrail.guidance.delivered", target_id: "care", session_id: "S9", channel_id: "C9" },
       { action: "guardrail.tool.denied", target_id: "no-shell#r", session_id: "S9", channel_id: "C9" },
     ]);
+  });
+});
+
+describe("node reports cannot forge or flood", () => {
+  const CARE = "---\nname: care\nload: on-match\ntriggers: { tool: Bash }\n---\nCareful.";
+  const claims = (job = "J1") => ({ tenant: "default", persona: "default", session: "S7", channel: "C7", thread: "7.7", job });
+  const ev = (applied: "deny" | "audit", toolName = "Bash") => ({ on: "tool" as const, slug: "no-shell", ruleId: "r", action: applied, applied, deciding: true, toolName });
+  beforeEach(async () => {
+    await __clearGuardrailsForTests();
+    __resetGuardrailSnapshotsForTests();
+    await db.run("DELETE FROM audit_events WHERE action LIKE 'guardrail.%'");
+    await applyGuardrailChange("default", { upsert: [{ slug: "no-shell", md: RULES, source: "file" }, { slug: "care", md: CARE, source: "file" }, { slug: "house", md: PROSE, source: "file" }], by: "t" });
+    await refreshGuardrails();
+  });
+
+  it("what was applied comes from the gateway's rule, never the node's claim", async () => {
+    const r = await recordNodeGuardrailEvent(claims(), { kind: "firing", events: [ev("audit")], slugs: [] }, makeNodeEventLimits());
+    expect(JSON.parse(r.content[0]!.text)).toEqual({ recorded: 1 });
+    await flushAudits();
+    const rows = await db.query<{ action: string; decision: string }>(`SELECT action, decision FROM audit_events WHERE action LIKE 'guardrail.%'`);
+    expect(rows).toEqual([{ action: "guardrail.tool.denied", decision: "deny" }]);
+  });
+
+  it("identical events of one job are recorded once; a new job records again; the bucket caps a flood", async () => {
+    const limits = makeNodeEventLimits({ capacity: 3, perSec: 0 });
+    const rec = async (job: string, tool = "Bash") => JSON.parse((await recordNodeGuardrailEvent(claims(job), { kind: "firing", events: [ev("deny", tool)], slugs: [] }, limits)).content[0]!.text);
+    expect(await rec("J1")).toEqual({ recorded: 1 });
+    expect(await rec("J1")).toEqual({ recorded: 0 });
+    expect(await rec("J2")).toEqual({ recorded: 1 });
+    expect(await rec("J3")).toEqual({ recorded: 1 });
+    expect(await rec("J4")).toEqual({ recorded: 0, dropped: 1 });
+  });
+
+  it("a delivery is recorded only for on-match Guidance; nothing when the set is unavailable", async () => {
+    const d = await recordNodeGuardrailEvent(claims(), { kind: "delivery", events: [], slugs: ["house", "care"], via: "tool", toolName: "Bash" }, makeNodeEventLimits());
+    expect(JSON.parse(d.content[0]!.text)).toEqual({ recorded: 1 });
+    await db.run("UPDATE guardrails SET md = 'tampered' WHERE slug = 'house'");
+    await refreshGuardrails();
+    const u = await recordNodeGuardrailEvent(claims("J9"), { kind: "firing", events: [ev("deny")], slugs: [] }, makeNodeEventLimits());
+    expect(JSON.parse(u.content[0]!.text)).toEqual({ recorded: 0 });
+  });
+
+  it("the bucket refills over time and forgets the oldest keys past its cap", () => {
+    let t = 0;
+    const l = makeNodeEventLimits({ capacity: 1, perSec: 1, cap: 2, now: () => t });
+    expect(l.take("s")).toBe(true);
+    expect(l.take("s")).toBe(false);
+    t = 1500;
+    expect(l.take("s")).toBe(true);
+    expect(l.once("a")).toBe(true);
+    expect(l.once("a")).toBe(false);
+    l.once("b");
+    l.once("c");
+    expect(l.once("a")).toBe(true);
+    l.take("x");
+    l.take("y");
   });
 });
 

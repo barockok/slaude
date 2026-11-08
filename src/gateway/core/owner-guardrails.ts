@@ -141,17 +141,22 @@ export function makeReplyQuiet(windowMs: () => number = () => env.guardrailReply
 }
 
 /**
- * A node's guardrail report (runtime/guardrail_event). The node is trusted
- * to say what fired, not what exists: an event naming a guardrail or rule the
- * gateway's own set does not apply to the token's agent is dropped. Context
- * (agent, session, channel, thread) comes from the signed job claims only.
+ * A node's guardrail report (runtime/guardrail_event). The node is trusted to
+ * say which rule fired on which tool, nothing more: the action and what was
+ * applied come from the gateway's own verified rule, and an event naming a
+ * guardrail or rule the gateway's set does not apply to the token's agent is
+ * dropped. Context (agent, session, channel, thread) comes from the signed job
+ * claims only. Flooding is bounded: a token bucket per session, and an event
+ * identical to one already recorded for the same job is recorded once.
  */
 export async function recordNodeGuardrailEvent(
-  claims: { tenant: string; persona: string; session: string; channel: string; thread: string },
+  claims: { tenant: string; persona: string; session: string; channel: string; thread: string; job?: string },
   r: { kind: "firing" | "delivery"; sessionKind?: string; events: FiringEvent[]; slugs: string[]; via?: "tool" | "inbound"; toolName?: string },
+  limits: NodeEventLimits = nodeEventLimits,
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   const persona = claims.persona || "default";
   let recorded = 0;
+  let dropped = 0;
   let snap: Awaited<ReturnType<typeof currentGuardrails>> | null = null;
   try {
     snap = await currentGuardrails(claims.tenant || "default");
@@ -160,17 +165,68 @@ export async function recordNodeGuardrailEvent(
   }
   const applies = new Map((snap?.resolved ?? []).filter((g) => appliesToAgent(g, persona)).map((g) => [g.slug, g]));
   const ctx = { tenantId: claims.tenant, persona, sessionId: claims.session, channelId: claims.channel, threadTs: claims.thread, kind: r.sessionKind ?? "interactive" };
+  const admit = (key: string): boolean => {
+    if (!limits.once(`${claims.session}\u0000${claims.job ?? ""}\u0000${key}`)) return false;
+    if (!limits.take(claims.session)) {
+      dropped++;
+      return false;
+    }
+    return true;
+  };
   if (r.kind === "firing") {
     for (const e of r.events) {
-      const g = applies.get(e.slug);
-      if (!g || !g.rules.some((x) => x.id === e.ruleId && x.on === "tool" && x.action === e.action)) continue;
-      auditFiring(e, ctx);
+      const rule = applies.get(e.slug)?.rules.find((x) => x.id === e.ruleId && x.on === "tool");
+      if (!rule) continue;
+      const action = rule.action as FiringEvent["action"];
+      const own: FiringEvent = { on: "tool", slug: e.slug, ruleId: rule.id, action, applied: action === "audit" ? "audit" : "deny", deciding: e.deciding, ...(e.toolName ? { toolName: e.toolName } : {}) };
+      if (!admit(`f\u0000${own.slug}\u0000${own.ruleId}\u0000${own.toolName ?? ""}\u0000${own.deciding}`)) continue;
+      auditFiring(own, ctx);
       recorded++;
     }
   } else {
-    const ok = r.slugs.filter((s) => applies.get(s)?.meta?.load === "on-match");
+    const ok = r.slugs.filter((s) => applies.get(s)?.meta?.load === "on-match" && admit(`d\u0000${s}`));
     if (ok.length) auditDelivery(ok, { ...ctx, via: r.via ?? "tool", ...(r.toolName ? { toolName: r.toolName } : {}) });
     recorded = ok.length;
   }
-  return { content: [{ type: "text", text: JSON.stringify({ recorded }) }] };
+  if (dropped) console.warn(`[guardrails] session=${claims.session}: ${dropped} node guardrail event(s) over the rate limit, not recorded`);
+  return { content: [{ type: "text", text: JSON.stringify({ recorded, ...(dropped ? { dropped } : {}) }) }] };
 }
+
+export interface NodeEventLimits {
+  /** True the first time a key is seen (bounded memory). */
+  once(key: string): boolean;
+  /** True while the session's bucket has a token. */
+  take(session: string): boolean;
+}
+
+/** A token bucket per session (`capacity` events, refilled at `perSec`) and a bounded once-set. */
+export function makeNodeEventLimits(o: { capacity?: number; perSec?: number; cap?: number; now?: () => number } = {}): NodeEventLimits {
+  const capacity = o.capacity ?? 60;
+  const perSec = o.perSec ?? 2;
+  const cap = o.cap ?? 10_000;
+  const now = o.now ?? Date.now;
+  const seen = new Set<string>();
+  const buckets = new Map<string, { tokens: number; at: number }>();
+  return {
+    once(key) {
+      if (seen.has(key)) return false;
+      seen.add(key);
+      if (seen.size > cap) seen.delete(seen.values().next().value as string);
+      return true;
+    },
+    take(session) {
+      const t = now();
+      const b = buckets.get(session) ?? { tokens: capacity, at: t };
+      b.tokens = Math.min(capacity, b.tokens + ((t - b.at) / 1000) * perSec);
+      b.at = t;
+      buckets.delete(session);
+      buckets.set(session, b);
+      if (buckets.size > cap) buckets.delete(buckets.keys().next().value as string);
+      if (b.tokens < 1) return false;
+      b.tokens -= 1;
+      return true;
+    },
+  };
+}
+
+const nodeEventLimits = makeNodeEventLimits();
