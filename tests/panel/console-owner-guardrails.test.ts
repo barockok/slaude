@@ -162,7 +162,9 @@ describe("GET /panel/api/guardrails/:slug", () => {
     expect((await call("/panel/api/guardrails/nope")).status).toBe(404);
     expect((await call("/panel/api/guardrails/Bad%20Name")).status).toBe(422);
     expect((await call("/panel/api/guardrails/x/y/z")).status).toBe(404);
-    expect((await call("/panel/api/guardrails", operator, { method: "POST", body: "{}" })).status).toBe(405);
+    expect((await call("/panel/api/guardrails", operator, { method: "PATCH", body: "{}" })).status).toBe(405);
+    // Creating is a superadmin write (phase B).
+    expect((await call("/panel/api/guardrails", operator, { method: "POST", body: "{}" })).status).toBe(403);
   });
 });
 

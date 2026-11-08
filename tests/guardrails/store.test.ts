@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { db } from "../../src/db/client";
 import {
-  __clearGuardrailsForTests, __setOverrideForTests, applyGuardrailChange, manifestVersion, readGuardrails, sha256, UnknownGuardrailError,
+  __clearGuardrailsForTests, __setOverrideForTests, applyGuardrailChange, guardrailRevision, manifestVersion, readGuardrails, sha256, StaleGuardrailError, UnknownGuardrailError,
 } from "../../src/db/guardrails";
 import { GuardrailIntegrityError, GuardrailKeyError, verifySet, guardrailKey, peekKeySource, __resetGuardrailKeyForTests, HMAC_KEY_FILE, GUARDRAILS_DIR } from "../../src/guardrails/integrity";
 import { HIGH_WATER_FILE, highWater, raiseHighWater, setHighWaterRedis, __resetHighWaterForTests } from "../../src/guardrails/high-water";
@@ -138,6 +138,43 @@ describe("overrides and the behind-source flag", () => {
     expect(docs[0]).toMatchObject({ override: true, behindSource: true });
     expect(docs[0]!.md).toContain("Mine.");
     expect(verifySet("default", await readGuardrails())).toBeGreaterThan(0);
+  });
+
+  test("a console override through applyGuardrailChange: signed, in the manifest, base_sha the source's; clear drops it", async () => {
+    await applyGuardrailChange("default", { upsert: [{ slug: "a", md: gmd("a"), source: "git" }], by: "pipeline" });
+    const set = await applyGuardrailChange("default", { setOverride: [{ slug: "a", md: gmd("a", "", "Mine.") }], by: "lead@example.com" });
+    expect(set).toMatchObject({ version: 2, overrideSet: ["a"], overrideCleared: [] });
+    let s = await readGuardrails();
+    expect(s.overrides).toMatchObject([{ slug: "a", baseSha: sha256(gmd("a")), version: 2, author: "lead@example.com" }]);
+    expect(verifySet("default", s)).toBe(2);
+    expect(guardrailRevision(s.rows[0], s.overrides[0])).toBe(2);
+    // The same text again changes nothing; a new text replaces it.
+    expect((await applyGuardrailChange("default", { setOverride: [{ slug: "a", md: gmd("a", "", "Mine.") }], by: "op" })).version).toBe(2);
+    expect((await applyGuardrailChange("default", { setOverride: [{ slug: "a", md: gmd("a", "", "Mine 2.") }], by: "op" })).version).toBe(3);
+    const cleared = await applyGuardrailChange("default", { clearOverride: ["a"], by: "op" });
+    expect(cleared).toMatchObject({ version: 4, overrideCleared: ["a"] });
+    s = await readGuardrails();
+    expect(s.overrides).toEqual([]);
+    expect(verifySet("default", s)).toBe(4);
+    // The source row is re-signed at the clearing version: the revision only goes up.
+    expect(s.rows[0]).toMatchObject({ version: 4, md: gmd("a") });
+    expect(guardrailRevision(s.rows[0], undefined)).toBe(4);
+    // Clearing nothing writes nothing; an unknown guardrail is refused.
+    expect((await applyGuardrailChange("default", { clearOverride: ["a"], by: "op" })).version).toBe(4);
+    await expect(applyGuardrailChange("default", { setOverride: [{ slug: "zz", md: gmd("zz") }], by: "op" })).rejects.toBeInstanceOf(UnknownGuardrailError);
+    await expect(applyGuardrailChange("default", { clearOverride: ["zz"], by: "op" })).rejects.toBeInstanceOf(UnknownGuardrailError);
+  });
+
+  test("a write against a stale revision is refused inside the transaction and writes nothing", async () => {
+    await applyGuardrailChange("default", { upsert: [{ slug: "a", md: gmd("a"), source: "console" }], by: "op" });
+    await expect(applyGuardrailChange("default", { upsert: [{ slug: "a", md: gmd("a", "", "x"), source: "console" }], expect: [{ slug: "a", revision: 0 }], by: "op" }))
+      .rejects.toBeInstanceOf(StaleGuardrailError);
+    await expect(applyGuardrailChange("default", { upsert: [{ slug: "a", md: gmd("a"), source: "console" }], expect: [{ slug: "a", revision: null }], by: "op" }))
+      .rejects.toThrow(/already exists/);
+    await expect(applyGuardrailChange("default", { remove: ["b"], expect: [{ slug: "b", revision: 1 }], by: "op" })).rejects.toThrow(/no longer exists/);
+    expect(await manifestVersion()).toBe(1);
+    const ok = await applyGuardrailChange("default", { upsert: [{ slug: "a", md: gmd("a", "", "x"), source: "console" }], expect: [{ slug: "a", revision: 1 }], by: "op" });
+    expect(ok.version).toBe(2);
   });
 });
 

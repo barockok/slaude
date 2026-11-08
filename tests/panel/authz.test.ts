@@ -9,9 +9,9 @@ afterEach(() => {
 });
 
 describe("superadmin action set", () => {
-  it("gates exactly reset, mode, force-release, reload, the persona changes, grant changes, private memory, console roles, skill retire and restore, and the guardrail switch", () => {
+  it("gates exactly reset, mode, force-release, reload, the persona changes, grant changes, private memory, console roles, skill retire and restore, and every guardrail write", () => {
     expect([...SUPERADMIN_ACTIONS].sort()).toEqual([
-      "console.roles.read", "control.mode", "control.reset", "force-release", "grant.create", "grant.revoke", "guardrail.toggle", "memory.private", "persona.create", "persona.override", "reload", "skill.restore", "skill.retire",
+      "console.roles.read", "control.mode", "control.reset", "force-release", "grant.create", "grant.revoke", "guardrail.create", "guardrail.delete", "guardrail.edit", "guardrail.override.clear", "guardrail.toggle", "memory.private", "persona.create", "persona.override", "reload", "skill.restore", "skill.retire",
     ]);
   });
 

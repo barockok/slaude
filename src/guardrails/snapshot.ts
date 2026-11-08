@@ -25,6 +25,8 @@ export interface TenantSnapshot {
   resolved: ResolvedGuardrail[];
   /** null: no set and no key yet. */
   keySource: KeySource | null;
+  /** The verified stored set it was built from (source texts and revisions for the console). */
+  stored: StoredGuardrails;
 }
 
 /** The documents of a verified stored set: an override's text wins over its source row. */
@@ -48,7 +50,7 @@ export async function loadTenantSnapshot(tenant: string): Promise<TenantSnapshot
   await raiseHighWater(tenant, version);
   // The key is touched only when a set exists: a deployment with no
   // guardrails reads and creates nothing.
-  return { tenant, version, resolved: resolveDocs(docsFromStored(stored)), keySource: version > 0 ? guardrailKey().source : peekKeySource() };
+  return { tenant, version, resolved: resolveDocs(docsFromStored(stored)), keySource: version > 0 ? guardrailKey().source : peekKeySource(), stored };
 }
 
 

@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
-import type { MemoryStoreKind, MemoryStoreView, MemoryStoresResponse } from "../../../../gateway/panel/api-types";
+import type { AgentsResponse, MemoryStoreKind, MemoryStoreView, MemoryStoresResponse } from "../../../../gateway/panel/api-types";
 import { ApiError } from "../../../lib/api";
-import { navigate } from "../../../lib/router";
+import { navigate, useSearch } from "../../../lib/router";
 import { Button, Card, EmptyState, FilterChip, PageHeader, SearchField, Table, type Column, type FilterOption } from "../../../ui";
 import { ErrorState } from "../../components/ErrorState";
+import { AgentSettings } from "../../components/SettingsFamilies";
 import { useApi } from "../../hooks/useApi";
 import { useRole } from "../../hooks/useRole";
 import { KIND_LABEL, KindBadge, PrivateBadge, isPrivateKind, storePath } from "./memoryParts";
@@ -30,6 +31,26 @@ const COLUMNS: Column<MemoryStoreView>[] = [
   },
   { key: "pages", header: "Pages", width: "6rem", align: "end", skeleton: 0.3, render: (s) => s.pageCount.toLocaleString() },
 ];
+
+/** What an agent may read and write in memory without asking: the write tiers and the profile guard, per agent. */
+function WriteRules() {
+  const agent = new URLSearchParams(useSearch()).get("agent") || "default";
+  const agents = useApi<AgentsResponse>("/api/agents");
+  const names = agents.data?.agents.map((a) => a.name) ?? [agent];
+  const options: FilterOption<string>[] = (names.includes(agent) ? names : [agent, ...names]).map((n) => ({ value: n, label: n }));
+  return (
+    <section className="sl-section sl-section--flush" aria-labelledby="memory-write-rules">
+      <div className="sl-section__head">
+        <div>
+          <h2 className="sl-section__title" id="memory-write-rules">Write rules</h2>
+          <p className="sl-caption">What an agent may write in memory without asking, and who must approve the rest. Enforced on every memory call.</p>
+        </div>
+        <FilterChip label="Agent" value={agent} options={options} onChange={(a) => navigate(`/memory?agent=${encodeURIComponent(a)}`, { replace: true })} />
+      </div>
+      <AgentSettings key={agent} agent={agent} group="memory" />
+    </section>
+  );
+}
 
 export function MemoryStoresPage() {
   const { data, loading, error, reload } = useApi<MemoryStoresResponse>("/api/memory/stores");
@@ -110,6 +131,7 @@ export function MemoryStoresPage() {
           />
         </>
       )}
+      <WriteRules />
     </>
   );
 }

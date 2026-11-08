@@ -15,7 +15,7 @@
  * each can be audited, and the message shown is the deciding rule's.
  */
 import type { GuardrailRule, RuleAction, RuleOn } from "./format";
-import { capText, MAX_MATCH_CHARS } from "./pattern";
+import { capText, MAX_MATCH_CHARS, REDACTED } from "./pattern";
 
 /** Bounds of the walk over a tool input. Past any of them the input is too large to check. */
 export const MAX_DEPTH = 32;
@@ -152,6 +152,11 @@ export function hitMessage(h: RuleHit): string {
   return h.rule.message.trim() || `Blocked by the owner's guardrail ${h.slug}.`;
 }
 
+/** The thread reply an inbound deny posts: the rule's message, or a note naming the guardrail. */
+export function inboundDenyMessage(h: RuleHit): string {
+  return h.oversize || h.rule.message.trim() ? hitMessage(h) : `This message was not passed on: it matches the owner's guardrail ${h.slug}.`;
+}
+
 const RANK: Record<RuleAction, number> = { deny: 4, approve: 3, redact: 2, audit: 1 };
 
 /** A rule that matched, with the guardrail it belongs to. */
@@ -177,4 +182,15 @@ export function combine(hits: RuleHit[]): Decision | null {
   let deciding = hits[0]!;
   for (const h of hits) if (RANK[h.rule.action] > RANK[deciding.rule.action]) deciding = h;
   return { action: deciding.rule.action, deciding, hits };
+}
+
+/**
+ * A reply text with every redact hit applied (each matched span replaced
+ * with [REDACTED]), whatever action decides. A hit counted only because the
+ * text was too large to check has nothing to replace.
+ */
+export function applyRedactions(hits: readonly RuleHit[], text: string): string {
+  let out = text;
+  for (const h of hits) if (h.rule.action === "redact" && !h.oversize && h.rule.text?.replace) out = h.rule.text.replace(out, REDACTED);
+  return out;
 }

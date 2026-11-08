@@ -495,6 +495,19 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync: guardrails", () => {
     expect(e2.message).toContain("rules would apply to nobody");
   });
 
+  test("a reserved name (new, test) is refused for a new guardrail (422); one already stored deploys as before", async () => {
+    const e = await runSync(T, v5([g("fine"), g("test")], next()), { dryRun: false, env, by: "ci", extract: okExtract }).catch((x) => x);
+    expect(e).toBeInstanceOf(SyncFailure);
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("'test' is reserved for a new guardrail");
+    expect((await readGuardrails()).rows).toEqual([]);
+    // Stored before the name was reserved: the deploy repo keeps updating it.
+    await applyGuardrailChange(T, { upsert: [{ slug: "test", md: g("test").md, source: "git" }], by: "old" });
+    const r = await runSync(T, v5([g("test", "changed")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r.guardrails).toMatchObject({ updated: ["test"] });
+    expect((await readGuardrails()).rows.map((x) => [x.slug, x.md])).toEqual([["test", g("test", "changed").md]]);
+  });
+
   test("on Postgres without SLAUDE_MASTER_KEY a guardrail change is a 422 before anything is applied; an unchanged set is not", async () => {
     const plain = (guardrails: unknown[], extra: object = {}) => bare([def], { version: 5, guardrails, ...extra });
     // A persona set that stores no secret (no userToken), so only the guardrails need the key.

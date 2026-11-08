@@ -11,11 +11,16 @@
  *   ?stubHang=agents     never answer API paths containing the text (skeletons)
  *   ?stubMono=1          a single-process deployment: no node pools, no lock backend
  *   ?stubNoHistory=1     memory is off: the history route answers a note, no turns
+ *   ?stubReservedGuardrail=1  a guardrail stored as "test" (named like the Test box page)
  */
 import type {
   AgentSummary, ConsoleGrantView, CreateGrantRequest, GrantView, SessionActivity, SessionControlRequest, SessionEvent, SessionSummaryView,
 } from "../../../gateway/panel/api-types";
-import { agentGuardrailFixtures, guardrailSettingsFixtures, ownerGuardrailDetail, ownerGuardrailList, setOwnerGuardrailEnabled, skillFixtures } from "./resources-fixtures";
+import {
+  addLegacyGuardrail, agentGuardrailFixtures, agentSettingsFixtures, ownerGuardrailDetail, ownerGuardrailList, setOwnerGuardrailEnabled, skillFixtures, testOwnerGuardrails,
+  validateOwnerGuardrail, writeOwnerGuardrail,
+} from "./resources-fixtures";
+import type { AgentSettingsGroup, GuardrailTestRequest } from "../../../gateway/panel/api-types";
 import { CHANNEL_LABELS, USER_NAMES, allGrantsOf, createFixtures, sessionHistory, sessionScript, type ConsoleFixtures } from "./fixtures";
 
 const ID_RE = { user: /^[UW][A-Z0-9]+$/, channel: /^[CG][A-Z0-9]+$/, workspace: /^T[A-Z0-9]+$/ } as const;
@@ -69,6 +74,10 @@ export function installStub(): void {
   const empty = sticky("stubEmpty") === "1";
   const mono = sticky("stubMono") === "1";
   const noHistory = sticky("stubNoHistory") === "1";
+  // A guardrail stored as "test" before the name was reserved for the Test box page.
+  if (sticky("stubReservedGuardrail") === "1") {
+    addLegacyGuardrail("test", "---\nname: test\ndescription: Stored before the name was reserved\n---\nKeep test notes short.\n\n```rules\n- id: no-tokens\n  on: reply\n  match: { text: 'token-\\d+' }\n  action: redact\n```");
+  }
   /** Sessions with a scripted turn in flight right now (turnStart sent, done not yet). */
   const working = new Set<string>();
 
@@ -146,23 +155,53 @@ export function installStub(): void {
     if (seg[1] === "memory") return memory(seg, query, isSuper);
     if (path === "/api/environments") return json(200, fx.environments);
     if (seg[1] === "skills") return skillsRoute(method, seg, isSuper);
-    if (path === "/api/guardrails") return json(200, ownerGuardrailList(Date.now(), isSuper));
-    if (path === "/api/guardrails/settings") {
-      const agent = query.get("agent") || "default";
-      if (agent !== "default" && !fx.agents[agent]) return json(404, { error: `no agent named '${agent}'` });
-      return json(200, guardrailSettingsFixtures(agent, isSuper));
-    }
-    if (seg[1] === "guardrails" && seg.length === 3) {
-      const d = ownerGuardrailDetail(decodeURIComponent(seg[2]!), Date.now(), isSuper);
-      return d ? json(200, d) : json(404, { error: "no such guardrail" });
-    }
-    if (seg[1] === "guardrails" && seg.length === 4 && seg[3] === "enabled" && method === "PUT") {
-      if (!isSuper) return json(403, { error: "action 'guardrail.toggle' requires the superadmin role", required: "superadmin" });
+    if (seg[1] === "guardrails") {
+      const superOnly = (action: string) => json(403, { error: `action '${action}' requires the superadmin role`, required: "superadmin" });
+      const me = fx.me.email;
+      const b = (body ?? {}) as { slug?: string; md?: string; revision?: number };
+      const rev = query.get("revision");
+      const answer = (r: { status: number; body: unknown }) => json(r.status, r.body);
+      if (seg.length === 2) {
+        if (method === "GET") return json(200, ownerGuardrailList(Date.now(), isSuper));
+        if (method !== "POST") return json(405, { error: "method not allowed" });
+        if (!isSuper) return superOnly("guardrail.create");
+        return answer(writeOwnerGuardrail("create", b.slug ?? "", b, me));
+      }
+      if (seg.length === 3 && seg[2] === "validate" && method === "POST") return json(200, validateOwnerGuardrail(b.slug ?? "untitled", b.md ?? ""));
+      if (seg.length === 3 && seg[2] === "test" && method === "POST") {
+        const t = body as GuardrailTestRequest;
+        if (t.kind === "tool" && t.input) {
+          try { JSON.parse(t.input); } catch (e) { return json(400, { error: `the tool input is not valid JSON (${(e as Error).message})` }); }
+        }
+        return json(200, testOwnerGuardrails(t));
+      }
       const slug = decodeURIComponent(seg[2]!);
-      const enabled = (body as { enabled?: unknown })?.enabled;
-      if (typeof enabled !== "boolean") return json(400, { error: "body must be { enabled: boolean }" });
-      if (!setOwnerGuardrailEnabled(slug, enabled)) return json(404, { error: "no such guardrail" });
-      return json(200, { ok: true, slug, enabled, version: 8 });
+      if (seg.length === 3) {
+        if (method === "GET") {
+          const d = ownerGuardrailDetail(slug, Date.now(), isSuper);
+          return d ? json(200, d) : json(404, { error: "no such guardrail" });
+        }
+        if (method === "PUT") return isSuper ? answer(writeOwnerGuardrail("edit", slug, b, me)) : superOnly("guardrail.edit");
+        if (method === "DELETE") {
+          if (!isSuper) return superOnly("guardrail.delete");
+          if (rev === null) return json(400, { error: "revision (the guardrail's revision as loaded) is required" });
+          return answer(writeOwnerGuardrail("delete", slug, { revision: Number(rev) }, me));
+        }
+        return json(405, { error: "method not allowed" });
+      }
+      if (seg.length === 4 && seg[3] === "override" && method === "DELETE") {
+        if (!isSuper) return superOnly("guardrail.override.clear");
+        if (rev === null) return json(400, { error: "revision (the guardrail's revision as loaded) is required" });
+        return answer(writeOwnerGuardrail("clear", slug, { revision: Number(rev) }, me));
+      }
+      if (seg.length === 4 && seg[3] === "enabled" && method === "PUT") {
+        if (!isSuper) return superOnly("guardrail.toggle");
+        const enabled = (body as { enabled?: unknown })?.enabled;
+        if (typeof enabled !== "boolean") return json(400, { error: "body must be { enabled: boolean }" });
+        if (!setOwnerGuardrailEnabled(slug, enabled)) return json(404, { error: "no such guardrail" });
+        return json(200, { ok: true, slug, enabled, version: 8 });
+      }
+      return json(404, { error: "not found" });
     }
     if (seg[1] === "agents") {
       if (seg.length === 2) return json(200, { agents: Object.values(fx.agents).map(summary) });
@@ -170,6 +209,11 @@ export function installStub(): void {
       if (!agent) return json(404, { error: `no agent named '${decodeURIComponent(seg[2]!)}'` });
       if (seg.length === 3) return json(200, { ...agent, ...summary(agent), grants: labelled(agent.grants) });
       if (seg.length === 4 && seg[3] === "guardrails") return json(200, agentGuardrailFixtures(decodeURIComponent(seg[2]!), Date.now()));
+      if (seg.length === 5 && seg[3] === "settings") {
+        const group = seg[4] as AgentSettingsGroup;
+        if (!["access", "memory", "mandates", "learned-rules"].includes(group)) return json(404, { error: "not found" });
+        return json(200, agentSettingsFixtures(decodeURIComponent(seg[2]!), group, isSuper));
+      }
       if (seg[3] !== "grants") return json(404, { error: "not found" });
       if (seg.length === 4 && method === "GET") return json(200, { grants: labelled(agent.grants) });
       if (!isSuper) {

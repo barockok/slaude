@@ -24,14 +24,14 @@ dark themes follow the browser, and every page works at phone width.
 | Page | What you see |
 |---|---|
 | **Overview** | Counts of agents, live sessions, pending approvals and audit events in the last 24 h, and recent activity. |
-| **Agents** | Every agent (persona) with its live state. An agent's page has five tabs: *Overview* (identity, model, the label it runs on), *Mandates* (its jobs: the soul's mandate, each channel block, each cron and the heartbeat, with triggers and the approvers who can actually approve), *Access* (effective grants from the soul and the console), *Guardrails* (the owner guardrails that apply to it, shared and its own) and *Activity* (its audit events). |
+| **Agents** | Every agent (persona) with its live state. An agent's page has five tabs: *Overview* (identity, model, the label it runs on), *Mandates* (its jobs: the soul's mandate, each channel block, each cron and the heartbeat, with triggers and the approvers who can actually approve; then its proactive settings and caps, the wake tool allow-list, budgets and the rules it learned), *Access* (effective grants from the soul and the console; then approvals, permission cards, admission and redaction), *Guardrails* (the owner guardrails that apply to it, shared and its own) and *Activity* (its audit events). |
 | **Sessions** | Live and recent sessions with filters by agent and status. A session has a *Timeline*, a *Chat* tab and its *Audit* events. |
 | **Approvals and audit** | Every permission and approval decision, refusal and expiry, and every console change, newest first, filterable by agent, action, actor, decision and time. An event the agent itself did shows the agent's name as its actor, not its bot user id. |
 | **Access** | Console roles (read only, from the role file; superadmins only, operators see a note) and every stored agent grant. |
-| **Memory** | Memory stores with page counts; a store lists its pages; a page shows its content, type, tags and links. Read only. |
+| **Memory** | Memory stores with page counts; a store lists its pages; a page shows its content, type, tags and links. Read only. Below the stores, *Write rules* shows per agent what it may write without asking and who must approve the rest. |
 | **Environments** | Node pools (labels, live nodes, last heartbeat), each agent's placement label, and personal environments (secrets never shown). |
 | **Resources: Skills** | Every skill an agent can use, filterable by source, agent and status, with search. A skill's page shows its `SKILL.md` rendered (raw and copy too), where it came from, which agents have it, its files, per-agent usage and related proposals. |
-| **Resources: Guardrails** | The owner's guardrails: scope, enforced rules by kind, Guidance, source, status and when each last fired, with a page per guardrail. A superadmin can switch one off and on. Below, a collapsed *Soul and access settings* section shows every soul and access setting of one agent with its effective value and where it comes from. |
+| **Resources: Guardrails** | The owner's guardrails: scope, enforced rules by kind, Guidance, source, status and when each last fired, with a page per guardrail. A superadmin creates one from a template, edits it (an override for a deploy repo or host-file guardrail, shown as a diff against its source), clears an override, deletes a console guardrail and switches any off and on. *Test a guardrail* tries a tool call, a reply or a message against an agent's guardrails. |
 
 **Grants.** A superadmin adds or revokes an agent grant from the agent's
 *Access* tab: a user, a channel's members or a whole workspace gets the
@@ -84,8 +84,8 @@ come from (the manifest, the personas repo), never from the console.
 agents the way you set their souls, shared by every agent or for some, written
 as `GUARDRAIL.md` in the deploy repo's `guardrails/` folder or imported from
 host files (`slaude guardrails import <dir>`). Each row shows the scope, the
-rules by kind (*Enforced*: checked by code and never in the prompt; *Not yet
-enforced*: reply rules, from a later release; *Guidance*: text the agent reads),
+rules by kind (*Enforced*: checked by code and never in the prompt;
+*Guidance*: text the agent reads),
 the source (*Deploy repo*, *Host file*, *Console override*, *Behind source*),
 the status (on or off, validation problems, applies to no agent, over the
 always-loaded prose cap) and when it last fired. A guardrail's page shows its
@@ -93,7 +93,32 @@ always-loaded prose cap) and when it last fired. A guardrail's page shows its
 agents and channels it applies to (names resolved), its Guidance and triggers,
 and its recent firings from the audit trail. A superadmin can switch a
 guardrail off and on: one audited write, then a config reload so nodes and warm
-sessions pick it up after their turn. Operators read everything. The page also
+sessions pick it up after their turn.
+
+Superadmins also edit guardrails (`rc.11`). *New guardrail* starts from a
+template (Enforced rule examples or Guidance). The editor checks the text as
+you type with the server's own parser: a rule that would refuse the save is
+shown inline and disables *Save*, other problems are shown, unknown agent
+names are flagged, and the always-loaded prose cap names the guardrail it
+would leave out. A console guardrail is edited in place and can be deleted. A
+guardrail from the deploy repo or host files is edited as a console override:
+its source text stays, the override is kept across syncs and marked *Behind
+source* when the source changes, and its page shows the override as a diff
+against the source with a *Clear override* button; it cannot be deleted from
+the console (switch it off). Every save carries the revision the editor
+loaded; when someone else saved first, the save is refused and the editor
+offers a reload, keeping your edits to copy. While the stored set fails to
+verify, every write is refused with the repair command. Each write is audited
+without the text and announced to nodes and warm sessions like the switch.
+
+The *Test box*, on each guardrail's page, under the editor (with the unsaved
+text) and on *Test a guardrail*, takes a tool call (name and JSON input), a
+reply or an inbound message, an agent and a channel, and shows every rule
+that matches, the deciding action, what would happen, the Guidance that loads
+or would be delivered, and inputs too large to check. It runs the runtime's
+own matcher and does nothing else (one `guardrail.tested` audit row, without
+the text). Operators read everything, validate and test, and cannot write.
+The page also
 says how strongly the deployment keeps an agent from changing its own
 guardrails: with Postgres or nodes a session cannot reach the database; on one
 process with sqlite the guarantee is drift and tamper detection only. The
@@ -104,20 +129,23 @@ The runtime's own layer (its hooks, gates and deny lists) is not shown: it
 lives in the code (`src/agent/guardrails.ts`), checked by a test against the
 hooks real sessions are built with.
 
-Below the list, a collapsed *Soul and access settings* section has one card per soul and access setting: tool permissions (always-allowed tools
-from `SLAUDE_AUTO_ALLOW_TOOLS`, the default permission mode, who may decide a
-card), approvals (who may approve for this agent, and the approval timeout),
-admission and grants, memory write gating (what is read freely, written
-freely, needs approval or a manager), the profile write guard, redaction (the
-default soul's patterns plus the agent's own; the patterns themselves are
-shown to superadmins only, operators see a count),
-proactive restraint (from the soul's `## Proactive` block and the code's
-caps), learned proactive rules (from the agent's memory), the wake tool
-allow-list and the background and wake budgets. Each value has a source badge:
-*Env*, *Soul*, *Persona* (its config in git), *Console* (a stored grant),
-*Learned*, *Default* or *Fixed* (in the code). Change a value where its badge
-points; the page never edits. Policy guardrails (a written policy checked on
-every call) are designed but not implemented, and the page says so.
+**Agent settings.** The soul and access settings that constrain an agent are
+shown where they apply (until `rc.10` they were folded under Guardrails). The
+*Access* tab has approvals (who may approve for this agent, the scope words
+of the default agent's approvers, and the approval timeout), permission cards
+(always-allowed tools from `SLAUDE_AUTO_ALLOW_TOOLS`, the default permission
+mode, who may decide a card, and the agent's threads per permission mode),
+admission and grants, and redaction (the default soul's patterns plus the
+agent's own; the patterns themselves are shown to superadmins only, operators
+see a count). The Memory page's *Write rules* has the memory write tiers
+(what is read freely, written freely, needs approval or a manager) and the
+profile write guard, per agent. The *Mandates* tab has proactive restraint
+(from the soul's `## Proactive` block and the code's caps), the wake tool
+allow-list, the background and wake budgets, and the learned proactive rules
+(read from the agent's memory on their own, so a slow brain never holds up
+the tab). Each value has a source badge: *Env*, *Soul*, *Persona* (its config
+in git), *Console* (a stored grant), *Learned*, *Default* or *Fixed* (in the
+code). Change a value where its badge points; these cards never edit.
 
 **Surfaces.** Slack is the only chat surface today, but the console names it
 from a small registry (label, its word for a conversation, how to show a

@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { AgentDetailResponse, MandateView } from "../../../../gateway/panel/api-types";
 import { Avatar, Badge, Card, EmptyState, Markdown } from "../../../ui";
 import { TimeAgo } from "../../../shared/TimeAgo";
+import { AgentSettings } from "../../components/SettingsFamilies";
 
 const GROUPS: Array<{ kind: MandateView["kind"]; label: string; hint: string }> = [
   { kind: "global", label: "Global", hint: "Applies to every admitted message." },
@@ -117,38 +118,60 @@ function MandateCard({ m, persona }: { m: MandateView; persona: string }) {
   );
 }
 
+/** Proactive restraint and caps, wake tools and budgets, then the learned rules (their own request: a brain read can time out). */
+function ProactiveSettings({ agent }: { agent: string }) {
+  return (
+    <>
+      <section className="sl-group" aria-labelledby="mandates-proactive-title">
+        <div className="sl-group__head">
+          <h2 className="sl-section__title" id="mandates-proactive-title">Proactive settings</h2>
+          <p className="sl-caption">When the agent may speak first, how often and how far, what it may call when it wakes, and what it may spend.</p>
+        </div>
+        <AgentSettings agent={agent} group="mandates" />
+      </section>
+      <section className="sl-group" aria-labelledby="mandates-learned-title">
+        <div className="sl-group__head">
+          <h2 className="sl-section__title" id="mandates-learned-title">Learned rules</h2>
+          <p className="sl-caption">How people told the agent to react to things. A rule can only lower how far it goes.</p>
+        </div>
+        <AgentSettings agent={agent} group="learned-rules" />
+      </section>
+    </>
+  );
+}
+
 export function MandatesTab({ agent }: { agent: AgentDetailResponse }) {
-  if (agent.mandates.length === 0) {
-    return (
-      <Card>
-        <EmptyState
-          title="No mandates"
-          description="This agent has no mandate in its SOUL.md, no channel blocks, no heartbeat and no active crons."
-        />
-      </Card>
-    );
-  }
   return (
     <div className="sl-groups">
-      {GROUPS.map((g) => {
-        const items = agent.mandates.filter((m) => m.kind === g.kind);
-        if (items.length === 0) return null;
-        return (
-          <section key={g.kind} className="sl-group" aria-label={g.label}>
-            <div className="sl-group__head">
-              <h2 className="sl-section__title">
-                {g.label} <span className="sl-count">{items.length}</span>
-              </h2>
-              <p className="sl-caption">{g.hint}</p>
-            </div>
-            <div className="sl-group__list">
-              {items.map((m) => (
-                <MandateCard key={m.id} m={m} persona={agent.name} />
-              ))}
-            </div>
-          </section>
-        );
-      })}
+      {agent.mandates.length === 0 ? (
+        <Card>
+          <EmptyState
+            title="No mandates"
+            description="This agent has no mandate in its SOUL.md, no channel blocks, no heartbeat and no active crons."
+          />
+        </Card>
+      ) : (
+        GROUPS.map((g) => {
+          const items = agent.mandates.filter((m) => m.kind === g.kind);
+          if (items.length === 0) return null;
+          return (
+            <section key={g.kind} className="sl-group" aria-label={g.label}>
+              <div className="sl-group__head">
+                <h2 className="sl-section__title">
+                  {g.label} <span className="sl-count">{items.length}</span>
+                </h2>
+                <p className="sl-caption">{g.hint}</p>
+              </div>
+              <div className="sl-group__list">
+                {items.map((m) => (
+                  <MandateCard key={m.id} m={m} persona={agent.name} />
+                ))}
+              </div>
+            </section>
+          );
+        })
+      )}
+      <ProactiveSettings agent={agent.name} />
     </div>
   );
 }

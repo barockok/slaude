@@ -10,7 +10,8 @@ date: 2026-11-08
 Phase A2 (tool approve cards, one outbound choke point, reply rules) shipped in
 `v0.46.0-rc.10` (branch `feat/owner-guardrails-a2`, section below);
 phase B (console editing, the Test box, moving the soul and access settings to
-the agent's tabs) is rc.11. Design:
+the agent's tabs) shipped in `v0.46.0-rc.11` (branch `feat/owner-guardrails-b`,
+section below). Design:
 `docs/superpowers/specs/2026-11-08-owner-guardrails.md`. Operator reference:
 [Guardrails](../reference/guardrails.md).
 
@@ -246,4 +247,90 @@ reference says so.
 - **Mixed versions.** An rc.9 gateway rejects a whole firing batch with the
   new `approved`/`refused` values; the node sends those separately. Upgrade
   gateways first.
+
+## Phase B (rc.11): editing in the console, the Test box, the settings move out
+
+**One write path, not a second one for the console.** Create, edit, override,
+clear and delete all call `applyGuardrailChange`, the function `/deploy` and
+the import already use. It grew three inputs (`setOverride`, `clearOverride`,
+`expect`) instead of the console getting its own SQL; the old test seam that
+wrote overrides by hand is now only a test seam. So everything the earlier
+phases promised holds for console writes without being re-implemented: the
+set re-signed in one transaction, the high-water mark raised, a write over a
+set that fails to verify refused (the console answers 423 with the repair
+command), and a rule that fails to parse refused (422) by the same `blocking`
+list `/deploy` and the import use.
+
+**A revision per guardrail, checked inside the transaction.** Optimistic
+concurrency needed a version a writer can hold. The manifest version would
+make every write conflict with any other; a per-guardrail revision is free:
+the row and its override each already carry the manifest version of their
+last write, so the guardrail's revision is the larger of the two. It moves
+on a text change, an override and the switch. The check runs after the
+locked read in the write's own transaction, so two concurrent saves cannot
+both pass it.
+
+**Edit what you own, override what you do not.** A console guardrail is
+edited in place and can be deleted. A deploy repo or host-file guardrail is
+never rewritten from the console: an edit is an override with the source's
+sha, a delete is refused (switch it off, or remove it at the source). The
+detail now carries the source text beside the override, so the console shows
+a line diff against what the source says today, which is what an owner needs
+when a sync marks the override behind source.
+
+**Live validation is the server's parser, over the wire.** The parser uses
+`Bun.YAML` and re2js; shipping a second YAML parser to the browser would be
+a second parser that can drift. The editor posts the draft to
+`/guardrails/validate` a moment after each change instead (no write, any
+operator). It also measures the always-loaded prose cap with the draft in
+place, and the answer was not what the obvious UI would say: prose loads in
+name order, so the guardrail a draft "tips over" is often another one. The
+editor names the guardrail actually left out, per agent.
+
+**The Test box is the runtime, called without its side effects.** Rather
+than a second matcher, `evaluateGuardrails` calls the same functions the hook,
+the outbound choke point and the inbound check call (`sessionGuardrails`,
+`toolHits`, `textHits`, `combine`, the on-match triggers); the redaction of a
+reply and the inbound deny message moved into `match.ts` so all four share
+them. A parity test puts the same tool calls, replies (formatted as real
+replies are) and messages through the real hook, `outbound()` and
+`inboundVerdict()` and checks the Test box reports the same decision, hits
+and message. A draft replaces the stored guardrail of its name for that one
+evaluation.
+
+**The settings found their tabs.** The families folded under Guardrails since
+rc.9 moved with their view-model functions unchanged (renamed
+`settings-view.ts`) behind `GET /agents/:name/settings/:group`: approvals,
+permission cards, admission and redaction on Access; the memory write tiers
+and the profile guard on Memory; proactive restraint, wake tools and budgets
+on Mandates, with the learned rules as their own request because their brain
+read can time out and must not hold up the tab. The never-built *policy*
+family is gone: owner guardrails are that policy now. With
+`/guardrails/settings` gone, the reserved slug `settings` was dropped; `new`
+and `test` are reserved instead because the console's own pages
+(`/guardrails/new`, `/guardrails/test`) would otherwise be shadowed by a
+guardrail of that name. Review caught that reserving a name breaks a
+deployment that already stores one: the check now refuses only a **new**
+guardrail (it moved from the payload parser and the folder reader, which do
+not know the stored set, to the sync, the import and the console create), and
+the console reaches a stored one at `/guardrails/~/<name>`, a path no name
+can shadow.
+
+**Review fixes before merge (B).** The Test box first matched only the typed
+tool name; the session matches every name a tool goes by in a `/remote`
+thread (`aliasNames(REMOTE_TOOL_ALIASES)`), so it now takes the same alias
+function, merges the triggers of each name as the hook does, and has a parity
+case for an aliased call. Clearing an override let the revision fall back to
+the source row's older version (an A, B, A that a stale editor could pass);
+the source row is now re-signed at the clearing version, so revisions only go
+up. While the set fails to verify, the Test box answers with the runtime's
+fail-closed result instead of evaluating an older set. A draft of a
+switched-off guardrail is evaluated as on and the result says so. The Test
+box's input and text are capped just past what a pattern checks.
+
+**Audit.** Console writes record `guardrail.created|updated|deleted` and the
+new `guardrail.override.set|cleared` (no text), plus a `panel.guardrail.*`
+row with the reload result; panel guardrail actions are console-wide rows now,
+not the default agent's. The Test box leaves `guardrail.tested` with the
+agent, kind, tool and decision, never the input or text it evaluated.
 

@@ -15,7 +15,7 @@ import { applyGuardrailChange, readGuardrails, type ChangeResult } from "../db/g
 import { auditChange } from "./audit";
 import { emitAudit } from "../audit/emit";
 import { GuardrailFilesError, readGuardrailDir } from "./files";
-import { parseGuardrail } from "./format";
+import { parseGuardrail, reservedNameProblem } from "./format";
 
 export interface ImportReport extends ChangeResult {
   dryRun: boolean;
@@ -40,6 +40,8 @@ export async function importGuardrails(
   const invalid = parsed.map((x) => ({ slug: x.slug, errors: x.p.errors })).filter((x) => x.errors.length > 0);
   const stored = await readGuardrails(tenant);
   const owners = new Map(stored.rows.map((r) => [r.slug, r.source]));
+  const reserved = files.map((f) => reservedNameProblem(f.slug, owners.has(f.slug))).filter((x): x is string => !!x);
+  if (reserved.length) throw new GuardrailFilesError(`guardrails refused: ${reserved.join(" | ")}`);
   const skipped = files.filter((f) => owners.has(f.slug) && owners.get(f.slug) !== "file").map((f) => f.slug);
   const upsert = files.filter((f) => !skipped.includes(f.slug)).map((f) => ({ slug: f.slug, md: f.md, source: "file" as const }));
   const present = new Set(files.map((f) => f.slug));
@@ -49,7 +51,7 @@ export async function importGuardrails(
     const created = upsert.filter((u) => !bySlug.has(u.slug)).map((u) => u.slug);
     const unchanged = upsert.filter((u) => bySlug.get(u.slug)?.md === u.md).map((u) => u.slug);
     const updated = upsert.filter((u) => bySlug.has(u.slug) && !unchanged.includes(u.slug)).map((u) => u.slug);
-    return { version: stored.manifest?.version ?? 0, created, updated, unchanged, removed: remove, toggled: [], dryRun: true, invalid, skipped };
+    return { version: stored.manifest?.version ?? 0, created, updated, unchanged, removed: remove, toggled: [], overrideSet: [], overrideCleared: [], dryRun: true, invalid, skipped };
   }
   const r = await applyGuardrailChange(tenant, { upsert, remove, by: opts.by, ...(opts.repair ? { repair: true } : {}) });
   auditChange(r, { tenantId: tenant, actorKind: "operator", actorId: opts.by, via: "cli" });

@@ -18,6 +18,8 @@ import { OverviewPage } from "./pages/OverviewPage";
 import { SessionDetailPage, isSessionTab } from "./pages/session/SessionDetailPage";
 import { SessionsPage } from "./pages/SessionsPage";
 import { GuardrailDetailPage } from "./pages/resources/GuardrailDetailPage";
+import { GuardrailEditPage } from "./pages/resources/GuardrailEditPage";
+import { GuardrailTestPage } from "./pages/resources/GuardrailTestPage";
 import { GuardrailsPage } from "./pages/resources/GuardrailsPage";
 import { SkillDetailPage } from "./pages/resources/SkillDetailPage";
 import { SkillsPage } from "./pages/resources/SkillsPage";
@@ -62,6 +64,15 @@ function renderPage(path: string, entry: NavEntry | null) {
   const skill = matchPath("/skills/:id", path);
   if (skill) return <SkillDetailPage key={skill.id} id={skill.id!} />;
   if (path.startsWith("/skills/")) return <NotFoundPage home="/skills" />;
+  if (path === "/guardrails/new") return <GuardrailEditPage key="new" />;
+  if (path === "/guardrails/test") return <GuardrailTestPage />;
+  // Any guardrail by name, even one stored as "new" or "test" (no name contains "~").
+  const byNameEdit = matchPath("/guardrails/~/:slug/edit", path);
+  if (byNameEdit) return <GuardrailEditPage key={`edit:${byNameEdit.slug}`} slug={byNameEdit.slug!} />;
+  const byName = matchPath("/guardrails/~/:slug", path);
+  if (byName) return <GuardrailDetailPage key={byName.slug} slug={byName.slug!} />;
+  const editGuardrail = matchPath("/guardrails/:slug/edit", path);
+  if (editGuardrail) return <GuardrailEditPage key={`edit:${editGuardrail.slug}`} slug={editGuardrail.slug!} />;
   const guardrail = matchPath("/guardrails/:slug", path);
   if (guardrail) return <GuardrailDetailPage key={guardrail.slug} slug={guardrail.slug!} />;
   if (path.startsWith("/guardrails/")) return <NotFoundPage home="/guardrails" />;

@@ -13,7 +13,7 @@
 import type { AgentManager, GuardrailSink } from "../../agent/manager";
 import { env } from "../../config/env";
 import { auditDelivery, auditFiring, firingEvents, type FiringEvent } from "../../guardrails/audit";
-import { combine, hitMessage, textHits, toolHits } from "../../guardrails/match";
+import { combine, hitMessage, inboundDenyMessage, textHits, toolHits } from "../../guardrails/match";
 import { aliasNames, APPROVE_TIMEOUT_MAX_SEC } from "../../guardrails/hooks";
 import { REMOTE_TOOL_ALIASES } from "../../remote/mcp";
 import { failureText } from "./failure-codes";
@@ -99,7 +99,7 @@ export async function inboundVerdict(persona: string, channel: string, text: str
   if (!d) return null;
   return {
     action: d.action === "deny" ? "deny" : "audit",
-    message: d.deciding.oversize || d.deciding.rule.message.trim() ? hitMessage(d.deciding) : `This message was not passed on: it matches the owner's guardrail ${d.deciding.slug}.`,
+    message: inboundDenyMessage(d.deciding),
     slug: d.deciding.slug,
     events: firingEvents("inbound", d.hits, d.deciding),
   };

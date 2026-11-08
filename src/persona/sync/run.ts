@@ -12,7 +12,7 @@ import {
 } from "./payload";
 import { applyGuardrailChange, readGuardrails } from "../../db/guardrails";
 import { auditChange } from "../../guardrails/audit";
-import { parseGuardrail } from "../../guardrails/format";
+import { parseGuardrail, reservedNameProblem } from "../../guardrails/format";
 import { extractSoulData } from "../../soul/extract";
 import { emitAudit } from "../../audit/emit";
 import {
@@ -328,6 +328,11 @@ async function planGuardrails(tenant: string, list: GuardrailSpec[], personaName
     if (prev && prev.source === "console") {
       report.skipped.push(g.slug);
       warnings.push(`guardrail '${g.slug}' exists in the console; the deploy repo's copy was not applied`);
+      continue;
+    }
+    const reserved = reservedNameProblem(g.slug, !!prev);
+    if (reserved) {
+      refused.push(`guardrail ${reserved}`);
       continue;
     }
     const parsed = parseGuardrail(g.slug, g.md);
