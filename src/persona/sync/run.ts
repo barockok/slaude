@@ -25,6 +25,18 @@ import { loadVaultConfig, parseRef, SecretResolutionError, type VaultConfig } fr
 import { isAllowed, requestPathFor } from "../../secrets/allowlist";
 import { assertNoProviderRefsInMono } from "../../gateway/core/provider-secrets";
 import { internalHostsFrom } from "../provider-base-url";
+import { dbDialect } from "../../db/client";
+import { masterKey, MasterKeyError } from "../../db/crypto";
+
+function masterKeySet(): boolean {
+  try {
+    masterKey();
+    return true;
+  } catch (e) {
+    if (e instanceof MasterKeyError) return false;
+    throw e;
+  }
+}
 
 export class SyncFailure extends Error {
   constructor(readonly status: 409 | 422 | 502 | 503, message: string) { super(message); }
@@ -344,6 +356,13 @@ async function planGuardrails(tenant: string, list: GuardrailSpec[], personaName
   const listed = new Set(list.map((g) => g.slug));
   const remove = stored.rows.filter((r) => r.source === "git" && !listed.has(r.slug)).map((r) => r.slug);
   report.removed = remove;
+  // Postgres signs guardrails with the master key only. Refuse here, before
+  // the personas are applied: failing inside the guardrail write would leave
+  // the sync half applied and the pipeline retrying a 500.
+  const changes = report.created.length + report.updated.length + remove.length;
+  if (changes > 0 && dbDialect() === "pg" && !masterKeySet()) {
+    throw new SyncFailure(422, "guardrails on Postgres need SLAUDE_MASTER_KEY");
+  }
   for (const w of report.behindSource) warnings.push(`guardrail '${w}' has a console override written against the previous text; it is kept and shown behind source`);
   return { report, upsert, remove };
 }

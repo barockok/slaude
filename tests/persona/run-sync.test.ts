@@ -495,6 +495,32 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync: guardrails", () => {
     expect(e2.message).toContain("rules would apply to nobody");
   });
 
+  test("on Postgres without SLAUDE_MASTER_KEY a guardrail change is a 422 before anything is applied; an unchanged set is not", async () => {
+    const plain = (guardrails: unknown[], extra: object = {}) => bare([def], { version: 5, guardrails, ...extra });
+    // A persona set that stores no secret (no userToken), so only the guardrails need the key.
+    await runSync(T, plain([g("a")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    const before = (await P.syncState(T))!.revision;
+    const saved = process.env.SLAUDE_MASTER_KEY;
+    delete process.env.SLAUDE_MASTER_KEY;
+    __resetMasterKeyCache();
+    try {
+      const e = await runSync(T, plain([g("a"), g("b")], next()), { dryRun: false, env, by: "ci", extract: okExtract }).catch((x) => x);
+      expect(e).toBeInstanceOf(SyncFailure);
+      expect(e.status).toBe(422);
+      expect(e.message).toBe("guardrails on Postgres need SLAUDE_MASTER_KEY");
+      // The personas were not applied: the live revision is the one before.
+      expect((await P.syncState(T))!.revision).toBe(before);
+      const removing = await runSync(T, plain([], next()), { dryRun: false, env, by: "ci", extract: okExtract }).catch((x) => x);
+      expect(removing.status).toBe(422);
+      // Nothing to change in the guardrails: the personas sync goes through.
+      const same = await runSync(T, plain([g("a")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+      expect(same.guardrails!.unchanged).toEqual(["a"]);
+    } finally {
+      process.env.SLAUDE_MASTER_KEY = saved;
+      __resetMasterKeyCache();
+    }
+  });
+
   test("a host-file guardrail taken over by the deploy repo is reported", async () => {
     await applyGuardrailChange(T, { upsert: [{ slug: "host", md: g("host").md, source: "file" }], by: "cli" });
     const r = await runSync(T, v5([g("host", "from git")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
