@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "bun:test";
+import { describe, it, expect, afterEach, spyOn } from "bun:test";
 import { AudioLink, CapabilityRedactor, appendTail, redactCapabilityUrls } from "../../src/voice/audio-link";
 import { parseAudioOrigins } from "../../src/voice/audio-acl";
 import { pcmToBase64 } from "../../src/voice/provider/types";
@@ -214,18 +214,40 @@ describe("AudioLink", () => {
     wb = fakeWorkbench({ postSeq: [409] });
     const logs: string[] = [];
     // 24 kHz, 100 ms bound: 2400 samples.
-    const link = newLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 150, busyWindowMs: 3000, replayMs: 100, log: (l) => logs.push(l) });
-    await link.start({ onAudio: () => {}, onEnded: () => {} });
-    await until(() => wb.posts === 1);
-    for (const v of [1, 2, 3]) link.write(new Int16Array(1200).fill(v));
-    await until(() => wb.posts === 2);
-    await link.close();
-    await until(() => wb.uplinkData.length === 2400);
-    expect(wb.uplinkData.slice(0, 1200).every((x: number) => x === 2)).toBe(true);
-    expect(wb.uplinkData.slice(1200).every((x: number) => x === 3)).toBe(true);
-    expect(logs.join("\n")).toMatch(/dropped 2400 bytes \(50 ms\)/);
-    // The dropped audio never reaches the audio provider: the uplink clock does not count it.
-    expect(link.clockMs()).toBe(100);
+    // The writes must land while the link is in its busy wait. The fake
+    // counting the first POST is not that: the link may not have read the 409
+    // yet, and writes then still go to the refused attempt's body (counted as
+    // sent, no drop). So wait for the 409 to reach the link, then write from a
+    // 0 ms timer: it runs after the link has handled the 409 (microtasks run
+    // first) and before the backoff timer (an earlier deadline), however
+    // loaded the process is.
+    let refused!: () => void;
+    const refusedSeen = new Promise<void>((r) => (refused = r));
+    const realFetch = globalThis.fetch;
+    const spy = spyOn(globalThis, "fetch").mockImplementation((async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const res = await realFetch(input, init);
+      if (init?.method === "POST" && res.status === 409) refused();
+      return res;
+    }) as typeof fetch);
+    try {
+      const link = newLink({ baseUrl: wb.base, endpoints, busyBackoffMs: 150, busyWindowMs: 3000, replayMs: 100, log: (l) => logs.push(l) });
+      await link.start({ onAudio: () => {}, onEnded: () => {} });
+      await refusedSeen;
+      await new Promise<void>((r) => setTimeout(() => {
+        for (const v of [1, 2, 3]) link.write(new Int16Array(1200).fill(v));
+        r();
+      }, 0));
+      await until(() => wb.posts === 2);
+      await link.close();
+      await until(() => wb.uplinkData.length === 2400);
+      expect(wb.uplinkData.slice(0, 1200).every((x: number) => x === 2)).toBe(true);
+      expect(wb.uplinkData.slice(1200).every((x: number) => x === 3)).toBe(true);
+      expect(logs.join("\n")).toMatch(/dropped 2400 bytes \(50 ms\)/);
+      // The dropped audio never reaches the audio provider: the uplink clock does not count it.
+      expect(link.clockMs()).toBe(100);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("close during a busy wait returns promptly", async () => {
