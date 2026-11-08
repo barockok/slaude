@@ -4,8 +4,13 @@
  * hook.pre-tool.owner-guardrails: the session's enforced tool rules, then
  * on-match Guidance. PreToolUse runs in every permission mode, bypass
  * included, so `/mode` cannot skip an owner rule.
- *   - deny (and approve, enforced as deny until approval cards exist):
- *     permissionDecision deny with the deciding rule's message.
+ *   - deny: permissionDecision deny with the deciding rule's message.
+ *   - approve: the hook holds the call on an approval card (decided by the
+ *     requester or an approver) and returns allow or deny itself. A timeout,
+ *     an abort, a wake or background pass (nobody to ask) and any error are a
+ *     deny. The hook owns an inner deadline strictly shorter than its
+ *     matcher's timeout and the node's turn deadline. Spike:
+ *     docs/superpowers/specs/2026-11-08-owner-guardrails-a2-spike.md.
  *   - audit: the call goes on; the firing is recorded.
  *   - every matching rule is recorded, the deciding one marked.
  *   - Guidance with a tool trigger: the first matching call of the session is
@@ -20,13 +25,53 @@
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
-import { combine, hitMessage, toolHits } from "./match";
+import { combine, hitMessage, toolHits, type RuleHit } from "./match";
 import { firingEvents, type FiringEvent } from "./audit";
 import { guidanceText, toolTriggered, type OnMatchGuidance, type SessionGuardrails } from "./resolve";
 
 const deny = (reason: string) => ({
   hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "deny" as const, permissionDecisionReason: reason },
 });
+const allow = (reason: string) => ({
+  hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "allow" as const, permissionDecisionReason: reason },
+});
+
+/** Default and ceiling of how long an owner tool card waits (the permission card's own TTL is the ceiling). */
+export const APPROVE_TIMEOUT_DEFAULT_SEC = 600;
+export const APPROVE_TIMEOUT_MAX_SEC = 3600;
+/** The matcher timeout sits this far above the inner deadline. */
+export const APPROVE_MATCHER_MARGIN_SEC = 60;
+/** On a node the card ends this long before the turn's own deadline. */
+export const TURN_DEADLINE_MARGIN_MS = 30_000;
+/** Less time than this left: no card is opened, the call is refused. */
+export const MIN_APPROVE_MS = 5_000;
+
+/** The PreToolUse matcher timeout (seconds) for a given approve cap: strictly above the inner deadline. */
+export function approveMatcherTimeoutSec(capSec: number): number {
+  return capSec + APPROVE_MATCHER_MARGIN_SEC;
+}
+
+/** What an owner approve asks the permission resolver for. */
+export interface OwnerApproval {
+  /** `<slug>#<rule id>`, the deciding rule. */
+  ruleId: string;
+  /** The rule's message, shown on the card. */
+  message: string;
+  /** Epoch ms: the card expires then; the caller has stopped waiting by then. */
+  deadline: number;
+}
+
+export interface ApproveRequest {
+  toolName: string;
+  input: Record<string, unknown>;
+  toolUseId: string;
+  approval: OwnerApproval;
+  /** Aborts when the deadline passes or the turn is aborted. */
+  signal: AbortSignal;
+}
+
+/** The card's outcome. `reason` names who decided or why nothing was decided. */
+export type ApproveOutcome = { allow: true; reason: string } | { allow: false; reason: string };
 
 export interface OwnerGuardrailHookDeps {
   /** The session's guardrails (snapshot at boot), or null when none. */
@@ -41,6 +86,68 @@ export interface OwnerGuardrailHookDeps {
   onDelivered: (items: OnMatchGuidance[], toolName: string) => void;
   /** Every name the called tool goes by (remote mode: the alias and the builtin it stands for). Default: the name itself. */
   toolNames?: (toolName: string) => string[];
+  /**
+   * Hold a call on an approval card. Absent (a background pass), or returning
+   * a refusal (a wake), an approve rule is a deny.
+   */
+  approve?: (req: ApproveRequest) => Promise<ApproveOutcome>;
+  /** How long a card may wait, in ms (default APPROVE_TIMEOUT_DEFAULT_SEC). */
+  approveCapMs?: () => number;
+  /** Epoch ms the session's turn must end by (a node's turn deadline), or null. */
+  turnDeadline?: () => number | null;
+  /** Clock (tests). */
+  now?: () => number;
+}
+
+/** The refusal shown for an approve rule that was not approved. */
+export function notApprovedMessage(hit: RuleHit, reason: string): string {
+  const base = hit.oversize ? hitMessage(hit) : hit.rule.message.trim() || `The owner's guardrail ${hit.slug} needs an approver for this.`;
+  return `${base} Not approved: ${reason}.`;
+}
+
+/**
+ * Hold one call on a card, bounded by an inner deadline: the earlier of the
+ * cap and the turn deadline less a margin. Whatever happens (the deadline, an
+ * abort of the turn, a throw anywhere) the answer is a deny: a thrown hook
+ * would fall through to allow (spike).
+ */
+async function holdOnCard(
+  deps: OwnerGuardrailHookDeps,
+  hit: RuleHit,
+  call: { toolName: string; input: Record<string, unknown>; toolUseId: string },
+  turnSignal: AbortSignal | undefined,
+): Promise<ApproveOutcome> {
+  if (!deps.approve) return { allow: false, reason: "nobody can be asked in this session" };
+  const now = deps.now ?? Date.now;
+  const start = now();
+  const cap = deps.approveCapMs?.() ?? APPROVE_TIMEOUT_DEFAULT_SEC * 1000;
+  const turn = deps.turnDeadline?.() ?? null;
+  const deadline = Math.min(start + cap, turn === null ? Infinity : turn - TURN_DEADLINE_MARGIN_MS);
+  if (deadline - start < MIN_APPROVE_MS) return { allow: false, reason: "not enough time left in this turn to ask" };
+  const ac = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stop = new Promise<ApproveOutcome>((resolve) => {
+    timer = setTimeout(() => {
+      ac.abort();
+      resolve({ allow: false, reason: "no decision in time" });
+    }, deadline - start);
+    const onAbort = () => {
+      ac.abort();
+      resolve({ allow: false, reason: "the turn was stopped" });
+    };
+    if (turnSignal?.aborted) onAbort();
+    else turnSignal?.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    const asked = deps
+      .approve({ ...call, approval: { ruleId: `${hit.slug}#${hit.rule.id}`, message: hitMessage(hit), deadline }, signal: ac.signal })
+      .then((o): ApproveOutcome => (o && o.allow === true ? { allow: true, reason: String(o.reason) } : { allow: false, reason: String(o?.reason ?? "refused") }))
+      .catch((e: unknown): ApproveOutcome => ({ allow: false, reason: `the card failed (${e instanceof Error ? e.message : String(e)})` }));
+    return await Promise.race([asked, stop]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (!ac.signal.aborted) ac.abort();
+  }
 }
 
 /** A tool's names in remote mode: the alias the CLI reports and the builtin it stands for. */
@@ -58,26 +165,51 @@ export function deniedMessage(slug: string, message: string): string {
 }
 
 export function ownerGuardrailsHook(deps: OwnerGuardrailHookDeps): HookCallback {
-  return async (input) => {
-    if (input.hook_event_name !== "PreToolUse") return {};
-    const g = deps.guardrails();
-    if (!g || (g.toolRules.length === 0 && g.onMatch.length === 0)) return {};
-    const i = input as { tool_name?: string; tool_input?: unknown };
-    const toolName = i.tool_name ?? "";
-    const names = deps.toolNames?.(toolName) ?? [toolName];
-    const decision = combine(toolHits(g.toolRules, names, i.tool_input));
-    if (decision) deps.onFiring(firingEvents("tool", decision.hits, decision.deciding, toolName));
-    if (decision && decision.action !== "audit") return deny(hitMessage(decision.deciding));
-    const seen = deps.delivered();
-    const triggered = new Map<string, OnMatchGuidance>();
-    for (const n of names) for (const o of toolTriggered(g, n, deps.channel())) triggered.set(o.slug, o);
-    const due = [...triggered.values()].filter((o) => !seen.has(o.slug));
-    if (due.length === 0) return {};
+  return async (input, toolUseId, options) => {
+    try {
+      return await decideCall(deps, input, toolUseId, options?.signal);
+    } catch (e) {
+      // A thrown hook lets the tool run (spike): never let one escape.
+      return deny(`The owner's guardrails could not check this call, so it is refused (${e instanceof Error ? e.message : String(e)}).`);
+    }
+  };
+}
+
+async function decideCall(deps: OwnerGuardrailHookDeps, input: Parameters<HookCallback>[0], toolUseId: string | undefined, signal: AbortSignal | undefined) {
+  if (input.hook_event_name !== "PreToolUse") return {};
+  const g = deps.guardrails();
+  if (!g || (g.toolRules.length === 0 && g.onMatch.length === 0)) return {};
+  const i = input as { tool_name?: string; tool_input?: unknown; tool_use_id?: string };
+  const toolName = i.tool_name ?? "";
+  const names = deps.toolNames?.(toolName) ?? [toolName];
+  const decision = combine(toolHits(g.toolRules, names, i.tool_input));
+  if (decision && decision.action === "deny") {
+    deps.onFiring(firingEvents("tool", decision.hits, decision.deciding, toolName));
+    return deny(hitMessage(decision.deciding));
+  }
+  // On-match Guidance before a card: the model reads it first, and an
+  // approver is not asked about a call that is refused for delivery anyway.
+  const seen = deps.delivered();
+  const triggered = new Map<string, OnMatchGuidance>();
+  for (const n of names) for (const o of toolTriggered(g, n, deps.channel())) triggered.set(o.slug, o);
+  const due = [...triggered.values()].filter((o) => !seen.has(o.slug));
+  if (due.length > 0) {
+    if (decision && decision.action === "audit") deps.onFiring(firingEvents("tool", decision.hits, decision.deciding, toolName));
     for (const o of due) seen.add(o.slug);
     deps.onDelivered(due, toolName);
     const titles = due.map((o) => o.name).join(", ");
     return deny(`Read guardrail ${titles} first. This is not a refusal of the call: retry it after reading.\n\n${guidanceText(due)}`);
-  };
+  }
+  if (!decision) return {};
+  if (decision.action !== "approve") {
+    deps.onFiring(firingEvents("tool", decision.hits, decision.deciding, toolName));
+    return {};
+  }
+  const toolInput = i.tool_input && typeof i.tool_input === "object" && !Array.isArray(i.tool_input) ? (i.tool_input as Record<string, unknown>) : {};
+  const outcome = await holdOnCard(deps, decision.deciding, { toolName, input: toolInput, toolUseId: toolUseId ?? i.tool_use_id ?? "" }, signal);
+  deps.onFiring(firingEvents("tool", decision.hits, decision.deciding, toolName, outcome.allow ? "approved" : "refused"));
+  if (outcome.allow) return allow(`Approved under the owner's guardrail ${decision.deciding.slug}: ${outcome.reason}.`);
+  return deny(notApprovedMessage(decision.deciding, outcome.reason));
 }
 
 /** How many refusals on-match tool Guidance can cost a session at most (one per guardrail). */

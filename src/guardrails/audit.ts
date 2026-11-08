@@ -1,7 +1,8 @@
 /**
  * Audit rows for owner guardrails (design section 5).
  *
- *   guardrail.tool.denied | guardrail.tool.audited
+ *   guardrail.tool.denied | approved | refused | audited
+ *   guardrail.reply.denied | held | redacted | audited
  *   guardrail.inbound.denied | guardrail.inbound.audited
  *   guardrail.guidance.delivered       (an on-match body handed to the model)
  *   guardrail.created | updated | deleted
@@ -28,29 +29,64 @@ export interface FiringContext {
   kind?: string;
 }
 
+/**
+ * What was done about one firing:
+ *   deny      a deny rule refused it (tool, reply, inbound);
+ *   approved  an approve rule held it and an approver let it go (tool);
+ *   refused   an approve rule held it and it was not approved: denied,
+ *             timed out, or nobody could be asked (a wake, a background pass);
+ *   held      an approve rule held a reply for an approver (the decision is
+ *             the approval card's own audit row);
+ *   redacted  a redact rule replaced what it matched (reply);
+ *   audit     recorded only.
+ */
+export type FiringApplied = "deny" | "approved" | "refused" | "held" | "redacted" | "audit";
+
 /** One firing, in a shape a node can send to its gateway unchanged. */
 export interface FiringEvent {
-  on: "tool" | "inbound";
+  on: "tool" | "inbound" | "reply";
   slug: string;
   ruleId: string;
-  action: "deny" | "approve" | "audit";
-  /** The action applied: a tool approve is enforced as a deny until approval cards exist. */
-  applied: "deny" | "audit";
+  action: "deny" | "approve" | "redact" | "audit";
+  applied: FiringApplied;
   deciding: boolean;
   toolName?: string;
+  /** Where a reply was going (reply, edit, proactive_post, ...). */
+  kind?: string;
 }
+
+const PAST: Record<FiringApplied, string> = { deny: "denied", approved: "approved", refused: "refused", held: "held", redacted: "redacted", audit: "audited" };
 
 export function firingAction(e: Pick<FiringEvent, "on" | "applied">): string {
-  return `guardrail.${e.on}.${e.applied === "deny" ? "denied" : "audited"}`;
+  return `guardrail.${e.on}.${PAST[e.applied]}`;
 }
 
-/** The firing events of one decision: every hit, the deciding one marked. */
-export function firingEvents(on: "tool" | "inbound", hits: RuleHit[], deciding: RuleHit | null, toolName?: string): FiringEvent[] {
+/** What a rule of `action` did when nothing more specific is known: a deny denies, an approve with no card is refused. */
+export function defaultApplied(action: FiringEvent["action"]): FiringApplied {
+  return action === "audit" ? "audit" : action === "redact" ? "redacted" : action === "approve" ? "refused" : "deny";
+}
+
+/**
+ * The firing events of one decision: every hit, the deciding one marked.
+ * `decided` is what happened to the event (an approve's outcome, a held
+ * reply); it applies to every hit with the deciding rule's action. Other hits
+ * keep their own default (an audit rule is audited, a redact rule redacted).
+ */
+export function firingEvents(
+  on: FiringEvent["on"],
+  hits: RuleHit[],
+  deciding: RuleHit | null,
+  toolName?: string,
+  decided?: FiringApplied,
+  kind?: string,
+): FiringEvent[] {
   return hits.map((h) => {
     const action = h.rule.action as FiringEvent["action"];
+    const applied = decided && deciding && action === deciding.rule.action ? decided : defaultApplied(action);
     return {
-      on, slug: h.slug, ruleId: h.rule.id, action, applied: action === "audit" ? "audit" : "deny", deciding: h === deciding,
+      on, slug: h.slug, ruleId: h.rule.id, action, applied, deciding: h === deciding,
       ...(toolName ? { toolName } : {}),
+      ...(kind ? { kind } : {}),
     };
   });
 }
@@ -64,17 +100,17 @@ export function auditFiring(e: FiringEvent, ctx: FiringContext): void {
     action: firingAction(e),
     targetKind: "guardrail",
     targetId: `${e.slug}#${e.ruleId}`,
-    decision: e.applied === "deny" ? "deny" : "allow",
+    decision: e.applied === "deny" || e.applied === "refused" ? "deny" : "allow",
     sessionId: ctx.sessionId ?? null,
     channelId: ctx.channelId ?? null,
     threadTs: ctx.threadTs ?? null,
-    summary: e.on === "tool" ? `guardrail ${e.slug}#${e.ruleId} ${e.applied === "deny" ? "denied" : "audited"} ${e.toolName ?? "a tool"}` : `guardrail ${e.slug}#${e.ruleId} ${e.applied === "deny" ? "denied" : "audited"} an inbound message`,
+    summary: `guardrail ${e.slug}#${e.ruleId} ${PAST[e.applied]} ${e.on === "tool" ? (e.toolName ?? "a tool") : e.on === "reply" ? `a ${e.kind ?? "reply"}` : "an inbound message"}`,
     details: {
       agent: ctx.persona,
       rule: e.ruleId,
       action: e.action,
-      ...(e.action === "approve" ? { enforcedAs: "deny" } : {}),
       deciding: e.deciding,
+      ...(e.kind ? { kind: e.kind } : {}),
       ...(e.toolName ? { tool: e.toolName } : {}),
       ...(ctx.channelId ? { channel: ctx.channelId } : {}),
       ...(ctx.kind ? { session: ctx.kind } : {}),
