@@ -424,6 +424,36 @@ CREATE TABLE IF NOT EXISTS agent_grants (
   note         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_grants_persona ON agent_grants (persona);
+
+CREATE TABLE IF NOT EXISTS guardrails (
+  slug       TEXT    PRIMARY KEY,
+  md         TEXT    NOT NULL,
+  sha        TEXT    NOT NULL,
+  source     TEXT    NOT NULL,
+  version    INTEGER NOT NULL,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  hmac       TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS guardrail_overrides (
+  slug       TEXT    PRIMARY KEY,
+  md         TEXT    NOT NULL,
+  base_sha   TEXT    NOT NULL,
+  version    INTEGER NOT NULL,
+  author     TEXT    NOT NULL,
+  hmac       TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS guardrails_manifest (
+  id         TEXT    PRIMARY KEY DEFAULT 'manifest',
+  version    INTEGER NOT NULL,
+  entries    TEXT    NOT NULL,
+  hmac       TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 /** Create tables + apply the incremental column migrations on an existing sqlite file. */
