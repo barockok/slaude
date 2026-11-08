@@ -124,6 +124,7 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     trigger_ingest: { input: {}, isErrorOk: true }, // no slaude.json in the test home
     reload_session: { input: {}, isErrorOk: true }, // session not live in this process
     can_use_tool: { input: { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "rt_perm_fixture" } }, // REST-only: returns {pendingId}
+    guardrail_event: { input: { kind: "delivery", slugs: ["none"] } }, // REST-only: records nothing for an unknown guardrail
   },
   connect: {
     connect_mcp: { input: { server: "nonexistent" } }, // manager scope → "unknown MCP server" text

@@ -160,8 +160,8 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       pattern: ["tenants", ":tenant", "runtime"],
       auth: "node+job",
       gate: "label",
-      handle: async ({ req, seg, claims }) =>
-        tenantScoped(claims!, seg[1]!) ?? handleTenantRuntime(req, seg[1]!, claims!.persona || "default"),
+      handle: async ({ req, seg, claims, node }) =>
+        tenantScoped(claims!, seg[1]!) ?? handleTenantRuntime(req, seg[1]!, claims!.persona || "default", { nodeId: node.id, sessionId: claims!.session }),
     },
     {
       // The owner is the token's signed runAs claim and nothing else: there is
@@ -214,11 +214,11 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       pattern: ["tenants", ":tenant", "personas", ":persona", "runtime"],
       auth: "node+job",
       gate: "label",
-      handle: async ({ req, seg, claims }) => {
+      handle: async ({ req, seg, claims, node }) => {
         const scoped = tenantScoped(claims!, seg[1]!);
         if (scoped) return scoped;
         if (claims!.persona !== seg[3]!) return json(403, { error: "job token is not scoped to this persona" });
-        return handleTenantRuntime(req, seg[1]!, seg[3]!);
+        return handleTenantRuntime(req, seg[1]!, seg[3]!, { nodeId: node.id, sessionId: claims!.session });
       },
     },
     {

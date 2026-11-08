@@ -13,6 +13,7 @@ import { runtimeContract } from "../../../tools/contracts/runtime";
 import { parseToolArgs } from "../../../tools/contracts/types";
 import type { JobClaims } from "../auth";
 import type { ToolPlaneDeps, ToolResult } from "./deps";
+import { recordNodeGuardrailEvent } from "../../core/owner-guardrails";
 
 const c = runtimeContract.tools;
 
@@ -91,6 +92,19 @@ export async function executeRuntimeTool(
         suggestions: a.suggestions,
       });
       return { content: [{ type: "text", text: JSON.stringify(res) }] };
+    }
+    case c.guardrail_event.name: {
+      // REST-only: the node's guardrail sink. Recorded only for guardrails
+      // and rules that apply to the token's agent in the gateway's own set.
+      const a = parseToolArgs(c.guardrail_event, body);
+      return recordNodeGuardrailEvent(claims, {
+        kind: a.kind,
+        sessionKind: a.session_kind,
+        events: (a.events ?? []).map((e) => ({ on: e.on, slug: e.slug, ruleId: e.rule_id, action: e.action, applied: e.applied, deciding: e.deciding, ...(e.tool_name ? { toolName: e.tool_name } : {}) })),
+        slugs: a.slugs ?? [],
+        via: a.via,
+        toolName: a.tool_name,
+      });
     }
     default:
       return null;

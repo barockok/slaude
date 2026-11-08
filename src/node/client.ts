@@ -14,6 +14,7 @@ import { GATE_DENIED_CODE, JOB_HEADER, LABEL_MISMATCH_CODE, NODE_UNAUTHORIZED_CO
 import type { RuntimeBundle } from "../gateway/api/tenants";
 import type { ConnectInfo } from "../remote/transport";
 import { BootFailure } from "../gateway/core/failure-codes";
+import { CAPABILITIES_HEADER, GUARDRAILS_CAPABILITY } from "../guardrails/capability";
 
 export interface NodeClientOpts {
   /** Gateway base URL (SLAUDE_GATEWAY_URL), e.g. http://gateway:8080 */
@@ -98,6 +99,16 @@ export function bundleFetchFailure(e: unknown): BootFailure {
   if (e instanceof GateDenied) return labelMismatchBoot(e);
   let transient = true;
   if (e instanceof NodeApiError) {
+    const code = (() => {
+      try {
+        return (JSON.parse(e.body) as { code?: unknown }).code;
+      } catch {
+        return undefined;
+      }
+    })();
+    if (code === "GUARDRAILS_UNAVAILABLE" || code === "GUARDRAILS_UNSUPPORTED") {
+      return new BootFailure(code, `the gateway refused the runtime bundle: ${code}`, { cause: e, transient: false });
+    }
     if (e.status === 503) {
       try {
         transient = (JSON.parse(e.body) as { transient?: unknown }).transient === true;
@@ -304,7 +315,9 @@ export class NodeClient {
     const cached = this.#runtimeCache.get(key);
     const res = await this.request(
       `/v1/tenants/${encodeURIComponent(tenantId)}/personas/${encodeURIComponent(personaId)}/runtime`,
-      { jobToken, headers: cached ? { "if-none-match": cached.etag } : {} },
+      // The capability header: the gateway refuses an agent with enforced
+      // owner guardrails to a node that does not send it.
+      { jobToken, headers: { [CAPABILITIES_HEADER]: GUARDRAILS_CAPABILITY, ...(cached ? { "if-none-match": cached.etag } : {}) } },
     );
     if (res.status === 304 && cached) return cached.bundle;
     const bundle = await this.#json<RuntimeBundle>(res);

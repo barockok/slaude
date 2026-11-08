@@ -39,6 +39,10 @@ export interface TurnMessage {
    *  the transcript via the suppress hook without running the model. A turn
    *  runs suppressed only when EVERY coalesced message is suppressed. */
   suppress?: boolean;
+  /** On-match owner Guidance this message's text triggered. The gateway
+   *  matches the trigger; the node hands it to the session, which takes each
+   *  guardrail at most once per boot. */
+  guidance?: Array<{ slug: string; name: string; body: string }>;
 }
 
 /** Who sent one of a turn's messages, as the gateway saw it at dispatch. */

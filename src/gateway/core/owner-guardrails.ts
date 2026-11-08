@@ -14,7 +14,7 @@ import type { AgentManager, GuardrailSink } from "../../agent/manager";
 import { env } from "../../config/env";
 import { auditDelivery, auditFiring, firingEvents, type FiringEvent } from "../../guardrails/audit";
 import { combine, textRuleMatches } from "../../guardrails/match";
-import { inboundTriggered, sessionGuardrails, type SessionGuardrails } from "../../guardrails/resolve";
+import { appliesToAgent, inboundTriggered, sessionGuardrails, type SessionGuardrails } from "../../guardrails/resolve";
 import { cachedGuardrails, currentGuardrails, onGuardrailsChanged, refreshGuardrails, startGuardrailRevalidation } from "../../guardrails/snapshot";
 import { publishConfigReload } from "./config-reload";
 import type { PubSub } from "../../queue/pubsub";
@@ -123,4 +123,39 @@ export function makeReplyQuiet(windowMs: () => number = () => env.guardrailReply
     if (until.size > cap) until.delete(until.keys().next().value as string);
     return true;
   };
+}
+
+/**
+ * A node's guardrail report (runtime/guardrail_event). The node is trusted
+ * to say what fired, not what exists: an event naming a guardrail or rule the
+ * gateway's own set does not apply to the token's agent is dropped. Context
+ * (agent, session, channel, thread) comes from the signed job claims only.
+ */
+export async function recordNodeGuardrailEvent(
+  claims: { tenant: string; persona: string; session: string; channel: string; thread: string },
+  r: { kind: "firing" | "delivery"; sessionKind?: string; events: FiringEvent[]; slugs: string[]; via?: "tool" | "inbound"; toolName?: string },
+): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  const persona = claims.persona || "default";
+  let recorded = 0;
+  let snap: Awaited<ReturnType<typeof currentGuardrails>> | null = null;
+  try {
+    snap = await currentGuardrails(claims.tenant || "default");
+  } catch {
+    snap = null;
+  }
+  const applies = new Map((snap?.resolved ?? []).filter((g) => appliesToAgent(g, persona)).map((g) => [g.slug, g]));
+  const ctx = { tenantId: claims.tenant, persona, sessionId: claims.session, channelId: claims.channel, threadTs: claims.thread, kind: r.sessionKind ?? "interactive" };
+  if (r.kind === "firing") {
+    for (const e of r.events) {
+      const g = applies.get(e.slug);
+      if (!g || !g.rules.some((x) => x.id === e.ruleId && x.on === "tool" && x.action === e.action)) continue;
+      auditFiring(e, ctx);
+      recorded++;
+    }
+  } else {
+    const ok = r.slugs.filter((s) => applies.get(s)?.meta?.load === "on-match");
+    if (ok.length) auditDelivery(ok, { ...ctx, via: r.via ?? "tool", ...(r.toolName ? { toolName: r.toolName } : {}) });
+    recorded = ok.length;
+  }
+  return { content: [{ type: "text", text: JSON.stringify({ recorded }) }] };
 }
