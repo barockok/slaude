@@ -6,7 +6,8 @@
 > reads and is asked to follow.
 
 This page is the operator reference for owner guardrails (`v0.46.0-rc.9`
-onward; tool approval cards and reply rules from `rc.10`). It mirrors `src/guardrails/*`; if code and this page disagree, code
+onward; tool approval cards and reply rules from `rc.10`; console editing,
+overrides and the Test box from `rc.11`). It mirrors `src/guardrails/*`; if code and this page disagree, code
 wins and this page has a bug. The design is in the
 [owner guardrails spec](https://github.com/barockok/slaude/blob/main/docs/superpowers/specs/2026-11-08-owner-guardrails.md)
 and the [field note](../field-notes/2026-11-08-owner-guardrails.md).
@@ -24,6 +25,9 @@ On this page:
 - [Threat model](#threat-model)
 - [Nodes](#nodes)
 - [The console](#console)
+- [Editing in the console](#editing)
+- [Overrides and behind source](#overrides)
+- [The Test box](#test-box)
 - [Audit](#audit)
 - [Limits](#limits)
 
@@ -234,10 +238,12 @@ session never reads guardrail files.
   as it is, at a version above any seen before (audited `guardrail.repaired`;
   the report lists what was re-signed without new text, to check, and a
   `/deploy` afterwards restores deploy repo guardrails).
-- **The console** (phase B): editing, overrides, create and delete. An
-  override is kept across syncs and flagged *behind source* when the source
-  text changes after it was written, so a sync never silently drops a safety
-  rule.
+- **The console** (`rc.11`, superadmin): create a guardrail, edit one,
+  override a deploy repo or host-file guardrail, clear an override, delete a
+  console guardrail ([below](#editing)). An override is kept across syncs and
+  flagged *behind source* when the source text changes after it was written,
+  so a sync never silently drops a safety rule. A sync or an import never
+  touches a guardrail created in the console (reported when one names it).
 
 Every change bumps the set's version and announces a config reload: nodes drop
 cached bundles and warm sessions reload after their turn.
@@ -463,10 +469,122 @@ and its recent firings. Each agent page has a **Guardrails** tab with what
 applies to that agent, shared and its own.
 
 A superadmin can switch a guardrail off and on (one audited write, then a
-config reload). Operators read everything and cannot switch. Editing is phase
-B. The soul and access settings that used to be on this page are in a
-collapsed *Soul and access settings* section until they move to the agent's
-own tabs.
+config reload), and edit ([below](#editing)). Operators read everything,
+validate a draft and use the Test box; every write answers them 403.
+
+The soul and access settings that were folded under this page until `rc.10`
+now live where they apply: approvals (with scope words and the approval
+timeout), permission cards (who decides, threads per permission mode),
+admission and grants, and redaction on the agent's **Access** tab; the memory
+write tiers and the profile guard in the **Memory** page's *Write rules*
+section (per agent); proactive restraint and caps, the wake tool allow-list,
+budgets and the learned rules on the agent's **Mandates** tab. They come from
+`GET /panel/api/agents/:name/settings/:group` (`access`, `memory`,
+`mandates`, `learned-rules`; the learned rules have their own request because
+reading them from the brain can time out). `/panel/api/guardrails/settings`
+is gone.
+
+<a id="editing"></a>
+## Editing in the console
+
+Superadmin only. Every write goes through the same storage function as
+`/deploy` and `slaude guardrails import`, so the same rules hold: the set is
+re-signed in one transaction (rows, manifest, high-water mark), a rule that
+fails to parse refuses the write, and a write while the stored set fails to
+verify is refused. After a write that changed something, the console
+announces a config reload exactly like the switch: nodes drop cached bundles
+and warm sessions reload after their turn.
+
+- **New guardrail** (*Resources > Guardrails > New guardrail*): a name (it
+  becomes the folder name and cannot change later) and a template to start
+  from: *Enforced rule examples* (deny a tool, ask an approver before a tool
+  runs, redact or hold replies, refuse an incoming message) or *Guidance*
+  (in every prompt, or when it becomes relevant). The source is *Console*.
+- **Edit.** A console guardrail's own text changes. A deploy repo or host-file
+  guardrail is edited as an **override** ([below](#overrides)); its source
+  text stays as synced.
+- **Clear override.** The source text applies again.
+- **Delete.** Console guardrails only. A deploy repo or host-file guardrail
+  cannot be deleted from the console: switch it off, or remove it at its
+  source.
+
+The editor checks the text as you type with the server's own parser
+(`POST /panel/api/guardrails/validate`, no write): errors that refuse a save
+are shown inline and disable *Save*; other problems (a name that differs, a
+trigger with the wrong `load`) are shown and do not block; names in `agents:`
+that no agent has are flagged; and the always-loaded Guidance is measured
+against the prose cap, naming per agent the guardrail the draft would leave
+out (prose loads in name order, so the one that tips the total over may be
+another guardrail, not the draft). The server checks again on save.
+
+Each write carries the guardrail's **revision** as the editor loaded it (the
+set version of its last change: text, override or switch). If someone else
+changed it in between, the save is refused and the editor offers to reload
+the saved version, keeping your edits to copy.
+
+| Route (superadmin) | Does |
+|---|---|
+| `POST /panel/api/guardrails` `{ slug, md }` | Create a console guardrail (201) |
+| `PUT /panel/api/guardrails/:slug` `{ md, revision }` | Edit; a deploy repo or host-file guardrail gets an override |
+| `DELETE /panel/api/guardrails/:slug/override?revision=` | Clear the override |
+| `DELETE /panel/api/guardrails/:slug?revision=` | Delete a console guardrail |
+| `PUT /panel/api/guardrails/:slug/enabled` `{ enabled }` | The switch (since rc.9) |
+
+| Refusal | When |
+|---|---|
+| 403 | Not a superadmin |
+| 404 | No such guardrail; clear: it has no override (`code: no-override`) |
+| 409 `code: stale` | The revision moved since it was loaded (the body has the current one) |
+| 409 `code: exists` | Create: the name is taken |
+| 422 `code: invalid` | A rule or the file fails to parse (`blocking` lists why), or the name is bad or reserved |
+| 422 `code: not-deletable` | Delete: a deploy repo or host-file guardrail |
+| 423 `code: integrity` | The stored set does not verify; the body's `hint` is the repair: find what changed it, then `slaude guardrails import --repair <dir>` on the host |
+
+The names `new` and `test` are reserved (the console's own pages), in the
+deploy repo and in imports too. `settings`, reserved in `rc.9` and `rc.10`
+for the route that is now gone, is a valid name again.
+
+<a id="overrides"></a>
+## Overrides and behind source
+
+An override is a console edit of a deploy repo or host-file guardrail, stored
+beside it (`guardrail_overrides`) with the sha of the source text it was
+written against, signed and listed in the manifest like every row. Its text is
+what applies. A `/deploy` or an import that changes the source keeps the
+override and marks it **Behind source** (the source sha no longer matches),
+in the list and on the guardrail's page. The page shows the override as a
+line diff against the current source text, so an owner sees what the sync
+brought and what the override still changes; then either edit the override
+(saving it records the new source sha, and it is no longer behind) or clear
+it.
+
+<a id="test-box"></a>
+## The Test box
+
+On every guardrail's page, under the editor (with the unsaved text) and as
+*Test a guardrail* on its own page. Pick the event (a tool call with its name
+and JSON input, a reply text or an inbound message), the agent and
+optionally a channel, and optionally an unsaved draft that replaces the
+stored guardrail of the same name (or is added when it is new). It shows:
+
+- every rule that matches across the agent's effective set there, and the
+  deciding action (the strictest wins: deny > approve > redact > audit) with
+  the message the agent or the person would see;
+- what the runtime would do (refused, held on a card, posted as redacted,
+  not passed on), and a reply as it would be posted;
+- the Guidance that loads in that agent's prompt, what the prose cap leaves
+  out, and on-match Guidance the event would deliver;
+- **too large to check** hits: past a size bound a deny or approve rule
+  counts as matched.
+
+It is the runtime's own code (`evaluateGuardrails` in
+`src/guardrails/evaluate.ts` calls the same resolution and matcher functions
+as the PreToolUse hook, the outbound choke point and the inbound check; a
+test puts the same inputs through all of them). A reply is formatted as a
+real one first. Nothing is posted, held, run or delivered; the only trace is
+a `guardrail.tested` audit row naming the agent, kind, tool and decision,
+never the text or input tested. Any operator can use it
+(`POST /panel/api/guardrails/test`).
 
 <a id="audit"></a>
 ## Audit
@@ -478,14 +596,18 @@ own tabs.
 | `guardrail.reply.denied`, `guardrail.reply.held`, `guardrail.reply.redacted`, `guardrail.reply.audited` | A reply rule matched a post; details name the kind of post. A held reply's decision is the approval card's own row. |
 | `guardrail.inbound.denied`, `guardrail.inbound.audited` | An inbound rule matched |
 | `guardrail.guidance.delivered` | On-match Guidance was handed to a session |
-| `guardrail.created`, `guardrail.updated`, `guardrail.deleted` | A sync, an import or the console switch changed the set |
+| `guardrail.created`, `guardrail.updated`, `guardrail.deleted` | A sync, an import or the console (an edit, a create, a delete, the switch) changed the set |
+| `guardrail.override.set`, `guardrail.override.cleared` | A console override was written or cleared |
+| `guardrail.tested` | The Test box ran (agent, kind, tool and decision only) |
 | `guardrail.repaired` | An owner re-signed the set with `slaude guardrails import --repair` |
 | `guardrail.node.unsupported` | A node without the capability was refused, or no capable node took a turn in time |
 | `guardrail.integrity.failed` | The stored set did not verify; sessions do not start |
 
 Target: `guardrail <name>#<rule id>`. Details name the agent, channel, tool
 and rule (and the kind of post), never the tool input or the message text: a
-row whose pattern matched never stores the text it matched.
+row whose pattern matched never stores the text it matched. A console write
+also leaves a `panel.guardrail.*` row (the panel action and the reload
+result); neither stores the guardrail's text.
 
 <a id="limits"></a>
 ## Limits

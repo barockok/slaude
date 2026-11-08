@@ -1,6 +1,8 @@
 # Owner-defined guardrails (design)
 
-Status: approved after review 2, revised after an independent review (review 3) and the operator's loading model. Supersedes the console part of the rc.7 "guardrails runtime layer" work and the
+Status: approved after review 2, revised after an independent review (review 3) and the operator's loading model.
+Built: phase A1 in v0.46.0-rc.9, phase A2 in rc.10, phase B in rc.11 (console editing with overrides and a
+per-guardrail revision, the Test box, the soul and access settings moved to Access, Memory and Mandates). Supersedes the console part of the rc.7 "guardrails runtime layer" work and the
 unbuilt Tier 2/3 policy design (field note 2026-05-21), keeping only its `policyCheck` hook shape.
 
 ## Problem
@@ -268,7 +270,13 @@ rule id only).
 - **Phase A2 (rc.10):** spike then build tool approve (card); the single outbound choke point; reply deny,
   redact, audit and hold-and-approve.
 - **Phase B (rc.11):** console editing (overrides, create, delete), the Test box, and moving
-  the old soul and access families to Access, Memory and Mandates.
+  the old soul and access families to Access, Memory and Mandates. Built as: every write through
+  `applyGuardrailChange` (`setOverride`, `clearOverride`, and `expect` for a per-guardrail revision,
+  the later of its row's and its override's version, checked in the write's transaction: 409 when
+  stale); live validation by the server's parser over `POST /guardrails/validate`; the Test box as
+  `evaluateGuardrails`, which calls the runtime's own resolution and matcher functions; the settings
+  at `GET /agents/:name/settings/:group` (the policy family dropped); reserved slugs `new` and `test`
+  (the console's pages) instead of `settings` (its route is gone).
 - **Later:** semantic matching, approve on inbound, redact on tool input.
 
 ## 8. Testing
