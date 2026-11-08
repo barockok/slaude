@@ -46,6 +46,9 @@ function Result({ r }: { r: GuardrailTestResponse }) {
       ) : (
         <p className="sl-caption">{`Tested with the unsaved draft of ${r.draft.slug} ${r.draft.replaced ? "in place of its stored text" : "added to the stored set"}.`}</p>
       ))}
+      {r.draft?.switchedOff && (
+        <p className="sl-notice is-warning" role="note">{`${r.draft.slug} is switched off; its draft was tested as if it were on. Saving does not switch it on.`}</p>
+      )}
       {r.hits.length > 0 && (
         <div className="sl-scroll-x" tabIndex={0}>
           <table className="sl-simple-table sl-gr-table" aria-label="Matching rules">
@@ -124,6 +127,7 @@ export function GuardrailTestBox({ agent: initialAgent = "default", draft = null
   const [input, setInput] = useState("{}");
   const [text, setText] = useState("");
   const [useDraft, setUseDraft] = useState(true);
+  const [remote, setRemote] = useState(false);
   const [draftSlug, setDraftSlug] = useState("");
   const [draftMd, setDraftMd] = useState("");
   const [busy, setBusy] = useState(false);
@@ -141,7 +145,7 @@ export function GuardrailTestBox({ agent: initialAgent = "default", draft = null
         agent,
         channel: channel.trim() || null,
         kind,
-        ...(kind === "tool" ? { tool: tool.trim(), input } : { text }),
+        ...(kind === "tool" ? { tool: tool.trim(), input, ...(remote ? { remote: true } : {}) } : { text }),
         draft: draftToSend,
       };
       setResult(await api.post<GuardrailTestResponse>("/api/guardrails/test", body));
@@ -195,6 +199,10 @@ export function GuardrailTestBox({ agent: initialAgent = "default", draft = null
             <Field label="Tool input (JSON)">
               {({ id }) => <textarea id={id} className="sl-input sl-mono" rows={4} spellCheck={false} value={input} onChange={(e) => setInput(e.target.value)} />}
             </Field>
+            <label className="sl-inline sl-caption">
+              <input type="checkbox" checked={remote} onChange={(e) => setRemote(e.target.checked)} />
+              In a thread bound with /remote (a rule on Bash also holds for mcp__remote__bash, and the other way round)
+            </label>
           </>
         ) : (
           <Field label={kind === "reply" ? "Reply text" : "Message text"} hint={kind === "reply" ? "Formatted as a real reply is (mrkdwn, the soul's redaction) before the rules run." : undefined}>

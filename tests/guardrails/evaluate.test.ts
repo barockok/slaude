@@ -10,7 +10,8 @@ import { __clearGuardrailsForTests, applyGuardrailChange } from "../../src/db/gu
 import { __resetGuardrailSnapshotsForTests, currentGuardrails } from "../../src/guardrails/snapshot";
 import { evaluateGuardrails, type TestEvent } from "../../src/guardrails/evaluate";
 import { sessionGuardrails } from "../../src/guardrails/resolve";
-import { ownerGuardrailsHook } from "../../src/guardrails/hooks";
+import { aliasNames, ownerGuardrailsHook } from "../../src/guardrails/hooks";
+import { REMOTE_TOOL_ALIASES } from "../../src/remote/mcp";
 import type { FiringEvent } from "../../src/guardrails/audit";
 import { formatOutbound, outbound } from "../../src/gateway/slack/outbound";
 import { inboundVerdict } from "../../src/gateway/core/owner-guardrails";
@@ -74,7 +75,7 @@ const test_ = async (e: TestEvent, agent = "default", channel: string | null = "
   evaluateGuardrails(await resolved(), e, { ...opts(agent, channel), draft: draft ?? null });
 
 /** The PreToolUse hook's verdict for one call: denied or allowed, and which rule decided (the card's rule when approve). */
-async function hookVerdict(agent: string, channel: string | null, tool: string, input: unknown) {
+async function hookVerdict(agent: string, channel: string | null, tool: string, input: unknown, toolNames?: (n: string) => string[]) {
   const g = sessionGuardrails(await resolved(), agent, channel, { version, proseMax: 4000 });
   let fired: FiringEvent[] = [];
   let card = null as string | null;
@@ -84,6 +85,7 @@ async function hookVerdict(agent: string, channel: string | null, tool: string, 
     delivered: () => new Set(g.onMatch.map((o) => o.slug)),
     onFiring: (ev) => (fired = ev),
     onDelivered: () => {},
+    ...(toolNames ? { toolNames } : {}),
     approve: async (req) => {
       card = req.approval.ruleId;
       return { allow: true, reason: "approved by UAPP" };
@@ -126,6 +128,21 @@ describe("parity with the PreToolUse hook", () => {
       expect(hook.hits).toEqual(t.hits.map((h) => `${h.slug}#${h.ruleId}`));
     });
   }
+
+  test("a /remote alias: the same names as the hook (the manager's alias function), so a Bash rule holds for mcp__remote__bash", async () => {
+    const names = aliasNames(REMOTE_TOOL_ALIASES);
+    for (const [tool, input] of [["mcp__remote__bash", { command: "rm -rf /" }], ["mcp__remote__bash", { command: "curl x" }], ["mcp__remote__read", { file_path: "/x" }]] as const) {
+      const hook = await hookVerdict("default", "CDEV", tool, input, names);
+      const t = evaluateGuardrails(await resolved(), { kind: "tool", tool, input }, { ...opts("default", "CDEV"), toolNames: names });
+      expect(hook.deciding).toBe(t.decision ? `${t.decision.slug}#${t.decision.ruleId}` : null);
+      expect(hook.hits).toEqual(t.hits.map((h) => `${h.slug}#${h.ruleId}`));
+      expect(hook.decision).toBe(t.decision?.action === "deny" ? "deny" : "none");
+    }
+    const t = evaluateGuardrails(await resolved(), { kind: "tool", tool: "mcp__remote__bash", input: { command: "rm -rf /" } }, { ...opts("default", "CDEV"), toolNames: names });
+    expect(t.decision).toMatchObject({ action: "deny", ruleId: "no-rm" });
+    // Without the alias function (a thread not bound with /remote) the alias name alone matches nothing.
+    expect((await test_({ kind: "tool", tool: "mcp__remote__bash", input: { command: "rm -rf /" } })).decision).toBeNull();
+  });
 
   test("the deciding rules are the expected ones", async () => {
     expect((await test_({ kind: "tool", tool: "mcp__mail__send_message", input: { to: "a@external.example" } })).decision).toMatchObject({ action: "deny", ruleId: "no-send" });
@@ -213,7 +230,7 @@ describe("Guidance and drafts", () => {
     const t = await test_({ kind: "tool", tool: "mcp__mail__send_message", input: { to: "a@external.example" } }, "default", "CDEV", { slug: "tools", md: loose });
     expect(t.decision).toMatchObject({ action: "approve", ruleId: "ask-send" });
     expect(t.hits.every((h) => h.draft)).toBe(true);
-    expect(t.draft).toEqual({ slug: "tools", errors: [], blocking: [], replaced: true });
+    expect(t.draft).toEqual({ slug: "tools", errors: [], blocking: [], replaced: true, switchedOff: false });
     const fresh = "---\nname: fresh\n---\n```rules\n- id: x\n  on: reply\n  match: { text: hello }\n  action: deny\n- id: bad\n  on: reply\n  match: { text: '(' }\n  action: deny\n```";
     const n = await test_({ kind: "reply", text: "hello there" }, "default", "CDEV", { slug: "fresh", md: fresh });
     expect(n.decision).toMatchObject({ slug: "fresh", ruleId: "x", action: "deny" });
@@ -221,6 +238,18 @@ describe("Guidance and drafts", () => {
     expect(n.draft!.blocking[0]).toMatch(/rule bad/);
     // The stored set is untouched.
     expect((await test_({ kind: "reply", text: "hello there" })).decision).toBeNull();
+  });
+
+  test("a draft of a switched-off guardrail is evaluated as on, and the result says so", async () => {
+    await applyGuardrailChange("default", { setEnabled: [{ slug: "replies", enabled: false }], by: "test" });
+    try {
+      expect((await test_({ kind: "reply", text: "launch code 1" })).decision).toBeNull();
+      const t = await test_({ kind: "reply", text: "launch code 1" }, "default", "CDEV", { slug: "replies", md: REPLIES });
+      expect(t.decision).toMatchObject({ action: "deny", slug: "replies", ruleId: "no-codes" });
+      expect(t.draft).toMatchObject({ replaced: true, switchedOff: true });
+    } finally {
+      await applyGuardrailChange("default", { setEnabled: [{ slug: "replies", enabled: true }], by: "test" });
+    }
   });
 
   test("evaluation records nothing", async () => {

@@ -66,6 +66,11 @@ function renderPage(path: string, entry: NavEntry | null) {
   if (path.startsWith("/skills/")) return <NotFoundPage home="/skills" />;
   if (path === "/guardrails/new") return <GuardrailEditPage key="new" />;
   if (path === "/guardrails/test") return <GuardrailTestPage />;
+  // Any guardrail by name, even one stored as "new" or "test" (no name contains "~").
+  const byNameEdit = matchPath("/guardrails/~/:slug/edit", path);
+  if (byNameEdit) return <GuardrailEditPage key={`edit:${byNameEdit.slug}`} slug={byNameEdit.slug!} />;
+  const byName = matchPath("/guardrails/~/:slug", path);
+  if (byName) return <GuardrailDetailPage key={byName.slug} slug={byName.slug!} />;
   const editGuardrail = matchPath("/guardrails/:slug/edit", path);
   if (editGuardrail) return <GuardrailEditPage key={`edit:${editGuardrail.slug}`} slug={editGuardrail.slug!} />;
   const guardrail = matchPath("/guardrails/:slug", path);

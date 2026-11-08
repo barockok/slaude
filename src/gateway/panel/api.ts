@@ -111,6 +111,7 @@ import {
   setGuardrailEnabled, testGuardrails, validateGuardrailDraft, type GuardrailApiDeps,
 } from "./guardrails-api";
 import { MAX_GUARDRAIL_BYTES } from "../../guardrails/format";
+import { MAX_MATCH_CHARS } from "../../guardrails/pattern";
 import { GUARDRAIL_SLUG_RE } from "../../guardrails/format";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
@@ -240,8 +241,10 @@ const testGuardrailSchema = z
     channel: z.string().max(64).nullable().optional(),
     kind: z.enum(["tool", "reply", "inbound"]),
     tool: z.string().max(256).optional(),
-    input: z.string().max(8 * 1024 * 1024).optional(),
-    text: z.string().max(8 * 1024 * 1024).optional(),
+    // Just past what a pattern checks, so "too large to check" still shows while a request stays small.
+    input: z.string().max(MAX_MATCH_CHARS + 4096).optional(),
+    text: z.string().max(MAX_MATCH_CHARS + 1).optional(),
+    remote: z.boolean().optional(),
     draft: z.object({ slug: z.string().regex(GUARDRAIL_SLUG_RE), md: guardrailMd }).strict().nullable().optional(),
   })
   .strict()

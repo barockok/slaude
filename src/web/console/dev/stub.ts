@@ -11,12 +11,13 @@
  *   ?stubHang=agents     never answer API paths containing the text (skeletons)
  *   ?stubMono=1          a single-process deployment: no node pools, no lock backend
  *   ?stubNoHistory=1     memory is off: the history route answers a note, no turns
+ *   ?stubReservedGuardrail=1  a guardrail stored as "test" (named like the Test box page)
  */
 import type {
   AgentSummary, ConsoleGrantView, CreateGrantRequest, GrantView, SessionActivity, SessionControlRequest, SessionEvent, SessionSummaryView,
 } from "../../../gateway/panel/api-types";
 import {
-  agentGuardrailFixtures, agentSettingsFixtures, ownerGuardrailDetail, ownerGuardrailList, setOwnerGuardrailEnabled, skillFixtures, testOwnerGuardrails,
+  addLegacyGuardrail, agentGuardrailFixtures, agentSettingsFixtures, ownerGuardrailDetail, ownerGuardrailList, setOwnerGuardrailEnabled, skillFixtures, testOwnerGuardrails,
   validateOwnerGuardrail, writeOwnerGuardrail,
 } from "./resources-fixtures";
 import type { AgentSettingsGroup, GuardrailTestRequest } from "../../../gateway/panel/api-types";
@@ -73,6 +74,10 @@ export function installStub(): void {
   const empty = sticky("stubEmpty") === "1";
   const mono = sticky("stubMono") === "1";
   const noHistory = sticky("stubNoHistory") === "1";
+  // A guardrail stored as "test" before the name was reserved for the Test box page.
+  if (sticky("stubReservedGuardrail") === "1") {
+    addLegacyGuardrail("test", "---\nname: test\ndescription: Stored before the name was reserved\n---\nKeep test notes short.\n\n```rules\n- id: no-tokens\n  on: reply\n  match: { text: 'token-\\d+' }\n  action: redact\n```");
+  }
   /** Sessions with a scripted turn in flight right now (turnStart sent, done not yet). */
   const working = new Set<string>();
 

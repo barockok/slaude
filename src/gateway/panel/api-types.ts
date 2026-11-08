@@ -912,6 +912,12 @@ export interface GuardrailTestRequest {
   text?: string;
   /** An unsaved GUARDRAIL.md tried in place of the stored one (or added when new). */
   draft?: { slug: string; md: string } | null;
+  /**
+   * kind tool: the thread is bound with /remote, so the tool goes by its
+   * remote alias and the builtin it stands for (a Bash rule holds for
+   * mcp__remote__bash). Implied when the tool name is a remote alias.
+   */
+  remote?: boolean;
 }
 
 export interface GuardrailTestHit {
@@ -943,7 +949,8 @@ export interface GuardrailTestResponse {
     proseChars: number;
     proseMax: number;
   };
-  draft: { slug: string; errors: string[]; blocking: string[]; replaced: boolean } | null;
+  /** `switchedOff`: the stored guardrail is switched off in the console; its draft was evaluated as on. */
+  draft: { slug: string; errors: string[]; blocking: string[]; replaced: boolean; switchedOff: boolean } | null;
 }
 
 /** PUT /panel/api/guardrails/:slug/enabled */

@@ -64,7 +64,12 @@ export interface TestResult {
     proseMax: number;
   };
   /** The draft that was tested in place of its stored text, with its validation. */
-  draft: { slug: string; errors: string[]; blocking: string[]; replaced: boolean } | null;
+  /**
+   * The draft tested in place of its stored text. `switchedOff`: the stored
+   * guardrail is switched off in the console; the draft is evaluated as on,
+   * so its rules can be tried before switching it back on.
+   */
+  draft: { slug: string; errors: string[]; blocking: string[]; replaced: boolean; switchedOff: boolean } | null;
 }
 
 export interface TestOptions {
@@ -73,16 +78,32 @@ export interface TestOptions {
   version: number;
   proseMax: number;
   draft?: { slug: string; md: string } | null;
+  /**
+   * Every name the called tool goes by in the session: in a /remote thread
+   * the CLI reports an alias (`mcp__remote__bash`) for a builtin (`Bash`).
+   * The same function the session manager hands the hook
+   * (`aliasNames(REMOTE_TOOL_ALIASES)`). Default: the name itself.
+   */
+  toolNames?: (toolName: string) => string[];
 }
 
-/** The stored set with a draft in place of (or added beside) its stored text. */
-export function withDraft(resolved: readonly ResolvedGuardrail[], draft: { slug: string; md: string }): { resolved: ResolvedGuardrail[]; replaced: boolean } {
+/**
+ * The stored set with a draft in place of (or added beside) its stored text.
+ * The stored console switch is kept unless `asEnabled` (the Test box tries a
+ * switched-off guardrail's draft as on; `switchedOff` says it was off).
+ */
+export function withDraft(
+  resolved: readonly ResolvedGuardrail[],
+  draft: { slug: string; md: string },
+  opts: { asEnabled?: boolean } = {},
+): { resolved: ResolvedGuardrail[]; replaced: boolean; switchedOff: boolean } {
   const prev = resolved.find((g) => g.slug === draft.slug);
+  const switchedOff = !!prev && !prev.doc.enabled;
   const doc: GuardrailDoc = prev
-    ? { ...prev.doc, md: draft.md }
+    ? { ...prev.doc, md: draft.md, enabled: opts.asEnabled ? true : prev.doc.enabled }
     : { slug: draft.slug, md: draft.md, source: "console", override: false, behindSource: false, enabled: true };
   const [parsed] = resolveDocs([doc]);
-  return { resolved: [...resolved.filter((g) => g.slug !== draft.slug), parsed!], replaced: !!prev };
+  return { resolved: [...resolved.filter((g) => g.slug !== draft.slug), parsed!], replaced: !!prev, switchedOff };
 }
 
 function outcomeOf(e: TestEvent, d: Decision | null, delivered: OnMatchGuidance[]): string {
@@ -111,9 +132,9 @@ export function evaluateGuardrails(stored: readonly ResolvedGuardrail[], event: 
   let draft: TestResult["draft"] = null;
   if (opts.draft) {
     const p = parseGuardrail(opts.draft.slug, opts.draft.md);
-    const w = withDraft(stored, opts.draft);
+    const w = withDraft(stored, opts.draft, { asEnabled: true });
     resolved = w.resolved;
-    draft = { slug: opts.draft.slug, errors: p.errors, blocking: p.blocking, replaced: w.replaced };
+    draft = { slug: opts.draft.slug, errors: p.errors, blocking: p.blocking, replaced: w.replaced, switchedOff: w.switchedOff };
   }
   const g = sessionGuardrails(resolved, opts.agent, opts.channel, { version: opts.version, proseMax: opts.proseMax });
   let d: Decision | null;
@@ -121,9 +142,13 @@ export function evaluateGuardrails(stored: readonly ResolvedGuardrail[], event: 
   let delivered: OnMatchGuidance[] = [];
   let via: "tool" | "inbound" = "tool";
   if (event.kind === "tool") {
+    // As the PreToolUse hook does: every name the tool goes by, the triggers of each merged.
+    const names = opts.toolNames?.(event.tool) ?? [event.tool];
     rulesChecked = g.toolRules.length;
-    d = combine(toolHits(g.toolRules, [event.tool], event.input));
-    delivered = toolTriggered(g, event.tool, opts.channel);
+    d = combine(toolHits(g.toolRules, names, event.input));
+    const triggered = new Map<string, OnMatchGuidance>();
+    for (const n of names) for (const o of toolTriggered(g, n, opts.channel)) triggered.set(o.slug, o);
+    delivered = [...triggered.values()];
   } else if (event.kind === "reply") {
     rulesChecked = g.replyRules.length;
     d = combine(textHits(g.replyRules, "reply", event.text));

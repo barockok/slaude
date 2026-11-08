@@ -383,7 +383,14 @@ const guardrailEnabled = new Map<string, boolean>();
 const edits = new Map<string, { md: string; revision: number; override?: { sourceMd: string; author: string; at: number } | null }>();
 const created = new Map<string, { md: string; revision: number; at: number }>();
 const deleted = new Set<string>();
+/** Guardrails stored before their name was reserved (the stub's ?stubReservedGuardrail=1). */
+const legacy = new Map<string, { md: string; source: "file" | "git" }>();
 let setVersion = 7;
+
+/** Store a guardrail named like a console page ("test"), as an upgraded deployment may have. */
+export function addLegacyGuardrail(slug: string, md: string, source: "file" | "git" = "file"): void {
+  legacy.set(slug, { md, source });
+}
 
 const ALLOWED: Record<OwnerGuardrailRule["on"], OwnerRuleAction[]> = { tool: ["deny", "approve", "audit"], reply: ["deny", "approve", "redact", "audit"], inbound: ["deny", "audit"] };
 
@@ -477,6 +484,7 @@ function ownerGuardrails(now: number): OwnerGuardrailDetail[] {
       overrideOf: { sourceMd: TRIAGE_SOURCE_MD, author: "lead@example.com", updatedAt: now - 3 * DAY },
     },
   ];
+  for (const [slug, l] of legacy) list.push(fromText(slug, l.md, { source: l.source, deletable: false, revision: 5 }, tm));
   const out: OwnerGuardrailDetail[] = list.map((g) => {
     const e = edits.get(g.slug);
     if (!e) return g;
@@ -551,7 +559,7 @@ export function writeOwnerGuardrail(
   const g = all.find((x) => x.slug === slug);
   const check = (md: string): Refused | null => {
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug)) return refuse(422, { error: `invalid guardrail name '${slug}'`, code: "invalid" });
-    if (RESERVED.includes(slug)) return refuse(422, { error: `'${slug}' is reserved; choose another guardrail name`, code: "invalid" });
+    if (op === "create" && !g && RESERVED.includes(slug)) return refuse(422, { error: `'${slug}' is reserved for a new guardrail; choose another name`, code: "invalid" });
     const p = stubParse(slug, md);
     return p.blocking.length ? refuse(422, { error: `guardrail '${slug}' refused: ${p.blocking.join("; ")}`, code: "invalid", blocking: p.blocking, errors: p.errors }) : null;
   };
@@ -595,7 +603,7 @@ export function writeOwnerGuardrail(
 export function validateOwnerGuardrail(slug: string, md: string): GuardrailValidation {
   const p = stubParse(slug, md);
   const blocking = [...p.blocking];
-  if (RESERVED.includes(slug)) blocking.unshift(`'${slug}' is reserved; choose another guardrail name`);
+  if (RESERVED.includes(slug) && !ownerGuardrails(0).some((g) => g.slug === slug)) blocking.unshift(`'${slug}' is reserved for a new guardrail; choose another name`);
   const unknownAgents = p.agents.filter((a) => !AGENTS.includes(a));
   const appliesTo = p.scope === "shared" ? [...AGENTS] : p.agents.filter((a) => AGENTS.includes(a));
   const chars = p.load === "always" ? p.prose.length : 0;
@@ -615,10 +623,11 @@ export function testOwnerGuardrails(req: GuardrailTestRequest): GuardrailTestRes
   let set = ownerGuardrails(0).filter((g) => g.active && g.appliesTo.agents.includes(req.agent));
   let draft: GuardrailTestResponse["draft"] = null;
   if (req.draft) {
-    const replaced = set.some((g) => g.slug === req.draft!.slug);
+    const stored = ownerGuardrails(0).find((g) => g.slug === req.draft!.slug);
+    const replaced = !!stored;
     const d = fromText(req.draft.slug, req.draft.md, {}, set[0]?.threatModel ?? { db: "pg", turnsRunOn: "nodes", strong: true, keySource: "master-key" });
     set = [...set.filter((g) => g.slug !== req.draft!.slug), d];
-    draft = { slug: req.draft.slug, errors: d.errors, blocking: stubParse(req.draft.slug, req.draft.md).blocking, replaced };
+    draft = { slug: req.draft.slug, errors: d.errors, blocking: stubParse(req.draft.slug, req.draft.md).blocking, replaced, switchedOff: !!stored && !stored.enabled };
   }
   const subject = req.kind === "tool" ? (req.tool ?? "") : (req.text ?? "");
   const rules = set.flatMap((g) => g.rules.filter((r) => r.on === req.kind).map((r) => ({ g, r })));

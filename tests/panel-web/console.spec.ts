@@ -731,6 +731,26 @@ test.describe("resources", () => {
     await expect(page.getByRole("alert").filter({ hasText: "not valid JSON" })).toBeVisible();
   });
 
+  test("a guardrail stored as test (before the name was reserved) is reachable: list, detail, edit; /guardrails/test stays the Test box", async ({ page }) => {
+    await page.goto("/panel/guardrails?stubReservedGuardrail=1");
+    await page.getByRole("table", { name: "Guardrails" }).getByRole("row").filter({ hasText: "Stored before the name was reserved" }).click();
+    await expect(page).toHaveURL(/\/guardrails\/~\/test$/);
+    await expect(h1(page)).toHaveText("test");
+    await expect(page.getByRole("table", { name: "Rules" }).getByText("no-tokens")).toBeVisible();
+    await page.getByRole("button", { name: "Edit as override" }).click();
+    await expect(page).toHaveURL(/\/guardrails\/~\/test\/edit$/);
+    const text = page.getByLabel("GUARDRAIL.md text");
+    await expect(page.getByTestId("guardrail-validation").getByText("Valid", { exact: true })).toBeVisible();
+    await text.fill((await text.inputValue()).replace("Keep test notes short.", "Keep test notes shorter."));
+    await expect(page.getByTestId("guardrail-validation").getByText("Valid", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Save override" }).click();
+    await expect(toasts(page).getByText("Override saved")).toBeVisible();
+    await expect(page).toHaveURL(/\/guardrails\/~\/test$/);
+    await expect(page.getByLabel("Override diff against the source").locator(".is-add")).toContainText("Keep test notes shorter.");
+    await page.goto("/panel/guardrails/test");
+    await expect(h1(page)).toHaveText("Test a guardrail");
+  });
+
   test("the Test box on a guardrail's detail page", async ({ page }) => {
     await page.goto("/panel/guardrails/triage-channels");
     const form = page.getByRole("form", { name: "Test a guardrail" });

@@ -7,7 +7,8 @@
 import { describe, expect, test } from "bun:test";
 import { GUARDRAIL_TEMPLATES } from "../../src/web/console/pages/resources/guardrailTemplates";
 import { lineDiff } from "../../src/web/console/lib/line-diff";
-import { parseGuardrail } from "../../src/guardrails/format";
+import { parseGuardrail, RESERVED_SLUGS } from "../../src/guardrails/format";
+import { CONSOLE_GUARDRAIL_PAGES } from "../../src/web/console/pages/resources/guardrailPages";
 
 describe("templates", () => {
   test("each parses cleanly with the server's parser, both kinds offered", () => {
@@ -29,6 +30,10 @@ describe("templates", () => {
     const inbound = parseGuardrail("t", GUARDRAIL_TEMPLATES.find((t) => t.id === "inbound-deny")!.md("t")).rules[0]!;
     expect(inbound.text!.test("password: x")).toBe(true);
   });
+});
+
+test("the console's own /guardrails pages are exactly the reserved names", () => {
+  expect([...CONSOLE_GUARDRAIL_PAGES].sort()).toEqual([...RESERVED_SLUGS].sort());
 });
 
 describe("lineDiff", () => {

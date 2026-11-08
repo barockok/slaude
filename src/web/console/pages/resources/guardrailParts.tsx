@@ -2,8 +2,11 @@ import type { ReactNode } from "react";
 import type { GuardrailThreatModel, NamedChannel, OwnerGuardrailRule, OwnerGuardrailSource, OwnerGuardrailSummary } from "../../../../gateway/panel/api-types";
 import { Link } from "../../../lib/router";
 import { Badge, type BadgeTone } from "../../../ui";
+import { CONSOLE_GUARDRAIL_PAGES } from "./guardrailPages";
 
-export const guardrailPath = (slug: string) => `/guardrails/${encodeURIComponent(slug)}`;
+/** A guardrail's console page; one named like a console page is reached under /guardrails/~/. */
+export const guardrailPath = (slug: string) =>
+  CONSOLE_GUARDRAIL_PAGES.has(slug) ? `/guardrails/~/${encodeURIComponent(slug)}` : `/guardrails/${encodeURIComponent(slug)}`;
 
 const SOURCE: Record<OwnerGuardrailSource, { label: string; hint: string }> = {
   git: { label: "Deploy repo", hint: "From the deploy repo's guardrails/ folder, synced by /deploy" },

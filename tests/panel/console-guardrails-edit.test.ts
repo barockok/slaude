@@ -13,7 +13,7 @@ import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
 import { db } from "../../src/db/schema";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
 import { __clearGuardrailsForTests, applyGuardrailChange, readGuardrails, sha256 } from "../../src/db/guardrails";
-import { __resetGuardrailSnapshotsForTests, currentGuardrails } from "../../src/guardrails/snapshot";
+import { __resetGuardrailSnapshotsForTests, currentGuardrails, refreshGuardrails } from "../../src/guardrails/snapshot";
 import { verifySet } from "../../src/guardrails/integrity";
 import { flushAudits } from "../../src/audit/emit";
 import { evaluateGuardrails } from "../../src/guardrails/evaluate";
@@ -115,7 +115,7 @@ describe("create", () => {
     const taken = await call("/panel/api/guardrails", superadmin, { method: "POST", body: { slug: "no-send", md: GIT } });
     expect(taken.status).toBe(409);
     expect(taken.body).toMatchObject({ code: "exists" });
-    expect((await call("/panel/api/guardrails", superadmin, { method: "POST", body: { slug: "test", md: NEW.replace("quiet-prices", "test") } })).body).toMatchObject({ code: "invalid", error: expect.stringContaining("reserved") });
+    expect((await call("/panel/api/guardrails", superadmin, { method: "POST", body: { slug: "test", md: NEW.replace("quiet-prices", "test") } })).body).toMatchObject({ code: "invalid", error: expect.stringContaining("reserved for a new guardrail") });
     expect((await call("/panel/api/guardrails", superadmin, { method: "POST", body: { slug: "Bad Name", md: NEW } })).status).toBe(422);
     const bad = await call("/panel/api/guardrails", superadmin, { method: "POST", body: { slug: "quiet-prices", md: BAD } });
     expect(bad.status).toBe(422);
@@ -213,8 +213,10 @@ describe("clear and delete", () => {
     expect(r.body).toMatchObject({ change: "override.cleared", version: 3 });
     expect(reloads).toEqual(["default"]);
     const d = await detail("no-send");
-    expect(d).toMatchObject({ md: GIT, override: false, overrideOf: null, revision: 1 });
+    expect(d).toMatchObject({ md: GIT, override: false, overrideOf: null, revision: 3 });
     expect(r.body.revision).toBe(d.revision);
+    // Revisions only go up: an editor that loaded the source before the override was set is stale now.
+    expect((await call("/panel/api/guardrails/no-send", superadmin, { method: "PUT", body: { md: GIT.replace("Draft only.", "Old."), revision: 1 } })).status).toBe(409);
     expect(verifySet("default", await readGuardrails())).toBe(3);
     const again = await call(`/panel/api/guardrails/no-send/override?revision=${d.revision}`, superadmin, { method: "DELETE" });
     expect(again.status).toBe(404);
@@ -238,6 +240,24 @@ describe("clear and delete", () => {
     expect(reloads).toEqual(["default"]);
     expect((await readGuardrails()).rows.map((x) => x.slug)).toEqual(["host", "no-send"]);
     expect((await auditRows("guardrail.deleted")).map((x) => x.target_id)).toEqual(["quiet-prices"]);
+  });
+});
+
+describe("a guardrail stored under a now reserved name", () => {
+  test("a stored `test` guardrail: detail, edit (override), validate and clear all work; creating `test` again is a 409", async () => {
+    const md = "---\nname: test\ndescription: Old one\n---\nKeep notes short.";
+    await applyGuardrailChange("default", { upsert: [{ slug: "test", md, source: "file" }], by: "old" });
+    const d = await detail("test");
+    expect(d).toMatchObject({ slug: "test", source: "file", revision: 2 });
+    const v = (await call("/panel/api/guardrails/validate", superadmin, { method: "POST", body: { slug: "test", md } })).body as GuardrailValidation;
+    expect(v.ok).toBe(true);
+    const e = await call("/panel/api/guardrails/test", superadmin, { method: "PUT", body: { md: md.replace("short", "shorter"), revision: 2 } });
+    expect(e.status).toBe(200);
+    expect(e.body).toMatchObject({ change: "override.set", revision: 3 });
+    expect((await call("/panel/api/guardrails/test/override?revision=3", superadmin, { method: "DELETE" })).status).toBe(200);
+    // POST /guardrails/test is still the Test box (no POST on a guardrail's own route).
+    expect((await call("/panel/api/guardrails/test", superadmin, { method: "POST", body: { agent: "default", kind: "reply", text: "hi" } })).status).toBe(200);
+    expect((await call("/panel/api/guardrails", superadmin, { method: "POST", body: { slug: "test", md } })).body).toMatchObject({ code: "exists" });
   });
 });
 
@@ -275,7 +295,7 @@ describe("validate", () => {
     }
     const reserved = (await call("/panel/api/guardrails/validate", superadmin, { method: "POST", body: { slug: "new", md: "---\nname: new\n---\n" } })).body as GuardrailValidation;
     expect(reserved.ok).toBe(false);
-    expect(reserved.blocking[0]).toContain("reserved");
+    expect(reserved.blocking[0]).toContain("reserved for a new guardrail");
     // Nothing was written.
     expect((await readGuardrails()).rows.map((x) => x.slug)).toEqual(["no-send"]);
   });
@@ -307,6 +327,38 @@ describe("the Test box", () => {
     expect((await call("/panel/api/guardrails/test", superadmin, { method: "POST", body: { agent: "default", kind: "tool", tool: "Bash", input: "{nope" } })).status).toBe(400);
     expect((await call("/panel/api/guardrails/test", superadmin, { method: "POST", body: { agent: "default", kind: "tool" } })).status).toBe(400);
     expect((await call("/panel/api/guardrails/test", superadmin, { method: "POST", body: { agent: "nobody", kind: "reply", text: "x" } })).status).toBe(404);
+  });
+
+  test("a /remote thread: a rule on Bash holds for mcp__remote__bash (implied by the alias name), a rule on the alias for Bash with remote set", async () => {
+    const bash = "---\nname: no-rm\n---\n```rules\n- id: rm\n  on: tool\n  match: { tool: Bash, input: { command: 'rm -rf' } }\n  action: deny\n```";
+    const t = async (body: Record<string, unknown>) => ((await call("/panel/api/guardrails/test", superadmin, { method: "POST", body: { agent: "default", kind: "tool", input: '{"command":"rm -rf /"}', ...body } })).body as GuardrailTestResponse).decision;
+    expect(await t({ tool: "mcp__remote__bash", draft: { slug: "no-rm", md: bash } })).toMatchObject({ action: "deny", ruleId: "rm" });
+    const alias = bash.replace("tool: Bash", "tool: mcp__remote__bash");
+    expect(await t({ tool: "Bash", draft: { slug: "no-rm", md: alias } })).toBeNull();
+    expect(await t({ tool: "Bash", remote: true, draft: { slug: "no-rm", md: alias } })).toMatchObject({ action: "deny" });
+  });
+
+  test("a set that does not verify: the Test box fails closed with the runtime's notice, never the cached set", async () => {
+    expect((await call("/panel/api/guardrails/test", superadmin, { method: "POST", body: { agent: "default", kind: "reply", text: "x" } })).status).toBe(200);
+    await db.run("UPDATE guardrails SET md = 'tampered' WHERE slug = 'no-send'");
+    // The next read (a reload signal, the poll) finds it: from then on the runtime fails closed.
+    await refreshGuardrails("default");
+    const r = await call("/panel/api/guardrails/test", superadmin, { method: "POST", body: { agent: "default", kind: "tool", tool: "mcp__x__send" } });
+    expect(r.status).toBe(423);
+    expect(r.body.code).toBe("integrity");
+    expect(r.body.error).toMatch(/could not be read or verified/);
+    expect(r.body.hint).toContain("--repair");
+  });
+
+  test("requests stay small: input and text are capped just past what a pattern checks", async () => {
+    const MAX = 1024 * 1024;
+    expect((await call("/panel/api/guardrails/test", superadmin, { method: "POST", body: { agent: "default", kind: "reply", text: "x".repeat(MAX + 2) } })).status).toBe(400);
+    expect((await call("/panel/api/guardrails/test", superadmin, { method: "POST", body: { agent: "default", kind: "tool", tool: "Bash", input: "x".repeat(MAX + 4097) } })).status).toBe(400);
+    // At the cap a deny rule still reports too large to check.
+    const draft = "---\nname: d\n---\n```rules\n- id: r\n  on: reply\n  match: { text: zzz }\n  action: deny\n```";
+    const t = (await call("/panel/api/guardrails/test", superadmin, { method: "POST", body: { agent: "default", kind: "reply", text: "x".repeat(MAX + 1), draft: { slug: "d", md: draft } } })).body as GuardrailTestResponse;
+    expect(t.tooLarge).toBe(true);
+    expect(t.decision).toMatchObject({ action: "deny", oversize: true });
   });
 
   test("too large to check is reported", async () => {
