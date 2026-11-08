@@ -3261,6 +3261,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             existing.spoke = false;
             existing.passed = false;
             existing.passReact = undefined;
+            existing.silent = false;
             existing.engagedBefore = dispatch?.engagedBefore;
             existing.wasCompacting = true;
             noteTurnSender(session.id, existing.ctx);
@@ -3454,6 +3455,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       existing.spoke = false;
       existing.passed = false;
       existing.passReact = undefined;
+      // A person's message: the Stop guard applies again even when the route
+      // was last a cron run's (silent), as a node guards a Slack job.
+      existing.silent = false;
       // A message merged into a running turn carries no mention result
       // (undefined) and must not erase the running mention's; the done
       // handler clears it at the end of every turn.
@@ -4463,6 +4467,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (route) {
         route.ctx.userId = operatorId;
         route.ctx.origin = "panel";
+        // A new turn: the Stop guard starts over and forces a silent end, as
+        // a node does for a panel job.
+        route.spoke = false;
+        route.passed = false;
+        route.passReact = undefined;
+        route.silent = false;
         noteTurnSender(session.id, route.ctx);
       }
       await agent.sendMessage(session.id, envelope, { sender: { userId: operatorId, teamId: meta.teamId || null, origin: "panel" } });
