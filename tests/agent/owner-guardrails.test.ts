@@ -260,3 +260,80 @@ describe("a booted session", () => {
     expect(mgr.isLive(row.id)).toBe(false);
   });
 });
+
+describe("tool approve in a booted session", () => {
+  const APPROVE_SET = resolveDocs([doc("deploys", "", "```rules\n- id: ask\n  on: tool\n  match: { tool: Deploy }\n  action: approve\n  message: Deploys need an approver.\n```")]);
+  const approveResolver = async (_s: string, persona: string | undefined, channel: string | null) =>
+    sessionGuardrails(APPROVE_SET, persona ?? "default", channel, { version: 5, proseMax: 4000 });
+
+  it("asks the permission resolver for a forced card and allows on its allow; the matcher timeout sits above the cap", async () => {
+    const mgr = new AgentManager();
+    mgr.setGuardrailResolver(approveResolver);
+    const { sink, firings } = recordingSink();
+    mgr.setGuardrailSink(sink);
+    const asked: any[] = [];
+    mgr.setPermissionResolver(async (_sid, tool, input, ctx) => {
+      asked.push({ tool, input, ctx });
+      return { behavior: "allow", updatedInput: input };
+    });
+    const row = await mgr.ensureSession(thread());
+    await mgr.setPermissionMode(row.id, "bypassPermissions");
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => lastOptions !== undefined, 3000, "boot");
+    expect(lastOptions.hooks.PreToolUse[0].timeout).toBe(660);
+    const out = await runPre(lastOptions, pre("Deploy", { env: "prod" }));
+    expect(out.some((o) => o?.hookSpecificOutput?.permissionDecision === "allow")).toBe(true);
+    expect(asked).toHaveLength(1);
+    expect(asked[0].ctx.ownerApproval).toMatchObject({ ruleId: "deploys#ask", message: "Deploys need an approver." });
+    expect(asked[0].ctx.decisionReason).toBe("Deploys need an approver.");
+    expect(firings).toEqual(["deploys#ask:approved:interactive"]);
+    mgr.reload(row.id);
+    await until(() => !mgr.isLive(row.id), 3000, "shutdown");
+  });
+
+  it("a deny from the card refuses with its message; no resolver refuses at once", async () => {
+    const mgr = new AgentManager();
+    mgr.setGuardrailResolver(approveResolver);
+    mgr.setPermissionResolver(async () => ({ behavior: "deny", message: "Denied by <@U9>" }));
+    const row = await mgr.ensureSession(thread());
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => lastOptions !== undefined, 3000, "boot");
+    const out = await runPre(lastOptions, pre("Deploy"));
+    expect(out.find((o) => o?.hookSpecificOutput)?.hookSpecificOutput.permissionDecisionReason).toBe("Deploys need an approver. Not approved: Denied by <@U9>.");
+    mgr.setPermissionResolver(undefined);
+    const none = await runPre(lastOptions, pre("Deploy"));
+    expect(none.find((o) => o?.hookSpecificOutput)?.hookSpecificOutput.permissionDecisionReason).toBe("Deploys need an approver. Not approved: no approval card can be shown in this session.");
+    mgr.reload(row.id);
+    await until(() => !mgr.isLive(row.id), 3000, "shutdown");
+  });
+
+  it("in a wake nobody is asked: refused before the resolver; a node's turn deadline bounds the card", async () => {
+    const mgr = new AgentManager();
+    mgr.setGuardrailResolver(approveResolver);
+    let called = 0;
+    mgr.setPermissionResolver(async (_s, _t, input, ctx: any) => {
+      called++;
+      return ctx.ownerApproval.deadline <= Date.now() + 60_000 ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "too long" };
+    });
+    const row = await mgr.ensureSession(thread());
+    const run: BackgroundTurnRun = { runId: "run-a", finish: async () => {} };
+    await mgr.sendMessage(row.id, '<runtime-check kind="wake">look</runtime-check>', { backgroundRun: run, wake: { maxTurns: 10 } });
+    await until(() => lastOptions !== undefined, 3000, "boot");
+    const out = await runPre(lastOptions, pre("Deploy"));
+    expect(out.find((o) => o?.hookSpecificOutput)?.hookSpecificOutput.permissionDecisionReason).toBe("Deploys need an approver. Not approved: nobody is in this turn to approve it (you woke on your own).");
+    expect(called).toBe(0);
+    mgr.reload(row.id);
+    await until(() => !mgr.isLive(row.id), 3000, "shutdown");
+    // Not a wake, with a turn deadline 90 s away: the card gets 60 s.
+    lastOptions = undefined;
+    mgr.setTurnDeadline(() => Date.now() + 90_000);
+    const row2 = await mgr.ensureSession(thread());
+    await mgr.sendMessage(row2.id, "hello");
+    await until(() => lastOptions !== undefined, 3000, "boot 2");
+    const out2 = await runPre(lastOptions, pre("Deploy"));
+    expect(out2.some((o) => o?.hookSpecificOutput?.permissionDecision === "allow")).toBe(true);
+    expect(called).toBe(1);
+    mgr.reload(row2.id);
+    await until(() => !mgr.isLive(row2.id), 3000, "shutdown 2");
+  });
+});

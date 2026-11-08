@@ -565,6 +565,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // flag, so a later normal turn on the same session is not a wake.
   const wakeFor = (sessionId: string): boolean => isWakeTurn(store.tokenFor(sessionId), wakeJobs.has(sessionId));
   agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id), wakeFor }));
+  // Each turn's hard deadline (the turn timeout below, which is the job
+  // token's lifetime): an owner tool approval card ends before it.
+  const turnDeadlines = new Map<string, number>();
+  agent.setTurnDeadline((sessionId) => turnDeadlines.get(sessionId) ?? null);
   // The post-turn skill check is budgeted on the gateway's ledger (spec §9.3);
   // a refused or failed start skips it.
   agent.setBackgroundBudget(makeNodeSkillCheckBudget({ client, withToken: (id, call) => store.withToken(id, call) }));
@@ -834,6 +838,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       const bound = store.tokenFor(sessionId) ?? data.jobToken;
       stopGuard.beginTurn(sessionId, { claims: decodeClaims(bound), bgRun: data.bgRun, wake: data.wake });
 
+      turnDeadlines.set(sessionId, Date.now() + turnTimeoutMs);
       const outcome = await new Promise<"done" | "error">((resolve, reject) => {
         const timer = setTimeout(() => {
           console.error(`[node] turn timeout session=${sessionId} — aborting`);
@@ -880,6 +885,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       return outcome;
     } finally {
       turnAborts.delete(sessionId);
+      turnDeadlines.delete(sessionId);
       await unsubAbort().catch(() => {});
       // Warm registry: the Query outlives the turn under the idle TTL.
       try {

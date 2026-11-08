@@ -10,8 +10,14 @@
  * wake's turn to click a card, and mono denies every canUseTool call during a
  * wake before any policy runs (src/gateway/core/gateway.ts). Without this, a
  * tool in the node's SLAUDE_AUTO_ALLOW_TOOLS would run in a wake.
+ *
+ * An owner guardrail's approve rule (ctx.ownerApproval, set by the owner
+ * guardrails hook) skips the local policy and asks the gateway with
+ * force_card and rule_id; the gateway re-evaluates the rule from its own
+ * verified set before it opens the card. ttl_ms is the hook's inner deadline,
+ * so the card never outlives the wait (or the job token polling it).
  */
-import type { PermissionResolver } from "../../agent/manager";
+import type { PermissionContext, PermissionResolver } from "../../agent/manager";
 import {
   autoAllowFromEnv,
   permissionPolicy,
@@ -45,8 +51,11 @@ export function makeNodePermissionResolver(deps: NodePermissionDeps): Permission
   const autoAllow = autoAllowFromEnv();
   return async (sessionId, toolName, input, ctx) => {
     if (deps.wakeFor?.(sessionId)) return { behavior: "deny", message: wakeRefusal(toolName) };
-    const local = permissionPolicy(toolName, input, autoAllow);
-    if (local) return local;
+    const forced = (ctx as PermissionContext).ownerApproval;
+    if (!forced) {
+      const local = permissionPolicy(toolName, input, autoAllow);
+      if (local) return local;
+    }
 
     const token = deps.tokenFor(sessionId);
     if (!token) return { behavior: "deny", message: "no job token for this session — cannot ask for permission" };
@@ -62,6 +71,7 @@ export function makeNodePermissionResolver(deps: NodePermissionDeps): Permission
           tool_use_id: ctx.toolUseID,
           ...(ctx.decisionReason ? { decision_reason: String(ctx.decisionReason) } : {}),
           ...(ctx.suggestions?.length ? { suggestions: ctx.suggestions } : {}),
+          ...(forced ? { force_card: true, rule_id: forced.ruleId, ttl_ms: Math.max(1, Math.floor(forced.deadline - Date.now())) } : {}),
         },
         token,
       );

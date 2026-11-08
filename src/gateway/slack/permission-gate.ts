@@ -14,6 +14,7 @@ import { auditGateRow } from "../../audit/emit";
 import * as OneOnOne from "../../db/one-on-one";
 import { canDecidePermission } from "../../access/permission-auth";
 import type { TurnOrigin } from "../../knowledge/gated-dispatch";
+import type { PermissionContext } from "../../agent/manager";
 import { memoryToolIdTwin, memoryToolTwin } from "../../tools/contracts/kb";
 
 type PendingKey = string; // toolUseID
@@ -231,7 +232,8 @@ export function decisionFromPermRow(
   suggestions: PermissionUpdate[] | undefined,
 ): PermissionDecision {
   if (row.status === "approved") {
-    const always = (row.payload as any)?.decision === "always";
+    // An owner guardrail's card never grants more than this call.
+    const always = (row.payload as any)?.decision === "always" && !(row.payload as any)?.guardrail;
     return {
       behavior: "allow",
       updatedInput: input,
@@ -288,6 +290,11 @@ function literalTokens(s: string): string[] {
 }
 /** A single-line field shown literally. */
 const cardLiteral = (s: string): string => literalTokens(s).join("");
+
+/** Rule text on a card: Slack's control characters escaped, so it cannot mention or link. */
+function escapeCardText(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
 /** Three or more backticks cannot end the card's fence early. */
 function unfence(s: string): string {
@@ -389,7 +396,15 @@ export function voiceStartCard(input: Record<string, unknown>, cfg: VoiceCardCon
   return blocks;
 }
 
-function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId: string, decisionReason?: string) {
+/** An owner guardrail's card: the rule asks for it, and it offers no "always allow". */
+export interface ForcedCard {
+  /** `<slug>#<rule id>`. */
+  ruleId: string;
+  /** The rule's message. */
+  message: string;
+}
+
+function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId: string, decisionReason?: string, forced?: ForcedCard) {
   // voice_start's card is never truncated: it spans as many blocks as needed.
   const bodies = toolName === VOICE_START
     ? voiceStartCard(input, voiceCardConfig())
@@ -399,7 +414,14 @@ function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId:
       type: "section",
       text: { type: "mrkdwn", text: `:lock: *Approval needed* — \`${toolName}\`` },
     },
-    ...(decisionReason
+    ...(forced
+      ? [
+          {
+            type: "context",
+            elements: [{ type: "mrkdwn", text: `Owner guardrail \`${cardLiteral(forced.ruleId)}\`: ${escapeCardText(forced.message)} Only the person who asked or an approver can decide.` }],
+          },
+        ]
+      : decisionReason
       ? [
           {
             type: "context",
@@ -420,11 +442,15 @@ function permBlocks(toolName: string, input: Record<string, unknown>, toolUseId:
           text: { type: "plain_text", text: "Allow once" },
           action_id: `slaude_perm:allow:${toolUseId}`,
         },
-        {
-          type: "button",
-          text: { type: "plain_text", text: "Always allow" },
-          action_id: `slaude_perm:always:${toolUseId}`,
-        },
+        ...(forced
+          ? []
+          : [
+              {
+                type: "button",
+                text: { type: "plain_text", text: "Always allow" },
+                action_id: `slaude_perm:always:${toolUseId}`,
+              },
+            ]),
         {
           type: "button",
           style: "danger",
@@ -634,7 +660,7 @@ export class PermissionGate {
         pend.resolve({
           behavior: "allow",
           updatedInput: pend.input,
-          ...(decision === "always"
+          ...(decision === "always" && !pend.row.payload.guardrail
             ? { updatedPermissions: alwaysAllowUpdates(pend.toolName, pend.suggestions) }
             : {}),
         });
@@ -687,9 +713,15 @@ export class PermissionGate {
     persona?: string | null;
     /** Who started the turn (from the job token), stamped for click authorisation. */
     turn?: TurnStamp;
+    /** An owner guardrail asks for this card (already re-evaluated by the
+     *  caller): no auto-allow policy, no "always allow", expires within ttlMs. */
+    forced?: ForcedCard & { ttlMs?: number };
   }): Promise<{ decision: PermissionDecision } | { pendingId: string }> {
-    const policy = permissionPolicy(args.toolName, args.input, this.#autoAllow, gateVoiceAudio(args.toolName));
-    if (policy) return { decision: policy };
+    if (!args.forced) {
+      const policy = permissionPolicy(args.toolName, args.input, this.#autoAllow, gateVoiceAudio(args.toolName));
+      if (policy) return { decision: policy };
+    }
+    const ttl = Math.min(PERM_GATE_TTL_MS, args.forced?.ttlMs ?? PERM_GATE_TTL_MS);
 
     await PendingGates.create({
       id: args.toolUseId,
@@ -703,15 +735,16 @@ export class PermissionGate {
         ...(args.persona ? { personaName: args.persona } : {}),
         ...stampPayload(args.turn),
         ...(args.suggestions?.length ? { suggestions: args.suggestions } : {}),
+        ...(args.forced ? { guardrail: args.forced.ruleId } : {}),
       },
-      expiresAt: Date.now() + PERM_GATE_TTL_MS,
+      expiresAt: Date.now() + ttl,
     });
     try {
       await clientForApp(this.#transport, args.app).chat.postMessage({
         channel: args.channel,
         thread_ts: args.threadTs,
         text: `:lock: Approval needed: \`${args.toolName}\``,
-        blocks: permBlocks(args.toolName, args.input, args.toolUseId, args.decisionReason),
+        blocks: permBlocks(args.toolName, args.input, args.toolUseId, args.decisionReason, args.forced),
       });
     } catch (e) {
       // The prompt never reached Slack — settle the row and rethrow.
@@ -730,8 +763,13 @@ export class PermissionGate {
     input,
     ctx,
   ) => {
-    const policy = permissionPolicy(toolName, input, this.#autoAllow, gateVoiceAudio(toolName));
-    if (policy) return policy;
+    // An owner guardrail's approve rule forces the card: the auto-allow
+    // policy does not apply to it (the rule is the owner's, the policy ours).
+    const forced = (ctx as PermissionContext).ownerApproval;
+    if (!forced) {
+      const policy = permissionPolicy(toolName, input, this.#autoAllow, gateVoiceAudio(toolName));
+      if (policy) return policy;
+    }
     const route = this.#routes.get(sessionId);
     if (!route) {
       // No live thread — fail closed so we don't silently grant ops.
@@ -749,13 +787,16 @@ export class PermissionGate {
       threadTs: route.threadTs,
       ...(route.persona ? { personaName: route.persona } : {}),
       ...stampPayload(this.#turnOf(sessionId)),
+      ...(forced ? { guardrail: forced.ruleId } : {}),
     };
     await PendingGates.create({
       id: toolUseId,
       kind: "perm",
       sessionId,
       payload,
-      expiresAt: Date.now() + PERM_GATE_TTL_MS,
+      // An owner card ends with its hook's deadline (the hook aborts the
+      // signal then, which cancels the row below).
+      expiresAt: forced ? Math.min(forced.deadline, Date.now() + PERM_GATE_TTL_MS) : Date.now() + PERM_GATE_TTL_MS,
     });
 
     let resolveFn!: (r: Awaited<ReturnType<CanUseTool>>) => void;
@@ -812,7 +853,7 @@ export class PermissionGate {
         channel: route.channel,
         thread_ts: route.threadTs,
         text: `:lock: Approval needed: \`${toolName}\``,
-        blocks: permBlocks(toolName, input, toolUseId, ctx.decisionReason),
+        blocks: permBlocks(toolName, input, toolUseId, ctx.decisionReason, forced ? { ruleId: forced.ruleId, message: forced.message } : undefined),
       });
       pend.messageTs = (posted.ts as string) ?? "";
     } catch (e) {
