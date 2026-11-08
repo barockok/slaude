@@ -1,13 +1,15 @@
 import { useState } from "react";
-import type { OwnerGuardrailDetail, OwnerGuardrailRule, OwnerGuardrailToggleResponse } from "../../../../gateway/panel/api-types";
+import type { GuardrailWriteError, GuardrailWriteResponse, OwnerGuardrailDetail, OwnerGuardrailRule, OwnerGuardrailToggleResponse } from "../../../../gateway/panel/api-types";
 import { ApiError } from "../../../lib/api";
-import { Link } from "../../../lib/router";
+import { Link, navigate } from "../../../lib/router";
 import { Badge, Button, Card, Dialog, EmptyState, IconArrowLeft, KeyValue, Markdown, PageHeader, Skeleton, useToast } from "../../../ui";
 import { TimeAgo } from "../../../shared/TimeAgo";
 import { api } from "../../client";
 import { ErrorState } from "../../components/ErrorState";
 import { useApi } from "../../hooks/useApi";
-import { channelText, GuardrailSourceBadges, GuardrailStatus, RuleStatusBadge, ThreatModelNote } from "./guardrailParts";
+import { channelText, guardrailPath, GuardrailSourceBadges, GuardrailStatus, RuleStatusBadge, ThreatModelNote } from "./guardrailParts";
+import { GuardrailTestBox } from "./GuardrailTestBox";
+import { lineDiff } from "../../lib/line-diff";
 
 const ON: Record<OwnerGuardrailRule["on"], string> = { tool: "Tool call", reply: "Reply", inbound: "Inbound message" };
 const ACTION: Record<OwnerGuardrailRule["action"], string> = { deny: "Deny", approve: "Needs approval", redact: "Redact", audit: "Record only" };
@@ -26,6 +28,12 @@ const FIRING: Record<string, string> = {
   "guardrail.inbound.denied": "Denied a message",
   "guardrail.inbound.audited": "Recorded a message",
   "guardrail.guidance.delivered": "Guidance given",
+  "guardrail.tool.approved": "Approved a held tool call",
+  "guardrail.tool.refused": "Refused a held tool call",
+  "guardrail.reply.denied": "Denied a reply",
+  "guardrail.reply.held": "Held a reply",
+  "guardrail.reply.redacted": "Redacted a reply",
+  "guardrail.reply.audited": "Recorded a reply",
 };
 
 function Rules({ d }: { d: OwnerGuardrailDetail }) {
@@ -184,6 +192,123 @@ function Switch({ d, reload }: { d: OwnerGuardrailDetail; reload: () => void }) 
   );
 }
 
+/** The override against the source text it replaces (the current synced or imported one). */
+function OverrideDiff({ d }: { d: OwnerGuardrailDetail }) {
+  if (!d.overrideOf) return null;
+  const lines = lineDiff(d.overrideOf.sourceMd, d.md);
+  const changed = lines.filter((l) => l.kind !== "same").length;
+  return (
+    <Card
+      title={
+        <span className="sl-title-row">
+          <span>Changes from the source</span>
+          {d.behindSource && <Badge tone="warning">Behind source</Badge>}
+        </span>
+      }
+      description={
+        d.behindSource
+          ? "The source changed after this override was written. Lines marked - are in the current source and not in the override; lines marked + are the override's."
+          : "Lines marked - are in the source and not in the override; lines marked + are the override's."
+      }
+    >
+      <p className="sl-caption">
+        Override by {d.overrideOf.author}, <TimeAgo at={d.overrideOf.updatedAt} />. {changed ? `${changed} ${changed === 1 ? "line differs" : "lines differ"}.` : "Same text as the source."}
+      </p>
+      <pre className="sl-gr-diff" aria-label="Override diff against the source">
+        {lines.map((l, i) => (
+          <span key={i} className={`sl-gr-diff__line is-${l.kind}`}>
+            {`${l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "} ${l.text}\n`}
+          </span>
+        ))}
+      </pre>
+    </Card>
+  );
+}
+
+/** Edit, clear the override, delete: superadmin only; each write carries the revision loaded. */
+function Actions({ d, reload }: { d: OwnerGuardrailDetail; reload: () => void }) {
+  const toast = useToast();
+  const [confirm, setConfirm] = useState<"clear" | "delete" | null>(null);
+  const [busy, setBusy] = useState(false);
+  const act = async () => {
+    if (!confirm) return;
+    setBusy(true);
+    try {
+      const path = `/api/guardrails/${encodeURIComponent(d.slug)}${confirm === "clear" ? "/override" : ""}?revision=${d.revision}`;
+      await api.del<GuardrailWriteResponse>(path);
+      toast({
+        tone: "success",
+        title: confirm === "clear" ? "Override cleared" : "Guardrail deleted",
+        description: confirm === "clear" ? "The source text applies again from each agent's next turn." : `${d.name} no longer applies.`,
+      });
+      setConfirm(null);
+      if (confirm === "delete") navigate("/guardrails");
+      else reload();
+    } catch (e) {
+      const body = e instanceof ApiError ? (e.body as GuardrailWriteError | null) : null;
+      const stale = body?.code === "stale";
+      toast({
+        tone: "danger",
+        title: stale ? "It changed since you loaded it" : "Could not change the guardrail",
+        description: `${e instanceof Error ? e.message : String(e)}${body?.hint ? ` ${body.hint}` : ""}`,
+      });
+      setConfirm(null);
+      if (stale) reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Card
+      title="Change it"
+      description={
+        d.canEdit
+          ? d.deletable
+            ? "Written in the console: edit it or delete it. Every change is recorded in the audit trail."
+            : "From the deploy repo or host files: an edit saves a console override, kept across syncs. To remove it, switch it off or delete it at its source."
+          : "Only a superadmin can edit, override or delete a guardrail."
+      }
+    >
+      <div className="sl-title-row">
+        <Button variant="primary" disabled={!d.canEdit} onClick={() => navigate(`${guardrailPath(d.slug)}/edit`)}>
+          {d.override ? "Edit override" : d.deletable ? "Edit" : "Edit as override"}
+        </Button>
+        {d.override && (
+          <Button disabled={!d.canEdit} onClick={() => setConfirm("clear")}>
+            Clear override
+          </Button>
+        )}
+        {d.deletable && (
+          <Button variant="danger" disabled={!d.canEdit} onClick={() => setConfirm("delete")}>
+            Delete
+          </Button>
+        )}
+      </div>
+      <Dialog
+        open={confirm !== null}
+        onClose={() => (busy ? undefined : setConfirm(null))}
+        size="sm"
+        title={confirm === "clear" ? "Clear the override?" : "Delete this guardrail?"}
+        description={
+          confirm === "clear"
+            ? "The console override is dropped and the source text applies again. Warm sessions pick it up after their current turn."
+            : "Its rules stop being checked and its Guidance leaves the prompt. This cannot be undone."
+        }
+        footer={
+          <>
+            <Button onClick={() => setConfirm(null)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button variant="danger" loading={busy} onClick={act}>
+              {confirm === "clear" ? "Clear override" : "Delete"}
+            </Button>
+          </>
+        }
+      />
+    </Card>
+  );
+}
+
 function Body({ d, reload }: { d: OwnerGuardrailDetail; reload: () => void }) {
   return (
     <div className="sl-memory-page">
@@ -202,8 +327,10 @@ function Body({ d, reload }: { d: OwnerGuardrailDetail; reload: () => void }) {
         <Card title="GUARDRAIL.md">
           <Markdown source={d.md} copyLabel="Copy GUARDRAIL.md" />
         </Card>
+        <OverrideDiff d={d} />
         <Rules d={d} />
         <Guidance d={d} />
+        <GuardrailTestBox agent={d.appliesTo.agents[0] ?? "default"} description="Try a tool call, a reply or an incoming message against an agent's guardrails, this one included. Nothing is posted, held or run." />
         <Firings d={d} />
       </div>
       <aside className="sl-memory-page__aside">
@@ -246,6 +373,7 @@ function Body({ d, reload }: { d: OwnerGuardrailDetail; reload: () => void }) {
             {d.behindSource && <p className="sl-caption">The source text changed after this override was written. The override is kept until someone updates or clears it.</p>}
           </div>
         </Card>
+        <Actions d={d} reload={reload} />
         <Switch d={d} reload={reload} />
         <Card title="Who can change it">
           <ThreatModelNote t={d.threatModel} />

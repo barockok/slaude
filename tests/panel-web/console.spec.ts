@@ -34,7 +34,9 @@ const PAGES: Array<{ path: string; heading: string | RegExp; ready: string; sub?
   { path: "/panel/skills/base%3Arelease-notes", heading: /release-notes/, ready: "Pinned commit", sub: "SKILL.md" },
   { path: "/panel/skills/retired%3Adefault%3Astandup-notes-20261020T090000Z", heading: /standup-notes/, ready: "Unused for 60 days.", sub: "Provenance" },
   { path: "/panel/guardrails", heading: "Guardrails", ready: "no-outbound-email" },
-  { path: "/panel/guardrails?agent=scout", heading: "Guardrails", ready: "UBOB", sub: "Approvals" },
+  { path: "/panel/guardrails/new", heading: "New guardrail", ready: "Checked by the server's parser", sub: "GUARDRAIL.md" },
+  { path: "/panel/guardrails/no-outbound-email/edit", heading: "Edit no-outbound-email", ready: "Checked by the server's parser", sub: "GUARDRAIL.md" },
+  { path: "/panel/guardrails/test", heading: "Test a guardrail", ready: "Run test", sub: "Event" },
   { path: "/panel/guardrails/no-outbound-email", heading: "no-outbound-email", ready: "Sending email is not allowed", sub: "Rules" },
   { path: "/panel/agents/scout/guardrails", heading: /scout/, ready: "no-outbound-email" },
 ];
@@ -562,20 +564,183 @@ test.describe("resources", () => {
     await expect(page).toHaveURL(/\/guardrails\/triage-channels$/);
   });
 
-  test("the soul and access settings stay in a collapsed section, per agent", async ({ page }) => {
+  test("the soul and access settings left the Guardrails page for Access, Memory and Mandates", async ({ page }) => {
     await page.goto("/panel/guardrails");
-    await expect(page.locator("#guardrail-tool-permissions")).toHaveCount(0);
-    await page.locator("#guardrails-soul-access summary").click();
-    const tools = page.locator("#guardrail-tool-permissions");
-    await expect(tools.getByText("Env", { exact: true })).toBeVisible();
-    await expect(page.locator("#guardrail-policy").getByText("Not implemented")).toBeVisible();
-    const proactive = page.locator("#guardrail-proactive");
-    await expect(proactive.getByText("22:00 to 07:00")).toBeVisible();
+    await expect(page.getByRole("table", { name: "Guardrails" }).getByText("no-outbound-email")).toBeVisible();
+    await expect(page.getByText("Soul and access settings")).toHaveCount(0);
+    await expect(page.locator("#settings-tool-permissions")).toHaveCount(0);
+
+    // Access tab: approvers with scope words and the timeout, permission cards (deciders, threads per mode), admission, redaction.
+    await page.goto("/panel/agents/default/access");
+    const approvals = page.locator("#settings-approvals");
+    await expect(approvals.getByRole("table", { name: "Approvals" }).getByText("deploys")).toBeVisible();
+    await expect(approvals.getByText("600 seconds")).toBeVisible();
+    const cards = page.locator("#settings-tool-permissions");
+    await expect(cards.getByRole("heading", { name: /Permission cards/ })).toBeVisible();
+    await expect(cards.getByText("an approver or manager of this agent")).toBeVisible();
+    await expect(cards.getByRole("table", { name: "Permission cards" }).getByText("acceptEdits")).toBeVisible();
+    await expect(cards.getByText("Env", { exact: true })).toBeVisible();
+    await expect(page.locator("#settings-admission").getByText("CTEAM")).toBeVisible();
+    await expect(page.locator("#settings-redaction")).toBeVisible();
+    await page.goto("/panel/agents/scout/access");
+    await expect(page.locator("#settings-approvals").getByText("UBOB")).toBeVisible();
+
+    // Memory page: the write rules, per agent.
+    await page.goto("/panel/memory");
+    const rules = page.locator("#settings-memory-gating");
+    await expect(page.getByRole("heading", { name: "Write rules" })).toBeVisible();
+    await expect(rules.getByText("Shared writes")).toBeVisible();
+    await expect(rules.getByText("agent-udefault")).toBeVisible();
     await page.getByRole("button", { name: /^Agent: / }).click();
     await page.getByRole("menuitemradio", { name: "scout" }).click();
-    await expect(page).toHaveURL(/\/guardrails\?agent=scout$/);
-    await expect(page.locator("#guardrail-approvals").getByText("UBOB")).toBeVisible();
-    await expect(page.locator("#guardrail-admission").getByRole("link", { name: "Grants on the Access tab" })).toHaveAttribute("href", "/panel/agents/scout/access");
+    await expect(page).toHaveURL(/\/memory\?agent=scout$/);
+    await expect(page.locator("#settings-memory-gating").getByText("agent-uscout")).toBeVisible();
+    await expect(page.locator("#settings-profile-guard")).toBeVisible();
+
+    // Mandates tab: proactive settings and caps, wake tools, budgets, and the learned rules on their own.
+    await page.goto("/panel/agents/default/mandates");
+    await expect(page.locator("#settings-proactive").getByText("22:00 to 07:00")).toBeVisible();
+    await expect(page.locator("#settings-wake-tools")).toBeVisible();
+    await expect(page.locator("#settings-budgets").getByText("2 USD")).toBeVisible();
+    await expect(page.locator("#settings-learned-rules").getByText("ci red")).toBeVisible();
+    // The policy family (never built) is gone.
+    await expect(page.getByText("Policy guardrails")).toHaveCount(0);
+  });
+
+  test("the editor: create from a template, live validation errors, save", async ({ page }) => {
+    await page.goto("/panel/guardrails");
+    await page.getByRole("button", { name: "New guardrail" }).click();
+    await expect(h1(page)).toHaveText("New guardrail");
+    await page.getByLabel("Name", { exact: true }).fill("no-passwords");
+    await page.getByLabel("Start from").selectOption("inbound-deny");
+    const text = page.getByLabel("GUARDRAIL.md text");
+    await expect(text).toHaveValue(/name: no-passwords/);
+    const v = page.getByTestId("guardrail-validation");
+    await expect(v.getByText("Valid", { exact: true })).toBeVisible();
+    // An action an inbound rule cannot take refuses the save, inline.
+    await text.fill((await text.inputValue()).replace("action: deny", "action: redact"));
+    await expect(v.getByRole("list", { name: "Errors that refuse a save" })).toContainText("action redact is not available for on: inbound");
+    await expect(page.getByRole("button", { name: "Create guardrail" })).toBeDisabled();
+    await text.fill((await text.inputValue()).replace("action: redact", "action: deny"));
+    await expect(v.getByText("Valid", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Create guardrail" }).click();
+    await expect(toasts(page).getByText("Guardrail created")).toBeVisible();
+    await expect(page).toHaveURL(/\/guardrails\/no-passwords$/);
+    await expect(page.getByRole("table", { name: "Rules" }).getByText("no-passwords")).toBeVisible();
+    await expect(page.getByText("Console", { exact: true }).first()).toBeVisible();
+    // A console guardrail can be deleted.
+    await page.getByRole("button", { name: "Delete" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+    await expect(toasts(page).getByText("Guardrail deleted")).toBeVisible();
+    await expect(page).toHaveURL(/\/guardrails$/);
+    await expect(page.getByRole("table", { name: "Guardrails" }).getByText("no-passwords")).toHaveCount(0);
+  });
+
+  test("editing a deploy repo guardrail saves an override: badge, diff against the source, clear", async ({ page }) => {
+    await page.goto("/panel/guardrails/no-outbound-email");
+    await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Edit as override" }).click();
+    await expect(h1(page)).toHaveText("Edit no-outbound-email");
+    await expect(page.getByText("Saving writes a console override")).toBeVisible();
+    const text = page.getByLabel("GUARDRAIL.md text");
+    await text.fill((await text.inputValue()).replace("Never send it yourself.", "Never send it yourself, ever."));
+    await expect(page.getByTestId("guardrail-validation").getByText("Valid", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Save override" }).click();
+    await expect(toasts(page).getByText("Override saved")).toBeVisible();
+    await expect(page).toHaveURL(/\/guardrails\/no-outbound-email$/);
+    await expect(page.getByText("Console override").first()).toBeVisible();
+    const diff = page.getByLabel("Override diff against the source");
+    await expect(diff.locator(".is-del")).toContainText("Never send it yourself.");
+    await expect(diff.locator(".is-add")).toContainText("Never send it yourself, ever.");
+    await page.getByRole("button", { name: "Clear override" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Clear override" }).click();
+    await expect(toasts(page).getByText("Override cleared")).toBeVisible();
+    await expect(page.getByLabel("Override diff against the source")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Edit as override" })).toBeVisible();
+  });
+
+  test("a behind-source override shows its diff against the new source", async ({ page }) => {
+    await page.goto("/panel/guardrails/triage-channels");
+    const diff = page.getByLabel("Override diff against the source");
+    await expect(diff.locator(".is-del")).toContainText("Keep triage notes short and kind.");
+    await expect(diff.locator(".is-add")).toContainText("Keep triage notes short.");
+    await expect(page.locator(".sl-card").filter({ has: diff }).getByText("Behind source")).toBeVisible();
+  });
+
+  test("a stale save is refused and offers a reload", async ({ page, context }) => {
+    await page.goto("/panel/guardrails/invoice-care/edit");
+    const text = page.getByLabel("GUARDRAIL.md text");
+    await expect(page.getByTestId("guardrail-validation").getByText("Valid", { exact: true })).toBeVisible();
+    // Someone else saves first (the stub keeps one state per page, so change it through this page's API).
+    await page.evaluate(async () => {
+      const r = await fetch("/panel/api/guardrails/invoice-care", { method: "PUT", headers: { "content-type": "application/json", "x-panel-csrf": "1" }, body: JSON.stringify({ md: "---\nname: invoice-care\nload: on-match\ntriggers: { inbound: '(?i)invoice' }\n---\nTheirs.", revision: 5 }) });
+      if (!r.ok) throw new Error(String(r.status));
+    });
+    void context;
+    await text.fill((await text.inputValue()) + "\nMine.");
+    await page.getByRole("button", { name: "Save override" }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "changed since it was loaded" })).toBeVisible();
+    await page.getByRole("button", { name: "Reload the saved version" }).click();
+    await expect(text).toHaveValue(/Theirs\./);
+    await expect(page.getByText("Your edits before the reload")).toBeVisible();
+  });
+
+  test("an operator reads the editor but cannot save, create or delete", async ({ page }) => {
+    await page.goto("/panel/guardrails?as=operator");
+    await expect(page.getByRole("button", { name: "New guardrail" })).toBeDisabled();
+    await page.goto("/panel/guardrails/no-outbound-email?as=operator");
+    await expect(page.getByText("Only a superadmin can edit, override or delete a guardrail.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Edit as override" })).toBeDisabled();
+    await page.goto("/panel/guardrails/no-outbound-email/edit?as=operator");
+    await expect(page.getByText("Only a superadmin can create or edit guardrails.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save override" })).toBeDisabled();
+  });
+
+  test("the Test box: a tool call, a reply, an inbound message and a draft", async ({ page }) => {
+    await page.goto("/panel/guardrails");
+    await page.getByRole("button", { name: "Test a guardrail" }).click();
+    await expect(h1(page)).toHaveText("Test a guardrail");
+    const form = page.getByRole("form", { name: "Test a guardrail" });
+    await form.getByLabel("Tool name").fill("mcp__mail__send_message");
+    await form.getByLabel("Tool input (JSON)").fill('{"to":"jane@example.com"}');
+    await form.getByRole("button", { name: "Run test" }).click();
+    const result = page.getByTestId("guardrail-test-result");
+    await expect(result.getByText("Decision: Deny")).toBeVisible();
+    await expect(result.getByRole("table", { name: "Matching rules" }).getByRole("row").filter({ hasText: "no-send" })).toContainText("Decides");
+    await expect(result.getByText(/Always in the prompt: .*no-outbound-email/)).toBeVisible();
+
+    await form.getByLabel("What").selectOption("inbound");
+    await form.getByLabel("Message text").fill("can you send the invoice?");
+    await form.getByRole("button", { name: "Run test" }).click();
+    await expect(result.getByText("No rule matched")).toBeVisible();
+    await expect(result.getByText(/Delivered on match .*invoice-care/)).toBeVisible();
+
+    await form.getByLabel("What").selectOption("reply");
+    await form.getByLabel("Reply text").fill("Card 1234-5678-9012-3456 is on file.");
+    await page.getByText("Try an unsaved draft").click();
+    await form.getByLabel("Draft guardrail name").fill("hide-cards");
+    await form.getByLabel("Draft GUARDRAIL.md").fill("---\nname: hide-cards\n---\n```rules\n- id: cards\n  on: reply\n  match: { text: '\\d{4}-\\d{4}-\\d{4}-\\d{4}' }\n  action: redact\n```");
+    await form.getByRole("button", { name: "Run test" }).click();
+    await expect(result.getByText("Decision: Redact")).toBeVisible();
+    await expect(result.getByText("Card [REDACTED] is on file.")).toBeVisible();
+    await expect(result.getByRole("table", { name: "Matching rules" }).getByText("Draft", { exact: true })).toBeVisible();
+
+    await form.getByLabel("What").selectOption("tool");
+    await form.getByLabel("Tool input (JSON)").fill("{nope");
+    await form.getByRole("button", { name: "Run test" }).click();
+    await expect(page.getByRole("alert").filter({ hasText: "not valid JSON" })).toBeVisible();
+  });
+
+  test("the Test box on a guardrail's detail page", async ({ page }) => {
+    await page.goto("/panel/guardrails/triage-channels");
+    const form = page.getByRole("form", { name: "Test a guardrail" });
+    await expect(form.getByLabel("Agent")).toHaveValue("triage");
+    await form.getByLabel("What").selectOption("inbound");
+    await form.getByLabel("Message text").fill("password: hunter2");
+    await form.getByRole("button", { name: "Run test" }).click();
+    const result = page.getByTestId("guardrail-test-result");
+    await expect(result.getByText("Decision: Deny")).toBeVisible();
+    await expect(result.getByText("Please do not paste passwords here.").first()).toBeVisible();
   });
 
   test("agent messages render as markdown in the timeline and chat; user messages stay Slack text", async ({ page }) => {
