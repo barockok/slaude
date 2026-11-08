@@ -6,6 +6,7 @@ import { paths } from "../src/config/home";
 import { clearKbCache, loadKbs } from "../src/knowledge/loader";
 import { closeBrain } from "../src/knowledge/brain";
 import { syncKbWikis } from "../src/knowledge/brain-sync";
+import { seedBrainHome } from "./helpers/brain-template";
 import {
   brainClosing,
   pendingBrainWork,
@@ -54,6 +55,8 @@ describe("syncKbWikis while the brain is closing", () => {
   const saved = process.env.SLAUDE_BRAIN_HOME;
   beforeAll(async () => {
     await closeBrain();
+    // A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+    await seedBrainHome(brainDir);
     process.env.SLAUDE_BRAIN_HOME = brainDir;
     // Only this file's KBs: the test home is shared with every other file.
     rmSync(paths.knowledge, { recursive: true, force: true });
@@ -62,7 +65,7 @@ describe("syncKbWikis while the brain is closing", () => {
       writeFileSync(join(paths.knowledge, l, "README.md"), `---\ndescription: ${l}\n---\n# ${l}\n`);
     }
     clearKbCache();
-  });
+  }, 60_000); // builds the template brain when no earlier file in this process has
   afterAll(async () => {
     await closeBrain();
     if (saved === undefined) delete process.env.SLAUDE_BRAIN_HOME;

@@ -1,14 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 
-const home = mkdtempSync(join(tmpdir(), "slaude-gather-test-"));
+// A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+const home = await freshBrainHome("slaude-gather-test-");
 process.env.SLAUDE_BRAIN_HOME = home;
 
 import { brainCall, closeBrain, ensureSources, getBrain } from "../src/knowledge/brain";
 import { gather, normalizeQuery, rankScore } from "../src/knowledge/gather";
 import type { BrainScope } from "../src/knowledge/scope";
+import { freshBrainHome } from "./helpers/brain-template";
 
 afterAll(async () => {
   await closeBrain();

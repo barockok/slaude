@@ -8,6 +8,7 @@ import { brainCallIfOpen, brainHome, brainReady, closeBrain, getBrain } from "..
 import { resetBackend } from "../../src/knowledge/backend";
 import { RemoteBackend } from "../../src/knowledge/remote/brain-client";
 import type { BrainScope } from "../../src/knowledge/scope";
+import { seedBrainHome } from "../helpers/brain-template";
 
 const root = mkdtempSync(join(tmpdir(), "brain-open-"));
 const saved = { home: process.env.SLAUDE_BRAIN_HOME, mode: process.env.SLAUDE_BRAIN_MODE };
@@ -38,6 +39,8 @@ test("local: ready once the engine is open, not ready again after closeBrain", a
   await closeBrain();
   resetBackend();
   delete process.env.SLAUDE_BRAIN_MODE;
+  // A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+  await seedBrainHome(join(root, "warm"));
   process.env.SLAUDE_BRAIN_HOME = join(root, "warm");
   const booting = getBrain();
   expect(brainReady()).toBe(false); // still booting: not open yet

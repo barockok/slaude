@@ -1,6 +1,7 @@
 // tests/brain-migrate/seed.ts
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { seedBrainHome } from "../helpers/brain-template";
 
 /** Dimension the test brains use (set from the Step 1 spike; gbrain's default pgvector column is vector(1280)). */
 export const TEST_DIMS = 1280;
@@ -15,7 +16,9 @@ export const vec = (seed: number): number[] => Array.from({ length: TEST_DIMS },
  * Runs in the current process against SLAUDE_BRAIN_HOME=home, then closes the brain.
  */
 export async function seedMonoBrain(home: string, o: { empty?: boolean } = {}): Promise<void> {
-  mkdirSync(home, { recursive: true });
+  // A new home starts as a copy of the per-process template brain, not a
+  // fresh initdb (tests/helpers/brain-template.ts).
+  if (!existsSync(join(home, "db"))) await seedBrainHome(home);
   process.env.SLAUDE_BRAIN_HOME = home;
   delete process.env.SLAUDE_AGENT_ID;
   const { closeBrain, getBrain, brainAdminCall } = await import("../../src/knowledge/brain");

@@ -1,17 +1,17 @@
 // Real PGLite brain behind the endpoint: engine, ensureSource and the embedding
 // dimension all come from the real code paths; only env, agent id and log are injected.
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rmSync } from "node:fs";
 import { TEST_DIMS, vec } from "../../brain-migrate/seed";
 
-const home = mkdtempSync(join(tmpdir(), "bm-import-real-"));
+// A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+const home = await freshBrainHome("bm-import-real-");
 process.env.SLAUDE_BRAIN_HOME = home;
 import { closeBrain, getBrain } from "../../../src/knowledge/brain";
 import { createBrainImportApi } from "../../../src/gateway/brain-import/api";
 import type { BundlePage } from "../../../src/brain-migrate/bundle";
 import type { MigrateEngine } from "../../../src/brain-migrate/engine-types";
+import { freshBrainHome } from "../../helpers/brain-template";
 
 // Unset the home too: a gateway in a later file would boot a fresh brain into the deleted dir.
 afterAll(async () => { await closeBrain(); delete process.env.SLAUDE_BRAIN_HOME; rmSync(home, { recursive: true, force: true }); });

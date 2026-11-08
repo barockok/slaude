@@ -1,9 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { freshBrainHome } from "./helpers/brain-template";
 
-const home = mkdtempSync(join(tmpdir(), "slaude-brainlock-"));
+// A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+const home = await freshBrainHome("slaude-brainlock-");
 process.env.SLAUDE_BRAIN_HOME = home;
 
 // Simulate the k8s restart trap: a lock left by a previous pod whose PID is
