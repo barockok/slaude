@@ -12,6 +12,8 @@ import type { BrainScope } from "../src/knowledge/scope";
 
 afterAll(async () => {
   await closeBrain();
+  // A gateway in a later file would otherwise boot a fresh brain into this deleted home.
+  delete process.env.SLAUDE_BRAIN_HOME;
   rmSync(home, { recursive: true, force: true });
 });
 

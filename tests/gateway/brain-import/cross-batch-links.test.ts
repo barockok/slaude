@@ -15,7 +15,8 @@ import { createBrainImportApi } from "../../../src/gateway/brain-import/api";
 import { BundleWriter, type BundlePage } from "../../../src/brain-migrate/bundle";
 import { hasProblems, runImport } from "../../../src/brain-migrate/client";
 
-afterAll(async () => { await closeBrain(); rmSync(home, { recursive: true, force: true }); rmSync(bundleDir, { recursive: true, force: true }); });
+// Unset the home too: a gateway in a later file would boot a fresh brain into the deleted dir.
+afterAll(async () => { await closeBrain(); delete process.env.SLAUDE_BRAIN_HOME; rmSync(home, { recursive: true, force: true }); rmSync(bundleDir, { recursive: true, force: true }); });
 
 const TOKEN = "x".repeat(40);
 const N = 105;

@@ -14,7 +14,8 @@ import type { BundlePage } from "../../src/brain-migrate/bundle";
 
 let engine: MigrateEngine;
 beforeAll(async () => { engine = (await getBrain()) as unknown as MigrateEngine; }, 60_000);
-afterAll(async () => { await closeBrain(); rmSync(home, { recursive: true, force: true }); });
+// Unset the home too: a gateway in a later file would boot a fresh brain into the deleted dir.
+afterAll(async () => { await closeBrain(); delete process.env.SLAUDE_BRAIN_HOME; rmSync(home, { recursive: true, force: true }); });
 
 const mk = (slug: string, truth: string, over: Partial<BundlePage> = {}): BundlePage => ({
   source: "agent-default", slug, type: "note", title: slug, compiledTruth: truth, timeline: "", frontmatter: {}, contentHash: null,

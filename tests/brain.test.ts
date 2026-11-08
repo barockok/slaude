@@ -11,6 +11,8 @@ import type { BrainScope } from "../src/knowledge/scope";
 
 afterAll(async () => {
   await closeBrain();
+  // Later files must not boot into this (deleted) home.
+  delete process.env.SLAUDE_BRAIN_HOME;
   rmSync(home, { recursive: true, force: true });
 });
 
