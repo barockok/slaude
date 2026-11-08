@@ -687,104 +687,133 @@ export interface GuardrailFamily {
   link?: { label: string; to: string };
 }
 
-// --- Guardrails: the runtime layer (registry, prompt stack, baseline) --------
-
-/** What a registry entry is. `observability` hooks count or report; they never block. */
-export type GuardrailKind = "prompt" | "hook" | "gate" | "deny-list" | "limit" | "redaction" | "observability";
-/** `not-wired`: the code exists but this process does not install it; `not-built`: designed only. */
-export type GuardrailState = "enforcing" | "shadow" | "off" | "not-built" | "not-wired";
-/** Where a guardrail applies. Voice is an interactive session on a call. */
-export type GuardrailAppliesTo = "interactive" | "wake" | "remote" | "voice" | "background" | "deployment";
-export type GuardrailEvent = "Stop" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PreCompact" | "canUseTool" | "dispatch";
-
-export interface GuardrailToggle {
-  /** `none`: always on, nothing turns it off. */
-  source: "env" | "config" | "thread" | "none";
-  /** The variable or command, e.g. `SLAUDE_REMOTE` or `/remote`. */
-  key?: string;
-  /** The value when nothing sets it. */
-  default?: string;
-}
-
-/** One fact about a guardrail. Env values appear only as on/off, a mode or a cap. */
-export interface GuardrailDetail {
-  label: string;
-  value: string | number | boolean | string[];
-}
-
-export interface GuardrailEntry {
-  /** Stable, e.g. `hook.stop.must-reply`. */
-  id: string;
-  kind: GuardrailKind;
-  title: string;
-  summary: string;
-  event?: GuardrailEvent;
-  /** What it does when it fires. */
-  effect: string;
-  appliesTo: GuardrailAppliesTo[];
-  state: GuardrailState;
-  toggle: GuardrailToggle;
-  details: GuardrailDetail[];
-  /** file:area, for operators reading the code. */
-  source: string;
-  /** The design write-up, for a guardrail that is not built. */
-  fieldNote?: { title: string; href: string };
-}
-
-export interface GuardrailGroup {
-  kind: GuardrailKind;
-  entries: GuardrailEntry[];
-}
-
-/** One layer of the system prompt, in the order the session receives them. */
-export interface PromptLayer {
-  id: "preset" | "runtime-baseline" | "persona" | "channel-mandate" | "session-mode" | "mcp-servers" | "memory-context";
-  title: string;
-  /** False: fixed by the runtime. True: comes from the soul (or the thread). */
-  overridable: boolean;
-  source: string;
-  /** Whether this agent's sessions carry it (per-thread layers: when that thread has it). */
-  present: boolean;
-  /** How many there are, e.g. channel mandates that differ from the soul's. */
-  count?: number;
-  note?: string;
-  /** A console page that edits or shows it, e.g. the agent's Mandates tab. */
-  link?: { label: string; to: string };
-}
-
-/** Text the runtime adds to a single turn, not to the system prompt. */
-export interface PromptInjection {
-  id: string;
-  title: string;
-  summary: string;
-  source: string;
-}
-
-export interface BaselineBlockView {
-  id: string;
-  title: string;
-  /** The block's markdown, with on-disk paths shown as `$SLAUDE_HOME/...`. */
-  markdown: string;
-}
-
-export interface BuiltinSkillView {
-  name: string;
-  qualified: string;
-  trigger: string;
-  /** Tools the runtime blocks until this skill is loaded. */
-  governs: string[];
-}
-
-/** GET /panel/api/guardrails?agent= */
-export interface GuardrailsResponse {
+/** GET /panel/api/guardrails/settings?agent=: the soul and access settings
+ *  that constrain one agent (a collapsed section of the Guardrails page until
+ *  they move to the agent's own tabs). */
+export interface GuardrailSettingsResponse {
   agent: string;
-  /** The system prompt's layers, then what single turns get. */
-  promptStack: { layers: PromptLayer[]; perTurn: PromptInjection[] };
-  /** The runtime baseline, one render for every agent of this deployment. */
-  baseline: { deploymentWide: true; brain: boolean; blocks: BaselineBlockView[] };
-  builtinSkills: BuiltinSkillView[];
-  /** The registry, each entry's state computed for this process, grouped by kind. */
-  guardrails: GuardrailGroup[];
-  /** Soul and access settings (moving to the agent's tabs in a later release). */
   families: GuardrailFamily[];
+}
+
+// --- Resources: owner guardrails ---------------------------------------------
+
+export type OwnerGuardrailSource = "file" | "git" | "console";
+export type OwnerRuleOn = "tool" | "reply" | "inbound";
+export type OwnerRuleAction = "deny" | "approve" | "redact" | "audit";
+
+/** One parsed rule. `enforced`: code applies it now; `pending`: stored and shown, applied from a later release (reply rules). */
+export interface OwnerGuardrailRule {
+  id: string;
+  on: OwnerRuleOn;
+  action: OwnerRuleAction;
+  message: string;
+  status: "enforced" | "pending";
+  tool?: string[];
+  input?: string | Record<string, string>;
+  text?: string;
+}
+
+export interface NamedChannel {
+  id: string;
+  /** `#name` when the gateway can resolve it. */
+  label: string | null;
+}
+
+export interface OwnerGuardrailSummary {
+  slug: string;
+  name: string;
+  description: string;
+  /** null when the frontmatter could not be read. */
+  scope: "shared" | "agents" | null;
+  agents: string[];
+  channels: NamedChannel[];
+  /** The console switch. */
+  enabled: boolean;
+  /** The frontmatter's own `enabled`. */
+  authorEnabled: boolean;
+  /** Applies at all: switched on, readable and enabled by its author. */
+  active: boolean;
+  load: "always" | "on-match" | null;
+  ruleCounts: { tool: number; reply: number; inbound: number };
+  /** Has Guidance prose (advisory, read by the model). */
+  guidance: boolean;
+  /** Validation errors found (its valid rules and prose still apply). */
+  errorCount: number;
+  source: OwnerGuardrailSource;
+  /** The text is a console override. */
+  override: boolean;
+  /** The override was written against an older source text. */
+  behindSource: boolean;
+  /** `agents:` names no agent of this deployment knows. */
+  unknownAgents: string[];
+  /** It applies to no agent (flagged in the list). */
+  appliesToNoAgent: boolean;
+  /** Agents whose always-loaded prose cap left this guardrail out. */
+  skippedFor: string[];
+  /** Last firing or delivery (audit), epoch ms. */
+  lastFiredAt: number | null;
+}
+
+/** How strongly the deployment keeps an agent from changing its guardrails. */
+export interface GuardrailThreatModel {
+  db: "sqlite" | "pg";
+  turnsRunOn: "this-process" | "nodes";
+  /** True with Postgres or nodes: a session cannot reach the database. */
+  strong: boolean;
+  keySource: "master-key" | "key-file" | null;
+}
+
+/** GET /panel/api/guardrails */
+export interface OwnerGuardrailsResponse {
+  guardrails: OwnerGuardrailSummary[];
+  /** The stored set's version (0: none stored yet). */
+  version: number;
+  /** Why the stored set could not be read or verified (sessions do not start), or null. */
+  failure: string | null;
+  threatModel: GuardrailThreatModel;
+  /** Always-loaded prose cap per agent (characters). */
+  proseMax: number;
+  /** Whether the viewer may switch guardrails on and off. */
+  canToggle: boolean;
+}
+
+export interface OwnerGuardrailFiring {
+  id: string;
+  at: number;
+  action: string;
+  /** The rule id (absent for a Guidance delivery). */
+  ruleId: string | null;
+  agent: string | null;
+  channel: NamedChannel | null;
+  decision: string | null;
+}
+
+/** GET /panel/api/guardrails/:slug */
+export interface OwnerGuardrailDetail extends OwnerGuardrailSummary {
+  md: string;
+  prose: string;
+  rules: OwnerGuardrailRule[];
+  errors: string[];
+  triggers: { tool: string[]; inbound: string | null; channels: NamedChannel[] } | null;
+  /** Resolved: every agent it applies to (shared = all, the default agent included). */
+  appliesTo: { agents: string[]; channels: NamedChannel[]; everyChannel: boolean };
+  firings: OwnerGuardrailFiring[];
+  threatModel: GuardrailThreatModel;
+  canToggle: boolean;
+}
+
+/** PUT /panel/api/guardrails/:slug/enabled */
+export interface OwnerGuardrailToggleResponse {
+  ok: true;
+  slug: string;
+  enabled: boolean;
+  version: number;
+}
+
+/** GET /panel/api/agents/:name/guardrails: what applies to one agent. */
+export interface AgentGuardrailsResponse {
+  agent: string;
+  guardrails: Array<OwnerGuardrailSummary & { via: "shared" | "agent"; channelLimited: boolean; skipped: boolean }>;
+  prose: { chars: number; max: number; skipped: Array<{ slug: string; name: string; chars: number }> };
+  failure: string | null;
 }

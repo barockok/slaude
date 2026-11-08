@@ -50,7 +50,11 @@
  *   GET    /panel/api/skills                       every skill: source, origin, agents, status, usage
  *   GET    /panel/api/skills/:id                   one skill: frontmatter, SKILL.md, files, provenance, usage, proposals
  *   POST   /panel/api/skills/:id/retire|restore    an agent-authored skill (superadmin; audited)
- *   GET    /panel/api/guardrails?agent=            what constrains one agent, with each value's source; the runtime layer (prompt stack, baseline, registry)
+ *   GET    /panel/api/guardrails                   the owner's guardrails: scope, rules by kind, source, behind source, last fired
+ *   GET    /panel/api/guardrails/:slug             one guardrail: GUARDRAIL.md, parsed rules, errors, applies to, recent firings
+ *   PUT    /panel/api/guardrails/:slug/enabled     { enabled } (superadmin; audited; announces a config reload)
+ *   GET    /panel/api/guardrails/settings?agent=   the soul and access settings that constrain one agent, with each value's source
+ *   GET    /panel/api/agents/:name/guardrails      the owner guardrails that apply to one agent
  *   GET    /panel/api/overview                     counts and the latest audit events
  */
 import { PanelVoiceRedactor } from "./voice-redact";
@@ -93,7 +97,9 @@ import { emitAudit } from "../../audit/emit";
 import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
 import { agentIdsByName, buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
-import { guardrailsFor, type GuardrailDeps } from "./guardrails-view";
+import { guardrailSettingsFor, type GuardrailDeps } from "./guardrails-view";
+import { agentGuardrails, guardrailDetail, listGuardrails, setGuardrailEnabled, type GuardrailApiDeps } from "./guardrails-api";
+import { GUARDRAIL_SLUG_RE } from "../../guardrails/format";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
 import { agentStoreNames, displayTitle, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
@@ -117,7 +123,11 @@ import type {
   AgentsResponse,
   CreateGrantResponse,
   RevokeGrantResponse,
-  GuardrailsResponse,
+  AgentGuardrailsResponse,
+  GuardrailSettingsResponse,
+  OwnerGuardrailDetail,
+  OwnerGuardrailsResponse,
+  OwnerGuardrailToggleResponse,
   SkillActionResponse,
   SkillDetailResponse,
   SkillsResponse,
@@ -174,6 +184,7 @@ export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "console.roles.read",
   "skill.retire",
   "skill.restore",
+  "guardrail.toggle",
 ]);
 
 /** Returns the 403 to send, or null when the role suffices. */
@@ -348,6 +359,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
   const extractSoul = deps.extractSoul ?? ((t: string) => extractSoulData(t, { strict: true }));
   const installedKbSources = deps.installedKbSources ?? installedKbSourceIds;
   const panelRole = deps.role ?? "gateway";
+  const guardrailApiDeps = (): GuardrailApiDeps => ({ agents: () => agentNames(), names: deps.names ?? null, turnsRunOn: panelRole === "mono" ? "this-process" : "nodes" });
 
   /**
    * Audit rows with channel labels (`#name`) where the gateway can resolve
@@ -660,6 +672,12 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           return json(200, (await agentDetail(name, liveness, Date.now(), deps.names ?? null)) satisfies AgentDetailResponse);
         }
 
+        // GET /panel/api/agents/:name/guardrails: the owner guardrails that apply to it.
+        if (seg.length === 5 && seg[4] === "guardrails") {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          return json(200, (await agentGuardrails(name, guardrailApiDeps())) satisfies AgentGuardrailsResponse);
+        }
+
         if (seg[4] !== "grants" || seg.length > 6) return json(404, { error: "not found" });
 
         // GET|POST /panel/api/agents/:name/grants
@@ -788,14 +806,47 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         return json(404, { error: "not found" });
       }
 
-      // GET /panel/api/guardrails?agent=: what constrains one agent, each value
-      // with its source. Read-only, any operator.
-      if (seg.length === 3 && seg[2] === "guardrails") {
-        if (req.method !== "GET") return json(405, { error: "method not allowed" });
-        const name = url.searchParams.get("agent") || "default";
-        if (!PERSONA_NAME_RE.test(name) && name !== "default") return json(422, { error: "invalid agent name" });
-        if (!isAgent(name)) return json(404, { error: `no agent named '${name}'` });
-        return json(200, (await guardrailsFor(name, deps.guardrails, { role })) satisfies GuardrailsResponse);
+      // --- Guardrails: the owner's guardrails (list, detail, the enabled
+      // switch) and, under /settings, the soul and access settings. Reads for
+      // any operator; the switch is superadmin only, audited and announced.
+      if (seg[2] === "guardrails") {
+        const grDeps = guardrailApiDeps();
+        // GET /panel/api/guardrails
+        if (seg.length === 3) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          return json(200, (await listGuardrails(grDeps, role === "superadmin")) satisfies OwnerGuardrailsResponse);
+        }
+        // GET /panel/api/guardrails/settings?agent=
+        if (seg.length === 4 && seg[3] === "settings") {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          const name = url.searchParams.get("agent") || "default";
+          if (!PERSONA_NAME_RE.test(name) && name !== "default") return json(422, { error: "invalid agent name" });
+          if (!isAgent(name)) return json(404, { error: `no agent named '${name}'` });
+          return json(200, (await guardrailSettingsFor(name, deps.guardrails, { role })) satisfies GuardrailSettingsResponse);
+        }
+        let slug: string;
+        try { slug = decodeURIComponent(seg[3]!); } catch { return json(422, { error: "invalid guardrail name" }); }
+        if (!GUARDRAIL_SLUG_RE.test(slug)) return json(422, { error: "invalid guardrail name" });
+        // GET /panel/api/guardrails/:slug
+        if (seg.length === 4) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          const d = await guardrailDetail(slug, grDeps, role === "superadmin");
+          return d ? json(200, d satisfies OwnerGuardrailDetail) : json(404, { error: `no guardrail named '${slug}'` });
+        }
+        // PUT /panel/api/guardrails/:slug/enabled
+        if (seg.length === 5 && seg[4] === "enabled") {
+          if (req.method !== "PUT") return json(405, { error: "method not allowed" });
+          const denied = requireSuperadmin(role, { action: "guardrail.toggle", operator: operatorId });
+          if (denied) return denied;
+          const b = (await req.json().catch(() => null)) as { enabled?: unknown } | null;
+          if (!b || typeof b !== "object" || typeof b.enabled !== "boolean") return json(400, { error: "body must be { enabled: boolean }" });
+          const r = await setGuardrailEnabled(slug, b.enabled, operatorId);
+          if (!r) return json(404, { error: `no guardrail named '${slug}'` });
+          const reload = r.changed ? await publishConfigReload(deps.pubsub, "default") : null;
+          if (r.changed) audit({ action: "guardrail.toggle", operator: operatorId, role, outcome: "ok", detail: { slug, enabled: b.enabled, ...(reload ?? {}) } });
+          return json(200, { ok: true, slug, enabled: b.enabled, version: r.version } satisfies OwnerGuardrailToggleResponse);
+        }
+        return json(404, { error: "not found" });
       }
 
       // GET /panel/api/grants: every console grant across agents, for the
