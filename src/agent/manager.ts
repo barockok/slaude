@@ -866,6 +866,20 @@ export class AgentManager extends EventEmitter {
     return this.#live.size;
   }
 
+  /**
+   * The owner guardrail set moved to `version`: every live session that booted
+   * with another version reloads after its turn (an idle one now), so its next
+   * turn boots with the new snapshot. Returns how many were asked to.
+   */
+  reloadForGuardrails(version: number): number {
+    let n = 0;
+    for (const id of [...this.#live.keys()]) {
+      if ((this.#sessionGuardrails.get(id)?.version ?? 0) === version) continue;
+      if (this.reloadAfterTurn(id)) n++;
+    }
+    return n;
+  }
+
   /** Whether a specific session has an active SDK Query loop right now. */
   isLive(sessionId: string): boolean {
     return this.#live.has(sessionId);

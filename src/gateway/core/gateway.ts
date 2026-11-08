@@ -123,6 +123,8 @@ import { wakeGateConfig, type WakeRunOptions, type WakeTransport } from "../../p
 import { wakeRefusal } from "../../proactive/wake-guard";
 import { MUST_REPLY_INSTRUCTION, mustReplyEffect } from "../../agent/must-reply";
 import { NODE_RUNTIME } from "../../agent/guardrails";
+import { inboundGuidance, inboundVerdict, installOwnerGuardrails, makeReplyQuiet, type InboundVerdict } from "./owner-guardrails";
+import { auditFiring } from "../../guardrails/audit";
 import { wakeStatusText } from "../../proactive/wake-status";
 import type { WakeToolDeps } from "../../proactive/wake-tools";
 import type { ActivityMessage } from "../../proactive/wake-activity";
@@ -253,7 +255,7 @@ const GATE_TRUST: Record<ChannelTrust, Trust> = { trusted: "trusted", public: "a
 
 /** An early drop: the slackDropsTotal reason label and the line handleMessage
  *  logs (null for a silent drop: no line, no metric). */
-type PreTurnDrop = { reason: string; log: string | null };
+type PreTurnDrop = { reason: string; log: string | null; reply?: string };
 
 /** Pages of thread history the decision gate reads at most. */
 const GATE_REPLY_PAGES = 5;
@@ -1343,6 +1345,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // (reply / edit / upload) or an explicit pass, block the stop once with an
   // instruction to either reply (`mcp__slaude_surface__reply`) or pass
   // (`mcp__slaude_surface__pass`) before exiting.
+  // Owner guardrails: the session resolver and audit sink, the boot snapshot
+  // and its reload (nodes get theirs in the runtime bundle).
+  const stopOwnerGuardrails = installOwnerGuardrails(agent, { pubsub: queueDispatch?.pubsub ?? panelInfra?.pubsub ?? null, mono: !queueDispatch });
+  const guardrailReplyQuiet = makeReplyQuiet();
   agent.setStopGuard((sessionId) => {
     if (voiceTurns.active(sessionId)) return null;
     const route = routes.get(sessionId);
@@ -2484,8 +2490,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // repeated here only to narrow teamId/userId for the code below.
     if (!teamId || !userId) return;
     {
+      let guardrailVerdict: InboundVerdict | null = null;
       const drop = await preTurnDropReason(args, {
         personaId: dispatch?.personaId,
+        onGuardrail: (v) => (guardrailVerdict = v),
         // Dedup — durable atomic claim in seen_events by (channel, ts), so a Slack
         // redelivery is dropped even across a restart or by a sibling replica.
         afterSelfEcho: async () => {
@@ -2498,10 +2506,30 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           return null;
         },
       });
+      const verdict = guardrailVerdict as InboundVerdict | null;
+      if (verdict) {
+        const thread = event.thread_ts || eventTs;
+        for (const ev of verdict.events) {
+          auditFiring(ev, { persona: dispatch?.personaId || "default", channelId, threadTs: thread, userId, kind: "inbound" });
+        }
+      }
       if (drop) {
         if (drop.log !== null) {
           console.log(drop.log);
           metric.slackDropsTotal.inc({ reason: drop.reason });
+        }
+        if (drop.reason === "owner_guardrail" && drop.reply) {
+          const thread = event.thread_ts || eventTs;
+          // One reply per person per thread per quiet window; later denies are silent (and audited above).
+          if (guardrailReplyQuiet(`${dispatch?.personaId || "default"}:${channelId}:${thread}:${userId}`)) {
+            const out = outClientForPersona(dispatch?.personaId, app);
+            try {
+              await out.chat.postEphemeral({ channel: channelId, user: userId, thread_ts: thread, text: drop.reply });
+            } catch {
+              await out.chat.postMessage({ channel: channelId, thread_ts: thread, text: drop.reply }).catch((err: unknown) =>
+                console.error(`[slack-rx] guardrail reply failed ch=${channelId}: ${(err as Error)?.message ?? String(err)}`));
+            }
+          }
         }
         return;
       }
@@ -3515,6 +3543,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // thread) is recorded but never reaches the agent, and a voice turn's
       // events stay off the stream: neither is shown.
       if (!suppress && !voiceTurns.active(session.id)) streamUserMessage(session.id, { userId, userName, text: stripped });
+      // On-match Guidance an inbound trigger matched: matched here, on the
+      // gateway; on nodes the text travels with the job.
+      const guidance = suppress ? [] : await inboundGuidance(dispatch?.personaId || "default", channelId, stripped).catch(() => []);
       if (queueDispatch) {
         // Gateway role: the turn runs on a node (spec §2). Suppression rides on
         // the message so the node's suppress hook records without running the
@@ -3532,6 +3563,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             apiAppId: app.apiAppId,
             origin: "slack",
             suppress,
+            ...(guidance.length ? { guidance } : {}),
           });
         } catch (e: any) {
           console.error("[slaude] dispatch threw:", e?.message ?? e, e?.stack);
@@ -3541,6 +3573,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
       console.log(`[slaude] sendMessage session=${session.id} cwd=${session.working_dir} model=${session.model}`);
       if (suppress) agent.suppressNextTurn(session.id);
+      agent.offerGuidance(session.id, guidance);
       try {
         await agent.sendMessage(session.id, envelope, { sender: { userId, teamId: teamId || null, origin: "slack", text: stripped } });
       } catch (e: any) {
@@ -3786,7 +3819,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Both handleMessage and the decision gate (ingressDrops) depend on this: a filter added here reaches both.
   const preTurnDropReason = async (
     args: any,
-    o: { personaId?: string; afterSelfEcho?: () => Promise<PreTurnDrop | null> } = {},
+    o: {
+      personaId?: string;
+      afterSelfEcho?: () => Promise<PreTurnDrop | null>;
+      /** handleMessage's step: told of an inbound guardrail verdict (deny or
+       *  audit) to record it. The gate passes none: it never records or posts. */
+      onGuardrail?: (v: InboundVerdict) => void;
+    } = {},
   ): Promise<PreTurnDrop | null> => {
     const e: any = args.event;
     const teamId: string | undefined = args.context?.teamId ?? e.team;
@@ -3846,6 +3885,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             `[slack-rx] drop ch=${channelId} user=${userId} persona=${persona}: not granted here` +
             (soulDataFor(persona).manager.userId ? "" : " (no manager set in SOUL.md)"),
         };
+      }
+    }
+    // Owner inbound rules, after admission (design section 4): a deny drops
+    // the message with the rule's message as the reply; an audit lets it on.
+    {
+      const persona = o.personaId || "default";
+      const v = await inboundVerdict(persona, channelId, (e.text || "").toString());
+      if (v) o.onGuardrail?.(v);
+      if (v?.action === "deny") {
+        return { reason: "owner_guardrail", log: `[slack-rx] drop ch=${channelId} user=${userId} persona=${persona}: owner guardrail ${v.slug}`, reply: v.message };
       }
     }
     return null;
@@ -4555,6 +4604,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Aborts a pass in flight; bounded (STOP_GRACE_MS, 10 s) so shutdown never waits out a review.
       await backgroundScheduler?.stop().catch(() => {});
       cronScheduler.stop();
+      stopOwnerGuardrails();
       if (panelSweeper) clearInterval(panelSweeper);
       await panelResumeUnsub?.().catch(() => {});
       await panelHoldUnsub?.().catch(() => {});
