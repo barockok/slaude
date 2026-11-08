@@ -6,12 +6,13 @@ import { LiveBadge } from "../../components/LiveBadge";
 import { useApi } from "../../hooks/useApi";
 import { AccessTab } from "./AccessTab";
 import { ActivityTab } from "./ActivityTab";
+import { GuardrailsTab } from "./GuardrailsTab";
 import { MandatesTab } from "./MandatesTab";
 
-export const AGENT_TABS = ["overview", "mandates", "access", "activity"] as const;
+export const AGENT_TABS = ["overview", "mandates", "access", "guardrails", "activity"] as const;
 export type AgentTab = (typeof AGENT_TABS)[number];
 
-const TAB_LABEL: Record<AgentTab, string> = { overview: "Overview", mandates: "Mandates", access: "Access", activity: "Activity" };
+const TAB_LABEL: Record<AgentTab, string> = { overview: "Overview", mandates: "Mandates", access: "Access", guardrails: "Guardrails", activity: "Activity" };
 
 export const agentPath = (name: string, tab: AgentTab = "overview") =>
   `/agents/${encodeURIComponent(name)}${tab === "overview" ? "" : `/${tab}`}`;
@@ -96,6 +97,8 @@ export function AgentDetailPage({ name, tab }: { name: string; tab: AgentTab }) 
             <MandatesTab agent={data} />
           ) : tab === "access" ? (
             <AccessTab agent={data} onChanged={reload} />
+          ) : tab === "guardrails" ? (
+            <GuardrailsTab name={name} />
           ) : (
             <ActivityTab name={name} />
           )}
