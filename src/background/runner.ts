@@ -49,6 +49,7 @@ import { canStart, localDay, overAfterStart, overLimit, PASS_MAX_TURNS, unpriced
 import { budgetConfigFor } from "./config";
 import { indexWritten } from "../proactive/commitment-index";
 import { createPassMcpServer, type PassToolName, PASS_MCP_NAME, passProfileSource, passReadSources, type PassScope, type PassTool, type TranscriptTurn } from "./pass-tools";
+import { HOOK_IDS, tagHook } from "../agent/hook-tags";
 import {
   addTokens as add,
   costUsd,
@@ -193,7 +194,7 @@ export function passQueryOptions(a: {
     strictMcpConfig: true,
     settingSources: [],
     mcpServers: { [PASS_MCP_NAME]: a.server },
-    hooks: { PreToolUse: [{ hooks: [onlyPassTools(a.toolIds)] }] },
+    hooks: { PreToolUse: [{ hooks: [tagHook(HOOK_IDS.backgroundOnlyPassTools, onlyPassTools(a.toolIds))] }] },
     maxTurns: a.maxTurns,
     abortController: a.abort,
     persistSession: false,
