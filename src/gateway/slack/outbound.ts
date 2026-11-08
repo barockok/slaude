@@ -28,9 +28,8 @@ import { redactSlack } from "./redact";
 import { redactPatternsFor } from "../../soul/per-persona";
 import { redactSecrets } from "../core/status-text";
 import { env } from "../../config/env";
-import { combine, hitMessage, textHits, type RuleHit } from "../../guardrails/match";
+import { applyRedactions, combine, hitMessage, textHits, type RuleHit } from "../../guardrails/match";
 import { auditFiring, firingEvents, type FiringApplied } from "../../guardrails/audit";
-import { REDACTED } from "../../guardrails/pattern";
 import { sessionGuardrails, type SessionGuardrails } from "../../guardrails/resolve";
 import { cachedGuardrails, currentGuardrails, failedSetExists, failedSetExistsCached, guardrailsFailure } from "../../guardrails/snapshot";
 import { failureText } from "../core/failure-codes";
@@ -164,8 +163,7 @@ function judge(formatted: string, rules: Rules, o: OutboundOptions): OutboundVer
   const d = combine(textHits(replyRules, "reply", formatted));
   if (!d) return { action: "send", text: formatted };
   // Every redact rule that matched is applied, whatever decides.
-  let text = formatted;
-  for (const h of d.hits) if (h.rule.action === "redact" && !h.oversize && h.rule.text?.replace) text = h.rule.text.replace(text, REDACTED);
+  const text = applyRedactions(d.hits, formatted);
   const oversizeRedact = d.hits.some((h) => h.rule.action === "redact" && h.oversize);
   if (d.action === "deny" || (d.action === "redact" && oversizeRedact)) {
     const deciding = d.action === "deny" ? d.deciding : d.hits.find((h) => h.rule.action === "redact" && h.oversize)!;
