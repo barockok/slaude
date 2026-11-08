@@ -79,12 +79,16 @@ export function keepOffEventStream(e: AgentEvent): boolean {
 export const STALE_CONFIG = Symbol("stale-config");
 
 /**
- * The part of a claim that runs under lock:session:<id>: bind this job's token,
- * reboot a warm session whose config it no longer matches, then run the turn.
- * The token is bound only by the lock holder: a boot resolves its remote target,
- * child env and credentials from the bound token, so a job that is about to lose
- * the lock race must not swap the token under the holder's boot (it would boot
- * one config labelled with another's fingerprint).
+ * The part of a claim that runs under lock:session:<id>: reboot a warm session
+ * whose config this job no longer matches, bind this job's token, then run the
+ * turn. The token is bound only by the lock holder: a boot resolves its remote
+ * target, child env and credentials from the bound token, so a job that is
+ * about to lose the lock race must not swap the token under the holder's boot
+ * (it would boot one config labelled with another's fingerprint). It is bound
+ * only once the config is current, too: a job requeued as STALE_CONFIG leaves
+ * the token alone, so a turn still running on the session (a skill check after
+ * the last job) keeps its own token and claims, a wake's refusal included.
+ * The session boots, if it must, in `run`, after the bind.
  */
 export async function runLockedTurn<T>(deps: {
   lock: (fn: (lostLock: AbortSignal) => Promise<T | typeof STALE_CONFIG>) => Promise<T | typeof STALE_CONFIG | typeof HELD_BY_OTHER>;
@@ -94,7 +98,6 @@ export async function runLockedTurn<T>(deps: {
   run: (lostLock: AbortSignal) => Promise<T>;
 }): Promise<T | typeof STALE_CONFIG | typeof HELD_BY_OTHER> {
   return deps.lock(async (lostLock) => {
-    deps.bindToken(deps.jobToken);
     // A changed lock/remote config reboots the warm session before this turn
     // is sent; an older gateway mints no fingerprint and the manager ignores
     // it. Checked under the lock so no other job's turn, reboot or token lands
@@ -102,6 +105,7 @@ export async function runLockedTurn<T>(deps: {
     // in flight) → never send into the stale session, whose tools may be local
     // while the thread is remote: the caller requeues like a held lock.
     if (!(await deps.ensureConfigFp(decodeClaims(deps.jobToken)?.sessionConfigFp))) return STALE_CONFIG;
+    deps.bindToken(deps.jobToken);
     return deps.run(lostLock);
   });
 }
