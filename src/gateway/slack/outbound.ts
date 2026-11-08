@@ -156,7 +156,8 @@ function judge(formatted: string, rules: Rules, o: OutboundOptions): OutboundVer
   }
   if (d.action === "approve") {
     if (o.unattended || !o.thread) {
-      record(o, d.hits, d.deciding, "refused");
+      // Approve becomes deny: recorded as guardrail.reply.denied (design section 5).
+      record(o, d.hits, d.deciding, "deny");
       return { action: "deny", message: `${hitMessage(d.deciding)} It needs an approver, and nobody is in this turn to ask, so it was not posted.` };
     }
     record(o, d.hits, d.deciding, "held");
