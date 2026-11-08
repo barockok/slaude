@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { MAX_RULES, parseGuardrail, ruleView, splitFrontmatter, MAX_GUARDRAIL_BYTES } from "../../src/guardrails/format";
-import { atPath, combine, stringLeaves, textRuleMatches, toolRuleMatches } from "../../src/guardrails/match";
+import { atPath, combine, hitMessage, MAX_DEPTH, MAX_LEAVES, stringLeaves, textHits, textRuleMatch, textRuleMatches, toolHits, toolRuleMatch, toolRuleMatches } from "../../src/guardrails/match";
 import { compileGlob, compilePattern, MAX_MATCH_CHARS, MAX_PATTERN_CHARS, PatternError } from "../../src/guardrails/pattern";
 
 const md = (front: string, body = "", rules?: string) =>
@@ -141,7 +141,7 @@ describe("parseGuardrail", () => {
   test("a catastrophic pattern runs in linear time; backtracking constructs are rejected", () => {
     const g = parseGuardrail("x", md("name: x", "", "- id: r\n  on: inbound\n  match: { text: '(a+)+$' }\n  action: deny"));
     expect(g.errors).toEqual([]);
-    const evil = "a".repeat(MAX_MATCH_CHARS - 1) + "!";
+    const evil = "a".repeat(64 * 1024) + "!";
     const t0 = performance.now();
     expect(g.rules[0]!.text!.test(evil)).toBe(false);
     expect(performance.now() - t0).toBeLessThan(2000);
@@ -215,14 +215,57 @@ describe("matching", () => {
 
   test("the walk is bounded in depth, count and size", () => {
     let deep: unknown = "x";
-    for (let i = 0; i < 20; i++) deep = { d: deep };
-    expect(stringLeaves(deep)).toEqual([]);
-    expect(stringLeaves(Array.from({ length: 500 }, () => "a"))).toHaveLength(200);
-    expect(stringLeaves("a".repeat(MAX_MATCH_CHARS * 2))[0]!.length).toBe(MAX_MATCH_CHARS);
+    for (let i = 0; i < MAX_DEPTH + 1; i++) deep = { d: deep };
+    expect(stringLeaves(deep)).toEqual({ values: [], overflow: true });
+    expect(stringLeaves({ a: { b: "x" } })).toEqual({ values: ["x"], overflow: false });
+    expect(stringLeaves(Array.from({ length: MAX_LEAVES + 1 }, () => "a")).overflow).toBe(true);
+    expect(stringLeaves(Array.from({ length: MAX_LEAVES }, () => "a")).overflow).toBe(false);
+    const big = stringLeaves("a".repeat(MAX_MATCH_CHARS + 1));
+    expect(big.overflow).toBe(true);
+    expect(big.values[0]!.length).toBe(MAX_MATCH_CHARS);
+    expect(stringLeaves(Array.from({ length: 5 }, () => "a".repeat(MAX_MATCH_CHARS))).overflow).toBe(true);
     expect(atPath({ a: [1, { b: "c" }] }, "a.1.b")).toBe("c");
     expect(atPath({ a: [1] }, "a.x")).toBeUndefined();
     expect(atPath({ a: 1 }, "a.b")).toBeUndefined();
     expect(atPath({}, "constructor")).toBeUndefined();
+  });
+
+  test("padding cannot hide a value: past 16 KB is still checked; past any bound, deny and approve fail closed, audit stays best effort", () => {
+    const rules = (action: string, match: string) => [{ slug: "g", rule: rule(`- id: r\n  on: tool\n  match: ${match}\n  action: ${action}`) }];
+    const field = "{ tool: Bash, input: { command: 'rm -rf' } }";
+    // 16 KB of padding before the target: whole strings up to 1 MB are matched.
+    const padded = { command: "x".repeat(64 * 1024) + " rm -rf /" };
+    expect(toolRuleMatch(rules("deny", field)[0]!.rule, "Bash", padded)).toBe("match");
+    // Past the per-string cap.
+    const huge = { command: "x".repeat(MAX_MATCH_CHARS + 10) + " rm -rf /" };
+    expect(toolRuleMatch(rules("deny", field)[0]!.rule, "Bash", huge)).toBe("oversize");
+    const denyHits = toolHits(rules("deny", field), ["Bash"], huge);
+    expect(denyHits).toHaveLength(1);
+    expect(denyHits[0]!.oversize).toBe(true);
+    expect(hitMessage(denyHits[0]!)).toMatch(/too large for the owner's guardrail g to check/);
+    expect(toolHits(rules("approve", field), ["Bash"], huge)).toHaveLength(1);
+    expect(toolHits(rules("audit", field), ["Bash"], huge)).toHaveLength(0);
+    // The target placed past the leaf bound, and past the depth bound.
+    const any = "{ tool: Mail, input: '@external\\.example$' }";
+    const many = { to: [...Array.from({ length: MAX_LEAVES + 1 }, () => "a@internal.example"), "x@external.example"] };
+    expect(toolRuleMatch(rules("deny", any)[0]!.rule, "Mail", many)).toBe("oversize");
+    let deep: unknown = "x@external.example";
+    for (let i = 0; i < MAX_DEPTH + 2; i++) deep = { d: deep };
+    expect(toolRuleMatch(rules("deny", any)[0]!.rule, "Mail", deep)).toBe("oversize");
+    // A visible match still matches even when something else overflowed.
+    expect(toolRuleMatch(rules("deny", any)[0]!.rule, "Mail", { to: ["x@external.example", ...many.to] })).toBe("match");
+    // A field rule with a padded array under the field.
+    const toField = "{ tool: Mail, input: { to: '@external\\.example$' } }";
+    expect(toolRuleMatch(rules("deny", toField)[0]!.rule, "Mail", many)).toBe("oversize");
+    expect(toolRuleMatch(rules("deny", toField)[0]!.rule, "Mail", { to: ["a@internal.example"] })).toBe("no");
+    // A large inbound text.
+    const inbound = [{ slug: "g", rule: rule("- id: r\n  on: inbound\n  match: { text: 'password' }\n  action: deny") }];
+    expect(textHits(inbound, "inbound", "x".repeat(40 * 1024) + " password")).toHaveLength(1);
+    const long = "x".repeat(MAX_MATCH_CHARS + 1);
+    expect(textRuleMatch(inbound[0]!.rule, "inbound", long)).toBe("oversize");
+    expect(textHits(inbound, "inbound", long)[0]!.oversize).toBe(true);
+    expect(textRuleMatch(inbound[0]!.rule, "reply", long)).toBe("no");
+    expect(hitMessage({ slug: "g", rule: { ...inbound[0]!.rule, message: "" } })).toBe("Blocked by the owner's guardrail g.");
   });
 
   test("combining: the strictest action decides, every hit is kept, ties go to the first", () => {

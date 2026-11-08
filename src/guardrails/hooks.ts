@@ -20,7 +20,7 @@
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
-import { combine, toolRuleMatches } from "./match";
+import { combine, hitMessage, toolHits } from "./match";
 import { firingEvents, type FiringEvent } from "./audit";
 import { guidanceText, toolTriggered, type OnMatchGuidance, type SessionGuardrails } from "./resolve";
 
@@ -39,10 +39,22 @@ export interface OwnerGuardrailHookDeps {
   onFiring: (events: FiringEvent[]) => void;
   /** Guidance handed over by a refusal. */
   onDelivered: (items: OnMatchGuidance[], toolName: string) => void;
+  /** Every name the called tool goes by (remote mode: the alias and the builtin it stands for). Default: the name itself. */
+  toolNames?: (toolName: string) => string[];
+}
+
+/** A tool's names in remote mode: the alias the CLI reports and the builtin it stands for. */
+export function aliasNames(aliases: Readonly<Record<string, string>>): (toolName: string) => string[] {
+  const reverse = new Map(Object.entries(aliases).map(([builtin, alias]) => [alias, builtin]));
+  return (name) => {
+    const builtin = reverse.get(name);
+    const forward = aliases[name];
+    return [name, ...(builtin ? [builtin] : []), ...(forward ? [forward] : [])];
+  };
 }
 
 export function deniedMessage(slug: string, message: string): string {
-  return message.trim() ? message.trim() : `Blocked by the owner's guardrail ${slug}.`;
+  return hitMessage({ slug, rule: { message } as never });
 }
 
 export function ownerGuardrailsHook(deps: OwnerGuardrailHookDeps): HookCallback {
@@ -52,19 +64,19 @@ export function ownerGuardrailsHook(deps: OwnerGuardrailHookDeps): HookCallback 
     if (!g || (g.toolRules.length === 0 && g.onMatch.length === 0)) return {};
     const i = input as { tool_name?: string; tool_input?: unknown };
     const toolName = i.tool_name ?? "";
-    const hits = g.toolRules.filter((h) => toolRuleMatches(h.rule, toolName, i.tool_input));
-    const decision = combine(hits);
+    const names = deps.toolNames?.(toolName) ?? [toolName];
+    const decision = combine(toolHits(g.toolRules, names, i.tool_input));
     if (decision) deps.onFiring(firingEvents("tool", decision.hits, decision.deciding, toolName));
-    if (decision && decision.action !== "audit") {
-      return deny(deniedMessage(decision.deciding.slug, decision.deciding.rule.message));
-    }
+    if (decision && decision.action !== "audit") return deny(hitMessage(decision.deciding));
     const seen = deps.delivered();
-    const due = toolTriggered(g, toolName, deps.channel()).filter((o) => !seen.has(o.slug));
+    const triggered = new Map<string, OnMatchGuidance>();
+    for (const n of names) for (const o of toolTriggered(g, n, deps.channel())) triggered.set(o.slug, o);
+    const due = [...triggered.values()].filter((o) => !seen.has(o.slug));
     if (due.length === 0) return {};
     for (const o of due) seen.add(o.slug);
     deps.onDelivered(due, toolName);
-    const names = due.map((o) => o.name).join(", ");
-    return deny(`Read guardrail ${names} first. This is not a refusal of the call: retry it after reading.\n\n${guidanceText(due)}`);
+    const titles = due.map((o) => o.name).join(", ");
+    return deny(`Read guardrail ${titles} first. This is not a refusal of the call: retry it after reading.\n\n${guidanceText(due)}`);
   };
 }
 

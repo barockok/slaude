@@ -3,8 +3,10 @@
  * engine: no pattern can backtrack catastrophically, and the constructs that
  * would need backtracking (backreferences, lookaround) fail to compile. Every
  * pattern runs in dotall mode (`.` crosses newlines), is length capped, and is
- * compiled once when its guardrail is parsed. Matched text is size capped
- * before it reaches the engine.
+ * compiled once when its guardrail is parsed. Strings are matched whole up to
+ * a large cap (RE2 is linear, so the cost is bounded by the input); a string
+ * over the cap is too large to check, and match.ts treats that as a match for
+ * deny and approve rules (fail closed).
  *
  * Tool names are matched with a glob (`*` any run of characters, `?` one),
  * compiled to an anchored RE2 pattern.
@@ -13,8 +15,8 @@ import { RE2JS } from "re2js";
 
 /** Longest pattern source a rule may carry. */
 export const MAX_PATTERN_CHARS = 512;
-/** Most characters of one string that ever reach a pattern. */
-export const MAX_MATCH_CHARS = 16 * 1024;
+/** Most characters of one string a pattern checks; a longer one is too large to check. */
+export const MAX_MATCH_CHARS = 1024 * 1024;
 
 export interface Pattern {
   source: string;
@@ -36,7 +38,7 @@ export function compilePattern(source: unknown, what: string): Pattern {
   return { source, test: (text) => re.test(capText(text)) };
 }
 
-/** `text` cut to the match budget. */
+/** `text` cut to the match budget (a best-effort prefix for audit rules). */
 export function capText(text: string): string {
   return text.length > MAX_MATCH_CHARS ? text.slice(0, MAX_MATCH_CHARS) : text;
 }
