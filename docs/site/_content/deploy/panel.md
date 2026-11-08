@@ -26,7 +26,7 @@ dark themes follow the browser, and every page works at phone width.
 | **Overview** | Counts of agents, live sessions, pending approvals and audit events in the last 24 h, and recent activity. |
 | **Agents** | Every agent (persona) with its live state. An agent's page has four tabs: *Overview* (identity, model, the label it runs on), *Mandates* (its jobs: the soul's mandate, each channel block, each cron and the heartbeat, with triggers and the approvers who can actually approve), *Access* (effective grants from the soul and the console) and *Activity* (its audit events). |
 | **Sessions** | Live and recent sessions with filters by agent and status. A session has a *Timeline*, a *Chat* tab and its *Audit* events. |
-| **Approvals and audit** | Every permission and approval decision, refusal and expiry, and every console change, newest first, filterable by agent, action, actor, decision and time. |
+| **Approvals and audit** | Every permission and approval decision, refusal and expiry, and every console change, newest first, filterable by agent, action, actor, decision and time. An event the agent itself did shows the agent's name as its actor, not its bot user id. |
 | **Access** | Console roles (read only, from the role file; superadmins only, operators see a note) and every stored agent grant. |
 | **Memory** | Memory stores with page counts; a store lists its pages; a page shows its content, type, tags and links. Read only. |
 | **Environments** | Node pools (labels, live nodes, last heartbeat), each agent's placement label, and personal environments (secrets never shown). |
@@ -278,7 +278,9 @@ client secret, public URL and signing secret.
 
 The portal has three pages:
 
-- **My account**: the signed-in identity and the Slack identities linked to it.
+- **My account**: the signed-in identity and the chat identities linked to it,
+  each with its surface (Slack today), workspace and user, shown by name with
+  the id as secondary text.
 - **Integrations**: the MCP servers a person can connect (below).
 - **My agents**: the agents the person holds a grant on, with their role.
 
