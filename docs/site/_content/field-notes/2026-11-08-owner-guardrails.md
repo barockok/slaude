@@ -100,12 +100,47 @@ life). Letting the call run until rc.10 would be the opposite of what the
 owner wrote; denying it is the safe reading. Reply rules are parsed, stored and
 shown as *Not yet enforced*: they need the single outbound choke point.
 
-**Without a master key the HMAC key is a file.** A single process on sqlite
-may have no `SLAUDE_MASTER_KEY`; a random per-process key (the ETag's
-fallback) would not survive a restart or match the import CLI's process. The
-key is created once under `$SLAUDE_HOME/guardrails/.hmac-key` (0600, refused to
-the file tools). A session's shell can still read it there, which is the same
-limit the threat model already states for that mode.
+**Without a master key the HMAC key is a file, on sqlite only.** A single
+process on sqlite may have no `SLAUDE_MASTER_KEY`; a random per-process key
+(the ETag's fallback) would not survive a restart or match the import CLI's
+process. The key is created on the first write under
+`$SLAUDE_HOME/guardrails/.hmac-key` (0600, refused to the file tools for
+writing and reading). A session's shell can still read it there, which is the
+same limit the threat model already states for that mode. Postgres requires
+the master key.
+
+## Review fixes before merge
+
+A review of the first push found ways around each layer; all fixed in the
+same release:
+
+- **Padding.** Strings were capped at 16 KB and the input walk at 200 values,
+  8 levels deep, so a value past the cap (or at `to[201]`) was never checked.
+  RE2 is linear, so strings are now matched whole up to 1 MB; past any bound
+  (size, count, depth, total) the input is too large to check, which is a
+  match for deny and approve rules and best effort for audit rules.
+- **Laundering.** A write re-signed the manifest over whatever rows were
+  stored, so the next legitimate write blessed a tampered row. A write now
+  verifies the stored set first; only the owner's `import --repair` re-signs.
+- **Delete-all and rollback.** A missing manifest read as "no guardrails" and
+  a whole older signed set verified. A high-water mark (memory, a file beside
+  the key, Redis) closes both; the cold-start case on a single process without
+  Redis is the stated residual.
+- **The key on deployments without guardrails** was created on the first
+  snapshot read, so a read-only `$SLAUDE_HOME` broke boot. It is now touched
+  only when a set exists or is written, and Postgres requires the master key.
+- **Remote aliases.** The hook saw `mcp__remote__bash`, so a rule on `Bash`
+  missed it in a remote thread; both names are matched now.
+- **Inbound after a failed verification** fell back to no rules; it now drops
+  the message with the unavailable notice.
+- **The reaper** moved a dead capable node's job back to the label queue an
+  older node consumes; jobs carry `requiresCaps` and are re-pinned to a
+  capable node.
+- **Node reports** chose their own `applied` value and were unbounded; the
+  gateway now takes the action from its own rule, dedupes per job and
+  rate-limits per session.
+- **Broken rules** were stored silently dropped; they now refuse the deploy,
+  the import and the render.
 
 ## What it does not do
 
