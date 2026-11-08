@@ -136,6 +136,14 @@ runs came out of the survey. Both are fixed in v0.46.0-rc.8:
    node reads the same facts from the job: only a turn whose signed `origin`
    is `slack` or `panel`, with no `bgRun` or `wake` in the claims or the job,
    is guarded. Voice turns are skipped, as in mono.
+   Two follow-ups from review keep the rule the same in both runtimes. A job
+   runs under one token, so the turn queue no longer merges a message into a
+   pending job of another kind (a different origin, background run or wake:
+   `sameTurnKind` in `src/queue/turns.ts`, on append, relabel and move); a
+   Slack reply behind a queued wake used to run under the wake's token, and a
+   promise check merged into a Slack job lost its run. In mono, a route reused
+   for a person's Slack message is no longer left silent after a cron run, and
+   a console (panel) message starts the guard over, as a node does per job.
 2. **A wake on a node could run tools the node's local policy auto-allows.**
    In mono the gateway wraps the permission resolver and denies every
    `canUseTool` call during a wake before any policy runs. A node's resolver
@@ -146,10 +154,19 @@ runs came out of the survey. Both are fixed in v0.46.0-rc.8:
    wake refusal lives. The tool plane's `wakeAllows` check covers only slaude's
    own contract tools, so it did not catch a built-in either.
    **Fix:** the node resolver denies with `wakeRefusal(toolName)` before
-   `permissionPolicy` when the session's current turn is a wake. The signed
-   `wake` claim of the session's bound job token decides (the job's `wake`
-   field only when the token cannot be read). Each job binds its own token, so
-   the next normal turn on the same session keeps the node's auto-allow list.
+   `permissionPolicy` when the session's current turn is a wake: the signed
+   `wake` claim of the session's bound job token or the job's own `wake` field
+   (either is enough). Each job binds its own token and resets the flag, so the
+   next normal turn on the same session keeps the node's auto-allow list. A job
+   requeued because the warm session is not on its config yet (STALE_CONFIG)
+   no longer binds its token first, so a turn still running there keeps its
+   own token and its wake refusal.
+
+   **Known limitation:** a voice call on a node runs outside any job and uses
+   the session's bound token. On a session whose last job was a wake, that
+   token is the wake's, so the call's permission requests are refused too
+   until the next normal job binds a new token. Nothing is allowed that should
+   not be; a call there just cannot use a tool that needs a decision.
 
 ## Other known gaps
 
