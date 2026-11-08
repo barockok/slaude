@@ -268,7 +268,8 @@ describe("the runtime layer", () => {
     const wake = entry(nodes, "gate.can-use-tool.wake-refusal");
     expect(wake.state).toBe("enforcing");
     expect(wake.details[0]!.label).toBe("On nodes");
-    expect(String(wake.details[0]!.value)).toContain("only calls that reach the gateway are refused");
+    expect(String(wake.details[0]!.value)).toContain("refused on the node before its local policy");
+    expect(entry(nodes, "hook.stop.must-reply").state).toBe("enforcing");
     expect(entry(nodes, "gate.can-use-tool.permission").details[0]).toMatchObject({ label: "Gateway env allow-list (SLAUDE_AUTO_ALLOW_TOOLS)" });
     expect(String(entry(nodes, "gate.can-use-tool.permission").details[0]!.value)).toContain("each node reads its own");
     expect(String(entry(nodes, "limit.wake-caps").details.find((d) => d.label === "Wall clock")!.value)).toContain("(nodes clamp to their turn timeout)");
@@ -283,7 +284,8 @@ describe("the runtime layer", () => {
   test("the node facts match what the node worker installs", () => {
     const worker = readFileSync(new URL("../../src/node/worker.ts", import.meta.url), "utf8");
     expect(worker).toContain("agent.setPermissionResolver(");
-    expect(worker).not.toContain("setStopGuard(");
+    expect(worker).toContain("agent.setStopGuard(");
+    expect(NODE_RUNTIME).toMatchObject({ stopGuard: true, permissionResolver: true });
   });
 });
 

@@ -53,6 +53,12 @@ const memoryHits: string[] = [];
 let bootFailure: Error | null = null;
 let busts: Array<[string, string | undefined]> = [];
 
+/** When set, the stub runs the manager's Stop hook rule (block once per turn
+ *  with the installed guard's reason, then let the stop through). */
+let emulateStopHook = false;
+/** The reasons the emulated Stop hook blocked with, in order. */
+const stopBlocks: string[] = [];
+
 /** Current stub behavior; tests swap it. */
 let behavior: (a: { sessionId: string; text: string; servers: any; signal: AbortSignal }) => Promise<void>;
 
@@ -214,6 +220,16 @@ beforeAll(async () => {
       this.aborts.get(id)?.abort();
     }
     override suppressNextTurn(_id: string) {}
+    permissionResolver?: (sessionId: string, toolName: string, input: any, ctx: any) => Promise<any>;
+    override setPermissionResolver(r: any) {
+      super.setPermissionResolver(r);
+      this.permissionResolver = r;
+    }
+    stopGuard?: (sessionId: string) => string | null;
+    override setStopGuard(g: any) {
+      super.setStopGuard(g);
+      this.stopGuard = g;
+    }
     /** The background run each sendMessage carried (phase E promise checks), by session. */
     bgRuns = new Map<string, { runId: string; finish: (usage: any, outcome: "ok" | "error") => Promise<void> }>();
     override async sendMessage(sessionId: string, text: string, opts: { backgroundRun?: any } = {}): Promise<void> {
@@ -227,6 +243,13 @@ beforeAll(async () => {
       void (async () => {
         try {
           await behavior({ sessionId, text, servers, signal: ac.signal });
+          // AgentManager's stopHook: the first stop of a turn the guard
+          // objects to goes back to the model with the reason as its input.
+          const reason = emulateStopHook ? this.stopGuard?.(sessionId) : null;
+          if (reason) {
+            stopBlocks.push(reason);
+            await behavior({ sessionId, text: reason, servers, signal: ac.signal });
+          }
           this.liveSet.add(sessionId); // Query stays warm after the turn
           this.emit("event", { type: "done", sessionId } as any);
         } catch (e) {
@@ -249,6 +272,10 @@ beforeAll(async () => {
   // agent never calls its child-env resolver, so no other case depends on it).
   const savedFallback = process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
   process.env.SLAUDE_PROVIDER_ENV_FALLBACK = "0";
+  // The node's own auto-allow list, read once when its resolver is built (the
+  // gateway above was created without it).
+  const savedAutoAllow = process.env.SLAUDE_AUTO_ALLOW_TOOLS;
+  process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Bash";
   workerHandle = await startNodeWorker({
     nodeId: NODE_ID,
     client,
@@ -276,6 +303,8 @@ beforeAll(async () => {
   });
   if (savedFallback === undefined) delete process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
   else process.env.SLAUDE_PROVIDER_ENV_FALLBACK = savedFallback;
+  if (savedAutoAllow === undefined) delete process.env.SLAUDE_AUTO_ALLOW_TOOLS;
+  else process.env.SLAUDE_AUTO_ALLOW_TOOLS = savedAutoAllow;
 });
 
 afterAll(async () => {
@@ -327,6 +356,102 @@ d("gateway↔node E2E (real Redis)", () => {
     // Follower re-emitted the node's done → gateway stamped ✅ on the inbound.
     await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9000.1"), 10_000);
   }, 30_000);
+
+  // The must-reply Stop guard on a node (v0.46.0-rc.8): a person's turn that
+  // ends with nothing user-visible is sent back once with mono's instruction;
+  // the model's answer to it lands in Slack, and a turn that replied is not
+  // sent back at all.
+  test("a node turn that ends without a reply is sent back once, then its reply lands", async () => {
+    const { MUST_REPLY_INSTRUCTION } = await import("../../src/agent/must-reply");
+    const prev = behavior;
+    const inputs: string[] = [];
+    // The stub emits the toolCall the real manager emits from the SDK stream.
+    behavior = async ({ sessionId, text, servers }) => {
+      inputs.push(text);
+      if (text !== MUST_REPLY_INSTRUCTION) return; // the first pass says nothing
+      stub.emit("event", { type: "toolCall", sessionId, tool: "mcp__slaude_surface__reply", input: {} });
+      await callShim(servers["slaude_surface"], "reply", { text: "node-reply: after the stop guard" });
+    };
+    emulateStopHook = true;
+    stopBlocks.length = 0;
+    try {
+      posts.length = 0;
+      reacts.length = 0;
+      await emitSlack("message", msg("9005.0", "9005.1", "<@USLAUDE> say something"));
+      await until(() => posts.some((p) => String(p.text).includes("after the stop guard")), 15_000);
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9005.1"), 10_000);
+      expect(stopBlocks).toEqual([MUST_REPLY_INSTRUCTION]);
+      expect(inputs).toHaveLength(2);
+
+      // A turn that replies first is not sent back.
+      behavior = async ({ sessionId, text, servers }) => {
+        inputs.push(text);
+        stub.emit("event", { type: "toolCall", sessionId, tool: "mcp__slaude_surface__reply", input: {} });
+        await callShim(servers["slaude_surface"], "reply", { text: "node-reply: straight away" });
+      };
+      inputs.length = 0;
+      await emitSlack("message", msg("9005.0", "9005.2", "<@USLAUDE> again"));
+      await until(() => posts.some((p) => String(p.text).includes("straight away")), 15_000);
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9005.2"), 10_000);
+      expect(stopBlocks).toHaveLength(1);
+      expect(inputs).toHaveLength(1);
+    } finally {
+      emulateStopHook = false;
+      behavior = prev;
+    }
+  }, 30_000);
+
+  // The wake refusal on a node (v0.46.0-rc.8), through the worker's own wiring
+  // (the job's wake flag, the bound token's signed claim, per-job reset): a
+  // tool the node auto-allows is refused in a wake's turn and allowed again in
+  // the next normal turn on the same session.
+  test("a wake job refuses a node-auto-allowed tool; the next normal job on the session allows it", async () => {
+    const { wakeRefusal } = await import("../../src/proactive/wake-guard");
+    const WAKE_THREAD = "9007.0";
+    const prev = behavior;
+    const decisions: Array<{ text: string; decision: any }> = [];
+    behavior = async ({ sessionId, text, servers }) => {
+      const decision = await stub.permissionResolver!(sessionId, "Bash", { command: "ls" }, { signal: new AbortController().signal, toolUseID: "tu-1" });
+      decisions.push({ text, decision });
+      if (!text.startsWith("[wake]")) await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
+    };
+    try {
+      posts.length = 0;
+      reacts.length = 0;
+      await emitSlack("message", msg(WAKE_THREAD, "9007.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9007.1"), 15_000);
+      const Sessions = await import("../../src/db/sessions");
+      const session = (await Sessions.findById(await sessionIdOf(WAKE_THREAD)))!;
+      // A heartbeat wake on the thread, dispatched as the gateway dispatches one.
+      await qd.dispatch(session, "[wake] look around", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WAKE_THREAD,
+        eventTs: "9007.2",
+        userId: "USLAUDE",
+        origin: "cron",
+        backgroundRunId: "run-e2e-wake",
+        wake: { maxTurns: 3 },
+      });
+      await until(() => decisions.some((d) => d.text.startsWith("[wake]")), 15_000);
+      await until(async () => !(await turnsQ.hasPending(session.id)), 10_000);
+      // The wake's turn has ended (its lock is free) before the next message.
+      await until(async () => (await redis.exists(keys.sessionLock(session.id))) === 0, 10_000);
+      await emitSlack("message", msg(WAKE_THREAD, "9007.3", "<@USLAUDE> after the wake"));
+      await until(() => decisions.some((d) => d.text.includes("after the wake")), 15_000);
+
+      const [first, wake, after] = [
+        decisions.find((d) => d.text.includes("first"))!,
+        decisions.find((d) => d.text.startsWith("[wake]"))!,
+        decisions.find((d) => d.text.includes("after the wake"))!,
+      ];
+      expect(first.decision.behavior).toBe("allow");
+      expect(wake.decision).toEqual({ behavior: "deny", message: wakeRefusal("Bash") });
+      expect(after.decision.behavior).toBe("allow");
+    } finally {
+      behavior = prev;
+    }
+  }, 45_000);
 
   test("an acked job's turn-senders record is deleted, not left to its TTL", async () => {
     posts.length = 0;

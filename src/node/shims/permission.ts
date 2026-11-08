@@ -5,6 +5,11 @@
  * POST /v1/tools/runtime/can_use_tool → {pendingId} → long-poll
  * /v1/pending/:id, honoring the click's allow-vs-always decision recorded in
  * the row payload. Fail closed: any wire failure is a deny, never a hang.
+ *
+ * A wake's turn is refused first, before that local policy: nobody is in a
+ * wake's turn to click a card, and mono denies every canUseTool call during a
+ * wake before any policy runs (src/gateway/core/gateway.ts). Without this, a
+ * tool in the node's SLAUDE_AUTO_ALLOW_TOOLS would run in a wake.
  */
 import type { PermissionResolver } from "../../agent/manager";
 import {
@@ -13,16 +18,33 @@ import {
   decisionFromPermRow,
 } from "../../gateway/slack/permission-gate";
 import type { NodeClient } from "../client";
+import { decodeClaims } from "../remote";
 import { pollPending } from "../pending";
+import { wakeRefusal } from "../../proactive/wake-guard";
 
 export interface NodePermissionDeps {
   client: NodeClient;
   tokenFor(sessionId: string): string | undefined;
+  /** The session's current turn is a wake (worker.ts: the signed claim, else the job). */
+  wakeFor?(sessionId: string): boolean;
+}
+
+/**
+ * Whether a session's current turn is a wake: the signed `wake` claim of the
+ * token bound for its job, or the job payload's `wake`. Either one is enough
+ * (fail closed: a refusal is the safe side). Each job binds its own token and
+ * resets the job flag, so a later normal job on the same session reads as not
+ * a wake.
+ */
+export function isWakeTurn(boundToken: string | undefined, jobIsWake: boolean): boolean {
+  const claims = boundToken ? decodeClaims(boundToken) : null;
+  return claims?.wake === true || jobIsWake;
 }
 
 export function makeNodePermissionResolver(deps: NodePermissionDeps): PermissionResolver {
   const autoAllow = autoAllowFromEnv();
   return async (sessionId, toolName, input, ctx) => {
+    if (deps.wakeFor?.(sessionId)) return { behavior: "deny", message: wakeRefusal(toolName) };
     const local = permissionPolicy(toolName, input, autoAllow);
     if (local) return local;
 

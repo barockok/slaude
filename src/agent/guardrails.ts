@@ -56,14 +56,15 @@ export interface GuardrailRuntime {
 
 /**
  * A node worker (src/node/worker.ts) installs a permission resolver
- * (makeNodePermissionResolver) and no Stop guard. In the gateway role, turns
- * run there, so these are the facts that hold for them.
+ * (makeNodePermissionResolver) and the must-reply Stop guard
+ * (makeNodeStopGuard). In the gateway role, turns run there, so these are the
+ * facts that hold for them.
  *
  * Keep in step with src/node/worker.ts: tests/panel/console-guardrails.test.ts
- * checks the worker's source for these two calls. A node that starts
- * installing a Stop guard must flip `stopGuard` here (and that test).
+ * checks the worker's source for these two calls. A node that stops
+ * installing either must flip it here (and that test).
  */
-export const NODE_RUNTIME: GuardrailRuntime = { stopGuard: false, permissionResolver: true, turnsRunOn: "nodes" };
+export const NODE_RUNTIME: GuardrailRuntime = { stopGuard: true, permissionResolver: true, turnsRunOn: "nodes" };
 
 /** No runtime facts known: nothing is assumed wired. */
 export const UNKNOWN_RUNTIME: GuardrailRuntime = { stopGuard: false, permissionResolver: false, turnsRunOn: "this-process" };
@@ -141,9 +142,13 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
     state: (ctx) => (ctx.stopGuard ? "enforcing" : "not-wired"),
     toggle: ALWAYS,
     details: (ctx) => [
-      { label: "Stop guard installed in", value: ctx.turnsRunOn === "nodes" ? "not on nodes (the node worker installs none)" : ctx.stopGuard ? "this process" : "nowhere (no guard set)" },
+      {
+        label: "Stop guard installed in",
+        value: !ctx.stopGuard ? "nowhere (no guard set)" : ctx.turnsRunOn === "nodes" ? "each node worker (same rule and text as mono)" : "this process",
+      },
+      { label: "Not forced", value: "cron runs, promise checks, heartbeat turns and wakes (silent), and voice turns" },
     ],
-    source: "agent/manager.ts #bootSession (stopHook); gateway/core/gateway.ts setStopGuard",
+    source: "agent/manager.ts #bootSession (stopHook); gateway/core/gateway.ts setStopGuard; node/stop-guard.ts; agent/must-reply.ts",
   },
   {
     id: HOOK_IDS.userPromptSuppress,
@@ -300,9 +305,8 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
     event: "canUseTool",
     effect: "Denies with a refusal naming proactive_post and post_message; the node tool plane refuses the same from the signed wake claim.",
     appliesTo: ["wake"],
-    // Enforcing for every call that reaches the gateway. On nodes the node's
-    // own permissionPolicy answers first (src/node/shims/permission.ts), so a
-    // tool it auto-allows never reaches this refusal: the first detail says so.
+    // Mono wraps the resolver; a node's resolver refuses first, before its
+    // local permissionPolicy (src/node/shims/permission.ts).
     state: (ctx) => (ctx.permissionResolver ? "enforcing" : "not-wired"),
     toggle: ALWAYS,
     details: (ctx) =>
@@ -310,11 +314,11 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
         ? [
             {
               label: "On nodes",
-              value: "The node's local policy (including its SLAUDE_AUTO_ALLOW_TOOLS) runs first; only calls that reach the gateway are refused. The tool plane's wake check covers slaude's own tools only.",
+              value: "Every permission request during a wake is refused on the node before its local policy (including its SLAUDE_AUTO_ALLOW_TOOLS) runs, from the signed wake claim or the job's wake; the gateway's can_use_tool route refuses the same.",
             },
           ]
         : [{ label: "In this process", value: "Every permission request during a wake is refused before any policy runs." }],
-    source: "gateway/core/gateway.ts (resolver wrapper); gateway/api/tools/index.ts (wake claim); node/shims/permission.ts (node order)",
+    source: "gateway/core/gateway.ts (resolver wrapper); gateway/api/tools/index.ts (wake claim); node/shims/permission.ts (node resolver)",
   },
   {
     id: "gate.can-use-tool.remote",
