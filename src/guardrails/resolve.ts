@@ -90,6 +90,8 @@ export interface SessionGuardrails {
   toolRules: RuleHit[];
   /** Enforced inbound rules (the gateway checks them before a turn). */
   inboundRules: RuleHit[];
+  /** Enforced reply rules (the gateway's outbound choke point checks them). */
+  replyRules: RuleHit[];
   /** `<owner-guardrails>` for the system prompt, or null when nothing applies. */
   promptBlock: string | null;
   /** On-match Guidance, delivered once per session when a trigger matches. */
@@ -101,7 +103,7 @@ export interface SessionGuardrails {
 }
 
 export const EMPTY_SESSION_GUARDRAILS: SessionGuardrails = Object.freeze({
-  version: 0, toolRules: [], inboundRules: [], promptBlock: null, onMatch: [], skipped: [], proseChars: 0,
+  version: 0, toolRules: [], inboundRules: [], replyRules: [], promptBlock: null, onMatch: [], skipped: [], proseChars: 0,
 }) as SessionGuardrails;
 
 const tagSafe = (s: string) => s.replace(/<(\/?)owner-guardrails?\b/gi, "&lt;$1owner-guardrail");
@@ -153,7 +155,7 @@ export function sessionGuardrails(
     parts.push("</owner-guardrails>");
     promptBlock = parts.join("\n");
   }
-  return { version: opts.version, toolRules: hits("tool"), inboundRules: hits("inbound"), promptBlock, onMatch, skipped, proseChars };
+  return { version: opts.version, toolRules: hits("tool"), inboundRules: hits("inbound"), replyRules: hits("reply"), promptBlock, onMatch, skipped, proseChars };
 }
 
 /** On-match guidance whose tool trigger matches `toolName` in `channel`. */

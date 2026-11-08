@@ -21,7 +21,12 @@ export const MAX_MATCH_CHARS = 1024 * 1024;
 export interface Pattern {
   source: string;
   test(text: string): boolean;
+  /** Every match replaced with `with` (text patterns; a glob has none). */
+  replace?(text: string, with_: string): string;
 }
+
+/** The redaction marker, the same as the soul's redact patterns use. */
+export const REDACTED = "[REDACTED]";
 
 export class PatternError extends Error {}
 
@@ -35,7 +40,8 @@ export function compilePattern(source: unknown, what: string): Pattern {
   } catch (e) {
     throw new PatternError(`${what} is not a valid pattern (${(e as Error).message})`);
   }
-  return { source, test: (text) => re.test(capText(text)) };
+  // `$` in the replacement is literal: quote it for RE2's group syntax.
+  return { source, test: (text) => re.test(capText(text)), replace: (text, with_) => re.matcher(text).replaceAll(with_.replace(/\$/g, "$$$$")) };
 }
 
 /** `text` cut to the match budget (a best-effort prefix for audit rules). */
