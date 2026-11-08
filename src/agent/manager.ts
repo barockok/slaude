@@ -27,6 +27,7 @@ export type PermissionMode =
   | "plan"
   | "dontAsk";
 import { paths } from "../config/home";
+import { dbDialect } from "../db/client";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
 import { soulSystemBlock } from "../soul/loader";
@@ -58,6 +59,10 @@ import { turnModelTokens, type SkillCheckBudget } from "../background/skill-chec
 import { skillUsageHook, type SkillUsageRecorder } from "./skill-usage-hook";
 import { passEndsTurnHook } from "./pass-stop-hook";
 import { HOOK_IDS, tagHook } from "./hook-tags";
+import { deliveryTurnAllowance, guardrailFilesHook, ownerGuardrailsHook } from "../guardrails/hooks";
+import { guidanceText, type SessionGuardrails } from "../guardrails/resolve";
+import type { FiringEvent } from "../guardrails/audit";
+import { GUARDRAILS_DIR } from "../guardrails/integrity";
 import { isProactiveWorkspace, WorkspaceClaims } from "./workspace-claim";
 import { addTokens, PROVISIONAL_OUTPUT_TOKENS, tokensFromUsage, type ModelTokens, type ModelUsageRow, type TokenCounts } from "../background/prices";
 
@@ -331,6 +336,16 @@ export type StopGuard = (sessionId: string) => string | null;
  *  when the gateway has none). */
 export type PersonaSoul = { soulMd: string; soulJson: unknown };
 export type PersonaSoulResolver = (sessionId: string, persona: string | undefined) => Promise<PersonaSoul>;
+/** The owner guardrails a booting session carries (src/guardrails/resolve.ts),
+ *  or null when none apply. A throw fails the boot with GUARDRAILS_UNAVAILABLE:
+ *  a session never runs with an empty set because the set could not be read. */
+export type GuardrailResolver = (sessionId: string, persona: string | undefined, channelId: string | null) => Promise<SessionGuardrails | null>;
+/** Where owner guardrail firings and Guidance deliveries are recorded (mono:
+ *  the audit writer; a node: its gateway). Never awaited by a decision. */
+export interface GuardrailSink {
+  firing(sessionId: string, events: FiringEvent[], ctx: { persona: string; channelId: string | null; kind: string }): void;
+  delivered(sessionId: string, slugs: string[], ctx: { persona: string; channelId: string | null; kind: string; via: "tool" | "inbound"; toolName?: string }): void;
+}
 /** A persona's default model as the node receives it in the runtime bundle, or
  *  undefined when the bundle is unmanaged (the row's model stands as is). */
 export type PersonaModelResolver = (sessionId: string, persona: string | undefined) => Promise<string | undefined>;
@@ -384,6 +399,8 @@ export function makeUserPromptHook(
   notes: Map<string, string[]>,
   suppressCheck?: () => boolean,
   findById: SessionStore["findById"] = Sessions.findById,
+  /** Inbound-triggered owner Guidance due this turn (drained once, like notes). */
+  takeGuidance?: () => Array<{ name: string; body: string }>,
 ): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
@@ -405,7 +422,8 @@ export function makeUserPromptHook(
     }
     const pending = notes.get(sessionId) ?? [];
     notes.set(sessionId, []);
-    const block = formatSessionNotes(pending);
+    const guidance = takeGuidance?.() ?? [];
+    const block = [formatSessionNotes(pending), guidance.length ? guidanceText(guidance) : null].filter(Boolean).join("\n");
     if (!block) return { continue: true };
     return {
       continue: true,
@@ -448,6 +466,14 @@ export class AgentManager extends EventEmitter {
   #configDirResolver: ((sessionId: string, persona: string | undefined) => Promise<string>) | undefined;
   #personaSoulResolver: PersonaSoulResolver | undefined;
   #personaModelResolver: PersonaModelResolver | undefined;
+  #guardrailResolver: GuardrailResolver | undefined;
+  #guardrailSink: GuardrailSink | undefined;
+  /** Per live session: the owner guardrails its boot resolved (fixed until the next boot). */
+  #sessionGuardrails = new Map<string, SessionGuardrails>();
+  /** Per session: the slugs whose on-match Guidance it has been given. Cleared on every boot. */
+  #guidanceDelivered = new Map<string, Set<string>>();
+  /** Inbound-triggered Guidance waiting for the session's next engaged turn (survives a reboot). */
+  #guidanceQueue = new Map<string, Array<{ slug: string; name: string; body: string }>>();
   #mcpResolver: McpResolver | undefined;
   #localMcpResolver: McpResolver | undefined;
   /** Episodic memory. The process provider in mono and on the gateway; the
@@ -551,6 +577,53 @@ export class AgentManager extends EventEmitter {
    *  configured, or as the default soul, instead of failing loudly. */
   setPersonaSoulResolver(resolver: PersonaSoulResolver | undefined) {
     this.#personaSoulResolver = resolver;
+  }
+
+  /** Install the owner guardrail resolver, called at session boot with the
+   *  session's persona and channel (mono and gateway: the verified database
+   *  snapshot; a node: its runtime bundle). Unset = no owner guardrails. */
+  setGuardrailResolver(resolver: GuardrailResolver | undefined) {
+    this.#guardrailResolver = resolver;
+  }
+
+  /** Install where guardrail firings are recorded. Unset = not recorded. */
+  setGuardrailSink(sink: GuardrailSink | undefined) {
+    this.#guardrailSink = sink;
+  }
+
+  /** The owner guardrails a live session booted with, or null. */
+  guardrailsFor(sessionId: string): SessionGuardrails | null {
+    return this.#sessionGuardrails.get(sessionId) ?? null;
+  }
+
+  /**
+   * Inbound-triggered Guidance for a session's next turn (the gateway matched
+   * the trigger; on a node it arrives with the job). Each guardrail is handed
+   * over at most once per session boot: what the session already has is
+   * dropped when the turn drains the queue.
+   */
+  offerGuidance(sessionId: string, items: ReadonlyArray<{ slug: string; name: string; body: string }>) {
+    if (items.length === 0) return;
+    const q = this.#guidanceQueue.get(sessionId) ?? [];
+    for (const it of items) if (!q.some((x) => x.slug === it.slug)) q.push({ slug: it.slug, name: it.name, body: it.body });
+    this.#guidanceQueue.set(sessionId, q);
+  }
+
+  /** A live session ended: its boot snapshot and delivery marks go with it. */
+  #forgetGuardrails(sessionId: string) {
+    this.#sessionGuardrails.delete(sessionId);
+    this.#guidanceDelivered.delete(sessionId);
+  }
+
+  /** Drain the queued Guidance the session has not been given yet, marking it given. */
+  #takeGuidance(sessionId: string): Array<{ slug: string; name: string; body: string }> {
+    const q = this.#guidanceQueue.get(sessionId) ?? [];
+    this.#guidanceQueue.delete(sessionId);
+    const seen = this.#guidanceDelivered.get(sessionId) ?? new Set<string>();
+    this.#guidanceDelivered.set(sessionId, seen);
+    const due = q.filter((x) => !seen.has(x.slug));
+    for (const x of due) seen.add(x.slug);
+    return due;
   }
 
   /** Install a per-session persona model resolver (a node: the runtime
@@ -1000,6 +1073,7 @@ export class AgentManager extends EventEmitter {
           if (this.#live.get(sessionId) === old) {
             this.#live.delete(sessionId);
             this.#skillGate.forget(sessionId);
+            this.#forgetGuardrails(sessionId);
             // The detached instance's own teardown no longer owns the id and
             // stays silent, so this is its one exit signal (a voice call must learn).
             this.#signalSessionExit(sessionId);
@@ -1268,6 +1342,8 @@ export class AgentManager extends EventEmitter {
        *  the whole list. */
       strictMcp?: boolean;
       memBlock?: string | null;
+      /** The owner guardrails the session boots with (their Guidance block). */
+      guardrails?: SessionGuardrails | null;
     },
   ): Promise<string> {
     // Named personas use their own soul for the persona block (the database
@@ -1284,6 +1360,9 @@ export class AgentManager extends EventEmitter {
     const { mcpServers, memBlock } = ctx;
     return [
       soulSystemBlock(soul.soulMd),
+      // Owner Guidance right after the soul, before the channel mandate.
+      // Enforced rules are never in the prompt: code checks them.
+      ctx.guardrails?.promptBlock ?? "",
       channelMandateBlock(ctx.channelId, soul.soulJson, sessionId, personaName),
       sessionModeBlock(ctx.lock ?? null, ctx.remote),
       mcpServers
@@ -1308,7 +1387,21 @@ export class AgentManager extends EventEmitter {
     personaId: string | undefined,
     ctx: { channelId?: string | null } = {},
   ): Promise<string> {
-    return this.#buildSystemAppend(sessionId, this.#resolvePersona(personaId).name, ctx);
+    const name = this.#resolvePersona(personaId).name;
+    const guardrails = await this.#resolveGuardrails(sessionId, name, ctx.channelId ?? null);
+    return this.#buildSystemAppend(sessionId, name, { ...ctx, guardrails });
+  }
+
+  /** The session's owner guardrails, or a typed boot failure: never an empty
+   *  set because the set could not be read or verified. */
+  async #resolveGuardrails(sessionId: string, personaName: string | undefined, channelId: string | null): Promise<SessionGuardrails | null> {
+    if (!this.#guardrailResolver) return null;
+    try {
+      return await this.#guardrailResolver(sessionId, personaName, channelId);
+    } catch (e) {
+      console.error(`[mgr] guardrails unavailable session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+      throw e instanceof BootFailure ? e : new BootFailure("GUARDRAILS_UNAVAILABLE", "owner guardrails could not be read or verified", { cause: e });
+    }
   }
 
   /** Boot a session, marked as booting (see ensureConfigFp) from the first
@@ -1327,7 +1420,10 @@ export class AgentManager extends EventEmitter {
       error: "session reboot failed",
       code: e instanceof BootFailure ? e.code : "TURN_FAILED",
     } satisfies AgentEvent);
-    if (!this.#live.has(sessionId)) this.#skillGate.forget(sessionId);
+    if (!this.#live.has(sessionId)) {
+      this.#skillGate.forget(sessionId);
+      this.#forgetGuardrails(sessionId);
+    }
     if (o.signalExit && !this.#live.has(sessionId)) this.#signalSessionExit(sessionId);
   }
 
@@ -1483,7 +1579,11 @@ export class AgentManager extends EventEmitter {
     const model = await this.#sessionModel(sessionId, row.model, personaName);
     // Strict (node): the prompt lists exactly what the CLI will mount.
     const strictNames = localMcp ? { ...baseMcpServers, ...(remoteTarget ? { [REMOTE_MCP_NAME]: true } : {}) } : null;
+    // Owner guardrails: resolved once per boot (the same lifecycle as the
+    // soul); a failure fails the boot.
+    const guardrails = await this.#resolveGuardrails(sessionId, personaName, row.slack_channel_id ?? null);
     const systemAppend = await this.#buildSystemAppend(sessionId, personaName, {
+      guardrails,
       channelId: row.slack_channel_id,
       lock,
       remote: remoteTarget
@@ -1529,11 +1629,33 @@ export class AgentManager extends EventEmitter {
     // history — no Slack re-fetch, no synthetic preamble. (decision:"block"
     // discards the prompt *before* it persists — verified against the pinned
     // SDK; see docs/site/_content/field-notes/2026-06-16-reengage-hook-suppress.md.)
+    const guardrailKind = () => (this.#wakes.has(sessionId) ? "wake" : this.#remoteHandles.has(sessionId) ? "remote" : "interactive");
+    const guardrailCtx = () => ({ persona: personaName ?? "default", channelId: row.slack_channel_id ?? null, kind: guardrailKind() });
     const userPromptHook = makeUserPromptHook(
       sessionId,
       this.#sessionNotes,
       () => this.#suppressNextTurn.delete(sessionId),
       (id) => this.#store.findById(id),
+      () => {
+        const due = this.#takeGuidance(sessionId);
+        if (due.length) this.#guardrailSink?.delivered(sessionId, due.map((d) => d.slug), { ...guardrailCtx(), via: "inbound" });
+        return due;
+      },
+    );
+    const ownerGuardrails = ownerGuardrailsHook({
+      guardrails: () => this.#sessionGuardrails.get(sessionId) ?? null,
+      channel: () => row.slack_channel_id,
+      delivered: () => {
+        let d = this.#guidanceDelivered.get(sessionId);
+        if (!d) this.#guidanceDelivered.set(sessionId, (d = new Set()));
+        return d;
+      },
+      onFiring: (events) => this.#guardrailSink?.firing(sessionId, events, guardrailCtx()),
+      onDelivered: (items, toolName) => this.#guardrailSink?.delivered(sessionId, items.map((i) => i.slug), { ...guardrailCtx(), via: "tool", toolName }),
+    });
+    const guardrailFiles = guardrailFilesHook(
+      () => row.working_dir,
+      () => ({ guardrailsDir: GUARDRAILS_DIR, dbFile: dbDialect() === "sqlite" ? paths.db : null }),
     );
     // CC plugins installed via `bun run install-deps`. Without this, the SDK
     // ignores the enabledPlugins entry in settings.json (it only reads
@@ -1602,7 +1724,9 @@ export class AgentManager extends EventEmitter {
         ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES } : {}),
         disallowedTools: [...SCHEDULER_TOOLS, ...(remoteHandle ? REMOTE_DENIED_LOCAL_TOOLS : []), ...(wake ? wakeDeniedToolIds() : WAKE_ONLY_TOOL_IDS)],
         ...(wake?.maxBudgetUsd && wake.maxBudgetUsd > 0 ? { maxBudgetUsd: wake.maxBudgetUsd } : {}),
-        ...(wake?.maxTurns && wake.maxTurns > 0 ? { maxTurns: wake.maxTurns } : {}),
+        // A Guidance delivery refusal costs a turn the wake did not choose:
+        // each on-match tool guardrail can refuse once, so the cap grows by that many.
+        ...(wake?.maxTurns && wake.maxTurns > 0 ? { maxTurns: wake.maxTurns + deliveryTurnAllowance(guardrails) } : {}),
         permissionMode: mode,
         ...(mode === "bypassPermissions"
           ? { allowDangerouslySkipPermissions: true }
@@ -1616,6 +1740,8 @@ export class AgentManager extends EventEmitter {
           PreToolUse: [{
             hooks: [
               ...(remoteHandle ? [tagHook(HOOK_IDS.remoteDenyLocal, denyLocalBuiltins)] : []),
+              tagHook(HOOK_IDS.guardrailFiles, guardrailFiles),
+              tagHook(HOOK_IDS.ownerGuardrails, ownerGuardrails),
               tagHook(HOOK_IDS.skillGate, this.#skillGate.pre(sessionId)),
               tagHook(HOOK_IDS.profileWriteGuard, denySyntheticProfileWrite(() => this.isSyntheticTurn(sessionId))),
             ],
@@ -1679,6 +1805,10 @@ export class AgentManager extends EventEmitter {
     // fails before going live leaves no state behind.
     this.#skillGate.reset(sessionId);
     this.#skillGate.markMounted(sessionId, allPlugins.some((p) => p.path === BUILTIN_PLUGIN_DIR));
+    // A fresh CLI has been given no Guidance: deliveries start over.
+    if (guardrails) this.#sessionGuardrails.set(sessionId, guardrails);
+    else this.#sessionGuardrails.delete(sessionId);
+    this.#guidanceDelivered.set(sessionId, new Set());
     this.#live.set(sessionId, live);
     onLive();
     metric.sessionsLive.set(this.#live.size);
@@ -1779,6 +1909,7 @@ export class AgentManager extends EventEmitter {
           console.error(`[mgr] remote release failed session=${sessionId}: ${e instanceof RemoteError ? e.code : "error"}`));
         this.#budget.forget(sessionId);
         this.#skillGate.forget(sessionId);
+        this.#forgetGuardrails(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
         markExited();
@@ -1813,6 +1944,7 @@ export class AgentManager extends EventEmitter {
         if (live.idleTimer) clearTimeout(live.idleTimer);
         this.#live.delete(sessionId);
         this.#skillGate.forget(sessionId);
+        this.#forgetGuardrails(sessionId);
       }
       markExited();
       if (!exitSignalled && (owned || !this.#live.has(sessionId))) {
