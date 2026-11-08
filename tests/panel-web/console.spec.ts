@@ -33,8 +33,10 @@ const PAGES: Array<{ path: string; heading: string | RegExp; ready: string; sub?
   { path: "/panel/skills", heading: "Skills", ready: "release-notes" },
   { path: "/panel/skills/base%3Arelease-notes", heading: /release-notes/, ready: "Pinned commit", sub: "SKILL.md" },
   { path: "/panel/skills/retired%3Adefault%3Astandup-notes-20261020T090000Z", heading: /standup-notes/, ready: "Unused for 60 days.", sub: "Provenance" },
-  { path: "/panel/guardrails", heading: "Guardrails", ready: "SLAUDE_AUTO_ALLOW_TOOLS", sub: "Tool permissions" },
+  { path: "/panel/guardrails", heading: "Guardrails", ready: "no-outbound-email" },
   { path: "/panel/guardrails?agent=scout", heading: "Guardrails", ready: "UBOB", sub: "Approvals" },
+  { path: "/panel/guardrails/no-outbound-email", heading: "no-outbound-email", ready: "Sending email is not allowed", sub: "Rules" },
+  { path: "/panel/agents/scout/guardrails", heading: /scout/, ready: "no-outbound-email" },
 ];
 
 test("the shell loads with the signed-in superadmin", async ({ page }) => {
@@ -481,73 +483,98 @@ test.describe("resources", () => {
     await expect(page.getByRole("button", { name: "Retire skill" })).toBeDisabled();
   });
 
-  test("guardrails show each value's source and the soul's own text, per agent", async ({ page }) => {
+  test("guardrails list the owner's guardrails: scope, rules by kind, source, status and last fired", async ({ page }) => {
     await page.goto("/panel/guardrails");
+    const table = page.getByRole("table", { name: "Guardrails" });
+    const mail = table.getByRole("row").filter({ hasText: "no-outbound-email" });
+    await expect(mail).toContainText("Every agent");
+    await expect(mail).toContainText("Enforced: 1");
+    await expect(mail).toContainText("Not yet enforced: 1");
+    await expect(mail).toContainText("Guidance");
+    await expect(mail).toContainText("Deploy repo");
+    await expect(mail).toContainText("On");
+    const triage = table.getByRole("row").filter({ hasText: "triage-channels" });
+    await expect(triage).toContainText("Only in #team-channel");
+    await expect(triage).toContainText("Behind source");
+    await expect(triage).toContainText("1 problem");
+    await expect(table.getByRole("row").filter({ hasText: "invoice-care" })).toContainText("Guidance (on match)");
+    await expect(page.getByText("a session cannot reach the database")).toBeVisible();
+    // The runtime layer is no longer shown.
+    await expect(page.getByText("Hooks and gates")).toHaveCount(0);
+    await expect(page.getByText("System prompt", { exact: true })).toHaveCount(0);
+    await mail.click();
+    await expect(page).toHaveURL(/\/guardrails\/no-outbound-email$/);
+  });
+
+  test("a guardrail's detail: GUARDRAIL.md rendered and raw, rules labelled Enforced, Guidance, applies-to, firings", async ({ page }) => {
+    await page.goto("/panel/guardrails/no-outbound-email");
+    await expect(h1(page)).toHaveText("no-outbound-email");
+    const rules = page.getByRole("table", { name: "Rules" });
+    await expect(rules.getByRole("row").filter({ hasText: "no-send" })).toContainText("Enforced");
+    await expect(rules.getByRole("row").filter({ hasText: "no-prices" })).toContainText("Not yet enforced");
+    await expect(page.getByText("Advisory", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Copy GUARDRAIL.md" })).toBeVisible();
+    const card = page.locator(".sl-card").filter({ has: page.getByRole("button", { name: "Copy GUARDRAIL.md" }) });
+    await card.getByRole("button", { name: "Raw" }).click();
+    await expect(card.locator(".sl-md-raw")).toContainText("```rules");
+    await card.getByRole("button", { name: "Rendered" }).click();
+    await expect(page.getByRole("table", { name: "Recent firings" }).getByText("Denied a tool call")).toBeVisible();
+    await expect(page.getByRole("link", { name: "triage" })).toHaveAttribute("href", "/panel/agents/triage/guardrails");
+    await expect(page.getByText("Every channel")).toBeVisible();
+    await page.goto("/panel/guardrails/triage-channels");
+    await expect(page.getByText("is not a valid pattern")).toBeVisible();
+    await expect(page.getByText("The source text changed after this override was written.")).toBeVisible();
+    await page.goto("/panel/guardrails/missing");
+    await expect(page.getByText("No such guardrail").first()).toBeVisible();
+  });
+
+  test("a superadmin turns a guardrail off and on; it leaves the agent's tab while off", async ({ page }) => {
+    await page.goto("/panel/guardrails/invoice-care");
+    await page.getByRole("button", { name: "Turn off" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Turn off" }).click();
+    await expect(toasts(page).getByText("Guardrail off")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Turn on" })).toBeVisible();
+    // In-app navigation: the dev stub keeps its state for the page's lifetime.
+    await page.getByRole("link", { name: "scout" }).click();
+    const tab = page.getByRole("table", { name: "Guardrails of this agent" });
+    await expect(tab.getByText("no-outbound-email")).toBeVisible();
+    await expect(tab.getByText("invoice-care")).toHaveCount(0);
+    await page.goBack();
+    await page.getByRole("button", { name: "Turn on" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Turn on" }).click();
+    await expect(toasts(page).getByText("Guardrail on")).toBeVisible();
+  });
+
+  test("an operator reads guardrails and cannot switch them", async ({ page }) => {
+    await page.goto("/panel/guardrails/no-outbound-email?as=operator");
+    await expect(page.getByText("Only a superadmin can switch a guardrail on or off.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Turn off" })).toBeDisabled();
+  });
+
+  test("the agent's Guardrails tab lists shared and its own guardrails, linking to each", async ({ page }) => {
+    await page.goto("/panel/agents/triage/guardrails");
+    const t = page.getByRole("table", { name: "Guardrails of this agent" });
+    await expect(t.getByRole("row").filter({ hasText: "no-outbound-email" })).toContainText("Shared");
+    await expect(t.getByRole("row").filter({ hasText: "triage-channels" })).toContainText("This agent");
+    await expect(page.getByText(/Always-loaded Guidance: \d+ of 4,000 characters/)).toBeVisible();
+    await t.getByRole("link", { name: "triage-channels" }).click();
+    await expect(page).toHaveURL(/\/guardrails\/triage-channels$/);
+  });
+
+  test("the soul and access settings stay in a collapsed section, per agent", async ({ page }) => {
+    await page.goto("/panel/guardrails");
+    await expect(page.locator("#guardrail-tool-permissions")).toHaveCount(0);
+    await page.locator("#guardrails-soul-access summary").click();
     const tools = page.locator("#guardrail-tool-permissions");
     await expect(tools.getByText("Env", { exact: true })).toBeVisible();
     await expect(page.locator("#guardrail-policy").getByText("Not implemented")).toBeVisible();
     const proactive = page.locator("#guardrail-proactive");
     await expect(proactive.getByText("22:00 to 07:00")).toBeVisible();
-    await expect(proactive.getByRole("heading", { name: "Proactive", exact: true })).toBeVisible();
     await page.getByRole("button", { name: /^Agent: / }).click();
     await page.getByRole("menuitemradio", { name: "scout" }).click();
     await expect(page).toHaveURL(/\/guardrails\?agent=scout$/);
     await expect(page.locator("#guardrail-approvals").getByText("UBOB")).toBeVisible();
     await expect(page.locator("#guardrail-admission").getByRole("link", { name: "Grants on the Access tab" })).toHaveAttribute("href", "/panel/agents/scout/access");
-  });
-
-  test("guardrails show the runtime layer above the soul and access settings", async ({ page }) => {
-    await page.goto("/panel/guardrails");
-    const prompt = page.locator("#guardrails-system-prompt");
-    const layers = prompt.getByRole("list", { name: "System prompt layers" });
-    await expect(layers.getByRole("listitem")).toHaveCount(7);
-    await expect(layers.locator('[data-layer="runtime-baseline"]').getByText("Fixed by the runtime")).toBeVisible();
-    await expect(layers.locator('[data-layer="persona"]').getByText("From the soul")).toBeVisible();
-    await expect(layers.locator('[data-layer="channel-mandate"]').getByText("2 channels")).toBeVisible();
-    await expect(layers.locator('[data-layer="persona"]').getByRole("link", { name: "Mandates tab" })).toHaveAttribute("href", "/panel/agents/default/mandates");
-    await expect(prompt.getByText("nothing in the code stops a soul from contradicting it")).toBeVisible();
-    await expect(prompt.getByText(/one render for every agent of this deployment/)).toBeVisible();
-    // A baseline block is folded until opened, then rendered with the shared markdown view.
-    const block = page.locator("#baseline-channel-trust");
-    await expect(block.locator(".sl-markdown")).toHaveCount(0);
-    await block.locator("summary").click();
-    await expect(block.locator(".sl-markdown").getByText("internal team channel.")).toBeVisible();
-    await block.getByRole("button", { name: "Raw" }).click();
-    await expect(block.locator(".sl-md-raw")).toContainText("## Channel trust");
-    await block.getByRole("button", { name: "Rendered" }).click();
-    await expect(block.getByRole("button", { name: "Copy block" })).toBeVisible();
-    await expect(prompt.getByText("mcp__slaude_skills__write_skill")).toBeVisible();
-
-    const hooks = page.getByRole("table", { name: "Hooks and gates" });
-    await expect(hooks.getByRole("row").filter({ hasText: "Must reply or pass" })).toContainText("Enforcing");
-    await expect(hooks.getByRole("row").filter({ hasText: "Remote mode local-tool deny" })).toContainText("SLAUDE_REMOTE");
-    await expect(hooks.getByRole("row").filter({ hasText: "Decision gate" })).toContainText("Shadow");
-    const kbFirst = hooks.getByRole("row").filter({ hasText: "KB-first Stop guard" });
-    await expect(kbFirst).toContainText("Not built");
-    await expect(kbFirst.getByRole("link", { name: /Design: KB-first enforcement/ })).toHaveAttribute("href", /2026-06-13-kb-first-enforcement/);
-    // Observability hooks are behind the kind filter.
-    await expect(hooks.getByText("Skill usage counter")).toHaveCount(0);
-    await page.getByRole("button", { name: /^Kind: / }).click();
-    await page.getByRole("menuitemradio", { name: "Observability" }).click();
-    await expect(page).toHaveURL(/kind=observability/);
-    await expect(hooks.getByText("Skill usage counter")).toBeVisible();
-    await expect(hooks.getByText("Must reply or pass")).toHaveCount(0);
-
-    const limits = page.locator("#guardrails-limits");
-    await expect(limits.getByText("CLI scheduler tools")).toBeVisible();
-    await expect(limits.getByText("ScheduleWakeup")).toBeVisible();
-    await expect(limits.locator('[id="guardrail-redact.soul-patterns"]').getByText("project-[a-z]+")).toBeVisible();
-
-    // The new sections come first, the old cards after them.
-    const order = await page.locator("#guardrails-system-prompt, #guardrails-hooks, #guardrails-limits, #guardrail-tool-permissions").evaluateAll((els) => els.map((e) => e.id));
-    expect(order).toEqual(["guardrails-system-prompt", "guardrails-hooks", "guardrails-limits", "guardrail-tool-permissions"]);
-  });
-
-  test("an operator sees how many redaction patterns, never the patterns", async ({ page }) => {
-    await page.goto("/panel/guardrails?as=operator");
-    const soul = page.locator('[id="guardrail-redact.soul-patterns"]');
-    await expect(soul.getByText("1 pattern")).toBeVisible();
-    await expect(page.getByText("project-[a-z]+")).toHaveCount(0);
   });
 
   test("agent messages render as markdown in the timeline and chat; user messages stay Slack text", async ({ page }) => {
