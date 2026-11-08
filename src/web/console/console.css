@@ -1382,10 +1382,9 @@
   flex: none;
 }
 
-/* Guardrails: the runtime layer (system prompt, hooks and gates, limits). */
+/* Guardrails: chips that wrap inside a value or a table cell. */
 .sl-gr-value .sl-tag,
-.sl-gr-limit .sl-tag,
-.sl-gr-hooks .sl-tag {
+.sl-gr-table .sl-tag {
   max-width: 100%;
   height: auto;
   min-height: var(--sl-control-h-xs);
@@ -1393,8 +1392,7 @@
   overflow-wrap: anywhere;
 }
 
-.sl-gr-value .sl-chips,
-.sl-gr-limit .sl-chips {
+.sl-gr-value .sl-chips {
   min-width: 0;
   max-width: 100%;
 }
@@ -1405,63 +1403,23 @@
   font-weight: var(--sl-weight-semibold);
 }
 
-.sl-gr-layers {
+.sl-gr-table td {
+  vertical-align: top;
+}
+
+.sl-gr-badges {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  gap: var(--sl-pad-xs);
+  min-width: 0;
+}
+
+.sl-gr-errors {
   margin: 0;
   padding-left: var(--sl-pad-xl);
-  gap: var(--sl-pad-sm);
-}
-
-.sl-gr-layer {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  min-width: 0;
-}
-
-.sl-gr-blocks {
   display: flex;
   flex-direction: column;
   gap: var(--sl-pad-xs);
-  min-width: 0;
-}
-
-.sl-gr-hooks td {
-  vertical-align: top;
-  padding-top: var(--sl-pad-sm);
-  padding-bottom: var(--sl-pad-sm);
-}
-
-.sl-gr-inline-details {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  min-width: 0;
-}
-
-.sl-gr-limits {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.sl-gr-limit {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sl-pad-xs);
-  min-width: 0;
-  padding: var(--sl-pad-md) 0;
-  border-top: 1px solid var(--sl-border);
-}
-
-.sl-gr-limit:first-child {
-  padding-top: 0;
-  border-top: none;
-}
-
-.sl-gr-limit p {
-  margin: 0;
 }
 
 /* A wide table that scrolls inside its card instead of widening the page. */
