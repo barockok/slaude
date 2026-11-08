@@ -100,6 +100,30 @@ describe("slaude guardrails import", () => {
     expect(rows.map((x) => x.actor_id)).toContain("cli:owner");
   });
 
+  test("with Redis the CLI reads and raises the gateway's high-water mark: a repair lands above it", async () => {
+    const store = new Map<string, string>();
+    const client = {
+      get: async (k: string) => store.get(k) ?? null,
+      del: async (k: string) => void store.delete(k),
+      eval: async (_s: string, _n: number, k: string, v: string) => {
+        if (Number(store.get(k) ?? "0") < Number(v)) store.set(k, v);
+        return 1;
+      },
+    };
+    const redis = { client: client as never, prefix: "slaude" };
+    const key = "slaude:guardrails:high-water:default";
+    const d = folder({ alpha: gmd("alpha") });
+    expect(await main(["import", d], { redis })).toBe(0);
+    expect(store.get(key)).toBe("1");
+    // Another replica saw version 9 (this process never did): a plain import
+    // refuses the older stored set; the repair lands above the mark.
+    store.set(key, "9");
+    expect(await main(["import", folder({ alpha: gmd("alpha", "v2") })], { redis })).toBe(1);
+    expect(await main(["import", folder({ alpha: gmd("alpha", "v2") }), "--repair"], { redis })).toBe(0);
+    expect(store.get(key)).toBe("10");
+    expect((await readGuardrails()).manifest!.version).toBe(10);
+  });
+
   test("the CLI entry: usage, node refusal, success and failure codes", async () => {
     const d = folder({ cli: gmd("cli") });
     expect(await main([])).toBe(2);

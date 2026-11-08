@@ -10,15 +10,33 @@
 //
 // <dir> holds <slug>/GUARDRAIL.md folders (or is a deploy repo with a
 // guardrails/ folder). A running server picks the change up within its poll
-// (about 10 seconds) and reloads warm sessions after their turn.
+// (about 10 seconds) and reloads warm sessions after their turn. With
+// SLAUDE_REDIS_URL set it reads and raises the high-water mark in Redis, as
+// the gateway does.
 import { parseArgs } from "node:util";
 import { userInfo } from "node:os";
 import { flushAudits } from "../audit/emit";
 import { formatImportReport, importGuardrails } from "../guardrails/import";
+import { setHighWaterRedis } from "../guardrails/high-water";
+import { createRedis } from "../queue/redis";
+import { makeKeys } from "../queue/keys";
+import type { Redis } from "ioredis";
 
 const USAGE = "usage: slaude guardrails import <dir> [--prune] [--dry-run] [--repair]";
 
-export async function main(argv: string[]): Promise<number> {
+/** The Redis the high-water mark is shared through, when the deployment has one. */
+export interface ImportRedis {
+  client: Pick<Redis, "get" | "eval" | "del"> & { quit?: () => Promise<unknown> };
+  prefix: string;
+}
+
+/** SLAUDE_REDIS_URL set: the same store and key prefix the gateway uses. */
+function envRedis(): ImportRedis | null {
+  if (!process.env.SLAUDE_REDIS_URL) return null;
+  return { client: createRedis(), prefix: makeKeys().prefix };
+}
+
+export async function main(argv: string[], deps: { redis?: ImportRedis | null } = {}): Promise<number> {
   let parsed: { values: { prune?: boolean; "dry-run"?: boolean; repair?: boolean }; positionals: string[] };
   try {
     parsed = parseArgs({ args: argv, allowPositionals: true, options: { prune: { type: "boolean" }, "dry-run": { type: "boolean" }, repair: { type: "boolean" } } });
@@ -41,6 +59,11 @@ export async function main(argv: string[]): Promise<number> {
   } catch {
     /* no passwd entry */
   }
+  // The high-water mark the gateway keeps in Redis: an import (a repair
+  // above all) must see it, or it could land below the mark and leave every
+  // session refusing to start.
+  const redis = deps.redis !== undefined ? deps.redis : envRedis();
+  if (redis) setHighWaterRedis(redis.client as Redis, redis.prefix);
   try {
     const r = await importGuardrails(dir, { by: `cli:${who}`, prune: !!parsed.values.prune, dryRun: !!parsed.values["dry-run"], repair: !!parsed.values.repair });
     console.log(formatImportReport(r));
@@ -49,6 +72,10 @@ export async function main(argv: string[]): Promise<number> {
     return 1;
   } finally {
     await flushAudits({ timeoutMs: 5000 });
+    if (redis) {
+      setHighWaterRedis(null);
+      if (deps.redis === undefined) await redis.client.quit?.().catch(() => {});
+    }
   }
   return 0;
 }
