@@ -687,8 +687,104 @@ export interface GuardrailFamily {
   link?: { label: string; to: string };
 }
 
+// --- Guardrails: the runtime layer (registry, prompt stack, baseline) --------
+
+/** What a registry entry is. `observability` hooks count or report; they never block. */
+export type GuardrailKind = "prompt" | "hook" | "gate" | "deny-list" | "limit" | "redaction" | "observability";
+/** `not-wired`: the code exists but this process does not install it; `not-built`: designed only. */
+export type GuardrailState = "enforcing" | "shadow" | "off" | "not-built" | "not-wired";
+/** Where a guardrail applies. Voice is an interactive session on a call. */
+export type GuardrailAppliesTo = "interactive" | "wake" | "remote" | "voice" | "background" | "deployment";
+export type GuardrailEvent = "Stop" | "UserPromptSubmit" | "PreToolUse" | "PostToolUse" | "PreCompact" | "canUseTool" | "dispatch";
+
+export interface GuardrailToggle {
+  /** `none`: always on, nothing turns it off. */
+  source: "env" | "config" | "thread" | "none";
+  /** The variable or command, e.g. `SLAUDE_REMOTE` or `/remote`. */
+  key?: string;
+  /** The value when nothing sets it. */
+  default?: string;
+}
+
+/** One fact about a guardrail. Env values appear only as on/off, a mode or a cap. */
+export interface GuardrailDetail {
+  label: string;
+  value: string | number | boolean | string[];
+}
+
+export interface GuardrailEntry {
+  /** Stable, e.g. `hook.stop.must-reply`. */
+  id: string;
+  kind: GuardrailKind;
+  title: string;
+  summary: string;
+  event?: GuardrailEvent;
+  /** What it does when it fires. */
+  effect: string;
+  appliesTo: GuardrailAppliesTo[];
+  state: GuardrailState;
+  toggle: GuardrailToggle;
+  details: GuardrailDetail[];
+  /** file:area, for operators reading the code. */
+  source: string;
+  /** The design write-up, for a guardrail that is not built. */
+  fieldNote?: { title: string; href: string };
+}
+
+export interface GuardrailGroup {
+  kind: GuardrailKind;
+  entries: GuardrailEntry[];
+}
+
+/** One layer of the system prompt, in the order the session receives them. */
+export interface PromptLayer {
+  id: "preset" | "runtime-baseline" | "persona" | "channel-mandate" | "session-mode" | "mcp-servers" | "memory-context";
+  title: string;
+  /** False: fixed by the runtime. True: comes from the soul (or the thread). */
+  overridable: boolean;
+  source: string;
+  /** Whether this agent's sessions carry it (per-thread layers: when that thread has it). */
+  present: boolean;
+  /** How many there are, e.g. channel mandates that differ from the soul's. */
+  count?: number;
+  note?: string;
+  /** A console page that edits or shows it, e.g. the agent's Mandates tab. */
+  link?: { label: string; to: string };
+}
+
+/** Text the runtime adds to a single turn, not to the system prompt. */
+export interface PromptInjection {
+  id: string;
+  title: string;
+  summary: string;
+  source: string;
+}
+
+export interface BaselineBlockView {
+  id: string;
+  title: string;
+  /** The block's markdown, with on-disk paths shown as `$SLAUDE_HOME/...`. */
+  markdown: string;
+}
+
+export interface BuiltinSkillView {
+  name: string;
+  qualified: string;
+  trigger: string;
+  /** Tools the runtime blocks until this skill is loaded. */
+  governs: string[];
+}
+
 /** GET /panel/api/guardrails?agent= */
 export interface GuardrailsResponse {
   agent: string;
+  /** The system prompt's layers, then what single turns get. */
+  promptStack: { layers: PromptLayer[]; perTurn: PromptInjection[] };
+  /** The runtime baseline, one render for every agent of this deployment. */
+  baseline: { deploymentWide: true; brain: boolean; blocks: BaselineBlockView[] };
+  builtinSkills: BuiltinSkillView[];
+  /** The registry, each entry's state computed for this process, grouped by kind. */
+  guardrails: GuardrailGroup[];
+  /** Soul and access settings (moving to the agent's tabs in a later release). */
   families: GuardrailFamily[];
 }

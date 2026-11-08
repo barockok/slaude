@@ -149,7 +149,7 @@ export function installStub(): void {
     if (path === "/api/guardrails") {
       const agent = query.get("agent") || "default";
       if (agent !== "default" && !fx.agents[agent]) return json(404, { error: `no agent named '${agent}'` });
-      return json(200, guardrailFixtures(agent));
+      return json(200, guardrailFixtures(agent, isSuper));
     }
     if (seg[1] === "agents") {
       if (seg.length === 2) return json(200, { agents: Object.values(fx.agents).map(summary) });

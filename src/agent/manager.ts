@@ -57,6 +57,7 @@ import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/typ
 import { turnModelTokens, type SkillCheckBudget } from "../background/skill-check";
 import { skillUsageHook, type SkillUsageRecorder } from "./skill-usage-hook";
 import { passEndsTurnHook } from "./pass-stop-hook";
+import { HOOK_IDS, tagHook } from "./hook-tags";
 import { isProactiveWorkspace, WorkspaceClaims } from "./workspace-claim";
 import { addTokens, PROVISIONAL_OUTPUT_TOKENS, tokensFromUsage, type ModelTokens, type ModelUsageRow, type TokenCounts } from "../background/prices";
 
@@ -638,6 +639,17 @@ export class AgentManager extends EventEmitter {
   /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
   setStopGuard(guard: StopGuard | undefined) {
     this.#stopGuard = guard;
+  }
+
+  /** Whether a Stop guard is installed (the guardrails view: absent, the
+   *  must-reply hook is a no-op, so it reports "not wired"). */
+  hasStopGuard(): boolean {
+    return this.#stopGuard !== undefined;
+  }
+
+  /** Whether a permission resolver is installed (absent: no canUseTool). */
+  hasPermissionResolver(): boolean {
+    return this.#resolver !== undefined;
   }
 
   /** Remote mode (spec §4.1): resolver says whether a session's tools run remotely;
@@ -1595,12 +1607,26 @@ export class AgentManager extends EventEmitter {
         ...(mode === "bypassPermissions"
           ? { allowDangerouslySkipPermissions: true }
           : {}),
+        // Each callback is marked with its guardrail registry id (tagHook
+        // returns it unchanged); the agreement test reads the marks back.
         hooks: {
-          PreCompact: [{ hooks: [preCompact] }],
-          Stop: [{ hooks: [stopHook] }],
-          UserPromptSubmit: [{ hooks: [userPromptHook] }],
-          PreToolUse: [{ hooks: [...(remoteHandle ? [denyLocalBuiltins] : []), this.#skillGate.pre(sessionId), denySyntheticProfileWrite(() => this.isSyntheticTurn(sessionId))] }],
-          PostToolUse: [{ hooks: [this.#skillGate.post(sessionId), skillUsageHook(sessionId, personaName, () => this.#skillUsage), passEndsTurnHook()] }],
+          PreCompact: [{ hooks: [tagHook(HOOK_IDS.preCompact, preCompact)] }],
+          Stop: [{ hooks: [tagHook(HOOK_IDS.stopMustReply, stopHook)] }],
+          UserPromptSubmit: [{ hooks: [tagHook(HOOK_IDS.userPromptSuppress, userPromptHook)] }],
+          PreToolUse: [{
+            hooks: [
+              ...(remoteHandle ? [tagHook(HOOK_IDS.remoteDenyLocal, denyLocalBuiltins)] : []),
+              tagHook(HOOK_IDS.skillGate, this.#skillGate.pre(sessionId)),
+              tagHook(HOOK_IDS.profileWriteGuard, denySyntheticProfileWrite(() => this.isSyntheticTurn(sessionId))),
+            ],
+          }],
+          PostToolUse: [{
+            hooks: [
+              tagHook(HOOK_IDS.skillGateMark, this.#skillGate.post(sessionId)),
+              tagHook(HOOK_IDS.skillUsage, skillUsageHook(sessionId, personaName, () => this.#skillUsage)),
+              tagHook(HOOK_IDS.passEndsTurn, passEndsTurnHook()),
+            ],
+          }],
         },
         systemPrompt: {
           type: "preset",

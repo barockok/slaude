@@ -496,6 +496,60 @@ test.describe("resources", () => {
     await expect(page.locator("#guardrail-admission").getByRole("link", { name: "Grants on the Access tab" })).toHaveAttribute("href", "/panel/agents/scout/access");
   });
 
+  test("guardrails show the runtime layer above the soul and access settings", async ({ page }) => {
+    await page.goto("/panel/guardrails");
+    const prompt = page.locator("#guardrails-system-prompt");
+    const layers = prompt.getByRole("list", { name: "System prompt layers" });
+    await expect(layers.getByRole("listitem")).toHaveCount(7);
+    await expect(layers.locator('[data-layer="runtime-baseline"]').getByText("Fixed by the runtime")).toBeVisible();
+    await expect(layers.locator('[data-layer="persona"]').getByText("From the soul")).toBeVisible();
+    await expect(layers.locator('[data-layer="channel-mandate"]').getByText("2 channels")).toBeVisible();
+    await expect(layers.locator('[data-layer="persona"]').getByRole("link", { name: "Mandates tab" })).toHaveAttribute("href", "/panel/agents/default/mandates");
+    await expect(prompt.getByText("nothing in the code stops a soul from contradicting it")).toBeVisible();
+    await expect(prompt.getByText(/one render for every agent of this deployment/)).toBeVisible();
+    // A baseline block is folded until opened, then rendered with the shared markdown view.
+    const block = page.locator("#baseline-channel-trust");
+    await expect(block.locator(".sl-markdown")).toHaveCount(0);
+    await block.locator("summary").click();
+    await expect(block.locator(".sl-markdown").getByText("internal team channel.")).toBeVisible();
+    await block.getByRole("button", { name: "Raw" }).click();
+    await expect(block.locator(".sl-md-raw")).toContainText("## Channel trust");
+    await block.getByRole("button", { name: "Rendered" }).click();
+    await expect(block.getByRole("button", { name: "Copy block" })).toBeVisible();
+    await expect(prompt.getByText("mcp__slaude_skills__write_skill")).toBeVisible();
+
+    const hooks = page.getByRole("table", { name: "Hooks and gates" });
+    await expect(hooks.getByRole("row").filter({ hasText: "Must reply or pass" })).toContainText("Enforcing");
+    await expect(hooks.getByRole("row").filter({ hasText: "Remote mode local-tool deny" })).toContainText("SLAUDE_REMOTE");
+    await expect(hooks.getByRole("row").filter({ hasText: "Decision gate" })).toContainText("Shadow");
+    const kbFirst = hooks.getByRole("row").filter({ hasText: "KB-first Stop guard" });
+    await expect(kbFirst).toContainText("Not built");
+    await expect(kbFirst.getByRole("link", { name: /Design: KB-first enforcement/ })).toHaveAttribute("href", /2026-06-13-kb-first-enforcement/);
+    // Observability hooks are behind the kind filter.
+    await expect(hooks.getByText("Skill usage counter")).toHaveCount(0);
+    await page.getByRole("button", { name: /^Kind: / }).click();
+    await page.getByRole("menuitemradio", { name: "Observability" }).click();
+    await expect(page).toHaveURL(/kind=observability/);
+    await expect(hooks.getByText("Skill usage counter")).toBeVisible();
+    await expect(hooks.getByText("Must reply or pass")).toHaveCount(0);
+
+    const limits = page.locator("#guardrails-limits");
+    await expect(limits.getByText("CLI scheduler tools")).toBeVisible();
+    await expect(limits.getByText("ScheduleWakeup")).toBeVisible();
+    await expect(limits.locator('[id="guardrail-redact.soul-patterns"]').getByText("project-[a-z]+")).toBeVisible();
+
+    // The new sections come first, the old cards after them.
+    const order = await page.locator("#guardrails-system-prompt, #guardrails-hooks, #guardrails-limits, #guardrail-tool-permissions").evaluateAll((els) => els.map((e) => e.id));
+    expect(order).toEqual(["guardrails-system-prompt", "guardrails-hooks", "guardrails-limits", "guardrail-tool-permissions"]);
+  });
+
+  test("an operator sees how many redaction patterns, never the patterns", async ({ page }) => {
+    await page.goto("/panel/guardrails?as=operator");
+    const soul = page.locator('[id="guardrail-redact.soul-patterns"]');
+    await expect(soul.getByText("1 pattern")).toBeVisible();
+    await expect(page.getByText("project-[a-z]+")).toHaveCount(0);
+  });
+
   test("agent messages render as markdown in the timeline and chat; user messages stay Slack text", async ({ page }) => {
     await page.goto("/panel/sessions/s_7f21");
     const tl = page.locator(".sl-tl__scroll");
