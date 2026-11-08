@@ -345,11 +345,11 @@ describe("guardrails (payload version 5)", () => {
   test("a gateway that knows only version 4 refuses a guardrail payload instead of dropping it", () => {
     expect(() => parsePayload({ ...base([ana]), version: 5, guardrails: [g("a")] }, { supportedVersion: 4 })).toThrow(/newer than this gateway supports \(4\)/);
   });
-  test("slugs: valid, not reserved, not repeated; entries strict and size capped", () => {
+  test("slugs: valid, not repeated; entries strict and size capped (a reserved name is checked against the stored set by the sync)", () => {
     const v5 = (guardrails: unknown[]) => ({ ...base([ana]), version: 5, guardrails });
     expect(() => parsePayload(v5([{ slug: "Bad", md: "x" }]))).toThrow(/guardrail slug/);
-    expect(() => parsePayload(v5([g("new")]))).toThrow(/reserved/);
-    expect(() => parsePayload(v5([g("test")]))).toThrow(/reserved/);
+    expect(() => parsePayload(v5([g("new")]))).not.toThrow();
+    expect(() => parsePayload(v5([g("test")]))).not.toThrow();
     expect(() => parsePayload(v5([g("a"), g("a")]))).toThrow(/duplicate guardrail 'a'/);
     expect(() => parsePayload(v5([{ ...g("a"), extra: 1 }]))).toThrow(PayloadError);
     expect(() => parsePayload(v5([{ slug: "a", md: "x".repeat(64 * 1024 + 1) }]))).toThrow(/at most/);

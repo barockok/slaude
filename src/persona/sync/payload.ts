@@ -17,7 +17,7 @@ import { LABEL_RE } from "../../queue/keys";
 import { parseRef } from "../../secrets/ref";
 import { baseUrlProblem, internalHostsFrom } from "../provider-base-url";
 import { PayloadError } from "./errors";
-import { GUARDRAIL_SLUG_RE, MAX_GUARDRAIL_BYTES, RESERVED_SLUGS } from "../../guardrails/format";
+import { GUARDRAIL_SLUG_RE, MAX_GUARDRAIL_BYTES } from "../../guardrails/format";
 import { MAX_GUARDRAILS } from "../../guardrails/files";
 
 export { PayloadError };
@@ -311,7 +311,6 @@ export function parsePayload(
     }
     const slugs = new Set<string>();
     for (const g of p.guardrails) {
-      if (RESERVED_SLUGS.has(g.slug)) throw new PayloadError(`guardrail '${g.slug}' uses a reserved name`);
       if (slugs.has(g.slug)) throw new PayloadError(`duplicate guardrail '${g.slug}'`);
       slugs.add(g.slug);
     }

@@ -75,14 +75,23 @@ describe("slaude guardrails import", () => {
     expect((await readGuardrails()).rows).toEqual([]);
   });
 
-  test("bad folder names, reserved names, oversized files and a missing folder refuse the whole import", async () => {
+  test("bad folder names, oversized files and a missing folder refuse the whole import", async () => {
     expect(() => readGuardrailDir("/nonexistent/dir")).toThrow(GuardrailFilesError);
     expect(() => readGuardrailDir(folder({ "Bad Name": gmd("x") }))).toThrow(/not a guardrail name/);
-    expect(() => checkSlug("new")).toThrow(/reserved/);
-    expect(() => checkSlug("test")).toThrow(/reserved/);
+    expect(() => checkSlug("Bad Name")).toThrow(/not a guardrail name/);
     expect(() => checkSlug("settings")).not.toThrow();
     expect(() => readGuardrailDir(folder({ big: "x".repeat(MAX_GUARDRAIL_BYTES + 1) }))).toThrow(/bytes; at most/);
     expect((await readGuardrails()).rows).toEqual([]);
+  });
+
+  test("a reserved name (new, test) is refused for a new guardrail, and imports fine when it is already stored", async () => {
+    await expect(importGuardrails(folder({ ok: gmd("ok"), test: gmd("test") }), { by: "x" })).rejects.toThrow(/'test' is reserved for a new guardrail/);
+    expect((await readGuardrails()).rows).toEqual([]);
+    // Stored before the name was reserved (an upgraded deployment): the import updates it.
+    await applyGuardrailChange("default", { upsert: [{ slug: "test", md: gmd("test"), source: "file" }], by: "old" });
+    const r = await importGuardrails(folder({ test: gmd("test", "changed") }), { by: "x" });
+    expect(r.updated).toEqual(["test"]);
+    await expect(importGuardrails(folder({ new: gmd("new") }), { by: "x" })).rejects.toThrow(/'new' is reserved/);
   });
 
   test("--repair re-signs a set that failed its check, audited; a plain import refuses it", async () => {

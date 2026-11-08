@@ -32,10 +32,18 @@ import { compileGlob, compilePattern, PatternError, type Pattern } from "./patte
 
 export const GUARDRAIL_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 /**
- * Slugs the console uses for its own pages (/guardrails/new creates one,
- * /guardrails/test is the Test box), so no guardrail can shadow them.
+ * Names a new guardrail cannot take: the console's own pages are
+ * /guardrails/new and /guardrails/test. Refused only for a guardrail that
+ * does not exist yet; one already stored under such a name (from before it
+ * was reserved) keeps working everywhere: a /deploy or an import updates it,
+ * and the console reaches it at /guardrails/~/<name>.
  */
 export const RESERVED_SLUGS = new Set(["new", "test"]);
+
+/** Why `slug` cannot be created, or null: reserved, unless a guardrail of that name is already stored. */
+export function reservedNameProblem(slug: string, alreadyStored: boolean): string | null {
+  return RESERVED_SLUGS.has(slug) && !alreadyStored ? `'${slug}' is reserved for a new guardrail; choose another name` : null;
+}
 /** Largest GUARDRAIL.md accepted (bytes). */
 export const MAX_GUARDRAIL_BYTES = 64 * 1024;
 /** Most rules one guardrail may carry; the rest are rejected. */

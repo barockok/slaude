@@ -5,17 +5,20 @@
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { GUARDRAIL_SLUG_RE, MAX_GUARDRAIL_BYTES, RESERVED_SLUGS } from "./format";
+import { GUARDRAIL_SLUG_RE, MAX_GUARDRAIL_BYTES } from "./format";
 
 /** Most guardrails one folder may hold. */
 export const MAX_GUARDRAILS = 200;
 
 export class GuardrailFilesError extends Error {}
 
-/** Validate a slug the way every writer does. */
+/**
+ * Validate a slug's shape the way every writer does. A reserved name is
+ * checked where the stored set is known (an import, a /deploy, the console):
+ * it is refused only for a guardrail that does not exist yet.
+ */
 export function checkSlug(slug: string): void {
   if (!GUARDRAIL_SLUG_RE.test(slug)) throw new GuardrailFilesError(`'${slug.slice(0, 64)}' is not a guardrail name (${GUARDRAIL_SLUG_RE.source})`);
-  if (RESERVED_SLUGS.has(slug)) throw new GuardrailFilesError(`'${slug}' is reserved; choose another guardrail name`);
 }
 
 /**
