@@ -1349,7 +1349,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const stopOwnerGuardrails = installOwnerGuardrails(agent, {
     pubsub: queueDispatch?.pubsub ?? panelInfra?.pubsub ?? null,
     mono: !queueDispatch,
-    redis: queueDispatch ? { client: queueDispatch.turns.redis, prefix: queueDispatch.turns.keys.prefix } : null,
+    redis: queueDispatch?.turns?.redis ? { client: queueDispatch.turns.redis, prefix: queueDispatch.turns.keys?.prefix ?? "slaude" } : null,
   });
   const guardrailReplyQuiet = makeReplyQuiet();
   agent.setStopGuard((sessionId) => {
