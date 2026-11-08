@@ -430,6 +430,10 @@ describe("runPass", () => {
     expect((await owner({ hook_event_name: "PreToolUse", tool_name: passToolId("propose"), tool_input: {} })).hookSpecificOutput.permissionDecisionReason).toBe("Not in background.");
     expect((await owner({ hook_event_name: "PreToolUse", tool_name: passToolId("memoize"), tool_input: {} })).hookSpecificOutput.permissionDecisionReason).toContain("Write short pages.");
     expect(await owner({ hook_event_name: "PreToolUse", tool_name: passToolId("memoize"), tool_input: {} })).toEqual({});
+    const tenants: string[] = [];
+    await runPass({ ...spec(), tenantId: "t-two" }, { ...deps(fakeQuery([result()]).query, 5), guardrails: async (_p, t) => (tenants.push(t), null) });
+    await runPass(spec(), { ...deps(fakeQuery([result()]).query, 5), guardrails: async (_p, t) => (tenants.push(t), null) });
+    expect(tenants).toEqual(["t-two", "default"]);
     const failing = fakeQuery([result()]);
     const r = await runPass(spec(), { ...deps(failing.query, 5), guardrails: async () => { throw new Error("integrity"); } });
     expect(r.outcome).toBe("error");

@@ -16,6 +16,9 @@ import { __resetHighWaterForTests, checkHighWater, raiseHighWater } from "./high
 export { checkHighWater };
 import { resolveDocs, type GuardrailDoc, type ResolvedGuardrail } from "./resolve";
 
+/** The tenant of a single-tenant deployment (sqlite has only this one). */
+export const DEFAULT_TENANT = "default";
+
 export interface TenantSnapshot {
   tenant: string;
   version: number;

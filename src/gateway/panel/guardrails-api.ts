@@ -17,7 +17,7 @@ import { applyGuardrailChange, UnknownGuardrailError } from "../../db/guardrails
 import { auditChange } from "../../guardrails/audit";
 import { ruleView } from "../../guardrails/format";
 import { appliesToAgent, isActive, sessionGuardrails, type ResolvedGuardrail } from "../../guardrails/resolve";
-import { cachedGuardrails, currentGuardrails, guardrailsFailure, refreshGuardrails, type TenantSnapshot } from "../../guardrails/snapshot";
+import { cachedGuardrails, currentGuardrails, DEFAULT_TENANT, guardrailsFailure, refreshGuardrails, type TenantSnapshot } from "../../guardrails/snapshot";
 import { peekKeySource } from "../../guardrails/integrity";
 import type {
   AgentGuardrailsResponse,
@@ -38,7 +38,9 @@ export interface GuardrailApiDeps {
   turnsRunOn: "this-process" | "nodes";
 }
 
-const TENANT = "default";
+const TENANT = DEFAULT_TENANT;
+/** Postgres: only this tenant's audit rows (sqlite has one tenant and no column). */
+const tenantFilter = () => (dbDialect() === "pg" ? { sql: " AND tenant_id = ?", params: [TENANT] } : { sql: "", params: [] as string[] });
 
 /** The snapshot, or an empty one with the failure named (the page still renders). */
 async function snapshot(): Promise<{ snap: TenantSnapshot | null; failure: string | null }> {
@@ -62,10 +64,12 @@ async function named(ids: string[], names: SlackNames | null | undefined): Promi
 
 /** Last firing or delivery per guardrail slug (one grouped read). */
 async function lastFired(): Promise<Map<string, number>> {
+  const t = tenantFilter();
   const rows = await db.query<{ target_id: string; at: number }>(
     `SELECT target_id, MAX(at) AS at FROM audit_events
-     WHERE target_kind = 'guardrail' AND (action LIKE 'guardrail.tool.%' OR action LIKE 'guardrail.inbound.%' OR action LIKE 'guardrail.reply.%' OR action = 'guardrail.guidance.delivered')
+     WHERE target_kind = 'guardrail' AND (action LIKE 'guardrail.tool.%' OR action LIKE 'guardrail.inbound.%' OR action LIKE 'guardrail.reply.%' OR action = 'guardrail.guidance.delivered')${t.sql}
      GROUP BY target_id`,
+    t.params,
   );
   const out = new Map<string, number>();
   for (const r of rows) {
@@ -126,9 +130,9 @@ export async function listGuardrails(deps: GuardrailApiDeps, canToggle: boolean)
 async function firings(slug: string, names: SlackNames | null | undefined): Promise<OwnerGuardrailFiring[]> {
   const rows = await db.query<{ id: string; at: number; action: string; target_id: string; persona: string | null; channel_id: string | null; decision: string | null }>(
     `SELECT id, at, action, target_id, persona, channel_id, decision FROM audit_events
-     WHERE target_kind = 'guardrail' AND (target_id = ? OR target_id LIKE ?) AND action NOT IN ('guardrail.created', 'guardrail.updated', 'guardrail.deleted')
+     WHERE target_kind = 'guardrail' AND (target_id = ? OR target_id LIKE ?) AND action NOT IN ('guardrail.created', 'guardrail.updated', 'guardrail.deleted')${tenantFilter().sql}
      ORDER BY id DESC LIMIT 20`,
-    [slug, `${slug}#%`],
+    [slug, `${slug}#%`, ...tenantFilter().params],
   );
   return Promise.all(
     rows.map(async (r) => ({

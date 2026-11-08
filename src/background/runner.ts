@@ -52,7 +52,7 @@ import { createPassMcpServer, type PassToolName, PASS_MCP_NAME, passProfileSourc
 import { HOOK_IDS, tagHook } from "../agent/hook-tags";
 import { deliveryTurnAllowance, ownerGuardrailsHook } from "../guardrails/hooks";
 import { sessionGuardrails, type SessionGuardrails } from "../guardrails/resolve";
-import { currentGuardrails } from "../guardrails/snapshot";
+import { currentGuardrails, DEFAULT_TENANT } from "../guardrails/snapshot";
 import { auditDelivery, auditFiring, type FiringEvent } from "../guardrails/audit";
 import {
   addTokens as add,
@@ -74,6 +74,8 @@ export type Outcome = RunOutcome;
 export interface PassSpec {
   pass: PassName;
   personaId: string;
+  /** The tenant the persona belongs to (its owner guardrails). Absent: the single-tenant default. */
+  tenantId?: string;
   agentId: string;
   scope: PassScope;
   prompt: string;
@@ -99,13 +101,13 @@ export interface RunnerDeps {
   budget?: (personaId: string) => BudgetConfig;
   kbSources?: (personaId: string) => string[];
   provider?: (personaId: string) => Promise<ProviderCreds | null>;
-  /** The persona's owner guardrails (default: the verified database snapshot). A throw fails the pass. */
-  guardrails?: (personaId: string) => Promise<SessionGuardrails | null>;
+  /** The persona's owner guardrails (default: the verified database snapshot of the pass's tenant). A throw fails the pass. */
+  guardrails?: (personaId: string, tenantId: string) => Promise<SessionGuardrails | null>;
 }
 
 /** The persona's owner guardrails from the gateway's verified snapshot (no channel). */
-async function defaultGuardrails(personaId: string): Promise<SessionGuardrails | null> {
-  const snap = await currentGuardrails("default", { persona: personaId });
+async function defaultGuardrails(personaId: string, tenantId: string): Promise<SessionGuardrails | null> {
+  const snap = await currentGuardrails(tenantId, { persona: personaId });
   return sessionGuardrails(snap.resolved, personaId, null, { version: snap.version, proseMax: env.guardrailProseMax() });
 }
 
@@ -331,7 +333,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
     // The persona's own provider set, or null for this process's provider env. Never a mix.
     provider = await (deps.provider ?? defaultProvider)(spec.personaId);
     // The owner's guardrails: a set that cannot be read or verified fails the pass.
-    guardrails = await (deps.guardrails ?? defaultGuardrails)(spec.personaId);
+    guardrails = await (deps.guardrails ?? defaultGuardrails)(spec.personaId, spec.tenantId ?? DEFAULT_TENANT);
   } catch (e) {
     console.error(`${tag}: could not start: ${errMsg(e)}`);
     try {
