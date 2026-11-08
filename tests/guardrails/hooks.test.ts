@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { aliasNames, deliveryTurnAllowance, deniedMessage, guardrailFilesHook, isProtectedPath, ownerGuardrailsHook } from "../../src/guardrails/hooks";
+import { aliasNames, deliveryTurnAllowance, deniedMessage, guardrailFilesHook, isProtectedPath, ownerGuardrailsHook, readsKey } from "../../src/guardrails/hooks";
 import { resolveDocs, sessionGuardrails, type GuardrailDoc } from "../../src/guardrails/resolve";
 import type { FiringEvent } from "../../src/guardrails/audit";
 import { firingAction } from "../../src/guardrails/audit";
@@ -152,9 +152,34 @@ describe("hook.pre-tool.guardrail-files", () => {
     expect(isProtectedPath("notes.md", work, { guardrailsDir: grDir, dbFile: null })).toBe(false);
   });
 
+  test("the signing key cannot be read with Read, Grep or Glob; other files in the folder can be read", async () => {
+    const key = join(grDir, ".hmac-key");
+    const out = async (tool: string, input: unknown) => ((await hook(pre(tool, input), "t", sig)) as any).hookSpecificOutput?.permissionDecisionReason;
+    expect(await out("Read", { file_path: key })).toMatch(/signing key is not readable/);
+    expect(await out("Grep", { pattern: "x", path: grDir })).toMatch(/signing key/);
+    expect(await out("Grep", { pattern: "x", path: key })).toMatch(/signing key/);
+    expect(await out("Glob", { pattern: join(grDir, "*") })).toMatch(/signing key/);
+    expect(await out("Glob", { pattern: "*", path: "link" })).toMatch(/signing key/);
+    expect(await out("Read", { file_path: join(grDir, "x", "GUARDRAIL.md") })).toBeUndefined();
+    expect(await out("Grep", { pattern: "x", path: work })).toBeUndefined();
+    expect(await out("Glob", { pattern: "**/*.md" })).toBeUndefined();
+    expect(await out("Read", {})).toBeUndefined();
+  });
+
+  test("on a case-insensitive volume a different spelling is the same path", () => {
+    const ci = { ...paths, caseInsensitive: true };
+    expect(isProtectedPath(join(grDir.toUpperCase(), "x", "GUARDRAIL.md"), work, ci)).toBe(true);
+    expect(isProtectedPath(dbFile.toUpperCase(), work, ci)).toBe(true);
+    expect(readsKey(join(grDir, ".HMAC-KEY"), work, ci, false)).toBe(true);
+    // Case-sensitive comparison: a spelling that differs only in case is another file.
+    const cs = { ...paths, caseInsensitive: false };
+    expect(readsKey(join(grDir, ".HMAC-KEY"), work, cs, false)).toBe(false);
+  });
+
   test("other tools, other paths and inputs without a path pass", async () => {
     expect(await hook(pre("Write", { file_path: join(work, "notes.md") }), "t", sig)).toEqual({});
     expect(await hook(pre("Read", { file_path: join(grDir, "x", "GUARDRAIL.md") }), "t", sig)).toEqual({});
+    expect(await hook(pre("Bash", { command: "ls" }), "t", sig)).toEqual({});
     expect(await hook(pre("Write", {}), "t", sig)).toEqual({});
     expect(await hook(pre("Write", null), "t", sig)).toEqual({});
     expect(await hook({ hook_event_name: "Stop" } as any, "t", sig)).toEqual({});

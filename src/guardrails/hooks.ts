@@ -111,24 +111,61 @@ export interface ProtectedPaths {
   guardrailsDir: string;
   /** The sqlite database file (its -wal, -shm and -journal siblings too). */
   dbFile: string | null;
+  /** The signing key file when there is no master key (default: `.hmac-key` in guardrailsDir). */
+  keyFile?: string;
+  /** Compare paths case-insensitively (default: on macOS and Windows, whose default volumes are). */
+  caseInsensitive?: boolean;
 }
 
-/** Whether a file tool's target is a protected guardrail path. */
-export function isProtectedPath(target: string, cwd: string, p: ProtectedPaths): boolean {
+const caseInsensitiveDefault = process.platform === "darwin" || process.platform === "win32";
+
+function norm(p: ProtectedPaths): (x: string) => string {
+  return (p.caseInsensitive ?? caseInsensitiveDefault) ? (x) => x.toLowerCase() : (x) => x;
+}
+
+function absolute(target: string, cwd: string): string[] {
   const abs = isAbsolute(target) ? resolve(target) : resolve(cwd, target);
-  const candidates = [abs, realish(abs)];
-  const dirs = [p.guardrailsDir, realish(p.guardrailsDir)];
-  const dbs = p.dbFile ? [p.dbFile, realish(p.dbFile)].flatMap((f) => [f, `${f}-wal`, `${f}-shm`, `${f}-journal`]) : [];
+  return [abs, realish(abs)];
+}
+
+/** Whether a file tool's target is a protected guardrail path (written). */
+export function isProtectedPath(target: string, cwd: string, p: ProtectedPaths): boolean {
+  const n = norm(p);
+  const candidates = absolute(target, cwd).map(n);
+  const dirs = [p.guardrailsDir, realish(p.guardrailsDir)].map(n);
+  const dbs = (p.dbFile ? [p.dbFile, realish(p.dbFile)].flatMap((f) => [f, `${f}-wal`, `${f}-shm`, `${f}-journal`]) : []).map(n);
   return candidates.some((c) => dirs.some((d) => under(c, d)) || dbs.includes(c));
 }
+
+/** Whether a read of `target` reaches the signing key: the key file itself, or a search rooted in the guardrails folder. */
+export function readsKey(target: string, cwd: string, p: ProtectedPaths, search: boolean): boolean {
+  const n = norm(p);
+  const keyFile = p.keyFile ?? resolve(p.guardrailsDir, ".hmac-key");
+  const keys = [keyFile, realish(keyFile)].map(n);
+  const candidates = absolute(target, cwd).map(n);
+  if (candidates.some((c) => keys.includes(c))) return true;
+  if (!search) return false;
+  const dirs = [p.guardrailsDir, realish(p.guardrailsDir)].map(n);
+  return candidates.some((c) => dirs.some((d) => under(c, d)));
+}
+
+export const KEY_READ_TOOLS = ["Read", "Grep", "Glob"] as const;
 
 export function guardrailFilesHook(cwd: () => string, protectedPaths: () => ProtectedPaths): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== "PreToolUse") return {};
     const i = input as { tool_name?: string; tool_input?: Record<string, unknown> | null };
-    if (!(FILE_WRITE_TOOLS as readonly string[]).includes(i.tool_name ?? "")) return {};
+    const name = i.tool_name ?? "";
     const t = i.tool_input ?? {};
-    const target = typeof t.file_path === "string" ? t.file_path : typeof t.notebook_path === "string" ? t.notebook_path : null;
+    const str = (k: string) => (typeof t[k] === "string" ? (t[k] as string) : null);
+    if ((KEY_READ_TOOLS as readonly string[]).includes(name)) {
+      const search = name !== "Read";
+      const targets = [str("file_path"), str("path"), ...(name === "Glob" && str("pattern") && isAbsolute(str("pattern")!) ? [str("pattern")] : [])].filter((x): x is string => !!x);
+      if (!targets.some((x) => readsKey(x, cwd(), protectedPaths(), search))) return {};
+      return deny("The guardrail signing key is not readable from a session.");
+    }
+    if (!(FILE_WRITE_TOOLS as readonly string[]).includes(name)) return {};
+    const target = str("file_path") ?? str("notebook_path");
     if (!target) return {};
     if (!isProtectedPath(target, cwd(), protectedPaths())) return {};
     return deny("Guardrail files and the runtime database are not editable from a session. The owner changes guardrails through the deploy repo, the console or `slaude guardrails import`.");

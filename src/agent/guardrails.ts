@@ -197,7 +197,7 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
     title: "Guardrail files are not editable",
     summary: "A session cannot write the owner's guardrail files or the runtime database with the file tools.",
     event: "PreToolUse",
-    effect: "Denies Write, Edit, MultiEdit and NotebookEdit under $SLAUDE_HOME/guardrails and on the database file. Bash is not covered: files are never read at runtime and stored rows are signed.",
+    effect: "Denies Write, Edit, MultiEdit and NotebookEdit under $SLAUDE_HOME/guardrails and on the database file, and Read, Grep and Glob of the signing key file (paths compared case-insensitively where the volume is). Bash is not covered: files are never read at runtime and stored rows are signed.",
     appliesTo: MANAGER_SESSIONS,
     state: enforcing,
     toggle: ALWAYS,
