@@ -480,6 +480,8 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           ...(meta.oauthUser ? { oauthUser: meta.oauthUser } : {}),
           ...(meta.backgroundRunId ? { bgRun: meta.backgroundRunId } : {}),
           ...(meta.wake ? { wake: meta.wake } : {}),
+          // The reaper re-pins this job only to a capable node.
+          ...(needs ? { requiresCaps: [GUARDRAILS_CAPABILITY] } : {}),
           // The agent's proactive folder is shared by heartbeat channel-post
           // threads: the node serialises turns there across nodes by this field.
           ...(isProactiveWorkspace(session.working_dir) ? { workspace: resolve(session.working_dir!) } : {}),

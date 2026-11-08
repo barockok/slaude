@@ -60,6 +60,7 @@ describe("dispatch and the guardrails capability", () => {
     const h = harness({ needs: false, warm: { node: "old-node", caps: [] } });
     await h.dispatch.dispatch(S, "hi", META);
     expect(h.enqueued[0]!.target).toEqual({ node: "old-node" });
+    expect(h.enqueued[0]!.job.requiresCaps).toBeUndefined();
   });
 
   test("enforced rules: a warm node with the capability keeps the session; one without is skipped", async () => {
@@ -75,6 +76,8 @@ describe("dispatch and the guardrails capability", () => {
     const h = harness({ needs: true, nodes: () => [{ node: "old", has: false }, { node: "new-1", has: true }, { node: "new-2", has: true }] });
     await h.dispatch.dispatch(S, "hi", META);
     expect(["new-1", "new-2"]).toContain(h.enqueued[0]!.target.node);
+    // The reaper may move it later: the job says what its node needs.
+    expect(h.enqueued[0]!.job.requiresCaps).toEqual(["guardrails/1"]);
   });
 
   test("the turn waits for a capable node to come up", async () => {
