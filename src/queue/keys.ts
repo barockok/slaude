@@ -81,7 +81,7 @@ export interface Keys {
    *  written with every heartbeat; TTL max(node TTL, 3× heartbeat). Absent for a node that
    *  predates labels: it counts as `{default}`. */
   nodeLabels(nodeId: string): string;
-  /** `nodecaps:<nodeId>` — the capabilities a live node advertises (e.g.
+  /** `nodecaps:<nodeId>`: the capabilities a live node advertises (e.g.
    *  `guardrails/1`), comma-joined, written beside its labels. Absent for a
    *  node that predates capabilities: it has none. */
   nodeCaps(nodeId: string): string;
