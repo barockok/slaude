@@ -11,14 +11,17 @@
  */
 import { manifestVersion, readGuardrails, type StoredGuardrails } from "../db/guardrails";
 import { emitAudit } from "../audit/emit";
-import { GuardrailIntegrityError, guardrailKey, verifySet, type KeySource } from "./integrity";
+import { GuardrailIntegrityError, guardrailKey, peekKeySource, verifySet, type KeySource } from "./integrity";
+import { __resetHighWaterForTests, checkHighWater, raiseHighWater } from "./high-water";
+export { checkHighWater };
 import { resolveDocs, type GuardrailDoc, type ResolvedGuardrail } from "./resolve";
 
 export interface TenantSnapshot {
   tenant: string;
   version: number;
   resolved: ResolvedGuardrail[];
-  keySource: KeySource;
+  /** null: no set and no key yet. */
+  keySource: KeySource | null;
 }
 
 /** The documents of a verified stored set: an override's text wins over its source row. */
@@ -30,12 +33,21 @@ export function docsFromStored(s: StoredGuardrails): GuardrailDoc[] {
   });
 }
 
-/** Read and verify one tenant's set. Throws GuardrailIntegrityError (or a read error). */
+/**
+ * Read and verify one tenant's set: the manifest and rows (verifySet), then
+ * against the high-water mark, so a deleted set or a replayed older signed
+ * set fails closed. Throws GuardrailIntegrityError (or a read error).
+ */
 export async function loadTenantSnapshot(tenant: string): Promise<TenantSnapshot> {
   const stored = await readGuardrails(tenant);
   const version = verifySet(tenant, stored);
-  return { tenant, version, resolved: resolveDocs(docsFromStored(stored)), keySource: guardrailKey().source };
+  await checkHighWater(tenant, version);
+  await raiseHighWater(tenant, version);
+  // The key is touched only when a set exists: a deployment with no
+  // guardrails reads and creates nothing.
+  return { tenant, version, resolved: resolveDocs(docsFromStored(stored)), keySource: version > 0 ? guardrailKey().source : peekKeySource() };
 }
+
 
 /** A snapshot that could not be read or verified. */
 export class GuardrailsUnavailableError extends Error {
@@ -175,8 +187,9 @@ export function startGuardrailRevalidation(tenant = "default", everyMs = 10_000)
   return () => clearInterval(t);
 }
 
-/** TEST SEAM: forget every snapshot and listener. */
+/** TEST SEAM: forget every snapshot and listener (and the high-water mark). */
 export function __resetGuardrailSnapshotsForTests(): void {
+  void __resetHighWaterForTests();
   entries.clear();
   inflight.clear();
   listeners.clear();
