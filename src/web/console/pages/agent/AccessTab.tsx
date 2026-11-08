@@ -4,6 +4,7 @@ import { ApiError } from "../../../lib/api";
 import { Badge, Button, Dialog, EmptyState, IconLock, IconPlus, Table, useToast, type Column } from "../../../ui";
 import { api } from "../../client";
 import { RoleBadge, Subject } from "../../components/GrantParts";
+import { AgentSettings } from "../../components/SettingsFamilies";
 import { useRole } from "../../hooks/useRole";
 import { absoluteTime, expiryLabel, shortDate } from "../../lib/format";
 import { ROLE_LABEL, SUBJECT_LABEL } from "../../lib/grants";
@@ -133,6 +134,7 @@ export function AccessTab({ agent, onChanged }: { agent: AgentDetailResponse; on
   };
 
   return (
+    <>
     <section className="sl-section sl-section--flush">
       <div className="sl-section__head">
         <div>
@@ -194,5 +196,15 @@ export function AccessTab({ agent, onChanged }: { agent: AgentDetailResponse; on
         }
       />
     </section>
+    <section className="sl-section sl-section--flush" aria-labelledby="access-settings-title">
+      <div className="sl-section__head">
+        <div>
+          <h2 className="sl-section__title" id="access-settings-title">Approvals and permissions</h2>
+          <p className="sl-caption">Who approves, who may decide a permission card, who the agent answers, and what never leaves in a reply. Read from the soul, the environment and console grants.</p>
+        </div>
+      </div>
+      <AgentSettings agent={agent.name} group="access" />
+    </section>
+    </>
   );
 }
