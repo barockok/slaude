@@ -314,7 +314,7 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
         ? [
             {
               label: "On nodes",
-              value: "Every permission request during a wake is refused on the node before its local policy (including its SLAUDE_AUTO_ALLOW_TOOLS) runs, from the signed wake claim; the gateway's can_use_tool route refuses the same.",
+              value: "Every permission request during a wake is refused on the node before its local policy (including its SLAUDE_AUTO_ALLOW_TOOLS) runs, from the signed wake claim or the job's wake; the gateway's can_use_tool route refuses the same.",
             },
           ]
         : [{ label: "In this process", value: "Every permission request during a wake is refused before any policy runs." }],

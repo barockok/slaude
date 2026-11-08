@@ -62,9 +62,11 @@ describe("node wake refusal", () => {
     expect((await plain("S1", "Bash", { command: "ls" }, ctx)).behavior).toBe("allow");
   });
 
-  test("the signed claim decides; the job's flag only when the token cannot be read", () => {
+  test("either the signed claim or the job's flag makes it a wake", () => {
     expect(isWakeTurn(WAKE, false)).toBe(true);
-    expect(isWakeTurn(NORMAL, true)).toBe(false);
+    expect(isWakeTurn(WAKE, true)).toBe(true);
+    expect(isWakeTurn(NORMAL, true)).toBe(true);
+    expect(isWakeTurn(NORMAL, false)).toBe(false);
     expect(isWakeTurn(undefined, true)).toBe(true);
     expect(isWakeTurn("not-a-jwt", true)).toBe(true);
     expect(isWakeTurn(undefined, false)).toBe(false);

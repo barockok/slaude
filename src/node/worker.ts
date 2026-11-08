@@ -516,13 +516,13 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // removing it here means updating both.
   const stopGuard = makeNodeStopGuard({ voiceActive: (id) => voiceTurns.active(id) });
   agent.setStopGuard(stopGuard.guard);
-  /** Sessions whose current job is a wake, from the job payload: the fallback
-   *  when the bound token's claims cannot be read. */
+  /** Sessions whose current job is a wake, from the job payload. Either this
+   *  or the bound token's signed `wake` claim makes the turn a wake. */
   const wakeJobs = new Set<string>();
   // A wake's turn refuses every permission request before the node's local
-  // policy, as mono does. The signed `wake` claim of the session's bound token
-  // decides; the next job binds its own token, so a later normal turn on the
-  // same session is not a wake.
+  // policy, as mono does: the signed `wake` claim of the session's bound token
+  // or the job's own `wake`. The next job binds its own token and resets the
+  // flag, so a later normal turn on the same session is not a wake.
   const wakeFor = (sessionId: string): boolean => isWakeTurn(store.tokenFor(sessionId), wakeJobs.has(sessionId));
   agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id), wakeFor }));
   // The post-turn skill check is budgeted on the gateway's ledger (spec §9.3);

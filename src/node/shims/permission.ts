@@ -31,13 +31,14 @@ export interface NodePermissionDeps {
 
 /**
  * Whether a session's current turn is a wake: the signed `wake` claim of the
- * token bound for its job, or the job payload's `wake` only when that token
- * cannot be read. Each job binds its own token, so a later normal job on the
- * same session reads as not a wake.
+ * token bound for its job, or the job payload's `wake`. Either one is enough
+ * (fail closed: a refusal is the safe side). Each job binds its own token and
+ * resets the job flag, so a later normal job on the same session reads as not
+ * a wake.
  */
 export function isWakeTurn(boundToken: string | undefined, jobIsWake: boolean): boolean {
   const claims = boundToken ? decodeClaims(boundToken) : null;
-  return claims ? claims.wake === true : jobIsWake;
+  return claims?.wake === true || jobIsWake;
 }
 
 export function makeNodePermissionResolver(deps: NodePermissionDeps): PermissionResolver {
