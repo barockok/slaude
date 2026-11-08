@@ -274,11 +274,13 @@ falls back to an older snapshot.
 
 A tool rule with `action: approve` holds the call on a permission card in the
 session's thread, with the rule named and only **Allow once** and **Deny**
-(no *Always allow*: the next matching call asks again). The requester (the
-sole Slack sender of the turn) or an approver decides, as for any permission
-card; anyone else's click is refused. The card is shown in every permission
-mode, bypass included, and whatever the auto-allow list says: the rule is the
-owner's.
+(no *Always allow*: the next matching call asks again). The person who asked
+(the sole Slack sender of the turn), the thread's /1on1 owner, or an approver
+or manager of the agent decides, as for any permission card; anyone else's
+click is refused. The card is shown in every permission mode, bypass
+included, and whatever the auto-allow list says: the rule skips the
+auto-allow policy's allows. It never skips its denies: the synthesized OAuth
+tools and `voice_start`'s checks are still refused with no card.
 
 - **Allowed:** the call runs. No second, ordinary permission card follows.
 - **Denied, timed out, or the turn stopped:** the call is refused with the
@@ -296,7 +298,9 @@ owner's.
   is opened and the call is refused. The node asks the gateway for the card
   naming the rule, and the gateway opens it only when its own verified set
   says that rule applies to the agent and channel, is a tool approve rule and
-  matches the call.
+  matches the call. When the node stops waiting (its deadline, the turn
+  stopped) it cancels the card, so a late click cannot show *Approved* on a
+  call that was refused.
 - On-match Guidance for the same tool is delivered first; the card comes on
   the retry.
 - Another hook (the skill gate, the file protection) can still refuse a call
@@ -320,12 +324,23 @@ before.
 | deny | Nothing is posted. The tool returns an error with the rule's message. |
 | redact | Every match becomes `[REDACTED]` (the soul's marker), then it is posted. Every matching redact rule applies, whatever action decides. |
 | audit | Posted as is; recorded. |
-| approve | A *waiting for approval* placeholder is posted, an approval card goes to the agent's approvers in the session's thread, and the held text is sent to each approver privately (never into the thread). Allowed: the placeholder becomes the reply. Denied or timed out: it becomes a short *Not posted* note. The tool returns the outcome. An agent with no named approver, a wake, a background pass and a proactive post have nobody to ask, so approve is a deny there. The card waits the persona's approval timeout or `SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC`, whichever is shorter. |
+| approve | The agent's approvers are resolved first: with none named, the reply is refused at once (audited as denied, nothing posted). Otherwise a *waiting for approval* placeholder is posted, an approval card goes to the approvers in the session's thread, and the held text is sent to each approver privately (never into the thread). Allowed: the placeholder becomes the reply. Denied, timed out or the turn stopped: it becomes a short *Not posted* note. The tool returns the outcome. A wake, a background pass and a proactive post have nobody to ask, so approve is a deny there. |
+
+**A held reply lives no longer than its turn.** The card waits the
+persona's approval timeout, `SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC`, or what
+is left of the turn, whichever is shortest: on nodes the turn ends 30 s
+before the job token expires; in mono a stopped turn cancels the card. With
+under 5 s left nothing is held (the reply is refused), and a reply is never
+posted after its turn ended, even when the approval arrives afterwards.
 
 A reply that is edited as it is written (a streamed message) is judged on the
 whole new text at every edit, and the whole message is replaced, so a pattern
-split across edits is still caught and redaction stays in sync. A pattern
-split across two separate messages is not.
+split across edits is still caught and redaction stays in sync. A held phrase
+is asked about once per message: once approved, later edits that keep the same
+matched text go out without a new card (a changed phrase is asked again); once
+declined, the message keeps its *Not posted* note and later edits that still
+match are refused with no new card. A pattern split across two separate
+messages is not caught.
 
 Covered, in mono and on nodes (a node's posts run on the gateway through the
 tool plane's surface executor, which is the same code):
@@ -341,17 +356,22 @@ tool plane's surface executor, which is the same code):
 | proposal previews on digest and DM cards | `proposal_preview` (deny or approve hides the preview) |
 | `create_canvas`, `append_canvas`, `prepend_canvas` | `canvas` |
 | `set_topic`, `set_purpose` | `topic` |
+| the todo and task list messages (the runtime renders them from the model's items) | `todo` (redact applies; a list a rule refuses or would hold is shown as hidden) |
 
 Not covered (runtime UI, not written by the agent): permission and approval
-cards, the status line, the todo and task list messages, slash command and
+cards, the status line, slash command and
 `/remote` replies, connect cards and notices, the turn failure text, the
 inbound guardrail reply, the panel hand-off notice, the promise check's fixed
-line, the feedback acknowledgement and the digest's own text. A test
-(`tests/gateway/outbound-sites.test.ts`) lists every Slack write in the code
-with its classification and fails when a new one appears.
+line, the feedback acknowledgement and the digest's own text. Every Slack
+write in the code (chat, file writes, canvases, topic and purpose, views,
+`apiCall` and an interaction's `respond`) carries an `// outbound:` or
+`// runtime-ui:` marker on its line, and a test
+(`tests/gateway/outbound-sites.test.ts`) fails on any write without one.
 
-A stored set that cannot be read or verified refuses every agent post (the
-same notice as a session that cannot start); runtime UI still goes out.
+A stored set that exists and cannot be read or verified refuses every agent
+post (the same notice as a session that cannot start); runtime UI still goes
+out. A deployment with no guardrails (no stored set, never had one) posts
+exactly as before, even when a read fails or no snapshot has loaded yet.
 
 <a id="named-tools"></a>
 ## Tool rules are a policy on named tools

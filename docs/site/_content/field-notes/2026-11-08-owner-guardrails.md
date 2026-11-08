@@ -219,3 +219,31 @@ text and replaces the message, so a pattern split across edits is caught and
 redaction stays in sync. A pattern split across two messages is not, and the
 reference says so.
 
+### Review fixes before merge (A2)
+
+- **A forced card skipped the policy's denies too.** Skipping the auto-allow
+  policy for an owner card also skipped its hard denies (the synthesized OAuth
+  tools, `voice_start`'s checks). Only the allows are skipped now, in the
+  gateway's resolver, its node `open()` and the node resolver.
+- **A held reply could outlive its turn.** The card now waits at most what is
+  left of the turn (the job token's expiry less 30 s on the tool plane; the
+  session's abort in mono), refuses with under 5 s left, and a reply is never
+  posted after its turn ended, even when the approval comes later. A node that
+  stops waiting on a tool card cancels it, so a late click cannot read
+  *Approved*.
+- **A streamed message re-held at every edit.** The decision is remembered per
+  message and rule: an approved phrase stays approved while its matched text
+  is unchanged; a declined one keeps the refusal note without new cards.
+- **No approver meant a flashing placeholder.** Approvers are resolved first;
+  with none named the reply is refused up front and audited as denied.
+- **No guardrails, but every reply refused.** A failed or not-yet-loaded read
+  refused replies on a deployment that has no guardrails at all. Only a set
+  that exists (a stored version, or a high-water mark) fails closed now.
+- **The trackers carried model text as runtime UI.** The todo and task lists
+  go through the reply rules (kind `todo`).
+- **Coverage by call, not by count.** Each Slack write line carries an
+  `outbound:` or `runtime-ui:` marker, checked by the test.
+- **Mixed versions.** An rc.9 gateway rejects a whole firing batch with the
+  new `approved`/`refused` values; the node sends those separately. Upgrade
+  gateways first.
+

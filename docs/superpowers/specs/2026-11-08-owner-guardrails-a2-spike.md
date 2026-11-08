@@ -91,11 +91,19 @@ Approach (a): the owner-guardrails hook awaits the card.
 ## Node path
 
 The node's hook calls the node permission resolver with an owner-approval
-marker, which skips the local auto-allow policy and posts
+marker, which skips the local policy's allows (never its denies: the
+synthesized OAuth tools and `voice_start`'s checks still refuse) and posts
 `/v1/tools/runtime/can_use_tool` with `force_card: true` and
 `rule_id: "<slug>#<rule id>"`. The gateway re-evaluates the rule from its own
 verified snapshot (the rule exists, applies to the token's agent in the
 token's channel, is a tool `approve` rule and matches this tool name and
 input) before it opens the card; otherwise the call is denied. A node cannot
 force a card the owner's set does not ask for, and cannot skip one by leaving
-the flag off (its hook is the only place that asks).
+the flag off (its hook is the only place that asks). When the node stops
+waiting it cancels the row (`DELETE /v1/pending/:id`, its own session's poll
+rows only).
+
+Mixed versions: an rc.9 gateway's strict schemas reject `force_card` (the
+node then denies: fail closed) and a firing batch carrying `approved` or
+`refused`; the node sends those in their own batch so the rest is still
+recorded. Upgrade gateways first.
