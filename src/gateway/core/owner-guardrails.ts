@@ -13,7 +13,8 @@
 import type { AgentManager, GuardrailSink } from "../../agent/manager";
 import { env } from "../../config/env";
 import { auditDelivery, auditFiring, firingEvents, type FiringEvent } from "../../guardrails/audit";
-import { combine, textRuleMatches } from "../../guardrails/match";
+import { combine, hitMessage, textHits } from "../../guardrails/match";
+import { failureText } from "./failure-codes";
 import { appliesToAgent, inboundTriggered, sessionGuardrails, type SessionGuardrails } from "../../guardrails/resolve";
 import { cachedGuardrails, currentGuardrails, onGuardrailsChanged, refreshGuardrails, startGuardrailRevalidation } from "../../guardrails/snapshot";
 import type { PubSub } from "../../queue/pubsub";
@@ -76,19 +77,20 @@ export interface InboundVerdict {
 
 /**
  * The enforced inbound rules of `persona` in `channel` against `text`, from
- * the cached snapshot (loaded once if this process has none yet). No snapshot
- * (it failed verification): no verdict here; the turn's session boot then
- * fails closed on the same snapshot.
+ * the cached snapshot (loaded once if this process has none yet). A set that
+ * failed to read or verify drops the message (fail closed, never a stale
+ * snapshot): the reply is the GUARDRAILS_UNAVAILABLE notice. Text too large
+ * to check counts as a match for deny rules.
  */
 export async function inboundVerdict(persona: string, channel: string, text: string, tenant = "default"): Promise<InboundVerdict | null> {
   const g = await cachedSession(persona, channel, tenant);
-  if (!g || g.inboundRules.length === 0) return null;
-  const hits = g.inboundRules.filter((h) => textRuleMatches(h.rule, "inbound", text));
-  const d = combine(hits);
+  if (g === "unavailable") return { action: "deny", message: failureText("GUARDRAILS_UNAVAILABLE"), slug: null, events: [] };
+  if (g.inboundRules.length === 0) return null;
+  const d = combine(textHits(g.inboundRules, "inbound", text));
   if (!d) return null;
   return {
     action: d.action === "deny" ? "deny" : "audit",
-    message: d.deciding.rule.message.trim() || `This message was not passed on: it matches the owner's guardrail ${d.deciding.slug}.`,
+    message: d.deciding.oversize || d.deciding.rule.message.trim() ? hitMessage(d.deciding) : `This message was not passed on: it matches the owner's guardrail ${d.deciding.slug}.`,
     slug: d.deciding.slug,
     events: firingEvents("inbound", d.hits, d.deciding),
   };
@@ -97,17 +99,18 @@ export async function inboundVerdict(persona: string, channel: string, text: str
 /** On-match Guidance an inbound message triggers (delivered once per session by the manager). */
 export async function inboundGuidance(persona: string, channel: string, text: string, tenant = "default"): Promise<Array<{ slug: string; name: string; body: string }>> {
   const g = await cachedSession(persona, channel, tenant);
-  if (!g) return [];
+  if (g === "unavailable") return [];
   return inboundTriggered(g, text, channel).map((o) => ({ slug: o.slug, name: o.name, body: o.body }));
 }
 
-async function cachedSession(persona: string, channel: string, tenant: string): Promise<SessionGuardrails | null> {
+/** The tenant's verified snapshot as a session would see it, or "unavailable" when it failed. */
+async function cachedSession(persona: string, channel: string, tenant: string): Promise<SessionGuardrails | "unavailable"> {
   let snap = cachedGuardrails(tenant);
   if (!snap) {
     try {
       snap = await currentGuardrails(tenant);
     } catch {
-      return null;
+      return "unavailable";
     }
   }
   return sessionGuardrails(snap.resolved, persona, channel, { version: snap.version, proseMax: env.guardrailProseMax() });

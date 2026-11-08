@@ -136,6 +136,24 @@ describe("inbound owner rules", () => {
     expect(rows).toEqual([{ action: "guardrail.inbound.audited", target_id: "inbound-care#watch-invoices", decision: "allow" }]);
   });
 
+  it("a set that failed to verify drops every message with the unavailable notice (fail closed, never a stale snapshot)", async () => {
+    const g = setup();
+    await g.deliver("U0BOB", "hello before", "300.1");
+    expect(g.turns).toHaveLength(1);
+    await db.run("UPDATE guardrails SET md = 'tampered' WHERE slug = 'invoice-help'");
+    await refreshGuardrails();
+    await g.deliver("U0BOB", "hello after", "300.1");
+    expect(g.turns).toHaveLength(1);
+    expect(g.posts.at(-1)).toMatchObject({ kind: "ephemeral", text: expect.stringContaining("guardrails could not be read or verified") });
+  });
+
+  it("a long message is checked whole: a password after 40 KB of text is still refused", async () => {
+    const g = setup();
+    await g.deliver("U0BOB", "x".repeat(40 * 1024) + " password: x", "301.1");
+    expect(g.turns).toHaveLength(0);
+    expect(g.posts.at(-1)?.text).toBe("Please do not paste passwords here.");
+  });
+
   it("a disabled guardrail applies to nobody", async () => {
     await applyGuardrailChange("default", { setEnabled: [{ slug: "inbound-care", enabled: false }], by: "test" });
     await refreshGuardrails();

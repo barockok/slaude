@@ -3893,7 +3893,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const v = await inboundVerdict(persona, channelId, (e.text || "").toString());
       if (v) o.onGuardrail?.(v);
       if (v?.action === "deny") {
-        return { reason: "owner_guardrail", log: `[slack-rx] drop ch=${channelId} user=${userId} persona=${persona}: owner guardrail ${v.slug}`, reply: v.message };
+        return { reason: "owner_guardrail", log: `[slack-rx] drop ch=${channelId} user=${userId} persona=${persona}: ${v.slug ? `owner guardrail ${v.slug}` : "owner guardrails unavailable"}`, reply: v.message };
       }
     }
     return null;
