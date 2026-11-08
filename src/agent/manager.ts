@@ -1657,7 +1657,9 @@ export class AgentManager extends EventEmitter {
       },
     );
     const ownerGuardrails = ownerGuardrailsHook({
-      guardrails: () => this.#sessionGuardrails.get(sessionId) ?? null,
+      // This boot's own snapshot, held by the hook: a teardown race on the
+      // per-session map can never leave a running CLI without its rules.
+      guardrails: () => guardrails,
       channel: () => row.slack_channel_id,
       delivered: () => {
         let d = this.#guidanceDelivered.get(sessionId);
