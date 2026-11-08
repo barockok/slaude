@@ -8,8 +8,11 @@
 import { flag } from "../../config/security-switches";
 import {
   parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, providerWarnings, kbSourceWarnings, MAX_REPORTED_FIELDS,
-  PROVIDER_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError, type SyncPayload,
+  PROVIDER_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError, type GuardrailSpec, type SyncPayload,
 } from "./payload";
+import { applyGuardrailChange, readGuardrails } from "../../db/guardrails";
+import { auditChange } from "../../guardrails/audit";
+import { parseGuardrail } from "../../guardrails/format";
 import { extractSoulData } from "../../soul/extract";
 import { emitAudit } from "../../audit/emit";
 import {
@@ -26,8 +29,23 @@ import { internalHostsFrom } from "../provider-base-url";
 export class SyncFailure extends Error {
   constructor(readonly status: 409 | 422 | 502 | 503, message: string) { super(message); }
 }
+/** What a sync did to the deploy repo's guardrails (absent: the payload carried none). */
+export interface GuardrailSyncReport {
+  created: string[];
+  updated: string[];
+  unchanged: string[];
+  removed: string[];
+  /** Guardrails stored with validation errors (their valid rules and prose apply). */
+  invalid: Array<{ slug: string; errors: string[] }>;
+  /** Slugs held by another source (a host file or the console), left alone. */
+  skipped: string[];
+  /** Overrides kept although their source changed (shown behind source). */
+  behindSource: string[];
+}
+
 export type SyncReport = ApplyResult & {
   revision: string; dryRun: boolean; ignoredFields: string[]; ignoredFieldsTotal: number;
+  guardrails?: GuardrailSyncReport;
   /** Applied anyway, reported by persona name: provider/model pairing (WS-A
    *  §4) and a runsOn label no live node carries (node labels spec §4.5). */
   warnings: string[];
@@ -234,6 +252,8 @@ export async function runSync(
   }
   const meta = { revision: payload.revision, committedAt: Date.parse(payload.committedAt), by: opts.by };
 
+  const guardrailPlan = payload.guardrails ? await planGuardrails(tenant, payload.guardrails, rows.map((r) => r.name), warnings) : undefined;
+
   if (opts.dryRun) {
     const incoming = new Set(rows.map((r) => r.name));
     const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields, ignoredFieldsTotal, warnings };
@@ -248,17 +268,69 @@ export async function runSync(
     // setOverride refuses names without a live persona, so no orphan rows exist
     // and this equals the count applySync's DELETE reports.
     report.overridesWiped = [...effective.values()].reduce((n, p) => n + p.overridden.length, 0);
+    if (guardrailPlan) report.guardrails = guardrailPlan.report;
     return report;
   }
 
   try {
     const applied = await applySync(tenant, rows, meta);
     auditPersonaSync(tenant, opts.by, meta.revision, applied);
-    return { ...applied, revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal, warnings };
+    let guardrails: GuardrailSyncReport | undefined;
+    if (guardrailPlan) {
+      // Its own transaction, after the personas: the guardrail set carries its
+      // own signed manifest. A failure here leaves the personas applied and
+      // the previous guardrail set intact (the pipeline sees the 500 and retries).
+      const r = await applyGuardrailChange(tenant, { upsert: guardrailPlan.upsert, remove: guardrailPlan.remove, by: opts.by });
+      auditChange(r, { tenantId: tenant, actorKind: "system", actorId: opts.by, via: "deploy", revision: meta.revision });
+      guardrails = { ...guardrailPlan.report, created: r.created, updated: r.updated, unchanged: r.unchanged, removed: r.removed };
+    }
+    return { ...applied, revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal, warnings, ...(guardrails ? { guardrails } : {}) };
   } catch (e) {
     if (e instanceof StaleRevisionError) throw new SyncFailure(409, e.message);
     throw e;
   }
+}
+
+/**
+ * The guardrail half of a sync: the payload's list is the deploy repo's whole
+ * set (source `git`). A git guardrail it no longer lists is removed; a slug
+ * held by a host file or the console is left alone and reported. Overrides
+ * are kept (never wiped like soul overrides) and reported behind source when
+ * the text they were written against changes. Names in `agents:` that match
+ * no persona of the payload are warnings, not errors.
+ */
+async function planGuardrails(tenant: string, list: GuardrailSpec[], personaNames: string[], warnings: string[]) {
+  const stored = await readGuardrails(tenant);
+  const bySlug = new Map(stored.rows.map((r) => [r.slug, r]));
+  const overridden = new Map(stored.overrides.map((o) => [o.slug, o]));
+  const report: GuardrailSyncReport = { created: [], updated: [], unchanged: [], removed: [], invalid: [], skipped: [], behindSource: [] };
+  const upsert: Array<{ slug: string; md: string; source: "git" }> = [];
+  const names = new Set(personaNames);
+  for (const g of list) {
+    const prev = bySlug.get(g.slug);
+    if (prev && prev.source === "console") {
+      report.skipped.push(g.slug);
+      warnings.push(`guardrail '${g.slug}' exists in the console; the deploy repo's copy was not applied`);
+      continue;
+    }
+    const parsed = parseGuardrail(g.slug, g.md);
+    if (parsed.errors.length) report.invalid.push({ slug: g.slug, errors: parsed.errors });
+    for (const a of parsed.meta?.scope === "agents" ? parsed.meta.agents : []) {
+      if (!names.has(a)) warnings.push(`guardrail '${g.slug}' names agent '${a}', which this deploy does not have`);
+    }
+    if (!prev) report.created.push(g.slug);
+    else if (prev.md === g.md && prev.source === "git") report.unchanged.push(g.slug);
+    else {
+      report.updated.push(g.slug);
+      if (overridden.has(g.slug)) report.behindSource.push(g.slug);
+    }
+    upsert.push({ slug: g.slug, md: g.md, source: "git" });
+  }
+  const listed = new Set(list.map((g) => g.slug));
+  const remove = stored.rows.filter((r) => r.source === "git" && !listed.has(r.slug)).map((r) => r.slug);
+  report.removed = remove;
+  for (const w of report.behindSource) warnings.push(`guardrail '${w}' has a console override written against the previous text; it is kept and shown behind source`);
+  return { report, upsert, remove };
 }
 
 /** persona.sync: one row per applied (not dry-run) sync, with the revision and

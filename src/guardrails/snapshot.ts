@@ -39,7 +39,7 @@ export async function loadTenantSnapshot(tenant: string): Promise<TenantSnapshot
 
 /** A snapshot that could not be read or verified. */
 export class GuardrailsUnavailableError extends Error {
-  constructor(readonly tenant: string, readonly cause: unknown) {
+  constructor(readonly tenant: string, override readonly cause: unknown) {
     super(cause instanceof GuardrailIntegrityError ? cause.message : `guardrails could not be read: ${(cause as Error)?.message ?? String(cause)}`);
   }
 }

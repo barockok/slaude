@@ -103,7 +103,7 @@ export function auditDelivery(slugs: string[], ctx: FiringContext & { via: "tool
 
 /** guardrail.created | updated | deleted, one row per slug changed. */
 export function auditChange(
-  r: { created: string[]; updated: string[]; removed: string[]; toggled?: Array<{ slug: string; enabled: boolean }> },
+  r: { created: string[]; updated: string[]; removed: string[]; enabledChanges?: Array<{ slug: string; enabled: boolean }> },
   ctx: { tenantId?: string; actorKind: "operator" | "system"; actorId: string; via: "cli" | "deploy" | "console"; revision?: string },
 ): void {
   const row = (action: string, slug: string, details: Record<string, unknown> = {}) =>
@@ -121,5 +121,5 @@ export function auditChange(
   for (const s of r.created) row("guardrail.created", s);
   for (const s of r.updated) row("guardrail.updated", s);
   for (const s of r.removed) row("guardrail.deleted", s);
-  for (const t of r.toggled ?? []) row("guardrail.updated", t.slug, { enabled: t.enabled });
+  for (const t of r.enabledChanges ?? []) row("guardrail.updated", t.slug, { enabled: t.enabled });
 }

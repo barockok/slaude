@@ -7,6 +7,8 @@ import { runSync, SyncFailure, unservedLabelWarnings } from "../../src/persona/s
 import { SUPPORTED_PAYLOAD_VERSION } from "../../src/persona/sync/payload";
 import * as AuditEvents from "../../src/db/audit-events";
 import { flushAudits } from "../../src/audit/emit";
+import { __clearGuardrailsForTests, __setOverrideForTests, applyGuardrailChange, readGuardrails, sha256 } from "../../src/db/guardrails";
+import { loadTenantSnapshot } from "../../src/guardrails/snapshot";
 
 const T = "default";
 const bare = (personas: unknown[], extra: object = {}) =>
@@ -431,5 +433,57 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync provider references (WS
     } finally {
       await db.run(`ALTER TABLE personas ADD COLUMN IF NOT EXISTS provider_json JSONB`);
     }
+  });
+});
+
+describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync: guardrails", () => {
+  const g = (slug: string, body = "prose", front = "") => ({ slug, md: `---\nname: ${slug}\n${front}---\n${body}\n` });
+  const v5 = (guardrails: unknown[], extra: object = {}) => payload([ana], { version: 5, guardrails, ...extra });
+  let rev = 0;
+  const next = () => ({ revision: `g${++rev}`, committedAt: new Date(Date.parse("2026-10-02T00:00:00Z") + rev * 1000).toISOString() });
+  beforeEach(() => __clearGuardrailsForTests());
+
+  test("the payload's list becomes the git set: created, unchanged, removed; signed and audited", async () => {
+    await db.run("DELETE FROM audit_events");
+    const r1 = await runSync(T, v5([g("a"), g("b")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r1.guardrails).toMatchObject({ created: ["a", "b"], removed: [] });
+    const r2 = await runSync(T, v5([g("a")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r2.guardrails).toMatchObject({ unchanged: ["a"], removed: ["b"] });
+    expect((await readGuardrails()).rows.map((r) => [r.slug, r.source])).toEqual([["a", "git"]]);
+    expect((await loadTenantSnapshot(T)).resolved.map((x) => x.slug)).toEqual(["a"]);
+    await flushAudits();
+    const acts = (await AuditEvents.list({ action: "guardrail." })).items.map((e) => `${e.action}:${e.targetId}`).sort();
+    expect(acts).toEqual(["guardrail.created:a", "guardrail.created:b", "guardrail.deleted:b"]);
+  });
+
+  test("absent leaves the git set alone; a dry run reports and writes nothing", async () => {
+    await runSync(T, v5([g("a")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    const absent = await runSync(T, payload([ana], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(absent.guardrails).toBeUndefined();
+    expect((await readGuardrails()).rows).toHaveLength(1);
+    const dry = await runSync(T, v5([g("a", "changed"), g("c")], next()), { dryRun: true, env, by: "ci", extract: okExtract });
+    expect(dry.guardrails).toMatchObject({ created: ["c"], updated: ["a"] });
+    expect((await readGuardrails()).rows.map((r) => r.slug)).toEqual(["a"]);
+  });
+
+  test("an override is kept and reported behind source; host-file and unknown agents are reported", async () => {
+    await applyGuardrailChange(T, { upsert: [{ slug: "host", md: g("host").md, source: "file" }], by: "cli" });
+    await runSync(T, v5([g("a")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    await __setOverrideForTests(T, { slug: "a", md: g("a", "mine").md, baseSha: sha256(g("a").md), author: "op" });
+    const r = await runSync(T, v5([g("a", "moved"), g("lonely", "p", "scope: agents\nagents: [nobody]\n")], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r.guardrails!.behindSource).toEqual(["a"]);
+    expect(r.warnings.join("\n")).toContain("names agent 'nobody'");
+    expect(r.warnings.join("\n")).toContain("guardrail 'a' has a console override");
+    const s = await loadTenantSnapshot(T);
+    expect(s.resolved.find((x) => x.slug === "a")!.doc).toMatchObject({ override: true, behindSource: true });
+    expect(s.resolved.find((x) => x.slug === "host")!.doc.source).toBe("file");
+    // A git guardrail named like a host file takes it over; the host file one stays only if git does not list it.
+    expect((await readGuardrails()).rows.map((x) => x.slug)).toEqual(["a", "host", "lonely"]);
+  });
+
+  test("an invalid guardrail is stored and reported, the sync still applies", async () => {
+    const r = await runSync(T, v5([{ slug: "bad", md: "no frontmatter" }], next()), { dryRun: false, env, by: "ci", extract: okExtract });
+    expect(r.guardrails!.invalid[0]!.slug).toBe("bad");
+    expect((await readGuardrails()).rows.map((x) => x.slug)).toEqual(["bad"]);
   });
 });
