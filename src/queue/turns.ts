@@ -234,6 +234,38 @@ function tokenJobId(token: string): string | null {
   }
 }
 
+/** A job token's payload, read without verifying (the gateway minted it). */
+function tokenPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const p = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+    return p && typeof p === "object" ? (p as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What kind of turn a job is, for coalescing: its origin (the token's signed
+ * `origin`, else its first sender's), its background run and whether it is a
+ * wake. A merged job runs under ONE token, whose origin, bgRun and wake decide
+ * how the node runs every message in it (the must-reply Stop guard, the wake
+ * refusal, the ledger run), so two jobs merge only when these all agree.
+ */
+function turnKind(job: TurnJob): string {
+  const c = tokenPayload(job.jobToken);
+  const origin = (typeof c?.origin === "string" ? c.origin : undefined) ?? job.senders?.[0]?.origin ?? null;
+  const bgRun = job.bgRun ?? (typeof c?.bgRun === "string" ? c.bgRun : null);
+  const wake = !!job.wake || c?.wake === true;
+  return JSON.stringify([origin, bgRun, wake]);
+}
+
+/** Two jobs may share one token and turn (see turnKind). */
+export function sameTurnKind(a: TurnJob, b: TurnJob): boolean {
+  return turnKind(a) === turnKind(b);
+}
+
 /** One message's identity for de-duplication: a re-delivered message is the
  *  same Slack message, so its ts, author and text all match. */
 const msgKey = (m: TurnMessage): string => `${m.ts}\u0000${m.user}\u0000${m.text}`;
@@ -479,6 +511,12 @@ export class TurnQueues {
     if (!PENDING_STATES.has(await pending.getState())) return null; // already claimed
     if (await this.#turnRan(pending)) return null; // finished, then stalled back
     const prev = pending.data as TurnJob;
+    // A different kind of turn (a person's message behind a queued wake or
+    // promise check, or the reverse) never merges: the merged job would run
+    // under one of the two tokens, forcing a background run's reply or running
+    // a person's message under a wake's refusal. Null adds it as its own job;
+    // the session lock still runs the two in order.
+    if (!sameTurnKind(prev, job)) return null;
     // Only a LABEL change relocates (node labels spec §4.6). A warmth change
     // under the same label (the warm node came or went between messages)
     // appends in place exactly as before labels: same job id, same token.
@@ -539,6 +577,9 @@ export class TurnQueues {
     opts: { first?: boolean } = {},
   ): Promise<EnqueueResult | null> {
     const prev = pending.data as TurnJob;
+    // The same rule as #tryAppend: the merged job takes this call's token, so
+    // a different kind of turn is added on its own instead.
+    if (!sameTurnKind(prev, job)) return null;
     const id = want.jobId ?? randomUUID();
     const attempts = maxAttempts(prev, job);
     const merged: TurnJob = {
@@ -722,6 +763,8 @@ export class TurnQueues {
     const other = await this.queue(ref.queue).getJob(ref.jobId);
     if (!other || !PENDING_STATES.has(await other.getState())) return null;
     const data = job.data as TurnJob;
+    // A different kind of turn is moved on its own (see turnKind).
+    if (!sameTurnKind(other.data as TurnJob, data)) return null;
     const holdId = randomUUID();
     const hold = await this.queue(ref.queue).add("turn", data, { ...this.defaultJobOpts(), jobId: holdId, delay: SWAP_HOLD_MS });
     await this.#markMoved(id, { queue: ref.queue, jobId: holdId });
