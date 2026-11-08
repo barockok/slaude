@@ -37,6 +37,14 @@ describe("splitBaseline", () => {
     expect(blocks.map((b) => b.markdown).join("")).toBe(text);
   });
 
+  test("a fence closes only on its own marker: a ~~~ line inside a ``` block does not end it", () => {
+    const text = "## A\n```\n~~~\n## Still code\n~~~\n## Still code too\n```\n## B\nz";
+    const blocks = splitBaseline(text);
+    expect(blocks.map((b) => b.title)).toEqual(["A", "B"]);
+    expect(blocks[0]!.markdown).toContain("## Still code too");
+    expect(blocks.map((b) => b.markdown).join("")).toBe(text);
+  });
+
   test("no built-in skills: no such block, nothing lost", () => {
     const text = "<runtime-baseline>\nhi\n## Memory\n- m\n\n\n## Progress visibility\n- p\n</runtime-baseline>";
     const blocks = splitBaseline(text);

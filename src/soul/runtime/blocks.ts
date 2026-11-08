@@ -27,13 +27,19 @@ export function splitBaseline(text: string): BaselineBlock[] {
   const blocks: BaselineBlock[] = [];
   const seen = new Map<string, number>();
   let cur: BaselineBlock = { id: "preamble", title: "Preamble", markdown: "" };
-  let fenced = false;
+  // The marker that opened the current fence (``` or ~~~, possibly longer);
+  // only a line starting with the same marker closes it.
+  let fence: string | null = null;
   // Split keeping each line's own terminator, so the slices round-trip.
   const lines = text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   for (const line of lines) {
     const bare = line.replace(/\r?\n$/, "");
-    if (/^\s*(```|~~~)/.test(bare)) fenced = !fenced;
-    const h = !fenced && /^##\s+(.+?)\s*$/.exec(bare);
+    const marker = /^\s*(`{3,}|~{3,})/.exec(bare)?.[1];
+    if (marker) {
+      if (fence === null) fence = marker;
+      else if (marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+    }
+    const h = fence === null && /^##\s+(.+?)\s*$/.exec(bare);
     if (h) {
       if (cur.markdown) blocks.push(cur);
       const title = h[1]!;
