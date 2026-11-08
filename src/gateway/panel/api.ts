@@ -50,7 +50,7 @@
  *   GET    /panel/api/skills                       every skill: source, origin, agents, status, usage
  *   GET    /panel/api/skills/:id                   one skill: frontmatter, SKILL.md, files, provenance, usage, proposals
  *   POST   /panel/api/skills/:id/retire|restore    an agent-authored skill (superadmin; audited)
- *   GET    /panel/api/guardrails?agent=            what constrains one agent, with each value's source
+ *   GET    /panel/api/guardrails?agent=            what constrains one agent, with each value's source; the runtime layer (prompt stack, baseline, registry)
  *   GET    /panel/api/overview                     counts and the latest audit events
  */
 import { PanelVoiceRedactor } from "./voice-redact";

@@ -778,5 +778,13 @@ export interface BuiltinSkillView {
 /** GET /panel/api/guardrails?agent= */
 export interface GuardrailsResponse {
   agent: string;
+  /** The system prompt's layers, then what single turns get. */
+  promptStack: { layers: PromptLayer[]; perTurn: PromptInjection[] };
+  /** The runtime baseline, one render for every agent of this deployment. */
+  baseline: { deploymentWide: true; brain: boolean; blocks: BaselineBlockView[] };
+  builtinSkills: BuiltinSkillView[];
+  /** The registry, each entry's state computed for this process, grouped by kind. */
+  guardrails: GuardrailGroup[];
+  /** Soul and access settings (moving to the agent's tabs in a later release). */
   families: GuardrailFamily[];
 }

@@ -121,6 +121,7 @@ import { parseRef } from "../../secrets";
 import { proactiveWorkspaceDir } from "../../agent/workspace-claim";
 import { wakeGateConfig, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
 import { wakeRefusal } from "../../proactive/wake-guard";
+import { NODE_RUNTIME } from "../../agent/guardrails";
 import { wakeStatusText } from "../../proactive/wake-status";
 import type { WakeToolDeps } from "../../proactive/wake-tools";
 import type { ActivityMessage } from "../../proactive/wake-activity";
@@ -4507,6 +4508,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // The persona view says where a persona's stdio MCP servers run.
         role: queueDispatch ? "gateway" : "mono",
         names: slackNames,
+        // The Guardrails page's runtime facts: with a node queue, turns run on
+        // nodes (src/node/worker.ts); in mono, on this manager.
+        guardrails: {
+          runtime: () =>
+            queueDispatch
+              ? NODE_RUNTIME
+              : { stopGuard: agent.hasStopGuard(), permissionResolver: agent.hasPermissionResolver(), turnsRunOn: "this-process" },
+        },
         // Mono: sessions run here, so liveness is the manager's live map
         // (nothing registers in the node registry).
         local: queueDispatch
