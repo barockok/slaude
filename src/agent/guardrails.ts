@@ -209,7 +209,7 @@ export const GUARDRAILS: readonly GuardrailDescriptor[] = [
     title: "Owner guardrails (tool rules)",
     summary: "The owner's enforced tool rules, and on-match Guidance delivered once per session.",
     event: "PreToolUse",
-    effect: "Denies a call an owner rule denies (approve is enforced as deny until approval cards exist), records audit rules, and refuses the first call a Guidance trigger matches once, with the Guidance text.",
+    effect: "Denies a call an owner rule denies; holds a call an approve rule matches on a permission card for the requester or an approver (a timeout, a wake, a background pass or any error is a deny); records audit rules; and refuses the first call a Guidance trigger matches once, with the Guidance text.",
     appliesTo: [...MANAGER_SESSIONS, "background"],
     state: enforcing,
     toggle: { source: "config", key: "each owner guardrail's enabled switch" },

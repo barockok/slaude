@@ -325,7 +325,7 @@ function ownerGuardrails(now: number): OwnerGuardrailDetail[] {
       md: MAIL_MD, prose: "Draft email for people to send. Never send it yourself.",
       rules: [
         { id: "no-send", on: "tool", action: "deny", message: "Sending email is not allowed; save a draft instead.", status: "enforced", tool: ["mcp__*__*send*"] },
-        { id: "no-prices", on: "reply", action: "approve", message: "", status: "pending", text: "(?i)\\b(price|quote)\\b" },
+        { id: "no-prices", on: "reply", action: "approve", message: "", status: "enforced", text: "(?i)\\b(price|quote)\\b" },
       ],
       errors: [], triggers: null,
       appliesTo: { agents: [...AGENTS], channels: [], everyChannel: true },
