@@ -92,6 +92,11 @@ export function actorKindLabel(e: Pick<AuditEventView, "actorKind" | "details">)
   return ACTOR_KIND_LABEL[e.actorKind] ?? e.actorKind;
 }
 
+/** Who did it, for display: an agent actor by the agent's name (the gateway's actorLabel), anyone else by their id. */
+export function auditActorName(e: Pick<AuditEventView, "actorId" | "actorLabel">): string {
+  return e.actorLabel || e.actorId;
+}
+
 /**
  * Who an audit row is about, for the Agent column: the agent, or null for a
  * console-wide event. Older rows recorded console sign-ins under the default

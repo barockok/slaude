@@ -371,6 +371,8 @@ export interface AuditEventView {
   threadTs?: string | null;
   summary: string;
   details: Record<string, unknown>;
+  /** The actor's display name when the console knows one: an agent actor reads as the agent's name, not its bot user id. */
+  actorLabel?: string;
   /** Display label of `channelId` (`#name`, `DM with ...`) when resolvable. */
   channelLabel?: string;
   /** Display label of the target when it is a channel and resolvable. */

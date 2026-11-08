@@ -5,10 +5,10 @@
  *
  *   GET    /portal              the app shell (React, served statically)
  *   GET    /portal/auth/*      sign-in (./auth-routes)
- *   GET    /portal/api/me      the signed-in account and its Slack identities
- *   GET    /portal/api/my-agents   agents my linked Slack identities hold a role on
+ *   GET    /portal/api/me      the signed-in account and its linked chat identities
+ *   GET    /portal/api/my-agents   agents my linked chat identities hold a role on
  *   GET    /portal/link?t=…    confirmation page for an onboarding link
- *   POST   /portal/api/link    redeem a link: bind a Slack identity
+ *   POST   /portal/api/link    redeem a link: bind a chat identity
  *   DELETE /portal/api/link    unlink one of your own bindings
  *   GET    /portal/api/integrations                  what is offered + my status
  *   POST   /portal/api/integrations/:name/connect    start an OAuth connect
@@ -63,6 +63,11 @@ export interface PortalApiDeps {
   /** Workspace and Slack user names for display (ids stay the key). Absent: ids only. */
   names?: Pick<SlackNames, "teamName" | "userName"> | null;
 }
+
+/** The surface every linked identity is on: the account binding stores Slack identities only today. */
+const IDENTITY_SURFACE = "slack";
+/** Surface labels for the server-rendered link page (the web app's registry is src/web/shared/surfaces.ts). */
+const SURFACE_LABEL: Readonly<Record<string, string>> = { slack: "Slack" };
 
 export interface PortalApi {
   /** Handle a request; null when the path is not the portal's. */
@@ -201,19 +206,21 @@ function expiredPage(nonce: string): string {
  */
 function confirmPage(nonce: string, token: string, team: string, slackUser: string, names: { teamName?: string; userName?: string } = {}): string {
   const attr = (v: string | undefined) => `"${escapeHtml(v ?? "")}"`;
-  const main = `<main id="link" data-token=${attr(token)} data-team=${attr(team)} data-team-name=${attr(names.teamName)} data-user=${attr(slackUser)} data-user-name=${attr(names.userName)}>
+  const main = `<main id="link" data-token=${attr(token)} data-surface=${attr(SURFACE_LABEL[IDENTITY_SURFACE] ?? IDENTITY_SURFACE)} data-team=${attr(team)} data-team-name=${attr(names.teamName)} data-user=${attr(slackUser)} data-user-name=${attr(names.userName)}>
   <div class="brand"><div class="mark" aria-hidden="true"></div>slaude <span>portal</span></div>
   <h1>Connect your account</h1>
-  <p>This links the Slack user below to the account you are signed in as. Any agent you message can then use the integrations you connect here.</p>
+  <p>This links the chat identity below to the account you are signed in as. Any agent you message as that user can then use the integrations you connect here.</p>
   <dl>
+    <div class="row"><dt>Surface</dt><dd><span class="name" id="surface"></span></dd></div>
     <div class="row"><dt>Workspace</dt><dd><span class="name" id="team-name"></span><span class="id" id="team"></span></dd></div>
-    <div class="row"><dt>Slack user</dt><dd><span class="name" id="user-name"></span><span class="id" id="user"></span></dd></div>
+    <div class="row"><dt>User</dt><dd><span class="name" id="user-name"></span><span class="id" id="user"></span></dd></div>
   </dl>
   <button id="go" type="button">Connect</button>
   <p id="result" role="status"></p>
 </main>`;
   const script = `<script nonce="${nonce}">
   const d = document.getElementById("link").dataset;
+  document.getElementById("surface").textContent = d.surface || "";
   document.getElementById("team-name").textContent = d.teamName || "";
   document.getElementById("team").textContent = d.team || "";
   document.getElementById("user-name").textContent = d.userName || "";
@@ -285,6 +292,7 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
           issuer: guarded.account.issuer,
           slackIdentities: await Promise.all(
             identities.map(async (s) => ({
+              surface: IDENTITY_SURFACE,
               teamId: s.team_id,
               slackUserId: s.slack_user_id,
               linkedAt: s.linked_at,
@@ -326,7 +334,7 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
             via: "signed-link",
           });
           if (!linked.ok) {
-            return json(409, { error: "that Slack user is already connected to another account" });
+            return json(409, { error: "that chat identity is already connected to another account" });
           }
           // This Slack user now resolves to an account (and its integrations):
           // its warm sessions re-list their bridged tools on the next turn.

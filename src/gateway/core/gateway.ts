@@ -173,7 +173,7 @@ import { budgetConfigFor } from "../../background/config";
 import { cardPoster, registerProposalActions } from "../../background/proposal-cards";
 import { digestRecipientOf, personaApp } from "../../background/digest";
 import { createSlackNames, type NameContext, type SlackNameClient } from "../panel/slack-names";
-import { createLookupClients } from "../panel/lookup-clients";
+import { createLookupClients, teamLookupToken } from "../panel/lookup-clients";
 import type { LeaderHandle } from "../../queue/locks";
 import { getNextRun } from "../slack/cron-parser";
 import { clientForApp, type AppRef, type Transport } from "./transport";
@@ -755,6 +755,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
     if (!token && !persona) {
       token = tokenFor(ctx.teamId ? { teamId: ctx.teamId } : {});
+      // The team alone is ambiguous with several apps in it (one per persona),
+      // and the default agent may have no thread to name its app: any app of
+      // that workspace can say the workspace's and a person's name.
+      if (!token && ctx.teamId) token = await teamLookupToken(ctx.teamId, t.apps ? () => t.apps!() : undefined, tokenFor);
       if (!token) {
         try {
           token = env.slack.botToken();

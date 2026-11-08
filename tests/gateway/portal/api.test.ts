@@ -47,7 +47,7 @@ describe("GET /portal/api/me", () => {
     expect(body.email).toBe("alice@example.com");
     expect(body.issuer).toBe(ISS);
     expect(body.slackIdentities).toEqual([
-      { teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1", linkedAt: expect.any(Number), linkedVia: "signed-link" },
+      { surface: "slack", teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1", linkedAt: expect.any(Number), linkedVia: "signed-link" },
     ]);
   });
 });
@@ -144,6 +144,19 @@ describe("redeeming an onboarding link", () => {
     expect(page).toContain('data-team="TTESTTEAM1"');
     expect(page).toContain(`data-token="${token}"`);
     expect(await Accounts.accountForSlackUser("TTESTTEAM1", "UTESTUSER1")).toBeNull();
+  });
+
+  test("the confirmation page is surface-neutral: the surface is a row of its own, set from a data attribute", async () => {
+    const { page } = await linkPage({ teamName: async () => null, userName: async () => null });
+    expect(page).toContain('data-surface="Slack"');
+    expect(page).toContain("<dt>Surface</dt>");
+    expect(page).toContain("<dt>User</dt>");
+    expect(page).toContain("links the chat identity below");
+    expect(page).not.toContain("Slack user");
+    // The script reads the label from the DOM; the label is never interpolated into it.
+    const script = /<script\b[^>]*>([\s\S]*?)<\/script>/.exec(page)![1]!;
+    expect(script).toContain("d.surface");
+    expect(script).not.toContain('"Slack"');
   });
 
   test("names from Slack cannot inject markup or script: escaped into attributes, nothing interpolated into the script", async () => {

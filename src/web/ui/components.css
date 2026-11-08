@@ -484,6 +484,18 @@
   height: var(--sl-control-h-sm);
 }
 
+/* A copy button showing its result ("Copied", "Copy failed") as text beside the icon. */
+.sl-copy-btn.has-text {
+  width: auto;
+  padding: 0 var(--sl-pad-sm);
+  font-size: var(--sl-text-footnote);
+  color: var(--sl-text);
+}
+
+.sl-copy-btn.is-failed {
+  color: var(--sl-text-danger);
+}
+
 .sl-icon-btn--md {
   width: var(--sl-control-h);
   height: var(--sl-control-h);

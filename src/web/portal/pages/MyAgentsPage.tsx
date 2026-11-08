@@ -4,7 +4,7 @@ import { ErrorState } from "../../shared/ErrorState";
 import { RoleBadge } from "../../shared/RoleBadge";
 import { useApi } from "../client";
 import { NamedId } from "../../shared/NamedId";
-import { capitalize, sendCommandGuidance } from "../../shared/surfaces";
+import { capitalize, sendCommandGuidance, surfaceInfo } from "../../shared/surfaces";
 
 const COLUMNS: Column<MyAgentView>[] = [
   {
@@ -18,6 +18,7 @@ const COLUMNS: Column<MyAgentView>[] = [
       </span>
     ),
   },
+  { key: "surface", header: "Surface", width: "10%", skeleton: 0.5, render: (a) => <span className="sl-nowrap">{surfaceInfo(a.surface).label}</span> },
   {
     key: "team",
     header: "Workspace",
@@ -25,19 +26,19 @@ const COLUMNS: Column<MyAgentView>[] = [
     skeleton: 0.6,
     render: (a) => (
       <span className="sl-subject">
-        <span className="sl-subject__icon" title="Slack workspace">
+        <span className="sl-subject__icon" title={`${surfaceInfo(a.surface).label} workspace`}>
           <IconBuilding size={14} />
         </span>
         <NamedId name={a.teamName} id={a.teamId} />
       </span>
     ),
   },
-  { key: "user", header: "As Slack user", width: "20%", skeleton: 0.6, render: (a) => <NamedId name={a.userName} id={a.slackUserId} /> },
+  { key: "user", header: "As user", width: "20%", skeleton: 0.6, render: (a) => <NamedId name={a.userName} id={a.slackUserId} /> },
   { key: "role", header: "Your role", width: "9rem", skeleton: 0.5, render: (a) => <RoleBadge role={a.role} /> },
 ];
 
 /**
- * The empty list, said for the reason it is empty: with no Slack identity
+ * The empty list, said for the reason it is empty: with no chat identity
  * linked, no person grant can match the account yet (link first); with one
  * linked, nobody granted a role yet.
  */
@@ -45,10 +46,10 @@ export function NoAgents({ me }: { me: PortalMeResponse | null }) {
   if (me && me.slackIdentities.length === 0) {
     return (
       <EmptyState
-        title="No Slack identity linked"
+        title="No chat identity linked"
         description={
           <>
-            Roles are granted to your Slack user, and your account has none linked yet. {capitalize(sendCommandGuidance("/link"))}, in a
+            Roles are granted to your chat user, and your account has none linked yet. {capitalize(sendCommandGuidance("/link"))}, in a
             conversation with any agent. It replies with a private link; open it while signed in here and confirm. Your agents show up here afterwards.
           </>
         }
@@ -65,7 +66,7 @@ export function MyAgentsPage() {
     <>
       <PageHeader title="My agents" description="Agents you can work with, and your role on each." />
       <p className="pt-note">
-        This lists roles granted to you as a person, for each Slack identity linked to your account. Access you have through a channel or a whole
+        This lists roles granted to you as a person, for each chat identity linked to your account. Access you have through a channel or a whole
         workspace is not listed.
       </p>
       {error && !data ? (
@@ -78,7 +79,7 @@ export function MyAgentsPage() {
           label="My agents"
           columns={COLUMNS}
           rows={data?.agents ?? []}
-          rowKey={(a) => `${a.persona}:${a.teamId}:${a.slackUserId}`}
+          rowKey={(a) => `${a.persona}:${a.surface}:${a.teamId}:${a.slackUserId}`}
           loading={(loading && !data) || (data?.agents.length === 0 && me.loading && !me.data)}
           skeletonRows={3}
           empty={<NoAgents me={me.data ?? null} />}
