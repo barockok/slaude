@@ -224,11 +224,20 @@ function writeChange(tenant: string, change: GuardrailChange, now: number): Prom
     const overrideWrites: GuardrailOverrideRow[] = [];
     const overrideDeletes: string[] = [];
     for (const slug of change.clearOverride ?? []) {
-      if (!bySlug.has(slug)) throw new UnknownGuardrailError(slug);
+      const src = bySlug.get(slug);
+      if (!src) throw new UnknownGuardrailError(slug);
       if (!overrides.some((o) => o.slug === slug)) continue;
       overrides = overrides.filter((o) => o.slug !== slug);
       overrideDeletes.push(slug);
       res.overrideCleared.push(slug);
+      // The source row is re-signed at this version, so the guardrail's
+      // revision only ever goes up (never back to the row's older one).
+      if (!writes.some((w) => w.slug === slug)) {
+        const row: GuardrailRow = { ...src, version, updatedAt: now, updatedBy: change.by, hmac: "" };
+        row.hmac = rowMac(tenant, row);
+        writes.push(row);
+        bySlug.set(slug, row);
+      }
     }
     for (const o of change.setOverride ?? []) {
       const src = bySlug.get(o.slug);

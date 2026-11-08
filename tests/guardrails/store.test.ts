@@ -156,6 +156,9 @@ describe("overrides and the behind-source flag", () => {
     s = await readGuardrails();
     expect(s.overrides).toEqual([]);
     expect(verifySet("default", s)).toBe(4);
+    // The source row is re-signed at the clearing version: the revision only goes up.
+    expect(s.rows[0]).toMatchObject({ version: 4, md: gmd("a") });
+    expect(guardrailRevision(s.rows[0], undefined)).toBe(4);
     // Clearing nothing writes nothing; an unknown guardrail is refused.
     expect((await applyGuardrailChange("default", { clearOverride: ["a"], by: "op" })).version).toBe(4);
     await expect(applyGuardrailChange("default", { setOverride: [{ slug: "zz", md: gmd("zz") }], by: "op" })).rejects.toBeInstanceOf(UnknownGuardrailError);
