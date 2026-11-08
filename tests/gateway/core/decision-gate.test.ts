@@ -675,6 +675,7 @@ describe("decision gate KB lookup and profiles", () => {
 describe("an owner inbound guardrail and the gate", () => {
   const GUARD = "---\nname: no-passwords\n---\n```rules\n- id: r\n  on: inbound\n  match: { text: '(?i)password\\s*[:=]' }\n  action: deny\n  message: Please do not paste passwords here.\n```";
   beforeEach(async () => {
+    (await import("../../guardrails/helpers")).ensureGuardrailKeyForPg();
     const { __clearGuardrailsForTests, applyGuardrailChange } = await import("../../../src/db/guardrails");
     const { __resetGuardrailSnapshotsForTests, refreshGuardrails } = await import("../../../src/guardrails/snapshot");
     await __clearGuardrailsForTests();
