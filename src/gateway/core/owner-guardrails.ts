@@ -16,7 +16,6 @@ import { auditDelivery, auditFiring, firingEvents, type FiringEvent } from "../.
 import { combine, textRuleMatches } from "../../guardrails/match";
 import { appliesToAgent, inboundTriggered, sessionGuardrails, type SessionGuardrails } from "../../guardrails/resolve";
 import { cachedGuardrails, currentGuardrails, onGuardrailsChanged, refreshGuardrails, startGuardrailRevalidation } from "../../guardrails/snapshot";
-import { publishConfigReload } from "./config-reload";
 import type { PubSub } from "../../queue/pubsub";
 
 /** The session guardrails of `persona` in `channel` from the verified snapshot. Throws when unavailable. */
@@ -37,8 +36,9 @@ export const auditSink: GuardrailSink = {
  * Wire the manager and keep the snapshot current. The first load happens now
  * (a failure is held and refuses session boots, never the gateway's own
  * boot); a change (a local write, another replica's write seen by the poll)
- * announces a config reload, so nodes drop cached bundles, and in mono asks
- * every warm session on another version to reload after its turn.
+ * publishes the tenant's reload signal, so nodes drop cached bundles and
+ * reload warm sessions, and in mono asks every warm session on another
+ * version to reload after its turn.
  */
 export function installOwnerGuardrails(agent: AgentManager, o: { pubsub: PubSub | null; tenant?: string; mono: boolean; pollMs?: number }): () => void {
   const tenant = o.tenant ?? "default";
@@ -48,7 +48,12 @@ export function installOwnerGuardrails(agent: AgentManager, o: { pubsub: PubSub 
   const stopPoll = startGuardrailRevalidation(tenant, o.pollMs);
   const off = onGuardrailsChanged((t, snap) => {
     if (t !== tenant) return;
-    void publishConfigReload(o.pubsub, t);
+    // The node half of publishConfigReload: nodes drop cached bundles and
+    // reload warm sessions. The persona registry is untouched by a guardrail
+    // change, so it is not rebuilt here.
+    if (o.pubsub) {
+      void o.pubsub.publishReload(t).catch((e: unknown) => console.error(`[guardrails] reload publish failed tenant=${t}: ${(e as Error)?.message ?? String(e)}`));
+    }
     if (o.mono && snap) {
       const n = agent.reloadForGuardrails(snap.version);
       if (n) console.log(`[guardrails] version ${snap.version}: ${n} warm session(s) reload after their turn`);
