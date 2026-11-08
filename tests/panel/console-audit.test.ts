@@ -9,7 +9,8 @@ import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
 import { db } from "../../src/db/schema";
 import * as AuditEvents from "../../src/db/audit-events";
 import { flushAudits } from "../../src/audit/emit";
-import type { AuditPageResponse } from "../../src/gateway/panel/api-types";
+import type { AuditPageResponse, OverviewResponse } from "../../src/gateway/panel/api-types";
+import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
 
 const SECRET = "t".repeat(32);
 const cookie = (email: string) => `${AT_COOKIE}=${mintSession({ sub: "s", email }, "at", { secret: SECRET })}`;
@@ -117,5 +118,46 @@ describe("GET /panel/api/sessions/:id/audit", () => {
     const next = await get(`/panel/api/sessions/S-1/audit?limit=2&cursor=${encodeURIComponent(r.body.nextCursor!)}`);
     expect(summaries(next.body)).toEqual(["event 0"]);
     expect((await get("/panel/api/sessions/S-1/audit?persona=x")).status).toBe(400);
+  });
+});
+
+describe("an agent actor is named by its agent", () => {
+  const BOT = "U0AAAAAAAAA";
+  const registry = (): PersonaRegistry => {
+    const scout = { name: "scout", slackUserId: BOT, soulMd: "# Scout\n", config: { slackUserId: BOT, name: "scout" }, outClient: null } as unknown as Persona;
+    return {
+      lookupByUserId: (id) => (id === BOT ? scout : null),
+      lookupByName: (n) => (n === "scout" ? scout : null),
+      list: () => [scout],
+      isMultiPersonaMode: () => true,
+      isManaged: () => false,
+      tombstonedPersonaFor: () => null,
+    };
+  };
+  beforeEach(async () => {
+    setPersonaRegistry(registry());
+    await db.run("DELETE FROM audit_events");
+    await AuditEvents.insert(ev(0, { actorKind: "agent", actorId: BOT, action: "skill.retired", sessionId: null, summary: "by id" }));
+    // No persona on the row: the bot user id alone names the agent (any case).
+    await AuditEvents.insert(ev(1, { actorKind: "agent", actorId: BOT.toLowerCase(), persona: null, action: "skill.retired", sessionId: null, summary: "lower-case id" }));
+    // An id the console does not know: the row's persona.
+    await AuditEvents.insert(ev(2, { actorKind: "agent", actorId: "U0BBBBBBBBB", action: "skill.retired", sessionId: null, summary: "unknown id" }));
+    await AuditEvents.insert(ev(3, { summary: "a person" }));
+  });
+  afterEach(() => __resetPersonaRegistry());
+
+  test("the audit list carries actorLabel for agent actors only; actorId stays the id", async () => {
+    const r = await get("/panel/api/audit");
+    const by = Object.fromEntries(r.body.items.map((i) => [i.summary, i]));
+    expect(by["by id"]).toMatchObject({ actorKind: "agent", actorId: BOT, actorLabel: "scout" });
+    expect(by["lower-case id"]).toMatchObject({ actorId: BOT.toLowerCase(), actorLabel: "scout" });
+    expect(by["unknown id"]).toMatchObject({ actorId: "U0BBBBBBBBB", actorLabel: "scout" });
+    expect(by["a person"]!.actorLabel).toBeUndefined();
+  });
+
+  test("the Overview's recent activity names the agent too", async () => {
+    const res = (await panel().fetch(new Request("https://panel.example.com/panel/api/overview", { headers: { cookie: operator } })))!;
+    const body = (await res.json()) as OverviewResponse;
+    expect(body.recentAudit.find((e) => e.summary === "by id")).toMatchObject({ actorId: BOT, actorLabel: "scout" });
   });
 });

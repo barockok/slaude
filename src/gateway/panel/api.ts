@@ -92,7 +92,7 @@ import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
 import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
-import { buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
+import { agentIdsByName, buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
 import { guardrailsFor, type GuardrailDeps } from "./guardrails-view";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
@@ -349,11 +349,15 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
   const installedKbSources = deps.installedKbSources ?? installedKbSourceIds;
   const panelRole = deps.role ?? "gateway";
 
-  /** Audit rows with channel labels (`#name`) where the gateway can resolve them. */
-  async function labelAudit<T extends { persona?: string | null; channelId?: string | null; sessionId?: string | null; targetKind?: string | null; targetId?: string | null }>(
-    raw: T[],
-  ): Promise<Array<T & { channelLabel?: string; targetLabel?: string; surface?: string }>> {
-    const items = withSurface(raw);
+  /**
+   * Audit rows with channel labels (`#name`) where the gateway can resolve
+   * them, and an agent actor named by its agent (the persona) rather than its
+   * bot user id.
+   */
+  async function labelAudit<
+    T extends { persona?: string | null; actorKind?: string; actorId?: string; channelId?: string | null; sessionId?: string | null; targetKind?: string | null; targetId?: string | null },
+  >(raw: T[]): Promise<Array<T & { actorLabel?: string; channelLabel?: string; targetLabel?: string; surface?: string }>> {
+    const items = withAgentActors(withSurface(raw));
     if (!deps.names || items.length === 0) return items;
     const targetChannel = (e: T) => (e.targetKind === "channel" && e.targetId ? e.targetId : null);
     const labels = await channelLabels(deps.names, items.flatMap((e) => [
@@ -365,6 +369,27 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
       const tc = targetChannel(e);
       const t = tc ? labels.get(tc) : undefined;
       return { ...e, ...(c ? { channelLabel: c } : {}), ...(t ? { targetLabel: t } : {}) };
+    });
+  }
+
+  /**
+   * An event the agent itself did (actorKind `agent`) records the agent's bot
+   * user id as its actor; the console shows the agent's name instead: the
+   * agent whose id it is, else the persona the row belongs to.
+   */
+  function withAgentActors<T extends { persona?: string | null; actorKind?: string; actorId?: string }>(items: T[]): Array<T & { actorLabel?: string }> {
+    if (!items.some((e) => e.actorKind === "agent")) return items;
+    let byId: Map<string, string> | null = null;
+    try {
+      // Ids compared without case: some writers record the sanitized (lower-case) agent id.
+      byId = new Map([...agentIdsByName()].map(([name, id]) => [id.toLowerCase(), name]));
+    } catch {
+      byId = null;
+    }
+    return items.map((e) => {
+      if (e.actorKind !== "agent") return e;
+      const label = (e.actorId && byId?.get(e.actorId.toLowerCase())) || e.persona || undefined;
+      return label ? { ...e, actorLabel: label } : e;
     });
   }
 

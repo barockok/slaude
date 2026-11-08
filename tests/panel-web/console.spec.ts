@@ -199,6 +199,17 @@ test("a failed load offers Try again", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
 });
 
+test("an agent actor reads as the agent's name, not its bot user id", async ({ page }) => {
+  await page.goto("/panel/");
+  const recent = page.getByRole("table", { name: "Recent activity" });
+  const row = recent.getByRole("row").filter({ hasText: "retired skill standup-notes" });
+  const actor = row.getByRole("cell").nth(2);
+  await expect(actor).toContainText("scout");
+  await expect(actor).toContainText("Agent");
+  await expect(actor).not.toContainText("USCOUT");
+  await expect(actor.getByText("scout", { exact: true })).toHaveAttribute("title", "USCOUT");
+});
+
 test("an empty deployment shows empty states", async ({ page }) => {
   await page.goto("/panel/agents?stubEmpty=1");
   await expect(page.getByText("No agents yet")).toBeVisible();

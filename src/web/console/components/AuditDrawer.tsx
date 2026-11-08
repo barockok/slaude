@@ -43,7 +43,14 @@ export function AuditDrawer({ event, onClose }: { event: AuditEventView | null; 
                 label: "Actor",
                 value: (
                   <span className="sl-stack">
-                    <span className="sl-mono sl-break">{e.actorId}</span>
+                    {e.actorLabel ? (
+                      <>
+                        <span className="sl-break">{e.actorLabel}</span>
+                        <span className="sl-caption sl-mono sl-break">{e.actorId}</span>
+                      </>
+                    ) : (
+                      <span className="sl-mono sl-break">{e.actorId}</span>
+                    )}
                     <span className="sl-caption">{actorKindLabel(e)}</span>
                   </span>
                 ),

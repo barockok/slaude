@@ -217,7 +217,7 @@ function ItemView({ it }: { it: Item }) {
             <span className="sl-caption">
               {g.summary}
               {g.summary ? ". " : ""}
-              {actorKindLabel(g)} <span className="sl-mono">{g.actorId}</span>
+              {actorKindLabel(g)} {g.actorLabel ? <span title={g.actorId}>{g.actorLabel}</span> : <span className="sl-mono">{g.actorId}</span>}
             </span>
           </div>
           <Time at={g.at} />

@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import type { AuditEventView } from "../../../gateway/panel/api-types";
 import { Badge, Table, type Column } from "../../ui";
-import { actionLabel, actorKindLabel, auditAgent, auditTarget, decisionLabel, decisionTone } from "../lib/format";
+import { actionLabel, actorKindLabel, auditActorName, auditAgent, auditTarget, decisionLabel, decisionTone } from "../lib/format";
 import { TimeAgo } from "../../shared/TimeAgo";
 
 const COLUMNS: Column<AuditEventView>[] = [
@@ -13,7 +13,13 @@ const COLUMNS: Column<AuditEventView>[] = [
     skeleton: 0.7,
     render: (e) => (
       <span className="sl-stack">
-        <span className="sl-mono sl-truncate">{e.actorId}</span>
+        {e.actorLabel ? (
+          <span className="sl-truncate" title={e.actorId}>
+            {auditActorName(e)}
+          </span>
+        ) : (
+          <span className="sl-mono sl-truncate">{e.actorId}</span>
+        )}
         <span className="sl-caption">{actorKindLabel(e)}</span>
       </span>
     ),
