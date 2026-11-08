@@ -35,12 +35,15 @@ export interface Surface {
   readonly capabilities: ReadonlySet<SurfaceCapability>;
 
   // core — every surface MUST implement:
-  reply(i: { text: string }): Promise<{ ref: string }>;
+  /** `runtime`: the runtime's own text (a todo list, a connect notice), formatted
+   *  but never held or refused by the owner's reply rules. A reply an owner rule
+   *  refuses throws OutboundRefusal; `note` says it was held and approved. */
+  reply(i: { text: string; runtime?: boolean }): Promise<{ ref: string; note?: string }>;
   getHistory(i: { limit?: number; includeReplies?: boolean }): Promise<{ messages: HistoryItem[]; hasMore: boolean }>;
   requestApproval(r: ApprovalRequest): Promise<ApprovalResult>;
 
   // optional — present iff the matching capability is declared:
-  edit?(i: { ref: string; text: string }): Promise<void>;        // cap: "edit"
+  edit?(i: { ref: string; text: string; runtime?: boolean }): Promise<void | { note?: string }>; // cap: "edit"
   react?(i: { name: string; ref?: string }): Promise<void>;      // cap: "react"
   unreact?(i: { name: string; ref?: string }): Promise<void>;    // cap: "react" (rides with react)
   upload?(i: { path: string; title?: string; comment?: string; altText?: string }): Promise<void>; // cap: "upload"
@@ -61,6 +64,12 @@ export interface SessionBinding {
   teamId?: string;
   requestApproval: (r: ApprovalRequest) => Promise<ApprovalResult>;
   reloadSession: (prompt?: string) => boolean;
+  /** The session posting (owner reply rules: audit rows, the held reply's card). */
+  sessionId?: string;
+  /** Nobody is in this turn (a wake): an owner approve rule is a deny. */
+  unattended?: boolean;
+  /** The Slack app the session posts as (a held reply's card goes out as it). */
+  appId?: string;
 }
 
 export type SurfaceFactory = (b: SessionBinding) => Surface;

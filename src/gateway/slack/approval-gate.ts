@@ -30,6 +30,12 @@ export type ApprovalRequest = {
   app?: AppRef;
   /** Persona name, stamped into the row for its audit rows. */
   persona?: string | null;
+  /** Sent privately (a DM) to each approver after the card is posted, never
+   *  into the thread: a reply an owner guardrail holds. With it, a request
+   *  with no named approver is refused rather than left to anyone. */
+  privateDetail?: string;
+  /** A shorter limit than the persona's own timeout (never a longer one). */
+  timeoutSeconds?: number;
 };
 
 /** An approver id no Slack user has: an approver set of just this admits
@@ -488,10 +494,29 @@ export class ApprovalGate {
     return { pendingId: id };
   }
 
+  /** The held text, to each approver's DM (best effort: an approver who cannot be reached can still deny). */
+  async #sendDetail(client: WebClientLike, req: ApprovalRequest, approvers: Set<string>): Promise<void> {
+    const where = `<#${req.channel}>`;
+    for (const a of approvers) {
+      if (a === NOBODY) continue;
+      try {
+        await client.chat.postMessage({ channel: a, text: `Held for your approval in ${where} (${escapeMrkdwn(req.summary)}):\n\n${req.privateDetail}` });
+      } catch (e) {
+        console.warn(`[approval-gate] could not send the held text to an approver: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+
   async request(req: ApprovalRequest, abortSignal?: AbortSignal): Promise<ApprovalDecision> {
-    const id = this.#mintId();
     const approvers = await this.#resolveApprovers(req);
-    const timeoutSec = this.#timeoutSeconds(req.persona);
+    // A held text is for named approvers only: "anyone may click" would let
+    // the thread approve what it was held from.
+    if (req.privateDetail !== undefined && (approvers.size === 0 || [...approvers].every((a) => a === NOBODY))) {
+      throw new Error("this agent has no approver to ask");
+    }
+    const id = this.#mintId();
+    const own = this.#timeoutSeconds(req.persona);
+    const timeoutSec = req.timeoutSeconds && req.timeoutSeconds > 0 ? (own > 0 ? Math.min(own, req.timeoutSeconds) : req.timeoutSeconds) : own;
 
     // Durable pending state FIRST, then the in-process waiter, then the
     // buttons — by the time a click can exist, both stores are in place.
@@ -600,11 +625,12 @@ export class ApprovalGate {
     try {
       const posted = await pending.client.chat.postMessage({
         channel: req.channel,
-        thread_ts: req.threadTs,
+        thread_ts: req.threadTs || undefined,
         text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
         blocks: this.#card(req, approvers, id, timeoutSec),
       });
       pending.ts = posted.ts as string | undefined;
+      if (req.privateDetail !== undefined) await this.#sendDetail(pending.client, req, approvers);
     } catch (e) {
       // The prompt never reached Slack — tear both stores down and rethrow.
       if (pending.timer) clearTimeout(pending.timer);

@@ -38,6 +38,7 @@ const VOICE_SHUTDOWN_GRACE_MS = 5_000;
 import { monoPersonaSoul } from "../../voice/mono-soul";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration, isManagerOrApprover } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
+import { setOutboundApprover } from "../slack/outbound";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus, redactSecrets } from "./status-text";
 import * as Remote from "../../db/remote";
@@ -434,6 +435,10 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
     get teamId() { return ctx.teamId; },
     requestApproval: (r) => ctx.requestApproval!(r),
     reloadSession: (prompt?) => ctx.reloadSession?.(prompt) ?? false,
+    get sessionId() { return ctx.sessionId; },
+    // A wake's turn has nobody to approve a held reply.
+    get unattended() { return !!ctx.wake; },
+    get appId() { return ctx.apiAppId; },
   };
 }
 
@@ -825,6 +830,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // The agent's own soul timeout, else the default persona's, else 5 minutes.
     timeoutSeconds: (persona) => approvalTimeoutFor(persona) || 300,
   });
+  // A reply an owner guardrail holds goes to the agent's approvers on the
+  // ApprovalGate's card, in the session's thread; the held text goes to each
+  // approver privately, never into the thread.
+  setOutboundApprover((req) =>
+    approvals.request({
+      channel: req.channel,
+      threadTs: req.threadTs ?? "",
+      summary: req.summary,
+      ...(req.sessionId ? { sessionId: req.sessionId } : {}),
+      ...(req.app ? { app: req.app } : {}),
+      persona: req.persona,
+      privateDetail: req.detail,
+      timeoutSeconds: req.timeoutSeconds,
+    }),
+  );
   // Background-learning messages (phase D): the weekly digest to the manager
   // and a person's proposals to their DM. Both carry buttons, so they go out
   // as the bot of the app (interactivity-bound, like the gates); chat:write
@@ -1774,13 +1794,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const redactAuthMessage = async (surface: Surface, ref: string | undefined, serverName: string) => {
     if (!ref || !surface.capabilities.has("edit") || !surface.edit) return;
     try {
-      await surface.edit({ ref, text: `:link: Authorize \`${serverName}\` — link removed (flow finished).` });
+      await surface.edit({ ref, text: `:link: Authorize \`${serverName}\` — link removed (flow finished).`, runtime: true });
     } catch { /* best-effort: redaction failure must not mask the connect outcome */ }
   };
 
   async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any; scope: ConnectScope; personaName?: string; app?: AppRef }) {
     const surface = connectSurface(a.channelId, a.threadTs, a.userId, a.app);
-    const post = (text: string) => surface.reply({ text });
+    const post = (text: string) => surface.reply({ text, runtime: true });
     const serverConfig: OAuthServerConfig = { type: "http", url: a.serverCfg.url, headers: a.serverCfg.headers };
     const redirectUrl = env.oauthRedirectUrl();
 
@@ -1853,7 +1873,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    */
   async function completePaste(pend: SlackOauthFlows.SlackOauthFlow, code: string, state: string | undefined, app: AppRef): Promise<void> {
     const surface = connectSurface(pend.channelId, pend.threadTs, pend.userId, app);
-    const post = (text: string) => surface.reply({ text });
+    const post = (text: string) => surface.reply({ text, runtime: true });
     if (state && state !== pend.state) {
       await post(":x: OAuth `state` mismatch — paste the URL from the same authorize step, or rerun `/mcp connect`.");
       return;
@@ -2178,7 +2198,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const cfg = httpExternalServers(ctx.personaName)[ctx.serverName];
     if (!cfg) {
       await connectSurface(ctx.channelId, ctx.threadTs, ctx.userId, clickApp)
-        .reply({ text: `:warning: \`${ctx.serverName}\` is not available for this agent any more, so it can't be connected. Run \`/mcp\` for the current list.` })
+        .reply({ text: `:warning: \`${ctx.serverName}\` is not available for this agent any more, so it can't be connected. Run \`/mcp\` for the current list.`, runtime: true })
         .catch(() => {});
       return;
     }
@@ -2244,9 +2264,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               void (async () => {
                 try {
                   if (route.todoRef && route.surface.capabilities.has("edit") && route.surface.edit) {
-                    await route.surface.edit({ ref: route.todoRef, text });
+                    await route.surface.edit({ ref: route.todoRef, text, runtime: true });
                   } else {
-                    const { ref } = await route.surface.reply({ text });
+                    const { ref } = await route.surface.reply({ text, runtime: true });
                     route.todoRef = ref;
                   }
                 } catch (err) {
@@ -2280,9 +2300,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
                 void (async () => {
                   try {
                     if (route.tasksRef && route.surface.capabilities.has("edit") && route.surface.edit) {
-                      await route.surface.edit({ ref: route.tasksRef, text });
+                      await route.surface.edit({ ref: route.tasksRef, text, runtime: true });
                     } else {
-                      const { ref } = await route.surface.reply({ text });
+                      const { ref } = await route.surface.reply({ text, runtime: true });
                       route.tasksRef = ref;
                     }
                   } catch (err) {
@@ -2317,9 +2337,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             void (async () => {
               try {
                 if (route.tasksRef && route.surface.capabilities.has("edit") && route.surface.edit) {
-                  await route.surface.edit({ ref: route.tasksRef, text });
+                  await route.surface.edit({ ref: route.tasksRef, text, runtime: true });
                 } else {
-                  const { ref } = await route.surface.reply({ text });
+                  const { ref } = await route.surface.reply({ text, runtime: true });
                   route.tasksRef = ref;
                 }
               } catch (err) {
@@ -2359,7 +2379,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               route.todosSnapshot.every((t) => t.status === "completed") &&
               route.surface.capabilities.has("edit") && route.surface.edit) {
             const doneText = `**Tasks**\n${route.todosSnapshot.map((t) => `✓ ${t.content}`).join("\n")}`;
-            await route.surface.edit({ ref: route.todoRef, text: doneText }).catch(() => {});
+            await route.surface.edit({ ref: route.todoRef, text: doneText, runtime: true }).catch(() => {});
           }
           // Stamp the structured task block "all done" when every task is completed/deleted.
           if (route.tasksRef && route.tasksMap?.size &&
@@ -2367,7 +2387,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               route.surface.capabilities.has("edit") && route.surface.edit) {
             const completedTasks = [...route.tasksMap.values()].filter((t) => t.status === "completed");
             const doneText = `**Tasks**\n${completedTasks.map((t) => `✓ ${t.subject}${t.completedAt ? ` _(${t.completedAt})_` : ""}`).join("\n")}`;
-            await route.surface.edit({ ref: route.tasksRef, text: doneText }).catch(() => {});
+            await route.surface.edit({ ref: route.tasksRef, text: doneText, runtime: true }).catch(() => {});
           }
           route.tasksRef = undefined;
           route.tasksMap = undefined;

@@ -7,6 +7,12 @@ import { auditSoulOverride, type ThreadCtx } from "../../audit/events";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { soulData } from "../../soul/extract";
 import { redactSecrets } from "./status-text";
+import { OutboundRefusal } from "../slack/outbound";
+
+/** A failed post: an owner rule's refusal is shown as is (it is for the agent); anything else is prefixed. */
+const postFailed = (what: string, e: any): ToolResult =>
+  e instanceof OutboundRefusal ? fail(e.message) : fail(`${what} failed: ${e?.message ?? String(e)}`);
+const noted = (text: string, note?: string): ToolResult => ok(note ? `${text} (${note})` : text);
 
 export const SURFACE_MCP_NAME = surfaceContract.server;
 
@@ -51,8 +57,8 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
     {
       ...c.reply,
       handler: async ({ text }) => {
-        try { const { ref } = await surface.reply({ text }); return ok(`posted ref=${ref}`); }
-        catch (e: any) { return fail(`reply failed: ${e?.message ?? String(e)}`); }
+        try { const { ref, note } = await surface.reply({ text }); return noted(`posted ref=${ref}`, note); }
+        catch (e: any) { return postFailed("reply", e); }
       },
     },
     {
@@ -92,8 +98,8 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
     defs.push({
       ...c.edit,
       handler: async ({ ref, text }) => {
-        try { await surface.edit!({ ref, text }); return ok("edited"); }
-        catch (e: any) { return fail(`edit failed: ${e?.message ?? String(e)}`); }
+        try { const r = await surface.edit!({ ref, text }); return noted("edited", r ? r.note : undefined); }
+        catch (e: any) { return postFailed("edit", e); }
       },
     });
   }
@@ -120,7 +126,7 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
       ...c.upload,
       handler: async ({ path, title, initial_comment, alt_text }) => {
         try { await surface.upload!({ path, title, comment: initial_comment, altText: alt_text }); return ok("uploaded"); }
-        catch (e: any) { return fail(`upload failed: ${e?.message ?? String(e)}`); }
+        catch (e: any) { return postFailed("upload", e); }
       },
     });
   }
