@@ -43,7 +43,9 @@ Whether the marker exists says whether the tool ran; the fake records the
 | hook returns ask, no `canUseTool` | bypass | denied with the hook's reason |
 
 The two 65 s cases were run once by hand (they are too slow for CI); every
-other row is pinned by `tests/spike/sdk-hooks.test.ts`, so an SDK upgrade that
+other row is pinned by `tests/spike/sdk-hooks.test.ts` (the cases run in a
+child process, `tests/spike/sdk-cases.ts`, clear of the SDK mocks other test
+files install), so an SDK upgrade that
 changes one fails CI.
 
 ## Decision

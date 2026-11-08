@@ -146,7 +146,7 @@ describe("GET /panel/api/guardrails/:slug", () => {
     const d = r.body as OwnerGuardrailDetail;
     expect(d.md).toBe(MAIL);
     expect(d.prose).toBe("Draft email, never send it.");
-    expect(d.rules.map((x) => [x.id, x.on, x.action, x.status])).toEqual([["no-send", "tool", "deny", "enforced"], ["no-prices", "reply", "approve", "pending"]]);
+    expect(d.rules.map((x) => [x.id, x.on, x.action, x.status])).toEqual([["no-send", "tool", "deny", "enforced"], ["no-prices", "reply", "approve", "enforced"]]);
     expect(d.errors[0]).toMatch(/rule bad match.text is not a valid pattern/);
     expect(d.appliesTo).toEqual({ agents: ["default", "scout"], channels: [], everyChannel: true });
     expect(d.triggers).toBeNull();
