@@ -118,6 +118,11 @@ describe("parseGuardrail", () => {
     expect(g.errors[2]).toMatch(/a tool rule matches tool and input, not text/);
     expect(g.errors[3]).toMatch(/id repeats/);
     expect(g.errors[4]).toMatch(/^rule 6: /);
+    // Every rule problem refuses a write; the prose-only ones do not.
+    expect(g.blocking).toEqual(g.errors);
+    expect(parseGuardrail("y", md("name: x")).blocking).toEqual([]);
+    expect(parseGuardrail("x", "no frontmatter\n```rules\n- id: r\n  on: inbound\n  match: { text: x }\n  action: deny\n```").blocking.join()).toMatch(/apply to nobody/);
+    expect(parseGuardrail("x", "no frontmatter at all").blocking).toEqual([]);
   });
 
   test("every on/action pair of v1, and the unknown ones", () => {

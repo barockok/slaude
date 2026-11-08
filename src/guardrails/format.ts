@@ -104,6 +104,14 @@ export interface ParsedGuardrail {
   rules: GuardrailRule[];
   /** Every problem found, in file order. Non-empty = the guardrail is invalid. */
   errors: string[];
+  /**
+   * The problems that refuse a write (a /deploy is a 422, an import exits 1):
+   * a rule that fails to parse, a rules block that cannot be read, a file too
+   * large, or frontmatter that cannot be read in a file with rules (its rules
+   * would apply to nobody). An owner who wrote a rule meant it to be enforced;
+   * storing it silently dropped would be the opposite.
+   */
+  blocking: string[];
 }
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
@@ -161,7 +169,7 @@ export function splitFrontmatter(md: string): { front: string | null; body: stri
 }
 
 /** The one ```rules fence and the prose around it. */
-function splitRules(body: string, errors: string[]): { prose: string; rulesYaml: string | null } {
+function splitRules(body: string, fail: (e: string) => void): { prose: string; rulesYaml: string | null } {
   const lines = body.split(/\r?\n/);
   const prose: string[] = [];
   let rulesYaml: string | null = null;
@@ -189,8 +197,8 @@ function splitRules(body: string, errors: string[]): { prose: string; rulesYaml:
       inner.push(l);
       i++;
     }
-    if (!closed) errors.push("the rules block is not closed");
-    if (rulesYaml !== null) errors.push("only one rules block is read; a second one was ignored");
+    if (!closed) fail("the rules block is not closed");
+    if (rulesYaml !== null) fail("only one rules block is read; a second one was ignored");
     else rulesYaml = inner.join("\n");
   }
   return { prose: prose.join("\n").trim(), rulesYaml };
@@ -252,9 +260,14 @@ function parseRule(raw: unknown, index: number, seen: Set<string>): { rule?: Gua
 /** Parse one GUARDRAIL.md. Never throws: every problem is in `errors`. */
 export function parseGuardrail(slug: string, md: string): ParsedGuardrail {
   const errors: string[] = [];
-  const out: ParsedGuardrail = { slug, meta: null, prose: "", rules: [], errors };
+  const blocking: string[] = [];
+  const fail = (e: string) => {
+    errors.push(e);
+    blocking.push(e);
+  };
+  const out: ParsedGuardrail = { slug, meta: null, prose: "", rules: [], errors, blocking };
   if (Buffer.byteLength(md) > MAX_GUARDRAIL_BYTES) {
-    errors.push(`GUARDRAIL.md is ${Buffer.byteLength(md)} bytes; at most ${MAX_GUARDRAIL_BYTES}`);
+    fail(`GUARDRAIL.md is ${Buffer.byteLength(md)} bytes; at most ${MAX_GUARDRAIL_BYTES}`);
     return out;
   }
   const { front, body } = splitFrontmatter(md);
@@ -299,24 +312,27 @@ export function parseGuardrail(slug: string, md: string): ParsedGuardrail {
       }
     }
   }
-  const { prose, rulesYaml } = splitRules(body, errors);
+  const { prose, rulesYaml } = splitRules(body, fail);
   out.prose = prose;
+  if (rulesYaml !== null && rulesYaml.trim() && out.meta === null) {
+    fail("the frontmatter cannot be read, so this guardrail's rules would apply to nobody");
+  }
   if (rulesYaml !== null && rulesYaml.trim()) {
     let raw: unknown;
     try {
       raw = Bun.YAML.parse(rulesYaml);
     } catch (e) {
-      errors.push(`the rules block is not valid YAML (${(e as Error).message})`);
+      fail(`the rules block is not valid YAML (${(e as Error).message})`);
     }
     if (raw !== undefined && raw !== null) {
-      if (!Array.isArray(raw)) errors.push("the rules block must be a YAML list of rules");
+      if (!Array.isArray(raw)) fail("the rules block must be a YAML list of rules");
       else {
-        if (raw.length > MAX_RULES) errors.push(`${raw.length} rules; at most ${MAX_RULES} are read, the rest are rejected`);
+        if (raw.length > MAX_RULES) fail(`${raw.length} rules; at most ${MAX_RULES} are read, the rest are rejected`);
         const seen = new Set<string>();
         raw.slice(0, MAX_RULES).forEach((r, i) => {
           const p = parseRule(r, i, seen);
           if (p.rule) out.rules.push(p.rule);
-          else errors.push(p.error!);
+          else fail(p.error!);
         });
       }
     }
