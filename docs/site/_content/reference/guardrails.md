@@ -298,6 +298,18 @@ manifest version seen, kept in the process, in a file beside the key
 the mark, or missing after one existed, fails closed. Residual risk on a cold
 start of a single process without Redis: whoever can rewrite both the
 database and the mark file can roll back or delete the set undetected.
+`slaude guardrails import` (and `--repair`) reads and raises the mark in
+Redis too when `SLAUDE_REDIS_URL` is set, so a repair never lands below it.
+
+**Moving from sqlite to Postgres.** Set `SLAUDE_MASTER_KEY` first: on
+Postgres guardrails are signed with the master key only, and a `/deploy` that
+changes guardrails without it is refused (422) before any persona is applied.
+The rows signed on sqlite with the key file do not verify under the master
+key, and a `.high-water.json` that survives the move still holds the sqlite
+version, so sessions refuse to start until the owner runs
+`slaude guardrails import <dir> --repair` with the master key set (re-signing
+the set above the remembered version), then a `/deploy` for the deploy repo's
+guardrails.
 
 - **Postgres, or turns on nodes:** a session cannot reach the database, so an
   agent cannot change its own guardrails.

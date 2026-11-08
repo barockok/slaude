@@ -142,6 +142,16 @@ same release:
 - **Broken rules** were stored silently dropped; they now refuse the deploy,
   the import and the render.
 
+**Moving from sqlite to Postgres needs the master key first.** Postgres has
+no key-file fallback, so `SLAUDE_MASTER_KEY` must be set before the move (a
+`/deploy` that changes guardrails without it is a 422, refused before any
+persona is applied, never a half-applied 500). A `.high-water.json` that
+survives the move remembers the sqlite version, so sessions refuse to start
+until the owner runs `slaude guardrails import <dir> --repair` with the key,
+which re-signs the set above that version. With `SLAUDE_REDIS_URL` set the
+import reads and raises the Redis mark too, so a repair never lands below the
+mark another replica saw.
+
 ## What it does not do
 
 Tool rules are a policy on named tools: a shell or fetch tool reaches the same
