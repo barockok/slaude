@@ -1,42 +1,47 @@
 /**
- * Every Slack write in src/ is classified in OUTBOUND_SITES: agent-authored
- * text goes through the outbound choke point, runtime UI is listed as not
- * covered. A new posting call (or one moved between files) fails this test
- * until it is classified, and a file that carries agent text must use the
- * choke point.
+ * Every Slack write in src/ is classified on its own line: `// outbound:` for
+ * agent-authored text, which goes through the outbound choke point, or
+ * `// runtime-ui:` for the runtime's own UI, which is not covered. A new
+ * write (chat.*, files.* writes, canvases, topic and purpose, views.*,
+ * apiCall to those, an interaction's respond()) fails this test until it is
+ * marked, and a file with an outbound call must use the choke point.
  */
 import { describe, expect, it } from "bun:test";
 import { Glob } from "bun";
-import { OUTBOUND_SITES } from "../../src/gateway/slack/outbound";
+import { SLACK_WRITE } from "../../src/gateway/slack/outbound";
 
-const WRITE = /\.(?:chat\.(?:postMessage|update|postEphemeral|scheduleMessage|meMessage)|files\.(?:uploadV2|upload)|canvases\.(?:create|edit)|conversations\.(?:setTopic|setPurpose))\s*\(/g;
-const code = (src: string) => src.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+const comment = (l: string) => /^\s*(\/\/|\*|\/\*)/.test(l);
 
-async function scan(): Promise<Record<string, number>> {
-  const out: Record<string, number> = {};
+async function writes(): Promise<Array<{ file: string; line: number; text: string }>> {
+  const out: Array<{ file: string; line: number; text: string }> = [];
   for await (const f of new Glob("src/**/*.{ts,tsx}").scan(".")) {
-    const n = code(await Bun.file(f).text()).match(WRITE)?.length ?? 0;
-    if (n) out[f] = n;
+    (await Bun.file(f).text()).split("\n").forEach((l, i) => {
+      if (!comment(l) && SLACK_WRITE.test(l)) out.push({ file: f, line: i + 1, text: l });
+    });
   }
   return out;
 }
 
 describe("outbound coverage", () => {
-  it("every Slack write in src/ is a classified site, with the count on record", async () => {
-    const found = await scan();
-    const listed = Object.fromEntries(OUTBOUND_SITES.filter((s) => s.calls > 0).map((s) => [s.file, s.calls]));
-    expect(found).toEqual(listed);
+  it("every Slack write in src/ is marked outbound or runtime-ui on its line", async () => {
+    const all = await writes();
+    expect(all.length).toBeGreaterThan(40);
+    const unmarked = all.filter((w) => !/\/\/ (outbound|runtime-ui): \S/.test(w.text)).map((w) => `${w.file}:${w.line}`);
+    expect(unmarked).toEqual([]);
   });
 
-  it("a file that carries agent text calls the choke point", async () => {
-    for (const s of OUTBOUND_SITES) {
-      if (s.carries === "runtime" || s.file.endsWith("/outbound.ts")) continue;
-      const src = await Bun.file(s.file).text();
-      expect({ file: s.file, uses: /\b(deliver|outbound|outboundSync|formatOutbound)\(/.test(src) }).toEqual({ file: s.file, uses: true });
-    }
+  it("a file with an outbound call uses the choke point", async () => {
+    const files = new Set((await writes()).filter((w) => w.text.includes("// outbound:")).map((w) => w.file));
+    expect([...files].sort()).toEqual(["src/background/proposal-cards.ts", "src/gateway/slack/mcp-tools.ts", "src/gateway/slack/surface.ts"]);
+    for (const f of files) expect({ f, uses: /\b(deliver|outbound|outboundSync)\(/.test(await Bun.file(f).text()) }).toEqual({ f, uses: true });
   });
 
-  it("the proactive post path and the wake tool go through it", async () => {
+  it("the patterns catch every kind of write, and only writes", () => {
+    for (const l of ["await client.chat.postMessage({", "x.chat.update(", "c.files.uploadV2({", "c.views.open({", 'client.apiCall("chat.postMessage", {', "await respond({ text })", "c.canvases.edit({", "c.conversations.setTopic({"]) expect({ l, w: SLACK_WRITE.test(l) }).toEqual({ l, w: true });
+    for (const l of ["c.files.info({", "d.files.map((f) =>", "this.io.provider.respond();", 'log("respond() dropped")', "c.conversations.replies({"]) expect({ l, w: SLACK_WRITE.test(l) }).toEqual({ l, w: false });
+  });
+
+  it("proactive posts go through it before cardPoster", async () => {
     expect(await Bun.file("src/proactive/heartbeat.ts").text()).toMatch(/await outbound\(raw, \{ kind: "proactive_post"/);
   });
 });

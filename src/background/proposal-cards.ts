@@ -71,7 +71,7 @@ export function cardPoster(t: Pick<Transport, "client" | "clientFor" | "apps">):
       const registered = t.apps ? (await t.apps()).length : Infinity;
       if (registered !== 1) throw new Error(NO_APP_REFUSAL);
     }
-    const r = (await clientForApp(t, msg.app).chat.postMessage({
+    const r = (await clientForApp(t, msg.app).chat.postMessage({ // outbound: cardPoster (proactive posts judged in sendProactive, previews in outboundSync; digests and notices are runtime UI)
       channel: msg.channel,
       text: msg.text,
       blocks: msg.blocks,
@@ -416,10 +416,10 @@ const originOf = (body: unknown): ClickOrigin => {
 export function registerProposalActions(t: Pick<Transport, "action">, deps: DecideDeps): void {
   const answer = async (res: ClickResult, id: string, body: { message?: { blocks?: unknown; text?: string } }, respond: (m: unknown) => Promise<void>) => {
     try {
-      if (!res.ok) return void (await respond({ response_type: "ephemeral", replace_original: false, text: res.text }));
+      if (!res.ok) return void (await respond({ response_type: "ephemeral", replace_original: false, text: res.text })); // runtime-ui: proposal card click answer
       const blocks = withDecision(body.message?.blocks, id, res.line);
-      if (blocks) await respond({ replace_original: true, text: body.message?.text ?? res.line, blocks });
-      else await respond({ response_type: "ephemeral", replace_original: false, text: res.line });
+      if (blocks) await respond({ replace_original: true, text: body.message?.text ?? res.line, blocks }); // runtime-ui: proposal card click answer
+      else await respond({ response_type: "ephemeral", replace_original: false, text: res.line }); // runtime-ui: proposal card click answer
     } catch {
       /* the decision stands; only the card's update was lost */
     }

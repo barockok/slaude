@@ -682,6 +682,11 @@ export class AgentManager extends EventEmitter {
     this.#resolver = resolver;
   }
 
+  /** The live session's abort signal (a stopped turn aborts it), or undefined when none is live. */
+  sessionSignal(sessionId: string): AbortSignal | undefined {
+    return this.#live.get(sessionId)?.abort.signal;
+  }
+
   /** Node only: the epoch ms a session's current turn must end by (its hard
    *  turn deadline). An owner tool card ends before it. */
   setTurnDeadline(fn: ((sessionId: string) => number | null) | undefined) {

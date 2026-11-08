@@ -36,8 +36,10 @@ function outOpts(ctx: SlackContext, kind: OutboundKind, channel?: string): Outbo
     channel: channel ?? ctx.channel,
     thread: { channel: ctx.channel, threadTs: ctx.postTarget === "channel" ? null : ctx.threadTs },
     ...(ctx.apiAppId || ctx.teamId ? { app: { apiAppId: ctx.apiAppId, teamId: ctx.teamId } } : {}),
-    sessionId: ctx.sessionId ?? null,
+    sessionId: ctx.sessionId ?? ctx.turnSessionId ?? null,
     unattended: !!ctx.wake || ctx.unattended === true,
+    ...(ctx.turnSignal?.() ? { signal: ctx.turnSignal()! } : {}),
+    ...(ctx.turnDeadline !== undefined ? { deadline: ctx.turnDeadline } : {}),
   };
 }
 
@@ -88,6 +90,12 @@ export type SlackContext = {
   wake?: WakeTurn;
   /** Nobody is in this turn (a signed wake claim): an owner approve rule on a post is a deny. */
   unattended?: boolean;
+  /** The session a route's turns belong to (mono routes; outbound audit and held replies). */
+  turnSessionId?: string;
+  /** The running turn's abort (mono): a held reply is not posted after it. */
+  turnSignal?: () => AbortSignal | undefined;
+  /** Epoch ms the turn must be over by (the tool plane: the job token's expiry less 30 s). */
+  turnDeadline?: number;
   /** What started the route's current job (a person's Slack message, the
    *  panel, or cron). Drives GateInput.interactive; absent = not interactive.
    *  A synthetic turn the runtime injects afterwards (auto-evolve, a
@@ -123,10 +131,10 @@ export const SLACK_MCP_NAME = slackContract.server;
 export const slackHandlers = {
   async reply(ctx: SlackContext, { text }: { text: string }): Promise<ToolResult> {
     try {
-      const update = async (ts: string, t: string) => void (await ctx.client.chat.update({ channel: ctx.channel, ts, text: t }));
+      const update = async (ts: string, t: string) => void (await ctx.client.chat.update({ channel: ctx.channel, ts, text: t })); // outbound: legacy slack tool, through deliver()
       const r = await deliver(text, outOpts(ctx, "reply"), {
         post: async (t) => {
-          const p = await ctx.client.chat.postMessage({
+          const p = await ctx.client.chat.postMessage({ // outbound: legacy slack tool, through deliver()
             channel: ctx.channel,
             thread_ts: ctx.postTarget === "channel" ? undefined : ctx.threadTs,
             text: t,
@@ -146,10 +154,10 @@ export const slackHandlers = {
   async edit(ctx: SlackContext, { ts, text }: { ts: string; text: string }): Promise<ToolResult> {
     try {
       const write = async (t: string) => {
-        await ctx.client.chat.update({ channel: ctx.channel, ts, text: t });
+        await ctx.client.chat.update({ channel: ctx.channel, ts, text: t }); // outbound: legacy slack tool, through deliver()
         return ts;
       };
-      const r = await deliver(text, outOpts(ctx, "edit"), { post: write, edit: async (_ref, t) => void (await write(t)) });
+      const r = await deliver(text, { ...outOpts(ctx, "edit"), ref: ts }, { post: write, edit: async (_ref, t) => void (await write(t)) });
       return result(r, () => "edited");
     } catch (e: any) {
       return err(`slack edit failed: ${e?.message ?? String(e)}`);
@@ -233,7 +241,7 @@ export const slackHandlers = {
       const filename = basename(path);
       let ids: string[] = [];
       const send = async (caption?: string) => {
-        const r = await ctx.client.files.uploadV2({
+        const r = await ctx.client.files.uploadV2({ // outbound: legacy slack tool, through deliver()
           channel_id: ctx.channel,
           thread_ts: ctx.threadTs,
           file: createReadStream(path),
@@ -405,11 +413,11 @@ export const slackHandlers = {
       let where = channel;
       const r = await deliver(text, outOpts(ctx, "post_message", channel), {
         post: async (t) => {
-          const p = await ctx.client.chat.postMessage({ channel, text: t, mrkdwn: true, ...replyOpts });
+          const p = await ctx.client.chat.postMessage({ channel, text: t, mrkdwn: true, ...replyOpts }); // outbound: legacy slack tool, through deliver()
           where = String(p.channel ?? channel);
           return String(p.ts);
         },
-        edit: async (ts, t) => void (await ctx.client.chat.update({ channel: where, ts, text: t })),
+        edit: async (ts, t) => void (await ctx.client.chat.update({ channel: where, ts, text: t })), // outbound: legacy slack tool, through deliver()
       });
       return result(r, (ts) => `posted channel=${where} ts=${ts}`);
     } catch (e: any) {
@@ -419,7 +427,7 @@ export const slackHandlers = {
 
   async delete(ctx: SlackContext, { ts, channel }: { ts: string; channel?: string }): Promise<ToolResult> {
     try {
-      await ctx.client.chat.delete({ channel: channel ?? ctx.channel, ts });
+      await ctx.client.chat.delete({ channel: channel ?? ctx.channel, ts }); // outbound: the delete tool removes a message and carries no text to judge
       return ok("deleted");
     } catch (e: any) {
       return err(`slack chat.delete failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
@@ -434,7 +442,7 @@ export const slackHandlers = {
       // An ephemeral cannot be edited: a held one waits for the card.
       const r = await deliver(text, outOpts(ctx, "ephemeral", channel), {
         post: async (t) => {
-          const p = await ctx.client.chat.postEphemeral({ channel: channel ?? ctx.channel, user, thread_ts, text: t });
+          const p = await ctx.client.chat.postEphemeral({ channel: channel ?? ctx.channel, user, thread_ts, text: t }); // outbound: legacy slack tool, through deliver()
           return String(p.message_ts ?? "");
         },
       });
@@ -467,7 +475,7 @@ export const slackHandlers = {
   async set_topic(ctx: SlackContext, { topic, channel }: { topic: string; channel?: string }): Promise<ToolResult> {
     try {
       const r = await deliver(topic, outOpts(ctx, "topic", channel), {
-        post: async (t) => void (await ctx.client.conversations.setTopic({ channel: channel ?? ctx.channel, topic: t })),
+        post: async (t) => void (await ctx.client.conversations.setTopic({ channel: channel ?? ctx.channel, topic: t })), // outbound: legacy slack tool, through deliver()
       });
       return result(r, () => "topic set");
     } catch (e: any) {
@@ -478,7 +486,7 @@ export const slackHandlers = {
   async set_purpose(ctx: SlackContext, { purpose, channel }: { purpose: string; channel?: string }): Promise<ToolResult> {
     try {
       const r = await deliver(purpose, outOpts(ctx, "topic", channel), {
-        post: async (t) => void (await ctx.client.conversations.setPurpose({ channel: channel ?? ctx.channel, purpose: t })),
+        post: async (t) => void (await ctx.client.conversations.setPurpose({ channel: channel ?? ctx.channel, purpose: t })), // outbound: legacy slack tool, through deliver()
       });
       return result(r, () => "purpose set");
     } catch (e: any) {
@@ -494,7 +502,7 @@ export const slackHandlers = {
       let id: unknown;
       const r = await deliver(markdown, outOpts(ctx, "canvas", channel), {
         post: async (t) => {
-          const c = await ctx.client.conversations.canvases.create({ channel_id: channel ?? ctx.channel, title, document_content: { type: "markdown", markdown: t } });
+          const c = await ctx.client.conversations.canvases.create({ channel_id: channel ?? ctx.channel, title, document_content: { type: "markdown", markdown: t } }); // outbound: legacy slack tool, through deliver()
           id = c.canvas_id;
           return undefined;
         },
@@ -551,7 +559,7 @@ async function editCanvasEnd(
     const canvasId = await getCanvasId(ctx, channel);
     if (typeof canvasId !== "string") return canvasId;
     const r = await deliver(markdown, outOpts(ctx, "canvas", channel), {
-      post: async (t) => void (await ctx.client.canvases.edit({ canvas_id: canvasId, changes: [{ operation, document_content: { type: "markdown", markdown: t } }] })),
+      post: async (t) => void (await ctx.client.canvases.edit({ canvas_id: canvasId, changes: [{ operation, document_content: { type: "markdown", markdown: t } }] })), // outbound: legacy slack tool, through deliver()
     });
     return result(r, () => `canvas ${operation === "insert_at_end" ? "appended" : "prepended"}`);
   } catch (e: any) {

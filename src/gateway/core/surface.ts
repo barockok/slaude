@@ -38,12 +38,15 @@ export interface Surface {
   /** `runtime`: the runtime's own text (a todo list, a connect notice), formatted
    *  but never held or refused by the owner's reply rules. A reply an owner rule
    *  refuses throws OutboundRefusal; `note` says it was held and approved. */
-  reply(i: { text: string; runtime?: boolean }): Promise<{ ref: string; note?: string }>;
+  /** `tracker`: the todo or task list the runtime renders from the model's items:
+   *  the owner's reply rules apply (redact), and a list a rule refuses or would
+   *  hold is shown as hidden instead. */
+  reply(i: { text: string; runtime?: boolean; tracker?: boolean }): Promise<{ ref: string; note?: string }>;
   getHistory(i: { limit?: number; includeReplies?: boolean }): Promise<{ messages: HistoryItem[]; hasMore: boolean }>;
   requestApproval(r: ApprovalRequest): Promise<ApprovalResult>;
 
   // optional — present iff the matching capability is declared:
-  edit?(i: { ref: string; text: string; runtime?: boolean }): Promise<void | { note?: string }>; // cap: "edit"
+  edit?(i: { ref: string; text: string; runtime?: boolean; tracker?: boolean }): Promise<void | { note?: string }>; // cap: "edit"
   react?(i: { name: string; ref?: string }): Promise<void>;      // cap: "react"
   unreact?(i: { name: string; ref?: string }): Promise<void>;    // cap: "react" (rides with react)
   upload?(i: { path: string; title?: string; comment?: string; altText?: string }): Promise<void>; // cap: "upload"
@@ -70,6 +73,10 @@ export interface SessionBinding {
   unattended?: boolean;
   /** The Slack app the session posts as (a held reply's card goes out as it). */
   appId?: string;
+  /** The turn's abort: a held reply is not posted after its turn stopped. */
+  turnSignal?: AbortSignal;
+  /** Epoch ms the turn must be over by (a node's token expiry less a margin). */
+  turnDeadline?: number;
 }
 
 export type SurfaceFactory = (b: SessionBinding) => Surface;

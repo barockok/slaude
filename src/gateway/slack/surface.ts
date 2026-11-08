@@ -1,7 +1,7 @@
 import type { WebClient } from "@slack/web-api";
 import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
-import { deliver, formatOutbound, OutboundRefusal, type OutboundKind, type OutboundOptions } from "./outbound";
+import { deliver, formatOutbound, outbound, OutboundRefusal, TRACKER_HIDDEN, type OutboundKind, type OutboundOptions } from "./outbound";
 import { SLACK_SURFACE_ID } from "../core/surface";
 import type {
   ApprovalRequest,
@@ -52,19 +52,28 @@ export class SlackSurface implements Surface {
       ...(b.appId || b.teamId ? { app: { apiAppId: b.appId, teamId: b.teamId } } : {}),
       sessionId: b.sessionId ?? null,
       unattended: b.unattended === true,
+      ...(b.turnSignal ? { signal: b.turnSignal } : {}),
+      ...(b.turnDeadline !== undefined ? { deadline: b.turnDeadline } : {}),
     };
   }
 
   async #post(text: string): Promise<string> {
-    const r = await this.#client.chat.postMessage({ channel: this.#b.conversationId, thread_ts: this.#b.threadRef, text, mrkdwn: true });
+    const r = await this.#client.chat.postMessage({ channel: this.#b.conversationId, thread_ts: this.#b.threadRef, text, mrkdwn: true }); // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
     return String(r.ts);
   }
 
   async #update(ref: string, text: string): Promise<void> {
-    await this.#client.chat.update({ channel: this.#b.conversationId, ts: ref, text });
+    await this.#client.chat.update({ channel: this.#b.conversationId, ts: ref, text }); // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
   }
 
-  async reply({ text, runtime }: { text: string; runtime?: boolean }): Promise<{ ref: string; note?: string }> {
+  /** A todo or task list: model-written items through the reply rules; nobody holds it, so a deny or approve hides it. */
+  async #tracker(text: string): Promise<string> {
+    const v = await outbound(text, { ...this.#opts("todo"), unattended: true });
+    return v.action === "send" ? v.text : formatOutbound(TRACKER_HIDDEN, "runtime", this.#persona);
+  }
+
+  async reply({ text, runtime, tracker }: { text: string; runtime?: boolean; tracker?: boolean }): Promise<{ ref: string; note?: string }> {
+    if (tracker) return { ref: await this.#post(await this.#tracker(text)) };
     if (runtime) return { ref: await this.#post(formatOutbound(text, "runtime", this.#persona)) };
     const r = await deliver(text, this.#opts("reply"), { post: (t) => this.#post(t), edit: (ref, t) => this.#update(ref, t) });
     if (!r.ok) throw new OutboundRefusal(r.error);
@@ -99,7 +108,7 @@ export class SlackSurface implements Surface {
   async sayEphemeral(i: { text: string; userId?: string; blocks?: unknown[] }): Promise<void> {
     const user = i.userId ?? this.#b.userId;
     if (!user) throw new Error("sayEphemeral needs a user: refusing to post publicly");
-    await this.#client.chat.postEphemeral({
+    await this.#client.chat.postEphemeral({ // runtime-ui: sayEphemeral (the runtime's own private notices), formatted only
       channel: this.#b.conversationId,
       user,
       text: formatOutbound(i.text, "runtime", this.#persona),
@@ -109,13 +118,14 @@ export class SlackSurface implements Surface {
   }
 
   /** An edit is judged on the whole new text (a streamed message re-checked in full at every edit). */
-  async edit({ ref, text, runtime }: { ref: string; text: string; runtime?: boolean }): Promise<void | { note?: string }> {
+  async edit({ ref, text, runtime, tracker }: { ref: string; text: string; runtime?: boolean; tracker?: boolean }): Promise<void | { note?: string }> {
+    if (tracker) return this.#update(ref, await this.#tracker(text));
     if (runtime) return this.#update(ref, formatOutbound(text, "runtime", this.#persona));
     const write = async (t: string) => {
       await this.#update(ref, t);
       return ref;
     };
-    const r = await deliver(text, this.#opts("edit"), { post: write, edit: (_r, t) => this.#update(ref, t) });
+    const r = await deliver(text, { ...this.#opts("edit"), ref }, { post: write, edit: (_r, t) => this.#update(ref, t) });
     if (!r.ok) throw new OutboundRefusal(r.error);
     return r.note ? { note: r.note } : undefined;
   }
@@ -138,7 +148,7 @@ export class SlackSurface implements Surface {
     statSync(path); // throws if missing
     const filename = basename(path);
     const send = async (caption: string | undefined) => {
-      await this.#client.files.uploadV2({
+      await this.#client.files.uploadV2({ // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
         channel_id: this.#b.conversationId,
         thread_ts: this.#b.threadRef,
         file: createReadStream(path),

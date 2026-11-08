@@ -23,6 +23,8 @@ export interface Pattern {
   test(text: string): boolean;
   /** Every match replaced with `with` (text patterns; a glob has none). */
   replace?(text: string, with_: string): string;
+  /** The matched spans, in order (text patterns). */
+  matches?(text: string): string[];
 }
 
 /** The redaction marker, the same as the soul's redact patterns use. */
@@ -41,7 +43,13 @@ export function compilePattern(source: unknown, what: string): Pattern {
     throw new PatternError(`${what} is not a valid pattern (${(e as Error).message})`);
   }
   // `$` in the replacement is literal: quote it for RE2's group syntax.
-  return { source, test: (text) => re.test(capText(text)), replace: (text, with_) => re.matcher(text).replaceAll(with_.replace(/\$/g, "$$$$")) };
+  const matches = (text: string): string[] => {
+    const m = re.matcher(capText(text));
+    const out: string[] = [];
+    while (m.find() && out.length < 1000) out.push(m.group() ?? "");
+    return out;
+  };
+  return { source, test: (text) => re.test(capText(text)), replace: (text, with_) => re.matcher(text).replaceAll(with_.replace(/\$/g, "$$$$")), matches };
 }
 
 /** `text` cut to the match budget (a best-effort prefix for audit rules). */

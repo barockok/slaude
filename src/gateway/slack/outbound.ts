@@ -32,7 +32,7 @@ import { combine, hitMessage, textHits, type RuleHit } from "../../guardrails/ma
 import { auditFiring, firingEvents, type FiringApplied } from "../../guardrails/audit";
 import { REDACTED } from "../../guardrails/pattern";
 import { sessionGuardrails, type SessionGuardrails } from "../../guardrails/resolve";
-import { cachedGuardrails, currentGuardrails, guardrailsFailure } from "../../guardrails/snapshot";
+import { cachedGuardrails, currentGuardrails, failedSetExists, failedSetExistsCached, guardrailsFailure } from "../../guardrails/snapshot";
 import { failureText } from "../core/failure-codes";
 import type { AppRef } from "../core/transport";
 
@@ -47,6 +47,7 @@ export type OutboundKind =
   | "proposal_preview"
   | "canvas"
   | "topic"
+  | "todo"
   | "runtime";
 
 interface Profile {
@@ -75,6 +76,8 @@ export const PROFILES: Record<OutboundKind, Profile> = {
   proposal_preview: { mrkdwn: false, soul: false, secrets: true },
   canvas: RAW,
   topic: RAW,
+  // The todo and task trackers: the runtime renders them, the model writes their items.
+  todo: MESSAGE,
 };
 
 export interface OutboundOptions {
@@ -91,12 +94,21 @@ export interface OutboundOptions {
   /** Nobody is in this turn (a wake, a background pass): an approve is a deny. */
   unattended?: boolean;
   tenant?: string;
+  /** Epoch ms the turn must be over by (a node's job token expiry less a margin): a held text is decided before it or not posted. */
+  deadline?: number;
+  /** The turn's abort: a held text whose turn stops is not posted. */
+  signal?: AbortSignal;
+  /** An edit: the message it rewrites (a held phrase approved or denied there is remembered). */
+  ref?: string;
 }
+
+/** Less time than this left: a text is not held (a card no one can answer), it is refused. */
+export const MIN_HOLD_MS = 5_000;
 
 export type OutboundVerdict =
   | { action: "send"; text: string }
   | { action: "deny"; message: string }
-  | { action: "hold"; text: string; message: string; slug: string; ruleId: string };
+  | { action: "hold"; text: string; message: string; slug: string; ruleId: string; hits: RuleHit[]; deciding: RuleHit; spans: string };
 
 /** The formatting a kind has always had. */
 export function formatOutbound(text: string, kind: OutboundKind, persona?: string | null): string {
@@ -110,6 +122,12 @@ export function formatOutbound(text: string, kind: OutboundKind, persona?: strin
 /** The session guardrails for a post, or "unavailable" when the set failed to load or verify. */
 type Rules = SessionGuardrails | "unavailable" | null;
 
+/**
+ * A set that exists and cannot be read or verified refuses agent posts (fail
+ * closed). A deployment with no guardrail set at all (no manifest, no
+ * high-water mark) is not refused when a read fails: it posts as it did
+ * before guardrails existed.
+ */
 async function rulesFor(o: OutboundOptions): Promise<Rules> {
   const tenant = o.tenant ?? "default";
   let snap = cachedGuardrails(tenant);
@@ -117,7 +135,7 @@ async function rulesFor(o: OutboundOptions): Promise<Rules> {
     try {
       snap = await currentGuardrails(tenant);
     } catch {
-      return "unavailable";
+      return (await failedSetExists(tenant)) ? "unavailable" : null;
     }
   }
   return sessionGuardrails(snap.resolved, o.persona || "default", o.channel, { version: snap.version, proseMax: env.guardrailProseMax() });
@@ -126,7 +144,7 @@ async function rulesFor(o: OutboundOptions): Promise<Rules> {
 /** The cached rules only (sync paths: a card being built). A failed load is unavailable; none loaded yet is none. */
 function cachedRulesFor(o: OutboundOptions): Rules {
   const tenant = o.tenant ?? "default";
-  if (guardrailsFailure(tenant)) return "unavailable";
+  if (guardrailsFailure(tenant)) return failedSetExistsCached(tenant) ? "unavailable" : null;
   const snap = cachedGuardrails(tenant);
   if (!snap) return null;
   return sessionGuardrails(snap.resolved, o.persona || "default", o.channel, { version: snap.version, proseMax: env.guardrailProseMax() });
@@ -160,8 +178,9 @@ function judge(formatted: string, rules: Rules, o: OutboundOptions): OutboundVer
       record(o, d.hits, d.deciding, "deny");
       return { action: "deny", message: `${hitMessage(d.deciding)} It needs an approver, and nobody is in this turn to ask, so it was not posted.` };
     }
-    record(o, d.hits, d.deciding, "held");
-    return { action: "hold", text, message: hitMessage(d.deciding), slug: d.deciding.slug, ruleId: d.deciding.rule.id };
+    // Recorded by deliver(): held once a card can be asked for, denied otherwise.
+    const spans = d.hits.filter((h) => h.rule.action === "approve").flatMap((h) => h.rule.text?.matches?.(formatted) ?? []).join("\u0000");
+    return { action: "hold", text, message: hitMessage(d.deciding), slug: d.deciding.slug, ruleId: d.deciding.rule.id, hits: d.hits, deciding: d.deciding, spans };
   }
   record(o, d.hits, d.deciding, d.action === "redact" ? "redacted" : "audit");
   return { action: "send", text };
@@ -186,6 +205,8 @@ export function outboundSync(text: string, o: OutboundOptions): OutboundVerdict 
 
 /** A held text's approval card: whoever the agent's approvers are decide it. */
 export interface HoldRequest {
+  /** The turn's abort: the card is cancelled with it. */
+  signal?: AbortSignal;
   persona: string | null;
   channel: string;
   threadTs?: string | null;
@@ -198,13 +219,24 @@ export interface HoldRequest {
   timeoutSeconds: number;
 }
 export type HoldDecision = { approved: boolean; by: string; note?: string };
-export type OutboundApprover = (req: HoldRequest) => Promise<HoldDecision>;
+/**
+ * The card behind a held text. `approvers` is asked first, before anything is
+ * posted: with nobody named, the text is refused up front (no placeholder, no
+ * card that anyone in the thread could click).
+ */
+export interface OutboundApprover {
+  approvers(req: HoldRequest): Promise<string[]>;
+  ask(req: HoldRequest): Promise<HoldDecision>;
+}
 
 let approver: OutboundApprover | undefined;
 /** The gateway installs its ApprovalGate here. Absent: an approve is a deny. */
 export function setOutboundApprover(fn: OutboundApprover | undefined): void {
   approver = fn;
 }
+
+/** A todo or task list a rule refuses or would hold. */
+export const TRACKER_HIDDEN = "**Tasks**\n_(hidden by the owner's guardrails)_";
 
 export const WAITING_TEXT = (slug: string) => `:hourglass_flowing_sand: Waiting for approval (owner guardrail ${slug}).`;
 export const NOT_POSTED_TEXT = (reason: string) => `:no_entry_sign: Not posted: ${reason}.`;
@@ -224,60 +256,103 @@ export interface DeliverIo {
   edit?(ref: string, text: string): Promise<void>;
 }
 
+/**
+ * What a held phrase's card decided, per session, message and rule, so a
+ * streamed message (one message edited many times) is not held again at every
+ * edit: an approved phrase stays approved while the matched spans are the
+ * same; a denied one keeps the message on its refusal note, with no new card.
+ * Bounded.
+ */
+const decided = new Map<string, { approved: boolean; spans: string }>();
+const DECIDED_CAP = 5000;
+const decidedKey = (o: OutboundOptions, ref: string, v: { slug: string; ruleId: string }) => `${o.sessionId ?? ""}\u0000${ref}\u0000${v.slug}#${v.ruleId}`;
+function remember(key: string, value: { approved: boolean; spans: string }): void {
+  decided.delete(key);
+  decided.set(key, value);
+  if (decided.size > DECIDED_CAP) decided.delete(decided.keys().next().value as string);
+}
+/** TEST SEAM. */
+export function __resetHeldDecisionsForTests(): void {
+  decided.clear();
+}
+
+const turnOver = (o: OutboundOptions, now = Date.now()) => !!o.signal?.aborted || (o.deadline !== undefined && now >= o.deadline);
+
 /** outbound(), then post, holding the text on a card when a rule says approve. */
 export async function deliver(text: string, o: OutboundOptions, io: DeliverIo): Promise<Delivered> {
   const v = await outbound(text, o);
   if (v.action === "deny") return { ok: false, error: v.message };
   if (v.action === "send") return { ok: true, ref: await io.post(v.text) };
+  const refuse = (reason: string): Delivered => {
+    record(o, v.hits, v.deciding, "deny");
+    return { ok: false, error: `${v.message} Not posted: ${reason}.` };
+  };
+  // A phrase already decided in this message (a streamed edit).
+  const key = o.ref ? decidedKey(o, o.ref, v) : null;
+  const before = key ? decided.get(key) : undefined;
+  if (before && !before.approved) return refuse("an approver already declined it in this message");
+  if (before && before.approved && before.spans === v.spans) {
+    record(o, v.hits, v.deciding, "audit");
+    return { ok: true, ref: await io.post(v.text) };
+  }
+  const now = Date.now();
+  const left = Math.min(env.guardrailApproveTimeoutSec() * 1000, o.deadline !== undefined ? o.deadline - now : Infinity);
+  if (left < MIN_HOLD_MS || turnOver(o, now)) return refuse("not enough time left in this turn to ask an approver");
+  const req: HoldRequest = {
+    persona: o.persona ?? null,
+    channel: o.thread!.channel,
+    threadTs: o.thread!.threadTs ?? null,
+    ...(o.app ? { app: o.app } : {}),
+    sessionId: o.sessionId ?? null,
+    summary: `Owner guardrail ${v.slug}#${v.ruleId} held a ${o.kind.replace("_", " ")}: ${v.message}`,
+    detail: v.text,
+    timeoutSeconds: Math.max(1, Math.floor(left / 1000)),
+    ...(o.signal ? { signal: o.signal } : {}),
+  };
+  let named: string[];
+  try {
+    if (!approver) throw new Error("no approval card can be shown here");
+    named = await approver.approvers(req);
+  } catch (e) {
+    return refuse(e instanceof Error ? e.message : String(e));
+  }
+  if (named.length === 0) return refuse("this agent has no approver to ask");
+  record(o, v.hits, v.deciding, "held");
   const placeholder = io.edit ? await io.post(WAITING_TEXT(v.slug)) : undefined;
   let d: HoldDecision;
   try {
-    if (!approver) throw new Error("no approval card can be shown here");
-    d = await approver({
-      persona: o.persona ?? null,
-      channel: o.thread!.channel,
-      threadTs: o.thread!.threadTs ?? null,
-      ...(o.app ? { app: o.app } : {}),
-      sessionId: o.sessionId ?? null,
-      summary: `Owner guardrail ${v.slug}#${v.ruleId} held a ${o.kind.replace("_", " ")}: ${v.message}`,
-      detail: v.text,
-      timeoutSeconds: env.guardrailApproveTimeoutSec(),
-    });
+    d = await approver!.ask(req);
   } catch (e) {
     d = { approved: false, by: "system", note: e instanceof Error ? e.message : String(e) };
   }
+  const memo = (ref: string | undefined, approved: boolean) => {
+    if (ref) remember(decidedKey(o, ref, v), { approved, spans: v.spans });
+  };
+  // A text is never posted after its turn ended, approved or not.
+  if (d.approved && turnOver(o)) d = { approved: false, by: "system", note: "the turn ended before the decision" };
   if (d.approved) {
     if (placeholder && io.edit) {
       await io.edit(placeholder, v.text);
+      memo(o.ref ?? placeholder, true);
       return { ok: true, ref: placeholder, note: `held for approval, approved by <@${d.by}>` };
     }
-    return { ok: true, ref: await io.post(v.text), note: `held for approval, approved by <@${d.by}>` };
+    const ref = await io.post(v.text);
+    memo(o.ref ?? ref, true);
+    return { ok: true, ref, note: `held for approval, approved by <@${d.by}>` };
   }
-  const reason = d.by === "system" ? (d.note?.startsWith("timeout") ? "no approver decided in time" : (d.note ?? "not approved")) : `denied by <@${d.by}>`;
+  const reason = d.by === "system" ? (d.note?.startsWith("timeout") ? "no approver decided in time" : d.note === "aborted" ? "the turn was stopped" : (d.note ?? "not approved")) : `denied by <@${d.by}>`;
   if (placeholder && io.edit) await io.edit(placeholder, NOT_POSTED_TEXT(reason)).catch(() => {});
+  memo(o.ref ?? placeholder, false);
   return { ok: false, error: `${v.message} Not posted: ${reason}.` };
 }
 
-/** A posting site in src/ and what it carries. The outbound coverage test checks this list against the code. */
-export interface OutboundSite {
-  file: string;
-  /** Slack write calls in the file. */
-  calls: number;
-  /** agent: agent-authored text, routed through outbound(); runtime: runtime UI, not covered. */
-  carries: "agent" | "runtime" | "both";
-  what: string;
-}
-
 /**
- * Every Slack write in src/ (chat.postMessage, chat.update, chat.postEphemeral,
- * files.uploadV2, canvases.create/edit, conversations.setTopic/setPurpose).
+ * Every Slack write call in src/ carries a marker comment on its line, which
+ * tests/gateway/outbound-sites.test.ts checks: `// outbound: ...` for a call
+ * that posts agent-authored text through this module, `// runtime-ui: ...`
+ * for the runtime's own UI (cards, notices, command replies), which is not
+ * covered. A new write without a marker fails the test until it is
+ * classified. SLACK_WRITE is what counts as a write.
  */
-export const OUTBOUND_SITES: readonly OutboundSite[] = [
-  { file: "src/gateway/slack/surface.ts", calls: 4, carries: "both", what: "the surface: reply, edit, upload caption (agent, through deliver); sayEphemeral and runtime: true callers (todo list, connect flow) formatted only" },
-  { file: "src/gateway/slack/mcp-tools.ts", calls: 11, carries: "agent", what: "the legacy slack tools: reply, edit, upload caption, post_message, post_ephemeral, canvases, topic and purpose" },
-  { file: "src/gateway/slack/outbound.ts", calls: 0, carries: "agent", what: "the choke point itself" },
-  { file: "src/background/proposal-cards.ts", calls: 1, carries: "both", what: "cardPoster: proactive posts (outbound in sendProactive), proposal cards (previews through outboundSync), digests and notices (runtime)" },
-  { file: "src/gateway/slack/approval-gate.ts", calls: 3, carries: "runtime", what: "approval cards, their timeout edit, and a held text sent privately to approvers" },
-  { file: "src/gateway/slack/permission-gate.ts", calls: 2, carries: "runtime", what: "permission cards" },
-  { file: "src/gateway/core/gateway.ts", calls: 10, carries: "runtime", what: "fixed promise-check line, /remote and slash command replies, turn failure text, inbound guardrail reply, /mcp card, panel notice, feedback acknowledgement, connect card" },
-];
+export const SLACK_WRITE =
+  /\.(?:chat\.(?:postMessage|update|postEphemeral|scheduleMessage|meMessage|delete)|files\.(?:upload|uploadV2|delete|completeUploadExternal|getUploadURLExternal)|canvases\.(?:create|edit)|conversations\.(?:setTopic|setPurpose)|views\.(?:open|update|push|publish))\s*\(|\bapiCall\(\s*["'`](?:chat\.|files\.|views\.|canvases\.|conversations\.set)|(?<![.\w"'`])respond\(\{/;

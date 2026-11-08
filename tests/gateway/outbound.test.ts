@@ -11,7 +11,9 @@ import { join } from "node:path";
 import { ensureHome } from "../../src/config/home";
 import { __clearGuardrailsForTests, applyGuardrailChange } from "../../src/db/guardrails";
 import { __resetGuardrailSnapshotsForTests, refreshGuardrails } from "../../src/guardrails/snapshot";
-import { deliver, formatOutbound, NOT_POSTED_TEXT, outbound, outboundSync, OutboundRefusal, setOutboundApprover, WAITING_TEXT, type HoldRequest } from "../../src/gateway/slack/outbound";
+import { __resetHeldDecisionsForTests, deliver, formatOutbound, NOT_POSTED_TEXT, outbound, outboundSync, OutboundRefusal, setOutboundApprover, TRACKER_HIDDEN, WAITING_TEXT, type HoldRequest } from "../../src/gateway/slack/outbound";
+import { bindingFor } from "../../src/gateway/core/gateway";
+import { __resetHighWaterForTests } from "../../src/guardrails/high-water";
 import { SlackSurface } from "../../src/gateway/slack/surface";
 import { surfaceTools } from "../../src/gateway/core/surface-mcp";
 import { slackHandlers, type SlackContext } from "../../src/gateway/slack/mcp-tools";
@@ -44,14 +46,20 @@ async function install(md = RULES) {
 type Held = HoldRequest;
 let held: Held[] = [];
 let answer: (r: Held) => Promise<{ approved: boolean; by: string; note?: string }> = async () => ({ approved: true, by: "UAPPROVER" });
+let named: string[] = ["UAPPROVER"];
 
 beforeAll(() => ensureHome());
 beforeEach(async () => {
   held = [];
   answer = async () => ({ approved: true, by: "UAPPROVER" });
-  setOutboundApprover(async (r) => {
-    held.push(r);
-    return answer(r);
+  named = ["UAPPROVER"];
+  __resetHeldDecisionsForTests();
+  setOutboundApprover({
+    approvers: async () => named,
+    ask: async (r) => {
+      held.push(r);
+      return answer(r);
+    },
   });
   await install();
 });
@@ -122,7 +130,7 @@ describe("outbound(): the rules", () => {
 
   it("approve: held with the redactions applied; a wake or no thread is a deny", async () => {
     const v = await outbound("The price is $40 for 1111-2222-3333-4444", opts());
-    expect(v).toEqual({ action: "hold", text: "The price is $40 for [REDACTED]", message: "Prices need an approver.", slug: "replies", ruleId: "prices" });
+    expect(v).toMatchObject({ action: "hold", text: "The price is $40 for [REDACTED]", message: "Prices need an approver.", slug: "replies", ruleId: "prices", spans: "price is $40" });
     const wake = await outbound("The price is $40", opts({ unattended: true }));
     expect(wake.action).toBe("deny");
     expect((wake as any).message).toContain("nobody is in this turn to ask");
@@ -133,6 +141,7 @@ describe("outbound(): the rules", () => {
     await db.run("DELETE FROM audit_events WHERE action LIKE 'guardrail.reply.%'");
     expect(await outbound("our roadmap says so", opts())).toEqual({ action: "send", text: "our roadmap says so" });
     await outbound("launch code 7 and roadmap", opts({ sessionId: "S-aud" }));
+    // A hold is recorded by deliver() once a card can be asked for (below).
     await outbound("price is $9", opts({ sessionId: "S-held" }));
     await outbound("card 1111-2222-3333-4444", opts({ sessionId: "S-red" }));
     await flushAudits();
@@ -141,7 +150,6 @@ describe("outbound(): the rules", () => {
       "guardrail.reply.audited replies#watch",
       "guardrail.reply.audited replies#watch",
       "guardrail.reply.denied replies#no-codes",
-      "guardrail.reply.held replies#prices",
       "guardrail.reply.redacted replies#hide-cards",
     ]);
     const all = JSON.stringify(rows);
@@ -181,10 +189,12 @@ describe("deliver(): hold and approve", () => {
     answer = async () => ({ approved: false, by: "system", note: "timeout-600s" });
     expect(await deliver("The price is $40", opts(), io)).toEqual({ ok: false, error: "Prices need an approver. Not posted: no approver decided in time." });
     expect(msgs.get("9.2")).toBe(NOT_POSTED_TEXT("no approver decided in time"));
-    answer = async () => { throw new Error("this agent has no approver to ask"); };
-    expect(await deliver("The price is $40", opts(), io)).toEqual({ ok: false, error: "Prices need an approver. Not posted: this agent has no approver to ask." });
+    answer = async () => { throw new Error("the card failed"); };
+    expect(await deliver("The price is $40", opts(), io)).toEqual({ ok: false, error: "Prices need an approver. Not posted: the card failed." });
+    answer = async () => ({ approved: false, by: "system", note: "aborted" });
+    expect(await deliver("The price is $40", opts(), io)).toEqual({ ok: false, error: "Prices need an approver. Not posted: the turn was stopped." });
     setOutboundApprover(undefined);
-    expect((await deliver("The price is $40", opts(), io)).ok).toBe(false);
+    expect(await deliver("The price is $40", opts(), io)).toEqual({ ok: false, error: "Prices need an approver. Not posted: no approval card can be shown here." });
   });
 
   it("a path with no message to hold in place posts only after the card", async () => {
@@ -329,5 +339,111 @@ describe("proactive posts and proposal previews", () => {
   it("no set loaded yet: a preview goes through unchanged", () => {
     __resetGuardrailSnapshotsForTests();
     expect(outboundSync("launch code 1", { kind: "proposal_preview", channel: null })).toEqual({ action: "send", text: "launch code 1" });
+  });
+});
+
+describe("held replies: approvers, turn lifetime, streams", () => {
+  const io = (client: any) => ({ post: async (t: string) => String((await client.chat.postMessage({ text: t })).ts), edit: async (ref: string, t: string) => void (await client.chat.update({ ts: ref, text: t })) });
+
+  it("no named approver: refused up front, no placeholder, audited as denied (not held)", async () => {
+    await db.run("DELETE FROM audit_events WHERE action LIKE 'guardrail.reply.%'");
+    named = [];
+    const { client, log } = fakeSlack();
+    expect(await deliver("The price is $40", opts({ sessionId: "S-none" }), io(client))).toEqual({ ok: false, error: "Prices need an approver. Not posted: this agent has no approver to ask." });
+    expect(log).toEqual([]);
+    expect(held).toEqual([]);
+    await flushAudits();
+    const rows = await db.query<{ action: string }>("SELECT action FROM audit_events WHERE action LIKE 'guardrail.reply.%' AND session_id = 'S-none'");
+    expect(rows.map((r) => r.action)).toEqual(["guardrail.reply.denied"]);
+  });
+
+  it("a deadline too close, or a stopped turn, refuses before any card; the card waits no longer than the turn", async () => {
+    const { client, log } = fakeSlack();
+    expect((await deliver("The price is $40", opts({ deadline: Date.now() + 2000 }), io(client))).ok).toBe(false);
+    const stopped = new AbortController();
+    stopped.abort();
+    expect((await deliver("The price is $40", opts({ signal: stopped.signal }), io(client))).ok).toBe(false);
+    expect(log).toEqual([]);
+    await deliver("The price is $40", opts({ deadline: Date.now() + 60_000 }), io(client));
+    expect(held[0]!.timeoutSeconds).toBeLessThanOrEqual(60);
+    expect(held[0]!.timeoutSeconds).toBeGreaterThan(50);
+  });
+
+  it("mono: a turn stopped while the card is open never posts the reply, even when it is approved after", async () => {
+    const turn = new AbortController();
+    const ctx: SlackContext = { client: fakeSlack().client, channel: "C1", threadTs: "1.1", inboundTs: "1.1", turnSessionId: "S-mono", turnSignal: () => turn.signal };
+    const { client, msgs } = fakeSlack();
+    ctx.client = client;
+    const s = new SlackSurface(client, bindingFor(ctx));
+    answer = async (r) => {
+      expect(r.signal).toBe(turn.signal);
+      turn.abort();
+      return { approved: true, by: "UAPPROVER" };
+    };
+    await expect(s.reply({ text: "The price is $40" })).rejects.toBeInstanceOf(OutboundRefusal);
+    expect(msgs.get("9.1")).toBe(NOT_POSTED_TEXT("the turn ended before the decision"));
+    expect(held[0]!.sessionId).toBe("S-mono");
+  });
+
+  it("node: the tool plane's turn deadline (token expiry less 30 s) bounds the card through the binding", async () => {
+    const { client, log } = fakeSlack();
+    const ctx: SlackContext = { client, channel: "C1", threadTs: "1.1", inboundTs: "1.1", turnDeadline: Date.now() + 3000 };
+    await expect(new SlackSurface(client, bindingFor(ctx)).reply({ text: "The price is $40" })).rejects.toBeInstanceOf(OutboundRefusal);
+    expect(log).toEqual([]);
+    expect(held).toEqual([]);
+  });
+
+  it("a five-edit stream: one card while the held phrase is unchanged, a new one when it changes; a declined phrase stays declined", async () => {
+    const { client, msgs } = fakeSlack();
+    const s = new SlackSurface(client, { conversationId: "C1", threadRef: "1.1", inboundRef: "1.1", requestApproval: async () => ({ approved: true, by: "U" }), reloadSession: () => true, sessionId: "S-stream" } as any);
+    const { ref } = await s.reply({ text: "Working on it" });
+    await s.edit!({ ref, text: "The price is $5" });
+    await s.edit!({ ref, text: "The price is $5 per seat" });
+    await s.edit!({ ref, text: "The price is $5 per seat, billed yearly" });
+    expect(held).toHaveLength(1);
+    await s.edit!({ ref, text: "The price is $6 per seat" });
+    expect(held).toHaveLength(2);
+    expect(msgs.get(ref)).toBe("The price is $6 per seat");
+    // A second message whose phrase is declined.
+    answer = async () => ({ approved: false, by: "UBOSS" });
+    const second = await s.reply({ text: "Next" });
+    await expect(s.edit!({ ref: second.ref, text: "The price is $9" })).rejects.toBeInstanceOf(OutboundRefusal);
+    for (const t of ["The price is $9 total", "The price is $9 total, final", "The price is $10"]) await expect(s.edit!({ ref: second.ref, text: t })).rejects.toBeInstanceOf(OutboundRefusal);
+    expect(held).toHaveLength(3);
+    expect(msgs.get(second.ref)).toBe(NOT_POSTED_TEXT("denied by <@UBOSS>"));
+    // Text without the phrase goes through normally.
+    await s.edit!({ ref: second.ref, text: "Ask sales for a quote" });
+    expect(msgs.get(second.ref)).toBe("Ask sales for a quote");
+  });
+
+  it("the todo and task trackers: redacted, and hidden when a rule refuses or would hold them", async () => {
+    const { client, msgs } = fakeSlack();
+    const s = new SlackSurface(client, { conversationId: "C1", threadRef: "1.1", inboundRef: "1.1", requestApproval: async () => ({ approved: true, by: "U" }), reloadSession: () => true } as any);
+    const { ref } = await s.reply({ text: "**Tasks**\n- check card 1111-2222-3333-4444", tracker: true });
+    expect(msgs.get(ref)).toBe("*Tasks*\n• check card [REDACTED]");
+    await s.edit!({ ref, text: "**Tasks**\n- send launch code 7", tracker: true });
+    expect(msgs.get(ref)).toBe(formatOutbound(TRACKER_HIDDEN, "runtime"));
+    await s.edit!({ ref, text: "**Tasks**\n- the price is $3", tracker: true });
+    expect(msgs.get(ref)).toBe(formatOutbound(TRACKER_HIDDEN, "runtime"));
+    expect(held).toEqual([]);
+  });
+});
+
+describe("a deployment with no guardrails", () => {
+  it("posts as before: no set, no snapshot loaded, no key, no mark", async () => {
+    await __clearGuardrailsForTests();
+    __resetGuardrailSnapshotsForTests();
+    await __resetHighWaterForTests();
+    expect(await outbound("launch code 1", opts())).toEqual({ action: "send", text: "launch code 1" });
+    expect(outboundSync("launch code 1", { kind: "proposal_preview", channel: null })).toEqual({ action: "send", text: "launch code 1" });
+  });
+
+  it("a set that existed and was deleted (the mark remembers it) still fails closed", async () => {
+    await install();
+    // The rows go, the mark stays (only a test seam resets it).
+    for (const t of ["guardrails", "guardrail_overrides", "guardrails_manifest"]) await db.run(`DELETE FROM ${t}`);
+    await refreshGuardrails("default");
+    expect((await outbound("hello", opts())).action).toBe("deny");
+    await __resetHighWaterForTests();
   });
 });

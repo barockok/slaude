@@ -10,7 +10,7 @@ import { ReactionTracker } from "../slack/reactions";
 import { Presence } from "../slack/presence";
 import { Status } from "../slack/status";
 import { PermissionGate, liveTurnStamp, stampFromSenders } from "../slack/permission-gate";
-import { ApprovalGate } from "../slack/approval-gate";
+import { ApprovalGate, type ApprovalRequest } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
@@ -38,7 +38,7 @@ const VOICE_SHUTDOWN_GRACE_MS = 5_000;
 import { monoPersonaSoul } from "../../voice/mono-soul";
 import { createSlackMcp, SLACK_MCP_NAME, createRuntimeMcp, RUNTIME_MCP_NAME, createConnectMcp, CONNECT_MCP_NAME, type SlackContext, parseDuration, isManagerOrApprover } from "../slack/mcp-tools";
 import { makeSlackSurfaceFactory } from "../slack/surface";
-import { setOutboundApprover } from "../slack/outbound";
+import { setOutboundApprover, type HoldRequest } from "../slack/outbound";
 import { createSurfaceMcp, SURFACE_MCP_NAME } from "./surface-mcp";
 import { humanizeToolStatus, redactSecrets } from "./status-text";
 import * as Remote from "../../db/remote";
@@ -435,10 +435,12 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
     get teamId() { return ctx.teamId; },
     requestApproval: (r) => ctx.requestApproval!(r),
     reloadSession: (prompt?) => ctx.reloadSession?.(prompt) ?? false,
-    get sessionId() { return ctx.sessionId; },
+    get sessionId() { return ctx.sessionId ?? ctx.turnSessionId; },
     // A wake's turn has nobody to approve a held reply.
     get unattended() { return !!ctx.wake || ctx.unattended === true; },
     get appId() { return ctx.apiAppId; },
+    get turnSignal() { return ctx.turnSignal?.(); },
+    get turnDeadline() { return ctx.turnDeadline; },
   };
 }
 
@@ -833,18 +835,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // A reply an owner guardrail holds goes to the agent's approvers on the
   // ApprovalGate's card, in the session's thread; the held text goes to each
   // approver privately, never into the thread.
-  setOutboundApprover((req) =>
-    approvals.request({
-      channel: req.channel,
-      threadTs: req.threadTs ?? "",
-      summary: req.summary,
-      ...(req.sessionId ? { sessionId: req.sessionId } : {}),
-      ...(req.app ? { app: req.app } : {}),
-      persona: req.persona,
-      privateDetail: req.detail,
-      timeoutSeconds: req.timeoutSeconds,
-    }),
-  );
+  const heldRequest = (req: HoldRequest): ApprovalRequest => ({
+    channel: req.channel,
+    threadTs: req.threadTs ?? "",
+    summary: req.summary,
+    ...(req.sessionId ? { sessionId: req.sessionId } : {}),
+    ...(req.app ? { app: req.app } : {}),
+    persona: req.persona,
+    privateDetail: req.detail,
+    timeoutSeconds: req.timeoutSeconds,
+  });
+  setOutboundApprover({
+    approvers: (req) => approvals.approversFor(heldRequest(req)),
+    // The turn's abort cancels the card.
+    ask: (req) => approvals.request(heldRequest(req), req.signal),
+  });
   // Background-learning messages (phase D): the weekly digest to the manager
   // and a person's proposals to their DM. Both carry buttons, so they go out
   // as the bot of the app (interactivity-bound, like the gates); chat:write
@@ -947,6 +952,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const noteTurnSender = (sessionId: string, ctx: SlackContext): void => {
     ctx.turnSenders ??= () => (typeof agent.turnSenders === "function" ? agent.turnSenders(sessionId) : null);
     ctx.turnTexts ??= () => (typeof agent.turnTexts === "function" ? agent.turnTexts(sessionId) : null);
+    // Held replies: the session to audit and the turn's abort (mono).
+    ctx.turnSessionId ??= sessionId;
+    ctx.turnSignal ??= () => (typeof agent.sessionSignal === "function" ? agent.sessionSignal(sessionId) : undefined);
   };
 
   const cronScheduler = new CronScheduler({
@@ -1172,7 +1180,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const persona = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
       const session = await promiseSession(row);
       const app: AppRef = { apiAppId: session?.slack_app_id ?? undefined, teamId: teamId ?? undefined };
-      await outClientForPersona(persona, app).chat.postMessage({ channel: row.channelId, thread_ts: row.threadTs, text });
+      await outClientForPersona(persona, app).chat.postMessage({ channel: row.channelId, thread_ts: row.threadTs, text }); // runtime-ui: gateway notice, card or command reply
     },
   };
 
@@ -1794,7 +1802,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const redactAuthMessage = async (surface: Surface, ref: string | undefined, serverName: string) => {
     if (!ref || !surface.capabilities.has("edit") || !surface.edit) return;
     try {
-      await surface.edit({ ref, text: `:link: Authorize \`${serverName}\` — link removed (flow finished).`, runtime: true });
+      await surface.edit({ ref, text: `:link: Authorize \`${serverName}\`: link removed (flow finished).`, runtime: true });
     } catch { /* best-effort: redaction failure must not mask the connect outcome */ }
   };
 
@@ -2007,7 +2015,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     });
     const canEphemeral = surface.capabilities.has("ephemeral") && !!surface.sayEphemeral;
     const reply = async (text: string) => {
-      await outClientForPersona(i.personaId, i.app).chat.postMessage({ channel: channelId, thread_ts: threadTs, text, mrkdwn: true });
+      await outClientForPersona(i.personaId, i.app).chat.postMessage({ channel: channelId, thread_ts: threadTs, text, mrkdwn: true }); // runtime-ui: gateway notice, card or command reply
     };
     const isManager = await isManagerOf(i.personaId, userId);
     return {
@@ -2064,7 +2072,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const decoded = decodeEnvOffer((action as { value?: string }).value, (body as any).user?.id);
     if (!decoded.ok) {
       if (decoded.reason === "expired") {
-        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {});
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
       }
       return;
     }
@@ -2081,7 +2089,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const decoded = decodeEnvOffer((action as { value?: string }).value, (body as any).user?.id);
     if (!decoded.ok) {
       if (decoded.reason === "expired") {
-        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {});
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
       }
       return;
     }
@@ -2089,7 +2097,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const client = botClientFor(clickApp);
     const triggerId = (body as any).trigger_id;
     if (!client.views || !triggerId) return;
-    await client.views.open({ trigger_id: triggerId, view: envAddModal({ ...decoded.offer, issuedAt: Date.now() }) });
+    await client.views.open({ trigger_id: triggerId, view: envAddModal({ ...decoded.offer, issuedAt: Date.now() }) }); // runtime-ui: gateway notice, card or command reply
   });
 
   // Kind picked in the Add modal: redraw the modal with that kind's fields.
@@ -2104,7 +2112,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const clickApp: AppRef = { apiAppId: (body as any).api_app_id, teamId: (body as any).team?.id ?? (body as any).user?.team_id };
     const client = botClientFor(clickApp);
     if (!client.views?.update) return;
-    await client.views.update({ view_id: view.id, hash: view.hash, view: envAddModal({ ...decoded.offer, kindName }) }).catch(() => {});
+    await client.views.update({ view_id: view.id, hash: view.hash, view: envAddModal({ ...decoded.offer, kindName }) }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
   });
 
   t.view?.(ENV_ADD_VIEW, async ({ ack, view, body }) => {
@@ -2133,7 +2141,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const decoded = decodeRemoteOffer((action as { value?: string }).value, (body as any).user?.id);
     if (!decoded.ok) {
       if (decoded.reason === "expired") {
-        await respond({ response_type: "ephemeral", replace_original: true, text: "That Connect button expired. Send `/remote` again for a new one." }).catch(() => {});
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That Connect button expired. Send `/remote` again for a new one." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
       }
       return;
     }
@@ -2145,7 +2153,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const existing = await Remote.findTarget(decoded.offer.channelId, decoded.offer.threadTs);
     const initialDir = existing?.user_id === decoded.offer.userId ? existing.dir : undefined;
     // Restamp: the modal's own clock starts when it opens.
-    await client.views.open({ trigger_id: triggerId, view: remoteConnectModal({ ...decoded.offer, issuedAt: Date.now() }, initialDir) });
+    await client.views.open({ trigger_id: triggerId, view: remoteConnectModal({ ...decoded.offer, issuedAt: Date.now() }, initialDir) }); // runtime-ui: gateway notice, card or command reply
   });
 
   // Connect modal submitted: the same path as `/remote <addr> <dir>`, minus the
@@ -2264,9 +2272,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               void (async () => {
                 try {
                   if (route.todoRef && route.surface.capabilities.has("edit") && route.surface.edit) {
-                    await route.surface.edit({ ref: route.todoRef, text, runtime: true });
+                    await route.surface.edit({ ref: route.todoRef, text, tracker: true });
                   } else {
-                    const { ref } = await route.surface.reply({ text, runtime: true });
+                    const { ref } = await route.surface.reply({ text, tracker: true });
                     route.todoRef = ref;
                   }
                 } catch (err) {
@@ -2300,9 +2308,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
                 void (async () => {
                   try {
                     if (route.tasksRef && route.surface.capabilities.has("edit") && route.surface.edit) {
-                      await route.surface.edit({ ref: route.tasksRef, text, runtime: true });
+                      await route.surface.edit({ ref: route.tasksRef, text, tracker: true });
                     } else {
-                      const { ref } = await route.surface.reply({ text, runtime: true });
+                      const { ref } = await route.surface.reply({ text, tracker: true });
                       route.tasksRef = ref;
                     }
                   } catch (err) {
@@ -2337,9 +2345,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             void (async () => {
               try {
                 if (route.tasksRef && route.surface.capabilities.has("edit") && route.surface.edit) {
-                  await route.surface.edit({ ref: route.tasksRef, text, runtime: true });
+                  await route.surface.edit({ ref: route.tasksRef, text, tracker: true });
                 } else {
-                  const { ref } = await route.surface.reply({ text, runtime: true });
+                  const { ref } = await route.surface.reply({ text, tracker: true });
                   route.tasksRef = ref;
                 }
               } catch (err) {
@@ -2379,7 +2387,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               route.todosSnapshot.every((t) => t.status === "completed") &&
               route.surface.capabilities.has("edit") && route.surface.edit) {
             const doneText = `**Tasks**\n${route.todosSnapshot.map((t) => `✓ ${t.content}`).join("\n")}`;
-            await route.surface.edit({ ref: route.todoRef, text: doneText, runtime: true }).catch(() => {});
+            await route.surface.edit({ ref: route.todoRef, text: doneText, tracker: true }).catch(() => {});
           }
           // Stamp the structured task block "all done" when every task is completed/deleted.
           if (route.tasksRef && route.tasksMap?.size &&
@@ -2387,7 +2395,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               route.surface.capabilities.has("edit") && route.surface.edit) {
             const completedTasks = [...route.tasksMap.values()].filter((t) => t.status === "completed");
             const doneText = `**Tasks**\n${completedTasks.map((t) => `✓ ${t.subject}${t.completedAt ? ` _(${t.completedAt})_` : ""}`).join("\n")}`;
-            await route.surface.edit({ ref: route.tasksRef, text: doneText, runtime: true }).catch(() => {});
+            await route.surface.edit({ ref: route.tasksRef, text: doneText, tracker: true }).catch(() => {});
           }
           route.tasksRef = undefined;
           route.tasksMap = undefined;
@@ -2428,7 +2436,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // once. The guard is an in-process Set: it does NOT span replicas.
           if (firstFailurePost(e.jobId ? `${e.sessionId}:job:${e.jobId}` : `${e.sessionId}:ts:${route.ctx.inboundTs}`)) {
             try {
-              await botClientFor(appOf(route.ctx)).chat.postMessage({
+              await botClientFor(appOf(route.ctx)).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
                 channel: route.ctx.channel,
                 thread_ts: route.ctx.threadTs,
                 text: failureText(e.code),
@@ -2547,9 +2555,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           if (guardrailReplyQuiet(`${dispatch?.personaId || "default"}:${channelId}:${thread}:${userId}`)) {
             const out = outClientForPersona(dispatch?.personaId, app);
             try {
-              await out.chat.postEphemeral({ channel: channelId, user: userId, thread_ts: thread, text: drop.reply });
+              await out.chat.postEphemeral({ channel: channelId, user: userId, thread_ts: thread, text: drop.reply }); // runtime-ui: gateway notice, card or command reply
             } catch {
-              await out.chat.postMessage({ channel: channelId, thread_ts: thread, text: drop.reply }).catch((err: unknown) =>
+              await out.chat.postMessage({ channel: channelId, thread_ts: thread, text: drop.reply }).catch((err: unknown) => // runtime-ui: gateway notice, card or command reply
                 console.error(`[slack-rx] guardrail reply failed ch=${channelId}: ${(err as Error)?.message ?? String(err)}`));
             }
           }
@@ -2648,7 +2656,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (slash) {
       const slashClient = outClientForPersona(dispatch?.personaId, app);
       const reply = async (txt: string) => {
-        await slashClient.chat.postMessage({
+        await slashClient.chat.postMessage({ // runtime-ui: gateway notice, card or command reply
           channel: channelId,
           thread_ts: threadTs,
           text: txt,
@@ -2999,7 +3007,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           blocks.push({ type: "actions", elements });
         }
-        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: "MCP servers", mrkdwn: true });
+        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: "MCP servers", mrkdwn: true }); // runtime-ui: gateway notice, card or command reply
         return;
       }
       if (slash.kind === "ignore" || slash.kind === "unignore") {
@@ -3629,7 +3637,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
         if (shouldNotice) {
           try {
-            await outClientForPersona(dispatch?.personaId, app).chat.postMessage({
+            await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
               channel: channelId,
               thread_ts: threadTs,
               text: "⏸ handled in ops panel — I'll catch up on your messages here when the operator hands back.",
@@ -4063,7 +4071,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     call: brainCall,
     now: () => new Date(),
     reply: async (channel, threadTs, text) => {
-      await (args.client ?? t.client).chat.postMessage({ channel, thread_ts: threadTs, text });
+      await (args.client ?? t.client).chat.postMessage({ channel, thread_ts: threadTs, text }); // runtime-ui: gateway notice, card or command reply
     },
     once: (key) => SeenEvents.tryInsert(key),
   });
@@ -4376,7 +4384,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const button = await connectButton(claims.session, {
       channelId: claims.channel, threadTs: claims.thread, userId, serverName: server, scope, personaName: personaKey(personaId),
     });
-    await outClientForPersona(personaId, { apiAppId: claims.app, teamId: claims.team }).chat.postMessage({
+    await outClientForPersona(personaId, { apiAppId: claims.app, teamId: claims.team }).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
       channel: claims.channel,
       thread_ts: claims.thread,
       text,
@@ -4416,6 +4424,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (claims.wake && claims.bgRun) ctx.wake = { runId: claims.bgRun, deps: wakeToolDeps };
     // A signed wake has nobody to approve a held reply, with or without a run.
     if (claims.wake) ctx.unattended = true;
+    // A held reply is decided before the job token expires, or not posted.
+    if (typeof claims.exp === "number") ctx.turnDeadline = claims.exp * 1000 - 30_000;
     ctx.reloadSession = (prompt?) => agent.reload(claims.session, prompt);
     return ctx;
   };

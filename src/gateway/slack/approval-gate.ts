@@ -142,7 +142,7 @@ export class ApprovalGate {
           try {
             // Ephemeral note only: a decided card is the visible record. An
             // expired/cancelled row was never decided, so don't say it was.
-            await respond({
+            await respond({ // runtime-ui: approval card
               response_type: "ephemeral",
               replace_original: false,
               text:
@@ -162,7 +162,7 @@ export class ApprovalGate {
             summary: `approval ${verb} refused: ${denied ? "clicker is denied on this persona" : "clicker is not an approver"}`,
           });
           try {
-            await respond({
+            await respond({ // runtime-ui: approval card
               response_type: "ephemeral",
               replace_original: false,
               text: `:no_entry: <@${userId}>, you are not on the approver allowlist for this plan. The plan stays pending.`,
@@ -218,7 +218,7 @@ export class ApprovalGate {
             auditApprovalDecided(resolved, userId, approved);
             await this.#publish(id);
             try {
-              await respond({
+              await respond({ // runtime-ui: approval card
                 replace_original: true,
                 text: decidedLine(resolved.payload, approved, userId),
                 blocks: [],
@@ -231,7 +231,7 @@ export class ApprovalGate {
           // would leave the legit approver with "already decided" while the
           // sibling hangs forever. Keep the buttons, tell the clicker.
           try {
-            await respond({
+            await respond({ // runtime-ui: approval card
               response_type: "ephemeral",
               replace_original: false,
               text: ":hourglass: This approval is pending on another replica — it will be decided there (or auto-expire).",
@@ -269,7 +269,7 @@ export class ApprovalGate {
         auditApprovalDecided(resolved, userId, approved);
         await this.#publish(id);
         try {
-          await respond({
+          await respond({ // runtime-ui: approval card
             replace_original: true,
             text: decidedLine(resolved.payload, approved, userId),
             blocks: [],
@@ -476,7 +476,7 @@ export class ApprovalGate {
     }
 
     try {
-      const posted = await client.chat.postMessage({
+      const posted = await client.chat.postMessage({ // runtime-ui: approval card
         channel: req.channel,
         thread_ts: req.threadTs,
         text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
@@ -494,13 +494,18 @@ export class ApprovalGate {
     return { pendingId: id };
   }
 
+  /** Who may decide `req` (the set the card would name). Empty: anyone may click. */
+  async approversFor(req: ApprovalRequest): Promise<string[]> {
+    return [...(await this.#resolveApprovers(req))].filter((a) => a !== NOBODY);
+  }
+
   /** The held text, to each approver's DM (best effort: an approver who cannot be reached can still deny). */
   async #sendDetail(client: WebClientLike, req: ApprovalRequest, approvers: Set<string>): Promise<void> {
     const where = `<#${req.channel}>`;
     for (const a of approvers) {
       if (a === NOBODY) continue;
       try {
-        await client.chat.postMessage({ channel: a, text: `Held for your approval in ${where} (${escapeMrkdwn(req.summary)}):\n\n${req.privateDetail}` });
+        await client.chat.postMessage({ channel: a, text: `Held for your approval in ${where} (${escapeMrkdwn(req.summary)}):\n\n${req.privateDetail}` }); // runtime-ui: a held text to an approver's DM (already judged by deliver())
       } catch (e) {
         console.warn(`[approval-gate] could not send the held text to an approver: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -623,7 +628,7 @@ export class ApprovalGate {
     );
 
     try {
-      const posted = await pending.client.chat.postMessage({
+      const posted = await pending.client.chat.postMessage({ // runtime-ui: approval card
         channel: req.channel,
         thread_ts: req.threadTs || undefined,
         text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
