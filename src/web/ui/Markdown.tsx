@@ -7,12 +7,11 @@
  * The Rendered or Raw choice is the viewer's, remembered in localStorage (when
  * the browser allows it) and shared by every markdown view on the page.
  */
-import { Fragment, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Fragment, useMemo, useSyncExternalStore, type ReactNode } from "react";
 import { CodeBlock } from "./CodeBlock";
 import { cx } from "./cx";
 import { KeyValue } from "./Display";
-import { IconButton } from "./Button";
-import { IconCheck, IconCopy } from "./icons";
+import { CopyButton } from "./CopyButton";
 import { parseMarkdown, type Block, type Inline, type MdDoc } from "./md-parse";
 
 export type MarkdownView = "rendered" | "raw";
@@ -188,28 +187,6 @@ export function MarkdownBody({ doc, className }: { doc: MdDoc; className?: strin
       )}
       {renderBlocks(doc.blocks)}
     </div>
-  );
-}
-
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const t = setTimeout(() => setCopied(false), 1500);
-    return () => clearTimeout(t);
-  }, [copied]);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-    } catch {
-      /* clipboard blocked; switch to Raw to select the text */
-    }
-  };
-  return (
-    <IconButton label={copied ? "Copied" : label} size="sm" onClick={copy}>
-      {copied ? <IconCheck size={16} /> : <IconCopy size={16} />}
-    </IconButton>
   );
 }
 

@@ -49,6 +49,13 @@ export const IconChevronDown = make("ChevronDown", <path d="m5.5 8 4.5 4.5L14.5 
 export const IconChevronRight = make("ChevronRight", <path d="m8 5.5 4.5 4.5L8 14.5" />);
 export const IconClose = make("Close", <path d="m5.5 5.5 9 9M14.5 5.5l-9 9" />);
 export const IconCheck = make("Check", <path d="m4.5 10.5 3.5 3.5 7.5-8" />);
+export const IconAlert = make(
+  "Alert",
+  <>
+    <circle cx="10" cy="10" r="6.75" />
+    <path d="M10 6.5v4M10 13.5h.01" />
+  </>,
+);
 export const IconCopy = make(
   "Copy",
   <>

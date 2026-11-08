@@ -15,6 +15,8 @@ export { Tabs } from "./Tabs";
 export { Dialog } from "./Dialog";
 export { ToastProvider, useToast } from "./Toast";
 export { CodeBlock } from "./CodeBlock";
+export { CopyButton, COPY_FEEDBACK_MS } from "./CopyButton";
+export type { CopyButtonProps } from "./CopyButton";
 export { Markdown, MarkdownBody, useMarkdownView, setMarkdownView } from "./Markdown";
 export type { MarkdownProps, MarkdownView } from "./Markdown";
 export { parseMarkdown } from "./md-parse";

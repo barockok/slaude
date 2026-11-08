@@ -210,6 +210,45 @@ test("an agent actor reads as the agent's name, not its bot user id", async ({ p
   await expect(actor.getByText("scout", { exact: true })).toHaveAttribute("title", "USCOUT");
 });
 
+test("the markdown copy button says Copied, announces it, and goes back to its icon", async ({ page }) => {
+  await page.goto("/panel/skills/base%3Arelease-notes");
+  await page.evaluate(() => {
+    (window as unknown as { __copied: string[] }).__copied = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (t: string) => void (window as unknown as { __copied: string[] }).__copied.push(t) },
+    });
+  });
+  const button = page.getByRole("button", { name: "Copy SKILL.md" });
+  await button.click();
+  const done = page.getByRole("button", { name: "Copied" });
+  await expect(done).toBeVisible();
+  await expect(done).toContainText("Copied");
+  await expect(done).toBeFocused();
+  await expect(page.getByRole("status").filter({ hasText: "Copied" })).toHaveAttribute("aria-live", "polite");
+  const copied = await page.evaluate(() => (window as unknown as { __copied: string[] }).__copied);
+  expect(copied).toHaveLength(1);
+  expect(copied[0]).toContain("name: release-notes");
+  // About two seconds later it is the icon again.
+  await expect(page.getByRole("button", { name: "Copy SKILL.md" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy SKILL.md" })).not.toContainText("Copied");
+});
+
+test("a refused clipboard shows Copy failed", async ({ page }) => {
+  await page.goto("/panel/skills/base%3Arelease-notes");
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async () => { throw new DOMException("denied", "NotAllowedError"); } },
+    });
+  });
+  await page.getByRole("button", { name: "Copy SKILL.md" }).click();
+  const failed = page.getByRole("button", { name: "Copy failed" });
+  await expect(failed).toBeVisible();
+  await expect(failed).toContainText("Copy failed");
+  await expect(page.getByRole("status").filter({ hasText: "Copy failed" })).toBeAttached();
+});
+
 test("an empty deployment shows empty states", async ({ page }) => {
   await page.goto("/panel/agents?stubEmpty=1");
   await expect(page.getByText("No agents yet")).toBeVisible();
