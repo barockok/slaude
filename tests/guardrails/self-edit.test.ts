@@ -12,6 +12,9 @@ import { guardrailFilesHook } from "../../src/guardrails/hooks";
 import { __clearGuardrailsForTests } from "../../src/db/guardrails";
 import { __resetGuardrailSnapshotsForTests, currentGuardrails } from "../../src/guardrails/snapshot";
 import { paths } from "../../src/config/home";
+import { ensureGuardrailKeyForPg } from "./helpers";
+
+ensureGuardrailKeyForPg();
 
 const sig = { signal: new AbortController().signal };
 

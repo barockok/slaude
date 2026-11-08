@@ -16,6 +16,9 @@ import { __clearGuardrailsForTests, applyGuardrailChange } from "../../../src/db
 import { __resetGuardrailSnapshotsForTests, refreshGuardrails } from "../../../src/guardrails/snapshot";
 import { flushAudits } from "../../../src/audit/emit";
 import { makeReplyQuiet } from "../../../src/gateway/core/owner-guardrails";
+import { ensureGuardrailKeyForPg } from "../../guardrails/helpers";
+
+ensureGuardrailKeyForPg();
 
 const SECRET = "hunter2-do-not-store";
 const GUARD = [

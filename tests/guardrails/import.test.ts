@@ -10,6 +10,9 @@ import { main } from "../../src/cli/guardrails";
 import { flushAudits } from "../../src/audit/emit";
 import { db } from "../../src/db/client";
 import { MAX_GUARDRAIL_BYTES } from "../../src/guardrails/format";
+import { ensureGuardrailKeyForPg } from "./helpers";
+
+ensureGuardrailKeyForPg();
 
 const gmd = (slug: string, body = "Prose.") => `---\nname: ${slug}\ndescription: d\n---\n${body}\n`;
 function folder(files: Record<string, string>): string {
@@ -71,6 +74,23 @@ describe("slaude guardrails import", () => {
     expect(() => checkSlug("settings")).toThrow(/reserved/);
     expect(() => readGuardrailDir(folder({ big: "x".repeat(MAX_GUARDRAIL_BYTES + 1) }))).toThrow(/bytes; at most/);
     expect((await readGuardrails()).rows).toEqual([]);
+  });
+
+  test("--repair re-signs a set that failed its check, audited; a plain import refuses it", async () => {
+    const d = folder({ alpha: gmd("alpha") });
+    await importGuardrails(d, { by: "cli:tester" });
+    await db.run(`UPDATE guardrails SET md = ?`, [gmd("alpha", "tampered")]);
+    expect(await main(["import", d])).toBe(1);
+    expect(await main(["import", d, "--repair"])).toBe(0);
+    const r = await readGuardrails();
+    expect(r.rows[0]!.md).toBe(gmd("alpha"));
+    await db.run(`UPDATE guardrails SET md = ?`, [gmd("alpha", "tampered again")]);
+    const rep = await importGuardrails(folder({ beta: gmd("beta") }), { by: "cli:owner", repair: true });
+    expect(rep.resigned).toEqual(["alpha"]);
+    expect(formatImportReport(rep)).toContain("re-signed as stored");
+    await flushAudits();
+    const rows = await db.query<{ actor_id: string }>(`SELECT actor_id FROM audit_events WHERE action = 'guardrail.repaired'`);
+    expect(rows.map((x) => x.actor_id)).toContain("cli:owner");
   });
 
   test("the CLI entry: usage, node refusal, success and failure codes", async () => {

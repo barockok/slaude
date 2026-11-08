@@ -20,6 +20,9 @@ import { bundleFetchFailure, NodeApiError } from "../../src/node/client";
 import { makeBundleGuardrailResolver, makeNodeGuardrailSink, NODE_CAPS } from "../../src/node/worker";
 import { recordNodeGuardrailEvent } from "../../src/gateway/core/owner-guardrails";
 import { BootFailure } from "../../src/gateway/core/failure-codes";
+import { ensureGuardrailKeyForPg } from "../guardrails/helpers";
+
+ensureGuardrailKeyForPg();
 
 const PROSE = "---\nname: house\ndescription: d\n---\nSign as the team.";
 const RULES = "---\nname: no-shell\ndescription: d\n---\n```rules\n- id: r\n  on: tool\n  match: { tool: Bash }\n  action: deny\n  message: no shell\n```";

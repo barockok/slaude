@@ -13,6 +13,9 @@ import { __clearGuardrailsForTests, __setOverrideForTests, applyGuardrailChange,
 import { __resetGuardrailSnapshotsForTests } from "../../src/guardrails/snapshot";
 import { flushAudits } from "../../src/audit/emit";
 import type { AgentGuardrailsResponse, OwnerGuardrailDetail, OwnerGuardrailsResponse } from "../../src/gateway/panel/api-types";
+import { ensureGuardrailKeyForPg } from "../guardrails/helpers";
+
+ensureGuardrailKeyForPg();
 
 const SECRET = "t".repeat(32);
 const operator = `${AT_COOKIE}=${mintSession({ sub: "s", email: "alice@example.com" }, "at", { secret: SECRET })}`;

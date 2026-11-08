@@ -3,14 +3,19 @@ import { db } from "../../src/db/client";
 import {
   __clearGuardrailsForTests, __setOverrideForTests, applyGuardrailChange, manifestVersion, readGuardrails, sha256, UnknownGuardrailError,
 } from "../../src/db/guardrails";
-import { GuardrailIntegrityError, verifySet, guardrailKey, __resetGuardrailKeyForTests, HMAC_KEY_FILE } from "../../src/guardrails/integrity";
+import { GuardrailIntegrityError, GuardrailKeyError, verifySet, guardrailKey, peekKeySource, __resetGuardrailKeyForTests, HMAC_KEY_FILE, GUARDRAILS_DIR } from "../../src/guardrails/integrity";
+import { HIGH_WATER_FILE, highWater, raiseHighWater, setHighWaterRedis, __resetHighWaterForTests } from "../../src/guardrails/high-water";
 import {
   __resetGuardrailSnapshotsForTests, cachedGuardrails, currentGuardrails, docsFromStored, guardrailsFailure, GuardrailsUnavailableError,
   loadTenantSnapshot, onGuardrailsChanged, refreshGuardrails,
 } from "../../src/guardrails/snapshot";
 import { flushAudits } from "../../src/audit/emit";
-import { existsSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { paths } from "../../src/config/home";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
+import { ensureGuardrailKeyForPg } from "./helpers";
+
+ensureGuardrailKeyForPg();
 
 const gmd = (slug: string, extra = "", body = "Be kind.") => `---\nname: ${slug}\ndescription: d\n${extra}---\n${body}\n`;
 const pgOnly = db.dialect === "pg";
@@ -164,13 +169,21 @@ describe("the snapshot", () => {
     expect(cachedGuardrails()).toBeNull();
   });
 
-  test("the key comes from the master key, else a 0600 key file", () => {
+  test("the key comes from the master key, else a 0600 key file (sqlite only; Postgres refuses without the master key)", () => {
     const saved = process.env.SLAUDE_MASTER_KEY;
     try {
       delete process.env.SLAUDE_MASTER_KEY;
       __resetGuardrailKeyForTests();
       __resetMasterKeyCache();
+      if (pgOnly) {
+        expect(() => guardrailKey()).toThrow(GuardrailKeyError);
+        expect(() => guardrailKey()).toThrow(/need SLAUDE_MASTER_KEY/);
+        return;
+      }
+      rmSync(HMAC_KEY_FILE, { force: true });
+      expect(peekKeySource()).toBeNull();
       const k = guardrailKey();
+      expect(peekKeySource()).toBe("key-file");
       expect(k.source).toBe("key-file");
       expect(existsSync(HMAC_KEY_FILE)).toBe(true);
       expect(statSync(HMAC_KEY_FILE).mode & 0o777).toBe(0o600);
@@ -183,6 +196,136 @@ describe("the snapshot", () => {
     } finally {
       if (saved !== undefined) process.env.SLAUDE_MASTER_KEY = saved;
       else delete process.env.SLAUDE_MASTER_KEY;
+      __resetMasterKeyCache();
+      __resetGuardrailKeyForTests();
+    }
+  });
+});
+
+describe("writes never launder tampering; the owner's repair", () => {
+  test("a write over a set that does not verify is refused; a repair re-signs it above every version seen", async () => {
+    await applyGuardrailChange("default", { upsert: [{ slug: "a", md: gmd("a"), source: "file" }, { slug: "b", md: gmd("b"), source: "git" }], by: "cli" });
+    await db.run(`UPDATE guardrails SET md = ? WHERE slug = 'b'${tenantSql}`, [gmd("b", "", "Tampered.")]);
+    await expect(applyGuardrailChange("default", { upsert: [{ slug: "c", md: gmd("c"), source: "file" }], by: "cli" })).rejects.toThrow(/'b' signature does not verify/);
+    await expect(applyGuardrailChange("default", { setEnabled: [{ slug: "a", enabled: false }], by: "op" })).rejects.toBeInstanceOf(GuardrailIntegrityError);
+    expect((await readGuardrails()).rows.map((r) => r.slug)).toEqual(["a", "b"]);
+    const r = await applyGuardrailChange("default", { upsert: [{ slug: "a", md: gmd("a", "", "Fresh."), source: "file" }], by: "cli", repair: true });
+    expect(r.updated).toEqual(["a"]);
+    expect(r.resigned).toEqual(["b"]);
+    expect(r.version).toBe(2);
+    const snap = await loadTenantSnapshot("default");
+    expect(snap.resolved.find((g) => g.slug === "b")!.prose).toBe("Tampered.");
+    expect(await highWater("default")).toBe(2);
+  });
+
+  test("a repair after a rollback lands above the high-water mark, overrides included", async () => {
+    await applyGuardrailChange("default", { upsert: [{ slug: "a", md: gmd("a"), source: "file" }], by: "cli" });
+    await __setOverrideForTests("default", { slug: "a", md: gmd("a", "", "Mine."), baseSha: "x", author: "op" });
+    await raiseHighWater("default", 9);
+    await expect(loadTenantSnapshot("default")).rejects.toThrow(/older than version 9/);
+    const r = await applyGuardrailChange("default", { by: "cli", repair: true });
+    expect(r.version).toBe(10);
+    expect(r.resigned).toEqual(["a", "a (override)"]);
+    expect((await loadTenantSnapshot("default")).version).toBe(10);
+  });
+});
+
+describe("the high-water mark: deleted and rolled-back sets fail closed", () => {
+  test("deleting the whole set after one existed fails closed, in this process and after a cold start (the file)", async () => {
+    await applyGuardrailChange("default", { upsert: [{ slug: "a", md: gmd("a"), source: "file" }], by: "cli" });
+    expect((await loadTenantSnapshot("default")).version).toBe(1);
+    for (const t of ["guardrails", "guardrails_manifest"]) await db.run(`DELETE FROM ${t}`);
+    await expect(loadTenantSnapshot("default")).rejects.toThrow(/gone, but version 1 was seen before/);
+    // A version-0 placeholder is the same as no manifest.
+    await expect(currentGuardrails("default")).rejects.toBeInstanceOf(GuardrailsUnavailableError);
+    // Cold start: memory forgotten, the file beside the key remembers.
+    const file = await Bun.file(HIGH_WATER_FILE).text();
+    await __resetHighWaterForTests();
+    writeFileSync(HIGH_WATER_FILE, file);
+    await expect(loadTenantSnapshot("default")).rejects.toThrow(/deleted/);
+  });
+
+  test("replaying an older signed set (rows and manifest together) is refused", async () => {
+    await applyGuardrailChange("default", { upsert: [{ slug: "a", md: gmd("a", "", "v1"), source: "file" }], by: "cli" });
+    const old = await readGuardrails();
+    await applyGuardrailChange("default", { upsert: [{ slug: "a", md: gmd("a", "", "v2 stricter"), source: "file" }], by: "cli" });
+    const r = old.rows[0]!;
+    await db.run(`UPDATE guardrails SET md = ?, sha = ?, version = ?, hmac = ? WHERE slug = 'a'${tenantSql}`, [r.md, r.sha, r.version, r.hmac]);
+    await db.run(`UPDATE guardrails_manifest SET version = ?, entries = ?, hmac = ?`, [old.manifest!.version, old.manifest!.entries, old.manifest!.hmac]);
+    // The older set verifies on its own; only the mark refuses it.
+    expect(verifySet("default", await readGuardrails())).toBe(1);
+    await expect(loadTenantSnapshot("default")).rejects.toThrow(/version 1, older than version 2/);
+    await expect(applyGuardrailChange("default", { upsert: [{ slug: "b", md: gmd("b"), source: "file" }], by: "cli" })).rejects.toThrow(/rolled back/);
+  });
+
+  test("Redis keeps the mark for every replica and restart; it only ever rises", async () => {
+    const store = new Map<string, string>();
+    const fake = {
+      get: async (k: string) => store.get(k) ?? null,
+      del: async (k: string) => void store.delete(k),
+      eval: async (_s: string, _n: number, k: string, v: string) => {
+        if (Number(store.get(k) ?? "0") < Number(v)) store.set(k, v);
+        return 1;
+      },
+    };
+    setHighWaterRedis(fake as never, "test");
+    try {
+      await raiseHighWater("default", 5);
+      await raiseHighWater("default", 3);
+      expect(store.get("test:guardrails:high-water:default")).toBe("5");
+      await __resetHighWaterForTests();
+      store.set("test:guardrails:high-water:default", "7");
+      expect(await highWater("default")).toBe(7);
+      const broken = { get: async () => { throw new Error("down"); }, eval: async () => { throw new Error("down"); }, del: async () => {} };
+      setHighWaterRedis(broken as never);
+      await raiseHighWater("default", 8);
+      expect(await highWater("default")).toBe(8);
+    } finally {
+      setHighWaterRedis(null);
+      await __resetHighWaterForTests();
+    }
+  });
+});
+
+describe.skipIf(pgOnly || process.getuid?.() === 0)("a deployment with no guardrails", () => {
+  test("never reads or creates the key, and works on a read-only home", async () => {
+    const saved = process.env.SLAUDE_MASTER_KEY;
+    delete process.env.SLAUDE_MASTER_KEY;
+    __resetMasterKeyCache();
+    __resetGuardrailKeyForTests();
+    rmSync(GUARDRAILS_DIR, { recursive: true, force: true });
+    chmodSync(paths.home, 0o555);
+    try {
+      const snap = await currentGuardrails("default");
+      expect(snap).toMatchObject({ version: 0, resolved: [], keySource: null });
+      const { threatModel } = await import("../../src/gateway/panel/guardrails-api");
+      expect(threatModel("this-process").keySource).toBeNull();
+      const { bundleGuardrailsFor } = await import("../../src/guardrails/node");
+      expect(await bundleGuardrailsFor("default", "default")).toBeNull();
+      expect(existsSync(HMAC_KEY_FILE)).toBe(false);
+      expect(existsSync(GUARDRAILS_DIR)).toBe(false);
+    } finally {
+      chmodSync(paths.home, 0o755);
+      if (saved !== undefined) process.env.SLAUDE_MASTER_KEY = saved;
+      __resetMasterKeyCache();
+      __resetGuardrailKeyForTests();
+    }
+  });
+
+  test("an empty key file is retried, then refused rather than used", () => {
+    const saved = process.env.SLAUDE_MASTER_KEY;
+    delete process.env.SLAUDE_MASTER_KEY;
+    __resetMasterKeyCache();
+    __resetGuardrailKeyForTests();
+    mkdirSync(GUARDRAILS_DIR, { recursive: true });
+    writeFileSync(HMAC_KEY_FILE, "");
+    try {
+      expect(() => guardrailKey()).toThrow(GuardrailKeyError);
+      writeFileSync(HMAC_KEY_FILE, "c2hvcnQ=\n");
+      expect(() => guardrailKey()).toThrow(/32-byte key/);
+    } finally {
+      rmSync(HMAC_KEY_FILE, { force: true });
+      if (saved !== undefined) process.env.SLAUDE_MASTER_KEY = saved;
       __resetMasterKeyCache();
       __resetGuardrailKeyForTests();
     }
