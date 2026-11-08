@@ -7,9 +7,12 @@ import { absoluteTime, shortDate } from "../../shared/time";
 import { api, useApi } from "../client";
 import { linkedViaLabel } from "../lib/labels";
 import { NamedId } from "../../shared/NamedId";
-import { capitalize, sendCommandGuidance } from "../../shared/surfaces";
+import { capitalize, sendCommandGuidance, surfaceInfo } from "../../shared/surfaces";
 
-const idKey = (s: PortalSlackIdentityView) => `${s.teamId}:${s.slackUserId}`;
+const idKey = (s: PortalSlackIdentityView) => `${s.surface}:${s.teamId}:${s.slackUserId}`;
+
+/** "Jane Doe in Example Workspace (Slack)": a linked identity in one line, names first. */
+const identityLine = (s: PortalSlackIdentityView) => `${s.userName ?? s.slackUserId} in ${s.teamName ?? s.teamId} (${surfaceInfo(s.surface).label})`;
 
 function hostOf(issuer: string): string {
   try {
@@ -21,25 +24,26 @@ function hostOf(issuer: string): string {
 
 function columns(onUnlink: (s: PortalSlackIdentityView) => void): Column<PortalSlackIdentityView>[] {
   return [
+    { key: "surface", header: "Surface", width: "10%", skeleton: 0.5, render: (s) => <span className="sl-nowrap">{surfaceInfo(s.surface).label}</span> },
     {
       key: "team",
       header: "Workspace",
       skeleton: 0.6,
       render: (s) => (
         <span className="sl-subject">
-          <span className="sl-subject__icon" title="Slack workspace">
+          <span className="sl-subject__icon" title={`${surfaceInfo(s.surface).label} workspace`}>
             <IconBuilding size={14} />
           </span>
           <NamedId name={s.teamName} id={s.teamId} />
         </span>
       ),
     },
-    { key: "user", header: "Slack user", width: "22%", skeleton: 0.6, render: (s) => <NamedId name={s.userName} id={s.slackUserId} /> },
-    { key: "via", header: "Linked via", width: "20%", skeleton: 0.6, render: (s) => <span className="sl-nowrap">{linkedViaLabel(s.linkedVia)}</span> },
+    { key: "user", header: "User", width: "20%", skeleton: 0.6, render: (s) => <NamedId name={s.userName} id={s.slackUserId} /> },
+    { key: "via", header: "Linked via", width: "16%", skeleton: 0.6, render: (s) => <span className="sl-nowrap">{linkedViaLabel(s.linkedVia)}</span> },
     {
       key: "at",
       header: "Linked",
-      width: "16%",
+      width: "12%",
       skeleton: 0.5,
       render: (s) => (
         <time className="sl-nowrap" dateTime={new Date(s.linkedAt).toISOString()} title={absoluteTime(s.linkedAt)}>
@@ -54,7 +58,7 @@ function columns(onUnlink: (s: PortalSlackIdentityView) => void): Column<PortalS
       align: "end",
       skeleton: 0.6,
       render: (s) => (
-        <Button size="sm" variant="ghost" onClick={() => onUnlink(s)} aria-label={`Unlink ${s.slackUserId} in ${s.teamId}`}>
+        <Button size="sm" variant="ghost" onClick={() => onUnlink(s)} aria-label={`Unlink ${identityLine(s)}`}>
           Unlink
         </Button>
       ),
@@ -95,11 +99,11 @@ export function AccountPage() {
 
   const unlink = async () => {
     if (!unlinking) return;
-    const who = `${unlinking.slackUserId} in ${unlinking.teamId}`;
+    const who = identityLine(unlinking);
     setBusy(true);
     try {
       await api.del("/api/link", { teamId: unlinking.teamId, slackUserId: unlinking.slackUserId } satisfies UnlinkRequest);
-      toast({ tone: "success", title: "Slack identity unlinked", description: `${who} is no longer linked to your account.` });
+      toast({ tone: "success", title: "Chat identity unlinked", description: `${who} is no longer linked to your account.` });
       setUnlinking(null);
       reload();
     } catch (e) {
@@ -117,7 +121,7 @@ export function AccountPage() {
 
   return (
     <>
-      <PageHeader title="My account" description="Your sign-in and the Slack identities linked to it." />
+      <PageHeader title="My account" description="Your sign-in and the chat identities linked to it." />
       {error && !me ? (
         <Card>
           <ErrorState what="Your account" error={error} onRetry={reload} />
@@ -129,15 +133,15 @@ export function AccountPage() {
           <section className="sl-section">
             <div className="sl-section__head">
               <div>
-                <h2 className="sl-section__title">Linked Slack identities</h2>
+                <h2 className="sl-section__title">Linked chat identities</h2>
                 <p className="sl-caption">
-                  When you message an agent as one of these Slack users, it can use the integrations you connect here.
+                  When you message an agent as one of these users, it can use the integrations you connect here.
                 </p>
               </div>
             </div>
             <Table
               className="pt-stack"
-              label="Linked Slack identities"
+              label="Linked chat identities"
               columns={columns(setUnlinking)}
               rows={me?.slackIdentities ?? []}
               rowKey={idKey}
@@ -145,7 +149,7 @@ export function AccountPage() {
               skeletonRows={2}
               empty={
                 <EmptyState
-                  title="No Slack identity linked yet"
+                  title="No chat identity linked yet"
                   description={
                     <>
                       {capitalize(sendCommandGuidance("/link"))}, in a conversation with any agent. It replies with a private link; open it while
@@ -163,10 +167,10 @@ export function AccountPage() {
         open={unlinking !== null}
         onClose={() => (busy ? undefined : setUnlinking(null))}
         size="sm"
-        title="Unlink this Slack identity?"
+        title="Unlink this chat identity?"
         description={
           unlinking
-            ? `Slack user ${unlinking.userName ?? unlinking.slackUserId} in ${unlinking.teamName ?? unlinking.teamId} stops resolving to your account. Agents working for that user no longer use your integrations. To link it again, ${sendCommandGuidance("/link")}.`
+            ? `${identityLine(unlinking)} stops resolving to your account. Agents working for that user no longer use your integrations. To link it again, ${sendCommandGuidance("/link")}.`
             : undefined
         }
         footer={

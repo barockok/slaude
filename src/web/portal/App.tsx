@@ -1,6 +1,6 @@
 /**
  * The personal portal, served at /portal, for every person on the deployment:
- * their sign-in and linked Slack identities, the integrations they connect for
+ * their sign-in and linked chat identities, the integrations they connect for
  * agents to use on their behalf, and the agents they can work with.
  */
 import type { PortalMeResponse } from "../../gateway/portal/api-types";
@@ -15,7 +15,7 @@ import { MyAgentsPage } from "./pages/MyAgentsPage";
 export { api };
 
 export const NAV: NavEntry[] = [
-  { label: "My account", to: "/", description: "Your sign-in and the Slack identities linked to it.", keywords: "slack identity link unlink" },
+  { label: "My account", to: "/", description: "Your sign-in and the chat identities linked to it.", keywords: "chat slack identity link unlink" },
   { label: "Integrations", to: "/integrations", description: "Connect the tools your agents use on your behalf.", keywords: "connect oauth disconnect" },
   { label: "My agents", to: "/agents", description: "Agents you can work with, and your role on each.", keywords: "grants roles" },
 ];
@@ -23,7 +23,7 @@ export const NAV: NavEntry[] = [
 async function loadIdentity(): Promise<Identity> {
   const me = await api.get<PortalMeResponse>("/api/me");
   const n = me.slackIdentities.length;
-  return { name: me.email, detail: n === 0 ? "No Slack identity linked" : n === 1 ? "1 Slack identity linked" : `${n} Slack identities linked` };
+  return { name: me.email, detail: n === 0 ? "No chat identity linked" : n === 1 ? "1 chat identity linked" : `${n} chat identities linked` };
 }
 
 function page(path: string) {

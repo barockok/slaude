@@ -6,13 +6,23 @@
 
 export type AgentRole = "manager" | "approver" | "member";
 
-/** One agent the signed-in person holds a user-level role on, per linked Slack identity. */
+/**
+ * The chat surface an identity lives on (`slack` today; WhatsApp, Discord and
+ * Telegram come later). The web app labels it from its surface registry.
+ * The id fields below keep their Slack-era names (`teamId`, `slackUserId`):
+ * they are the surface's workspace and user ids.
+ */
+export type PortalSurfaceId = string;
+
+/** One agent the signed-in person holds a user-level role on, per linked chat identity. */
 export interface MyAgentView {
   /** Persona name; `default` is the deployment's default agent. */
   persona: string;
+  /** Where the identity holding the role lives. */
+  surface: PortalSurfaceId;
   teamId: string;
   slackUserId: string;
-  /** The workspace's and the Slack user's names, when the gateway could resolve them. */
+  /** The workspace's and the user's names, when the gateway could resolve them. */
   teamName?: string;
   userName?: string;
   role: AgentRole;
@@ -23,15 +33,17 @@ export interface MyAgentsResponse {
   agents: MyAgentView[];
 }
 
-/** One Slack identity bound to the signed-in account. */
+/** One chat identity (a user in a workspace on a surface) bound to the signed-in account. */
 export interface PortalSlackIdentityView {
+  /** Where the identity lives. */
+  surface: PortalSurfaceId;
   teamId: string;
   slackUserId: string;
   /** Epoch ms. */
   linkedAt: number;
   /** How the binding was made, e.g. `signed-link` (the link `/link` sends). */
   linkedVia: string;
-  /** The workspace's and the Slack user's names, when the gateway could resolve them. */
+  /** The workspace's and the user's names, when the gateway could resolve them. */
   teamName?: string;
   userName?: string;
 }
@@ -42,10 +54,11 @@ export interface PortalMeResponse {
   accountId: string;
   /** The sign-in provider's issuer URL: the account is keyed on (issuer, subject). */
   issuer: string;
+  /** Every linked chat identity (the name predates other surfaces). */
   slackIdentities: PortalSlackIdentityView[];
 }
 
-/** DELETE /portal/api/link body: unlink one of your own Slack identities. */
+/** DELETE /portal/api/link body: unlink one of your own chat identities. */
 export interface UnlinkRequest {
   teamId: string;
   slackUserId: string;

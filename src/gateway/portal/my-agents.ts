@@ -33,7 +33,8 @@ export async function myAgents(identities: ReadonlyArray<{ teamId: string; slack
       const userGrants = grants.get(persona);
       if (!userGrants) continue;
       const role = roleFromGrants(userGrants, id.slackUserId);
-      if (role) out.push({ persona, teamId: id.teamId, slackUserId: id.slackUserId, role });
+      // Grants name Slack users: the identity holding the role is a Slack one.
+      if (role) out.push({ persona, surface: "slack", teamId: id.teamId, slackUserId: id.slackUserId, role });
     }
   }
   return out;

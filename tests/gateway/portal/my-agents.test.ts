@@ -76,10 +76,10 @@ describe("GET /portal/api/my-agents", () => {
     const r = await get(signedIn("sub-1", "alice@example.com"));
     expect(r.status).toBe(200);
     expect(r.body.agents).toEqual([
-      { persona: "default", teamId: "TTEAM", slackUserId: "UALICE", role: "manager" },
-      { persona: "scout", teamId: "TTEAM", slackUserId: "UALICE", role: "approver" },
+      { persona: "default", surface: "slack", teamId: "TTEAM", slackUserId: "UALICE", role: "manager" },
+      { persona: "scout", surface: "slack", teamId: "TTEAM", slackUserId: "UALICE", role: "approver" },
       // UALICEWORK reaches `default` only through the workspace grant: not listed.
-      { persona: "ledger", teamId: "TWORK", slackUserId: "UALICEWORK", role: "member" },
+      { persona: "ledger", surface: "slack", teamId: "TWORK", slackUserId: "UALICEWORK", role: "member" },
     ]);
   });
 
