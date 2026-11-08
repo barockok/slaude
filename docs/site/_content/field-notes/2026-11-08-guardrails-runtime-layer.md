@@ -6,7 +6,7 @@ date: 2026-11-08
 # Guardrails as the runtime layer: a registry the wired hooks must agree with
 
 **Date:** 2026-11-08
-**Status:** Phase 1 shipped in `v0.46.0-rc.7` (branch `feat/guardrails-runtime-layer`).
+**Status:** Phase 1 shipped in `v0.46.0-rc.7` (branch `feat/guardrails-runtime-layer`). The two node behaviour gaps it found are fixed in `v0.46.0-rc.8`.
 Phase 2 (moving the soul and access settings to the agent's tabs) is planned for rc.8.
 
 ## Problem
@@ -85,7 +85,8 @@ permission resolver but no Stop guard. In the gateway role, turns run on nodes,
 so the must-reply hook there is a no-op: a node turn that ends without a reply
 or a pass is not sent back. The page reports it as *Not wired* in that role. A
 test pins the node facts to what the worker installs, so the page changes when
-the worker does. Fixing the gap is outside this change.
+the worker does. Fixing the gap was outside this change; v0.46.0-rc.8 installs
+the guard on nodes (see below), and the row now reads *Enforcing* there.
 
 Two designs are rows with state *Not built* and a link to their field note: the
 KB-first Stop guard (today prose in the baseline only) and policy guardrails
@@ -114,28 +115,41 @@ lists are set, never the hosts. Redaction pattern values stay superadmin-only;
 operators see a count, and a test checks an operator response holds no pattern
 string.
 
-## Behaviour gaps found (follow-ups, not fixed here)
+## Behaviour gaps found (fixed in v0.46.0-rc.8)
 
-This change only describes; it does not change what runs. Two gaps in what
-runs came out of the survey:
+This change only described; it did not change what runs. Two gaps in what
+runs came out of the survey. Both are fixed in v0.46.0-rc.8:
 
-1. **Node workers install no Stop guard.** `src/node/worker.ts` sets a
-   permission resolver but never calls `setStopGuard`, so on a node the Stop
-   hook returns `continue: true` for every stop. A node turn that ends with no
-   reply and no `pass` is not sent back. The page shows the must-reply row as
-   *Not wired* in the gateway role.
-2. **A wake on a node can run tools the node's local policy auto-allows.** In
-   mono the gateway wraps the permission resolver and denies every `canUseTool`
-   call during a wake before any policy runs. A node's resolver
-   (`makeNodePermissionResolver`, `src/node/shims/permission.ts`) runs
+1. **Node workers installed no Stop guard.** `src/node/worker.ts` set a
+   permission resolver but never called `setStopGuard`, so on a node the Stop
+   hook returned `continue: true` for every stop. A node turn that ended with
+   no reply and no `pass` was not sent back, and the page showed the
+   must-reply row as *Not wired* in the gateway role.
+   **Fix:** the worker installs `makeNodeStopGuard` (`src/node/stop-guard.ts`).
+   It tracks spoke and passed per session from the node manager's own
+   `toolCall` events, resets them when a job's turn starts, and returns the
+   same instruction as mono. The tool-name rule and the instruction live in
+   `src/agent/must-reply.ts`, used by both the gateway and the node, so they
+   cannot drift. It forces only the turns mono forces: mono guards a route
+   that is not silent, and every cron-origin route is silent (a cron run, and
+   every `dispatchThreadTurn`: promise checks, heartbeat turns, wakes). The
+   node reads the same facts from the job: only a turn whose signed `origin`
+   is `slack` or `panel`, with no `bgRun` or `wake` in the claims or the job,
+   is guarded. Voice turns are skipped, as in mono.
+2. **A wake on a node could run tools the node's local policy auto-allows.**
+   In mono the gateway wraps the permission resolver and denies every
+   `canUseTool` call during a wake before any policy runs. A node's resolver
+   (`makeNodePermissionResolver`, `src/node/shims/permission.ts`) ran
    `permissionPolicy` locally first, with the node's own
-   `SLAUDE_AUTO_ALLOW_TOOLS`; a tool it allows (a built-in such as `Bash`, if
-   listed there) never reaches the gateway's `can_use_tool` route, where the
+   `SLAUDE_AUTO_ALLOW_TOOLS`; a tool it allowed (a built-in such as `Bash`, if
+   listed there) never reached the gateway's `can_use_tool` route, where the
    wake refusal lives. The tool plane's `wakeAllows` check covers only slaude's
-   own contract tools, so it does not catch a built-in either. The wake still
-   hides the refused slaude tools through `disallowedTools`. The page keeps the
-   wake refusal row *Enforcing*, because every call that reaches the gateway is
-   refused, and puts this caveat first in its details in the gateway role.
+   own contract tools, so it did not catch a built-in either.
+   **Fix:** the node resolver denies with `wakeRefusal(toolName)` before
+   `permissionPolicy` when the session's current turn is a wake. The signed
+   `wake` claim of the session's bound job token decides (the job's `wake`
+   field only when the token cannot be read). Each job binds its own token, so
+   the next normal turn on the same session keeps the node's auto-allow list.
 
 ## Other known gaps
 
