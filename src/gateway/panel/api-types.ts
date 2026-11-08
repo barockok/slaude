@@ -775,6 +775,8 @@ export interface OwnerGuardrailsResponse {
   proseMax: number;
   /** Whether the viewer may switch guardrails on and off. */
   canToggle: boolean;
+  /** Whether the viewer may create, edit, override and delete guardrails (superadmin). */
+  canEdit: boolean;
 }
 
 export interface OwnerGuardrailFiring {
@@ -800,6 +802,140 @@ export interface OwnerGuardrailDetail extends OwnerGuardrailSummary {
   firings: OwnerGuardrailFiring[];
   threatModel: GuardrailThreatModel;
   canToggle: boolean;
+  /** Whether the viewer may edit, override, clear or delete it (superadmin). */
+  canEdit: boolean;
+  /**
+   * The guardrail's revision: send it back with a write. A write against an
+   * older revision is a 409 (someone else changed it first).
+   */
+  revision: number;
+  /** Only console-created guardrails can be deleted; file and git ones can be switched off. */
+  deletable: boolean;
+  /** With a console override: the source text it replaces (the current synced or imported one), who wrote the override, when. */
+  overrideOf: { sourceMd: string; author: string; updatedAt: number } | null;
+}
+
+/** Why a guardrail write was refused (the body of a 4xx). */
+export interface GuardrailWriteError {
+  error: string;
+  /**
+   *   invalid        an enforced rule (or the file) fails to parse (422)
+   *   stale          someone changed it after it was loaded (409): reload
+   *   exists         create: the name is taken (409)
+   *   not-deletable  delete: a file or git guardrail (422): switch it off instead
+   *   no-override    clear: it has no console override (404)
+   *   integrity      the stored set does not verify (423): repair first
+   */
+  code?: "invalid" | "stale" | "exists" | "not-deletable" | "no-override" | "integrity";
+  /** invalid: the problems that refuse the write. */
+  blocking?: string[];
+  /** invalid: every problem found. */
+  errors?: string[];
+  /** stale: the revision it has now (null: it was deleted). */
+  revision?: number | null;
+  /** integrity: how to repair the set. */
+  hint?: string;
+}
+
+/** POST /panel/api/guardrails (create, superadmin): `{ slug, md }`. */
+export interface CreateGuardrailRequest {
+  slug: string;
+  md: string;
+}
+
+/** PUT /panel/api/guardrails/:slug (superadmin): `{ md, revision }`. A console guardrail's own text changes; a file or git guardrail gets a console override. */
+export interface EditGuardrailRequest {
+  md: string;
+  revision: number;
+}
+
+/** The answer to a create, edit, clear or delete. */
+export interface GuardrailWriteResponse {
+  ok: true;
+  slug: string;
+  /** What the write did. */
+  change: "created" | "updated" | "override.set" | "override.cleared" | "deleted" | "unchanged";
+  /** The guardrail's new revision (null once deleted). */
+  revision: number | null;
+  /** The stored set's version after the write. */
+  version: number;
+}
+
+/** POST /panel/api/guardrails/validate: `{ slug, md }`, the editor's live check (no write). */
+export interface GuardrailValidateRequest {
+  slug: string;
+  md: string;
+}
+
+/** The server parser's verdict on a draft GUARDRAIL.md. */
+export interface GuardrailValidation {
+  slug: string;
+  /** Nothing refuses a save (other problems are shown, and the valid rules still apply). */
+  ok: boolean;
+  errors: string[];
+  blocking: string[];
+  name: string | null;
+  description: string;
+  scope: "shared" | "agents" | null;
+  load: "always" | "on-match" | null;
+  rules: OwnerGuardrailRule[];
+  /** `agents:` names that no agent of this deployment has. */
+  unknownAgents: string[];
+  /** Agents it would apply to. */
+  appliesTo: string[];
+  /** Always-loaded prose: this draft's size, the cap, and per agent what the cap would leave out with this draft saved. */
+  prose: {
+    chars: number;
+    max: number;
+    overCap: Array<{ agent: string; chars: number; skipped: Array<{ slug: string; name: string; chars: number }> }>;
+  };
+}
+
+/** POST /panel/api/guardrails/test: one event through an agent's effective guardrails, nothing recorded but a guardrail.tested row without text. */
+export interface GuardrailTestRequest {
+  agent: string;
+  channel?: string | null;
+  kind: "tool" | "reply" | "inbound";
+  /** kind tool. */
+  tool?: string;
+  /** kind tool: the tool input as JSON text (an object). */
+  input?: string;
+  /** kind reply or inbound. */
+  text?: string;
+  /** An unsaved GUARDRAIL.md tried in place of the stored one (or added when new). */
+  draft?: { slug: string; md: string } | null;
+}
+
+export interface GuardrailTestHit {
+  slug: string;
+  ruleId: string;
+  action: OwnerRuleAction;
+  message: string;
+  oversize: boolean;
+  deciding: boolean;
+  draft: boolean;
+}
+
+export interface GuardrailTestResponse {
+  agent: string;
+  channel: string | null;
+  kind: "tool" | "reply" | "inbound";
+  rulesChecked: number;
+  hits: GuardrailTestHit[];
+  decision: { action: OwnerRuleAction; slug: string; ruleId: string; message: string; oversize: boolean } | null;
+  outcome: string;
+  /** A reply as it would be posted (formatted, redactions applied); absent when it would not be posted. */
+  posted?: string;
+  tooLarge: boolean;
+  guidance: {
+    always: Array<{ slug: string; name: string; chars: number }>;
+    skipped: Array<{ slug: string; name: string; chars: number }>;
+    delivered: Array<{ slug: string; name: string; via: "tool" | "inbound" }>;
+    indexed: Array<{ slug: string; name: string }>;
+    proseChars: number;
+    proseMax: number;
+  };
+  draft: { slug: string; errors: string[]; blocking: string[]; replaced: boolean } | null;
 }
 
 /** PUT /panel/api/guardrails/:slug/enabled */

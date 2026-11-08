@@ -64,7 +64,7 @@ describe("panel audit", () => {
   });
 
   it("server and console share one console-wide rule: what the panel records with no agent, the console shows as Console", () => {
-    const panelActions = ["auth.login", "auth.logout", "auth.denied", "console.roles.read", "reload", "control.stop", "chat", "persona.create", "grant.create", "memory.private"];
+    const panelActions = ["auth.login", "auth.logout", "auth.denied", "console.roles.read", "reload", "control.stop", "chat", "persona.create", "grant.create", "memory.private", "guardrail.toggle", "guardrail.edit"];
     for (const a of panelActions) {
       const rec = panelAuditInput({ action: a, operator: "o" });
       // The mapped action is console-wide exactly when the panel action is.

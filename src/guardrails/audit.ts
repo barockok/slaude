@@ -5,7 +5,8 @@
  *   guardrail.reply.denied | held | redacted | audited
  *   guardrail.inbound.denied | guardrail.inbound.audited
  *   guardrail.guidance.delivered       (an on-match body handed to the model)
- *   guardrail.created | updated | deleted
+ *   guardrail.created | updated | deleted | override.set | override.cleared
+ *   guardrail.tested                   (the console Test box; never the text tested)
  *   guardrail.node.unsupported | guardrail.integrity.failed
  *
  * Target: `guardrail <slug>#<rule id>`. Details name the agent, channel, tool
@@ -137,9 +138,9 @@ export function auditDelivery(slugs: string[], ctx: FiringContext & { via: "tool
   }
 }
 
-/** guardrail.created | updated | deleted, one row per slug changed. */
+/** guardrail.created | updated | deleted | override.set | override.cleared, one row per slug changed (never the text). */
 export function auditChange(
-  r: { created: string[]; updated: string[]; removed: string[]; enabledChanges?: Array<{ slug: string; enabled: boolean }> },
+  r: { created: string[]; updated: string[]; removed: string[]; enabledChanges?: Array<{ slug: string; enabled: boolean }>; overrideSet?: string[]; overrideCleared?: string[] },
   ctx: { tenantId?: string; actorKind: "operator" | "system"; actorId: string; via: "cli" | "deploy" | "console"; revision?: string },
 ): void {
   const row = (action: string, slug: string, details: Record<string, unknown> = {}) =>
@@ -151,11 +152,13 @@ export function auditChange(
       action,
       targetKind: "guardrail",
       targetId: slug,
-      summary: `guardrail ${slug} ${action.split(".")[1]} (${ctx.via})`,
+      summary: `guardrail ${slug} ${action.slice("guardrail.".length).replace(".", " ")} (${ctx.via})`,
       details: { via: ctx.via, ...(ctx.revision ? { revision: ctx.revision } : {}), ...details },
     });
   for (const s of r.created) row("guardrail.created", s);
   for (const s of r.updated) row("guardrail.updated", s);
   for (const s of r.removed) row("guardrail.deleted", s);
   for (const t of r.enabledChanges ?? []) row("guardrail.updated", t.slug, { enabled: t.enabled });
+  for (const s of r.overrideSet ?? []) row("guardrail.override.set", s);
+  for (const s of r.overrideCleared ?? []) row("guardrail.override.cleared", s);
 }
