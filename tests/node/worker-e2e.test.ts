@@ -53,6 +53,12 @@ const memoryHits: string[] = [];
 let bootFailure: Error | null = null;
 let busts: Array<[string, string | undefined]> = [];
 
+/** When set, the stub runs the manager's Stop hook rule (block once per turn
+ *  with the installed guard's reason, then let the stop through). */
+let emulateStopHook = false;
+/** The reasons the emulated Stop hook blocked with, in order. */
+const stopBlocks: string[] = [];
+
 /** Current stub behavior; tests swap it. */
 let behavior: (a: { sessionId: string; text: string; servers: any; signal: AbortSignal }) => Promise<void>;
 
@@ -214,6 +220,11 @@ beforeAll(async () => {
       this.aborts.get(id)?.abort();
     }
     override suppressNextTurn(_id: string) {}
+    stopGuard?: (sessionId: string) => string | null;
+    override setStopGuard(g: any) {
+      super.setStopGuard(g);
+      this.stopGuard = g;
+    }
     /** The background run each sendMessage carried (phase E promise checks), by session. */
     bgRuns = new Map<string, { runId: string; finish: (usage: any, outcome: "ok" | "error") => Promise<void> }>();
     override async sendMessage(sessionId: string, text: string, opts: { backgroundRun?: any } = {}): Promise<void> {
@@ -227,6 +238,13 @@ beforeAll(async () => {
       void (async () => {
         try {
           await behavior({ sessionId, text, servers, signal: ac.signal });
+          // AgentManager's stopHook: the first stop of a turn the guard
+          // objects to goes back to the model with the reason as its input.
+          const reason = emulateStopHook ? this.stopGuard?.(sessionId) : null;
+          if (reason) {
+            stopBlocks.push(reason);
+            await behavior({ sessionId, text: reason, servers, signal: ac.signal });
+          }
           this.liveSet.add(sessionId); // Query stays warm after the turn
           this.emit("event", { type: "done", sessionId } as any);
         } catch (e) {
@@ -326,6 +344,50 @@ d("gateway↔node E2E (real Redis)", () => {
     expect(reply.channel).toBe("C0TEAM");
     // Follower re-emitted the node's done → gateway stamped ✅ on the inbound.
     await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9000.1"), 10_000);
+  }, 30_000);
+
+  // The must-reply Stop guard on a node (v0.46.0-rc.8): a person's turn that
+  // ends with nothing user-visible is sent back once with mono's instruction;
+  // the model's answer to it lands in Slack, and a turn that replied is not
+  // sent back at all.
+  test("a node turn that ends without a reply is sent back once, then its reply lands", async () => {
+    const { MUST_REPLY_INSTRUCTION } = await import("../../src/agent/must-reply");
+    const prev = behavior;
+    const inputs: string[] = [];
+    // The stub emits the toolCall the real manager emits from the SDK stream.
+    behavior = async ({ sessionId, text, servers }) => {
+      inputs.push(text);
+      if (text !== MUST_REPLY_INSTRUCTION) return; // the first pass says nothing
+      stub.emit("event", { type: "toolCall", sessionId, tool: "mcp__slaude_surface__reply", input: {} });
+      await callShim(servers["slaude_surface"], "reply", { text: "node-reply: after the stop guard" });
+    };
+    emulateStopHook = true;
+    stopBlocks.length = 0;
+    try {
+      posts.length = 0;
+      reacts.length = 0;
+      await emitSlack("message", msg("9005.0", "9005.1", "<@USLAUDE> say something"));
+      await until(() => posts.some((p) => String(p.text).includes("after the stop guard")), 15_000);
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9005.1"), 10_000);
+      expect(stopBlocks).toEqual([MUST_REPLY_INSTRUCTION]);
+      expect(inputs).toHaveLength(2);
+
+      // A turn that replies first is not sent back.
+      behavior = async ({ sessionId, text, servers }) => {
+        inputs.push(text);
+        stub.emit("event", { type: "toolCall", sessionId, tool: "mcp__slaude_surface__reply", input: {} });
+        await callShim(servers["slaude_surface"], "reply", { text: "node-reply: straight away" });
+      };
+      inputs.length = 0;
+      await emitSlack("message", msg("9005.0", "9005.2", "<@USLAUDE> again"));
+      await until(() => posts.some((p) => String(p.text).includes("straight away")), 15_000);
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9005.2"), 10_000);
+      expect(stopBlocks).toHaveLength(1);
+      expect(inputs).toHaveLength(1);
+    } finally {
+      emulateStopHook = false;
+      behavior = prev;
+    }
   }, 30_000);
 
   test("an acked job's turn-senders record is deleted, not left to its TTL", async () => {
