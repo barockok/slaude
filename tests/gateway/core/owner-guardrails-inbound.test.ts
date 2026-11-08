@@ -5,7 +5,7 @@
  * audited without the message text. On-match Guidance an inbound trigger
  * matches is handed to the session for its next turn.
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { createGateway } from "../../../src/gateway/core/gateway";
 import { AgentManager } from "../../../src/agent/manager";
 import type { Transport } from "../../../src/gateway/core/transport";
@@ -114,7 +114,7 @@ describe("inbound owner rules", () => {
     const rows = await db.query<{ action: string; target_id: string; decision: string; summary: string; details: string; actor_id: string }>(
       `SELECT action, target_id, decision, summary, details, actor_id FROM audit_events WHERE action LIKE 'guardrail.inbound.%' ORDER BY id`,
     );
-    expect(rows.map((r) => `${r.action}:${r.target_id}:${r.decision}:${r.actor_id}`)).toEqual([
+    expect(rows.map((r) => `${r.action}:${r.target_id}:${r.decision}:${r.actor_id}`).sort()).toEqual([
       "guardrail.inbound.denied:inbound-care#no-passwords:deny:U0BOB",
       "guardrail.inbound.denied:inbound-care#no-passwords:deny:U0BOB",
       "guardrail.inbound.denied:inbound-care#no-passwords:deny:U0CAROL",
@@ -156,4 +156,10 @@ describe("the reply quiet window", () => {
     expect(quiet("a")).toBe(true);
     expect(quiet("c")).toBe(true);
   });
+});
+
+// The database is shared by every test file of the run: leave no guardrail behind.
+afterAll(async () => {
+  await __clearGuardrailsForTests();
+  __resetGuardrailSnapshotsForTests();
 });

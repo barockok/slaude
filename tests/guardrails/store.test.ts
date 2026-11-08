@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { db } from "../../src/db/client";
 import {
   __clearGuardrailsForTests, __setOverrideForTests, applyGuardrailChange, manifestVersion, readGuardrails, sha256, UnknownGuardrailError,
@@ -187,4 +187,10 @@ describe("the snapshot", () => {
       __resetGuardrailKeyForTests();
     }
   });
+});
+
+// The database is shared by every test file of the run: leave no guardrail behind.
+afterAll(async () => {
+  await __clearGuardrailsForTests();
+  __resetGuardrailSnapshotsForTests();
 });

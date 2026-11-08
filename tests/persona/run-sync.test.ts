@@ -1,5 +1,5 @@
 // tests/persona/run-sync.test.ts
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import * as P from "../../src/db/personas";
@@ -486,4 +486,8 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync: guardrails", () => {
     expect(r.guardrails!.invalid[0]!.slug).toBe("bad");
     expect((await readGuardrails()).rows.map((x) => x.slug)).toEqual(["bad"]);
   });
+});
+
+afterAll(async () => {
+  if (process.env.SLAUDE_DB === "pg") await __clearGuardrailsForTests();
 });

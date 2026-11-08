@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { __resetGuardrailSnapshotsForTests } from "../../src/guardrails/snapshot";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,7 +39,7 @@ describe("slaude guardrails import", () => {
     const rows = await db.query<{ action: string; target_id: string; actor_id: string }>(
       `SELECT action, target_id, actor_id FROM audit_events WHERE action LIKE 'guardrail.%' AND actor_id = 'cli:tester' ORDER BY id`,
     );
-    expect(rows.map((x) => `${x.action}:${x.target_id}`)).toEqual(["guardrail.created:alpha", "guardrail.created:beta"]);
+    expect(rows.map((x) => `${x.action}:${x.target_id}`).sort()).toEqual(["guardrail.created:alpha", "guardrail.created:beta"]);
   });
 
   test("a deploy repo checkout: its guardrails/ folder is used", async () => {
@@ -88,4 +89,10 @@ describe("slaude guardrails import", () => {
     expect((await readGuardrails()).rows.map((r) => r.slug)).toEqual(["cli"]);
     expect(await main(["import", "/nonexistent"])).toBe(1);
   });
+});
+
+// The database is shared by every test file of the run: leave no guardrail behind.
+afterAll(async () => {
+  await __clearGuardrailsForTests();
+  __resetGuardrailSnapshotsForTests();
 });
