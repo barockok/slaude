@@ -375,6 +375,8 @@ and roles come from a file or the env lists below.
 | `SLAUDE_PANEL_ROLES_FILE` | No | `""` | Path to a YAML role list (`superadmin:` / `operator:`), matched case-insensitively, superadmin winning when an identity is in both. Read at boot and re-read per request, so edits apply without a redeploy. |
 | `SLAUDE_PANEL_SUPERADMIN` | No | `""` | Comma-separated superadmin identities — the fallback when no role file is mounted. Superadmin gates the destructive controls (reset, mode, force-release). |
 | `SLAUDE_PANEL_OPERATORS` | No | `""` | Comma-separated operator identities. An identity in neither list authenticates but is not authorized (`403`). |
+| `SLAUDE_GUARDRAIL_PROSE_MAX` | No | `4000` | Most characters of always-loaded owner guardrail Guidance per agent. A guardrail that would tip the total over is left out of that agent's prompt (its rules still apply) and the console names it. See [Guardrails](guardrails.md). |
+| `SLAUDE_GUARDRAIL_REPLY_QUIET_SECS` | No | `600` | How long an inbound guardrail's reply stays quiet for the same person in the same thread; later drops are silent and audited. |
 | `SLAUDE_AUDIT_RETENTION_DAYS` | No | `365` | Days an audit event (`audit_events`: gate decisions, grant changes, console actions) is kept before the periodic sweep deletes it. Applies whether or not the panel is mounted. |
 | `SLAUDE_PORTAL` | No | `0` | `1`/`true`/`yes` mounts the end-user portal at `/portal` (onboarding, identity binding, MCP connections) on `mono` and `gateway`. It reuses the panel's OIDC client, public URL and `SLAUDE_PANEL_SECRET`, so those are required when it is on. See [The user portal](../deploy/panel.md#the-user-portal). |
 

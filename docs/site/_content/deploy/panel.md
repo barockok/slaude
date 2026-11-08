@@ -24,14 +24,14 @@ dark themes follow the browser, and every page works at phone width.
 | Page | What you see |
 |---|---|
 | **Overview** | Counts of agents, live sessions, pending approvals and audit events in the last 24 h, and recent activity. |
-| **Agents** | Every agent (persona) with its live state. An agent's page has four tabs: *Overview* (identity, model, the label it runs on), *Mandates* (its jobs: the soul's mandate, each channel block, each cron and the heartbeat, with triggers and the approvers who can actually approve), *Access* (effective grants from the soul and the console) and *Activity* (its audit events). |
+| **Agents** | Every agent (persona) with its live state. An agent's page has five tabs: *Overview* (identity, model, the label it runs on), *Mandates* (its jobs: the soul's mandate, each channel block, each cron and the heartbeat, with triggers and the approvers who can actually approve), *Access* (effective grants from the soul and the console), *Guardrails* (the owner guardrails that apply to it, shared and its own) and *Activity* (its audit events). |
 | **Sessions** | Live and recent sessions with filters by agent and status. A session has a *Timeline*, a *Chat* tab and its *Audit* events. |
 | **Approvals and audit** | Every permission and approval decision, refusal and expiry, and every console change, newest first, filterable by agent, action, actor, decision and time. An event the agent itself did shows the agent's name as its actor, not its bot user id. |
 | **Access** | Console roles (read only, from the role file; superadmins only, operators see a note) and every stored agent grant. |
 | **Memory** | Memory stores with page counts; a store lists its pages; a page shows its content, type, tags and links. Read only. |
 | **Environments** | Node pools (labels, live nodes, last heartbeat), each agent's placement label, and personal environments (secrets never shown). |
 | **Resources: Skills** | Every skill an agent can use, filterable by source, agent and status, with search. A skill's page shows its `SKILL.md` rendered (raw and copy too), where it came from, which agents have it, its files, per-agent usage and related proposals. |
-| **Resources: Guardrails** | For one agent at a time: the runtime's own layer (the system prompt stack and baseline, the hooks and gates with their state, limits and deny lists), then every soul and access setting with its effective value and where it comes from. Read only. |
+| **Resources: Guardrails** | The owner's guardrails: scope, enforced rules by kind, Guidance, source, status and when each last fired, with a page per guardrail. A superadmin can switch one off and on. Below, a collapsed *Soul and access settings* section shows every soul and access setting of one agent with its effective value and where it comes from. |
 
 **Grants.** A superadmin adds or revokes an agent grant from the agent's
 *Access* tab: a user, a channel's members or a whole workspace gets the
@@ -80,33 +80,31 @@ a retired copy. Both are recorded in the audit trail (`skill.retired`,
 `skill.restored`). Installed, plugin and built-in skills are changed where they
 come from (the manifest, the personas repo), never from the console.
 
-**Guardrails.** The page starts with the runtime's own layer, the part no soul
-can turn off:
+**Guardrails.** The page lists the owner's guardrails: rules you set for your
+agents the way you set their souls, shared by every agent or for some, written
+as `GUARDRAIL.md` in the deploy repo's `guardrails/` folder or imported from
+host files (`slaude guardrails import <dir>`). Each row shows the scope, the
+rules by kind (*Enforced*: checked by code and never in the prompt; *Not yet
+enforced*: reply rules, from a later release; *Guidance*: text the agent reads),
+the source (*Deploy repo*, *Host file*, *Console override*, *Behind source*),
+the status (on or off, validation problems, applies to no agent, over the
+always-loaded prose cap) and when it last fired. A guardrail's page shows its
+`GUARDRAIL.md` (Rendered, Raw, Copy), the parsed rules, its problems, the
+agents and channels it applies to (names resolved), its Guidance and triggers,
+and its recent firings from the audit trail. A superadmin can switch a
+guardrail off and on: one audited write, then a config reload so nodes and warm
+sessions pick it up after their turn. Operators read everything. The page also
+says how strongly the deployment keeps an agent from changing its own
+guardrails: with Postgres or nodes a session cannot reach the database; on one
+process with sqlite the guarantee is drift and tamper detection only. The
+format, the threat model and the audit actions are in the
+[guardrails reference](../reference/guardrails.md).
 
-- *System prompt*: the layers every session gets, in order (the Claude Code
-  preset, the runtime baseline, the persona, channel mandates, the session
-  mode, the mounted MCP servers, memory context), each tagged *Fixed by the
-  runtime* or *From the soul*; the persona and channel mandate rows link to the
-  agent's Mandates tab. Each block of the runtime baseline
-  (`src/soul/runtime/core.md`) opens as rendered markdown with Raw and Copy.
-  The baseline is one render for every agent of the deployment. Built-in
-  skills are listed with the tools they gate. The soul is written to follow
-  the baseline, but nothing in the code checks that it does.
-- *Hooks and gates*: every SDK hook and gate the runtime wires, with its
-  event, what it does, where it applies (threads, wakes, remote, voice,
-  background), its state (*Enforcing*, *Shadow*, *Off*, *Not wired*: the code
-  exists but this deployment does not install it, *Not built*: designed only,
-  with a link to the design) and how it is turned on or off. Hooks that only
-  count or report are behind the Kind filter (*Observability*).
-- *Limits and deny lists*: the CLI scheduler tools, the wake allow-list, the
-  remote deny list, the background pass lockdown, the child environment scrub,
-  budgets and wake caps, secret masking and the soul's redaction patterns.
+The runtime's own layer (its hooks, gates and deny lists) is not shown: it
+lives in the code (`src/agent/guardrails.ts`), checked by a test against the
+hooks real sessions are built with.
 
-The list comes from the runtime's guardrail registry (`src/agent/guardrails.ts`),
-which a test checks against the hooks real sessions are built with. Values from
-the environment show only as on or off, a mode, or a cap.
-
-Below that, one card per soul and access setting: tool permissions (always-allowed tools
+Below the list, a collapsed *Soul and access settings* section has one card per soul and access setting: tool permissions (always-allowed tools
 from `SLAUDE_AUTO_ALLOW_TOOLS`, the default permission mode, who may decide a
 card), approvals (who may approve for this agent, and the approval timeout),
 admission and grants, memory write gating (what is read freely, written

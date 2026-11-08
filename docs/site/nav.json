@@ -49,7 +49,7 @@
           "items": [
             { "path": "reference/configuration", "label": "Configuration" },
             { "path": "reference/api", "label": "API reference" },
-            { "path": "reference/guardrails", "label": "Guardrails design" }
+            { "path": "reference/guardrails", "label": "Guardrails" }
           ]
         }
       ]
