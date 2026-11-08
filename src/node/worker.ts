@@ -47,6 +47,7 @@ import { makeNodeSkillCheckBudget, makeNodeSkillUsageRecorder } from "./backgrou
 import type { ModelTokens } from "../background/prices";
 import { makeNodeMemoryProvider } from "./memory";
 import { makeNodePermissionResolver } from "./shims/permission";
+import { makeNodeStopGuard } from "./stop-guard";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
 import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
@@ -504,9 +505,13 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // Episodic memory runs on the gateway, scoped by the job token (a node has
   // no database or brain); a failure only costs the turn its memory.
   agent.setMemoryProvider(makeNodeMemoryProvider({ client, tokenFor: (id) => store.tokenFor(id) }));
-  // No Stop guard is installed on a node. The console's guardrail registry
-  // describes that (NODE_RUNTIME in src/agent/guardrails.ts, checked by
-  // tests/panel/console-guardrails.test.ts): adding one here means updating both.
+  // The must-reply Stop guard, as mono installs it (src/node/stop-guard.ts):
+  // spoke/passed come from this manager's toolCall events, reset per job.
+  // The console's guardrail registry describes it (NODE_RUNTIME in
+  // src/agent/guardrails.ts, checked by tests/panel/console-guardrails.test.ts):
+  // removing it here means updating both.
+  const stopGuard = makeNodeStopGuard({ voiceActive: (id) => voiceTurns.active(id) });
+  agent.setStopGuard(stopGuard.guard);
   agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id) }));
   // The post-turn skill check is budgeted on the gateway's ledger (spec §9.3);
   // a refused or failed start skips it.
@@ -699,6 +704,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // Turn-end wait: resolved by the first done/error for the session.
   const turnWaiters = new Map<string, (outcome: "done" | "error") => void>();
   agent.on("event", (e: AgentEvent) => {
+    stopGuard.onEvent(e);
     // Every AgentEvent also lands on the events:<session> stream (spec §4) so
     // the gateway can drive Slack reactions/status and surface errors.
     // Exact trim: at MAXLEN 1000 the cost is negligible and it removes the
@@ -762,6 +768,11 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       const warmDir = existingSessionConfigDir(sessionId, configRoot);
       if (warmDir) await seeder.atTurn(sessionId, warmDir);
       recovery.resetTurn(sessionId);
+      // Whether the Stop guard may send this job's turn back. Read from the
+      // token bound for this job (runLockedTurn binds it before this runs), so
+      // nothing carries over from the session's last job.
+      const bound = store.tokenFor(sessionId) ?? data.jobToken;
+      stopGuard.beginTurn(sessionId, { claims: decodeClaims(bound), bgRun: data.bgRun, wake: data.wake });
 
       const outcome = await new Promise<"done" | "error">((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -819,6 +830,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           // No live child (the turn ended it, or its boot failed): its
           // credentials must not outlive it in this node's memory.
           evictBundle(sessionId);
+          stopGuard.forget(sessionId);
           if (warm.delete(sessionId)) await registry.unregister(sessionId);
         }
       } catch (e) {
