@@ -28,7 +28,7 @@ const { passQueryOptions } = await import("../../src/background/runner");
 const { hookTag } = await import("../../src/agent/hook-tags");
 const { GUARDRAILS, SCHEDULER_TOOL_NAMES, wiredHookEntries, NODE_RUNTIME } = await import("../../src/agent/guardrails");
 import type { BackgroundTurnRun } from "../../src/agent/manager";
-import type { GuardrailAppliesTo } from "../../src/gateway/panel/api-types";
+import type { GuardrailAppliesTo } from "../../src/agent/guardrails";
 
 class FakeSession {
   out: any[] = [];
