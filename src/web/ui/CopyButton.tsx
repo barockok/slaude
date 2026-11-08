@@ -41,6 +41,15 @@ export function CopyButton({ text, label, className }: CopyButtonProps) {
     const t = setTimeout(() => setState("idle"), COPY_FEEDBACK_MS);
     return () => clearTimeout(t);
   }, [state, round]);
+  // What the live region says. Emptied for one tick before each result, so a
+  // repeat click announces "Copied" again instead of leaving the text unchanged.
+  const [announce, setAnnounce] = useState("");
+  useEffect(() => {
+    setAnnounce("");
+    if (state === "idle") return;
+    const t = setTimeout(() => setAnnounce(TEXT[state]), 50);
+    return () => clearTimeout(t);
+  }, [state, round]);
 
   const copy = async () => {
     let next: CopyState;
@@ -76,7 +85,7 @@ export function CopyButton({ text, label, className }: CopyButtonProps) {
         )}
       </button>
       <span className="sl-visually-hidden" role="status" aria-live="polite">
-        {message ?? ""}
+        {announce}
       </span>
     </>
   );
