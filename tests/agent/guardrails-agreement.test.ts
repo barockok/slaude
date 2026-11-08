@@ -168,7 +168,7 @@ describe("the registry agrees with the wired hooks", () => {
   it("remote", async () => {
     const o = await remoteOptions();
     expect(wired(o)).toEqual(expected("remote"));
-    expect(o.hooks.PreToolUse[0].hooks).toHaveLength(3);
+    expect(o.hooks.PreToolUse[0].hooks).toHaveLength(5);
   });
   it("background pass", () => {
     expect(wired(backgroundOptions())).toEqual(expected("background"));
@@ -194,6 +194,15 @@ describe("the registry itself", () => {
       expect(g.fieldNote?.href).toMatch(/^https:\/\//);
       expect(wiredHookEntries()).not.toContain(g);
     }
+  });
+  it("both owner guardrail hooks are in the registry, tagged, and wired where they apply", async () => {
+    const byId = (id: string) => GUARDRAILS.find((g) => g.id === id)!;
+    expect(byId("hook.pre-tool.owner-guardrails").appliesTo).toEqual(["interactive", "wake", "remote", "voice", "background"]);
+    expect(byId("hook.pre-tool.guardrail-files").appliesTo).toEqual(["interactive", "wake", "remote", "voice"]);
+    for (const o of [await interactiveOptions(), await wakeOptions(), await remoteOptions()]) {
+      expect(wired(o).PreToolUse).toEqual(expect.arrayContaining(["hook.pre-tool.guardrail-files", "hook.pre-tool.owner-guardrails"]));
+    }
+    expect(wired(backgroundOptions()).PreToolUse).toEqual(["hook.pre-tool.owner-guardrails", "hook.pre-tool.background-only-pass-tools"]);
   });
   it("telemetry hooks are observability entries", () => {
     const kind = (id: string) => GUARDRAILS.find((g) => g.id === id)!.kind;
