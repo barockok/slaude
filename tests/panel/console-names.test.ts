@@ -10,7 +10,7 @@ import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
 import { db } from "../../src/db/schema";
 import * as Sessions from "../../src/db/sessions";
 import { MAX_CONCURRENT, MAX_PER_ANSWER, channelLabels, createSlackNames, mentionNames, plainChannelRefs, type SlackNameClient } from "../../src/gateway/panel/slack-names";
-import { createLookupClients } from "../../src/gateway/panel/lookup-clients";
+import { createLookupClients, teamLookupToken } from "../../src/gateway/panel/lookup-clients";
 import { readableMandates } from "../../src/gateway/panel/console-views";
 import { sessionModel } from "../../src/gateway/panel/enumerator";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
@@ -336,3 +336,25 @@ describe("panel API: sessions pages, names and audit labels", () => {
     expect(page.body.items[0]).toMatchObject({ channelLabel: "#team", targetLabel: "#team" });
   });
 });
+
+describe("teamLookupToken", () => {
+  const apps = async () => [
+    { apiAppId: "A0BBBBBBBBB", teamId: "T0AAAAAAAAA" },
+    { apiAppId: "A0AAAAAAAAA", teamId: "T0AAAAAAAAA" },
+    { apiAppId: "A0CCCCCCCCC", teamId: "T0OTHERTEAM" },
+  ];
+  const tokens: Record<string, string> = { A0AAAAAAAAA: "token-a", A0BBBBBBBBB: "token-b", A0CCCCCCCCC: "token-c" };
+
+  it("with several apps in one workspace, picks one of that workspace, stably by app id", async () => {
+    expect(await teamLookupToken("T0AAAAAAAAA", apps, (a) => tokens[a.apiAppId])).toBe("token-a");
+    // An app without a token is skipped; another team's app is never used.
+    expect(await teamLookupToken("T0AAAAAAAAA", apps, (a) => (a.apiAppId === "A0AAAAAAAAA" ? undefined : tokens[a.apiAppId]))).toBe("token-b");
+    expect(await teamLookupToken("T0NOAPPHERE", apps, (a) => tokens[a.apiAppId])).toBeUndefined();
+  });
+
+  it("no app registry (Socket Mode) or a failing one gives no token", async () => {
+    expect(await teamLookupToken("T0AAAAAAAAA", undefined, () => "x")).toBeUndefined();
+    expect(await teamLookupToken("T0AAAAAAAAA", async () => { throw new Error("registry down"); }, () => "x")).toBeUndefined();
+  });
+});
+

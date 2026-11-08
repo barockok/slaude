@@ -35,3 +35,29 @@ export function createLookupClients(make: LookupClientFactory = defaultLookupCli
     },
   };
 }
+
+/**
+ * A bot token of some registered app installed in `teamId`, for lookups any
+ * app of that workspace can answer (a person's name, the workspace's own
+ * name). Used when no app is named and the team alone is ambiguous, as with
+ * one Slack app per persona in one workspace: the pick is the first by app
+ * id, so it is stable. Undefined when no app of that team has a token.
+ */
+export async function teamLookupToken(
+  teamId: string,
+  apps: (() => Promise<ReadonlyArray<{ apiAppId: string; teamId: string }>>) | undefined,
+  tokenFor: (app: { apiAppId: string; teamId: string }) => string | undefined,
+): Promise<string | undefined> {
+  if (!apps) return undefined;
+  let list: ReadonlyArray<{ apiAppId: string; teamId: string }>;
+  try {
+    list = await apps();
+  } catch {
+    return undefined;
+  }
+  for (const a of [...list].filter((x) => x.teamId === teamId).sort((x, y) => x.apiAppId.localeCompare(y.apiAppId))) {
+    const token = tokenFor({ apiAppId: a.apiAppId, teamId: a.teamId });
+    if (token) return token;
+  }
+  return undefined;
+}
