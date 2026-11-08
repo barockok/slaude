@@ -12,7 +12,7 @@
 import { manifestVersion, readGuardrails, type StoredGuardrails } from "../db/guardrails";
 import { emitAudit } from "../audit/emit";
 import { GuardrailIntegrityError, guardrailKey, peekKeySource, verifySet, type KeySource } from "./integrity";
-import { __resetHighWaterForTests, checkHighWater, raiseHighWater } from "./high-water";
+import { __resetHighWaterForTests, checkHighWater, highWater, highWaterInMemory, raiseHighWater } from "./high-water";
 export { checkHighWater };
 import { resolveDocs, type GuardrailDoc, type ResolvedGuardrail } from "./resolve";
 
@@ -153,6 +153,30 @@ export async function currentGuardrails(tenant = "default", context: { persona?:
 export function cachedGuardrails(tenant = "default"): TenantSnapshot | null {
   const e = entries.get(tenant);
   return e?.ok ? e.snap : null;
+}
+
+/**
+ * Whether `tenant` has a guardrail set that its last load could not read or
+ * verify: the stored manifest names a version, or the high-water mark says
+ * one was seen (a deleted set). A deployment with no guardrails at all has
+ * neither, so paths that fail closed only for a set that exists (the
+ * outbound choke point) behave there exactly as before guardrails.
+ */
+export async function failedSetExists(tenant = "default"): Promise<boolean> {
+  const e = entries.get(tenant);
+  if (e && !e.ok && (e.version ?? 0) > 0) return true;
+  try {
+    return (await highWater(tenant)) > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** failedSetExists without I/O: the failed load's own manifest version, or this process's mark. */
+export function failedSetExistsCached(tenant = "default"): boolean {
+  const e = entries.get(tenant);
+  if (!e || e.ok) return false;
+  return (e.version ?? 0) > 0 || highWaterInMemory(tenant) > 0;
 }
 
 /** The last load's failure, or null (the console names it). */
