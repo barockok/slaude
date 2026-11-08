@@ -4418,6 +4418,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       threadTs: claims.thread,
       decisionReason: args.decisionReason,
       suggestions: args.suggestions,
+      ...(args.forced ? { forced: args.forced } : {}),
       app: { apiAppId: claims.app, teamId: claims.team },
       persona: claims.persona,
       // The job's recorded senders (merged follow-ups included): the
