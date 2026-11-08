@@ -121,6 +121,7 @@ import { parseRef } from "../../secrets";
 import { proactiveWorkspaceDir } from "../../agent/workspace-claim";
 import { wakeGateConfig, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
 import { wakeRefusal } from "../../proactive/wake-guard";
+import { MUST_REPLY_INSTRUCTION, mustReplyEffect } from "../../agent/must-reply";
 import { NODE_RUNTIME } from "../../agent/guardrails";
 import { wakeStatusText } from "../../proactive/wake-status";
 import type { WakeToolDeps } from "../../proactive/wake-tools";
@@ -1349,7 +1350,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (route.spoke) return null;
     if (route.passed) return null;
     if (route.silent) return null;
-    return "You ended the turn without a reply or a pass. If the message needs an answer, call `mcp__slaude_surface__reply`; if it is not for you, call `mcp__slaude_surface__pass` with a reason. Then stop.";
+    return MUST_REPLY_INSTRUCTION;
   });
 
   // Brain gate input from the live SlackContext — read per tool call so the
@@ -2211,20 +2212,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // surface content. (react alone doesn't satisfy: an emoji isn't a real
         // answer.) Matches the canonical surface namespace + the deprecated
         // slack namespace during the transition.
-        const userVisible =
-          e.tool === `mcp__${SURFACE_MCP_NAME}__reply` ||
-          e.tool === `mcp__${SURFACE_MCP_NAME}__edit` ||
-          e.tool === `mcp__${SURFACE_MCP_NAME}__upload` ||
-          e.tool === `mcp__${SLACK_MCP_NAME}__reply` ||
-          e.tool === `mcp__${SLACK_MCP_NAME}__edit` ||
-          e.tool === `mcp__${SLACK_MCP_NAME}__upload`;
-        if (e.tool === `mcp__${SURFACE_MCP_NAME}__pass`) {
+        // (Shared with the node worker's guard: src/agent/must-reply.ts.)
+        const effect = mustReplyEffect(e.tool);
+        if (effect === "passed") {
           // Deliberate silence: satisfies the stop guard without counting as
           // having spoken, and without the working reaction.
           route.passed = true;
           const react = (e.input as any)?.react;
           if (typeof react === "string" && react) route.passReact = react.replace(/^:|:$/g, "");
-        } else if (userVisible) {
+        } else if (effect === "spoke") {
           route.spoke = true;
           void reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_WORKING);
         } else {
