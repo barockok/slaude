@@ -518,7 +518,9 @@ out (prose loads in name order, so the one that tips the total over may be
 another guardrail, not the draft). The server checks again on save.
 
 Each write carries the guardrail's **revision** as the editor loaded it (the
-set version of its last change: text, override or switch). If someone else
+set version of its last change: text, override, clearing an override or the
+switch; it only ever goes up, since clearing an override re-signs the source
+row at the new version). If someone else
 changed it in between, the save is refused and the editor offers to reload
 the saved version, keeping your edits to copy.
 
@@ -540,9 +542,13 @@ the saved version, keeping your edits to copy.
 | 422 `code: not-deletable` | Delete: a deploy repo or host-file guardrail |
 | 423 `code: integrity` | The stored set does not verify; the body's `hint` is the repair: find what changed it, then `slaude guardrails import --repair <dir>` on the host |
 
-The names `new` and `test` are reserved (the console's own pages), in the
-deploy repo and in imports too. `settings`, reserved in `rc.9` and `rc.10`
-for the route that is now gone, is a valid name again.
+The names `new` and `test` are reserved for the console's own pages
+(`/guardrails/new`, `/guardrails/test`): a **new** guardrail cannot take them,
+from the console, the deploy repo or an import. A guardrail already stored
+under one of them (from before they were reserved) keeps working: `/deploy`
+and imports update it, the API reaches it at its usual routes, and the
+console shows it at `/guardrails/~/<name>`. `settings`, reserved in `rc.9`
+and `rc.10` for the route that is now gone, is a valid name again.
 
 <a id="overrides"></a>
 ## Overrides and behind source
@@ -565,7 +571,16 @@ On every guardrail's page, under the editor (with the unsaved text) and as
 *Test a guardrail* on its own page. Pick the event (a tool call with its name
 and JSON input, a reply text or an inbound message), the agent and
 optionally a channel, and optionally an unsaved draft that replaces the
-stored guardrail of the same name (or is added when it is new). It shows:
+stored guardrail of the same name (or is added when it is new). A draft of a
+guardrail that is switched off is tried as if it were on, and the result
+says so. For a tool call, *In a thread bound with /remote* matches every name
+the tool goes by there, as the session does (a rule on `Bash` holds for
+`mcp__remote__bash` and the other way round); a remote alias name implies it.
+The input and the text are accepted up to just past what a pattern checks
+(1 MB), so *too large to check* still shows. While the stored set does not
+verify, the Test box answers 423 with the runtime's fail-closed result (no
+session starts, every agent post is refused) instead of evaluating an older
+set. It shows:
 
 - every rule that matches across the agent's effective set there, and the
   deciding action (the strictest wins: deny > approve > redact > audit) with

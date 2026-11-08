@@ -276,7 +276,10 @@ rule id only).
   stale); live validation by the server's parser over `POST /guardrails/validate`; the Test box as
   `evaluateGuardrails`, which calls the runtime's own resolution and matcher functions; the settings
   at `GET /agents/:name/settings/:group` (the policy family dropped); reserved slugs `new` and `test`
-  (the console's pages) instead of `settings` (its route is gone).
+  (the console's pages) instead of `settings` (its route is gone), refused only for a guardrail that
+  does not exist yet (a stored one keeps syncing and is shown at `/guardrails/~/<name>`); the Test box
+  takes the session's remote alias names and fails closed while the set does not verify; clearing an
+  override re-signs the source row so revisions only go up.
 - **Later:** semantic matching, approve on inbound, redact on tool input.
 
 ## 8. Testing

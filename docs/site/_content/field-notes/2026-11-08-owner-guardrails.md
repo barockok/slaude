@@ -309,7 +309,24 @@ family is gone: owner guardrails are that policy now. With
 `/guardrails/settings` gone, the reserved slug `settings` was dropped; `new`
 and `test` are reserved instead because the console's own pages
 (`/guardrails/new`, `/guardrails/test`) would otherwise be shadowed by a
-guardrail of that name.
+guardrail of that name. Review caught that reserving a name breaks a
+deployment that already stores one: the check now refuses only a **new**
+guardrail (it moved from the payload parser and the folder reader, which do
+not know the stored set, to the sync, the import and the console create), and
+the console reaches a stored one at `/guardrails/~/<name>`, a path no name
+can shadow.
+
+**Review fixes before merge (B).** The Test box first matched only the typed
+tool name; the session matches every name a tool goes by in a `/remote`
+thread (`aliasNames(REMOTE_TOOL_ALIASES)`), so it now takes the same alias
+function, merges the triggers of each name as the hook does, and has a parity
+case for an aliased call. Clearing an override let the revision fall back to
+the source row's older version (an A, B, A that a stale editor could pass);
+the source row is now re-signed at the clearing version, so revisions only go
+up. While the set fails to verify, the Test box answers with the runtime's
+fail-closed result instead of evaluating an older set. A draft of a
+switched-off guardrail is evaluated as on and the result says so. The Test
+box's input and text are capped just past what a pattern checks.
 
 **Audit.** Console writes record `guardrail.created|updated|deleted` and the
 new `guardrail.override.set|cleared` (no text), plus a `panel.guardrail.*`
