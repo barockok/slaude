@@ -18,6 +18,8 @@ import { failureText } from "./failure-codes";
 import { appliesToAgent, inboundTriggered, sessionGuardrails, type SessionGuardrails } from "../../guardrails/resolve";
 import { cachedGuardrails, currentGuardrails, onGuardrailsChanged, refreshGuardrails, startGuardrailRevalidation } from "../../guardrails/snapshot";
 import type { PubSub } from "../../queue/pubsub";
+import type { Redis } from "ioredis";
+import { setHighWaterRedis } from "../../guardrails/high-water";
 
 /** The session guardrails of `persona` in `channel` from the verified snapshot. Throws when unavailable. */
 export async function gatewaySessionGuardrails(persona: string, channel: string | null, ctx: { tenant?: string; sessionId?: string } = {}): Promise<SessionGuardrails> {
@@ -41,8 +43,13 @@ export const auditSink: GuardrailSink = {
  * reload warm sessions, and in mono asks every warm session on another
  * version to reload after its turn.
  */
-export function installOwnerGuardrails(agent: AgentManager, o: { pubsub: PubSub | null; tenant?: string; mono: boolean; pollMs?: number }): () => void {
+export function installOwnerGuardrails(
+  agent: AgentManager,
+  o: { pubsub: PubSub | null; tenant?: string; mono: boolean; pollMs?: number; redis?: { client: Redis; prefix: string } | null },
+): () => void {
   const tenant = o.tenant ?? "default";
+  // Every replica and restart agrees on the high-water mark when there is a Redis.
+  if (o.redis) setHighWaterRedis(o.redis.client, o.redis.prefix);
   agent.setGuardrailResolver((sessionId, persona, channel) => gatewaySessionGuardrails(persona ?? "default", channel, { tenant, sessionId }));
   agent.setGuardrailSink(auditSink);
   void refreshGuardrails(tenant).catch(() => {});

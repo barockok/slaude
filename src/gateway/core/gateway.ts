@@ -1346,7 +1346,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // (`mcp__slaude_surface__pass`) before exiting.
   // Owner guardrails: the session resolver and audit sink, the boot snapshot
   // and its reload (nodes get theirs in the runtime bundle).
-  const stopOwnerGuardrails = installOwnerGuardrails(agent, { pubsub: queueDispatch?.pubsub ?? panelInfra?.pubsub ?? null, mono: !queueDispatch });
+  const stopOwnerGuardrails = installOwnerGuardrails(agent, {
+    pubsub: queueDispatch?.pubsub ?? panelInfra?.pubsub ?? null,
+    mono: !queueDispatch,
+    redis: queueDispatch ? { client: queueDispatch.turns.redis, prefix: queueDispatch.turns.keys.prefix } : null,
+  });
   const guardrailReplyQuiet = makeReplyQuiet();
   agent.setStopGuard((sessionId) => {
     if (voiceTurns.active(sessionId)) return null;

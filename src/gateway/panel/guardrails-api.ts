@@ -18,7 +18,7 @@ import { auditChange } from "../../guardrails/audit";
 import { ruleView } from "../../guardrails/format";
 import { appliesToAgent, isActive, sessionGuardrails, type ResolvedGuardrail } from "../../guardrails/resolve";
 import { cachedGuardrails, currentGuardrails, guardrailsFailure, refreshGuardrails, type TenantSnapshot } from "../../guardrails/snapshot";
-import { guardrailKey } from "../../guardrails/integrity";
+import { peekKeySource } from "../../guardrails/integrity";
 import type {
   AgentGuardrailsResponse,
   GuardrailThreatModel,
@@ -51,12 +51,8 @@ async function snapshot(): Promise<{ snap: TenantSnapshot | null; failure: strin
 
 export function threatModel(turnsRunOn: GuardrailApiDeps["turnsRunOn"]): GuardrailThreatModel {
   const dialect = dbDialect();
-  let keySource: GuardrailThreatModel["keySource"] = null;
-  try {
-    keySource = guardrailKey().source;
-  } catch {
-    keySource = null;
-  }
+  // Never reads or creates the key: a deployment with no guardrails touches nothing.
+  const keySource: GuardrailThreatModel["keySource"] = peekKeySource();
   return { db: dialect, turnsRunOn, strong: dialect === "pg" || turnsRunOn === "nodes", keySource };
 }
 
