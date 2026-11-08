@@ -6,7 +6,7 @@
 > reads and is asked to follow.
 
 This page is the operator reference for owner guardrails (`v0.46.0-rc.9`
-onward). It mirrors `src/guardrails/*`; if code and this page disagree, code
+onward; tool approval cards and reply rules from `rc.10`). It mirrors `src/guardrails/*`; if code and this page disagree, code
 wins and this page has a bug. The design is in the
 [owner guardrails spec](https://github.com/barockok/slaude/blob/main/docs/superpowers/specs/2026-11-08-owner-guardrails.md)
 and the [field note](../field-notes/2026-11-08-owner-guardrails.md).
@@ -18,6 +18,8 @@ On this page:
 - [Examples](#examples)
 - [Where guardrails come from](#sources)
 - [What is enforced in this release](#enforced)
+- [Tool approve: the approval card](#tool-approve)
+- [Reply rules: the outbound choke point](#reply-rules)
 - [Tool rules are a policy on named tools](#named-tools)
 - [Threat model](#threat-model)
 - [Nodes](#nodes)
@@ -37,7 +39,7 @@ console.
 |---|---|---|
 | What | The fenced `rules` block: tool, reply and inbound rules | The markdown prose of the file |
 | Who applies it | Code, on every event | The model, asked to follow it |
-| In the prompt | Never. The model sees only the outcome: a refused tool call with the rule's message, a dropped message | Yes: always (`load: always`) or once per session when a trigger matches (`load: on-match`) |
+| In the prompt | Never. The model sees only the outcome: a refused or held tool call, a refused, held or redacted reply, a dropped message | Yes: always (`load: always`) or once per session when a trigger matches (`load: on-match`) |
 | Console label | **Enforced** | **Guidance** |
 
 Guidance with `load: always` sits in the system prompt as an
@@ -243,13 +245,13 @@ cached bundles and warm sessions reload after their turn.
 <a id="enforced"></a>
 ## What is enforced in this release
 
-| Rule | rc.9 | Later |
+| Rule | Since | How |
 |---|---|---|
-| tool deny, audit | Enforced in every session kind: threads, wakes, remote threads, background passes. A PreToolUse hook, so it holds in every permission mode, bypass included. | |
-| tool approve | Enforced as **deny** until approval cards exist | rc.10: an approval card |
-| inbound deny, audit | Enforced before the turn | |
-| reply rules | Stored, parsed and shown as *Not yet enforced* | rc.10: one outbound choke point for every reply, edit, upload caption and proactive post |
-| Guidance (always, on-match) | Delivered | |
+| tool deny, audit | rc.9 | Every session kind: threads, wakes, remote threads, background passes. A PreToolUse hook, so it holds in every permission mode, bypass included. |
+| tool approve | rc.10 | The call waits on a permission card for the requester or an approver ([below](#tool-approve)). In rc.9 it was a deny. |
+| inbound deny, audit | rc.9 | Before the turn |
+| reply deny, approve, redact, audit | rc.10 | At the outbound choke point, on every agent-authored post ([below](#reply-rules)). In rc.9 these were stored and shown as *Not yet enforced*. |
+| Guidance (always, on-match) | rc.9 | Delivered |
 
 Not covered by inbound rules: cron dispatch, panel chat and `/compact`.
 
@@ -266,6 +268,90 @@ and Windows). No MCP tool writes guardrail rows.
 An inbound message that arrives while the stored set fails to verify is
 dropped with the "guardrails could not be read or verified" notice; it never
 falls back to an older snapshot.
+
+<a id="tool-approve"></a>
+## Tool approve: the approval card
+
+A tool rule with `action: approve` holds the call on a permission card in the
+session's thread, with the rule named and only **Allow once** and **Deny**
+(no *Always allow*: the next matching call asks again). The requester (the
+sole Slack sender of the turn) or an approver decides, as for any permission
+card; anyone else's click is refused. The card is shown in every permission
+mode, bypass included, and whatever the auto-allow list says: the rule is the
+owner's.
+
+- **Allowed:** the call runs. No second, ordinary permission card follows.
+- **Denied, timed out, or the turn stopped:** the call is refused with the
+  rule's message and the reason ("Not approved: denied by ...", "no decision
+  in time"). A timeout or any error is always a deny, never an allow.
+- **Nobody to ask:** in a wake or a background pass approve is a deny at once,
+  with no card.
+- **How long:** `SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC` (default 600, at most
+  3600). The hook that holds the call owns this deadline and denies when it
+  passes; the SDK's own hook timeout is set above it.
+- **On nodes** the card is capped by the turn: the job token lifetime (15
+  minutes) is also the node's turn deadline, and the token is not extended
+  while a card waits. A card ends 30 seconds before the turn's deadline or at
+  the timeout above, whichever is first; with less than 5 seconds left no card
+  is opened and the call is refused. The node asks the gateway for the card
+  naming the rule, and the gateway opens it only when its own verified set
+  says that rule applies to the agent and channel, is a tool approve rule and
+  matches the call.
+- On-match Guidance for the same tool is delivered first; the card comes on
+  the retry.
+- Another hook (the skill gate, the file protection) can still refuse a call
+  while its card is open; the call stays refused.
+
+How this was decided: [the A2 spike](https://github.com/barockok/slaude/blob/main/docs/superpowers/specs/2026-11-08-owner-guardrails-a2-spike.md)
+(the SDK behaviour it relies on is pinned by `tests/spike/sdk-hooks.test.ts`).
+
+<a id="reply-rules"></a>
+## Reply rules: the outbound choke point
+
+Every post the agent writes goes through one function,
+`outbound()` in `src/gateway/slack/outbound.ts`. It formats the text as that
+path always has (markdown to Slack's format, the soul's redact patterns,
+secret masking), then applies the agent's reply rules to the text as it would
+be posted. With no rule matching the result is exactly what the path posted
+before.
+
+| Action | What happens |
+|---|---|
+| deny | Nothing is posted. The tool returns an error with the rule's message. |
+| redact | Every match becomes `[REDACTED]` (the soul's marker), then it is posted. Every matching redact rule applies, whatever action decides. |
+| audit | Posted as is; recorded. |
+| approve | A *waiting for approval* placeholder is posted, an approval card goes to the agent's approvers in the session's thread, and the held text is sent to each approver privately (never into the thread). Allowed: the placeholder becomes the reply. Denied or timed out: it becomes a short *Not posted* note. The tool returns the outcome. An agent with no named approver, a wake, a background pass and a proactive post have nobody to ask, so approve is a deny there. The card waits the persona's approval timeout or `SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC`, whichever is shorter. |
+
+A reply that is edited as it is written (a streamed message) is judged on the
+whole new text at every edit, and the whole message is replaced, so a pattern
+split across edits is still caught and redaction stays in sync. A pattern
+split across two separate messages is not.
+
+Covered, in mono and on nodes (a node's posts run on the gateway through the
+tool plane's surface executor, which is the same code):
+
+| Path | Kind |
+|---|---|
+| `reply` (surface and legacy slack tools) | `reply` |
+| `edit` | `edit` |
+| `upload` caption | `upload_caption` (a held caption waits for the card, then the file goes out with it) |
+| `post_message` | `post_message` |
+| `post_ephemeral` | `ephemeral` (cannot be held in place: posted after the card) |
+| `proactive_post` (wakes and the heartbeat round) | `proactive_post` (approve is a deny) |
+| proposal previews on digest and DM cards | `proposal_preview` (deny or approve hides the preview) |
+| `create_canvas`, `append_canvas`, `prepend_canvas` | `canvas` |
+| `set_topic`, `set_purpose` | `topic` |
+
+Not covered (runtime UI, not written by the agent): permission and approval
+cards, the status line, the todo and task list messages, slash command and
+`/remote` replies, connect cards and notices, the turn failure text, the
+inbound guardrail reply, the panel hand-off notice, the promise check's fixed
+line, the feedback acknowledgement and the digest's own text. A test
+(`tests/gateway/outbound-sites.test.ts`) lists every Slack write in the code
+with its classification and fails when a new one appears.
+
+A stored set that cannot be read or verified refuses every agent post (the
+same notice as a session that cannot start); runtime UI still goes out.
 
 <a id="named-tools"></a>
 ## Tool rules are a policy on named tools
@@ -347,8 +433,8 @@ the label queue.
 ## The console
 
 **Resources > Guardrails** lists every guardrail: scope (*Every agent* or the
-agents it names, and channels), rules by kind (*Enforced*, *Not yet
-enforced*, *Guidance*), source (*Deploy repo*, *Host file*, *Console
+agents it names, and channels), rules by kind (*Enforced*, *Guidance*;
+*Not yet enforced* only from an rc.9 gateway), source (*Deploy repo*, *Host file*, *Console
 override*, *Behind source*), status (on or off, problems, applies to no
 agent, over the prose cap) and when it last fired. A guardrail's page shows
 its `GUARDRAIL.md` (Rendered, Raw, Copy), the parsed rules, validation
@@ -368,6 +454,8 @@ own tabs.
 | Action | When |
 |---|---|
 | `guardrail.tool.denied`, `guardrail.tool.audited` | A tool rule matched (every match, the deciding one marked) |
+| `guardrail.tool.approved`, `guardrail.tool.refused` | An approve rule held a call: approved on the card, or not (denied, timed out, nobody to ask). The card's own `gate.*` rows name who decided. |
+| `guardrail.reply.denied`, `guardrail.reply.held`, `guardrail.reply.redacted`, `guardrail.reply.audited` | A reply rule matched a post; details name the kind of post. A held reply's decision is the approval card's own row. |
 | `guardrail.inbound.denied`, `guardrail.inbound.audited` | An inbound rule matched |
 | `guardrail.guidance.delivered` | On-match Guidance was handed to a session |
 | `guardrail.created`, `guardrail.updated`, `guardrail.deleted` | A sync, an import or the console switch changed the set |
@@ -376,8 +464,8 @@ own tabs.
 | `guardrail.integrity.failed` | The stored set did not verify; sessions do not start |
 
 Target: `guardrail <name>#<rule id>`. Details name the agent, channel, tool
-and rule, never the tool input or the message text: a row whose pattern
-matched never stores the text it matched.
+and rule (and the kind of post), never the tool input or the message text: a
+row whose pattern matched never stores the text it matched.
 
 <a id="limits"></a>
 ## Limits
@@ -392,3 +480,4 @@ matched never stores the text it matched.
 | Guardrails per deploy repo or import | 200 |
 | Always-loaded Guidance per agent | `SLAUDE_GUARDRAIL_PROSE_MAX`, default 4000 characters |
 | Inbound reply quiet window | `SLAUDE_GUARDRAIL_REPLY_QUIET_SECS`, default 600 |
+| Approval card wait (tool approve, held replies) | `SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC`, default 600, at most 3600; on nodes also 30 s before the turn deadline (15 minutes) |
