@@ -35,7 +35,7 @@ export async function seedMonoBrain(home: string, o: { empty?: boolean } = {}): 
     await mem.syncTurn({ sessionId: session, user: "and the oncall?", assistant: "rotates monday" });
     const put = async (source: string, slug: string, truth: string, extra: Partial<{ tags: string[]; seed: number }> = {}) => {
       await engine.putPage(slug, { type: "note", title: slug, compiled_truth: truth }, { sourceId: source });
-      await engine.upsertChunks(slug, [{ chunk_index: 0, chunk_text: truth, chunk_source: "compiled_truth", embedding: Float32Array.from(vec(extra.seed ?? 1)), model: "test-embed", token_count: 4 }], { sourceId: source });
+      await engine.upsertChunks(slug, [{ chunk_index: 0, chunk_text: truth, chunk_source: "compiled_truth", embedding: Float32Array.from(vec(extra.seed ?? 1)), model: "test-embed", token_count: 4 }], { sourceId: source, slaudeCarriedIn: true });
       for (const t of extra.tags ?? []) await engine.addTag(slug, t, { sourceId: source });
     };
     await put("agent-default", "learned/runbook", "Restart the worker with the zebra procedure.", { tags: ["ops"], seed: 2 });
