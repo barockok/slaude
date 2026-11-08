@@ -80,7 +80,7 @@ whether a Stop guard is installed and whether a permission resolver is set. A
 guardrail whose code exists but is not installed in this process reports
 *Not wired*, never *Enforcing*.
 
-That surfaced one real gap. The node worker (`src/node/worker.ts`) installs a
+That surfaced the first of two real gaps (listed below). The node worker (`src/node/worker.ts`) installs a
 permission resolver but no Stop guard. In the gateway role, turns run on nodes,
 so the must-reply hook there is a no-op: a node turn that ends without a reply
 or a pass is not sent back. The page reports it as *Not wired* in that role. A
@@ -114,10 +114,32 @@ lists are set, never the hosts. Redaction pattern values stay superadmin-only;
 operators see a count, and a test checks an operator response holds no pattern
 string.
 
-## Known gaps
+## Behaviour gaps found (follow-ups, not fixed here)
+
+This change only describes; it does not change what runs. Two gaps in what
+runs came out of the survey:
+
+1. **Node workers install no Stop guard.** `src/node/worker.ts` sets a
+   permission resolver but never calls `setStopGuard`, so on a node the Stop
+   hook returns `continue: true` for every stop. A node turn that ends with no
+   reply and no `pass` is not sent back. The page shows the must-reply row as
+   *Not wired* in the gateway role.
+2. **A wake on a node can run tools the node's local policy auto-allows.** In
+   mono the gateway wraps the permission resolver and denies every `canUseTool`
+   call during a wake before any policy runs. A node's resolver
+   (`makeNodePermissionResolver`, `src/node/shims/permission.ts`) runs
+   `permissionPolicy` locally first, with the node's own
+   `SLAUDE_AUTO_ALLOW_TOOLS`; a tool it allows (a built-in such as `Bash`, if
+   listed there) never reaches the gateway's `can_use_tool` route, where the
+   wake refusal lives. The tool plane's `wakeAllows` check covers only slaude's
+   own contract tools, so it does not catch a built-in either. The wake still
+   hides the refused slaude tools through `disallowedTools`. The page keeps the
+   wake refusal row *Enforcing*, because every call that reaches the gateway is
+   refused, and puts this caveat first in its details in the gateway role.
+
+## Other known gaps
 
 - Nothing in the code stops a soul from contradicting the baseline. The page
   says so.
 - The remote entries read `SLAUDE_REMOTE` in the gateway's environment; a node
-  started with a different value is not reflected.
-- The must-reply Stop guard is not installed on nodes (above).
+  follows the remote target signed into its job claim instead. The rows say so.
