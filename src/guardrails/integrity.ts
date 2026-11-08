@@ -20,6 +20,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { dirname, join } from "node:path";
 import { masterKey, MasterKeyError } from "../db/crypto";
 import { paths } from "../config/home";
+import { dbDialect } from "../db/client";
 
 export const GUARDRAILS_DIR = join(paths.home, "guardrails");
 export const HMAC_KEY_FILE = join(GUARDRAILS_DIR, ".hmac-key");
@@ -28,24 +29,55 @@ export type KeySource = "master-key" | "key-file";
 
 let cached: { key: Buffer; source: KeySource } | null = null;
 
-/** The HMAC key and where it came from. Creates the key file when needed. */
+/** No key can be used: Postgres without SLAUDE_MASTER_KEY, or an unreadable key file. */
+export class GuardrailKeyError extends Error {}
+
+/** Read the key file, retrying briefly while another process is still writing it. */
+function readKeyFile(): string {
+  for (let i = 0; i < 20; i++) {
+    const raw = existsSync(HMAC_KEY_FILE) ? readFileSync(HMAC_KEY_FILE, "utf8").trim() : "";
+    if (raw) return raw;
+    Bun.sleepSync(10);
+  }
+  return "";
+}
+
+function hasMasterKey(): boolean {
+  try {
+    masterKey();
+    return true;
+  } catch (e) {
+    if (e instanceof MasterKeyError) return false;
+    throw e;
+  }
+}
+
+/**
+ * The HMAC key and where it came from. Read or created only when a guardrail
+ * set exists or is being written: a deployment with no guardrails never
+ * touches the key (it boots on a read-only $SLAUDE_HOME exactly as before).
+ * On Postgres the master key is required: a key file would differ per
+ * replica and per host, and is not a secret the database's own readers lack.
+ */
 export function guardrailKey(): { key: Buffer; source: KeySource } {
   if (cached) return cached;
-  try {
+  if (hasMasterKey()) {
     cached = { key: createHmac("sha256", masterKey()).update("slaude/guardrails-hmac/v1").digest(), source: "master-key" };
     return cached;
-  } catch (e) {
-    if (!(e instanceof MasterKeyError)) throw e;
   }
-  let raw: string | null = existsSync(HMAC_KEY_FILE) ? readFileSync(HMAC_KEY_FILE, "utf8").trim() : null;
+  if (dbDialect() === "pg") {
+    throw new GuardrailKeyError("owner guardrails on Postgres need SLAUDE_MASTER_KEY (32 random bytes, base64) to sign and verify the stored set");
+  }
+  let raw = existsSync(HMAC_KEY_FILE) ? readKeyFile() : "";
   if (!raw) {
     mkdirSync(dirname(HMAC_KEY_FILE), { recursive: true });
-    raw = randomBytes(32).toString("base64");
+    const fresh = randomBytes(32).toString("base64");
     // wx: two processes racing to create it must not both win with different keys.
     try {
-      writeFileSync(HMAC_KEY_FILE, `${raw}\n`, { mode: 0o600, flag: "wx" });
+      writeFileSync(HMAC_KEY_FILE, `${fresh}\n`, { mode: 0o600, flag: "wx" });
+      raw = fresh;
     } catch {
-      raw = readFileSync(HMAC_KEY_FILE, "utf8").trim();
+      raw = readKeyFile();
     }
     try {
       chmodSync(HMAC_KEY_FILE, 0o600);
@@ -54,9 +86,16 @@ export function guardrailKey(): { key: Buffer; source: KeySource } {
     }
   }
   const key = Buffer.from(raw, "base64");
-  if (key.length < 32) throw new Error(`${HMAC_KEY_FILE} does not hold a 32-byte key`);
+  if (key.length < 32) throw new GuardrailKeyError(`${HMAC_KEY_FILE} does not hold a 32-byte key`);
   cached = { key, source: "key-file" };
   return cached;
+}
+
+/** Where the key would come from, without reading or creating anything (null: none yet). */
+export function peekKeySource(): KeySource | null {
+  if (cached) return cached.source;
+  if (hasMasterKey()) return "master-key";
+  return existsSync(HMAC_KEY_FILE) ? "key-file" : null;
 }
 
 /** TEST SEAM: forget the cached key (a changed env or key file is re-read). */
