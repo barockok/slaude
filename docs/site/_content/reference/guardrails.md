@@ -112,17 +112,30 @@ Fields and rules:
   every string value of the input. Never against the serialised JSON, so a
   pattern never matches a key name or another field.
 - `text` (reply and inbound rules) is matched against the message text.
+- In a remote thread the CLI reports a remote alias (`mcp__remote__bash`); a
+  rule written for the builtin (`Bash`) matches it, and the other way round.
 - Every pattern is an RE2 pattern (the `re2js` engine): linear time, no
   backtracking, so backreferences and lookaround are refused. Patterns run in
   dotall mode (`.` crosses newlines); use `(?i)` for case-insensitive.
+- Strings are matched whole up to 1 MB each (RE2 is linear, so the cost is
+  bounded). Padding cannot hide a value: a string over 1 MB, or a tool input
+  over 10,000 values, 32 levels deep or 4 MB of text, is *too large to check*,
+  and that counts as a match for `deny` and `approve` rules (refused with "too
+  large for the owner's guardrail ... to check"). `audit` rules stay best
+  effort.
 - When several rules match one event, the strictest action decides (deny >
   approve > redact > audit); every match is recorded, and the message shown is
   the deciding rule's. An empty `message` gets a default naming the guardrail.
 
-Parsing is deterministic (YAML and a schema, no model). A rule that fails
-validation is rejected with a clear error and the guardrail is marked as
-having problems; its other rules still load and its Guidance still applies.
-Frontmatter that cannot be read leaves nothing to apply, and says so.
+Parsing is deterministic (YAML and a schema, no model). A rule that fails to
+parse, a rules block that cannot be read, or frontmatter that cannot be read
+in a file with rules (its rules would apply to nobody) **refuses the write**:
+`/deploy` answers 422, `slaude guardrails import` exits 1 and
+`personas render` fails the pull request. An owner who wrote a rule meant it
+to be enforced; storing it silently dropped would be the opposite. Other
+problems (a name that differs from the folder, a trigger with the wrong
+`load`) are warnings: the guardrail is stored, marked as having problems, and
+its rules and Guidance apply.
 
 <a id="examples"></a>
 ## Examples
@@ -206,13 +219,19 @@ session never reads guardrail files.
   top-level `guardrails` list (payload version 5 when it holds any guardrail;
   a gateway older than this release refuses the payload instead of dropping
   them). A folder that exists, even empty, is the whole set: a guardrail it no
-  longer lists is removed. No folder leaves the stored set as it is.
-- **Host files.** `slaude guardrails import <dir> [--prune] [--dry-run]` on
+  longer lists is removed. No folder leaves the stored set as it is. A
+  guardrail of the same name imported from host files is taken over by the
+  deploy repo (reported); one held by the console is left alone (reported).
+- **Host files.** `slaude guardrails import <dir> [--prune] [--dry-run] [--repair]` on
   the gateway or mono host stores `<dir>/<name>/GUARDRAIL.md` folders (or a
   deploy repo's `guardrails/` folder). `--prune` removes host-file guardrails
   the folder no longer has; deploy repo guardrails are never touched by an
   import. A running server picks the change up within its poll (about 10
-  seconds).
+  seconds). `--repair` is for the owner after the stored set failed its
+  integrity check: it imports the folder and re-signs every stored guardrail
+  as it is, at a version above any seen before (audited `guardrail.repaired`;
+  the report lists what was re-signed without new text, to check, and a
+  `/deploy` afterwards restores deploy repo guardrails).
 - **The console** (phase B): editing, overrides, create and delete. An
   override is kept across syncs and flagged *behind source* when the source
   text changes after it was written, so a sync never silently drops a safety
@@ -239,8 +258,14 @@ A session that cannot read or verify the stored set does not start
 runs with an empty set.
 
 Defence in depth: the file tools (Write, Edit, MultiEdit, NotebookEdit) are
-refused under `$SLAUDE_HOME/guardrails` and on the database file
-(`hook.pre-tool.guardrail-files`). No MCP tool writes guardrail rows.
+refused under `$SLAUDE_HOME/guardrails` and on the database file, and Read,
+Grep and Glob of the signing key file are refused
+(`hook.pre-tool.guardrail-files`; paths compare case-insensitively on macOS
+and Windows). No MCP tool writes guardrail rows.
+
+An inbound message that arrives while the stored set fails to verify is
+dropped with the "guardrails could not be read or verified" notice; it never
+falls back to an older snapshot.
 
 <a id="named-tools"></a>
 ## Tool rules are a policy on named tools
@@ -254,11 +279,25 @@ tools; they are not a sandbox.
 <a id="threat-model"></a>
 ## Threat model
 
-Every stored guardrail row carries an HMAC (keyed from `SLAUDE_MASTER_KEY`, or
-a key file under `$SLAUDE_HOME/guardrails` when there is no master key), and
-one manifest row signs the whole set, written in the same transaction as
-every change. A deleted row, a replayed older row, an added row or an edited
-one fails the check, and sessions refuse to start.
+Every stored guardrail row carries an HMAC, and one manifest row signs the
+whole set, written in the same transaction as every change. A deleted row, a
+replayed older row, an added row or an edited one fails the check, and
+sessions refuse to start. A write checks the stored set first and refuses one
+that does not verify, so a later write can never re-sign tampering into a
+valid set (only the owner's `--repair` re-signs).
+
+The key comes from `SLAUDE_MASTER_KEY`. On sqlite without a master key, a key
+file under `$SLAUDE_HOME/guardrails` is created on the first write; on
+Postgres the master key is required. A deployment with no guardrails never
+reads or creates the key, so it boots on a read-only `$SLAUDE_HOME` as before.
+
+A whole signed set can still be replayed (an older manifest with its rows) or
+deleted (no manifest at all). A **high-water mark** closes that: the highest
+manifest version seen, kept in the process, in a file beside the key
+(`.high-water.json`) and in Redis on cluster deployments. A set older than
+the mark, or missing after one existed, fails closed. Residual risk on a cold
+start of a single process without Redis: whoever can rewrite both the
+database and the mark file can roll back or delete the set undetected.
 
 - **Postgres, or turns on nodes:** a session cannot reach the database, so an
   agent cannot change its own guardrails.
@@ -286,7 +325,11 @@ heartbeat and on every bundle fetch:
   then the thread gets a notice instead of a silent queue.
 
 Firings on a node are recorded by the gateway, which accepts only guardrails
-and rules its own verified set applies to that agent.
+and rules its own verified set applies to that agent, takes the action from
+its own rule (never the node's claim), records an identical event once per
+job and rate-limits each session. When a node goes away, a turn that needs
+the capability is moved only to another capable node's queue, never back to
+the label queue.
 
 <a id="console"></a>
 ## The console
@@ -316,6 +359,7 @@ own tabs.
 | `guardrail.inbound.denied`, `guardrail.inbound.audited` | An inbound rule matched |
 | `guardrail.guidance.delivered` | On-match Guidance was handed to a session |
 | `guardrail.created`, `guardrail.updated`, `guardrail.deleted` | A sync, an import or the console switch changed the set |
+| `guardrail.repaired` | An owner re-signed the set with `slaude guardrails import --repair` |
 | `guardrail.node.unsupported` | A node without the capability was refused, or no capable node took a turn in time |
 | `guardrail.integrity.failed` | The stored set did not verify; sessions do not start |
 
@@ -331,7 +375,7 @@ matched never stores the text it matched.
 | One `GUARDRAIL.md` | 64 KB |
 | Rules per guardrail | 50 (the rest are rejected) |
 | Pattern length | 512 characters; a tool glob 256 |
-| Text a pattern sees | the first 16 KB of each string; at most 200 string values of a tool input, 8 levels deep |
+| Text a pattern sees | each string whole up to 1 MB; a tool input up to 10,000 values, 32 levels deep and 4 MB of text. Past any bound: a match for deny and approve rules |
 | Input fields per rule | 20 |
 | Guardrails per deploy repo or import | 200 |
 | Always-loaded Guidance per agent | `SLAUDE_GUARDRAIL_PROSE_MAX`, default 4000 characters |
