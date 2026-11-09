@@ -173,6 +173,10 @@ export interface BridgeSourceOptions {
    *  SLAUDE_MCP_BRIDGE_ENV_ALLOW (empty). */
   envAllow?: readonly string[];
   env?: Record<string, string | undefined>;
+  /** The node label to scope plugin servers by. A job passes its signed label
+   *  (jobLabel(claims)): the label it really runs on, even if the persona was
+   *  relabelled since. Default: the persona's current `runsOn`. */
+  label?: string;
   /** The offerable plugin servers for a node label. Default: the gateway's
    *  plugin inventory view (empty in mono and when no node reports any). */
   pluginServers?: (label: string) => Record<string, PluginBridgeServer>;
@@ -249,7 +253,7 @@ export function bridgeExternalMcp(personaId: string | null | undefined, opts: Br
   // A name no registry entry lists gets its own config only: runsOnFor would
   // answer "default" for it, and a label is exactly what must not be guessed.
   if (named && !registry.lookupByName(named)) return own;
-  const plugins = (opts.pluginServers ?? pluginServersFor)(runsOnFor(named, registry));
+  const plugins = (opts.pluginServers ?? pluginServersFor)(opts.label ?? runsOnFor(named, registry));
   for (const [name, server] of Object.entries(plugins)) {
     // The persona's own configured server of the same name wins.
     if (!Object.hasOwn(own.servers, name)) own.servers[name] = { ...server } as McpServerConfig;

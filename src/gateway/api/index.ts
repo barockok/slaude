@@ -40,6 +40,7 @@
 import {
   authenticateNode,
   gateLabel,
+  jobLabel,
   JOB_HEADER,
   requireJobToken,
   type JobClaims,
@@ -174,7 +175,7 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       auth: "node+job",
       gate: "label",
       handle: async ({ req, seg, claims, node }) =>
-        tenantScoped(claims!, seg[1]!) ?? handleTenantRuntime(req, seg[1]!, claims!.persona || "default", { nodeId: node.id, sessionId: claims!.session }),
+        tenantScoped(claims!, seg[1]!) ?? handleTenantRuntime(req, seg[1]!, claims!.persona || "default", { nodeId: node.id, sessionId: claims!.session, label: jobLabel(claims!) }),
     },
     {
       // The owner is the token's signed runAs claim and nothing else: there is
@@ -231,7 +232,7 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
         const scoped = tenantScoped(claims!, seg[1]!);
         if (scoped) return scoped;
         if (claims!.persona !== seg[3]!) return json(403, { error: "job token is not scoped to this persona" });
-        return handleTenantRuntime(req, seg[1]!, seg[3]!, { nodeId: node.id, sessionId: claims!.session });
+        return handleTenantRuntime(req, seg[1]!, seg[3]!, { nodeId: node.id, sessionId: claims!.session, label: jobLabel(claims!) });
       },
     },
     {

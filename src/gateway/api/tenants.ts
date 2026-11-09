@@ -258,7 +258,7 @@ export async function providerRowsFingerprint(personaName: string, tenantId = "d
 
 /** A managed tenant: effective state only. Self-contained, so tiers 2 and 3
  *  (disk, env) are unreachable from it. Missing or tombstoned persona -> null. */
-async function buildManagedBundle(tenantId: string, personaId: string): Promise<RuntimeBundle | null> {
+async function buildManagedBundle(tenantId: string, personaId: string, label?: string): Promise<RuntimeBundle | null> {
   const effective = (await effectivePersonas(tenantId)).find((p) => p.name === personaId);
   if (!effective) return null;
   const own = declaresProvider(effective.provider);
@@ -282,7 +282,7 @@ async function buildManagedBundle(tenantId: string, personaId: string): Promise<
     // A persona's mcp holds resolved header and env secrets: a node gets the
     // bridged server names below, never the config.
     mcpJson: null,
-    mcpServers: bridgedServerNames(effective.name),
+    mcpServers: bridgedServerNames(effective.name, label ? { label } : {}),
     skillsPaths: skillRootsFor(effective.name),
     defaultModel: effective.model ?? env.model(),
     managed: true,
@@ -301,7 +301,9 @@ async function buildManagedBundle(tenantId: string, personaId: string): Promise<
  * persona sorted first in the tenant, so a second persona could never get its
  * own bundle.
  */
-async function buildBundle(tenantId: string, personaId: string): Promise<RuntimeBundle | null> {
+async function buildBundle(tenantId: string, personaId: string, label?: string): Promise<RuntimeBundle | null> {
+  // The names a session mounts follow the same signed label the bridge serves by.
+  const scope = label ? { label } : {};
   // The tenancy tables exist only on Postgres (P1 migrations). sqlite is decided
   // from configuration, never from a caught error: it is unmanaged, and its
   // "no such table" failures read as an empty registry so the implicit
@@ -311,7 +313,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
   const sqlite = resolveDbConfig().dialect === "sqlite";
   // Managed is decided FIRST, so everything after reads one consistent answer.
   const managed = sqlite ? false : await isManaged(tenantId);
-  if (managed) return buildManagedBundle(tenantId, personaId);
+  if (managed) return buildManagedBundle(tenantId, personaId, label);
 
   // Unmanaged: today's raw-row tier 1, then tiers 2 and 3.
   let tenant: { id: string } | null = null;
@@ -343,7 +345,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
       soulJson: typeof persona.soul_json === "string" ? JSON.parse(persona.soul_json) : persona.soul_json,
       slackUserId: persona.slack_user_id ?? null,
       mcpJson: null,
-      mcpServers: bridgedServerNames(persona.name),
+      mcpServers: bridgedServerNames(persona.name, scope),
       skillsPaths: skillRootsFor(persona.name),
       defaultModel: persona.model_default ?? env.model(),
     };
@@ -380,7 +382,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
       soulJson: null,
       slackUserId: fsPersona.slackUserId ?? null,
       mcpJson: null,
-      mcpServers: bridgedServerNames(personaId),
+      mcpServers: bridgedServerNames(personaId, scope),
       skillsPaths: skillRootsFor(personaId),
       defaultModel: env.model(),
     };
@@ -410,7 +412,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
     soulJson,
     slackUserId: null,
     mcpJson: null,
-    mcpServers: bridgedServerNames(undefined),
+    mcpServers: bridgedServerNames(undefined, scope),
     skillsPaths: skillRootsFor(),
     defaultModel: env.model(),
   };
@@ -457,11 +459,11 @@ export async function handleTenantRuntime(
   req: Request,
   tenantId: string,
   personaId: string,
-  ctx: { nodeId?: string; sessionId?: string | null } = {},
+  ctx: { nodeId?: string; sessionId?: string | null; label?: string } = {},
 ): Promise<Response> {
   let bundle: RuntimeBundle | null;
   try {
-    bundle = await buildBundle(tenantId, personaId);
+    bundle = await buildBundle(tenantId, personaId, ctx.label);
   } catch (e) {
     // The resolver already logged persona, scheme and reason. The body is
     // fixed: the reason, path and value stay on the gateway (WS-A §7).

@@ -5,22 +5,27 @@ import {
   computeSnapshot,
   currentSnapshot,
   EMPTY_SNAPSHOT,
+  loadInventory,
   pluginServersFor,
+  prunableInstances,
+  PRUNE_GRACE_MS,
   refreshPluginInventory,
   STALE_AFTER_MS,
   startPluginInventory,
 } from "../../../src/gateway/core/plugin-inventory";
+import { revokeNodeCredential } from "../../../src/gateway/auth/node-credential";
 import type { PersonaRegistry } from "../../../src/persona/registry";
 import type { NodePluginsRow } from "../../../src/db/node-plugins";
 import { oauthKey } from "../../../src/agent/mcp-oauth/store";
-import { STATE_NEEDS_HEADERS, STATE_OFFERABLE, STATE_WRITABLE } from "../../../src/config/plugin-inventory";
+import { STATE_DNS_PENDING, STATE_NEEDS_HEADERS, STATE_OFFERABLE, STATE_REFUSED_POLICY, STATE_WRITABLE } from "../../../src/config/plugin-inventory";
 
 const server = (name: string, url: string, state = STATE_OFFERABLE) => ({ name, url, state });
-const row = (nodeId: string, labels: string[], http: ReturnType<typeof server>[], plugin = "toolkit"): NodePluginsRow => ({
+const row = (nodeId: string, labels: string[], http: ReturnType<typeof server>[], plugin = "toolkit", instance = nodeId, reportedAt = 1): NodePluginsRow => ({
   nodeId,
+  instance,
   labels,
-  reportedAt: 1,
-  report: { plugins: [{ name: plugin, marketplace: "m", commit: null, skills: 0, commands: 0, agents: 0, hooks: 0, stdio: [], http: http as never }] },
+  reportedAt,
+  report: { instance, plugins: [{ name: plugin, marketplace: "m", commit: null, skills: 0, commands: 0, agents: 0, hooks: 0, stdio: [], http: http as never }] },
 });
 
 const reg = (personas: Record<string, { mcp?: unknown; runsOn?: string | null }>, defaultRunsOn: string | null = null): PersonaRegistry => ({
@@ -56,13 +61,33 @@ describe("computeSnapshot", () => {
     expect([...s.conflicts.get("gpu")!]).toEqual(["web"]);
   });
 
-  test("a URL disagreement from a node that is not offerable still blocks the offer", () => {
+  test("an unsealed disagreement cannot veto a sealed server: offered, with a warning", () => {
     const s = computeSnapshot(
-      [row("n1", ["gpu"], [server("web", "https://a.test/mcp")]), row("n2", ["gpu"], [server("web", "https://b.test/mcp", STATE_WRITABLE)])],
+      [row("n1", ["gpu"], [server("web", "https://a.test/mcp")]), row("n2", ["gpu"], [server("web", "https://attacker.test/mcp", STATE_WRITABLE)])],
       new Set(["n1", "n2"]),
     );
-    expect(s.servers.get("gpu")?.has("web") ?? false).toBe(false);
-    expect([...s.conflicts.get("gpu")!]).toEqual(["web"]);
+    expect(s.servers.get("gpu")?.get("web")?.url).toBe("https://a.test/mcp");
+    expect(s.conflicts.get("gpu")).toBeUndefined();
+    expect([...s.unsealedDisagreements.get("gpu")!]).toEqual(["web"]);
+  });
+
+  test("an unsealed report alone offers nothing and warns of nothing", () => {
+    const s = computeSnapshot([row("n2", ["gpu"], [server("web", "https://attacker.test/mcp", STATE_WRITABLE)])], new Set(["n2"]));
+    expect(s.servers.size).toBe(0);
+    expect(s.unsealedDisagreements.size).toBe(0);
+  });
+
+  test("two processes sharing a credential are compared and live separately", () => {
+    const rows = [row("shared", ["gpu"], [server("web", "https://a.test/mcp")], "toolkit", "p1"), row("shared", ["gpu"], [server("web", "https://b.test/mcp")], "toolkit", "p2")];
+    expect([...computeSnapshot(rows, new Set(["p1", "p2"])).conflicts.get("gpu")!]).toEqual(["web"]);
+    expect(computeSnapshot(rows, new Set(["p1"])).servers.get("gpu")?.get("web")?.url).toBe("https://a.test/mcp");
+    expect(computeSnapshot(rows, new Set()).servers.size).toBe(0);
+  });
+
+  test("a new process whose report failed does not inherit the previous process's row", () => {
+    // The credential is alive through p2, but p2 has no report; p1 (dead) does.
+    const rows = [row("n1", ["gpu"], [server("web", "https://old.test/mcp")], "toolkit", "p1")];
+    expect(computeSnapshot(rows, new Set(["p2"])).servers.size).toBe(0);
   });
 
   test("a different URL on another label is no conflict", () => {
@@ -117,6 +142,70 @@ describe("the view", () => {
   });
 });
 
+describe("loadInventory and refresh", () => {
+  const rows = [row("n1", ["gpu"], [server("web", "https://a.test/mcp")], "toolkit", "p1", 5_000)];
+
+  test("a revoked credential's earlier reports are filtered and removed", async () => {
+    const removed: string[] = [];
+    const h = await startPluginInventory(
+      { rows: async () => rows, live: async () => new Set(["p1"]), revokedBefore: async () => 10, remove: async (i) => void removed.push(...i) },
+      { intervalMs: 3_600_000 },
+    );
+    expect(pluginServersFor("gpu")).toEqual({});
+    expect(removed).toEqual(["p1"]);
+    h.stop();
+  });
+
+  test("a report made after the revocation (a fresh credential) still counts", async () => {
+    const out = await loadInventory({ rows: async () => rows, live: async () => new Set(["p1"]), revokedBefore: async () => 2 });
+    expect(out.rows).toHaveLength(1);
+    expect(out.revoked).toEqual([]);
+  });
+
+  test("sqlite cannot revoke (undefined): rows are kept", async () => {
+    const out = await loadInventory({ rows: async () => rows, live: async () => new Set(["p1"]), revokedBefore: async () => undefined });
+    expect(out.rows).toHaveLength(1);
+  });
+
+  test("a revocation source that fails keeps the last view rather than offering unchecked", async () => {
+    await expect(loadInventory({ rows: async () => rows, live: async () => new Set(["p1"]), revokedBefore: async () => { throw new Error("db down"); } })).rejects.toThrow("db down");
+  });
+
+  test("a DNS failure is re-evaluated at refresh, without a new report", async () => {
+    let resolves = false;
+    const pending = [row("n1", ["gpu"], [server("web", "https://a.example.com/mcp", STATE_DNS_PENDING)], "toolkit", "p1")];
+    const src = {
+      rows: async () => pending,
+      live: async () => new Set(["p1"]),
+      policy: { resolver: async () => { if (!resolves) throw new Error("SERVFAIL"); return [{ address: "93.184.216.34", family: 4 }]; } },
+    };
+    const h = await startPluginInventory(src, { intervalMs: 3_600_000 });
+    expect(pluginServersFor("gpu")).toEqual({});
+    resolves = true;
+    await refreshPluginInventory();
+    expect(pluginServersFor("gpu").web?.url).toBe("https://a.example.com/mcp");
+    h.stop();
+  });
+
+  test("a pending host that now resolves private is refused", async () => {
+    const pending = [row("n1", ["gpu"], [server("web", "https://a.example.com/mcp", STATE_DNS_PENDING)], "toolkit", "p1")];
+    const out = await loadInventory({ rows: async () => pending, live: async () => new Set(["p1"]), policy: { resolver: async () => [{ address: "10.0.0.1", family: 4 }] } });
+    expect(out.rows[0]!.report.plugins[0]!.http[0]!.state).toBe(STATE_REFUSED_POLICY);
+  });
+
+  test("pruning: keeps live rows, new rows and an offline credential's last report", () => {
+    const now = PRUNE_GRACE_MS * 10;
+    const old = 1;
+    const mk = (id: string, inst: string, at: number) => row(id, ["gpu"], [], "toolkit", inst, at);
+    const out = prunableInstances(
+      [mk("a", "a-live", old), mk("a", "a-dead", old), mk("a", "a-new", now - 1), mk("b", "b-old", old), mk("b", "b-newest", old + 1)],
+      new Set(["a-live"]),
+      now,
+    );
+    expect(out.sort()).toEqual(["a-dead", "b-old"]);
+  });
+});
+
 describe("bridge merge", () => {
   const offer = (label: string, ...servers: Array<[string, string]>) => {
     __setPluginInventorySnapshot(computeSnapshot([row("n1", [label], servers.map(([n, u]) => server(n, u)))], new Set(["n1"])));
@@ -128,6 +217,15 @@ describe("bridge merge", () => {
     expect(bridgedServerNames("onGpu", { registry: r })).toEqual(["web"]);
     expect(bridgedServerNames("onCpu", { registry: r })).toEqual([]);
     expect(bridgedServerNames(undefined, { registry: r })).toEqual([]);
+  });
+
+  test("a job's signed label decides, not the persona's current one", () => {
+    offer("gpu", ["web", "https://a.test/mcp"]);
+    const r = reg({ moved: { runsOn: "cpu" } });
+    expect(bridgedServerNames("moved", { registry: r })).toEqual([]);
+    expect(bridgedServerNames("moved", { registry: r, label: "gpu" })).toEqual(["web"]);
+    const stillGpu = reg({ left: { runsOn: "gpu" } });
+    expect(bridgedServerNames("left", { registry: stillGpu, label: "cpu" })).toEqual([]);
   });
 
   test("the persona's own server of the same name wins", () => {
@@ -183,5 +281,13 @@ describe("bridge merge", () => {
     offer("default", ["web", "https://other.test/mcp"]);
     const after = connectableServers("a", { servers: {}, privateServices: [] }, r, { role: "gateway" }).web!;
     expect(oauthKey("web", before)).not.toBe(oauthKey("web", after));
+  });
+});
+
+describe("revokeNodeCredential", () => {
+  test("deletes the credential's plugin rows", async () => {
+    const sql: string[] = [];
+    await revokeNodeCredential("n1", { run: async (q: string) => void sql.push(q) });
+    expect(sql.some((q) => q.includes("DELETE FROM node_plugins"))).toBe(true);
   });
 });

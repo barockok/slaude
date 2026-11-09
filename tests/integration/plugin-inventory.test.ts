@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { realEnabled, until, cleanupPrefix, setupScenarioEnv, teardownScenarioEnv, bootReplica, bootNode, REAL_URL, NODE_TOKEN, testPrefix, type Replica } from "./harness";
+import { realEnabled, until, cleanupPrefix, setupScenarioEnv, teardownScenarioEnv, bootReplica, bootNode, REAL_URL, testPrefix, type Replica } from "./harness";
 
 const d = describe.skipIf(!realEnabled || process.getuid?.() === 0);
 
@@ -27,6 +27,8 @@ let portal: typeof import("../../src/gateway/portal/integrations");
 let externalMcp: typeof import("../../src/gateway/core/external-mcp");
 const prefix = testPrefix("plugin-inv");
 const savedRole = process.env.SLAUDE_ROLE;
+const NODE_KEY = "plugin-inventory-node-key-0123456789abcdef";
+const INSTANCE = "scen-plugin-1a2b3c";
 
 /** A sealed image-owned root with one plugin. */
 function makeTree() {
@@ -56,17 +58,17 @@ d("plugin inventory, full path", () => {
     const { Redis } = await import("ioredis");
     const { makeKeys } = await import("../../src/queue/keys");
     const { makeRegistry } = await import("../../src/queue/registry");
-    const { LEGACY_NODE_ID } = await import("../../src/gateway/auth/node-credential");
+    process.env.SLAUDE_NODE_KEY = NODE_KEY;
     redis = new Redis(REAL_URL);
     keys = makeKeys(prefix);
     registry = makeRegistry({ redis, keys, heartbeatSec: 1, nodeTtlSec: 3 });
     gw = await bootReplica(keys);
-    node = await bootNode(keys, gw.url, { worker: { credentialId: LEGACY_NODE_ID } });
+    node = await bootNode(keys, gw.url, { nodeId: INSTANCE });
     portal = await import("../../src/gateway/portal/integrations");
     externalMcp = await import("../../src/gateway/core/external-mcp");
     const { startPluginInventory } = await import("../../src/gateway/core/plugin-inventory");
     const { listNodePlugins } = await import("../../src/db/node-plugins");
-    view = await startPluginInventory({ rows: listNodePlugins, live: (ids) => registry.liveCredentials(ids) }, { intervalMs: 100 });
+    view = await startPluginInventory({ rows: listNodePlugins, live: (ids) => registry.liveNodeIds(ids) }, { intervalMs: 100 });
   });
 
   afterAll(async () => {
@@ -81,6 +83,7 @@ d("plugin inventory, full path", () => {
     rmSync(tree, { recursive: true, force: true });
     teardownScenarioEnv();
     delete process.env.SLAUDE_PLUGIN_ROOT;
+    delete process.env.SLAUDE_NODE_KEY;
     if (savedRole === undefined) delete process.env.SLAUDE_ROLE;
     else process.env.SLAUDE_ROLE = savedRole;
   });
@@ -91,10 +94,12 @@ d("plugin inventory, full path", () => {
     const { STATE_OFFERABLE } = await import("../../src/config/plugin-inventory");
     const { pluginServersFor, refreshPluginInventory } = await import("../../src/gateway/core/plugin-inventory");
 
-    const report = buildPluginReport({ manifest: { servers: {} }, sealed: { boundary: tree } });
+    const report = buildPluginReport({ instance: INSTANCE, manifest: { servers: {} }, sealed: { boundary: tree, ownerOf: () => 0 } });
     expect(report.plugins[0]!.http[0]!.state).toBe(STATE_OFFERABLE);
 
-    const client = new NodeClient({ baseUrl: gw.url, token: NODE_TOKEN, baseDelayMs: 5 });
+    const { mintNodeCredential } = await import("../../src/gateway/auth/node-credential");
+    const token = mintNodeCredential({ id: "scen-plugin", labels: ["default"] }, { key: NODE_KEY });
+    const client = new NodeClient({ baseUrl: gw.url, token, baseDelayMs: 5 });
     expect(await client.putPlugins(report)).toBe("ok");
 
     await until(() => pluginServersFor("default").web?.url === "https://93.184.216.34/mcp", 5000);
@@ -104,9 +109,9 @@ d("plugin inventory, full path", () => {
     expect(rows.map((r) => [r.id, r.plugin, r.cfg.url])).toEqual([["web", "toolkit", "https://93.184.216.34/mcp"]]);
     expect(portal.configuredServer("web", rows)?.cfg.url).toBe("https://93.184.216.34/mcp");
 
-    // The only live credential goes away: the server leaves the portal.
+    // The reporting process goes away: the server leaves the portal.
     await node.worker.stop();
-    await redis.del(keys.nodeCredential((await import("../../src/gateway/auth/node-credential")).LEGACY_NODE_ID));
+    await redis.del(keys.node(INSTANCE));
     await refreshPluginInventory();
     expect(pluginServersFor("default")).toEqual({});
     expect(portal.portalServers({ global: { servers: {}, privateServices: [] } })).toEqual([]);

@@ -15,6 +15,7 @@ import { db } from "../../src/db/schema";
 import { bridgedServerNames } from "../../src/gateway/core/external-mcp";
 import { configuredServer, integrationsFor, portalServers } from "../../src/gateway/portal/integrations";
 import { NodeClient } from "../../src/node/client";
+import { handleTenantRuntime } from "../../src/gateway/api/tenants";
 import { STATE_OFFERABLE, STATE_REFUSED_POLICY, type PluginReport } from "../../src/config/plugin-inventory";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
 
@@ -44,7 +45,8 @@ const client = (id: string, labels: string[]) =>
     fetchImpl: (async (url: string, init: RequestInit) => (await v1.fetch(new Request(String(url), init)))!) as unknown as typeof fetch,
   });
 
-const reportOf = (servers: Array<[string, string, string?]>, plugin = "toolkit"): PluginReport => ({
+const reportOf = (servers: Array<[string, string, string?]>, instance = "proc-1", plugin = "toolkit"): PluginReport => ({
+  instance,
   plugins: [{ name: plugin, marketplace: "market", commit: "abcdef0", skills: 0, commands: 0, agents: 0, hooks: 0, stdio: [], http: servers.map(([name, url, state]) => ({ name, url, state: (state ?? STATE_OFFERABLE) as never })) }],
 });
 
@@ -88,9 +90,9 @@ describe("report to portal", () => {
   test("a live node's offerable server reaches the portal row and connect, for its own label's agents", async () => {
     await startView();
     expect(await client("node-gpu", ["gpu"]).putPlugins(reportOf([["web", "https://mcp.example.com/x"]]))).toBe("ok");
-    expect((await listNodePlugins())[0]).toMatchObject({ nodeId: "node-gpu", labels: ["gpu"] });
+    expect((await listNodePlugins())[0]).toMatchObject({ nodeId: "node-gpu", instance: "proc-1", labels: ["gpu"] });
 
-    live = new Set(["node-gpu"]);
+    live = new Set(["proc-1"]);
     await new Promise((r) => setTimeout(r, 0)); // the report already refreshed; refresh again with it live
     const { refreshPluginInventory } = await import("../../src/gateway/core/plugin-inventory");
     await refreshPluginInventory();
@@ -112,7 +114,7 @@ describe("report to portal", () => {
   test("a report for a private address is stored as refused and never offered", async () => {
     await startView();
     await client("node-gpu", ["gpu"]).putPlugins(reportOf([["web", "https://10.1.2.3/mcp"]]));
-    live = new Set(["node-gpu"]);
+    live = new Set(["proc-1"]);
     const { refreshPluginInventory } = await import("../../src/gateway/core/plugin-inventory");
     await refreshPluginInventory();
     expect((await listNodePlugins())[0]!.report.plugins[0]!.http[0]!.state).toBe(STATE_REFUSED_POLICY);
@@ -120,15 +122,37 @@ describe("report to portal", () => {
     expect(portalServers()).toEqual([]);
   });
 
-  test("the next report replaces the node's previous one", async () => {
+  test("one report per process stands; a new process has its own row and its own liveness", async () => {
     await startView();
     const c = client("node-gpu", ["gpu"]);
-    await c.putPlugins(reportOf([["web", "https://mcp.example.com/x"]]));
-    await c.putPlugins(reportOf([["other", "https://mcp.example.com/y"]]));
-    live = new Set(["node-gpu"]);
+    expect(await c.putPlugins(reportOf([["web", "https://mcp.example.com/x"]], "proc-1"))).toBe("ok");
+    expect(await c.putPlugins(reportOf([["evil", "https://mcp.example.com/evil"]], "proc-1"))).toBe("duplicate");
+    expect(await c.putPlugins(reportOf([["other", "https://mcp.example.com/y"]], "proc-2"))).toBe("ok");
+    expect(await listNodePlugins()).toHaveLength(2);
     const { refreshPluginInventory } = await import("../../src/gateway/core/plugin-inventory");
+    live = new Set(["proc-2"]);
     await refreshPluginInventory();
     expect(Object.keys(pluginServersFor("gpu"))).toEqual(["other"]);
+  });
+
+  test("a second credential cannot claim a process another credential reported", async () => {
+    await startView();
+    expect(await client("node-gpu", ["gpu"]).putPlugins(reportOf([["web", "https://mcp.example.com/x"]], "proc-1"))).toBe("ok");
+    expect(await client("node-other", ["gpu"]).putPlugins(reportOf([["evil", "https://mcp.example.com/evil"]], "proc-1"))).toBe("duplicate");
     expect(await listNodePlugins()).toHaveLength(1);
+  });
+
+  test("the runtime bundle's server names follow the job's signed label", async () => {
+    await startView();
+    await client("node-gpu", ["gpu"]).putPlugins(reportOf([["web", "https://mcp.example.com/x"]]));
+    live = new Set(["proc-1"]);
+    const { refreshPluginInventory } = await import("../../src/gateway/core/plugin-inventory");
+    await refreshPluginInventory();
+    const names = async (label?: string) => {
+      const res = await handleTenantRuntime(new Request("http://gw/x"), "default", "default", label ? { label } : {});
+      return ((await res.json()) as { mcpServers: string[] }).mcpServers;
+    };
+    expect(await names("gpu")).toEqual(["web"]);
+    expect(await names()).toEqual([]);
   });
 });
