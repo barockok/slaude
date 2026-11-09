@@ -50,6 +50,7 @@ const NO_TENANT_TABLES = new Set([
   "portal_oauth_flows",
   "slack_oauth_flows",
   "remote_keys",
+  "node_plugins", // a node credential is deployment-global, like node_revocations
 ]);
 
 // Tables that exist only on sqlite (legacy; dropped from the pg schema). None

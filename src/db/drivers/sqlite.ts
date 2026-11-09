@@ -454,6 +454,13 @@ CREATE TABLE IF NOT EXISTS guardrails_manifest (
   hmac       TEXT    NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS node_plugins (
+  node_id     TEXT    PRIMARY KEY,
+  labels      TEXT    NOT NULL,
+  reported_at INTEGER NOT NULL,
+  report      TEXT    NOT NULL
+);
 `;
 
 /** Create tables + apply the incremental column migrations on an existing sqlite file. */
