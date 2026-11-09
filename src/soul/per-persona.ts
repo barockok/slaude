@@ -1,6 +1,6 @@
 import { SoulDataSchema, type ChannelOverride, type SoulData } from "./data";
 import { soulData, soulForChannel, withManagerApprover } from "./extract";
-import { getPersonaRegistry } from "../persona/registry";
+import { getPersonaRegistry, managedPersonaDefinition } from "../persona/registry";
 
 /**
  * Structured soul per persona. `soulData()` and `effectiveSoulForChannel()` are
@@ -56,6 +56,33 @@ function ownSoul(persona: string): SoulData | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The structure of a persona defined by an agent.yaml: compiled at sync and
+ * stored as `soul_json`, the only source for it. Its soul text is prose and
+ * has no extraction, so readers that look in the extraction cache or parse
+ * the text ask here first. Null for any other persona. The default persona's
+ * compiled structure is the process-wide soul, runtime overrides included.
+ */
+export function compiledSoulFor(persona: string | null | undefined): SoulData | null {
+  try {
+    if (!persona || persona === "default") return managedPersonaDefinition(undefined) ? soulData() : null;
+    const r = getPersonaRegistry();
+    const p = r.lookupByName(persona);
+    if (!p?.definition || p.soulJson == null) return null;
+    return parseSoul(p.soulJson);
+  } catch {
+    return null;
+  }
+}
+
+/** `compiledSoulFor` with the channel lists that class a channel for this persona (inherited ones included). */
+export function compiledPromptSoul(persona: string | null | undefined): SoulData | null {
+  const own = compiledSoulFor(persona);
+  if (!own) return null;
+  const { trustedChannels, allowedChannels } = soulDataFor(persona);
+  return { ...own, trustedChannels, allowedChannels };
 }
 
 const EMPTY: SoulData = SoulDataSchema.parse({});
