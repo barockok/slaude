@@ -6,6 +6,7 @@ import { loadSoul, soulSystemBlock, loadApproverEntries } from "./loader";
 import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData, type ApproverEntry } from "./data";
 import { applyOverrides } from "./overrides";
 import { resolveSoulMandate, usesScopedMandates } from "./mandate-scope";
+import { parseScopedMandates } from "./proactive";
 import * as SoulOverrides from "../db/soul-overrides";
 import { masterKey } from "../db/crypto";
 
@@ -222,10 +223,33 @@ function assertIdsGroundedInPersona(data: SoulData, persona: string): void {
   }
 }
 
-/** Regex-derived fallback. Only fills `approvers` — other fields stay empty. */
+/** Regex-derived fallback. Fills `approvers`, and a scoped soul's mandates; other fields stay empty. */
 function regexFallback(): SoulData {
   const entries = loadApproverEntries() ?? [];
-  return SoulDataSchema.parse({ approvers: entries });
+  return SoulDataSchema.parse({ approvers: entries, ...scopedMandatesFallback() });
+}
+
+/**
+ * A soul using the scoped syntax keeps its mandates through an extraction
+ * outage, from the deterministic parse: losing a `reduce` would widen what the
+ * agent does exactly when the model is down. Channel lists stay out of the
+ * fallback (they would widen admission), so a `## Scope public|trusted` cannot
+ * match until extraction returns. Any other soul falls back as it always has.
+ */
+function scopedMandatesFallback(): Partial<SoulData> {
+  try {
+    const text = loadSoul();
+    if (!usesScopedMandates(text)) return {};
+    const parsed = parseScopedMandates(text);
+    const fields = {
+      ...(parsed.global.trim() ? { mandate: parsed.global.trim() } : {}),
+      channelOverrides: Object.entries(parsed.channels).map(([channel, mandate]) => ({ channel, mandate, mandateMode: parsed.modes[channel], approvers: [] })),
+      scopeMandates: parsed.scopes,
+    };
+    return SoulDataSchema.partial().safeParse(fields).success ? fields : {};
+  } catch {
+    return {};
+  }
 }
 
 /**

@@ -3,6 +3,8 @@
  * `Mode:` line and no `## Scope` block resolves byte-identically to before.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { paths } from "../../src/config/home";
 import { AgentManager } from "../../src/agent/manager";
 import { personaMandates } from "../../src/background/scheduler";
 import * as SO from "../../src/db/soul-overrides";
@@ -10,7 +12,7 @@ import { withChannelClasses } from "../../src/gateway/api/tenants";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
 import type { Persona } from "../../src/persona/types";
 import { SoulDataSchema, type SoulData } from "../../src/soul/data";
-import { __resetSoulDataMemo, channelMandate, effectiveSoulForChannel, setSoulData } from "../../src/soul/extract";
+import { __resetSoulDataMemo, channelMandate, effectiveSoulForChannel, setSoulData, soulData } from "../../src/soul/extract";
 import { effectiveMandateIn, personaMandateText } from "../../src/soul/persona-mandates";
 import { effectiveSoulForChannelFor } from "../../src/soul/per-persona";
 import { makeNodeVoiceHost } from "../../src/voice/hosts";
@@ -205,5 +207,41 @@ describe("scheduler parts", () => {
     expect(m.parts!.D0ALICE).toBeUndefined();
     setSoulData(LEGACY);
     expect(personaMandates("default", ["COVER"]).parts).toBeUndefined();
+  });
+});
+
+describe("extraction outage: the approvers-only fallback", () => {
+  const useSoul = (text: string) => {
+    writeFileSync(paths.soul, text);
+    __resetSoulDataMemo();
+  };
+  let saved: string | null = null;
+  beforeEach(() => {
+    saved = existsSync(paths.soul) ? readFileSync(paths.soul, "utf8") : null;
+  });
+  afterEach(() => {
+    if (saved === null) rmSync(paths.soul, { force: true });
+    else writeFileSync(paths.soul, saved);
+  });
+
+  const scoped = "## Mandate\nHelp.\n\n## Channel C0OPS\n### Mandate\nMode: reduce\nNo paging.\n\n## Scope dm\n### Mandate\nMode: extend\nBe brief.\n\n## Scope public\n### Mandate\nQuiet.\n";
+
+  test("a scoped soul keeps its global, channel and dm mandates by their modes", () => {
+    useSoul(scoped);
+    expect(effectiveSoulForChannel("C0OPS").mandate).toBe("Help.\n\nLimit for this channel (this narrows the mandate above and wins over it wherever they conflict):\nNo paging.");
+    expect(effectiveSoulForChannel("D0ALICE").mandate).toContain("Be brief.");
+    expect(effectiveSoulForChannel("C0ELSE").mandate).toBe("Help.");
+  });
+
+  test("no channel list is invented, so admission does not widen", () => {
+    useSoul(`${scoped}\n## Allowed channels\n- C0PUBLIC\n`);
+    expect(soulData().allowedChannels).toEqual([]);
+    expect(soulData().trustedChannels).toEqual([]);
+  });
+
+  test("a soul without the syntax falls back as it always has", () => {
+    useSoul("## Mandate\nHelp.\n\n## Channel C0OPS\n### Mandate\nOwn.\n");
+    expect(soulData().mandate).toBeUndefined();
+    expect(soulData().channelOverrides).toEqual([]);
   });
 });
