@@ -348,10 +348,6 @@ existed, keep the model they were created with until `/model` changes it.
   on Postgres a managed persona's external MCP servers come from its effective
   `mcp` (nothing when it has none; the default persona falls back to the
   global `.mcp.json`).
-- **In `mono`, a named persona's channel mandate is the default persona's.**
-  Nodes take each persona's channel mandate from its own structured soul; the
-  `mono` process still uses the default persona's channel overrides for every
-  persona.
 - **Required before merge, not yet run:** the sync's compare-and-set against a
   real Postgres, and the k8s-local cluster proof
   (`deploy/k8s-local/verify-ha.sh`, the "personas as code" section, including

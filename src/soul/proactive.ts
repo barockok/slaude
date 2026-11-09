@@ -29,6 +29,8 @@
  * through runtime overrides (src/soul/overrides.ts), never by a command. Only
  * the SOUL can raise it; a person's profile can only lower it (restraint.ts).
  */
+import type { MandateMode, ScopeMandate } from "./data";
+import { parseModeLine } from "./mandate-scope";
 import { createHash } from "node:crypto";
 import { personaSoulText } from "../persona/soul-source";
 import { parseLevel, type Level } from "../proactive/levels";
@@ -300,14 +302,33 @@ export function parseManager(text: string): string | null {
   return null;
 }
 
+/** The mandates in a SOUL text, with each sub-mandate's mode and the scope blocks. */
+export interface ParsedMandates {
+  global: string;
+  channels: Record<string, string>;
+  /** Channel id -> its `Mode:` line, only when it wrote one. */
+  modes: Record<string, MandateMode>;
+  scopes: ScopeMandate[];
+  /** `<place>: <value>` for each `Mode:` line whose value is not a known mode (read as extend). */
+  unknownModes: string[];
+}
+
 /**
- * A persona's mandates from the SOUL text: `## Mandate`, and `### Mandate` per
- * channel. For when the LLM extraction has not run for this exact soul text.
+ * A persona's mandates from the SOUL text: `## Mandate`, `### Mandate` per
+ * channel and per `## Scope dm|public|trusted`, each with an optional first
+ * `Mode:` line. For when the LLM extraction has not run for this exact soul text.
  */
-export function parseMandates(text: string): { global: string; channels: Record<string, string> } {
-  const out: { global: string[]; channels: Record<string, string[]> } = { global: [], channels: {} };
+export function parseScopedMandates(text: string): ParsedMandates {
+  const global: string[] = [];
+  const channels: Record<string, string[]> = {};
+  const scopes: Record<string, string[]> = {};
+  const modes: Record<string, MandateMode> = {};
+  const unknownModes: string[] = [];
   let target: string[] | null = null;
   let channel: string | null = null;
+  let scope: string | null = null;
+  /** The sub-mandate whose first line may still be a `Mode:` line. */
+  let openMode: string | null = null;
   let fenced = false;
   for (const line of text.split(/\r?\n/)) {
     if (/^\s*(```|~~~)/.test(line)) {
@@ -317,22 +338,58 @@ export function parseMandates(text: string): { global: string; channels: Record<
     if (fenced) continue;
     if (/^##\s/.test(line)) {
       channel = /^##\s+channel\b/i.test(line) ? channelOf(line) : null;
-      target = /^##\s+mandate\s*$/i.test(line.trim()) ? out.global : null;
+      scope = /^##\s+scope\s+(dm|public|trusted)\s*$/i.exec(line.trim())?.[1]?.toLowerCase() ?? null;
+      target = /^##\s+mandate\s*$/i.test(line.trim()) ? global : null;
+      openMode = null;
       continue;
     }
     if (/^#\s/.test(line)) {
       channel = null;
+      scope = null;
       target = null;
+      openMode = null;
       continue;
     }
     if (/^###\s/.test(line)) {
-      target = channel && /^###\s+mandate\s*$/i.test(line.trim()) ? (out.channels[channel] ??= []) : null;
+      const isMandate = /^###\s+mandate\s*$/i.test(line.trim());
+      target = isMandate && channel ? (channels[channel] ??= []) : isMandate && scope ? (scopes[scope] ??= []) : null;
+      openMode = target && (channel ?? (scope ? `scope:${scope}` : null));
       continue;
     }
     const body = line.trim().replace(/^[-*]\s+/, "");
-    if (target && body) target.push(body);
+    if (!target || !body) continue;
+    if (openMode) {
+      const parsed = parseModeLine(body);
+      const key = openMode;
+      openMode = null;
+      if (parsed) {
+        modes[key] = parsed.mode;
+        if (parsed.unknown !== undefined) unknownModes.push(`${key}: ${parsed.unknown}`);
+        continue;
+      }
+    }
+    target.push(body);
   }
-  return { global: out.global.join(" "), channels: Object.fromEntries(Object.entries(out.channels).map(([c, v]) => [c, v.join(" ")])) };
+  const join = (o: Record<string, string[]>) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, v.join(" ")]));
+  const scopeMode = (s: string) => modes[`scope:${s}`];
+  const channelModes = Object.fromEntries(Object.entries(modes).filter(([k]) => !k.startsWith("scope:")));
+  return {
+    global: global.join(" "),
+    channels: join(channels),
+    modes: channelModes,
+    unknownModes,
+    scopes: Object.entries(join(scopes)).map(([s, mandate]) => ({
+      scope: s as ScopeMandate["scope"],
+      mandate,
+      ...(scopeMode(s) ? { mode: scopeMode(s) } : {}),
+    })),
+  };
+}
+
+/** The global mandate and each channel's own text. See {@link parseScopedMandates}. */
+export function parseMandates(text: string): { global: string; channels: Record<string, string> } {
+  const { global, channels } = parseScopedMandates(text);
+  return { global, channels };
 }
 
 export type WakeEligibility = { ok: true } | { ok: false; reason: "no-manager" | "no-act-destination" | null };

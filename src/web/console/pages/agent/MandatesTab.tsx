@@ -6,12 +6,25 @@ import { AgentSettings } from "../../components/SettingsFamilies";
 
 const GROUPS: Array<{ kind: MandateView["kind"]; label: string; hint: string }> = [
   { kind: "global", label: "Global", hint: "Applies to every admitted message." },
-  { kind: "channel", label: "Channels", hint: "Each channel block in the soul, on top of the global mandate." },
+  { kind: "channel", label: "Channels", hint: "Each channel block in the soul: it overrides, extends or reduces the global mandate in that channel." },
+  { kind: "scope", label: "Scopes", hint: "A sub-mandate for direct messages or a channel class. A channel's own block wins over these." },
   { kind: "heartbeat", label: "Heartbeat", hint: "What the agent watches on its own between messages." },
   { kind: "cron", label: "Crons", hint: "Scheduled prompts that run on their own." },
 ];
 
 const SOURCE_LABEL: Record<MandateView["source"], string> = { soul: "Soul", cron: "Cron", proactive: "Proactive" };
+
+const MODE_LABEL: Record<NonNullable<MandateView["mode"]>, string> = { override: "Override", extend: "Extend", reduce: "Reduce" };
+
+const MODE_TONE: Record<NonNullable<MandateView["mode"]>, "neutral" | "accent" | "warning"> = { override: "neutral", extend: "accent", reduce: "warning" };
+
+/** A sub-mandate's place in words. */
+export function boundaryLabel(b: NonNullable<MandateView["boundary"]>): string {
+  if (b === "dm") return "Direct messages";
+  if (b === "trust:public") return "Public channels";
+  if (b === "trust:trusted") return "Trusted channels";
+  return "This channel";
+}
 
 /** Slack's `<#C123>` channel reference, shown as `#C123`. */
 export const slackText = (s: string) => s.replace(/<#([A-Z0-9]+)(\|[^>]*)?>/g, "#$1");
@@ -64,6 +77,8 @@ function MandateCard({ m, persona }: { m: MandateView; persona: string }) {
       <header className="sl-mandate__head">
         <h3 className="sl-mandate__title">{slackText(m.title)}</h3>
         <span className="sl-mandate__badges">
+          {m.boundary && <Badge>{boundaryLabel(m.boundary)}</Badge>}
+          {m.mode && <Badge tone={MODE_TONE[m.mode]}>{MODE_LABEL[m.mode]}</Badge>}
           {m.proactive && (
             <Badge tone={m.proactive.enabled ? "accent" : "neutral"}>
               {m.proactive.enabled ? `Proactive${m.proactive.highest ? `: up to ${m.proactive.highest}` : ""}` : "Proactive off"}
@@ -84,7 +99,14 @@ function MandateCard({ m, persona }: { m: MandateView; persona: string }) {
       )}
 
       {m.inheritsGlobal && <p className="sl-faint">Inherits the global mandate</p>}
+      {m.effectiveFrom && <p className="sl-faint">Follows the {boundaryLabel(m.effectiveFrom).toLowerCase()} mandate</p>}
       {m.instructions && <Instructions text={m.instructions} />}
+      {m.effective && m.effective !== m.instructions && (
+        <div className="sl-mandate__effective">
+          <p className="sl-caption">What the agent reads here</p>
+          <Instructions text={m.effective} />
+        </div>
+      )}
 
       <dl className="sl-mandate__meta">
         {m.kind === "cron" && (

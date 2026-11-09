@@ -3,6 +3,7 @@
 // Exit code: 0 = ok, 1 = missing required fields, 2 = extraction failure.
 
 import { loadSoulData } from "../soul/extract";
+import { loadSoul } from "../soul/loader";
 import { validateSoul } from "../soul/validate";
 
 async function main() {
@@ -14,7 +15,7 @@ async function main() {
     process.exit(2);
   }
 
-  const r = validateSoul(data);
+  const r = validateSoul(data, loadSoul());
   if (r.missing.length) {
     console.error("[validate] missing required fields:");
     for (const m of r.missing) console.error(`  - ${m}`);

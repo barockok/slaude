@@ -5,6 +5,8 @@ import { paths } from "../config/home";
 import { loadSoul, soulSystemBlock, loadApproverEntries } from "./loader";
 import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData, type ApproverEntry } from "./data";
 import { applyOverrides } from "./overrides";
+import { resolveSoulMandate, usesScopedMandates } from "./mandate-scope";
+import { parseScopedMandates } from "./proactive";
 import * as SoulOverrides from "../db/soul-overrides";
 import { masterKey } from "../db/crypto";
 
@@ -28,7 +30,10 @@ function sha256(s: string): string {
 /** The cache file for a soul text: the single derivation, shared by extraction
  *  and anything that pre-seeds the cache (e.g. the k8s-local verifier). */
 export function soulCachePath(text: string): string {
-  return cachePath(sha256(text));
+  // A soul that uses the scoped-mandate syntax is keyed apart, so an extraction
+  // made before that syntax existed is never trusted. Every other soul keeps
+  // its key: nothing to re-extract, and no boot depends on the model again.
+  return cachePath(sha256(usesScopedMandates(text) ? `scoped-mandates/1\n${text}` : text));
 }
 
 /**
@@ -218,10 +223,33 @@ function assertIdsGroundedInPersona(data: SoulData, persona: string): void {
   }
 }
 
-/** Regex-derived fallback. Only fills `approvers` — other fields stay empty. */
+/** Regex-derived fallback. Fills `approvers`, and a scoped soul's mandates; other fields stay empty. */
 function regexFallback(): SoulData {
   const entries = loadApproverEntries() ?? [];
-  return SoulDataSchema.parse({ approvers: entries });
+  return SoulDataSchema.parse({ approvers: entries, ...scopedMandatesFallback() });
+}
+
+/**
+ * A soul using the scoped syntax keeps its mandates through an extraction
+ * outage, from the deterministic parse: losing a `reduce` would widen what the
+ * agent does exactly when the model is down. Channel lists stay out of the
+ * fallback (they would widen admission), so a `## Scope public|trusted` cannot
+ * match until extraction returns. Any other soul falls back as it always has.
+ */
+function scopedMandatesFallback(): Partial<SoulData> {
+  try {
+    const text = loadSoul();
+    if (!usesScopedMandates(text)) return {};
+    const parsed = parseScopedMandates(text);
+    const fields = {
+      ...(parsed.global.trim() ? { mandate: parsed.global.trim() } : {}),
+      channelOverrides: Object.entries(parsed.channels).map(([channel, mandate]) => ({ channel, mandate, mandateMode: parsed.modes[channel], approvers: [] })),
+      scopeMandates: parsed.scopes,
+    };
+    return SoulDataSchema.partial().safeParse(fields).success ? fields : {};
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -260,7 +288,7 @@ export async function extractSoulData(
   if (hit.why) console.warn(`[soul] cache invalid at ${cp}, re-extracting: ${hit.why}`);
 
   try {
-    const text = await call(soulSystemBlock(persona), EXTRACTION_PROMPT);
+    const text = await call(soulSystemBlock(persona, { keepScopes: true }), EXTRACTION_PROMPT);
     const raw = parseJsonLoose(text);
     const data = SoulDataSchema.parse(raw);
     // Defense in depth: every extracted Slack id MUST appear verbatim in
@@ -352,19 +380,27 @@ export function channelMandate(soul: SoulData, channelId: string): string | null
   return m || null;
 }
 
+/**
+ * `base` narrowed to one channel: the mandate from the resolver (the most
+ * specific sub-mandate, by its mode), approvers from the channel's own block.
+ * Nothing applying returns `base` itself.
+ */
+export function soulForChannel(base: SoulData, channelId: string): SoulData {
+  const ov = base.channelOverrides.find((c) => c.channel === channelId);
+  const resolved = resolveSoulMandate(base, channelId, base);
+  if (!ov && !resolved.applied) return base;
+  return {
+    ...base,
+    mandate: resolved.applied ? resolved.text : base.mandate,
+    approvers: ov?.approvers.length ? withManagerApprover(ov.approvers, base) : base.approvers,
+  };
+}
+
 export function effectiveSoulForChannel(channelId?: string): SoulData {
   const base = soulData();
   if (!channelId) return base;
   try {
-    const ov = base.channelOverrides.find((c) => c.channel === channelId);
-    if (!ov) return base;
-    return {
-      ...base,
-      mandate: channelMandate(base, channelId) ?? base.mandate,
-      approvers: ov.approvers.length
-        ? withManagerApprover(ov.approvers, base)
-        : base.approvers,
-    };
+    return soulForChannel(base, channelId);
   } catch {
     return base;
   }

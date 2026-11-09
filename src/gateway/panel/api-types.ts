@@ -43,9 +43,11 @@ export interface AgentsResponse {
 
 export type ProactiveLevel = "ignore" | "inform" | "ask" | "act";
 
+export type MandateBoundaryView = `channel:${string}` | "trust:public" | "trust:trusted" | "dm";
+
 export interface MandateView {
   id: string;
-  kind: "global" | "channel" | "cron" | "heartbeat";
+  kind: "global" | "channel" | "scope" | "cron" | "heartbeat";
   title: string;
   instructions: string;
   triggers: string[];
@@ -56,6 +58,14 @@ export interface MandateView {
   schedule?: string;
   proactive?: { enabled: boolean; highest?: ProactiveLevel };
   inheritsGlobal?: boolean;
+  /** A sub-mandate's place. */
+  boundary?: MandateBoundaryView;
+  /** How a sub-mandate combines with the global mandate. */
+  mode?: "override" | "extend" | "reduce";
+  /** The mandate the agent reads in this place. */
+  effective?: string;
+  /** Which sub-mandate shaped `effective`, when it is not this card's own. */
+  effectiveFrom?: MandateBoundaryView;
   approverNote?: string;
   /** `#name` of `channelId` when the gateway could resolve it. Titles and triggers already use it. */
   channelLabel?: string;

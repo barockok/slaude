@@ -283,6 +283,16 @@ describe("runHeartbeat", () => {
       expect(p).not.toContain("x".repeat(MANDATE_MAX + 1));
     });
 
+    test("an extend or reduce: only the global part is cut, a limit over MANDATE_MAX is carried whole", async () => {
+      const limit = `Limit for this channel (wins):\n${"never pay ".repeat(100).trim()}`;
+      const global = "g".repeat(MANDATE_MAX + 200);
+      const h = round({ soul: ON, items: [], mandates: () => ({ global: "g", channels: { C0ON: `${global}\n\n${limit}` }, parts: { C0ON: { global, addition: limit } } }) });
+      await h.go();
+      const p = h.specs[0]!.prompt;
+      expect(p).toContain(`- <#C0ON>: ${"g".repeat(MANDATE_MAX)}… Limit for this channel (wins): ${"never pay ".repeat(100).trim()}`);
+      expect(p).not.toContain("g".repeat(MANDATE_MAX + 1));
+    });
+
     test("the mandates are asked for the round's own persona and its enabled channels", async () => {
       const asked: Array<[string, readonly string[]]> = [];
       const h = round({ soul: ON, items: [], mandates: (p, c) => (asked.push([p, c]), { global: "g", channels: {} }) });

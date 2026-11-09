@@ -61,13 +61,13 @@ Code: `src/mandate/index.ts` (`listMandates`), `src/soul/per-persona.ts`
 3. Two rows for persona `default`; the second paused.
 4. `mandates` has exactly four entries, in this order (the API's order):
    - `{ id: "global", kind: "global", title: "Global mandate", instructions: "Answer questions from the team about the integration test environment.", triggers: ["any admitted message"], approvers: ["UAPPR"], source: "soul", approverNote: "scope-matched per request" }`
-   - `{ id: "channel:COPS", kind: "channel", title: "Mandate in <#COPS>", instructions: "Watch the ops channel and summarise incidents.", triggers: ["messages in <#COPS>"], approvers: ["UOPSLEAD", "UMGR", "UBACKUP"], source: "soul", channelId: "COPS" }`
+   - `{ id: "channel:COPS", kind: "channel", title: "Mandate in <#COPS>", instructions: "Watch the ops channel and summarise incidents.", triggers: ["messages in <#COPS>"], approvers: ["UOPSLEAD", "UMGR", "UBACKUP"], source: "soul", channelId: "COPS", boundary: "channel:COPS", mode: "override", effective: "Watch the ops channel and summarise incidents." }`
    - `{ id: "heartbeat", kind: "heartbeat", title: "Heartbeat", instructions: "Watches: tracker. Highest action: ignore.", triggers: ["heartbeat round"], approvers: ["UAPPR"], source: "proactive" }`
    - `{ id: "cron:<id>", kind: "cron", title: "weekly status digest for the team", triggers: ["cron 0 9 * * 1"], approvers: ["UAPPR"], source: "cron", channelId: "CTEAM", schedule: "0 9 * * 1", lastRunAt: null }`
    The paused cron is absent.
 5. Sections `Global`, `Channels`, `Heartbeat`, `Crons` with the hints
    `Applies to every admitted message.`,
-   `Each channel block in the soul, on top of the global mandate.`,
+   `Each channel block in the soul: it overrides, extends or reduces the global mandate in that channel.`,
    `What the agent watches on its own between messages.`,
    `Scheduled prompts that run on their own.`; source badges `Soul`, `Soul`,
    `Proactive`, `Cron`; the cron shows `Schedule` `0 9 * * 1` and `Last run`
