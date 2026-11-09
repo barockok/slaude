@@ -131,23 +131,26 @@ describe("the prompt of a compiled soul", () => {
 describe("the skill list", () => {
   const home = homeSkillNamespace();
   const allowed = new Set(["triage"]);
+  const mounted = new Set(["some-plugin"]);
 
   test("names outside the list are refused; built-ins and plugin skills are not limited", () => {
-    expect(isSkillAllowed("triage", allowed)).toBe(true);
-    expect(isSkillAllowed(`${home}:triage`, allowed)).toBe(true);
-    expect(isSkillAllowed("other", allowed)).toBe(false);
-    expect(isSkillAllowed(`${home}:other`, allowed)).toBe(false);
-    expect(isSkillAllowed("slaude:memory", allowed)).toBe(true);
-    expect(isSkillAllowed("some-plugin:pdf", allowed)).toBe(true);
+    expect(isSkillAllowed("triage", allowed, mounted)).toBe(true);
+    expect(isSkillAllowed(`${home}:triage`, allowed, mounted)).toBe(true);
+    expect(isSkillAllowed("other", allowed, mounted)).toBe(false);
+    expect(isSkillAllowed(`${home}:other`, allowed, mounted)).toBe(false);
+    expect(isSkillAllowed("slaude:memory", allowed, mounted)).toBe(true);
+    expect(isSkillAllowed("some-plugin:pdf", allowed, mounted)).toBe(true);
+    // Default deny: a namespace this session did not mount is not assumed to be a plugin.
+    expect(isSkillAllowed("not-mounted:pdf", allowed, mounted)).toBe(false);
     // A name in the built-in namespace that is not a built-in has no free pass.
-    expect(isSkillAllowed("slaude:not-a-builtin", allowed)).toBe(false);
+    expect(isSkillAllowed("slaude:not-a-builtin", allowed, mounted)).toBe(false);
   });
 
   test("the gate denies the Skill tool outside the list and leaves other tools alone", async () => {
     const gate = new SkillGate();
     gate.reset("s");
     gate.markMounted("s", false);
-    gate.setAllowedSkills("s", ["triage"]);
+    gate.setSkillListSource("s", { read: async () => ["triage"], initial: ["triage"], mounted: new Set() });
     const call = (tool_name: string, tool_input: unknown) =>
       gate.pre("s")({ hook_event_name: "PreToolUse", tool_name, tool_input } as never, undefined, { signal: new AbortController().signal });
     const denied = await call("Skill", { skill: "/other" }) as { hookSpecificOutput?: { permissionDecision?: string } };
@@ -163,7 +166,7 @@ describe("the skill list", () => {
     const gate = new SkillGate();
     gate.reset("s");
     gate.markMounted("s", false);
-    gate.setAllowedSkills("s", null);
+    gate.setSkillListSource("s", { read: async () => null, initial: null, mounted: new Set() });
     const r = await gate.pre("s")({ hook_event_name: "PreToolUse", tool_name: "Skill", tool_input: { skill: "anything" } } as never, undefined, { signal: new AbortController().signal });
     expect(r).toEqual({});
   });
