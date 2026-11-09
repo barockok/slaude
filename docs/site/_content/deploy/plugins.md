@@ -134,13 +134,37 @@ The gateway reads the inventory into memory on start, after a report, and every
 
 ## What the guarantee rests on
 
-At start a Linux node makes itself non-dumpable, so a tool running at the node's
-uid cannot read the node's environment from `/proc` or ptrace it for its
-credential. The node warns if it cannot. This narrows the risk and does not
-remove it: **the automatic offer's full guarantee needs agent tools running under
-a separate uid from the node process.** Someone who holds a node's credential and
-a live process id can report a server URL and have it offered on that node's
-labels; existing credentials stay safe, because each is bound to its own URL.
+Start a node by executing its entry directly, as the shipped manifests do:
+
+```
+bun --no-env-file src/node/main.ts
+```
+
+Do not use `bun run worker`: it leaves a parent bun process, PID 1 in a container,
+holding the node's credential in an environment a same-uid tool can read.
+
+As its first step a Linux node makes itself non-dumpable, so a tool running at the
+node's uid cannot read the node's environment from `/proc` or ptrace it for its
+credential. This also **disables core dumps** of the node process; debug a crash
+from logs, or run a debug build without it. The node warns if it cannot do this.
+
+**The automatic offer's guarantee depends on that direct-exec entry plus `prctl` on
+Linux, and its full guarantee needs agent tools running under a separate uid from
+the node process.** The gateway cannot tell a forged report from a real one if a
+node's token is stolen: someone holding the token and Redis access can report a
+server URL and have it offered on that node's labels. Existing credentials stay
+safe, because each is bound to its own URL.
+
+A node does not read `$SLAUDE_HOME/.env`, which agent turns can write. Put a node's
+settings (`SLAUDE_GATEWAY_URL`, `SLAUDE_NODE_TOKEN`, `SLAUDE_REDIS_URL` and the
+rest) in its real environment. A node that kept them in that file stops at boot
+with `SLAUDE_NODE_TOKEN is not set`, or uses a default. Gateways and mono still
+read the file.
+
+A credential holds at most 256 report rows, and each row lasts until its process
+has been unseen for 7 days. A node past the cap logs a warning and starts without
+a report, so its servers are not offered. Many restarts a day on one shared
+credential can reach that; mint one credential per pool.
 
 A node without plugins, or a deployment with none, sees an empty page and no
 change in behavior. Mono mode is unchanged.

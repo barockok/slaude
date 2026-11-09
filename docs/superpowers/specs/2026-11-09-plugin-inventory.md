@@ -76,7 +76,8 @@ Rules:
   one gets 409. A process id is unique across credentials.
 - **Per-process liveness.** A report counts only while the process that sent it
   heartbeats under its id, so a new process whose report failed does not inherit
-  the previous process's servers.
+  the previous process's servers. A row goes only after 7 days unseen and a fresh
+  check that the process is gone, so a live process's report slot never reopens.
 - **No secrets.** The report carries no header or env value and strips userinfo,
   query and fragment from URLs. An HTTP server that declares headers is listed
   with the state `not offered: needs static headers`, because the bridge would
@@ -88,8 +89,8 @@ Rules:
   node credential, never from the report body. The shared `legacy` token names no
   one machine: its report is listed with `not offered: node uses the shared
   legacy token`.
-- **Revocation.** Revoking a credential deletes its rows, and each refresh ignores
-  rows reported before the credential's revocation time. On sqlite there is no
+- **Revocation.** Revoking a credential deletes its rows, and each refresh voids
+  a row whose credential was issued (`iat`) before the revocation time. On sqlite there is no
   `node_revocations` table, so a credential cannot be revoked there at all.
 - **URL guards.** `https` only, checked against the outbound policy. A DNS failure
   is `not offered: host did not resolve`, distinct from a policy refusal and
@@ -98,23 +99,39 @@ Rules:
 - **Portal disclosure.** The connect row names the plugin and host.
 - **Bridge label.** A job's server list is scoped by the job's signed label, not
   the persona's current one.
-- **Process hardening.** At start a Linux node makes itself non-dumpable
-  (`PR_SET_DUMPABLE`), so a same-uid tool cannot read `/proc/<pid>/environ` or
-  ptrace it for `SLAUDE_NODE_TOKEN`. Best effort: it warns when it cannot.
+- **Process hardening.** Nodes are started by executing `src/node/main.ts`
+  directly; `bun run worker` would leave a parent (PID 1 in a container) holding
+  the credential, and the shipped manifests are tested against it. As the entry's
+  first import a Linux node makes itself non-dumpable (`PR_SET_DUMPABLE`), so a
+  same-uid tool cannot read `/proc/<pid>/environ` or ptrace it for
+  `SLAUDE_NODE_TOKEN`. This also disables its core dumps. Best effort: it warns
+  when it cannot.
+- **No `.env` on a node.** A node never reads `$SLAUDE_HOME/.env`, so a turn
+  cannot set `SLAUDE_GATEWAY_URL`, `NODE_TLS_REJECT_UNAUTHORIZED` or the like for
+  the next start. Its settings come from its real environment.
+- **Bounded input.** A node may send only the states a node can know; a state the
+  gateway decides is an invalid entry. One credential holds at most 256 rows, and
+  a report triggers at most one refresh per 5 seconds.
 
 Remaining risks, accepted with the automatic offer:
 
-- An attacker who fully owns a node (its credential, not just an agent turn) can
-  report a server URL and have it offered, if it also holds a live process id in
-  Redis. They gain a phishing surface and a tool server for agents on that label.
-  They do not gain existing credentials, because those are bound to their own
-  URLs.
-- **The automatic offer's full guarantee needs agent tools running under a
-  separate uid from the node process.** With tools at the node's uid, non-dumpable
-  narrows the route to the node's credential but does not close every one (a
-  platform without `prctl`, a kernel or container that allows the read, a token
-  placed on a readable path). The sealed check protects the plugin files in
-  either case.
+- **The gateway cannot tell a forged report from a real one if the node's token is
+  stolen.** A report is a claim made with a bearer credential. The rules above
+  limit what a holder can do (the first report per process stands, a report counts
+  only under a heartbeating process id, input is bounded), but someone holding the
+  token and Redis access can report a server URL under a process id that has not
+  reported, and have it offered on that credential's labels. They gain a phishing
+  surface and a tool server for agents on those labels. They do not gain existing
+  credentials, because those are bound to their own URLs.
+- **The automatic offer's guarantee against an agent turn depends on the
+  direct-exec entry plus `prctl` on Linux.** Together they keep the token out of a
+  same-uid tool's reach through `/proc` and ptrace. A deployment that starts the
+  node another way, a platform without `prctl`, or a kernel or container that
+  allows the read loses that protection, and the node only warns.
+- **The full guarantee needs agent tools running under a separate uid from the
+  node process.** At the node's uid, other routes to the token remain possible
+  (a token placed on a readable path, for instance). The sealed check protects
+  the plugin files in either case.
 
 ## Design
 
@@ -128,13 +145,14 @@ names the process id the node heartbeats under.
 
 Storage is a new table, one row per credential and process: node id, process id,
 labels, `reported_at`, and the report as JSON, in both the Postgres migrations
-and the sqlite schema. A refresh prunes rows of dead processes, keeping an
-offline credential's latest report for the console.
+and the sqlite schema, plus the credential's issue time and when the process was
+last seen. A refresh prunes rows of long-dead processes, keeping an offline
+credential's latest report for the console.
 
 A gateway older than this route answers 404, and the node logs it and continues.
 An invalid entry is dropped and logged; the rest of the report still counts. An
-oversized report is refused with 413, and a second report from one process with
-409.
+oversized report is refused with 413, a second report from one process with 409,
+and a report past the credential's row cap with 429.
 
 ### Bridge and portal
 

@@ -52,5 +52,8 @@ A URL change needs a new connect because the stored credential is keyed on the
 URL. Sealed reports disagreeing on a URL offer nothing rather than pick one.
 
 Residual: a tool at the node's uid is one step from the node's credential. A
-non-dumpable process closes the `/proc` route on Linux, but the automatic offer's
-full guarantee needs tools under a separate uid from the node.
+non-dumpable process closes the `/proc` route on Linux only if nothing else holds
+the token: `bun run worker` leaves an unhardened parent as PID 1 whose environment
+still has it, so nodes must exec the entry directly. The gateway cannot tell a
+forged report from a real one once a token is stolen, and the full guarantee needs
+tools under a separate uid from the node.
