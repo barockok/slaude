@@ -56,7 +56,6 @@ export function renderDir(
       const beside = LEGACY_FILES.filter((f) => existsSync(join(root, name, f)));
       if (beside.length) throw new PayloadError(`persona '${name}': ${AGENT_YAML} cannot sit beside ${beside.join(", ")}; delete those files, ${AGENT_YAML} replaces them`);
       const compiled = parseAgentYaml(name, agentYaml);
-      unknown.push(...compiled.unknown);
       definitionWarnings.push(...compiled.warnings);
       personas.push(compiled.spec);
       continue;
@@ -402,7 +401,7 @@ if (import.meta.main) {
         revision: flag("--revision") ?? process.env.GITHUB_SHA ?? "local",
         committedAt: flag("--committed-at") ?? new Date().toISOString(),
       }, (paths) => {
-        if (flags.has("--check")) console.error(`[personas] unknown fields (the gateway refuses them, or ignores them with SLAUDE_DEPLOY_STRICT=0): ${paths.join(", ")}`);
+        if (flags.has("--check")) console.error(`[personas] unknown persona.yaml keys, left out of the payload (the gateway never sees them): ${paths.join(", ")}`);
       }, (warnings) => {
         for (const w of warnings) console.error(`[personas] warning: ${w}`);
       });

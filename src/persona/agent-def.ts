@@ -9,6 +9,7 @@
  *
  * Errors name the persona and the key, never the value.
  */
+import { parse as parseYaml, YAMLParseError } from "yaml";
 import { GUARDRAIL_SLUG_RE } from "../guardrails/format";
 import { MANDATE_LINE_MAX, subMandatesOf, type SubMandate } from "../soul/mandate-scope";
 import { SoulDataSchema, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
@@ -59,8 +60,6 @@ export interface CompiledAgent {
     background?: unknown;
     definition: { description?: string; skills?: string[]; guardrails?: string[]; soulData: SoulData };
   };
-  /** `persona.<name>.<key>` paths the format has no field for (names only). */
-  unknown: string[];
   warnings: string[];
 }
 
@@ -71,19 +70,28 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   };
   let raw: unknown;
   try {
-    raw = Bun.YAML.parse(text);
+    // The `yaml` package refuses a duplicate key. Its message quotes the source
+    // line, so only its code and position are reported.
+    raw = parseYaml(text);
   } catch (e) {
-    throw new PayloadError(`persona '${name}': agent.yaml is not valid YAML (${(e as Error).message})`);
+    const where = e instanceof YAMLParseError ? `${e.code}${e.linePos ? ` at line ${e.linePos[0].line}` : ""}` : "unreadable";
+    throw new PayloadError(`persona '${name}': agent.yaml is not valid YAML (${where})`);
   }
   if (!isMap(raw)) fail("", "must be a mapping of the agent's fields");
   const doc = raw as Record<string, unknown>;
 
-  const unknown: string[] = [];
   const warnings: string[] = [];
-  const reportUnknown = (where: string, m: Record<string, unknown>, known: Set<string>) => {
-    for (const k of Object.keys(m)) if (!known.has(k)) unknown.push(`persona.${name}.${where}${safeKey(k)}`);
+  // A misspelt key must not silently leave an access list or a limit unset.
+  const refuseUnknown = (where: string, m: Record<string, unknown>, known: Set<string>) => {
+    for (const k of Object.keys(m)) if (!known.has(k)) fail(`${where}${safeKey(k)}`, "is not a known key");
   };
-  reportUnknown("", doc, TOP_KEYS);
+  refuseUnknown("", doc, TOP_KEYS);
+  // Absent and empty mean different things for these (every one, none), and a
+  // bare `key:` is neither: it fails rather than widen to "every".
+  const refuseNull = (key: string, m: Record<string, unknown>, field: string) => {
+    if (Object.hasOwn(m, field) && m[field] === null) fail(key, "has no value: list entries, write [] for none, or remove the key for all");
+  };
+  refuseNull("skills", doc, "skills");
 
   const str = (key: string, v: unknown): string | undefined => {
     if (v == null) return undefined;
@@ -133,12 +141,13 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const guardrails = slugs("guardrails", doc.guardrails, GUARDRAIL_SLUG_RE);
 
   const memory = asMap("memory", doc.memory);
-  reportUnknown("memory.", memory, MEMORY_KEYS);
+  refuseUnknown("memory.", memory, MEMORY_KEYS);
+  refuseNull("memory.kbSources", memory, "kbSources");
   if (memory.kbSources != null && !Array.isArray(memory.kbSources)) fail("memory.kbSources", "must be a list of knowledge-base ids");
   if (memory.background != null && !isMap(memory.background)) fail("memory.background", "must be a mapping");
 
   const mandate = asMap("mandate", doc.mandate);
-  reportUnknown("mandate.", mandate, MANDATE_KEYS);
+  refuseUnknown("mandate.", mandate, MANDATE_KEYS);
   const global = str("mandate.global", mandate.global);
   const channels = new Map<string, ChannelOverride>();
   const channelBlock = (channel: string): ChannelOverride => {
@@ -156,7 +165,7 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
     const key = `mandate.scoped[${i}]`;
     if (!isMap(entry)) fail(key, "must be a mapping with boundary, mode and text");
     const e = entry as Record<string, unknown>;
-    reportUnknown(`mandate.scoped.${i}.`, e, SCOPED_KEYS);
+    refuseUnknown(`${key}.`, e, SCOPED_KEYS);
     const boundary = e.boundary;
     if (typeof boundary !== "string" || !BOUNDARY_RE.test(boundary)) fail(`${key}.boundary`, "must be channel:<id>, trust:public, trust:trusted or dm");
     if (seenBoundary.has(boundary as string)) fail(`${key}.boundary`, "repeats an earlier boundary");
@@ -186,16 +195,16 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   });
 
   const access = asMap("access", doc.access);
-  reportUnknown("access.", access, ACCESS_KEYS);
+  refuseUnknown("access.", access, ACCESS_KEYS);
   const channelLists = asMap("access.channels", access.channels);
-  reportUnknown("access.channels.", channelLists, CHANNELS_KEYS);
+  refuseUnknown("access.channels.", channelLists, CHANNELS_KEYS);
   if (access.approvers != null && !Array.isArray(access.approvers)) fail("access.approvers", "must be a list of { user, scope, catchall }");
   const approvers: ApproverEntry[] = [];
   ((access.approvers ?? []) as unknown[]).forEach((entry, i) => {
     const key = `access.approvers[${i}]`;
     if (!isMap(entry)) fail(key, "must be a mapping with user, scope and catchall");
     const e = entry as Record<string, unknown>;
-    reportUnknown(`access.approvers.${i}.`, e, APPROVER_KEYS);
+    refuseUnknown(`${key}.`, e, APPROVER_KEYS);
     const user = id(`${key}.user`, e.user, USER_ID_RE, "Slack user id");
     if (user === undefined) fail(`${key}.user`, "is required");
     const scope = str(`${key}.scope`, e.scope);
@@ -266,7 +275,6 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
         soulData,
       },
     },
-    unknown,
     warnings,
   };
 }

@@ -79,7 +79,6 @@ function err(f: () => unknown): PayloadError {
 describe("parseAgentYaml", () => {
   test("a full file compiles to the payload's fields", () => {
     const c = parseAgentYaml("ana", FULL);
-    expect(c.unknown).toEqual([]);
     expect(c.spec).toMatchObject({
       name: "ana", slackUserId: "UANA1", userToken: "${PERSONA_ANA_XOXP}", model: "provider/model-name",
       runsOn: "finance", provider: { apiKey: "env://PERSONA_ANA_KEY" }, kbSources: ["kb-handbook"], background: { budgetUsd: 2, timezone: "UTC" },
@@ -123,9 +122,28 @@ describe("parseAgentYaml", () => {
     expect(parseAgentYaml("default", def("skills: []\n")).spec.definition.skills).toEqual([]);
   });
 
-  test("unknown keys are reported by name and do not fail", () => {
-    const c = parseAgentYaml("default", def("plugins: [a]\naccess:\n  foo: 1\nmandate:\n  bar: 2\n"));
-    expect([...c.unknown].sort()).toEqual(["persona.default.access.foo", "persona.default.mandate.bar", "persona.default.plugins"]);
+  test("an unknown key fails the sync, naming the persona and key", () => {
+    for (const [extra, key] of [["plugins: [a]\n", "plugins"], ["access:\n  foo: 1\n", "access.foo"], ["mandate:\n  bar: 2\n", "mandate.bar"], ["access:\n  channels:\n    privat: [CA]\n", "access.channels.privat"], ["memory:\n  kb: []\n", "memory.kb"], ["access:\n  approvers:\n    - { user: UBOB, sope: x }\n", "access.approvers[0].sope"], ["mandate:\n  scoped:\n    - { boundary: dm, text: t, x: 1 }\n", "mandate.scoped[0].x"]] as const) {
+      const e = err(() => parseAgentYaml("default", def(extra)));
+      expect(e).toBeInstanceOf(PayloadError);
+      expect(e.message).toBe(`persona 'default': agent.yaml ${key} is not a known key`);
+    }
+  });
+
+  test("a duplicate key is refused, with no source text in the message", () => {
+    const e = err(() => parseAgentYaml("default", "name: default\nsoul: x\nmodel: first-secret\nmodel: second-secret\n"));
+    expect(e).toBeInstanceOf(PayloadError);
+    expect(e.message).toContain("DUPLICATE_KEY");
+    expect(e.message).toContain("line 4");
+    expect(e.message).not.toContain("secret");
+  });
+
+  test("a bare skills: or memory.kbSources: fails rather than widen; absent and [] stay distinct", () => {
+    expect(err(() => parseAgentYaml("default", def("skills:\n"))).message).toContain("agent.yaml skills has no value");
+    expect(err(() => parseAgentYaml("default", def("memory:\n  kbSources:\n"))).message).toContain("agent.yaml memory.kbSources has no value");
+    expect(parseAgentYaml("default", def()).spec.definition.skills).toBeUndefined();
+    expect(parseAgentYaml("default", def()).spec.kbSources).toBeUndefined();
+    expect(parseAgentYaml("default", def("skills: []\nmemory:\n  kbSources: []\n")).spec.kbSources).toEqual([]);
   });
 
   test("a soul that still carries a structured section gets a warning", () => {
@@ -202,10 +220,8 @@ describe("renderDir with agent.yaml", () => {
     }
   });
 
-  test("unknown keys reach onUnknown; a malformed value fails the render", () => {
-    const seen: string[][] = [];
-    renderDir(repo({ default: { "agent.yaml": def("nope: 1\n") } }), meta, (p) => seen.push(p));
-    expect(seen).toEqual([["persona.default.nope"]]);
+  test("an unknown key or a malformed value fails the render", () => {
+    expect(() => renderDir(repo({ default: { "agent.yaml": def("nope: 1\n") } }), meta)).toThrow(/persona 'default': agent\.yaml nope is not a known key/);
     expect(() => renderDir(repo({ default: { "agent.yaml": def("skills: 1\n") } }), meta)).toThrow(/persona 'default': agent\.yaml skills/);
   });
 
