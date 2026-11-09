@@ -28,6 +28,7 @@ export const EXPORT_TABLES = [
   "kb_ingest_jobs",
   "memory_turns",
   "memory_facts",
+  "skill_versions",
 ] as const;
 
 export type TableReport = { table: string; source: number; inserted: number; skipped: number };
