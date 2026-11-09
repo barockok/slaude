@@ -418,9 +418,6 @@ export interface NodeWorkerOpts {
   configRoot?: string;
   /** Default: `<hostname>-<rand>` (spec §6). */
   nodeId?: string;
-  /** The id of this node's verified credential (whoami): its heartbeat keeps
-   *  the credential's plugin report counted as live. */
-  credentialId?: string;
   client?: NodeClient;
   redisUrl?: string;
   keys?: Keys;
@@ -1090,7 +1087,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
 
   // Announce liveness (and the labels, same transaction) BEFORE claiming anything.
   await registry.nodeUp(nodeId, labels, NODE_CAPS);
-  if (opts.credentialId) await registry.beatCredential(opts.credentialId);
 
   // One BullMQ worker per label plus this node's own queue, each on its own
   // connection (blocking claims must never share) with its own concurrency.
@@ -1131,7 +1127,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       if (authPaused) return;
       try {
         await registry.beatNode(nodeId, labels, NODE_CAPS);
-        if (opts.credentialId) await registry.beatCredential(opts.credentialId);
         metric.nodeSessionsLive.set(agent.liveCount());
         for (const sessionId of [...warm]) {
           if (agent.isLive(sessionId)) {

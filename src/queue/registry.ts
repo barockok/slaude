@@ -168,16 +168,10 @@ export function makeRegistry(opts: RegistryOpts) {
       await tx.exec();
     },
 
-    /** Refresh "a live node holds this credential" (the plugin inventory's
-     *  liveness: a credential may be shared by several processes). */
-    async beatCredential(credentialId: string): Promise<void> {
-      await redis.set(keys.nodeCredential(credentialId), Date.now(), "PX", nodeTtlMs);
-    },
-
-    /** Of the given credential ids, those with a live node holding them. */
-    async liveCredentials(ids: readonly string[]): Promise<Set<string>> {
+    /** Of the given node process ids, those with a live heartbeat. */
+    async liveNodeIds(ids: readonly string[]): Promise<Set<string>> {
       if (ids.length === 0) return new Set();
-      const vals = await redis.mget(...ids.map((id) => keys.nodeCredential(id)));
+      const vals = await redis.mget(...ids.map((id) => keys.node(id)));
       return new Set(ids.filter((_, i) => vals[i] !== null));
     },
 

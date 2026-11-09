@@ -33,9 +33,15 @@ import { NodeClient } from "./client";
 import { nodeHandshake } from "./handshake";
 import { installRejectionGuard } from "./rejection-guard";
 import { reportNodePlugins } from "./plugin-report";
+import { hardenNodeProcess } from "./harden";
+import { randomBytes } from "node:crypto";
+import { hostname } from "node:os";
 import { type NodeManifest, NodeManifestError, describeNodeManifest, loadNodeManifest } from "./manifest";
 
 async function main() {
+  // First: nothing below may run with this process's /proc entries readable by
+  // a same-uid tool. Best effort; warns when it cannot.
+  hardenNodeProcess();
   // Before anything else: a node must not hold the gateway's secrets (the
   // master key, the job secret, database URLs, Slack secrets). Warns by
   // default; SLAUDE_NODE_BOOT_CHECK=refuse stops the boot. Any SLAUDE_VAULT_* or
@@ -79,13 +85,12 @@ async function main() {
   // identity null) only knows `turns`, which is `default` too.
   // The plugin report goes first: it is sent once per process, before the
   // worker claims a job, so it describes the image and no agent turn's writes.
-  await reportNodePlugins({ client: new NodeClient(), manifest });
+  // The worker heartbeats under the same id the report names, which is how the
+  // gateway knows this process's report is live.
+  const instance = `${hostname()}-${randomBytes(3).toString("hex")}`;
+  await reportNodePlugins({ client: new NodeClient(), instance, manifest });
 
-  const handle = await startNodeWorker({
-    labels: hs.identity?.labels ?? ["default"],
-    manifest,
-    ...(hs.identity ? { credentialId: hs.identity.id } : {}),
-  });
+  const handle = await startNodeWorker({ nodeId: instance, labels: hs.identity?.labels ?? ["default"], manifest });
 
   // Only once the worker is up: a rejection during boot stays fatal. From
   // here a rejection nobody awaits (one session's background work) is logged

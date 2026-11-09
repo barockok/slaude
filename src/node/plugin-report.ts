@@ -13,7 +13,7 @@
  * No secrets: header and env values are never read into the report; URLs lose
  * userinfo, query and fragment.
  */
-import { accessSync, constants, existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { listInstalledPlugins, pluginRoot, type InstalledPlugin } from "../config/plugins";
 import {
@@ -21,8 +21,10 @@ import {
   STATE_NEEDS_HEADERS,
   STATE_OFFERABLE,
   STATE_SSE,
+  STATE_URL_SECRETS,
   STATE_WRITABLE,
   sanitizeServerUrl,
+  urlCarriesSecrets,
   type PluginReport,
   type ReportedHttpServer,
   type ReportedPlugin,
@@ -36,6 +38,9 @@ export interface SealedOptions {
   /** Stop walking ancestors at this directory, not checking it (test seam).
    *  Default: every ancestor up to the filesystem root is checked. */
   boundary?: string;
+  /** A path's owner uid (test seam: tests cannot create root-owned files).
+   *  Default: the real owner, from stat. */
+  ownerOf?: (path: string) => number;
 }
 
 function writable(path: string): boolean {
@@ -52,16 +57,41 @@ function within(child: string, parent: string): boolean {
   return rel === "" || (!rel.startsWith(`..${sep}`) && rel !== ".." && !rel.startsWith(sep));
 }
 
-/** Writable path, or any writable ancestor up to the boundary: an ancestor the
- *  process can write lets it rename the checked path and put another there. */
-function writableChain(path: string, boundary: string | null): boolean {
+const GROUP_OTHER_WRITE = 0o022;
+const STICKY = 0o1000;
+
+/**
+ * One path of a sealed chain: owned by root, and writable by nobody but root.
+ *
+ * `access(2)` alone is not enough: a process can chmod a tree it owns read-only
+ * and pass, then chmod it back. Ownership by root is what the process cannot
+ * forge. The one exception to the mode rule is a root-owned sticky directory
+ * ABOVE the plugin root (such as /tmp): sticky means a non-owner cannot rename
+ * or remove the root-owned entry below it.
+ */
+function pathSealed(path: string, realRoot: string, ownerOf: SealedOptions["ownerOf"]): boolean {
+  let st;
+  try {
+    st = statSync(path);
+  } catch {
+    return false;
+  }
+  if ((ownerOf ? ownerOf(path) : st.uid) !== 0) return false;
+  if ((st.mode & GROUP_OTHER_WRITE) !== 0) {
+    return st.isDirectory() && (st.mode & STICKY) !== 0 && !within(path, realRoot);
+  }
+  return !writable(path);
+}
+
+/** The path and every ancestor: an ancestor the process can write lets it
+ *  rename the checked path and put another there. */
+function chainSealed(path: string, realRoot: string, boundary: string | null, ownerOf: SealedOptions["ownerOf"]): boolean {
   let p = path;
   for (;;) {
-    if (p === boundary) return false;
-    if (writable(p)) return true;
-    if (p === "/") return false;
+    if (p === boundary) return true;
+    if (!pathSealed(p, realRoot, ownerOf)) return false;
     const up = dirname(p);
-    if (up === p) return false;
+    if (up === p) return true;
     p = up;
   }
 }
@@ -69,22 +99,18 @@ function writableChain(path: string, boundary: string | null): boolean {
 /**
  * The sealed check. True only when the plugin directory, its `.mcp.json` and
  * the installed_plugins.json listing it all resolve (symlinks followed) inside
- * the plugin root and none of them, nor any ancestor, is writable by this
- * process. `access(2)` is the kernel's own answer, so group bits, ACLs and a
- * read-only mount are all counted as they really apply.
+ * the plugin root, and each of them and every ancestor is owned by root and
+ * not writable by this process, its group or others. A process running as root
+ * fails: it could write anything.
  */
 export function isPluginSealed(plugin: Pick<InstalledPlugin, "path" | "listedIn" | "imageOwned">, root: string | null, opts: SealedOptions = {}): boolean {
   if (!plugin.imageOwned || !root) return false;
   const uid = opts.uid ?? process.getuid?.();
   if (uid === 0) return false;
   let realRoot: string;
-  try {
-    realRoot = realpathSync(root);
-  } catch {
-    return false;
-  }
   let boundary: string | null = null;
   try {
+    realRoot = realpathSync(root);
     if (opts.boundary) boundary = realpathSync(opts.boundary);
   } catch {
     return false;
@@ -97,7 +123,7 @@ export function isPluginSealed(plugin: Pick<InstalledPlugin, "path" | "listedIn"
       return false;
     }
     if (!within(real, realRoot)) return false;
-    if (writableChain(real, boundary)) return false;
+    if (!chainSealed(real, realRoot, boundary, opts.ownerOf)) return false;
   }
   return true;
 }
@@ -159,6 +185,7 @@ function httpEntry(name: string, raw: Record<string, unknown>, sealed: boolean):
   const url = sanitizeServerUrl(rawUrl);
   if (raw.type === "sse") return { name, url, state: STATE_SSE };
   if (!url || rawUrl.includes("${") || !url.startsWith("https://")) return { name, url, state: STATE_INVALID_URL };
+  if (urlCarriesSecrets(rawUrl)) return { name, url, state: STATE_URL_SECRETS };
   if (hasHeaders(raw)) return { name, url, state: STATE_NEEDS_HEADERS };
   if (!sealed) return { name, url, state: STATE_WRITABLE };
   return { name, url, state: STATE_OFFERABLE };
@@ -188,9 +215,10 @@ function reportPlugin(p: InstalledPlugin, root: string | null, manifest: Pick<No
 }
 
 /** The report for this machine's plugins, against its node manifest. */
-export function buildPluginReport(opts: { manifest: Pick<NodeManifest, "servers">; sealed?: SealedOptions }): PluginReport {
+export function buildPluginReport(opts: { instance: string; manifest: Pick<NodeManifest, "servers">; sealed?: SealedOptions }): PluginReport {
   const root = pluginRoot();
   return {
+    instance: opts.instance,
     plugins: listInstalledPlugins()
       .map((p) => reportPlugin(p, root, opts.manifest, opts.sealed ?? {}))
       .sort((a, b) => a.name.localeCompare(b.name) || a.marketplace.localeCompare(b.marketplace)),
@@ -198,7 +226,9 @@ export function buildPluginReport(opts: { manifest: Pick<NodeManifest, "servers"
 }
 
 export interface ReportDeps {
-  client: { putPlugins(report: PluginReport): Promise<"ok" | "unsupported" | "too-large"> };
+  client: { putPlugins(report: PluginReport): Promise<"ok" | "unsupported" | "too-large" | "duplicate"> };
+  /** This process's id, the one its worker heartbeats under. */
+  instance: string;
   manifest: Pick<NodeManifest, "servers">;
   log?: (m: string) => void;
   warn?: (m: string) => void;
@@ -209,7 +239,7 @@ export async function reportNodePlugins(deps: ReportDeps): Promise<void> {
   const log = deps.log ?? ((m: string) => console.log(m));
   const warn = deps.warn ?? ((m: string) => console.warn(m));
   try {
-    const report = buildPluginReport({ manifest: deps.manifest });
+    const report = buildPluginReport({ instance: deps.instance, manifest: deps.manifest });
     const servers = report.plugins.reduce((n, p) => n + p.http.filter((h) => h.state === STATE_OFFERABLE).length, 0);
     if (process.getuid?.() === 0 && report.plugins.some((p) => p.http.length > 0)) {
       warn("[node] running as root: every plugin file counts as writable, so no HTTP plugin server is offered");
@@ -217,6 +247,11 @@ export async function reportNodePlugins(deps: ReportDeps): Promise<void> {
     const result = await deps.client.putPlugins(report);
     if (result === "unsupported") {
       warn("[node] the gateway does not take plugin reports (it predates them); continuing without one");
+      return;
+    }
+    if (result === "duplicate") {
+      // A retry whose first attempt landed, or someone else used this process id.
+      warn("[node] the gateway already holds a plugin report for this process; it keeps the first");
       return;
     }
     if (result === "too-large") {

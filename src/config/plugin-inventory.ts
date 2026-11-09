@@ -19,6 +19,12 @@ export const STATE_INVALID_URL = "not offered: invalid url";
 export const STATE_REFUSED_POLICY = "not offered: refused by the outbound policy";
 /** SSE servers are listed but never bridged. */
 export const STATE_SSE = "not offered: sse transport is not bridged";
+/** Bridging the stripped URL would reach a different endpoint than configured. */
+export const STATE_URL_SECRETS = "not offered: url carries query or credentials";
+/** The host did not resolve at the gateway. Not sticky: re-evaluated at every refresh. */
+export const STATE_DNS_PENDING = "not offered: host did not resolve";
+/** The shared legacy token names no one machine, so its report cannot be trusted to be one. */
+export const STATE_LEGACY = "not offered: node uses the shared legacy token";
 
 export const SERVER_STATES = [
   STATE_OFFERABLE,
@@ -27,6 +33,9 @@ export const SERVER_STATES = [
   STATE_INVALID_URL,
   STATE_REFUSED_POLICY,
   STATE_SSE,
+  STATE_URL_SECRETS,
+  STATE_DNS_PENDING,
+  STATE_LEGACY,
 ] as const;
 
 export type ServerState = (typeof SERVER_STATES)[number];
@@ -57,7 +66,28 @@ export interface ReportedPlugin {
 }
 
 export interface PluginReport {
+  /** This process's id (the id it heartbeats under). The gateway keeps one
+   *  report per credential and process, and takes only the first. */
+  instance: string;
   plugins: ReportedPlugin[];
+}
+
+/** States a node gives only after the sealed check passed, or the gateway's
+ *  later refusal of such a server. Only these may create a URL conflict: an
+ *  agent-writable plugin must not be able to veto a sealed server. */
+export function isSealedState(s: ServerState): boolean {
+  return s === STATE_OFFERABLE || s === STATE_REFUSED_POLICY || s === STATE_DNS_PENDING;
+}
+
+/** Whether the URL has userinfo or a query. Stripping those for the report
+ *  yields a different endpoint from the configured one, so it is never offered. */
+export function urlCarriesSecrets(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    return u.username !== "" || u.password !== "" || u.search !== "";
+  } catch {
+    return false;
+  }
 }
 
 /** Userinfo, query and fragment removed; "" when it does not parse. */
