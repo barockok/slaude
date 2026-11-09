@@ -25,7 +25,22 @@ export function loadDotenv(path: string) {
   }
 }
 
-loadDotenv(paths.env);
+/**
+ * Whether this process reads $SLAUDE_HOME/.env. A node does not: agent turns can
+ * write that volume, so a file there could set SLAUDE_GATEWAY_URL,
+ * NODE_TLS_REJECT_UNAUTHORIZED and the like on the next start. A node's settings
+ * come from its real environment. The entry mark (src/node/first-import.ts) makes
+ * this hold even when SLAUDE_ROLE is not set in the real environment.
+ */
+export function readsHomeDotenv(
+  realEnv: Record<string, string | undefined> = process.env,
+  nodeEntry: boolean = !!(globalThis as Record<symbol, unknown>)[Symbol.for("slaude.nodeEntry")],
+): boolean {
+  return !nodeEntry && realEnv.SLAUDE_ROLE?.trim().toLowerCase() !== "node";
+}
+
+if (readsHomeDotenv()) loadDotenv(paths.env);
+else if (existsSync(paths.env)) console.warn("[node] ignoring $SLAUDE_HOME/.env: a node takes its settings from its real environment only");
 
 function req(name: string): string {
   const v = process.env[name];
