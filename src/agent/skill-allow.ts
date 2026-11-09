@@ -26,10 +26,11 @@ export const homeSkillNamespace = (): string => cliPluginName(paths.home);
 
 /**
  * Whether the Skill tool may load `name` (trimmed, one leading "/" removed).
- * A qualified name in another plugin's namespace, a built-in, or a listed skill
- * passes; a bare name must be listed.
+ * A listed skill, a built-in, or a qualified name in the namespace of a plugin
+ * this session mounted passes. Anything else is refused: a bare name must be
+ * listed, and an unknown namespace is not assumed to be a plugin.
  */
-export function isSkillAllowed(name: string, allowed: ReadonlySet<string>, home: string = homeSkillNamespace()): boolean {
+export function isSkillAllowed(name: string, allowed: ReadonlySet<string>, mounted: ReadonlySet<string>, home: string = homeSkillNamespace()): boolean {
   if (allowed.has(name)) return true;
   const colon = name.indexOf(":");
   if (colon < 0) return false;
@@ -37,7 +38,7 @@ export function isSkillAllowed(name: string, allowed: ReadonlySet<string>, home:
   const bare = name.slice(colon + 1);
   if (ns === home) return allowed.has(bare);
   if (listBuiltinSkills().some((b) => b.qualified === name)) return true;
-  return ns !== "slaude";
+  return ns !== "slaude" && mounted.has(ns);
 }
 
 function pluginSkillIds(dir: string): string[] {

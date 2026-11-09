@@ -31,7 +31,7 @@ import { dbDialect } from "../db/client";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
 import { soulSystemBlock } from "../soul/loader";
-import { BUILTIN_PLUGIN_DIR, pluginsNamedLikeBuiltin } from "../soul/builtin";
+import { BUILTIN_PLUGIN_DIR, cliPluginName, pluginsNamedLikeBuiltin } from "../soul/builtin";
 import { personaSoulText } from "../persona/soul-source";
 import { effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
 import { compiledPromptSoul } from "../soul/per-persona";
@@ -1391,14 +1391,32 @@ export class AgentManager extends EventEmitter {
    *  A persona from an agent.yaml carries its compiled structure (a mono
    *  session has no bundle); any other soul keeps the process-global reading. */
   async #resolveSoul(sessionId: string, personaName: string | undefined): Promise<PersonaSoul> {
-    if (this.#personaSoulResolver) return this.#personaSoulResolver(sessionId, personaName);
-    const compiled = compiledPromptSoul(personaName);
-    const definition = compiled ? managedPersonaDefinition(personaName) : null;
-    return {
-      soulMd: personaSoulText(personaName),
-      soulJson: compiled ?? undefined,
-      ...(definition ? { definition } : {}),
-    };
+    let soul: PersonaSoul;
+    if (this.#personaSoulResolver) {
+      soul = await this.#personaSoulResolver(sessionId, personaName);
+    } else {
+      const definition = managedPersonaDefinition(personaName);
+      const compiled = definition ? compiledPromptSoul(personaName) : null;
+      soul = {
+        soulMd: personaSoulText(personaName),
+        soulJson: compiled ?? undefined,
+        ...(definition ? { definition } : {}),
+      };
+    }
+    // Booting anyway would run the agent without its skill list and access.
+    if (soul.definition && !SoulDataSchema.safeParse(soul.soulJson).success) {
+      throw new Error(`persona '${personaName ?? "default"}' is defined by agent.yaml but its stored structure does not parse; refusing to boot`);
+    }
+    return soul;
+  }
+
+  /** The persona's skill list as Skill tool names, read now so a sync reaches a
+   *  warm session (a node asks its gateway, through the ETag-cached bundle). */
+  async #currentSkillNames(sessionId: string, personaName: string | undefined): Promise<string[] | null> {
+    const list = this.#personaSoulResolver
+      ? (await this.#personaSoulResolver(sessionId, personaName)).definition?.skills
+      : managedPersonaDefinition(personaName)?.skills;
+    return list ? allowedSkillNames(list, personaName) : null;
   }
 
   /** The `systemPrompt.append` text for a booting session. One function for
@@ -1899,7 +1917,11 @@ export class AgentManager extends EventEmitter {
     // fails before going live leaves no state behind.
     this.#skillGate.reset(sessionId);
     this.#skillGate.markMounted(sessionId, allPlugins.some((p) => p.path === BUILTIN_PLUGIN_DIR));
-    this.#skillGate.setAllowedSkills(sessionId, allowedSkills);
+    this.#skillGate.setSkillListSource(sessionId, {
+      read: () => this.#currentSkillNames(sessionId, personaName),
+      initial: allowedSkills,
+      mounted: new Set(pluginPaths.map((p) => cliPluginName(p.path))),
+    });
     // A fresh CLI has been given no Guidance: deliveries start over.
     if (guardrails) this.#sessionGuardrails.set(sessionId, guardrails);
     else this.#sessionGuardrails.delete(sessionId);

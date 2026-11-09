@@ -7,8 +7,19 @@ interface GateState {
   mounted: boolean;
   /** Qualified built-in names (`slaude:<name>`) loaded since the last boot. */
   loaded: Set<string>;
-  /** The agent's skill list as Skill tool names; absent: no list (every skill). */
-  allowed?: ReadonlySet<string>;
+  /** Where the agent's skill list is read from, per Skill call. */
+  list?: SkillListSource;
+  /** The last list read; served when a read fails. */
+  last?: readonly string[] | null;
+}
+
+/** An agent's current skill list as Skill tool names (null: no list, every skill). */
+export interface SkillListSource {
+  read: () => Promise<readonly string[] | null>;
+  /** The list at boot: served if the first read fails. */
+  initial: readonly string[] | null;
+  /** Namespaces of the plugins this session mounted: only those pass unlisted. */
+  mounted: ReadonlySet<string>;
 }
 
 /** A Skill tool response that reports an error: an `is_error` object, or the
@@ -48,10 +59,23 @@ export class SkillGate {
     else this.#state.set(sessionId, { mounted, loaded: new Set() });
   }
 
-  /** Limit a session to these skills (null: no limit). Cleared by reset, so set after it. */
-  setAllowedSkills(sessionId: string, names: readonly string[] | null): void {
+  /** Where a session's skill list comes from. Cleared by reset, so set after it. */
+  setSkillListSource(sessionId: string, source: SkillListSource): void {
     const s = this.#state.get(sessionId);
-    if (s) s.allowed = names ? new Set(names) : undefined;
+    if (s) {
+      s.list = source;
+      s.last = source.initial;
+    }
+  }
+
+  /** The list now; on a failed read, the last one known, never "no list" unless that is what it was. */
+  async #currentList(sessionId: string, s: GateState): Promise<readonly string[] | null> {
+    try {
+      s.last = await s.list!.read();
+    } catch (e) {
+      console.warn(`[skill-gate] session=${sessionId}: could not read the skill list, using the last one: ${(e as Error)?.name ?? "error"}`);
+    }
+    return s.last ?? null;
   }
 
   /** Drop a session's state when its live session ends. */
@@ -72,17 +96,20 @@ export class SkillGate {
     return async (input) => {
       if (input.hook_event_name !== "PreToolUse") return {};
       const s = this.#state.get(sessionId);
-      if (s?.allowed && (input as { tool_name?: string }).tool_name === "Skill") {
-        const raw = ((input as { tool_input?: unknown }).tool_input as { skill?: unknown } | null)?.skill;
-        const name = typeof raw === "string" ? normaliseSkillName(raw) : "";
-        if (!isSkillAllowed(name, s.allowed)) {
-          return {
-            hookSpecificOutput: {
-              hookEventName: "PreToolUse" as const,
-              permissionDecision: "deny" as const,
-              permissionDecisionReason: `The skill "${name}" is not in this agent's skill list.`,
-            },
-          };
+      if (s?.list && (input as { tool_name?: string }).tool_name === "Skill") {
+        const list = await this.#currentList(sessionId, s);
+        if (list) {
+          const raw = ((input as { tool_input?: unknown }).tool_input as { skill?: unknown } | null)?.skill;
+          const name = typeof raw === "string" ? normaliseSkillName(raw) : "";
+          if (!isSkillAllowed(name, new Set(list), s.list.mounted)) {
+            return {
+              hookSpecificOutput: {
+                hookEventName: "PreToolUse" as const,
+                permissionDecision: "deny" as const,
+                permissionDecisionReason: `The skill "${name}" is not in this agent's skill list.`,
+              },
+            };
+          }
         }
       }
       if (!s?.mounted) return {};
