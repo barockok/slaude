@@ -396,6 +396,10 @@ describe("/1on1 nightly review, end to end", () => {
     await scheduler.tick();
     expect(seen).toHaveLength(2);
 
+    // The pass ran on the test's fixed date, but a click is checked against the
+    // real clock: keep the proposal live however long after that date this runs.
+    await db.run("UPDATE proposals SET expires_at = ? WHERE id = ?", [Date.now() + 86_400_000, prop.id]);
+
     // Bob may not decide Alice's proposal; Alice's Approve forwards it to the manager.
     const refused = await click("U0BOB", approveActionId(prop.id), dm);
     expect(JSON.stringify(refused)).toContain("only the person it is for");
