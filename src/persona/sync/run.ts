@@ -204,7 +204,7 @@ export async function runSync(
   }
   if (!(await definitionColumnPresent())) {
     throw new SyncFailure(503,
-      "the database schema predates this gateway (personas.definition is missing): apply migration 0034 before syncing personas");
+      "the database schema predates this gateway (personas.definition is missing): apply migration 0036 before syncing personas");
   }
   const warnings = [
     ...providerWarnings(payload),

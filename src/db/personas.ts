@@ -117,7 +117,7 @@ export async function backgroundColumnPresent(): Promise<boolean> {
   return personasColumnPresent("background");
 }
 
-/** Whether migration 0034 (personas.definition) is applied; same reason. */
+/** Whether migration 0036 (personas.definition) is applied; same reason. */
 export async function definitionColumnPresent(): Promise<boolean> {
   return personasColumnPresent("definition");
 }
