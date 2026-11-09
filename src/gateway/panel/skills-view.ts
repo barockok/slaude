@@ -31,11 +31,13 @@ import { join, relative, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { paths } from "../../config/home";
 import { BUILTIN_PLUGIN_DIR, cliPluginName, cliSkillName, listBuiltinSkills } from "../../soul/builtin";
-import { discoverSkills, globalSkillsRoot, personaSkillsRoot, RETIRED_DIR, type Skill } from "../../skills/loader";
+import { discoverSkills, globalSkillsRoot, personaSkillsRoot, RETIRED_DIR, SKILL_MD_MAX_BYTES, type Skill } from "../../skills/loader";
 import { provenanceSources, skillProvenance, type ProvenanceSources } from "../../skills/provenance";
 import { usageKeysOf } from "../../skills/usage";
 import { skillOps } from "../../skills/mcp-tools";
+import { versionScope } from "../../skills/versions";
 import * as SkillUsage from "../../db/skill-usage";
+import * as SkillVersions from "../../db/skill-versions";
 import * as Proposals from "../../db/proposals";
 import { agentIdSync } from "../../knowledge/agent-identity";
 import { getPersonaRegistry } from "../../persona/registry";
@@ -48,6 +50,9 @@ import type {
   SkillSourceKind,
   SkillSummaryView,
   SkillUsageRowView,
+  SkillVersionDetailResponse,
+  SkillVersionsResponse,
+  SkillVersionView,
 } from "./api-types";
 
 /** A summary plus what the detail and the actions need, never sent as is. */
@@ -110,8 +115,7 @@ export function parseSkillMd(raw: string): { frontmatter: Record<string, unknown
   return { frontmatter: fm, body: m[2] ?? "" };
 }
 
-/** Most of a SKILL.md the console reads; past it the text is cut and flagged. */
-export const SKILL_MD_MAX_BYTES = 256 * 1024;
+export { SKILL_MD_MAX_BYTES };
 
 export type SkillFileRead = { ok: true; text: string; truncated: boolean } | { ok: false; reason: string };
 
@@ -203,7 +207,7 @@ export async function buildSkills(): Promise<Built> {
   if (lock === null) notes.push("slaude.lock could not be read: installed skills show without their repo and commit, and count as installed.");
   const src: ProvenanceSources = provenanceSources();
   const entries: SkillEntry[] = [];
-  const base = (keys: string[], agents: string[]) => ({ keys, agents, usage: { uses: 0, lastUsedAt: null, trackedSince: null } });
+  const base = (keys: string[], agents: string[]) => ({ keys, agents, usage: { uses: 0, lastUsedAt: null, trackedSince: null }, currentVersion: null });
 
   // Built-in slaude:* skills: every agent.
   try {
@@ -363,6 +367,7 @@ export async function buildSkills(): Promise<Built> {
         keys: usageKeysOf({ slug, name }),
         agents: [],
         usage: { uses: 0, lastUsedAt: null, trackedSince: null },
+        currentVersion: null,
       });
     }
   }
@@ -393,6 +398,16 @@ export async function buildSkills(): Promise<Built> {
         if (e.usage.trackedSince === null || r.firstSeenAt < e.usage.trackedSince) e.usage.trackedSince = r.firstSeenAt;
       }
     }
+  }
+
+  // The version log: an owned skill (base, overlay, retired) has an identity; built-ins and plugins do not.
+  try {
+    const current = await SkillVersions.currentVersions();
+    for (const e of entries) {
+      if (e.owner !== null) e.currentVersion = current.get(SkillVersions.versionKey(versionScope(e.owner), e.slug)) ?? null;
+    }
+  } catch (e) {
+    notes.push(`skill versions could not be read: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   const order: Record<SkillSourceKind, number> = { "built-in": 0, installed: 1, plugin: 2, "agent-authored": 3 };
@@ -502,6 +517,37 @@ export async function skillDetail(id: string): Promise<SkillDetailResponse | nul
     proposals,
     actions: actionsFor(e, entries),
   };
+}
+
+const VERSIONS_MAX = 200;
+
+const versionView = (v: SkillVersions.SkillVersionMeta): SkillVersionView => ({
+  version: v.version,
+  hash: v.contentHash,
+  capturedAt: v.capturedAt,
+  origin: v.origin,
+  fileCount: v.fileCount,
+  totalBytes: v.totalBytes,
+  skillMdTruncated: v.skillMdTruncated,
+});
+
+/** A skill's recorded versions, newest first. Null when the id names no skill; empty for one with no identity. */
+export async function skillVersions(id: string): Promise<SkillVersionsResponse | null> {
+  const { entries } = await buildSkills();
+  const e = entries.find((x) => x.id === id);
+  if (!e) return null;
+  if (e.owner === null) return { versions: [], truncated: false };
+  const rows = await SkillVersions.list(versionScope(e.owner), e.slug, VERSIONS_MAX + 1);
+  return { versions: rows.slice(0, VERSIONS_MAX).map(versionView), truncated: rows.length > VERSIONS_MAX };
+}
+
+/** One recorded version with its SKILL.md. Null when the skill or the version does not exist. */
+export async function skillVersionDetail(id: string, version: number): Promise<SkillVersionDetailResponse | null> {
+  const { entries } = await buildSkills();
+  const e = entries.find((x) => x.id === id);
+  if (!e || e.owner === null) return null;
+  const row = await SkillVersions.get(versionScope(e.owner), e.slug, version);
+  return row ? { ...versionView(row), skillMd: row.skillMd } : null;
 }
 
 /**

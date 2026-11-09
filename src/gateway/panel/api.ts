@@ -49,6 +49,8 @@
  *   GET    /panel/api/console-roles                the console's email allowlist (read-only, superadmin)
  *   GET    /panel/api/skills                       every skill: source, origin, agents, status, usage
  *   GET    /panel/api/skills/:id                   one skill: frontmatter, SKILL.md, files, provenance, usage, proposals
+ *   GET    /panel/api/skills/:id/versions          the skill's recorded versions (no text)
+ *   GET    /panel/api/skills/:id/versions/:n       one version with its SKILL.md
  *   POST   /panel/api/skills/:id/retire|restore    an agent-authored skill (superadmin; audited)
  *   GET    /panel/api/guardrails                   the owner's guardrails: scope, rules by kind, source, behind source, last fired
  *   GET    /panel/api/guardrails/:slug             one guardrail: GUARDRAIL.md, parsed rules, errors, applies to, recent firings
@@ -104,7 +106,7 @@ import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
 import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
-import { agentIdsByName, buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
+import { agentIdsByName, buildSkills, restoreSkill, retireSkill, skillDetail, skillVersionDetail, skillVersions, summaryOf } from "./skills-view";
 import { agentSettings, SETTINGS_GROUPS, type SettingsDeps } from "./settings-view";
 import {
   agentGuardrails, clearGuardrailOverride, createGuardrail, deleteGuardrail, editGuardrail, guardrailDetail, GuardrailWriteRefused, listGuardrails,
@@ -148,6 +150,8 @@ import type {
   SkillActionResponse,
   SkillDetailResponse,
   SkillsResponse,
+  SkillVersionDetailResponse,
+  SkillVersionsResponse,
 } from "./api-types";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
@@ -823,6 +827,16 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           if (req.method !== "GET") return json(405, { error: "method not allowed" });
           const detail = await skillDetail(skillId);
           return detail ? json(200, detail satisfies SkillDetailResponse) : json(404, { error: "no such skill" });
+        }
+        if (seg[4] === "versions" && (seg.length === 5 || seg.length === 6)) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          if (seg.length === 5) {
+            const versions = await skillVersions(skillId);
+            return versions ? json(200, versions satisfies SkillVersionsResponse) : json(404, { error: "no such skill" });
+          }
+          if (!/^[1-9]\d{0,9}$/.test(seg[5]!)) return json(404, { error: "no such version" });
+          const version = await skillVersionDetail(skillId, Number(seg[5]));
+          return version ? json(200, version satisfies SkillVersionDetailResponse) : json(404, { error: "no such version" });
         }
         if (seg.length === 5 && (seg[4] === "retire" || seg[4] === "restore")) {
           if (req.method !== "POST") return json(405, { error: "method not allowed" });
