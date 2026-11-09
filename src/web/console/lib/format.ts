@@ -23,6 +23,7 @@ const ACTION_LABELS: Record<string, string> = {
   "persona.override": "Agent setting overridden",
   "persona.sync": "Agents synced",
   "memory.page.viewed": "Private memory page viewed",
+  "skill.version.viewed": "Agent skill version viewed",
   "skill.retired": "Skill retired",
   "skill.restored": "Skill restored",
   "proposal.decided": "Proposal decided",

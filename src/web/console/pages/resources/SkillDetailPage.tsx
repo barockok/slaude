@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import type { SkillActionResponse, SkillDetailResponse } from "../../../../gateway/panel/api-types";
+import type { SkillActionResponse, SkillDetailResponse, SkillVersionDetailResponse, SkillVersionsResponse } from "../../../../gateway/panel/api-types";
 import { ApiError } from "../../../lib/api";
 import { Link, navigate } from "../../../lib/router";
 import { Badge, Button, Card, Dialog, EmptyState, Field, IconArrowLeft, Input, KeyValue, Markdown, PageHeader, Skeleton, useToast } from "../../../ui";
@@ -35,6 +35,7 @@ function provenance(d: SkillDetailResponse): Array<{ key: string; label: ReactNo
       }[o.root],
     },
   ];
+  if (d.currentVersion !== null) rows.push({ key: "currentVersion", label: d.status === "retired" ? "Version when retired" : "Tracked version", value: <span className="sl-mono">v{d.currentVersion}</span> });
   if (o.repo) rows.push({ key: "repo", label: "Repository", value: mono(o.repo) });
   if (o.ref) rows.push({ key: "ref", label: "Requested ref", value: mono(o.ref) });
   if (o.commit) rows.push({ key: "commit", label: "Pinned commit", value: <span className="sl-mono" title={o.commit}>{o.commit.slice(0, 12)}</span> });
@@ -49,6 +50,81 @@ function provenance(d: SkillDetailResponse): Array<{ key: string; label: ReactNo
   if (o.retiredAt) rows.push({ key: "retired", label: "Retired", value: <TimeAgo at={o.retiredAt} /> });
   if (d.shadowedFor?.length) rows.push({ key: "shadowed", label: "Shadowed for", value: d.shadowedFor.join(", ") });
   return rows;
+}
+
+function VersionText({ id, version }: { id: string; version: number }) {
+  const { data, error, reload } = useApi<SkillVersionDetailResponse>(`/api/skills/${encodeURIComponent(id)}/versions/${version}`);
+  if (error && !data) return <ErrorState what="Version" error={error} onRetry={reload} />;
+  if (!data) return <Skeleton height="10rem" radius="var(--sl-radius-panel)" />;
+  return (
+    <div className="sl-stack">
+      {data.skillMdTruncated && <span className="sl-caption">Only the first 256 KB of this version was kept.</span>}
+      {data.skillMd.trim() ? <Markdown source={data.skillMd} copyLabel={`Copy version ${data.version}`} /> : <EmptyState title="This version has no SKILL.md text" />}
+    </div>
+  );
+}
+
+const ORIGIN_LABEL = { bundled: "Bundled", installed: "Installed", agent: "Written by the agent" } as const;
+
+function VersionsCard({ id, retired, agentOwned }: { id: string; retired: boolean; agentOwned: boolean }) {
+  const role = useRole();
+  const textLocked = agentOwned && role !== "superadmin";
+  const { data, error, reload } = useApi<SkillVersionsResponse>(`/api/skills/${encodeURIComponent(id)}/versions`);
+  const [picked, setPicked] = useState<number | null>(null);
+  if (error && !data) {
+    return (
+      <Card title="Versions">
+        <ErrorState what="Versions" error={error} onRetry={reload} />
+      </Card>
+    );
+  }
+  if (!data) return <Skeleton height="6rem" radius="var(--sl-radius-panel)" />;
+  const lockedNote = textLocked ? " Only a superadmin can read an agent's version text." : "";
+  const history = retired ? "Read-only history of this copy, up to when it was retired." : "Read-only history of this skill's files.";
+  const description = data.versions.length
+    ? data.truncated
+      ? `${history} Only the newest are listed.${lockedNote}`
+      : `${history}${lockedNote}`
+    : "No version has been recorded for this skill.";
+  return (
+    <Card title="Versions" description={description} flush={data.versions.length > 0}>
+      {data.versions.length > 0 && (
+        <div className="sl-scroll-x" tabIndex={0}>
+          <table className="sl-simple-table">
+            <thead>
+              <tr>
+                <th>Version</th>
+                <th>Hash</th>
+                <th>Captured</th>
+                <th>Origin</th>
+                <th aria-label="SKILL.md" />
+              </tr>
+            </thead>
+            <tbody>
+              {data.versions.map((v) => (
+                <tr key={v.version}>
+                  <td className="sl-mono">v{v.version}</td>
+                  <td className="sl-mono" title={v.hash}>{v.hash.slice(0, 12)}</td>
+                  <td><TimeAgo at={v.capturedAt} /></td>
+                  <td>{ORIGIN_LABEL[v.origin]}</td>
+                  <td className="is-end">
+                    <Button size="sm" variant="ghost" disabled={textLocked} aria-pressed={picked === v.version} onClick={() => setPicked(picked === v.version ? null : v.version)}>
+                      {picked === v.version ? "Hide" : "View SKILL.md"}
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {picked !== null && (
+        <div className="sl-card__section">
+          <VersionText key={picked} id={id} version={picked} />
+        </div>
+      )}
+    </Card>
+  );
 }
 
 function Body({ d, reload }: { d: SkillDetailResponse; reload: () => void }) {
@@ -88,6 +164,7 @@ function Body({ d, reload }: { d: SkillDetailResponse; reload: () => void }) {
             <EmptyState title="This skill has no SKILL.md text" />
           )}
         </Card>
+        <VersionsCard id={d.id} retired={d.status === "retired"} agentOwned={d.origin.root === "agent"} />
         <Card title="Usage" description={d.usageHistory.length ? "Per agent, as counted when the agent loaded it." : "No agent has used it yet."} flush={d.usageHistory.length > 0}>
           {d.usageHistory.length > 0 && (
             <div className="sl-scroll-x" tabIndex={0}>

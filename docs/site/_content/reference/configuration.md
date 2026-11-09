@@ -379,6 +379,7 @@ and roles come from a file or the env lists below.
 | `SLAUDE_GUARDRAIL_REPLY_QUIET_SECS` | No | `600` | How long an inbound guardrail's reply stays quiet for the same person in the same thread; later drops are silent and audited. |
 | `SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC` | No | `600` | How long an owner guardrail's approval card waits (a tool `approve` and a held reply), at most 3600. A timeout is a deny. On nodes a tool card also ends 30 s before the turn deadline. |
 | `SLAUDE_AUDIT_RETENTION_DAYS` | No | `365` | Days an audit event (`audit_events`: gate decisions, grant changes, console actions) is kept before the periodic sweep deletes it. Applies whether or not the panel is mounted. |
+| `SLAUDE_SKILL_VERSION_RECONCILE_MINUTES` | No | `5` | Minutes between passes that compare each skill on disk with its latest row in the skill version log and record what changed. The gateway or mono process also reconciles at start and right after `write_skill`, retire and restore. |
 | `SLAUDE_PORTAL` | No | `0` | `1`/`true`/`yes` mounts the end-user portal at `/portal` (onboarding, identity binding, MCP connections) on `mono` and `gateway`. It reuses the panel's OIDC client, public URL and `SLAUDE_PANEL_SECRET`, so those are required when it is on. See [The user portal](../deploy/panel.md#the-user-portal). |
 
 ¹ Required when `SLAUDE_PANEL=1`; ignored otherwise.

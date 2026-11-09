@@ -16,6 +16,7 @@ import {
 import { dirname, join, resolve, relative } from "node:path";
 import { discoverSkills, globalSkillsRoot, personaSkillsRoot, RETIRED_DIR, skillFileName, type Skill } from "./loader";
 import { syncManifest } from "./sync-manifest";
+import { noteSkillChanged } from "./versions";
 import { builtinSkillRefusal, cliSkillName, isBuiltinSkillName } from "../soul/builtin";
 import { skillsContract } from "../tools/contracts/skills";
 
@@ -136,6 +137,7 @@ export const skillOps = {
     const path = join(dir, "SKILL.md");
     const created = !existsSync(path);
     writeFileSync(path, buildSkillMd(name, description, body, { authoredBy: "agent", authoredAt: now.toISOString() }), "utf8");
+    noteSkillChanged(personaName, slug, dir);
     return { path, created };
   },
   delete(slug: string, personaName?: string): void {
@@ -166,6 +168,7 @@ export const skillOps = {
     }
     const path = join(store, id);
     renameSync(dir, path);
+    noteSkillChanged(personaName, slug, path, now.getTime());
     return { id, path };
   },
   /**
@@ -190,6 +193,7 @@ export const skillOps = {
     if (existsSync(dir)) throw new Error(`a live skill "${slug}" exists; retire or delete it before restoring "${id}"`);
     mkdirSync(dirname(dir), { recursive: true });
     renameSync(from, dir);
+    noteSkillChanged(personaName, slug, dir);
     return { slug, path: dir };
   },
   /** The retired copies in a persona's own root, by id (newest timestamp last). */

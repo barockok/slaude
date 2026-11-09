@@ -50,6 +50,8 @@
  *   GET    /panel/api/plugins                      the node plugin inventory, by node label (read-only)
  *   GET    /panel/api/skills                       every skill: source, origin, agents, status, usage
  *   GET    /panel/api/skills/:id                   one skill: frontmatter, SKILL.md, files, provenance, usage, proposals
+ *   GET    /panel/api/skills/:id/versions          the skill's recorded versions (no text)
+ *   GET    /panel/api/skills/:id/versions/:n       one version with its SKILL.md (a persona's skill: superadmin; audited)
  *   POST   /panel/api/skills/:id/retire|restore    an agent-authored skill (superadmin; audited)
  *   GET    /panel/api/guardrails                   the owner's guardrails: scope, rules by kind, source, behind source, last fired
  *   GET    /panel/api/guardrails/:slug             one guardrail: GUARDRAIL.md, parsed rules, errors, applies to, recent firings
@@ -107,7 +109,7 @@ import { pluginsView } from "./plugins-view";
 import type { InventorySources } from "../core/plugin-inventory";
 import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
-import { agentIdsByName, buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
+import { agentIdsByName, buildSkills, readSkillVersion, restoreSkill, retireSkill, skillDetail, skillVersions, skillVersionTarget, summaryOf } from "./skills-view";
 import { agentSettings, SETTINGS_GROUPS, type SettingsDeps } from "./settings-view";
 import {
   agentGuardrails, clearGuardrailOverride, createGuardrail, deleteGuardrail, editGuardrail, guardrailDetail, GuardrailWriteRefused, listGuardrails,
@@ -152,6 +154,8 @@ import type {
   SkillActionResponse,
   SkillDetailResponse,
   SkillsResponse,
+  SkillVersionDetailResponse,
+  SkillVersionsResponse,
 } from "./api-types";
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}): Response =>
@@ -202,6 +206,7 @@ export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "grant.create",
   "grant.revoke",
   "memory.private",
+  "skill.version.private",
   "console.roles.read",
   "skill.retire",
   "skill.restore",
@@ -830,6 +835,38 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           if (req.method !== "GET") return json(405, { error: "method not allowed" });
           const detail = await skillDetail(skillId);
           return detail ? json(200, detail satisfies SkillDetailResponse) : json(404, { error: "no such skill" });
+        }
+        if (seg[4] === "versions" && (seg.length === 5 || seg.length === 6)) {
+          if (req.method !== "GET") return json(405, { error: "method not allowed" });
+          if (seg.length === 5) {
+            const versions = await skillVersions(skillId);
+            return versions ? json(200, versions satisfies SkillVersionsResponse) : json(404, { error: "no such skill" });
+          }
+          if (!/^[1-9]\d{0,8}$/.test(seg[5]!)) return json(404, { error: "no such version" });
+          const target = await skillVersionTarget(skillId);
+          if (!target) return json(404, { error: "no such version" });
+          // A persona's own skill may hold private content: like a private memory
+          // page, its text is superadmin only and each read is audited, without content.
+          if (target.personaScoped) {
+            const denied = requireSuperadmin(role, { action: "skill.version.private", operator: operatorId });
+            if (denied) return denied;
+          }
+          const version = await readSkillVersion(target, Number(seg[5]));
+          if (!version) return json(404, { error: "no such version" });
+          if (target.personaScoped) {
+            emitAudit({
+              tenantId: "default",
+              persona: target.owner,
+              actorKind: "operator",
+              actorId: operatorId,
+              action: "skill.version.viewed",
+              targetKind: "skill",
+              targetId: target.slug,
+              summary: `viewed version ${version.version} of a persona's skill`,
+              details: { slug: target.slug, version: version.version, operatorRole: role },
+            });
+          }
+          return json(200, version satisfies SkillVersionDetailResponse);
         }
         if (seg.length === 5 && (seg[4] === "retire" || seg[4] === "restore")) {
           if (req.method !== "POST") return json(405, { error: "method not allowed" });

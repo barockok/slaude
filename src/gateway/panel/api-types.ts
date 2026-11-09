@@ -653,6 +653,8 @@ export interface SkillSummaryView {
   agents: string[];
   /** Summed over those agents. */
   usage: SkillUsageTotals;
+  /** The tracked version number; null when none is recorded (built-in and plugin skills, or before the first capture). For a retired copy: the version it had when retired. */
+  currentVersion: number | null;
   /** True when another skill with the same slug in an agent's overlay shadows this one for that agent. */
   shadowedFor?: string[];
 }
@@ -710,6 +712,33 @@ export interface SkillDetailResponse extends SkillSummaryView {
   proposals: SkillProposalView[];
   /** What a superadmin may do to it from the console. */
   actions: { retire: boolean; restore: boolean };
+}
+
+/** One recorded version of a skill, without its text. */
+export interface SkillVersionView {
+  version: number;
+  /** sha256 over the skill's files. */
+  hash: string;
+  capturedAt: number;
+  /** Where the skill came from when this version was captured. */
+  origin: "bundled" | "installed" | "agent";
+  fileCount: number;
+  totalBytes: number;
+  /** True when SKILL.md was larger than the 256 KB the log keeps. */
+  skillMdTruncated: boolean;
+}
+
+/** GET /panel/api/skills/:id/versions (newest first). A retired copy lists only what was captured up to its retirement. */
+export interface SkillVersionsResponse {
+  versions: SkillVersionView[];
+  /** True when older versions exist past the list limit. */
+  truncated: boolean;
+}
+
+/** GET /panel/api/skills/:id/versions/:version (a persona's own skill: superadmin only, audited). */
+export interface SkillVersionDetailResponse extends SkillVersionView {
+  /** The SKILL.md text of this version, up to 256 KB. */
+  skillMd: string;
 }
 
 /** POST /panel/api/skills/:id/retire and /restore (superadmin). */
