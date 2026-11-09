@@ -3,7 +3,7 @@
  * node label. Nothing here writes; the console has no plugin actions.
  */
 import type { NodePluginsRow } from "../../db/node-plugins";
-import { STATE_OFFERABLE } from "../../config/plugin-inventory";
+import { STATE_OFFERABLE, isSealedState, type ServerState } from "../../config/plugin-inventory";
 import { computeSnapshot, loadInventory, type InventorySources } from "../core/plugin-inventory";
 import type { PluginHttpView, PluginLabelView, PluginNodeView, PluginStdioView, PluginView, PluginsResponse } from "./api-types";
 
@@ -91,13 +91,19 @@ export async function pluginsView(src: InventorySources): Promise<PluginsRespons
             view.nodes.sort((a, b) => a.id.localeCompare(b.id) || a.instance.localeCompare(b.instance));
             view.stdio = [...stdio.entries()].map(([name, missing]): PluginStdioView => ({ name, notMountedOn: [...missing].sort() })).sort((a, b) => a.name.localeCompare(b.name));
             view.http = [...http.entries()]
-              .map(([name, e]): PluginHttpView => ({
-                name,
-                // The offered URL's host, so an unsealed report cannot put its host on the row.
-                host: hostOf(offered?.get(name)?.url ?? e.url),
-                state: httpState(e.states, !!offered?.has(name), !!conflicts?.has(name)),
-                ...(disagreements?.has(name) ? { warning: WARNING_UNSEALED } : {}),
-              }))
+              .map(([name, e]): PluginHttpView => {
+                // Only this plugin's own sealed entry may show as offered or in conflict:
+                // an unsealed plugin that shares a server name keeps its own state.
+                const isOffered = !!offered?.has(name) && e.states.includes(STATE_OFFERABLE);
+                const isConflict = !!conflicts?.has(name) && e.states.some((s) => isSealedState(s as ServerState));
+                return {
+                  name,
+                  // The offered URL's host, so an unsealed report cannot put its host on the row.
+                  host: hostOf(isOffered ? offered!.get(name)!.url : e.url),
+                  state: httpState(e.states, isOffered, isConflict),
+                  ...(isOffered && disagreements?.has(name) ? { warning: WARNING_UNSEALED } : {}),
+                };
+              })
               .sort((a, b) => a.name.localeCompare(b.name));
             return view;
           })

@@ -7,7 +7,7 @@ import { __resetRoleCache } from "../../src/gateway/panel/auth/roles";
 import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
 
 const plugin = (over: Partial<ReportedPlugin> = {}): ReportedPlugin => ({ name: "toolkit", marketplace: "m", commit: "aaaaaaa", skills: 2, commands: 1, agents: 0, hooks: 0, stdio: [], http: [], ...over });
-const row = (nodeId: string, labels: string[], plugins: ReportedPlugin[], reportedAt = 5): NodePluginsRow => ({ nodeId, instance: `${nodeId}-p`, labels, reportedAt, report: { instance: `${nodeId}-p`, plugins } });
+const row = (nodeId: string, labels: string[], plugins: ReportedPlugin[], reportedAt = 5): NodePluginsRow => ({ nodeId, instance: `${nodeId}-p`, labels, reportedAt, lastSeenAt: reportedAt, credentialIat: 1, report: { instance: `${nodeId}-p`, plugins } });
 const view = (rows: NodePluginsRow[], live: string[]) => pluginsView({ rows: async () => rows, live: async () => new Set(live.map((n) => `${n}-p`)) });
 
 describe("pluginsView", () => {
@@ -59,6 +59,18 @@ describe("pluginsView", () => {
       ["attacker", "sealed"],
     );
     expect(out.labels[0]!.plugins[0]!.http).toEqual([{ name: "web", host: "a.test", state: "offered", warning: "a node with writable plugin files reports a different URL" }]);
+  });
+
+  test("an unsealed plugin sharing a name with an offered server keeps its own state", async () => {
+    const out = await view(
+      [
+        row("sealed", ["gpu"], [plugin({ name: "good", http: [{ name: "web", url: "https://a.test/mcp", state: STATE_OFFERABLE }] })]),
+        row("soft", ["gpu"], [plugin({ name: "soft-plugin", http: [{ name: "web", url: "https://a.test/mcp", state: STATE_WRITABLE }] })]),
+      ],
+      ["sealed", "soft"],
+    );
+    const byPlugin = Object.fromEntries(out.labels[0]!.plugins.map((p) => [p.name, p.http[0]!.state]));
+    expect(byPlugin).toEqual({ good: "offered", "soft-plugin": STATE_WRITABLE });
   });
 
   test("a URL path, which can hold a secret, is never in the console's answer", async () => {
