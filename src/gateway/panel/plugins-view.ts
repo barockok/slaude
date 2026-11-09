@@ -4,12 +4,13 @@
  */
 import type { NodePluginsRow } from "../../db/node-plugins";
 import { STATE_OFFERABLE } from "../../config/plugin-inventory";
-import { computeSnapshot, type InventorySources } from "../core/plugin-inventory";
+import { computeSnapshot, loadInventory, type InventorySources } from "../core/plugin-inventory";
 import type { PluginHttpView, PluginLabelView, PluginNodeView, PluginStdioView, PluginView, PluginsResponse } from "./api-types";
 
 const STATE_CONFLICT = "conflict: nodes report different URLs";
 const STATE_OFFERED = "offered";
 const STATE_NO_LIVE_NODE = "not offered: no live node lists it";
+const WARNING_UNSEALED = "a node with writable plugin files reports a different URL";
 
 function hostOf(url: string): string {
   try {
@@ -35,8 +36,7 @@ function httpState(states: string[], offered: boolean, conflict: boolean): strin
 }
 
 export async function pluginsView(src: InventorySources): Promise<PluginsResponse> {
-  const rows = await src.rows();
-  const live = await src.live(rows.map((r) => r.nodeId));
+  const { rows, live } = await loadInventory(src);
   const snapshot = computeSnapshot(rows, live);
   const byLabel = new Map<string, NodePluginsRow[]>();
   for (const row of rows) {
@@ -51,8 +51,9 @@ export async function pluginsView(src: InventorySources): Promise<PluginsRespons
     .map(([label, nodeRows]) => {
       const offered = snapshot.servers.get(label);
       const conflicts = snapshot.conflicts.get(label);
+      const disagreements = snapshot.unsealedDisagreements.get(label);
       const plugins = new Map<string, Acc>();
-      const nodeView = (r: NodePluginsRow): PluginNodeView => ({ id: r.nodeId, live: live.has(r.nodeId), reportedAt: r.reportedAt });
+      const nodeView = (r: NodePluginsRow): PluginNodeView => ({ id: r.nodeId, instance: r.instance, live: live.has(r.instance), reportedAt: r.reportedAt });
       for (const row of nodeRows) {
         for (const p of row.report.plugins) {
           const key = `${p.name}@${p.marketplace}`;
@@ -67,10 +68,10 @@ export async function pluginsView(src: InventorySources): Promise<PluginsRespons
             plugins.set(key, acc);
           }
           acc.view.nodes.push({ ...nodeView(row), commit: p.commit });
-          if (live.has(row.nodeId) && p.commit) acc.commits.add(p.commit);
+          if (live.has(row.instance) && p.commit) acc.commits.add(p.commit);
           for (const s of p.stdio) {
             const missing = acc.stdio.get(s.name) ?? new Set<string>();
-            if (!s.declared) missing.add(row.nodeId);
+            if (!s.declared) missing.add(row.instance);
             acc.stdio.set(s.name, missing);
           }
           for (const s of p.http) {
@@ -82,15 +83,21 @@ export async function pluginsView(src: InventorySources): Promise<PluginsRespons
       }
       return {
         label,
-        nodes: nodeRows.map(nodeView).sort((a, b) => a.id.localeCompare(b.id)),
+        nodes: nodeRows.map(nodeView).sort((a, b) => a.id.localeCompare(b.id) || a.instance.localeCompare(b.instance)),
         plugins: [...plugins.values()]
           .map(({ view, commits, stdio, http }) => {
             view.commits = [...commits].sort();
             view.drift = commits.size > 1;
-            view.nodes.sort((a, b) => a.id.localeCompare(b.id));
+            view.nodes.sort((a, b) => a.id.localeCompare(b.id) || a.instance.localeCompare(b.instance));
             view.stdio = [...stdio.entries()].map(([name, missing]): PluginStdioView => ({ name, notMountedOn: [...missing].sort() })).sort((a, b) => a.name.localeCompare(b.name));
             view.http = [...http.entries()]
-              .map(([name, e]): PluginHttpView => ({ name, host: hostOf(e.url), state: httpState(e.states, !!offered?.has(name), !!conflicts?.has(name)) }))
+              .map(([name, e]): PluginHttpView => ({
+                name,
+                // The offered URL's host, so an unsealed report cannot put its host on the row.
+                host: hostOf(offered?.get(name)?.url ?? e.url),
+                state: httpState(e.states, !!offered?.has(name), !!conflicts?.has(name)),
+                ...(disagreements?.has(name) ? { warning: WARNING_UNSEALED } : {}),
+              }))
               .sort((a, b) => a.name.localeCompare(b.name));
             return view;
           })

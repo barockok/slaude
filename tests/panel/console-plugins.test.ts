@@ -7,8 +7,8 @@ import { __resetRoleCache } from "../../src/gateway/panel/auth/roles";
 import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
 
 const plugin = (over: Partial<ReportedPlugin> = {}): ReportedPlugin => ({ name: "toolkit", marketplace: "m", commit: "aaaaaaa", skills: 2, commands: 1, agents: 0, hooks: 0, stdio: [], http: [], ...over });
-const row = (nodeId: string, labels: string[], plugins: ReportedPlugin[], reportedAt = 5): NodePluginsRow => ({ nodeId, labels, reportedAt, report: { plugins } });
-const view = (rows: NodePluginsRow[], live: string[]) => pluginsView({ rows: async () => rows, live: async () => new Set(live) });
+const row = (nodeId: string, labels: string[], plugins: ReportedPlugin[], reportedAt = 5): NodePluginsRow => ({ nodeId, instance: `${nodeId}-p`, labels, reportedAt, report: { instance: `${nodeId}-p`, plugins } });
+const view = (rows: NodePluginsRow[], live: string[]) => pluginsView({ rows: async () => rows, live: async () => new Set(live.map((n) => `${n}-p`)) });
 
 describe("pluginsView", () => {
   test("groups by label, with contents and per-server state", async () => {
@@ -39,7 +39,7 @@ describe("pluginsView", () => {
 
   test("an offline node shows its last report time", async () => {
     const out = await view([row("n1", ["gpu"], [plugin()], 1234)], []);
-    expect(out.labels[0]!.nodes).toEqual([{ id: "n1", live: false, reportedAt: 1234 }]);
+    expect(out.labels[0]!.nodes).toEqual([{ id: "n1", instance: "n1-p", live: false, reportedAt: 1234 }]);
   });
 
   test("a stdio server missing from a node manifest is not mounted on that node", async () => {
@@ -47,7 +47,23 @@ describe("pluginsView", () => {
       [row("n1", ["gpu"], [plugin({ stdio: [{ name: "local", declared: false }] })]), row("n2", ["gpu"], [plugin({ stdio: [{ name: "local", declared: true }] })])],
       ["n1", "n2"],
     );
-    expect(out.labels[0]!.plugins[0]!.stdio).toEqual([{ name: "local", notMountedOn: ["n1"] }]);
+    expect(out.labels[0]!.plugins[0]!.stdio).toEqual([{ name: "local", notMountedOn: ["n1-p"] }]);
+  });
+
+  test("an unsealed disagreement is a warning on an offered row, and cannot put its host there", async () => {
+    const out = await view(
+      [
+        row("attacker", ["gpu"], [plugin({ http: [{ name: "web", url: "https://attacker.test/mcp", state: STATE_WRITABLE }] })]),
+        row("sealed", ["gpu"], [plugin({ http: [{ name: "web", url: "https://a.test/mcp", state: STATE_OFFERABLE }] })]),
+      ],
+      ["attacker", "sealed"],
+    );
+    expect(out.labels[0]!.plugins[0]!.http).toEqual([{ name: "web", host: "a.test", state: "offered", warning: "a node with writable plugin files reports a different URL" }]);
+  });
+
+  test("a URL path, which can hold a secret, is never in the console's answer", async () => {
+    const out = await view([row("n1", ["gpu"], [plugin({ http: [{ name: "web", url: "https://a.test/token-in-path/mcp", state: STATE_OFFERABLE }] })])], ["n1"]);
+    expect(JSON.stringify(out)).not.toContain("token-in-path");
   });
 
   test("a URL conflict and a writable plugin are shown", async () => {

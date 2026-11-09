@@ -51,6 +51,7 @@ const columns: Column<PluginView>[] = [
             <span key={s.name} className="sl-caption">
               <span className="sl-mono">{s.name}</span>
               {s.host ? <> ({s.host})</> : null}: {s.state}
+              {s.warning ? <> <Badge tone="warning">{s.warning}</Badge></> : null}
             </span>
           ))}
           {p.stdio.map((s) => (
@@ -72,9 +73,9 @@ function LabelSection({ group }: { group: PluginLabelView }) {
           <h2 className="sl-section__title sl-mono">{group.label}</h2>
           <p className="sl-caption">
             {group.nodes.map((n, i) => (
-              <span key={n.id}>
+              <span key={n.instance}>
                 {i > 0 ? ", " : ""}
-                <span className="sl-mono">{n.id}</span>{" "}
+                <span className="sl-mono">{n.instance}</span>{" "}
                 {n.live ? "live" : <>offline, last report <TimeAgo at={n.reportedAt} /></>}
               </span>
             ))}

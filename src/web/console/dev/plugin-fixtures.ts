@@ -10,8 +10,8 @@ export function pluginFixtures(now: number, empty: boolean, mono: boolean): Plug
       {
         label: "default",
         nodes: [
-          { id: "node-a", live: true, reportedAt: now - 3_600_000 },
-          { id: "node-b", live: false, reportedAt: now - 7_200_000 },
+          { id: "node-a", instance: "node-a-1a2b3c", live: true, reportedAt: now - 3_600_000 },
+          { id: "node-b", instance: "node-b-1a2b3c", live: false, reportedAt: now - 7_200_000 },
         ],
         plugins: [
           {
@@ -25,12 +25,12 @@ export function pluginFixtures(now: number, empty: boolean, mono: boolean): Plug
             agents: 1,
             hooks: 0,
             nodes: [
-              { id: "node-a", live: true, reportedAt: now - 3_600_000, commit: "a1b2c3d4" },
-              { id: "node-b", live: false, reportedAt: now - 7_200_000, commit: "e5f6a7b8" },
+              { id: "node-a", instance: "node-a-1a2b3c", live: true, reportedAt: now - 3_600_000, commit: "a1b2c3d4" },
+              { id: "node-b", instance: "node-b-1a2b3c", live: false, reportedAt: now - 7_200_000, commit: "e5f6a7b8" },
             ],
-            stdio: [{ name: "local-index", notMountedOn: ["node-a"] }],
+            stdio: [{ name: "local-index", notMountedOn: ["node-a-1a2b3c"] }],
             http: [
-              { name: "docs-wiki", host: "wiki.example.com", state: "offered" },
+              { name: "docs-wiki", host: "wiki.example.com", state: "offered", warning: "a node with writable plugin files reports a different URL" },
               { name: "needs-key", host: "api.example.com", state: "not offered: needs static headers" },
               { name: "split-url", host: "one.example.com", state: "conflict: nodes report different URLs" },
             ],
@@ -39,7 +39,7 @@ export function pluginFixtures(now: number, empty: boolean, mono: boolean): Plug
       },
       {
         label: "gpu",
-        nodes: [{ id: "node-gpu", live: true, reportedAt: now - 600_000 }],
+        nodes: [{ id: "node-gpu", instance: "node-gpu-1a2b3c", live: true, reportedAt: now - 600_000 }],
         plugins: [
           {
             key: "example-render@example-market",
@@ -51,7 +51,7 @@ export function pluginFixtures(now: number, empty: boolean, mono: boolean): Plug
             commands: 0,
             agents: 0,
             hooks: 1,
-            nodes: [{ id: "node-gpu", live: true, reportedAt: now - 600_000, commit: "9f8e7d6c" }],
+            nodes: [{ id: "node-gpu", instance: "node-gpu-1a2b3c", live: true, reportedAt: now - 600_000, commit: "9f8e7d6c" }],
             stdio: [],
             http: [{ name: "render-api", host: "render.example.com", state: "not offered: plugin files are writable by the agent" }],
           },

@@ -527,6 +527,8 @@ export type SurfaceId = "slack" | (string & {});
 export interface PluginNodeView {
   /** The node credential id. */
   id: string;
+  /** The node process that sent this report. */
+  instance: string;
   live: boolean;
   /** Epoch ms of the node's latest report. */
   reportedAt: number;
@@ -536,16 +538,18 @@ export interface PluginNodeView {
 
 export interface PluginStdioView {
   name: string;
-  /** Nodes whose manifest does not declare it: "not mounted on this node". */
+  /** Node processes whose manifest does not declare it: "not mounted on this node". */
   notMountedOn: string[];
 }
 
 export interface PluginHttpView {
   name: string;
-  /** Host only. */
+  /** Host only: a URL path can hold a secret, so the console never shows it. */
   host: string;
   /** "offered", "conflict: nodes report different URLs", or a "not offered: ..." reason. */
   state: string;
+  /** An unsealed report disagrees with the offered URL. It does not block the offer. */
+  warning?: string;
 }
 
 export interface PluginView {

@@ -104,7 +104,7 @@ import * as AgentGrants from "../../db/agent-grants";
 import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
 import { pluginsView } from "./plugins-view";
-import type { NodePluginsRow } from "../../db/node-plugins";
+import type { InventorySources } from "../core/plugin-inventory";
 import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
 import { agentIdsByName, buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
@@ -376,7 +376,7 @@ export interface PanelApiDeps {
   extractSoul?: (text: string) => Promise<unknown>;
   /** The plugin inventory's sources, for GET /panel/api/plugins. Absent or null
    *  (mono: no nodes report) = an empty, unavailable view. */
-  plugins?: { rows: () => Promise<NodePluginsRow[]>; live: (ids: readonly string[]) => Promise<ReadonlySet<string>> } | null;
+  plugins?: InventorySources | null;
   /** Node label status (node labels spec §4.7) for GET /panel/api/labels.
    *  Absent or null (mono: no node queue) = 503. */
   labels?: (() => Promise<LabelStatus[]>) | null;
