@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS node_plugins (
   instance_id TEXT   NOT NULL,
   labels      TEXT   NOT NULL,
   reported_at BIGINT NOT NULL,
+  last_seen_at BIGINT NOT NULL,
+  credential_iat BIGINT NOT NULL,
   report      TEXT   NOT NULL,
   PRIMARY KEY (node_id, instance_id)
 );
