@@ -71,7 +71,8 @@ import { env } from "../config/env";
 import { personaApp } from "./digest";
 import { soulData, cachedSoulData } from "../soul/extract";
 import { personaSoulText } from "../persona/soul-source";
-import { personaMandateText } from "../soul/persona-mandates";
+import type { MandateParts } from "../soul/mandate-scope";
+import { effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
 import { sweepStaleRuns } from "./stale-runs";
 import type { SourceReader } from "../proactive/source-reader";
 
@@ -552,12 +553,22 @@ export interface PersonaMandates {
   /** The persona's `## Identity` voice, when it has one. */
   voice?: string;
   channels: Record<string, string | null>;
+  /** Channel id -> the two parts of its extend or reduce, for prompts that bound a mandate's length. */
+  parts?: Record<string, MandateParts>;
 }
 
-/** A persona's global mandate and each listed channel's own (null: it follows the global one). Never throws. */
+/** A persona's global mandate and each listed channel's effective one (null: no sub-mandate applies, the global one stands). Never throws. */
 export function personaMandates(personaId: string, channelIds: readonly string[]): PersonaMandates {
   const m = personaMandateText(personaId);
-  return { global: m.global, ...(m.voice ? { voice: m.voice } : {}), channels: Object.fromEntries(channelIds.map((c) => [c, m.channels[c] ?? null])) };
+  const channels: Record<string, string | null> = {};
+  const parts: Record<string, MandateParts> = {};
+  for (const c of channelIds) {
+    const r = effectiveMandateIn(m, c);
+    // A block with an empty mandate stays "" as it always read here; only an absent one is null.
+    channels[c] = r.applied ? r.text : (m.channels[c] ?? null);
+    if (r.parts) parts[c] = r.parts;
+  }
+  return { global: m.global, ...(m.voice ? { voice: m.voice } : {}), channels, ...(Object.keys(parts).length ? { parts } : {}) };
 }
 
 /** Production promise checks for a group: budgeted on the ledger, prefs from the beneficiary's profile. */

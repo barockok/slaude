@@ -136,7 +136,7 @@ No session is created, no suppressed turn is recorded.
 |---|---|
 | List team channels in `trustedChannels` so the agent can be candid | List a public support channel as `trusted` — internal dumps will leak |
 | Add a noisy bot user to `blockedUsers` | Rely on `blockedUsers` for managers — `manager`/`backup` bypass it by design |
-| Use `## Channel <#Cxxx>` overrides for per-channel mandate/approvers (see SOUL guide) | Duplicate `Cxxx` across both lists expecting a merge — a channel should live in one |
+| Use `## Channel <#Cxxx>` overrides for per-channel mandate/approvers, and `## Scope` blocks for a channel class or DMs (see SOUL guide) | Duplicate `Cxxx` across both lists expecting a merge — a channel should live in one |
 
 ---
 
@@ -272,7 +272,7 @@ Manager and backup are always retained as catchall approvers even when a `## Cha
 
 ### 4.3 Per-channel approver overrides
 
-A `## Channel <#C12345>` block in SOUL.md can declare its own `Approvers:` and `Mandate:` that **replace** the global values for messages in that channel. Inbound `effectiveSoulForChannel(channelId)` is used both for the agent's mandate and for approval-gate resolution, so a channel override can widen or narrow who may approve without redeploying the container. Edits take effect after `bun run validate-soul` re-extraction or on next boot.
+A `## Channel <#C12345>` block in SOUL.md can declare its own `Approvers:` and `Mandate:` that apply to messages in that channel. Approvers replace the global list; the mandate replaces, extends or reduces the global one by its `Mode:` line (see [Scoped mandates](../reference/configuration.md#scoped-mandates)). Inbound `effectiveSoulForChannel(channelId)` is used both for the agent's mandate and for approval-gate resolution, so a channel override can widen or narrow who may approve without redeploying the container. Edits take effect after `bun run validate-soul` re-extraction or on next boot.
 
 ### 4.4 Do / Don't
 
