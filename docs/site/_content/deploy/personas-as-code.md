@@ -93,6 +93,111 @@ none); add it to `persona.yaml` by hand.
 because the default persona's soul would otherwise have to come from disk,
 which would mix two sources. The default persona needs no `slackUserId`.
 
+## One file: agent.yaml
+
+A persona can be defined by a single `personas/<name>/agent.yaml` instead of
+`persona.yaml`, `SOUL.md` and `mcp.json`. The two forms can coexist in one
+repository, persona by persona; a directory that has an `agent.yaml` must not
+also have those three files (that is a sync error), and directories without one
+behave exactly as above.
+
+The file's fields, with placeholders throughout:
+
+```yaml
+name: support-bot                 # required: must equal the directory name
+description: Answers support questions in the team channels
+model: provider/model-name
+slackUserId: UTESTUSER1           # required for a named persona
+userToken: ${PERSONA_SUPPORT_BOT_XOXP}
+provider:                         # as persona.yaml: references, never values
+  baseUrl: https://llm.example.com
+  apiKey: env://PERSONA_SUPPORT_BOT_API_KEY
+runsOn: general                   # node label; plugins follow the machine, see below
+soul: |                           # required: prose only, identity and voice
+  You are the support bot. Plain and direct.
+mandate:
+  global: Answer questions about the product and file bugs.
+  scoped:
+    - boundary: channel:CTEAMCHAN  # channel:<id>, trust:public, trust:trusted or dm
+      mode: extend                # override (default), extend or reduce
+      text: Also triage the deploy queue here.
+    - boundary: trust:public
+      mode: reduce
+      text: Share nothing internal in public channels.
+access:
+  manager: UMANAGER1
+  backupManager: UDEPUTY1
+  approvers:
+    - user: UAPPROVER1
+      scope: budget changes
+      catchall: false
+    - user: UAPPROVER2            # no scope: a catchall approver
+      channel: CTEAMCHAN          # optional: only in this channel
+  channels:
+    public: [CPUBLIC1]
+    trusted: [CTEAMCHAN]
+  dm: [UFRIEND1]
+  blocked: [UNOISY1]
+  redact: ["internal-[0-9]+"]     # regular expressions
+  approvalTimeoutSeconds: 300     # optional; 0 waits forever
+mcp:                              # the same shape as mcp.json
+  mcpServers:
+    tracker:
+      type: http
+      url: https://tracker.example.com/mcp
+      headers:
+        Authorization: ${PERSONA_SUPPORT_BOT_TRACKER_TOKEN}
+skills: [triage, release-notes]   # absent: every skill; []: none
+guardrails: [no-outbound-email]   # guardrails that also apply to this agent
+memory:
+  kbSources: [kb-handbook]        # absent: every installed KB; []: none
+  background:
+    budgetUsd: 2
+    timezone: UTC
+```
+
+**Compiled, never extracted.** The structured parts compile deterministically
+to the persona's structure at sync: no model is called and nothing is cached,
+for the default persona as well. The `soul` block stays prose; mandates and
+access come only from their own keys, so a `## Manager` or `## Mandate` heading
+left in the soul has no effect and the sync warns about it. A console edit of
+such a persona's soul changes the prose and keeps the structure.
+
+**Scoped mandates** behave as the `Mode:` line and `## Scope` blocks of a
+`SOUL.md` do: the most specific boundary applies, an absent `mode` is
+`override`, and an unknown one reads as `extend` (a sync warning names it) so a
+typo keeps the global mandate.
+
+**Errors.** A malformed value (a bad id, a bad regular expression, a boundary
+that is not one of the four, a `name` that differs from the directory) fails
+the sync with a message naming the persona and the key. Unknown keys are
+reported like `persona.yaml`'s.
+
+**`skills`** lists the skill slugs the agent may use. It covers the skills in
+`$SLAUDE_HOME/skills` and the persona's own overlay: the Skill tool, the
+`/slug` invocation, `list_skills`, `read_skill`, `write_skill` and `delete_skill`
+all honour it, and the model is not offered other skills. Built-in `slaude:`
+skills and installed plugins' skills are not limited by it. It is a filter on
+what the agent loads, not a sandbox: skill files stay readable on disk.
+
+**`guardrails`** adds this agent to `scope: agents` guardrails it names (which
+apply to their own agents as well). It is additive only: it cannot remove or
+weaken a guardrail, a disabled guardrail stays off, a `shared` one is
+unaffected, and an unknown slug is a sync warning that takes effect once a
+guardrail with that slug exists.
+
+**Plugins are not a field.** Every agent on a machine gets every plugin
+installed there; choose machines with `runsOn`.
+
+An agent with a skill list or attached guardrails needs nodes that advertise the
+`agent-definition/1` capability, which this version's nodes do; an older node
+is refused, as for owner guardrails. It needs payload version 6 and migration
+0034 on the gateway's database. Secrets stay as `${PERSONA_*}` placeholders and
+`provider` references exactly as in `persona.yaml`.
+
+`export --format agent-yaml` (below) writes these files from a current
+deployment.
+
 ## Placeholders
 
 `${VAR}` is resolved by the gateway from its own environment at sync time, in
@@ -281,6 +386,23 @@ edit it before exporting. Other stdio `args` cannot be told apart from
 secrets, so export succeeds and prints a warning listing the servers to review
 before you commit. A persona directory whose name is not a valid persona name
 fails the export.
+
+To migrate to [one file](#one-file-agentyaml), add `--format agent-yaml`:
+
+```sh
+bun run personas export --format agent-yaml --out ./persona-repo
+bun run personas export --format agent-yaml --persona support-bot --out ./persona-repo
+```
+
+It writes one `personas/<name>/agent.yaml` per persona with the same secret
+handling as above. The structured parts come from the existing soul extraction
+(its cache, else a model call), and the soul keeps its prose: the sections that
+moved into their own keys (`## Mandate`, `## Reporting`, approvers, channels,
+redaction and so on) are dropped from it, and anything it does not recognise
+stays. It reads `$SLAUDE_HOME`, so a deployment already managed from a git
+repository migrates by hand or by exporting from a filesystem copy. Review the
+result: an extraction can miss a section, and compiling is exact only about
+what was extracted.
 
 ## Runtime overrides
 
