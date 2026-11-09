@@ -47,6 +47,7 @@
  *   GET    /panel/api/memory/pages?store&slug      one page: content, type, tags, links
  *   GET    /panel/api/environments                 node pools, persona runsOn, personal environments (no secrets)
  *   GET    /panel/api/console-roles                the console's email allowlist (read-only, superadmin)
+ *   GET    /panel/api/plugins                      the node plugin inventory, by node label (read-only)
  *   GET    /panel/api/skills                       every skill: source, origin, agents, status, usage
  *   GET    /panel/api/skills/:id                   one skill: frontmatter, SKILL.md, files, provenance, usage, proposals
  *   POST   /panel/api/skills/:id/retire|restore    an agent-authored skill (superadmin; audited)
@@ -102,6 +103,8 @@ import { oauthKey } from "../../agent/mcp-oauth/store";
 import * as AgentGrants from "../../db/agent-grants";
 import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
+import { pluginsView } from "./plugins-view";
+import type { NodePluginsRow } from "../../db/node-plugins";
 import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
 import { agentIdsByName, buildSkills, restoreSkill, retireSkill, skillDetail, summaryOf } from "./skills-view";
@@ -122,6 +125,7 @@ import { getPersonaRegistry } from "../../persona/registry";
 import type {
   ConsoleRolesResponse,
   EnvironmentsResponse,
+  PluginsResponse,
   OverviewResponse,
   MemoryPageResponse,
   MemoryPagesResponse,
@@ -370,6 +374,9 @@ export interface PanelApiDeps {
   eventsPollMs?: number;
   /** Strict soul extraction for runtime persona changes. Default: the real extractor. */
   extractSoul?: (text: string) => Promise<unknown>;
+  /** The plugin inventory's sources, for GET /panel/api/plugins. Absent or null
+   *  (mono: no nodes report) = an empty, unavailable view. */
+  plugins?: { rows: () => Promise<NodePluginsRow[]>; live: (ids: readonly string[]) => Promise<ReadonlySet<string>> } | null;
   /** Node label status (node labels spec §4.7) for GET /panel/api/labels.
    *  Absent or null (mono: no node queue) = 503. */
   labels?: (() => Promise<LabelStatus[]>) | null;
@@ -983,6 +990,14 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           { cursor, limit },
         );
         return json(200, { ...page, items: await labelAudit(page.items) } satisfies AuditPageResponse);
+      }
+
+      // GET /panel/api/plugins: the plugin inventory. Read-only, any operator;
+      // there is no write route for plugins by design.
+      if (seg.length === 3 && seg[2] === "plugins") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        if (!deps.plugins) return json(200, { available: false, labels: [] } satisfies PluginsResponse);
+        return json(200, (await pluginsView(deps.plugins)) satisfies PluginsResponse);
       }
 
       // GET /panel/api/environments: where agents run. Read-only, any operator.

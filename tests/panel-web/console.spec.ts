@@ -31,6 +31,7 @@ const PAGES: Array<{ path: string; heading: string | RegExp; ready: string; sub?
   { path: "/panel/memory/shared/page?slug=runbooks%2Fdeploy-rollback", heading: "Rolling back a deploy", ready: "Announce the rollback", sub: "Content" },
   { path: "/panel/environments", heading: "Environments", ready: "node-g1", sub: "Node pools" },
   { path: "/panel/skills", heading: "Skills", ready: "release-notes" },
+  { path: "/panel/plugins", heading: "Plugins", ready: "example-toolkit" },
   { path: "/panel/skills/base%3Arelease-notes", heading: /release-notes/, ready: "Pinned commit", sub: "SKILL.md" },
   { path: "/panel/skills/retired%3Adefault%3Astandup-notes-20261020T090000Z", heading: /standup-notes/, ready: "Unused for 60 days.", sub: "Provenance" },
   { path: "/panel/guardrails", heading: "Guardrails", ready: "no-outbound-email" },

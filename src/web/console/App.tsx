@@ -23,6 +23,7 @@ import { GuardrailTestPage } from "./pages/resources/GuardrailTestPage";
 import { GuardrailsPage } from "./pages/resources/GuardrailsPage";
 import { SkillDetailPage } from "./pages/resources/SkillDetailPage";
 import { SkillsPage } from "./pages/resources/SkillsPage";
+import { PluginsPage } from "./pages/resources/PluginsPage";
 
 export { api };
 
@@ -36,6 +37,7 @@ export const NAV: NavEntry[] = [
   { label: "Environments", to: "/environments", description: "Where agents run: node pools, placement and personal environments.", keywords: "nodes" },
   { label: "Skills", to: "/skills", group: "Resources", description: "Every skill your agents can use, where it came from and how often it is used.", keywords: "plugins resources" },
   { label: "Guardrails", to: "/guardrails", group: "Resources", description: "The rules you set for your agents: enforced tool and message rules, and Guidance they read.", keywords: "policy rules limits resources" },
+  { label: "Plugins", to: "/plugins", group: "Resources", description: "Plugins each node image carries, by node label, and the state of their MCP servers.", keywords: "mcp servers commits resources" },
 ];
 
 /** GET /panel/auth/me answers { email, role } for the signed-in operator. */
@@ -60,6 +62,7 @@ function renderPage(path: string, entry: NavEntry | null) {
   if (path === "/memory") return <MemoryStoresPage />;
   if (path === "/environments") return <EnvironmentsPage />;
   if (path === "/skills") return <SkillsPage />;
+  if (path === "/plugins") return <PluginsPage />;
   if (path === "/guardrails") return <GuardrailsPage />;
   const skill = matchPath("/skills/:id", path);
   if (skill) return <SkillDetailPage key={skill.id} id={skill.id!} />;
