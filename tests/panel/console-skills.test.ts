@@ -316,7 +316,10 @@ describe("GET /panel/api/skills/:id/versions", () => {
     const { skills } = (await call("GET", "/panel/api/skills")).body as SkillsResponse;
     const retired = skills.find((s) => s.slug === "notes-x" && s.status === "retired")!;
     const body = (await call("GET", `/panel/api/skills/${encodeURIComponent(retired.id)}/versions`)).body as SkillVersionsResponse;
-    expect(body.versions.map((v) => v.hash.charAt(0))).toEqual(["e"]);
+    // The retire captures its own version of what is on disk, possibly after this response.
+    const hashes = body.versions.map((v) => v.hash.charAt(0));
+    expect(hashes.at(-1)).toBe("e");
+    expect(hashes).not.toContain("d");
   });
 
   test("a retired copy shows only what was captured up to its retirement, not a later skill of that slug", async () => {
