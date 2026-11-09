@@ -3,6 +3,12 @@ import { randomBytes } from "node:crypto";
 import { paths } from "./home";
 import { flag } from "./security-switches";
 
+/** Never taken from a .env file. `$SLAUDE_HOME/.env` sits on the volume agent
+ *  turns write, and this variable names the location trusted to say which plugin
+ *  servers get offered with no approval: only the real process environment may
+ *  set it. */
+const DOTENV_REFUSED = new Set(["SLAUDE_PLUGIN_ROOT"]);
+
 // Load a .env file if present (does not override existing process.env)
 export function loadDotenv(path: string) {
   if (!existsSync(path)) return;
@@ -11,6 +17,7 @@ export function loadDotenv(path: string) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
     if (!m || !m[1]) continue;
     const key: string = m[1];
+    if (DOTENV_REFUSED.has(key)) continue;
     let val: string = m[2] ?? "";
     if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
     if (val.startsWith("'") && val.endsWith("'")) val = val.slice(1, -1);

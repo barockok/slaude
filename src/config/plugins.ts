@@ -51,7 +51,8 @@ export interface InstalledPlugin {
  * mirrors a CC config directory: `<root>/plugins/installed_plugins.json` and
  * `<root>/plugins/cache/...`. Unlike $SLAUDE_HOME it is not writable by agent
  * turns, which is what makes reporting a plugin's HTTP server safe (see
- * src/node/plugin-report.ts).
+ * src/node/plugin-report.ts). Real process environment only: loadDotenv refuses
+ * this name, because `$SLAUDE_HOME/.env` is agent-writable.
  */
 export function pluginRoot(): string | null {
   return process.env.SLAUDE_PLUGIN_ROOT?.trim() || null;
