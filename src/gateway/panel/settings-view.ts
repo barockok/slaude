@@ -47,7 +47,7 @@ import { loadRules, type ProactiveRule } from "../../proactive/rules";
 import { brainCallIfOpen } from "../../knowledge/brain";
 import { memoryUnavailableReason } from "../../knowledge/memory-browse";
 import { budgetConfigFor } from "../../background/config";
-import { getPersonaRegistry } from "../../persona/registry";
+import { getPersonaRegistry, managedPersonaDefinition } from "../../persona/registry";
 import { agentIdsByName } from "./skills-view";
 import type { AgentSettingsGroup, AgentSettingsResponse, SettingsFamily, SettingsValue, SettingsSource } from "./api-types";
 
@@ -187,7 +187,8 @@ async function approvals(name: string, text: string): Promise<SettingsFamily> {
       settings.push(setting("approvers", "Approvers", own, fromConsole ? "console" : "soul", "approvers and managers of this agent (grants)",
         "Every approver may approve any request; scope keywords are not matched for a named agent."));
     } else {
-      const fallback = usersWithRole(await loadGrants("default"), ["manager"]);
+      // An agent.yaml persona has exactly the approvers its file names.
+      const fallback = managedPersonaDefinition(name) ? [] : usersWithRole(await loadGrants("default"), ["manager"]);
       settings.push(fallback.length
         ? setting("approvers", "Approvers", fallback, "default", "the default agent's managers", "This agent names no approver or manager.")
         : setting("approvers", "Approvers", "Nobody (requests time out denied)", "default", undefined, "Neither this agent nor the default agent has an approver or manager."));
@@ -196,8 +197,10 @@ async function approvals(name: string, text: string): Promise<SettingsFamily> {
     if (perChannel.size) table = { columns: ["Channel", "Approvers there"], rows: [...perChannel].map(([c, ids]) => [c, ids.join(", ")]) };
   } else {
     const structured = def.approvers;
-    const legacy = loadApprovers();
-    const envList = env.slack.approvers();
+    // An agent.yaml default persona stops at its own file (approval-gate.ts).
+    const compiled = !!managedPersonaDefinition(undefined);
+    const legacy = compiled ? null : loadApprovers();
+    const envList = compiled ? [] : env.slack.approvers();
     if (structured.length) {
       settings.push(setting("approvers", "Approvers", structured.map((a) => a.userId), "soul", "SOUL.md approvers",
         "Matched per request: catch-all approvers always, others when their scope words appear in the request."));
@@ -206,6 +209,11 @@ async function approvals(name: string, text: string): Promise<SettingsFamily> {
       settings.push(setting("approvers", "Approvers", Object.entries(legacy).map(([k, v]) => `${k}: ${v.join(", ")}`), "soul", "SOUL.md approvers block (by category)"));
     } else if (envList.length) {
       settings.push(setting("approvers", "Approvers", envList, "env", "SLAUDE_APPROVERS"));
+    } else if (compiled) {
+      const managers = [def.manager.userId, def.backupManager.userId].filter((u): u is string => !!u);
+      settings.push(managers.length
+        ? setting("approvers", "Approvers", managers, "soul", "this agent's managers", "Its agent.yaml names no approver.")
+        : setting("approvers", "Approvers", "Nobody (requests time out denied)", "default", undefined, "Its agent.yaml names no approver or manager."));
     } else {
       settings.push(setting("approvers", "Approvers", "Anyone who sees the card", "default", undefined, "No approver is named in the soul or SLAUDE_APPROVERS."));
     }
