@@ -174,3 +174,32 @@ describe("soulCachePath", () => {
     expect(JSON.parse(readFileSync(soulCachePath(text), "utf8")).mac).toMatch(/^[0-9a-f]{64}$/);
   });
 });
+
+describe("soulCachePath and scoped mandates", () => {
+  test("a soul using the scoped syntax is keyed apart from its plain hash; any other soul keeps its key", () => {
+    const sha = (t: string) => createHash("sha256").update(t).digest("hex").slice(0, 16);
+    const plain = "## Mandate\nHelp.\n## Channel C0AB\n### Mandate\nThis.\n";
+    const scoped = `${plain}\n## Scope dm\n### Mandate\nBe brief.\n`;
+    const moded = "## Channel C0AB\n### Mandate\nMode: reduce\nNo deploys.\n";
+    expect(soulCachePath(plain).endsWith(`soul.${sha(plain)}.json`)).toBe(true);
+    expect(soulCachePath(scoped).endsWith(`soul.${sha(scoped)}.json`)).toBe(false);
+    expect(soulCachePath(moded).endsWith(`soul.${sha(moded)}.json`)).toBe(false);
+  });
+
+  test("extraction of a scoped soul writes and reads its own key, and carries modes", async () => {
+    process.env.SLAUDE_SOUL_CACHE_DIR = mkdtempSync(join(tmpdir(), "soul-scope-"));
+    noKey();
+    const soul = "## Channel C0ABCD\n### Mandate\nMode: extend\nAlso this.\n\n## Scope public\n### Mandate\nMode: reduce\nNo internals.\n";
+    let calls = 0;
+    const call = async () => {
+      calls++;
+      return JSON.stringify({ channelOverrides: [{ channel: "C0ABCD", mandate: "Also this.", mandateMode: "Extend", approvers: [] }], scopeMandates: [{ scope: "public", mandate: "No internals.", mode: "reduce" }] });
+    };
+    const first = await extractSoulData(soul, { strict: true, call });
+    const again = await extractSoulData(soul, { strict: true, call });
+    expect(calls).toBe(1);
+    expect(first.channelOverrides[0]!.mandateMode).toBe("extend");
+    expect(first.scopeMandates).toEqual([{ scope: "public", mandate: "No internals.", mode: "reduce" }]);
+    expect(again.scopeMandates).toEqual(first.scopeMandates);
+  });
+});

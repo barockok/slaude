@@ -5,7 +5,7 @@ import { paths } from "../config/home";
 import { loadSoul, soulSystemBlock, loadApproverEntries } from "./loader";
 import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData, type ApproverEntry } from "./data";
 import { applyOverrides } from "./overrides";
-import { resolveSoulMandate } from "./mandate-scope";
+import { resolveSoulMandate, usesScopedMandates } from "./mandate-scope";
 import * as SoulOverrides from "../db/soul-overrides";
 import { masterKey } from "../db/crypto";
 
@@ -29,7 +29,10 @@ function sha256(s: string): string {
 /** The cache file for a soul text: the single derivation, shared by extraction
  *  and anything that pre-seeds the cache (e.g. the k8s-local verifier). */
 export function soulCachePath(text: string): string {
-  return cachePath(sha256(text));
+  // A soul that uses the scoped-mandate syntax is keyed apart, so an extraction
+  // made before that syntax existed is never trusted. Every other soul keeps
+  // its key: nothing to re-extract, and no boot depends on the model again.
+  return cachePath(sha256(usesScopedMandates(text) ? `scoped-mandates/1\n${text}` : text));
 }
 
 /**
