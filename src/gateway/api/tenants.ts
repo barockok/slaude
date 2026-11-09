@@ -36,7 +36,7 @@ import { skillRootsFor } from "../../skills/loader";
 import { json, notFound } from "./http";
 import { bridgedServerNames } from "../core/external-mcp";
 import { voiceBundleFromEnv, type VoiceBundle } from "../../voice/config";
-import { bundleGuardrailsFor, CAPABILITIES_HEADER, GUARDRAILS_CAPABILITY, hasCapability, type BundleGuardrails } from "../../guardrails/node";
+import { AGENT_DEFINITION_CAPABILITY, bundleGuardrailsFor, CAPABILITIES_HEADER, definitionNeedsNode, GUARDRAILS_CAPABILITY, hasCapability, type BundleGuardrails } from "../../guardrails/node";
 import { emitAudit } from "../../audit/emit";
 
 export interface RuntimeBundle {
@@ -83,6 +83,11 @@ export interface RuntimeBundle {
    *  why a persona with enforced rules is refused to a node that does not
    *  advertise the capability. */
   guardrails?: BundleGuardrails;
+  /** Present when the persona comes from an agent.yaml, so `soulMd` is prose
+   *  and `soulJson` is compiled. `skills` limits the skills a session may
+   *  load (absent: every skill). A node without the agent-definition/1
+   *  capability is refused such a bundle: it would ignore these. */
+  definition?: { skills?: string[]; guardrails?: string[] };
 }
 
 type PersonaRow = {
@@ -301,7 +306,12 @@ async function buildManagedBundle(tenantId: string, personaId: string): Promise<
     skillsPaths: skillRootsFor(effective.name),
     defaultModel: effective.model ?? env.model(),
     managed: true,
+    ...(effective.definition ? { definition: bundleDefinition(effective.definition) } : {}),
   };
+}
+
+function bundleDefinition(d: NonNullable<EffectivePersona["definition"]>): NonNullable<RuntimeBundle["definition"]> {
+  return { ...(d.skills ? { skills: d.skills } : {}), ...(d.guardrails ? { guardrails: d.guardrails } : {}) };
 }
 
 /**
@@ -525,6 +535,28 @@ export async function handleTenantRuntime(
     });
   }
   if (guardrails) bundle = { ...bundle, guardrails };
+  // A skill list or attached guardrails would be silently ignored by an older
+  // node, so such an agent is refused to one: the same version-skew rule as
+  // enforced guardrails.
+  if (bundle.definition && definitionNeedsNode(bundle.definition) && !hasCapability(req.headers.get(CAPABILITIES_HEADER), AGENT_DEFINITION_CAPABILITY)) {
+    emitAudit({
+      tenantId,
+      persona: bundle.personaId,
+      actorKind: "system",
+      actorId: ctx.nodeId ?? "node",
+      action: "guardrail.node.unsupported",
+      targetKind: "node",
+      targetId: ctx.nodeId ?? "unknown",
+      decision: "refused",
+      sessionId: ctx.sessionId ?? null,
+      summary: `a node without the ${AGENT_DEFINITION_CAPABILITY} capability asked for an agent with a skill list or attached guardrails; refused`,
+      details: { agent: bundle.personaId, capability: AGENT_DEFINITION_CAPABILITY },
+    });
+    return new Response(JSON.stringify({ error: "this node does not apply agent definitions", code: "GUARDRAILS_UNSUPPORTED", transient: false }), {
+      status: 409,
+      headers: { "content-type": "application/json" },
+    });
+  }
   let voiceBundle: VoiceBundle | null = null;
   // Tenant isolation (PF49): only ship voice config to authorized tenants.
   const allowedTenants = env.voice.tenants();

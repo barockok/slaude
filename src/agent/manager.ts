@@ -34,9 +34,11 @@ import { soulSystemBlock } from "../soul/loader";
 import { BUILTIN_PLUGIN_DIR, pluginsNamedLikeBuiltin } from "../soul/builtin";
 import { personaSoulText } from "../persona/soul-source";
 import { effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
+import { compiledPromptSoul } from "../soul/per-persona";
+import { allowedSkillNames, sdkSkillsOption } from "./skill-allow";
 import { resolveSoulMandate } from "../soul/mandate-scope";
 import { SoulDataSchema } from "../soul/data";
-import { getPersonaRegistry, livePersona, managedPersonaModel, onPersonaRegistryInstalled, type PersonaRegistry } from "../persona/registry";
+import { getPersonaRegistry, livePersona, managedPersonaDefinition, managedPersonaModel, onPersonaRegistryInstalled, type PersonaRegistry } from "../persona/registry";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import { dbSessionStore, type SessionStore } from "./session-store";
@@ -340,7 +342,13 @@ export type StopGuard = (sessionId: string) => string | null;
 /** A persona's soul as the node receives it in the runtime bundle: the text for
  *  the <persona> block and its structured projection (SoulData-shaped, or null
  *  when the gateway has none). */
-export type PersonaSoul = { soulMd: string; soulJson: unknown };
+export type PersonaSoul = {
+  soulMd: string;
+  soulJson: unknown;
+  /** Present for a persona from an agent.yaml: `soulMd` is prose and `soulJson`
+   *  is compiled. `skills` limits the skills a session may load. */
+  definition?: { skills?: string[]; guardrails?: string[] };
+};
 export type PersonaSoulResolver = (sessionId: string, persona: string | undefined) => Promise<PersonaSoul>;
 /** The owner guardrails a booting session carries (src/guardrails/resolve.ts),
  *  or null when none apply. A throw fails the boot with GUARDRAILS_UNAVAILABLE:
@@ -1379,6 +1387,20 @@ export class AgentManager extends EventEmitter {
     return { persona, name: persona?.name };
   }
 
+  /** A booting session's soul: its runtime bundle on a node, else the registry.
+   *  A persona from an agent.yaml carries its compiled structure (a mono
+   *  session has no bundle); any other soul keeps the process-global reading. */
+  async #resolveSoul(sessionId: string, personaName: string | undefined): Promise<PersonaSoul> {
+    if (this.#personaSoulResolver) return this.#personaSoulResolver(sessionId, personaName);
+    const compiled = compiledPromptSoul(personaName);
+    const definition = compiled ? managedPersonaDefinition(personaName) : null;
+    return {
+      soulMd: personaSoulText(personaName),
+      soulJson: compiled ?? undefined,
+      ...(definition ? { definition } : {}),
+    };
+  }
+
   /** The `systemPrompt.append` text for a booting session. One function for
    *  session start and {@link __systemPromptForTests}, so the test exercises the
    *  production path. A soul resolver failure propagates and fails the boot. */
@@ -1396,6 +1418,8 @@ export class AgentManager extends EventEmitter {
       memBlock?: string | null;
       /** The owner guardrails the session boots with (their Guidance block). */
       guardrails?: SessionGuardrails | null;
+      /** The soul already resolved for this boot (else resolved here). */
+      soul?: PersonaSoul;
     },
   ): Promise<string> {
     // Named personas use their own soul for the persona block (the database
@@ -1403,15 +1427,14 @@ export class AgentManager extends EventEmitter {
     // stays the same. Default persona = the managed `default` row when one
     // exists, else the global SOUL.md. On a node the resolver supplies both
     // from the runtime bundle.
-    const soul: PersonaSoul = this.#personaSoulResolver
-      ? await this.#personaSoulResolver(sessionId, personaName)
-      : { soulMd: personaSoulText(personaName), soulJson: undefined };
+    const soul: PersonaSoul = ctx.soul ?? await this.#resolveSoul(sessionId, personaName);
     // Observable soul source: a hash, never the text.
     const soulHash = createHash("sha256").update(soul.soulMd).digest("hex").slice(0, 12);
     console.log(`[agent] session=${sessionId} persona=${personaName ?? "default"} soul=${soulHash}`);
     const { mcpServers, memBlock } = ctx;
     return [
       soulSystemBlock(soul.soulMd),
+      compiledMandateBlock(soul),
       // Owner Guidance right after the soul, before the channel mandate.
       // Enforced rules are never in the prompt: code checks them.
       ctx.guardrails?.promptBlock ?? "",
@@ -1634,8 +1657,10 @@ export class AgentManager extends EventEmitter {
     // Owner guardrails: resolved once per boot (the same lifecycle as the
     // soul); a failure fails the boot.
     const guardrails = await this.#resolveGuardrails(sessionId, personaName, row.slack_channel_id ?? null);
+    const soul = await this.#resolveSoul(sessionId, personaName);
     const systemAppend = await this.#buildSystemAppend(sessionId, personaName, {
       guardrails,
+      soul,
       channelId: row.slack_channel_id,
       lock,
       remote: remoteTarget
@@ -1742,6 +1767,9 @@ export class AgentManager extends EventEmitter {
     const builtinPlugin = { type: "local" as const, path: BUILTIN_PLUGIN_DIR, skipMcpDiscovery: true };
     const allPlugins = [slaudeHomePlugin, builtinPlugin, ...pluginPaths];
     warnPluginsNamedLikeBuiltin(allPlugins.map((p) => p.path));
+    // An agent.yaml `skills` list: the Skill tool's names for it, and the SDK
+    // option that hides the rest from the model's listing.
+    const allowedSkills = soul.definition?.skills ? allowedSkillNames(soul.definition.skills, personaName) : null;
 
     // Opened after the soul resolves, so a boot that fails there holds no connection.
     const remoteHandle = await this.#remoteHandleFor(sessionId, remoteTarget);
@@ -1781,6 +1809,7 @@ export class AgentManager extends EventEmitter {
         ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
         ...(localMcp ? { strictMcpConfig: true } : {}),
         plugins: allPlugins,
+        ...(allowedSkills ? { skills: sdkSkillsOption(allowedSkills, pluginPaths.map((p) => p.path)) } : {}),
         // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
         // local-only tools with no remote counterpart are removed outright.
         ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES } : {}),
@@ -1870,6 +1899,7 @@ export class AgentManager extends EventEmitter {
     // fails before going live leaves no state behind.
     this.#skillGate.reset(sessionId);
     this.#skillGate.markMounted(sessionId, allPlugins.some((p) => p.path === BUILTIN_PLUGIN_DIR));
+    this.#skillGate.setAllowedSkills(sessionId, allowedSkills);
     // A fresh CLI has been given no Guidance: deliveries start over.
     if (guardrails) this.#sessionGuardrails.set(sessionId, guardrails);
     else this.#sessionGuardrails.delete(sessionId);
@@ -2503,6 +2533,14 @@ const AUTO_EVOLVE_PROMPT = [
   "</auto-evolve>",
   "</runtime-check>",
 ].join("\n");
+
+/** An agent.yaml's soul is prose: its global mandate reaches the prompt here. */
+function compiledMandateBlock(soul: PersonaSoul): string {
+  if (!soul.definition) return "";
+  const parsed = SoulDataSchema.safeParse(soul.soulJson);
+  const mandate = parsed.success ? parsed.data.mandate?.trim() : "";
+  return mandate ? `<mandate>\n${mandate}\n</mandate>` : "";
+}
 
 /**
  * Scoped mandate: when a sub-mandate applies here (a `## Channel` block's

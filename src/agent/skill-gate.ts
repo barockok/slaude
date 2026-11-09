@@ -1,11 +1,14 @@
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { builtinGoverning, listBuiltinSkills } from "../soul/builtin";
+import { isSkillAllowed } from "./skill-allow";
 
 interface GateState {
   /** The boot mounted the built-in plugin; no enforcement otherwise. */
   mounted: boolean;
   /** Qualified built-in names (`slaude:<name>`) loaded since the last boot. */
   loaded: Set<string>;
+  /** The agent's skill list as Skill tool names; absent: no list (every skill). */
+  allowed?: ReadonlySet<string>;
 }
 
 /** A Skill tool response that reports an error: an `is_error` object, or the
@@ -45,6 +48,12 @@ export class SkillGate {
     else this.#state.set(sessionId, { mounted, loaded: new Set() });
   }
 
+  /** Limit a session to these skills (null: no limit). Cleared by reset, so set after it. */
+  setAllowedSkills(sessionId: string, names: readonly string[] | null): void {
+    const s = this.#state.get(sessionId);
+    if (s) s.allowed = names ? new Set(names) : undefined;
+  }
+
   /** Drop a session's state when its live session ends. */
   forget(sessionId: string): void {
     this.#state.delete(sessionId);
@@ -63,6 +72,19 @@ export class SkillGate {
     return async (input) => {
       if (input.hook_event_name !== "PreToolUse") return {};
       const s = this.#state.get(sessionId);
+      if (s?.allowed && (input as { tool_name?: string }).tool_name === "Skill") {
+        const raw = ((input as { tool_input?: unknown }).tool_input as { skill?: unknown } | null)?.skill;
+        const name = typeof raw === "string" ? normaliseSkillName(raw) : "";
+        if (!isSkillAllowed(name, s.allowed)) {
+          return {
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse" as const,
+              permissionDecision: "deny" as const,
+              permissionDecisionReason: `The skill "${name}" is not in this agent's skill list.`,
+            },
+          };
+        }
+      }
       if (!s?.mounted) return {};
       const skill = builtinGoverning((input as { tool_name?: string }).tool_name ?? "");
       if (!skill || s.loaded.has(skill.qualified)) return {};

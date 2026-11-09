@@ -2,6 +2,7 @@ import type { AgentManager, AgentEvent } from "../../agent/manager";
 import { env } from "../../config/env";
 import { m as metric } from "../../metrics";
 import {
+  allowedSkillsOf,
   discoverSkills,
   matchSkillInvocation,
   buildSkillInvocation,
@@ -136,7 +137,7 @@ import { recordSkillUse } from "../../skills/usage";
 import { scrubChildEnv, withoutKeys } from "../../agent/child-env";
 import { providerSelectingNames } from "../../agent/provider-env";
 import { memoryScopeFor, withClaimLock } from "../../memory/scope";
-import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled } from "../../persona/registry";
+import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled, skillsAllowedFor } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
 import { isInteractiveOrigin, turnBrainScope, type GateInput } from "../../knowledge/gated-dispatch";
 import { personaKbs, personaKbSourceIds } from "../../knowledge/persona-kb";
@@ -3402,7 +3403,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
 
     let userText = stripped;
-    const skillHit = matchSkillInvocation(stripped, discoverSkills(session.persona_id));
+    const skillHit = matchSkillInvocation(stripped, allowedSkillsOf(discoverSkills(session.persona_id), skillsAllowedFor(session.persona_id)));
     if (skillHit) {
       userText = buildSkillInvocation(skillHit.skill, skillHit.args, session.id);
       // A `/<slug>` invocation is a use too (it never reaches the Skill tool). Best effort, off the turn's path.

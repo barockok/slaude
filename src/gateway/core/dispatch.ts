@@ -32,7 +32,8 @@ import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { TurnQueues, type TurnJob, type TurnTarget } from "../../queue/turns";
 import { isFailureCode } from "./failure-codes";
 import { personaNeedsGuardrails } from "../../guardrails/node";
-import { GUARDRAILS_CAPABILITY } from "../../guardrails/capability";
+import { AGENT_DEFINITION_CAPABILITY, definitionNeedsNode, GUARDRAILS_CAPABILITY } from "../../guardrails/capability";
+import { managedPersonaDefinition } from "../../persona/registry";
 import { emitAudit } from "../../audit/emit";
 import { resolve } from "node:path";
 import { isProactiveWorkspace } from "../../agent/workspace-claim";
@@ -333,10 +334,10 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
 
   /** The label's live nodes with their capability, once at least one has it;
    *  null when none does within the wait. */
-  async function waitForCapableNodes(label: string): Promise<Array<{ node: string; has: boolean }> | null> {
+  async function waitForCapableNodes(label: string, cap: string): Promise<Array<{ node: string; has: boolean }> | null> {
     const deadline = Date.now() + guardrailWaitMs;
     for (;;) {
-      const nodes = await registry.liveNodesWithCap(label, GUARDRAILS_CAPABILITY);
+      const nodes = await registry.liveNodesWithCap(label, cap);
       if (nodes.some((n) => n.has)) return nodes;
       if (Date.now() >= deadline || closed) return null;
       await sleep(Math.min(guardrailPollMs, Math.max(1, deadline - Date.now())));
@@ -344,7 +345,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
   }
 
   /** No capable node in time: audited, and the thread is told (the turn is not queued). */
-  async function refuseUnsupported(sessionId: string, persona: string, tenantId: string, meta: DispatchMeta, label: string): Promise<void> {
+  async function refuseUnsupported(sessionId: string, persona: string, tenantId: string, meta: DispatchMeta, label: string, cap: string): Promise<void> {
     emitAudit({
       tenantId,
       persona,
@@ -358,9 +359,9 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       channelId: meta.channelId,
       threadTs: meta.threadTs,
       summary: `no node on label ${label} applies owner guardrails; the turn was not dispatched`,
-      details: { agent: persona, label, capability: GUARDRAILS_CAPABILITY, waitedMs: guardrailWaitMs },
+      details: { agent: persona, label, capability: cap, waitedMs: guardrailWaitMs },
     });
-    console.warn(`[dispatch] session=${sessionId} persona=${persona}: no ${GUARDRAILS_CAPABILITY} node on label ${label}; not dispatched`);
+    console.warn(`[dispatch] session=${sessionId} persona=${persona}: no ${cap} node on label ${label}; not dispatched`);
     agent.emit("event", { type: "error", sessionId, error: "no guardrails-capable node", code: "GUARDRAILS_UNSUPPORTED" } as AgentEvent);
   }
 
@@ -449,13 +450,16 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // Owner guardrails (version skew): an agent with enforced rules runs
       // only on a node that advertises the capability. A snapshot that cannot
       // be read is not decided here: the node's bundle fetch fails closed.
-      const needs = await (opts.needsGuardrails ?? personaNeedsGuardrails)(tenantId, personaId).catch(() => false);
-      const warmOk = !!loc && loc.fresh && (await registry.nodeCarries(loc.node, label)) && (!needs || (await registry.nodeCaps(loc.node)).has(GUARDRAILS_CAPABILITY));
+      // A skill list or attached guardrails need a node that applies them.
+      const needsDefinition = definitionNeedsNode(managedPersonaDefinition(personaId));
+      const needs = needsDefinition || (await (opts.needsGuardrails ?? personaNeedsGuardrails)(tenantId, personaId).catch(() => false));
+      const cap = needsDefinition ? AGENT_DEFINITION_CAPABILITY : GUARDRAILS_CAPABILITY;
+      const warmOk = !!loc && loc.fresh && (await registry.nodeCarries(loc.node, label)) && (!needs || (await registry.nodeCaps(loc.node)).has(cap));
       let target: TurnTarget = warmOk ? { node: loc!.node } : { label };
       if (needs && !warmOk) {
-        const capable = await waitForCapableNodes(label);
+        const capable = await waitForCapableNodes(label, cap);
         if (capable === null) {
-          await refuseUnsupported(session.id, personaId, tenantId, meta, label);
+          await refuseUnsupported(session.id, personaId, tenantId, meta, label, cap);
           return;
         }
         // Mixed fleet: a node without the capability consumes the label queue
@@ -481,7 +485,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           ...(meta.backgroundRunId ? { bgRun: meta.backgroundRunId } : {}),
           ...(meta.wake ? { wake: meta.wake } : {}),
           // The reaper re-pins this job only to a capable node.
-          ...(needs ? { requiresCaps: [GUARDRAILS_CAPABILITY] } : {}),
+          ...(needs ? { requiresCaps: [cap] } : {}),
           // The agent's proactive folder is shared by heartbeat channel-post
           // threads: the node serialises turns there across nodes by this field.
           ...(isProactiveWorkspace(session.working_dir) ? { workspace: resolve(session.working_dir!) } : {}),
