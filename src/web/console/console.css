@@ -170,6 +170,13 @@
   overflow: hidden;
 }
 
+.sl-mandate__effective {
+  margin-top: var(--sl-pad-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
 .sl-mandate__meta {
   display: flex;
   flex-wrap: wrap;

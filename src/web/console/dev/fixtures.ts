@@ -48,7 +48,16 @@ function defaultMandates(now: number): MandateView[] {
     {
       id: "channel:CTEAM", kind: "channel", title: "Mandate in #team", source: "soul", channelId: "CTEAM", channelLabel: "#team", approverNote: note,
       instructions: "In the team channel, answer only when mentioned or when a question goes unanswered for an hour. Keep replies in threads.",
+      boundary: "channel:CTEAM", mode: "extend",
+      effective: "Help the team ship: answer questions about the codebase, review pull requests when asked, and keep threads moving. Ask before anything that changes shared infrastructure.\n\nAdditional mandate for this channel (in addition to the mandate above):\nIn the team channel, answer only when mentioned or when a question goes unanswered for an hour. Keep replies in threads.",
       triggers: ["messages in #team"], approvers: ["UALICE", "UBOB"],
+    },
+    {
+      id: "scope:trust:public", kind: "scope", title: "Mandate in public channels", source: "soul", approverNote: note,
+      instructions: "No internal roadmap or infrastructure details in public channels.",
+      boundary: "trust:public", mode: "reduce",
+      effective: "Help the team ship: answer questions about the codebase, review pull requests when asked, and keep threads moving. Ask before anything that changes shared infrastructure.\n\nLimit for public channels (this narrows the mandate above and wins over it wherever they conflict):\nNo internal roadmap or infrastructure details in public channels.",
+      triggers: ["messages in public channels"], approvers: ["UALICE"],
     },
     {
       id: "channel:COPS", kind: "channel", title: "Mandate in #ops", source: "soul", channelId: "COPS", channelLabel: "#ops", approverNote: note,
