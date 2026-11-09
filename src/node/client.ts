@@ -15,6 +15,7 @@ import type { RuntimeBundle } from "../gateway/api/tenants";
 import type { ConnectInfo } from "../remote/transport";
 import { BootFailure } from "../gateway/core/failure-codes";
 import { CAPABILITIES_HEADER, GUARDRAILS_CAPABILITY } from "../guardrails/capability";
+import type { PluginReport } from "../config/plugin-inventory";
 
 export interface NodeClientOpts {
   /** Gateway base URL (SLAUDE_GATEWAY_URL), e.g. http://gateway:8080 */
@@ -288,6 +289,20 @@ export class NodeClient {
   async whoami(): Promise<NodeWhoami> {
     const res = await this.request("/v1/node/whoami", { retry: false });
     return this.#json<NodeWhoami>(res);
+  }
+
+  /**
+   * Send this node's plugin report (design: plugin inventory). "unsupported":
+   * a gateway that predates the route (404); "too-large": the gateway's 413.
+   * Node-authenticated: the gateway takes the node id and labels from the
+   * credential. Transient failures throw after the usual retries.
+   */
+  async putPlugins(report: PluginReport): Promise<"ok" | "unsupported" | "too-large"> {
+    const res = await this.request("/v1/node/plugins", { method: "PUT", body: report, signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS) });
+    if (res.status === 404) return "unsupported";
+    if (res.status === 413) return "too-large";
+    await this.#json<unknown>(res);
+    return "ok";
   }
 
   async getSession(id: string, jobToken: string): Promise<SessionView | null> {

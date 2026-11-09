@@ -32,6 +32,7 @@ import { enforceNodeBootCheck } from "./boot-check";
 import { NodeClient } from "./client";
 import { nodeHandshake } from "./handshake";
 import { installRejectionGuard } from "./rejection-guard";
+import { reportNodePlugins } from "./plugin-report";
 import { type NodeManifest, NodeManifestError, describeNodeManifest, loadNodeManifest } from "./manifest";
 
 async function main() {
@@ -76,7 +77,15 @@ async function main() {
   // The labels this node consumes are the ones its VERIFIED credential carries
   // (whoami). A legacy token is {default}; a gateway older than whoami (404,
   // identity null) only knows `turns`, which is `default` too.
-  const handle = await startNodeWorker({ labels: hs.identity?.labels ?? ["default"], manifest });
+  // The plugin report goes first: it is sent once per process, before the
+  // worker claims a job, so it describes the image and no agent turn's writes.
+  await reportNodePlugins({ client: new NodeClient(), manifest });
+
+  const handle = await startNodeWorker({
+    labels: hs.identity?.labels ?? ["default"],
+    manifest,
+    ...(hs.identity ? { credentialId: hs.identity.id } : {}),
+  });
 
   // Only once the worker is up: a rejection during boot stays fatal. From
   // here a rejection nobody awaits (one session's background work) is logged

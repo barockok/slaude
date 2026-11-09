@@ -85,6 +85,10 @@ export interface Keys {
    *  `guardrails/1`), comma-joined, written beside its labels. Absent for a
    *  node that predates capabilities: it has none. */
   nodeCaps(nodeId: string): string;
+  /** `nodecred:<credentialId>`: set by every live node holding that credential
+   *  (id from whoami), TTL as the node's. The registry id is per process; the
+   *  plugin inventory is per credential. */
+  nodeCredential(credentialId: string): string;
   /** Set of every nodeId that ever registered — reaper work list. */
   nodeSet(): string;
   /** `lock:session:<sessionId>` — one turn at a time per session. */
@@ -161,6 +165,7 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     nodePattern: () => `${prefix}:nodes:*`,
     nodeLabels: (nodeId) => `${prefix}:nodelabels:${nodeId}`,
     nodeCaps: (nodeId) => `${prefix}:nodecaps:${nodeId}`,
+    nodeCredential: (id) => `${prefix}:nodecred:${id}`,
     nodeSet: () => `${prefix}:nodeset`,
     sessionLock: (sessionId) => `${prefix}:lock:session:${sessionId}`,
     workspaceLock: (dir) => `${prefix}:lock:workspace:${createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 32)}`,
