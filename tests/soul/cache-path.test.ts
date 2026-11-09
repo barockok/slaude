@@ -202,4 +202,11 @@ describe("soulCachePath and scoped mandates", () => {
     expect(first.scopeMandates).toEqual([{ scope: "public", mandate: "No internals.", mode: "reduce" }]);
     expect(again.scopeMandates).toEqual(first.scopeMandates);
   });
+
+  test("the model's unknown mode is extend, never an override; an absent one stays absent", () => {
+    const parsed = SoulDataSchema.parse({ channelOverrides: [{ channel: "C0A", mandate: "x", mandateMode: "narrow", approvers: [] }, { channel: "C0B", mandate: "y", approvers: [] }], scopeMandates: [{ scope: "dm", mandate: "z", mode: "stack" }] });
+    expect(parsed.channelOverrides[0]!.mandateMode).toBe("extend");
+    expect(parsed.channelOverrides[1]!.mandateMode).toBeUndefined();
+    expect(parsed.scopeMandates[0]!.mode).toBe("extend");
+  });
 });

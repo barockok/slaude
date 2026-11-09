@@ -106,4 +106,9 @@ describe("validateSoul", () => {
     expect(w).toHaveLength(1);
     expect(w[0]).toContain("channel:C0A");
   });
+
+  test("warns on an unknown Mode value from the soul text", () => {
+    const w = validateSoul(baseFull(), "## Channel C0ABCD\n### Mandate\nMode: narrow\nx\n").warnings;
+    expect(w.some((x) => x.includes("unknown Mode value (C0ABCD: narrow)") && x.includes("extend"))).toBe(true);
+  });
 });

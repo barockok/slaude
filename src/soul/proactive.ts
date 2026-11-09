@@ -30,7 +30,7 @@
  * the SOUL can raise it; a person's profile can only lower it (restraint.ts).
  */
 import type { MandateMode, ScopeMandate } from "./data";
-import { modeLineValue } from "./mandate-scope";
+import { parseModeLine } from "./mandate-scope";
 import { createHash } from "node:crypto";
 import { personaSoulText } from "../persona/soul-source";
 import { parseLevel, type Level } from "../proactive/levels";
@@ -309,6 +309,8 @@ export interface ParsedMandates {
   /** Channel id -> its `Mode:` line, only when it wrote one. */
   modes: Record<string, MandateMode>;
   scopes: ScopeMandate[];
+  /** `<place>: <value>` for each `Mode:` line whose value is not a known mode (read as extend). */
+  unknownModes: string[];
 }
 
 /**
@@ -321,6 +323,7 @@ export function parseScopedMandates(text: string): ParsedMandates {
   const channels: Record<string, string[]> = {};
   const scopes: Record<string, string[]> = {};
   const modes: Record<string, MandateMode> = {};
+  const unknownModes: string[] = [];
   let target: string[] | null = null;
   let channel: string | null = null;
   let scope: string | null = null;
@@ -356,11 +359,12 @@ export function parseScopedMandates(text: string): ParsedMandates {
     const body = line.trim().replace(/^[-*]\s+/, "");
     if (!target || !body) continue;
     if (openMode) {
-      const mode = modeLineValue(body);
+      const parsed = parseModeLine(body);
       const key = openMode;
       openMode = null;
-      if (mode) {
-        modes[key] = mode;
+      if (parsed) {
+        modes[key] = parsed.mode;
+        if (parsed.unknown !== undefined) unknownModes.push(`${key}: ${parsed.unknown}`);
         continue;
       }
     }
@@ -373,6 +377,7 @@ export function parseScopedMandates(text: string): ParsedMandates {
     global: global.join(" "),
     channels: join(channels),
     modes: channelModes,
+    unknownModes,
     scopes: Object.entries(join(scopes)).map(([s, mandate]) => ({
       scope: s as ScopeMandate["scope"],
       mandate,

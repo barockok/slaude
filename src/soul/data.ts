@@ -18,11 +18,13 @@ export const ApproverEntrySchema = z.object({
 export const MandateModeSchema = z.enum(["override", "extend", "reduce"]);
 export type MandateMode = z.infer<typeof MandateModeSchema>;
 
-/** Lower-cased, and an unknown value reads as no mode (`override`) rather than
- *  failing the whole extraction and costing the soul its ACLs. */
-const lenientMode = z
-  .preprocess((v) => (typeof v === "string" ? v.trim().toLowerCase() : v), MandateModeSchema.optional())
-  .catch(undefined);
+/** Lower-cased. An unknown value reads as `extend`: it keeps the global mandate
+ *  rather than replacing it, and does not fail the extraction. Absent stays absent. */
+const lenientMode = z.preprocess((v) => {
+  if (v === undefined || v === null) return undefined;
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return MandateModeSchema.safeParse(s).success ? s : "extend";
+}, MandateModeSchema.optional());
 
 /**
  * Per-channel override of the global mandate / approvers. Sourced from a
@@ -157,7 +159,7 @@ Rules:
 - redactPatterns: array of regex source strings (no /…/ wrappers, no flags) the persona declares for redacting outbound replies. Look for sections titled "Redaction", "Redact", "PII patterns". Empty array if no such section.
 - approvalTimeoutSeconds: integer seconds. Look for "Approval timeout" or "Auto-deny after". 0 means wait forever.
 - channelOverrides: one entry per "## Channel <#Cxxx|name>" (or raw Cxxx/Gxxx/Dxxx) section. For each: "channel" = the channel id (strip <#…|name> wrappers, keep only the id); "mandate" = the text under that block's "### Mandate" subsection (omit if absent); "approvers" = the entries under that block's "### Approvers" subsection (same userId/scope/catchall rules as the top-level approvers). Skip template-stub blocks whose channel id is a placeholder like "<#Cxxx|name>" or "C0123456789". Empty array if there are no channel sections.
-- mandateMode: when the first line under a "### Mandate" is "Mode: override", "Mode: extend" or "Mode: reduce", set that value (lower case) and leave the line out of the mandate text. Omit it when there is no such line.
+- mandateMode: when the first line under a "### Mandate" is "Mode: override", "Mode: extend" or "Mode: reduce", set that value (lower case) and leave the line out of the mandate text. A first line "Mode: <one other word>" means "extend", also left out of the text. Omit it when there is no such line.
 - scopeMandates: one entry per top-level "## Scope dm", "## Scope public" or "## Scope trusted" section that has a "### Mandate". "scope" = dm, public or trusted; "mandate" = the text under its "### Mandate"; "mode" = the value of a first "Mode:" line, left out of the text, as for mandateMode. Empty array if there are none.
 - Omit fields you cannot determine. Do not invent ids — every id you return MUST appear verbatim somewhere in the persona text.
 - Return ONLY the JSON object. No \`\`\` fence. No explanation.`;

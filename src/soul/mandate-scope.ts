@@ -124,16 +124,28 @@ export function mandatePartsLine(parts: MandateParts, max: number, flatten: (s: 
   return [head.length > max ? `${head.slice(0, max)}…` : head, flatten(parts.addition)].filter(Boolean).join(" ");
 }
 
-const MODE_VALUE = "(override|extend|reduce)";
+export interface ModeLine {
+  mode: MandateMode;
+  /** The value as written, when it was not a known mode (the mode is then `extend`). */
+  unknown?: string;
+}
 
-/** The `Mode:` value on a line, else null. Bullets, bold and a trailing `#` comment are allowed. */
-export function modeLineValue(line: string): MandateMode | null {
+/**
+ * A `Mode:` line, else null. Bullets, bold and a trailing `#` comment are
+ * allowed. The value is one word, so a sentence that starts "Mode:" stays
+ * mandate text. An unknown word reads as `extend`: a typo must keep the global
+ * mandate, never replace it.
+ */
+export function parseModeLine(line: string): ModeLine | null {
   const clean = line.replaceAll("*", "").replace(/^\s*-\s+/, "").replace(/\s+#.*$/, "").trim();
-  const m = new RegExp(`^mode\\s*:\\s*${MODE_VALUE}$`, "i").exec(clean);
-  return m ? (m[1]!.toLowerCase() as MandateMode) : null;
+  const m = /^mode\s*:\s*(\S*)$/i.exec(clean);
+  if (!m) return null;
+  const value = m[1]!.toLowerCase();
+  return value === "override" || value === "extend" || value === "reduce" ? { mode: value } : { mode: "extend", unknown: m[1]! };
 }
 
 /** Whether a soul text uses the scoped-mandate syntax (which extractions made before it cannot have read). */
 export function usesScopedMandates(text: string): boolean {
-  return /^##\s+scope\s+(dm|public|trusted)\s*$/im.test(text) || new RegExp(`^\\s*(?:[-*]\\s+)?\\**mode\\**\\s*:\\**\\s*${MODE_VALUE}\\b`, "im").test(text);
+  const lines = text.split(/\r?\n/);
+  return lines.some((l) => /^##\s+scope\s+(dm|public|trusted)\s*$/i.test(l.trim()) || parseModeLine(l) !== null);
 }

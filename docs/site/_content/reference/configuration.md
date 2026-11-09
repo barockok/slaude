@@ -906,7 +906,7 @@ The agent has one global `## Mandate`. A **sub-mandate** changes it inside one b
 | `extend` | The global mandate, plus this addition. |
 | `reduce` | The global mandate, plus this narrowing, rendered as a limit that wins over the global text inside the boundary. |
 
-The mode is a `Mode: extend` line first inside `### Mandate`. It is not part of the mandate text. Anything else there is mandate text: a `Mode:` line that is not first, or with another value, stays as text and the mode stays `override`.
+The mode is a `Mode: extend` line first inside `### Mandate`. It is not part of the mandate text. A `Mode:` line that is not first stays mandate text. A first `Mode:` line with any other single word is read as `extend`, so a typo keeps the global mandate instead of replacing it, and `bun run validate-soul` warns about it.
 
 ```markdown
 ## Mandate

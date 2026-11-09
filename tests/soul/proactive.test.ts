@@ -317,6 +317,7 @@ describe("parseScopedMandates", () => {
       global: "Help the team.",
       channels: { C0HOMECHAN: "Also keep the rota.", C0OTHERCHAN: "No deploys.", C0PLAINCHAN: "Just this." },
       modes: { C0HOMECHAN: "extend", C0OTHERCHAN: "reduce" },
+      unknownModes: [],
       scopes: [
         { scope: "dm", mandate: "Be brief.", mode: "override" },
         { scope: "public", mandate: "No internals.", mode: "reduce" },
@@ -325,12 +326,24 @@ describe("parseScopedMandates", () => {
     });
   });
 
-  it("a Mode line is only read first; later or unknown ones stay mandate text", () => {
+  it("a Mode line is only read first; a later one stays mandate text", () => {
     const later = "## Channel C0HOMECHAN\n### Mandate\nDo the job.\nMode: reduce\n";
     expect(parseScopedMandates(later).modes).toEqual({});
     expect(parseScopedMandates(later).channels.C0HOMECHAN).toBe("Do the job. Mode: reduce");
-    const unknown = "## Channel C0HOMECHAN\n### Mandate\nMode: stack\nDo the job.\n";
-    expect(parseScopedMandates(unknown).channels.C0HOMECHAN).toBe("Mode: stack Do the job.");
+  });
+
+  it("an unknown Mode is extend, dropped from the text and reported", () => {
+    const r = parseScopedMandates("## Channel C0HOMECHAN\n### Mandate\nMode: stack\nDo the job.\n\n## Scope dm\n### Mandate\nMode: narrow\nBe brief.\n");
+    expect(r.modes).toEqual({ C0HOMECHAN: "extend" });
+    expect(r.channels.C0HOMECHAN).toBe("Do the job.");
+    expect(r.scopes).toEqual([{ scope: "dm", mandate: "Be brief.", mode: "extend" }]);
+    expect(r.unknownModes).toEqual(["C0HOMECHAN: stack", "scope:dm: narrow"]);
+  });
+
+  it("a first line that is a sentence starting Mode: stays mandate text", () => {
+    const r = parseScopedMandates("## Channel C0HOMECHAN\n### Mandate\nMode: be terse and helpful\n");
+    expect(r.channels.C0HOMECHAN).toBe("Mode: be terse and helpful");
+    expect(r.unknownModes).toEqual([]);
   });
 
   it("a Mode line in the global mandate stays text; it has no boundary", () => {

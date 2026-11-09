@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MANDATE_LINE_MAX, mandateContext, mandatePartsLine, modeLineValue, resolveMandate, subMandatesOf, usesScopedMandates, type SubMandate } from "../../src/soul/mandate-scope";
+import { MANDATE_LINE_MAX, mandateContext, mandatePartsLine, parseModeLine, resolveMandate, subMandatesOf, usesScopedMandates, type SubMandate } from "../../src/soul/mandate-scope";
 import { SoulDataSchema } from "../../src/soul/data";
 
 const G = "Help the team ship.";
@@ -118,16 +118,18 @@ describe("parts and mandatePartsLine", () => {
 });
 
 describe("mode lines and the scoped-syntax check", () => {
-  test("modeLineValue accepts the written forms and nothing else", () => {
-    expect(modeLineValue("Mode: extend")).toBe("extend");
-    expect(modeLineValue("- mode: Reduce  # narrower here")).toBe("reduce");
-    expect(modeLineValue("**Mode:** override")).toBe("override");
-    expect(modeLineValue("Mode: stack")).toBeNull();
-    expect(modeLineValue("Model: extend")).toBeNull();
+  test("parseModeLine reads the written forms; an unknown word is extend; a sentence is no Mode line", () => {
+    expect(parseModeLine("Mode: extend")).toEqual({ mode: "extend" });
+    expect(parseModeLine("- mode: Reduce  # narrower here")).toEqual({ mode: "reduce" });
+    expect(parseModeLine("**Mode:** override")).toEqual({ mode: "override" });
+    expect(parseModeLine("Mode: stack")).toEqual({ mode: "extend", unknown: "stack" });
+    expect(parseModeLine("Mode: be terse and helpful")).toBeNull();
+    expect(parseModeLine("Model: extend")).toBeNull();
   });
 
   test("usesScopedMandates finds a mode line or a scope block, and nothing else", () => {
     expect(usesScopedMandates("## Channel C1\n### Mandate\nMode: reduce\nx")).toBe(true);
+    expect(usesScopedMandates("## Channel C1\n### Mandate\nMode: stack\nx")).toBe(true);
     expect(usesScopedMandates("# s\n\n## Scope dm\n### Mandate\nx")).toBe(true);
     expect(usesScopedMandates("## Mandate\nHelp in `## Scope dm` docs.\n## Channel C1\n### Mandate\nx")).toBe(false);
   });
