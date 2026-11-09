@@ -10,7 +10,9 @@ export function hasCapability(header: string | null | undefined, cap = GUARDRAIL
   return !!header && header.split(",").map((s) => s.trim()).includes(cap);
 }
 
-/** Whether a node must apply this agent's definition (older nodes would ignore a skill list or attached guardrails). */
+/** Whether a node must understand this agent's definition. Every agent.yaml
+ *  persona needs it: an older node would ignore a skill list or attached
+ *  guardrails, and leave the compiled global mandate out of the prompt. */
 export function definitionNeedsNode(d: { skills?: string[]; guardrails?: string[] } | null | undefined): boolean {
-  return !!d && (d.skills !== undefined || (d.guardrails?.length ?? 0) > 0);
+  return !!d;
 }

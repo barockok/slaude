@@ -450,7 +450,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // Owner guardrails (version skew): an agent with enforced rules runs
       // only on a node that advertises the capability. A snapshot that cannot
       // be read is not decided here: the node's bundle fetch fails closed.
-      // A skill list or attached guardrails need a node that applies them.
+      // An agent.yaml persona needs a node that understands its definition.
       const needsDefinition = definitionNeedsNode(managedPersonaDefinition(personaId));
       const needs = needsDefinition || (await (opts.needsGuardrails ?? personaNeedsGuardrails)(tenantId, personaId).catch(() => false));
       const cap = needsDefinition ? AGENT_DEFINITION_CAPABILITY : GUARDRAILS_CAPABILITY;

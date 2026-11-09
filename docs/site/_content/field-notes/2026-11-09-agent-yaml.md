@@ -20,7 +20,7 @@ An agent was three files plus a parse: `persona.yaml`, `SOUL.md`, `mcp.json`, wi
 - Sync compares a definition's structure with the stored one, so changing only access counts as a change. Extracted souls keep the old rule (they follow their text, extraction is not deterministic).
 - **Skill list.** Enforced where a skill is loaded: the Skill tool (the gate, per session), `/slug` invocation, and the skill MCP tools. The SDK's `skills` option hides the rest from the model's listing; that option is the listing only, the gate is the enforcement. Built-in `slaude:` skills and other plugins' skills are outside the list.
 - **Attached guardrails.** A definition's guardrail list adds that agent to `scope: agents` guardrails at read time (`withAgentAttachments`). The stored documents and their signatures are not touched, and it can only add coverage; a disabled guardrail stays off.
-- **Nodes.** A skill list or attached guardrails ride in the runtime bundle. A node that ignored them would run the agent without them, so a new capability (`agent-definition/1`) gates both dispatch and the bundle, the same way `guardrails/1` does.
+- **Nodes.** A definition rides in the runtime bundle. A node that ignored it would run the agent without its skill list, attached guardrails and compiled mandate, so a new capability (`agent-definition/1`) gates both dispatch and the bundle for every agent.yaml persona, the same way `guardrails/1` does.
 
 ## Decisions
 

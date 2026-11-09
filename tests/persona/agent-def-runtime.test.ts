@@ -256,11 +256,11 @@ describe("attached guardrails are additive", () => {
     expect(without?.toolRules).toEqual([]);
   });
 
-  test("a node without the capability is refused only for a definition that needs one", () => {
+  test("a node needs the capability for any agent.yaml persona, and only those", () => {
     expect(definitionNeedsNode({ skills: [] })).toBe(true);
     expect(definitionNeedsNode({ guardrails: ["x"] })).toBe(true);
-    expect(definitionNeedsNode({ guardrails: [] })).toBe(false);
-    expect(definitionNeedsNode({})).toBe(false);
+    // Its compiled mandate still needs a node that puts it in the prompt.
+    expect(definitionNeedsNode({})).toBe(true);
     expect(definitionNeedsNode(null)).toBe(false);
     expect(hasCapability(`guardrails/1,${AGENT_DEFINITION_CAPABILITY}`, AGENT_DEFINITION_CAPABILITY)).toBe(true);
     expect(hasCapability("guardrails/1", AGENT_DEFINITION_CAPABILITY)).toBe(false);

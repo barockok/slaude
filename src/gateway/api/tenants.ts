@@ -86,7 +86,7 @@ export interface RuntimeBundle {
   /** Present when the persona comes from an agent.yaml, so `soulMd` is prose
    *  and `soulJson` is compiled. `skills` limits the skills a session may
    *  load (absent: every skill). A node without the agent-definition/1
-   *  capability is refused such a bundle: it would ignore these. */
+   *  capability is refused such a bundle. */
   definition?: { skills?: string[]; guardrails?: string[] };
 }
 
@@ -535,9 +535,9 @@ export async function handleTenantRuntime(
     });
   }
   if (guardrails) bundle = { ...bundle, guardrails };
-  // A skill list or attached guardrails would be silently ignored by an older
-  // node, so such an agent is refused to one: the same version-skew rule as
-  // enforced guardrails.
+  // An older node would ignore a skill list and attached guardrails, and leave
+  // the compiled mandate out of the prompt, so an agent.yaml persona is refused
+  // to one: the same version-skew rule as enforced guardrails.
   if (bundle.definition && definitionNeedsNode(bundle.definition) && !hasCapability(req.headers.get(CAPABILITIES_HEADER), AGENT_DEFINITION_CAPABILITY)) {
     emitAudit({
       tenantId,
@@ -549,7 +549,7 @@ export async function handleTenantRuntime(
       targetId: ctx.nodeId ?? "unknown",
       decision: "refused",
       sessionId: ctx.sessionId ?? null,
-      summary: `a node without the ${AGENT_DEFINITION_CAPABILITY} capability asked for an agent with a skill list or attached guardrails; refused`,
+      summary: `a node without the ${AGENT_DEFINITION_CAPABILITY} capability asked for an agent defined by agent.yaml; refused`,
       details: { agent: bundle.personaId, capability: AGENT_DEFINITION_CAPABILITY },
     });
     return new Response(JSON.stringify({ error: "this node does not apply agent definitions", code: "GUARDRAILS_UNSUPPORTED", transient: false }), {

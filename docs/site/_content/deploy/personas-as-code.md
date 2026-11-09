@@ -189,10 +189,10 @@ guardrail with that slug exists.
 **Plugins are not a field.** Every agent on a machine gets every plugin
 installed there; choose machines with `runsOn`.
 
-An agent with a skill list or attached guardrails needs nodes that advertise the
-`agent-definition/1` capability, which this version's nodes do; an older node
-is refused, as for owner guardrails. It needs payload version 6 and migration
-0034 on the gateway's database. Secrets stay as `${PERSONA_*}` placeholders and
+An agent defined this way needs nodes that advertise the `agent-definition/1`
+capability, which this version's nodes do; an older node is refused, as for
+owner guardrails. It needs payload version 6 and migration 0034 on the
+gateway's database. Secrets stay as `${PERSONA_*}` placeholders and
 `provider` references exactly as in `persona.yaml`.
 
 `export --format agent-yaml` (below) writes these files from a current
