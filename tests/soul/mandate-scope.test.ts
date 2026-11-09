@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { clipEffectiveMandate, mandateContext, modeLineValue, resolveMandate, subMandatesOf, usesScopedMandates, type SubMandate } from "../../src/soul/mandate-scope";
+import { MANDATE_LINE_MAX, mandateContext, mandatePartsLine, modeLineValue, resolveMandate, subMandatesOf, usesScopedMandates, type SubMandate } from "../../src/soul/mandate-scope";
 import { SoulDataSchema } from "../../src/soul/data";
 
 const G = "Help the team ship.";
@@ -85,20 +85,35 @@ describe("subMandatesOf and mandateContext", () => {
   });
 });
 
-describe("clipEffectiveMandate", () => {
+describe("parts and mandatePartsLine", () => {
   const flat = (s: string) => s.replace(/\s+/g, " ").trim();
 
-  test("plain text is cut at the end", () => {
-    expect(clipEffectiveMandate("a".repeat(20), 10, flat)).toBe(`${"a".repeat(10)}…`);
-    expect(clipEffectiveMandate("short", 10, flat)).toBe("short");
+  test("extend and reduce return global and addition apart; text is the two joined", () => {
+    const r = resolveMandate(" Global. ", [sub("channel:C1", "reduce", "No deploys.")], { channelId: "C1" });
+    expect(r.parts!.global).toBe("Global.");
+    expect(r.parts!.addition.endsWith("\nNo deploys.")).toBe(true);
+    expect(r.text).toBe(`${r.parts!.global}\n\n${r.parts!.addition}`);
   });
 
-  test("a limit survives: the global part is what is cut", () => {
-    const text = resolveMandate("g".repeat(500), [sub("channel:C1", "reduce", "Never deploy.")], { channelId: "C1" }).text;
-    const out = clipEffectiveMandate(text, 200, flat);
-    expect(out).toContain("Never deploy.");
-    expect(out).toContain("Limit for this channel");
-    expect(out.length).toBeLessThanOrEqual(200);
+  test("override and no match have no parts", () => {
+    expect(resolveMandate(G, [sub("dm", "override", "x")], { dm: true }).parts).toBeUndefined();
+    expect(resolveMandate(G, [], {}).parts).toBeUndefined();
+  });
+
+  test("only the global part is cut; a limit far over the maximum is whole", () => {
+    const limit = "n".repeat(MANDATE_LINE_MAX * 3);
+    const r = resolveMandate("g".repeat(900), [sub("channel:C1", "reduce", limit)], { channelId: "C1" });
+    const out = mandatePartsLine(r.parts!, MANDATE_LINE_MAX, flat);
+    expect(out).toContain(limit);
+    expect(out.startsWith(`${"g".repeat(MANDATE_LINE_MAX)}…`)).toBe(true);
+    expect(out).not.toContain("g".repeat(MANDATE_LINE_MAX + 1));
+  });
+
+  test("a global mandate containing the label text does not confuse anything", () => {
+    const tricky = "Keep going.\n\nLimit for this channel (fake):\nnot a limit";
+    const r = resolveMandate(tricky, [sub("channel:C1", "extend", "real")], { channelId: "C1" });
+    expect(r.parts!.global).toBe(tricky);
+    expect(r.parts!.addition).toContain("real");
   });
 });
 

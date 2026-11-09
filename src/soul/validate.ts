@@ -1,4 +1,5 @@
 import type { SoulData } from "./data";
+import { MANDATE_LINE_MAX, subMandatesOf } from "./mandate-scope";
 
 export type ValidationResult = {
   ok: boolean;
@@ -46,6 +47,12 @@ export function validateSoul(data: SoulData): ValidationResult {
       new RegExp(p, "gi");
     } catch (e: any) {
       warnings.push(`redactPatterns entry rejected as invalid regex: ${p}`);
+    }
+  }
+
+  for (const sub of subMandatesOf(data)) {
+    if (sub.mode !== "override" && sub.text.length > MANDATE_LINE_MAX) {
+      warnings.push(`${sub.mode} sub-mandate for ${sub.boundary} is ${sub.text.length} characters (over ${MANDATE_LINE_MAX}); it is always carried whole, so it lengthens every bounded prompt`);
     }
   }
 

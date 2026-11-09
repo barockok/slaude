@@ -195,3 +195,15 @@ describe("scheduler: an empty mandate block in a no-Mode soul", () => {
     expect(personaMandates("scout", ["C0EMPTY", "C0OWN", "C0NONE"]).channels).toEqual({ C0EMPTY: "", C0OWN: "Own.", C0NONE: null });
   });
 });
+
+describe("scheduler parts", () => {
+  test("an extend or reduce carries parts, a legacy soul none", () => {
+    setSoulData(SCOPED);
+    const m = personaMandates("default", ["CPUB", "D0ALICE"]);
+    expect(m.parts!.CPUB!.global).toBe("Global.");
+    expect(m.parts!.CPUB!.addition).toContain("No internals.");
+    expect(m.parts!.D0ALICE).toBeUndefined();
+    setSoulData(LEGACY);
+    expect(personaMandates("default", ["COVER"]).parts).toBeUndefined();
+  });
+});

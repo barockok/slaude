@@ -97,4 +97,13 @@ describe("validateSoul", () => {
       "mandate",
     ]);
   });
+
+  test("warns on an oversized extend or reduce, never on an override", () => {
+    const long = "x".repeat(601);
+    const d = baseFull();
+    d.channelOverrides = [{ channel: "C0A", mandate: long, mandateMode: "reduce", approvers: [] }, { channel: "C0B", mandate: long, approvers: [] }];
+    const w = validateSoul(d).warnings.filter((x) => x.includes("sub-mandate"));
+    expect(w).toHaveLength(1);
+    expect(w[0]).toContain("channel:C0A");
+  });
 });

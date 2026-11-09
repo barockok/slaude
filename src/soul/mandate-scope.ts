@@ -30,12 +30,24 @@ export interface MandateContext {
   dm?: boolean;
 }
 
+/** An extend or reduce, kept in two parts so nothing has to re-parse the rendered text. */
+export interface MandateParts {
+  global: string;
+  /** The labelled addition or limit. */
+  addition: string;
+}
+
 export interface ResolvedMandate {
   /** The effective mandate text. With nothing applied: `global`, as given. */
   text: string;
   /** The sub-mandate that shaped it; null when the global mandate stands. */
   applied: SubMandate | null;
+  /** Present for extend and reduce, where `text` is these two parts joined. */
+  parts?: MandateParts;
 }
+
+/** Longest mandate line in a bounded prompt. A longer addition or limit is carried whole, and validate-soul warns. */
+export const MANDATE_LINE_MAX = 600;
 
 const EXTEND_LABEL = "Additional mandate for";
 const REDUCE_LABEL = "Limit for";
@@ -47,13 +59,14 @@ function boundaryPhrase(b: MandateBoundary): string {
   return "this channel";
 }
 
-function render(global: string, sub: SubMandate): string {
+function render(global: string, sub: SubMandate): { text: string; parts: MandateParts } {
   const place = boundaryPhrase(sub.boundary);
   const addition =
     sub.mode === "reduce"
       ? `${REDUCE_LABEL} ${place} (this narrows the mandate above and wins over it wherever they conflict):\n${sub.text}`
       : `${EXTEND_LABEL} ${place} (in addition to the mandate above):\n${sub.text}`;
-  return [global.trim(), addition].filter(Boolean).join("\n\n");
+  const head = global.trim();
+  return { text: [head, addition].filter(Boolean).join("\n\n"), parts: { global: head, addition } };
 }
 
 export function resolveMandate(global: string, subMandates: readonly SubMandate[], context: MandateContext): ResolvedMandate {
@@ -64,7 +77,8 @@ export function resolveMandate(global: string, subMandates: readonly SubMandate[
     (context.dm ? usable("dm") : undefined);
   if (!found) return { text: global, applied: null };
   const applied: SubMandate = { ...found, text: found.text.trim() };
-  return { text: applied.mode === "override" ? applied.text : render(global, applied), applied };
+  if (applied.mode === "override") return { text: applied.text, applied };
+  return { ...render(global, applied), applied };
 }
 
 type SoulMandates = Pick<SoulData, "channelOverrides"> & Partial<Pick<SoulData, "scopeMandates">>;
@@ -102,21 +116,12 @@ export function resolveSoulMandate(soul: SoulMandates & Pick<SoulData, "mandate"
 }
 
 /**
- * Cut an effective mandate to `max` characters without losing its sub-mandate:
- * when the text carries a rendered addition or limit, the global part before
- * it is what gets cut. Plain text is cut at the end, as any line would be.
- * Whitespace is collapsed onto one line by the caller's `flatten`.
+ * An extend or reduce on one line for a bounded prompt. Only the global part is
+ * cut, at `max`; the addition or limit is always carried whole.
  */
-export function clipEffectiveMandate(text: string, max: number, flatten: (s: string) => string): string {
-  const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
-  const at = Math.max(text.lastIndexOf(`\n\n${REDUCE_LABEL} `), text.lastIndexOf(`\n\n${EXTEND_LABEL} `));
-  if (at < 0) return cut(flatten(text), max);
-  const head = flatten(text.slice(0, at));
-  const tail = flatten(text.slice(at));
-  if (head.length + 1 + tail.length <= max) return `${head} ${tail}`;
-  if (tail.length >= max) return cut(tail, max);
-  const room = max - tail.length - 2;
-  return room > 0 ? `${head.slice(0, room)}… ${tail}` : tail;
+export function mandatePartsLine(parts: MandateParts, max: number, flatten: (s: string) => string): string {
+  const head = flatten(parts.global);
+  return [head.length > max ? `${head.slice(0, max)}…` : head, flatten(parts.addition)].filter(Boolean).join(" ");
 }
 
 const MODE_VALUE = "(override|extend|reduce)";

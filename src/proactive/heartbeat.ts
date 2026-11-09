@@ -36,7 +36,7 @@ import { READ_ONLY_PASS_TOOLS } from "../background/pass-tools";
 import { runPass, type Outcome, type PassTool, type RunnerDeps } from "../background/runner";
 import type { CardPost } from "../background/proposal-cards";
 import type { AgentGroup, PersonaMandates } from "../background/scheduler";
-import { clipEffectiveMandate } from "../soul/mandate-scope";
+import { MANDATE_LINE_MAX, mandatePartsLine, type MandateParts } from "../soul/mandate-scope";
 import { NO_PREFS, readPingPrefs } from "./prefs";
 import { checkProactive, textHash, UNCHANGED_WINDOW_MS, type Audience, type RestraintRule } from "./restraint";
 import type { Level } from "./levels";
@@ -49,7 +49,7 @@ import { defaultDispatchDeps, dispatchProactive, type ProactiveDispatchDeps, typ
 export const HEARTBEAT_SLUG = "self/heartbeat";
 export const HEARTBEAT_MAX_POSTS = 3;
 /** Longest mandate line in the triage prompt, in characters (cut with an ellipsis past it). */
-export const MANDATE_MAX = 600;
+export const MANDATE_MAX = MANDATE_LINE_MAX;
 /** Longest proactive post, in characters. */
 export const MAX_POST_CHARS = 3000;
 
@@ -297,8 +297,13 @@ const FIELD_MAX = 200;
 
 /** One line, bounded, and no tag can open or close: model or source text going into a prompt or a page. */
 export const line = (s: string | null | undefined, max = FIELD_MAX): string => (s ?? "").replace(/[\r\n]+/g, " ").replaceAll("<", "‹").trim().slice(0, max);
-/** A mandate on one line, cut at MANDATE_MAX with an ellipsis when it was longer; a sub-mandate's limit or addition is never the part that is cut. */
-const mandateLine = (s: string | null | undefined): string => clipEffectiveMandate(s ?? "", MANDATE_MAX, (x) => line(x, Number.MAX_SAFE_INTEGER));
+/** A mandate on one line, cut at MANDATE_MAX with an ellipsis when it was longer. */
+const mandateLine = (s: string | null | undefined): string => {
+  const one = line(s, Number.MAX_SAFE_INTEGER);
+  return one.length > MANDATE_MAX ? `${one.slice(0, MANDATE_MAX)}…` : one;
+};
+/** An extend or reduce on one line: only its global part is cut, its addition or limit is carried whole. */
+const partsLine = (p: MandateParts): string => mandatePartsLine(p, MANDATE_MAX, (x) => line(x, Number.MAX_SAFE_INTEGER));
 const clamp = (s: string, max: number): string => (s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s);
 const iso = (ms: number): string => new Date(ms).toISOString().slice(0, 16) + "Z";
 
@@ -406,7 +411,7 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
     SOURCES: sources.map((s) => `- ${s.server}: ${since[s.server] == null ? "the last 24 hours" : `since ${iso(since[s.server]!)}`}`).join("\n") || "(none)",
     MANDATE: mandateLine(m.global) || "(not set)",
     VOICE: mandateLine(m.voice) || "(not set)",
-    CHANNELS_ON: channelsOn.map((c) => `- <#${c}>: ${m.channels[c] ? mandateLine(m.channels[c]) : "the global mandate"}`).join("\n") || "(none)",
+    CHANNELS_ON: channelsOn.map((c) => `- <#${c}>: ${m.parts?.[c] ? partsLine(m.parts[c]) : m.channels[c] ? mandateLine(m.channels[c]) : "the global mandate"}`).join("\n") || "(none)",
     MAX_POSTS: String(HEARTBEAT_MAX_POSTS),
     MANAGER: managerId ?? "none",
   });
