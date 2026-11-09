@@ -162,12 +162,13 @@ export async function agentDetail(
   deps: LivenessDeps,
   now: number = Date.now(),
   names: SlackNames | null = null,
+  opts: { canSeeValues?: boolean } = {},
 ): Promise<AgentSummary & { mandates: MandateView[]; grants: GrantView[]; definition: AgentDefinitionView }> {
   const r = getPersonaRegistry();
   const [live, raw, plain] = await Promise.all([liveCounts(deps), listMandates(name), grantViews(name, now)]);
   const [mandates, grants] = await Promise.all([readableMandates(raw, name, names), labelGrants(plain, name, names)]);
   const consoleCount = grants.filter((g) => g.source === "console").length;
-  return { ...summaryOf(name, r, live, deps.role, mandates.length, consoleCount), mandates, grants, definition: agentDefinitionView(name, r) };
+  return { ...summaryOf(name, r, live, deps.role, mandates.length, consoleCount), mandates, grants, definition: agentDefinitionView(name, r, opts) };
 }
 
 const CHANNEL_REF = /<#([A-Z0-9]+)(?:\|[^>]*)?>/g;

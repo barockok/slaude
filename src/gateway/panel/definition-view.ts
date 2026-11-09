@@ -70,16 +70,20 @@ function providerRefs(p: Parameters<typeof providerView>[0]): Record<string, str
   return Object.keys(out).length ? out : null;
 }
 
-export function agentDefinitionView(name: string, r: PersonaRegistry = getPersonaRegistry()): AgentDefinitionView {
+/** `canSeeValues`: the viewer may read redaction patterns (a pattern can name
+ *  what it hides, a project or a customer); anyone else gets a count. */
+export function agentDefinitionView(name: string, r: PersonaRegistry = getPersonaRegistry(), opts: { canSeeValues?: boolean } = {}): AgentDefinitionView {
   const persona = name === "default" ? null : r.lookupByName(name);
   const definition = managedPersonaDefinition(name === "default" ? undefined : name, r);
   const source: AgentDefinitionView["source"] = definition ? "agent.yaml" : "soul";
   try {
     const fields = r.isManaged() ? (name === "default" ? r.defaultPersona?.() ?? null : persona) : null;
     const mandates = personaMandateText(name);
+    const access = soulDataFor(name);
+    const cleanScope = <T extends { scope: string }>(a: T): T => ({ ...a, scope: redactSecrets(a.scope) });
     const doc = agentDocument({
       name,
-      description: definition?.description ?? null,
+      description: definition?.description ? redactSecrets(definition.description) : null,
       model: fields?.model ?? null,
       slackUserId: persona?.slackUserId ?? null,
       userToken: persona?.config.userToken ? REDACTED : null,
@@ -90,13 +94,22 @@ export function agentDefinitionView(name: string, r: PersonaRegistry = getPerson
       // mangle YAML keys such as `userToken:`.
       soul: redactSecrets(proseOnlySoul(personaSoulText(name === "default" ? undefined : name))),
       mandate: { global: redactSecrets(mandates.global), scoped: mandates.subMandates.map((m) => ({ ...m, text: redactSecrets(m.text) })) },
-      access: soulDataFor(name),
+      access: {
+        ...access,
+        approvers: access.approvers.map(cleanScope),
+        channelOverrides: access.channelOverrides.map((c) => ({ ...c, approvers: c.approvers.map(cleanScope) })),
+      },
       mcp: redactedMcp(fields ? fields.mcp : readFileMcp(name)),
       skills: definition?.skills ?? null,
       guardrails: definition?.guardrails ?? null,
       kbSources: fields?.kbSources ?? null,
       background: fields?.background ?? null,
     });
+    const shownAccess = doc.access as { redact?: unknown } | undefined;
+    if (!opts.canSeeValues && Array.isArray(shownAccess?.redact)) {
+      const n = shownAccess.redact.length;
+      shownAccess.redact = `${n} ${n === 1 ? "pattern" : "patterns"}`;
+    }
     return { source, yaml: stringify(doc, { lineWidth: 0 }) };
   } catch (e) {
     console.error(`[panel] definition view failed for an agent: ${e instanceof Error ? e.name : typeof e}`);

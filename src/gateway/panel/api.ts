@@ -713,7 +713,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         // GET /panel/api/agents/:name
         if (seg.length === 4) {
           if (req.method !== "GET") return json(405, { error: "method not allowed" });
-          return json(200, (await agentDetail(name, liveness, Date.now(), deps.names ?? null)) satisfies AgentDetailResponse);
+          return json(200, (await agentDetail(name, liveness, Date.now(), deps.names ?? null, { canSeeValues: role === "superadmin" })) satisfies AgentDetailResponse);
         }
 
         // GET /panel/api/agents/:name/guardrails: the owner guardrails that apply to it.
