@@ -294,15 +294,17 @@ export const flushSkillVersionCaptures = (): Promise<void> => queue;
 /**
  * Record a skill right after a write, retire or restore. `dir` is where the
  * content is now (a retired copy's directory for a retire), so the last edit
- * before a retirement still reaches the log. Fire and forget: never throws and
- * never delays the caller. No-op in a process without a database.
+ * before a retirement still reaches the log. `at` is the capture time when the
+ * caller's clock matters (a retire's, which dates the retired copy). Fire and
+ * forget: never throws and never delays the caller. No-op in a process without
+ * a database.
  */
-export function noteSkillChanged(personaName: string | undefined, slug: string, dir: string): void {
+export function noteSkillChanged(personaName: string | undefined, slug: string, dir: string, at?: number): void {
   if (env.role() === "node") return;
   const scope = versionScope(personaName);
   void enqueue(async () => {
     try {
-      await capture(scope, slug, dir, provenanceSources(), Date.now());
+      await capture(scope, slug, dir, provenanceSources(), at ?? Date.now());
       clearFailures(scope, slug);
     } catch (e) {
       reportFailure(scope, slug, e);

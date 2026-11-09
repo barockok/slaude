@@ -73,11 +73,13 @@ export async function insert(v: SkillVersion): Promise<boolean> {
   return r.changes > 0;
 }
 
-/** A skill's rows, newest first, without the text. */
-export async function list(scope: string, slug: string, limit: number): Promise<SkillVersionMeta[]> {
+/** A skill's rows, newest first, without the text; with `upTo`, only rows captured by then. */
+export async function list(scope: string, slug: string, limit: number, upTo?: number): Promise<SkillVersionMeta[]> {
   const rows = await db.query<MetaRow>(
-    `SELECT ${META_COLUMNS} FROM skill_versions WHERE scope = ? AND slug = ? ORDER BY version DESC LIMIT ?`,
-    [scope, slug, limit],
+    `SELECT ${META_COLUMNS} FROM skill_versions
+      WHERE scope = ? AND slug = ? ${upTo === undefined ? "" : "AND captured_at <= ?"}
+      ORDER BY version DESC LIMIT ?`,
+    upTo === undefined ? [scope, slug, limit] : [scope, slug, upTo, limit],
   );
   return rows.map(toMeta);
 }

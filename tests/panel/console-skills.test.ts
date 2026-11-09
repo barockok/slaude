@@ -319,6 +319,32 @@ describe("GET /panel/api/skills/:id/versions", () => {
     expect(body.versions.map((v) => v.hash.charAt(0))).toEqual(["e"]);
   });
 
+  test("a retired copy shows only what was captured up to its retirement, not a later skill of that slug", async () => {
+    const retiredAt = Date.UTC(2026, 10, 1, 12, 0, 0);
+    const rid = "later-x-20261101T120000Z";
+    skill(join(paths.skills, ".retired", rid), { name: "later-x", description: "Old copy" });
+    await rec("global", "later-x", 1, "a".repeat(64), "the retired copy", retiredAt - 5000);
+    await rec("global", "later-x", 2, "b".repeat(64), "its last edit", retiredAt + 400);
+    await rec("global", "later-x", 3, "c".repeat(64), "a later skill", retiredAt + 60_000);
+    const id = encodeURIComponent(`retired:default:${rid}`);
+
+    const { skills } = (await call("GET", "/panel/api/skills")).body as SkillsResponse;
+    expect(byId(skills, `retired:default:${rid}`)!.currentVersion).toBe(2);
+
+    const body = (await call("GET", `/panel/api/skills/${id}/versions`)).body as SkillVersionsResponse;
+    expect(body.versions.map((v) => v.version)).toEqual([2, 1]);
+    expect((await call("GET", `/panel/api/skills/${id}/versions/2`)).status).toBe(200);
+    expect((await call("GET", `/panel/api/skills/${id}/versions/3`)).status).toBe(404);
+  });
+
+  test("a retired copy with nothing captured by then has no current version", async () => {
+    const rid = "fresh-x-20261101T120000Z";
+    skill(join(paths.skills, ".retired", rid), { name: "fresh-x", description: "Old copy" });
+    await rec("global", "fresh-x", 1, "a".repeat(64), "a later skill", Date.UTC(2026, 10, 2));
+    const { skills } = (await call("GET", "/panel/api/skills")).body as SkillsResponse;
+    expect(byId(skills, `retired:default:${rid}`)!.currentVersion).toBeNull();
+  });
+
   test("a built-in has no versions; unknown skills and versions are 404; only GET is allowed", async () => {
     const builtin = await call("GET", "/panel/api/skills/builtin%3Amemory/versions");
     expect(builtin.status).toBe(200);

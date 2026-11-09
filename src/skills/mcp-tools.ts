@@ -168,7 +168,7 @@ export const skillOps = {
     }
     const path = join(store, id);
     renameSync(dir, path);
-    noteSkillChanged(personaName, slug, path);
+    noteSkillChanged(personaName, slug, path, now.getTime());
     return { id, path };
   },
   /**

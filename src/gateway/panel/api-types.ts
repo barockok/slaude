@@ -584,7 +584,7 @@ export interface SkillSummaryView {
   agents: string[];
   /** Summed over those agents. */
   usage: SkillUsageTotals;
-  /** The tracked version number; null when none is recorded (built-in and plugin skills, or before the first capture). */
+  /** The tracked version number; null when none is recorded (built-in and plugin skills, or before the first capture). For a retired copy: the version it had when retired. */
   currentVersion: number | null;
   /** True when another skill with the same slug in an agent's overlay shadows this one for that agent. */
   shadowedFor?: string[];
@@ -659,7 +659,7 @@ export interface SkillVersionView {
   skillMdTruncated: boolean;
 }
 
-/** GET /panel/api/skills/:id/versions (newest first). */
+/** GET /panel/api/skills/:id/versions (newest first). A retired copy lists only what was captured up to its retirement. */
 export interface SkillVersionsResponse {
   versions: SkillVersionView[];
   /** True when older versions exist past the list limit. */

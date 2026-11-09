@@ -232,6 +232,14 @@ describe("retire and restore", () => {
     expect((await SkillVersions.get("global", "edit-x", 2))!.skillMd).toContain("edited");
   });
 
+  test("a retire captures at the retirement's own time", async () => {
+    const dir = place("dated-x", agentMd("dated-x"));
+    writeFileSync(join(dir, "SKILL.md"), agentMd("dated-x", " last"));
+    skillOps.retire("dated-x", undefined, new Date(NOW + 123));
+    await flushSkillVersionCaptures();
+    expect((await rows("dated-x"))[0]!.capturedAt).toBe(NOW + 123);
+  });
+
   test("write_skill records the new content right after the write", async () => {
     skillOps.write("written-x", "written-x", "d", "first", undefined, new Date(NOW));
     made.push(join(paths.skills, "written-x"));

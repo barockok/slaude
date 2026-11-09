@@ -197,6 +197,15 @@ interface Built {
   notes: string[];
 }
 
+/**
+ * The last moment a retired copy's history can include: the retirement. Its
+ * stamp has whole seconds and the retire captures at the same instant with
+ * milliseconds, so the cutoff is the end of that second. Undefined for a live skill.
+ */
+function versionCutoff(e: Pick<SkillEntry, "status" | "origin">): number | undefined {
+  return e.status === "retired" ? (e.origin.retiredAt ?? 0) + 999 : undefined;
+}
+
 /** Every skill, with agents, origin and usage. */
 export async function buildSkills(): Promise<Built> {
   const notes: string[] = [];
@@ -404,7 +413,13 @@ export async function buildSkills(): Promise<Built> {
   try {
     const current = await SkillVersions.currentVersions();
     for (const e of entries) {
-      if (e.owner !== null) e.currentVersion = current.get(SkillVersions.versionKey(versionScope(e.owner), e.slug)) ?? null;
+      if (e.owner === null) continue;
+      const scope = versionScope(e.owner);
+      const upTo = versionCutoff(e);
+      // A later skill may hold this slug now: a retired copy shows the version it had when retired.
+      e.currentVersion = upTo === undefined
+        ? current.get(SkillVersions.versionKey(scope, e.slug)) ?? null
+        : (await SkillVersions.list(scope, e.slug, 1, upTo))[0]?.version ?? null;
     }
   } catch (e) {
     notes.push(`skill versions could not be read: ${e instanceof Error ? e.message : String(e)}`);
@@ -537,7 +552,7 @@ export async function skillVersions(id: string): Promise<SkillVersionsResponse |
   const e = entries.find((x) => x.id === id);
   if (!e) return null;
   if (e.owner === null) return { versions: [], truncated: false };
-  const rows = await SkillVersions.list(versionScope(e.owner), e.slug, VERSIONS_MAX + 1);
+  const rows = await SkillVersions.list(versionScope(e.owner), e.slug, VERSIONS_MAX + 1, versionCutoff(e));
   return { versions: rows.slice(0, VERSIONS_MAX).map(versionView), truncated: rows.length > VERSIONS_MAX };
 }
 
@@ -547,7 +562,9 @@ export async function skillVersionDetail(id: string, version: number): Promise<S
   const e = entries.find((x) => x.id === id);
   if (!e || e.owner === null) return null;
   const row = await SkillVersions.get(versionScope(e.owner), e.slug, version);
-  return row ? { ...versionView(row), skillMd: row.skillMd } : null;
+  const upTo = versionCutoff(e);
+  if (!row || (upTo !== undefined && row.capturedAt > upTo)) return null;
+  return { ...versionView(row), skillMd: row.skillMd };
 }
 
 /**

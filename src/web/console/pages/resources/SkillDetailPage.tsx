@@ -35,7 +35,7 @@ function provenance(d: SkillDetailResponse): Array<{ key: string; label: ReactNo
       }[o.root],
     },
   ];
-  if (d.currentVersion !== null) rows.push({ key: "currentVersion", label: "Tracked version", value: <span className="sl-mono">v{d.currentVersion}</span> });
+  if (d.currentVersion !== null) rows.push({ key: "currentVersion", label: d.status === "retired" ? "Version when retired" : "Tracked version", value: <span className="sl-mono">v{d.currentVersion}</span> });
   if (o.repo) rows.push({ key: "repo", label: "Repository", value: mono(o.repo) });
   if (o.ref) rows.push({ key: "ref", label: "Requested ref", value: mono(o.ref) });
   if (o.commit) rows.push({ key: "commit", label: "Pinned commit", value: <span className="sl-mono" title={o.commit}>{o.commit.slice(0, 12)}</span> });
@@ -66,7 +66,7 @@ function VersionText({ id, version }: { id: string; version: number }) {
 
 const ORIGIN_LABEL = { bundled: "Bundled", installed: "Installed", agent: "Written by the agent" } as const;
 
-function VersionsCard({ id }: { id: string }) {
+function VersionsCard({ id, retired }: { id: string; retired: boolean }) {
   const { data, error, reload } = useApi<SkillVersionsResponse>(`/api/skills/${encodeURIComponent(id)}/versions`);
   const [picked, setPicked] = useState<number | null>(null);
   if (error && !data) {
@@ -77,10 +77,11 @@ function VersionsCard({ id }: { id: string }) {
     );
   }
   if (!data) return <Skeleton height="6rem" radius="var(--sl-radius-panel)" />;
+  const history = retired ? "Read-only history of this copy, up to when it was retired." : "Read-only history of this skill's files.";
   const description = data.versions.length
     ? data.truncated
-      ? "Read-only history of this skill's files. Only the newest are listed."
-      : "Read-only history of this skill's files."
+      ? `${history} Only the newest are listed.`
+      : history
     : "No version has been recorded for this skill.";
   return (
     <Card title="Versions" description={description} flush={data.versions.length > 0}>
@@ -160,7 +161,7 @@ function Body({ d, reload }: { d: SkillDetailResponse; reload: () => void }) {
             <EmptyState title="This skill has no SKILL.md text" />
           )}
         </Card>
-        <VersionsCard id={d.id} />
+        <VersionsCard id={d.id} retired={d.status === "retired"} />
         <Card title="Usage" description={d.usageHistory.length ? "Per agent, as counted when the agent loaded it." : "No agent has used it yet."} flush={d.usageHistory.length > 0}>
           {d.usageHistory.length > 0 && (
             <div className="sl-scroll-x" tabIndex={0}>
