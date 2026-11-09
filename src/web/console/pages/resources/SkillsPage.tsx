@@ -63,6 +63,7 @@ function columns(allAgents: readonly string[]): Column<SkillSummaryView>[] {
         </span>
       ),
     },
+    { key: "version", header: "Version", width: "6rem", skeleton: 0.3, render: (s) => (s.currentVersion !== null ? <span className="sl-mono">v{s.currentVersion}</span> : <span className="sl-faint">None</span>) },
     { key: "status", header: "Status", width: "8rem", skeleton: 0.4, render: (s) => <StatusBadge status={s.status} /> },
   ];
 }

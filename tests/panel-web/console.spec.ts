@@ -464,6 +464,19 @@ test.describe("resources", () => {
     await expect(page.locator(".sl-markdown").first().getByRole("heading", { name: "Release notes" })).toBeVisible();
   });
 
+  test("the Versions card lists a skill's history and shows one version's SKILL.md", async ({ page }) => {
+    await page.goto("/panel/skills");
+    await expect(page.getByRole("row").filter({ hasText: "release-notes" }).getByText("v2")).toBeVisible();
+    await page.goto("/panel/skills/base%3Arelease-notes");
+    const card = page.locator(".sl-card").filter({ has: page.getByText("Versions", { exact: true }) });
+    await expect(card.getByRole("row").filter({ hasText: "v1" }).getByText("1b7e4c2f90a3")).toBeVisible();
+    await card.getByRole("row").filter({ hasText: "v1" }).getByRole("button", { name: "View SKILL.md" }).click();
+    await expect(card.getByText("List the merged pull requests.")).toBeVisible();
+    await card.getByRole("row").filter({ hasText: "v1" }).getByRole("button", { name: "Hide" }).click();
+    await expect(card.getByText("List the merged pull requests.")).toHaveCount(0);
+    await expect(card.getByRole("button", { name: "Rollback" })).toHaveCount(0);
+  });
+
   test("a superadmin retires an agent-authored skill and restores it", async ({ page }) => {
     await page.goto("/panel/skills/agent%3Ascout%3Aweekly-digest");
     await page.getByRole("button", { name: "Retire skill" }).click();

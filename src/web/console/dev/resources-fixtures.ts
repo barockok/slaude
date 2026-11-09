@@ -18,6 +18,7 @@ import type {
   OwnerRuleAction,
   SettingsFamily,
   SkillDetailResponse,
+  SkillVersionDetailResponse,
 } from "../../../gateway/panel/api-types";
 
 const MIN = 60_000;
@@ -26,10 +27,38 @@ const DAY = 24 * HOUR;
 
 const AGENTS = ["default", "scout", "triage"];
 
-const skill = (s: Omit<SkillDetailResponse, "frontmatter" | "body" | "rawTruncated"> & { frontmatter?: Record<string, unknown> }): SkillDetailResponse => {
+const skill = (s: Omit<SkillDetailResponse, "frontmatter" | "body" | "rawTruncated" | "currentVersion"> & { frontmatter?: Record<string, unknown>; currentVersion?: number | null }): SkillDetailResponse => {
   const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(s.raw);
-  return { frontmatter: s.frontmatter ?? { name: s.name, description: s.description }, body: m ? m[2]! : s.raw, rawTruncated: false, ...s };
+  return { frontmatter: s.frontmatter ?? { name: s.name, description: s.description }, body: m ? m[2]! : s.raw, rawTruncated: false, currentVersion: null, ...s };
 };
+
+/** Recorded versions by skill id, newest first. */
+export function skillVersionFixtures(now: number): Record<string, SkillVersionDetailResponse[]> {
+  return {
+    "base:release-notes": [
+      {
+        version: 2,
+        hash: "9f2c6a1d4e8b73056a1f2d3c4b5a69788796a5b4c3d2e1f00112233445566778",
+        capturedAt: now - 3 * DAY,
+        origin: "installed",
+        fileCount: 3,
+        totalBytes: 1862,
+        skillMdTruncated: false,
+        skillMd: "---\nname: release-notes\ndescription: Draft release notes from merged pull requests.\n---\n# Release notes\n\nGroup changes by **category**.\n",
+      },
+      {
+        version: 1,
+        hash: "1b7e4c2f90a3d856c7e1f4a2b3d5c6e7f8091a2b3c4d5e6f7a8b9c0d1e2f3a4b",
+        capturedAt: now - 40 * DAY,
+        origin: "installed",
+        fileCount: 2,
+        totalBytes: 1204,
+        skillMdTruncated: false,
+        skillMd: "---\nname: release-notes\ndescription: Draft release notes.\n---\n# Release notes\n\nList the merged pull requests.\n",
+      },
+    ],
+  };
+}
 
 export function skillFixtures(now: number): SkillDetailResponse[] {
   const none = { files: [], filesTruncated: false, usageHistory: [], proposals: [], actions: { retire: false, restore: false } };
@@ -56,6 +85,7 @@ export function skillFixtures(now: number): SkillDetailResponse[] {
     skill({
       id: "base:release-notes",
       slug: "release-notes",
+      currentVersion: 2,
       name: "release-notes",
       description: "Draft release notes from merged pull requests.",
       invocation: "/release-notes",
