@@ -196,15 +196,13 @@ export function AccessTab({ agent, onChanged }: { agent: AgentDetailResponse; on
         }
       />
     </section>
-    <section className="sl-section sl-section--flush" aria-labelledby="access-settings-title">
-      <div className="sl-section__head">
-        <div>
-          <h2 className="sl-section__title" id="access-settings-title">Approvals and permissions</h2>
-          <p className="sl-caption">Who approves, who may decide a permission card, who the agent answers, and what never leaves in a reply. Read from the soul, the environment and console grants.</p>
-        </div>
+    <details className="sl-fold">
+      <summary className="sl-fold__summary">Approvals and permissions details</summary>
+      <div className="sl-fold__body sl-stack">
+        <p className="sl-caption">Who approves, who may decide a permission card, who the agent answers, and what never leaves in a reply. Read from the agent's definition, the environment and console grants.</p>
+        <AgentSettings agent={agent.name} group="access" />
       </div>
-      <AgentSettings agent={agent.name} group="access" />
-    </section>
+    </details>
     </>
   );
 }

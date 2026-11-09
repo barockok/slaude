@@ -1,6 +1,6 @@
 import type { AgentDetailResponse } from "../../../../gateway/panel/api-types";
 import { Link, navigate } from "../../../lib/router";
-import { Avatar, Badge, Card, IconArrowLeft, KeyValue, PageHeader, Skeleton, Tabs } from "../../../ui";
+import { Avatar, Badge, Card, CodeBlock, IconArrowLeft, KeyValue, PageHeader, Skeleton, Tabs } from "../../../ui";
 import { ErrorState } from "../../components/ErrorState";
 import { LiveBadge } from "../../components/LiveBadge";
 import { useApi } from "../../hooks/useApi";
@@ -39,6 +39,19 @@ function IdentityCard({ agent }: { agent: AgentDetailResponse }) {
           { key: "grants", label: "Console grants", value: agent.grantCount },
         ]}
       />
+    </Card>
+  );
+}
+
+function DefinitionCard({ agent }: { agent: AgentDetailResponse }) {
+  return (
+    <Card title="Definition">
+      <p className="sl-caption">
+        {agent.definition.source === "agent.yaml"
+          ? "Read-only: edit this agent's agent.yaml and deploy to change it. Secret values are redacted."
+          : "Read-only: this agent is defined by its SOUL.md. Shown in agent.yaml form, with secret values redacted."}
+      </p>
+      <CodeBlock code={agent.definition.yaml} language="yaml" className="sl-definition" />
     </Card>
   );
 }
@@ -92,7 +105,10 @@ export function AgentDetailPage({ name, tab }: { name: string; tab: AgentTab }) 
           {!data ? (
             <HeaderSkeleton />
           ) : tab === "overview" ? (
-            <IdentityCard agent={data} />
+            <div className="sl-stack-lg">
+              <IdentityCard agent={data} />
+              <DefinitionCard agent={data} />
+            </div>
           ) : tab === "mandates" ? (
             <MandatesTab agent={data} />
           ) : tab === "access" ? (

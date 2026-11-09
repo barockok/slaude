@@ -9,8 +9,10 @@ import { listMandates } from "../../mandate";
 import { getPersonaRegistry, labelsInUse, managedPersonaModel, runsOnFor, type PersonaRegistry } from "../../persona/registry";
 import { listAllEnvSummaries } from "../../db/environments";
 import type { Registry } from "../../queue/registry";
+import { agentDefinitionView } from "./definition-view";
 import { channelLabels, MAX_PER_ANSWER, plainChannelRefs, type SlackNames } from "./slack-names";
 import type {
+  AgentDefinitionView,
   AgentSummary,
   ConsoleGrantView,
   EnvironmentsResponse,
@@ -160,12 +162,12 @@ export async function agentDetail(
   deps: LivenessDeps,
   now: number = Date.now(),
   names: SlackNames | null = null,
-): Promise<AgentSummary & { mandates: MandateView[]; grants: GrantView[] }> {
+): Promise<AgentSummary & { mandates: MandateView[]; grants: GrantView[]; definition: AgentDefinitionView }> {
   const r = getPersonaRegistry();
   const [live, raw, plain] = await Promise.all([liveCounts(deps), listMandates(name), grantViews(name, now)]);
   const [mandates, grants] = await Promise.all([readableMandates(raw, name, names), labelGrants(plain, name, names)]);
   const consoleCount = grants.filter((g) => g.source === "console").length;
-  return { ...summaryOf(name, r, live, deps.role, mandates.length, consoleCount), mandates, grants };
+  return { ...summaryOf(name, r, live, deps.role, mandates.length, consoleCount), mandates, grants, definition: agentDefinitionView(name, r) };
 }
 
 const CHANNEL_REF = /<#([A-Z0-9]+)(?:\|[^>]*)?>/g;

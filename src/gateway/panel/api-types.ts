@@ -105,10 +105,19 @@ export interface ConsoleGrantView {
 
 export type GrantView = SoulGrantView | ConsoleGrantView;
 
+/** An agent's effective definition, as one read-only YAML document. */
+export interface AgentDefinitionView {
+  /** "agent.yaml": it comes from one file. "soul": SOUL.md and extraction. */
+  source: "agent.yaml" | "soul";
+  /** The document, with secret values redacted. */
+  yaml: string;
+}
+
 export interface AgentDetailResponse extends AgentSummary {
   mandates: MandateView[];
   /** Effective grants: soul-derived first, then stored (unexpired) console grants. */
   grants: GrantView[];
+  definition: AgentDefinitionView;
 }
 
 export interface AgentGrantsResponse {
