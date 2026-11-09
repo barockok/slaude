@@ -34,6 +34,8 @@ export interface PortalServer {
   cfg: OAuthServerConfig;
   /** The personas that mount it, sorted. */
   usedBy: string[];
+  /** The plugin that provides it, when it comes from the node plugin inventory. */
+  plugin?: string;
 }
 
 export type { IntegrationView } from "./api-types";
@@ -42,7 +44,7 @@ export type { IntegrationView } from "./api-types";
  *  when their credential key matches (name, URL and headers), which is exactly
  *  when one stored credential serves both. */
 export function aggregateServers(sources: Array<{ persona: string; servers: ConfiguredServers }>): PortalServer[] {
-  const byKey = new Map<string, { name: string; cfg: OAuthServerConfig; personas: Set<string> }>();
+  const byKey = new Map<string, { name: string; cfg: OAuthServerConfig; personas: Set<string>; plugin?: string }>();
   for (const { persona, servers } of sources) {
     for (const [name, cfg] of Object.entries(servers)) {
       const key = oauthKey(name, cfg);
@@ -52,6 +54,8 @@ export function aggregateServers(sources: Array<{ persona: string; servers: Conf
         byKey.set(key, entry);
       }
       entry.personas.add(persona);
+      const plugin = (cfg as { fromPlugin?: unknown }).fromPlugin;
+      if (typeof plugin === "string") entry.plugin = plugin;
     }
   }
 
@@ -64,7 +68,7 @@ export function aggregateServers(sources: Array<{ persona: string; servers: Conf
     // A bare name only when nothing else shares it; the key otherwise.
     const id = perName.get(e.name) === 1 && !taken.has(e.name) ? e.name : key;
     taken.add(id);
-    rows.push({ id, name: e.name, cfg: e.cfg, usedBy: [...e.personas].sort() });
+    rows.push({ id, name: e.name, cfg: e.cfg, usedBy: [...e.personas].sort(), ...(e.plugin ? { plugin: e.plugin } : {}) });
   }
   return rows.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 }
@@ -103,6 +107,7 @@ export async function integrationsFor(accountId: string, servers: PortalServer[]
       connected: expiresAt !== null,
       expiresAt,
       usedBy: s.usedBy,
+      ...(s.plugin ? { plugin: s.plugin } : {}),
     };
   });
 }

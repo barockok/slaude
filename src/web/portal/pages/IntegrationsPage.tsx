@@ -25,6 +25,7 @@ function columns(
         <span className="sl-stack">
           <span className="sl-identity__name">{i.name}</span>
           <span className="sl-caption sl-mono sl-truncate" title={i.host}>{i.host}</span>
+          {i.plugin && <span className="sl-caption sl-truncate" title={`From plugin ${i.plugin}`}>From plugin {i.plugin}</span>}
         </span>
       ),
     },
