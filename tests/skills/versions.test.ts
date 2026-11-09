@@ -4,7 +4,7 @@
  * several gateway replicas writing at once.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../../src/config/home";
@@ -264,6 +264,68 @@ describe("retire and restore", () => {
       else process.env.SLAUDE_ROLE = saved;
     }
     expect(await rows("node-x")).toEqual([]);
+  });
+});
+
+describe("a removed persona", () => {
+  const overlay = (persona: string) => join(paths.personas, persona, "skills");
+  const owned = (persona: string, slug: string) => {
+    place(slug, undefined, overlay(persona));
+    made.push(join(paths.personas, persona));
+  };
+
+  test("its rows go when its directory does, and a new persona of that name starts empty", async () => {
+    owned("gone-p", "kept-x");
+    owned("stays-p", "kept-x");
+    place("kept-x");
+    await reconcileSkillVersions(NOW);
+    rmSync(join(paths.personas, "gone-p"), { recursive: true, force: true });
+    await reconcileSkillVersions(NOW + 1);
+    expect(await rows("kept-x", "gone-p")).toEqual([]);
+    expect(await rows("kept-x", "stays-p")).toHaveLength(1);
+    expect(await rows("kept-x")).toHaveLength(1);
+
+    owned("gone-p", "kept-x");
+    writeFileSync(join(overlay("gone-p"), "kept-x", "SKILL.md"), "---\nname: kept-x\n---\nnew owner\n");
+    await reconcileSkillVersions(NOW + 2);
+    const again = await rows("kept-x", "gone-p");
+    expect(again.map((v) => v.version)).toEqual([1]);
+    expect((await SkillVersions.get("global", "kept-x", 1))!.skillMd).toContain("body");
+    expect((await SkillVersions.get("gone-p", "kept-x", 1))!.skillMd).toContain("new owner");
+  });
+
+  test("a missing or empty personas directory deletes nothing", async () => {
+    owned("mount-p", "held-x");
+    await reconcileSkillVersions(NOW);
+    const aside = `${paths.personas}.aside`;
+    renameSync(paths.personas, aside);
+    try {
+      await reconcileSkillVersions(NOW + 1);
+      expect(await rows("held-x", "mount-p")).toHaveLength(1);
+      mkdirSync(paths.personas);
+      await reconcileSkillVersions(NOW + 2);
+      expect(await rows("held-x", "mount-p")).toHaveLength(1);
+    } finally {
+      rmSync(paths.personas, { recursive: true, force: true });
+      renameSync(aside, paths.personas);
+    }
+  });
+
+  test("deleteForPersona never touches the shared base", async () => {
+    place("base-x");
+    await reconcileSkillVersions(NOW);
+    expect(await SkillVersions.deleteForPersona("default")).toBe(0);
+    expect(await rows("base-x")).toHaveLength(1);
+  });
+
+  test("a persona named global has its own scope to delete", async () => {
+    place("base-y");
+    owned("global", "base-y");
+    await reconcileSkillVersions(NOW);
+    expect(await rows("base-y", "persona:global")).toHaveLength(1);
+    await SkillVersions.deleteForPersona("global");
+    expect(await rows("base-y", "persona:global")).toEqual([]);
+    expect(await rows("base-y")).toHaveLength(1);
   });
 });
 

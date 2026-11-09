@@ -345,6 +345,52 @@ describe("GET /panel/api/skills/:id/versions", () => {
     expect(byId(skills, `retired:default:${rid}`)!.currentVersion).toBeNull();
   });
 
+  describe("a persona's own skill", () => {
+    const text = "/panel/api/skills/agent%3Ascout%3Atriage-x/versions/1";
+
+    test("an operator sees the list but not the text, and the refusal is audited", async () => {
+      expect((await call("GET", "/panel/api/skills/agent%3Ascout%3Atriage-x/versions")).status).toBe(200);
+      const r = await call("GET", text);
+      expect(r.status).toBe(403);
+      expect(r.body).toMatchObject({ required: "superadmin" });
+      expect(JSON.stringify(r.body)).not.toContain("scout one");
+      await flushAudits();
+      expect((await AuditEvents.list({ action: "skill.version.viewed" })).items).toEqual([]);
+      expect((await AuditEvents.list({ action: "panel.skill.version.private" })).items.map((e) => e.decision)).toEqual(["refused"]);
+    });
+
+    test("a superadmin reads the text, and the read is audited without content", async () => {
+      const r = await call("GET", text, superadmin);
+      expect(r.status).toBe(200);
+      expect((r.body as SkillVersionDetailResponse).skillMd).toBe("scout one");
+      await flushAudits();
+      const [row, ...rest] = (await AuditEvents.list({ action: "skill.version.viewed" })).items;
+      expect(rest).toEqual([]);
+      expect(row).toMatchObject({ actorId: "lead@example.com", persona: "scout", targetKind: "skill", targetId: "triage-x" });
+      expect(JSON.stringify(row)).not.toContain("scout one");
+    });
+
+    test("a version that does not exist is still refused to an operator first", async () => {
+      expect((await call("GET", "/panel/api/skills/agent%3Ascout%3Atriage-x/versions/99")).status).toBe(403);
+      expect((await call("GET", "/panel/api/skills/agent%3Ascout%3Atriage-x/versions/99", superadmin)).status).toBe(404);
+      await flushAudits();
+      expect((await AuditEvents.list({ action: "skill.version.viewed" })).items).toEqual([]);
+    });
+
+    test("a retired copy of a persona's skill is gated too", async () => {
+      const rid = "triage-x-20261101T120000Z";
+      skill(join(paths.personas, "scout", "skills", ".retired", rid), { name: "triage-x", description: "Old" });
+      const id = encodeURIComponent(`retired:scout:${rid}`);
+      expect((await call("GET", `/panel/api/skills/${id}/versions/1`)).status).toBe(403);
+    });
+
+    test("the shared base's text stays open to any operator, unaudited", async () => {
+      expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/1")).status).toBe(200);
+      await flushAudits();
+      expect((await AuditEvents.list({ action: "skill.version.viewed" })).items).toEqual([]);
+    });
+  });
+
   test("a built-in has no versions; unknown skills and versions are 404; only GET is allowed", async () => {
     const builtin = await call("GET", "/panel/api/skills/builtin%3Amemory/versions");
     expect(builtin.status).toBe(200);

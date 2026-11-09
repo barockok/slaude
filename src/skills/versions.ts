@@ -7,8 +7,10 @@
  * A skill's identity is its root plus its slug: the shared base is scope
  * `global` and a persona's overlay is scope `<persona>`. A new row is written
  * only when the content hash differs from the identity's latest row, so a
- * reconcile finding nothing changed writes nothing. Rows are never removed: a
- * retired skill or a deleted file keeps its history. A persona literally named
+ * reconcile finding nothing changed writes nothing. A retired skill or a
+ * deleted file keeps its history. A removed persona does not: its rows hold
+ * private content, so they are deleted and its leftover overlay is not walked,
+ * and a later persona of that name starts empty. A persona literally named
  * `global` is stored as `persona:global` (persona names have no `:`), so it
  * cannot share history with the base root.
  *
@@ -24,18 +26,14 @@ import { open, readdir, readlink } from "node:fs/promises";
 import { join } from "node:path";
 import { env } from "../config/env";
 import { paths } from "../config/home";
+import { personaNameStates } from "../db/personas";
 import * as SkillVersions from "../db/skill-versions";
+import { GLOBAL_SCOPE, versionScope } from "../db/skill-versions";
 import { registerLoop } from "../gateway/core/running-loops";
 import { globalSkillsRoot, parseSkillText, personaSkillsRoot, SKILL_MD_MAX_BYTES } from "./loader";
 import { provenanceSources, skillProvenance, type ProvenanceSources } from "./provenance";
 
-export const GLOBAL_SCOPE = "global";
-
-/** The version-log scope of a persona's own root (undefined or `default`: the shared base). */
-export function versionScope(personaName?: string | null): string {
-  if (!personaName || personaName === "default") return GLOBAL_SCOPE;
-  return personaName === GLOBAL_SCOPE ? `persona:${personaName}` : personaName;
-}
+export { GLOBAL_SCOPE, versionScope };
 
 /** Tool state in a skill's tree, not part of it: VCS metadata, installed dependencies, bytecode, Finder's files. */
 const IGNORED_NAMES = new Set([".git", "__pycache__", "node_modules", ".venv", ".DS_Store"]);
@@ -206,12 +204,12 @@ interface SkillRoot {
   root: string;
 }
 
-/** The shared base and every persona overlay on disk. */
-function skillRoots(): SkillRoot[] {
+/** The shared base and every persona overlay on disk, except a removed persona's. */
+function skillRoots(removed: ReadonlySet<string>): SkillRoot[] {
   const roots: SkillRoot[] = [{ scope: GLOBAL_SCOPE, root: globalSkillsRoot() }];
   if (existsSync(paths.personas)) {
     for (const name of readdirSync(paths.personas)) {
-      if (name.startsWith(".") || name === "default") continue;
+      if (name.startsWith(".") || name === "default" || removed.has(name)) continue;
       const root = personaSkillsRoot(name);
       if (existsSync(root)) roots.push({ scope: versionScope(name), root });
     }
@@ -238,6 +236,24 @@ function skillDirs(root: string): string[] {
 }
 
 /**
+ * Delete the rows of personas that no longer exist: tombstoned ones (their rows
+ * went with the tombstone; this catches a replica's insert that raced it) and,
+ * without a persona table entry, ones whose directory is gone. A missing or
+ * empty personas directory says nothing about any one persona (an unmounted
+ * volume looks the same), so it removes nothing by absence.
+ */
+async function pruneRemovedPersonas(personas: { live: ReadonlySet<string>; removed: ReadonlySet<string> }): Promise<void> {
+  const rootHasEntries = existsSync(paths.personas) && readdirSync(paths.personas).length > 0;
+  for (const scope of await SkillVersions.personaScopes()) {
+    const name = SkillVersions.personaOfScope(scope);
+    if (personas.live.has(name)) continue;
+    if (personas.removed.has(name) || (rootHasEntries && !existsSync(join(paths.personas, name)))) {
+      await SkillVersions.deleteForPersona(name);
+    }
+  }
+}
+
+/**
  * Walk every skill root and record what changed. Each skill stands alone: one
  * that cannot be read is skipped for this pass and the rest continue. Never
  * throws.
@@ -246,13 +262,22 @@ export async function reconcileSkillVersions(now: number = Date.now()): Promise<
   const result: ReconcileResult = { scanned: 0, recorded: 0, failed: 0 };
   let src: ProvenanceSources;
   let roots: SkillRoot[];
+  let personas: Awaited<ReturnType<typeof personaNameStates>>;
   try {
     src = provenanceSources();
-    roots = skillRoots();
+    // Before any walk: not knowing who was removed must not capture their overlays.
+    personas = await personaNameStates();
+    roots = skillRoots(personas.removed);
   } catch (e) {
     console.error(`[skills] version reconcile could not list the skill roots: ${errorLabel(e)}`);
     result.failed++;
     return result;
+  }
+  try {
+    await pruneRemovedPersonas(personas);
+  } catch (e) {
+    result.failed++;
+    reportFailure("(personas)", "(prune)", e);
   }
   for (const { scope, root } of roots) {
     let slugs: string[];

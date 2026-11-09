@@ -66,7 +66,9 @@ function VersionText({ id, version }: { id: string; version: number }) {
 
 const ORIGIN_LABEL = { bundled: "Bundled", installed: "Installed", agent: "Written by the agent" } as const;
 
-function VersionsCard({ id, retired }: { id: string; retired: boolean }) {
+function VersionsCard({ id, retired, agentOwned }: { id: string; retired: boolean; agentOwned: boolean }) {
+  const role = useRole();
+  const textLocked = agentOwned && role !== "superadmin";
   const { data, error, reload } = useApi<SkillVersionsResponse>(`/api/skills/${encodeURIComponent(id)}/versions`);
   const [picked, setPicked] = useState<number | null>(null);
   if (error && !data) {
@@ -77,11 +79,12 @@ function VersionsCard({ id, retired }: { id: string; retired: boolean }) {
     );
   }
   if (!data) return <Skeleton height="6rem" radius="var(--sl-radius-panel)" />;
+  const lockedNote = textLocked ? " Only a superadmin can read an agent's version text." : "";
   const history = retired ? "Read-only history of this copy, up to when it was retired." : "Read-only history of this skill's files.";
   const description = data.versions.length
     ? data.truncated
-      ? `${history} Only the newest are listed.`
-      : history
+      ? `${history} Only the newest are listed.${lockedNote}`
+      : `${history}${lockedNote}`
     : "No version has been recorded for this skill.";
   return (
     <Card title="Versions" description={description} flush={data.versions.length > 0}>
@@ -105,7 +108,7 @@ function VersionsCard({ id, retired }: { id: string; retired: boolean }) {
                   <td><TimeAgo at={v.capturedAt} /></td>
                   <td>{ORIGIN_LABEL[v.origin]}</td>
                   <td className="is-end">
-                    <Button size="sm" variant="ghost" aria-pressed={picked === v.version} onClick={() => setPicked(picked === v.version ? null : v.version)}>
+                    <Button size="sm" variant="ghost" disabled={textLocked} aria-pressed={picked === v.version} onClick={() => setPicked(picked === v.version ? null : v.version)}>
                       {picked === v.version ? "Hide" : "View SKILL.md"}
                     </Button>
                   </td>
@@ -161,7 +164,7 @@ function Body({ d, reload }: { d: SkillDetailResponse; reload: () => void }) {
             <EmptyState title="This skill has no SKILL.md text" />
           )}
         </Card>
-        <VersionsCard id={d.id} retired={d.status === "retired"} />
+        <VersionsCard id={d.id} retired={d.status === "retired"} agentOwned={d.origin.root === "agent"} />
         <Card title="Usage" description={d.usageHistory.length ? "Per agent, as counted when the agent loaded it." : "No agent has used it yet."} flush={d.usageHistory.length > 0}>
           {d.usageHistory.length > 0 && (
             <div className="sl-scroll-x" tabIndex={0}>

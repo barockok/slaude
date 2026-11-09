@@ -3,8 +3,20 @@ import { db } from "./schema";
 /**
  * Version log of the skills on disk (migration 0034). Files stay the runtime
  * authority: rows are written by src/skills/versions.ts in the gateway or mono
- * process and read by the console. Rows are never updated or deleted.
+ * process and read by the console. Rows are never updated, and are deleted only
+ * when the persona that owns them is removed.
  */
+export const GLOBAL_SCOPE = "global";
+
+/** The version-log scope of a persona's own root (undefined or `default`: the shared base). */
+export function versionScope(personaName?: string | null): string {
+  if (!personaName || personaName === "default") return GLOBAL_SCOPE;
+  return personaName === GLOBAL_SCOPE ? `persona:${personaName}` : personaName;
+}
+
+/** The persona a persona scope belongs to (inverse of versionScope). */
+export const personaOfScope = (scope: string): string => scope.replace(/^persona:/, "");
+
 export type SkillVersionOrigin = "bundled" | "installed" | "agent";
 
 export interface SkillVersionMeta {
@@ -102,3 +114,16 @@ export async function currentVersions(): Promise<Map<string, number>> {
 }
 
 export const versionKey = (scope: string, slug: string): string => `${scope}\u0000${slug}`;
+
+/** Every persona scope with rows. */
+export async function personaScopes(): Promise<string[]> {
+  const rows = await db.query<{ scope: string }>("SELECT DISTINCT scope FROM skill_versions WHERE scope <> ?", [GLOBAL_SCOPE]);
+  return rows.map((r) => r.scope);
+}
+
+/** Delete a removed persona's rows, so a later persona of that name cannot read them. Never the shared base's. */
+export async function deleteForPersona(personaName: string): Promise<number> {
+  const scope = versionScope(personaName);
+  if (scope === GLOBAL_SCOPE) return 0;
+  return (await db.run("DELETE FROM skill_versions WHERE scope = ?", [scope])).changes;
+}

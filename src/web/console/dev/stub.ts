@@ -266,8 +266,9 @@ export function installStub(): void {
     if (seg.length === 3) return method === "GET" ? json(200, sk) : json(405, { error: "method not allowed" });
     if (seg[3] === "versions" && (seg.length === 4 || seg.length === 5)) {
       if (method !== "GET") return json(405, { error: "method not allowed" });
-      const all = skillVersions[`base:${sk.slug}`] ?? [];
+      const all = skillVersions[sk.id] ?? [];
       if (seg.length === 4) return json(200, { versions: all.map(({ skillMd: _s, ...v }) => v), truncated: false });
+      if (sk.origin.root === "agent" && !isSuper) return json(403, { error: "action 'skill.version.private' requires the superadmin role", required: "superadmin" });
       const found = all.find((v) => v.version === Number(seg[4]));
       return found ? json(200, found) : json(404, { error: "no such version" });
     }

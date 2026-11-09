@@ -492,6 +492,14 @@ test.describe("resources", () => {
     await expect(page).toHaveURL(/\/skills\/agent%3Ascout%3Aweekly-digest$/);
   });
 
+  test("an operator sees an agent skill's versions but not their text", async ({ page }) => {
+    await page.goto("/panel/skills/agent%3Ascout%3Aweekly-digest?as=operator");
+    const card = page.locator(".sl-card").filter({ has: page.getByText("Versions", { exact: true }) });
+    await expect(card.getByText("7c3a9e5d1f0b")).toBeVisible();
+    await expect(card.getByText("Only a superadmin can read an agent's version text.")).toBeVisible();
+    await expect(card.getByRole("button", { name: "View SKILL.md" })).toBeDisabled();
+  });
+
   test("an operator cannot retire a skill", async ({ page }) => {
     await page.goto("/panel/skills/agent%3Ascout%3Aweekly-digest?as=operator");
     await expect(page.getByText("Only a superadmin can retire or restore a skill.")).toBeVisible();

@@ -556,14 +556,28 @@ export async function skillVersions(id: string): Promise<SkillVersionsResponse |
   return { versions: rows.slice(0, VERSIONS_MAX).map(versionView), truncated: rows.length > VERSIONS_MAX };
 }
 
-/** One recorded version with its SKILL.md. Null when the skill or the version does not exist. */
-export async function skillVersionDetail(id: string, version: number): Promise<SkillVersionDetailResponse | null> {
+/** The identity a version read resolves to, and whether its text is private to a persona. */
+export interface SkillVersionTarget {
+  owner: string;
+  slug: string;
+  scope: string;
+  /** A persona's own skill: its version text is superadmin only, and audited. */
+  personaScoped: boolean;
+  upTo: number | undefined;
+}
+
+/** Null when the id names no skill, or one with no identity (built-in, plugin). */
+export async function skillVersionTarget(id: string): Promise<SkillVersionTarget | null> {
   const { entries } = await buildSkills();
   const e = entries.find((x) => x.id === id);
   if (!e || e.owner === null) return null;
-  const row = await SkillVersions.get(versionScope(e.owner), e.slug, version);
-  const upTo = versionCutoff(e);
-  if (!row || (upTo !== undefined && row.capturedAt > upTo)) return null;
+  return { owner: e.owner, slug: e.slug, scope: versionScope(e.owner), personaScoped: e.owner !== "default", upTo: versionCutoff(e) };
+}
+
+/** One recorded version with its SKILL.md. Null when the version does not exist for this target. */
+export async function readSkillVersion(t: SkillVersionTarget, version: number): Promise<SkillVersionDetailResponse | null> {
+  const row = await SkillVersions.get(t.scope, t.slug, version);
+  if (!row || (t.upTo !== undefined && row.capturedAt > t.upTo)) return null;
   return { ...versionView(row), skillMd: row.skillMd };
 }
 

@@ -666,7 +666,7 @@ export interface SkillVersionsResponse {
   truncated: boolean;
 }
 
-/** GET /panel/api/skills/:id/versions/:version */
+/** GET /panel/api/skills/:id/versions/:version (a persona's own skill: superadmin only, audited). */
 export interface SkillVersionDetailResponse extends SkillVersionView {
   /** The SKILL.md text of this version, up to 256 KB. */
   skillMd: string;

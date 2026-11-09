@@ -35,6 +35,18 @@ const skill = (s: Omit<SkillDetailResponse, "frontmatter" | "body" | "rawTruncat
 /** Recorded versions by skill id, newest first. */
 export function skillVersionFixtures(now: number): Record<string, SkillVersionDetailResponse[]> {
   return {
+    "agent:scout:weekly-digest": [
+      {
+        version: 1,
+        hash: "7c3a9e5d1f0b2468ace13579bdf02468ace13579bdf02468ace13579bdf02468",
+        capturedAt: now - 8 * DAY,
+        origin: "agent",
+        fileCount: 1,
+        totalBytes: 240,
+        skillMdTruncated: false,
+        skillMd: "---\nname: weekly-digest\n---\n# Weekly digest\n\nSummarise the week.\n",
+      },
+    ],
     "base:release-notes": [
       {
         version: 2,
@@ -165,6 +177,7 @@ export function skillFixtures(now: number): SkillDetailResponse[] {
     skill({
       id: "agent:scout:weekly-digest",
       slug: "weekly-digest",
+      currentVersion: 1,
       name: "weekly-digest",
       description: "Summarise the week's research threads for the team.",
       invocation: "/weekly-digest",

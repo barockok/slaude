@@ -1,8 +1,8 @@
 -- Version log of the skills on disk. Files stay the runtime authority: this
 -- table is written only by the gateway or mono process, when a reconcile
 -- finds a skill whose content hash differs from its latest row, and is never
--- read to run a skill. Rows are never updated or deleted, so a retired skill
--- or a deleted file keeps its history.
+-- read to run a skill. Rows are never updated, so a retired skill or a deleted
+-- file keeps its history; they are deleted only when their persona is removed.
 --
 -- scope is 'global' for the shared base root, else the persona that owns the
 -- overlay. content_hash is a sha256 over every file of the skill (relative
