@@ -67,7 +67,7 @@ RUN set -eux; \
       arm64) sha="$TAILCAT_SHA256_ARM64" ;; \
       *) echo "unsupported architecture for tailcat: $arch" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/tailcat.tgz "https://github.com/tailscale/tailcat/releases/download/v${TAILCAT_VERSION}/tailcat_${TAILCAT_VERSION}_linux_${arch}.tar.gz"; \
+    curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o /tmp/tailcat.tgz "https://github.com/tailscale/tailcat/releases/download/v${TAILCAT_VERSION}/tailcat_${TAILCAT_VERSION}_linux_${arch}.tar.gz"; \
     echo "${sha}  /tmp/tailcat.tgz" | sha256sum -c -; \
     tar -xzf /tmp/tailcat.tgz -C /usr/local/bin tailcat; \
     rm -f /tmp/tailcat.tgz; \
