@@ -7,8 +7,11 @@ import {
   EMPTY_SNAPSHOT,
   loadInventory,
   pluginServersFor,
+  noteReported,
   prunableInstances,
-  PRUNE_GRACE_MS,
+  PRUNE_DEAD_MS,
+  REPORT_REFRESH_MIN_MS,
+  TOUCH_EVERY_MS,
   refreshPluginInventory,
   STALE_AFTER_MS,
   startPluginInventory,
@@ -20,11 +23,13 @@ import { oauthKey } from "../../../src/agent/mcp-oauth/store";
 import { STATE_DNS_PENDING, STATE_NEEDS_HEADERS, STATE_OFFERABLE, STATE_REFUSED_POLICY, STATE_WRITABLE } from "../../../src/config/plugin-inventory";
 
 const server = (name: string, url: string, state = STATE_OFFERABLE) => ({ name, url, state });
-const row = (nodeId: string, labels: string[], http: ReturnType<typeof server>[], plugin = "toolkit", instance = nodeId, reportedAt = 1): NodePluginsRow => ({
+const row = (nodeId: string, labels: string[], http: ReturnType<typeof server>[], plugin = "toolkit", instance = nodeId, reportedAt = 1, credentialIat = 1_000): NodePluginsRow => ({
   nodeId,
   instance,
   labels,
   reportedAt,
+  lastSeenAt: reportedAt,
+  credentialIat,
   report: { instance, plugins: [{ name: plugin, marketplace: "m", commit: null, skills: 0, commands: 0, agents: 0, hooks: 0, stdio: [], http: http as never }] },
 });
 
@@ -145,21 +150,18 @@ describe("the view", () => {
 describe("loadInventory and refresh", () => {
   const rows = [row("n1", ["gpu"], [server("web", "https://a.test/mcp")], "toolkit", "p1", 5_000)];
 
-  test("a revoked credential's earlier reports are filtered and removed", async () => {
-    const removed: string[] = [];
-    const h = await startPluginInventory(
-      { rows: async () => rows, live: async () => new Set(["p1"]), revokedBefore: async () => 10, remove: async (i) => void removed.push(...i) },
-      { intervalMs: 3_600_000 },
-    );
+  test("a row is void when its credential was issued before the revocation, however recent the report", async () => {
+    // Reported long after the revocation time, with a credential minted before it.
+    const late = [row("n1", ["gpu"], [server("web", "https://a.test/mcp")], "toolkit", "p1", 9_000_000, 5)];
+    const h = await startPluginInventory({ rows: async () => late, live: async () => new Set(["p1"]), revokedBefore: async () => 10 }, { intervalMs: 3_600_000 });
     expect(pluginServersFor("gpu")).toEqual({});
-    expect(removed).toEqual(["p1"]);
     h.stop();
   });
 
-  test("a report made after the revocation (a fresh credential) still counts", async () => {
-    const out = await loadInventory({ rows: async () => rows, live: async () => new Set(["p1"]), revokedBefore: async () => 2 });
+  test("a credential issued after the revocation still counts", async () => {
+    const fresh = [row("n1", ["gpu"], [server("web", "https://a.test/mcp")], "toolkit", "p1", 5_000, 20)];
+    const out = await loadInventory({ rows: async () => fresh, live: async () => new Set(["p1"]), revokedBefore: async () => 10 });
     expect(out.rows).toHaveLength(1);
-    expect(out.revoked).toEqual([]);
   });
 
   test("sqlite cannot revoke (undefined): rows are kept", async () => {
@@ -193,16 +195,58 @@ describe("loadInventory and refresh", () => {
     expect(out.rows[0]!.report.plugins[0]!.http[0]!.state).toBe(STATE_REFUSED_POLICY);
   });
 
-  test("pruning: keeps live rows, new rows and an offline credential's last report", () => {
-    const now = PRUNE_GRACE_MS * 10;
+  test("pruning needs a long dead period; live rows and an offline credential's last report stay", () => {
+    const now = PRUNE_DEAD_MS * 10;
     const old = 1;
+    const recent = now - PRUNE_DEAD_MS + 1;
     const mk = (id: string, inst: string, at: number) => row(id, ["gpu"], [], "toolkit", inst, at);
     const out = prunableInstances(
-      [mk("a", "a-live", old), mk("a", "a-dead", old), mk("a", "a-new", now - 1), mk("b", "b-old", old), mk("b", "b-newest", old + 1)],
+      [mk("a", "a-live", old), mk("a", "a-dead", old), mk("a", "a-recent", recent), mk("b", "b-old", old), mk("b", "b-newest", old + 1)],
       new Set(["a-live"]),
       now,
     );
     expect(out.sort()).toEqual(["a-dead", "b-old"]);
+  });
+
+  test("a live process's row is never removed, even a very old one, so its id stays taken", async () => {
+    const rows2 = [row("a", ["gpu"], [], "toolkit", "old-live", 1), row("a", ["gpu"], [], "toolkit", "gone", 1), row("a", ["gpu"], [], "toolkit", "newest", 2)];
+    const removed: string[] = [];
+    let reads = 0;
+    // The first read misses "old-live" (a blip); the check before deleting sees it.
+    const live = async (ids: readonly string[]) => (++reads === 1 ? new Set(["newest"]) : new Set(ids.filter((i) => i === "old-live" || i === "newest")));
+    const h = await startPluginInventory({ rows: async () => rows2, live, remove: async (i) => void removed.push(...i) }, { intervalMs: 3_600_000 });
+    expect(removed).toEqual(["gone"]);
+    h.stop();
+  });
+
+  test("a live process's last-seen is written, and at most hourly", async () => {
+    const now = Date.now();
+    const rows2 = [
+      { ...row("a", ["gpu"], [], "toolkit", "stale", now - TOUCH_EVERY_MS - 1), lastSeenAt: now - TOUCH_EVERY_MS - 1 },
+      { ...row("a", ["gpu"], [], "toolkit", "fresh", now), lastSeenAt: now },
+      { ...row("a", ["gpu"], [], "toolkit", "dead", now - TOUCH_EVERY_MS - 1), lastSeenAt: now - TOUCH_EVERY_MS - 1 },
+    ];
+    const touched: string[] = [];
+    const h = await startPluginInventory({ rows: async () => rows2, live: async () => new Set(["stale", "fresh"]), touch: async (i) => void touched.push(...i) }, { intervalMs: 3_600_000 });
+    expect(touched).toEqual(["stale"]);
+    h.stop();
+  });
+
+  test("reports refresh at most once per window", async () => {
+    let loads = 0;
+    const h = await startPluginInventory({ rows: async () => { loads++; return []; }, live: async () => new Set() }, { intervalMs: 3_600_000 });
+    __setPluginInventorySnapshot(null); // also resets the window
+    loads = 0;
+    const t0 = 1_000_000;
+    noteReported(t0);
+    noteReported(t0 + 1);
+    noteReported(t0 + REPORT_REFRESH_MIN_MS - 1);
+    await Bun.sleep(5);
+    expect(loads).toBe(1);
+    noteReported(t0 + REPORT_REFRESH_MIN_MS);
+    await Bun.sleep(5);
+    expect(loads).toBe(2);
+    h.stop();
   });
 });
 

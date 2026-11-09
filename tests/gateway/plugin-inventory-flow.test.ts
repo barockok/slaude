@@ -10,7 +10,7 @@ import { __setNodeVerifier } from "../../src/gateway/api/auth";
 import { mintNodeCredential, NodeCredentialVerifier } from "../../src/gateway/auth/node-credential";
 import { InMemoryPendingSource } from "../../src/gateway/api/pending-source";
 import { startPluginInventory, __setPluginInventorySnapshot, pluginServersFor } from "../../src/gateway/core/plugin-inventory";
-import { listNodePlugins } from "../../src/db/node-plugins";
+import { insertNodePlugins, listNodePlugins, MAX_ROWS_PER_CREDENTIAL } from "../../src/db/node-plugins";
 import { db } from "../../src/db/schema";
 import { bridgedServerNames } from "../../src/gateway/core/external-mcp";
 import { configuredServer, integrationsFor, portalServers } from "../../src/gateway/portal/integrations";
@@ -133,6 +133,14 @@ describe("report to portal", () => {
     live = new Set(["proc-2"]);
     await refreshPluginInventory();
     expect(Object.keys(pluginServersFor("gpu"))).toEqual(["other"]);
+  });
+
+  test("the row cap is enforced against the real table", async () => {
+    await startView();
+    const base = { nodeId: "node-full", labels: ["gpu"], reportedAt: 1, lastSeenAt: 1, credentialIat: 1 };
+    for (let i = 0; i < MAX_ROWS_PER_CREDENTIAL; i++) await insertNodePlugins({ ...base, instance: `p${i}`, report: { instance: `p${i}`, plugins: [] } });
+    expect(await insertNodePlugins({ ...base, instance: "one-more", report: { instance: "one-more", plugins: [] } })).toBe("cap");
+    expect(await insertNodePlugins({ ...base, nodeId: "node-other", instance: "fine", report: { instance: "fine", plugins: [] } })).toBe("stored");
   });
 
   test("a second credential cannot claim a process another credential reported", async () => {

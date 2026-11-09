@@ -19,7 +19,7 @@
  * Each row is one node process: liveness is that process's own heartbeat, so a
  * process that failed to report never inherits the previous process's servers.
  */
-import { deleteNodePluginInstances, listNodePlugins, type NodePluginsRow } from "../../db/node-plugins";
+import { deleteNodePluginInstances, listNodePlugins, touchNodePluginInstances, type NodePluginsRow } from "../../db/node-plugins";
 import {
   STATE_DNS_PENDING,
   STATE_INVALID_URL,
@@ -37,8 +37,14 @@ import { dbRevocationSource } from "../auth/node-credential";
 
 export const REFRESH_MS = 15_000;
 export const STALE_AFTER_MS = 5 * 60_000;
-/** A new process's row is not live until its first heartbeat: never prune it sooner. */
-export const PRUNE_GRACE_MS = 10 * 60_000;
+/** How long a process must be unseen before its row may go. Long on purpose: a
+ *  row is the claim on that process id's one report, so removing it too soon, or
+ *  during a heartbeat outage, would reopen the slot. */
+export const PRUNE_DEAD_MS = 7 * 24 * 3_600_000;
+/** How often a live process's last-seen time is written. */
+export const TOUCH_EVERY_MS = 3_600_000;
+/** A flood of reports must not become a flood of refreshes; the timer catches up. */
+export const REPORT_REFRESH_MIN_MS = 5_000;
 
 /** A plugin HTTP server the bridge may serve. `fromPlugin` names it in the
  *  portal row; the rest is the same shape a configured server has. */
@@ -133,12 +139,14 @@ export interface InventorySources {
   revokedBefore?: (nodeId: string) => Promise<number | null | undefined>;
   /** Remove process rows no longer worth keeping. */
   remove?: (instances: readonly string[]) => Promise<void>;
+  /** Record that these processes are live now. */
+  touch?: (instances: readonly string[], at: number) => Promise<void>;
   policy?: OutboundPolicyOptions;
 }
 
 /** The sources over the real database and a node registry. */
 export function dbInventorySources(liveNodeIds: (ids: readonly string[]) => Promise<ReadonlySet<string>>): InventorySources {
-  return { rows: listNodePlugins, live: liveNodeIds, revokedBefore: dbRevocationSource, remove: deleteNodePluginInstances };
+  return { rows: listNodePlugins, live: liveNodeIds, revokedBefore: dbRevocationSource, remove: deleteNodePluginInstances, touch: touchNodePluginInstances };
 }
 
 /** Re-evaluate servers whose host did not resolve at report time, in memory
@@ -168,30 +176,30 @@ async function resolvePending(rows: NodePluginsRow[], live: ReadonlySet<string>,
 }
 
 export interface LoadedInventory {
+  /** Rows that count: not revoked, DNS re-evaluated. */
   rows: NodePluginsRow[];
   live: ReadonlySet<string>;
-  /** Rows of a revoked credential, excluded from `rows`. */
-  revoked: string[];
+  /** Every stored row, a revoked credential's included (for housekeeping). */
+  all: NodePluginsRow[];
 }
 
-/** Rows that still count, with their liveness and DNS re-evaluated. A failing
- *  revocation source throws: an unknown revocation must not offer. */
+/** A credential minted before its revocation is void, as at authentication. A
+ *  failing revocation source throws: an unknown revocation must not offer. */
 export async function loadInventory(src: InventorySources): Promise<LoadedInventory> {
   const all = await src.rows();
   const before = new Map<string, number | null | undefined>();
   for (const id of new Set(all.map((r) => r.nodeId))) before.set(id, await src.revokedBefore?.(id));
-  const isRevoked = (r: NodePluginsRow) => {
+  const kept = all.filter((r) => {
     const b = before.get(r.nodeId);
-    return b !== null && b !== undefined && r.reportedAt < b * 1000;
-  };
-  const kept = all.filter((r) => !isRevoked(r));
-  const live = await src.live(kept.map((r) => r.instance));
-  return { rows: await resolvePending(kept, live, src.policy ?? {}), live, revoked: all.filter(isRevoked).map((r) => r.instance) };
+    return b === null || b === undefined || r.credentialIat >= b;
+  });
+  const live = await src.live(all.map((r) => r.instance));
+  return { rows: await resolvePending(kept, live, src.policy ?? {}), live, all };
 }
 
-/** Process rows to drop: past the grace, not live, and either a sibling of the
- *  same credential is live or a newer offline row stands for that credential
- *  (the console keeps the last report of an offline node). */
+/** Process rows that may go: unseen for PRUNE_DEAD_MS and not live, and either a
+ *  process of that credential is live or a newer row stands for it (the console
+ *  keeps an offline credential's last report). */
 export function prunableInstances(rows: readonly NodePluginsRow[], live: ReadonlySet<string>, now = Date.now()): string[] {
   const byNode = new Map<string, NodePluginsRow[]>();
   for (const r of rows) bucket(byNode, r.nodeId, () => []).push(r);
@@ -200,11 +208,23 @@ export function prunableInstances(rows: readonly NodePluginsRow[], live: Readonl
     const anyLive = group.some((r) => live.has(r.instance));
     const newest = group.reduce((a, b) => (b.reportedAt > a.reportedAt ? b : a));
     for (const r of group) {
-      if (live.has(r.instance) || now - r.reportedAt < PRUNE_GRACE_MS) continue;
+      if (live.has(r.instance) || now - r.lastSeenAt < PRUNE_DEAD_MS) continue;
       if (anyLive || r !== newest) out.push(r.instance);
     }
   }
   return out;
+}
+
+/** Keep last-seen current and drop long-dead rows. Liveness is read AGAIN right
+ *  before a delete, so a process id still heartbeating never loses its row. */
+async function housekeep(src: InventorySources, all: readonly NodePluginsRow[], live: ReadonlySet<string>, now: number): Promise<void> {
+  const seen = all.filter((r) => live.has(r.instance) && now - r.lastSeenAt >= TOUCH_EVERY_MS).map((r) => r.instance);
+  if (seen.length > 0) await src.touch?.(seen, now);
+  const candidates = prunableInstances(all, live, now);
+  if (candidates.length === 0 || !src.remove) return;
+  const stillLive = await src.live(candidates);
+  const gone = candidates.filter((i) => !stillLive.has(i));
+  if (gone.length > 0) await src.remove(gone);
 }
 
 let snapshot: InventorySnapshot = EMPTY_SNAPSHOT;
@@ -225,17 +245,19 @@ export function pluginServersFor(label: string, now = Date.now()): Record<string
 /** Recompute from the sources. Throws on a source failure (the caller logs). */
 export async function refreshPluginInventory(src: InventorySources | null = sources): Promise<void> {
   if (!src) return;
-  const { rows, live, revoked } = await loadInventory(src);
+  const { rows, live, all } = await loadInventory(src);
   snapshot = computeSnapshot(rows, live);
-  // Housekeeping, idempotent across replicas; its failure must not cost the view.
-  const drop = [...revoked, ...prunableInstances(rows, live)];
-  if (drop.length > 0 && src.remove) {
-    await src.remove(drop).catch((e) => console.warn(`[plugins] inventory prune failed: ${e instanceof Error ? e.name : typeof e}`));
-  }
+  // Idempotent across replicas; its failure must not cost the view.
+  await housekeep(src, all, live, Date.now()).catch((e) => console.warn(`[plugins] inventory housekeeping failed: ${e instanceof Error ? e.name : typeof e}`));
 }
 
-/** Refresh after a report landed on this replica; best effort (the timer repairs). */
-export function noteReported(): void {
+let lastReportRefresh = 0;
+
+/** Refresh after a report landed on this replica, at most once per
+ *  REPORT_REFRESH_MIN_MS; best effort (the timer repairs what this skips). */
+export function noteReported(now = Date.now()): void {
+  if (now - lastReportRefresh < REPORT_REFRESH_MIN_MS) return;
+  lastReportRefresh = now;
   void refreshPluginInventory().catch((e) => console.warn(`[plugins] inventory refresh failed: ${e instanceof Error ? e.name : typeof e}`));
 }
 
@@ -261,4 +283,5 @@ export async function startPluginInventory(src: InventorySources, opts: { interv
 /** TEST SEAM: set the snapshot directly (null resets it). */
 export function __setPluginInventorySnapshot(s: InventorySnapshot | null): void {
   snapshot = s ?? EMPTY_SNAPSHOT;
+  lastReportRefresh = 0;
 }

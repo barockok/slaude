@@ -11,7 +11,9 @@
  * One report per credential and process: the first stands (409 after it), so a
  * stolen credential cannot rewrite the report of a process already running. A
  * report under a process id nobody heartbeats is stored and never offered. The
- * shared legacy token is not one machine, so its report is never offered.
+ * shared legacy token is not one machine, so every server in its report is stored
+ * as not offered, whatever state it claimed. A node may send only the states a
+ * node can know; a state the gateway decides is treated as an invalid entry.
  */
 import { z } from "zod";
 import type { NodeIdentity } from "./auth";
@@ -20,9 +22,8 @@ import type { OutboundPolicyOptions } from "../../net/outbound-policy";
 import { insertNodePlugins, type NodePluginsRow } from "../../db/node-plugins";
 import { guardHttpServer, noteReported } from "../core/plugin-inventory";
 import {
-  SERVER_STATES,
+  NODE_SERVER_STATES,
   STATE_LEGACY,
-  STATE_OFFERABLE,
   sanitizeServerUrl,
   type PluginReport,
   type ReportedHttpServer,
@@ -38,7 +39,8 @@ const instance = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/);
 const serverName = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
 const count = z.number().int().min(0).max(100_000);
 const Stdio = z.object({ name: serverName, declared: z.boolean() });
-const Http = z.object({ name: serverName, url: z.string().max(2048), state: z.enum(SERVER_STATES) });
+// Node-originating states only: a state the gateway decides is an invalid entry.
+const Http = z.object({ name: serverName, url: z.string().max(2048), state: z.enum(NODE_SERVER_STATES) });
 const Plugin = z.object({
   name,
   marketplace: z.string().regex(/^[A-Za-z0-9._-]{0,128}$/),
@@ -63,8 +65,7 @@ function validEntries<T>(raw: readonly unknown[], schema: z.ZodType<T>): { ok: T
 }
 
 export interface NodePluginsDeps {
-  /** False when this process already has a report. */
-  store?: (row: NodePluginsRow) => Promise<boolean>;
+  store?: (row: NodePluginsRow) => Promise<"stored" | "duplicate" | "cap">;
   /** After a stored report (default: recompute this replica's view). */
   onReported?: () => void;
   /** Outbound policy options (tests inject a resolver). */
@@ -103,7 +104,7 @@ export async function handleNodePlugins(req: Request, node: NodeIdentity, deps: 
       stdio: stdio.ok,
       http: await Promise.all(
         http.ok.map((s) =>
-          node.legacy && s.state === STATE_OFFERABLE
+          node.legacy
             ? { ...(s as ReportedHttpServer), url: sanitizeServerUrl(s.url), state: STATE_LEGACY }
             : guardHttpServer(s as ReportedHttpServer, policy),
         ),
@@ -114,14 +115,18 @@ export async function handleNodePlugins(req: Request, node: NodeIdentity, deps: 
   if (dropped > 0) console.warn(`[plugins] node=${node.id} dropped ${dropped} invalid report entr${dropped === 1 ? "y" : "ies"}`);
 
   const report: PluginReport = { instance: process_.data, plugins };
+  const now = (deps.now ?? Date.now)();
   const stored = await (deps.store ?? insertNodePlugins)({
     nodeId: node.id,
     instance: process_.data,
     labels: [...node.labels].sort(),
-    reportedAt: (deps.now ?? Date.now)(),
+    reportedAt: now,
+    lastSeenAt: now,
+    credentialIat: node.iat ?? 0,
     report,
   });
-  if (!stored) return json(409, { error: "this process has already reported" });
+  if (stored === "duplicate") return json(409, { error: "this process has already reported" });
+  if (stored === "cap") return json(429, { error: "this credential holds too many plugin reports" });
   (deps.onReported ?? noteReported)();
   return json(200, { ok: true, accepted: plugins.length, dropped });
 }

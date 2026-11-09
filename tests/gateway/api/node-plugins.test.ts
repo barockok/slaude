@@ -15,6 +15,7 @@ const policy = { resolver: async () => [{ address: "93.184.216.34", family: 4 }]
 let v1: ReturnType<typeof createV1Api>;
 let stored: NodePluginsRow[];
 let reported = 0;
+let capped = false;
 let token: string;
 
 const http = (name: string, url: string, state: string) => ({ name, url, state });
@@ -38,7 +39,7 @@ beforeAll(() => {
     tools: {} as never,
     pendingSource: new InMemoryPendingSource(),
     memory: null,
-    nodePlugins: { store: async (r) => { if (stored.some((x) => x.nodeId === r.nodeId && x.instance === r.instance)) return false; stored.push(r); return true; }, onReported: () => { reported++; }, policy },
+    nodePlugins: { store: async (r) => { if (capped) return "cap"; if (stored.some((x) => x.nodeId === r.nodeId && x.instance === r.instance)) return "duplicate"; stored.push(r); return "stored"; }, onReported: () => { reported++; }, policy },
   });
 });
 
@@ -59,6 +60,7 @@ describe("PUT /v1/node/plugins", () => {
     expect(stored[0]!.nodeId).toBe("node-1");
     expect(stored[0]!.labels).toEqual(["default", "gpu"]);
     expect(stored[0]!.instance).toBe("proc-1");
+    expect(stored[0]!.credentialIat).toBeGreaterThan(1_000_000_000);
     expect(JSON.stringify(stored[0]!.report)).not.toContain("spoofed");
     expect(JSON.stringify(stored[0]!.report)).not.toContain("evil");
   });
@@ -113,12 +115,35 @@ describe("PUT /v1/node/plugins", () => {
     expect((await put({ instance: "../etc", plugins: [] }))!.status).toBe(400);
   });
 
-  test("the shared legacy token never gets an offer", async () => {
+  test("a node cannot claim a state only the gateway decides: treated as an invalid entry", async () => {
+    for (const state of [STATE_DNS_PENDING, STATE_REFUSED_POLICY, STATE_LEGACY, "not offered: no live node lists it"]) {
+      stored = [];
+      const res = await put({ instance: "proc-c", plugins: [{ name: "p", marketplace: "m", commit: null, skills: 0, commands: 0, agents: 0, hooks: 0, stdio: [], http: [http("web", "https://x.example.com/mcp", state)] }] });
+      expect(await res!.json()).toMatchObject({ accepted: 1, dropped: 1 });
+      expect(stored[0]!.report.plugins[0]!.http).toEqual([]);
+    }
+  });
+
+  test("a credential at its row cap gets 429 and triggers no refresh", async () => {
+    stored = [];
+    reported = 0;
+    capped = true;
+    try {
+      expect((await put(report()))!.status).toBe(429);
+      expect(reported).toBe(0);
+    } finally {
+      capped = false;
+    }
+  });
+
+  test("the shared legacy token never gets an offer, whatever state it claims", async () => {
     stored = [];
     process.env.SLAUDE_NODE_LEGACY_TOKEN = "plugins-legacy";
     try {
-      expect((await put(report(), "plugins-legacy"))!.status).toBe(200);
-      expect(stored[0]!.report.plugins[0]!.http[0]!.state).toBe(STATE_LEGACY);
+      const body = report({ plugins: [{ name: "toolkit", marketplace: "m", commit: null, skills: 0, commands: 0, agents: 0, hooks: 0, stdio: [], http: [http("a", "https://x.example.com/mcp", STATE_OFFERABLE), http("b", "https://y.example.com/mcp", STATE_WRITABLE)] }] });
+      expect((await put(body, "plugins-legacy"))!.status).toBe(200);
+      expect(stored[0]!.report.plugins[0]!.http.map((h) => h.state)).toEqual([STATE_LEGACY, STATE_LEGACY]);
+      expect(stored[0]!.credentialIat).toBe(0);
     } finally {
       delete process.env.SLAUDE_NODE_LEGACY_TOKEN;
     }

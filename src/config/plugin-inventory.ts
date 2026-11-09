@@ -40,6 +40,18 @@ export const SERVER_STATES = [
 
 export type ServerState = (typeof SERVER_STATES)[number];
 
+/** The only states a node may send. The rest are decided at the gateway: a node
+ *  claiming one (say, "host did not resolve", which a refresh can promote) would
+ *  be choosing a verdict that belongs to the gateway. */
+export const NODE_SERVER_STATES = [
+  STATE_OFFERABLE,
+  STATE_WRITABLE,
+  STATE_NEEDS_HEADERS,
+  STATE_INVALID_URL,
+  STATE_SSE,
+  STATE_URL_SECRETS,
+] as const;
+
 export interface ReportedStdioServer {
   name: string;
   /** Whether the node manifest declares a server of this name. */
