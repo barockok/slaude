@@ -778,7 +778,8 @@ Every field below is optional in the markdown (the extractor omits what it canno
 | `approvalTimeoutSeconds` | `## Approval timeout` | integer ≥ 0 | No | Auto-deny `request_approval` blocks after N seconds with no click. `0` or omitted = wait forever |
 | `mandate` | `## Mandate` | string | **Yes** | What the agent is meant to accomplish — drives every turn |
 | `values` | `## Values` | string[] | No | 1–2 lines of operating principles unique to the persona |
-| `channelOverrides` | `## Channel <#Cxxx\|name>` blocks | `{channel, mandate?, approvers}` per block | No | Per-channel replacement of `mandate` and `approvers` — see [Channel overrides](#channel-overrides) |
+| `channelOverrides` | `## Channel <#Cxxx\|name>` blocks | `{channel, mandate?, mandateMode?, approvers}` per block | No | Per-channel sub-mandate and approvers, see [Channel overrides](#channel-overrides) |
+| `scopeMandates` | `## Scope dm\|public\|trusted` blocks | `{scope, mandate, mode?}` per block | No | Sub-mandate for direct messages or a channel class, see [Scoped mandates](#scoped-mandates) |
 
 ### Required vs warnings — what `validate-soul` checks
 
@@ -886,7 +887,61 @@ The manager and backup manager are always retained as catchall approvers in ever
 - <@U0DBA123>:       migrations, SQL, schema changes
 ```
 
-Resolution at runtime: `effectiveSoulForChannel(channelId)` in `extract.ts` starts from the global `soulData()` (runtime overlays preserved), looks up the matching `channelOverrides` entry, and applies: `mandate` replaced when the override sets one (non-empty after trim), `approvers` replaced when the override lists ≥ 1. The channel mandate is injected as `<channel-mandate>` directive that supersedes the global Mandate for that channel.
+Resolution at runtime: `effectiveSoulForChannel(channelId)` in `extract.ts` starts from the global `soulData()` (runtime overlays preserved), resolves the mandate (see [Scoped mandates](#scoped-mandates)) and replaces `approvers` when the override lists at least one. The effective mandate is injected as a `<channel-mandate>` directive that supersedes the global Mandate for that channel.
+
+### Scoped mandates <a id="scoped-mandates"></a>
+
+The agent has one global `## Mandate`. A **sub-mandate** changes it inside one boundary. Each has a boundary and a mode.
+
+| Boundary | Written as | Applies to |
+|---|---|---|
+| One channel | `## Channel <#Cxxx\|name>` with `### Mandate` | That channel |
+| Public channels | `## Scope public` with `### Mandate` | Channels in *Allowed channels* |
+| Trusted channels | `## Scope trusted` with `### Mandate` | Channels in *Trusted channels* (including runtime `/soul` additions) |
+| Direct messages | `## Scope dm` with `### Mandate` | DM channels |
+
+| Mode | Effect |
+|---|---|
+| `override` | Replaces the global mandate. The default when no `Mode:` line is written, so a soul with no `Mode:` line works as it always did. |
+| `extend` | The global mandate, plus this addition. |
+| `reduce` | The global mandate, plus this narrowing, rendered as a limit that wins over the global text inside the boundary. |
+
+The mode is a `Mode: extend` line first inside `### Mandate`. It is not part of the mandate text. Anything else there is mandate text: a `Mode:` line that is not first, or with another value, stays as text and the mode stays `override`.
+
+```markdown
+## Mandate
+- Help the team ship. Draft first, ask before changing shared infrastructure.
+
+## Channel <#C0999999999|incidents>
+### Mandate
+Mode: extend
+- Also own the incident timeline here.
+
+## Scope public
+### Mandate
+Mode: reduce
+- No internal roadmap or infrastructure details.
+
+## Scope dm
+### Mandate
+- Answer the person's own questions. Do not start work on other channels from a DM.
+```
+
+**Precedence.** Only the single most specific match applies, in this order: channel block, then trust class, then dm. Sub-mandates never stack: a channel with `Mode: extend` in *Allowed channels* ignores `## Scope public`. A channel block with no `### Mandate` of its own is not a match, so the next boundary applies.
+
+**Rendered text** is stable and labelled, one label per boundary (`this channel`, `public channels`, `trusted channels`, `direct messages`):
+
+```
+<global mandate>
+
+Limit for public channels (this narrows the mandate above and wins over it wherever they conflict):
+<narrowing>
+
+```
+
+`extend` reads `Additional mandate for this channel (in addition to the mandate above):` in the same place.
+
+A named persona reads its own mandates and blocks (the default persona's are never inherited), and its channel classes are the same lists that admit it (`withAclFallback`). Every reader of a mandate goes through `resolveMandate` in `src/soul/mandate-scope.ts`: the turn's system prompt, the heartbeat and wake prompts, voice calls and the console's Mandates tab.
 
 > **Template stub block.** The seeded `SOUL.md` contains a `## Channel <#C0123456789|example-channel>` stub with a placeholder id — the extractor skips it (placeholder ids like `C0123456789` and `<@manager-id>` are ignored). Delete the stub or fill it with a real channel id.
 
