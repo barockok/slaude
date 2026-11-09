@@ -82,6 +82,8 @@ export interface IntegrationView {
   expiresAt: number | null;
   /** Personas that mount it, sorted. */
   usedBy: string[];
+  /** The plugin that provides it, when it comes from a node's plugins. */
+  plugin?: string;
 }
 
 /** GET /portal/api/integrations */

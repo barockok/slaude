@@ -69,7 +69,7 @@ services:
     image: slaude:latest
     profiles: [scale]
     restart: unless-stopped
-    command: ["bun", "run", "worker"]
+    command: ["bun", "--no-env-file", "src/node/main.ts"]
     depends_on:
       redis:
         condition: service_healthy

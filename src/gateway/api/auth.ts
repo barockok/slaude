@@ -186,7 +186,13 @@ export function verifyJobToken(
 const json = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-export type NodeIdentity = { id: string; labels: ReadonlySet<string>; legacy: boolean };
+export type NodeIdentity = {
+  id: string;
+  labels: ReadonlySet<string>;
+  legacy: boolean;
+  /** Unix seconds a signed credential was issued; absent for the legacy token. */
+  iat?: number;
+};
 
 export type NodeAuthResult =
   | { ok: true; node: NodeIdentity; expiresAt?: number }
@@ -313,7 +319,7 @@ export async function authenticateNode(req: Request): Promise<NodeAuthResult> {
     if (r.ok) {
       return {
         ok: true,
-        node: { id: r.claims.id, labels: new Set(r.claims.labels), legacy: false },
+        node: { id: r.claims.id, labels: new Set(r.claims.labels), legacy: false, iat: r.claims.iat },
         expiresAt: r.claims.exp,
       };
     }

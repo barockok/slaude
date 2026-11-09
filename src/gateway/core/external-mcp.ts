@@ -3,7 +3,8 @@ import { join } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { paths } from "../../config/home";
 import { isChildScrubbedEnv } from "../../agent/child-env";
-import { getPersonaRegistry, type PersonaRegistry } from "../../persona/registry";
+import { getPersonaRegistry, runsOnFor, type PersonaRegistry } from "../../persona/registry";
+import { pluginServersFor, type PluginBridgeServer } from "./plugin-inventory";
 import { env } from "../../config/env";
 
 /** Return a copy of a server config with all injected secrets removed.
@@ -96,11 +97,11 @@ export function parseExternalMcp(
  */
 export function oauthHttpServers(
   servers: Record<string, McpServerConfig>,
-): Record<string, { type: "http"; url: string; headers?: Record<string, string> }> {
-  const out: Record<string, { type: "http"; url: string; headers?: Record<string, string> }> = {};
+): Record<string, { type: "http"; url: string; headers?: Record<string, string>; fromPlugin?: string }> {
+  const out: Record<string, { type: "http"; url: string; headers?: Record<string, string>; fromPlugin?: string }> = {};
   for (const [name, cfg] of Object.entries<any>(servers)) {
     if (cfg?.type === "http" && typeof cfg.url === "string") {
-      out[name] = { type: "http", url: cfg.url, headers: cfg.headers };
+      out[name] = { type: "http", url: cfg.url, headers: cfg.headers, ...(typeof cfg.fromPlugin === "string" ? { fromPlugin: cfg.fromPlugin } : {}) };
     }
   }
   return out;
@@ -172,6 +173,13 @@ export interface BridgeSourceOptions {
    *  SLAUDE_MCP_BRIDGE_ENV_ALLOW (empty). */
   envAllow?: readonly string[];
   env?: Record<string, string | undefined>;
+  /** The node label to scope plugin servers by. A job passes its signed label
+   *  (jobLabel(claims)): the label it really runs on, even if the persona was
+   *  relabelled since. Default: the persona's current `runsOn`. */
+  label?: string;
+  /** The offerable plugin servers for a node label. Default: the gateway's
+   *  plugin inventory view (empty in mono and when no node reports any). */
+  pluginServers?: (label: string) => Record<string, PluginBridgeServer>;
 }
 
 /** SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG: unset/0 = off, 1 = on, else refused. */
@@ -230,10 +238,31 @@ function bridgeFileMcp(path: string, allow: readonly string[], env: Record<strin
  * an agent's reach. Files are served only with the operator's opt-in
  * (SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG=1), and then expand only the
  * `${VAR}` names in SLAUDE_MCP_BRIDGE_ENV_ALLOW.
+ *
+ * One more source is merged here: HTTP servers of plugins reported by live
+ * nodes carrying the persona's `runsOn` label (gateway/core/plugin-inventory).
+ * Those are not agent-writable files: a node reports a server as offerable only
+ * from the image-owned SLAUDE_PLUGIN_ROOT, past the sealed check, before any
+ * turn runs (node/plugin-report.ts). They carry no headers, and the persona's
+ * own configured server of the same name always wins.
  */
 export function bridgeExternalMcp(personaId: string | null | undefined, opts: BridgeSourceOptions = {}): ExternalMcp {
   const registry = opts.registry ?? getPersonaRegistry();
   const named = personaId && personaId !== "default" ? personaId : undefined;
+  const own = ownBridgeMcp(named, registry, opts);
+  // A name no registry entry lists gets its own config only: runsOnFor would
+  // answer "default" for it, and a label is exactly what must not be guessed.
+  if (named && !registry.lookupByName(named)) return own;
+  const plugins = (opts.pluginServers ?? pluginServersFor)(opts.label ?? runsOnFor(named, registry));
+  for (const [name, server] of Object.entries(plugins)) {
+    // The persona's own configured server of the same name wins.
+    if (!Object.hasOwn(own.servers, name)) own.servers[name] = { ...server } as McpServerConfig;
+  }
+  return own;
+}
+
+/** The persona's OWN servers: managed config, or the file opt-in. */
+function ownBridgeMcp(named: string | undefined, registry: PersonaRegistry, opts: BridgeSourceOptions): ExternalMcp {
   if (registry.isManaged()) {
     const mcp = named ? registry.lookupByName(named)?.mcp : registry.defaultPersona?.()?.mcp;
     if (mcp) return fromEffective(mcp);
@@ -246,8 +275,8 @@ export function bridgeExternalMcp(personaId: string | null | undefined, opts: Br
 }
 
 /** The persona's servers the MCP bridge serves to a node: the HTTP servers of
- *  {@link bridgeExternalMcp}, exactly the set the mcpx routes accept. stdio, sse
- *  and plugin servers are not bridged. */
+ *  {@link bridgeExternalMcp}, exactly the set the mcpx routes accept. stdio and
+ *  sse servers are not bridged. */
 export function bridgedServerNames(personaId: string | null | undefined, opts: BridgeSourceOptions = {}): string[] {
   return Object.keys(oauthHttpServers(bridgeExternalMcp(personaId, opts).servers)).sort();
 }

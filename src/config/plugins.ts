@@ -20,6 +20,8 @@ import { paths } from "./home";
 type InstalledPluginRecord = {
   scope?: string;
   installPath?: string;
+  version?: string;
+  gitCommitSha?: string;
 };
 
 type InstalledPluginsFile = {
@@ -29,8 +31,34 @@ type InstalledPluginsFile = {
 
 export type SdkPluginPath = { type: "local"; path: string };
 
-function readInstalledPlugins(): InstalledPluginsFile | null {
-  const file = join(paths.claudeConfig, "plugins", "installed_plugins.json");
+/** One installed plugin, as a metadata file records it. */
+export interface InstalledPlugin {
+  /** `<plugin>@<marketplace>`, the key in installed_plugins.json. */
+  key: string;
+  name: string;
+  marketplace: string;
+  path: string;
+  version: string | null;
+  commit: string | null;
+  /** The installed_plugins.json that lists it. */
+  listedIn: string;
+  /** Listed under SLAUDE_PLUGIN_ROOT (baked into the image), not $SLAUDE_HOME. */
+  imageOwned: boolean;
+}
+
+/**
+ * The image-owned plugin location (SLAUDE_PLUGIN_ROOT), or null when unset. It
+ * mirrors a CC config directory: `<root>/plugins/installed_plugins.json` and
+ * `<root>/plugins/cache/...`. Unlike $SLAUDE_HOME it is not writable by agent
+ * turns, which is what makes reporting a plugin's HTTP server safe (see
+ * src/node/plugin-report.ts). Real process environment only: loadDotenv refuses
+ * this name, because `$SLAUDE_HOME/.env` is agent-writable.
+ */
+export function pluginRoot(): string | null {
+  return process.env.SLAUDE_PLUGIN_ROOT?.trim() || null;
+}
+
+function readInstalledPlugins(file: string): InstalledPluginsFile | null {
   if (!existsSync(file)) return null;
   try {
     return JSON.parse(readFileSync(file, "utf8")) as InstalledPluginsFile;
@@ -39,21 +67,47 @@ function readInstalledPlugins(): InstalledPluginsFile | null {
   }
 }
 
-export function loadInstalledPluginPaths(): SdkPluginPath[] {
-  const parsed = readInstalledPlugins();
-  if (!parsed) return [];
-  const out: SdkPluginPath[] = [];
-  const seen = new Set<string>();
-  for (const records of Object.values(parsed.plugins ?? {})) {
-    for (const r of records ?? []) {
-      const p = r?.installPath;
-      if (!p || seen.has(p)) continue;
-      if (!existsSync(p)) continue;
-      seen.add(p);
-      out.push({ type: "local", path: p });
+/** Every installed plugin that exists on disk: the image-owned root first, then
+ *  $SLAUDE_HOME/.claude/plugins. A key the root lists shadows the same key in
+ *  $SLAUDE_HOME, so the volume cannot replace an image-owned plugin. */
+export function listInstalledPlugins(): InstalledPlugin[] {
+  const root = pluginRoot();
+  const sources: Array<{ file: string; imageOwned: boolean }> = [
+    ...(root ? [{ file: join(root, "plugins", "installed_plugins.json"), imageOwned: true }] : []),
+    { file: join(paths.claudeConfig, "plugins", "installed_plugins.json"), imageOwned: false },
+  ];
+  const out: InstalledPlugin[] = [];
+  const seenPaths = new Set<string>();
+  const rootKeys = new Set<string>();
+  for (const { file, imageOwned } of sources) {
+    const parsed = readInstalledPlugins(file);
+    for (const [key, records] of Object.entries(parsed?.plugins ?? {})) {
+      if (!imageOwned && rootKeys.has(key)) continue;
+      const at = key.lastIndexOf("@");
+      for (const r of records ?? []) {
+        const p = r?.installPath;
+        if (!p || seenPaths.has(p)) continue;
+        if (!existsSync(p)) continue;
+        seenPaths.add(p);
+        if (imageOwned) rootKeys.add(key);
+        out.push({
+          key,
+          name: at > 0 ? key.slice(0, at) : key,
+          marketplace: at > 0 ? key.slice(at + 1) : "",
+          path: p,
+          version: r.version ?? null,
+          commit: r.gitCommitSha ?? null,
+          listedIn: file,
+          imageOwned,
+        });
+      }
     }
   }
   return out;
+}
+
+export function loadInstalledPluginPaths(): SdkPluginPath[] {
+  return listInstalledPlugins().map((p) => ({ type: "local", path: p.path }));
 }
 
 type RawMcpEntry = Record<string, unknown>;

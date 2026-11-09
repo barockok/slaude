@@ -541,6 +541,65 @@ export interface OverviewResponse {
  */
 export type SurfaceId = "slack" | (string & {});
 
+// --- Resources: plugins (read-only: the console never installs or enables one) -
+
+export interface PluginNodeView {
+  /** The node credential id. */
+  id: string;
+  /** The node process that sent this report. */
+  instance: string;
+  live: boolean;
+  /** Epoch ms of the node's latest report. */
+  reportedAt: number;
+  /** The commit this node reports for the plugin (plugin rows only). */
+  commit?: string | null;
+}
+
+export interface PluginStdioView {
+  name: string;
+  /** Node processes whose manifest does not declare it: "not mounted on this node". */
+  notMountedOn: string[];
+}
+
+export interface PluginHttpView {
+  name: string;
+  /** Host only: a URL path can hold a secret, so the console never shows it. */
+  host: string;
+  /** "offered", "conflict: nodes report different URLs", or a "not offered: ..." reason. */
+  state: string;
+  /** An unsealed report disagrees with the offered URL. It does not block the offer. */
+  warning?: string;
+}
+
+export interface PluginView {
+  key: string;
+  name: string;
+  marketplace: string;
+  /** Distinct commits among this label's live nodes; two or more is drift. */
+  commits: string[];
+  drift: boolean;
+  skills: number;
+  commands: number;
+  agents: number;
+  hooks: number;
+  nodes: PluginNodeView[];
+  stdio: PluginStdioView[];
+  http: PluginHttpView[];
+}
+
+export interface PluginLabelView {
+  label: string;
+  nodes: PluginNodeView[];
+  plugins: PluginView[];
+}
+
+/** GET /panel/api/plugins */
+export interface PluginsResponse {
+  /** False in mono mode: no node reports there. */
+  available: boolean;
+  labels: PluginLabelView[];
+}
+
 // --- Resources: skills (read-only, plus retire and restore) -------------------
 
 /**

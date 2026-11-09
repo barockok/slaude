@@ -249,6 +249,9 @@ export async function revokeNodeCredential(
       "ON CONFLICT (id) DO UPDATE SET revoked_before = EXCLUDED.revoked_before",
     [id],
   );
+  // Its plugin reports go with it, so no replica can offer from them. Replicas
+  // also filter by revocation time at refresh, which covers this delete failing.
+  await dbc.run("DELETE FROM node_plugins WHERE node_id = ?", [id]);
 }
 
 // --- lifecycle gauge -------------------------------------------------------

@@ -468,6 +468,18 @@ CREATE TABLE IF NOT EXISTS guardrails_manifest (
   hmac       TEXT    NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS node_plugins (
+  node_id     TEXT    NOT NULL,
+  instance_id TEXT    NOT NULL,
+  labels      TEXT    NOT NULL,
+  reported_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  credential_iat INTEGER NOT NULL,
+  report      TEXT    NOT NULL,
+  PRIMARY KEY (node_id, instance_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_node_plugins_instance ON node_plugins (instance_id);
 `;
 
 /** Create tables + apply the incremental column migrations on an existing sqlite file. */

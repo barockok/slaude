@@ -33,7 +33,7 @@ export function createFixtures(now: number = Date.now()): PortalFixtures {
       },
       {
         id: "docs-wiki", name: "docs-wiki", host: "wiki.example.com",
-        connected: false, expiresAt: null, usedBy: ["default", "scout"],
+        connected: false, expiresAt: null, usedBy: ["default", "scout"], plugin: "example-toolkit",
       },
       {
         id: "ci-status", name: "ci-status", host: "ci.example.com",

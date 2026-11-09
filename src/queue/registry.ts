@@ -168,6 +168,13 @@ export function makeRegistry(opts: RegistryOpts) {
       await tx.exec();
     },
 
+    /** Of the given node process ids, those with a live heartbeat. */
+    async liveNodeIds(ids: readonly string[]): Promise<Set<string>> {
+      if (ids.length === 0) return new Set();
+      const vals = await redis.mget(...ids.map((id) => keys.node(id)));
+      return new Set(ids.filter((_, i) => vals[i] !== null));
+    },
+
     /** The capabilities a node advertises (none for a node that predates them). */
     async nodeCaps(node: string): Promise<ReadonlySet<string>> {
       const v = await redis.get(keys.nodeCaps(node));

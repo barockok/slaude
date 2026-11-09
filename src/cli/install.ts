@@ -1,5 +1,9 @@
 // slaude install — dependency manifest installer.
-// Usage: bun src/cli/install.ts [--update] [--frozen] [--check]
+// Usage: bun src/cli/install.ts [--update] [--frozen] [--check] [--plugin-root <dir>]
+//
+// --plugin-root (or SLAUDE_PLUGIN_ROOT) installs plugins under that directory
+// instead of $SLAUDE_HOME/.claude: the image-owned location a node reads, baked
+// at build time. Skills, knowledge and the lockfile stay under $SLAUDE_HOME.
 // Exit codes: 0 = ok, 1 = --check found drift, 2 = schema error, 3 = git/net error, 4 = marketplace error
 
 import { execSync } from "node:child_process";
@@ -14,7 +18,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { SLAUDE_HOME, paths } from "../config/home";
 import { builtinSkillRefusal, isBuiltinSkillName } from "../soul/builtin";
 
@@ -84,11 +88,28 @@ function currentSha(dir: string): string {
   return execSync("git rev-parse HEAD", { cwd: dir, encoding: "utf8" }).trim();
 }
 
+/** Where plugins install: --plugin-root, SLAUDE_PLUGIN_ROOT, or $SLAUDE_HOME/.claude. */
+function pluginConfigDir(args: string[]): string {
+  const i = args.indexOf("--plugin-root");
+  if (i >= 0) {
+    const dir = args[i + 1];
+    if (!dir || dir.startsWith("--")) {
+      console.error("[install] --plugin-root needs a directory");
+      process.exit(2);
+    }
+    return resolve(dir);
+  }
+  const fromEnv = process.env.SLAUDE_PLUGIN_ROOT?.trim();
+  return fromEnv ? resolve(fromEnv) : paths.claudeConfig;
+}
+
 async function main() {
   const args = Bun.argv.slice(2);
   const update = args.includes("--update");
   const frozen = args.includes("--frozen");
   const check = args.includes("--check");
+  // The directory that holds plugins/ (a CC config dir shape).
+  const pluginConfig = pluginConfigDir(args);
 
   const manifestPath = join(SLAUDE_HOME, "slaude.json");
   if (!existsSync(manifestPath)) {
@@ -222,9 +243,9 @@ async function main() {
 
     // Always clone into a tmp dir first — we don't know the canonical marketplace
     // slug (from marketplace.json `name`) until we've read the index. Stage
-    // inside paths.claudeConfig/plugins so the later renameSync to
+    // inside <config>/plugins so the later renameSync to
     // marketplaces/<slug> stays on the same filesystem.
-    const stagingClone = mkdtempSync(join(siblingTmpdir(join(paths.claudeConfig, "plugins")), "slaude-mp-"));
+    const stagingClone = mkdtempSync(join(siblingTmpdir(join(pluginConfig, "plugins")), "slaude-mp-"));
     let sha: string;
     try {
       sha = gitClone(resolvedUrl, entry.ref, stagingClone);
@@ -263,11 +284,11 @@ async function main() {
     // Canonical marketplace slug — used in cache paths AND the CC plugin key
     // (`<plugin>@<slug>`). Prefer marketplace.json `name`; fall back to URL.
     const mpSlug = mpJson.name?.trim() || deriveMarketplaceSlug(entry.marketplace);
-    const mpInstallLocation = join(paths.claudeConfig, "plugins", "marketplaces", mpSlug);
-    const mpCacheDir = join(paths.claudeConfig, "plugins", "cache", mpSlug);
+    const mpInstallLocation = join(pluginConfig, "plugins", "marketplaces", mpSlug);
+    const mpCacheDir = join(pluginConfig, "plugins", "cache", mpSlug);
 
     // Move staging clone to its final marketplaces/ location.
-    mkdirSync(join(paths.claudeConfig, "plugins", "marketplaces"), { recursive: true });
+    mkdirSync(join(pluginConfig, "plugins", "marketplaces"), { recursive: true });
     if (existsSync(mpInstallLocation)) rmSync(mpInstallLocation, { recursive: true, force: true });
     renameSync(stagingClone, mpInstallLocation);
     installed++;
@@ -319,7 +340,7 @@ async function main() {
 
   // Write the three CC plugin metadata files (merge with whatever the operator
   // or a previous run wrote so we don't clobber unrelated plugins / settings).
-  if (mpEntries.size > 0) writeCcPluginMetadata({
+  if (mpEntries.size > 0) writeCcPluginMetadata(pluginConfig, {
     knownMarketplacesUpdates: ccKnownMarketplacesUpdates,
     installedPluginUpdates: ccInstalledPluginUpdates,
     settingsEnabledKeys: ccEnabledKeys,
@@ -466,8 +487,8 @@ function readJsonOr<T>(path: string, fallback: T): T {
   catch { return fallback; }
 }
 
-function writeCcPluginMetadata(input: CcMetadataInput): void {
-  const pluginsDir = join(paths.claudeConfig, "plugins");
+function writeCcPluginMetadata(configDir: string, input: CcMetadataInput): void {
+  const pluginsDir = join(configDir, "plugins");
   mkdirSync(pluginsDir, { recursive: true });
 
   // known_marketplaces.json
@@ -489,7 +510,7 @@ function writeCcPluginMetadata(input: CcMetadataInput): void {
 
   // settings.json — merge enabledPlugins + extraKnownMarketplaces. Preserve all
   // other keys the operator may have written (permissions, model, hooks, etc.).
-  const settingsPath = join(paths.claudeConfig, "settings.json");
+  const settingsPath = join(configDir, "settings.json");
   const settings = readJsonOr<SettingsPatch>(settingsPath, {});
   const merged = mergeSettings(settings, input.settingsEnabledKeys, input.settingsMarketplaces);
   writeJsonAtomic(settingsPath, merged);

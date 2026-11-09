@@ -33,6 +33,7 @@ const stubTools = {
 /** The audited gate decision per route. A change here is a security decision. */
 const EXPECTED_GATES: Record<string, "label" | "none"> = {
   "node.whoami": "none",
+  "node.plugins": "none",
   sessions: "label",
   "tenants.runtime": "label",
   "tenants.mcp-credentials": "label",

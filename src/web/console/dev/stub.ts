@@ -20,6 +20,7 @@ import {
   addLegacyGuardrail, agentGuardrailFixtures, agentSettingsFixtures, ownerGuardrailDetail, ownerGuardrailList, setOwnerGuardrailEnabled, skillFixtures, skillVersionFixtures, testOwnerGuardrails,
   validateOwnerGuardrail, writeOwnerGuardrail,
 } from "./resources-fixtures";
+import { pluginFixtures } from "./plugin-fixtures";
 import type { AgentSettingsGroup, GuardrailTestRequest } from "../../../gateway/panel/api-types";
 import { CHANNEL_LABELS, USER_NAMES, allGrantsOf, createFixtures, sessionHistory, sessionScript, type ConsoleFixtures } from "./fixtures";
 
@@ -155,6 +156,7 @@ export function installStub(): void {
     if (seg[1] === "sessions") return sessions(method, seg, query, body, isSuper);
     if (seg[1] === "memory") return memory(seg, query, isSuper);
     if (path === "/api/environments") return json(200, fx.environments);
+    if (path === "/api/plugins") return method === "GET" ? json(200, pluginFixtures(Date.now(), empty, mono)) : json(405, { error: "method not allowed" });
     if (seg[1] === "skills") return skillsRoute(method, seg, isSuper);
     if (seg[1] === "guardrails") {
       const superOnly = (action: string) => json(403, { error: `action '${action}' requires the superadmin role`, required: "superadmin" });

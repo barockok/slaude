@@ -3,6 +3,12 @@ import { randomBytes } from "node:crypto";
 import { paths } from "./home";
 import { flag } from "./security-switches";
 
+/** Never taken from a .env file. `$SLAUDE_HOME/.env` sits on the volume agent
+ *  turns write, and this variable names the location trusted to say which plugin
+ *  servers get offered with no approval: only the real process environment may
+ *  set it. */
+const DOTENV_REFUSED = new Set(["SLAUDE_PLUGIN_ROOT"]);
+
 // Load a .env file if present (does not override existing process.env)
 export function loadDotenv(path: string) {
   if (!existsSync(path)) return;
@@ -11,6 +17,7 @@ export function loadDotenv(path: string) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
     if (!m || !m[1]) continue;
     const key: string = m[1];
+    if (DOTENV_REFUSED.has(key)) continue;
     let val: string = m[2] ?? "";
     if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
     if (val.startsWith("'") && val.endsWith("'")) val = val.slice(1, -1);
@@ -18,7 +25,22 @@ export function loadDotenv(path: string) {
   }
 }
 
-loadDotenv(paths.env);
+/**
+ * Whether this process reads $SLAUDE_HOME/.env. A node does not: agent turns can
+ * write that volume, so a file there could set SLAUDE_GATEWAY_URL,
+ * NODE_TLS_REJECT_UNAUTHORIZED and the like on the next start. A node's settings
+ * come from its real environment. The entry mark (src/node/first-import.ts) makes
+ * this hold even when SLAUDE_ROLE is not set in the real environment.
+ */
+export function readsHomeDotenv(
+  realEnv: Record<string, string | undefined> = process.env,
+  nodeEntry: boolean = !!(globalThis as Record<symbol, unknown>)[Symbol.for("slaude.nodeEntry")],
+): boolean {
+  return !nodeEntry && realEnv.SLAUDE_ROLE?.trim().toLowerCase() !== "node";
+}
+
+if (readsHomeDotenv()) loadDotenv(paths.env);
+else if (existsSync(paths.env)) console.warn("[node] ignoring $SLAUDE_HOME/.env: a node takes its settings from its real environment only");
 
 function req(name: string): string {
   const v = process.env[name];

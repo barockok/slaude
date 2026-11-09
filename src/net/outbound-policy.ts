@@ -73,7 +73,8 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 export const DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 
 export class OutboundBlockedError extends Error {
-  constructor(reason: string) {
+  /** "unresolved": DNS gave no answer, which may pass later. "policy": refused. */
+  constructor(reason: string, readonly kind: "policy" | "unresolved" = "policy") {
     super(`outbound request refused: ${reason}`);
     this.name = "OutboundBlockedError";
   }
@@ -219,7 +220,7 @@ export async function checkOutbound(
     addresses = [{ address: host, family }];
   } else {
     try { addresses = await (opts.resolver ?? systemResolver)(host); } catch { addresses = []; }
-    if (!addresses.length) throw new OutboundBlockedError(`${host} could not be resolved`);
+    if (!addresses.length) throw new OutboundBlockedError(`${host} could not be resolved`, "unresolved");
   }
 
   for (const { address } of addresses) {

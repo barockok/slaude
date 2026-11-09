@@ -54,7 +54,7 @@ spec:
         - name: node
           image: ghcr.io/REPLACE/slaude:latest
           imagePullPolicy: Always
-          command: ["bun", "run", "worker"]
+          command: ["bun", "--no-env-file", "src/node/main.ts"]
           # The node Secret only. Loading the gateway's would hand every node,
           # and every agent child on it, the master key and the job secret; the
           # node logs a warning at boot if it finds them (10-secrets.yaml).
@@ -192,7 +192,7 @@ spec:
         - name: node
           image: ghcr.io/REPLACE/slaude:latest
           imagePullPolicy: Always
-          command: ["bun", "run", "worker"]
+          command: ["bun", "--no-env-file", "src/node/main.ts"]
           envFrom:
             - secretRef:
                 name: slaude-scale-node-secrets

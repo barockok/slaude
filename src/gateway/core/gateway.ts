@@ -84,7 +84,7 @@ import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
 import { createV1Api } from "../api";
 import type { PendingSource } from "../api/pending-source";
-import type { JobClaims } from "../api/auth";
+import { jobLabel, type JobClaims } from "../api/auth";
 import type { ToolPlaneDeps } from "../api/tools/deps";
 import { memoryScopeForClaims } from "../api/memory";
 import { defaultGateBus } from "../../queue/gate-bus";
@@ -97,6 +97,7 @@ import { makeRegistry, type Registry } from "../../queue/registry";
 import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
+import { dbInventorySources, startPluginInventory } from "./plugin-inventory";
 import { createPortalApi } from "../portal/api";
 import { createDeployApi } from "../deploy/api";
 import { createBrainImportApi } from "../brain-import/api";
@@ -863,7 +864,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   /** The persona's servers as the MCP bridge serves them (bridgeExternalMcp:
    *  the managed persona's config; files only with the operator's opt-in). */
   const bridgeServers = (claims: JobClaims) =>
-    bridgeExternalMcp(claims.persona && claims.persona !== "default" ? claims.persona : undefined);
+    bridgeExternalMcp(claims.persona && claims.persona !== "default" ? claims.persona : undefined, { label: jobLabel(claims) });
   /** Boot warning: a watched server a session mounts but the bridge does not
    *  serve (a file-configured server without the opt-in) is never read. */
   const warnUnservedWatches = (): void => {
@@ -4470,6 +4471,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         expect: claims.initiator,
       }),
     });
+  // The plugin inventory view (design: plugin inventory): the snapshot the
+  // bridge and the portal read synchronously. Nodes exist only with a queue;
+  // started in start() so it is loaded before this gateway serves.
+  let pluginInventory: { stop(): void } | null = null;
   const v1 = createV1Api({
     tools: {
       mcpBridge,
@@ -4602,6 +4607,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         onUnlock: (sessionId) => { agent.reload(sessionId); },
         // The persona view says where a persona's stdio MCP servers run.
         role: queueDispatch ? "gateway" : "mono",
+        // The read-only Plugins page: nodes exist only with a queue.
+        plugins: queueDispatch
+          ? dbInventorySources((ids) => queueDispatch.registry.liveNodeIds(ids))
+          : null,
         names: slackNames,
         // Mono: sessions run here, so liveness is the manager's live map
         // (nothing registers in the node registry).
@@ -4626,7 +4635,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     : null;
 
   return {
-    start: () => t.start(),
+    start: async () => {
+      if (queueDispatch) {
+        pluginInventory = await startPluginInventory(dbInventorySources((ids) => queueDispatch.registry.liveNodeIds(ids)));
+      }
+      await t.start();
+    },
     stop: async () => {
       // End live voice calls first, while the transport can still carry each
       // call's summary turn; bounded so shutdown never hangs on a call.
@@ -4638,6 +4652,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       cronScheduler.stop();
       stopSkillVersionReconciler();
       stopOwnerGuardrails();
+      pluginInventory?.stop();
       if (panelSweeper) clearInterval(panelSweeper);
       await panelResumeUnsub?.().catch(() => {});
       await panelHoldUnsub?.().catch(() => {});
