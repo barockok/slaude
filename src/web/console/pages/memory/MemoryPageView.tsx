@@ -15,6 +15,29 @@ function fmValue(v: unknown): ReactNode {
   return <span className="sl-mono sl-break">{JSON.stringify(v)}</span>;
 }
 
+const WHO_LABEL = { agent: "Agent", user: "User" } as const;
+
+/** The page's timeline rows; a conversation page has one per turn. */
+function Entries({ page }: { page: MemoryPageResponse }) {
+  return (
+    <Card title="Timeline" description={page.entriesCapped ? `Only the latest ${page.entries.length} entries are shown.` : undefined}>
+      <ol className="sl-memory-entries">
+        {page.entries.map((e) => (
+          <li key={e.id} className="sl-memory-entry">
+            <span className="sl-caption">{e.at ? <TimeAgo at={e.at} /> : e.date}</span>
+            {e.lines.map((l, i) => (
+              <div key={i} className="sl-memory-entry__line">
+                {l.who !== "note" && <span className="sl-memory-entry__who">{l.name ?? WHO_LABEL[l.who]}</span>}
+                <Markdown source={l.text} />
+              </div>
+            ))}
+          </li>
+        ))}
+      </ol>
+    </Card>
+  );
+}
+
 function Body({ page }: { page: MemoryPageResponse }) {
   const fm = Object.entries(page.frontmatter ?? {});
   return (
@@ -32,6 +55,7 @@ function Body({ page }: { page: MemoryPageResponse }) {
             <Markdown source={page.timeline} />
           </Card>
         )}
+        {page.entries.length > 0 && <Entries page={page} />}
       </div>
       <aside className="sl-memory-page__aside">
         <Card title="About">

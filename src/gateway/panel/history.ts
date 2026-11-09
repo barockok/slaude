@@ -17,7 +17,7 @@ import { conversationSlug } from "../../memory/brain-provider";
 import { PersonaNotLiveError } from "../../persona/registry";
 import { personaAgentId } from "../../persona/agent-slice";
 import { redactSecrets } from "../../redact";
-import type { SessionHistoryItem, SessionHistoryResponse } from "./api-types";
+import type { MemoryEntryLine, MemoryEntryView, SessionHistoryItem, SessionHistoryResponse } from "./api-types";
 import { surfaceOfSession } from "../core/surface";
 
 /** Rows read per request: the page is cut from these. */
@@ -135,4 +135,38 @@ export async function sessionHistory(
     nextCursor,
     ...(capped && nextCursor === null ? { note: `only the latest ${MAX_ROWS} turns of this session can be shown; older turns are not` } : {}),
   };
+}
+
+/** Timeline rows a memory page returns. */
+export const MEMORY_ENTRIES_MAX = 200;
+
+/** One timeline row for the memory page: a recorded turn's two sides, else a note. */
+export function memoryEntry(row: MemoryTimelineRow): MemoryEntryView {
+  const detail = row.detail ?? "";
+  const isTurn = between(detail, "user") !== null || between(detail, "assistant") !== null;
+  const lines: MemoryEntryLine[] = isTurn
+    ? turnLines(row).map((l) => ({ who: l.who === "agent" ? "agent" : "user", ...(l.name ? { name: l.name } : {}), text: l.text }))
+    : [row.summary, detail]
+        .map((t) => t.trim())
+        .filter((t, i, all) => t !== "" && all.indexOf(t) === i)
+        .map((t) => ({ who: "note", text: redactSecrets(t) }));
+  return { id: row.id, date: row.date, at: row.createdAt, lines };
+}
+
+/**
+ * A memory page's timeline rows, oldest first, for the console. The engine
+ * keeps these in their own table, so the page's `timeline` text is empty for
+ * them. A failed read costs the rows, never the page.
+ */
+export async function memoryEntries(memory: MemoryBrowser, store: string, slug: string): Promise<{ entries: MemoryEntryView[]; entriesCapped: boolean }> {
+  if (!memory.timeline) return { entries: [], entriesCapped: false };
+  let rows: MemoryTimelineRow[];
+  try {
+    rows = await memory.timeline(store, slug, MEMORY_ENTRIES_MAX + 1);
+  } catch (e) {
+    console.error(`[panel] could not read a memory page's timeline: ${e instanceof Error ? e.name : typeof e}`);
+    return { entries: [], entriesCapped: false };
+  }
+  const ordered = [...rows].sort((a, b) => a.id - b.id);
+  return { entries: ordered.slice(-MEMORY_ENTRIES_MAX).map(memoryEntry), entriesCapped: ordered.length > MEMORY_ENTRIES_MAX };
 }

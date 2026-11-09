@@ -83,7 +83,7 @@ import type { PanelRole } from "./auth/roles";
 import { enumerateSessions, sessionModel, syntheticRunLabel } from "./enumerator";
 import { channelLabels, mentionNames, type SlackNames } from "./slack-names";
 import { activityOf, streamTurnInFlight, streamTurnsInFlight, type LocalSessions } from "./activity";
-import { sessionHistory } from "./history";
+import { memoryEntries, sessionHistory } from "./history";
 import { surfaceOfSession } from "../core/surface";
 import { redactSecrets } from "../../redact";
 import { servePanelStatic } from "./static";
@@ -1087,7 +1087,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
               details: { store: page.store, slug: page.slug, storeKind: storeKind(page.store), operatorRole: role },
             });
           }
-          return json(200, { ...page, title: displayTitle({ ...page, frontmatterTitle: typeof page.frontmatter.title === "string" ? page.frontmatter.title : null }) } satisfies MemoryPageResponse);
+          const entries = await memoryEntries(memory, page.store, page.slug);
+          return json(200, { ...page, ...entries, title: displayTitle({ ...page, frontmatterTitle: typeof page.frontmatter.title === "string" ? page.frontmatter.title : null }) } satisfies MemoryPageResponse);
         }
         return json(404, { error: "not found" });
       }

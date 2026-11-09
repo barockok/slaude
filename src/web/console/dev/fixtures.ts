@@ -363,7 +363,7 @@ export function sessionHistory(sessionId: string, now: number): SessionHistoryIt
 
 function memoryFixtures(now: number): ConsoleFixtures["memory"] {
   const page = (store: string, slug: string, type: string, title: string, ago: number | null, over: Partial<MemoryPageResponse> = {}): MemoryPageResponse => ({
-    store, slug, type, title, content: "", timeline: "", frontmatter: {}, tags: [], links: [],
+    store, slug, type, title, content: "", timeline: "", entries: [], entriesCapped: false, frontmatter: {}, tags: [], links: [],
     createdAt: ago == null ? null : now - ago - 20 * DAY, updatedAt: ago == null ? null : now - ago, ...over,
   });
   const runbook = page("shared", "runbooks/deploy-rollback", "runbook", "Rolling back a deploy", 2 * HOUR, {

@@ -426,6 +426,22 @@ export interface MemoryPageLinkView {
 }
 
 /** GET /panel/api/memory/pages?store=&slug= */
+/** One line of a memory timeline entry: a recorded turn's two sides, or a plain note. */
+export interface MemoryEntryLine {
+  who: "user" | "agent" | "note";
+  name?: string;
+  text: string;
+}
+
+/** One timeline row of a memory page (a conversation page has one per turn). */
+export interface MemoryEntryView {
+  id: number;
+  date: string;
+  /** Epoch ms the row was written, or null when only the day is known. */
+  at: number | null;
+  lines: MemoryEntryLine[];
+}
+
 export interface MemoryPageResponse {
   store: string;
   slug: string;
@@ -433,6 +449,10 @@ export interface MemoryPageResponse {
   title: string;
   content: string;
   timeline: string;
+  /** The page's timeline rows, oldest first: at most the latest MEMORY_ENTRIES_MAX. */
+  entries: MemoryEntryView[];
+  /** True when older rows exist past that cap. */
+  entriesCapped: boolean;
   frontmatter: Record<string, unknown>;
   tags: string[];
   links: MemoryPageLinkView[];
