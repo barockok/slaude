@@ -1647,6 +1647,7 @@ describe("a detached reloading session's late messages", () => {
 // Without this, the live child keeps taking messages (sendMessage pushes into it
 // and never re-resolves the persona) and runs as the default identity.
 const { setPersonaRegistry, __resetPersonaRegistry } = await import("../../src/persona/registry");
+const { hookTag, HOOK_IDS } = await import("../../src/agent/hook-tags");
 describe("a warm session whose persona is retired", () => {
   const reg = (managed: boolean, live: string[]) => ({
     lookupByUserId: () => null,
@@ -2298,6 +2299,49 @@ describe("profile writes on a synthetic turn (phase C, invariant 2)", () => {
       permissionDecisionReason: "A profile is written only on that person's own turn.",
     });
     expect(evolve[1]).toEqual({});
+    await shutdown(mgr, row.id);
+  });
+});
+
+describe("a sync reaches a warm session's skill list", () => {
+  const skillCall = async (fs: FakeSession, skill: string) => {
+    const hook = fs.options.hooks.PreToolUse[0].hooks.find((h: unknown) => hookTag(h) === HOOK_IDS.skillGate);
+    return hook({ hook_event_name: "PreToolUse", tool_name: "Skill", tool_input: { skill } }, undefined, { signal: new AbortController().signal });
+  };
+  const denied = (r: any) => r.hookSpecificOutput?.permissionDecision === "deny";
+  const registry = (skills: string[] | undefined) => {
+    const p = { name: "ana", slackUserId: "UANA", soulMd: "s", config: { slackUserId: "UANA", name: "ana" }, outClient: null, model: null, mcp: null, soulJson: {}, definition: skills ? { skills } : {} };
+    return { lookupByUserId: () => null, lookupByName: (n: string) => (n === "ana" ? p : null), list: () => [p], isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null, defaultPersona: () => ({ model: null, mcp: null }) } as any;
+  };
+
+  afterEach(() => __resetPersonaRegistry());
+
+  it("mono: the gate reads the registry, so a new snapshot applies to a live session", async () => {
+    setPersonaRegistry(registry(["old-skill"]));
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+    const fs = plan();
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => fs.options !== null, 3000, "boot");
+    expect(fs.options.skills).toContain("old-skill");
+    expect(denied(await skillCall(fs, "new-skill"))).toBe(true);
+    setPersonaRegistry(registry(["new-skill"]));
+    expect(denied(await skillCall(fs, "new-skill"))).toBe(false);
+    expect(denied(await skillCall(fs, "old-skill"))).toBe(true);
+    await shutdown(mgr, row.id);
+  });
+
+  it("node: the gate reads the bundle on each call", async () => {
+    let skills: string[] = ["old-skill"];
+    const mgr = new AgentManager();
+    mgr.setPersonaSoulResolver(async () => ({ soulMd: "s", soulJson: {}, definition: { skills } }));
+    const row = await mgr.ensureSession({ ...thread(), persona_id: "ana" });
+    const fs = plan();
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => fs.options !== null, 3000, "boot");
+    expect(denied(await skillCall(fs, "new-skill"))).toBe(true);
+    skills = ["new-skill"];
+    expect(denied(await skillCall(fs, "new-skill"))).toBe(false);
     await shutdown(mgr, row.id);
   });
 });

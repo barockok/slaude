@@ -13,14 +13,48 @@ import { getPersonaRegistry } from "../persona/registry";
  *  - filesystem persona, sqlite, or a soul_json that does not validate: no
  *    structured soul of its own (phase 1).
  *
- * The ACL fields fall back field by field to the default soul (see
- * {@link withAclFallback}), so with no stored grants a named persona admits
- * exactly what it admits today.
+ * The ACL fields of a SOUL.md persona fall back field by field to the default
+ * soul (see {@link withAclFallback}), so with no stored grants a named persona
+ * admits exactly what it admits today. An agent.yaml persona inherits none of
+ * them (see {@link exactAccess}).
  */
 export function soulDataFor(persona?: string | null): SoulData {
   const def = soulData();
   if (!persona || persona === "default") return def;
+  const compiled = compiledRow(persona);
+  if (compiled) return exactAccess(compiled.soulJson == null ? null : parseSoul(compiled.soulJson), def);
   return withAclFallback(ownSoul(persona), def);
+}
+
+/** The registry row of a persona defined by an agent.yaml, or null. */
+function compiledRow(persona: string): { soulJson?: unknown } | null {
+  try {
+    const p = getPersonaRegistry().lookupByName(persona);
+    return p?.definition ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * An agent.yaml persona's access is exactly what its file says: an empty or
+ * missing list is none, and nothing comes from the default persona. The one
+ * exception is the default's blocked users, which still apply: a block is
+ * deployment wide. A structure that does not parse is no access at all, never
+ * the default's.
+ */
+function exactAccess(own: SoulData | null, def: SoulData): SoulData {
+  const p = own ?? EMPTY;
+  return { ...p, blockedUsers: [...new Set([...def.blockedUsers, ...p.blockedUsers])] };
+}
+
+/**
+ * The soul whose channel lists class a channel for this persona (KB scope, the
+ * trust envelope, the decision gate): an agent.yaml persona's own lists; any
+ * other persona reads the default soul, as it always has.
+ */
+export function trustSoulFor(persona?: string | null): SoulData {
+  return persona && persona !== "default" && compiledRow(persona) ? soulDataFor(persona) : soulData();
 }
 
 /** Personas whose soul_json failed to parse, warned once each per process. */
@@ -56,6 +90,36 @@ function ownSoul(persona: string): SoulData | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * The structure of a persona defined by an agent.yaml: compiled at sync and
+ * stored as `soul_json`, the only source for it. Its soul text is prose and
+ * has no extraction, so readers that look in the extraction cache or parse
+ * the text ask here first. Null for any other persona. The default persona's
+ * compiled structure is the process-wide soul, runtime overrides included.
+ */
+export function compiledSoulFor(persona: string | null | undefined): SoulData | null {
+  try {
+    if (!persona || persona === "default") {
+      const d = getPersonaRegistry().defaultPersona?.();
+      return d?.definition && SoulDataSchema.safeParse(d.soulJson).success ? soulData() : null;
+    }
+    const r = getPersonaRegistry();
+    const p = r.lookupByName(persona);
+    if (!p?.definition || p.soulJson == null) return null;
+    return parseSoul(p.soulJson);
+  } catch {
+    return null;
+  }
+}
+
+/** `compiledSoulFor` with the channel lists that class a channel for this persona (inherited ones included). */
+export function compiledPromptSoul(persona: string | null | undefined): SoulData | null {
+  const own = compiledSoulFor(persona);
+  if (!own) return null;
+  const { trustedChannels, allowedChannels } = soulDataFor(persona);
+  return { ...own, trustedChannels, allowedChannels };
 }
 
 const EMPTY: SoulData = SoulDataSchema.parse({});

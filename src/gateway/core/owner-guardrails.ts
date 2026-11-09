@@ -11,6 +11,7 @@
  * and documented: cron dispatch, panel chat and /compact.
  */
 import type { AgentManager, GuardrailSink } from "../../agent/manager";
+import { attachedResolved } from "../../guardrails/attached";
 import { env } from "../../config/env";
 import { auditDelivery, auditFiring, firingEvents, type FiringEvent } from "../../guardrails/audit";
 import { combine, hitMessage, inboundDenyMessage, textHits, toolHits } from "../../guardrails/match";
@@ -26,7 +27,7 @@ import { setHighWaterRedis } from "../../guardrails/high-water";
 /** The session guardrails of `persona` in `channel` from the verified snapshot. Throws when unavailable. */
 export async function gatewaySessionGuardrails(persona: string, channel: string | null, ctx: { tenant?: string; sessionId?: string } = {}): Promise<SessionGuardrails> {
   const snap = await currentGuardrails(ctx.tenant ?? "default", { persona, sessionId: ctx.sessionId ?? null });
-  return sessionGuardrails(snap.resolved, persona, channel, { version: snap.version, proseMax: env.guardrailProseMax() });
+  return sessionGuardrails(attachedResolved(snap.resolved), persona, channel, { version: snap.version, proseMax: env.guardrailProseMax() });
 }
 
 /** Records firings and deliveries through the audit writer (this process has the database). */
@@ -122,7 +123,7 @@ async function cachedSession(persona: string, channel: string, tenant: string): 
       return "unavailable";
     }
   }
-  return sessionGuardrails(snap.resolved, persona, channel, { version: snap.version, proseMax: env.guardrailProseMax() });
+  return sessionGuardrails(attachedResolved(snap.resolved), persona, channel, { version: snap.version, proseMax: env.guardrailProseMax() });
 }
 
 /**
@@ -165,7 +166,7 @@ export async function recordNodeGuardrailEvent(
   } catch {
     snap = null;
   }
-  const applies = new Map((snap?.resolved ?? []).filter((g) => appliesToAgent(g, persona)).map((g) => [g.slug, g]));
+  const applies = new Map(attachedResolved(snap?.resolved ?? []).filter((g) => appliesToAgent(g, persona)).map((g) => [g.slug, g]));
   const ctx = { tenantId: claims.tenant, persona, sessionId: claims.session, channelId: claims.channel, threadTs: claims.thread, kind: r.sessionKind ?? "interactive" };
   const admit = (key: string): boolean => {
     if (!limits.once(`${claims.session}\u0000${claims.job ?? ""}\u0000${key}`)) return false;

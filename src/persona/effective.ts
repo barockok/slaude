@@ -3,7 +3,7 @@
  * it. This is the single merge; nothing else combines the two layers, so the
  * gateway, the runtime bundle and the panel cannot disagree about what is live.
  */
-import { PROVIDER_FIELDS, type PersonaBackground, type PersonaProvider } from "./sync/payload";
+import { PROVIDER_FIELDS, type PersonaBackground, type PersonaDefinition, type PersonaProvider } from "./sync/payload";
 export type OverrideField = "soul" | "model" | "mcp";
 export const OVERRIDE_FIELDS: readonly OverrideField[] = ["soul", "model", "mcp"];
 
@@ -29,6 +29,10 @@ export interface DesiredPersona {
   /** Background-learning budget and timezone. Absent and null both mean the
    *  defaults. Desired layer only, not an override field. */
   background?: PersonaBackground | null;
+  /** Set when the persona comes from an agent.yaml; `soulJson` is then compiled
+   *  from that file, never extracted. Null or absent: the older layout. Desired
+   *  layer only, not an override field. */
+  definition?: PersonaDefinition | null;
   origin: "git" | "runtime";
   tombstonedAt: number | null;
 }
@@ -70,7 +74,26 @@ export function sameDesired(a: DesiredPersona, b: DesiredPersona): boolean {
     (a.runsOn ?? null) === (b.runsOn ?? null) &&
     canonicalProvider(a.provider) === canonicalProvider(b.provider) &&
     JSON.stringify(a.kbSources ?? null) === JSON.stringify(b.kbSources ?? null) &&
-    canonicalBackground(a.background) === canonicalBackground(b.background) && a.tombstonedAt === null;
+    canonicalBackground(a.background) === canonicalBackground(b.background) &&
+    sameDefinition(a, b) && a.tombstonedAt === null;
+}
+
+/**
+ * A definition's soul is compiled, so its structure is part of what the sync
+ * desires (an access change leaves the prose as it was). An extracted soul is
+ * not compared: it follows the text, and extraction is not deterministic.
+ */
+function sameDefinition(a: DesiredPersona, b: DesiredPersona): boolean {
+  if (!a.definition && !b.definition) return true;
+  return stableJson(a.definition ?? null) === stableJson(b.definition ?? null) && stableJson(a.soulJson ?? null) === stableJson(b.soulJson ?? null);
+}
+
+/** JSON with sorted keys, so a row read back from JSONB compares equal. */
+function stableJson(v: unknown): string {
+  return JSON.stringify(v, (_k, x) =>
+    x && typeof x === "object" && !Array.isArray(x)
+      ? Object.fromEntries(Object.entries(x).sort(([p], [q]) => (p < q ? -1 : p > q ? 1 : 0)))
+      : x);
 }
 
 function canonicalBackground(b: PersonaBackground | null | undefined): string {

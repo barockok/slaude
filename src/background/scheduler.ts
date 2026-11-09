@@ -70,6 +70,7 @@ import { anyProactiveEnabled } from "../soul/proactive";
 import { env } from "../config/env";
 import { personaApp } from "./digest";
 import { soulData, cachedSoulData } from "../soul/extract";
+import { compiledSoulFor } from "../soul/per-persona";
 import { personaSoulText } from "../persona/soul-source";
 import type { MandateParts } from "../soul/mandate-scope";
 import { effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
@@ -541,6 +542,8 @@ export async function wakeNow(
 export function personaManager(personaId: string): string | null {
   try {
     if (!personaId || personaId === "default") return soulData().manager.userId ?? null;
+    const compiled = compiledSoulFor(personaId);
+    if (compiled) return compiled.manager.userId ?? null;
     const soul = personaSoulText(personaId);
     return cachedSoulData(soul)?.manager.userId ?? parseManager(soul);
   } catch {

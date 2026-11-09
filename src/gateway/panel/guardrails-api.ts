@@ -38,6 +38,7 @@ import { REMOTE_TOOL_ALIASES } from "../../remote/mcp";
 const REMOTE_ALIASES = new Set(Object.values(REMOTE_TOOL_ALIASES));
 const isRemoteAlias = (tool: string) => REMOTE_ALIASES.has(tool);
 import { appliesToAgent, isActive, sessionGuardrails, type ResolvedGuardrail } from "../../guardrails/resolve";
+import { attachedResolved } from "../../guardrails/attached";
 import { cachedGuardrails, currentGuardrails, DEFAULT_TENANT, guardrailsFailure, refreshGuardrails, type TenantSnapshot } from "../../guardrails/snapshot";
 import { peekKeySource } from "../../guardrails/integrity";
 import type {
@@ -141,7 +142,7 @@ async function summary(g: ResolvedGuardrail, all: readonly ResolvedGuardrail[], 
 
 export async function listGuardrails(deps: GuardrailApiDeps, canToggle: boolean, canEdit = canToggle): Promise<OwnerGuardrailsResponse> {
   const { snap, failure } = await snapshot();
-  const all = snap?.resolved ?? [];
+  const all = attachedResolved(snap?.resolved ?? []);
   const fired = await lastFired();
   return {
     guardrails: await Promise.all(all.map((g) => summary(g, all, deps, snap?.version ?? 0, fired))),
@@ -176,7 +177,7 @@ async function firings(slug: string, names: SlackNames | null | undefined): Prom
 
 export async function guardrailDetail(slug: string, deps: GuardrailApiDeps, canToggle: boolean, canEdit = canToggle): Promise<OwnerGuardrailDetail | null> {
   const { snap } = await snapshot();
-  const all = snap?.resolved ?? [];
+  const all = attachedResolved(snap?.resolved ?? []);
   const g = all.find((x) => x.slug === slug);
   if (!g) return null;
   const s = await summary(g, all, deps, snap?.version ?? 0, await lastFired());
@@ -205,7 +206,7 @@ export async function guardrailDetail(slug: string, deps: GuardrailApiDeps, canT
 
 export async function agentGuardrails(agent: string, deps: GuardrailApiDeps): Promise<AgentGuardrailsResponse> {
   const { snap, failure } = await snapshot();
-  const all = snap?.resolved ?? [];
+  const all = attachedResolved(snap?.resolved ?? []);
   const version = snap?.version ?? 0;
   const fired = await lastFired();
   const session = sessionGuardrails(all, agent, null, { version, proseMax: env.guardrailProseMax() });
@@ -365,7 +366,7 @@ export async function validateGuardrailDraft(slug: string, md: string, deps: Gua
   else if (reserved) blocking.unshift(reserved);
   for (const b of blocking) if (!errors.includes(b)) errors.unshift(b);
   const version = snap?.version ?? 0;
-  const { resolved } = withDraft(snap?.resolved ?? [], { slug, md });
+  const resolved = attachedResolved(withDraft(snap?.resolved ?? [], { slug, md }).resolved);
   const g = resolved.find((x) => x.slug === slug)!;
   const max = env.guardrailProseMax();
   const overCap: GuardrailValidation["prose"]["overCap"] = [];
@@ -420,7 +421,7 @@ export async function testGuardrails(req: GuardrailTestRequest, operatorId: stri
   } else {
     event = { kind: "inbound", text: req.text ?? "" };
   }
-  const r = evaluateGuardrails(snap.resolved, event, {
+  const r = evaluateGuardrails(attachedResolved(snap.resolved), event, {
     agent: req.agent,
     channel: req.channel || null,
     version: snap.version,

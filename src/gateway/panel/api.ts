@@ -718,7 +718,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         // GET /panel/api/agents/:name
         if (seg.length === 4) {
           if (req.method !== "GET") return json(405, { error: "method not allowed" });
-          return json(200, (await agentDetail(name, liveness, Date.now(), deps.names ?? null)) satisfies AgentDetailResponse);
+          return json(200, (await agentDetail(name, liveness, Date.now(), deps.names ?? null, { canSeeValues: role === "superadmin" })) satisfies AgentDetailResponse);
         }
 
         // GET /panel/api/agents/:name/guardrails: the owner guardrails that apply to it.
@@ -1301,7 +1301,10 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
               let stored: unknown = v;
               if (field === "soul") {
                 if (typeof v !== "string" || !v.trim()) return json(422, { error: "soul value must be non-empty text" });
-                stored = { soulMd: v, soulJson: await extractSoul(v) };
+                // A persona from an agent.yaml keeps its compiled structure: only
+                // the prose changes, and extraction would find nothing in prose.
+                const one = await Personas.personaByName(tenant, name);
+                stored = { soulMd: v, soulJson: one?.desired.definition ? one.desired.soulJson : await extractSoul(v) };
               } else if (field === "model") {
                 if (typeof v !== "string" || !v) return json(422, { error: "model value must be a non-empty string" });
               } else {

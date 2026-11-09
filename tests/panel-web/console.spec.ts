@@ -41,6 +41,27 @@ const PAGES: Array<{ path: string; heading: string | RegExp; ready: string; sub?
   { path: "/panel/agents/scout/guardrails", heading: /scout/, ready: "no-outbound-email" },
 ];
 
+test("the agent's Overview shows its definition as read-only YAML with a copy control", async ({ page }) => {
+  await page.goto("/panel/agents/scout");
+  const main = page.getByRole("main");
+  await settled(page, "USCOUT");
+  await expect(main.getByText("Definition", { exact: true })).toBeVisible();
+  await expect(main.locator(".sl-definition code")).toContainText("name: scout");
+  await expect(main.locator(".sl-definition code")).toContainText("userToken: <redacted>");
+  await expect(main.locator(".sl-definition").getByRole("button", { name: "Copy" })).toBeVisible();
+  await expect(main.getByText("edit this agent's agent.yaml", { exact: false })).toBeVisible();
+});
+
+test("the Access tab keeps grants on top and the parsed settings folded", async ({ page }) => {
+  await page.goto("/panel/agents/scout/access");
+  await settled(page, "Covering approvals this week");
+  const fold = page.locator("details.sl-fold");
+  await expect(fold).toBeVisible();
+  await expect(fold).not.toHaveAttribute("open", "");
+  await fold.getByText("Approvals and permissions details").click();
+  await expect(fold).toHaveAttribute("open", "");
+});
+
 test("the shell loads with the signed-in superadmin", async ({ page }) => {
   await page.goto("/panel/");
   await expect(h1(page)).toHaveText("Overview");
@@ -593,6 +614,7 @@ test.describe("resources", () => {
 
     // Access tab: approvers with scope words and the timeout, permission cards (deciders, threads per mode), admission, redaction.
     await page.goto("/panel/agents/default/access");
+    await page.getByText("Approvals and permissions details").click();
     const approvals = page.locator("#settings-approvals");
     await expect(approvals.getByRole("table", { name: "Approvals" }).getByText("deploys")).toBeVisible();
     await expect(approvals.getByText("600 seconds")).toBeVisible();
@@ -604,6 +626,7 @@ test.describe("resources", () => {
     await expect(page.locator("#settings-admission").getByText("CTEAM")).toBeVisible();
     await expect(page.locator("#settings-redaction")).toBeVisible();
     await page.goto("/panel/agents/scout/access");
+    await page.getByText("Approvals and permissions details").click();
     await expect(page.locator("#settings-approvals").getByText("UBOB")).toBeVisible();
 
     // Memory page: the write rules, per agent.

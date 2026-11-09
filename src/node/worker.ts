@@ -26,12 +26,12 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Worker, DelayedError, UnrecoverableError, type Job } from "bullmq";
 import type { Redis } from "ioredis";
-import { AgentManager, type AgentEvent, type GuardrailSink } from "../agent/manager";
+import { AgentManager, type AgentEvent, type GuardrailSink, type PersonaSoul } from "../agent/manager";
 import { createSessionMcp, SESSION_MCP_NAME } from "../agent/session-mcp";
 import { env } from "../config/env";
 import { m as metric, metrics } from "../metrics";
 import { bundleSessionGuardrails } from "../guardrails/node";
-import { GUARDRAILS_CAPABILITY } from "../guardrails/capability";
+import { AGENT_DEFINITION_CAPABILITY, GUARDRAILS_CAPABILITY } from "../guardrails/capability";
 import type { SessionGuardrails } from "../guardrails/resolve";
 import type { FiringEvent } from "../guardrails/audit";
 import { assertNodeIdUsable, DEFAULT_LABEL, LABEL_RE, labelTurnsQueue, makeKeys, nodeTurnsQueue, type Keys } from "../queue/keys";
@@ -354,15 +354,15 @@ export function makeBridgedNamesResolver(deps: BundleResolverDeps): (sessionId: 
   };
 }
 
-export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined) => Promise<{ soulMd: string; soulJson: unknown }> {
+export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined) => Promise<PersonaSoul> {
   return async (sessionId, persona) => {
     const bundle = await sessionBundle(deps, sessionId, persona);
-    return { soulMd: bundle.soulMd, soulJson: bundle.soulJson };
+    return { soulMd: bundle.soulMd, soulJson: bundle.soulJson, ...(bundle.definition ? { definition: bundle.definition } : {}) };
   };
 }
 
 /** What this node advertises on its heartbeat (and on every bundle fetch). */
-export const NODE_CAPS: readonly string[] = [GUARDRAILS_CAPABILITY];
+export const NODE_CAPS: readonly string[] = [GUARDRAILS_CAPABILITY, AGENT_DEFINITION_CAPABILITY];
 
 /** The session's owner guardrails from its runtime bundle (none when the
  *  gateway sends none). A refused bundle (GUARDRAILS_UNAVAILABLE) fails the boot. */

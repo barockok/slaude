@@ -155,9 +155,10 @@ export function createFixtures(now: number = Date.now()): ConsoleFixtures {
   ];
 
   const detail = (
-    d: Omit<AgentDetailResponse, "mandateCount" | "grantCount">,
+    d: Omit<AgentDetailResponse, "mandateCount" | "grantCount" | "definition">,
   ): AgentDetailResponse => ({
     ...d,
+    definition: definitionFixture(d.name),
     mandateCount: d.mandates.length,
     grantCount: d.grants.filter((g) => g.source === "console").length,
   });
@@ -188,6 +189,35 @@ export function createFixtures(now: number = Date.now()): ConsoleFixtures {
     locks: { s_7f21: "bob@example.com", s_5c90: "alice@example.com" },
     memory: memoryFixtures(now),
     environments: environmentFixtures(now),
+  };
+}
+
+/** The Definition card's document: agent.yaml's shape, with placeholders for secrets. */
+function definitionFixture(name: string): AgentDetailResponse["definition"] {
+  return {
+    source: name === "scout" ? "agent.yaml" : "soul",
+    yaml: [
+      `name: ${name}`,
+      name === "scout" ? "description: Research questions the team brings" : "",
+      "userToken: <redacted>",
+      "soul: |",
+      `  You are ${name}, a teammate on the team channel. Plain and direct.`,
+      "mandate:",
+      "  global: Help the team and report what you did.",
+      "access:",
+      "  manager: UALICE",
+      "  channels:",
+      "    trusted:",
+      "      - CTEAM",
+      "mcp:",
+      "  mcpServers:",
+      "    tracker:",
+      "      type: http",
+      "      url: https://tracker.example.com",
+      "      headers:",
+      "        Authorization: <redacted>",
+      "",
+    ].filter((l, i, all) => l !== "" || i === all.length - 1).join("\n"),
   };
 }
 

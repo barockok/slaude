@@ -222,6 +222,29 @@ describe("ApprovalGate", () => {
       });
     });
 
+    test("an agent.yaml default persona with no approver or manager: nobody, not the env list or anyone", async () => {
+      const registry = { lookupByUserId: () => null, lookupByName: () => null, list: () => [], isMultiPersonaMode: () => false, isManaged: () => true, tombstonedPersonaFor: () => null, defaultPersona: () => ({ model: null, mcp: null, definition: {} }) } as PersonaRegistry;
+      setPersonaRegistry(registry);
+      setSoulData(SoulDataSchema.parse({}));
+      try {
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, ["UENV"]);
+        const ac = new AbortController();
+        let resolved = false;
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x" }, ac.signal).then((d) => ((resolved = true), d));
+        const card = JSON.stringify((await firstPost(f)).blocks);
+        expect(card).not.toContain("!nobody");
+        await f.fire(await approveId(f), "UENV");
+        await f.fire(await approveId(f), "URANDOM");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        ac.abort();
+        expect((await p).approved).toBe(false);
+      } finally {
+        __resetPersonaRegistry();
+      }
+    });
+
     test("never anyone: with no manager anywhere nobody may approve", async () => {
       await withBare(async () => {
         setSoulData(SoulDataSchema.parse({}));
