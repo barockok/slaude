@@ -263,8 +263,8 @@ describe("kbSources (WS-C §4.1)", () => {
   });
 
   test("one version table: the payload needs the highest version of any field a persona sets", () => {
-    expect(PERSONA_FIELD_VERSION).toEqual({ provider: 2, runsOn: 2, kbSources: 3, background: 4 });
-    expect(SUPPORTED_PAYLOAD_VERSION).toBe(5);
+    expect(PERSONA_FIELD_VERSION).toEqual({ provider: 2, runsOn: 2, kbSources: 3, background: 4, definition: 6 });
+    expect(SUPPORTED_PAYLOAD_VERSION).toBe(6);
     const key = { apiKey: "env://PERSONA_ANA_KEY" };
     expect(payloadVersionFor([])).toBe(1);
     expect(payloadVersionFor([ana])).toBe(1);
@@ -327,7 +327,7 @@ describe("background (budget and timezone)", () => {
     expect(payloadVersionFor([{ ...ana, background: { budgetUsd: 1 } }])).toBe(4);
     expect(payloadVersionFor([{ ...ana, kbSources: [] }])).toBe(3);
     expect(parsePayload({ ...base([ana]), version: 3 }).personas).toHaveLength(1);
-    expect(() => parsePayload({ ...withBg({ budgetUsd: 1 }), version: 6 })).toThrow(/newer/);
+    expect(() => parsePayload({ ...withBg({ budgetUsd: 1 }), version: SUPPORTED_PAYLOAD_VERSION + 1 })).toThrow(/newer/);
   });
 });
 

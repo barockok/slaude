@@ -19,6 +19,8 @@ import { baseUrlProblem, internalHostsFrom } from "../provider-base-url";
 import { PayloadError } from "./errors";
 import { GUARDRAIL_SLUG_RE, MAX_GUARDRAIL_BYTES } from "../../guardrails/format";
 import { MAX_GUARDRAILS } from "../../guardrails/files";
+import { SKILL_SLUG_RE } from "../../skills/loader";
+import { SoulDataSchema } from "../../soul/data";
 
 export { PayloadError };
 
@@ -39,6 +41,8 @@ export class UnresolvedVarError extends PayloadError {
  *   3  adds `kbSources` (WS-C §4.1)
  *   4  adds `background` (background learning budget and timezone)
  *   5  adds a top-level `guardrails` list (owner guardrails, GUARDRAIL.md text)
+ *   6  adds `definition` (a persona defined by one agent.yaml: its compiled soul
+ *      structure and skill and guardrail lists)
  *
  * Each persona field newer than version 1 is one entry in PERSONA_FIELD_VERSION.
  * `render` writes the highest version any field a persona sets needs, so a
@@ -46,8 +50,8 @@ export class UnresolvedVarError extends PayloadError {
  * (which would leave a persona on node credentials, on `default`, or widen it
  * to every KB); a payload that sets none stays 1 and deploys to any gateway.
  */
-export const PERSONA_FIELD_VERSION = { provider: 2, runsOn: 2, kbSources: 3, background: 4 } as const;
-export const SUPPORTED_PAYLOAD_VERSION = 5;
+export const PERSONA_FIELD_VERSION = { provider: 2, runsOn: 2, kbSources: 3, background: 4, definition: 6 } as const;
+export const SUPPORTED_PAYLOAD_VERSION = 6;
 /** The payload version a non-empty top-level `guardrails` list needs. */
 export const GUARDRAILS_PAYLOAD_VERSION = 5;
 
@@ -89,6 +93,28 @@ const backgroundSpec = z
   .strict();
 export type PersonaBackground = z.infer<typeof backgroundSpec>;
 
+/** Most skills or guardrail slugs one definition may list. */
+export const DEFINITION_LIST_MAX = 256;
+
+/**
+ * What an agent.yaml adds to a persona: `soulData` is its soul structure,
+ * compiled deterministically (never extracted). The rest of the file maps to
+ * the persona's existing fields.
+ */
+const definitionSpec = z
+  .object({
+    description: z.string().max(2000).optional(),
+    // Absent: every skill, as a persona without a definition. Slugs only.
+    skills: z.array(z.string().regex(SKILL_SLUG_RE, "skill slugs must match the skill slug pattern")).max(DEFINITION_LIST_MAX).optional(),
+    // Guardrails that also apply to this agent; never removes one.
+    guardrails: z.array(z.string().regex(GUARDRAIL_SLUG_RE, "guardrail slugs must match the guardrail slug pattern")).max(DEFINITION_LIST_MAX).optional(),
+    soulData: SoulDataSchema,
+  })
+  .strict();
+export type PersonaDefinitionSpec = z.infer<typeof definitionSpec>;
+/** A persona's stored definition: the spec without the structure, which is `soul_json`. */
+export type PersonaDefinition = Omit<PersonaDefinitionSpec, "soulData">;
+
 const personaSpec = z.object({
   name: z.string().regex(PERSONA_NAME_RE, "persona name must match ^[a-z0-9][a-z0-9-]{0,62}$"),
   slackUserId: z.string().min(1).optional(),
@@ -106,6 +132,8 @@ const personaSpec = z.object({
   kbSources: z.array(z.unknown()).optional(),
   // Background-learning budget and timezone; absent = the environment default and UTC.
   background: backgroundSpec.optional(),
+  // Set when the persona comes from an agent.yaml; absent for the older layout.
+  definition: definitionSpec.optional(),
 });
 
 /**
@@ -155,6 +183,17 @@ export function kbSourceWarnings(payload: Pick<SyncPayload, "personas">, install
       const n = count.get(id) ?? 0;
       if (n === 0) out.push(`persona '${p.name}' lists ${id} in kbSources, but no such knowledge base is installed; it reads nothing from it until one is`);
       else if (n > 1) out.push(`persona '${p.name}' lists ${id} in kbSources, which more than one installed knowledge base maps to (their labels normalise to the same id); it reads all of them`);
+    }
+  }
+  return out;
+}
+
+/** Sync warnings for guardrail slugs in an agent.yaml that match no known guardrail (names only). */
+export function definitionGuardrailWarnings(payload: Pick<SyncPayload, "personas">, known: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  for (const p of payload.personas) {
+    for (const slug of p.definition?.guardrails ?? []) {
+      if (!known.has(slug)) out.push(`persona '${p.name}' lists guardrail '${slug}', which does not exist; it applies once a guardrail with that slug exists`);
     }
   }
   return out;

@@ -20,7 +20,8 @@ import { paths } from "../config/home";
 import { LABEL_RE } from "../queue/keys";
 import { readGuardrailDir } from "../guardrails/files";
 import { parseGuardrail } from "../guardrails/format";
-import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
+import { definitionGuardrailWarnings, parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
+import { AGENT_YAML, LEGACY_FILES, parseAgentYaml } from "../persona/agent-def";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
 // The gateway only resolves ${PERSONA_UPPER_CASE_NAME}; persona names are lower-case with hyphens.
@@ -40,9 +41,20 @@ export function renderDir(
   const root = join(dir, "personas");
   if (!existsSync(root)) throw new PayloadError(`no personas/ directory in ${dir}`);
   const personas = [];
+  const definitionWarnings: string[] = [];
   for (const name of readdirSync(root).sort()) {
     if (!statSync(join(root, name)).isDirectory()) continue;
     if (!PERSONA_NAME_RE.test(name)) throw new PayloadError(`directory '${name}' is not a valid persona name`);
+    const agentYaml = read(join(root, name, AGENT_YAML));
+    if (agentYaml !== undefined) {
+      const beside = LEGACY_FILES.filter((f) => existsSync(join(root, name, f)));
+      if (beside.length) throw new PayloadError(`persona '${name}': ${AGENT_YAML} cannot sit beside ${beside.join(", ")}; delete those files, ${AGENT_YAML} replaces them`);
+      const compiled = parseAgentYaml(name, agentYaml);
+      unknown.push(...compiled.unknown);
+      definitionWarnings.push(...compiled.warnings);
+      personas.push(compiled.spec);
+      continue;
+    }
     const yaml = read(join(root, name, "persona.yaml"));
     let cfg: { slackUserId?: string; userToken?: string; model?: string; provider?: unknown; runsOn?: string; kbSources?: unknown; background?: unknown };
     try {
@@ -108,7 +120,13 @@ export function renderDir(
   }
   const payload = parsePayload({ version: payloadVersionFor(personas, guardrails), ...meta, personas, ...(guardrails ? { guardrails } : {}) });
   if (unknown.length) onUnknown?.(capPaths(unknown));
-  const warnings = providerWarnings(payload);
+  const warnings = [
+    ...providerWarnings(payload),
+    ...definitionWarnings,
+    // A guardrail slug no rule in this repository has. Only checkable when the
+    // repository carries its guardrails; the gateway checks the deployed set too.
+    ...(guardrails ? definitionGuardrailWarnings(payload, new Set(guardrails.map((g) => g.slug))) : []),
+  ];
   if (warnings.length) onWarnings?.(warnings);
   // Run the gateway's placeholder validation (with every name satisfied) so a
   // malformed ${...} fails the pull request instead of 422ing at deploy.
