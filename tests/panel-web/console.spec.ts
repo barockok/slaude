@@ -605,6 +605,7 @@ test.describe("resources", () => {
     await expect(page.locator("#settings-admission").getByText("CTEAM")).toBeVisible();
     await expect(page.locator("#settings-redaction")).toBeVisible();
     await page.goto("/panel/agents/scout/access");
+    await page.getByText("Approvals and permissions details").click();
     await expect(page.locator("#settings-approvals").getByText("UBOB")).toBeVisible();
 
     // Memory page: the write rules, per agent.
