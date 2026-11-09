@@ -7,7 +7,7 @@
  */
 import { flag } from "../../config/security-switches";
 import {
-  parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, providerWarnings, kbSourceWarnings, MAX_REPORTED_FIELDS,
+  parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, providerWarnings, kbSourceWarnings, definitionGuardrailWarnings, MAX_REPORTED_FIELDS,
   PROVIDER_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError, type GuardrailSpec, type SyncPayload,
 } from "./payload";
 import { applyGuardrailChange, readGuardrails } from "../../db/guardrails";
@@ -16,7 +16,7 @@ import { parseGuardrail, reservedNameProblem } from "../../guardrails/format";
 import { extractSoulData } from "../../soul/extract";
 import { emitAudit } from "../../audit/emit";
 import {
-  applySync, desiredPersonas, effectivePersonas, backgroundColumnPresent, kbSourcesColumnPresent, providerColumnPresent, syncState, StaleRevisionError,
+  applySync, desiredPersonas, effectivePersonas, backgroundColumnPresent, definitionColumnPresent, kbSourcesColumnPresent, providerColumnPresent, syncState, StaleRevisionError,
   type ApplyResult,
 } from "../../db/personas";
 import { installedKbSourceIds } from "../../knowledge/persona-kb";
@@ -126,6 +126,13 @@ export function unservedLabelWarnings(rows: ReadonlyArray<{ name: string; runsOn
     .map((r) => `persona '${r.name}': no live node carries label '${r.runsOn}'; its turns wait until one does`);
 }
 
+/** What an agent.yaml stores beyond soul_json; null for the older layout. */
+function storedDefinition(p: SyncPayload["personas"][number]): DesiredPersona["definition"] {
+  if (!p.definition) return null;
+  const { soulData: _compiled, ...rest } = p.definition;
+  return rest;
+}
+
 export async function runSync(
   tenant: string,
   raw: unknown,
@@ -195,6 +202,10 @@ export async function runSync(
     throw new SyncFailure(503,
       "the database schema predates this gateway (personas.background is missing): apply migration 0020 before syncing personas");
   }
+  if (!(await definitionColumnPresent())) {
+    throw new SyncFailure(503,
+      "the database schema predates this gateway (personas.definition is missing): apply migration 0034 before syncing personas");
+  }
   const warnings = [
     ...providerWarnings(payload),
     // An id that matches no installed KB is applied anyway: the installer and
@@ -218,7 +229,9 @@ export async function runSync(
   for (const p of payload.personas) {
     const prev = desired.get(p.name);
     let soulJson: unknown;
-    if (prev && prev.soulMd === p.soul && !effective.get(p.name)?.overridden.includes("soul")) {
+    if (p.definition) {
+      soulJson = p.definition.soulData; // an agent.yaml: compiled, no model call
+    } else if (prev && !prev.definition && prev.soulMd === p.soul && !effective.get(p.name)?.overridden.includes("soul")) {
       soulJson = prev.soulJson; // unchanged soul: no model call
     } else if (opts.dryRun) {
       // A dry run reports created/updated/unchanged, which never depends on the
@@ -239,6 +252,7 @@ export async function runSync(
       name: p.name, slackUserId: p.slackUserId ?? null, userToken: p.userToken ?? null, model: p.model ?? null,
       soulMd: p.soul, soulJson, mcp: p.mcp ?? null, provider: p.provider ?? null, runsOn: p.runsOn ?? null, kbSources: p.kbSources ?? null,
       background: p.background ?? null,
+      definition: storedDefinition(p),
       origin: "git", tombstonedAt: null,
     });
   }
@@ -258,6 +272,15 @@ export async function runSync(
       // The check is advisory: a Redis hiccup must not fail a deploy.
       console.warn(`[persona-sync] could not read live node labels tenant=${tenant}: ${(e as Error).message}`);
     }
+  }
+  if (payload.personas.some((p) => p.definition?.guardrails?.length)) {
+    // The slugs the deploy will have: the payload's set plus what it does not
+    // manage (console and host-file guardrails), else everything stored.
+    const stored = (await readGuardrails(tenant)).rows;
+    const known = payload.guardrails
+      ? [...payload.guardrails.map((g) => g.slug), ...stored.filter((r) => r.source !== "git").map((r) => r.slug)]
+      : stored.map((r) => r.slug);
+    warnings.push(...definitionGuardrailWarnings(payload, new Set(known)));
   }
   for (const w of warnings) console.warn(`[persona-sync] warning tenant=${tenant}: ${w}`);
 

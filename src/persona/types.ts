@@ -1,5 +1,5 @@
 import type { WebClient } from "@slack/web-api";
-import type { PersonaBackground, PersonaProvider } from "./sync/payload";
+import type { PersonaBackground, PersonaDefinition, PersonaProvider } from "./sync/payload";
 
 export interface PersonaConfig {
   slackUserId: string;
@@ -43,4 +43,7 @@ export interface Persona {
    *  (`personas.soul_json`), unvalidated; null when the sync stored none.
    *  Undefined for filesystem personas (no structured soul in phase 1). */
   soulJson?: unknown;
+  /** Managed personas only: set when it comes from an agent.yaml (skills and
+   *  guardrail lists, and `soulJson` is compiled, not extracted). Null otherwise. */
+  definition?: PersonaDefinition | null;
 }

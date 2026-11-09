@@ -42,12 +42,12 @@ export interface ApplyResult {
 
 type Row = {
   name: string; slack_user_id: string | null; user_token: string | null; model_default: string | null;
-  soul_md: string; soul_json: unknown; mcp_json: unknown; provider_json: unknown; runs_on: string | null; kb_sources: unknown; background: unknown;
+  soul_md: string; soul_json: unknown; mcp_json: unknown; provider_json: unknown; runs_on: string | null; kb_sources: unknown; background: unknown; definition: unknown;
   origin: "git" | "runtime"; tombstoned_at: number | null;
 };
 
 const ROW_COLUMNS =
-  "name, slack_user_id, user_token, model_default, soul_md, soul_json, mcp_json, provider_json, runs_on, kb_sources, background, origin, tombstoned_at";
+  "name, slack_user_id, user_token, model_default, soul_md, soul_json, mcp_json, provider_json, runs_on, kb_sources, background, definition, origin, tombstoned_at";
 
 // provider_json holds references only (WS-A §4), never a value, so it is
 // stored as plain JSONB: an operator can read which secret a persona names.
@@ -57,6 +57,8 @@ const providerJson = (p: DesiredPersona["provider"]) => (p ? JSON.stringify(p) :
 const kbSourcesJson = (k: DesiredPersona["kbSources"]) => (k == null ? null : JSON.stringify(k));
 // background: null = the defaults (environment budget, UTC).
 const backgroundJson = (b: DesiredPersona["background"]) => (b == null ? null : JSON.stringify(b));
+// definition: null = the older layout; an object (even empty) = an agent.yaml.
+const definitionJson = (d: DesiredPersona["definition"]) => (d == null ? null : JSON.stringify(d));
 
 // mcp is stored as an encrypted string inside the JSONB column, so the column
 // type stays as 0001 defined it while the value is never plaintext at rest.
@@ -84,6 +86,7 @@ function toDesired(r: Row): DesiredPersona {
     runsOn: r.runs_on ?? null,
     kbSources: (parseJson(r.kb_sources) as string[] | null) ?? null,
     background: (parseJson(r.background) as DesiredPersona["background"]) ?? null,
+    definition: (parseJson(r.definition) as DesiredPersona["definition"]) ?? null,
     origin: r.origin,
     tombstonedAt: r.tombstoned_at == null ? null : Number(r.tombstoned_at),
   };
@@ -112,6 +115,11 @@ export async function kbSourcesColumnPresent(): Promise<boolean> {
 /** Whether migration 0020 (personas.background) is applied; same reason. */
 export async function backgroundColumnPresent(): Promise<boolean> {
   return personasColumnPresent("background");
+}
+
+/** Whether migration 0034 (personas.definition) is applied; same reason. */
+export async function definitionColumnPresent(): Promise<boolean> {
+  return personasColumnPresent("definition");
 }
 
 async function personasColumnPresent(column: string): Promise<boolean> {
@@ -209,16 +217,16 @@ export async function applySync(
       else if (prev.origin === "git" && sameDesired(prev, r)) result.unchanged.push(r.name);
       else result.updated.push(r.name);
       await tx.run(
-        `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, soul_sha, model_default, mcp_json, provider_json, runs_on, kb_sources, background,
+        `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, soul_sha, model_default, mcp_json, provider_json, runs_on, kb_sources, background, definition,
                                slack_user_id, user_token, origin, source_revision, tombstoned_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'git', ?, NULL, ?, ?)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'git', ?, NULL, ?, ?)
          ON CONFLICT (tenant_id, name) DO UPDATE SET
            soul_md = excluded.soul_md, soul_json = excluded.soul_json, model_default = excluded.model_default,
-           mcp_json = excluded.mcp_json, provider_json = excluded.provider_json, runs_on = excluded.runs_on, kb_sources = excluded.kb_sources, background = excluded.background,
+           mcp_json = excluded.mcp_json, provider_json = excluded.provider_json, runs_on = excluded.runs_on, kb_sources = excluded.kb_sources, background = excluded.background, definition = excluded.definition,
            slack_user_id = excluded.slack_user_id, user_token = excluded.user_token,
            origin = 'git', source_revision = excluded.source_revision, tombstoned_at = NULL, updated_at = excluded.updated_at`,
         [randomUUID(), tenant, r.name, r.soulMd, JSON.stringify(r.soulJson ?? null), r.model, encJson(r.mcp),
-         providerJson(r.provider), r.runsOn ?? null, kbSourcesJson(r.kbSources), backgroundJson(r.background), r.slackUserId, r.userToken ? encrypt(r.userToken) : null, meta.revision, now, now]);
+         providerJson(r.provider), r.runsOn ?? null, kbSourcesJson(r.kbSources), backgroundJson(r.background), definitionJson(r.definition), r.slackUserId, r.userToken ? encrypt(r.userToken) : null, meta.revision, now, now]);
     }
     for (const [name, prev] of existing) {
       if (incoming.has(name) || prev.tombstonedAt !== null) continue;

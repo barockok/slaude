@@ -5,7 +5,7 @@ import { env } from "../config/env";
 import { paths } from "../config/home";
 import type { Persona, PersonaConfig } from "./types";
 import type { EffectivePersona } from "./effective";
-import type { PersonaBackground, PersonaProvider } from "./sync/payload";
+import type { PersonaBackground, PersonaDefinition, PersonaProvider } from "./sync/payload";
 import { effectivePersonas, isManaged, stateVersion } from "../db/personas";
 import { resolveDbConfig } from "../db/client";
 import { SoulDataSchema, type SoulData } from "../soul/data";
@@ -20,6 +20,8 @@ export type DefaultPersonaFields = {
   /** Desired layer, not overridable: null = every installed KB. */
   kbSources?: string[] | null;
   background?: PersonaBackground | null;
+  /** Desired layer: set when the default persona comes from an agent.yaml. */
+  definition?: PersonaDefinition | null;
 };
 
 export interface PersonaRegistry {
@@ -160,10 +162,11 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
       kbSources: p.kbSources ?? null,
       background: p.background ?? null,
       soulJson: p.soulJson ?? null,
+      ...(p.definition ? { definition: p.definition } : {}),
     }));
   const def = all.find((p) => p.name === "default") ?? null;
   const defaultFields = def
-    ? { model: def.model, mcp: def.mcp ?? null, provider: def.provider ?? null, runsOn: def.runsOn ?? null, kbSources: def.kbSources ?? null, background: def.background ?? null }
+    ? { model: def.model, mcp: def.mcp ?? null, provider: def.provider ?? null, runsOn: def.runsOn ?? null, kbSources: def.kbSources ?? null, background: def.background ?? null, ...(def.definition ? { definition: def.definition } : {}) }
     : null;
   return { registry: snapshot(personas, { tombstoned, defaultPersona: defaultFields }), managed: { defaultPersona: def } };
 }
@@ -285,6 +288,21 @@ export function managedPersonaProvider(name: string | undefined, r: PersonaRegis
   if (!r.isManaged()) return null;
   if (!name || name === "default") return r.defaultPersona?.()?.provider ?? null;
   return r.lookupByName(name)?.provider ?? null;
+}
+
+/**
+ * A persona's agent.yaml additions (undefined name = the default persona), or
+ * null when it has no agent.yaml (always null on a filesystem registry).
+ */
+export function managedPersonaDefinition(name: string | undefined, r: PersonaRegistry = getPersonaRegistry()): PersonaDefinition | null {
+  if (!r.isManaged()) return null;
+  if (!name || name === "default") return r.defaultPersona?.()?.definition ?? null;
+  return r.lookupByName(name)?.definition ?? null;
+}
+
+/** The skill slugs persona `name` may use; null = every skill (no list set). */
+export function skillsAllowedFor(name: string | null | undefined, r: PersonaRegistry = getPersonaRegistry()): string[] | null {
+  return managedPersonaDefinition(name ?? undefined, r)?.skills ?? null;
 }
 
 /** Names of the live personas (the default included) that set provider references. */
