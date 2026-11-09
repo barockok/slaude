@@ -110,7 +110,7 @@ services:
   node-1:
     image: slaude:latest
     restart: unless-stopped
-    command: ["bun", "run", "worker"]
+    command: ["bun", "--no-env-file", "src/node/main.ts"]
     depends_on:
       gateway:
         condition: service_healthy
@@ -139,7 +139,7 @@ services:
   node-2:
     image: slaude:latest
     restart: unless-stopped
-    command: ["bun", "run", "worker"]
+    command: ["bun", "--no-env-file", "src/node/main.ts"]
     depends_on:
       gateway:
         condition: service_healthy

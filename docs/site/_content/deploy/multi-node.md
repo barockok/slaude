@@ -13,8 +13,8 @@ flowchart TB
   GW["gateway — SLAUDE_ROLE=gateway, :8080<br/>/slack/events · /slack/interactions · /v1 · /healthz · /metrics"]
   PG[("Postgres")]
   Redis[("Redis<br/>turn queues · session registry · locks · events")]
-  N1["node-1<br/>SLAUDE_ROLE=node · bun run worker · /v1 client"]
-  N2["node-2<br/>SLAUDE_ROLE=node · bun run worker · /v1 client"]
+  N1["node-1<br/>SLAUDE_ROLE=node · bun src/node/main.ts · /v1 client"]
+  N2["node-2<br/>SLAUDE_ROLE=node · bun src/node/main.ts · /v1 client"]
 
   Slack --> GW
   GW <--> PG

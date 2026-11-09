@@ -1,7 +1,8 @@
 /**
- * Node entry (spec §6, §7): `bun run worker` (script name "worker" — "node"
- * would shadow the runtime's name in every shell and script that greps for
- * it). Boots the worker off env:
+ * Node entry (spec §6, §7). Deployments execute this file directly
+ * (`bun --no-env-file src/node/main.ts`), not through `bun run worker`, which
+ * would leave an unhardened parent holding the credential. Boots the worker off env
+ * (the real process environment: a node never reads $SLAUDE_HOME/.env):
  *
  *   SLAUDE_GATEWAY_URL       gateway base URL for /v1 (default localhost:8080)
  *   SLAUDE_NODE_TOKEN        this node's /v1 credential: a signed node credential
@@ -25,6 +26,7 @@
  * persona's directory need not exist on the shared $SLAUDE_HOME volume; skills
  * and transcripts still live there.
  */
+import "./first-import"; // must stay the first import: see that file.
 import { ensureHome } from "../config/home";
 import { env } from "../config/env";
 import { startNodeWorker } from "./worker";
@@ -33,15 +35,11 @@ import { NodeClient } from "./client";
 import { nodeHandshake } from "./handshake";
 import { installRejectionGuard } from "./rejection-guard";
 import { reportNodePlugins } from "./plugin-report";
-import { hardenNodeProcess } from "./harden";
 import { randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { type NodeManifest, NodeManifestError, describeNodeManifest, loadNodeManifest } from "./manifest";
 
 async function main() {
-  // First: nothing below may run with this process's /proc entries readable by
-  // a same-uid tool. Best effort; warns when it cannot.
-  hardenNodeProcess();
   // Before anything else: a node must not hold the gateway's secrets (the
   // master key, the job secret, database URLs, Slack secrets). Warns by
   // default; SLAUDE_NODE_BOOT_CHECK=refuse stops the boot. Any SLAUDE_VAULT_* or
