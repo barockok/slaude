@@ -34,6 +34,7 @@ import { soulSystemBlock } from "../soul/loader";
 import { BUILTIN_PLUGIN_DIR, pluginsNamedLikeBuiltin } from "../soul/builtin";
 import { personaSoulText } from "../persona/soul-source";
 import { soulData, effectiveSoulForChannel } from "../soul/extract";
+import { resolveSoulMandate } from "../soul/mandate-scope";
 import { SoulDataSchema } from "../soul/data";
 import { getPersonaRegistry, livePersona, managedPersonaModel, onPersonaRegistryInstalled, type PersonaRegistry } from "../persona/registry";
 import * as Sessions from "../db/sessions";
@@ -2504,10 +2505,10 @@ const AUTO_EVOLVE_PROMPT = [
 ].join("\n");
 
 /**
- * Per-channel mandate override: when the soul defines a `## Channel` block with
- * its own `### Mandate` for this channel, an authoritative directive that
- * supersedes the global Mandate (which lives, unedited, inside the <persona>
- * text block).
+ * Scoped mandate: when a sub-mandate applies here (a `## Channel` block's
+ * `### Mandate`, or a `## Scope` block), the resolver's effective text as an
+ * authoritative directive that supersedes the global Mandate (which lives,
+ * unedited, inside the <persona> text block).
  *
  * With a structured soul from the persona soul resolver (a node's runtime
  * bundle), the mandate comes from that persona's own soul. Without one (mono,
@@ -2532,8 +2533,7 @@ function channelMandateBlock(
   }
   if (parsed?.success) {
     base = parsed.data.mandate?.trim();
-    const ov = parsed.data.channelOverrides.find((c) => c.channel === channelId);
-    eff = ov?.mandate?.trim() || base;
+    eff = resolveSoulMandate(parsed.data, channelId, parsed.data).text.trim();
   } else {
     eff = effectiveSoulForChannel(channelId).mandate?.trim();
     base = soulData().mandate?.trim();

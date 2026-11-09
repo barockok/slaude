@@ -1,5 +1,5 @@
 import { SoulDataSchema, type ChannelOverride, type SoulData } from "./data";
-import { channelMandate, soulData, withManagerApprover } from "./extract";
+import { soulData, soulForChannel, withManagerApprover } from "./extract";
 import { getPersonaRegistry } from "../persona/registry";
 
 /**
@@ -108,20 +108,14 @@ function inheritChannelApprovers(mine: ChannelOverride[], theirs: ChannelOverrid
 
 /**
  * {@link soulDataFor} narrowed to a channel, with the semantics of
- * `effectiveSoulForChannel`: a channel block's mandate replaces the global one,
- * and its approvers (when it lists any) replace the global approvers, with the
+ * `effectiveSoulForChannel`: the mandate from the resolver (mode and boundary),
+ * and a channel block's approvers (when it lists any) replace the global approvers, with the
  * persona's manager and backup always appended.
  */
 export function effectiveSoulForChannelFor(persona: string | null | undefined, channelId?: string | null): SoulData {
   const base = soulDataFor(persona);
   if (!channelId) return base;
-  const ov = base.channelOverrides.find((c) => c.channel === channelId);
-  if (!ov) return base;
-  return {
-    ...base,
-    mandate: channelMandate(base, channelId) ?? base.mandate,
-    approvers: ov.approvers.length ? withManagerApprover(ov.approvers, base) : base.approvers,
-  };
+  return soulForChannel(base, channelId);
 }
 
 /** Channel id -> that channel's effective approver ids, for every channel block

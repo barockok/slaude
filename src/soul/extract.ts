@@ -5,6 +5,7 @@ import { paths } from "../config/home";
 import { loadSoul, soulSystemBlock, loadApproverEntries } from "./loader";
 import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData, type ApproverEntry } from "./data";
 import { applyOverrides } from "./overrides";
+import { resolveSoulMandate } from "./mandate-scope";
 import * as SoulOverrides from "../db/soul-overrides";
 import { masterKey } from "../db/crypto";
 
@@ -352,19 +353,27 @@ export function channelMandate(soul: SoulData, channelId: string): string | null
   return m || null;
 }
 
+/**
+ * `base` narrowed to one channel: the mandate from the resolver (the most
+ * specific sub-mandate, by its mode), approvers from the channel's own block.
+ * Nothing applying returns `base` itself.
+ */
+export function soulForChannel(base: SoulData, channelId: string): SoulData {
+  const ov = base.channelOverrides.find((c) => c.channel === channelId);
+  const resolved = resolveSoulMandate(base, channelId, base);
+  if (!ov && !resolved.applied) return base;
+  return {
+    ...base,
+    mandate: resolved.applied ? resolved.text : base.mandate,
+    approvers: ov?.approvers.length ? withManagerApprover(ov.approvers, base) : base.approvers,
+  };
+}
+
 export function effectiveSoulForChannel(channelId?: string): SoulData {
   const base = soulData();
   if (!channelId) return base;
   try {
-    const ov = base.channelOverrides.find((c) => c.channel === channelId);
-    if (!ov) return base;
-    return {
-      ...base,
-      mandate: channelMandate(base, channelId) ?? base.mandate,
-      approvers: ov.approvers.length
-        ? withManagerApprover(ov.approvers, base)
-        : base.approvers,
-    };
+    return soulForChannel(base, channelId);
   } catch {
     return base;
   }

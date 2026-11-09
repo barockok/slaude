@@ -36,6 +36,7 @@ import { READ_ONLY_PASS_TOOLS } from "../background/pass-tools";
 import { runPass, type Outcome, type PassTool, type RunnerDeps } from "../background/runner";
 import type { CardPost } from "../background/proposal-cards";
 import type { AgentGroup, PersonaMandates } from "../background/scheduler";
+import { clipEffectiveMandate } from "../soul/mandate-scope";
 import { NO_PREFS, readPingPrefs } from "./prefs";
 import { checkProactive, textHash, UNCHANGED_WINDOW_MS, type Audience, type RestraintRule } from "./restraint";
 import type { Level } from "./levels";
@@ -296,11 +297,8 @@ const FIELD_MAX = 200;
 
 /** One line, bounded, and no tag can open or close: model or source text going into a prompt or a page. */
 export const line = (s: string | null | undefined, max = FIELD_MAX): string => (s ?? "").replace(/[\r\n]+/g, " ").replaceAll("<", "‹").trim().slice(0, max);
-/** A mandate on one line, cut at MANDATE_MAX with an ellipsis when it was longer. */
-const mandateLine = (s: string | null | undefined): string => {
-  const one = line(s, Number.MAX_SAFE_INTEGER);
-  return one.length > MANDATE_MAX ? `${one.slice(0, MANDATE_MAX)}…` : one;
-};
+/** A mandate on one line, cut at MANDATE_MAX with an ellipsis when it was longer; a sub-mandate's limit or addition is never the part that is cut. */
+const mandateLine = (s: string | null | undefined): string => clipEffectiveMandate(s ?? "", MANDATE_MAX, (x) => line(x, Number.MAX_SAFE_INTEGER));
 const clamp = (s: string, max: number): string => (s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s);
 const iso = (ms: number): string => new Date(ms).toISOString().slice(0, 16) + "Z";
 

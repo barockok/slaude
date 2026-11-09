@@ -283,6 +283,13 @@ describe("runHeartbeat", () => {
       expect(p).not.toContain("x".repeat(MANDATE_MAX + 1));
     });
 
+    test("a long channel mandate keeps its limit: the global part is cut, not the narrowing", async () => {
+      const text = `${"g".repeat(MANDATE_MAX + 200)}\n\nLimit for this channel (this narrows the mandate above and wins over it wherever they conflict):\nNever pay invoices.`;
+      const h = round({ soul: ON, items: [], mandates: () => ({ global: "g", channels: { C0ON: text } }) });
+      await h.go();
+      expect(h.specs[0]!.prompt).toContain("Never pay invoices.");
+    });
+
     test("the mandates are asked for the round's own persona and its enabled channels", async () => {
       const asked: Array<[string, readonly string[]]> = [];
       const h = round({ soul: ON, items: [], mandates: (p, c) => (asked.push([p, c]), { global: "g", channels: {} }) });

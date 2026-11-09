@@ -71,7 +71,7 @@ import { env } from "../config/env";
 import { personaApp } from "./digest";
 import { soulData, cachedSoulData } from "../soul/extract";
 import { personaSoulText } from "../persona/soul-source";
-import { personaMandateText } from "../soul/persona-mandates";
+import { effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
 import { sweepStaleRuns } from "./stale-runs";
 import type { SourceReader } from "../proactive/source-reader";
 
@@ -554,10 +554,13 @@ export interface PersonaMandates {
   channels: Record<string, string | null>;
 }
 
-/** A persona's global mandate and each listed channel's own (null: it follows the global one). Never throws. */
+/** A persona's global mandate and each listed channel's effective one (null: no sub-mandate applies, the global one stands). Never throws. */
 export function personaMandates(personaId: string, channelIds: readonly string[]): PersonaMandates {
   const m = personaMandateText(personaId);
-  return { global: m.global, ...(m.voice ? { voice: m.voice } : {}), channels: Object.fromEntries(channelIds.map((c) => [c, m.channels[c] ?? null])) };
+  return { global: m.global, ...(m.voice ? { voice: m.voice } : {}), channels: Object.fromEntries(channelIds.map((c) => {
+    const r = effectiveMandateIn(m, c);
+    return [c, r.applied ? r.text : null];
+  })) };
 }
 
 /** Production promise checks for a group: budgeted on the ledger, prefs from the beneficiary's profile. */
