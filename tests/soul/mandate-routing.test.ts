@@ -160,3 +160,38 @@ describe("consumers go through the resolver", () => {
     expect(text).toContain("No paging.");
   });
 });
+
+describe("a named persona's turn prompt with no structured soul (mono)", () => {
+  const prompt = (persona: string, channelId: string) => new AgentManager().__systemPromptForTests("s", persona, { channelId });
+
+  test("the default persona's sub-mandates never reach a named persona", async () => {
+    setSoulData(SCOPED);
+    setPersonaRegistry(registry([{ name: "scout", soulMd: "# Scout\n\n## Mandate\nScout.\n" }]));
+    const text = await prompt("scout", "D0ALICE");
+    expect(text).not.toContain("<channel-mandate>");
+    expect(text).not.toContain("Be brief.");
+  });
+
+  test("a named persona's own reduce reaches its turn, compared against its own global", async () => {
+    setSoulData(SoulDataSchema.parse({ mandate: "Default global." }));
+    setPersonaRegistry(registry([{ name: "scout", soulMd: "# Scout\n\n## Mandate\nScout.\n\n## Channel C0OPS\n### Mandate\nMode: reduce\nNo paging.\n" }]));
+    const text = await prompt("scout", "C0OPS");
+    expect(text).toContain("<channel-mandate>\nFor this channel your mandate is: Scout.\n\nLimit for this channel");
+    expect(text).toContain("No paging.");
+    expect(text).not.toContain("Default global.");
+    expect(await prompt("scout", "C0ELSE")).not.toContain("<channel-mandate>");
+  });
+
+  test("the default persona still reads its own sub-mandates", async () => {
+    setSoulData(SCOPED);
+    expect(await prompt("default", "D0ALICE")).toContain("For this channel your mandate is: Be brief.");
+  });
+});
+
+describe("scheduler: an empty mandate block in a no-Mode soul", () => {
+  test("reads as the empty string, as before; an absent block is null", () => {
+    setSoulData(SoulDataSchema.parse({}));
+    setPersonaRegistry(registry([{ name: "scout", soulMd: "## Mandate\nScout.\n\n## Channel C0EMPTY\n### Mandate\n\n## Channel C0OWN\n### Mandate\nOwn.\n" }]));
+    expect(personaMandates("scout", ["C0EMPTY", "C0OWN", "C0NONE"]).channels).toEqual({ C0EMPTY: "", C0OWN: "Own.", C0NONE: null });
+  });
+});

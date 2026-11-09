@@ -559,7 +559,8 @@ export function personaMandates(personaId: string, channelIds: readonly string[]
   const m = personaMandateText(personaId);
   return { global: m.global, ...(m.voice ? { voice: m.voice } : {}), channels: Object.fromEntries(channelIds.map((c) => {
     const r = effectiveMandateIn(m, c);
-    return [c, r.applied ? r.text : null];
+    // A block with an empty mandate stays "" as it always read here; only an absent one is null.
+    return [c, r.applied ? r.text : (m.channels[c] ?? null)];
   })) };
 }
 
