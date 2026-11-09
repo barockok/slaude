@@ -28,14 +28,15 @@ export type SkillSource = "global" | "persona";
 
 /** A skill's slug: its directory name. */
 export const SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** Most of a SKILL.md the console reads and the version log keeps; past it the text is cut and flagged. */
+export const SKILL_MD_MAX_BYTES = 256 * 1024;
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
 
 type ParsedSkill = Pick<Skill, "name" | "description" | "body" | "authoredBy" | "authoredAt">;
 
-function parseSkillFile(absPath: string): ParsedSkill | null {
-  if (!existsSync(absPath)) return null;
-  const raw = readFileSync(absPath, "utf8");
+/** Parse SKILL.md text into its frontmatter fields and body. */
+export function parseSkillText(raw: string): ParsedSkill {
   const m = raw.match(FRONTMATTER_RE);
   if (!m) {
     return { name: "", description: "", body: raw };
@@ -53,6 +54,11 @@ function parseSkillFile(absPath: string): ParsedSkill | null {
     ...(typeof fm.authored_by === "string" ? { authoredBy: fm.authored_by } : {}),
     ...(typeof fm.authored_at === "string" ? { authoredAt: fm.authored_at } : {}),
   };
+}
+
+function parseSkillFile(absPath: string): ParsedSkill | null {
+  if (!existsSync(absPath)) return null;
+  return parseSkillText(readFileSync(absPath, "utf8"));
 }
 
 /** A SKILL.md's frontmatter `name` ("" when it has none), or null when the file is missing. */

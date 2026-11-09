@@ -14,13 +14,14 @@ import { __resetRoleCache } from "../../src/gateway/panel/auth/roles";
 import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
 import { db } from "../../src/db/schema";
 import * as SkillUsage from "../../src/db/skill-usage";
+import * as SkillVersions from "../../src/db/skill-versions";
 import * as Proposals from "../../src/db/proposals";
 import * as AuditEvents from "../../src/db/audit-events";
 import { flushAudits } from "../../src/audit/emit";
 import { paths } from "../../src/config/home";
 import { setAgentId, resetAgentId } from "../../src/knowledge/agent-identity";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
-import type { SkillDetailResponse, SkillsResponse, SkillSummaryView } from "../../src/gateway/panel/api-types";
+import type { SkillDetailResponse, SkillsResponse, SkillSummaryView, SkillVersionDetailResponse, SkillVersionsResponse } from "../../src/gateway/panel/api-types";
 
 const SECRET = "t".repeat(32);
 const cookie = (email: string) => `${AT_COOKIE}=${mintSession({ sub: "s", email }, "at", { secret: SECRET })}`;
@@ -77,6 +78,7 @@ beforeEach(async () => {
   setPersonaRegistry(registryWith(["scout"]));
   await flushAudits();
   await db.run("DELETE FROM skill_usage");
+  await db.run("DELETE FROM skill_versions");
   await db.run("DELETE FROM proposals");
   await db.run("DELETE FROM audit_events");
 
@@ -261,5 +263,154 @@ describe("retire and restore", () => {
       ["skill.restored", "lead@example.com", "scout", "scout-x"],
       ["skill.retired", "lead@example.com", "scout", "scout-x"],
     ]);
+  });
+});
+
+describe("GET /panel/api/skills/:id/versions", () => {
+  const rec = (scope: string, slug: string, version: number, hash: string, skillMd: string, capturedAt = version * 1000) =>
+    SkillVersions.insert({ scope, slug, version, contentHash: hash, skillMd, skillMdTruncated: false, fileCount: 2, totalBytes: 30, capturedAt, origin: "installed" });
+
+  beforeEach(async () => {
+    await rec("global", "triage-x", 1, "a".repeat(64), "base one");
+    await rec("global", "triage-x", 2, "b".repeat(64), "base two");
+    await rec("scout", "triage-x", 1, "c".repeat(64), "scout one");
+  });
+
+  test("the list and the detail show the current version per identity; a skill with none shows null", async () => {
+    const { skills } = (await call("GET", "/panel/api/skills")).body as SkillsResponse;
+    expect(byId(skills, "base:triage-x")!.currentVersion).toBe(2);
+    expect(byId(skills, "agent:scout:triage-x")!.currentVersion).toBe(1);
+    expect(byId(skills, "base:local-x")!.currentVersion).toBeNull();
+    expect(byId(skills, "builtin:memory")!.currentVersion).toBeNull();
+    const detail = (await call("GET", "/panel/api/skills/base%3Atriage-x")).body as SkillDetailResponse;
+    expect(detail.currentVersion).toBe(2);
+  });
+
+  test("the list is newest first, carries no text, and any operator may read it", async () => {
+    const r = await call("GET", "/panel/api/skills/base%3Atriage-x/versions");
+    expect(r.status).toBe(200);
+    const body = r.body as SkillVersionsResponse;
+    expect(body.truncated).toBe(false);
+    expect(body.versions.map((v) => [v.version, v.hash.charAt(0), v.capturedAt, v.origin, v.fileCount, v.totalBytes, v.skillMdTruncated])).toEqual([
+      [2, "b", 2000, "installed", 2, 30, false],
+      [1, "a", 1000, "installed", 2, 30, false],
+    ]);
+    expect(JSON.stringify(body)).not.toContain("base two");
+  });
+
+  test("an agent overlay reads its own identity's versions", async () => {
+    const body = (await call("GET", "/panel/api/skills/agent%3Ascout%3Atriage-x/versions")).body as SkillVersionsResponse;
+    expect(body.versions.map((v) => v.version)).toEqual([1]);
+  });
+
+  test("one version returns its SKILL.md", async () => {
+    const r = await call("GET", "/panel/api/skills/base%3Atriage-x/versions/1");
+    expect(r.status).toBe(200);
+    expect(r.body as SkillVersionDetailResponse).toMatchObject({ version: 1, skillMd: "base one", hash: "a".repeat(64) });
+  });
+
+  test("a retired copy reads its identity's versions", async () => {
+    await rec("default-unused", "notes-x", 1, "d".repeat(64), "other");
+    await rec("global", "notes-x", 1, "e".repeat(64), "notes one");
+    await call("POST", "/panel/api/skills/base%3Anotes-x/retire", superadmin, {});
+    const { skills } = (await call("GET", "/panel/api/skills")).body as SkillsResponse;
+    const retired = skills.find((s) => s.slug === "notes-x" && s.status === "retired")!;
+    const body = (await call("GET", `/panel/api/skills/${encodeURIComponent(retired.id)}/versions`)).body as SkillVersionsResponse;
+    // The retire captures its own version of what is on disk, possibly after this response.
+    const hashes = body.versions.map((v) => v.hash.charAt(0));
+    expect(hashes.at(-1)).toBe("e");
+    expect(hashes).not.toContain("d");
+  });
+
+  test("a retired copy shows only what was captured up to its retirement, not a later skill of that slug", async () => {
+    const retiredAt = Date.UTC(2026, 10, 1, 12, 0, 0);
+    const rid = "later-x-20261101T120000Z";
+    skill(join(paths.skills, ".retired", rid), { name: "later-x", description: "Old copy" });
+    await rec("global", "later-x", 1, "a".repeat(64), "the retired copy", retiredAt - 5000);
+    await rec("global", "later-x", 2, "b".repeat(64), "its last edit", retiredAt + 400);
+    await rec("global", "later-x", 3, "c".repeat(64), "a later skill", retiredAt + 60_000);
+    const id = encodeURIComponent(`retired:default:${rid}`);
+
+    const { skills } = (await call("GET", "/panel/api/skills")).body as SkillsResponse;
+    expect(byId(skills, `retired:default:${rid}`)!.currentVersion).toBe(2);
+
+    const body = (await call("GET", `/panel/api/skills/${id}/versions`)).body as SkillVersionsResponse;
+    expect(body.versions.map((v) => v.version)).toEqual([2, 1]);
+    expect((await call("GET", `/panel/api/skills/${id}/versions/2`)).status).toBe(200);
+    expect((await call("GET", `/panel/api/skills/${id}/versions/3`)).status).toBe(404);
+  });
+
+  test("a retired copy with nothing captured by then has no current version", async () => {
+    const rid = "fresh-x-20261101T120000Z";
+    skill(join(paths.skills, ".retired", rid), { name: "fresh-x", description: "Old copy" });
+    await rec("global", "fresh-x", 1, "a".repeat(64), "a later skill", Date.UTC(2026, 10, 2));
+    const { skills } = (await call("GET", "/panel/api/skills")).body as SkillsResponse;
+    expect(byId(skills, `retired:default:${rid}`)!.currentVersion).toBeNull();
+  });
+
+  describe("a persona's own skill", () => {
+    const text = "/panel/api/skills/agent%3Ascout%3Atriage-x/versions/1";
+
+    test("an operator sees the list but not the text, and the refusal is audited", async () => {
+      expect((await call("GET", "/panel/api/skills/agent%3Ascout%3Atriage-x/versions")).status).toBe(200);
+      const r = await call("GET", text);
+      expect(r.status).toBe(403);
+      expect(r.body).toMatchObject({ required: "superadmin" });
+      expect(JSON.stringify(r.body)).not.toContain("scout one");
+      await flushAudits();
+      expect((await AuditEvents.list({ action: "skill.version.viewed" })).items).toEqual([]);
+      expect((await AuditEvents.list({ action: "panel.skill.version.private" })).items.map((e) => e.decision)).toEqual(["refused"]);
+    });
+
+    test("a superadmin reads the text, and the read is audited without content", async () => {
+      const r = await call("GET", text, superadmin);
+      expect(r.status).toBe(200);
+      expect((r.body as SkillVersionDetailResponse).skillMd).toBe("scout one");
+      await flushAudits();
+      const [row, ...rest] = (await AuditEvents.list({ action: "skill.version.viewed" })).items;
+      expect(rest).toEqual([]);
+      expect(row).toMatchObject({ actorId: "lead@example.com", persona: "scout", targetKind: "skill", targetId: "triage-x" });
+      expect(JSON.stringify(row)).not.toContain("scout one");
+    });
+
+    test("a version that does not exist is still refused to an operator first", async () => {
+      expect((await call("GET", "/panel/api/skills/agent%3Ascout%3Atriage-x/versions/99")).status).toBe(403);
+      expect((await call("GET", "/panel/api/skills/agent%3Ascout%3Atriage-x/versions/99", superadmin)).status).toBe(404);
+      await flushAudits();
+      expect((await AuditEvents.list({ action: "skill.version.viewed" })).items).toEqual([]);
+    });
+
+    test("a retired copy of a persona's skill is gated too", async () => {
+      const rid = "triage-x-20261101T120000Z";
+      skill(join(paths.personas, "scout", "skills", ".retired", rid), { name: "triage-x", description: "Old" });
+      const id = encodeURIComponent(`retired:scout:${rid}`);
+      expect((await call("GET", `/panel/api/skills/${id}/versions/1`)).status).toBe(403);
+    });
+
+    test("the shared base's text stays open to any operator, unaudited", async () => {
+      expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/1")).status).toBe(200);
+      await flushAudits();
+      expect((await AuditEvents.list({ action: "skill.version.viewed" })).items).toEqual([]);
+    });
+  });
+
+  test("a built-in has no versions; unknown skills and versions are 404; only GET is allowed", async () => {
+    const builtin = await call("GET", "/panel/api/skills/builtin%3Amemory/versions");
+    expect(builtin.status).toBe(200);
+    expect((builtin.body as SkillVersionsResponse).versions).toEqual([]);
+    expect((await call("GET", "/panel/api/skills/builtin%3Amemory/versions/1")).status).toBe(404);
+    expect((await call("GET", "/panel/api/skills/base%3Anope/versions")).status).toBe(404);
+    expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/99")).status).toBe(404);
+    expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/abc")).status).toBe(404);
+    expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/1e3")).status).toBe(404);
+    // Past 9 digits is refused before the database: 2147483648 overflows a Postgres INTEGER.
+    expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/2147483648")).status).toBe(404);
+    expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/999999999")).status).toBe(404);
+    expect((await call("POST", "/panel/api/skills/base%3Atriage-x/versions", superadmin, {})).status).toBe(405);
+  });
+
+  test("an unauthenticated request is refused", async () => {
+    const res = (await panel().fetch(new Request("https://panel.example.com/panel/api/skills/base%3Atriage-x/versions")))!;
+    expect(res.status).toBe(401);
   });
 });

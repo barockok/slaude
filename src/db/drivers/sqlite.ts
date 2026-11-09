@@ -49,6 +49,20 @@ CREATE TABLE IF NOT EXISTS skill_usage (
   PRIMARY KEY (agent_id, skill)
 );
 
+CREATE TABLE IF NOT EXISTS skill_versions (
+  scope              TEXT    NOT NULL,
+  slug               TEXT    NOT NULL,
+  version            INTEGER NOT NULL,
+  content_hash       TEXT    NOT NULL,
+  skill_md           TEXT    NOT NULL,
+  skill_md_truncated INTEGER NOT NULL DEFAULT 0,
+  file_count         INTEGER NOT NULL,
+  total_bytes        INTEGER NOT NULL,
+  captured_at        INTEGER NOT NULL,
+  origin             TEXT    NOT NULL,
+  PRIMARY KEY (scope, slug, version)
+);
+
 CREATE TABLE IF NOT EXISTS kb_ingest_jobs (
   id TEXT PRIMARY KEY,
   label TEXT NOT NULL,

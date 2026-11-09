@@ -1166,6 +1166,11 @@ textarea.sl-input {
   padding: 0;
 }
 
+.sl-card__section {
+  padding: var(--sl-pad-lg);
+  border-top: 1px solid var(--sl-border);
+}
+
 /* ---------------------------------------------------------------- empty state */
 
 .sl-empty {

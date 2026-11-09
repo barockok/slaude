@@ -31,11 +31,13 @@ import { join, relative, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { paths } from "../../config/home";
 import { BUILTIN_PLUGIN_DIR, cliPluginName, cliSkillName, listBuiltinSkills } from "../../soul/builtin";
-import { discoverSkills, globalSkillsRoot, personaSkillsRoot, RETIRED_DIR, type Skill } from "../../skills/loader";
+import { discoverSkills, globalSkillsRoot, personaSkillsRoot, RETIRED_DIR, SKILL_MD_MAX_BYTES, type Skill } from "../../skills/loader";
 import { provenanceSources, skillProvenance, type ProvenanceSources } from "../../skills/provenance";
 import { usageKeysOf } from "../../skills/usage";
 import { skillOps } from "../../skills/mcp-tools";
+import { versionScope } from "../../skills/versions";
 import * as SkillUsage from "../../db/skill-usage";
+import * as SkillVersions from "../../db/skill-versions";
 import * as Proposals from "../../db/proposals";
 import { agentIdSync } from "../../knowledge/agent-identity";
 import { getPersonaRegistry } from "../../persona/registry";
@@ -48,6 +50,9 @@ import type {
   SkillSourceKind,
   SkillSummaryView,
   SkillUsageRowView,
+  SkillVersionDetailResponse,
+  SkillVersionsResponse,
+  SkillVersionView,
 } from "./api-types";
 
 /** A summary plus what the detail and the actions need, never sent as is. */
@@ -110,8 +115,7 @@ export function parseSkillMd(raw: string): { frontmatter: Record<string, unknown
   return { frontmatter: fm, body: m[2] ?? "" };
 }
 
-/** Most of a SKILL.md the console reads; past it the text is cut and flagged. */
-export const SKILL_MD_MAX_BYTES = 256 * 1024;
+export { SKILL_MD_MAX_BYTES };
 
 export type SkillFileRead = { ok: true; text: string; truncated: boolean } | { ok: false; reason: string };
 
@@ -193,6 +197,15 @@ interface Built {
   notes: string[];
 }
 
+/**
+ * The last moment a retired copy's history can include: the retirement. Its
+ * stamp has whole seconds and the retire captures at the same instant with
+ * milliseconds, so the cutoff is the end of that second. Undefined for a live skill.
+ */
+function versionCutoff(e: Pick<SkillEntry, "status" | "origin">): number | undefined {
+  return e.status === "retired" ? (e.origin.retiredAt ?? 0) + 999 : undefined;
+}
+
 /** Every skill, with agents, origin and usage. */
 export async function buildSkills(): Promise<Built> {
   const notes: string[] = [];
@@ -203,7 +216,7 @@ export async function buildSkills(): Promise<Built> {
   if (lock === null) notes.push("slaude.lock could not be read: installed skills show without their repo and commit, and count as installed.");
   const src: ProvenanceSources = provenanceSources();
   const entries: SkillEntry[] = [];
-  const base = (keys: string[], agents: string[]) => ({ keys, agents, usage: { uses: 0, lastUsedAt: null, trackedSince: null } });
+  const base = (keys: string[], agents: string[]) => ({ keys, agents, usage: { uses: 0, lastUsedAt: null, trackedSince: null }, currentVersion: null });
 
   // Built-in slaude:* skills: every agent.
   try {
@@ -363,6 +376,7 @@ export async function buildSkills(): Promise<Built> {
         keys: usageKeysOf({ slug, name }),
         agents: [],
         usage: { uses: 0, lastUsedAt: null, trackedSince: null },
+        currentVersion: null,
       });
     }
   }
@@ -393,6 +407,22 @@ export async function buildSkills(): Promise<Built> {
         if (e.usage.trackedSince === null || r.firstSeenAt < e.usage.trackedSince) e.usage.trackedSince = r.firstSeenAt;
       }
     }
+  }
+
+  // The version log: an owned skill (base, overlay, retired) has an identity; built-ins and plugins do not.
+  try {
+    const current = await SkillVersions.currentVersions();
+    for (const e of entries) {
+      if (e.owner === null) continue;
+      const scope = versionScope(e.owner);
+      const upTo = versionCutoff(e);
+      // A later skill may hold this slug now: a retired copy shows the version it had when retired.
+      e.currentVersion = upTo === undefined
+        ? current.get(SkillVersions.versionKey(scope, e.slug)) ?? null
+        : (await SkillVersions.list(scope, e.slug, 1, upTo))[0]?.version ?? null;
+    }
+  } catch (e) {
+    notes.push(`skill versions could not be read: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   const order: Record<SkillSourceKind, number> = { "built-in": 0, installed: 1, plugin: 2, "agent-authored": 3 };
@@ -502,6 +532,53 @@ export async function skillDetail(id: string): Promise<SkillDetailResponse | nul
     proposals,
     actions: actionsFor(e, entries),
   };
+}
+
+const VERSIONS_MAX = 200;
+
+const versionView = (v: SkillVersions.SkillVersionMeta): SkillVersionView => ({
+  version: v.version,
+  hash: v.contentHash,
+  capturedAt: v.capturedAt,
+  origin: v.origin,
+  fileCount: v.fileCount,
+  totalBytes: v.totalBytes,
+  skillMdTruncated: v.skillMdTruncated,
+});
+
+/** A skill's recorded versions, newest first. Null when the id names no skill; empty for one with no identity. */
+export async function skillVersions(id: string): Promise<SkillVersionsResponse | null> {
+  const { entries } = await buildSkills();
+  const e = entries.find((x) => x.id === id);
+  if (!e) return null;
+  if (e.owner === null) return { versions: [], truncated: false };
+  const rows = await SkillVersions.list(versionScope(e.owner), e.slug, VERSIONS_MAX + 1, versionCutoff(e));
+  return { versions: rows.slice(0, VERSIONS_MAX).map(versionView), truncated: rows.length > VERSIONS_MAX };
+}
+
+/** The identity a version read resolves to, and whether its text is private to a persona. */
+export interface SkillVersionTarget {
+  owner: string;
+  slug: string;
+  scope: string;
+  /** A persona's own skill: its version text is superadmin only, and audited. */
+  personaScoped: boolean;
+  upTo: number | undefined;
+}
+
+/** Null when the id names no skill, or one with no identity (built-in, plugin). */
+export async function skillVersionTarget(id: string): Promise<SkillVersionTarget | null> {
+  const { entries } = await buildSkills();
+  const e = entries.find((x) => x.id === id);
+  if (!e || e.owner === null) return null;
+  return { owner: e.owner, slug: e.slug, scope: versionScope(e.owner), personaScoped: e.owner !== "default", upTo: versionCutoff(e) };
+}
+
+/** One recorded version with its SKILL.md. Null when the version does not exist for this target. */
+export async function readSkillVersion(t: SkillVersionTarget, version: number): Promise<SkillVersionDetailResponse | null> {
+  const row = await SkillVersions.get(t.scope, t.slug, version);
+  if (!row || (t.upTo !== undefined && row.capturedAt > t.upTo)) return null;
+  return { ...versionView(row), skillMd: row.skillMd };
 }
 
 /**

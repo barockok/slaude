@@ -8,7 +8,8 @@
  * here combines the layers itself.
  */
 import { randomUUID } from "node:crypto";
-import { db } from "./schema";
+import { db, dbDialect } from "./schema";
+import { GLOBAL_SCOPE, versionScope } from "./skill-versions";
 import { encrypt, decrypt, isEncrypted } from "./crypto";
 import { mergeEffective, sameDesired, type DesiredPersona, type EffectivePersona, type Override, type OverrideField } from "../persona/effective";
 
@@ -231,12 +232,35 @@ export async function applySync(
     for (const [name, prev] of existing) {
       if (incoming.has(name) || prev.tombstonedAt !== null) continue;
       await tx.run(`UPDATE personas SET tombstoned_at = ? WHERE tenant_id = ? AND name = ?`, [now, tenant, name]);
+      // Its skill history is private to it: a later persona of this name must not
+      // read it. The log has no tenant, so a same-named live persona keeps it.
+      const scope = versionScope(name);
+      if (scope !== GLOBAL_SCOPE) {
+        await tx.run(
+          `DELETE FROM skill_versions WHERE scope = ? AND NOT EXISTS (SELECT 1 FROM personas WHERE name = ? AND tombstoned_at IS NULL)`,
+          [scope, name],
+        );
+      }
       result.tombstoned.push(name);
     }
     const wiped = await tx.run(`DELETE FROM persona_overrides WHERE tenant_id = ?`, [tenant]);
     result.overridesWiped = wiped.changes ?? 0;
     return result;
   });
+}
+
+/**
+ * Persona names by state, across tenants: `live` has a row in use, `removed`
+ * has only tombstoned rows. Empty on sqlite, which has no personas table.
+ */
+export async function personaNameStates(): Promise<{ live: Set<string>; removed: Set<string> }> {
+  const live = new Set<string>();
+  const tombstoned = new Set<string>();
+  if (dbDialect() !== "pg") return { live, removed: tombstoned };
+  for (const r of await db.query<{ name: string; tombstoned_at: number | string | null }>("SELECT name, tombstoned_at FROM personas")) {
+    (r.tombstoned_at === null ? live : tombstoned).add(r.name);
+  }
+  return { live, removed: new Set([...tombstoned].filter((n) => !live.has(n))) };
 }
 
 async function requireManaged(tenant: string) {
