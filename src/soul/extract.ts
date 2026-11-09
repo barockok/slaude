@@ -288,7 +288,7 @@ export async function extractSoulData(
   if (hit.why) console.warn(`[soul] cache invalid at ${cp}, re-extracting: ${hit.why}`);
 
   try {
-    const text = await call(soulSystemBlock(persona), EXTRACTION_PROMPT);
+    const text = await call(soulSystemBlock(persona, { keepScopes: true }), EXTRACTION_PROMPT);
     const raw = parseJsonLoose(text);
     const data = SoulDataSchema.parse(raw);
     // Defense in depth: every extracted Slack id MUST appear verbatim in

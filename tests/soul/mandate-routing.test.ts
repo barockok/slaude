@@ -12,7 +12,7 @@ import { withChannelClasses } from "../../src/gateway/api/tenants";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
 import type { Persona } from "../../src/persona/types";
 import { SoulDataSchema, type SoulData } from "../../src/soul/data";
-import { __resetSoulDataMemo, channelMandate, effectiveSoulForChannel, setSoulData, soulData } from "../../src/soul/extract";
+import { __resetSoulDataMemo, channelMandate, effectiveSoulForChannel, extractSoulData, setSoulData, soulData } from "../../src/soul/extract";
 import { effectiveMandateIn, personaMandateText } from "../../src/soul/persona-mandates";
 import { effectiveSoulForChannelFor } from "../../src/soul/per-persona";
 import { makeNodeVoiceHost } from "../../src/voice/hosts";
@@ -243,5 +243,24 @@ describe("extraction outage: the approvers-only fallback", () => {
     useSoul("## Mandate\nHelp.\n\n## Channel C0OPS\n### Mandate\nOwn.\n");
     expect(soulData().mandate).toBeUndefined();
     expect(soulData().channelOverrides).toEqual([]);
+  });
+});
+
+describe("scope blocks and the raw persona text", () => {
+  const md = "# Ana\n\n## Mandate\nGlobal.\n\n## Scope dm\n### Mandate\nDM-ONLY-TEXT\n\n## Values\n- calm\n";
+
+  test("a turn elsewhere never reads a scope block; the turn it applies to reads it resolved", async () => {
+    const agent = new AgentManager();
+    agent.setPersonaSoulResolver(async () => ({ soulMd: md, soulJson: { mandate: "Global.", scopeMandates: [{ scope: "dm", mandate: "DM-ONLY-TEXT" }] } }));
+    const elsewhere = await agent.__systemPromptForTests("s1", "ana", { channelId: "C0ELSE" });
+    expect(elsewhere).not.toContain("DM-ONLY-TEXT");
+    expect(elsewhere).toContain("## Values");
+    expect(await agent.__systemPromptForTests("s2", "ana", { channelId: "D0ALICE" })).toContain("For this channel your mandate is: DM-ONLY-TEXT");
+  });
+
+  test("the extractor still reads scope blocks", async () => {
+    let system = "";
+    await extractSoulData(md, { strict: false, call: async (s) => ((system = s), "{not json") });
+    expect(system).toContain("DM-ONLY-TEXT");
   });
 });

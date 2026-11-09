@@ -147,5 +147,26 @@ export function parseModeLine(line: string): ModeLine | null {
 /** Whether a soul text uses the scoped-mandate syntax (which extractions made before it cannot have read). */
 export function usesScopedMandates(text: string): boolean {
   const lines = text.split(/\r?\n/);
-  return lines.some((l) => /^##\s+scope\s+(dm|public|trusted)\s*$/i.test(l.trim()) || parseModeLine(l) !== null);
+  return lines.some((l) => SCOPE_HEADING.test(l.trim()) || parseModeLine(l) !== null);
 }
+
+const SCOPE_HEADING = /^##\s+scope\s+(dm|public|trusted)\s*$/i;
+
+/**
+ * The soul text with its `## Scope dm|public|trusted` blocks removed, for the
+ * persona block of a prompt: a scope is delivered only through the resolved
+ * mandate, so a turn never reads the scope of a place it is not in. A block
+ * ends at the next `#` or `##` heading. Text with no such block is unchanged.
+ */
+export function stripScopeBlocks(text: string): string {
+  const out: string[] = [];
+  let skipping = false;
+  let fenced = false;
+  for (const line of text.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+    else if (!fenced && /^#{1,2}\s/.test(line)) skipping = SCOPE_HEADING.test(line.trim());
+    if (!skipping) out.push(line);
+  }
+  return out.join("\n");
+}
+

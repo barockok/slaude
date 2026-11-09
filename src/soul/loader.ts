@@ -3,6 +3,7 @@ import { paths } from "../config/home";
 import { brainEnabled } from "../knowledge/brain";
 import { renderRuntimeFile } from "./runtime/render";
 import { renderSkillIndex } from "./builtin";
+import { stripScopeBlocks } from "./mandate-scope";
 
 /**
  * Runtime baseline — non-negotiable rules every slaude process inherits.
@@ -161,8 +162,10 @@ export function loadSoul(soulPath?: string): string {
  * defines how slaude interacts with Slack) with the operator's persona file
  * (which defines who slaude is in this deploy).
  */
-export function soulSystemBlock(overlay?: string): string {
-  const persona = (overlay ?? loadSoul()).trim();
+export function soulSystemBlock(overlay?: string, opts: { keepScopes?: boolean } = {}): string {
+  const text = overlay ?? loadSoul();
+  // `## Scope` blocks reach a turn only through the resolved mandate. Extraction alone reads them.
+  const persona = (opts.keepScopes ? text : stripScopeBlocks(text)).trim();
   return `${runtimeBaseline(brainEnabled())}\n\n<persona>\n${persona}\n</persona>`;
 }
 

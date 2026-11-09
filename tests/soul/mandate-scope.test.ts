@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MANDATE_LINE_MAX, mandateContext, mandatePartsLine, parseModeLine, resolveMandate, subMandatesOf, usesScopedMandates, type SubMandate } from "../../src/soul/mandate-scope";
+import { MANDATE_LINE_MAX, mandateContext, mandatePartsLine, parseModeLine, resolveMandate, stripScopeBlocks, subMandatesOf, usesScopedMandates, type SubMandate } from "../../src/soul/mandate-scope";
 import { SoulDataSchema } from "../../src/soul/data";
 
 const G = "Help the team ship.";
@@ -134,3 +134,21 @@ describe("mode lines and the scoped-syntax check", () => {
     expect(usesScopedMandates("## Mandate\nHelp in `## Scope dm` docs.\n## Channel C1\n### Mandate\nx")).toBe(false);
   });
 });
+
+describe("stripScopeBlocks", () => {
+  test("removes each known scope block up to the next top-level heading, keeps the rest", () => {
+    const soul = "# Name\n\n## Mandate\nHelp.\n\n## Scope dm\n### Mandate\nSECRET-DM\n\n## Values\n- calm\n\n## Scope public\n### Mandate\nSECRET-PUB\n";
+    const out = stripScopeBlocks(soul);
+    expect(out).not.toContain("Scope");
+    expect(out).not.toContain("SECRET");
+    expect(out).toContain("## Mandate\nHelp.");
+    expect(out).toContain("## Values\n- calm");
+  });
+
+  test("a legacy soul, an unknown scope, a channel block and a fenced heading are untouched", () => {
+    for (const soul of ["## Mandate\r\nHelp.\r\n\r\n## Channel C1\n### Mandate\nMode: reduce\nx\n", "## Scope elsewhere\n### Mandate\nx\n", "## Mandate\n```\n## Scope dm\nexample\n```\nafter\n"]) {
+      expect(stripScopeBlocks(soul)).toBe(soul);
+    }
+  });
+});
+

@@ -941,6 +941,8 @@ Limit for public channels (this narrows the mandate above and wins over it where
 
 `extend` reads `Additional mandate for this channel (in addition to the mandate above):` in the same place.
 
+`## Scope` blocks are removed from the raw `<persona>` text of the system prompt, so a turn only reads the scope that applies to it, through the resolved `<channel-mandate>` directive.
+
 A named persona reads its own mandates and blocks (the default persona's are never inherited), and its channel classes are the same lists that admit it (`withAclFallback`). Every reader of a mandate goes through `resolveMandate` in `src/soul/mandate-scope.ts`: the turn's system prompt, the heartbeat and wake prompts, voice calls and the console's Mandates tab.
 
 > **Template stub block.** The seeded `SOUL.md` contains a `## Channel <#C0123456789|example-channel>` stub with a placeholder id — the extractor skips it (placeholder ids like `C0123456789` and `<@manager-id>` are ignored). Delete the stub or fill it with a real channel id.
