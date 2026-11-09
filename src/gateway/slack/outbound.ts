@@ -24,6 +24,7 @@
  * test fails when a new one appears unclassified.
  */
 import { mdToMrkdwn } from "./format";
+import { attachedResolved } from "../../guardrails/attached";
 import { redactSlack } from "./redact";
 import { redactPatternsFor } from "../../soul/per-persona";
 import { redactSecrets } from "../core/status-text";
@@ -137,7 +138,7 @@ async function rulesFor(o: OutboundOptions): Promise<Rules> {
       return (await failedSetExists(tenant)) ? "unavailable" : null;
     }
   }
-  return sessionGuardrails(snap.resolved, o.persona || "default", o.channel, { version: snap.version, proseMax: env.guardrailProseMax() });
+  return sessionGuardrails(attachedResolved(snap.resolved), o.persona || "default", o.channel, { version: snap.version, proseMax: env.guardrailProseMax() });
 }
 
 /** The cached rules only (sync paths: a card being built). A failed load is unavailable; none loaded yet is none. */
@@ -146,7 +147,7 @@ function cachedRulesFor(o: OutboundOptions): Rules {
   if (guardrailsFailure(tenant)) return failedSetExistsCached(tenant) ? "unavailable" : null;
   const snap = cachedGuardrails(tenant);
   if (!snap) return null;
-  return sessionGuardrails(snap.resolved, o.persona || "default", o.channel, { version: snap.version, proseMax: env.guardrailProseMax() });
+  return sessionGuardrails(attachedResolved(snap.resolved), o.persona || "default", o.channel, { version: snap.version, proseMax: env.guardrailProseMax() });
 }
 
 function record(o: OutboundOptions, hits: RuleHit[], deciding: RuleHit, decided: FiringApplied): void {
