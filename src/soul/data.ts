@@ -14,10 +14,21 @@ export const ApproverEntrySchema = z.object({
   catchall: z.boolean(),
 });
 
+/** How a sub-mandate combines with the global mandate. See `mandate-scope.ts`. */
+export const MandateModeSchema = z.enum(["override", "extend", "reduce"]);
+export type MandateMode = z.infer<typeof MandateModeSchema>;
+
+/** Lower-cased, and an unknown value reads as no mode (`override`) rather than
+ *  failing the whole extraction and costing the soul its ACLs. */
+const lenientMode = z
+  .preprocess((v) => (typeof v === "string" ? v.trim().toLowerCase() : v), MandateModeSchema.optional())
+  .catch(undefined);
+
 /**
  * Per-channel override of the global mandate / approvers. Sourced from a
  * `## Channel <#Cxxx|name>` block in SOUL.md. Both inner fields are optional:
- *   - mandate present → replaces the global mandate in that channel.
+ *   - mandate present → applies in that channel per its mode (`Mode:` line;
+ *     none means it replaces the global mandate).
  *   - approvers non-empty → replaces the global approver set in that channel.
  * An absent field falls back to the global value. See
  * {@link SoulDataSchema.channelOverrides} and `effectiveSoulForChannel`.
@@ -25,7 +36,16 @@ export const ApproverEntrySchema = z.object({
 export const ChannelOverrideSchema = z.object({
   channel: z.string().regex(/^[CGD][A-Z0-9]+$/),
   mandate: z.string().optional(),
+  /** How `mandate` combines with the global one; absent means `override`. */
+  mandateMode: lenientMode,
   approvers: z.array(ApproverEntrySchema).default([]),
+});
+
+/** A sub-mandate for a kind of place, from a `## Scope dm|public|trusted` block. */
+export const ScopeMandateSchema = z.object({
+  scope: z.enum(["dm", "public", "trusted"]),
+  mandate: z.string(),
+  mode: lenientMode,
 });
 
 export const SoulDataSchema = z.object({
@@ -95,10 +115,13 @@ export const SoulDataSchema = z.object({
   /** Per-channel overrides of mandate / approvers. Empty = global only.
    *  Resolved at runtime by `effectiveSoulForChannel(channelId)`. */
   channelOverrides: z.array(ChannelOverrideSchema).default([]),
+  /** Sub-mandates for direct messages and the two channel classes. */
+  scopeMandates: z.array(ScopeMandateSchema).default([]),
 });
 
 export type ApproverEntry = z.infer<typeof ApproverEntrySchema>;
 export type ChannelOverride = z.infer<typeof ChannelOverrideSchema>;
+export type ScopeMandate = z.infer<typeof ScopeMandateSchema>;
 export type SoulData = z.infer<typeof SoulDataSchema>;
 
 export const EXTRACTION_PROMPT = `You are a structured-data extractor. Read the persona block above and return a single JSON object matching this TypeScript shape — no prose, no fences, just JSON:
@@ -116,7 +139,8 @@ export const EXTRACTION_PROMPT = `You are a structured-data extractor. Read the 
   "approvalTimeoutSeconds": number,
   "mandate"?:              string,
   "values":                string[],
-  "channelOverrides":      Array<{ "channel": string, "mandate"?: string, "approvers": Array<{ "userId": string, "scope": string, "catchall": boolean }> }>
+  "channelOverrides":      Array<{ "channel": string, "mandate"?: string, "mandateMode"?: "override" | "extend" | "reduce", "approvers": Array<{ "userId": string, "scope": string, "catchall": boolean }> }>,
+  "scopeMandates":         Array<{ "scope": "dm" | "public" | "trusted", "mandate": string, "mode"?: "override" | "extend" | "reduce" }>
 }
 
 Rules:
@@ -133,5 +157,7 @@ Rules:
 - redactPatterns: array of regex source strings (no /…/ wrappers, no flags) the persona declares for redacting outbound replies. Look for sections titled "Redaction", "Redact", "PII patterns". Empty array if no such section.
 - approvalTimeoutSeconds: integer seconds. Look for "Approval timeout" or "Auto-deny after". 0 means wait forever.
 - channelOverrides: one entry per "## Channel <#Cxxx|name>" (or raw Cxxx/Gxxx/Dxxx) section. For each: "channel" = the channel id (strip <#…|name> wrappers, keep only the id); "mandate" = the text under that block's "### Mandate" subsection (omit if absent); "approvers" = the entries under that block's "### Approvers" subsection (same userId/scope/catchall rules as the top-level approvers). Skip template-stub blocks whose channel id is a placeholder like "<#Cxxx|name>" or "C0123456789". Empty array if there are no channel sections.
+- mandateMode: when the first line under a "### Mandate" is "Mode: override", "Mode: extend" or "Mode: reduce", set that value (lower case) and leave the line out of the mandate text. Omit it when there is no such line.
+- scopeMandates: one entry per top-level "## Scope dm", "## Scope public" or "## Scope trusted" section that has a "### Mandate". "scope" = dm, public or trusted; "mandate" = the text under its "### Mandate"; "mode" = the value of a first "Mode:" line, left out of the text, as for mandateMode. Empty array if there are none.
 - Omit fields you cannot determine. Do not invent ids — every id you return MUST appear verbatim somewhere in the persona text.
 - Return ONLY the JSON object. No \`\`\` fence. No explanation.`;
