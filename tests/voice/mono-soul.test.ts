@@ -57,3 +57,22 @@ describe("monoPersonaSoul", () => {
     expect(monoPersonaSoul("default", "C1")).toBeTruthy();
   });
 });
+
+describe("monoPersonaSoul scoped mandates", () => {
+  it("a named persona's channel limit and dm scope go through the resolver", () => {
+    const md = "# Ops Bot\nRuns the rota in C0OPS1, D0ALICE1.";
+    writeSoulCacheEntry(md, SoulDataSchema.parse({
+      identity: { name: "Ops Bot" },
+      mandate: "keep the rota",
+      channelOverrides: [{ channel: "C0OPS1", mandate: "no paging", mandateMode: "reduce" }],
+      scopeMandates: [{ scope: "dm", mandate: "be brief" }],
+    }));
+    setPersonaRegistry(registry([persona("ops-bot", md)], true));
+    const limited = instructionsFrom(monoPersonaSoul("ops-bot", "C0OPS1"), "b");
+    expect(limited).toContain("Mandate: keep the rota");
+    expect(limited).toContain("Limit for this channel");
+    expect(limited).toContain("no paging");
+    expect(instructionsFrom(monoPersonaSoul("ops-bot", "D0ALICE1"), "b")).toContain("Mandate: be brief");
+    expect(instructionsFrom(monoPersonaSoul("ops-bot", "C0ELSE99"), "b")).toContain("Mandate: keep the rota");
+  });
+});

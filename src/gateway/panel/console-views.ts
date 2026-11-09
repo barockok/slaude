@@ -179,7 +179,7 @@ export async function readableMandates(mandates: MandateView[], persona: string,
   const ids = new Set<string>();
   for (const m of mandates) {
     if (m.channelId) ids.add(m.channelId);
-    for (const t of [m.title, m.instructions, ...m.triggers]) for (const x of t.matchAll(CHANNEL_REF)) ids.add(x[1]!);
+    for (const t of [m.title, m.instructions, m.effective ?? "", ...m.triggers]) for (const x of t.matchAll(CHANNEL_REF)) ids.add(x[1]!);
   }
   const labels = await channelLabels(names, [...ids].map((channelId) => ({ channelId, ctx: { persona } })));
   return mandates.map((m) => {
@@ -188,6 +188,7 @@ export async function readableMandates(mandates: MandateView[], persona: string,
       ...m,
       title: plainChannelRefs(m.title, labels),
       instructions: plainChannelRefs(m.instructions, labels),
+      ...(m.effective !== undefined ? { effective: plainChannelRefs(m.effective, labels) } : {}),
       triggers: m.triggers.map((t) => plainChannelRefs(t, labels)),
       ...(label ? { channelLabel: label } : {}),
     };

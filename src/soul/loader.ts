@@ -3,6 +3,7 @@ import { paths } from "../config/home";
 import { brainEnabled } from "../knowledge/brain";
 import { renderRuntimeFile } from "./runtime/render";
 import { renderSkillIndex } from "./builtin";
+import { stripScopeBlocks } from "./mandate-scope";
 
 /**
  * Runtime baseline — non-negotiable rules every slaude process inherits.
@@ -129,6 +130,13 @@ is a placeholder, ignored by the parser) or fill it with a real channel id.
 The manager (and backup) stay eligible approvers here automatically — a
 channel block can only *add* approvers, never lock the operator out.
 
+A sub-mandate can also add to or narrow the global mandate instead of replacing
+it: write \`Mode: override\`, \`Mode: extend\` or \`Mode: reduce\` as the first line
+inside \`### Mandate\` (no line means \`override\`). For direct messages or a whole
+channel class instead of one channel, add a top-level block named \`## Scope dm\`,
+\`## Scope public\` or \`## Scope trusted\`, each with its own \`### Mandate\`. Only
+the most specific match applies: a channel block, then a trust class, then dm.
+
 ### Mandate
 - <what slaude is meant to accomplish specifically in this channel>
 
@@ -154,8 +162,10 @@ export function loadSoul(soulPath?: string): string {
  * defines how slaude interacts with Slack) with the operator's persona file
  * (which defines who slaude is in this deploy).
  */
-export function soulSystemBlock(overlay?: string): string {
-  const persona = (overlay ?? loadSoul()).trim();
+export function soulSystemBlock(overlay?: string, opts: { keepScopes?: boolean } = {}): string {
+  const text = overlay ?? loadSoul();
+  // `## Scope` blocks reach a turn only through the resolved mandate. Extraction alone reads them.
+  const persona = (opts.keepScopes ? text : stripScopeBlocks(text)).trim();
   return `${runtimeBaseline(brainEnabled())}\n\n<persona>\n${persona}\n</persona>`;
 }
 

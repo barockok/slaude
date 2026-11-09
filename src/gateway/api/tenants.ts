@@ -31,6 +31,7 @@ import { decrypt, masterKey, MasterKeyError } from "../../db/crypto";
 import { env } from "../../config/env";
 import { loadSoul } from "../../soul/loader";
 import { soulData } from "../../soul/extract";
+import { soulDataFor } from "../../soul/per-persona";
 import { skillRootsFor } from "../../skills/loader";
 import { json, notFound } from "./http";
 import { bridgedServerNames } from "../core/external-mcp";
@@ -258,6 +259,20 @@ export async function providerRowsFingerprint(personaName: string, tenantId = "d
 
 /** A managed tenant: effective state only. Self-contained, so tiers 2 and 3
  *  (disk, env) are unreachable from it. Missing or tombstoned persona -> null. */
+/**
+ * A node resolves mandates from the bundle alone, and a named persona can
+ * inherit its channel lists from the default soul. A soul with scope mandates
+ * carries the lists it is admitted by, so `## Scope trusted` means the same on
+ * a node; any other soul ships as stored.
+ */
+export function withChannelClasses(persona: string, soulJson: unknown): unknown {
+  if (typeof soulJson !== "object" || soulJson === null) return soulJson;
+  const scopes = (soulJson as { scopeMandates?: unknown }).scopeMandates;
+  if (!Array.isArray(scopes) || scopes.length === 0) return soulJson;
+  const { trustedChannels, allowedChannels } = soulDataFor(persona);
+  return { ...soulJson, trustedChannels, allowedChannels };
+}
+
 async function buildManagedBundle(tenantId: string, personaId: string): Promise<RuntimeBundle | null> {
   const effective = (await effectivePersonas(tenantId)).find((p) => p.name === personaId);
   if (!effective) return null;
@@ -277,7 +292,7 @@ async function buildManagedBundle(tenantId: string, personaId: string): Promise<
     providerCreds,
     ...(own ? { ownProvider: true as const } : {}),
     soulMd: effective.soulMd,
-    soulJson: effective.soulJson,
+    soulJson: withChannelClasses(effective.name, effective.soulJson),
     slackUserId: effective.slackUserId ?? null,
     // A persona's mcp holds resolved header and env secrets: a node gets the
     // bridged server names below, never the config.
@@ -340,7 +355,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
       personaId: persona.name,
       providerCreds,
       soulMd: persona.soul_md,
-      soulJson: typeof persona.soul_json === "string" ? JSON.parse(persona.soul_json) : persona.soul_json,
+      soulJson: withChannelClasses(persona.name, typeof persona.soul_json === "string" ? JSON.parse(persona.soul_json) : persona.soul_json),
       slackUserId: persona.slack_user_id ?? null,
       mcpJson: null,
       mcpServers: bridgedServerNames(persona.name),

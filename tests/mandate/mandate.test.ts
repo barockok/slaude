@@ -286,3 +286,70 @@ Post the release status every morning.
     expect(ms.map((m) => m.id)).toEqual(["heartbeat"]);
   });
 });
+
+describe("listMandates scoped mandates", () => {
+  const SCOPED_MD = `# Scoped
+
+## Mandate
+Keep the team informed.
+
+## Channel <#CTEAM|team>
+### Mandate
+Mode: extend
+Answer team questions.
+
+## Channel <#CQUIET|quiet>
+### Proactive
+- Enabled: no
+
+## Channel <#CPUB2|pub2>
+### Mandate
+Replace it here.
+
+## Scope public
+### Mandate
+Mode: reduce
+No internals.
+
+## Scope dm
+### Mandate
+Be brief.
+`;
+  const scoped = () => {
+    setPersonaRegistry(registryWith([{ name: "scoped", soulJson: { allowedChannels: ["CQUIET", "CPUB2"], trustedChannels: ["CTEAM"] }, soulMd: SCOPED_MD }]));
+    return listMandates("scoped");
+  };
+  const byId = (ms: Awaited<ReturnType<typeof listMandates>>, id: string) => ms.find((m) => m.id === id)!;
+
+  test("a channel card shows its boundary, mode and effective text", async () => {
+    const c = byId(await scoped(), "channel:CTEAM");
+    expect(c.boundary).toBe("channel:CTEAM");
+    expect(c.mode).toBe("extend");
+    expect(c.instructions).toBe("Answer team questions.");
+    expect(c.effective).toBe("Keep the team informed.\n\nAdditional mandate for this channel (in addition to the mandate above):\nAnswer team questions.");
+    expect(c.inheritsGlobal).toBeUndefined();
+  });
+
+  test("a no-mode channel is an override and its effective text is its own", async () => {
+    const c = byId(await scoped(), "channel:CPUB2");
+    expect(c.mode).toBe("override");
+    expect(c.effective).toBe("Replace it here.");
+  });
+
+  test("scope blocks are cards with their boundary and effective text", async () => {
+    const ms = await scoped();
+    const pub = byId(ms, "scope:trust:public");
+    expect(pub.kind).toBe("scope");
+    expect(pub.boundary).toBe("trust:public");
+    expect(pub.mode).toBe("reduce");
+    expect(pub.effective).toContain("Limit for public channels");
+    expect(byId(ms, "scope:dm").effective).toBe("Be brief.");
+  });
+
+  test("a channel with no mandate of its own that a scope reaches follows it, not the global", async () => {
+    const c = byId(await scoped(), "channel:CQUIET");
+    expect(c.inheritsGlobal).toBeUndefined();
+    expect(c.effectiveFrom).toBe("trust:public");
+    expect(c.effective).toContain("No internals.");
+  });
+});

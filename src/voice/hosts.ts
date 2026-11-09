@@ -3,6 +3,8 @@
  * and child process come from, per runtime (the mono process or a node worker).
  * Calls run as the agent identity only (voice mode spec §3, §10).
  */
+import { SoulDataSchema } from "../soul/data";
+import { resolveSoulMandate } from "../soul/mandate-scope";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentManager } from "../agent/manager";
 import { buildInstructions, createVoiceMcp, VOICE_MCP_NAME, type VoiceHost } from "../agent/voice-mcp";
@@ -12,7 +14,7 @@ import { voiceConfigFromBundle, type VoiceBundle, type VoiceConfig } from "./con
 import { makeTokenKeeper, monoRunner, nodeRunner, VoiceAuthLost, type TurnAgent } from "./runners";
 import { spawnVoiceLoop } from "./spawn";
 
-type JobClaimsExcerpt = { lock?: unknown; remote?: unknown; runAs?: string };
+type JobClaimsExcerpt = { lock?: unknown; remote?: unknown; runAs?: string; channel?: unknown };
 
 /** A job token's claims (or the gateway's fresh thread identity) → the
  *  agent-only refusal: a /1on1 lock, a /remote target, or a turn that runs as
@@ -38,6 +40,15 @@ export function instructionsFrom(soul: unknown, brief: string): string {
   };
   const values = Array.isArray(s.values) ? s.values.filter((v): v is string => typeof v === "string") : [];
   return buildInstructions({ ...(s.identity ?? {}), values, mandate: s.mandate }, brief);
+}
+
+/** A node's soul as its voice call speaks it in one channel: the resolver's mandate when the bundle's soul parses. */
+function bundleSoulForChannel(soulJson: unknown, channel: unknown): unknown {
+  if (typeof channel !== "string" || soulJson == null) return soulJson;
+  const parsed = SoulDataSchema.safeParse(soulJson);
+  if (!parsed.success) return soulJson;
+  const resolved = resolveSoulMandate(parsed.data, channel, parsed.data);
+  return resolved.applied ? { ...(soulJson as object), mandate: resolved.text } : soulJson;
 }
 
 type MonoAgent = Parameters<typeof monoRunner>[0] & Pick<AgentManager, "holdIdle" | "resolveEffectiveIdentity">;
@@ -194,7 +205,11 @@ export function makeNodeVoiceHost(o: {
       }
       return o.agent.holdIdle(sid, h);
     },
-    instructions: async (sid, brief) => instructionsFrom((await o.bundle(sid))?.soulJson, brief),
+    instructions: async (sid, brief) => {
+      const token = o.tokenFor(sid);
+      const channel = token ? o.claims(token)?.channel : undefined;
+      return instructionsFrom(bundleSoulForChannel((await o.bundle(sid))?.soulJson, channel), brief);
+    },
   };
 }
 

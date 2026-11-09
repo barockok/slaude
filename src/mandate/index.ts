@@ -12,8 +12,9 @@
  *  - `global`: the soul's `## Mandate` (trigger: any admitted message).
  *  - `channel:<id>`: each `## Channel` block with a mandate, and each with its
  *    own `### Proactive` switch. A block with no mandate text is listed with
- *    `inheritsGlobal`. The default persona's blocks never appear under a
- *    named persona.
+ *    `inheritsGlobal`, or with `effectiveFrom` when a scope applies there. The
+ *    default persona's blocks never appear under a named persona.
+ *  - `scope:<boundary>`: each `## Scope dm|public|trusted` sub-mandate.
  *  - `heartbeat`: when proactive wakes are on anywhere: the `## Proactive`
  *    block, or any channel's own `### Proactive` with `Enabled: yes` (one switch).
  *  - `cron:<id>`: each active, unpaused `cron_jobs` row of the persona.
@@ -30,12 +31,14 @@ import * as CronJobs from "../db/cron-jobs";
 import { personaSoulText } from "../persona/soul-source";
 import type { Level } from "../proactive/levels";
 import { effectiveSoulForChannelFor } from "../soul/per-persona";
-import { personaMandateText } from "../soul/persona-mandates";
+import type { MandateMode } from "../soul/data";
+import type { MandateBoundary, SubMandate } from "../soul/mandate-scope";
+import { effectiveMandateAt, effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
 import { parseProactive, type ProactiveConfig } from "../soul/proactive";
 
 export interface Mandate {
   id: string;
-  kind: "global" | "channel" | "cron" | "heartbeat";
+  kind: "global" | "channel" | "scope" | "cron" | "heartbeat";
   title: string;
   instructions: string;
   triggers: string[];
@@ -46,8 +49,16 @@ export interface Mandate {
   schedule?: string;
   /** A channel block's own `### Proactive` switch, when it has one. */
   proactive?: { enabled: boolean; highest?: Level };
-  /** A channel block with no mandate text of its own: the global mandate applies there. */
+  /** A channel block with no mandate text and no scope applying: the global mandate applies there. */
   inheritsGlobal?: boolean;
+  /** A sub-mandate's place: `channel:<id>`, `trust:public`, `trust:trusted` or `dm`. */
+  boundary?: MandateBoundary;
+  /** How a sub-mandate combines with the global mandate. */
+  mode?: MandateMode;
+  /** The mandate the agent reads in this place, from the one resolver. */
+  effective?: string;
+  /** Which sub-mandate shaped `effective`, when it is not this card's own (a channel following a scope). */
+  effectiveFrom?: MandateBoundary;
   /** How the runtime narrows `approvers` (default persona: by scope, per request). */
   approverNote?: string;
 }
@@ -63,6 +74,16 @@ function proactiveOf(persona: string): ProactiveConfig | null {
   } catch {
     return null;
   }
+}
+
+const SCOPE_PLACE: Partial<Record<MandateBoundary, string>> = {
+  dm: "direct messages",
+  "trust:public": "public channels",
+  "trust:trusted": "trusted channels",
+};
+
+function boundaryContext(sub: SubMandate): { dm: true } | { trust: "public" | "trusted" } {
+  return sub.boundary === "dm" ? { dm: true } : { trust: sub.boundary === "trust:public" ? "public" : "trusted" };
 }
 
 function cronTitle(prompt: string): string {
@@ -87,6 +108,7 @@ export async function listMandates(personaName: string): Promise<Mandate[]> {
   const channels = [...new Set([...Object.keys(text.channels), ...Object.keys(proactive?.channels ?? {})])].sort();
   for (const channelId of channels) {
     const own = text.channels[channelId] ?? null;
+    const resolved = effectiveMandateIn(text, channelId);
     const m: Mandate = {
       id: `channel:${channelId}`,
       kind: "channel",
@@ -97,13 +119,38 @@ export async function listMandates(personaName: string): Promise<Mandate[]> {
       source: "soul",
       channelId,
     };
-    if (!own) m.inheritsGlobal = true;
+    if (own) {
+      m.boundary = `channel:${channelId}`;
+      m.mode = resolved.applied?.mode ?? "override";
+      m.effective = resolved.text;
+    } else if (resolved.applied) {
+      m.effective = resolved.text;
+      m.effectiveFrom = resolved.applied.boundary;
+    } else {
+      m.inheritsGlobal = true;
+    }
     const enabled = proactive?.channels[channelId];
     if (enabled !== undefined) {
       const highest = proactive!.channelHighest[channelId];
       m.proactive = highest ? { enabled, highest } : { enabled };
     }
     out.push(m);
+  }
+
+  for (const sub of text.subMandates.filter((s) => !s.boundary.startsWith("channel:"))) {
+    const where = SCOPE_PLACE[sub.boundary]!;
+    out.push({
+      id: `scope:${sub.boundary}`,
+      kind: "scope",
+      title: `Mandate in ${where}`,
+      instructions: sub.text,
+      triggers: [`messages in ${where}`],
+      approvers: await approversIn(),
+      source: "soul",
+      boundary: sub.boundary,
+      mode: sub.mode,
+      effective: effectiveMandateAt(text, boundaryContext(sub)).text,
+    });
   }
 
   // One switch: wakes run when the global section or any channel turns them on.

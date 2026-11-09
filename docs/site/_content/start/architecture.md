@@ -140,7 +140,8 @@ At boot (and on every `sha256(SOUL.md)` change) an **ephemeral, tool-free Claude
   blockedUsers:   string[],    // hard drop before Claude is invoked
   dmAllowedUsers: string[],    // DM allowlist beyond manager/backup
   approvers:      ApproverEntry[],  // { userId, scope, catchall }
-  channelOverrides: ChannelOverride[], // per-channel mandate/approver replace
+  channelOverrides: ChannelOverride[], // per-channel sub-mandate (with mode) and approvers
+  scopeMandates:  ScopeMandate[], // sub-mandates for dm, public and trusted
   mandate?:       string,
   values:         string[],
 }
@@ -341,7 +342,7 @@ The system prompt is a composition — not a single file.
 flowchart TB
   Base["<b>RUNTIME BASELINE</b> — src/soul/loader.ts:RUNTIME_BASELINE<br/>Hardcoded, non-negotiable, ships with the code.<br/>Slack output discipline, formatting, approval discipline, engagement,<br/>channel trust, KB-first, skill evolution, harness overrides.<br/>SOUL.md cannot override it. A slaude release updates it."]
   Persona["<b>&lt;persona&gt;</b> — ~/.slaude/SOUL.md<br/>Operator-authored. Defines who the agent is.<br/>Identity, mandate, values, manager, allowlists, approvers,<br/>per-channel overrides (## Channel &lt;#Cxxx&gt;).<br/>Seeded as STARTER_PERSONA on first boot when missing."]
-  Mandate["<b>&lt;channel-mandate&gt;</b> — when SOUL.md has a ## Channel override<br/>Replaces the global mandate for that channel only.<br/>Approvers are replaced too; manager and backup stay catchalls."]
+  Mandate["<b>&lt;channel-mandate&gt;</b> — when SOUL.md has a ## Channel override<br/>The effective mandate there (override, extend or reduce), also for ## Scope blocks.<br/>Approvers are replaced too; manager and backup stay catchalls."]
   Reminder["<b>&lt;system-reminder&gt;</b> — skills + session mode + memory context<br/>Injected per turn: discovered skills, 1on1 mode block, brain memory recall."]
   Out["Claude child system prompt<br/>preset: claude_code + append"]
 
@@ -352,7 +353,7 @@ flowchart TB
 |---|---|---|---|
 | Runtime baseline | `src/soul/loader.ts` | No — code change + release | No — outside `<persona>`, prompt says non-negotiable |
 | `SOUL.md` persona | `~/.slaude/SOUL.md` | Yes — edit file, re-extracted on next sha change | Persona can drift, but gates still enforce allowlists |
-| Channel override | `## Channel` block in `SOUL.md` | Yes | Replaces mandate/approvers for that channel |
+| Channel override and scope | `## Channel` and `## Scope` blocks in `SOUL.md` | Yes | Sub-mandate by mode; a channel block also replaces its approvers |
 | Runtime overlay | `soul_overrides` sqlite | Yes — `/soul add/remove` (manager-only) | Effective immediately, all sessions |
 
 > **Why two layers?** The baseline lets the project tighten guardrails (output discipline, approval rules, KB-first) in a release without touching any operator's persona. The persona stays focused on identity and mandate — not mechanical rules.
