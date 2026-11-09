@@ -834,7 +834,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             const versions = await skillVersions(skillId);
             return versions ? json(200, versions satisfies SkillVersionsResponse) : json(404, { error: "no such skill" });
           }
-          if (!/^[1-9]\d{0,9}$/.test(seg[5]!)) return json(404, { error: "no such version" });
+          if (!/^[1-9]\d{0,8}$/.test(seg[5]!)) return json(404, { error: "no such version" });
           const version = await skillVersionDetail(skillId, Number(seg[5]));
           return version ? json(200, version satisfies SkillVersionDetailResponse) : json(404, { error: "no such version" });
         }

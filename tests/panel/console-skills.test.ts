@@ -328,6 +328,9 @@ describe("GET /panel/api/skills/:id/versions", () => {
     expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/99")).status).toBe(404);
     expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/abc")).status).toBe(404);
     expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/1e3")).status).toBe(404);
+    // Past 9 digits is refused before the database: 2147483648 overflows a Postgres INTEGER.
+    expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/2147483648")).status).toBe(404);
+    expect((await call("GET", "/panel/api/skills/base%3Atriage-x/versions/999999999")).status).toBe(404);
     expect((await call("POST", "/panel/api/skills/base%3Atriage-x/versions", superadmin, {})).status).toBe(405);
   });
 
