@@ -456,11 +456,14 @@ CREATE TABLE IF NOT EXISTS guardrails_manifest (
 );
 
 CREATE TABLE IF NOT EXISTS node_plugins (
-  node_id     TEXT    PRIMARY KEY,
+  node_id     TEXT    NOT NULL,
+  instance_id TEXT    NOT NULL,
   labels      TEXT    NOT NULL,
   reported_at INTEGER NOT NULL,
-  report      TEXT    NOT NULL
+  report      TEXT    NOT NULL,
+  PRIMARY KEY (node_id, instance_id)
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_node_plugins_instance ON node_plugins (instance_id);
 `;
 
 /** Create tables + apply the incremental column migrations on an existing sqlite file. */
