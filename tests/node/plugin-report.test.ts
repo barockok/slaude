@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildPluginReport, isPluginSealed, reportNodePlugins } from "../../src/node/plugin-report";
+import { buildPluginReport, isPluginSealed, reportNodePlugins, sealedMcpFile } from "../../src/node/plugin-report";
 import { NodeClient } from "../../src/node/client";
 import { paths } from "../../src/config/home";
 import { loadInstalledPluginPaths } from "../../src/config/plugins";
-import { loadDotenv } from "../../src/config/env";
+import { loadDotenv, readsHomeDotenv } from "../../src/config/env";
 import { STATE_INVALID_URL, STATE_NEEDS_HEADERS, STATE_OFFERABLE, STATE_SSE, STATE_URL_SECRETS, STATE_WRITABLE } from "../../src/config/plugin-inventory";
 
 const asRoot = process.getuid?.() === 0;
@@ -91,6 +91,20 @@ describe("loader", () => {
     mkdirSync(legacy, { recursive: true });
     writeFileSync(join(paths.claudeConfig, "plugins", "installed_plugins.json"), JSON.stringify({ version: 2, plugins: { "old@market": [{ installPath: legacy }] } }));
     expect(loadInstalledPluginPaths()).toEqual([{ type: "local", path: legacy }]);
+  });
+});
+
+describe("$SLAUDE_HOME/.env on a node", () => {
+  test("a node process does not read it: by role in the real environment, or by the entry mark", () => {
+    expect(readsHomeDotenv({ SLAUDE_ROLE: "node" }, false)).toBe(false);
+    expect(readsHomeDotenv({ SLAUDE_ROLE: " Node " }, false)).toBe(false);
+    expect(readsHomeDotenv({}, true)).toBe(false);
+    expect(readsHomeDotenv({ SLAUDE_ROLE: "mono" }, true)).toBe(false);
+  });
+
+  test("mono and gateway still read it", () => {
+    expect(readsHomeDotenv({}, false)).toBe(true);
+    expect(readsHomeDotenv({ SLAUDE_ROLE: "gateway" }, false)).toBe(true);
   });
 });
 
@@ -194,6 +208,19 @@ describe("the sealed check", () => {
     expect(buildPluginReport({ instance: "p1", manifest, sealed: sealedOpts() }).plugins[0]!.http[0]!.state).toBe(STATE_OFFERABLE);
   });
 
+  test.skipIf(asRoot)("the report reads the realpath the check verified", () => {
+    const real = plugin({ mcpServers: { s: { type: "http", url: "https://real.example.com/mcp" } } }, "toolkit");
+    const link = join(root, "plugins", "cache", "market", "toolkit", "current");
+    symlinkSync(real, link);
+    writeFileSync(
+      join(root, "plugins", "installed_plugins.json"),
+      JSON.stringify({ version: 2, plugins: { "toolkit@market": [{ installPath: link, gitCommitSha: "abc1234def" }] } }),
+    );
+    seal(real);
+    expect(sealedMcpFile(entry(link), root, sealedOpts())).toBe(realpathSync(join(real, ".mcp.json")));
+    expect(buildPluginReport({ instance: "p1", manifest, sealed: sealedOpts() }).plugins[0]!.http[0]).toMatchObject({ url: "https://real.example.com/mcp", state: STATE_OFFERABLE });
+  });
+
   test.skipIf(asRoot)("one path not owned by root fails the whole chain", () => {
     const dir = plugin({ mcpServers: {} });
     seal(dir);
@@ -275,6 +302,13 @@ describe("reportNodePlugins", () => {
     const warnings: string[] = [];
     await reportNodePlugins({ client, instance: "p1", manifest, log: () => {}, warn: (m) => warnings.push(m) });
     expect(warnings.join()).toContain("keeps the first");
+  });
+
+  test("a 429 (credential at its row cap) is logged, not thrown", async () => {
+    const client = new NodeClient({ baseUrl: "http://gw", token: "t", attempts: 1, fetchImpl: (async () => new Response("cap", { status: 429 })) as unknown as typeof fetch });
+    const warnings: string[] = [];
+    await reportNodePlugins({ client, instance: "p1", manifest, log: () => {}, warn: (m) => warnings.push(m) });
+    expect(warnings.join()).toContain("too many");
   });
 
   test("a 413 is logged, not thrown", async () => {

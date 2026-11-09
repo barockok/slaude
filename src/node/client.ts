@@ -294,15 +294,17 @@ export class NodeClient {
   /**
    * Send this process's plugin report (design: plugin inventory). "unsupported":
    * a gateway that predates the route (404); "too-large": the gateway's 413;
-   * "duplicate": it already holds a report for this process (409, first wins).
+   * "duplicate": it already holds a report for this process (409, first wins);
+   * "too-many": this credential is at its row cap (429).
    * Node-authenticated: the gateway takes the node id and labels from the
    * credential. Transient failures throw after the usual retries.
    */
-  async putPlugins(report: PluginReport): Promise<"ok" | "unsupported" | "too-large" | "duplicate"> {
+  async putPlugins(report: PluginReport): Promise<"ok" | "unsupported" | "too-large" | "duplicate" | "too-many"> {
     const res = await this.request("/v1/node/plugins", { method: "PUT", body: report, signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS) });
     if (res.status === 404) return "unsupported";
     if (res.status === 413) return "too-large";
     if (res.status === 409) return "duplicate";
+    if (res.status === 429) return "too-many";
     await this.#json<unknown>(res);
     return "ok";
   }

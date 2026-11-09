@@ -97,35 +97,43 @@ function chainSealed(path: string, realRoot: string, boundary: string | null, ow
 }
 
 /**
- * The sealed check. True only when the plugin directory, its `.mcp.json` and
- * the installed_plugins.json listing it all resolve (symlinks followed) inside
- * the plugin root, and each of them and every ancestor is owned by root and
- * not writable by this process, its group or others. A process running as root
- * fails: it could write anything.
+ * The sealed check. Answers the realpath of the plugin's `.mcp.json` only when
+ * the plugin directory, that file and the installed_plugins.json listing it all
+ * resolve (symlinks followed) inside the plugin root, and each of them and every
+ * ancestor is owned by root and not writable by this process, its group or
+ * others; null otherwise. A process running as root fails: it could write
+ * anything. The caller reads THIS path, so what was checked is what gets read.
  */
-export function isPluginSealed(plugin: Pick<InstalledPlugin, "path" | "listedIn" | "imageOwned">, root: string | null, opts: SealedOptions = {}): boolean {
-  if (!plugin.imageOwned || !root) return false;
+export function sealedMcpFile(plugin: Pick<InstalledPlugin, "path" | "listedIn" | "imageOwned">, root: string | null, opts: SealedOptions = {}): string | null {
+  if (!plugin.imageOwned || !root) return null;
   const uid = opts.uid ?? process.getuid?.();
-  if (uid === 0) return false;
+  if (uid === 0) return null;
   let realRoot: string;
   let boundary: string | null = null;
   try {
     realRoot = realpathSync(root);
     if (opts.boundary) boundary = realpathSync(opts.boundary);
   } catch {
-    return false;
+    return null;
   }
-  for (const target of [plugin.path, join(plugin.path, ".mcp.json"), plugin.listedIn]) {
+  let mcpFile: string | null = null;
+  const mcpPath = join(plugin.path, ".mcp.json");
+  for (const target of [plugin.path, mcpPath, plugin.listedIn]) {
     let real: string;
     try {
       real = realpathSync(target);
     } catch {
-      return false;
+      return null;
     }
-    if (!within(real, realRoot)) return false;
-    if (!chainSealed(real, realRoot, boundary, opts.ownerOf)) return false;
+    if (!within(real, realRoot)) return null;
+    if (!chainSealed(real, realRoot, boundary, opts.ownerOf)) return null;
+    if (target === mcpPath) mcpFile = real;
   }
-  return true;
+  return mcpFile;
+}
+
+export function isPluginSealed(plugin: Pick<InstalledPlugin, "path" | "listedIn" | "imageOwned">, root: string | null, opts: SealedOptions = {}): boolean {
+  return sealedMcpFile(plugin, root, opts) !== null;
 }
 
 function countMd(dir: string, depth = 0): number {
@@ -160,8 +168,7 @@ function countHooks(path: string): number {
   }
 }
 
-function readServers(pluginPath: string): Record<string, Record<string, unknown>> {
-  const file = join(pluginPath, ".mcp.json");
+function readServers(file: string): Record<string, Record<string, unknown>> {
   if (!existsSync(file)) return {};
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8")) as { mcpServers?: unknown } | null;
@@ -194,8 +201,9 @@ function httpEntry(name: string, raw: Record<string, unknown>, sealed: boolean):
 function reportPlugin(p: InstalledPlugin, root: string | null, manifest: Pick<NodeManifest, "servers">, sealedOpts: SealedOptions): ReportedPlugin {
   const stdio: ReportedStdioServer[] = [];
   const http: ReportedHttpServer[] = [];
-  const servers = readServers(p.path);
-  const sealed = Object.keys(servers).length > 0 && isPluginSealed(p, root, sealedOpts);
+  const sealedFile = sealedMcpFile(p, root, sealedOpts);
+  const servers = readServers(sealedFile ?? join(p.path, ".mcp.json"));
+  const sealed = sealedFile !== null;
   for (const [name, raw] of Object.entries(servers)) {
     if (!raw || typeof raw !== "object") continue;
     if ((raw.type === "http" || raw.type === "sse") && typeof raw.url === "string") http.push(httpEntry(name, raw, sealed));
@@ -226,7 +234,7 @@ export function buildPluginReport(opts: { instance: string; manifest: Pick<NodeM
 }
 
 export interface ReportDeps {
-  client: { putPlugins(report: PluginReport): Promise<"ok" | "unsupported" | "too-large" | "duplicate"> };
+  client: { putPlugins(report: PluginReport): Promise<"ok" | "unsupported" | "too-large" | "duplicate" | "too-many"> };
   /** This process's id, the one its worker heartbeats under. */
   instance: string;
   manifest: Pick<NodeManifest, "servers">;
@@ -252,6 +260,10 @@ export async function reportNodePlugins(deps: ReportDeps): Promise<void> {
     if (result === "duplicate") {
       // A retry whose first attempt landed, or someone else used this process id.
       warn("[node] the gateway already holds a plugin report for this process; it keeps the first");
+      return;
+    }
+    if (result === "too-many") {
+      warn("[node] the gateway holds too many plugin reports for this credential; continuing without one");
       return;
     }
     if (result === "too-large") {
