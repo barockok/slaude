@@ -95,6 +95,8 @@ import { makeRegistry, type Registry } from "../../queue/registry";
 import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
+import { listNodePlugins } from "../../db/node-plugins";
+import { startPluginInventory } from "./plugin-inventory";
 import { createPortalApi } from "../portal/api";
 import { createDeployApi } from "../deploy/api";
 import { createBrainImportApi } from "../brain-import/api";
@@ -4466,6 +4468,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         expect: claims.initiator,
       }),
     });
+  // The plugin inventory view (design: plugin inventory): the snapshot the
+  // bridge and the portal read synchronously. Nodes exist only with a queue;
+  // started in start() so it is loaded before this gateway serves.
+  let pluginInventory: { stop(): void } | null = null;
   const v1 = createV1Api({
     tools: {
       mcpBridge,
@@ -4598,6 +4604,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         onUnlock: (sessionId) => { agent.reload(sessionId); },
         // The persona view says where a persona's stdio MCP servers run.
         role: queueDispatch ? "gateway" : "mono",
+        // The read-only Plugins page: nodes exist only with a queue.
+        plugins: queueDispatch
+          ? { rows: listNodePlugins, live: (ids) => queueDispatch.registry.liveCredentials(ids) }
+          : null,
         names: slackNames,
         // Mono: sessions run here, so liveness is the manager's live map
         // (nothing registers in the node registry).
@@ -4622,7 +4632,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     : null;
 
   return {
-    start: () => t.start(),
+    start: async () => {
+      if (queueDispatch) {
+        pluginInventory = await startPluginInventory({
+          rows: listNodePlugins,
+          live: (ids) => queueDispatch.registry.liveCredentials(ids),
+        });
+      }
+      await t.start();
+    },
     stop: async () => {
       // End live voice calls first, while the transport can still carry each
       // call's summary turn; bounded so shutdown never hangs on a call.
@@ -4633,6 +4651,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await backgroundScheduler?.stop().catch(() => {});
       cronScheduler.stop();
       stopOwnerGuardrails();
+      pluginInventory?.stop();
       if (panelSweeper) clearInterval(panelSweeper);
       await panelResumeUnsub?.().catch(() => {});
       await panelHoldUnsub?.().catch(() => {});

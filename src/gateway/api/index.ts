@@ -16,6 +16,7 @@
  * labels, before the handler runs.
  *
  *   GET   /v1/node/whoami             the caller's verified identity      (node)
+ *   PUT   /v1/node/plugins            the node's plugin report, once per process (node)
  *   GET   /v1/sessions/:id            session row                         (node+job, label)
  *   PATCH /v1/sessions/:id            update started/model/mode           (same)
  *   GET   /v1/tenants/:id/runtime     runtime bundle (legacy route)       (node+job, label)
@@ -55,6 +56,7 @@ import { handlePending, handlePendingCancel, type PendingOptions } from "./pendi
 import { handleJobEvent, handleTokenRefresh, handleTokenReissue, REFRESH_GRACE_SEC, type JobLookup, type JobMovedTo } from "./jobs";
 import { executeToolCall } from "./tools";
 import { handleMcpx } from "./tools/mcpx";
+import { handleNodePlugins, type NodePluginsDeps } from "./node-plugins";
 import type { ToolPlaneDeps } from "./tools/deps";
 import { defaultPendingSource, type PendingSource } from "./pending-source";
 import { json, methodNotAllowed, notFound, readBodyCapped, readJson } from "./http";
@@ -84,6 +86,8 @@ export interface V1Options {
   jobLookup?: JobLookup;
   /** The job-moved marker, for a held copy's token (refresh and reissue). */
   jobMovedTo?: JobMovedTo;
+  /** The plugin report route's seams (tests). */
+  nodePlugins?: NodePluginsDeps;
 }
 
 export type RouteAuth = "node" | "node+job";
@@ -141,6 +145,15 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
           legacy: node.legacy,
           expiresInSec: expiresAt === undefined ? null : Math.max(0, expiresAt - Math.floor(Date.now() / 1000)),
         }),
+    },
+    {
+      name: "node.plugins",
+      methods: ["PUT"],
+      pattern: ["node", "plugins"],
+      auth: "node",
+      gate: "none",
+      reason: "the report is stored under the caller's own verified node id and labels; no persona data",
+      handle: async ({ req, node }) => handleNodePlugins(req, node, opts.nodePlugins),
     },
     {
       name: "sessions",
