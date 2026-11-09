@@ -17,7 +17,7 @@ import type {
   AgentSummary, ConsoleGrantView, CreateGrantRequest, GrantView, SessionActivity, SessionControlRequest, SessionEvent, SessionSummaryView,
 } from "../../../gateway/panel/api-types";
 import {
-  addLegacyGuardrail, agentGuardrailFixtures, agentSettingsFixtures, ownerGuardrailDetail, ownerGuardrailList, setOwnerGuardrailEnabled, skillFixtures, testOwnerGuardrails,
+  addLegacyGuardrail, agentGuardrailFixtures, agentSettingsFixtures, ownerGuardrailDetail, ownerGuardrailList, setOwnerGuardrailEnabled, skillFixtures, skillVersionFixtures, testOwnerGuardrails,
   validateOwnerGuardrail, writeOwnerGuardrail,
 } from "./resources-fixtures";
 import type { AgentSettingsGroup, GuardrailTestRequest } from "../../../gateway/panel/api-types";
@@ -84,6 +84,7 @@ export function installStub(): void {
   const fx = createFixtures();
   const startedAt = Date.now();
   let skills = skillFixtures(startedAt);
+  const skillVersions = skillVersionFixtures(startedAt);
   if (sticky("as") === "operator") fx.me = { email: "bob@example.com", role: "operator" };
   if (empty) {
     fx.agents = {};
@@ -263,6 +264,14 @@ export function installStub(): void {
     if (i < 0) return json(404, { error: "no such skill" });
     const sk = skills[i]!;
     if (seg.length === 3) return method === "GET" ? json(200, sk) : json(405, { error: "method not allowed" });
+    if (seg[3] === "versions" && (seg.length === 4 || seg.length === 5)) {
+      if (method !== "GET") return json(405, { error: "method not allowed" });
+      const all = skillVersions[sk.id] ?? [];
+      if (seg.length === 4) return json(200, { versions: all.map(({ skillMd: _s, ...v }) => v), truncated: false });
+      if (sk.origin.root === "agent" && !isSuper) return json(403, { error: "action 'skill.version.private' requires the superadmin role", required: "superadmin" });
+      const found = all.find((v) => v.version === Number(seg[4]));
+      return found ? json(200, found) : json(404, { error: "no such version" });
+    }
     const verb = seg[3];
     if (method !== "POST" || (verb !== "retire" && verb !== "restore")) return json(404, { error: "not found" });
     if (!isSuper) return json(403, { error: `action 'skill.${verb}' requires the superadmin role`, required: "superadmin" });

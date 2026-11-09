@@ -604,6 +604,8 @@ export const env = {
   guardrailApproveTimeoutSec: () => Math.min(3600, intAtLeastOne("SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC", 600)),
   /** How long audit events are kept (`SLAUDE_AUDIT_RETENTION_DAYS`, default 365). */
   auditRetentionDays: () => intAtLeastOne("SLAUDE_AUDIT_RETENTION_DAYS", 365),
+  /** How often the gateway re-reads the skill roots into the version log, in minutes (`SLAUDE_SKILL_VERSION_RECONCILE_MINUTES`, default 5). */
+  skillVersionReconcileMinutes: () => intAtLeastOne("SLAUDE_SKILL_VERSION_RECONCILE_MINUTES", 5),
   /** The longest a waking agent may sleep, in hours (`SLAUDE_WAKE_MAX_SLEEP_HOURS`, default 24). */
   wakeMaxSleepHours: () => intAtLeastOne("SLAUDE_WAKE_MAX_SLEEP_HOURS", 24),
   /** Heartbeat pass interval in minutes (`SLAUDE_HEARTBEAT_MINUTES`, default 30; spec §10.3). */
