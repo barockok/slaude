@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { inWindow, parseClock, parseManager, parseMandates, parseProactive, proactiveFor, proactiveRead, wakeEligibility, __setProactiveSoulSource } from "../../src/soul/proactive";
+import { inWindow, parseClock, parseManager, parseMandates, parseProactive, parseScopedMandates, proactiveFor, proactiveRead, wakeEligibility, __setProactiveSoulSource } from "../../src/soul/proactive";
 import { FIELD_ALIASES, mutateOverride } from "../../src/soul/overrides";
 import { EXTRACTION_PROMPT, SoulDataSchema } from "../../src/soul/data";
 
@@ -297,5 +297,47 @@ describe("parseMandates", () => {
   });
   it("empty soul: nothing", () => {
     expect(parseMandates("")).toEqual({ global: "", channels: {} });
+  });
+});
+
+describe("parseScopedMandates", () => {
+  const soul = [
+    "## Mandate", "- Help the team.", "",
+    "## Channel <#C0HOMECHAN|home>", "### Mandate", "Mode: extend", "- Also keep the rota.", "",
+    "## Channel C0OTHERCHAN", "### Mandate", "- **Mode:** reduce", "- No deploys.", "",
+    "## Channel C0PLAINCHAN", "### Mandate", "Just this.", "",
+    "## Scope dm", "### Mandate", "Mode: override", "Be brief.", "",
+    "## Scope public", "### Mandate", "Mode: reduce", "No internals.", "",
+    "## Scope trusted", "### Mandate", "Open up.", "",
+    "## Scope elsewhere", "### Mandate", "Ignored.", "",
+  ].join("\n");
+
+  it("reads each mode line and scope block; the mode line is not mandate text", () => {
+    expect(parseScopedMandates(soul)).toEqual({
+      global: "Help the team.",
+      channels: { C0HOMECHAN: "Also keep the rota.", C0OTHERCHAN: "No deploys.", C0PLAINCHAN: "Just this." },
+      modes: { C0HOMECHAN: "extend", C0OTHERCHAN: "reduce" },
+      scopes: [
+        { scope: "dm", mandate: "Be brief.", mode: "override" },
+        { scope: "public", mandate: "No internals.", mode: "reduce" },
+        { scope: "trusted", mandate: "Open up." },
+      ],
+    });
+  });
+
+  it("a Mode line is only read first; later or unknown ones stay mandate text", () => {
+    const later = "## Channel C0HOMECHAN\n### Mandate\nDo the job.\nMode: reduce\n";
+    expect(parseScopedMandates(later).modes).toEqual({});
+    expect(parseScopedMandates(later).channels.C0HOMECHAN).toBe("Do the job. Mode: reduce");
+    const unknown = "## Channel C0HOMECHAN\n### Mandate\nMode: stack\nDo the job.\n";
+    expect(parseScopedMandates(unknown).channels.C0HOMECHAN).toBe("Mode: stack Do the job.");
+  });
+
+  it("a Mode line in the global mandate stays text; it has no boundary", () => {
+    expect(parseScopedMandates("## Mandate\nMode: extend\nHelp.\n").global).toBe("Mode: extend Help.");
+  });
+
+  it("parseMandates keeps its shape for a soul using the new syntax", () => {
+    expect(parseMandates(soul)).toEqual({ global: "Help the team.", channels: { C0HOMECHAN: "Also keep the rota.", C0OTHERCHAN: "No deploys.", C0PLAINCHAN: "Just this." } });
   });
 });
