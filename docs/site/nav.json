@@ -66,6 +66,7 @@
             { "path": "deploy/panel", "label": "Console and portal" },
             { "path": "deploy/multi-node", "label": "Multi-node scale-out" },
             { "path": "deploy/node-manifest", "label": "Node MCP manifest" },
+            { "path": "deploy/plugins", "label": "Plugins on nodes" },
             { "path": "deploy/scale-operations", "label": "Scale operations" },
             { "path": "deploy/personas-as-code", "label": "Personas as code" },
             { "path": "deploy/provider-credentials", "label": "Provider credentials" },
