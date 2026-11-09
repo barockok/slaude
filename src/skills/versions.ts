@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { env } from "../config/env";
 import { paths } from "../config/home";
 import * as SkillVersions from "../db/skill-versions";
+import { registerLoop } from "../gateway/core/running-loops";
 import { globalSkillsRoot, parseSkillText, personaSkillsRoot, SKILL_MD_MAX_BYTES } from "./loader";
 import { provenanceSources, skillProvenance, type ProvenanceSources } from "./provenance";
 
@@ -329,5 +330,12 @@ export function startSkillVersionReconciler(): () => void {
   queueSweep();
   const timer = setInterval(queueSweep, env.skillVersionReconcileMinutes() * 60_000);
   timer.unref?.();
-  return () => clearInterval(timer);
+  // Registered so an owner that never stops (a test's gateway) can still be
+  // ended by stopRunningLoops(); the returned stop unregisters.
+  const stop = () => {
+    clearInterval(timer);
+    unregister();
+  };
+  const unregister = registerLoop(stop);
+  return stop;
 }

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { paths } from "../../src/config/home";
 import { db } from "../../src/db/schema";
 import * as SkillVersions from "../../src/db/skill-versions";
+import { runningLoops, stopRunningLoops } from "../../src/gateway/core/running-loops";
 import { skillOps } from "../../src/skills/mcp-tools";
 import {
   fingerprintSkill,
@@ -17,6 +18,7 @@ import {
   noteSkillChanged,
   reconcileSkillVersions,
   recordFingerprint,
+  startSkillVersionReconciler,
   versionScope,
   type SkillFingerprint,
 } from "../../src/skills/versions";
@@ -248,6 +250,38 @@ describe("retire and restore", () => {
       else process.env.SLAUDE_ROLE = saved;
     }
     expect(await rows("node-x")).toEqual([]);
+  });
+});
+
+describe("the reconciler's timer", () => {
+  test("is a registered loop that its stop function ends, and stopping twice is harmless", () => {
+    const before = runningLoops();
+    const stop = startSkillVersionReconciler();
+    expect(runningLoops()).toBe(before + 1);
+    stop();
+    expect(runningLoops()).toBe(before);
+    stop();
+    expect(runningLoops()).toBe(before);
+  });
+
+  test("an owner that never stops is ended by stopRunningLoops", () => {
+    startSkillVersionReconciler();
+    expect(runningLoops()).toBeGreaterThan(0);
+    stopRunningLoops();
+    expect(runningLoops()).toBe(0);
+  });
+
+  test("a process with no database starts no timer", () => {
+    const saved = process.env.SLAUDE_ROLE;
+    const before = runningLoops();
+    process.env.SLAUDE_ROLE = "node";
+    try {
+      startSkillVersionReconciler()();
+      expect(runningLoops()).toBe(before);
+    } finally {
+      if (saved === undefined) delete process.env.SLAUDE_ROLE;
+      else process.env.SLAUDE_ROLE = saved;
+    }
   });
 });
 

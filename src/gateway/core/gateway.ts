@@ -918,7 +918,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     })
     .catch((e) => console.error("[gates] boot sweep failed:", e));
   // The skill version log: reconcile now, then on a timer. Best effort, never blocks boot.
-  startSkillVersionReconciler();
+  const stopSkillVersionReconciler = startSkillVersionReconciler();
   // Clean up expired ignores + abandoned paste-back OAuth flows every 5 minutes.
   // Each parked flow holds the registered client secret and the PKCE verifier
   // (encrypted), so an abandoned one must not linger until the initiator happens
@@ -4635,6 +4635,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Aborts a pass in flight; bounded (STOP_GRACE_MS, 10 s) so shutdown never waits out a review.
       await backgroundScheduler?.stop().catch(() => {});
       cronScheduler.stop();
+      stopSkillVersionReconciler();
       stopOwnerGuardrails();
       if (panelSweeper) clearInterval(panelSweeper);
       await panelResumeUnsub?.().catch(() => {});
