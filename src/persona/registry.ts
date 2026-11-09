@@ -22,6 +22,8 @@ export type DefaultPersonaFields = {
   background?: PersonaBackground | null;
   /** Desired layer: set when the default persona comes from an agent.yaml. */
   definition?: PersonaDefinition | null;
+  /** Its stored structure, only with a definition: a boot checks that it parses. */
+  soulJson?: unknown;
 };
 
 export interface PersonaRegistry {
@@ -166,7 +168,7 @@ async function loadPersonaState(tenant: string): Promise<PersonaState> {
     }));
   const def = all.find((p) => p.name === "default") ?? null;
   const defaultFields = def
-    ? { model: def.model, mcp: def.mcp ?? null, provider: def.provider ?? null, runsOn: def.runsOn ?? null, kbSources: def.kbSources ?? null, background: def.background ?? null, ...(def.definition ? { definition: def.definition } : {}) }
+    ? { model: def.model, mcp: def.mcp ?? null, provider: def.provider ?? null, runsOn: def.runsOn ?? null, kbSources: def.kbSources ?? null, background: def.background ?? null, ...(def.definition ? { definition: def.definition, soulJson: def.soulJson } : {}) }
     : null;
   return { registry: snapshot(personas, { tombstoned, defaultPersona: defaultFields }), managed: { defaultPersona: def } };
 }
@@ -357,7 +359,11 @@ export async function refreshPersonaState(tenant: string): Promise<boolean> {
   if (def) {
     const parsed = SoulDataSchema.safeParse(def.soulJson);
     if (parsed.success) pair = { text: def.soulMd, data: parsed.data, fromDb: true };
-    else console.error(`[persona] the default persona's soul structure is invalid tenant=${tenant}; keeping the previous default soul`);
+    else if (def.definition) {
+      // Never the disk soul's ACLs for an agent.yaml default: empty, and sessions refuse to boot.
+      console.error(`[persona] the default persona's compiled structure is invalid tenant=${tenant}; it has no access until a sync repairs it`);
+      pair = { text: def.soulMd, data: SoulDataSchema.parse({}), fromDb: true };
+    } else console.error(`[persona] the default persona's soul structure is invalid tenant=${tenant}; keeping the previous default soul`);
   } else if (defaultPairFromDb) {
     pair = { text: null, data: await diskSoulDataLoader(), fromDb: false };
   }

@@ -1,5 +1,6 @@
 import * as AgentGrants from "../db/agent-grants";
 import { m } from "../metrics";
+import { managedPersonaDefinition } from "../persona/registry";
 import { effectiveGrants, grantFromRow, type Grant, type GrantRole } from "./grants";
 
 export type Role = GrantRole;
@@ -146,12 +147,13 @@ export async function loadGrants(personaName: string | null | undefined): Promis
  * Who may approve for a NAMED persona, as the approval gate resolves it: every
  * user whose role on it (channel aware) is approver or manager, with no scope
  * keyword matching (phase 1); when it has none, the default persona's
- * managers; else nobody (an empty list). Not for the default persona, whose
+ * managers (never for an agent.yaml persona); else nobody (an empty list). Not for the default persona, whose
  * gate matches soul approvers by scope per request.
  */
 export async function approversFor(personaName: string, channelId?: string | null): Promise<string[]> {
   const own = usersWithRole(await loadGrants(personaName), ["approver", "manager"], channelId);
-  if (own.length) return own;
+  // An agent.yaml persona has exactly the approvers its file names.
+  if (own.length || managedPersonaDefinition(personaName)) return own;
   return usersWithRole(await loadGrants("default"), ["manager"]);
 }
 

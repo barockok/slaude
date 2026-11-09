@@ -15,7 +15,7 @@ import { ApprovalGate, type ApprovalRequest } from "../slack/approval-gate";
 import { IgnoreGate } from "../slack/ignore-gate";
 import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slack/commands";
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
-import { approvalTimeoutFor, effectiveSoulForChannelFor, soulDataFor } from "../../soul/per-persona";
+import { trustSoulFor, approvalTimeoutFor, effectiveSoulForChannelFor, soulDataFor } from "../../soul/per-persona";
 import { admit } from "../../access/admission";
 import { loadGrants, roleOf, usersWithRole } from "../../access/role";
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
@@ -1396,7 +1396,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   type BrainGateCtx = Pick<SlackContext, "channel" | "threadTs" | "userId" | "teamId" | "personaId" | "origin" | "turnSenders">;
   // `lockedUser`: the thread's lock owner when the caller already read it.
   const brainGateFor = async (ctx: BrainGateCtx, known?: { lockedUser: string | null }): Promise<GateInput> => {
-    const soul = soulData();
+    const soul = trustSoulFor(ctx.personaId);
     const lockedUser = known ? known.lockedUser : ((await OneOnOne.find(ctx.channel, ctx.threadTs))?.locked_user ?? null);
     // The persona's Slack user ID as the agent brain-slice key, the process
     // agent otherwise (shared with the console's history reader). Managed +
@@ -3463,7 +3463,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     //   allowed    — public channel, answer but mind exposure
     //   restricted — DM or unlisted (manager-only by the gate above)
     const trust = (() => {
-      const soul = soulData();
+      const soul = trustSoulFor(session.persona_id);
       if (channelType !== "im" && soul.trustedChannels.includes(channelId)) return "trusted";
       if (channelType !== "im" && soul.allowedChannels.includes(channelId)) return "allowed";
       return "restricted";
@@ -4012,7 +4012,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         };
         return buildGateInput(
           { channel: e.channel, ts: e.ts, thread_ts: e.thread_ts, text: (e.text ?? "").toString() },
-          { mentionsAgent: o.mentionsAgent, engaged, channelTrust: GATE_TRUST[channelTrustFor(e.channel, soulData())], contextMessages: runner.contextMessages },
+          { mentionsAgent: o.mentionsAgent, engaged, channelTrust: GATE_TRUST[channelTrustFor(e.channel, trustSoulFor(o.personaId))], contextMessages: runner.contextMessages },
           deps,
         );
       };
