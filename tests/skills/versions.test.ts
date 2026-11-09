@@ -108,6 +108,12 @@ describe("reconcile", () => {
     writeFileSync(join(dir, "__pycache__", "a.pyc"), "bytes");
     mkdirSync(join(dir, ".git"));
     writeFileSync(join(dir, ".git", "FETCH_HEAD"), "x");
+    mkdirSync(join(dir, "scripts", "node_modules", "dep"), { recursive: true });
+    writeFileSync(join(dir, "scripts", "node_modules", "dep", "index.js"), "x");
+    mkdirSync(join(dir, ".venv", "bin"), { recursive: true });
+    writeFileSync(join(dir, ".venv", "bin", "python"), "x");
+    writeFileSync(join(dir, ".DS_Store"), "x");
+    writeFileSync(join(dir, "scripts", ".DS_Store"), "x");
     const r = await reconcileSkillVersions(NOW + 1);
     expect(r.recorded).toBe(0);
   });

@@ -37,8 +37,8 @@ export function versionScope(personaName?: string | null): string {
   return personaName === GLOBAL_SCOPE ? `persona:${personaName}` : personaName;
 }
 
-/** Tool state in a skill's tree, not part of it: a git checkout's metadata, Python's bytecode cache. */
-const IGNORED_DIRS = new Set([".git", "__pycache__"]);
+/** Tool state in a skill's tree, not part of it: VCS metadata, installed dependencies, bytecode, Finder's files. */
+const IGNORED_NAMES = new Set([".git", "__pycache__", "node_modules", ".venv", ".DS_Store"]);
 
 export interface SkillFingerprint {
   hash: string;
@@ -56,9 +56,10 @@ interface TreeEntry {
 
 async function listTree(dir: string, rel: string, out: TreeEntry[]): Promise<void> {
   for (const d of await readdir(rel ? join(dir, rel) : dir, { withFileTypes: true })) {
+    if (IGNORED_NAMES.has(d.name)) continue;
     const p = rel ? `${rel}/${d.name}` : d.name;
     if (d.isDirectory()) {
-      if (!IGNORED_DIRS.has(d.name)) await listTree(dir, p, out);
+      await listTree(dir, p, out);
     } else if (d.isSymbolicLink()) {
       out.push({ rel: p, kind: "link" });
     } else if (d.isFile()) {
