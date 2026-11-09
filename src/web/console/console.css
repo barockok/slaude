@@ -1173,6 +1173,28 @@
   vertical-align: middle;
 }
 
+.sl-memory-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1rem;
+}
+
+.sl-memory-entry {
+  display: grid;
+  gap: 0.375rem;
+}
+
+.sl-memory-entry + .sl-memory-entry {
+  border-top: 1px solid var(--sl-border);
+  padding-top: 1rem;
+}
+
+.sl-memory-entry__who {
+  font-weight: 600;
+}
+
 .sl-memory-page {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 22rem);

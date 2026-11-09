@@ -122,8 +122,49 @@ describe("memory API", () => {
   test("one page with content, type, tags and links; a missing one is a 404", async () => {
     const r = await get("/panel/api/memory/pages?store=shared&slug=notes%2Fa");
     expect(r.status).toBe(200);
-    expect(r.body).toEqual(PAGE);
+    expect(r.body).toEqual({ ...PAGE, entries: [], entriesCapped: false });
     expect((await get("/panel/api/memory/pages?store=shared&slug=notes%2Fz")).status).toBe(404);
+  });
+
+  test("a page's timeline rows come back as entries: turns split, envelope and secrets gone, oldest first", async () => {
+    const withRows: MemoryBrowser = {
+      ...stub,
+      async timeline() {
+        return [
+          { id: 7, date: "2026-11-02", summary: "note title", detail: "note title", createdAt: 3000 },
+          {
+            id: 5,
+            date: "2026-11-01",
+            summary: "hi",
+            detail: `<user><channel user_name="Jane">hello there</channel></user>\n<assistant>token ghp_${"a".repeat(36)} done</assistant>`,
+            createdAt: 2000,
+          },
+        ];
+      },
+    };
+    const r = await get("/panel/api/memory/pages?store=shared&slug=notes%2Fa", operator, withRows);
+    expect(r.status).toBe(200);
+    expect(r.body.entries.map((e: any) => e.id)).toEqual([5, 7]);
+    expect(r.body.entries[0].lines[0]).toEqual({ who: "user", name: "Jane", text: "hello there" });
+    expect(r.body.entries[0].lines[1].who).toBe("agent");
+    expect(JSON.stringify(r.body.entries)).not.toContain("ghp_");
+    expect(r.body.entries[1].lines).toEqual([{ who: "note", text: "note title" }]);
+    expect(r.body.entriesCapped).toBe(false);
+  });
+
+  test("a failed timeline read still returns the page; more rows than the cap are marked", async () => {
+    const failing: MemoryBrowser = { ...stub, timeline: async () => { throw new Error("engine down"); } };
+    const r = await get("/panel/api/memory/pages?store=shared&slug=notes%2Fa", operator, failing);
+    expect(r.status).toBe(200);
+    expect(r.body.entries).toEqual([]);
+    const many: MemoryBrowser = {
+      ...stub,
+      timeline: async (_s, _p, limit) => Array.from({ length: limit }, (_, i) => ({ id: i, date: "2026-11-01", summary: `n${i}`, detail: "", createdAt: 1 })),
+    };
+    const c = await get("/panel/api/memory/pages?store=shared&slug=notes%2Fa", operator, many);
+    expect(c.body.entries.length).toBe(200);
+    expect(c.body.entries[0].id).toBe(1);
+    expect(c.body.entriesCapped).toBe(true);
   });
 
   test("bad parameters are a 400", async () => {
