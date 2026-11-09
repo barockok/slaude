@@ -24,6 +24,10 @@ An agent was three files plus a parse: `persona.yaml`, `SOUL.md`, `mcp.json`, wi
 
 ## Decisions
 
+- **An agent.yaml persona inherits no access.** `withAclFallback` lets a SOUL.md persona borrow the default's managers, channels and approvers, which is right for prose that may be partial. A file with `dm: []` is a statement, so `soulDataFor` returns exactly the file; only the default persona's blocked users union in. The same rule covers approvers (`approversFor`), the trust class used by KB scope, the envelope and the decision gate, and the default persona's own approver chain, which stops at its file and never reads the on-disk SOUL.md or the env list.
+- **A skill list is read per Skill call**, from the registry in mono and the ETag-cached bundle on a node, so a sync reaches a warm session. A failed read serves the last list known. The SDK listing is fixed at boot, so a newly allowed skill is listed from the next boot.
+- **Unknown and duplicate keys fail the sync.** A typo in `access` must not silently unset a list, and a bare `skills:` must not widen to every skill.
+
 - **Scoped mandates compile to the shapes the resolver already reads**, so override, extend, reduce, the absent-mode and unknown-mode rules are shared rather than reimplemented. An unknown mode warns at sync and reads as `extend`; a typo must not replace the global mandate or fail a deploy.
 - **Two access keys beyond the first draft:** `approvers[].channel` and `approvalTimeoutSeconds`. The structured soul already had both, and a migration that dropped them would silently change who can approve and how long a request waits.
 - **Export strips, conservatively.** `personas export --format agent-yaml` removes only the soul sections moved into their own keys, by heading, and keeps everything it does not recognise, so a migration cannot drop prose.

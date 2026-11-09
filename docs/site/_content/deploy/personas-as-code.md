@@ -139,7 +139,7 @@ access:
   dm: [UFRIEND1]
   blocked: [UNOISY1]
   redact: ["internal-[0-9]+"]     # regular expressions
-  approvalTimeoutSeconds: 300     # optional; 0 waits forever
+  approvalTimeoutSeconds: 300     # optional; absent or 0 uses the default persona's timeout
 mcp:                              # the same shape as mcp.json
   mcpServers:
     tracker:
@@ -168,10 +168,21 @@ such a persona's soul changes the prose and keeps the structure.
 `override`, and an unknown one reads as `extend` (a sync warning names it) so a
 typo keeps the global mandate.
 
+**Access is exactly what the file says.** Nothing is inherited from the default
+persona: `dm: []`, `approvers: []` or a missing `access` mean none, so an agent
+with no `access` answers nobody until a console grant says otherwise. It has no
+manager to fall back on either. The one exception is the default persona's
+blocked users, which still apply. Its own `access.channels` also decide the KB
+scope, the trust hint and the decision gate in those channels. A default persona
+defined this way uses only its own approvers, then its managers: an on-disk
+`SOUL.md` and `SLAUDE_APPROVERS` are not consulted, and with neither nobody can
+approve. A `SOUL.md` persona keeps its existing fallback to the default.
+
 **Errors.** A malformed value (a bad id, a bad regular expression, a boundary
-that is not one of the four, a `name` that differs from the directory) fails
-the sync with a message naming the persona and the key. Unknown keys are
-reported like `persona.yaml`'s.
+that is not one of the four, a `name` that differs from the directory), an
+unknown key or a duplicate key fails the sync with a message naming the persona
+and the key. A bare `skills:` or `memory.kbSources:` with no value fails too:
+remove the key for all, or write `[]` for none.
 
 **`skills`** lists the skill slugs the agent may use. It covers the skills in
 `$SLAUDE_HOME/skills` and the persona's own overlay: the Skill tool, the
@@ -191,7 +202,7 @@ installed there; choose machines with `runsOn`.
 
 An agent defined this way needs nodes that advertise the `agent-definition/1`
 capability, which this version's nodes do; an older node is refused, as for
-owner guardrails. It needs payload version 6 and migration 0034 on the
+owner guardrails. It needs payload version 6 and migration 0036 on the
 gateway's database. Secrets stay as `${PERSONA_*}` placeholders and
 `provider` references exactly as in `persona.yaml`.
 
