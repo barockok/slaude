@@ -8,7 +8,7 @@ import { cachedSoulData, effectiveSoulForChannel } from "../soul/extract";
 import { personaSoulText } from "../persona/soul-source";
 import { livePersona } from "../persona/registry";
 import { resolveSoulMandate } from "../soul/mandate-scope";
-import { soulDataFor } from "../soul/per-persona";
+import { compiledSoulFor, soulDataFor } from "../soul/per-persona";
 
 /** Null when the persona cannot be resolved (retired or unknown): the caller
  *  refuses the call rather than speak as another persona. */
@@ -19,7 +19,7 @@ export function monoPersonaSoul(personaId: string | null | undefined, channelId:
     if (!p) return null;
     // Structured data exists once the persona's soul was extracted (persona
     // sync does); otherwise the voice at least carries the persona's name.
-    const data = cachedSoulData(personaSoulText(personaId));
+    const data = compiledSoulFor(personaId) ?? cachedSoulData(personaSoulText(personaId));
     if (!data) return { identity: { name: p.name }, values: [] };
     const resolved = resolveSoulMandate(data, channelId, soulDataFor(personaId));
     return resolved.applied ? { ...data, mandate: resolved.text } : data;

@@ -33,6 +33,7 @@
  *      still writes an `error` row.
  */
 import { query as sdkQuery, type HookCallback, type McpSdkServerConfigWithInstance, type Options } from "@anthropic-ai/claude-agent-sdk";
+import { attachedResolved } from "../guardrails/attached";
 import { scrubChildEnv, TOOLS_SURVIVING_EMPTY_SET, withoutKeys } from "../agent/child-env";
 import { providerCredsEnv, providerSelectingNames } from "../agent/provider-env";
 import type { ResultUsage } from "../agent/token-budget";
@@ -108,7 +109,7 @@ export interface RunnerDeps {
 /** The persona's owner guardrails from the gateway's verified snapshot (no channel). */
 async function defaultGuardrails(personaId: string, tenantId: string): Promise<SessionGuardrails | null> {
   const snap = await currentGuardrails(tenantId, { persona: personaId });
-  return sessionGuardrails(snap.resolved, personaId, null, { version: snap.version, proseMax: env.guardrailProseMax() });
+  return sessionGuardrails(attachedResolved(snap.resolved), personaId, null, { version: snap.version, proseMax: env.guardrailProseMax() });
 }
 
 /** A resolved provider set (a runtime bundle's providerCreds). */

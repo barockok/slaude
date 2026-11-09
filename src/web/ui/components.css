@@ -1474,6 +1474,11 @@ textarea.sl-input {
   color: var(--sl-text);
 }
 
+.sl-definition .sl-code__pre {
+  max-height: 32rem;
+  overflow: auto;
+}
+
 .sl-code__pre:focus-visible {
   box-shadow: var(--sl-focus-ring);
   border-radius: 0 0 var(--sl-radius-lg) var(--sl-radius-lg);

@@ -14,15 +14,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve, relative } from "node:path";
-import { discoverSkills, globalSkillsRoot, personaSkillsRoot, RETIRED_DIR, skillFileName, type Skill } from "./loader";
+import { SKILL_SLUG_RE, allowedSkillsOf, discoverSkills, globalSkillsRoot, personaSkillsRoot, RETIRED_DIR, skillFileName, type Skill } from "./loader";
 import { syncManifest } from "./sync-manifest";
+import { skillsAllowedFor } from "../persona/registry";
 import { noteSkillChanged } from "./versions";
 import { builtinSkillRefusal, cliSkillName, isBuiltinSkillName } from "../soul/builtin";
 import { skillsContract } from "../tools/contracts/skills";
 
 export const SKILLS_MCP_NAME = skillsContract.server;
 
-const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /** True when a persona name denotes a real (non-default) persona. */
 function namedPersona(personaName?: string): string | null {
@@ -35,7 +35,7 @@ function namedPersona(personaName?: string): string | null {
  * (personas/<name>/skills/). Throws on invalid slug or any path-escape attempt.
  */
 export function resolveSkillDir(slug: string, personaName?: string): string {
-  if (!SLUG_RE.test(slug)) {
+  if (!SKILL_SLUG_RE.test(slug)) {
     throw new Error(
       `invalid slug "${slug}" — must match [a-z0-9][a-z0-9-]{0,63}`,
     );
@@ -225,9 +225,15 @@ const err = (text: string): ToolResult => ({
  *  shared base). Named personas read a merged base+overlay view but write/delete
  *  only into their own overlay. */
 export function makeSkillHandlers(personaName?: string) {
+  /** Null when `slug` passes the agent's `skills` list, else the refusal. */
+  const outsideList = (slug: string): ToolResult | null => {
+    const allowed = skillsAllowedFor(personaName);
+    if (!allowed || allowed.includes(slug) || isBuiltinSkillName(slug)) return null;
+    return err(`the skill "${slug}" is not in this agent's skill list`);
+  };
   return {
     async list_skills(): Promise<ToolResult> {
-      const skills = skillOps.list(personaName);
+      const skills = allowedSkillsOf(skillOps.list(personaName), skillsAllowedFor(personaName));
       if (skills.length === 0) return ok("(no skills installed)");
       return ok(
         skills
@@ -239,6 +245,8 @@ export function makeSkillHandlers(personaName?: string) {
       );
     },
     async read_skill({ slug }: { slug: string }): Promise<ToolResult> {
+      const refused = outsideList(slug);
+      if (refused) return refused;
       try {
         return ok(skillOps.read(slug, personaName));
       } catch (e: any) {
@@ -256,6 +264,8 @@ export function makeSkillHandlers(personaName?: string) {
       description: string;
       body: string;
     }): Promise<ToolResult> {
+      const refused = outsideList(slug);
+      if (refused) return refused;
       try {
         const r = skillOps.write(slug, name, description, body, personaName);
         return ok(
@@ -266,6 +276,8 @@ export function makeSkillHandlers(personaName?: string) {
       }
     },
     async delete_skill({ slug }: { slug: string }): Promise<ToolResult> {
+      const refused = outsideList(slug);
+      if (refused) return refused;
       try {
         skillOps.delete(slug, personaName);
         return ok(`deleted skill /${slug}`);

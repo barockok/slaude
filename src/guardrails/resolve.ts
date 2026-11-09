@@ -56,6 +56,21 @@ export function appliesTo(g: ResolvedGuardrail, agent: string, channel: string |
   return ch.length === 0 || (!!channel && ch.includes(channel));
 }
 
+/**
+ * `resolved` with agents added to the `scope: agents` guardrails they attach
+ * (agent.yaml `guardrails:`). Additive only: a guardrail is never removed,
+ * disabled or narrowed, a `shared` one is unchanged, a disabled one stays off,
+ * and the signed document text is not touched.
+ */
+export function withAgentAttachments(resolved: readonly ResolvedGuardrail[], attachments: ReadonlyMap<string, readonly string[]>): ResolvedGuardrail[] {
+  if (attachments.size === 0) return [...resolved];
+  return resolved.map((g) => {
+    const extra = attachments.get(g.slug);
+    if (!extra?.length || !g.meta || g.meta.scope !== "agents") return g;
+    return { ...g, meta: { ...g.meta, agents: [...new Set([...g.meta.agents, ...extra])] } };
+  });
+}
+
 /** The documents that apply to `agent` in some channel (what a node's bundle carries). */
 export function docsForAgent(resolved: readonly ResolvedGuardrail[], agent: string): GuardrailDoc[] {
   return resolved.filter((g) => appliesToAgent(g, agent)).map((g) => g.doc);

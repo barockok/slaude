@@ -12,15 +12,22 @@
  *       Anything export cannot make safe — an unknown key, a non-object
  *       headers/env, a non-list args, a token-shaped url path, command or arg —
  *       fails the export instead of being copied, so seeding a repository
- *       refuses rather than puts a secret in git.
+ *       refuses rather than puts a secret in git. With --format agent-yaml it
+ *       writes one agent.yaml per persona instead: the structured parts come
+ *       from the existing soul extraction (the cache, else a model call), and
+ *       the soul keeps its prose.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { stringify as yamlStringify } from "yaml";
 import { paths } from "../config/home";
 import { LABEL_RE } from "../queue/keys";
 import { readGuardrailDir } from "../guardrails/files";
 import { parseGuardrail } from "../guardrails/format";
-import { parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
+import { definitionGuardrailWarnings, parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
+import { AGENT_YAML, agentDocument, documentPartsFromSoul, LEGACY_FILES, parseAgentYaml, proseOnlySoul } from "../persona/agent-def";
+import { extractSoulData } from "../soul/extract";
+import type { SoulData } from "../soul/data";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
 // The gateway only resolves ${PERSONA_UPPER_CASE_NAME}; persona names are lower-case with hyphens.
@@ -40,9 +47,19 @@ export function renderDir(
   const root = join(dir, "personas");
   if (!existsSync(root)) throw new PayloadError(`no personas/ directory in ${dir}`);
   const personas = [];
+  const definitionWarnings: string[] = [];
   for (const name of readdirSync(root).sort()) {
     if (!statSync(join(root, name)).isDirectory()) continue;
     if (!PERSONA_NAME_RE.test(name)) throw new PayloadError(`directory '${name}' is not a valid persona name`);
+    const agentYaml = read(join(root, name, AGENT_YAML));
+    if (agentYaml !== undefined) {
+      const beside = LEGACY_FILES.filter((f) => existsSync(join(root, name, f)));
+      if (beside.length) throw new PayloadError(`persona '${name}': ${AGENT_YAML} cannot sit beside ${beside.join(", ")}; delete those files, ${AGENT_YAML} replaces them`);
+      const compiled = parseAgentYaml(name, agentYaml);
+      definitionWarnings.push(...compiled.warnings);
+      personas.push(compiled.spec);
+      continue;
+    }
     const yaml = read(join(root, name, "persona.yaml"));
     let cfg: { slackUserId?: string; userToken?: string; model?: string; provider?: unknown; runsOn?: string; kbSources?: unknown; background?: unknown };
     try {
@@ -108,7 +125,13 @@ export function renderDir(
   }
   const payload = parsePayload({ version: payloadVersionFor(personas, guardrails), ...meta, personas, ...(guardrails ? { guardrails } : {}) });
   if (unknown.length) onUnknown?.(capPaths(unknown));
-  const warnings = providerWarnings(payload);
+  const warnings = [
+    ...providerWarnings(payload),
+    ...definitionWarnings,
+    // A guardrail slug no rule in this repository has. Only checkable when the
+    // repository carries its guardrails; the gateway checks the deployed set too.
+    ...(guardrails ? definitionGuardrailWarnings(payload, new Set(guardrails.map((g) => g.slug))) : []),
+  ];
   if (warnings.length) onWarnings?.(warnings);
   // Run the gateway's placeholder validation (with every name satisfied) so a
   // malformed ${...} fails the pull request instead of 422ing at deploy.
@@ -292,9 +315,78 @@ export function exportHome(home: string, out: string): { variables: string[] } {
   return { variables: [...reg.keys()] };
 }
 
+/**
+ * $SLAUDE_HOME to one agent.yaml per persona. `extract` reads a soul's
+ * structure (default: the strict extractor, which serves its cache first);
+ * secrets become the same `${PERSONA_*}` placeholders the plain export writes.
+ */
+export async function exportAgentYaml(
+  home: string,
+  out: string,
+  opts: { only?: string; extract?: (soulMd: string) => Promise<SoulData> } = {},
+): Promise<{ variables: string[] }> {
+  const reg = new Map<string, string>();
+  const argsServers: string[] = [];
+  const extract = opts.extract ?? ((soulMd: string) => extractSoulData(soulMd, { strict: true }));
+  const write = async (args: {
+    name: string; soulMd: string; mcpFile?: string; mcpRaw?: string; slackUserId?: string; userToken?: string; runsOn?: string;
+  }) => {
+    if (opts.only && opts.only !== args.name) return;
+    const data = await extract(args.soulMd);
+    const mcp = args.mcpRaw ? JSON.parse(scrubMcp(args.name, args.mcpFile ?? "mcp.json", args.mcpRaw, reg, argsServers)) : undefined;
+    const prose = proseOnlySoul(args.soulMd);
+    const doc = agentDocument({
+      name: args.name,
+      description: data.identity.role,
+      slackUserId: args.slackUserId,
+      userToken: args.userToken,
+      runsOn: args.runsOn,
+      soul: prose.trim() ? prose : args.soulMd,
+      ...documentPartsFromSoul(data),
+      mcp,
+    });
+    const dir = join(out, "personas", args.name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, AGENT_YAML), yamlStringify(doc, { lineWidth: 0 }));
+  };
+  const defaultSoul = read(join(home, "SOUL.md"));
+  if (defaultSoul !== undefined) await write({ name: "default", soulMd: defaultSoul, mcpFile: ".mcp.json", mcpRaw: read(join(home, ".mcp.json")) });
+  const root = join(home, "personas");
+  if (existsSync(root)) {
+    for (const name of readdirSync(root).sort()) {
+      const d = join(root, name);
+      if (!statSync(d).isDirectory()) continue;
+      if (!PERSONA_NAME_RE.test(name)) throw new PayloadError(`directory '${name}' is not a valid persona name`);
+      const soulMd = read(join(d, "SOUL.md"));
+      if (soulMd === undefined) throw new PayloadError(`persona '${name}' has no SOUL.md`);
+      let cfg: { slackUserId?: string; userToken?: string; runsOn?: unknown };
+      try {
+        cfg = (JSON.parse(read(join(d, "config.json")) ?? "{}") ?? null) as typeof cfg;
+        if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error("not an object");
+      } catch {
+        throw new PayloadError(`persona '${name}': config.json is malformed`);
+      }
+      if (cfg.runsOn !== undefined && (typeof cfg.runsOn !== "string" || !LABEL_RE.test(cfg.runsOn))) {
+        throw new PayloadError(`persona '${name}': config.json runsOn is not a valid node label`);
+      }
+      let userToken: string | undefined;
+      if (cfg.userToken && (!opts.only || opts.only === name)) {
+        const v = varFor(name);
+        claim(reg, v, `${name}/userToken`);
+        userToken = `\${${v}}`; // the value never leaves $SLAUDE_HOME
+      }
+      await write({ name, soulMd, mcpRaw: read(join(d, "mcp.json")), slackUserId: cfg.slackUserId, userToken, runsOn: cfg.runsOn as string | undefined });
+    }
+  }
+  if (argsServers.length) {
+    console.error(`[personas] review stdio args before committing (names only): ${argsServers.join(", ")}`);
+  }
+  return { variables: [...reg.keys()] };
+}
+
 if (import.meta.main) {
   const [cmd, ...args] = process.argv.slice(2);
-  const valued = new Set(["--revision", "--committed-at", "--out"]);
+  const valued = new Set(["--revision", "--committed-at", "--out", "--format", "--persona"]);
   const flags = new Map<string, string>();
   const rest: string[] = []; // positionals, flags removed
   for (let i = 0; i < args.length; i++) {
@@ -309,18 +401,24 @@ if (import.meta.main) {
         revision: flag("--revision") ?? process.env.GITHUB_SHA ?? "local",
         committedAt: flag("--committed-at") ?? new Date().toISOString(),
       }, (paths) => {
-        if (flags.has("--check")) console.error(`[personas] unknown fields (the gateway refuses them, or ignores them with SLAUDE_DEPLOY_STRICT=0): ${paths.join(", ")}`);
+        if (flags.has("--check")) console.error(`[personas] unknown persona.yaml keys, left out of the payload (the gateway never sees them): ${paths.join(", ")}`);
       }, (warnings) => {
         for (const w of warnings) console.error(`[personas] warning: ${w}`);
       });
       if (!flags.has("--check")) console.log(JSON.stringify(p, null, 2));
     } else if (cmd === "export") {
       const out = flag("--out") ?? "./persona-repo";
-      const { variables } = exportHome(paths.home, out);
+      const format = flag("--format") ?? "files";
+      if (format !== "files" && format !== "agent-yaml") throw new PayloadError(`--format must be files or agent-yaml`);
+      const persona = flag("--persona");
+      if (persona !== undefined && format !== "agent-yaml") throw new PayloadError("--persona needs --format agent-yaml");
+      const { variables } = format === "agent-yaml"
+        ? await exportAgentYaml(paths.home, out, persona ? { only: persona } : {})
+        : exportHome(paths.home, out);
       console.error(`[personas] exported to ${out}`);
       if (variables.length) console.error(`[personas] set these in the gateway environment: ${variables.join(", ")}`);
     } else {
-      console.error("usage: personas render <dir> [--revision <sha>] [--committed-at <iso>] [--check] | personas export [--out <dir>]");
+      console.error("usage: personas render <dir> [--revision <sha>] [--committed-at <iso>] [--check] | personas export [--out <dir>] [--format files|agent-yaml] [--persona <name>]");
       process.exit(2);
     }
   } catch (e) {

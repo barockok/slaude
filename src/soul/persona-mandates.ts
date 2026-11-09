@@ -6,6 +6,7 @@
  * Precedence:
  *  - default persona: the effective default soul (`soulData()`, runtime
  *    overrides included);
+ *  - a persona defined by an agent.yaml: its compiled structure, only;
  *  - named persona: its soul text (`personaSoulText`: the managed soul, else
  *    its SOUL.md file; a persona with neither reads the default persona's soul
  *    text), then the cached LLM extraction of exactly that text, else the
@@ -18,7 +19,7 @@ import { personaSoulText } from "../persona/soul-source";
 import type { SoulData } from "./data";
 import { cachedSoulData, channelMandate, soulData } from "./extract";
 import { mandateContext, resolveMandate, subMandatesOf, type ChannelClasses, type MandateContext, type ResolvedMandate, type SubMandate } from "./mandate-scope";
-import { soulDataFor } from "./per-persona";
+import { compiledSoulFor, soulDataFor } from "./per-persona";
 import { parseScopedMandates } from "./proactive";
 
 export interface PersonaMandateText {
@@ -47,6 +48,8 @@ export function personaMandateText(personaId: string | null | undefined): Person
       const soul = soulData();
       return fromSoul(soul, soul);
     }
+    const compiled = compiledSoulFor(personaId);
+    if (compiled) return fromSoul(compiled, soulDataFor(personaId));
     const text = personaSoulText(personaId);
     const classes = soulDataFor(personaId);
     const cached = cachedSoulData(text);

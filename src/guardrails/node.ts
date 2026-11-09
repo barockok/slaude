@@ -15,9 +15,10 @@
  */
 import { env } from "../config/env";
 import { currentGuardrails } from "./snapshot";
-import { docsForAgent, hasEnforcedRules, resolveDocs, sessionGuardrails, type GuardrailDoc, type SessionGuardrails } from "./resolve";
+import { docsForAgent, hasEnforcedRules, resolveDocs, sessionGuardrails, withAgentAttachments, type GuardrailDoc, type SessionGuardrails } from "./resolve";
+import { attachedResolved, attachmentsOf } from "./attached";
 
-export { CAPABILITIES_HEADER, GUARDRAILS_CAPABILITY, hasCapability } from "./capability";
+export { AGENT_DEFINITION_CAPABILITY, CAPABILITIES_HEADER, definitionNeedsNode, GUARDRAILS_CAPABILITY, hasCapability } from "./capability";
 
 /** The bundle field. Absent: the gateway has no guardrails (or predates them). */
 export interface BundleGuardrails {
@@ -27,28 +28,35 @@ export interface BundleGuardrails {
   /** The always-loaded prose cap of the gateway's deployment. */
   proseMax: number;
   docs: GuardrailDoc[];
+  /** Guardrails the persona's agent.yaml attaches (the text is in `docs`).
+   *  Absent when it attaches none, so other bundles and their ETags are unchanged. */
+  attached?: string[];
 }
 
 /** The bundle's guardrails for one persona, from the verified snapshot (throws when unavailable). */
 export async function bundleGuardrailsFor(tenant: string, persona: string): Promise<BundleGuardrails | null> {
   const snap = await currentGuardrails(tenant, { persona });
   if (snap.version === 0) return null;
+  const resolved = attachedResolved(snap.resolved);
+  const attached = [...attachmentsOf()].filter(([, agents]) => agents.includes(persona)).map(([slug]) => slug);
   return {
     version: snap.version,
-    enforced: hasEnforcedRules(snap.resolved, persona),
+    enforced: hasEnforcedRules(resolved, persona),
     proseMax: env.guardrailProseMax(),
-    docs: docsForAgent(snap.resolved, persona),
+    docs: docsForAgent(resolved, persona),
+    ...(attached.length ? { attached } : {}),
   };
 }
 
 /** A node's session guardrails from its bundle (none when the bundle has none). */
 export function bundleSessionGuardrails(b: BundleGuardrails | null | undefined, persona: string, channel: string | null): SessionGuardrails | null {
   if (!b) return null;
-  return sessionGuardrails(resolveDocs(b.docs), persona, channel, { version: b.version, proseMax: b.proseMax });
+  const resolved = withAgentAttachments(resolveDocs(b.docs), new Map((b.attached ?? []).map((slug) => [slug, [persona]])));
+  return sessionGuardrails(resolved, persona, channel, { version: b.version, proseMax: b.proseMax });
 }
 
 /** Whether the persona has enforced rules now (the dispatcher's check). Throws when unavailable. */
 export async function personaNeedsGuardrails(tenant: string, persona: string): Promise<boolean> {
   const snap = await currentGuardrails(tenant, { persona });
-  return hasEnforcedRules(snap.resolved, persona);
+  return hasEnforcedRules(attachedResolved(snap.resolved), persona);
 }

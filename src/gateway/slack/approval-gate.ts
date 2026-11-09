@@ -1,6 +1,7 @@
 import { clientForApp, type AppRef, type Transport, type WebClientLike } from "../core/transport";
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
-import { effectiveSoulForChannel } from "../../soul/extract";
+import { managedPersonaDefinition } from "../../persona/registry";
+import { effectiveSoulForChannel, soulData } from "../../soul/extract";
 import { approversFor, isDenied, loadGrants } from "../../access/role";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
@@ -311,6 +312,7 @@ export class ApprovalGate {
    *   3. Legacy "category: ids" persona: persona[category] → persona.default.
    *   4. env SLAUDE_APPROVERS.
    *   5. Empty (anyone may click).
+   *  An agent.yaml default persona stops after 1: its managers, else nobody.
    *  then minus every user with a deny grant on the default persona. When the
    *  deny removes everyone the chain named, nobody may approve (never anyone).
    *  An empty set stays "anyone"; the click handler refuses a denied clicker. */
@@ -337,6 +339,13 @@ export class ApprovalGate {
     if (structured.length) {
       const ids = selectApproversFrom(structured, req.summary, req.category);
       if (ids.length) return new Set(ids);
+    }
+    if (managedPersonaDefinition(undefined)) {
+      // An agent.yaml default persona: its file is the whole answer. The disk
+      // SOUL.md, the env list and "anyone" are not consulted.
+      const soul = soulData();
+      const managers = [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
+      return new Set(managers.length ? managers : [NOBODY]);
     }
 
     const scoped = selectApprovers(req.summary, req.category);
