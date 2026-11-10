@@ -14,14 +14,15 @@ export const isRootChannelEvent = (e: { channel_type?: string; thread_ts?: strin
   !e.thread_ts && e.channel_type !== "im";
 
 /** The tags the gateway and the runtime wrap a turn's text in. */
-const ENVELOPE_TAGS = "channel|runtime-check|attachment|memory-context|proactive-context|proactive-work|skill-args|skill";
-const FORGED_TAG = new RegExp(`(<|&lt;)(/?)\\s*(${ENVELOPE_TAGS})\\b`, "gi");
+const ENVELOPE_TAGS = "channel|runtime-check|attachment|memory-context|proactive-context|proactive-work|skill-args|skill|checklist";
+const FORGED_TAG = new RegExp(`(<|&lt;)\\s*(/?)\\s*(${ENVELOPE_TAGS})\\b`, "gi");
 
 /**
  * A message's own text can never open or close one of those tags. A channel
  * session records what every member posts, so this is what stops a post forging
  * another person's envelope, and with it an approval. Slack's own markup
- * (`<@U1>`, `<!channel>`, `<#C1|name>`) does not match.
+ * (`<@U1>`, `<!channel>`, `<#C1|name>`) does not match. The `<` is replaced,
+ * never removed, so what is left cannot join up into a new tag.
  */
 export const neutraliseEnvelopeTags = (text: string): string => text.replace(FORGED_TAG, (_, _open: string, slash: string, tag: string) => `[${slash}${tag}`);
 

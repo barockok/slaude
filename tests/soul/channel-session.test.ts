@@ -91,10 +91,11 @@ describe("channel session mode", () => {
       warn.mockRestore();
     }
   });
-  test("Wake: no still keeps a persona from waking, its channel sessions stay", () => {
+  test("Wake: no still keeps a persona from waking; its channel sessions and read_channel stay", () => {
     __setProactiveSoulSource(() => "## Proactive\n- Wake: no\n\n## Channel <#C999>\n### Proactive\n- Enabled: yes\n");
     expect(channelSessionWakes("a")).toEqual([]);
     expect(channelSessionOn("a", "C999")).toBe(true);
+    expect(proactiveRead("a")).toEqual(["C999"]);
   });
   test("per-channel limits do not apply in channel mode", () => {
     __setProactiveSoulSource(() => soul);

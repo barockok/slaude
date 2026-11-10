@@ -123,10 +123,10 @@ export const runtimeContract = {
     proactive_post: {
       name: "proactive_post",
       description:
-        "Start a conversation when you are working on your own. It goes out as a new message; put details in a thread under it (post_message with the returned ts). The runtime refuses a post that breaks a rule, a daily cap, quiet hours or repeats an earlier one: do not rephrase a refused post to get around it. Works only when you woke on your own.",
+        "Start a conversation when you are working on your own. It goes out as a new message; put details in a thread under it (post_message with the returned ts). It goes to the channel you woke in, at its root. The runtime refuses a post that breaks a rule, falls in quiet hours or repeats an earlier one: do not rephrase a refused post to get around it. Works only when you woke on your own.",
       schema: {
         text: z.string().min(1).max(3000).describe("The message, as you would write it to a colleague: what you did, the result, what you need."),
-        destination: z.string().max(40).optional().describe("A channel id, a user id, or \"manager\". Leave out when you work in one place."),
+        destination: z.string().max(40).optional().describe("Leave out: a post goes to this channel. Any other destination is refused."),
         needs_reply: z.boolean().optional().describe("True when you are waiting for an answer before you go on. Then stop working on that item."),
         kind: z.string().max(200).optional().describe("A few words naming the sort of item, when a rule's kind fits."),
         evidence: z.string().max(500).optional().describe("Link or page slug of the result this rests on. Not your checklist or notes."),
@@ -136,7 +136,7 @@ export const runtimeContract = {
     finish_round: {
       name: "finish_round",
       description:
-        "End a wake: save your notes for next time and say when you next need to look. Call it once, last. The runtime keeps the time within its own limits. Works only when you woke on your own.",
+        "End a wake: sum up where things stand and say when you next need to look. Call it once, last. Your summary stays in this channel's session; nothing else saves it. The runtime keeps the time within its own limits. Works only when you woke on your own.",
       schema: {
         journal: z.string().min(1).max(4000).describe("Where the goal stands, what you finished (with its path or link), who you are waiting on and since when, and the next step."),
         next_check_at: z.string().max(40).optional().describe("ISO 8601 instant with an offset or Z: when you next need to wake. Say it whenever you can; without it you sleep a few hours."),

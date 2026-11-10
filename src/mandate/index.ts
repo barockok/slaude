@@ -131,8 +131,7 @@ export async function listMandates(personaName: string): Promise<Mandate[]> {
     }
     const enabled = proactive?.channels[channelId];
     if (enabled !== undefined) {
-      const highest = proactive!.channelHighest[channelId];
-      m.proactive = highest ? { enabled, highest } : { enabled };
+      m.proactive = { enabled: enabled && !proactive!.invalidSessions.includes(channelId) };
     }
     out.push(m);
   }

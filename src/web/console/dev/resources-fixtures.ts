@@ -324,7 +324,7 @@ export function agentSettingsFixtures(agent: string, group: AgentSettingsGroup, 
         scope: "agent",
         status: "active",
         settings: [
-          s("enabled", "Works on its own", !named, named ? "default" : "soul", "SOUL.md ## Proactive"),
+          s("enabled", "Summarising round on", !named, named ? "default" : "soul", "SOUL.md ## Proactive"),
           s("highest", "Highest action", "ask", named ? "default" : "soul", "SOUL.md ## Proactive", "Learned rules can only lower it."),
           s("quiet", "Quiet hours", named ? null : "22:00 to 07:00", named ? "default" : "soul", "SOUL.md ## Proactive"),
           s("cap", "Posts per person per day", 6, "default", "SOUL.md ## Proactive"),

@@ -230,9 +230,10 @@ export interface HeartbeatDeps {
   run?: typeof runPass;
   config?: ProactivePostContext["config"];
   /**
-   * Seam (tests): channels the round may route an item to. Default: none. Every
-   * channel with its own Proactive is a channel session now, whose work is its own
-   * wake and whose ceiling is `act`, so the round's untrusted items stay out of it.
+   * Seam (tests): channels the round may route an item to. Default: none, so the
+   * round's channel routing is unreachable in production. Every channel with its
+   * own Proactive is a channel session now, whose work is its own wake and whose
+   * ceiling is `act`, so the round's untrusted items stay out of it.
    */
   channelsOn?: (personaId: string) => string[];
   /**
@@ -356,9 +357,13 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   const config = deps.config ?? ((ch?: string) => proactiveFor(r.personaId, ch));
 
   // 1. Load.
+  // With the global switch off no post could reach anyone (restraint refuses every
+  // manager or person audience), so a round would spend and mark items handled for nothing.
+  const reachable = config().enabled;
+  if (!reachable && config().watch.length) warnOnce(`[proactive] persona=${r.personaId}: Watch is set but ## Proactive Enabled is not yes, so the sources are not read`);
   // Only watchableSources output reaches the reader: it is what keeps
   // privateServices and non-http servers out (the reader does not).
-  const watched = deps.sources ? watchableSources(config().watch, (deps.mcp ?? bridgeExternalMcp)(r.personaId), warnOnce) : [];
+  const watched = reachable && deps.sources ? watchableSources(config().watch, (deps.mcp ?? bridgeExternalMcp)(r.personaId), warnOnce) : [];
   const sources: Array<(typeof watched)[number] & { tools: SourceTool[] }> = [];
   // Refused at listing because the agent's credential needs (re)connecting:
   // not read this round, its watermark kept, and the manager told.

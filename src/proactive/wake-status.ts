@@ -6,7 +6,7 @@
 import { localDay, PROACTIVE_PASSES, type BudgetConfig } from "../background/budget";
 import * as Runs from "../db/background-runs";
 import * as ChannelWake from "../db/channel-wake-state";
-import { channelSessionWakes } from "../soul/proactive";
+import { channelSessionWakes, wakesSwitchedOff } from "../soul/proactive";
 
 const usd = (n: number): string => `$${n.toFixed(2)}`;
 const when = (ms: number | null): string => (ms === null ? "never" : new Date(ms).toISOString().slice(0, 16).replace("T", " ") + " UTC");
@@ -28,7 +28,8 @@ export async function wakeStatusText(a: { personaId: string; agentId: string; ma
   const skipped = todays.filter((r) => r.outcome === "skipped-budget" && proactive(r.pass)).length;
   if (skipped) lines.push(`Refused by budget today: ${skipped}`);
   const channels = channelSessionWakes(a.personaId);
-  if (channels.length === 0) lines.push("No channel has proactive on.");
+  if (wakesSwitchedOff(a.personaId)) lines.push("Wakes are off: this agent's soul says `Wake: no`.");
+  else if (channels.length === 0) lines.push("No channel has proactive on.");
   else if (!a.managerId) lines.push("No wakes run: this agent has no manager.");
   for (const channel of channels) {
     const s = await ChannelWake.get(a.agentId, channel);

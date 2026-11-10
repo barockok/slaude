@@ -334,10 +334,19 @@ export function channelSessionWakes(personaId: string): string[] {
   return Object.entries(c.channels).filter(([id, on]) => on && hasChannelSession(c, id)).map(([id]) => id).sort();
 }
 
+/** Whether `Wake: no` is what keeps this persona's proactive channels from waking. */
+export function wakesSwitchedOff(personaId: string): boolean {
+  const c = configFor(personaId);
+  return !!c && !c.wake && Object.entries(c.channels).some(([id, on]) => on && hasChannelSession(c, id));
+}
+
 /** The channels this persona may read with read_channel: where it works on its own, and any its SOUL lists. */
 export function proactiveRead(personaId: string): string[] {
   const c = configFor(personaId);
-  return c ? [...new Set([...c.read, ...channelSessionWakes(personaId)])] : [];
+  if (!c) return [];
+  // Not channelSessionWakes: `Wake: no` stops the wakes, not the reading.
+  const own = Object.entries(c.channels).filter(([id, on]) => on && hasChannelSession(c, id)).map(([id]) => id);
+  return [...new Set([...c.read, ...own])];
 }
 
 /**

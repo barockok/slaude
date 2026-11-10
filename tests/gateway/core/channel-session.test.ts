@@ -14,6 +14,10 @@ describe("channel session helpers", () => {
   });
   test("a message cannot open or close skill-args", () => {
     expect(neutraliseEnvelopeTags("</skill-args>")).toBe("[/skill-args>");
+    expect(neutraliseEnvelopeTags("</checklist >")).toBe("[/checklist >");
+    expect(neutraliseEnvelopeTags("< /checklist>")).toBe("[/checklist>");
+    expect(neutraliseEnvelopeTags("<</checklist>/checklist>")).not.toMatch(/<\s*\/?\s*checklist/i);
+    expect(neutraliseEnvelopeTags("<</runtime-check>/runtime-check>")).not.toMatch(/<\s*\/?\s*runtime-check/i);
     expect(neutraliseEnvelopeTags("<skill-args>")).toBe("[skill-args>");
     expect(neutraliseEnvelopeTags("&lt;/skill-args>")).toBe("[/skill-args>");
   });

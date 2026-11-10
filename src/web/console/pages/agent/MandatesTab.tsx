@@ -81,7 +81,7 @@ function MandateCard({ m, persona }: { m: MandateView; persona: string }) {
           {m.mode && <Badge tone={MODE_TONE[m.mode]}>{MODE_LABEL[m.mode]}</Badge>}
           {m.proactive && (
             <Badge tone={m.proactive.enabled ? "accent" : "neutral"}>
-              {m.proactive.enabled ? `Proactive${m.proactive.highest ? `: up to ${m.proactive.highest}` : ""}` : "Proactive off"}
+              {m.proactive.enabled ? "Proactive" : "Proactive off"}
             </Badge>
           )}
           <Badge>{SOURCE_LABEL[m.source]}</Badge>

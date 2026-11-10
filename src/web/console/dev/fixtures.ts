@@ -61,7 +61,7 @@ function defaultMandates(now: number): MandateView[] {
     },
     {
       id: "channel:COPS", kind: "channel", title: "Mandate in #ops", source: "soul", channelId: "COPS", channelLabel: "#ops", approverNote: note,
-      instructions: "", inheritsGlobal: true, proactive: { enabled: true, highest: "ask" },
+      instructions: "", inheritsGlobal: true, proactive: { enabled: true },
       triggers: ["messages in #ops"], approvers: [],
     },
     {

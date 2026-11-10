@@ -49,18 +49,26 @@ export async function get(agentId: string, channelId: string): Promise<ChannelWa
   return r ? { ...toWakeState(r), channelId: r.channel_id } : null;
 }
 
-/** A wake is starting: remember when, which checklist it saw, and its ledger run. */
-export async function noteStart(agentId: string, channelId: string, checklistHash: string, runId: string, now: number): Promise<void> {
-  await db.run(
+/**
+ * A wake is starting: remember when, which checklist it saw, and its ledger run.
+ * False when a run still open holds this channel: two starts can both pass the
+ * open-run check, and only one may own the row. A run that has ended, or is
+ * unknown, can be replaced.
+ */
+export async function noteStart(agentId: string, channelId: string, checklistHash: string, runId: string, now: number): Promise<boolean> {
+  const res = await db.run(
     `INSERT INTO channel_wake_state (agent_id, channel_id, last_wake_at, checklist_hash, open_run_id, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT (agent_id, channel_id) DO UPDATE SET
        last_wake_at = excluded.last_wake_at,
        checklist_hash = excluded.checklist_hash,
        open_run_id = excluded.open_run_id,
-       updated_at = excluded.updated_at`,
+       updated_at = excluded.updated_at
+     WHERE channel_wake_state.open_run_id IS NULL
+        OR NOT EXISTS (SELECT 1 FROM background_runs r WHERE r.id = channel_wake_state.open_run_id AND r.outcome IS NULL)`,
     [agentId, channelId, now, checklistHash, runId, now],
   );
+  return res.changes > 0;
 }
 
 /**

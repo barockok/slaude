@@ -16,7 +16,7 @@ import { finishSkillCheck, startSkillCheck } from "../background/skill-check";
 import { claimedAt, claimSlot } from "../db/background-slots";
 import * as Runs from "../db/background-runs";
 import * as ChannelWake from "../db/channel-wake-state";
-import { channelSessionKey } from "../gateway/core/channel-session";
+import { channelSessionKey, neutraliseEnvelopeTags } from "../gateway/core/channel-session";
 import type { AppRef } from "../gateway/core/transport";
 import { composePage, readPageRecord } from "../knowledge/memory-pages";
 import { getPageOrNull } from "../knowledge/memory-trail";
@@ -108,7 +108,13 @@ async function startChannelWake(r: Run, d: Job, managerId: string, app: AppRef, 
     return "no-model";
   }
   try {
-    await ChannelWake.noteStart(r.agentId, d.channel, d.hash, run.runId, now);
+    if (!(await ChannelWake.noteStart(r.agentId, d.channel, d.hash, run.runId, now))) {
+      // Another start claimed this channel first: its run owns the row.
+      await finishSkillCheck({ runId: run.runId, agentId: run.agentId, usage: {}, outcome: "ok", pass: "heartbeat-wake" }).catch(() => {});
+      count("busy");
+      console.log(`${tag}: <#${d.channel}> is claimed by another wake`);
+      return "busy";
+    }
     const rules = await loadRules(r.agentId, deps.call);
     const envelope = renderPassPrompt("channel-wake", {
       NOW: new Date(now).toISOString(),
@@ -116,7 +122,7 @@ async function startChannelWake(r: Run, d: Job, managerId: string, app: AppRef, 
       MANDATE: d.mandate || "(none set: your checklist below is your job)",
       MANAGER: managerId,
       CHECKLIST_SLUG: channelChecklistSlug(d.channel),
-      CHECKLIST: d.page.replace(/<\/?checklist>/gi, "") || "(none yet)",
+      CHECKLIST: neutraliseEnvelopeTags(d.page) || "(none yet)",
       RULES: rules.map((x) => `- ${line(x.slug)} · ${line(x.kind)} · ${line(x.scope)} · ${x.level}`).join("\n") || "(none)",
     });
     await deps.transport.dispatch(target, envelope, { runId: run.runId, agentId: run.agentId }, wakeCaps(deps, left));

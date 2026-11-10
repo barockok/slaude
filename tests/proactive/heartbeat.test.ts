@@ -331,6 +331,26 @@ describe("runHeartbeat", () => {
     expect(spec.extraTools!.map((t) => t.name)).toEqual(["read_mail", "route_item", "write_journal"]);
   });
 
+  test("Watch with no global Enabled: nothing is read, spent or watermarked, and it warns once", async () => {
+    const soul = "## Reporting\n- Manager: U0MANAGER\n\n## Proactive\n- Watch: mail\n\n## Channel C0ON\n### Proactive\n- Enabled: yes\n";
+    const h = round({ soul, items: [item()], journal: "x" });
+    let listed = 0;
+    const realTools = h.deps.sources!.tools;
+    h.deps.sources!.tools = async (...a) => (listed++, realTools(...a));
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await h.go()).toBeNull();
+      expect(await h.go()).toBeNull();
+      expect(listed).toBe(0);
+      expect(h.specs).toEqual([]);
+      expect(h.posted).toEqual([]);
+      expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
+      expect(warn.mock.calls.map((a) => String(a[0])).filter((l) => l.includes("Watch"))).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test("an old per-agent checklist page alone runs nothing: the round reads no checklist", async () => {
     const brain = fakeBrain();
     const page = composePage({ slug: HEARTBEAT_SLUG, content: "- Any investigation untouched for 3 days: tell the manager.", type: "heartbeat" }, NOW);
