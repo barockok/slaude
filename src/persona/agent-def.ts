@@ -13,6 +13,7 @@ import { parse as parseYaml, YAMLParseError } from "yaml";
 import { GUARDRAIL_SLUG_RE } from "../guardrails/format";
 import { MANDATE_LINE_MAX, subMandatesOf, type SubMandate } from "../soul/mandate-scope";
 import { SoulDataSchema, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
+import { channelOf, parseProactive } from "../soul/proactive";
 import { SKILL_SLUG_RE } from "../skills/loader";
 import { PayloadError, safeKey } from "./sync/payload";
 
@@ -324,6 +325,51 @@ export function proseOnlySoul(soulMd: string): string {
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
 }
 
+/** One entry of agent.yaml's `channels` key: only the keys that are set. */
+export interface ChannelSetting {
+  session?: "channel";
+  proactive?: boolean;
+}
+
+/** A soul's per-channel session and proactive settings, as agent.yaml's `channels` key holds them. */
+export function channelSettings(soulMd: string): Record<string, ChannelSetting> {
+  const { sessions, channels } = parseProactive(soulMd);
+  const out: Record<string, ChannelSetting> = {};
+  for (const id of new Set([...Object.keys(sessions), ...Object.keys(channels)])) {
+    out[id] = { ...(sessions[id] ? { session: "channel" as const } : {}), ...(channels[id] !== undefined ? { proactive: channels[id] } : {}) };
+  }
+  return out;
+}
+
+function channelSections(soulMd: string): { channel: string; lines: string[] }[] {
+  const out: { channel: string; lines: string[] }[] = [];
+  let open: string[] | null = null;
+  let fenced = false;
+  for (const line of soulMd.split(/\r?\n/)) {
+    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+    else if (!fenced && /^#{1,2}\s/.test(line)) {
+      const channel = channelOf(line);
+      open = channel ? [] : null;
+      if (channel && open) out.push({ channel, lines: open });
+    }
+    open?.push(line);
+  }
+  return out;
+}
+
+/**
+ * The compiled soul's `## Channel` sections for the channels `edited` has none
+ * for, ready to append to it: a console edit of an agent.yaml persona's soul
+ * changes the prose and keeps the structure. Empty when there are none.
+ */
+export function compiledChannelSections(compiled: string, edited: string): string {
+  const present = new Set(channelSections(edited).map((s) => s.channel));
+  return channelSections(compiled)
+    .filter((s) => !present.has(s.channel))
+    .map((s) => `\n\n${s.lines.join("\n").trimEnd()}`)
+    .join("");
+}
+
 export interface AgentDocumentInput {
   name: string;
   description?: string | null;
@@ -340,6 +386,7 @@ export interface AgentDocumentInput {
   guardrails?: string[] | null;
   kbSources?: string[] | null;
   background?: unknown;
+  channels?: Record<string, ChannelSetting> | null;
 }
 
 const nonEmpty = <T extends object>(o: T): boolean => Object.keys(o).length > 0;
@@ -391,5 +438,6 @@ export function agentDocument(i: AgentDocumentInput): Record<string, unknown> {
     ...(i.skills != null ? { skills: i.skills } : {}),
     ...(i.guardrails?.length ? { guardrails: i.guardrails } : {}),
     ...(nonEmpty(memory) ? { memory } : {}),
+    ...(i.channels && nonEmpty(i.channels) ? { channels: i.channels } : {}),
   };
 }

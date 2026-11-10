@@ -93,6 +93,7 @@ import { servePanelStatic } from "./static";
 import { publishConfigReload } from "../core/config-reload";
 import * as Personas from "../../db/personas";
 import { OVERRIDE_FIELDS, type OverrideField, type DesiredPersona } from "../../persona/effective";
+import { compiledChannelSections } from "../../persona/agent-def";
 import { PERSONA_NAME_RE } from "../../persona/sync/payload";
 import { resolveDbConfig } from "../../db/client";
 import { assertHttpOnlyMcp, McpNotHttpOnlyError } from "../../persona/mcp-http-only";
@@ -1316,10 +1317,13 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
               let stored: unknown = v;
               if (field === "soul") {
                 if (typeof v !== "string" || !v.trim()) return json(422, { error: "soul value must be non-empty text" });
-                // A persona from an agent.yaml keeps its compiled structure: only
-                // the prose changes, and extraction would find nothing in prose.
+                // A persona from an agent.yaml keeps its compiled structure, the
+                // channel sections in its soul included: only the prose changes,
+                // and extraction would find nothing in prose.
                 const one = await Personas.personaByName(tenant, name);
-                stored = { soulMd: v, soulJson: one?.desired.definition ? one.desired.soulJson : await extractSoul(v) };
+                stored = one?.desired.definition
+                  ? { soulMd: v + compiledChannelSections(one.desired.soulMd, v), soulJson: one.desired.soulJson }
+                  : { soulMd: v, soulJson: await extractSoul(v) };
               } else if (field === "model") {
                 if (typeof v !== "string" || !v) return json(422, { error: "model value must be a non-empty string" });
               } else {

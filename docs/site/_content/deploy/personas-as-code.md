@@ -170,7 +170,9 @@ such a persona's soul changes the prose and keeps the structure.
 **`channels`** compiles to the `## Channel` block a `SOUL.md` would carry
 (`### Session` with `Mode: channel`, `### Proactive` with `Enabled:`), appended
 to the soul. A key that is not a channel id, a `session` other than `channel`, a
-`proactive` that is not a boolean, or an unknown key fails the sync.
+`proactive` that is not a boolean, or an unknown key fails the sync. A console
+edit of the soul keeps these sections, except for a channel whose section the
+edited text carries itself.
 
 **Scoped mandates** behave as the `Mode:` line and `## Scope` blocks of a
 `SOUL.md` do: the most specific boundary applies, an absent `mode` is

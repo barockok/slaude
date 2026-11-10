@@ -117,7 +117,7 @@ export function inWindow(minutes: number, w: QuietHours): boolean {
 const CHANNEL_ID = /^[CGD][A-Z0-9]+$/;
 
 /** The channel id of a `## Channel …` heading, or null for a placeholder. */
-function channelOf(heading: string): string | null {
+export function channelOf(heading: string): string | null {
   const m = /^##\s+channel\s+(?:<#([A-Za-z0-9]+)(?:\|[^>]*)?>|([A-Za-z0-9]+))/i.exec(heading.trim());
   const id = m ? (m[1] ?? m[2])! : "";
   return CHANNEL_ID.test(id) ? id : null;

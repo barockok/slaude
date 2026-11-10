@@ -3,9 +3,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAgentYaml, renderDir } from "../../src/cli/personas";
+import { parse as parseYaml } from "yaml";
 import { agentDocument, documentPartsFromSoul, proseOnlySoul } from "../../src/persona/agent-def";
 import { SoulDataSchema, type SoulData } from "../../src/soul/data";
 import { subMandatesOf } from "../../src/soul/mandate-scope";
+import { parseProactive } from "../../src/soul/proactive";
 
 const meta = { revision: "r1", committedAt: "2026-10-01T10:00:00Z" };
 const tmp = () => mkdtempSync(join(tmpdir(), "slaude-agent-export-"));
@@ -69,6 +71,21 @@ describe("export to agent.yaml", () => {
     expect(ana.soul).not.toContain("## Channel");
     expect(ana.slackUserId).toBe("UTESTUSER1");
     expect(ana.mcp).toEqual({ mcpServers: { tracker: { type: "http", url: "https://x.example.com/mcp", headers: { Authorization: "${PERSONA_ANA_TRACKER_AUTHORIZATION}" } } } });
+  });
+
+  test("channel session and proactive settings survive the export and re-compile the same", async () => {
+    const source = `${soulMd}\n## Channel <#CSESS>\n### Session\n- Mode: channel\n### Proactive\n- Enabled: yes\n\n## Channel <#CQUIET>\n### Proactive\n- Enabled: no\n\n## Channel <#CBAD>\n### Session\n- Mode: thread\n`;
+    const h = home();
+    writeFileSync(join(h, "personas", "ana", "SOUL.md"), source);
+    const out = tmp();
+    await exportAgentYaml(h, out, { extract: async () => extracted });
+    const doc = parseYaml(readFileSync(join(out, "personas", "ana", "agent.yaml"), "utf8")) as Record<string, unknown>;
+    expect(doc.channels).toEqual({ CSESS: { session: "channel", proactive: true }, CQUIET: { proactive: false } });
+    const ana = renderDir(out, meta).personas.find((p) => p.name === "ana")!;
+    const before = parseProactive(source);
+    const after = parseProactive(ana.soul);
+    expect(after.sessions).toEqual(before.sessions);
+    expect(after.channels).toEqual(before.channels);
   });
 
   test("--persona exports one persona only, and asks no extraction for the others", async () => {

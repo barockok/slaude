@@ -175,6 +175,30 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("panel persona overrides", () =>
     expect((await panel.fetch(del("/panel/api/personas/ghost/overrides/model", superadmin)))!.status).toBe(404);
   });
 
+  describe("a soul edit and the compiled channel settings", () => {
+    const block = "\n\n## Channel <#COPS>\n### Session\n- Mode: channel";
+    const compiled = (over: Partial<DesiredPersona> = {}) => row("ana", { soulMd: `ana soul${block}`, definition: {}, ...over });
+
+    test("an agent.yaml persona keeps its channel sections", async () => {
+      await sync([compiled()]);
+      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose" }, superadmin)))!.status).toBe(200);
+      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe(`new prose${block}`);
+    });
+
+    test("a channel section the edit carries is not added twice", async () => {
+      await sync([compiled()]);
+      const value = "new prose\n\n## Channel <#COPS>\n### Proactive\n- Enabled: no";
+      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value }, superadmin)))!.status).toBe(200);
+      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe(value);
+    });
+
+    test("a SOUL.md persona's edit is stored as written", async () => {
+      await sync([compiled({ definition: undefined })]);
+      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose" }, superadmin)))!.status).toBe(200);
+      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe("new prose");
+    });
+  });
+
   test("DELETE clears an override and reloads", async () => {
     await sync([row("ana")]);
     await P.setOverride("default", "ana", "model", "m", "ops");

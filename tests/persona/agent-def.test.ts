@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderDir } from "../../src/cli/personas";
-import { parseAgentYaml } from "../../src/persona/agent-def";
+import { channelSettings, compiledChannelSections, parseAgentYaml } from "../../src/persona/agent-def";
 import { PayloadError, payloadVersionFor } from "../../src/persona/sync/payload";
 import { SoulDataSchema } from "../../src/soul/data";
 import { subMandatesOf } from "../../src/soul/mandate-scope";
@@ -233,6 +233,41 @@ describe("parseAgentYaml channels", () => {
 
   test("a persona with no channels key keeps its soul unchanged", () => {
     expect(compile("").spec.soul).toBe("You are the default agent.");
+  });
+});
+
+describe("channelSettings", () => {
+  test("reads only the keys a channel sets", () => {
+    const soul = "Prose.\n\n## Channel <#CONE>\n### Session\n- Mode: channel\n\n## Channel <#CTWO|two>\n### Proactive\n- Enabled: no\n";
+    expect(channelSettings(soul)).toEqual({ CONE: { session: "channel" }, CTWO: { proactive: false } });
+  });
+
+  test("a soul with no channel settings has none, and a block with only a mandate adds none", () => {
+    expect(channelSettings("Prose.\n\n## Channel <#CONE>\n### Mandate\nWatch.\n")).toEqual({});
+  });
+});
+
+describe("compiledChannelSections", () => {
+  const compiled = "Prose.\n\n## Channel <#CONE>\n### Session\n- Mode: channel\n\n## Channel <#CTWO>\n### Proactive\n- Enabled: yes";
+
+  test("returns the sections the edited text lacks, without the prose", () => {
+    const kept = compiledChannelSections(compiled, "New prose.");
+    expect(kept).toBe("\n\n## Channel <#CONE>\n### Session\n- Mode: channel\n\n## Channel <#CTWO>\n### Proactive\n- Enabled: yes");
+    expect(parseProactive(`New prose.${kept}`).sessions).toEqual({ CONE: "channel" });
+  });
+
+  test("leaves a channel the edited text already has to that text", () => {
+    const edited = "New prose.\n\n## Channel <#CTWO|two>\n### Proactive\n- Enabled: no";
+    expect(compiledChannelSections(compiled, edited)).toBe("\n\n## Channel <#CONE>\n### Session\n- Mode: channel");
+  });
+
+  test("is empty when the soul has no channel sections, and ignores a fenced heading", () => {
+    expect(compiledChannelSections("Prose.\n```\n## Channel <#CONE>\n```\n", "New prose.")).toBe("");
+  });
+
+  test("a section ends at the next heading of its level or above", () => {
+    const soul = "## Channel <#CONE>\n### Session\n- Mode: channel\n\n## Values\n- be honest\n";
+    expect(compiledChannelSections(soul, "New prose.")).toBe("\n\n## Channel <#CONE>\n### Session\n- Mode: channel");
   });
 });
 

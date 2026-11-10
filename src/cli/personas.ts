@@ -25,7 +25,7 @@ import { LABEL_RE } from "../queue/keys";
 import { readGuardrailDir } from "../guardrails/files";
 import { parseGuardrail } from "../guardrails/format";
 import { definitionGuardrailWarnings, parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
-import { AGENT_YAML, agentDocument, documentPartsFromSoul, LEGACY_FILES, parseAgentYaml, proseOnlySoul } from "../persona/agent-def";
+import { AGENT_YAML, agentDocument, channelSettings, documentPartsFromSoul, LEGACY_FILES, parseAgentYaml, proseOnlySoul } from "../persona/agent-def";
 import { extractSoulData } from "../soul/extract";
 import type { SoulData } from "../soul/data";
 
@@ -344,6 +344,7 @@ export async function exportAgentYaml(
       soul: prose.trim() ? prose : args.soulMd,
       ...documentPartsFromSoul(data),
       mcp,
+      channels: channelSettings(args.soulMd),
     });
     const dir = join(out, "personas", args.name);
     mkdirSync(dir, { recursive: true });

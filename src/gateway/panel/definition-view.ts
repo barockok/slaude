@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import { paths } from "../../config/home";
-import { agentDocument, proseOnlySoul } from "../../persona/agent-def";
+import { agentDocument, channelSettings, proseOnlySoul } from "../../persona/agent-def";
 import { getPersonaRegistry, managedPersonaDefinition, type PersonaRegistry } from "../../persona/registry";
 import { personaSoulText } from "../../persona/soul-source";
 import { personaMandateText } from "../../soul/persona-mandates";
@@ -81,6 +81,7 @@ export function agentDefinitionView(name: string, r: PersonaRegistry = getPerson
     const mandates = personaMandateText(name);
     const access = soulDataFor(name);
     const cleanScope = <T extends { scope: string }>(a: T): T => ({ ...a, scope: redactSecrets(a.scope) });
+    const soulText = personaSoulText(name === "default" ? undefined : name);
     const doc = agentDocument({
       name,
       description: definition?.description ? redactSecrets(definition.description) : null,
@@ -92,7 +93,7 @@ export function agentDefinitionView(name: string, r: PersonaRegistry = getPerson
       // Free text can carry a credential by accident; the structured keys are
       // written by this module, and a text pass over the whole document would
       // mangle YAML keys such as `userToken:`.
-      soul: redactSecrets(proseOnlySoul(personaSoulText(name === "default" ? undefined : name))),
+      soul: redactSecrets(proseOnlySoul(soulText)),
       mandate: { global: redactSecrets(mandates.global), scoped: mandates.subMandates.map((m) => ({ ...m, text: redactSecrets(m.text) })) },
       access: {
         ...access,
@@ -104,6 +105,7 @@ export function agentDefinitionView(name: string, r: PersonaRegistry = getPerson
       guardrails: definition?.guardrails ?? null,
       kbSources: fields?.kbSources ?? null,
       background: fields?.background ?? null,
+      channels: channelSettings(soulText),
     });
     const shownAccess = doc.access as { redact?: unknown } | undefined;
     if (!opts.canSeeValues && Array.isArray(shownAccess?.redact)) {
