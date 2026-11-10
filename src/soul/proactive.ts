@@ -70,7 +70,7 @@ export interface ProactiveConfig {
   channelMaxPerDay: Record<string, number>;
   /** Channel id → that channel's own `### Session` `Mode`, only when it is valid. */
   sessions: Record<string, "channel">;
-  /** Channels whose `### Session` `Mode` is not a known mode; they stay as if it were absent. */
+  /** Channels with a `### Session` `Mode` that is not a known mode, once each; never in `sessions`. */
   invalidSessions: string[];
 }
 
@@ -201,8 +201,11 @@ export function parseProactive(text: string): ProactiveConfig {
     if (where.kind === "channel") {
       if (where.sub === "session") {
         if (key === "mode") {
-          if (value.toLowerCase() === "channel") out.sessions[where.id] = "channel";
-          else out.invalidSessions.push(where.id);
+          // One invalid line turns the mode off for the channel, whatever else the soul says for it.
+          if (value.toLowerCase() !== "channel") {
+            delete out.sessions[where.id];
+            if (!out.invalidSessions.includes(where.id)) out.invalidSessions.push(where.id);
+          } else if (!out.invalidSessions.includes(where.id)) out.sessions[where.id] = "channel";
         }
         continue;
       }
@@ -283,7 +286,7 @@ export function proactiveFor(personaId: string, channelId?: string): ResolvedPro
     cooldownHours: channelCooldownHours[channelId] ?? global.cooldownHours,
     maxPerPersonPerDay: channelMaxPerDay[channelId] ?? global.maxPerPersonPerDay,
   };
-  // A channel session has no per-channel limits: only `enabled` still applies.
+  // A channel session has no cap, cooldown or ceiling; `enabled` and quiet hours still apply.
   if (sessions[channelId]) {
     return { ...resolved, highest: "act", cooldownHours: 0, maxPerPersonPerDay: Number.MAX_SAFE_INTEGER };
   }

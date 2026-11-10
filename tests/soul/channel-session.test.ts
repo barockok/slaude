@@ -49,6 +49,56 @@ describe("channel session mode", () => {
     __setProactiveSoulSource(() => "## Channel <#C666>\n### Proactive\n- Enabled: yes\n- Highest: ask\n");
     expect(wakeEligibility("a", "U1")).toEqual({ ok: false, reason: "no-act-destination" });
   });
+  test.each([
+    ["valid first", "## Channel <#C777>\n### Session\n- Mode: channel\n- Mode: off\n"],
+    ["invalid first", "## Channel <#C777>\n### Session\n- Mode: off\n- Mode: channel\n"],
+    ["valid heading first", "## Channel <#C777>\n### Session\n- Mode: channel\n\n## Channel <#C777>\n### Session\n- Mode: off\n"],
+    ["invalid heading first", "## Channel <#C777>\n### Session\n- Mode: off\n\n## Channel <#C777>\n### Session\n- Mode: channel\n"],
+  ])("a contradictory Mode reads as off: %s", (_name, text) => {
+    const c = parseProactive(text);
+    expect(c.sessions).toEqual({});
+    expect(c.invalidSessions).toEqual(["C777"]);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      __setProactiveSoulSource(() => text);
+      expect(channelSessionOn("a", "C777")).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  test("a channel with several invalid Modes appears once and warns once", () => {
+    const text = "## Channel <#C777>\n### Session\n- Mode: off\n- Mode: nonsense\n";
+    expect(parseProactive(text).invalidSessions).toEqual(["C777"]);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      __setProactiveSoulSource(() => text);
+      channelSessionOn("a", "C777");
+      expect(warn.mock.calls).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  test("a Mode after another ### heading is not channel mode", () => {
+    const c = parseProactive("## Channel <#C444>\n### Session\n### Other\n- Mode: channel\n");
+    expect(c.sessions).toEqual({});
+    expect(c.invalidSessions).toEqual([]);
+  });
+  test("Enabled under ### Session is ignored", () => {
+    const c = parseProactive("## Channel <#C444>\n### Session\n- Enabled: yes\n");
+    expect(c.channels).toEqual({});
+  });
+  test("a proactiveFor result carries neither session field", () => {
+    __setProactiveSoulSource(() => soul);
+    for (const r of [proactiveFor("a"), proactiveFor("a", "C111"), proactiveFor("a", "C222")]) {
+      expect(r).not.toHaveProperty("sessions");
+      expect(r).not.toHaveProperty("invalidSessions");
+    }
+  });
+  test("channelSessionWakes leaves out Enabled: no and sorts", () => {
+    const block = (id: string, enabled: string) => `## Channel <#${id}>\n### Session\n- Mode: channel\n### Proactive\n- Enabled: ${enabled}\n\n`;
+    __setProactiveSoulSource(() => block("C999", "yes") + block("C888", "no") + block("C777", "yes"));
+    expect(channelSessionWakes("a")).toEqual(["C777", "C999"]);
+  });
   test("Mode outside ### Session is ignored", () => {
     const c = parseProactive("## Channel <#C444>\n### Proactive\n- Mode: channel\n### Mandate\n- Mode: channel\n");
     expect(c.sessions).toEqual({});
