@@ -59,8 +59,8 @@ const slack: SurfaceInfo = {
   },
 };
 
-/** A thread key a run nobody started uses (`wake:...`, `cron:...`), not a conversation thread. */
-export const isSyntheticThread = (threadRef: string | null | undefined): boolean => !!threadRef && /^(wake|cron):/.test(threadRef);
+/** A thread key that is not a conversation thread: a run nobody started (`wake:...`, `cron:...`) or a channel session, live or archived (`channel:...`, `channel-archived:...`). */
+export const isSyntheticThread = (threadRef: string | null | undefined): boolean => !!threadRef && /^(wake|cron|channel|channel-archived):/.test(threadRef);
 
 const SURFACES: Readonly<Record<string, SurfaceInfo>> = { slack };
 
