@@ -14,6 +14,8 @@ import { makeSlackSurfaceFactory } from "../../../src/gateway/slack/surface";
 import { db, type SessionRow } from "../../../src/db/schema";
 import * as Sessions from "../../../src/db/sessions";
 import * as Ignores from "../../../src/db/ignores";
+import * as OneOnOne from "../../../src/db/one-on-one";
+import * as MentionOnly from "../../../src/db/mention-only";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { paths } from "../../../src/config/home";
 import { __setProactiveSoulSource } from "../../../src/soul/proactive";
@@ -529,6 +531,165 @@ describe("channel session routing", () => {
       await g.emit("message", rootArgs(g, "chatter"));
       expect(notices).toBe(0);
       expect(g.posts).toHaveLength(0);
+    });
+  });
+
+  describe("/new and refused commands", () => {
+    const COUNT = async () => (await db.query<{ n: number }>("SELECT COUNT(*) AS n FROM sessions"))[0]!.n;
+    const live = () => Sessions.findByThread({ team_id: "T", channel_id: "C1", thread_ts: "channel:C1" });
+    const at = (t: string) => `<@${BOT}> ${t}`;
+    const seed = async (g: Gw) => {
+      await g.emit("message", rootArgs(g, at("hello")));
+      return g.sends[0]!.id;
+    };
+
+    for (const [cmd, says] of [
+      ["/1on1", "Start a thread"],
+      ["/remote", "Start a thread"],
+      ["/env", "Start a thread"],
+      ["/mention-only", "already mention-only"],
+      ["/ignore-thread", "inside a thread"],
+      ["/unignore-thread", "inside a thread"],
+    ] as const) {
+      it(`${cmd} at root is refused at root, changing nothing`, async () => {
+        const g = makeGw();
+        const ts = nextTs();
+        await g.emit("message", rootArgs(g, at(cmd), { ts }));
+        expect(g.posts).toHaveLength(1);
+        expect(g.posts[0].text).toContain(says);
+        expect(g.posts[0].thread_ts).toBeUndefined();
+        expect(await OneOnOne.find("C1", ts)).toBeNull();
+        expect(await MentionOnly.find("C1", ts)).toBeNull();
+        expect(g.sends).toHaveLength(0);
+      });
+    }
+
+    it("a refused command on a channel with no session creates none", async () => {
+      const g = makeGw();
+      await g.emit("message", rootArgs(g, at("/1on1")));
+      expect(await COUNT()).toBe(0);
+    });
+
+    it("a manager's /new archives the session and the next message starts a new one", async () => {
+      const g = makeGw();
+      const old = await seed(g);
+      await g.emit("message", rootArgs(g, at("/new")));
+      expect((await row(old)).slack_thread_ts).toMatch(/^channel-archived:C1:\d+$/);
+      expect(await live()).toBeNull();
+      expect(g.posts.at(-1).text).toContain("Started this channel's session over");
+      expect(g.posts.at(-1).thread_ts).toBeUndefined();
+      await g.emit("message", rootArgs(g, at("again")));
+      const next = g.sends.at(-1)!.id;
+      expect(next).not.toBe(old);
+      expect((await row(next)).slack_thread_ts).toBe("channel:C1");
+      expect((await row(old)).slack_thread_ts).toMatch(/^channel-archived:/);
+    });
+
+    it("this channel's approver can run /new", async () => {
+      writeSoulFixture({ ...WORLD, trusted: ["C1", "C2"], channelOverrides: [{ channel: "C1", approvers: ["U0CHANAPP"] }] });
+      appendFileSync(paths.soul, MODE_BLOCK("C1"));
+      const g = makeGw();
+      const old = await seed(g);
+      await g.emit("message", rootArgs(g, at("/new"), { user: "U0CHANAPP" }));
+      expect((await row(old)).slack_thread_ts).toMatch(/^channel-archived:/);
+    });
+
+    it("an ordinary member's /new is refused and the session stays", async () => {
+      const g = makeGw();
+      const old = await seed(g);
+      await g.emit("message", rootArgs(g, at("/new"), { user: "U0MEMBER" }));
+      expect(g.posts.at(-1).text).toContain("Only a manager or this channel's approvers");
+      expect(g.posts.at(-1).thread_ts).toBeUndefined();
+      expect((await row(old)).slack_thread_ts).toBe("channel:C1");
+    });
+
+    it("/new in a thread of the channel changes no session", async () => {
+      const g = makeGw();
+      const old = await seed(g);
+      const before = await COUNT();
+      const thread = nextTs();
+      await g.emit("message", rootArgs(g, at("/new"), { thread_ts: thread }));
+      expect(g.posts.at(-1).text).toContain("works only at the root");
+      expect(g.posts.at(-1).thread_ts).toBe(thread);
+      expect((await row(old)).slack_thread_ts).toBe("channel:C1");
+      expect(await COUNT()).toBe(before);
+    });
+
+    it("/new in a classic channel changes no session", async () => {
+      const g = makeGw();
+      await g.emit("message", rootArgs(g, at("/new"), { channel: "C2" }));
+      expect(g.posts.at(-1).text).toContain("works only at the root");
+      expect(await COUNT()).toBe(0);
+    });
+
+    it("/new with no session yet creates none", async () => {
+      const g = makeGw();
+      await g.emit("message", rootArgs(g, at("/new")));
+      expect(g.posts).toHaveLength(1);
+      expect(g.posts[0].thread_ts).toBeUndefined();
+      expect(await COUNT()).toBe(0);
+    });
+
+    it("/new with no mention is recorded, not run", async () => {
+      const g = makeGw();
+      const old = await seed(g);
+      await g.emit("message", rootArgs(g, "/new"));
+      expect((await row(old)).slack_thread_ts).toBe("channel:C1");
+      expect(g.sends.at(-1)!.text).toContain("/new");
+    });
+
+    it("other commands reply at root, and in a thread as before", async () => {
+      const g = makeGw();
+      await g.emit("message", rootArgs(g, at("/help")));
+      expect(g.posts.at(-1).thread_ts).toBeUndefined();
+      const ts = nextTs();
+      await g.emit("message", rootArgs(g, at("/help"), { ts, channel: "C2" }));
+      expect(g.posts.at(-1).thread_ts).toBe(ts);
+    });
+
+    it("/new during a running turn ends it: no working reaction stays, a late done touches nothing", async () => {
+      const g = makeGw();
+      const removed: any[] = [];
+      g.client.reactions.remove = async (a: any) => { removed.push(a); return { ok: true }; };
+      const aborted: string[] = [];
+      const reloaded: string[] = [];
+      g.agent.abort = (id: string) => void aborted.push(id);
+      g.agent.reload = ((id: string) => { reloaded.push(id); return true; }) as any;
+      const m = nextTs();
+      await g.emit("message", rootArgs(g, at("work"), { ts: m }));
+      const old = g.sends[0]!.id;
+      await tick();
+      const working = g.reacts.filter((r) => r.timestamp === m).map((r) => r.name);
+      expect(working.length).toBeGreaterThan(0);
+
+      await g.emit("message", rootArgs(g, at("/new")));
+      expect(aborted).toEqual([old]);
+      expect(reloaded).toEqual([old]);
+      expect(removed.filter((r) => r.timestamp === m).map((r) => r.name)).toEqual(working);
+
+      // The next turn belongs to the new session, whatever the old one still says.
+      const m2 = nextTs();
+      await g.emit("message", rootArgs(g, at("fresh"), { ts: m2 }));
+      const next = g.sends.at(-1)!.id;
+      expect(next).not.toBe(old);
+      g.agent.emit("event", { type: "toolCall", sessionId: next, tool: "mcp__slaude_surface__reply", input: {} } as any);
+      g.agent.emit("event", { type: "done", sessionId: old } as any);
+      await tick();
+      expect(g.reacts.filter((r) => r.timestamp === m).map((r) => r.name)).not.toContain("white_check_mark");
+      expect(g.reacts.filter((r) => r.timestamp === m2).map((r) => r.name)).not.toContain("white_check_mark");
+      g.agent.emit("event", { type: "done", sessionId: next } as any);
+      await tick();
+      expect(g.reacts.filter((r) => r.timestamp === m2).map((r) => r.name)).toContain("white_check_mark");
+    });
+
+    it("a console turn on an archived session never carries a thread", async () => {
+      const g = makeGw();
+      const old = await seed(g);
+      await g.emit("message", rootArgs(g, at("/new")));
+      await g.h.__panelChat!(await row(old), "operator note", "U0OPER");
+      const env = g.sends.at(-1)!.text;
+      expect(env).toContain('thread_ts=""');
+      expect(env).not.toContain("channel-archived");
     });
   });
 

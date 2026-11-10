@@ -59,6 +59,7 @@ export type SlashHit =
   | { kind: "model"; id?: string }
   | { kind: "bash"; command: string }
   | { kind: "compact" }
+  | { kind: "new" }
   | { kind: "link" };
 
 /** One descriptor per agent slash command — the single source of truth for every help
@@ -92,6 +93,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/bash <command>", summary: "run a shell command on the server (gated — approval required)" },
   { usage: "/link", summary: "connect your account so any agent can use your integrations (replies privately)" },
   { usage: "/compact", summary: "summarize and compact the conversation context" },
+  { usage: "/new", summary: "start this channel's session over; the old one stays in the console (manager or this channel's approvers)" },
   { usage: "/help", summary: "show this help" },
 ];
 
@@ -282,6 +284,9 @@ export function parseSlashCommand(text: string): SlashHit | null {
   }
   if (cmd === "compact") {
     return { kind: "compact" };
+  }
+  if (cmd === "new") {
+    return { kind: "new" };
   }
   if (HELP_NAMES.has(cmd)) {
     return { kind: "help" };

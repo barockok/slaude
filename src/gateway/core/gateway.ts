@@ -123,7 +123,7 @@ import type { GateAction, Trust } from "../gate/types";
 import { providerSecretResolver } from "../api/tenants";
 import { parseRef } from "../../secrets";
 import { channelWorkspaceDir, proactiveWorkspaceDir } from "../../agent/workspace-claim";
-import { channelSessionKey, isChannelSessionKey, isRootChannelEvent } from "./channel-session";
+import { channelSessionKey, isChannelSessionKey, isRootChannelEvent, refusalAtRoot } from "./channel-session";
 import { wakeGateConfig, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
 import { wakeRefusal } from "../../proactive/wake-guard";
 import { MUST_REPLY_INSTRUCTION, mustReplyEffect } from "../../agent/must-reply";
@@ -2688,6 +2688,57 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const hasFiles = Array.isArray(event.files) && event.files.length > 0;
     if (!(recordingOnly ? text : stripped) && !hasFiles) return;
 
+    // Slash commands: /mode, /abort, /help. Handled locally; do not forward to model.
+    const slash = recordingOnly ? null : parseSlashCommand(stripped);
+    // A command at a channel session's root is answered at root, like its turns.
+    const slashThread = dispatch?.channelSession ? {} : { thread_ts: threadTs };
+    const reply = async (txt: string) => {
+      await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
+        channel: channelId,
+        ...slashThread,
+        text: txt,
+        mrkdwn: true,
+      });
+    };
+    // These answer before the session is looked up, so a refused command does
+    // not create one.
+    if (slash && dispatch?.channelSession) {
+      const refused = refusalAtRoot(slash);
+      if (refused) {
+        await reply(refused);
+        return;
+      }
+    }
+    if (slash?.kind === "new") {
+      if (!dispatch?.channelSession) {
+        await reply("/new works only at the root of a channel that has a channel session.");
+        return;
+      }
+      if (!(await isManagerOrApprover(dispatch.personaId, userId, channelId))) {
+        await reply("Only a manager or this channel's approvers can start the session over.");
+        return;
+      }
+      const current = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: channelSessionKey(channelId), persona_id: dispatch.personaId });
+      if (!current) {
+        await reply("This channel has no session to start over yet.");
+        return;
+      }
+      await Sessions.archiveChannelSession(current.id, channelId, Date.now());
+      // Whatever the old session was doing ends here: a pending card is torn
+      // down with its turn, a turn on a node stops, and no done will come for a
+      // reloaded session, so its working reaction and status go now, while the
+      // route still names the client that set them.
+      if (queueDispatch) await queueDispatch.abort(current.id).catch((e) => console.error("[slaude] abort publish failed:", e));
+      agent.abort(current.id);
+      agent.reload(current.id);
+      await reactions.clear(current.id);
+      presence.exit(current.id);
+      await status.clear(current.id);
+      routes.delete(current.id);
+      await reply("Started this channel's session over. The old one stays in the console.");
+      return;
+    }
+
     // The reserved key only finds the session: this turn's threadTs stays the
     // triggering message's ts, so nothing Slack-facing ever sees the key.
     const session = await agent.ensureSession(
@@ -2723,18 +2774,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
     }
 
-    // Slash commands: /mode, /abort, /help. Handled locally; do not forward to model.
-    const slash = recordingOnly ? null : parseSlashCommand(stripped);
     if (slash) {
-      const slashClient = outClientForPersona(dispatch?.personaId, app);
-      const reply = async (txt: string) => {
-        await slashClient.chat.postMessage({ // runtime-ui: gateway notice, card or command reply
-          channel: channelId,
-          thread_ts: threadTs,
-          text: txt,
-          mrkdwn: true,
-        });
-      };
       if (slash.kind === "help") {
         await reply(helpText());
         return;
@@ -3079,7 +3119,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           blocks.push({ type: "actions", elements });
         }
-        await client.chat.postMessage({ channel: channelId, thread_ts: threadTs, blocks, text: "MCP servers", mrkdwn: true }); // runtime-ui: gateway notice, card or command reply
+        await client.chat.postMessage({ channel: channelId, ...slashThread, blocks, text: "MCP servers", mrkdwn: true }); // runtime-ui: gateway notice, card or command reply
         return;
       }
       if (slash.kind === "ignore" || slash.kind === "unignore") {
