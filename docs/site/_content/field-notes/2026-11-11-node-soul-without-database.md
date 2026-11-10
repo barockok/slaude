@@ -25,10 +25,11 @@ Every turn of a process booted with this prompt, in a channel whose override dif
 
 ## Fix
 
-- `soulData()` skips the overlay on a node. The default soul reaches a node through the bundle, overrides already applied by the gateway.
-- `channelMandateBlock` on a node (a soul resolver is installed) parses the bundle's own soul text with the deterministic `parseScopedMandates` (`mandateTextFromSoulText`) when the bundle has no structured soul. The smallest change: no new bundle field, no wait, no fetch, and the text is the text the gateway sent. Gateway and mono keep `personaMandateText` unchanged.
+- `soulData()` skips the overlay on a node. A node does not apply runtime overrides: the gateway enforces the lists those overrides edit (trusted, allowed, approvers). Only the tier-3 default bundle's `soulJson` is read through `soulData()` on the gateway, so it carries the overrides, and only `channelMandateBlock` reads it on the node.
+- `channelMandateBlock` on a node (a soul resolver is installed) parses the bundle's own soul text with the deterministic `parseScopedMandates` (`mandateTextFromSoulText`) when the bundle has no structured soul. The gateway may use a cached LLM extraction of the same text where the node uses the deterministic parse, so the two are equal when no extraction is cached, not exactly always. Gateway and mono keep `personaMandateText` unchanged.
+- The bundle gains an optional `channelClasses` (trusted and allowed lists, from `soulDataFor`) whenever `soulJson` is null. It is part of the body, so the ETag changes with the lists (a `/soul trust add`). An older node ignores it; a new node against a gateway that omits it warns once per persona if the soul text has a `## Scope trusted|public` block.
 - `guardNode` is untouched.
 
-## Known limit
+## Failure direction
 
-Trust-class scope mandates (`## Scope trusted|public`) need the gateway's channel lists, which a null `soulJson` does not carry, so on a node they do not apply for a SOUL.md persona. Channel blocks and the global mandate do. Sending the classes with the bundle would close it.
+Before the classes were sent, a `## Scope public|trusted` mandate was dropped on a node for a SOUL.md persona (the node had no lists to place a channel). A `reduce` restriction disappeared without a trace, so the node was more permissive than the gateway. That is closed by `channelClasses`; with an old gateway it is a loud warning, not a silent drop.

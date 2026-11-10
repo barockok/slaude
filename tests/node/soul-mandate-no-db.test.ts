@@ -10,8 +10,11 @@ import { join } from "node:path";
 import { AgentManager } from "../../src/agent/manager";
 import { __resetNodeRefusalLogForTests } from "../../src/db/client";
 import { __resetCacheForTests } from "../../src/db/soul-overrides";
-import { __resetSoulDataMemo, soulData } from "../../src/soul/extract";
+import { __resetSoulDataMemo, setSoulData, soulData } from "../../src/soul/extract";
+import { SoulDataSchema } from "../../src/soul/data";
 import { approvalTimeoutFor, redactPatternsFor, soulDataFor } from "../../src/soul/per-persona";
+import { __resetPersonaRegistry, setPersonaRegistry } from "../../src/persona/registry";
+import type { Persona } from "../../src/persona/types";
 import { personaMandateText } from "../../src/soul/persona-mandates";
 
 const KEYS = ["SLAUDE_ROLE", "SLAUDE_DB", "SLAUDE_PG_URL", "SLAUDE_HOME"] as const;
@@ -74,8 +77,12 @@ describe("node channel mandate without a database", () => {
   test("soulData() on a node never reaches for the database", () => {
     const c = capture();
     try {
-      soulData();
+      setSoulData(SoulDataSchema.parse({ mandate: "Base mandate.", trustedChannels: ["CT1"] }));
+      const got = soulData();
+      expect(got.mandate).toBe("Base mandate.");
+      expect(got.trustedChannels).toEqual(["CT1"]);
     } finally {
+      __resetSoulDataMemo();
       c.restore();
     }
     expect(c.errs.filter((l) => l.includes("[db]"))).toEqual([]);
@@ -84,8 +91,16 @@ describe("node channel mandate without a database", () => {
   test("personaMandateText on a node does not read the database either", () => {
     const c = capture();
     try {
-      personaMandateText("sam");
+      const sam = { name: "sam", slackUserId: "U0P", config: { slackUserId: "U0P", name: "sam" }, outClient: null, soulMd: SOUL } as unknown as Persona;
+      setPersonaRegistry({
+        lookupByUserId: () => null, lookupByName: (n) => (n === "sam" ? sam : null), list: () => [sam],
+        isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+      });
+      const t = personaMandateText("sam");
+      expect(t.global).toBe("Keep the board tidy.");
+      expect(t.channels).toEqual({ CTEAM01: "In this channel only triage incoming asks." });
     } finally {
+      __resetPersonaRegistry();
       c.restore();
     }
     expect(c.errs.filter((l) => l.includes("[db]"))).toEqual([]);
@@ -94,10 +109,12 @@ describe("node channel mandate without a database", () => {
   test("the per-persona readers (soulDataFor, redact patterns, approval timeout) skip the database on a node", () => {
     const c = capture();
     try {
-      soulDataFor("sam");
-      redactPatternsFor("sam");
-      approvalTimeoutFor("sam");
+      setSoulData(SoulDataSchema.parse({ redactPatterns: ["secret-\\d+"], approvalTimeoutSeconds: 123, allowedChannels: ["CA1"] }));
+      expect(soulDataFor("sam").allowedChannels).toEqual(["CA1"]);
+      expect(redactPatternsFor("sam")).toEqual(["secret-\\d+"]);
+      expect(approvalTimeoutFor("sam")).toBe(123);
     } finally {
+      __resetSoulDataMemo();
       c.restore();
     }
     expect(c.errs.filter((l) => l.includes("[db]"))).toEqual([]);
