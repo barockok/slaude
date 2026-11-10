@@ -17,7 +17,9 @@ const passthrough = (args: QueryArgs) => realQuery(args as any);
 let currentQuery: (args: QueryArgs) => any = passthrough;
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({ ...realSdk, query: (args: QueryArgs) => currentQuery(args) }));
 
-const { AgentManager } = await import("../../src/agent/manager");
+const { AgentManager, WakeBusyError } = await import("../../src/agent/manager");
+const { dbSessionStore } = await import("../../src/agent/session-store");
+const Sessions = await import("../../src/db/sessions");
 const { resolveDocs, sessionGuardrails } = await import("../../src/guardrails/resolve");
 const { liveCalls } = await import("../../src/voice/turn-flags");
 import type { BackgroundTurnRun } from "../../src/agent/manager";
@@ -26,6 +28,8 @@ import type { ModelTokens } from "../../src/background/prices";
 class FakeSession {
   out: any[] = [];
   ended = false;
+  /** While set, the query keeps running after its input closes (a slow exit). */
+  holdExit: Promise<void> | null = null;
   err: Error | null = null;
   users: any[] = [];
   onUser: ((um: any) => void) | null = null;
@@ -70,7 +74,10 @@ class FakeSession {
             yield self.out.shift();
             continue;
           }
-          if (self.ended) return;
+          if (self.ended) {
+            if (self.holdExit) await self.holdExit;
+            return;
+          }
           await new Promise<void>((r) => (self._wake = r));
         }
       },
@@ -115,6 +122,8 @@ async function shutdown(mgr: InstanceType<typeof AgentManager>, id: string) {
 }
 
 
+/** Microtask ticks a live, never-woken session's send takes to resolve. */
+const TICKS = 3;
 const BG = '<runtime-check kind="wake">look</runtime-check>';
 function recorder(runId = "run-w1") {
   const finishes: { usage: ModelTokens; outcome: string; stats: unknown }[] = [];
@@ -579,33 +588,354 @@ describe("a session changing between wake and normal turns", () => {
     await shutdown(mgr, row.id);
   });
 
-  it("a wake waits while a voice call owns the session", async () => {
+  it("a wake is refused at once while a voice call owns the session, and its run is closed", async () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());
     const a = plan(answer);
-    const b = plan(answer);
+    const exits: string[] = [];
+    mgr.on("sessionExit", (id: string) => exits.push(id));
     const seen = events(mgr, row.id);
     await mgr.sendMessage(row.id, "hello");
     await until(() => seen.includes("done"), 3000, "done");
     liveCalls.add(row.id);
     try {
       const { run, finishes } = recorder();
-      const sent = mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 2 } });
-      await Bun.sleep(60);
+      const refused = await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 2 } }).catch((e) => e);
+      expect(refused).toBeInstanceOf(WakeBusyError);
+      expect(refused.code).toBe("WAKE_BUSY");
+      await until(() => finishes.length === 1, 3000, "the run closed");
+      expect(finishes[0]!.outcome).toBe("stopped-budget");
       expect(a.ended).toBe(false);
+      expect(exits).toEqual([]);
       expect(booted).toHaveLength(1);
-      // The call's own turns are not queued behind the waiting wake.
+      // The call's own turns still go through.
       seen.length = 0;
       await mgr.sendMessage(row.id, "said on the call");
       await until(() => seen.includes("done"), 3000, "the call's turn");
       expect(texts(a)).toEqual(["hello", "said on the call"]);
-      liveCalls.delete(row.id);
-      await sent;
-      await until(() => finishes.length === 1, 3000, "finish");
-      expect(texts(b)).toEqual([BG]);
     } finally {
       liveCalls.delete(row.id);
     }
+    await shutdown(mgr, row.id);
+  });
+
+  it("a wake is refused before its restart when a call starts while it waits, and does not hold the queue", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const exits: string[] = [];
+    mgr.on("sessionExit", (id: string) => exits.push(id));
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => a.users.length === 1, 3000, "input");
+    const { run, finishes } = recorder();
+    const sent = mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 2 } }).catch((e) => e);
+    const behind = mgr.sendMessage(row.id, "behind it");
+    await Bun.sleep(20);
+    liveCalls.add(row.id);
+    try {
+      answer(a);
+      expect(await sent).toBeInstanceOf(WakeBusyError);
+      await behind;
+      expect(finishes).toHaveLength(1);
+      expect(exits).toEqual([]);
+      expect(a.ended).toBe(false);
+      expect(texts(a)).toEqual(["hello", "behind it"]);
+      expect(booted).toHaveLength(1);
+    } finally {
+      liveCalls.delete(row.id);
+    }
+    await shutdown(mgr, row.id);
+  });
+
+  it("a person's message still inside its send boots as normal, and the wake behind it waits", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(answer);
+    const { run, finishes } = recorder();
+    const first = mgr.sendMessage(row.id, "person");
+    const sent = mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 2 } });
+    await until(() => a.users.length === 1, 3000, "the person's input");
+    await first;
+    await Bun.sleep(30);
+    expect(booted).toHaveLength(1);
+    expectNormalBoot(booted[0]);
+    expect(texts(a)).toEqual(["person"]);
+    answer(a);
+    await sent;
+    await until(() => finishes.length === 1, 3000, "the wake");
+    expect(texts(b)).toEqual([BG]);
+    expect(booted[1].maxTurns).toBe(2);
+    expectWakeBoot(booted[1]);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a send whose store read rejects stops counting, so a later wake is not held", async () => {
+    const mgr = new AgentManager();
+    let failing = true;
+    mgr.setSessionStore({
+      ...dbSessionStore,
+      findById: (id: string) => (failing ? Promise.reject(new Error("store down")) : dbSessionStore.findById(id)),
+    });
+    const row = await mgr.ensureSession(thread());
+    const a = plan(answer);
+    await expect(mgr.sendMessage(row.id, "lost")).rejects.toThrow("store down");
+    failing = false;
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 2 } });
+    await until(() => finishes.length === 1, 3000, "the wake");
+    expect(texts(a)).toEqual([BG]);
+    expect(booted).toHaveLength(1);
+    expect(booted[0].maxTurns).toBe(2);
+    await shutdown(mgr, row.id);
+  });
+
+  const hook = (o: any) => o.hooks.UserPromptSubmit[0].hooks[0]({ hook_event_name: "UserPromptSubmit", prompt: "x", session_id: "s", transcript_path: "", cwd: "/" }, undefined, { signal: new AbortController().signal });
+
+  it("a suppressed message behind a wake silences itself, not the message before it", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(() => {});
+    const { run } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    const one = mgr.sendMessage(row.id, "one");
+    mgr.suppressNextTurn(row.id);
+    const two = mgr.sendMessage(row.id, "two");
+    answer(a);
+    await Promise.all([one, two]);
+    await until(() => b.users.length === 2, 3000, "both inputs");
+    expect((await hook(booted[1])).continue).toBe(true);
+    expect((await hook(booted[1])).continue).toBe(false);
+    answer(b);
+    answer(b);
+    await Bun.sleep(20);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a delivery that rejects leaves no suppression behind it", async () => {
+    const mgr = new AgentManager();
+    let failing = true;
+    mgr.setGuardrailResolver(async () => {
+      if (failing) throw new Error("rules unreadable");
+      return null;
+    });
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    mgr.suppressNextTurn(row.id);
+    await expect(mgr.sendMessage(row.id, "lost")).rejects.toThrow();
+    failing = false;
+    await mgr.sendMessage(row.id, "next");
+    await until(() => a.users.length === 1, 3000, "the next input");
+    expect((await hook(booted[0])).continue).toBe(true);
+    answer(a);
+    await Bun.sleep(20);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a rejected delivery does not hold the messages behind it", async () => {
+    const mgr = new AgentManager();
+    let failing = false;
+    mgr.setGuardrailResolver(async () => {
+      if (failing) throw new Error("rules unreadable");
+      return null;
+    });
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(answer);
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => a.users.length === 1, 3000, "input");
+    const sent = mgr.sendMessage(row.id, BG, { wake: {} }).catch((e) => e);
+    const behind = mgr.sendMessage(row.id, "behind it");
+    failing = true;
+    answer(a);
+    const rejected = await sent;
+    expect(rejected).toBeInstanceOf(Error);
+    failing = false;
+    await behind;
+    await until(() => b.users.length === 1, 3000, "the message behind it");
+    expect(texts(b)).toEqual(["behind it"]);
+    expectNormalBoot(booted.at(-1));
+    await shutdown(mgr, row.id);
+  });
+
+  it("a boot that fails at go-live tears down, so a queued message is not held and the send rejects", async () => {
+    const mgr = new AgentManager();
+    let failing = false;
+    mgr.setSessionStore({
+      ...dbSessionStore,
+      setStatus: (id: string, status: any) => {
+        if (failing && status === "running") {
+          failing = false;
+          return Promise.reject(new Error("store down"));
+        }
+        return dbSessionStore.setStatus(id, status);
+      },
+    });
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(answer);
+    const exits: string[] = [];
+    mgr.on("sessionExit", (id: string) => exits.push(id));
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => a.users.length === 1, 3000, "input");
+    const sent = mgr.sendMessage(row.id, BG, { wake: { maxMinutes: 5 } }).catch((e) => e);
+    const behind = mgr.sendMessage(row.id, "behind it");
+    failing = true;
+    answer(a);
+    expect((await sent).message).toBe("store down");
+    await behind;
+    await until(() => b.users.length === 1, 3000, "the message behind it");
+    expect(texts(b)).toEqual(["behind it"]);
+    expectNormalBoot(booted.at(-1));
+    expect(exits).toHaveLength(2); // the first query's restart, then the failed boot's teardown
+    await shutdown(mgr, row.id);
+  });
+
+  it("a resume miss neither ends the wake nor clears its wall clock", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    await Sessions.markStarted(row.id);
+    const a = plan(() => {});
+    const b = plan(() => {}); // the retried boot, held
+    const c = plan(answer);
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 2, maxMinutes: 0.01 } });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    const sent = mgr.sendMessage(row.id, "person");
+    a.emit(res({ subtype: "error_during_execution", is_error: true, errors: ["No conversation found with session ID x"] }));
+    await Bun.sleep(5);
+    booted[0].stderr("Error: No conversation found with session ID x");
+    a.err = new Error("process exited");
+    a.wake();
+    await until(() => b.users.length === 1, 3000, "the retried wake");
+    expect(texts(b)).toEqual([BG]);
+    expect(booted[1].maxTurns).toBe(2);
+    expect(finishes).toHaveLength(0);
+    expect(c.users).toHaveLength(0);
+    // The wall clock survives and closes the run; the person goes after it.
+    await sent;
+    await until(() => c.users.length === 1, 3000, "the person's turn");
+    expect(finishes).toHaveLength(1);
+    expect((finishes[0]!.stats as { cap: string }).cap).toBe("minutes");
+    expectNormalBoot(booted[2]);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a retried wake finishes its own run with its own result", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    await Sessions.markStarted(row.id);
+    const a = plan(() => {});
+    const b = plan(answer);
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    a.emit(res({ subtype: "error_during_execution", is_error: true, errors: ["No conversation found with session ID x"] }));
+    await Bun.sleep(5);
+    booted[0].stderr("Error: No conversation found with session ID x");
+    a.err = new Error("process exited");
+    a.wake();
+    await until(() => finishes.length === 1, 3000, "the run closed");
+    expect(finishes[0]!.outcome).toBe("ok");
+    expect(texts(b)).toEqual([BG]);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a stream-closed wake continues as a wake with its run, and the queued message waits for that", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(() => {});
+    const c = plan(answer);
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 2 } });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    const sent = mgr.sendMessage(row.id, "person");
+    await Bun.sleep(20);
+    a.emit({ type: "user", tool_use_result: { is_error: true, content: "Stream closed" }, message: { content: [] } });
+    a.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(1, 1) }));
+    await until(() => b.users.length === 1, 3000, "the continuation");
+    expect(texts(b)[0]).toContain("Please continue");
+    expect(booted[1].maxTurns).toBe(2);
+    expectWakeBoot(booted[1]);
+    await Bun.sleep(30);
+    expect(c.users).toHaveLength(0);
+    expect(finishes).toHaveLength(0);
+    answer(b);
+    await sent;
+    await until(() => c.users.length === 1, 3000, "the person's turn");
+    expect(finishes).toHaveLength(1);
+    expect(finishes[0]!.outcome).toBe("ok");
+    expectNormalBoot(booted[2]);
+    await shutdown(mgr, row.id);
+  });
+
+  it("the wall clock releases a message waiting behind the wake", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(answer);
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxMinutes: 0.002 } });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    const sent = mgr.sendMessage(row.id, "person");
+    await sent;
+    await until(() => b.users.length === 1, 3000, "the person's turn");
+    expect(finishes).toHaveLength(1);
+    expect((finishes[0]!.stats as { cap: string }).cap).toBe("minutes");
+    expect(texts(b)).toEqual(["person"]);
+    expectNormalBoot(booted[1]);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a message arriving through idle teardown waits for the exit and boots as normal", async () => {
+    process.env.SLAUDE_IDLE_MINUTES = "0.0008";
+    try {
+      const mgr = new AgentManager();
+      const row = await mgr.ensureSession(thread());
+      const a = plan(answer);
+      const b = plan(answer);
+      let releaseExit!: () => void;
+      a.holdExit = new Promise<void>((r) => (releaseExit = r));
+      const { run, finishes } = recorder();
+      await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+      await until(() => finishes.length === 1, 3000, "the wake");
+      await until(() => a.ended, 3000, "idle teardown");
+      const seen = events(mgr, row.id);
+      const sent = mgr.sendMessage(row.id, "person");
+      await Bun.sleep(30);
+      expect(b.users).toHaveLength(0);
+      releaseExit();
+      await sent;
+      await until(() => seen.includes("done"), 3000, "the person's turn");
+      expect(texts(b)).toEqual(["person"]);
+      expect(booted).toHaveLength(2);
+      expectNormalBoot(booted[1]);
+      await shutdown(mgr, row.id);
+    } finally {
+      process.env.SLAUDE_IDLE_MINUTES = "0";
+    }
+  });
+
+  it("a never-woken session's send adds no await tick", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    await mgr.sendMessage(row.id, "one");
+    await until(() => a.users.length === 1, 3000, "input");
+    let done = false;
+    let ticks = 0;
+    void mgr.sendMessage(row.id, "two").then(() => void (done = true));
+    while (!done && ticks < 50) {
+      await null;
+      ticks++;
+    }
+    expect(ticks).toBe(TICKS);
+    a.emit(res());
+    a.emit(res());
+    await Bun.sleep(20);
     await shutdown(mgr, row.id);
   });
 

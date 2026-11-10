@@ -206,6 +206,17 @@ export interface BackgroundTurnRun {
 /** A heartbeat wake's caps (src/proactive/wake.ts). Absent or 0: off. */
 export type WakeOptions = { maxBudgetUsd?: number; maxTurns?: number; maxMinutes?: number };
 
+/** A wake refused because a voice call owns its session: a restart would end
+ *  the call. The session is busy, nothing went wrong: the wake's ledger run is
+ *  already closed and a later slot may retry. */
+export class WakeBusyError extends Error {
+  override readonly name = "WakeBusyError";
+  readonly code = "WAKE_BUSY";
+  constructor(sessionId: string) {
+    super(`wake refused: a voice call owns session ${sessionId}`);
+  }
+}
+
 /** A session marked as a wake (see #armWake). `inFlight` is the wake's own
  *  turn: never read from `timer`, since a wake with no wall clock has none.
  *  `done` resolves when that turn ends, however it ends. */
@@ -566,6 +577,15 @@ export class AgentManager extends EventEmitter {
   /** Per session, the last delivery waiting to change the session's kind
    *  (#sendInOrder): anything sent while one exists goes behind it. */
   #kindQueue = new Map<string, Promise<void>>();
+  /** Per session, #send calls still running. A person's message that took the
+   *  direct path has no mark and no live session yet while it reads the store
+   *  or waits for the folder: a wake queues behind it, or that boot reads the
+   *  wake's mark and boots as a wake. */
+  #sendsInProgress = new Map<string, number>();
+  /** Per session, one entry per input the CLI will run UserPromptSubmit for,
+   *  in pushed order: the hook consumes them in step, so a suppression lands
+   *  on its own input (see #noteInput). Emptied when no input is outstanding. */
+  #inputSuppression = new Map<string, Array<{ suppressed: boolean }>>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -1022,10 +1042,13 @@ export class AgentManager extends EventEmitter {
 
   /** Clear the hold and tell listeners (voice calls) the live session is gone.
    *  A throwing listener must not stall teardown. */
-  #signalSessionExit(sessionId: string) {
+  #signalSessionExit(sessionId: string, o: { keepWake?: boolean } = {}) {
     this.#idleHeld.delete(sessionId);
-    this.#wakeEnded(sessionId);
-    this.#wakes.delete(sessionId);
+    this.#inputSuppression.delete(sessionId);
+    if (!o.keepWake) {
+      this.#wakeEnded(sessionId);
+      this.#wakes.delete(sessionId);
+    }
     this.#claims.releaseHolder(sessionId);
     try {
       this.emit("sessionExit", sessionId);
@@ -1053,9 +1076,6 @@ export class AgentManager extends EventEmitter {
 
   /** Send user input. Starts session loop if not already live. */
   async sendMessage(sessionId: string, text: string, opts: { sender?: InputSender; backgroundRun?: BackgroundTurnRun; wake?: WakeOptions } = {}) {
-    // A wake restarts the session, and a restart's sessionExit ends a voice call
-    // on it. It waits here, not in the queue: the call's own turns must get by.
-    while (opts.wake && voiceCallActive(sessionId)) await new Promise((r) => setTimeout(r, 250));
     return this.#sendInOrder(sessionId, text, { wake: opts.wake, sender: opts.sender ?? null, run: opts.backgroundRun });
   }
 
@@ -1068,10 +1088,15 @@ export class AgentManager extends EventEmitter {
    */
   #sendInOrder(sessionId: string, text: string, o: { wake?: WakeOptions; synthetic?: boolean; sender?: InputSender | null; run?: BackgroundTurnRun }): Promise<void> {
     const wantWake = !!o.wake;
+    // Bound here, to this message: an earlier input must not consume it.
+    const suppressed = !wantWake && !o.synthetic && this.#suppressNextTurn.delete(sessionId);
+    const direct = !this.#kindQueue.has(sessionId) && !this.#needsSettling(sessionId, wantWake);
+    if (direct && !wantWake) return this.#send(sessionId, text, o.synthetic ?? false, o.sender ?? null, o.run, suppressed);
     const deliver = async () => {
+      if (o.wake) this.#refuseWakeDuringCall(sessionId, o.run);
       const armed = o.wake ? this.#armWake(sessionId, o.wake, o.run) : undefined;
       try {
-        await this.#send(sessionId, text, o.synthetic ?? false, o.sender ?? null, o.run);
+        await this.#send(sessionId, text, o.synthetic ?? false, o.sender ?? null, o.run, suppressed);
       } catch (e) {
         // Its input never went in: nothing behind it may wait for its turn.
         if (armed && this.#wakes.get(sessionId) === armed) {
@@ -1081,13 +1106,9 @@ export class AgentManager extends EventEmitter {
         throw e;
       }
     };
-    if (!this.#kindQueue.has(sessionId) && !this.#needsSettling(sessionId, wantWake)) return deliver();
-    // The flag is one bit per session and the caller set it for this message:
-    // it travels with the message, or an earlier input would consume it.
-    const suppressed = !wantWake && !o.synthetic && this.#suppressNextTurn.delete(sessionId);
+    if (direct) return deliver();
     const run = (this.#kindQueue.get(sessionId) ?? Promise.resolve()).then(async () => {
-      await this.#settleBootKind(sessionId, wantWake);
-      if (suppressed) this.#suppressNextTurn.add(sessionId);
+      await this.#settleBootKind(sessionId, wantWake, o.run);
       await deliver();
     });
     const tail = run.catch(() => {});
@@ -1098,10 +1119,25 @@ export class AgentManager extends EventEmitter {
     return run;
   }
 
+  /** A wake never waits for a voice call and never restarts one's session: it
+   *  is refused at once (a restart's sessionExit would end the call), its run
+   *  closed as neither a failure nor a cap. Throws, so its queue link settles
+   *  and whatever is behind it goes on. */
+  #refuseWakeDuringCall(sessionId: string, run: BackgroundTurnRun | undefined): void {
+    if (!voiceCallActive(sessionId)) return;
+    console.log(`[mgr] wake session=${sessionId} refused: a voice call owns the session`);
+    if (run) {
+      void run.finish({}, "stopped-budget").catch((e) => {
+        console.error(`[mgr] background run ${run.runId} could not be recorded session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+      });
+    }
+    throw new WakeBusyError(sessionId);
+  }
+
   /** Whether an input of this kind cannot go straight to #send. */
   #needsSettling(sessionId: string, wantWake: boolean): boolean {
     if (this.#wakes.has(sessionId)) return true;
-    if (wantWake) return this.#live.has(sessionId) || this.#booting.has(sessionId);
+    if (wantWake) return this.#live.has(sessionId) || this.#booting.has(sessionId) || this.#sendsInProgress.has(sessionId);
     return this.#live.get(sessionId)?.bootedAsWake === true;
   }
 
@@ -1113,15 +1149,16 @@ export class AgentManager extends EventEmitter {
    * query booted as a wake. Runs only inside #sendInOrder. Re-reads the session
    * after every wait, and restarts only with no input outstanding.
    */
-  async #settleBootKind(sessionId: string, wantWake: boolean): Promise<void> {
+  async #settleBootKind(sessionId: string, wantWake: boolean, run: BackgroundTurnRun | undefined): Promise<void> {
     for (;;) {
+      if (wantWake) this.#refuseWakeDuringCall(sessionId, run);
       const running = this.#wakes.get(sessionId);
       // A wake's turn is never shared with anything delivered here.
       if (running?.inFlight) {
         await running.done;
         continue;
       }
-      if (this.#booting.has(sessionId)) {
+      if (this.#booting.has(sessionId) || (wantWake && this.#sendsInProgress.has(sessionId))) {
         await new Promise((r) => setTimeout(r, 25));
         continue;
       }
@@ -1131,6 +1168,7 @@ export class AgentManager extends EventEmitter {
         await this.#turnEnded(live);
         continue;
       }
+      // No await since the check at the top: a call cannot have started.
       if (!live.reloading && !live.closing) this.reload(sessionId);
       // Here, not in #send: the old query's exit signal clears the wake mark,
       // so it must have fired before the next wake is armed.
@@ -1198,26 +1236,33 @@ export class AgentManager extends EventEmitter {
     return texts.every((t): t is string => typeof t === "string") ? texts : null;
   }
 
-  async #send(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null = null, run?: BackgroundTurnRun) {
+  async #send(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null = null, run?: BackgroundTurnRun, suppressed = false) {
+    // Counted in this frame, with no wrapper: a wrapper's await would add a tick to every send.
+    this.#sendsInProgress.set(sessionId, (this.#sendsInProgress.get(sessionId) ?? 0) + 1);
     // A session in the agent's proactive folder waits for the folder before
     // its turn starts: two threads there never run at once in this process.
     // Re-entrant, so the holder's own next input never waits on itself. The
     // working dir is set at creation and never changes: a live session's
     // cached copy saves a store read (a /v1 call on a node) per input.
-    const cached = this.#live.get(sessionId);
-    const dir = cached ? cached.workingDir : (await this.#store.findById(sessionId))?.working_dir;
-    const claimed = isProactiveWorkspace(dir);
+    let claimed = false;
     try {
-      await this.#sendClaimed(sessionId, text, synthetic, sender, run, claimed ? dir! : null);
+      const cached = this.#live.get(sessionId);
+      const dir = cached ? cached.workingDir : (await this.#store.findById(sessionId))?.working_dir;
+      claimed = isProactiveWorkspace(dir);
+      await this.#sendClaimed(sessionId, text, synthetic, sender, run, claimed ? dir! : null, suppressed);
     } catch (e) {
       // Failed before its input was in, and no other input of this session
       // runs or boots: nothing of this session runs there.
       if (claimed && !this.isTurnInFlight(sessionId) && !this.#booting.has(sessionId)) this.#claims.releaseHolder(sessionId);
       throw e;
+    } finally {
+      const n = (this.#sendsInProgress.get(sessionId) ?? 1) - 1;
+      if (n > 0) this.#sendsInProgress.set(sessionId, n);
+      else this.#sendsInProgress.delete(sessionId);
     }
   }
 
-  async #sendClaimed(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null, run: BackgroundTurnRun | undefined, claimDir: string | null) {
+  async #sendClaimed(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null, run: BackgroundTurnRun | undefined, claimDir: string | null, suppressed: boolean) {
     // Signal that a real user turn is starting for this session. Slash commands
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
@@ -1251,13 +1296,22 @@ export class AgentManager extends EventEmitter {
       live.turn.user = text;
       live.turn.assistant = [];
       this.#stopBlocked.delete(sessionId);
+      this.#noteInput(sessionId, text, suppressed);
       live.pushUser(text, synthetic, synthetic ? null : sender);
       if (run) (live.bgRuns ??= new Map()).set(live.inputSeq, run);
       this.#armIdle(live);
       return;
     }
     this.#stopBlocked.delete(sessionId);
-    await this.#startSession(sessionId, text, synthetic, synthetic ? null : sender);
+    const noted = this.#noteInput(sessionId, text, suppressed);
+    try {
+      await this.#startSession(sessionId, text, synthetic, synthetic ? null : sender);
+    } catch (e) {
+      // Its input never reached the CLI: no hook will consume this entry.
+      const q = this.#inputSuppression.get(sessionId);
+      if (q && noted) q.splice(q.indexOf(noted), 1);
+      throw e;
+    }
     if (run) {
       // A fresh session's first input is inputSeq 1. Anything else (a boot
       // that failed, another input already in) leaves the run open for the
@@ -1299,6 +1353,25 @@ export class AgentManager extends EventEmitter {
       live = this.#live.get(sessionId);
     }
     return live;
+  }
+
+  /** Line up an input with the UserPromptSubmit it will fire. A CLI command
+   *  fires none (the CLI handles it before the hook), so it takes no entry. */
+  #noteInput(sessionId: string, text: string, suppressed: boolean): { suppressed: boolean } | undefined {
+    if (text.startsWith("/")) return undefined;
+    const entry = { suppressed };
+    const q = this.#inputSuppression.get(sessionId);
+    if (q) q.push(entry);
+    else this.#inputSuppression.set(sessionId, [entry]);
+    return entry;
+  }
+
+  /** The hook's half of #noteInput: whether the input it is running for was
+   *  suppressed. No entry (the caller set the bit, no input went through
+   *  sendMessage) falls back to the bit. */
+  #takeSuppressed(sessionId: string): boolean {
+    const entry = this.#inputSuppression.get(sessionId)?.shift();
+    return entry ? entry.suppressed : this.#suppressNextTurn.delete(sessionId);
   }
 
   /** (Re)arm the idle timer for a session. On expiry, close the SDK loop
@@ -1651,6 +1724,18 @@ export class AgentManager extends EventEmitter {
     if (o.signalExit && !this.#live.has(sessionId)) this.#signalSessionExit(sessionId);
   }
 
+  /** Reboot a session whose first boot failed, with the same first input. A
+   *  wake's ledger run moves to the new query, which runs that same turn. */
+  #retryBoot(sessionId: string, live: LiveSession, firstText: string, firstSynthetic: boolean, firstSender: InputSender | null): void {
+    const run = live.bootedAsWake ? live.bgRuns?.get(1) : undefined;
+    void this.#startSession(sessionId, firstText, firstSynthetic, firstSender)
+      .then(() => {
+        const booted = this.#live.get(sessionId);
+        if (run && booted?.inputSeq === 1) (booted.bgRuns ??= new Map()).set(1, run);
+      })
+      .catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+  }
+
   async #startSession(sessionId: string, firstText: string, firstSynthetic = false, firstSender: InputSender | null = null) {
     this.#booting.set(sessionId, (this.#booting.get(sessionId) ?? 0) + 1);
     let marked = true;
@@ -1860,7 +1945,7 @@ export class AgentManager extends EventEmitter {
     const userPromptHook = makeUserPromptHook(
       sessionId,
       this.#sessionNotes,
-      () => this.#suppressNextTurn.delete(sessionId),
+      () => this.#takeSuppressed(sessionId),
       (id) => this.#store.findById(id),
       () => {
         const due = this.#takeGuidance(sessionId);
@@ -2063,7 +2148,28 @@ export class AgentManager extends EventEmitter {
     onLive();
     metric.sessionsLive.set(this.#live.size);
     this.#armIdle(live);
-    await this.#store.setStatus(sessionId, "running");
+    try {
+      await this.#store.setStatus(sessionId, "running");
+    } catch (e) {
+      // The query loop never starts, so nothing else would end this live
+      // session: without this, whoever waits for its turn or exit waits forever.
+      if (live.idleTimer) clearTimeout(live.idleTimer);
+      if (this.#live.get(sessionId) === live) {
+        this.#live.delete(sessionId);
+        metric.sessionsLive.set(this.#live.size);
+        this.#budget.forget(sessionId);
+        this.#skillGate.forget(sessionId);
+        this.#forgetGuardrails(sessionId);
+        this.#stopBlocked.delete(sessionId);
+        void this.#remoteHandles.get(sessionId)?.handle.release().catch((err) =>
+          console.error(`[mgr] remote release failed session=${sessionId}: ${err instanceof RemoteError ? err.code : "error"}`));
+        markExited();
+        this.#signalSessionExit(sessionId);
+      } else {
+        markExited();
+      }
+      throw e;
+    }
 
     let stderrBuf = "";
     (options as any).stderr = (chunk: string) => {
@@ -2101,7 +2207,7 @@ export class AgentManager extends EventEmitter {
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
-          void this.#startSession(sessionId, firstText, firstSynthetic, firstSender).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          this.#retryBoot(sessionId, live, firstText, firstSynthetic, firstSender);
           return;
         }
         // Mirror failure: we seeded --session-id but a transcript with that id
@@ -2113,7 +2219,7 @@ export class AgentManager extends EventEmitter {
           await this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
-          void this.#startSession(sessionId, firstText, firstSynthetic, firstSender).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          this.#retryBoot(sessionId, live, firstText, firstSynthetic, firstSender);
           return;
         }
         if (live?.reloading) {
@@ -2164,13 +2270,19 @@ export class AgentManager extends EventEmitter {
         metric.sessionsLive.set(this.#live.size);
         markExited();
         exitSignalled = true;
-        this.#signalSessionExit(sessionId);
+        // A wake cut by a closed stream is still that wake's turn: its mark,
+        // caps, wall clock and run go on to the query that continues it.
+        const wakeGoesOn = live.reloading && live.bootedAsWake && this.#autoContinue.has(sessionId) && this.#wakes.get(sessionId)?.inFlight === true;
+        this.#signalSessionExit(sessionId, { keepWake: wakeGoesOn });
         // After a stream_closed auto-reload, inject a synthetic "continue"
         // prompt so the resumed session picks up without human input.
         if (live.reloading && this.#autoContinue.has(sessionId)) {
           this.#autoContinue.delete(sessionId);
           console.log(`[mgr] auto-continuing after stream_closed reload session=${sessionId}`);
-          void this.#sendInOrder(sessionId, "The MCP stream was restored. Please continue where you left off.", { synthetic: true }).catch((e) => this.#rebootFailed(sessionId, e));
+          const text = "The MCP stream was restored. Please continue where you left off.";
+          // Not through the queue: what waits there is waiting for this turn.
+          if (wakeGoesOn) void this.#send(sessionId, text, true, null, live.bgRuns?.get(1)).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          else void this.#sendInOrder(sessionId, text, { synthetic: true }).catch((e) => this.#rebootFailed(sessionId, e));
         }
         // After a manual reload_session with a prompt, inject it so the user
         // doesn't need to type anything to resume the flow.
@@ -2330,6 +2442,8 @@ export class AgentManager extends EventEmitter {
         break;
       }
       case "result": {
+        const resultError = msg.is_error ? ("errors" in msg && Array.isArray((msg as any).errors) ? (msg as any).errors.join("; ") : msg.subtype) : "";
+        const resumeMiss = RESUME_MISS_RE.test(resultError);
         if (live) {
           // Settled first so no branch below can miss it; a waiting input resumes
           // only after this handler returns, and reads the session again then.
@@ -2340,7 +2454,12 @@ export class AgentManager extends EventEmitter {
           live.pendingReplies.clear();
           // The input this result ends: the oldest outstanding one.
           const endedSeq = live.inputSeq - live.pendingInputs + 1;
-          const bgRun = live.bgRuns?.get(endedSeq);
+          // A wake's own input is always this query's first (it boots for it).
+          const wakesTurn = live.bootedAsWake && endedSeq === 1;
+          // Its turn is not over when the same wake is about to run again: a
+          // resume miss reboots it, and a closed stream continues it.
+          const wakeGoesOn = wakesTurn && (resumeMiss || (this.#pendingReload.has(sessionId) && (this.#streamClosedCount.get(sessionId) ?? 1) <= 2));
+          const bgRun = wakeGoesOn ? undefined : live.bgRuns?.get(endedSeq);
           if (bgRun) live.bgRuns!.delete(endedSeq);
           live.pendingInputs = Math.max(0, live.pendingInputs - 1);
           live.inputSynthetic.shift();
@@ -2348,9 +2467,10 @@ export class AgentManager extends EventEmitter {
           if (live.pendingInputs === 0) {
             live.turnEnded?.resolve();
             live.turnEnded = undefined;
+            // Anything left never fired its hook (the CLI folded it into a turn).
+            this.#inputSuppression.delete(sessionId);
           }
-          // A wake's own input is always this query's first (it boots for it).
-          if (live.bootedAsWake && endedSeq === 1) this.#wakeEnded(sessionId);
+          if (wakesTurn && !wakeGoesOn) this.#wakeEnded(sessionId);
           // The check turn's result: its own usage (this result's running
           // modelUsage minus the qualifying turn's) ends its budgeted run.
           const r = msg as { subtype?: string; is_error?: boolean; usage?: Partial<ResultUsage>; modelUsage?: Record<string, ModelUsageRow>; num_turns?: number; duration_ms?: number };
@@ -2434,16 +2554,13 @@ export class AgentManager extends EventEmitter {
           } satisfies AgentEvent);
         }
         if (msg.is_error) {
-          const errStr =
-            "errors" in msg && Array.isArray((msg as any).errors)
-              ? (msg as any).errors.join("; ")
-              : msg.subtype;
+          const errStr: string = resultError;
           // A resume miss also arrives here as a result(is_error), in parallel
           // with the stderr/throw that drives the silent reboot in #startSession.
           // Suppress the user-facing emit so the self-healing migration stays
           // invisible — the catch path recovers it; surfacing a :warning: here
           // just scares the user about an expected, already-handled condition.
-          if (RESUME_MISS_RE.test(errStr)) {
+          if (resumeMiss) {
             console.log(`[resume-attempt] suppressing resume-miss result error session=${sessionId} (reboot will reseed --session-id)`);
             if (live) live.turnTools = [];
           } else if (this.#wakes.has(sessionId)) {

@@ -7,6 +7,9 @@ import type { SlashHit } from "../slack/commands";
 
 export const channelSessionKey = (channelId: string): string => `channel:${channelId}`;
 
+/** Whether a session row's `slack_thread_ts` is a channel session's key. */
+export const isChannelSessionKey = (threadTs: unknown): boolean => typeof threadTs === "string" && threadTs.startsWith("channel:");
+
 export const isRootChannelEvent = (e: { channel_type?: string; thread_ts?: string }): boolean =>
   !e.thread_ts && e.channel_type !== "im";
 

@@ -646,6 +646,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       const tok = store.tokenFor(id);
       return tenant && tok ? client.getRuntime(tenant, personas.get(id) ?? "default", tok) : null;
     },
+    sessionThread: async (id) => (await store.findById(id))?.slack_thread_ts ?? null,
     workingDir: async (id) => {
       const r = await store.findById(id);
       if (!r) throw new Error(`unknown session ${id}`);
