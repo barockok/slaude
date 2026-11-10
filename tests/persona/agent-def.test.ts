@@ -7,6 +7,7 @@ import { parseAgentYaml } from "../../src/persona/agent-def";
 import { PayloadError, payloadVersionFor } from "../../src/persona/sync/payload";
 import { SoulDataSchema } from "../../src/soul/data";
 import { subMandatesOf } from "../../src/soul/mandate-scope";
+import { parseProactive } from "../../src/soul/proactive";
 
 const FULL = `
 name: ana
@@ -198,6 +199,40 @@ describe("parseAgentYaml", () => {
   test("an error never echoes a value", () => {
     const e = err(() => parseAgentYaml("ana", "name: ana\nsoul: x\nmodel: [secret-looking-value]\n"));
     expect(e.message).not.toContain("secret-looking-value");
+  });
+});
+
+describe("parseAgentYaml channels", () => {
+  const compile = (extra: string) => parseAgentYaml("default", def(extra));
+
+  test("channels compile to the soul block the parser reads", () => {
+    const { spec } = compile("channels:\n  C0EXAMPLE:\n    session: channel\n    proactive: true\n");
+    const c = parseProactive(spec.soul);
+    expect(c.sessions).toEqual({ C0EXAMPLE: "channel" });
+    expect(c.channels).toEqual({ C0EXAMPLE: true });
+    expect(spec.soul.startsWith("You are the default agent.")).toBe(true);
+  });
+
+  test("proactive: false compiles to Enabled: no", () => {
+    const { spec } = compile("channels:\n  C0EXAMPLE:\n    proactive: false\n");
+    expect(spec.soul).toContain("- Enabled: no");
+    expect(parseProactive(spec.soul).channels).toEqual({ C0EXAMPLE: false });
+  });
+
+  test.each([["session: thread"], ["proactive: maybe"], ["other: 1"]])("refuses %s", (line) => {
+    expect(err(() => compile(`channels:\n  C0EXAMPLE:\n    ${line}\n`)).message).toContain("channels.C0EXAMPLE");
+  });
+
+  test("refuses a key that is not a channel id", () => {
+    expect(err(() => compile("channels:\n  general:\n    session: channel\n")).message).toContain("must be a channel id");
+  });
+
+  test("a channels block does not warn about a structured soul section", () => {
+    expect(compile("channels:\n  C0EXAMPLE:\n    session: channel\n").warnings).toEqual([]);
+  });
+
+  test("a persona with no channels key keeps its soul unchanged", () => {
+    expect(compile("").spec.soul).toBe("You are the default agent.");
   });
 });
 

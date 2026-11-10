@@ -28,7 +28,7 @@ export const DESCRIPTION_MAX = 2000;
 
 const TOP_KEYS = new Set([
   "name", "description", "model", "slackUserId", "userToken", "provider", "runsOn",
-  "soul", "mandate", "access", "mcp", "skills", "guardrails", "memory",
+  "soul", "mandate", "access", "mcp", "skills", "guardrails", "memory", "channels",
 ]);
 const MANDATE_KEYS = new Set(["global", "scoped"]);
 const SCOPED_KEYS = new Set(["boundary", "mode", "text"]);
@@ -36,6 +36,7 @@ const ACCESS_KEYS = new Set(["manager", "backupManager", "approvers", "channels"
 const APPROVER_KEYS = new Set(["user", "scope", "catchall", "channel"]);
 const CHANNELS_KEYS = new Set(["public", "trusted"]);
 const MEMORY_KEYS = new Set(["kbSources", "background"]);
+const CHANNEL_ENTRY_KEYS = new Set(["session", "proactive"]);
 
 /** A soul section that agent.yaml keeps in its own keys (headings a SOUL.md may carry). */
 const STRUCTURED_HEADING_RE =
@@ -252,6 +253,22 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
     scopeMandates: scopes,
   });
 
+  // Per-channel session and proactive settings compile to the `## Channel` block
+  // the soul parser reads. The warnings below run on the authored soul alone:
+  // this block is generated, not a section left in the prose by mistake.
+  const channelsDoc = asMap("channels", doc.channels);
+  let channelBlocks = "";
+  for (const [channel, value] of Object.entries(channelsDoc)) {
+    if (!CHANNEL_ID_RE.test(channel)) fail(`channels.${safeKey(channel)}`, "must be a channel id");
+    const entry = asMap(`channels.${channel}`, value);
+    refuseUnknown(`channels.${channel}.`, entry, CHANNEL_ENTRY_KEYS);
+    if (entry.session != null && entry.session !== "channel") fail(`channels.${channel}.session`, 'must be "channel"');
+    if (entry.proactive != null && typeof entry.proactive !== "boolean") fail(`channels.${channel}.proactive`, "must be true or false");
+    channelBlocks += `\n\n## Channel <#${channel}>`;
+    if (entry.session === "channel") channelBlocks += "\n### Session\n- Mode: channel";
+    if (entry.proactive != null) channelBlocks += `\n### Proactive\n- Enabled: ${entry.proactive ? "yes" : "no"}`;
+  }
+
   for (const h of structuredHeadings(soulText)) {
     warnings.push(`persona '${name}': agent.yaml soul has a '${h}' section; mandates and access are read from their own keys, so that section is only prose`);
   }
@@ -259,7 +276,7 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   return {
     spec: {
       name,
-      soul: soulText,
+      soul: soulText + channelBlocks,
       ...(slackUserId ? { slackUserId } : {}),
       ...(userToken ? { userToken } : {}),
       ...(model ? { model } : {}),
