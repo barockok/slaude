@@ -102,12 +102,15 @@ describe("export to agent.yaml", () => {
     }
   }
 
-  test("a classic channel with limits is left out and warned about, keeping the fallback", async () => {
+  test("an Enabled: yes channel with limits exports as proactive: the limits have no effect in a channel session", async () => {
     const { channels, warned } = await exportChannels("## Channel <#CLIMIT>\n### Proactive\n- Enabled: yes\n- Highest: ask\n- Cooldown: 4 hours\n");
-    expect(channels).toBeUndefined();
-    expect(warned).toContain("CLIMIT");
-    expect(warned).toContain("Highest, Cooldown");
-    expect(warned).not.toContain("Max per day");
+    expect(channels).toEqual({ CLIMIT: { proactive: true } });
+    expect(warned).not.toContain("CLIMIT");
+  });
+
+  test("a channel with an invalid Mode exports as off", async () => {
+    const { channels } = await exportChannels("## Channel <#CBAD>\n### Session\n- Mode: thread\n### Proactive\n- Enabled: yes\n");
+    expect(channels).toEqual({ CBAD: { proactive: false } });
   });
 
   test("a classic channel with limits that is off stays off", async () => {
