@@ -219,7 +219,17 @@ beforeAll(async () => {
       this.abortedSessions.push(id);
       this.aborts.get(id)?.abort();
     }
-    override suppressNextTurn(_id: string) {}
+    /** Whether anything else ran between each suppressNextTurn and the send it was for. */
+    bitGap = false;
+    bitPending = false;
+    bitChecks: boolean[] = [];
+    override suppressNextTurn(_id: string) {
+      this.bitPending = true;
+      this.bitGap = false;
+      queueMicrotask(() => {
+        this.bitGap = true;
+      });
+    }
     permissionResolver?: (sessionId: string, toolName: string, input: any, ctx: any) => Promise<any>;
     override setPermissionResolver(r: any) {
       super.setPermissionResolver(r);
@@ -232,7 +242,14 @@ beforeAll(async () => {
     }
     /** The background run each sendMessage carried (phase E promise checks), by session. */
     bgRuns = new Map<string, { runId: string; finish: (usage: any, outcome: "ok" | "error") => Promise<void> }>();
+    /** How many turns were sent, by session. */
+    sends = new Map<string, number>();
     override async sendMessage(sessionId: string, text: string, opts: { backgroundRun?: any } = {}): Promise<void> {
+      this.sends.set(sessionId, (this.sends.get(sessionId) ?? 0) + 1);
+      if (this.bitPending) {
+        this.bitPending = false;
+        this.bitChecks.push(this.bitGap);
+      }
       if (opts.backgroundRun) this.bgRuns.set(sessionId, opts.backgroundRun);
       this.emit("event", { type: "turnStart", sessionId } as any);
       // The real manager's boot fails this way when the child-env resolver throws.
@@ -491,6 +508,139 @@ d("gateway↔node E2E (real Redis)", () => {
       expect(busts.some(([t]) => t === "default")).toBe(true);
     } finally {
       bootFailure = null;
+    }
+  }, 30_000);
+
+  // The manager refuses a wake while a voice call owns its session, having
+  // closed the wake's run: the job is settled, so it is neither retried (the
+  // run is closed) nor failed, and the worker does not finish the run again.
+  test("a wake refused as busy completes without a retry and does not touch its run again", async () => {
+    const { WakeBusyError } = await import("../../src/agent/manager");
+    const WAKE_THREAD = "9011.0";
+    const prev = behavior;
+    behavior = async ({ servers, text }) => {
+      await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
+    };
+    try {
+      reacts.length = 0;
+      await emitSlack("message", msg(WAKE_THREAD, "9011.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9011.1"), 15_000);
+      const Sessions = await import("../../src/db/sessions");
+      const sid = await sessionIdOf(WAKE_THREAD);
+      const session = (await Sessions.findById(sid))!;
+      bootFailure = new WakeBusyError(sid);
+      const before = stub.sends.get(sid) ?? 0;
+      await qd.dispatch(session, "[wake] look around", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WAKE_THREAD,
+        eventTs: "9011.2",
+        userId: "USLAUDE",
+        origin: "cron",
+        backgroundRunId: "run-e2e-busy",
+        wake: { maxTurns: 3 },
+      });
+      const queues = () => [turnsQ.queue("turns"), turnsQ.queue(nodeTurnsQueueFn(NODE_ID))];
+      const inState = async (states: string[]) => {
+        const lists = await Promise.all(queues().map((q: any) => q.getJobs(states, 0, 200)));
+        return lists.flat().filter((j: any) => j?.data?.sessionId === sid && j.data.wake);
+      };
+      await until(async () => (await inState(["completed"])).length === 1, 10_000);
+      const [job] = await inState(["completed"]);
+      expect(job.attemptsMade).toBe(1);
+      expect(job.returnvalue).toEqual({ result: "skipped" });
+      // Past the retry backoff: it ran once, and nothing is left to run it again.
+      await sleep(1200);
+      expect(await inState(["failed", "delayed", "waiting", "active"])).toEqual([]);
+      expect((stub.sends.get(sid) ?? 0) - before).toBe(1);
+    } finally {
+      bootFailure = null;
+      behavior = prev;
+    }
+  }, 30_000);
+
+  // An /abort sets a durable flag that skips the next job claimed for the
+  // session. A wake skipped that way must still close its ledger run: left
+  // open, it reads as busy for two hours and blocks the agent's wakes.
+  test("a wake skipped by the abort flag closes its run and never starts", async () => {
+    const WAKE_THREAD = "9012.0";
+    const prev = behavior;
+    behavior = async ({ servers, text }) => {
+      await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
+    };
+    try {
+      reacts.length = 0;
+      await emitSlack("message", msg(WAKE_THREAD, "9012.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9012.1"), 15_000);
+      const Sessions = await import("../../src/db/sessions");
+      const Runs = await import("../../src/db/background-runs");
+      const { startSkillCheck } = await import("../../src/background/skill-check");
+      const sid = await sessionIdOf(WAKE_THREAD);
+      const session = (await Sessions.findById(sid))!;
+      const opened = await startSkillCheck(
+        { personaId: "default", model: "claude-opus-5-5", scope: "agent", pass: "heartbeat-wake" },
+        { budget: () => ({ limitUsd: 5, timeZone: "UTC" }) },
+      );
+      if (!opened.ok) throw new Error("run did not open");
+      const before = stub.sends.get(sid) ?? 0;
+      // Paused so the flag is set between enqueue and claim: dispatch itself
+      // clears a stale flag, so setting it before would not skip this job.
+      const queues = [turnsQ.queue("turns"), turnsQ.queue(nodeTurnsQueueFn(NODE_ID))];
+      await Promise.all(queues.map((q: any) => q.pause()));
+      try {
+        await qd.dispatch(session, "[wake] look around", {
+          teamId: "T",
+          channelId: "C0TEAM",
+          threadTs: WAKE_THREAD,
+          eventTs: "9012.2",
+          userId: "USLAUDE",
+          origin: "cron",
+          backgroundRunId: opened.runId,
+          wake: { maxTurns: 3 },
+        });
+        await redis.set(keys.abortFlag(sid), "1", "PX", 60_000);
+      } finally {
+        await Promise.all(queues.map((q: any) => q.resume()));
+      }
+      await until(async () => (await Runs.get(opened.runId))?.outcome != null, 15_000);
+      expect((await Runs.get(opened.runId))!.outcome).toBe("ok");
+      expect(stub.sends.get(sid) ?? 0).toBe(before);
+    } finally {
+      behavior = prev;
+    }
+  }, 30_000);
+
+  // A suppressed job's bit is bound by sendMessage. Set any earlier, an await
+  // that fails (the warm session's credential seed) would leave it standing.
+  test("a suppressed job sets its bit with nothing between it and the send", async () => {
+    const WARM_THREAD = "9013.0";
+    const prev = behavior;
+    behavior = async () => {};
+    try {
+      reacts.length = 0;
+      await emitSlack("message", msg(WARM_THREAD, "9013.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9013.1"), 15_000);
+      const sid = await sessionIdOf(WARM_THREAD);
+      // A config dir makes this a warm session: the worker awaits its seed.
+      const { sessionConfigDir } = await import("../../src/agent/config-root");
+      require("node:fs").mkdirSync(sessionConfigDir(sid, undefined, nodeConfigRoot), { recursive: true });
+      const Sessions = await import("../../src/db/sessions");
+      const session = (await Sessions.findById(sid))!;
+      const before = stub.sends.get(sid) ?? 0;
+      stub.bitChecks.length = 0;
+      await qd.dispatch(session, "recorded only", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WARM_THREAD,
+        eventTs: "9013.2",
+        userId: "U1",
+        origin: "slack",
+        suppress: true,
+      });
+      await until(() => (stub.sends.get(sid) ?? 0) > before, 15_000);
+      expect(stub.bitChecks).toEqual([false]);
+    } finally {
+      behavior = prev;
     }
   }, 30_000);
 

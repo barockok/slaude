@@ -1845,6 +1845,19 @@ describe("AgentManager voice support", () => {
     expect(mgr.isTurnInFlight(row.id)).toBe(false);
   });
 
+  it("turnRunning is true from send until the turn's result", async () => {
+    const mgr = new AgentManager();
+    expect(mgr.turnRunning("nope")).toBe(false);
+    const row = await mgr.ensureSession(thread());
+    const fs = plan();
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => mgr.isLive(row.id), 3000, "live");
+    expect(mgr.turnRunning(row.id)).toBe(true);
+    fs.emit(res());
+    await until(() => !mgr.turnRunning(row.id), 3000, "turn done");
+    await shutdown(mgr, row.id);
+  });
+
   it("holding a non-live id returns false and does not block a later session's idle", async () => {
     const spy = spyOn(env, "idleMs").mockReturnValue(30);
     try {

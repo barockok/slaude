@@ -131,8 +131,11 @@ export class SlackSurface implements Surface {
   }
 
   async react({ name, ref }: { name: string; ref?: string }): Promise<void> {
+    // A turn with no triggering message (a console turn at root) has nothing to react to.
+    const timestamp = ref ?? this.#b.inboundRef;
+    if (!timestamp) return;
     try {
-      await this.#client.reactions.add({ channel: this.#b.conversationId, timestamp: ref ?? this.#b.inboundRef, name });
+      await this.#client.reactions.add({ channel: this.#b.conversationId, timestamp, name });
     } catch (e: any) {
       const msg = e?.data?.error ?? e?.message ?? String(e);
       if (msg === "already_reacted") return; // idempotent — treat as success
@@ -141,7 +144,9 @@ export class SlackSurface implements Surface {
   }
 
   async unreact({ name, ref }: { name: string; ref?: string }): Promise<void> {
-    await this.#client.reactions.remove({ channel: this.#b.conversationId, timestamp: ref ?? this.#b.inboundRef, name });
+    const timestamp = ref ?? this.#b.inboundRef;
+    if (!timestamp) return;
+    await this.#client.reactions.remove({ channel: this.#b.conversationId, timestamp, name });
   }
 
   async upload({ path, title, comment, altText }: { path: string; title?: string; comment?: string; altText?: string }): Promise<void> {

@@ -7,7 +7,7 @@
  * the winner's job-moved marker instead.
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { makeQueueDispatch } from "../../../src/gateway/core/dispatch";
+import { makeQueueDispatch, type DispatchMeta } from "../../../src/gateway/core/dispatch";
 import { verifyJobToken } from "../../../src/gateway/api/auth";
 import { __resetPersonaRegistry, setPersonaRegistry } from "../../../src/persona/registry";
 import type { SessionRow } from "../../../src/db/schema";
@@ -115,7 +115,7 @@ describe("dispatch: LABEL_MISMATCH re-dispatch", () => {
     __resetPersonaRegistry();
   });
 
-  const run = async (outcomes: Outcome[], o: { loseGuard?: boolean; settleBetweenReads?: boolean } = {}) => {
+  const run = async (outcomes: Outcome[], o: { loseGuard?: boolean; settleBetweenReads?: boolean } = {}, meta: DispatchMeta = META) => {
     // The turn was dispatched on engineering; the persona has since moved.
     setPersonaRegistry(managedDefault("engineering") as any);
     const inf = infra(outcomes, o);
@@ -130,7 +130,7 @@ describe("dispatch: LABEL_MISMATCH re-dispatch", () => {
     console.warn = () => {};
     console.log = () => {};
     try {
-      await dispatch.dispatch(session("s1"), "hello", META);
+      await dispatch.dispatch(session("s1"), "hello", meta);
       setPersonaRegistry(managedDefault("finance") as any);
       const deadline = Date.now() + 3_000;
       while (!events.some((e) => e.type === "error" || e.type === "done") && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
@@ -156,6 +156,14 @@ describe("dispatch: LABEL_MISMATCH re-dispatch", () => {
     expect(v.ok && v.claims.session).toBe("s1");
     expect(events.filter((e) => e.type === "error")).toEqual([]);
     expect(events.filter((e) => e.type === "done")).toHaveLength(1);
+  });
+
+  test("a re-dispatched root turn still posts at the channel root", async () => {
+    const rd = await run(["failed-mismatch", "completed"], {}, { ...META, postTarget: "channel" });
+    expect(rd).toHaveLength(1);
+    const v = verifyJobToken(rd[0]!.data.jobToken);
+    expect(v.ok && v.claims.post).toBe("channel");
+    expect(v.ok && v.claims.job).toBe(rd[0]!.newJobId);
   });
 
   test("a second mismatch is shown once, never re-dispatched again", async () => {

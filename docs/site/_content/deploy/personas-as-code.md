@@ -154,6 +154,10 @@ memory:
   background:
     budgetUsd: 2
     timezone: UTC
+channels:                         # per-channel settings, keyed by channel id
+  CTEAMCHAN:
+    session: channel              # one long-lived session for this channel
+    proactive: true               # optional; turns proactiveness on or off here
 ```
 
 **Compiled, never extracted.** The structured parts compile deterministically
@@ -162,6 +166,16 @@ for the default persona as well. The `soul` block stays prose; mandates and
 access come only from their own keys, so a `## Manager` or `## Mandate` heading
 left in the soul has no effect and the sync warns about it. A console edit of
 such a persona's soul changes the prose and keeps the structure.
+
+**`channels`** compiles to the `## Channel` block a `SOUL.md` would carry
+(`### Session` with `Mode: channel`, `### Proactive` with `Enabled:`), appended
+to the soul. A key that is not a channel id, a `session` other than `channel`, a
+`proactive` that is not a boolean, a bare `session:` or `proactive:`, or an
+unknown key fails the sync. So does a `soul` that already has a `## Channel`
+section for a listed channel, or that ends inside an open code fence. A console
+edit of the soul keeps these generated sections, except for a channel whose
+section the edited text carries itself; sections you wrote in `soul` are yours
+to edit away.
 
 **Scoped mandates** behave as the `Mode:` line and `## Scope` blocks of a
 `SOUL.md` do: the most specific boundary applies, an absent `mode` is

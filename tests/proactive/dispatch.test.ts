@@ -6,7 +6,7 @@
  * (origin cron, no person), engaged, carrying its `heartbeat-turn` run.
  */
 import { existsSync } from "node:fs";
-import { isProactiveWorkspace, proactiveWorkspaceDir } from "../../src/agent/workspace-claim";
+import { channelWorkspaceDir, isProactiveWorkspace, proactiveWorkspaceDir } from "../../src/agent/workspace-claim";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import * as Posts from "../../src/db/proactive-posts";
@@ -24,6 +24,7 @@ import {
 } from "../../src/proactive/dispatch";
 import type { ProactiveRule } from "../../src/proactive/rules";
 import { createGateway, type GatewayHandle } from "../../src/gateway/core/gateway";
+import * as RedisConn from "../../src/queue/redis";
 import { AgentManager, type BackgroundTurnRun, type InputSender } from "../../src/agent/manager";
 import type { DispatchMeta, QueueDispatch } from "../../src/gateway/core/dispatch";
 import { writeSoulFixture, WORLD } from "../../src/gateway/sim/soul-fixture";
@@ -290,6 +291,45 @@ describe("the mono gateway's proactive transport", () => {
     await Bun.sleep(0);
     expect(sent[0]!.sid).toBe(row!.id);
     expect(wake).toEqual({ maxBudgetUsd: 1, maxTurns: 40 });
+  });
+
+  test("a channel wake: the channel session, its folder, and the root-post claims reach the dispatch", async () => {
+    const metas: DispatchMeta[] = [];
+    const qd = {
+      dispatch: async (_s: unknown, _text: string, meta: DispatchMeta) => void metas.push(meta),
+      abort: async () => {},
+      pubsub: { close: async () => {} },
+      turns: { close: async () => {}, hasPending: async () => false },
+      registry: { close: async () => {}, liveLabels: async () => [] },
+      close: async () => {},
+    } as unknown as QueueDispatch;
+    h = createGateway(agent, slackTransport(), { queueDispatch: qd });
+    // Gateway role reads the session lock from Redis before a channel wake. The
+    // queue here is a fake, so the lock is too: CI's sqlite job has no Redis.
+    const redis = spyOn(RedisConn, "getRedis").mockReturnValue({ exists: async () => 0 } as never);
+    try {
+      await h.__wake!.dispatch(
+        { teamId: "T", managerId: "U0MANAGER", channelId: "C1", threadTs: "channel:C1", personaId: "default", agentId: AGENT_ID, appId: undefined },
+        '<runtime-check kind="wake">look</runtime-check>',
+        { runId: "run-c", agentId: AGENT_ID },
+        { maxBudgetUsd: 1 },
+      );
+      expect(redis).toHaveBeenCalled();
+    } finally {
+      redis.mockRestore();
+    }
+    const row = await Sessions.findByThread({ team_id: "T", channel_id: "C1", thread_ts: "channel:C1", persona_id: "default" });
+    expect(row!.working_dir).toBe(channelWorkspaceDir(AGENT_ID, "C1"));
+    expect(metas[0]).toMatchObject({ channelId: "C1", threadTs: "channel:C1", userId: AGENT_ID, postTarget: "channel", channelSession: true, wake: { maxBudgetUsd: 1 }, backgroundRunId: "run-c", origin: "cron" });
+  });
+
+  test("a job token for a channel wake carries the channel session onto the tool plane", () => {
+    h = createGateway(agent, slackTransport());
+    const ctx = h.__v1SlackCtx!({ tenant: "t", persona: "default", session: "s", team: "T", channel: "C1", thread: "channel:C1", initiator: AGENT_ID, scope: "turn", job: "j", runAs: "", lock: null, sessionConfigFp: "", wake: true, bgRun: "run-c", post: "channel" } as never);
+    expect(ctx.wake?.channelSession).toBe("C1");
+    expect(ctx.postTarget).toBe("channel");
+    const plain = h.__v1SlackCtx!({ tenant: "t", persona: "default", session: "s", team: "T", channel: "C1", thread: "1800.1", initiator: AGENT_ID, scope: "turn", job: "j", runAs: "", lock: null, sessionConfigFp: "", wake: true, bgRun: "run-c" } as never);
+    expect(plain.wake?.channelSession).toBeUndefined();
   });
 
   test("mono: a promise check in a proactive-folder thread while another thread holds the folder is deferred, no turn sent", async () => {

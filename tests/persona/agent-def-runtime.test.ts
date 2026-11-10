@@ -290,6 +290,18 @@ describe("the Definition view", () => {
     expect(doc.provider.apiKey).toBe("env://PERSONA_ANA_KEY");
   });
 
+  test("shows channel settings read from the soul, and omits the key when there are none", () => {
+    const withChannels = compiledPersona();
+    withChannels.soulMd += "\n\n## Channel <#COPS>\n### Session\n- Mode: channel\n### Proactive\n- Enabled: no\n\n## Channel <#CTEAM>\n### Proactive\n- Enabled: yes";
+    setPersonaRegistry(managed(withChannels));
+    expect((parseYaml(agentDefinitionView("ana").yaml) as Record<string, any>).channels).toEqual({
+      COPS: { session: "channel", proactive: false },
+      CTEAM: { proactive: true },
+    });
+    setPersonaRegistry(managed(compiledPersona()));
+    expect(parseYaml(agentDefinitionView("ana").yaml) as Record<string, any>).not.toHaveProperty("channels");
+  });
+
   test("a stdio server's command and arguments are placeholders", () => {
     const out = redactedMcp({ mcpServers: { s: { command: "/bin/run --token=abc", args: ["--key", "abc"], env: { TOKEN: "abc" } } } }) as any;
     expect(JSON.stringify(out)).not.toContain("abc");

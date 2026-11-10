@@ -165,10 +165,12 @@ export const slackHandlers = {
   },
 
   async react(ctx: SlackContext, { name, ts }: { name: string; ts?: string }): Promise<ToolResult> {
+    const timestamp = ts ?? ctx.inboundTs;
+    if (!timestamp) return ok("nothing to react to");
     try {
       await ctx.client.reactions.add({
         channel: ctx.channel,
-        timestamp: ts ?? ctx.inboundTs,
+        timestamp,
         name,
       });
       return ok(`reacted :${name}:`);
@@ -180,10 +182,12 @@ export const slackHandlers = {
   },
 
   async unreact(ctx: SlackContext, { name, ts }: { name: string; ts?: string }): Promise<ToolResult> {
+    const timestamp = ts ?? ctx.inboundTs;
+    if (!timestamp) return ok("nothing to react to");
     try {
       await ctx.client.reactions.remove({
         channel: ctx.channel,
-        timestamp: ts ?? ctx.inboundTs,
+        timestamp,
         name,
       });
       return ok(`unreacted :${name}:`);
@@ -243,7 +247,7 @@ export const slackHandlers = {
       const send = async (caption?: string) => {
         const r = await ctx.client.files.uploadV2({ // outbound: legacy slack tool, through deliver()
           channel_id: ctx.channel,
-          thread_ts: ctx.threadTs,
+          thread_ts: ctx.threadTs || undefined,
           file: createReadStream(path),
           filename,
           title: title ?? filename,

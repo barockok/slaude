@@ -34,12 +34,12 @@ describe("parseClock / inWindow", () => {
 
 describe("parseProactive", () => {
   it("defaults to disabled, cap 6, cooldown 1, no quiet hours", () => {
-    expect(parseProactive(SOUL(""))).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 6, cooldownHours: 1, watch: [], highest: "act", wake: true, read: [], channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {} });
+    expect(parseProactive(SOUL(""))).toEqual({ enabled: false, quietHours: null, maxPerPersonPerDay: 6, cooldownHours: 1, watch: [], highest: "act", wake: true, read: [], channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {}, sessions: {}, invalidSessions: [] });
   });
 
   it("reads the global section", () => {
     const c = parseProactive(SOUL("## Proactive\n- Enabled: yes\n- Quiet hours: 21:00–08:00\n- Max per person per day: 3\n- Cooldown: 2 hours\n"));
-    expect(c).toEqual({ enabled: true, quietHours: { start: 21 * 60, end: 8 * 60 }, maxPerPersonPerDay: 3, cooldownHours: 2, watch: [], highest: "act", wake: true, read: [], channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {} });
+    expect(c).toEqual({ enabled: true, quietHours: { start: 21 * 60, end: 8 * 60 }, maxPerPersonPerDay: 3, cooldownHours: 2, watch: [], highest: "act", wake: true, read: [], channels: {}, channelHighest: {}, channelCooldownHours: {}, channelMaxPerDay: {}, sessions: {}, invalidSessions: [] });
   });
 
   it("is case-insensitive, accepts a hyphen, and ignores comments", () => {

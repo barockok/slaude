@@ -61,8 +61,8 @@ function toRun(r: Row): BackgroundRun {
 }
 
 /**
- * Open a run row (outcome NULL until finish). `scope` is 'agent' or
- * 'user:<id>'. `costUsd` is the provisional cost an open run counts toward
+ * Open a run row (outcome NULL until finish). `scope` is 'agent',
+ * 'user:<id>', or 'channel:<id>' (a channel session's wake). `costUsd` is the provisional cost an open run counts toward
  * spentOn until progress or finish replaces it (the pass's start estimate), so
  * concurrent runs and a run whose finish is lost never count as free.
  */

@@ -459,6 +459,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
         teamId: e.row.team_id,
         botUserId: e.row.bot_user_id ?? undefined,
         client: e.client,
+        personaId: e.row.persona_id,
       }));
     },
     get port() {

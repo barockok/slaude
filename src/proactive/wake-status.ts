@@ -5,10 +5,11 @@
  */
 import { localDay, PROACTIVE_PASSES, type BudgetConfig } from "../background/budget";
 import * as Runs from "../db/background-runs";
+import * as ChannelWake from "../db/channel-wake-state";
 import * as WakeState from "../db/heartbeat-wake-state";
 import type { BrainOpCall } from "../knowledge/memory-trail";
 import { agentPageBody } from "./heartbeat";
-import { wakeEligibility } from "../soul/proactive";
+import { channelSessionWakes, wakeEligibility } from "../soul/proactive";
 import { WAKE_JOURNAL_SLUG } from "./wake-tools";
 
 const usd = (n: number): string => `$${n.toFixed(2)}`;
@@ -40,6 +41,10 @@ export async function wakeStatusText(a: { personaId: string; agentId: string; ma
   const state = await WakeState.get(a.agentId);
   if (state) {
     lines.push(`Last wake: ${when(state.lastWakeAt)} (${state.lastOutcome ?? "running"}); next check: ${when(state.nextCheckAt)}; failures in a row: ${state.failures}`);
+  }
+  for (const channel of channelSessionWakes(a.personaId)) {
+    const s = await ChannelWake.get(a.agentId, channel);
+    if (s) lines.push(`<#${channel}>: last wake ${when(s.lastWakeAt)} (${s.lastOutcome ?? "running"}); next check: ${when(s.nextCheckAt)}; failures in a row: ${s.failures}`);
   }
   const wakes = runs.filter((r) => r.pass === "heartbeat-wake" && r.outcome && r.outcome !== "skipped-budget");
   if (wakes.length) {

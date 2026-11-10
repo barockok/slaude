@@ -2,6 +2,8 @@
 export const GUARDRAILS_CAPABILITY = "guardrails/1";
 /** The node capability that says a node applies an agent.yaml's skill list and attached guardrails. */
 export const AGENT_DEFINITION_CAPABILITY = "agent-definition/1";
+/** The node capability that says a node can run a channel session (one session per channel, wake and normal turns on it). */
+export const CHANNEL_SESSION_CAPABILITY = "channel-session/1";
 /** The request header a node lists its capabilities in. */
 export const CAPABILITIES_HEADER = "x-slaude-capabilities";
 

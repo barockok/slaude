@@ -18,7 +18,7 @@ import { currentGuardrails } from "./snapshot";
 import { docsForAgent, hasEnforcedRules, resolveDocs, sessionGuardrails, withAgentAttachments, type GuardrailDoc, type SessionGuardrails } from "./resolve";
 import { attachedResolved, attachmentsOf } from "./attached";
 
-export { AGENT_DEFINITION_CAPABILITY, CAPABILITIES_HEADER, definitionNeedsNode, GUARDRAILS_CAPABILITY, hasCapability } from "./capability";
+export { AGENT_DEFINITION_CAPABILITY, CAPABILITIES_HEADER, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, GUARDRAILS_CAPABILITY, hasCapability } from "./capability";
 
 /** The bundle field. Absent: the gateway has no guardrails (or predates them). */
 export interface BundleGuardrails {

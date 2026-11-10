@@ -22,6 +22,7 @@ import { mintJobToken, verifyJobToken } from "../api/auth";
 import { runsOnFor } from "../../persona/registry";
 import { env } from "../../config/env";
 import { threadIdentity } from "./thread-identity";
+import { channelSessionKey } from "./channel-session";
 import { sessionConfigFp } from "../../remote/fingerprint";
 import { ensureProvisioned } from "../../remote/env-runtime";
 import { defaultEpochs, localEpochs, turnMcpEpoch, type McpCredEpochs } from "./mcp-cred-epoch";
@@ -32,7 +33,7 @@ import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { TurnQueues, type TurnJob, type TurnTarget } from "../../queue/turns";
 import { isFailureCode } from "./failure-codes";
 import { personaNeedsGuardrails } from "../../guardrails/node";
-import { AGENT_DEFINITION_CAPABILITY, definitionNeedsNode, GUARDRAILS_CAPABILITY } from "../../guardrails/capability";
+import { AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, GUARDRAILS_CAPABILITY } from "../../guardrails/capability";
 import { managedPersonaDefinition } from "../../persona/registry";
 import { emitAudit } from "../../audit/emit";
 import { resolve } from "node:path";
@@ -81,6 +82,10 @@ export interface DispatchMeta {
   backgroundRunId?: string;
   /** This turn is a heartbeat wake: signed as `wake`, and its caps go to the node. Needs backgroundRunId. */
   wake?: { maxBudgetUsd?: number; maxTurns?: number; maxMinutes?: number };
+  /** This turn's replies go to the channel root: signed as `post`. */
+  postTarget?: "channel";
+  /** This turn runs on a channel session: only a node with the capability may take it. */
+  channelSession?: boolean;
 }
 
 export interface QueueDispatch {
@@ -346,6 +351,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
 
   /** No capable node in time: audited, and the thread is told (the turn is not queued). */
   async function refuseUnsupported(sessionId: string, persona: string, tenantId: string, meta: DispatchMeta, label: string, cap: string): Promise<void> {
+    const channelSession = cap === CHANNEL_SESSION_CAPABILITY;
     emitAudit({
       tenantId,
       persona,
@@ -358,11 +364,13 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       sessionId,
       channelId: meta.channelId,
       threadTs: meta.threadTs,
-      summary: `no node on label ${label} applies owner guardrails; the turn was not dispatched`,
+      summary: `no node on label ${label} ${channelSession ? "runs channel sessions" : "applies owner guardrails"}; the turn was not dispatched`,
       details: { agent: persona, label, capability: cap, waitedMs: guardrailWaitMs },
     });
     console.warn(`[dispatch] session=${sessionId} persona=${persona}: no ${cap} node on label ${label}; not dispatched`);
-    agent.emit("event", { type: "error", sessionId, error: "no guardrails-capable node", code: "GUARDRAILS_UNSUPPORTED" } as AgentEvent);
+    agent.emit("event", (channelSession
+      ? { type: "error", sessionId, error: "no channel-session-capable node", code: "CHANNEL_SESSION_UNSUPPORTED" }
+      : { type: "error", sessionId, error: "no guardrails-capable node", code: "GUARDRAILS_UNSUPPORTED" }) as AgentEvent);
   }
 
   return {
@@ -402,10 +410,13 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           console.error(`[dispatch] session=${session.id} sandbox: ${e instanceof Error ? e.message : String(e)}`),
         );
       }
+      // A channel session's turn has the trigger's ts as its thread, a message
+      // at root: a /1on1 under that message does not touch the session.
+      const identityThread = meta.channelSession ? channelSessionKey(meta.channelId) : meta.threadTs;
       const { runAsUser, lock: lockClaim, remote: remoteClaim } = await threadIdentity(
         meta.channelId,
-        meta.threadTs,
-        async () => meta.oauthUser ?? (await agent.resolveEffectiveIdentity(session.id, meta.channelId, meta.threadTs)),
+        identityThread,
+        async () => meta.oauthUser ?? (await agent.resolveEffectiveIdentity(session.id, meta.channelId, identityThread)),
       );
       // The node label the persona runs on, signed into the token (the /v1
       // gate checks it against the node's credential) and carried in the payload.
@@ -440,6 +451,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         ...(remoteClaim ? { remote: remoteClaim } : {}),
         ...(meta.backgroundRunId ? { bgRun: meta.backgroundRunId } : {}),
         ...(meta.wake && meta.backgroundRunId ? { wake: true } : {}),
+        ...(meta.postTarget ? { post: meta.postTarget } : {}),
       });
       // Routing (spec §2, node labels spec §4.6): warm + fresh on a node that
       // still carries the persona's label → that node's queue; anything else →
@@ -452,8 +464,9 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // be read is not decided here: the node's bundle fetch fails closed.
       // An agent.yaml persona needs a node that understands its definition.
       const needsDefinition = definitionNeedsNode(managedPersonaDefinition(personaId));
-      const needs = needsDefinition || (await (opts.needsGuardrails ?? personaNeedsGuardrails)(tenantId, personaId).catch(() => false));
-      const cap = needsDefinition ? AGENT_DEFINITION_CAPABILITY : GUARDRAILS_CAPABILITY;
+      const needs = !!meta.channelSession || needsDefinition || (await (opts.needsGuardrails ?? personaNeedsGuardrails)(tenantId, personaId).catch(() => false));
+      // A node with this capability is newer than the other two.
+      const cap = meta.channelSession ? CHANNEL_SESSION_CAPABILITY : needsDefinition ? AGENT_DEFINITION_CAPABILITY : GUARDRAILS_CAPABILITY;
       const warmOk = !!loc && loc.fresh && (await registry.nodeCarries(loc.node, label)) && (!needs || (await registry.nodeCaps(loc.node)).has(cap));
       let target: TurnTarget = warmOk ? { node: loc!.node } : { label };
       if (needs && !warmOk) {

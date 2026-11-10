@@ -14,13 +14,24 @@ export function proactiveWorkspaceDir(agentId: string): string {
   return resolve(paths.workspaces, `agent-${safeId(agentId)}`, "proactive");
 }
 
-/** True exactly for the proactive folder of some agent. */
-export function isProactiveWorkspace(dir: string | null | undefined): boolean {
-  if (!dir) return false;
-  const d = resolve(dir);
+/** A channel session's folder, one per agent and channel. Claimed like the proactive folder, so it serialises only within the channel. */
+export function channelWorkspaceDir(agentId: string, channelId: string): string {
+  return resolve(proactiveWorkspaceDir(agentId), "channels", safeId(channelId));
+}
+
+const isAgentProactiveDir = (d: string): boolean => {
   if (basename(d) !== "proactive") return false;
   const agentDir = dirname(d);
   return dirname(agentDir) === resolve(paths.workspaces) && /^agent-[A-Za-z0-9_-]*$/.test(basename(agentDir));
+};
+
+/** True exactly for the proactive folder of some agent or one of its channel folders. */
+export function isProactiveWorkspace(dir: string | null | undefined): boolean {
+  if (!dir) return false;
+  const d = resolve(dir);
+  if (isAgentProactiveDir(d)) return true;
+  const channels = dirname(d);
+  return basename(channels) === "channels" && isAgentProactiveDir(dirname(channels)) && /^[A-Za-z0-9_-]+$/.test(basename(d));
 }
 
 /**

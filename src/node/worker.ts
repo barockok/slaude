@@ -26,12 +26,12 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Worker, DelayedError, UnrecoverableError, type Job } from "bullmq";
 import type { Redis } from "ioredis";
-import { AgentManager, type AgentEvent, type GuardrailSink, type PersonaSoul } from "../agent/manager";
+import { AgentManager, WakeBusyError, type AgentEvent, type GuardrailSink, type PersonaSoul } from "../agent/manager";
 import { createSessionMcp, SESSION_MCP_NAME } from "../agent/session-mcp";
 import { env } from "../config/env";
 import { m as metric, metrics } from "../metrics";
 import { bundleSessionGuardrails } from "../guardrails/node";
-import { AGENT_DEFINITION_CAPABILITY, GUARDRAILS_CAPABILITY } from "../guardrails/capability";
+import { AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, GUARDRAILS_CAPABILITY } from "../guardrails/capability";
 import type { SessionGuardrails } from "../guardrails/resolve";
 import type { FiringEvent } from "../guardrails/audit";
 import { assertNodeIdUsable, DEFAULT_LABEL, LABEL_RE, labelTurnsQueue, makeKeys, nodeTurnsQueue, type Keys } from "../queue/keys";
@@ -362,7 +362,7 @@ export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: st
 }
 
 /** What this node advertises on its heartbeat (and on every bundle fetch). */
-export const NODE_CAPS: readonly string[] = [GUARDRAILS_CAPABILITY, AGENT_DEFINITION_CAPABILITY];
+export const NODE_CAPS: readonly string[] = [GUARDRAILS_CAPABILITY, AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY];
 
 /** The session's owner guardrails from its runtime bundle (none when the
  *  gateway sends none). A refused bundle (GUARDRAILS_UNAVAILABLE) fails the boot. */
@@ -646,6 +646,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       const tok = store.tokenFor(id);
       return tenant && tok ? client.getRuntime(tenant, personas.get(id) ?? "default", tok) : null;
     },
+    sessionThread: async (id) => (await store.findById(id))?.slack_thread_ts ?? null,
     workingDir: async (id) => {
       const r = await store.findById(id);
       if (!r) throw new Error(`unknown session ${id}`);
@@ -824,7 +825,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       // One prompt per job: coalesced messages arrive as one turn (spec §2).
       const text = data.messages.map((m) => m.text).join("\n\n");
       const suppress = data.messages.length > 0 && data.messages.every((m) => (m as any).suppress === true);
-      if (suppress) agent.suppressNextTurn(sessionId);
       // Inbound-triggered owner Guidance, matched on the gateway.
       agent.offerGuidance(sessionId, data.messages.flatMap((m) => m.guidance ?? []));
 
@@ -843,7 +843,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       stopGuard.beginTurn(sessionId, { claims: decodeClaims(bound), bgRun: data.bgRun, wake: data.wake });
 
       turnDeadlines.set(sessionId, Date.now() + turnTimeoutMs);
-      const outcome = await new Promise<"done" | "error">((resolve, reject) => {
+      const outcome = await new Promise<"done" | "error" | "skipped">((resolve, reject) => {
         const timer = setTimeout(() => {
           console.error(`[node] turn timeout session=${sessionId} — aborting`);
           abortAgent();
@@ -868,9 +868,21 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         // wake always closes its run itself; off, the timeout is the limit.
         const wakeLimit = Math.max(1, Math.floor(turnTimeoutMs / 60_000) - 1);
         const wake = data.wake ? { ...data.wake, maxMinutes: Math.min(data.wake.maxMinutes || wakeLimit, wakeLimit) } : undefined;
+        // Set here, in the send's own tick: sendMessage binds the bit to this
+        // message, so no failed await above can leave it for the next one.
+        if (suppress) agent.suppressNextTurn(sessionId);
         agent.sendMessage(sessionId, text, { ...(backgroundRun ? { backgroundRun } : {}), ...(wake ? { wake } : {}) }).catch((e) => {
           clearTimeout(timer);
           turnWaiters.delete(sessionId);
+          if (e instanceof WakeBusyError) {
+            // Settled, not failed: the manager closed the run, so a retry has
+            // nothing to run under. The call on this session keeps running,
+            // and its turns must not be taken for this wake's.
+            console.log(`[node] wake job=${job.id} session=${sessionId} refused: a voice call owns the session`);
+            wakeJobs.delete(sessionId);
+            resolve("skipped");
+            return;
+          }
           reject(e);
         });
       });
@@ -885,7 +897,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       } catch (e) {
         console.error(`[node] turn-done marker write failed job=${job.id}:`, e);
       }
-      if (opts.hooks?.afterTurn) await opts.hooks.afterTurn(String(job.id), outcome);
+      if (outcome !== "skipped" && opts.hooks?.afterTurn) await opts.hooks.afterTurn(String(job.id), outcome);
       return outcome;
     } finally {
       turnAborts.delete(sessionId);
@@ -952,6 +964,13 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     // Durable abort flag: /abort published before any node claimed the job.
     if (await pubsub.consumeAbortFlag(data.sessionId)) {
       metric.nodeTurnsTotal.inc({ result: "skipped" });
+      // A wake that never starts must not keep its ledger run open: the agent's
+      // wakes would all read as busy until the stale sweep. It spent nothing.
+      if (data.wake && data.bgRun) {
+        await client.turnFinish({ runId: data.bgRun, outcome: "ok", usage: {} }, data.jobToken).catch((e) => {
+          console.error(`[node] wake job=${job.id} session=${data.sessionId}: could not close its run ${data.bgRun}: ${e instanceof Error ? e.message : String(e)}`);
+        });
+      }
       return { skipped: "abort-flag" };
     }
     /** Fail the job with a typed code: the code is the job's failure reason

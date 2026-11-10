@@ -1,11 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportAgentYaml, renderDir } from "../../src/cli/personas";
+import { parse as parseYaml } from "yaml";
 import { agentDocument, documentPartsFromSoul, proseOnlySoul } from "../../src/persona/agent-def";
 import { SoulDataSchema, type SoulData } from "../../src/soul/data";
 import { subMandatesOf } from "../../src/soul/mandate-scope";
+import { parseProactive } from "../../src/soul/proactive";
 
 const meta = { revision: "r1", committedAt: "2026-10-01T10:00:00Z" };
 const tmp = () => mkdtempSync(join(tmpdir(), "slaude-agent-export-"));
@@ -69,6 +71,64 @@ describe("export to agent.yaml", () => {
     expect(ana.soul).not.toContain("## Channel");
     expect(ana.slackUserId).toBe("UTESTUSER1");
     expect(ana.mcp).toEqual({ mcpServers: { tracker: { type: "http", url: "https://x.example.com/mcp", headers: { Authorization: "${PERSONA_ANA_TRACKER_AUTHORIZATION}" } } } });
+  });
+
+  test("channel session and proactive settings survive the export and re-compile the same", async () => {
+    const source = `${soulMd}\n## Channel <#CSESS>\n### Session\n- Mode: channel\n### Proactive\n- Enabled: yes\n\n## Channel <#CQUIET>\n### Proactive\n- Enabled: no\n\n## Channel <#CBAD>\n### Session\n- Mode: thread\n`;
+    const h = home();
+    writeFileSync(join(h, "personas", "ana", "SOUL.md"), source);
+    const out = tmp();
+    await exportAgentYaml(h, out, { extract: async () => extracted });
+    const doc = parseYaml(readFileSync(join(out, "personas", "ana", "agent.yaml"), "utf8")) as Record<string, unknown>;
+    expect(doc.channels).toEqual({ CSESS: { session: "channel", proactive: true }, CQUIET: { proactive: false } });
+    const ana = renderDir(out, meta).personas.find((p) => p.name === "ana")!;
+    const before = parseProactive(source);
+    const after = parseProactive(ana.soul);
+    expect(after.sessions).toEqual(before.sessions);
+    expect(after.channels).toEqual(before.channels);
+  });
+
+  async function exportChannels(blocks: string): Promise<{ channels: unknown; warned: string; out: string }> {
+    const h = home();
+    writeFileSync(join(h, "personas", "ana", "SOUL.md"), `${soulMd}\n${blocks}`);
+    const out = tmp();
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await exportAgentYaml(h, out, { extract: async () => extracted });
+      const doc = parseYaml(readFileSync(join(out, "personas", "ana", "agent.yaml"), "utf8")) as Record<string, unknown>;
+      return { channels: doc.channels, warned: spy.mock.calls.map((c) => String(c[0])).join("\n"), out };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  test("a classic channel with limits is left out and warned about, keeping the fallback", async () => {
+    const { channels, warned } = await exportChannels("## Channel <#CLIMIT>\n### Proactive\n- Enabled: yes\n- Highest: ask\n- Cooldown: 4 hours\n");
+    expect(channels).toBeUndefined();
+    expect(warned).toContain("CLIMIT");
+    expect(warned).toContain("Highest, Cooldown");
+    expect(warned).not.toContain("Max per day");
+  });
+
+  test("a classic channel with limits that is off stays off", async () => {
+    const { channels, warned } = await exportChannels("## Channel <#CLIMIT>\n### Proactive\n- Enabled: no\n- Max per day: 2\n");
+    expect(channels).toEqual({ CLIMIT: { proactive: false } });
+    expect(warned).toContain("Max per day");
+  });
+
+  test("a channel-mode channel carries proactive, with no warning", async () => {
+    const { channels, warned } = await exportChannels("## Channel <#CSESS>\n### Session\n- Mode: channel\n### Proactive\n- Enabled: yes\n- Highest: ask\n");
+    expect(channels).toEqual({ CSESS: { session: "channel", proactive: true } });
+    expect(warned).not.toContain("CSESS");
+  });
+
+  test("a soul of only structured sections keeps them in the soul, and still compiles", async () => {
+    const h = home();
+    writeFileSync(join(h, "personas", "ana", "SOUL.md"), "## Channel <#CSESS>\n### Session\n- Mode: channel\n");
+    const out = tmp();
+    await exportAgentYaml(h, out, { extract: async () => extracted });
+    const ana = renderDir(out, meta).personas.find((p) => p.name === "ana")!;
+    expect(parseProactive(ana.soul).sessions).toEqual({ CSESS: "channel" });
   });
 
   test("--persona exports one persona only, and asks no extraction for the others", async () => {

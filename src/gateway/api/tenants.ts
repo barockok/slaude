@@ -36,7 +36,7 @@ import { skillRootsFor } from "../../skills/loader";
 import { json, notFound } from "./http";
 import { bridgedServerNames } from "../core/external-mcp";
 import { voiceBundleFromEnv, type VoiceBundle } from "../../voice/config";
-import { AGENT_DEFINITION_CAPABILITY, bundleGuardrailsFor, CAPABILITIES_HEADER, definitionNeedsNode, GUARDRAILS_CAPABILITY, hasCapability, type BundleGuardrails } from "../../guardrails/node";
+import { AGENT_DEFINITION_CAPABILITY, bundleGuardrailsFor, CAPABILITIES_HEADER, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, GUARDRAILS_CAPABILITY, hasCapability, type BundleGuardrails } from "../../guardrails/node";
 import { emitAudit } from "../../audit/emit";
 
 export interface RuntimeBundle {
@@ -484,7 +484,7 @@ export async function handleTenantRuntime(
   req: Request,
   tenantId: string,
   personaId: string,
-  ctx: { nodeId?: string; sessionId?: string | null; label?: string } = {},
+  ctx: { nodeId?: string; sessionId?: string | null; label?: string; post?: "channel" } = {},
 ): Promise<Response> {
   let bundle: RuntimeBundle | null;
   try {
@@ -505,6 +505,30 @@ export async function handleTenantRuntime(
     throw e;
   }
   if (!bundle) return notFound("unknown tenant or persona");
+  // An older node would run a wake on a warm session with a person's tool set.
+  // Dispatch pins these jobs to capable nodes, but one can still be claimed from
+  // the label queue, so it is stopped here. The code is the one an older node
+  // already reads as not retryable; a code it does not know would be reported
+  // as a provider failure.
+  if (ctx.post === "channel" && !hasCapability(req.headers.get(CAPABILITIES_HEADER), CHANNEL_SESSION_CAPABILITY)) {
+    emitAudit({
+      tenantId,
+      persona: bundle.personaId,
+      actorKind: "system",
+      actorId: ctx.nodeId ?? "node",
+      action: "guardrail.node.unsupported",
+      targetKind: "node",
+      targetId: ctx.nodeId ?? "unknown",
+      decision: "refused",
+      sessionId: ctx.sessionId ?? null,
+      summary: `a node without the ${CHANNEL_SESSION_CAPABILITY} capability asked for a channel session job; refused`,
+      details: { agent: bundle.personaId, capability: CHANNEL_SESSION_CAPABILITY },
+    });
+    return new Response(JSON.stringify({ error: "this node does not run channel sessions", code: "GUARDRAILS_UNSUPPORTED", transient: false }), {
+      status: 409,
+      headers: { "content-type": "application/json" },
+    });
+  }
   // Owner guardrails: from the verified snapshot. A set that cannot be read or
   // verified refuses the bundle (the node's boot fails closed), never ships
   // an empty one.

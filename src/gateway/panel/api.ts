@@ -93,6 +93,8 @@ import { servePanelStatic } from "./static";
 import { publishConfigReload } from "../core/config-reload";
 import * as Personas from "../../db/personas";
 import { OVERRIDE_FIELDS, type OverrideField, type DesiredPersona } from "../../persona/effective";
+import { compiledChannelSections } from "../../persona/agent-def";
+import { endsInOpenFence } from "../../soul/proactive";
 import { PERSONA_NAME_RE } from "../../persona/sync/payload";
 import { resolveDbConfig } from "../../db/client";
 import { assertHttpOnlyMcp, McpNotHttpOnlyError } from "../../persona/mcp-http-only";
@@ -358,6 +360,10 @@ const grantDetails = (g: AgentGrants.AgentGrantRow) => ({
   note: g.note,
   createdBy: g.createdBy,
 });
+
+
+/** A console turn the session cannot take now: its message is shown to the operator as it is. */
+export class PanelChatRefused extends Error {}
 
 export interface PanelApiDeps {
   registry: Registry | null;
@@ -1316,10 +1322,15 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
               let stored: unknown = v;
               if (field === "soul") {
                 if (typeof v !== "string" || !v.trim()) return json(422, { error: "soul value must be non-empty text" });
-                // A persona from an agent.yaml keeps its compiled structure: only
-                // the prose changes, and extraction would find nothing in prose.
+                // A persona from an agent.yaml keeps its compiled structure, the
+                // channel sections in its soul included: only the prose changes,
+                // and extraction would find nothing in prose.
                 const one = await Personas.personaByName(tenant, name);
-                stored = { soulMd: v, soulJson: one?.desired.definition ? one.desired.soulJson : await extractSoul(v) };
+                if (one?.desired.definition) {
+                  const kept = compiledChannelSections(one.desired.soulMd, v);
+                  if (kept && endsInOpenFence(v)) return json(400, { error: "the soul text ends inside an open code fence: close it so the channel settings can be kept" });
+                  stored = { soulMd: v + kept, soulJson: one.desired.soulJson };
+                } else stored = { soulMd: v, soulJson: await extractSoul(v) };
               } else if (field === "model") {
                 if (typeof v !== "string" || !v) return json(422, { error: "model value must be a non-empty string" });
               } else {
@@ -1477,6 +1488,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
                 await deps.panelLock.release(id, operatorId).catch(() => {});
                 await deps.onLockReleased?.(id);
               }
+              if (e instanceof PanelChatRefused) return json(409, { error: e.message });
               console.error(`[panel] chat enqueue failed session=${id}:`, e);
               return json(502, { error: "chat enqueue failed" });
             }
@@ -1484,7 +1496,12 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           }
           // No lock backend (mono without Redis): dispatch without exclusivity.
           audit({ action: "chat", operator: operatorId, role, session: id });
-          await deps.chat(row, parsed.data.text, operatorId);
+          try {
+            await deps.chat(row, parsed.data.text, operatorId);
+          } catch (e) {
+            if (e instanceof PanelChatRefused) return json(409, { error: e.message });
+            throw e;
+          }
           return json(202, { ok: true });
         }
 

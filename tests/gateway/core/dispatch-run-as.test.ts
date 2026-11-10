@@ -33,7 +33,7 @@ function harness(lockOwner: string | undefined | Error) {
         },
         close: async () => {},
       } as any,
-      registry: { lookup: async () => null, close: async () => {} } as any,
+      registry: { lookup: async () => null, liveNodesWithCap: async () => [{ node: "n1", has: true }], close: async () => {} } as any,
       pubsub: {
         consumeAbortFlag: async () => null,
         lastEventId: async () => null,
@@ -73,6 +73,22 @@ describe("runAs at dispatch", () => {
     await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTUSER1" });
     expect(h.claims().runAs).toBe("user:UTESTUSER1");
     await h.dispatch.close();
+  });
+
+  // The trigger's ts is a message at the channel's root, not the session's
+  // thread: a /1on1 in that message's thread must not move the channel session.
+  test("a channel session's turn looks the lock up on its own key, not the trigger's ts", async () => {
+    const h = harness(undefined);
+    await OneOnOne.lock({ channelId: "C1", threadTs: "1.1", lockedUser: "UTESTUSER1", createdBy: "UTESTUSER1" });
+    try {
+      await h.dispatch.dispatch(SESSION, "hi", { ...META, userId: "UTESTUSER2", channelSession: true });
+      expect(h.claims().runAs).toBe("agent");
+      expect(h.claims().lock ?? null).toBeNull();
+      expect(h.lookups).toEqual([["S1", "C1", "channel:C1"]]);
+    } finally {
+      await OneOnOne.unlock("C1", "1.1");
+      await h.dispatch.close();
+    }
   });
 
   test("the lock is resolved for this session's own channel and thread", async () => {

@@ -15,6 +15,8 @@ export const FAILURE_TEXT = {
     ":warning: I can't start: my owner's guardrails could not be read or verified, so I won't run without them. The details are in the server log.",
   GUARDRAILS_UNSUPPORTED:
     ":warning: No worker that applies this agent's guardrails is available right now, so this message was not handled. Try again later; the details are in the server log.",
+  CHANNEL_SESSION_UNSUPPORTED:
+    ":warning: No worker that can run this channel's session is available right now, so this message was not handled. Try again later; the details are in the server log.",
   TURN_FAILED: ":warning: Something went wrong while handling that message. Try again; details are in the server log.",
   UNKNOWN: ":warning: Something went wrong. Details are in the server log.",
 } as const;

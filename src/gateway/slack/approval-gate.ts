@@ -487,7 +487,7 @@ export class ApprovalGate {
     try {
       const posted = await client.chat.postMessage({ // runtime-ui: approval card
         channel: req.channel,
-        thread_ts: req.threadTs,
+        thread_ts: req.threadTs || undefined,
         text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
         blocks: this.#card(req, approvers, id, timeoutSec),
       });

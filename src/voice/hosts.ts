@@ -8,6 +8,7 @@ import { resolveSoulMandate } from "../soul/mandate-scope";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentManager } from "../agent/manager";
 import { buildInstructions, createVoiceMcp, VOICE_MCP_NAME, type VoiceHost } from "../agent/voice-mcp";
+import { isChannelSessionKey } from "../gateway/core/channel-session";
 import type { HELD_BY_OTHER } from "../queue/locks";
 import type { VoiceCalls } from "./call";
 import { voiceConfigFromBundle, type VoiceBundle, type VoiceConfig } from "./config";
@@ -83,6 +84,8 @@ export function makeMonoVoiceHost(o: {
 }): VoiceHost {
   const refusal: VoiceHost["refusal"] = async (sid) => {
     const t = await o.findThread(sid);
+    // A channel session's wakes restart it, and a restart ends a call.
+    if (t && isChannelSessionKey(t.threadTs)) return "VOICE_CHANNEL_SESSION";
     // A live /1on1 lock or a cron job's captured initiator: runs as a person.
     if (await o.agent.resolveEffectiveIdentity(sid, t?.channel, t?.threadTs)) return "VOICE_AGENT_ONLY";
     // Without the thread the lock and remote target cannot be checked: fail closed.
@@ -128,6 +131,9 @@ export function makeNodeVoiceHost(o: {
   bundle(id: string): Promise<{ voice?: VoiceBundle | null; soulJson: unknown } | null>;
   workingDir(id: string): Promise<string>;
   draining(): boolean;
+  /** The session row's thread key. Not in the job token: a channel session's
+   *  root turn carries its real message ts there. */
+  sessionThread?(id: string): Promise<string | null>;
 }): VoiceHost {
   /** The exact token whose claims passed voice_start's check, per session.
    *  Data only: the chain (keeper) is started from it in runner(). */
@@ -146,6 +152,11 @@ export function makeNodeVoiceHost(o: {
     refusal: async (sid) => {
       checked.delete(sid);
       if (o.draining()) return "VOICE_UNAVAILABLE";
+      try {
+        if (o.sessionThread && isChannelSessionKey(await o.sessionThread(sid))) return "VOICE_CHANNEL_SESSION";
+      } catch {
+        return "VOICE_UNAVAILABLE"; // the row cannot be read: fail closed
+      }
       const token = o.tokenFor(sid);
       const c = token ? o.claims(token) : null;
       const r = voiceRefusalFromClaims(c);

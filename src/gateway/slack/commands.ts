@@ -59,6 +59,7 @@ export type SlashHit =
   | { kind: "model"; id?: string }
   | { kind: "bash"; command: string }
   | { kind: "compact" }
+  | { kind: "new" }
   | { kind: "link" };
 
 /** One descriptor per agent slash command — the single source of truth for every help
@@ -92,6 +93,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/bash <command>", summary: "run a shell command on the server (gated — approval required)" },
   { usage: "/link", summary: "connect your account so any agent can use your integrations (replies privately)" },
   { usage: "/compact", summary: "summarize and compact the conversation context" },
+  { usage: "/new", summary: "start this channel's session over; the old one stays in the console (manager or this channel's approvers)" },
   { usage: "/help", summary: "show this help" },
 ];
 
@@ -283,20 +285,25 @@ export function parseSlashCommand(text: string): SlashHit | null {
   if (cmd === "compact") {
     return { kind: "compact" };
   }
+  if (cmd === "new") {
+    return { kind: "new" };
+  }
   if (HELP_NAMES.has(cmd)) {
     return { kind: "help" };
   }
   return null;
 }
 
-export function helpText(): string {
+export function helpText(o: { channelSessionRoot?: boolean } = {}): string {
   // Render the command table inside a code fence with the summary column aligned
   // to a single gutter (longest usage + 2). Slack renders fences monospace, so
   // space-padding lines up cleanly; tabs render at inconsistent widths and are
   // avoided. Usages are NOT backtick-wrapped — backticks show literally inside a
   // fence.
-  const gutter = Math.max(...AGENT_COMMANDS.map((c) => c.usage.length)) + 2;
-  const cmds = AGENT_COMMANDS.map((c) => c.usage.padEnd(gutter) + c.summary).join("\n");
+  // `/new` is a command only at a channel session's root; elsewhere it is plain text.
+  const commands = o.channelSessionRoot === false ? AGENT_COMMANDS.filter((c) => c.usage !== "/new") : AGENT_COMMANDS;
+  const gutter = Math.max(...commands.map((c) => c.usage.length)) + 2;
+  const cmds = commands.map((c) => c.usage.padEnd(gutter) + c.summary).join("\n");
   const modes = Object.values(MODE_ALIASES)
     .filter((v, i, a) => a.indexOf(v) === i)
     .map((m) => `  • \`/mode ${humanModeName(m)}\` — ${MODE_LABELS[m]}`)

@@ -25,7 +25,7 @@ import { LABEL_RE } from "../queue/keys";
 import { readGuardrailDir } from "../guardrails/files";
 import { parseGuardrail } from "../guardrails/format";
 import { definitionGuardrailWarnings, parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
-import { AGENT_YAML, agentDocument, documentPartsFromSoul, LEGACY_FILES, parseAgentYaml, proseOnlySoul } from "../persona/agent-def";
+import { AGENT_YAML, agentDocument, documentPartsFromSoul, exportedChannelSettings, LEGACY_FILES, parseAgentYaml, proseOnlySoul } from "../persona/agent-def";
 import { extractSoulData } from "../soul/extract";
 import type { SoulData } from "../soul/data";
 
@@ -335,6 +335,11 @@ export async function exportAgentYaml(
     const data = await extract(args.soulMd);
     const mcp = args.mcpRaw ? JSON.parse(scrubMcp(args.name, args.mcpFile ?? "mcp.json", args.mcpRaw, reg, argsServers)) : undefined;
     const prose = proseOnlySoul(args.soulMd);
+    // With no prose left the soul is exported whole, and its own sections carry these settings.
+    const exported = prose.trim() ? exportedChannelSettings(args.soulMd) : { channels: {}, dropped: [] };
+    for (const d of exported.dropped) {
+      console.error(`[personas] warning: persona '${args.name}': channel ${d.channel}: ${d.keys.join(", ")} not exported, agent.yaml has no key for them${d.followsGlobal ? "; its proactive setting is left out too, so it follows the global switch" : ""}`);
+    }
     const doc = agentDocument({
       name: args.name,
       description: data.identity.role,
@@ -344,6 +349,7 @@ export async function exportAgentYaml(
       soul: prose.trim() ? prose : args.soulMd,
       ...documentPartsFromSoul(data),
       mcp,
+      channels: exported.channels,
     });
     const dir = join(out, "personas", args.name);
     mkdirSync(dir, { recursive: true });

@@ -230,6 +230,11 @@ export async function latestAppOf(personaId: string): Promise<{ apiAppId: string
   return row ? { apiAppId: row.slack_app_id ?? null, teamId: row.slack_team_id ?? null } : null;
 }
 
+/** Retire a channel session: its key is freed so the next message starts a new one; the row and history stay. */
+export async function archiveChannelSession(id: string, channelId: string, now: number): Promise<void> {
+  await db.run(`UPDATE sessions SET slack_thread_ts = ?, updated_at = ? WHERE id = ?`, [`channel-archived:${channelId}:${now}`, now, id]);
+}
+
 /**
  * Remove heartbeat wakes' session rows older than `beforeMs`, with what is keyed
  * on them. A wake is one fresh session, never resumed, so they would only pile up.

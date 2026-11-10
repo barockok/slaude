@@ -33,14 +33,32 @@ export interface WakeRunOptions {
   maxMinutes?: number;
 }
 
+/** A wake refused because a turn started on its channel session since `busy` was asked. Not a failure: nothing ran. */
+export class WakeTargetBusyError extends Error {
+  override readonly name = "WakeTargetBusyError";
+}
+
+/** Where a wake's turn goes. `channelId` is set for a channel session's wake. */
+export interface WakeTarget {
+  teamId: string;
+  managerId: string;
+  channelId?: string;
+  threadTs: string;
+  personaId: string;
+  agentId: string;
+  appId: string | undefined;
+}
+
 /** How a wake's turn reaches its session (the gateway implements it). */
 export interface WakeTransport {
   dispatch(
-    target: { teamId: string; managerId: string; threadTs: string; personaId: string; agentId: string; appId: string | undefined },
+    target: WakeTarget,
     envelope: string,
     run: { runId: string; agentId: string },
     caps: WakeRunOptions,
   ): Promise<void>;
+  /** Whether a turn runs on this channel session now: its wake waits. Absent: never. */
+  busy?(target: WakeTarget): Promise<boolean>;
 }
 
 export interface WakeDeps {
@@ -69,7 +87,17 @@ export function wakeGateConfig(): WakeGateConfig {
 
 export const checklistHash = (checklist: string): string => createHash("sha256").update(checklist).digest("hex");
 
-const FAILURES_WORTH_A_NOTICE = 3;
+export const FAILURES_WORTH_A_NOTICE = 3;
+
+/** One wake's caps. The daily pool cannot be disabled: a run never spends past what is left. */
+export function wakeCaps(deps: Pick<WakeDeps, "caps">, left: number): WakeRunOptions {
+  const caps = (deps.caps ?? (() => ({ maxUsd: env.wakeMaxUsd(), maxTurns: env.wakeMaxTurns(), maxMinutes: env.wakeMaxMinutes() })))();
+  return {
+    maxBudgetUsd: caps.maxUsd > 0 ? Math.min(caps.maxUsd, left) : left,
+    ...(caps.maxTurns > 0 ? { maxTurns: caps.maxTurns } : {}),
+    ...(caps.maxMinutes > 0 ? { maxMinutes: caps.maxMinutes } : {}),
+  };
+}
 
 async function activityBlock(r: AgentGroup & { now: Date }, channels: readonly string[], lastWakeAt: number | null, app: AppRef, deps: WakeDeps): Promise<string> {
   if (!deps.activity) return "(not available)";
@@ -151,17 +179,11 @@ export async function runWake(r: AgentGroup & { slot: string; now: Date; signal?
       DESTINATIONS: destinations.join("\n") || "(none)",
       MANAGER: managerId,
     });
-    const caps = (deps.caps ?? (() => ({ maxUsd: env.wakeMaxUsd(), maxTurns: env.wakeMaxTurns(), maxMinutes: env.wakeMaxMinutes() })))();
     await deps.transport.dispatch(
       { teamId: app.teamId, managerId, threadTs: `wake:${r.agentId}:${r.slot}`, personaId: r.personaId, agentId: r.agentId, appId: app.apiAppId },
       envelope,
       { runId: run.runId, agentId: run.agentId },
-      {
-        // The daily pool cannot be disabled: a run never spends past what is left.
-        maxBudgetUsd: caps.maxUsd > 0 ? Math.min(caps.maxUsd, left) : left,
-        ...(caps.maxTurns > 0 ? { maxTurns: caps.maxTurns } : {}),
-        ...(caps.maxMinutes > 0 ? { maxMinutes: caps.maxMinutes } : {}),
-      },
+      wakeCaps(deps, left),
     );
     console.log(`${tag}: woke (${gate.reason})`);
     return "woke";

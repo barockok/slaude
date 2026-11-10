@@ -259,17 +259,23 @@ function tokenPayload(token: string): Record<string, unknown> | null {
 
 /**
  * What kind of turn a job is, for coalescing: its origin (the token's signed
- * `origin`, else its first sender's), its background run and whether it is a
- * wake. A merged job runs under ONE token, whose origin, bgRun and wake decide
- * how the node runs every message in it (the must-reply Stop guard, the wake
- * refusal, the ledger run), so two jobs merge only when these all agree.
+ * `origin`, else its first sender's), its background run, whether it is a
+ * wake and where it posts. A merged job runs under ONE token, whose origin,
+ * bgRun, wake and post decide how the node runs every message in it (the
+ * must-reply Stop guard, the wake refusal, the ledger run, root or thread
+ * replies), so two jobs merge only when these all agree.
  */
 function turnKind(job: TurnJob): string {
   const c = tokenPayload(job.jobToken);
   const origin = (typeof c?.origin === "string" ? c.origin : undefined) ?? job.senders?.[0]?.origin ?? null;
   const bgRun = job.bgRun ?? (typeof c?.bgRun === "string" ? c.bgRun : null);
   const wake = !!job.wake || c?.wake === true;
-  return JSON.stringify([origin, bgRun, wake]);
+  // On a root job a recording never shares a token with a mention: the pending
+  // job's token is the one that runs, so its cards and initiator would be the
+  // bystander's. Classic jobs merge as they always have.
+  const root = c?.post === "channel";
+  const suppressed = root && job.messages.length > 0 && job.messages.every((m) => (m as { suppress?: boolean }).suppress === true);
+  return JSON.stringify([origin, bgRun, wake, root, suppressed]);
 }
 
 /** Two jobs may share one token and turn (see turnKind). */
