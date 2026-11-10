@@ -12,6 +12,7 @@ import { skillsContract } from "../tools/contracts/skills";
 import { slackContract } from "../tools/contracts/slack";
 import { surfaceContract } from "../tools/contracts/surface";
 import { mcpMountedTools, type ServerContract } from "../tools/contracts/types";
+import { VOICE_MCP_NAME, VOICE_SERVER_TOOLS } from "../voice/turn-flags";
 
 /** Tool server (the /v1 path segment) → the tools a wake may call. */
 const ALLOWED: Readonly<Record<string, readonly string[] | "all">> = {
@@ -55,5 +56,8 @@ export function wakeDeniedToolIds(): string[] {
       if (!wakeAllows(key, t.name)) out.push(`mcp__${contract.server}__${t.name}`);
     }
   }
+  // Not on the /v1 tool plane, so no contract lists them. Hidden here because
+  // the permission gates that also refuse them do not run in bypass mode.
+  for (const t of VOICE_SERVER_TOOLS) out.push(`mcp__${VOICE_MCP_NAME}__${t}`);
   return out;
 }

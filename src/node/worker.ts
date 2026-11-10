@@ -26,7 +26,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Worker, DelayedError, UnrecoverableError, type Job } from "bullmq";
 import type { Redis } from "ioredis";
-import { AgentManager, type AgentEvent, type GuardrailSink, type PersonaSoul } from "../agent/manager";
+import { AgentManager, WakeBusyError, type AgentEvent, type GuardrailSink, type PersonaSoul } from "../agent/manager";
 import { createSessionMcp, SESSION_MCP_NAME } from "../agent/session-mcp";
 import { env } from "../config/env";
 import { m as metric, metrics } from "../metrics";
@@ -844,7 +844,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       stopGuard.beginTurn(sessionId, { claims: decodeClaims(bound), bgRun: data.bgRun, wake: data.wake });
 
       turnDeadlines.set(sessionId, Date.now() + turnTimeoutMs);
-      const outcome = await new Promise<"done" | "error">((resolve, reject) => {
+      const outcome = await new Promise<"done" | "error" | "skipped">((resolve, reject) => {
         const timer = setTimeout(() => {
           console.error(`[node] turn timeout session=${sessionId} — aborting`);
           abortAgent();
@@ -872,6 +872,15 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         agent.sendMessage(sessionId, text, { ...(backgroundRun ? { backgroundRun } : {}), ...(wake ? { wake } : {}) }).catch((e) => {
           clearTimeout(timer);
           turnWaiters.delete(sessionId);
+          if (e instanceof WakeBusyError) {
+            // Settled, not failed: the manager closed the run, so a retry has
+            // nothing to run under. The call on this session keeps running,
+            // and its turns must not be taken for this wake's.
+            console.log(`[node] wake job=${job.id} session=${sessionId} refused: a voice call owns the session`);
+            wakeJobs.delete(sessionId);
+            resolve("skipped");
+            return;
+          }
           reject(e);
         });
       });
@@ -886,7 +895,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       } catch (e) {
         console.error(`[node] turn-done marker write failed job=${job.id}:`, e);
       }
-      if (opts.hooks?.afterTurn) await opts.hooks.afterTurn(String(job.id), outcome);
+      if (outcome !== "skipped" && opts.hooks?.afterTurn) await opts.hooks.afterTurn(String(job.id), outcome);
       return outcome;
     } finally {
       turnAborts.delete(sessionId);

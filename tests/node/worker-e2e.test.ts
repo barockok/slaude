@@ -232,7 +232,10 @@ beforeAll(async () => {
     }
     /** The background run each sendMessage carried (phase E promise checks), by session. */
     bgRuns = new Map<string, { runId: string; finish: (usage: any, outcome: "ok" | "error") => Promise<void> }>();
+    /** How many turns were sent, by session. */
+    sends = new Map<string, number>();
     override async sendMessage(sessionId: string, text: string, opts: { backgroundRun?: any } = {}): Promise<void> {
+      this.sends.set(sessionId, (this.sends.get(sessionId) ?? 0) + 1);
       if (opts.backgroundRun) this.bgRuns.set(sessionId, opts.backgroundRun);
       this.emit("event", { type: "turnStart", sessionId } as any);
       // The real manager's boot fails this way when the child-env resolver throws.
@@ -491,6 +494,54 @@ d("gateway↔node E2E (real Redis)", () => {
       expect(busts.some(([t]) => t === "default")).toBe(true);
     } finally {
       bootFailure = null;
+    }
+  }, 30_000);
+
+  // The manager refuses a wake while a voice call owns its session, having
+  // closed the wake's run: the job is settled, so it is neither retried (the
+  // run is closed) nor failed, and the worker does not finish the run again.
+  test("a wake refused as busy completes without a retry and does not touch its run again", async () => {
+    const { WakeBusyError } = await import("../../src/agent/manager");
+    const WAKE_THREAD = "9011.0";
+    const prev = behavior;
+    behavior = async ({ servers, text }) => {
+      await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
+    };
+    try {
+      reacts.length = 0;
+      await emitSlack("message", msg(WAKE_THREAD, "9011.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9011.1"), 15_000);
+      const Sessions = await import("../../src/db/sessions");
+      const sid = await sessionIdOf(WAKE_THREAD);
+      const session = (await Sessions.findById(sid))!;
+      bootFailure = new WakeBusyError(sid);
+      const before = stub.sends.get(sid) ?? 0;
+      await qd.dispatch(session, "[wake] look around", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WAKE_THREAD,
+        eventTs: "9011.2",
+        userId: "USLAUDE",
+        origin: "cron",
+        backgroundRunId: "run-e2e-busy",
+        wake: { maxTurns: 3 },
+      });
+      const queues = () => [turnsQ.queue("turns"), turnsQ.queue(nodeTurnsQueueFn(NODE_ID))];
+      const inState = async (states: string[]) => {
+        const lists = await Promise.all(queues().map((q: any) => q.getJobs(states, 0, 200)));
+        return lists.flat().filter((j: any) => j?.data?.sessionId === sid && j.data.wake);
+      };
+      await until(async () => (await inState(["completed"])).length === 1, 10_000);
+      const [job] = await inState(["completed"]);
+      expect(job.attemptsMade).toBe(1);
+      expect(job.returnvalue).toEqual({ result: "skipped" });
+      // Past the retry backoff: it ran once, and nothing is left to run it again.
+      await sleep(1200);
+      expect(await inState(["failed", "delayed", "waiting", "active"])).toEqual([]);
+      expect((stub.sends.get(sid) ?? 0) - before).toBe(1);
+    } finally {
+      bootFailure = null;
+      behavior = prev;
     }
   }, 30_000);
 

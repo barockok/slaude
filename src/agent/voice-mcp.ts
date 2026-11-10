@@ -11,9 +11,10 @@ import type { VoiceConfig } from "../voice/config";
 import { VoiceCall, VoiceCalls, type LoopChild, type TurnRunner } from "../voice/call";
 import type { VoiceInit } from "../voice/ipc";
 import { redactCapabilityUrls } from "../voice/audio-link";
+import { VOICE_MCP_NAME } from "../voice/turn-flags";
 import { FORBIDDEN_HEADERS, audioHeadersProblem, matchAudioOrigin, type AudioPolicy } from "../voice/audio-acl";
 
-export const VOICE_MCP_NAME = "slaude_voice";
+export { VOICE_MCP_NAME };
 /** Why a session cannot start a call. */
 export type VoiceRefusal = "VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE" | "VOICE_CHANNEL_SESSION";
 /** Schema caps on voice_start's free text; the approval card shows both whole. */

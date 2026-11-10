@@ -176,6 +176,18 @@ describe("a wake's query", () => {
     expect(lastOptions.maxTurns).toBeUndefined();
     await shutdown(mgr, row.id);
   });
+  it("hides the voice tools in every permission mode, so a wake cannot start a call", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    await mgr.setPermissionMode(row.id, "bypassPermissions");
+    plan((s) => s.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(1, 1) })));
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+    await until(() => finishes.length === 1, 3000, "finish");
+    expect(lastOptions.permissionMode).toBe("bypassPermissions");
+    for (const t of ["voice_start", "voice_say", "voice_context", "voice_stop"]) expect(lastOptions.disallowedTools).toContain(`mcp__slaude_voice__${t}`);
+    await shutdown(mgr, row.id);
+  });
   it("a normal session gets none of this", async () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());

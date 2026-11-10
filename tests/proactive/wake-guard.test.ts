@@ -3,6 +3,7 @@ import { executeToolCall, SERVERS } from "../../src/gateway/api/tools";
 import type { JobClaims } from "../../src/gateway/api/auth";
 import { mcpMountedTools } from "../../src/tools/contracts/types";
 import { wakeAllows, wakeDeniedToolIds } from "../../src/proactive/wake-guard";
+import { createVoiceMcp, VOICE_MCP_NAME } from "../../src/agent/voice-mcp";
 
 const claims = { tenant: "default", persona: "default", session: "S1", team: "T1", channel: "U0MANAGER", thread: "wake:A:1", initiator: "A", scope: "turn", runAs: "agent", exp: 0, wake: true, bgRun: "run-1" } as JobClaims;
 
@@ -25,6 +26,13 @@ describe("wakeAllows", () => {
 });
 
 describe("wakeDeniedToolIds", () => {
+  test("hides every tool the voice server mounts", () => {
+    const server = createVoiceMcp("s1", {} as never, {} as never);
+    const names = Object.keys((server.instance as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
+    expect(names).toContain("voice_start");
+    const denied = new Set(wakeDeniedToolIds());
+    for (const name of names) expect(denied.has(`mcp__${VOICE_MCP_NAME}__${name}`)).toBe(true);
+  });
   test("covers every mounted tool of every server except the allowed ones", () => {
     const denied = new Set(wakeDeniedToolIds());
     for (const [key, { contract }] of Object.entries(SERVERS)) {
