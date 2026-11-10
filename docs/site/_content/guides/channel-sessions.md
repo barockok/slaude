@@ -88,7 +88,7 @@ A wake and a person's turn never share a turn. A mention that arrives during a w
 
 ## 5. Starting over with `/new`
 
-`/new` at root, from the manager or one of that channel's approvers, retires the channel session. The next root message starts a new one that remembers nothing of the old conversation. Anyone else is refused.
+`/new` at root, from the manager or one of that channel's approvers, retires the channel session. The next root message starts a new one that remembers nothing of the old conversation. Anyone else is refused, and so is `/new` when the channel has no session yet. Those refusals are shown only to the person who tried it (see section 6); the confirmation that the session was reset stays a normal message, so the channel sees it.
 
 The old session stays in the console, labelled archived, and it is read-only: a console chat into it is refused. Inside a thread, or in a channel without a channel session, `/new` is not a command: it reaches the agent as ordinary text, or a skill named `new`, as any other message would.
 
@@ -102,6 +102,8 @@ Some commands make no sense for a whole channel, so they are refused at root:
 | `/mention-only`, `/ignore-thread` | Refused: they have no meaning at root. |
 
 `/mode` at root needs a manager or one of this channel's approvers, because it applies to every later speaker and wake in the channel. Anyone else is refused. In a thread, a DM or a channel without a channel session it works as it always has.
+
+Every refusal at root is an ephemeral message, shown only to the person who sent the command, with nobody else in the channel seeing it. Like any ephemeral message it disappears when Slack clears it and is not kept in the channel history, and it is shown again each time the command is retried. This covers the commands above, `/mode` and `/new` refusals, `/compact` while a wake is running, and a `/heartbeat now` or other manager-only command that is refused. If Slack cannot deliver the private message (for example, the person is not in the channel), nothing is posted publicly: the agent reacts to the person's message with :x: instead. Refusals in a thread, a DM or a channel without a channel session are posted as before.
 
 Voice calls run in a thread. A channel session does not host one.
 
