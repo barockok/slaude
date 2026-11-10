@@ -976,14 +976,28 @@ describe("channel session routing", () => {
       expect(g.reacts.filter((r) => r.timestamp === m2).map((r) => r.name)).toContain("white_check_mark");
     });
 
-    it("a console turn on an archived session never carries a thread", async () => {
+    it("a console turn on an archived session is refused plainly, and nothing runs", async () => {
       const g = makeGw();
       const old = await seed(g);
       await g.emit("message", rootArgs(g, at("/new")));
-      await g.h.__panelChat!(await row(old), "operator note", "U0OPER");
-      const env = g.sends.at(-1)!.text;
-      expect(env).toContain('thread_ts=""');
-      expect(env).not.toContain("channel-archived");
+      const before = g.sends.length;
+      const refused = g.h.__panelChat!(await row(old), "operator note", "U0OPER");
+      await expect(refused).rejects.toBeInstanceOf(PanelChatRefused);
+      await expect(refused).rejects.toThrow(/archived/);
+      expect(g.sends).toHaveLength(before);
+    });
+
+    it("a console turn on the channel's current session still runs after /new", async () => {
+      const g = makeGw();
+      await seed(g);
+      await g.emit("message", rootArgs(g, at("/new")));
+      await g.emit("message", rootArgs(g, at("again")));
+      const current = g.sends.at(-1)!.id;
+      g.agent.emit("event", { type: "done", sessionId: current } as any);
+      await tick();
+      const before = g.sends.length;
+      await g.h.__panelChat!(await row(current), "operator note", "U0OPER");
+      expect(g.sends).toHaveLength(before + 1);
     });
   });
 

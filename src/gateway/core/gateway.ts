@@ -4856,6 +4856,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // in-process AgentManager in mono. The operator identity rides as the turn
   // initiator/userId.
   async function panelEnqueue(session: SessionRow, text: string, operatorId: string): Promise<void> {
+    // Archived by /new: the channel has moved on, and a turn here would resume
+    // a session nothing routes to any more.
+    if (session.slack_thread_ts?.startsWith("channel-archived:")) throw new PanelChatRefused("This channel session was archived with /new, so it is read-only. To talk to the agent, use the channel's current session.");
     if (routes.get(session.id)?.wakeHold) throw new PanelChatRefused("This channel's session is busy with its own work. Try again when it finishes.");
     const eventTs = `${Date.now() / 1000}`;
     const meta = panelDispatchMeta(session, operatorId, eventTs);
