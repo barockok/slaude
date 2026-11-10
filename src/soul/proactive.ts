@@ -24,6 +24,12 @@
  *   - Cooldown: 4 hours      # minimum gap between posts to one recipient
  *   - Max per person per day # the old name of Max per day
  *
+ * A channel can also give the agent one long-lived session there:
+ *
+ *   ## Channel <#C…>
+ *   ### Session
+ *   - Mode: channel          # anything else is logged and reads as off
+ *
  * Parsed here, deterministically, from the persona's SOUL text. Never through
  * the LLM structured extraction (a mis-extraction must never turn it on), never
  * through runtime overrides (src/soul/overrides.ts), never by a command. Only
@@ -62,10 +68,14 @@ export interface ProactiveConfig {
   channelCooldownHours: Record<string, number>;
   /** Channel id → that channel's own `### Proactive` `Max per day`. */
   channelMaxPerDay: Record<string, number>;
+  /** Channel id → that channel's own `### Session` `Mode`, only when it is valid. */
+  sessions: Record<string, "channel">;
+  /** Channels whose `### Session` `Mode` is not a known mode; they stay as if it were absent. */
+  invalidSessions: string[];
 }
 
 /** The resolved switch for one audience: the global settings, `enabled` per channel when one is given. */
-export type ResolvedProactive = Omit<ProactiveConfig, "wake" | "read" | "channels" | "channelHighest" | "channelCooldownHours" | "channelMaxPerDay">;
+export type ResolvedProactive = Omit<ProactiveConfig, "wake" | "read" | "channels" | "channelHighest" | "channelCooldownHours" | "channelMaxPerDay" | "sessions" | "invalidSessions">;
 
 export const DEFAULT_MAX_PER_PERSON_PER_DAY = 6;
 export const DEFAULT_COOLDOWN_HOURS = 1;
@@ -153,9 +163,11 @@ export function parseProactive(text: string): ProactiveConfig {
     channelHighest: {},
     channelCooldownHours: {},
     channelMaxPerDay: {},
+    sessions: {},
+    invalidSessions: [],
   };
-  // Where we are: the global section, a channel's Proactive subsection, or elsewhere.
-  let where: { kind: "global" } | { kind: "channel"; id: string; inProactive: boolean } | null = null;
+  // Where we are: the global section, a channel's Proactive or Session subsection, or elsewhere.
+  let where: { kind: "global" } | { kind: "channel"; id: string; sub: "proactive" | "session" | null } | null = null;
   let fenced = false;
   for (const line of text.split(/\r?\n/)) {
     if (/^\s*(```|~~~)/.test(line)) {
@@ -171,13 +183,15 @@ export function parseProactive(text: string): ProactiveConfig {
       if (/^##\s+proactive\s*$/i.test(line.trim())) where = { kind: "global" };
       else {
         const id = /^##\s+channel\b/i.test(line) ? channelOf(line) : null;
-        where = id ? { kind: "channel", id, inProactive: false } : null;
+        where = id ? { kind: "channel", id, sub: null } : null;
       }
       continue;
     }
     if (/^###\s/.test(line)) {
-      if (where?.kind === "channel") where.inProactive = /^###\s+proactive\s*$/i.test(line.trim());
-      else where = null;
+      if (where?.kind === "channel") {
+        const h = line.trim();
+        where.sub = /^###\s+proactive\s*$/i.test(h) ? "proactive" : /^###\s+session\s*$/i.test(h) ? "session" : null;
+      } else where = null;
       continue;
     }
     if (!where) continue;
@@ -185,7 +199,14 @@ export function parseProactive(text: string): ProactiveConfig {
     if (!kv) continue;
     const [key, value] = kv;
     if (where.kind === "channel") {
-      if (!where.inProactive) continue;
+      if (where.sub === "session") {
+        if (key === "mode") {
+          if (value.toLowerCase() === "channel") out.sessions[where.id] = "channel";
+          else out.invalidSessions.push(where.id);
+        }
+        continue;
+      }
+      if (where.sub !== "proactive") continue;
       if (key === "enabled") out.channels[where.id] = value.toLowerCase() === "yes";
       else if (key === "highest") {
         const l = parseLevel(value);
@@ -234,6 +255,7 @@ function configFor(personaId: string): ProactiveConfig | null {
     let c = memo.get(key);
     if (!c) {
       c = parseProactive(text);
+      for (const id of c.invalidSessions) console.warn(`[proactive] persona=${personaId} channel=${id}: unknown session Mode, staying on the default`);
       if (memo.size > 64) memo.clear();
       memo.set(key, c);
     }
@@ -252,27 +274,43 @@ function configFor(personaId: string): ProactiveConfig | null {
 export function proactiveFor(personaId: string, channelId?: string): ResolvedProactive {
   const c = configFor(personaId);
   if (!c) return { ...DISABLED };
-  const { wake: _wake, read: _read, channels, channelHighest, channelCooldownHours, channelMaxPerDay, ...global } = c;
+  const { wake: _wake, read: _read, channels, channelHighest, channelCooldownHours, channelMaxPerDay, sessions, invalidSessions: _invalid, ...global } = c;
   if (channelId === undefined) return global;
-  return {
+  const resolved: ResolvedProactive = {
     ...global,
     enabled: channels[channelId] ?? global.enabled,
     highest: channelHighest[channelId] ?? global.highest,
     cooldownHours: channelCooldownHours[channelId] ?? global.cooldownHours,
     maxPerPersonPerDay: channelMaxPerDay[channelId] ?? global.maxPerPersonPerDay,
   };
+  // A channel session has no per-channel limits: only `enabled` still applies.
+  if (sessions[channelId]) {
+    return { ...resolved, highest: "act", cooldownHours: 0, maxPerPersonPerDay: Number.MAX_SAFE_INTEGER };
+  }
+  return resolved;
 }
 
-/** The channels whose own `### Proactive` turns proactiveness on. */
+/** The channels whose own `### Proactive` turns proactiveness on, for the agent-level wake: not those with a channel session. */
 export function proactiveChannels(personaId: string): string[] {
   const c = configFor(personaId);
-  return c ? Object.entries(c.channels).filter(([, on]) => on).map(([id]) => id).sort() : [];
+  return c ? Object.entries(c.channels).filter(([id, on]) => on && !c.sessions[id]).map(([id]) => id).sort() : [];
+}
+
+/** Whether this agent runs one long-lived session in this channel. Any failure reads as off. */
+export function channelSessionOn(personaId: string, channelId: string): boolean {
+  return configFor(personaId)?.sessions[channelId] === "channel";
+}
+
+/** The channels whose wakes run in their channel session. */
+export function channelSessionWakes(personaId: string): string[] {
+  const c = configFor(personaId);
+  return c ? Object.entries(c.channels).filter(([id, on]) => on && c.sessions[id]).map(([id]) => id).sort() : [];
 }
 
 /** The channels this persona may read with read_channel: where it works on its own, and any its SOUL lists. */
 export function proactiveRead(personaId: string): string[] {
   const c = configFor(personaId);
-  return c ? [...new Set([...c.read, ...proactiveChannels(personaId)])] : [];
+  return c ? [...new Set([...c.read, ...proactiveChannels(personaId), ...channelSessionWakes(personaId)])] : [];
 }
 
 /**
@@ -405,7 +443,8 @@ export function wakeEligibility(personaId: string, managerId: string | null): Wa
   if (!c?.wake || !(c.enabled || Object.values(c.channels).some(Boolean))) return { ok: false, reason: null };
   if (!managerId) return { ok: false, reason: "no-manager" };
   const globalAct = c.enabled && c.highest === "act";
-  const channelAct = Object.entries(c.channels).some(([id, on]) => on && (c.channelHighest[id] ?? c.highest) === "act");
+  // A channel session has no per-channel limits, so its Highest does not narrow it.
+  const channelAct = Object.entries(c.channels).some(([id, on]) => on && (c.sessions[id] || (c.channelHighest[id] ?? c.highest) === "act"));
   return globalAct || channelAct ? { ok: true } : { ok: false, reason: "no-act-destination" };
 }
 
