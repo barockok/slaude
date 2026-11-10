@@ -1,0 +1,432 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://barockok.github.io/slaude/schemas/agent.schema.json",
+  "title": "slaude agent.yaml",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The agent's name. Must equal the name of the directory the file sits in (personas/<name>/agent.yaml). Required. Example: ana"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 2000
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "One or two lines on what the agent is for; it becomes the agent's role. At most 2000 characters. Example: Handles support questions for the platform team."
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Model the agent runs on, provider-qualified. Leave out for the deployment default. Example: provider/model-name"
+    },
+    "slackUserId": {
+      "description": "The agent's Slack user id. Example: U0EXAMPLE"
+    },
+    "userToken": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Slack user token to post as the agent's own user, as a placeholder that CI fills in, never the token itself. Example: ${PERSONA_ANA_XOXP}"
+    },
+    "provider": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Provider credentials and endpoint for this agent (apiKey, baseUrl, and so on). Give credentials as references such as env://PERSONA_ANA_KEY, never as values."
+    },
+    "runsOn": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Label of the machines this agent runs on. Leave out to run anywhere. Example: finance"
+    },
+    "soul": {
+      "type": "string",
+      "pattern": "\\S",
+      "description": "Who the agent is and how it sounds: identity, voice, values. Plain prose in a block (soul: |). Required. Mandates and access go in their own keys, not here."
+    },
+    "mandate": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "global": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "What the agent is responsible for everywhere. Example: Answer support questions and keep the runbook current."
+            },
+            "scoped": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "boundary": {
+                        "type": "string",
+                        "pattern": "^(?:channel:[CGD][A-Z0-9]+|trust:(?:public|trusted)|dm)$",
+                        "description": "Where this sub-mandate applies: channel:<channel id> for one channel, trust:public or trust:trusted for every channel of that class, or dm for direct messages. Each boundary may appear once. Example: channel:C0EXAMPLE"
+                      },
+                      "mode": {
+                        "description": "How the text combines with the global mandate: override (replace it, the default), extend (add to it) or reduce (restrict it). Matching ignores case and surrounding spaces. A value that is none of these is accepted with a warning and read as extend, so a typo keeps the global mandate instead of replacing it. Example: extend"
+                      },
+                      "text": {
+                        "type": "string",
+                        "pattern": "\\S",
+                        "description": "The sub-mandate itself, in the agent's own voice of duty. An extend or reduce is carried whole, so keep it under 600 characters. Example: Also watch the deploy queue."
+                      }
+                    },
+                    "required": [
+                      "boundary",
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Different duties for one channel, a trust class or direct messages. The most specific match applies."
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "What the agent is asked to do, globally and per place."
+    },
+    "access": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "manager": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[UW][A-Z0-9]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The person who manages this agent and can approve for it. Example: U0EXAMPLE"
+            },
+            "backupManager": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^[UW][A-Z0-9]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who covers when the manager is away. Example: U0EXAMPLE"
+            },
+            "approvers": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "user": {
+                        "type": "string",
+                        "pattern": "^[UW][A-Z0-9]+$",
+                        "description": "Slack user id of the approver. Required. Example: U0EXAMPLE"
+                      },
+                      "scope": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "\\S"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "What this person may approve, in plain words. Leave it out for an approver of anything (a catch-all). Example: budget changes"
+                      },
+                      "catchall": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ],
+                        "description": "true if this person is asked when no other approver's scope fits. Defaults to true when scope is left out, false otherwise."
+                      },
+                      "channel": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[CGD][A-Z0-9]+$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Make this person an approver for one channel only. Leave it out for an approver everywhere. Example: C0EXAMPLE"
+                      }
+                    },
+                    "required": [
+                      "user"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "People who may approve what the agent asks to do, each for a scope of work and optionally one channel."
+            },
+            "channels": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "public": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[CGD][A-Z0-9]+$"
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Channels where the agent may speak with anyone present. Example: [C0EXAMPLE]"
+                    },
+                    "trusted": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^[CGD][A-Z0-9]+$"
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Channels whose members the agent trusts with more, such as the team's own channel. Example: [C0EXAMPLE]"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Which channels the agent works in, by trust class."
+            },
+            "dm": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[UW][A-Z0-9]+$"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Users the agent answers in direct messages. Example: [U0EXAMPLE]"
+            },
+            "blocked": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[UW][A-Z0-9]+$"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Users the agent ignores everywhere. Example: [U0EXAMPLE]"
+            },
+            "redact": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Patterns (JavaScript regular expressions, matched case-insensitively) whose matches are masked before the agent's text reaches Slack. Example: [\"project-[a-z]+\"]"
+            },
+            "approvalTimeoutSeconds": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Seconds to wait for an approval before denying. 0 or unset uses the default. Example: 120"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Who manages the agent, who approves for it, and where and with whom it works."
+    },
+    "mcp": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "External tool servers, in the same shape as a .mcp.json file: mcpServers: { <name>: { type, url, headers } }. Give secrets as ${PERSONA_*} placeholders."
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+      },
+      "description": "Skills this agent may use, by name. Leave the key out for every installed skill; write [] for none. A bare `skills:` is refused. Example: [release-notes, triage]",
+      "uniqueItems": true
+    },
+    "guardrails": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "uniqueItems": true
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Owner guardrails that apply to this agent, by name, in addition to the shared ones. Example: [no-outbound-email]"
+    },
+    "memory": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kbSources": {
+              "type": "array",
+              "items": {},
+              "description": "Knowledge bases the agent reads. Leave the key out for the default; write [] for none. A bare `kbSources:` is refused. Example: [kb-handbook]"
+            },
+            "background": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": {}
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Settings for background learning passes, such as budgetUsd and timezone. Example: { budgetUsd: 2, timezone: UTC }"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Knowledge bases and background learning."
+    },
+    "channels": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "not": {}
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "session": {
+                        "type": "string",
+                        "const": "channel",
+                        "description": "Set to \"channel\" to keep one long-lived session for this channel instead of one per thread. The only value there is; leave the key out for the default. Example: channel"
+                      },
+                      "proactive": {
+                        "type": "boolean",
+                        "description": "true lets the agent wake in this channel on its own and speak up; false keeps it silent here. Setting it implies a channel session. Leave the key out to change nothing."
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            ]
+          },
+          "propertyNames": {
+            "pattern": "^[CGD][A-Z0-9]+$"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Per-channel behaviour, keyed by channel id. Example: { C0EXAMPLE: { session: channel, proactive: true } }"
+    }
+  },
+  "required": [
+    "name",
+    "soul"
+  ],
+  "additionalProperties": false,
+  "description": "A slaude agent: one file per persona, at personas/<name>/agent.yaml. Unknown keys are refused at every level."
+}
