@@ -12,26 +12,43 @@ Use it for a channel where the context builds up over days: a release channel, a
 
 It is a per-agent, per-channel setting, declared in the agent's definition. No command turns it on, and nothing is inferred by a model.
 
-In `SOUL.md`:
+There are two ways on:
+
+**A channel where the agent works on its own (wakes included).** Turning on proactive makes it a channel session:
+
+```markdown
+## Channel <#C0EXAMPLE>
+### Proactive
+- Enabled: yes
+```
+
+In `agent.yaml`:
+
+```yaml
+channels:
+  C0EXAMPLE:
+    proactive: true
+```
+
+**A channel that only wants the shared session, no wakes.**
 
 ```markdown
 ## Channel <#C0EXAMPLE>
 ### Session
 - Mode: channel
-### Proactive
-- Enabled: yes
 ```
 
-Or in `agent.yaml`, under the top-level `channels` key:
+In `agent.yaml`:
 
 ```yaml
 channels:
   C0EXAMPLE:
     session: channel
-    proactive: true
 ```
 
-`Mode` and `session` default to today's behaviour when absent. An unknown value in a soul leaves the channel on today's behaviour and the soul check warns. An invalid value in `agent.yaml` fails the compile. `### Proactive` is optional; leave it out for a channel session with no wakes.
+`Enabled: no` with no `Mode` is an ordinary channel. An unknown `Mode` in a soul reads as off for that channel, whatever `Enabled` says: no channel session and no wakes, and the soul check warns. An invalid value in `agent.yaml` fails the compile.
+
+`## Proactive` at the top level is not about a channel. `Enabled: yes` there starts no wake and warns once; it only keeps the summarising round going, which reads the sources under `Watch:` and reports to the manager.
 
 Two agents in one channel each have their own session and each records the channel for itself.
 
@@ -55,7 +72,11 @@ DMs are unchanged.
 
 ## 4. Proactive
 
-With `### Proactive` and `Enabled: yes` on a channel in this mode, the agent wakes in the channel's session. A wake needs a manager and a mandate: a persona with no manager does not wake, and a channel with no mandate (its own or the persona's) is skipped. It already holds the channel's history, so a wake reads no activity or notes block. It picks its own next look when it ends with `finish_round`; the runtime keeps that time between one heartbeat slot and the maximum sleep.
+With `### Proactive` and `Enabled: yes` on a channel, the agent wakes in that channel's session. A wake needs a manager, and a mandate or a checklist page: a persona with no manager does not wake, and a channel with neither is skipped. It already holds the channel's history, so a wake reads no activity or notes block. It picks its own next look when it ends with `finish_round`; the runtime keeps that time between one heartbeat slot and the maximum sleep (default 4 hours if it says nothing).
+
+Each proactive channel has its own checklist page in the agent's memory, `self/heartbeat/<channel id in lowercase>`. The agent keeps it itself. Its text reaches the channel's wake prompt inside a `<checklist>` block, marked as data, and editing it wakes the channel, as a changed mandate does. An agent with the old single `self/heartbeat` page and exactly one proactive channel gets that page copied to the channel's page once, at its first wake, and the old page stays. With more than one proactive channel nothing is copied and it warns once in the logs; the agent writes each channel's page itself.
+
+`/heartbeat now`, from the manager at a proactive channel's root, runs that channel's wake at once, outside the slot. If the channel or the agent is busy with another wake or someone's turn it says so, plainly, and does nothing. Anywhere else (a thread, a DM, a channel that is not proactive) it says where it works. `/heartbeat status` lists one line per proactive channel.
 
 Plain text from a wake stays silent. A wake reaches people with `proactive_post`, which posts at root, and with `post_message` for a follow-up in a thread of a post it made in that channel. It cannot `post_message` to another channel. Approval requests are refused during a wake, because nobody is in the turn to answer them.
 
@@ -63,7 +84,7 @@ A wake uses its own tools only under the `bypass` permission mode (`SLAUDE_DEFAU
 
 A wake and a person's turn never share a turn. A mention that arrives during a wake waits for it to end, and a wake waits for a running turn. An agent runs one wake at a time across its channels; a channel that is due while another wake runs goes at the next slot.
 
-`Highest`, `Cooldown` and `Max per day` do not apply to a channel in this mode. The operator-wide per-run caps and the daily pool still do.
+`Highest`, `Cooldown` and `Max per day` do not apply to a channel in this mode. The operator-wide per-run caps and the daily pool still do. A wake has no per-channel limits, so write what the agent may do in the mandate.
 
 ## 5. Starting over with `/new`
 
@@ -105,7 +126,7 @@ Every root turn and wake runs as the agent, so no person's credentials are invol
 ## 9. Switching the mode
 
 - **On:** existing threads keep working under their own keys.
-- **Off:** the channel session goes dormant. Root messages return to today's path, and the session is not deleted.
+- **Off:** set `Mode` absent and `Enabled: no`, or remove the block. The channel session goes dormant. Root messages return to today's path, and the session is not deleted.
 - **On again:** the same session resumes. Use `/new` to start clean instead.
 
 ## 10. Node version

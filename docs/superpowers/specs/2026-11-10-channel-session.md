@@ -199,6 +199,43 @@ one capability check is enough.
 - Injecting channel-session context into threads.
 - Changing DM or thread behavior.
 
+## rc.14: proactive means a channel session
+
+Date: 2026-11-10. Replaces the decisions above where they differ.
+
+Proactive is now defined per channel, and turning it on means a channel session.
+
+| Topic | Decision |
+|---|---|
+| Switch | `### Proactive` with `Enabled: yes` under a `## Channel` block makes that channel a channel session with wakes. No `### Session` is needed. The session is kept from then on. |
+| `Mode: channel` | Stays, for a channel that wants the shared session without wakes. |
+| Invalid `Mode` | Reads as off: no session, no wakes, whatever `Enabled` says. Warned. |
+| `Enabled: no` with no `Mode` | An ordinary classic channel. |
+| Agent-level wake | Removed. No code path starts a `wake:<agent>:<slot>` session. A global `## Proactive` `Enabled: yes` starts no wake and warns once per soul hash. |
+| Summarising round | `runHeartbeat` and `Watch:` stay, as a round over watched sources only: no checklist. Its posts reach the manager and people who opted in. It no longer routes to a channel: every proactive channel is a channel session whose ceiling is `act`, and an item from a watched source is untrusted. |
+| Checklist | Per channel, `self/heartbeat/<channel>` in the agent's slice, the channel id lowercased in one function (`channelChecklistSlug`) because gbrain stores slugs lowercased. The body goes into that channel's wake prompt as data inside a `<checklist>` block. The wake-due hash covers mandate plus page, so an edit wakes the channel. A page with no mandate is a job; neither is not. |
+| Migration | At wake start, a proactive channel with no page of its own gets a copy of the old per-agent `self/heartbeat` page, when the agent has exactly one proactive channel, once (recorded in `background_slots`). The old page stays. With several channels nothing is copied and it warns once. |
+| Timing | Unchanged: the heartbeat slot is the tick, `finish_round`'s `next_check_at` proposes the next look inside one slot and `SLAUDE_WAKE_MAX_SLEEP_HOURS`. |
+| `/heartbeat now` | At a proactive channel's root, manager only: that channel's wake, now, past the gate. Busy (another wake, a person's turn) says so and marks nothing. Anywhere else it says where it works. |
+| `/heartbeat status` | One line per proactive channel. No agent-level line. |
+
+### What this removes
+
+`runWake`, `wakeEligibility`, the `heartbeat-wake` prompt, the wake journal
+(`self/wake-journal` is no longer written or read), the activity block and
+`wake-activity.ts`. `heartbeat_wake_state` has no reader or writer now; the
+table is left in place, unused, and no migration drops it. `deleteWakeSessionsBefore`
+stays, so old `wake:` rows still age out.
+
+### What upgrading changes
+
+Every channel with `Enabled: yes` becomes a channel session on upgrade: root
+mentions reply at root and root messages are recorded. A channel's `Highest`,
+`Cooldown` and `Max per day` have no effect in a channel session; the soul check
+warns for each such channel that lost them this way. A proactive channel needs
+nodes with `channel-session/1`, so a node on an older version cannot take its
+jobs.
+
 ## Voice
 
 A wake never waits for a voice call: a wake on a session in a call is refused at once and its run closes. Channel sessions host no voice calls; a voice call runs in a thread.

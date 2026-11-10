@@ -156,8 +156,8 @@ memory:
     timezone: UTC
 channels:                         # per-channel settings, keyed by channel id
   CTEAMCHAN:
-    session: channel              # one long-lived session for this channel
-    proactive: true               # optional; turns proactiveness on or off here
+    session: channel              # one long-lived session for this channel, no wakes needed
+    proactive: true               # the agent works on its own here; on its own this also gives the channel session
 ```
 
 **Compiled, never extracted.** The structured parts compile deterministically
@@ -169,7 +169,8 @@ such a persona's soul changes the prose and keeps the structure.
 
 **`channels`** compiles to the `## Channel` block a `SOUL.md` would carry
 (`### Session` with `Mode: channel`, `### Proactive` with `Enabled:`), appended
-to the soul. A key that is not a channel id, a `session` other than `channel`, a
+to the soul. `proactive: true` alone gives the channel a channel session with
+wakes; `session: channel` alone gives it the session without wakes. A key that is not a channel id, a `session` other than `channel`, a
 `proactive` that is not a boolean, a bare `session:` or `proactive:`, or an
 unknown key fails the sync. So does a `soul` that already has a `## Channel`
 section for a listed channel, or that ends inside an open code fence. A console
