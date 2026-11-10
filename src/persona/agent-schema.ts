@@ -1,9 +1,9 @@
 /**
  * The shape of `personas/<name>/agent.yaml`, defined once.
  *
- * `compileAgent` (agent-def.ts) parses a file with `AgentSchema`, and
+ * `parseAgentYaml` (agent-def.ts) parses a file with `AgentSchema`, and
  * `scripts/gen-agent-schema.ts` turns the same schema into
- * `schemas/agent.schema.json` for editors. Every field's `.describe()` text is
+ * `docs/site/schemas/agent.schema.json` for editors. Every field's `.describe()` text is
  * written for the operator who edits the file; it shows up as the hover help.
  *
  * What lives here is the shape: keys, types, patterns, lengths, which values
@@ -12,13 +12,14 @@
  * and the soul's own `## Channel` sections.
  *
  * Error messages never carry the offending value. A message here may name the
- * kind of thing expected and a pattern, nothing from the input.
+ * kind of thing expected and a pattern, nothing from the input. Keys are echoed
+ * only through `safeKey` (see agent-def.ts).
  */
 import { z } from "zod";
 import { GUARDRAIL_SLUG_RE } from "../guardrails/format";
 import { SKILL_SLUG_RE } from "../skills/loader";
 
-/** Where the docs site serves the generated JSON Schema (docs/site/build.mjs copies schemas/). */
+/** Where the docs site serves the generated JSON Schema (docs/site/build.mjs copies docs/site/schemas/). */
 export const AGENT_SCHEMA_URL = "https://barockok.github.io/slaude/schemas/agent.schema.json";
 /** First line of an exported agent.yaml: editors running yaml-language-server read the schema from it. */
 export const AGENT_YAML_MODELINE = `# yaml-language-server: $schema=${AGENT_SCHEMA_URL}`;
@@ -57,6 +58,10 @@ const slugs = (re: RegExp, nullMessage?: string) => {
 };
 const idList = (re: RegExp, what: string) =>
   z.array(idString(re, `${what} id`), typeMessage({ other: `must be a list of ${what} ids` }));
+// z.record builds its result with plain assignment, so a `__proto__` key in
+// provider or mcp is dropped from the parsed value (it does not become the
+// prototype). The old code passed the YAML map through untouched; the key is
+// never meaningful in either, and the JSON Schema still allows it.
 const mapping = (msg = "must be a mapping") => z.record(z.unknown(), typeMessage({ other: msg }));
 /** A key may be left out or written as a bare `key:`; both mean "not set". */
 const optional = <T extends z.ZodTypeAny>(s: T) => s.nullable().optional();
@@ -191,10 +196,12 @@ export const AgentSchema = z
           .describe(`One or two lines on what the agent is for; it becomes the agent's role. At most ${DESCRIPTION_MAX} characters. Example: Handles support questions for the platform team.`),
       ),
       model: optional(text("a string").describe("Model the agent runs on, provider-qualified. Leave out for the deployment default. Example: provider/model-name")),
-      slackUserId: z
-        .unknown()
-        .describe("The agent's Slack user id. Example: U0EXAMPLE")
-        .optional(),
+      // An unquoted id can read as a YAML number, which is accepted and written as text.
+      slackUserId: optional(
+        z
+          .union([z.string(), z.number()], typeMessage({ other: "must be a string" }))
+          .describe("The agent's Slack user id, as text. Example: U0EXAMPLE"),
+      ),
       userToken: optional(
         text("a string").describe("Slack user token to post as the agent's own user, as a placeholder that CI fills in, never the token itself. Example: ${PERSONA_ANA_XOXP}"),
       ),
@@ -237,7 +244,7 @@ export const AgentSchema = z
           .object(
             {
               kbSources: z
-                .array(z.unknown(), typeMessage({ other: "must be a list of knowledge-base ids", null: NO_VALUE }))
+                .array(z.string(typeMessage({ other: "must be a knowledge-base id" })), typeMessage({ other: "must be a list of knowledge-base ids", null: NO_VALUE }))
                 .describe("Knowledge bases the agent reads. Leave the key out for the default; write [] for none. A bare `kbSources:` is refused. Example: [kb-handbook]")
                 .optional(),
               background: optional(mapping().describe("Settings for background learning passes, such as budgetUsd and timezone. Example: { budgetUsd: 2, timezone: UTC }")),

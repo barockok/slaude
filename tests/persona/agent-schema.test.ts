@@ -6,8 +6,8 @@ import { AGENT_SCHEMA_FILE, AGENT_SCHEMA_URL, agentSchemaText, buildAgentJsonSch
 import { CORPUS, CORPUS_DIR } from "./agent-corpus";
 import { parseAgentYaml } from "../../src/persona/agent-def";
 
-describe("schemas/agent.schema.json", () => {
-  test("the committed file is what the Zod schema generates (run `bun run schema:agent`)", () => {
+describe("docs/site/schemas/agent.schema.json", () => {
+  test("the committed file is what the Zod schema generates, so a schema change always changes a file under docs/** and republishes (run `bun run schema:agent`)", () => {
     expect(readFileSync(AGENT_SCHEMA_FILE, "utf8")).toBe(agentSchemaText());
   });
 
@@ -41,7 +41,7 @@ describe("schemas/agent.schema.json", () => {
 });
 
 describe("JSON Schema parity with the validator (ajv)", () => {
-  const ajv = new Ajv({ strict: true, allErrors: false });
+  const ajv = new Ajv({ strict: true, allowUnionTypes: true, allErrors: false });
   const validate = ajv.compile(buildAgentJsonSchema());
 
   for (const c of CORPUS) {

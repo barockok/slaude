@@ -28,7 +28,18 @@
       "description": "Model the agent runs on, provider-qualified. Leave out for the deployment default. Example: provider/model-name"
     },
     "slackUserId": {
-      "description": "The agent's Slack user id. Example: U0EXAMPLE"
+      "anyOf": [
+        {
+          "type": [
+            "string",
+            "number"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The agent's Slack user id, as text. Example: U0EXAMPLE"
     },
     "userToken": {
       "type": [
@@ -86,7 +97,12 @@
                         "description": "Where this sub-mandate applies: channel:<channel id> for one channel, trust:public or trust:trusted for every channel of that class, or dm for direct messages. Each boundary may appear once. Example: channel:C0EXAMPLE"
                       },
                       "mode": {
-                        "description": "How the text combines with the global mandate: override (replace it, the default), extend (add to it) or reduce (restrict it). Matching ignores case and surrounding spaces. A value that is none of these is accepted with a warning and read as extend, so a typo keeps the global mandate instead of replacing it. Example: extend"
+                        "description": "How the text combines with the global mandate: override (replace it, the default), extend (add to it) or reduce (restrict it). Matching ignores case and surrounding spaces. A value that is none of these is accepted with a warning and read as extend, so a typo keeps the global mandate instead of replacing it. Example: extend",
+                        "examples": [
+                          "override",
+                          "extend",
+                          "reduce"
+                        ]
                       },
                       "text": {
                         "type": "string",
@@ -355,7 +371,9 @@
           "properties": {
             "kbSources": {
               "type": "array",
-              "items": {},
+              "items": {
+                "type": "string"
+              },
               "description": "Knowledge bases the agent reads. Leave the key out for the default; write [] for none. A bare `kbSources:` is refused. Example: [kb-handbook]"
             },
             "background": {

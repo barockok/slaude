@@ -64,8 +64,6 @@ for (const k of ["description", "model", "slackUserId", "userToken", "provider",
 ok("empty strings", { description: "", model: "", userToken: "", runsOn: "" });
 ok("description at the limit", { description: "x".repeat(2000) });
 ok("numeric slackUserId", { slackUserId: 12345 });
-ok("list slackUserId is read as text", { slackUserId: ["a"] });
-ok("map slackUserId is read as text", { slackUserId: { a: 1 } });
 ok("empty provider and mcp", { provider: {}, mcp: {} });
 ok("skills empty", { skills: [] });
 ok("skills slugs", { skills: ["a", "a-b", "0x"] });
@@ -95,6 +93,36 @@ ok("channel entry empty", { channels: { [C]: {} } });
 ok("channel entry session", { channels: { [C]: { session: "channel" } } });
 ok("channel entry proactive off", { channels: { [C]: { proactive: false } } });
 ok("private and dm channel ids", { channels: { G0EXAMPLE: { proactive: true }, D0EXAMPLE: { proactive: false } } });
+
+
+// ---- refused: id, channel and boundary patterns at their edges
+const USER_EDGES = ["U", "W", "u0example", "U-x", "U0EX AMPLE", "U0EXAMPLE\n", " U0EXAMPLE", "C0EXAMPLE", "U0EXAMPLE-1", "UABC_D"];
+const CHAN_EDGES = ["C", "D", "G", "c0example", "CABC-x", "CABC\n", "C0EXAMPLE ", "U0EXAMPLE", "C0EXAMPLE_1", "X0EXAMPLE"];
+for (const v of USER_EDGES) {
+  bad(`manager edge ${JSON.stringify(v)}`, { access: { manager: v } });
+  bad(`backupManager edge ${JSON.stringify(v)}`, { access: { backupManager: v } });
+  bad(`approver user edge ${JSON.stringify(v)}`, { access: { approvers: [{ user: v }] } });
+  bad(`dm edge ${JSON.stringify(v)}`, { access: { dm: [v] } });
+  bad(`blocked edge ${JSON.stringify(v)}`, { access: { blocked: [v] } });
+}
+for (const v of CHAN_EDGES) {
+  bad(`public edge ${JSON.stringify(v)}`, { access: { channels: { public: [v] } } });
+  bad(`trusted edge ${JSON.stringify(v)}`, { access: { channels: { trusted: [v] } } });
+  bad(`approver channel edge ${JSON.stringify(v)}`, { access: { approvers: [{ user: U, channel: v }] } });
+  bad(`channels key edge ${JSON.stringify(v)}`, { channels: { [v]: {} } });
+  bad(`boundary channel edge ${JSON.stringify(v)}`, { mandate: { scoped: [{ boundary: `channel:${v}`, text: "x" }] } });
+}
+for (const b of ["trust:private", "dm:x", "channel:C", "channel:C0EXAMPLE\n", "trust:public\n", "trust:publicx", "xtrust:public", "channel:C0-EXAMPLE", "channel"]) {
+  bad(`boundary edge ${JSON.stringify(b)}`, { mandate: { scoped: [{ boundary: b, text: "x" }] } });
+}
+ok("single-letter-plus-one ids", { access: { manager: "U0", backupManager: "W1", dm: ["U1"], blocked: ["W9"], channels: { public: ["C1"], trusted: ["D1", "G1"] } }, channels: { C1: {} } });
+bad("slackUserId list", { slackUserId: ["a"] });
+bad("slackUserId map", { slackUserId: { a: 1 } });
+bad("slackUserId bool", { slackUserId: true });
+rawBad("slackUserId deeply nested", `name: ana\nsoul: x\nslackUserId: ${"[".repeat(5000)}${"]".repeat(5000)}\n`, true);
+bad("kbSources number entry", { memory: { kbSources: [1] } });
+bad("kbSources null entry", { memory: { kbSources: [null] } });
+bad("kbSources map entry", { memory: { kbSources: [{}] } });
 
 // ---- refused: top level
 rawBad("not a mapping (list)", "- a\n- b\n");

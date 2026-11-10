@@ -1,5 +1,5 @@
 /**
- * Writes schemas/agent.schema.json from the Zod schema in
+ * Writes docs/site/schemas/agent.schema.json from the Zod schema in
  * src/persona/agent-schema.ts: `bun run schema:agent`. A test regenerates it in
  * memory and fails when the committed file differs, so the two cannot drift.
  */
@@ -9,7 +9,7 @@ import { zodToJsonSchema } from "zod-to-json-schema";
 import { AGENT_SCHEMA_URL, AgentSchema } from "../src/persona/agent-schema";
 
 export { AGENT_SCHEMA_URL };
-export const AGENT_SCHEMA_FILE = join(import.meta.dir, "..", "schemas", "agent.schema.json");
+export const AGENT_SCHEMA_FILE = join(import.meta.dir, "..", "docs", "site", "schemas", "agent.schema.json");
 
 /** zod-to-json-schema repeats a field's description inside its `anyOf` members; keep the outer one. */
 function dedupeDescriptions(node: unknown, parent?: string): void {
@@ -32,6 +32,11 @@ export function buildAgentJsonSchema(): Record<string, unknown> {
     const list = (Array.isArray(p.anyOf) ? p.anyOf.find((x: Record<string, unknown>) => x.type === "array") : p) as Record<string, unknown>;
     list.uniqueItems = true;
   }
+  // `mode` accepts any value (an unknown one is a warning, read as extend), so it
+  // gets examples for the editor and no type constraint.
+  const scoped = ((props.mandate as { anyOf: Record<string, any>[] }).anyOf.find((m) => m.properties)!).properties.scoped;
+  const scopedItems = (Array.isArray(scoped.anyOf) ? scoped.anyOf.find((x: Record<string, unknown>) => x.type === "array") : scoped).items;
+  scopedItems.properties.mode.examples = ["override", "extend", "reduce"];
   dedupeDescriptions(schema);
   return schema;
 }
