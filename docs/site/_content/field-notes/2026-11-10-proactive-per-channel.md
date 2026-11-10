@@ -6,7 +6,7 @@ date: 2026-11-10
 # Proactive means a channel session
 
 **Date:** 2026-11-10
-**Status:** branch `feat/channel-proactive`, shipped in `v0.46.0-rc.14`. Spec: [rc.14 section](../../superpowers/specs/2026-11-10-channel-session.md#rc14-proactive-means-a-channel-session). User guide: [Channel sessions](../guides/channel-sessions.md).
+**Status:** branch `feat/channel-proactive`, shipped in `v0.46.0-rc.14`. Spec: the rc.14 section of `docs/superpowers/specs/2026-11-10-channel-session.md` in the repository. User guide: [Channel sessions](../guides/channel-sessions.md).
 
 ## The decision
 
