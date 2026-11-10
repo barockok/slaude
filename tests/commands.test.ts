@@ -79,6 +79,11 @@ describe("helpText", () => {
     for (const c of AGENT_COMMANDS) expect(t).toContain(c.usage);
   });
 
+  test("leaves /new out except at a channel session's root", () => {
+    expect(helpText({ channelSessionRoot: false })).not.toContain("/new");
+    expect(helpText({ channelSessionRoot: true })).toContain("/new");
+  });
+
   test("names /new", () => {
     expect(AGENT_COMMANDS.map((c) => c.usage)).toContain("/new");
     expect(helpText()).toContain("/new");

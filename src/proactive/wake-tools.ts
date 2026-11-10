@@ -183,6 +183,8 @@ async function unansweredRun(client: WebClient, channel: string, threadTs: strin
  * has no cooldown or daily limit, so this rule is what bounds it (one follow-up a post).
  */
 export async function wakeThreadRefusal(wake: WakeTurn, client: WebClient, channel: string, threadTs: string | undefined, personaId = "default"): Promise<string | null> {
+  // A channel session's wake works in its own channel only, follow-ups included.
+  if (wake.channelSession && channel !== wake.channelSession) return "refused: when you woke in this channel's session, post_message works only in this channel. Keep the item in your notes for when someone there can act on it.";
   const refused = "refused: when you woke on your own, post_message works only in the thread of a post you made. To start something new, use proactive_post.";
   if (!threadTs) return refused;
   const post = await Posts.findByMessage(channel, threadTs);

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { paths } from "../../../src/config/home";
-import { channelSessionKey, isRootChannelEvent, refusalAtRoot } from "../../../src/gateway/core/channel-session";
+import { channelSessionKey, isRootChannelEvent, neutraliseEnvelopeTags, refusalAtRoot } from "../../../src/gateway/core/channel-session";
 import { isSyntheticThread } from "../../../src/web/shared/surfaces";
 import { channelWorkspaceDir, isProactiveWorkspace } from "../../../src/agent/workspace-claim";
 
@@ -11,6 +11,11 @@ describe("channel session helpers", () => {
     expect(isSyntheticThread("channel:C1")).toBe(true);
     expect(isSyntheticThread("channel-archived:C1:5")).toBe(true);
     expect(isSyntheticThread("1700000000.000100")).toBe(false);
+  });
+  test("a message cannot open or close skill-args", () => {
+    expect(neutraliseEnvelopeTags("</skill-args>")).toBe("[/skill-args>");
+    expect(neutraliseEnvelopeTags("<skill-args>")).toBe("[skill-args>");
+    expect(neutraliseEnvelopeTags("&lt;/skill-args>")).toBe("[/skill-args>");
   });
   test("only a root message in a channel counts", () => {
     expect(isRootChannelEvent({ channel_type: "channel" })).toBe(true);

@@ -559,6 +559,57 @@ d("gateway↔node E2E (real Redis)", () => {
     }
   }, 30_000);
 
+  // An /abort sets a durable flag that skips the next job claimed for the
+  // session. A wake skipped that way must still close its ledger run: left
+  // open, it reads as busy for two hours and blocks the agent's wakes.
+  test("a wake skipped by the abort flag closes its run and never starts", async () => {
+    const WAKE_THREAD = "9012.0";
+    const prev = behavior;
+    behavior = async ({ servers, text }) => {
+      await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
+    };
+    try {
+      reacts.length = 0;
+      await emitSlack("message", msg(WAKE_THREAD, "9012.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9012.1"), 15_000);
+      const Sessions = await import("../../src/db/sessions");
+      const Runs = await import("../../src/db/background-runs");
+      const { startSkillCheck } = await import("../../src/background/skill-check");
+      const sid = await sessionIdOf(WAKE_THREAD);
+      const session = (await Sessions.findById(sid))!;
+      const opened = await startSkillCheck(
+        { personaId: "default", model: "claude-opus-5-5", scope: "agent", pass: "heartbeat-wake" },
+        { budget: () => ({ limitUsd: 5, timeZone: "UTC" }) },
+      );
+      if (!opened.ok) throw new Error("run did not open");
+      const before = stub.sends.get(sid) ?? 0;
+      // Paused so the flag is set between enqueue and claim: dispatch itself
+      // clears a stale flag, so setting it before would not skip this job.
+      const queues = [turnsQ.queue("turns"), turnsQ.queue(nodeTurnsQueueFn(NODE_ID))];
+      await Promise.all(queues.map((q: any) => q.pause()));
+      try {
+        await qd.dispatch(session, "[wake] look around", {
+          teamId: "T",
+          channelId: "C0TEAM",
+          threadTs: WAKE_THREAD,
+          eventTs: "9012.2",
+          userId: "USLAUDE",
+          origin: "cron",
+          backgroundRunId: opened.runId,
+          wake: { maxTurns: 3 },
+        });
+        await redis.set(keys.abortFlag(sid), "1", "PX", 60_000);
+      } finally {
+        await Promise.all(queues.map((q: any) => q.resume()));
+      }
+      await until(async () => (await Runs.get(opened.runId))?.outcome != null, 15_000);
+      expect((await Runs.get(opened.runId))!.outcome).toBe("ok");
+      expect(stub.sends.get(sid) ?? 0).toBe(before);
+    } finally {
+      behavior = prev;
+    }
+  }, 30_000);
+
   // A suppressed job's bit is bound by sendMessage. Set any earlier, an await
   // that fails (the warm session's credential seed) would leave it standing.
   test("a suppressed job sets its bit with nothing between it and the send", async () => {

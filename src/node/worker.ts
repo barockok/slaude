@@ -964,6 +964,13 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     // Durable abort flag: /abort published before any node claimed the job.
     if (await pubsub.consumeAbortFlag(data.sessionId)) {
       metric.nodeTurnsTotal.inc({ result: "skipped" });
+      // A wake that never starts must not keep its ledger run open: the agent's
+      // wakes would all read as busy until the stale sweep. It spent nothing.
+      if (data.wake && data.bgRun) {
+        await client.turnFinish({ runId: data.bgRun, outcome: "ok", usage: {} }, data.jobToken).catch((e) => {
+          console.error(`[node] wake job=${job.id} session=${data.sessionId}: could not close its run ${data.bgRun}: ${e instanceof Error ? e.message : String(e)}`);
+        });
+      }
       return { skipped: "abort-flag" };
     }
     /** Fail the job with a typed code: the code is the job's failure reason

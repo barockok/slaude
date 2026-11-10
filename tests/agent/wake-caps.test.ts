@@ -257,6 +257,116 @@ describe("how a wake ends", () => {
     expect(finishes[0]!.usage).toEqual({});
     expect((finishes[0]!.stats as { cap: string }).cap).toBe("minutes");
   });
+  const answerOk = (s: FakeSession) => {
+    s.emit(asst([{ type: "text", text: "ok" }]));
+    s.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(1, 1) }));
+  };
+
+  it("an abort during a wake closes its run once, as the wall clock does", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const seen = events(mgr, row.id);
+    plan(() => {}); // never answers
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxMinutes: 0.0005 } });
+    await until(() => seen.includes("turnStart"), 3000, "wake started");
+    mgr.abort(row.id);
+    await until(() => finishes.length === 1 && seen.includes("done"), 3000, "abort");
+    expect(finishes[0]!.outcome).toBe("stopped-budget");
+    expect(finishes[0]!.usage).toEqual({});
+    expect(seen.filter((e) => e === "done")).toHaveLength(1);
+    // Past the wall clock: it neither closes the run again nor ends the turn twice.
+    await Bun.sleep(80);
+    expect(finishes).toHaveLength(1);
+    expect(seen.filter((e) => e === "done")).toHaveLength(1);
+    // A second abort finds nothing left to close.
+    mgr.abort(row.id);
+    await Bun.sleep(10);
+    expect(finishes).toHaveLength(1);
+  });
+
+  it("the agent's next wake is not blocked by an aborted one", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const first = recorder("run-a");
+    await mgr.sendMessage(row.id, BG, { backgroundRun: first.run, wake: {} });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    mgr.abort(row.id);
+    await until(() => first.finishes.length === 1, 3000, "abort");
+    const b = plan(answerOk);
+    const second = recorder("run-b");
+    await mgr.sendMessage(row.id, BG, { backgroundRun: second.run, wake: {} });
+    await until(() => second.finishes.length === 1, 3000, "next wake");
+    expect(second.finishes[0]!.outcome).toBe("ok");
+    expect(b.users).toHaveLength(1);
+    await shutdown(mgr, row.id);
+  });
+
+  it("an abort before the wake's turn exists closes nothing, as the turn still runs", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const { run, finishes } = recorder();
+    const a = plan(answerOk);
+    const sent = mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+    mgr.abort(row.id);
+    await sent;
+    await until(() => finishes.length === 1, 3000, "finish");
+    expect(finishes[0]!.outcome).toBe("ok");
+    expect(a.users).toHaveLength(1);
+    await shutdown(mgr, row.id);
+  });
+
+  it("dropQueuedInputs: what waits behind a wake never boots on the retired session", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    const b = plan(answerOk);
+    const sent = mgr.sendMessage(row.id, "person");
+    await Bun.sleep(20);
+    mgr.dropQueuedInputs(row.id);
+    mgr.abort(row.id);
+    await sent;
+    await Bun.sleep(30);
+    expect(finishes).toHaveLength(1);
+    expect(b.users).toHaveLength(0);
+    expect(pending).toContain(b);
+    await until(() => !mgr.isLive(row.id), 3000, "session ended");
+  });
+
+  it("dropQueuedInputs closes a queued wake's run too", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    await mgr.sendMessage(row.id, BG, { wake: {} });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    const { run, finishes } = recorder("run-queued");
+    const sent = mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+    await Bun.sleep(20);
+    mgr.dropQueuedInputs(row.id);
+    mgr.abort(row.id);
+    await sent;
+    expect(finishes.map((f) => f.outcome)).toEqual(["stopped-budget"]);
+  });
+
+  it("a later message on the session is not dropped", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    await mgr.sendMessage(row.id, BG, { wake: {} });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    mgr.dropQueuedInputs(row.id);
+    const b = plan(answerOk);
+    mgr.abort(row.id);
+    await until(() => !mgr.isLive(row.id), 3000, "session ended");
+    await mgr.sendMessage(row.id, "after");
+    await until(() => b.users.length === 1, 3000, "later turn");
+    await shutdown(mgr, row.id);
+  });
+
   it("no skill check follows a substantive wake, though one follows the same work in a normal turn", async () => {
     const work = (s: FakeSession, text: string) => {
       if (isCheck(text)) { s.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(2, 2) })); return; }

@@ -470,8 +470,6 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
   };
 }
 
-/** Dispatch meta for an operator-panel turn: the session row is the only
- *  source, including the Slack app its thread arrives through (D1.2). */
 /** One more person's turn on the route; a recording that came first no longer runs behind nothing. */
 function countTurn(route: SessionRoute | undefined): void {
   if (!route) return;
@@ -493,6 +491,8 @@ function settleTurn(route: SessionRoute): { ownRecording: boolean; hadTurn: bool
   return { ownRecording: false, hadTurn, recordingNext };
 }
 
+/** Dispatch meta for an operator-panel turn: the session row is the only
+ *  source, including the Slack app its thread arrives through (D1.2). */
 export function panelDispatchMeta(session: SessionRow, operatorId: string, eventTs: string): DispatchMeta {
   const personaId = session.persona_id && session.persona_id !== "default" ? session.persona_id : undefined;
   // A channel session's key, live or archived, is not a Slack ts: its console
@@ -2795,7 +2795,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (!(recordingOnly ? text : stripped) && !hasFiles) return;
 
     // Slash commands: /mode, /abort, /help. Handled locally; do not forward to model.
-    const slash = recordingOnly ? null : parseSlashCommand(stripped);
+    const parsed = recordingOnly ? null : parseSlashCommand(stripped);
+    // `/new` is a command only at a channel session's root. Anywhere else it is
+    // text: it reaches the model, or a skill named `new`, as it did before.
+    const slash = parsed?.kind === "new" && !dispatch?.channelSession ? null : parsed;
     // A command at a channel session's root is answered at root, like its turns.
     const slashThread = dispatch?.channelSession ? {} : { thread_ts: threadTs };
     const reply = async (txt: string) => {
@@ -2814,12 +2817,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         await reply(refused);
         return;
       }
-    }
-    if (slash?.kind === "new") {
-      if (!dispatch?.channelSession) {
-        await reply("/new works only at the root of a channel that has a channel session.");
+      // /mode here persists for every later speaker and wake of the channel.
+      if (slash.kind === "mode" && !(await isManagerOrApprover(dispatch.personaId, userId, channelId))) {
+        await reply("Only a manager or this channel's approvers can change this channel's permission mode.");
         return;
       }
+    }
+    if (slash?.kind === "new" && dispatch?.channelSession) {
       if (!(await isManagerOrApprover(dispatch.personaId, userId, channelId))) {
         await reply("Only a manager or this channel's approvers can start the session over.");
         return;
@@ -2835,6 +2839,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // reloaded session, so its working reaction and status go now, while the
       // route still names the client that set them.
       if (queueDispatch) await queueDispatch.abort(current.id).catch((e) => console.error("[slaude] abort publish failed:", e));
+      // Before the abort, which frees what waits behind a wake: a mention held
+      // there must not boot on the archived session and spend a call with no route.
+      agent.dropQueuedInputs(current.id);
       agent.abort(current.id);
       agent.reload(current.id);
       await reactions.clear(current.id);
@@ -2882,7 +2889,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     if (slash) {
       if (slash.kind === "help") {
-        await reply(helpText());
+        await reply(helpText({ channelSessionRoot: !!dispatch?.channelSession }));
         return;
       }
       if (slash.kind === "heartbeat-status") {
@@ -3634,7 +3641,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (dispatch?.channelSession) userText = neutraliseEnvelopeTags(userText);
     const skillHit = recordingOnly ? null : matchSkillInvocation(stripped, allowedSkillsOf(discoverSkills(session.persona_id), skillsAllowedFor(session.persona_id)));
     if (skillHit) {
-      userText = buildSkillInvocation(skillHit.skill, skillHit.args, session.id);
+      userText = buildSkillInvocation(skillHit.skill, dispatch?.channelSession ? neutraliseEnvelopeTags(skillHit.args) : skillHit.args, session.id);
       // A `/<slug>` invocation is a use too (it never reaches the Skill tool). Best effort, off the turn's path.
       void backgroundAgentId(session.persona_id ?? "default")
         .then((agentId) => recordSkillUse(agentId, skillHit.skill.slug))
@@ -3732,88 +3739,88 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // the agent now (which runs it after the wake) and its route state applies
     // when the wake ends. The received reaction goes on now: it can wait a while.
     const applyRoute = () => {
-    // A recording that arrives during a running turn runs behind it: the turn
-    // keeps its own message, speaker and cards. Its done is left to the flag.
-    const existingRoute = routes.get(session.id);
-    const behindRunningTurn = recordingOnly && (existingRoute?.personTurns ?? 0) > 0;
-    if (behindRunningTurn) existingRoute!.recordingBehind = true;
-    if (!behindRunningTurn) permissions.bindSession(session.id, channelId, threadTs, app, session.persona_id);
+      // A recording that arrives during a running turn runs behind it: the turn
+      // keeps its own message, speaker and cards. Its done is left to the flag.
+      const existingRoute = routes.get(session.id);
+      const behindRunningTurn = recordingOnly && (existingRoute?.personTurns ?? 0) > 0;
+      if (behindRunningTurn) existingRoute!.recordingBehind = true;
+      if (!behindRunningTurn) permissions.bindSession(session.id, channelId, threadTs, app, session.persona_id);
 
-    // First turn for this session → seed the SlackContext + route.
-    // Subsequent turns → mutate the existing context so the bound MCP tools
-    // keep targeting the right thread / inbound message.
-    const existing = existingRoute;
-    if (behindRunningTurn) {
-      // Nothing to change on the route.
-    } else if (existing) {
-      existing.ctx.channel = channelId;
-      existing.ctx.threadTs = threadTs;
-      existing.ctx.inboundTs = eventTs;
-      existing.ctx.userId = userId;
-      existing.ctx.teamId = teamId;
-      existing.ctx.origin = "slack";
-      existing.ctx.postTarget = dispatch?.channelSession ? "channel" : undefined;
-      existing.ctx.botToken = context?.botToken;
-      existing.ctx.apiAppId = app.apiAppId;
-      existing.ctx.personaId = dispatch?.personaId;
-      existing.ctx.client = outClientForPersona(dispatch?.personaId, appOf(existing.ctx));
-      existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
-      existing.spoke = false;
-      existing.passed = false;
-      existing.passReact = undefined;
-      // A person's message: the Stop guard applies again even when the route
-      // was last a cron run's (silent), as a node guards a Slack job.
-      existing.silent = false;
-      // A message merged into a running turn carries no mention result
-      // (undefined) and must not erase the running mention's; the done
-      // handler clears it at the end of every turn.
-      if (dispatch?.engagedBefore !== undefined) existing.engagedBefore = dispatch.engagedBefore;
-      existing.todoRef = undefined;       // fresh tracker per user turn
-      existing.todosSnapshot = undefined;
-      existing.pendingTaskCreate = undefined;
-      // tasksRef/tasksMap are cleared in the done handler so mid-turn inbound
-      // messages don't wipe in-flight task state from the previous turn.
-      existing.suppress = suppress;
-      if (!suppress) countTurn(existing);
-      else if (recordingOnly) existing.recordingAhead = true;
-      noteTurnSender(session.id, existing.ctx);
-    } else {
-      const ctx: SlackContext = {
-        client: outClientForPersona(dispatch?.personaId, app),
-        apiAppId: app.apiAppId,
-        channel: channelId,
-        threadTs,
-        inboundTs: eventTs,
-        userId,
-        teamId,
-        botToken: context?.botToken,
-        personaId: dispatch?.personaId,
-        origin: "slack",
-        ...(dispatch?.channelSession ? { postTarget: "channel" as const } : {}),
-      };
-      ctx.requestApproval = (req) =>
-        approvals.request({
-          channel: ctx.channel,
-          threadTs: ctx.threadTs,
-          sessionId: session.id,
-          app: appOf(ctx),
-          ...req,
-          persona: ctx.personaId,
-        });
-      ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
-      noteTurnSender(session.id, ctx);
-      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore, personTurns: suppress ? 0 : 1, ...(suppress ? {} : { personTurnAt: Date.now() }), ...(recordingOnly ? { recordingAhead: true } : {}) });
-    }
+      // First turn for this session → seed the SlackContext + route.
+      // Subsequent turns → mutate the existing context so the bound MCP tools
+      // keep targeting the right thread / inbound message.
+      const existing = existingRoute;
+      if (behindRunningTurn) {
+        // Nothing to change on the route.
+      } else if (existing) {
+        existing.ctx.channel = channelId;
+        existing.ctx.threadTs = threadTs;
+        existing.ctx.inboundTs = eventTs;
+        existing.ctx.userId = userId;
+        existing.ctx.teamId = teamId;
+        existing.ctx.origin = "slack";
+        existing.ctx.postTarget = dispatch?.channelSession ? "channel" : undefined;
+        existing.ctx.botToken = context?.botToken;
+        existing.ctx.apiAppId = app.apiAppId;
+        existing.ctx.personaId = dispatch?.personaId;
+        existing.ctx.client = outClientForPersona(dispatch?.personaId, appOf(existing.ctx));
+        existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+        existing.spoke = false;
+        existing.passed = false;
+        existing.passReact = undefined;
+        // A person's message: the Stop guard applies again even when the route
+        // was last a cron run's (silent), as a node guards a Slack job.
+        existing.silent = false;
+        // A message merged into a running turn carries no mention result
+        // (undefined) and must not erase the running mention's; the done
+        // handler clears it at the end of every turn.
+        if (dispatch?.engagedBefore !== undefined) existing.engagedBefore = dispatch.engagedBefore;
+        existing.todoRef = undefined;       // fresh tracker per user turn
+        existing.todosSnapshot = undefined;
+        existing.pendingTaskCreate = undefined;
+        // tasksRef/tasksMap are cleared in the done handler so mid-turn inbound
+        // messages don't wipe in-flight task state from the previous turn.
+        existing.suppress = suppress;
+        if (!suppress) countTurn(existing);
+        else if (recordingOnly) existing.recordingAhead = true;
+        noteTurnSender(session.id, existing.ctx);
+      } else {
+        const ctx: SlackContext = {
+          client: outClientForPersona(dispatch?.personaId, app),
+          apiAppId: app.apiAppId,
+          channel: channelId,
+          threadTs,
+          inboundTs: eventTs,
+          userId,
+          teamId,
+          botToken: context?.botToken,
+          personaId: dispatch?.personaId,
+          origin: "slack",
+          ...(dispatch?.channelSession ? { postTarget: "channel" as const } : {}),
+        };
+        ctx.requestApproval = (req) =>
+          approvals.request({
+            channel: ctx.channel,
+            threadTs: ctx.threadTs,
+            sessionId: session.id,
+            app: appOf(ctx),
+            ...req,
+            persona: ctx.personaId,
+          });
+        ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+        noteTurnSender(session.id, ctx);
+        routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore, personTurns: suppress ? 0 : 1, ...(suppress ? {} : { personTurnAt: Date.now() }), ...(recordingOnly ? { recordingAhead: true } : {}) });
+      }
 
-    // After the route is in place, so the reaction and status resolvers read
-    // THIS turn's app and persona rather than the previous turn's (or, for a
-    // new session, no route at all).
-    if (!suppress) {
-      // 👀 received
-      void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
-      presence.enter(session.id, STATUS_THINKING);
-      void status.set(session.id, channelId, threadTs, "thinking…");
-    }
+      // After the route is in place, so the reaction and status resolvers read
+      // THIS turn's app and persona rather than the previous turn's (or, for a
+      // new session, no route at all).
+      if (!suppress) {
+        // 👀 received
+        void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
+        presence.enter(session.id, STATUS_THINKING);
+        void status.set(session.id, channelId, threadTs, "thinking…");
+      }
     };
     if (routes.get(session.id)?.wakeHold && !suppress) void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
     afterChannelWake(session.id, applyRoute);
@@ -4220,7 +4227,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       .replace(new RegExp(`<@${botUserId}>`, "g"), "")
       .replace(personaUserId ? new RegExp(`<@${personaUserId}>`, "g") : /(?!x)/g, "")
       .trim();
-    if (parseSlashCommand(stripped)) return true;
+    const hit = parseSlashCommand(stripped);
+    // `/new` is only a command at a channel session's root; elsewhere it takes the gate like any text.
+    if (hit && (hit.kind !== "new" || inChannelMode(e, personaId))) return true;
     const threadTs: string = e.thread_ts || e.ts;
     return Boolean(await SlackOauthFlows.peekFlow(pasteKey(e.channel, threadTs, e.user)));
   };

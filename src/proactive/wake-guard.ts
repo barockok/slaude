@@ -1,7 +1,7 @@
 /**
  * What a wake may call (heartbeat wake spec, section 5). An allow-list: nobody
  * is in the turn, so a tool not named here is refused, including any tool added
- * later. Enforced twice: the session's `disallowedTools` hides the tools, and the
+ * later. Enforced twice: the session's `disallowedTools` denies the tools, and the
  * gateway's /v1 tool plane refuses them from the signed `wake` claim, which is
  * what holds if a node disagrees.
  */
@@ -45,10 +45,10 @@ export function wakeAllows(server: string, tool: string): boolean {
 export const wakeRefusal = (tool: string): string =>
   `refused: ${tool} is not available when you woke on your own, because nobody is in this turn. To reach someone, use proactive_post; to follow up on a post you made, use post_message with its thread_ts.`;
 
-/** The tools that only mean something in a wake: a normal session does not see them. */
+/** The tools that only mean something in a wake: a normal session is refused them. */
 export const WAKE_ONLY_TOOL_IDS: readonly string[] = ["proactive_post", "finish_round"].map((t) => `mcp__${runtimeContract.server}__${t}`);
 
-/** The full tool ids a wake session must not see: every contract tool that is not allowed. */
+/** The full tool ids a wake session is refused: every contract tool that is not allowed. */
 export function wakeDeniedToolIds(): string[] {
   const out: string[] = [];
   for (const [key, contract] of Object.entries(CONTRACTS)) {
@@ -56,7 +56,7 @@ export function wakeDeniedToolIds(): string[] {
       if (!wakeAllows(key, t.name)) out.push(`mcp__${contract.server}__${t.name}`);
     }
   }
-  // Not on the /v1 tool plane, so no contract lists them. Hidden here because
+  // Not on the /v1 tool plane, so no contract lists them. Denied here because
   // the permission gates that also refuse them do not run in bypass mode.
   for (const t of VOICE_SERVER_TOOLS) out.push(`mcp__${VOICE_MCP_NAME}__${t}`);
   return out;

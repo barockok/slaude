@@ -55,6 +55,7 @@ import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
 import { WAKE_ONLY_TOOL_IDS, wakeDeniedToolIds } from "../proactive/wake-guard";
 import type { WakeStats } from "../proactive/wake-settle";
+import { isChannelSessionKey } from "../gateway/core/channel-session";
 import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
 import { injectedTurns, voiceCallActive } from "../voice/turn-flags";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
@@ -230,6 +231,8 @@ type SuppressionEntry = { text: string; suppressed: boolean };
  *  `done` resolves when that turn ends, however it ends. */
 type WakeState = {
   options: WakeOptions;
+  /** The wake's ledger run, closed by whichever ending comes first. */
+  run?: BackgroundTurnRun;
   timer?: ReturnType<typeof setTimeout>;
   inFlight: boolean;
   done: Promise<void>;
@@ -571,6 +574,8 @@ export class AgentManager extends EventEmitter {
 
   /** How long a query stays silent after a result before what it still counts is taken as folded. */
   #foldedQuietMs = FOLDED_INPUT_QUIET_MS;
+  /** Bumped when queued inputs are dropped (dropQueuedInputs); each queued input remembers the value it saw. */
+  #queueEpoch = new Map<string, number>();
 
   /** TEST SEAM: shrink the quiet period that bounds a wait on a folded input. */
   __setFoldedQuietForTests(ms: number) {
@@ -944,7 +949,9 @@ export class AgentManager extends EventEmitter {
     threadTs?: string | null,
   ): Promise<string | undefined> {
     return this.#cronOAuthUser.get(sessionId)
-      ?? (channel && threadTs ? (await this.#lockFor(sessionId, channel, threadTs))?.locked_user : undefined);
+      ?? (channel && threadTs && !isChannelSessionKey((await this.#store.findById(sessionId))?.slack_thread_ts)
+        ? (await this.#lockFor(sessionId, channel, threadTs))?.locked_user
+        : undefined);
   }
 
   #lockResolver: ((sessionId: string) => Promise<OneOnOneLockRow | null | undefined>) | null = null;
@@ -1117,6 +1124,7 @@ export class AgentManager extends EventEmitter {
     const suppressed = !wantWake && !o.synthetic && this.#suppressNextTurn.delete(sessionId);
     const direct = !this.#kindQueue.has(sessionId) && !this.#needsSettling(sessionId, wantWake);
     if (direct && !wantWake) return this.#send(sessionId, text, o.synthetic ?? false, o.sender ?? null, o.run, suppressed);
+    const queuedAt = this.#queueEpoch.get(sessionId) ?? 0;
     const deliver = async () => {
       if (o.wake) this.#refuseWakeDuringCall(sessionId, o.run);
       const armed = o.wake ? this.#armWake(sessionId, o.wake, o.run) : undefined;
@@ -1133,7 +1141,10 @@ export class AgentManager extends EventEmitter {
     };
     if (direct) return deliver();
     const run = (this.#kindQueue.get(sessionId) ?? Promise.resolve()).then(async () => {
+      if ((this.#queueEpoch.get(sessionId) ?? 0) !== queuedAt) return this.#dropQueued(sessionId, o.run);
       await this.#settleBootKind(sessionId, wantWake, o.run);
+      // The wait above is where a drop lands (the wake it waited for is what /new aborts).
+      if ((this.#queueEpoch.get(sessionId) ?? 0) !== queuedAt) return this.#dropQueued(sessionId, o.run);
       await deliver();
     });
     const tail = run.catch(() => {});
@@ -1144,6 +1155,29 @@ export class AgentManager extends EventEmitter {
     return run;
   }
 
+  /** An input queued behind a session that was retired: it does not run, and a wake's run closes. */
+  #dropQueued(sessionId: string, run: BackgroundTurnRun | undefined): void {
+    console.log(`[mgr] session=${sessionId}: dropped a queued input, the session was retired`);
+    if (run) this.#finishWakeRun(sessionId, run);
+  }
+
+  /** Close a wake's ledger run when no result will: usage unknown, so it counts at its cap, as the wall clock's does. */
+  #finishWakeRun(sessionId: string, run: BackgroundTurnRun, stats?: WakeStats): void {
+    void run.finish({}, "stopped-budget", stats).catch((e) => {
+      console.error(`[mgr] background run ${run.runId} could not be recorded session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+    });
+  }
+
+  /**
+   * Drop every input now queued behind this session's wake or restart. For a
+   * session being retired (/new): what waits would otherwise boot on it once
+   * the wake ends, and spend a model call with nowhere to reply. Inputs that
+   * come later are not affected.
+   */
+  dropQueuedInputs(sessionId: string): void {
+    this.#queueEpoch.set(sessionId, (this.#queueEpoch.get(sessionId) ?? 0) + 1);
+  }
+
   /** A wake never waits for a voice call and never restarts one's session: it
    *  is refused at once (a restart's sessionExit would end the call), its run
    *  closed as neither a failure nor a cap. Throws, so its queue link settles
@@ -1151,11 +1185,7 @@ export class AgentManager extends EventEmitter {
   #refuseWakeDuringCall(sessionId: string, run: BackgroundTurnRun | undefined): void {
     if (!voiceCallActive(sessionId)) return;
     console.log(`[mgr] wake session=${sessionId} refused: a voice call owns the session`);
-    if (run) {
-      void run.finish({}, "stopped-budget").catch((e) => {
-        console.error(`[mgr] background run ${run.runId} could not be recorded session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
-      });
-    }
+    if (run) this.#finishWakeRun(sessionId, run);
     throw new WakeBusyError(sessionId);
   }
 
@@ -1452,31 +1482,32 @@ export class AgentManager extends EventEmitter {
 
   /**
    * Mark a session as a heartbeat wake before it boots. Its query gets the caps
-   * and hides the tools a wake may not call. The wall clock closes the run itself
+   * and refuses the tools a wake may not call. The wall clock closes the run itself
    * and ends the turn, because an aborted query never reaches a result.
    */
   #armWake(sessionId: string, wake: WakeOptions, run: BackgroundTurnRun | undefined): WakeState {
     let markDone!: () => void;
     const done = new Promise<void>((r) => (markDone = r));
-    const state: WakeState = { options: wake, inFlight: true, done, markDone };
+    const state: WakeState = { options: wake, run, inFlight: true, done, markDone };
     this.#wakes.set(sessionId, state);
     if (!wake.maxMinutes || wake.maxMinutes <= 0) return state;
     state.timer = setTimeout(() => {
       console.log(`[mgr] wake session=${sessionId} reached its wall clock (${wake.maxMinutes} min)`);
-      const live = this.#live.get(sessionId);
-      if (live?.bgRuns) for (const [seq, r] of live.bgRuns) if (r === run) live.bgRuns.delete(seq);
-      if (run) {
-        void run.finish({}, "stopped-budget", { cap: "minutes", durationMs: wake.maxMinutes! * 60_000 }).catch((e) => {
-          console.error(`[mgr] background run ${run.runId} could not be recorded session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
-        });
-      }
-      this.#wakeEnded(sessionId);
-      this.#wakes.delete(sessionId);
+      this.#closeWake(sessionId, state, { cap: "minutes", durationMs: wake.maxMinutes! * 60_000 });
       this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
       this.abort(sessionId);
     }, wake.maxMinutes * 60_000);
     (state.timer as { unref?: () => void }).unref?.();
     return state;
+  }
+
+  /** A wake that will reach no result: its run closes here (once: its tag goes), and the wake is over. */
+  #closeWake(sessionId: string, state: WakeState, stats?: WakeStats): void {
+    const live = this.#live.get(sessionId);
+    if (live?.bgRuns) for (const [seq, r] of live.bgRuns) if (r === state.run) live.bgRuns.delete(seq);
+    if (state.run) this.#finishWakeRun(sessionId, state.run, stats);
+    this.#wakeEnded(sessionId);
+    this.#wakes.delete(sessionId);
   }
 
   /** The wake's turn ended: no wall clock any more, and whatever waits for it
@@ -1498,7 +1529,14 @@ export class AgentManager extends EventEmitter {
     this.#reloadAfterTurn.delete(sessionId);
     this.#autoContinue.delete(sessionId);
     this.#reloadPrompt.delete(sessionId);
-    this.#live.get(sessionId)?.abort.abort();
+    const live = this.#live.get(sessionId);
+    // An aborted query reaches no result, so an in-flight wake closes its run
+    // here. Left open, the run reads as busy and blocks the agent's next wakes
+    // until the stale sweep. The aborted query's own exit emits the `done`.
+    // Only the wake's own query: before it is live the abort stops nothing.
+    const wake = this.#wakes.get(sessionId);
+    if (wake?.inFlight && live?.bootedAsWake) this.#closeWake(sessionId, wake);
+    live?.abort.abort();
   }
 
   /** Push a raw CLI command (e.g. "/compact") directly into the live session's
@@ -2831,7 +2869,7 @@ function seenEvolveUsage(run: EvolveRun): ModelTokens {
 const RELOAD_EXIT_TIMEOUT_MS = 30_000;
 
 /** Silence after a result that means the inputs still counted were folded into
- *  a turn already answered (LiveSession.checkEnded): they will get no result. */
+ *  a turn already answered (#onlyFoldedLeft): they will get no result. */
 const FOLDED_INPUT_QUIET_MS = 30_000;
 
 /** Tools that don't count toward the auto-evolve trigger threshold. */

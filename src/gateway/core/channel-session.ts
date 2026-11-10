@@ -14,7 +14,7 @@ export const isRootChannelEvent = (e: { channel_type?: string; thread_ts?: strin
   !e.thread_ts && e.channel_type !== "im";
 
 /** The tags the gateway and the runtime wrap a turn's text in. */
-const ENVELOPE_TAGS = "channel|runtime-check|attachment|memory-context|proactive-context|proactive-work";
+const ENVELOPE_TAGS = "channel|runtime-check|attachment|memory-context|proactive-context|proactive-work|skill-args|skill";
 const FORGED_TAG = new RegExp(`(<|&lt;)(/?)\\s*(${ENVELOPE_TAGS})\\b`, "gi");
 
 /**

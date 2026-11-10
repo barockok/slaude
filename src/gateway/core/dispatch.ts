@@ -22,6 +22,7 @@ import { mintJobToken, verifyJobToken } from "../api/auth";
 import { runsOnFor } from "../../persona/registry";
 import { env } from "../../config/env";
 import { threadIdentity } from "./thread-identity";
+import { channelSessionKey } from "./channel-session";
 import { sessionConfigFp } from "../../remote/fingerprint";
 import { ensureProvisioned } from "../../remote/env-runtime";
 import { defaultEpochs, localEpochs, turnMcpEpoch, type McpCredEpochs } from "./mcp-cred-epoch";
@@ -409,10 +410,13 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           console.error(`[dispatch] session=${session.id} sandbox: ${e instanceof Error ? e.message : String(e)}`),
         );
       }
+      // A channel session's turn has the trigger's ts as its thread, a message
+      // at root: a /1on1 under that message does not touch the session.
+      const identityThread = meta.channelSession ? channelSessionKey(meta.channelId) : meta.threadTs;
       const { runAsUser, lock: lockClaim, remote: remoteClaim } = await threadIdentity(
         meta.channelId,
-        meta.threadTs,
-        async () => meta.oauthUser ?? (await agent.resolveEffectiveIdentity(session.id, meta.channelId, meta.threadTs)),
+        identityThread,
+        async () => meta.oauthUser ?? (await agent.resolveEffectiveIdentity(session.id, meta.channelId, identityThread)),
       );
       // The node label the persona runs on, signed into the token (the /v1
       // gate checks it against the node's credential) and carried in the payload.

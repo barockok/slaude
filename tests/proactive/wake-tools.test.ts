@@ -157,6 +157,20 @@ describe("post_message in a wake", () => {
     expect(await wakeThreadRefusal(other, quiet, "C0ONCHANNE", r.ts)).toContain("refused");
   });
 
+  test("a channel session's wake stays in its channel", async () => {
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    const w = { ...h.ctx.wake!, channelSession: "C0ONCHANNE" };
+    // A follow-up in a thread of its own post, in its channel, is still allowed.
+    expect(await wakeThreadRefusal(w, thread(AGENT), "C0ONCHANNE", r.ts)).toBeNull();
+    // Another channel is refused, even with that same thread ts.
+    const refused = await wakeThreadRefusal(w, thread(AGENT), "C0OTHER", r.ts);
+    expect(refused).toContain("refused");
+    expect(refused).toContain("this channel");
+    // The agent-level wake is not limited to one channel by this rule.
+    expect(await wakeThreadRefusal(h.ctx.wake!, thread(AGENT), "C0ONCHANNE", r.ts)).toBeNull();
+  });
+
   test("one follow-up until someone answers", async () => {
     const h = harness();
     const r = parsed(await proactivePostTool(h.ctx, post()));
