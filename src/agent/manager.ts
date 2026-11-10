@@ -172,8 +172,13 @@ type LiveSession = {
    *  for its life, so a person's message restarts the session (see
    *  #settleBootKind) and no skill check follows any of its turns. */
   bootedAsWake: boolean;
-  /** Settled once no input is outstanding. Made by #turnEnded for a waiter. */
+  /** Settled at each result. Made by #turnEnded for a waiter, which re-reads the count. */
   turnEnded?: { promise: Promise<void>; resolve: () => void };
+  /** When the last result arrived (undefined: none yet). */
+  lastResultAt?: number;
+  /** Something of a further turn was seen since that result (its prompt hook,
+   *  an assistant message, a tool result), so what is counted is really running. */
+  activeSinceResult?: boolean;
 };
 
 // `autoEvolve` marks events of the internal skill-evolution turn that follows a
@@ -216,6 +221,9 @@ export class WakeBusyError extends Error {
     super(`wake refused: a voice call owns session ${sessionId}`);
   }
 }
+
+/** One input awaiting its UserPromptSubmit (AgentManager.#inputSuppression). */
+type SuppressionEntry = { text: string; suppressed: boolean };
 
 /** A session marked as a wake (see #armWake). `inFlight` is the wake's own
  *  turn: never read from `timer`, since a wake with no wall clock has none.
@@ -440,7 +448,7 @@ export function makeDisengageSuppressHook(
 export function makeUserPromptHook(
   sessionId: string,
   notes: Map<string, string[]>,
-  suppressCheck?: () => boolean,
+  suppressCheck?: (prompt: string) => boolean,
   findById: SessionStore["findById"] = Sessions.findById,
   /** Inbound-triggered owner Guidance due this turn (drained once, like notes). */
   takeGuidance?: () => Array<{ name: string; body: string }>,
@@ -453,11 +461,11 @@ export function makeUserPromptHook(
       // message itself also passed suppress:true through handleMessage) — if
       // left unconsumed here it survives to the next turn and wrongly fires
       // "mention-only" on the message that re-engages the thread.
-      suppressCheck?.();
+      suppressCheck?.(input.prompt);
       metric.disengagedSuppressedTotal.inc();
       return dis; // leave queued notes for the next engaged turn
     }
-    if (suppressCheck?.()) {
+    if (suppressCheck?.(input.prompt)) {
       // mention-only thread: record the message in the transcript but don't run
       // the model. continue:false persists the prompt; decision:"block" would
       // discard it (see 2026-06-16 finding).
@@ -561,6 +569,14 @@ export class AgentManager extends EventEmitter {
   /** How long sendMessage waits for a reloading session to exit. */
   #reloadExitTimeoutMs = RELOAD_EXIT_TIMEOUT_MS;
 
+  /** How long a query stays silent after a result before what it still counts is taken as folded. */
+  #foldedQuietMs = FOLDED_INPUT_QUIET_MS;
+
+  /** TEST SEAM: shrink the quiet period that bounds a wait on a folded input. */
+  __setFoldedQuietForTests(ms: number) {
+    this.#foldedQuietMs = ms;
+  }
+
   /** TEST SEAM: shrink the bounded wait for a reloading session's exit. */
   __setReloadExitTimeoutForTests(ms: number) {
     this.#reloadExitTimeoutMs = ms;
@@ -582,10 +598,10 @@ export class AgentManager extends EventEmitter {
    *  or waits for the folder: a wake queues behind it, or that boot reads the
    *  wake's mark and boots as a wake. */
   #sendsInProgress = new Map<string, number>();
-  /** Per session, one entry per input the CLI will run UserPromptSubmit for,
-   *  in pushed order: the hook consumes them in step, so a suppression lands
-   *  on its own input (see #noteInput). Emptied when no input is outstanding. */
-  #inputSuppression = new Map<string, Array<{ suppressed: boolean }>>();
+  /** Per session, the inputs pushed and not yet seen by UserPromptSubmit, with
+   *  whether each was suppressed (#takeSuppressed matches them by text).
+   *  Emptied when no input is outstanding. */
+  #inputSuppression = new Map<string, SuppressionEntry[]>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
@@ -1164,10 +1180,14 @@ export class AgentManager extends EventEmitter {
       }
       const live = this.#live.get(sessionId);
       if (!live || !(wantWake || live.bootedAsWake)) break;
-      if (live.pendingInputs > 0) {
+      if (live.pendingInputs > 0 && !this.#onlyFoldedLeft(live)) {
         await this.#turnEnded(live);
         continue;
       }
+      // Nothing is running, so nothing may read as in flight while it exits.
+      live.pendingInputs = 0;
+      live.inputSynthetic = [];
+      live.inputSenders = [];
       // No await since the check at the top: a call cannot have started.
       if (!live.reloading && !live.closing) this.reload(sessionId);
       // Here, not in #send: the old query's exit signal clears the wake mark,
@@ -1177,16 +1197,29 @@ export class AgentManager extends EventEmitter {
     if (!wantWake) this.#wakes.delete(sessionId);
   }
 
-  /** Resolves when no input of this query is outstanding (checked at each
-   *  `result`, covering the branches that emit no "done") or when it is gone.
-   *  The caller re-reads the session: a queued input may still be running. */
+  /** The CLI joins inputs queued during a turn, so one result can answer
+   *  several and the count never reaches zero. They are taken as folded only
+   *  when the query has been silent since its last result. Anything seen since
+   *  means a turn is running, however long it is quiet (a slow tool), and it is
+   *  waited for: its result re-arms this. */
+  #onlyFoldedLeft(live: LiveSession): boolean {
+    return live.lastResultAt !== undefined && !live.activeSinceResult && Date.now() - live.lastResultAt >= this.#foldedQuietMs;
+  }
+
+  /** Resolves at the query's next result (which covers the branches that emit
+   *  no "done"), when it is gone, or when its quiet period is up. The caller
+   *  re-reads the session. */
   #turnEnded(live: LiveSession): Promise<void> {
     if (!live.turnEnded) {
       let resolve!: () => void;
       const promise = new Promise<void>((r) => (resolve = r));
       live.turnEnded = { promise, resolve };
     }
-    return Promise.race([live.turnEnded.promise, live.exited]);
+    const waits = [live.turnEnded.promise, live.exited];
+    if (live.lastResultAt === undefined || live.activeSinceResult) return Promise.race(waits);
+    const left = Math.max(0, live.lastResultAt + this.#foldedQuietMs - Date.now());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([...waits, new Promise<void>((r) => (timer = setTimeout(r, left)))]).finally(() => clearTimeout(timer));
   }
 
   /**
@@ -1309,7 +1342,7 @@ export class AgentManager extends EventEmitter {
     } catch (e) {
       // Its input never reached the CLI: no hook will consume this entry.
       const q = this.#inputSuppression.get(sessionId);
-      if (q && noted) q.splice(q.indexOf(noted), 1);
+      if (q?.includes(noted)) q.splice(q.indexOf(noted), 1);
       throw e;
     }
     if (run) {
@@ -1355,23 +1388,35 @@ export class AgentManager extends EventEmitter {
     return live;
   }
 
-  /** Line up an input with the UserPromptSubmit it will fire. A CLI command
-   *  fires none (the CLI handles it before the hook), so it takes no entry. */
-  #noteInput(sessionId: string, text: string, suppressed: boolean): { suppressed: boolean } | undefined {
-    if (text.startsWith("/")) return undefined;
-    const entry = { suppressed };
+  /** Remember a pushed input until its UserPromptSubmit. */
+  #noteInput(sessionId: string, text: string, suppressed: boolean): SuppressionEntry {
+    const entry = { text, suppressed };
     const q = this.#inputSuppression.get(sessionId);
     if (q) q.push(entry);
     else this.#inputSuppression.set(sessionId, [entry]);
     return entry;
   }
 
-  /** The hook's half of #noteInput: whether the input it is running for was
-   *  suppressed. No entry (the caller set the bit, no input went through
-   *  sendMessage) falls back to the bit. */
-  #takeSuppressed(sessionId: string): boolean {
-    const entry = this.#inputSuppression.get(sessionId)?.shift();
-    return entry ? entry.suppressed : this.#suppressNextTurn.delete(sessionId);
+  /**
+   * Whether the prompt the hook is running for was suppressed. Matched by text,
+   * not position: an input folded into a running turn never fires its hook, and
+   * inputs the CLI joins at dequeue arrive as one prompt (newline-joined), which
+   * is suppressed only if every one of them was. Older entries are discarded
+   * with the match. A prompt matching nothing (a check, a command) is not
+   * suppressed and disturbs nothing.
+   */
+  #takeSuppressed(sessionId: string, prompt: string): boolean {
+    const q = this.#inputSuppression.get(sessionId);
+    if (!q) return false;
+    for (let start = 0; start < q.length; start++) {
+      let joined = "";
+      for (let end = start; end < q.length; end++) {
+        joined = end === start ? q[end]!.text : `${joined}\n${q[end]!.text}`;
+        if (joined === prompt) return q.splice(0, end + 1).slice(start).every((e) => e.suppressed);
+        if (!prompt.startsWith(joined)) break;
+      }
+    }
+    return false;
   }
 
   /** (Re)arm the idle timer for a session. On expiry, close the SDK loop
@@ -1945,7 +1990,11 @@ export class AgentManager extends EventEmitter {
     const userPromptHook = makeUserPromptHook(
       sessionId,
       this.#sessionNotes,
-      () => this.#takeSuppressed(sessionId),
+      (prompt) => {
+        // The next turn has started, so what is counted is not folded.
+        live.activeSinceResult = true;
+        return this.#takeSuppressed(sessionId, prompt);
+      },
       (id) => this.#store.findById(id),
       () => {
         const due = this.#takeGuidance(sessionId);
@@ -2342,6 +2391,7 @@ export class AgentManager extends EventEmitter {
     const live = owner;
     switch (msg.type) {
       case "assistant": {
+        live.activeSinceResult = true;
         void this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
         // The context fill is this call's prompt, not the result's per-turn sum.
         // A subagent's messages (parent_tool_use_id set) run in their own context.
@@ -2400,6 +2450,7 @@ export class AgentManager extends EventEmitter {
       }
       case "user": {
         if (msg.tool_use_result !== undefined) {
+          live.activeSinceResult = true;
           // Detect stream_closed cascade: an external MCP server disconnecting
           // can tear down the SDK's shared MCP transport pool, causing ALL
           // in-process slaude_* tool calls to fail with "Stream closed".
@@ -2464,12 +2515,13 @@ export class AgentManager extends EventEmitter {
           live.pendingInputs = Math.max(0, live.pendingInputs - 1);
           live.inputSynthetic.shift();
           live.inputSenders.shift();
-          if (live.pendingInputs === 0) {
-            live.turnEnded?.resolve();
-            live.turnEnded = undefined;
-            // Anything left never fired its hook (the CLI folded it into a turn).
-            this.#inputSuppression.delete(sessionId);
-          }
+          live.lastResultAt = Date.now();
+          live.activeSinceResult = false;
+          live.turnEnded?.resolve();
+          live.turnEnded = undefined;
+          // Anything left never fired its hook (the CLI folded it into a turn).
+          // Not on a resume miss: the retried boot runs that same input.
+          if (live.pendingInputs === 0 && !resumeMiss) this.#inputSuppression.delete(sessionId);
           if (wakesTurn && !wakeGoesOn) this.#wakeEnded(sessionId);
           // The check turn's result: its own usage (this result's running
           // modelUsage minus the qualifying turn's) ends its budgeted run.
@@ -2768,6 +2820,10 @@ function seenEvolveUsage(run: EvolveRun): ModelTokens {
 
 /** Bound on sendMessage's wait for a reloading session's CLI to exit. */
 const RELOAD_EXIT_TIMEOUT_MS = 30_000;
+
+/** Silence after a result that means the inputs still counted were folded into
+ *  a turn already answered (LiveSession.checkEnded): they will get no result. */
+const FOLDED_INPUT_QUIET_MS = 30_000;
 
 /** Tools that don't count toward the auto-evolve trigger threshold. */
 const AUTO_EVOLVE_IGNORE = new Set([

@@ -308,6 +308,7 @@ describe("a session changing between wake and normal turns", () => {
     expect(o.maxBudgetUsd).toBeUndefined();
     expect(o.maxTurns).toBeUndefined();
   };
+  const hook = (o: any, prompt: string) => o.hooks.UserPromptSubmit[0].hooks[0]({ hook_event_name: "UserPromptSubmit", prompt, session_id: "s", transcript_path: "", cwd: "/" }, undefined, { signal: new AbortController().signal });
   /** Lets the started flag land: a resume needs it. */
   const settled = () => Bun.sleep(25);
 
@@ -464,15 +465,14 @@ describe("a session changing between wake and normal turns", () => {
     mgr.suppressNextTurn(row.id);
     const sent = mgr.sendMessage(row.id, "record me");
     await Bun.sleep(30);
-    const hook = (o: any) => o.hooks.UserPromptSubmit[0].hooks[0]({ hook_event_name: "UserPromptSubmit", prompt: "x", session_id: "s", transcript_path: "", cwd: "/" }, undefined, { signal: new AbortController().signal });
     // The wake's query must not consume the flag meant for the message behind it.
-    expect((await hook(booted[0])).continue).toBe(true);
+    expect((await hook(booted[0], BG)).continue).toBe(true);
     answer(a);
     await sent;
     await until(() => b.users.length === 1, 3000, "recorded input");
     expect(texts(b)).toEqual(["record me"]);
     expectNormalBoot(booted[1]);
-    expect((await hook(booted[1])).continue).toBe(false);
+    expect((await hook(booted[1], "record me")).continue).toBe(false);
     answer(b);
     await shutdown(mgr, row.id);
   });
@@ -702,7 +702,6 @@ describe("a session changing between wake and normal turns", () => {
     await shutdown(mgr, row.id);
   });
 
-  const hook = (o: any) => o.hooks.UserPromptSubmit[0].hooks[0]({ hook_event_name: "UserPromptSubmit", prompt: "x", session_id: "s", transcript_path: "", cwd: "/" }, undefined, { signal: new AbortController().signal });
 
   it("a suppressed message behind a wake silences itself, not the message before it", async () => {
     const mgr = new AgentManager();
@@ -718,8 +717,8 @@ describe("a session changing between wake and normal turns", () => {
     answer(a);
     await Promise.all([one, two]);
     await until(() => b.users.length === 2, 3000, "both inputs");
-    expect((await hook(booted[1])).continue).toBe(true);
-    expect((await hook(booted[1])).continue).toBe(false);
+    expect((await hook(booted[1], "one")).continue).toBe(true);
+    expect((await hook(booted[1], "two")).continue).toBe(false);
     answer(b);
     answer(b);
     await Bun.sleep(20);
@@ -740,10 +739,196 @@ describe("a session changing between wake and normal turns", () => {
     failing = false;
     await mgr.sendMessage(row.id, "next");
     await until(() => a.users.length === 1, 3000, "the next input");
-    expect((await hook(booted[0])).continue).toBe(true);
+    expect((await hook(booted[0], "next")).continue).toBe(true);
     answer(a);
     await Bun.sleep(20);
     await shutdown(mgr, row.id);
+  });
+
+  /** Two inputs sent during m1's turn; the hook then fires as the test says. */
+  async function folded(first: boolean, second: boolean) {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    await mgr.sendMessage(row.id, "m1");
+    await until(() => a.users.length === 1, 3000, "m1");
+    expect((await hook(booted[0], "m1")).continue).toBe(true);
+    if (first) mgr.suppressNextTurn(row.id);
+    await mgr.sendMessage(row.id, "m2");
+    if (second) mgr.suppressNextTurn(row.id);
+    await mgr.sendMessage(row.id, "m3");
+    return { mgr, row, a };
+  }
+  const finish = async (f: { mgr: InstanceType<typeof AgentManager>; row: { id: string } }, a: FakeSession, results: number) => {
+    for (let i = 0; i < results; i++) a.emit(res());
+    await Bun.sleep(20);
+    await shutdown(f.mgr, f.row.id);
+  };
+
+  it("a suppressed input the CLI folded does not silence the normal input after it", async () => {
+    const f = await folded(true, false);
+    expect((await hook(booted[0], "m3")).continue).toBe(true);
+    await finish(f, f.a, 3);
+  });
+
+  it("a normal input the CLI folded does not shift the suppression off the input after it", async () => {
+    const f = await folded(false, true);
+    expect((await hook(booted[0], "m3")).continue).toBe(false);
+    await finish(f, f.a, 3);
+  });
+
+  it("inputs the CLI joined into one prompt are silenced only when all of them were suppressed", async () => {
+    const all = await folded(true, true);
+    expect((await hook(booted[0], "m2\nm3")).continue).toBe(false);
+    await finish(all, all.a, 3);
+    booted.length = 0;
+    const mixed = await folded(true, false);
+    expect((await hook(booted[0], "m2\nm3")).continue).toBe(true);
+    await finish(mixed, mixed.a, 3);
+  });
+
+  it("a prompt matching no input is not suppressed, and an input's flag is used once", async () => {
+    const f = await folded(false, true);
+    expect((await hook(booted[0], "something else")).continue).toBe(true);
+    expect((await hook(booted[0], "m3")).continue).toBe(false);
+    expect((await hook(booted[0], "m3")).continue).toBe(true);
+    await finish(f, f.a, 3);
+  });
+
+  it("the bit alone suppresses nothing: only a message it was bound to", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    await mgr.sendMessage(row.id, "m1");
+    await until(() => a.users.length === 1, 3000, "m1");
+    expect((await hook(booted[0], "m1")).continue).toBe(true);
+    // Nothing queued now: the hook has only the bit, which no message took.
+    mgr.suppressNextTurn(row.id);
+    expect((await hook(booted[0], "not bound to anything")).continue).toBe(true);
+    await finish({ mgr, row }, a, 1);
+  });
+
+  it("a resume miss keeps the suppression for the retried boot", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    mgr.suppressNextTurn(row.id);
+    await mgr.sendMessage(row.id, "suppressed");
+    await until(() => a.users.length === 1, 3000, "input");
+    a.emit(res({ is_error: true, subtype: "error_during_execution", errors: ["No conversation found with session ID: x"] }));
+    await Bun.sleep(30);
+    expect((await hook(booted[0], "suppressed")).continue).toBe(false);
+    a.err = new Error("process exited");
+    a.wake();
+    await Bun.sleep(30);
+    await shutdown(mgr, row.id);
+  });
+
+  describe("an input the CLI folded into a running turn", () => {
+    const QUIET = 120;
+    /** m1 and m2 sent; one result answers m1 and leaves m2 counted. */
+    async function oneResultLeft(mgr: InstanceType<typeof AgentManager>, a: FakeSession) {
+      mgr.__setFoldedQuietForTests(QUIET);
+      const row = await mgr.ensureSession(thread());
+      await mgr.sendMessage(row.id, "m1");
+      await until(() => a.users.length === 1, 3000, "m1");
+      await mgr.sendMessage(row.id, "m2");
+      return row;
+    }
+
+    it("does not hang a wake or what is behind it: after a quiet period the wake boots", async () => {
+      const mgr = new AgentManager();
+      const a = plan(() => {});
+      const row = await oneResultLeft(mgr, a);
+      const b = plan(answer);
+      const c = plan(answer);
+      a.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(1, 1) }));
+      await Bun.sleep(20);
+      const { run, finishes } = recorder();
+      const w = mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 2 } });
+      const later = mgr.sendMessage(row.id, "later");
+      await Bun.sleep(30);
+      expect(booted).toHaveLength(1);
+      expect(a.ended).toBe(false);
+      await Promise.all([w, later]);
+      await until(() => c.users.length === 1, 3000, "the message behind it");
+      expect(a.ended).toBe(true);
+      expect(texts(b)).toEqual([BG]);
+      expect(booted[1].maxTurns).toBe(2);
+      expect(finishes).toHaveLength(1);
+      expect(texts(c)).toEqual(["later"]);
+      expectNormalBoot(booted[2]);
+      await until(() => !mgr.isTurnInFlight(row.id), 3000, "no turn in flight");
+      await shutdown(mgr, row.id);
+    });
+
+    it("clears the stuck count, so the old query does not read as in flight while it exits", async () => {
+      const mgr = new AgentManager();
+      const a = plan(() => {});
+      const row = await oneResultLeft(mgr, a);
+      const b = plan(() => {});
+      let releaseExit!: () => void;
+      a.holdExit = new Promise<void>((r) => (releaseExit = r));
+      a.emit(res());
+      const w = mgr.sendMessage(row.id, BG, { wake: {} });
+      await until(() => a.ended, 3000, "the restart");
+      expect(mgr.isLive(row.id)).toBe(true);
+      expect(mgr.isTurnInFlight(row.id)).toBe(false);
+      releaseExit();
+      await w;
+      await until(() => b.users.length === 1, 3000, "the wake");
+      expect(mgr.isTurnInFlight(row.id)).toBe(true);
+      answer(b);
+      await until(() => !mgr.isTurnInFlight(row.id), 3000, "the wake's end");
+      await shutdown(mgr, row.id);
+    });
+
+    for (const [name, signal] of [
+      ["an assistant message", (a: FakeSession) => a.emit(asst([{ type: "text", text: "working" }]))],
+      ["a tool result", (a: FakeSession) => a.emit({ type: "user", tool_use_result: { content: "ok" }, message: { content: [] } })],
+      ["its prompt hook", () => void hook(booted[0], "m2")],
+    ] as const) {
+      it(`is not bounded once ${name} shows the next turn is running`, async () => {
+        const mgr = new AgentManager();
+        const a = plan(() => {});
+        const row = await oneResultLeft(mgr, a);
+        const b = plan(answer);
+        a.emit(res());
+        await Bun.sleep(10);
+        signal(a);
+        await Bun.sleep(10);
+        const { run, finishes } = recorder();
+        const w = mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+        await Bun.sleep(QUIET * 3);
+        expect(a.ended).toBe(false);
+        expect(booted).toHaveLength(1);
+        a.emit(res());
+        await w;
+        await until(() => finishes.length === 1, 3000, "the wake");
+        expect(texts(b)).toEqual([BG]);
+        await shutdown(mgr, row.id);
+      });
+    }
+
+    it("is not bounded before any result: a long first turn is not folded", async () => {
+      const mgr = new AgentManager();
+      mgr.__setFoldedQuietForTests(QUIET);
+      const row = await mgr.ensureSession(thread());
+      const a = plan(() => {});
+      const b = plan(answer);
+      await mgr.sendMessage(row.id, "m1");
+      await until(() => a.users.length === 1, 3000, "m1");
+      const { run, finishes } = recorder();
+      const w = mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+      await Bun.sleep(QUIET * 3);
+      expect(a.ended).toBe(false);
+      expect(booted).toHaveLength(1);
+      answer(a);
+      await w;
+      await until(() => finishes.length === 1, 3000, "the wake");
+      expect(texts(b)).toEqual([BG]);
+      await shutdown(mgr, row.id);
+    });
   });
 
   it("a rejected delivery does not hold the messages behind it", async () => {

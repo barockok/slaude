@@ -219,7 +219,17 @@ beforeAll(async () => {
       this.abortedSessions.push(id);
       this.aborts.get(id)?.abort();
     }
-    override suppressNextTurn(_id: string) {}
+    /** Whether anything else ran between each suppressNextTurn and the send it was for. */
+    bitGap = false;
+    bitPending = false;
+    bitChecks: boolean[] = [];
+    override suppressNextTurn(_id: string) {
+      this.bitPending = true;
+      this.bitGap = false;
+      queueMicrotask(() => {
+        this.bitGap = true;
+      });
+    }
     permissionResolver?: (sessionId: string, toolName: string, input: any, ctx: any) => Promise<any>;
     override setPermissionResolver(r: any) {
       super.setPermissionResolver(r);
@@ -236,6 +246,10 @@ beforeAll(async () => {
     sends = new Map<string, number>();
     override async sendMessage(sessionId: string, text: string, opts: { backgroundRun?: any } = {}): Promise<void> {
       this.sends.set(sessionId, (this.sends.get(sessionId) ?? 0) + 1);
+      if (this.bitPending) {
+        this.bitPending = false;
+        this.bitChecks.push(this.bitGap);
+      }
       if (opts.backgroundRun) this.bgRuns.set(sessionId, opts.backgroundRun);
       this.emit("event", { type: "turnStart", sessionId } as any);
       // The real manager's boot fails this way when the child-env resolver throws.
@@ -541,6 +555,40 @@ d("gateway↔node E2E (real Redis)", () => {
       expect((stub.sends.get(sid) ?? 0) - before).toBe(1);
     } finally {
       bootFailure = null;
+      behavior = prev;
+    }
+  }, 30_000);
+
+  // A suppressed job's bit is bound by sendMessage. Set any earlier, an await
+  // that fails (the warm session's credential seed) would leave it standing.
+  test("a suppressed job sets its bit with nothing between it and the send", async () => {
+    const WARM_THREAD = "9013.0";
+    const prev = behavior;
+    behavior = async () => {};
+    try {
+      reacts.length = 0;
+      await emitSlack("message", msg(WARM_THREAD, "9013.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9013.1"), 15_000);
+      const sid = await sessionIdOf(WARM_THREAD);
+      // A config dir makes this a warm session: the worker awaits its seed.
+      const { sessionConfigDir } = await import("../../src/agent/config-root");
+      require("node:fs").mkdirSync(sessionConfigDir(sid, undefined, nodeConfigRoot), { recursive: true });
+      const Sessions = await import("../../src/db/sessions");
+      const session = (await Sessions.findById(sid))!;
+      const before = stub.sends.get(sid) ?? 0;
+      stub.bitChecks.length = 0;
+      await qd.dispatch(session, "recorded only", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WARM_THREAD,
+        eventTs: "9013.2",
+        userId: "U1",
+        origin: "slack",
+        suppress: true,
+      });
+      await until(() => (stub.sends.get(sid) ?? 0) > before, 15_000);
+      expect(stub.bitChecks).toEqual([false]);
+    } finally {
       behavior = prev;
     }
   }, 30_000);

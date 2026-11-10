@@ -825,7 +825,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       // One prompt per job: coalesced messages arrive as one turn (spec §2).
       const text = data.messages.map((m) => m.text).join("\n\n");
       const suppress = data.messages.length > 0 && data.messages.every((m) => (m as any).suppress === true);
-      if (suppress) agent.suppressNextTurn(sessionId);
       // Inbound-triggered owner Guidance, matched on the gateway.
       agent.offerGuidance(sessionId, data.messages.flatMap((m) => m.guidance ?? []));
 
@@ -869,6 +868,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         // wake always closes its run itself; off, the timeout is the limit.
         const wakeLimit = Math.max(1, Math.floor(turnTimeoutMs / 60_000) - 1);
         const wake = data.wake ? { ...data.wake, maxMinutes: Math.min(data.wake.maxMinutes || wakeLimit, wakeLimit) } : undefined;
+        // Set here, in the send's own tick: sendMessage binds the bit to this
+        // message, so no failed await above can leave it for the next one.
+        if (suppress) agent.suppressNextTurn(sessionId);
         agent.sendMessage(sessionId, text, { ...(backgroundRun ? { backgroundRun } : {}), ...(wake ? { wake } : {}) }).catch((e) => {
           clearTimeout(timer);
           turnWaiters.delete(sessionId);
