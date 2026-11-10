@@ -10,40 +10,51 @@
  * Errors name the persona and the key, never the value.
  */
 import { parse as parseYaml, YAMLParseError } from "yaml";
-import { GUARDRAIL_SLUG_RE } from "../guardrails/format";
 import { MANDATE_LINE_MAX, subMandatesOf, type SubMandate } from "../soul/mandate-scope";
 import { SoulDataSchema, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
 import { channelOf, endsInOpenFence, isCodeFence, parseProactive } from "../soul/proactive";
-import { SKILL_SLUG_RE } from "../skills/loader";
+import { AgentSchema, CHANNEL_ID_RE, DESCRIPTION_MAX, type AgentFile } from "./agent-schema";
+import type { ZodIssue } from "zod";
 import { PayloadError, safeKey } from "./sync/payload";
 
 export const AGENT_YAML = "agent.yaml";
 /** The older layout's files, which cannot sit beside an agent.yaml. */
 export const LEGACY_FILES = ["persona.yaml", "SOUL.md", "mcp.json"] as const;
 
-const USER_ID_RE = /^[UW][A-Z0-9]+$/;
-const CHANNEL_ID_RE = /^[CGD][A-Z0-9]+$/;
-const BOUNDARY_RE = /^(?:channel:[CGD][A-Z0-9]+|trust:(?:public|trusted)|dm)$/;
 const MODES = new Set(["override", "extend", "reduce"]);
-export const DESCRIPTION_MAX = 2000;
+export { DESCRIPTION_MAX };
 
-const TOP_KEYS = new Set([
-  "name", "description", "model", "slackUserId", "userToken", "provider", "runsOn",
-  "soul", "mandate", "access", "mcp", "skills", "guardrails", "memory", "channels",
-]);
-const MANDATE_KEYS = new Set(["global", "scoped"]);
-const SCOPED_KEYS = new Set(["boundary", "mode", "text"]);
-const ACCESS_KEYS = new Set(["manager", "backupManager", "approvers", "channels", "dm", "blocked", "redact", "approvalTimeoutSeconds"]);
-const APPROVER_KEYS = new Set(["user", "scope", "catchall", "channel"]);
-const CHANNELS_KEYS = new Set(["public", "trusted"]);
-const MEMORY_KEYS = new Set(["kbSources", "background"]);
-const CHANNEL_ENTRY_KEYS = new Set(["session", "proactive"]);
 /** Exactly what `channels` compiles to; anything else under a `## Channel` heading was authored. */
 const GENERATED_CHANNEL_SECTION_RE = /^## Channel <#[CGD][A-Z0-9]+>(?=\n###)(?:\n### Session\n- Mode: channel)?(?:\n### Proactive\n- Enabled: (?:yes|no))?$/;
 
 /** A soul section that agent.yaml keeps in its own keys (headings a SOUL.md may carry). */
 const STRUCTURED_HEADING_RE =
   /^##\s+(?:mandate|reporting|manager|backup manager|secondary manager|deputy|approvers?|allowed channels|public channels|trusted channels|team channel|home channel|bu channel|blocked|blacklist|banned|ignore|dm allowlist|allowed dms|direct message allowlist|who can dm|redaction|redact|pii patterns|approval timeout|auto-deny|channel\b.*|scope\s+(?:dm|public|trusted))\s*$/i;
+
+/**
+ * The issue to report: an unknown key first (the nearest to the top), then the
+ * first in the schema's own order. Its text comes from the schema's messages,
+ * which never carry a value; a key is echoed only through safeKey.
+ */
+function firstIssue(issues: ZodIssue[]): { path: string; message: string } {
+  const unknown = issues
+    .filter((i) => i.code === "unrecognized_keys")
+    .sort((a, b) => a.path.length - b.path.length)[0];
+  const issue = unknown ?? issues[0]!;
+  const base = issue.path.map((seg, i) => pathSegment(seg, i, issue.path)).reduce((acc, s) => (s.startsWith("[") || !acc ? acc + s : `${acc}.${s}`), "");
+  if (issue.code === "unrecognized_keys") {
+    const k = String(issue.keys[0] ?? "");
+    return { path: `${base ? `${base}.` : ""}${safeKey(k)}`, message: "is not a known key" };
+  }
+  return { path: base, message: issue.message };
+}
+
+/** One path segment: a schema key as is, an index in brackets, a `channels` key only when it is a channel id. */
+function pathSegment(seg: string | number, i: number, path: (string | number)[]): string {
+  if (typeof seg === "number") return `[${seg}]`;
+  if (i === 1 && path[0] === "channels") return CHANNEL_ID_RE.test(seg) ? seg : safeKey(seg);
+  return seg;
+}
 
 function isMap(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
@@ -72,6 +83,14 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const fail = (key: string, why: string): never => {
     throw new PayloadError(`persona '${name}': agent.yaml ${key} ${why}`);
   };
+  const noRepeats = (key: string, list: string[] | undefined): string[] | undefined => {
+    const seen = new Set<string>();
+    list?.forEach((x, i) => {
+      if (seen.has(x)) fail(`${key}[${i}]`, "repeats an earlier entry");
+      seen.add(x);
+    });
+    return list;
+  };
   let raw: unknown;
   try {
     // The `yaml` package refuses a duplicate key. Its message quotes the source
@@ -85,74 +104,30 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const doc = raw as Record<string, unknown>;
 
   const warnings: string[] = [];
-  // A misspelt key must not silently leave an access list or a limit unset.
-  const refuseUnknown = (where: string, m: Record<string, unknown>, known: Set<string>) => {
-    for (const k of Object.keys(m)) if (!known.has(k)) fail(`${where}${safeKey(k)}`, "is not a known key");
-  };
-  refuseUnknown("", doc, TOP_KEYS);
-  // Absent and empty mean different things for these (every one, none), and a
-  // bare `key:` is neither: it fails rather than widen to "every".
-  const refuseNull = (key: string, m: Record<string, unknown>, field: string, hint = "list entries, write [] for none, or remove the key for all") => {
-    if (Object.hasOwn(m, field) && m[field] === null) fail(key, `has no value: ${hint}`);
-  };
-  refuseNull("skills", doc, "skills");
+  // Shape (keys, types, patterns, lengths, nulls) is the schema's; see agent-schema.ts.
+  const checked = AgentSchema.safeParse(doc);
+  if (!checked.success) {
+    const issue = firstIssue(checked.error.issues);
+    fail(issue.path, issue.message);
+  }
+  const file = checked.data as AgentFile;
 
-  const str = (key: string, v: unknown): string | undefined => {
-    if (v == null) return undefined;
-    if (typeof v !== "string") return fail(key, "must be a string");
-    return v;
-  };
-  const id = (key: string, v: unknown, re: RegExp, what: string): string | undefined => {
-    if (v == null) return undefined;
-    if (typeof v !== "string" || !re.test(v)) return fail(key, `must be a ${what} (${re.source})`);
-    return v;
-  };
-  const ids = (key: string, v: unknown, re: RegExp, what: string): string[] => {
-    if (v == null) return [];
-    if (!Array.isArray(v)) return fail(key, `must be a list of ${what} ids`);
-    return v.map((x, i) => id(`${key}[${i}]`, x, re, `${what} id`) as string);
-  };
-  const slugs = (key: string, v: unknown, re: RegExp): string[] | undefined => {
-    if (v == null) return undefined;
-    if (!Array.isArray(v)) return fail(key, "must be a list of slugs");
-    const seen = new Set<string>();
-    v.forEach((x, i) => {
-      if (typeof x !== "string" || !re.test(x)) fail(`${key}[${i}]`, `must be a slug (${re.source})`);
-      if (seen.has(x as string)) fail(`${key}[${i}]`, "repeats an earlier entry");
-      seen.add(x as string);
-    });
-    return v as string[];
-  };
-  const asMap = (key: string, v: unknown): Record<string, unknown> => {
-    if (v == null) return {};
-    if (!isMap(v)) return fail(key, "must be a mapping");
-    return v;
-  };
+  if (file.name !== name) fail("name", `must equal the directory name '${name}'`);
+  const soulText = file.soul;
+  const description = file.description ?? undefined;
+  const model = file.model ?? undefined;
+  const userToken = file.userToken ?? undefined;
+  const runsOn = file.runsOn ?? undefined;
+  const slackUserId = file.slackUserId == null ? undefined : String(file.slackUserId);
+  const provider = file.provider ?? undefined;
+  const mcp = file.mcp ?? undefined;
+  const skills = noRepeats("skills", file.skills ?? undefined);
+  const guardrails = noRepeats("guardrails", file.guardrails ?? undefined);
 
-  if (doc.name !== name) fail("name", `must equal the directory name '${name}'`);
-  const soul = doc.soul;
-  if (typeof soul !== "string" || !soul.trim()) fail("soul", "must be a non-empty text block (identity and voice)");
-  const soulText = soul as string;
-  const description = str("description", doc.description);
-  if (description !== undefined && description.length > DESCRIPTION_MAX) fail("description", `is longer than ${DESCRIPTION_MAX} characters`);
-  const model = str("model", doc.model);
-  const userToken = str("userToken", doc.userToken);
-  const runsOn = str("runsOn", doc.runsOn);
-  const slackUserId = doc.slackUserId == null ? undefined : String(doc.slackUserId);
-  const provider = doc.provider == null ? undefined : (asMap("provider", doc.provider) as unknown);
-  const mcp = doc.mcp == null ? undefined : (asMap("mcp", doc.mcp) as unknown);
-  const skills = slugs("skills", doc.skills, SKILL_SLUG_RE);
-  const guardrails = slugs("guardrails", doc.guardrails, GUARDRAIL_SLUG_RE);
+  const memory = file.memory ?? {};
 
-  const memory = asMap("memory", doc.memory);
-  refuseUnknown("memory.", memory, MEMORY_KEYS);
-  refuseNull("memory.kbSources", memory, "kbSources");
-  if (memory.kbSources != null && !Array.isArray(memory.kbSources)) fail("memory.kbSources", "must be a list of knowledge-base ids");
-  if (memory.background != null && !isMap(memory.background)) fail("memory.background", "must be a mapping");
-
-  const mandate = asMap("mandate", doc.mandate);
-  refuseUnknown("mandate.", mandate, MANDATE_KEYS);
-  const global = str("mandate.global", mandate.global);
+  const mandate = file.mandate ?? {};
+  const global = mandate.global ?? undefined;
   const channels = new Map<string, ChannelOverride>();
   const channelBlock = (channel: string): ChannelOverride => {
     let block = channels.get(channel);
@@ -163,17 +138,12 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
     return block;
   };
   const scopes: ScopeMandate[] = [];
-  if (mandate.scoped != null && !Array.isArray(mandate.scoped)) fail("mandate.scoped", "must be a list of sub-mandates");
   const seenBoundary = new Set<string>();
-  ((mandate.scoped ?? []) as unknown[]).forEach((entry, i) => {
+  (mandate.scoped ?? []).forEach((e, i) => {
     const key = `mandate.scoped[${i}]`;
-    if (!isMap(entry)) fail(key, "must be a mapping with boundary, mode and text");
-    const e = entry as Record<string, unknown>;
-    refuseUnknown(`${key}.`, e, SCOPED_KEYS);
     const boundary = e.boundary;
-    if (typeof boundary !== "string" || !BOUNDARY_RE.test(boundary)) fail(`${key}.boundary`, "must be channel:<id>, trust:public, trust:trusted or dm");
-    if (seenBoundary.has(boundary as string)) fail(`${key}.boundary`, "repeats an earlier boundary");
-    seenBoundary.add(boundary as string);
+    if (seenBoundary.has(boundary)) fail(`${key}.boundary`, "repeats an earlier boundary");
+    seenBoundary.add(boundary);
     // As a soul's `Mode:` line: absent is override, and an unknown value reads
     // as extend, so a typo keeps the global mandate instead of replacing it.
     const written = typeof e.mode === "string" ? e.mode.trim().toLowerCase() : "";
@@ -183,71 +153,51 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
       if (!MODES.has(written)) warnings.push(`persona '${name}': agent.yaml ${key}.mode is not override, extend or reduce; it reads as extend`);
     }
     const text = e.text;
-    if (typeof text !== "string" || !text.trim()) fail(`${key}.text`, "must be non-empty text");
     const m = mode as "override" | "extend" | "reduce";
-    if (m !== "override" && (text as string).trim().length > MANDATE_LINE_MAX) {
+    if (m !== "override" && text.trim().length > MANDATE_LINE_MAX) {
       warnings.push(`persona '${name}': agent.yaml ${key}.text is longer than ${MANDATE_LINE_MAX} characters; a ${m} is carried whole, so keep it short`);
     }
-    if ((boundary as string).startsWith("channel:")) {
-      const b = channelBlock((boundary as string).slice("channel:".length));
-      b.mandate = (text as string).trim();
+    if (boundary.startsWith("channel:")) {
+      const b = channelBlock(boundary.slice("channel:".length));
+      b.mandate = text.trim();
       b.mandateMode = m;
     } else {
-      const scope = boundary === "dm" ? "dm" : ((boundary as string).slice("trust:".length) as "public" | "trusted");
-      scopes.push({ scope, mandate: (text as string).trim(), mode: m });
+      const scope = boundary === "dm" ? "dm" : (boundary.slice("trust:".length) as "public" | "trusted");
+      scopes.push({ scope, mandate: text.trim(), mode: m });
     }
   });
 
-  const access = asMap("access", doc.access);
-  refuseUnknown("access.", access, ACCESS_KEYS);
-  const channelLists = asMap("access.channels", access.channels);
-  refuseUnknown("access.channels.", channelLists, CHANNELS_KEYS);
-  if (access.approvers != null && !Array.isArray(access.approvers)) fail("access.approvers", "must be a list of { user, scope, catchall }");
+  const access = file.access ?? {};
+  const channelLists = access.channels ?? {};
   const approvers: ApproverEntry[] = [];
-  ((access.approvers ?? []) as unknown[]).forEach((entry, i) => {
-    const key = `access.approvers[${i}]`;
-    if (!isMap(entry)) fail(key, "must be a mapping with user, scope and catchall");
-    const e = entry as Record<string, unknown>;
-    refuseUnknown(`${key}.`, e, APPROVER_KEYS);
-    const user = id(`${key}.user`, e.user, USER_ID_RE, "Slack user id");
-    if (user === undefined) fail(`${key}.user`, "is required");
-    const scope = str(`${key}.scope`, e.scope);
-    if (scope !== undefined && !scope.trim()) fail(`${key}.scope`, "must be non-empty text");
-    if (e.catchall != null && typeof e.catchall !== "boolean") fail(`${key}.catchall`, "must be true or false");
+  (access.approvers ?? []).forEach((e) => {
     const entryOut: ApproverEntry = {
-      userId: user as string,
-      scope: scope ?? "anything",
-      catchall: typeof e.catchall === "boolean" ? e.catchall : scope === undefined,
+      userId: e.user,
+      scope: e.scope ?? "anything",
+      catchall: typeof e.catchall === "boolean" ? e.catchall : e.scope == null,
     };
-    const channel = id(`${key}.channel`, e.channel, CHANNEL_ID_RE, "Slack channel id");
-    if (channel) channelBlock(channel).approvers.push(entryOut);
+    if (e.channel) channelBlock(e.channel).approvers.push(entryOut);
     else approvers.push(entryOut);
   });
-  if (access.approvalTimeoutSeconds != null) {
-    const n = access.approvalTimeoutSeconds;
-    if (typeof n !== "number" || !Number.isInteger(n) || n < 0) fail("access.approvalTimeoutSeconds", "must be a non-negative whole number");
-  }
-  const redact = access.redact == null ? [] : access.redact;
-  if (!Array.isArray(redact)) fail("access.redact", "must be a list of regular expressions");
-  (redact as unknown[]).forEach((p, i) => {
-    if (typeof p !== "string" || !p) fail(`access.redact[${i}]`, "must be a non-empty regular expression");
+  const redact = access.redact ?? [];
+  redact.forEach((p, i) => {
     try {
-      new RegExp(p as string, "gi");
+      new RegExp(p, "gi");
     } catch {
       fail(`access.redact[${i}]`, "is not a valid regular expression");
     }
   });
-  const manager = id("access.manager", access.manager, USER_ID_RE, "Slack user id");
-  const backupManager = id("access.backupManager", access.backupManager, USER_ID_RE, "Slack user id");
+  const manager = access.manager ?? undefined;
+  const backupManager = access.backupManager ?? undefined;
 
   const soulData = SoulDataSchema.parse({
     identity: { name, ...(description ? { role: description } : {}) },
     manager: manager ? { userId: manager } : {},
     backupManager: backupManager ? { userId: backupManager } : {},
-    allowedChannels: ids("access.channels.public", channelLists.public, CHANNEL_ID_RE, "Slack channel"),
-    trustedChannels: ids("access.channels.trusted", channelLists.trusted, CHANNEL_ID_RE, "Slack channel"),
-    blockedUsers: ids("access.blocked", access.blocked, USER_ID_RE, "Slack user"),
-    dmAllowedUsers: ids("access.dm", access.dm, USER_ID_RE, "Slack user"),
+    allowedChannels: channelLists.public ?? [],
+    trustedChannels: channelLists.trusted ?? [],
+    blockedUsers: access.blocked ?? [],
+    dmAllowedUsers: access.dm ?? [],
     approvers,
     redactPatterns: redact,
     approvalTimeoutSeconds: access.approvalTimeoutSeconds ?? 0,
@@ -259,20 +209,13 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   // Per-channel session and proactive settings compile to the `## Channel` block
   // the soul parser reads. The warnings below run on the authored soul alone:
   // this block is generated, not a section left in the prose by mistake.
-  const channelsDoc = asMap("channels", doc.channels);
   const authoredChannels = new Set(channelSections(soulText).map((s) => s.channel));
   let channelBlocks = "";
-  for (const [channel, value] of Object.entries(channelsDoc)) {
-    if (!CHANNEL_ID_RE.test(channel)) fail(`channels.${safeKey(channel)}`, "must be a channel id");
+  for (const [channel, entry] of Object.entries(file.channels ?? {})) {
     if (authoredChannels.has(channel)) fail(`channels.${channel}`, "also has a ## Channel section in soul: keep it in one place");
-    const entry = asMap(`channels.${channel}`, value);
-    refuseUnknown(`channels.${channel}.`, entry, CHANNEL_ENTRY_KEYS);
-    for (const field of CHANNEL_ENTRY_KEYS) refuseNull(`channels.${channel}.${field}`, entry, field, "set it, or remove the key");
-    if (entry.session != null && entry.session !== "channel") fail(`channels.${channel}.session`, 'must be "channel"');
-    if (entry.proactive != null && typeof entry.proactive !== "boolean") fail(`channels.${channel}.proactive`, "must be true or false");
     let settings = "";
-    if (entry.session === "channel") settings += "\n### Session\n- Mode: channel";
-    if (entry.proactive != null) settings += `\n### Proactive\n- Enabled: ${entry.proactive ? "yes" : "no"}`;
+    if (entry?.session === "channel") settings += "\n### Session\n- Mode: channel";
+    if (entry?.proactive != null) settings += `\n### Proactive\n- Enabled: ${entry.proactive ? "yes" : "no"}`;
     if (settings) channelBlocks += `\n\n## Channel <#${channel}>${settings}`;
   }
   if (channelBlocks && endsInOpenFence(soulText)) fail("soul", "ends inside an open code fence, so the channels settings would not be read");

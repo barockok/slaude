@@ -224,6 +224,32 @@ gateway's database. Secrets stay as `${PERSONA_*}` placeholders and
 `export --format agent-yaml` (below) writes these files from a current
 deployment.
 
+### Editor help and the JSON Schema
+
+The file's shape is defined once, in a schema that the validator itself uses,
+and published as a JSON Schema:
+
+```
+https://barockok.github.io/slaude/schemas/agent.schema.json
+```
+
+With it an editor completes keys, shows each field's help text on hover and
+underlines a mistake as you type. Add this line at the top of an `agent.yaml`
+(the YAML language server reads it, in VS Code with the YAML extension, in
+Neovim, JetBrains and others):
+
+```yaml
+# yaml-language-server: $schema=https://barockok.github.io/slaude/schemas/agent.schema.json
+```
+
+`personas export --format agent-yaml` writes that line itself. The schema marks
+every object closed: **an unknown or misspelt key is an error at every level**,
+in the editor and in the sync, so a typo cannot silently leave an access list
+or a limit unset. A few rules need more than a shape (the name matching its
+directory, a repeated boundary, a valid redaction pattern, a soul that carries
+its own `## Channel` section for a channel under `channels:`); the editor does
+not check those, and the sync does.
+
 ## Placeholders
 
 `${VAR}` is resolved by the gateway from its own environment at sync time, in

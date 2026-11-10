@@ -28,6 +28,7 @@
     "brain-import": "bun src/cli/brain-import.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p src/web/tsconfig.json",
     "docs": "bun docs/site/build.mjs",
+    "schema:agent": "bun scripts/gen-agent-schema.ts",
     "panel:dev": "vite --config src/web/vite.console.config.ts",
     "panel:build": "vite build --config src/web/vite.console.config.ts",
     "portal:dev": "vite --config src/web/vite.portal.config.ts",
@@ -56,10 +57,12 @@
     "@types/react-dom": "^19.2.5",
     "@types/ssh2": "^1.15.6",
     "@vitejs/plugin-react": "^6.1.0",
+    "ajv": "8.20.0",
     "marked": "^18.0.11",
     "react-dom": "19.2.7",
     "typescript": "^5",
-    "vite": "^8.2.2"
+    "vite": "^8.2.2",
+    "zod-to-json-schema": "3.25.2"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.173",
@@ -75,6 +78,6 @@
     "react": "^19.2.7",
     "ssh2": "^1.17.0",
     "yaml": "^2.6.0",
-    "zod": "^3.23.8"
+    "zod": "^3.25.28"
   }
 }
