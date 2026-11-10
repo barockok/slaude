@@ -12,6 +12,9 @@ import { handleTokenRefresh, handleTokenReissue } from "../../../src/gateway/api
 import { sameTurnKind, type TurnJob } from "../../../src/queue/turns";
 import { NODE_CAPS } from "../../../src/node/worker";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
+import { CAPABILITIES_HEADER } from "../../../src/guardrails/capability";
+import { bundleFetchFailure, NodeApiError } from "../../../src/node/client";
+import { BootFailure } from "../../../src/gateway/core/failure-codes";
 
 /**
  * Channel session mode on a cluster: a root turn's replies reach channel root
@@ -231,6 +234,57 @@ describe("the /v1 tool plane", () => {
   };
 
   beforeEach(() => writeSoulFixture(WORLD));
+
+  /** A node's bundle fetch over /v1. */
+  const runtime = (g: GatewayHandle, path: string, over: Record<string, unknown>, caps?: string) =>
+    g.fetchV1(
+      new Request(`http://gw/v1/tenants/default/${path}`, {
+        headers: {
+          authorization: "Bearer cs-node-token",
+          [JOB_HEADER]: mintJobToken(claims(over)),
+          ...(caps === undefined ? {} : { [CAPABILITIES_HEADER]: caps }),
+        },
+      }),
+    );
+
+  for (const path of ["personas/default/runtime", "runtime"]) {
+    describe(`the runtime bundle at ${path}`, () => {
+      test("a node without the capability is refused a channel session job, and cannot retry it", async () => {
+        const res = (await runtime(gateway(), path, { post: "channel" }, "guardrails/1,agent-definition/1"))!;
+        expect(res.status).toBe(409);
+        const text = await res.text();
+        expect(JSON.parse(text)).toMatchObject({ code: "GUARDRAILS_UNSUPPORTED", transient: false });
+        // Read by an older node's own parser, which knows no newer code.
+        const f = bundleFetchFailure(new NodeApiError(res.status, text));
+        expect(f).toBeInstanceOf(BootFailure);
+        expect(f.code).toBe("GUARDRAILS_UNSUPPORTED");
+        expect(f.transient).toBe(false);
+      });
+
+      test("no capabilities header at all is refused too", async () => {
+        expect((await runtime(gateway(), path, { post: "channel" }))!.status).toBe(409);
+      });
+
+      test("a node with the capability gets the bundle", async () => {
+        expect((await runtime(gateway(), path, { post: "channel" }, `guardrails/1,${CHANNEL_SESSION_CAPABILITY}`))!.status).toBe(200);
+      });
+
+      test("a job off a channel session is not gated on it", async () => {
+        expect((await runtime(gateway(), path, {}, "guardrails/1"))!.status).toBe(200);
+      });
+    });
+  }
+
+  test("the refusal is audited under the existing action, naming the capability", async () => {
+    await db.run("DELETE FROM audit_events WHERE action = 'guardrail.node.unsupported'");
+    await runtime(gateway(), "personas/default/runtime", { post: "channel" }, "guardrails/1");
+    await flushAudits();
+    const rows = await db.query<{ session_id: string; summary: string; details: string }>(`SELECT session_id, summary, details FROM audit_events WHERE action = 'guardrail.node.unsupported'`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.session_id).toBe("S-v1");
+    expect(rows[0]!.summary).toBe("a node without the channel-session/1 capability asked for a channel session job; refused");
+    expect(rows[0]!.details).toContain("channel-session/1");
+  });
 
   test("post: channel yields a channel-targeted context", () => {
     expect(gateway().__v1SlackCtx!(claims({ post: "channel", exp: 9e9 }) as JobClaims).postTarget).toBe("channel");
