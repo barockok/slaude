@@ -2803,28 +2803,52 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         mrkdwn: true,
       });
     };
+    /**
+     * A refusal for the person who sent the command, shown to them alone: an
+     * ephemeral post to the sender at the channel session's root (no thread_ts).
+     * Anywhere else it is `reply`, unchanged. It never turns public: if the
+     * ephemeral cannot be posted (not in the channel, a missing scope, a
+     * transport without it) the error is logged and counted, and the sender's
+     * message gets the error reaction instead. Not rate limited: a retry shows again.
+     */
+    const replyPrivately = async (txt: string) => {
+      if (!dispatch?.channelSession) return reply(txt);
+      const out = outClientForPersona(dispatch?.personaId, app);
+      try {
+        if (typeof out.chat.postEphemeral !== "function") throw new Error("postEphemeral unavailable");
+        await out.chat.postEphemeral({ channel: channelId, user: userId, text: txt }); // runtime-ui: gateway notice, card or command reply
+      } catch (err: unknown) {
+        metric.ephemeralReplyFailuresTotal.inc();
+        console.error(`[slack-rx] private reply failed ch=${channelId} user=${userId}: ${(err as any)?.data?.error ?? (err as Error)?.message ?? String(err)}`);
+        try {
+          await out.reactions.add({ channel: channelId, timestamp: eventTs, name: REACT_ERROR });
+        } catch (e2: unknown) {
+          if ((e2 as any)?.data?.error !== "already_reacted") console.error(`[slack-rx] error reaction failed ch=${channelId} ts=${eventTs}: ${(e2 as Error)?.message ?? String(e2)}`);
+        }
+      }
+    };
     // These answer before the session is looked up, so a refused command does
     // not create one.
     if (slash && dispatch?.channelSession) {
       const refused = refusalAtRoot(slash);
       if (refused) {
-        await reply(refused);
+        await replyPrivately(refused);
         return;
       }
       // /mode here persists for every later speaker and wake of the channel.
       if (slash.kind === "mode" && !(await isManagerOrApprover(dispatch.personaId, userId, channelId))) {
-        await reply("Only a manager or this channel's approvers can change this channel's permission mode.");
+        await replyPrivately("Only a manager or this channel's approvers can change this channel's permission mode.");
         return;
       }
     }
     if (slash?.kind === "new" && dispatch?.channelSession) {
       if (!(await isManagerOrApprover(dispatch.personaId, userId, channelId))) {
-        await reply("Only a manager or this channel's approvers can start the session over.");
+        await replyPrivately("Only a manager or this channel's approvers can start the session over.");
         return;
       }
       const current = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: channelSessionKey(channelId), persona_id: dispatch.personaId });
       if (!current) {
-        await reply("This channel has no session to start over yet.");
+        await replyPrivately("This channel has no session to start over yet.");
         return;
       }
       await Sessions.archiveChannelSession(current.id, channelId, Date.now());
@@ -2892,7 +2916,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // filesystem persona's own SOUL.md) is never refused.
         const managerId = personaManager(persona);
         if (userId !== managerId && !(await isManagerOf(persona, userId))) {
-          await reply(":no_entry: only this agent's manager can see this");
+          await replyPrivately(":no_entry: only this agent's manager can see this");
           return;
         }
         await reply(await wakeStatusText({ personaId: persona, agentId: await backgroundAgentId(persona), managerId, budget: budgetConfigFor(persona), now: new Date() }));
@@ -2903,16 +2927,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // Same check as status: roleOf on the persona, plus the heartbeat's own recipient.
         const managerId = personaManager(persona);
         if (userId !== managerId && !(await isManagerOf(persona, userId))) {
-          await reply(":no_entry: only this agent's manager can do this");
+          await replyPrivately(":no_entry: only this agent's manager can do this");
           return;
         }
         if (!dispatch?.channelSession || !channelSessionWakes(persona).includes(channelId)) {
-          await reply(HEARTBEAT_NOW_WHERE);
+          await replyPrivately(HEARTBEAT_NOW_WHERE);
           return;
         }
         const now = new Date();
         const result = await (opts.__wakeNow ?? wakeNow)({ personaId: persona, personaIds: [persona], agentId: await backgroundAgentId(persona), slot: `now-${now.getTime()}`, now, timeZone: budgetConfigFor(persona).timeZone }, channelId, { call: brainCall, slack: backgroundSlack });
-        await reply(result === "woke" ? "On it." : result === "busy" ? "This channel is busy right now, with another wake or someone's turn. Try again when it finishes." : `Did not start: ${result}.`);
+        await (result === "woke" ? reply : replyPrivately)(result === "woke" ? "On it." : result === "busy" ? "This channel is busy right now, with another wake or someone's turn. Try again when it finishes." : `Did not start: ${result}.`);
         return;
       }
       if (slash.kind === "mode-help") {
@@ -3045,7 +3069,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // only, so the gate is the default persona's role, from any app.
         const soul = soulData();
         if (!soul.manager.userId || userId !== soul.manager.userId || !(await isManagerOf("default", userId))) {
-          await reply(":lock: `/soul` is manager-only.");
+          await replyPrivately(":lock: `/soul` is manager-only.");
           return;
         }
         if (slash.kind === "soul") {
@@ -3237,7 +3261,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (slash.kind === "ignore") {
           if (slash.target === "user") {
             if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId))) {
-              await reply(":no_entry: only manager or approver can ignore users");
+              await replyPrivately(":no_entry: only manager or approver can ignore users");
               return;
             }
             const duration = slash.duration;
@@ -3278,7 +3302,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (slash.kind === "unignore") {
           if (slash.target === "user") {
             if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId))) {
-              await reply(":no_entry: only manager or approver can unignore users");
+              await replyPrivately(":no_entry: only manager or approver can unignore users");
               return;
             }
             const removed = await Ignores.remove({ targetType: "user", userId: slash.userId });
@@ -3322,7 +3346,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
         if (slash.kind === "cron-list") {
           if (!isManager && !isApprover) {
-            await reply(":no_entry: only manager or approver can list cron jobs");
+            await replyPrivately(":no_entry: only manager or approver can list cron jobs");
             return;
           }
           const jobs = await CronJobs.listActive();
@@ -3337,7 +3361,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
         if (slash.kind === "cron-remove") {
           if (!isManager && !isApprover) {
-            await reply(":no_entry: only manager or approver can remove cron jobs");
+            await replyPrivately(":no_entry: only manager or approver can remove cron jobs");
             return;
           }
           const job = await findJob(slash.id);
@@ -3357,7 +3381,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
         if (slash.kind === "cron-pause" || slash.kind === "cron-resume") {
           if (!isManager && !isApprover) {
-            await reply(`:no_entry: only manager or approver can ${slash.kind.replace("cron-", "")} cron jobs`);
+            await replyPrivately(`:no_entry: only manager or approver can ${slash.kind.replace("cron-", "")} cron jobs`);
             return;
           }
           const job = await findJob(slash.id);
@@ -3388,7 +3412,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
         if (slash.kind === "cron-edit") {
           if (!isManager && !isApprover) {
-            await reply(":no_entry: only manager or approver can edit cron jobs");
+            await replyPrivately(":no_entry: only manager or approver can edit cron jobs");
             return;
           }
           if (isApprover && !isManager) {
@@ -3434,7 +3458,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
         if (slash.kind === "cron-add") {
           if (!isManager && !isApprover) {
-            await reply(":no_entry: only manager or approver can add cron jobs");
+            await replyPrivately(":no_entry: only manager or approver can add cron jobs");
             return;
           }
 
@@ -3498,7 +3522,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "model") {
         const soul = effectiveSoulForChannelFor(dispatch?.personaId, channelId);
         if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId)) && !canChangeModel(userId, { ...soul, approvers: [] })) {
-          await reply(":lock: `/model` — manager, approver, or DM-allowed users only.");
+          await replyPrivately(":lock: `/model` — manager, approver, or DM-allowed users only.");
           return;
         }
         // A persona on its own provider (WS-A §5.5) is not checked against the
@@ -3530,7 +3554,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "compact") {
         // A wake is on this session. It is never merged with anything else, and the route is the wake's until it ends.
         if (routes.get(session.id)?.wakeHold) {
-          await reply("I'm busy, try again shortly.");
+          await replyPrivately("I'm busy, try again shortly.");
           return;
         }
         const triggered = agent.triggerCommand(session.id, "/compact");
@@ -3595,7 +3619,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       if (slash.kind === "bash") {
         if (!(await isManagerOf(dispatch?.personaId, userId))) {
-          await reply(":no_entry: `/bash` is manager-only");
+          await replyPrivately(":no_entry: `/bash` is manager-only");
           return;
         }
         // A gateway holds the master key, the job secret, the node key and the

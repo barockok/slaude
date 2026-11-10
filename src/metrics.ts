@@ -208,6 +208,7 @@ export const m = {
   stopGuardFailedTotal: metrics.counter("slaude_stop_guard_failed_total", "Times the Stop hook blocked but the agent still stopped without satisfying the guard."),
   errorsTotal: metrics.counter("slaude_errors_total", "Errors raised during a turn, labeled by kind."),
   slackDropsTotal: metrics.counter("slaude_slack_drops_total", "Inbound Slack events dropped before processing, labeled by reason."),
+  ephemeralReplyFailuresTotal: metrics.counter("slaude_ephemeral_reply_failures_total", "Private (ephemeral) refusals at a channel session root that could not be posted; the sender got the error reaction instead, nothing went public."),
   channelSessionRecordFailuresTotal: metrics.counter("slaude_channel_session_record_failures_total", "Channel-session messages that failed to be recorded into the session (no model run was due)."),
   disengagedSuppressedTotal: metrics.counter("slaude_disengaged_suppressed_total", "Messages recorded into a disengaged thread's session transcript but suppressed by the UserPromptSubmit hook (no model run)."),
   userTurnsTotal: metrics.counter("slaude_user_turns_total", "Inbound user turns, labeled by user_id + user_name (opt-in via SLAUDE_METRICS_PER_USER=1)."),

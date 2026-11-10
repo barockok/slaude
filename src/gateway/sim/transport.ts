@@ -66,6 +66,8 @@ export class SimTransport implements Transport {
       chat: {
         postMessage: async (a: any) => push(classify(extractActionIds(a.blocks)), a.channel, a.thread_ts, a.text, a.blocks, a),
         update: async (a: any) => push("message", a.channel, a.ts, a.text, a.blocks, a),
+        // Visible to a.user alone in Slack; the sim has one view, so it lands as a message whose raw args carry the recipient.
+        postEphemeral: async (a: any) => push("message", a.channel, a.thread_ts, a.text, a.blocks, a),
       },
       reactions: {
         add: async (a: any) => push("reaction", a.channel, a.timestamp, `:${a.name}:`, undefined, a),
