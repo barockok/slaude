@@ -10,7 +10,7 @@
  * queue; cold resume via the shared queue; /abort mid-turn; held-by-other
  * delay+requeue; lost-lock abort; SIGTERM drain (last — it stops the node).
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { REAL_URL, realEnabled, testPrefix, cleanupPrefix, sweepTag, obliterateQueues, until, sleep } from "../queue/real";
 
 process.env.SLAUDE_BRAIN_DISABLED = "1";
@@ -61,6 +61,9 @@ const stopBlocks: string[] = [];
 
 /** Current stub behavior; tests swap it. */
 let behavior: (a: { sessionId: string; text: string; servers: any; signal: AbortSignal }) => Promise<void>;
+const defaultBehavior: typeof behavior = async ({ servers, text }) => {
+  await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
+};
 
 async function callShim(cfg: any, toolName: string, args: Record<string, unknown>): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -171,9 +174,7 @@ beforeAll(async () => {
     (await Sessions.findByThread({ team_id: "T", channel_id: "C0TEAM", thread_ts: thread }))!.id;
 
   // ---- node side ----
-  behavior = async ({ servers, text }) => {
-    await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
-  };
+  behavior = defaultBehavior;
 
   class NodeStubAgent extends AgentManager {
     mcp?: any;
@@ -346,6 +347,51 @@ afterAll(async () => {
   require("node:fs").rmSync(nodeConfigRoot, { recursive: true, force: true });
 });
 
+/**
+ * Wait until the node has nothing left in flight, so the next test starts on a
+ * quiet worker. A test that returns on the first observable effect (a reaction,
+ * a reply, an applied identity) leaves its turn running; that turn then reads
+ * the NEXT test's globals (`behavior`, `bootFailure`), holds a worker slot and
+ * a session lock, and makes the next test's "turn started" / "aborts drained"
+ * waits pass or fail for the wrong turn. Under CI load the stragglers are slow
+ * enough to be hit nearly every run.
+ *
+ * Quiet means: no turn running in the stub, no job active / waiting / delayed
+ * on either queue, no session / folder lock held, no durable abort flag left to
+ * skip the next job. A turn still hung after `abortAfterMs` (a test failed
+ * before releasing its gate) is aborted so one failure does not cascade; the
+ * generous overall bound exists only so a genuine leak reports itself instead of
+ * hanging the file, and only a leak ever waits on it.
+ */
+async function settleNode(abortAfterMs = 8_000, timeoutMs = 45_000): Promise<void> {
+  const started = Date.now();
+  let aborted = false;
+  const queueNames = ["turns", nodeTurnsQueueFn(NODE_ID)];
+  const busy = async (): Promise<string | null> => {
+    if (stub.aborts.size > 0) return `${stub.aborts.size} turn(s) running in the agent`;
+    for (const name of queueNames) {
+      const c = await turnsQ.queue(name).getJobCounts("active", "waiting", "delayed", "prioritized", "waiting-children", "paused");
+      const n = Object.values(c).reduce((a: number, b) => a + (b as number), 0);
+      if (n > 0) return `${n} job(s) in flight on ${name}: ${JSON.stringify(c)}`;
+    }
+    for (const pat of [keys.sessionLock("*"), keys.workspaceLock("*"), keys.abortFlag("*")]) {
+      const held = await redis.keys(pat);
+      if (held.length > 0) return `held: ${held.join(",")}`;
+    }
+    return null;
+  };
+  let why: string | null;
+  while ((why = await busy())) {
+    const waited = Date.now() - started;
+    if (waited > timeoutMs) throw new Error(`node did not go idle within ${timeoutMs}ms: ${why}`);
+    if (!aborted && waited > abortAfterMs) {
+      aborted = true;
+      for (const ac of stub.aborts.values()) ac.abort();
+    }
+    await sleep(25);
+  }
+}
+
 const msg = (thread: string, ts: string, text: string) => ({
   event: {
     type: "message",
@@ -362,6 +408,15 @@ const msg = (thread: string, ts: string, text: string) => ({
 
 d("gateway↔node E2E (real Redis)", () => {
   const THREAD = "9000.0";
+
+  // Every test leaves the node quiet and the stub's globals at their defaults,
+  // whatever it did or how it ended (see settleNode).
+  afterEach(async () => {
+    behavior = defaultBehavior;
+    bootFailure = null;
+    emulateStopHook = false;
+    await settleNode();
+  });
 
   test("message → enqueue → node claims → shim reply lands via the REST tool plane", async () => {
     posts.length = 0;
