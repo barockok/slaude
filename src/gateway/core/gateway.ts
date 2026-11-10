@@ -327,10 +327,13 @@ type SessionRoute = {
   /** This turn is a disengaged message recorded into the transcript but suppressed
    *  by the UserPromptSubmit hook (no model run). Skip all Slack-visible feedback. */
   suppress?: boolean;
-  /** A person's turn is running on this route (set at dispatch, cleared by done or error). */
-  turnRunning?: boolean;
-  /** A channel session's recording arrived during the running turn: its done ends quietly. */
+  /** People's turns dispatched on this route and not yet ended by done or error.
+   *  A folded or merged input leaves it too high, which only holds recordings back. */
+  personTurns?: number;
+  /** A channel session's recording queued behind the turn that is running. */
   recordingBehind?: boolean;
+  /** A channel session's recording dispatched at idle whose end has not arrived. */
+  recordingAhead?: boolean;
   /** When true, this session was started by a silent cron job — the stop guard
    *  must not force a reply (the job ran without intending to post to Slack). */
   silent?: boolean;
@@ -456,6 +459,26 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
 
 /** Dispatch meta for an operator-panel turn: the session row is the only
  *  source, including the Slack app its thread arrives through (D1.2). */
+/** One more person's turn on the route; a recording that came first no longer runs behind nothing. */
+function countTurn(route: SessionRoute | undefined): void {
+  if (!route) return;
+  route.personTurns = (route.personTurns ?? 0) + 1;
+  route.recordingBehind = undefined;
+}
+
+/** Closes one turn on the route at its done or error, saying what ended. */
+function settleTurn(route: SessionRoute): { ownRecording: boolean; hadTurn: boolean; recordingNext: boolean } {
+  if (route.recordingAhead) {
+    route.recordingAhead = undefined;
+    return { ownRecording: true, hadTurn: false, recordingNext: false };
+  }
+  const hadTurn = (route.personTurns ?? 0) > 0;
+  route.personTurns = Math.max(0, (route.personTurns ?? 0) - 1);
+  const recordingNext = route.personTurns === 0 && route.recordingBehind === true;
+  if (recordingNext) route.recordingBehind = undefined;
+  return { ownRecording: false, hadTurn, recordingNext };
+}
+
 export function panelDispatchMeta(session: SessionRow, operatorId: string, eventTs: string): DispatchMeta {
   const personaId = session.persona_id && session.persona_id !== "default" ? session.persona_id : undefined;
   // A channel session's key, live or archived, is not a Slack ts: its console
@@ -2240,6 +2263,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     await connectServer({ ...ctx, sessionId: gate.sessionId, serverCfg: cfg, personaName: ctx.personaName, app: clickApp });
   });
 
+  // A session with no process runs no turn: what was counted on its route is over.
+  agent.on("sessionExit", (sessionId: string) => {
+    if (agent.isLive(sessionId)) return;
+    const route = routes.get(sessionId);
+    if (!route) return;
+    route.personTurns = 0;
+    route.recordingBehind = undefined;
+    route.recordingAhead = undefined;
+  });
+
   agent.on("event", (e: AgentEvent) => {
     console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${redactSecrets(String(e.error))}` : ""}`);
     const route = routes.get(e.sessionId);
@@ -2379,10 +2412,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // check that follows a user turn is not one).
         const engagedBefore = route.engagedBefore;
         if (!e.autoEvolve) route.engagedBefore = undefined;
-        // Settled by the turn that ran, so a recording queued behind it ends quietly.
-        const recordingNext = !e.autoEvolve && route.turnRunning === true && route.recordingBehind === true;
-        if (!e.autoEvolve) route.turnRunning = false;
-        if (recordingNext) route.recordingBehind = undefined;
+        const settled = e.autoEvolve ? null : settleTurn(route);
         void (async () => {
           // Voice-origin turn: the thread stays quiet (no ✅, no task-block
           // edits), but the per-turn state is still cleaned up.
@@ -2396,8 +2426,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           // Suppressed (disengaged) turns set no 👀/status and must not stamp a
           // ✅ on the recorded-but-unprocessed message. Nothing to clean up.
-          if (route.suppress) return;
-          if (recordingNext) route.suppress = true;
+          if (route.suppress || settled?.ownRecording) return;
+          // Settled by the turn that ran, so a recording queued behind it ends quietly.
+          if (settled?.recordingNext) route.suppress = true;
           // Auto-evolve turns are internal — don't reset reactions/presence
           // (they were already finalized on the user-visible turn's done).
           if (e.autoEvolve) return;
@@ -2444,10 +2475,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         break;
       }
       case "error": {
-        route.turnRunning = false;
+        const settled = settleTurn(route);
         // The raw error (provider/CLI text, stack fragments) stays in the server
         // log; Slack only ever gets the fixed text for the failure code (D1.6).
         console.error(`[turn-error] session=${e.sessionId} code=${e.code ?? "UNKNOWN"} job=${e.jobId ?? "-"}: ${redactSecrets(String(e.error))}`);
+        // A failed recording is logged and counted; it says nothing in Slack.
+        if (settled.ownRecording || (route.suppress && route.ctx.postTarget === "channel" && !settled.hadTurn)) {
+          metric.channelSessionRecordFailuresTotal.inc();
+          break;
+        }
+        // A recording behind this failed turn must not leave a checkmark on it.
+        if (settled.recordingNext) route.suppress = true;
         // Voice-origin turn: no failure text or ❌ in the thread (the call voices it).
         if (voiceTurns.active(e.sessionId)) break;
         void (async () => {
@@ -2575,7 +2613,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           console.log(drop.log);
           metric.slackDropsTotal.inc({ reason: drop.reason });
         }
-        if (drop.reason === "owner_guardrail" && drop.reply) {
+        // A recording is dropped and audited like any message, but nobody asked it anything.
+        if (drop.reason === "owner_guardrail" && drop.reply && !(dispatch?.channelSession && suppress)) {
           const thread = event.thread_ts || eventTs;
           // One reply per person per thread per quiet window; later denies are silent (and audited above).
           if (guardrailReplyQuiet(`${dispatch?.personaId || "default"}:${channelId}:${thread}:${userId}`)) {
@@ -2635,7 +2674,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
     }
 
-    const botUserId = (await client.auth.test()).user_id as string;
+    // A channel session's recording: never a command, keeps its text as written.
+    const recordingOnly = dispatch?.channelSession === true && suppress;
+    const botUserId = recordingOnly ? await getBotId(args) : ((await client.auth.test()).user_id as string);
     // Strip bot mention + persona mention (e.g. "@Noah /model" → "/model").
     const personaUserId = dispatch?.personaId
       ? getPersonaRegistry().lookupByName(dispatch.personaId)?.slackUserId
@@ -2645,7 +2686,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       .replace(personaUserId ? new RegExp(`<@${personaUserId}>`, "g") : /(?!x)/g, "")
       .trim();
     const hasFiles = Array.isArray(event.files) && event.files.length > 0;
-    if (!stripped && !hasFiles) return;
+    if (!(recordingOnly ? text : stripped) && !hasFiles) return;
 
     // The reserved key only finds the session: this turn's threadTs stays the
     // triggering message's ts, so nothing Slack-facing ever sees the key.
@@ -2683,8 +2724,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
 
     // Slash commands: /mode, /abort, /help. Handled locally; do not forward to model.
-    // A channel session's recording is never a command: only a mention gives one.
-    const recordingOnly = dispatch?.channelSession === true && suppress;
     const slash = recordingOnly ? null : parseSlashCommand(stripped);
     if (slash) {
       const slashClient = outClientForPersona(dispatch?.personaId, app);
@@ -3357,6 +3396,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             existing.silent = false;
             existing.engagedBefore = dispatch?.engagedBefore;
             existing.wasCompacting = true;
+            countTurn(existing);
             noteTurnSender(session.id, existing.ctx);
           } else {
             const compactPersonaId = session.persona_id !== "default" ? session.persona_id : undefined;
@@ -3382,6 +3422,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               spoke: false,
               engagedBefore: dispatch?.engagedBefore,
               wasCompacting: true,
+              personTurns: 1,
             });
           }
           void reactions.set(session.id, channelId, eventTs, REACT_WORKING);
@@ -3391,6 +3432,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ).catch((e: any) => console.error("[slaude] compact auto-boot error:", e?.message ?? e));
           return;
         }
+        countTurn(routes.get(session.id));
         void reactions.set(session.id, channelId, eventTs, REACT_WORKING);
         return;
       }
@@ -3436,7 +3478,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
     }
 
-    let userText = stripped;
+    let userText = recordingOnly ? text : stripped;
     const skillHit = recordingOnly ? null : matchSkillInvocation(stripped, allowedSkillsOf(discoverSkills(session.persona_id), skillsAllowedFor(session.persona_id)));
     if (skillHit) {
       userText = buildSkillInvocation(skillHit.skill, skillHit.args, session.id);
@@ -3536,7 +3578,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // A recording that arrives during a running turn runs behind it: the turn
     // keeps its own message, speaker and cards. Its done is left to the flag.
     const existingRoute = routes.get(session.id);
-    const behindRunningTurn = recordingOnly && existingRoute?.turnRunning === true;
+    const behindRunningTurn = recordingOnly && (existingRoute?.personTurns ?? 0) > 0;
     if (behindRunningTurn) existingRoute!.recordingBehind = true;
     if (!behindRunningTurn) permissions.bindSession(session.id, channelId, threadTs, app, session.persona_id);
 
@@ -3575,8 +3617,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // tasksRef/tasksMap are cleared in the done handler so mid-turn inbound
       // messages don't wipe in-flight task state from the previous turn.
       existing.suppress = suppress;
-      existing.turnRunning = !suppress;
-      if (!suppress) existing.recordingBehind = undefined;
+      if (!suppress) countTurn(existing);
+      else if (recordingOnly) existing.recordingAhead = true;
       noteTurnSender(session.id, existing.ctx);
     } else {
       const ctx: SlackContext = {
@@ -3603,7 +3645,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         });
       ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       noteTurnSender(session.id, ctx);
-      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore, turnRunning: !suppress });
+      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore, personTurns: suppress ? 0 : 1, ...(recordingOnly ? { recordingAhead: true } : {}) });
     }
 
     // After the route is in place, so the reaction and status resolvers read
@@ -3650,6 +3692,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           });
         } catch (e: any) {
           console.error("[slaude] dispatch threw:", e?.message ?? e, e?.stack);
+          if (recordingOnly) metric.channelSessionRecordFailuresTotal.inc();
         }
         return;
       }
@@ -3661,6 +3704,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         await agent.sendMessage(session.id, envelope, { sender: { userId, teamId: teamId || null, origin: "slack", text: stripped } });
       } catch (e: any) {
         console.error("[slaude] sendMessage threw:", e?.message ?? e, e?.stack);
+        if (recordingOnly) metric.channelSessionRecordFailuresTotal.inc();
       }
     };
 
@@ -3683,7 +3727,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // exactly once regardless of which replica each message lands on.
         let shouldNotice = false;
         try {
-          shouldNotice = await panelInfra.panelLock.noticeOnce(session.id);
+          // Nobody is waiting on a recording, so it neither posts the notice nor spends it.
+          shouldNotice = !recordingOnly && (await panelInfra.panelLock.noticeOnce(session.id));
         } catch {
           /* Redis hiccup — skip the notice rather than risk a duplicate */
         }
@@ -4074,6 +4119,20 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   };
 
+  /** The doubt reaction on a mention; the other copy of the same mention may have added it already. */
+  const reactDoubt = async (args: any, personaId?: string): Promise<void> => {
+    const e: any = args.event;
+    try {
+      await outClientForPersona(personaId, { apiAppId: args.context?.apiAppId, teamId: args.context?.teamId ?? e.team }).reactions.add({
+        channel: e.channel, timestamp: e.ts, name: REACT_DOUBT,
+      });
+    } catch (err: any) {
+      if (err?.data?.error !== "already_reacted") {
+        console.error(`[gate] doubt reaction failed ch=${e.channel} ts=${e.ts}:`, err?.data?.error ?? err?.message);
+      }
+    }
+  };
+
   /**
    * record_doubt on a mention: react, record into the persona's existing
    * session (suppressed), never engage. No session: nothing to record into.
@@ -4086,16 +4145,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // was recorded): no 🤔 on a message the agent may be answering, and the
     // record below would be deduped anyway.
     if (await SeenEvents.has(`${e.channel}:${e.ts}`)) return;
-    try {
-      await outClientForPersona(personaId, { apiAppId: args.context?.apiAppId, teamId }).reactions.add({
-        channel: e.channel, timestamp: e.ts, name: REACT_DOUBT,
-      });
-    } catch (err: any) {
-      // The other copy of the same mention already reacted.
-      if (err?.data?.error !== "already_reacted") {
-        console.error(`[gate] doubt reaction failed ch=${e.channel} ts=${e.ts}:`, err?.data?.error ?? err?.message);
-      }
-    }
+    await reactDoubt(args, personaId);
     const row = teamId
       ? await Sessions.findByThread({ team_id: teamId, channel_id: e.channel, thread_ts: threadTs, persona_id: personaId ?? "default" })
       : null;
@@ -4175,15 +4225,25 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const routeChannelSession = async (args: any, mentioned: (persona: string | undefined) => boolean): Promise<boolean> => {
     const e = args.event;
     if (!isRootChannelEvent(e)) return false;
+    // System messages (a join, a topic change) are not conversation: today's path drops them.
+    if (e.subtype && e.subtype !== "file_share" && e.subtype !== "me_message") return false;
     const all = await channelSessionAgents(args);
     const agents = all.filter((p) => channelSessionOn(p ?? "default", e.channel));
     if (!agents.length) return false;
     for (const personaId of agents) {
-      if (mentioned(personaId)) {
-        const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
-        await handleMessage(args, { personaId, channelSession: true, ...(act === "record_doubt" ? { suppress: true } : {}) });
-      } else {
-        await handleMessage(args, { personaId, channelSession: true, suppress: true });
+      const isMentioned = mentioned(personaId);
+      // One agent's failure does not lose the message for the others.
+      try {
+        if (isMentioned) {
+          const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
+          if (act === "record_doubt") await reactDoubt(args, personaId);
+          await handleMessage(args, { personaId, channelSession: true, ...(act === "record_doubt" ? { suppress: true } : {}) });
+        } else {
+          await handleMessage(args, { personaId, channelSession: true, suppress: true });
+        }
+      } catch (err) {
+        console.error(`[slack-rx] channel session ch=${e.channel} ts=${e.ts} persona=${personaId ?? "default"} failed: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
+        if (!isMentioned) metric.channelSessionRecordFailuresTotal.inc();
       }
     }
     return agents.length === all.length;
@@ -4193,11 +4253,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const e: any = args.event;
     const ts: string = e.thread_ts || e.ts;
     const personaId = appPersonaOf(args);
-    const botId = await getBotId(args);
-    const inText = Array.from(((e.text || "") as string).matchAll(/<@([A-Z0-9]+)>/g)).map((m) => m[1]);
-    if (await routeChannelSession(args, (p) => p === personaId || mentionsAgent(args, p, inText, botId))) return;
-    // Handled above as a channel-session turn; a classic agent of this app continues below.
-    if (inChannelMode(e, personaId)) return;
+    if (isRootChannelEvent(e)) {
+      const botId = await getBotId(args);
+      const inText = Array.from(((e.text || "") as string).matchAll(/<@([A-Z0-9]+)>/g)).map((m) => m[1]);
+      if (await routeChannelSession(args, (p) => p === personaId || mentionsAgent(args, p, inText, botId))) return;
+      // Handled above as a channel-session turn; a classic agent of this app continues below.
+      if (inChannelMode(e, personaId)) return;
+    }
     const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
     if (act === "record_doubt") return await recordDoubt(args, personaId);
     const engagedBefore = await engageOnMention(args.context?.teamId ?? e.team, e.channel, ts, e.ts, personaId);
@@ -4484,7 +4546,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     });
     await outClientForPersona(personaId, { apiAppId: claims.app, teamId: claims.team }).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
       channel: claims.channel,
-      thread_ts: claims.thread,
+      thread_ts: claims.thread || undefined,
       text,
       blocks: [{ type: "section", text: { type: "mrkdwn", text } }, { type: "actions", elements: [button] }],
       mrkdwn: true,
@@ -4639,6 +4701,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // may still know it; with neither, the token carries the team alone.
     const liveApp = routes.get(session.id)?.ctx.apiAppId;
     if (!meta.apiAppId && liveApp) meta.apiAppId = liveApp;
+    countTurn(routes.get(session.id));
     const envelope =
       `<channel source="panel" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${operatorId}" user_name="${escapeAttr(operatorId)}" ` +

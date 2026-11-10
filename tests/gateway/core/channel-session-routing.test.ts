@@ -19,6 +19,17 @@ import { paths } from "../../../src/config/home";
 import { __setProactiveSoulSource } from "../../../src/soul/proactive";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../../src/persona/registry";
 import { channelSessionLabel } from "../../../src/web/shared/surfaces";
+import type { GateRunner } from "../../../src/gateway/gate/runner";
+import { __clearGuardrailsForTests, applyGuardrailChange } from "../../../src/db/guardrails";
+import { __resetGuardrailSnapshotsForTests, refreshGuardrails } from "../../../src/guardrails/snapshot";
+import { flushAudits } from "../../../src/audit/emit";
+import { metrics } from "../../../src/metrics";
+import { ensureGuardrailKeyForPg } from "../../guardrails/helpers";
+
+ensureGuardrailKeyForPg();
+
+const DENY = "---\nname: inbound-care\ndescription: d\n---\n```rules\n- id: no-passwords\n  on: inbound\n  match: { text: '(?i)password\\s*[:=]' }\n  action: deny\n  message: Please do not paste passwords here.\n```";
+const recordFailures = (): number => Number(metrics.render().split("\n").find((l) => l.startsWith("slaude_channel_session_record_failures_total"))?.split(" ").at(-1) ?? 0);
 
 const MODE_BLOCK = (ch: string) => `\n## Channel <#${ch}>\n### Session\n- Mode: channel\n`;
 const BOT = "U0BOT";
@@ -26,6 +37,7 @@ const SENDER = WORLD.manager;
 
 function richTransport() {
   const posts: any[] = [];
+  const ephemerals: any[] = [];
   const reacts: any[] = [];
   const handlers = new Map<string, (args: any) => Promise<void>>();
   const clientFor = (bot: string): any => ({
@@ -33,7 +45,7 @@ function richTransport() {
     chat: {
       postMessage: async (a: any) => { const ts = `${Date.now()}.${posts.length}`; posts.push({ ...a, ts }); return { ok: true, ts }; },
       update: async () => ({ ok: true }),
-      postEphemeral: async () => ({ ok: true }),
+      postEphemeral: async (a: any) => { ephemerals.push(a); return { ok: true }; },
     },
     reactions: { add: async (a: any) => { reacts.push(a); return { ok: true }; }, remove: async () => ({ ok: true }) },
     conversations: { info: async () => ({}), members: async () => ({ members: [] }), replies: async () => ({ messages: [] }) },
@@ -51,13 +63,13 @@ function richTransport() {
     event: (name: string, fn: any) => void handlers.set(name, fn),
   };
   const emit = async (name: string, args: any) => { await handlers.get(name)?.(args); };
-  return { t, client, clientFor, posts, reacts, emit };
+  return { t, client, clientFor, posts, ephemerals, reacts, emit };
 }
 
 type Gw = ReturnType<typeof makeGw>;
 let current: Gw | null = null;
 
-function makeGw(o: { apps?: Array<{ apiAppId: string; personaId: string }> } = {}) {
+function makeGw(o: { apps?: Array<{ apiAppId: string; personaId: string }>; gateRunner?: GateRunner; panel?: any } = {}) {
   const cap = richTransport();
   if (o.apps) cap.t.apps = async () => o.apps!.map((a) => ({ ...a, teamId: "T", client: cap.client }));
   const agent = new AgentManager();
@@ -69,6 +81,8 @@ function makeGw(o: { apps?: Array<{ apiAppId: string; personaId: string }> } = {
   const surfaces: Surface[] = [];
   const real = makeSlackSurfaceFactory(cap.client);
   const h = createGateway(agent, cap.t, {
+    ...(o.gateRunner ? { gateRunner: o.gateRunner } : {}),
+    ...(o.panel ? { panel: o.panel } : {}),
     surfaceFactory: (b) => {
       bindings.push(b);
       const s = real(b);
@@ -310,6 +324,230 @@ describe("channel session routing", () => {
     g.agent.emit("event", { type: "done", sessionId: id } as any);
     await tick();
     expect(g.reacts.length).toBe(before);
+  });
+
+  describe("recordings and running turns", () => {
+    const done = (g: Gw, id: string) => g.agent.emit("event", { type: "done", sessionId: id } as any);
+    const reactionsOn = (g: Gw, ts: string) => g.reacts.filter((r) => r.timestamp === ts).map((r) => r.name);
+
+    it("after one of two queued turns ends, a recording still leaves the route alone", async () => {
+      const g = makeGw();
+      const m1 = nextTs();
+      const m2 = nextTs();
+      await g.emit("message", rootArgs(g, `<@${BOT}> first`, { ts: m1 }));
+      await g.emit("message", rootArgs(g, `<@${BOT}> second`, { ts: m2 }));
+      done(g, g.sends[0]!.id);
+      await tick();
+      await g.emit("message", rootArgs(g, "chatter", { user: "U0OTHER" }));
+      const b = g.bindings.at(-1)!;
+      expect(b.inboundRef).toBe(m2);
+      expect(b.userId).toBe(SENDER);
+    });
+
+    it("a recording in flight when a mention arrives ends quietly, and the mention finishes normally", async () => {
+      const g = makeGw();
+      await g.emit("message", rootArgs(g, "chatter", { user: "U0OTHER" }));
+      const id = g.sends[0]!.id;
+      const m = nextTs();
+      await g.emit("message", rootArgs(g, `<@${BOT}> work`, { ts: m }));
+      done(g, id);
+      await tick();
+      expect(reactionsOn(g, m)).not.toContain("white_check_mark");
+      done(g, id);
+      await tick();
+      expect(reactionsOn(g, m)).toContain("white_check_mark");
+    });
+
+    it("a session that has exited holds no running turn", async () => {
+      const g = makeGw();
+      await g.emit("message", rootArgs(g, `<@${BOT}> first`));
+      g.agent.emit("sessionExit", g.sends[0]!.id);
+      const r = nextTs();
+      await g.emit("message", rootArgs(g, "chatter", { ts: r, user: "U0OTHER" }));
+      expect(g.bindings.at(-1)!.inboundRef).toBe(r);
+    });
+
+    it("a console turn counts as running", async () => {
+      const g = makeGw();
+      await g.emit("message", rootArgs(g, `<@${BOT}> first`));
+      const id = g.sends[0]!.id;
+      done(g, id);
+      await tick();
+      await g.h.__panelChat!(await row(id), "operator note", "U0OPER");
+      await g.emit("message", rootArgs(g, "chatter", { user: "U0OTHER" }));
+      expect(g.bindings.at(-1)!.userId).toBe("U0OPER");
+    });
+
+    it("a mention of /compact counts as running", async () => {
+      const g = makeGw();
+      g.agent.triggerCommand = (() => true) as any;
+      const m = nextTs();
+      await g.emit("message", rootArgs(g, `<@${BOT}> first`, { ts: m }));
+      done(g, g.sends[0]!.id);
+      await tick();
+      await g.emit("message", rootArgs(g, `<@${BOT}> /compact`));
+      await g.emit("message", rootArgs(g, "chatter", { user: "U0OTHER" }));
+      expect(g.bindings.at(-1)!.inboundRef).toBe(m);
+    });
+
+    it("a failed turn with a recording behind it does not end with a checkmark", async () => {
+      const g = makeGw();
+      const m = nextTs();
+      await g.emit("message", rootArgs(g, `<@${BOT}> work`, { ts: m }));
+      const id = g.sends[0]!.id;
+      await g.emit("message", rootArgs(g, "chatter", { user: "U0OTHER" }));
+      g.agent.emit("event", { type: "error", sessionId: id, error: "boom", code: "TURN_FAILED" } as any);
+      await tick();
+      done(g, id);
+      await tick();
+      expect(reactionsOn(g, m)).not.toContain("white_check_mark");
+    });
+
+    it("a recording that fails is counted, and says nothing in Slack", async () => {
+      const g = makeGw();
+      const r = nextTs();
+      await g.emit("message", rootArgs(g, "chatter", { ts: r, user: "U0OTHER" }));
+      const before = recordFailures();
+      g.agent.emit("event", { type: "error", sessionId: g.sends[0]!.id, error: "boom", code: "TURN_FAILED" } as any);
+      await tick();
+      expect(recordFailures()).toBe(before + 1);
+      expect(g.posts).toHaveLength(0);
+      expect(reactionsOn(g, r)).toHaveLength(0);
+    });
+  });
+
+  describe("what gets recorded", () => {
+    it("a system message at root is not recorded, even one naming the bot", async () => {
+      const g = makeGw();
+      const sys = (subtype: string, text: string) => {
+        const a = rootArgs(g, text);
+        return { ...a, event: { ...a.event, subtype } };
+      };
+      await g.emit("message", sys("channel_join", `<@${SENDER}> has joined the channel`));
+      await g.emit("message", sys("channel_topic", `<@${SENDER}> set the topic: ask <@${BOT}>`));
+      expect(g.sends).toHaveLength(0);
+      expect(g.posts).toHaveLength(0);
+    });
+
+    it("a file share and a /me message are recorded", async () => {
+      const g = makeGw();
+      for (const subtype of ["file_share", "me_message"]) {
+        const a = rootArgs(g, `a ${subtype}`);
+        await g.emit("message", { ...a, event: { ...a.event, subtype } });
+      }
+      expect(g.sends).toHaveLength(2);
+      expect(g.suppressed).toHaveLength(2);
+    });
+
+    it("keeps the addressee in the recorded text, and records a bare mention", async () => {
+      setPersonaRegistry(registry(["alpha"]));
+      __setProactiveSoulSource(() => MODE_BLOCK("C1"));
+      const g = makeGw();
+      // The default agent is mentioned, alpha records what was said to it.
+      await g.emit("message", rootArgs(g, `<@${BOT}> over to you`));
+      const recorded = g.sends.filter((s) => s.text.includes("recorded for context only"));
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]!.text).toContain(`<@${BOT}> over to you`);
+      await g.emit("message", rootArgs(g, `<@${BOT}>`));
+      const bare = g.sends.filter((s) => s.text.includes("recorded for context only"));
+      expect(bare).toHaveLength(2);
+      expect(bare[1]!.text).toContain(`<@${BOT}>`);
+    });
+
+    it("does not call auth.test per recording", async () => {
+      const g = makeGw();
+      let calls = 0;
+      const real = g.client.auth.test;
+      g.client.auth.test = async () => { calls++; return real(); };
+      await g.emit("message", rootArgs(g, "one"));
+      const after = calls;
+      await g.emit("message", rootArgs(g, "two"));
+      expect(calls).toBe(after);
+    });
+
+    it("one agent's failure does not lose the message for the others", async () => {
+      setPersonaRegistry(registry(["alpha", "beta"]));
+      __setProactiveSoulSource((p) => (p ? MODE_BLOCK("C1") : ""));
+      const g = makeGw();
+      const real = g.agent.ensureSession.bind(g.agent);
+      g.agent.ensureSession = (async (k: any, o: any) => {
+        if (k.persona_id === "alpha") throw new Error("boom");
+        return real(k, o);
+      }) as any;
+      const before = recordFailures();
+      await g.emit("message", rootArgs(g, "for the room"));
+      expect(g.sends.map((s) => s.id)).toHaveLength(1);
+      expect((await row(g.sends[0]!.id)).persona_id).toBe("beta");
+      expect(recordFailures()).toBe(before + 1);
+    });
+
+    it("an owner guardrail drops a recording silently, and still audits", async () => {
+      const g = makeGw();
+      await db.run("DELETE FROM audit_events");
+      await __clearGuardrailsForTests();
+      __resetGuardrailSnapshotsForTests();
+      await applyGuardrailChange("default", { upsert: [{ slug: "inbound-care", md: DENY, source: "file" }], by: "test" });
+      await refreshGuardrails();
+      try {
+        await g.emit("message", rootArgs(g, "my password: nope", { user: "U0OTHER" }));
+        await flushAudits();
+        expect(g.sends).toHaveLength(0);
+        expect(g.posts).toHaveLength(0);
+        expect(g.ephemerals).toHaveLength(0);
+        const rows = await db.query<{ action: string }>(`SELECT action FROM audit_events WHERE action LIKE 'guardrail.inbound.%'`);
+        expect(rows.map((r) => r.action)).toEqual(["guardrail.inbound.denied"]);
+      } finally {
+        await __clearGuardrailsForTests();
+        __resetGuardrailSnapshotsForTests();
+      }
+    });
+
+    it("a doubted root mention reacts and is recorded, tolerating already_reacted", async () => {
+      const gateRunner = { mode: "on", contextMessages: 8, gate: async () => "record_doubt" } as unknown as GateRunner;
+      const g = makeGw({ gateRunner });
+      const ts = nextTs();
+      await g.emit("message", rootArgs(g, `<@${BOT}> maybe`, { ts }));
+      expect(g.reacts.filter((r) => r.timestamp === ts).map((r) => r.name)).toEqual(["thinking_face"]);
+      expect(g.suppressed).toHaveLength(1);
+
+      const real = g.client.reactions.add;
+      g.client.reactions.add = async () => { throw Object.assign(new Error("x"), { data: { error: "already_reacted" } }); };
+      const ts2 = nextTs();
+      await g.emit("message", rootArgs(g, `<@${BOT}> again`, { ts: ts2 }));
+      g.client.reactions.add = real;
+      expect(g.suppressed).toHaveLength(2);
+    });
+
+    it("no ops panel notice under a recording", async () => {
+      let notices = 0;
+      const panel = {
+        panelLock: { noticeOnce: async () => { notices++; return true; }, owner: async () => "op", clearNotice: async () => {} },
+        pubsub: { appendEvent: async () => "1-0", onPanelResume: async () => async () => {}, onPanelHold: async () => async () => {}, publishPanelResume: async () => 0, publishPanelHold: async () => 0 },
+        registry: { lookup: async () => null, countWarm: async () => 0 },
+      } as any;
+      const g = makeGw({ panel });
+      await g.emit("message", rootArgs(g, "chatter"));
+      expect(notices).toBe(0);
+      expect(g.posts).toHaveLength(0);
+    });
+  });
+
+  describe("a turn with no thread", () => {
+    it("a permission card omits thread_ts instead of sending it empty", async () => {
+      const g = makeGw();
+      await g.h.__openPermissionForClaims!({ tenant: "default", persona: "default", session: "S1", team: "T", channel: "C1", thread: "", initiator: "U0OP", scope: "turn", exp: 9e9 } as any, { toolName: "Bash", input: { command: "ls" }, toolUseId: "tu-9" });
+      const card = g.posts.find((p) => p.blocks);
+      expect(card).toBeDefined();
+      expect("thread_ts" in card && card.thread_ts !== undefined).toBe(false);
+    });
+
+    it("a default-target reaction with no inbound ts is skipped", async () => {
+      const g = makeGw();
+      const s = makeSlackSurfaceFactory(g.client)({ conversationId: "C1", threadRef: undefined, inboundRef: "", userId: "U", teamId: "T" } as any);
+      await s.react!({ name: "wave" });
+      await s.unreact!({ name: "wave" });
+      expect(g.reacts).toHaveLength(0);
+    });
   });
 
   describe("agents sharing one app", () => {

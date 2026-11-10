@@ -187,6 +187,15 @@ describe("the merge rule", () => {
     expect(sameTurnKind(job({}), job({ post: "channel" }))).toBe(false);
   });
 
+  test("a recording merges only with recordings on a root job", () => {
+    const withMessages = (over: Partial<JobClaims>, suppress: boolean): TurnJob => ({ ...job(over), messages: [{ ts: "1.1", user: "U1", text: "t", suppress }] }) as unknown as TurnJob;
+    expect(sameTurnKind(withMessages({ post: "channel" }, true), withMessages({ post: "channel" }, false))).toBe(false);
+    expect(sameTurnKind(withMessages({ post: "channel" }, true), withMessages({ post: "channel" }, true))).toBe(true);
+    expect(sameTurnKind(withMessages({ post: "channel" }, false), withMessages({ post: "channel" }, false))).toBe(true);
+    // A classic thread's recording still merges as it always has.
+    expect(sameTurnKind(withMessages({}, true), withMessages({}, false))).toBe(true);
+  });
+
   test("two root turns still merge, as do two ordinary turns", () => {
     expect(sameTurnKind(job({ post: "channel", thread: "1.1" }), job({ post: "channel", thread: "2.2" }))).toBe(true);
     expect(sameTurnKind(job({}), job({}))).toBe(true);

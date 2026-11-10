@@ -745,7 +745,7 @@ export class PermissionGate {
     try {
       await clientForApp(this.#transport, args.app).chat.postMessage({ // runtime-ui: permission card
         channel: args.channel,
-        thread_ts: args.threadTs,
+        thread_ts: args.threadTs || undefined,
         text: `:lock: Approval needed: \`${args.toolName}\``,
         blocks: permBlocks(args.toolName, args.input, args.toolUseId, args.decisionReason, args.forced),
       });
@@ -853,7 +853,7 @@ export class PermissionGate {
     try {
       const posted = await clientForApp(this.#transport, route.app).chat.postMessage({ // runtime-ui: permission card
         channel: route.channel,
-        thread_ts: route.threadTs,
+        thread_ts: route.threadTs || undefined,
         text: `:lock: Approval needed: \`${toolName}\``,
         blocks: permBlocks(toolName, input, toolUseId, ctx.decisionReason, forced ? { ruleId: forced.ruleId, message: forced.message } : undefined),
       });

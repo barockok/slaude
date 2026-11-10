@@ -270,7 +270,12 @@ function turnKind(job: TurnJob): string {
   const origin = (typeof c?.origin === "string" ? c.origin : undefined) ?? job.senders?.[0]?.origin ?? null;
   const bgRun = job.bgRun ?? (typeof c?.bgRun === "string" ? c.bgRun : null);
   const wake = !!job.wake || c?.wake === true;
-  return JSON.stringify([origin, bgRun, wake, c?.post === "channel"]);
+  // On a root job a recording never shares a token with a mention: the pending
+  // job's token is the one that runs, so its cards and initiator would be the
+  // bystander's. Classic jobs merge as they always have.
+  const root = c?.post === "channel";
+  const suppressed = root && job.messages.length > 0 && job.messages.every((m) => (m as { suppress?: boolean }).suppress === true);
+  return JSON.stringify([origin, bgRun, wake, root, suppressed]);
 }
 
 /** Two jobs may share one token and turn (see turnKind). */
