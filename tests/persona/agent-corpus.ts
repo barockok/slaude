@@ -64,6 +64,8 @@ for (const k of ["description", "model", "slackUserId", "userToken", "provider",
 ok("empty strings", { description: "", model: "", userToken: "", runsOn: "" });
 ok("description at the limit", { description: "x".repeat(2000) });
 ok("numeric slackUserId", { slackUserId: 12345 });
+ok("list slackUserId is read as text", { slackUserId: ["a"] });
+ok("map slackUserId is read as text", { slackUserId: { a: 1 } });
 ok("empty provider and mcp", { provider: {}, mcp: {} });
 ok("skills empty", { skills: [] });
 ok("skills slugs", { skills: ["a", "a-b", "0x"] });

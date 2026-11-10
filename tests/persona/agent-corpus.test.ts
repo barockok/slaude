@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseAgentYaml } from "../../src/persona/agent-def";
+import { PayloadError } from "../../src/persona/sync/payload";
 import { CORPUS, CORPUS_DIR } from "./agent-corpus";
 
 /**
@@ -23,7 +24,7 @@ describe("agent.yaml corpus", () => {
       if (c.ok) {
         expect(thrown).toBeUndefined();
       } else {
-        expect(thrown).toBeInstanceOf(Error);
+        expect(thrown).toBeInstanceOf(PayloadError);
       }
     });
   }
