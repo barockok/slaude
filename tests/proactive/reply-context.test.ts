@@ -138,8 +138,7 @@ describe("proactiveReplyBlock", () => {
 
 describe("proactiveWorkBlock", () => {
   const AGENT = "U0WORKBLOCK";
-  const call = (body: string | null) => (async (op: string) => (op === "get_page" && body !== null ? { slug: "self/wake-journal", compiled_truth: body, content: body, frontmatter: {} } : null)) as never;
   test("nothing done yet: no block", async () => {
-    expect(await proactiveWorkBlock({ channel: "C0NOPOSTS", agentId: AGENT, call: call(null) })).toBe("");
+    expect(await proactiveWorkBlock({ channel: "C0NOPOSTS", agentId: AGENT })).toBe("");
   });
 });

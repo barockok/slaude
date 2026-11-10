@@ -81,7 +81,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: `/cron-add "<expr>" "<prompt>" [channel] [passive]`, summary: "schedule a prompt; `channel` posts to channel root, `passive` skips when a human is active" },
   { usage: "/cron-list", summary: "list scheduled crons" },
   { usage: "/heartbeat status", summary: "what the agent is doing on its own, and what it costs (manager only)" },
-  { usage: "/heartbeat now", summary: "make the agent look at its work now (manager only)" },
+  { usage: "/heartbeat now", summary: "run this channel's wake now, at the root of a proactive channel (manager only)" },
   { usage: `/cron-edit <id> "<expr>" "<prompt>" [channel] [passive]`, summary: "update a scheduled cron's expression, prompt, target, and passive mode" },
   { usage: "/cron-pause <id>", summary: "pause a scheduled cron without deleting it" },
   { usage: "/cron-resume <id>", summary: "resume a paused cron and recompute its next run" },

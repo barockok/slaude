@@ -1,10 +1,10 @@
 /**
  * The heartbeat round (spec §10.3, §10.4; heartbeat round spec §3, §4): when
- * the SOUL enables proactiveness, a timer round reads the agent's own
- * checklist (`agent-<id>/self/heartbeat`), its journal and its learned rules,
- * and the MCP sources the SOUL watches, read as the agent. What it checks is
- * the agent's; whether it runs, and how far it may go, is the SOUL's
- * (proactiveFor: `Enabled`, `Watch`, `Highest`).
+ * the SOUL enables proactiveness and watches sources, a timer round reads its
+ * journal, its learned rules and those MCP sources, read as the agent. It is not
+ * a wake and reads no checklist: a channel's checklist belongs to that channel's
+ * wake (channel-wake.ts). What it checks is the agent's; whether it runs, and how
+ * far it may go, is the SOUL's (proactiveFor: `Enabled`, `Watch`, `Highest`).
  *
  * Triage is one locked-down, agent-scoped, budgeted pass (`heartbeat`) with
  * the memory read tools and the triage tools only: no brain write, no Slack,
@@ -14,7 +14,7 @@
  * `proactive_post`'s restraint checks, and dispatches `ask`/`act` into the
  * post's thread. Code writes the journal and advances watermarks, only when
  * the pass ended without error. At most HEARTBEAT_MAX_POSTS posts per round;
- * evidence is required. No checklist and no source runs nothing.
+ * evidence is required. No source runs nothing.
  */
 import { randomUUID } from "node:crypto";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
@@ -29,7 +29,7 @@ import { claimSlot } from "../db/background-slots";
 import { composePage, readPageRecord } from "../knowledge/memory-pages";
 import { getPageOrNull, type BrainOpCall } from "../knowledge/memory-trail";
 import { agentSourceId, type BrainScope } from "../knowledge/scope";
-import { proactiveChannels, proactiveFor, type ResolvedProactive } from "../soul/proactive";
+import { proactiveFor, type ResolvedProactive } from "../soul/proactive";
 import { renderPassPrompt } from "../background/prompts";
 import { localDay } from "../background/budget";
 import { READ_ONLY_PASS_TOOLS } from "../background/pass-tools";
@@ -46,7 +46,17 @@ import type { SourceReader, SourceTool, SourceTools } from "./source-reader";
 import { triageTools, type RoutedItem, type TriageState } from "./triage-tools";
 import { defaultDispatchDeps, dispatchProactive, type ProactiveDispatchDeps, type ProactiveTransport } from "./dispatch";
 
+/** The old per-agent checklist page: nothing reads it now, except the one-time copy to a channel's page (channel-wake.ts). */
 export const HEARTBEAT_SLUG = "self/heartbeat";
+
+/**
+ * A channel's own checklist page, in the agent's slice. The only place this
+ * slug is built. Lowercase: gbrain stores slugs lowercased, and `memory_save`
+ * lowercases what an agent writes, so a Slack channel id (uppercase) would not
+ * round-trip (field note 2026-10-26-live-smoke-test).
+ */
+export const channelChecklistSlug = (channelId: string): string => `${HEARTBEAT_SLUG}/${channelId.toLowerCase()}`;
+
 export const HEARTBEAT_MAX_POSTS = 3;
 /** Longest mandate line in the triage prompt, in characters (cut with an ellipsis past it). */
 export const MANDATE_MAX = MANDATE_LINE_MAX;
@@ -219,7 +229,12 @@ export interface HeartbeatDeps {
   /** Seam (tests): the runner. */
   run?: typeof runPass;
   config?: ProactivePostContext["config"];
-  /** Seam (tests): the channels whose own Proactive is on. Default: proactiveChannels. */
+  /**
+   * Seam (tests): channels the round may route an item to. Default: none, so the
+   * round's channel routing is unreachable in production. Every channel with its
+   * own Proactive is a channel session now, whose work is its own wake and whose
+   * ceiling is `act`, so the round's untrusted items stay out of it.
+   */
   channelsOn?: (personaId: string) => string[];
   /**
    * Mono: the agent's OAuth credential lives in the CLI's own store (what
@@ -229,8 +244,6 @@ export interface HeartbeatDeps {
    * reconnect, which would not help.
    */
   agentOAuthInCli?: boolean;
-  /** A waking persona: its checklist goes to the wake, so this round reads only watched sources. */
-  skipChecklist?: boolean;
   /** Seam (tests): dispatch deps. Default: defaultDispatchDeps. */
   dispatchDeps?: (transport: ProactiveTransport, personaId: string) => ProactiveDispatchDeps;
 }
@@ -244,11 +257,6 @@ export const agentScope = (agentId: string): BrainScope => {
 export async function agentPageBody(agentId: string, call: BrainOpCall, slug: string): Promise<string> {
   const rec = readPageRecord(await getPageOrNull(call, slug, agentScope(agentId)));
   return rec && !rec.superseded ? rec.body.trim() : "";
-}
-
-/** The agent's checklist body, or "" when it has none. */
-export async function heartbeatChecklist(agentId: string, call: BrainOpCall): Promise<string> {
-  return agentPageBody(agentId, call, HEARTBEAT_SLUG);
 }
 
 export type Decision =
@@ -349,10 +357,13 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   const config = deps.config ?? ((ch?: string) => proactiveFor(r.personaId, ch));
 
   // 1. Load.
-  const checklist = deps.skipChecklist ? "" : await heartbeatChecklist(r.agentId, deps.call);
+  // With the global switch off no post could reach anyone (restraint refuses every
+  // manager or person audience), so a round would spend and mark items handled for nothing.
+  const reachable = config().enabled;
+  if (!reachable && config().watch.length) warnOnce(`[proactive] persona=${r.personaId}: Watch is set but ## Proactive Enabled is not yes, so the sources are not read`);
   // Only watchableSources output reaches the reader: it is what keeps
   // privateServices and non-http servers out (the reader does not).
-  const watched = deps.sources ? watchableSources(config().watch, (deps.mcp ?? bridgeExternalMcp)(r.personaId), warnOnce) : [];
+  const watched = reachable && deps.sources ? watchableSources(config().watch, (deps.mcp ?? bridgeExternalMcp)(r.personaId), warnOnce) : [];
   const sources: Array<(typeof watched)[number] & { tools: SourceTool[] }> = [];
   // Refused at listing because the agent's credential needs (re)connecting:
   // not read this round, its watermark kept, and the manager told.
@@ -372,8 +383,8 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
       );
     }
   };
-  if (!checklist && !sources.length) {
-    if (!deps.skipChecklist) console.debug(`${tag}: no checklist and no readable source; not running`);
+  if (!sources.length) {
+    console.debug(`${tag}: no readable source; not running`);
     await reauth(listNeedsAuth);
     return null;
   }
@@ -381,7 +392,7 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   for (const s of sources) since[s.server] = await Watermarks.getSince(r.agentId, s.server);
   const journal = await agentPageBody(r.agentId, deps.call, JOURNAL_SLUG);
   const rules = await loadRules(r.agentId, deps.call);
-  const channelsOn = (deps.channelsOn ?? proactiveChannels)(r.personaId);
+  const channelsOn = deps.channelsOn?.(r.personaId) ?? [];
   const m = deps.mandates(r.personaId, channelsOn);
 
   // 2. Triage.
@@ -403,8 +414,6 @@ export async function runHeartbeat(r: AgentGroup & { slot: string; now: Date; si
   const prompt = renderPassPrompt("heartbeat", {
     NOW: r.slot,
     TIME_ZONE: r.timeZone,
-    HEARTBEAT_SLUG,
-    CHECKLIST: strip(checklist, "checklist") || "(none)",
     JOURNAL: strip(journal, "journal") || "(none yet)",
     RULES: rules.map((x) => `- ${line(x.slug)} · ${line(x.kind)} · ${line(x.scope)} · ${x.level}`).join("\n") || "(none)",
     RECENT_POSTS: await recentPostLines(r.agentId, deps.call, startedAt),

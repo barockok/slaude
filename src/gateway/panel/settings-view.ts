@@ -362,13 +362,13 @@ function proactive(text: string): SettingsFamily {
     scope: "agent",
     status: "active",
     settings: [
-      setting("enabled", "Works on its own", cfg.enabled, src("enabled"), "SOUL.md ## Proactive"),
+      setting("enabled", "Summarising round on", cfg.enabled, src("enabled"), "SOUL.md ## Proactive"),
       setting("highest", "Highest action", cfg.highest, src("highest"), "SOUL.md ## Proactive", "ignore < inform < ask < act. Learned rules can only lower it."),
       setting("quiet", "Quiet hours", cfg.quietHours ? `${clock(cfg.quietHours.start)} to ${clock(cfg.quietHours.end)}` : null, src("quiet hours"), "SOUL.md ## Proactive",
         "A person's own quiet hours (from their profile) apply too."),
       setting("cap", "Posts per person per day", cfg.maxPerPersonPerDay, src("max per person per day", "max per day"), "SOUL.md ## Proactive"),
       setting("cooldown", "Cooldown between posts to a person", `${cfg.cooldownHours} hours`, src("cooldown"), "SOUL.md ## Proactive"),
-      setting("wake", "Wakes up for its checklist", cfg.wake, src("wake"), "SOUL.md ## Proactive"),
+      setting("wake", "Wakes in its proactive channels", cfg.wake, src("wake"), "SOUL.md ## Proactive"),
       setting("watch", "Watches", list(cfg.watch), src("watch"), "SOUL.md ## Proactive"),
       setting("read", "Channels it may read", list(cfg.read), src("read"), "SOUL.md ## Proactive"),
       setting("round-posts", "Posts per heartbeat round", HEARTBEAT_MAX_POSTS, "code", "HEARTBEAT_MAX_POSTS"),
@@ -379,14 +379,9 @@ function proactive(text: string): SettingsFamily {
     ...(channels.length
       ? {
           table: {
-            columns: ["Channel", "Works on its own", "Highest", "Cooldown", "Max per day"],
-            rows: channels.map((c) => [
-              c,
-              c in cfg.channels ? (cfg.channels[c] ? "yes" : "no") : "as global",
-              cfg.channelHighest[c] ?? "as global",
-              c in cfg.channelCooldownHours ? `${cfg.channelCooldownHours[c]} hours` : "as global",
-              c in cfg.channelMaxPerDay ? String(cfg.channelMaxPerDay[c]) : "as global",
-            ]),
+            columns: ["Channel", "Works on its own"],
+            // A channel's Highest, Cooldown and Max per day have no effect any more: a proactive channel is a channel session.
+            rows: channels.map((c) => [c, cfg.channels[c] && !cfg.invalidSessions.includes(c) ? "yes" : "no"]),
           },
         }
       : {}),

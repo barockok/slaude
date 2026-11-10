@@ -24,7 +24,7 @@ import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../
 import { proactiveReplyBlock, proactiveWorkBlock } from "../../proactive/reply-context";
 import type { PromiseTransport } from "../../proactive/promises";
 import type { ProactiveTransport } from "../../proactive/dispatch";
-import { channelSessionOn, proactiveFor } from "../../soul/proactive";
+import { channelSessionOn, channelSessionWakes, proactiveFor } from "../../soul/proactive";
 import { ledgerTurnRun, type TurnPass } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
@@ -133,7 +133,6 @@ import { inboundGuidance, inboundVerdict, installOwnerGuardrails, makeReplyQuiet
 import { auditFiring } from "../../guardrails/audit";
 import { wakeStatusText } from "../../proactive/wake-status";
 import type { WakeToolDeps } from "../../proactive/wake-tools";
-import type { ActivityMessage } from "../../proactive/wake-activity";
 import { agentIdSync, resolveAgentId } from "../../knowledge/agent-identity";
 import { memory as processMemory } from "../../memory";
 import { makeScopedMemory } from "../../memory/scoped";
@@ -410,6 +409,8 @@ export interface GatewayOptions {
   /** Decision gate (phase B). Default: the runner gateRunnerFromEnv resolves
    *  to at boot (SLAUDE_DECISION_CONFIG), treated as off until it does. */
   gateRunner?: GateRunner;
+  /** Test seam: what `/heartbeat now` runs. Default: wakeNow. */
+  __wakeNow?: typeof wakeNow;
   /** Start the background learning scheduler (nightly review, lessons upkeep;
    *  phase D): leader-elected in the gateway role, directly in mono, never on a
    *  node, and only with the brain enabled. Default false, so no test starts it
@@ -527,6 +528,8 @@ export function cronDispatchMeta(job: CronJobs.CronJob, threadTs: string, eventT
     ...(job.oauthUser ? { oauthUser: job.oauthUser } : {}),
   };
 }
+
+const HEARTBEAT_NOW_WHERE = "`/heartbeat now` runs a channel's wake. It works at the root of a channel where this agent's Proactive is on: mention me there, not in a thread or a DM.";
 
 export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOptions = {}): GatewayHandle {
 
@@ -1134,7 +1137,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     ctx.requestApproval = target.wake
       ? refuseApprovalInWake
       : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req, persona: ctx.personaId });
-    if (target.wake) ctx.wake = { runId: run.runId, deps: wakeToolDeps, ...(target.channelSession ? { channelSession: channelId } : {}) };
+    if (target.wake) ctx.wake = { runId: run.runId, deps: wakeToolDeps, channelSession: channelId };
     ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
     noteTurnSender(session.id, ctx);
     // A channel wake runs only with the route to itself. A person's turn on it
@@ -1179,29 +1182,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }) });
     }
   };
-  // A wake reads Slack as itself, before its model call.
-  backgroundSlack.activity = (personaId, app) => {
-    const client = outClientForPersona(personaId === "default" ? undefined : personaId, app);
-    return {
-      history: async (channel, oldest, limit) => ((await client.conversations.history({ channel, oldest, limit })).messages ?? []) as ActivityMessage[],
-      replies: async (channel, ts, limit) => ((await client.conversations.replies({ channel, ts, limit })).messages ?? []) as ActivityMessage[],
-    };
-  };
-  // A heartbeat wake: a fresh session of the agent itself, keyed on its own
-  // synthetic thread, in the agent's proactive folder. Its only way to speak is
-  // proactive_post. On a node the signed `wake` claim carries that rule.
+  // A channel's wake: a turn in that channel's session. Its only way to speak
+  // is proactive_post. On a node the signed `wake` claim carries that rule.
   backgroundSlack.wake = {
     dispatch: async (target, envelope, run, caps) => {
       const persona = target.personaId && target.personaId !== "default" ? target.personaId : undefined;
       await dispatchThreadTurn(
-        { teamId: target.teamId, channelId: target.channelId ?? target.managerId, threadTs: target.threadTs, personaId: persona, userId: target.agentId, appId: target.appId ?? null, ...(target.channelId ? { channelSession: true } : { sharedFolder: true }), wake: caps },
+        { teamId: target.teamId, channelId: target.channelId, threadTs: target.threadTs, personaId: persona, userId: target.agentId, appId: target.appId ?? null, channelSession: true, wake: caps },
         envelope,
         run,
         "heartbeat-wake",
       );
     },
     busy: async (target) => {
-      if (!target.channelId) return false;
       const session = await Sessions.findByThread({ team_id: target.teamId, channel_id: target.channelId, thread_ts: channelSessionKey(target.channelId), persona_id: target.personaId || "default" });
       if (!session) return false;
       return channelTurnRunning(session.id);
@@ -1689,7 +1682,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const persona = m.personaId ?? "default";
       const reply = m.threadTs === m.eventTs ? "" : await proactiveReplyBlock({ channel: m.channel, threadTs: m.threadTs, personaId: m.personaId });
       // Where the agent works on its own, a new thread starts knowing what it has been doing.
-      const work = m.firstTurn && proactiveFor(persona, m.channel).enabled ? await proactiveWorkBlock({ channel: m.channel, agentId: await backgroundAgentId(persona), call: brainCallIfOpen }) : "";
+      const workAgent = m.firstTurn && proactiveFor(persona, m.channel).enabled ? await backgroundAgentId(persona) : null;
+      const work = workAgent ? await proactiveWorkBlock({ channel: m.channel, agentId: workAgent, ...(channelSessionOn(persona, m.channel) ? { folder: channelWorkspaceDir(workAgent, m.channel) } : {}) }) : "";
       const block = [reply, work].filter(Boolean).join("\n\n");
       return block ? `${block}\n\n` : "";
     } catch (e) {
@@ -2901,7 +2895,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await reply(":no_entry: only this agent's manager can see this");
           return;
         }
-        await reply(await wakeStatusText({ personaId: persona, agentId: await backgroundAgentId(persona), managerId, budget: budgetConfigFor(persona), call: brainCall, now: new Date() }));
+        await reply(await wakeStatusText({ personaId: persona, agentId: await backgroundAgentId(persona), managerId, budget: budgetConfigFor(persona), now: new Date() }));
         return;
       }
       if (slash.kind === "heartbeat-now") {
@@ -2912,9 +2906,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await reply(":no_entry: only this agent's manager can do this");
           return;
         }
+        if (!dispatch?.channelSession || !channelSessionWakes(persona).includes(channelId)) {
+          await reply(HEARTBEAT_NOW_WHERE);
+          return;
+        }
         const now = new Date();
-        const result = await wakeNow({ personaId: persona, personaIds: [persona], agentId: await backgroundAgentId(persona), slot: `now-${now.getTime()}`, now, timeZone: budgetConfigFor(persona).timeZone }, { call: brainCall, slack: backgroundSlack });
-        await reply(result === "woke" ? "On it." : `Did not start: ${result}.`);
+        const result = await (opts.__wakeNow ?? wakeNow)({ personaId: persona, personaIds: [persona], agentId: await backgroundAgentId(persona), slot: `now-${now.getTime()}`, now, timeZone: budgetConfigFor(persona).timeZone }, channelId, { call: brainCall, slack: backgroundSlack });
+        await reply(result === "woke" ? "On it." : result === "busy" ? "This channel is busy right now, with another wake or someone's turn. Try again when it finishes." : `Did not start: ${result}.`);
         return;
       }
       if (slash.kind === "mode-help") {
@@ -4754,7 +4752,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     ctx.requestApproval = claims.wake
       ? refuseApprovalInWake
       : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, app, ...req, persona: ctx.personaId });
-    if (claims.wake && claims.bgRun) ctx.wake = { runId: claims.bgRun, deps: wakeToolDeps, ...(isChannelSessionKey(claims.thread) ? { channelSession: claims.channel } : {}) };
+    // Only a channel session's wake has these tools; a pre-rc.14 `wake:` job just ends without them.
+    if (claims.wake && claims.bgRun && isChannelSessionKey(claims.thread)) ctx.wake = { runId: claims.bgRun, deps: wakeToolDeps, channelSession: claims.channel };
     // A signed wake has nobody to approve a held reply, with or without a run.
     if (claims.wake) ctx.unattended = true;
     // A held reply is decided before the job token expires, or not posted.

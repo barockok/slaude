@@ -338,37 +338,44 @@ export interface ChannelSetting {
   proactive?: boolean;
 }
 
-/** A soul's per-channel session and proactive settings, as agent.yaml's `channels` key holds them. */
+/**
+ * A soul's per-channel settings, as agent.yaml's `channels` key holds them: what
+ * the soul writes, so a `proactive: true` channel round-trips as `proactive: true`
+ * and `session:` appears only where a `Mode` was written (proactive alone already
+ * means a channel session). A channel with an invalid `Mode` reads as off, so it
+ * exports as `proactive: false`: exported as written, importing it would turn on
+ * a session and wakes the soul never had.
+ */
 export function channelSettings(soulMd: string): Record<string, ChannelSetting> {
-  const { sessions, channels } = parseProactive(soulMd);
+  const { sessions, channels, invalidSessions } = parseProactive(soulMd);
   const out: Record<string, ChannelSetting> = {};
   for (const id of new Set([...Object.keys(sessions), ...Object.keys(channels)])) {
-    out[id] = { ...(sessions[id] ? { session: "channel" as const } : {}), ...(channels[id] !== undefined ? { proactive: channels[id] } : {}) };
+    out[id] = {
+      ...(sessions[id] ? { session: "channel" as const } : {}),
+      ...(channels[id] !== undefined ? { proactive: invalidSessions.includes(id) ? false : channels[id] } : {}),
+    };
   }
   return out;
 }
 
 /**
- * What `personas export` can carry. A classic channel's limits have no key in
- * agent.yaml, and a soul with `Enabled: yes` that lost them would be on with a
- * raised ceiling, so that entry is left out and the channel follows the global
- * switch. `Enabled: no` stays: the limits mean nothing there, and leaving it out
- * could turn the channel on. A channel session has no such limits.
+ * What `personas export` can carry. A channel's limits have no key in agent.yaml.
+ * They mean nothing in a channel session (`Mode: channel` or `Enabled: yes`), and
+ * nothing where the channel is off, so nothing changes by losing them; the off
+ * cases are reported so an author does not think they still apply.
  */
-export function exportedChannelSettings(soulMd: string): { channels: Record<string, ChannelSetting>; dropped: { channel: string; keys: string[]; followsGlobal: boolean }[] } {
+export function exportedChannelSettings(soulMd: string): { channels: Record<string, ChannelSetting>; dropped: { channel: string; keys: string[] }[] } {
   const c = parseProactive(soulMd);
   const channels = channelSettings(soulMd);
-  const dropped: { channel: string; keys: string[]; followsGlobal: boolean }[] = [];
+  const dropped: { channel: string; keys: string[] }[] = [];
   for (const channel of new Set([...Object.keys(c.channelHighest), ...Object.keys(c.channelCooldownHours), ...Object.keys(c.channelMaxPerDay)])) {
-    if (c.sessions[channel]) continue;
+    if (c.sessions[channel] || (c.channels[channel] === true && !c.invalidSessions.includes(channel))) continue;
     const keys = [
       ...(channel in c.channelHighest ? ["Highest"] : []),
       ...(channel in c.channelCooldownHours ? ["Cooldown"] : []),
       ...(channel in c.channelMaxPerDay ? ["Max per day"] : []),
     ];
-    const followsGlobal = channels[channel]?.proactive === true;
-    if (followsGlobal) delete channels[channel];
-    dropped.push({ channel, keys, followsGlobal });
+    dropped.push({ channel, keys });
   }
   return { channels, dropped };
 }

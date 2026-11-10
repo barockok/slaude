@@ -7,7 +7,7 @@ import { channelSettings, compiledChannelSections, parseAgentYaml } from "../../
 import { PayloadError, payloadVersionFor } from "../../src/persona/sync/payload";
 import { SoulDataSchema } from "../../src/soul/data";
 import { subMandatesOf } from "../../src/soul/mandate-scope";
-import { endsInOpenFence, parseProactive } from "../../src/soul/proactive";
+import { __setProactiveSoulSource, channelSessionOn, channelSessionWakes, endsInOpenFence, parseProactive } from "../../src/soul/proactive";
 import { sameDesired, type DesiredPersona } from "../../src/persona/effective";
 
 const FULL = `
@@ -212,6 +212,25 @@ describe("parseAgentYaml channels", () => {
     expect(c.sessions).toEqual({ C0EXAMPLE: "channel" });
     expect(c.channels).toEqual({ C0EXAMPLE: true });
     expect(spec.soul.startsWith("You are the default agent.")).toBe(true);
+  });
+
+  test("proactive: true alone is a channel session, and the keys round trip as written", () => {
+    const { spec } = compile("channels:\n  C0EXAMPLE:\n    proactive: true\n");
+    const c = parseProactive(spec.soul);
+    expect(c.sessions).toEqual({});
+    expect(c.channels).toEqual({ C0EXAMPLE: true });
+    __setProactiveSoulSource(() => spec.soul);
+    expect(channelSessionOn("a", "C0EXAMPLE")).toBe(true);
+    expect(channelSessionWakes("a")).toEqual(["C0EXAMPLE"]);
+    expect(channelSettings(spec.soul)).toEqual({ C0EXAMPLE: { proactive: true } });
+    __setProactiveSoulSource(null);
+  });
+
+  test("an invalid Mode exports as off, so importing it cannot turn the channel on", () => {
+    const soul = "Prose.\n\n## Channel <#CBAD>\n### Session\n- Mode: thread\n### Proactive\n- Enabled: yes\n";
+    expect(channelSettings(soul)).toEqual({ CBAD: { proactive: false } });
+    const { spec } = compile(`channels:\n  CBAD:\n    proactive: false\n`);
+    expect(parseProactive(spec.soul).channels).toEqual({ CBAD: false });
   });
 
   test("proactive: false compiles to Enabled: no", () => {

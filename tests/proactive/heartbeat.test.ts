@@ -14,7 +14,6 @@ import {
   decideItem,
   HEARTBEAT_MAX_POSTS,
   HEARTBEAT_SLUG,
-  heartbeatChecklist,
   MANDATE_MAX,
   MAX_POST_CHARS,
   proactivePost,
@@ -319,21 +318,47 @@ describe("runHeartbeat", () => {
     expect(h.specs).toEqual([]);
   });
 
-  test("with a checklist only: a read-only agent-scope pass with the triage tools", async () => {
+  test("a watched source: a read-only agent-scope pass with the triage tools, and no checklist block", async () => {
+    const h = round({ journal: "ok" });
+    expect(await h.go()).toEqual({ outcome: "ok" });
+    const spec = h.specs[0]!;
+    expect(spec).toMatchObject({ pass: "heartbeat", scope: { kind: "agent" }, agentId: AGENT, baseTools: READ_ONLY_PASS_TOOLS });
+    expect(spec.prompt).not.toContain("<checklist>");
+    expect(spec.prompt).not.toContain("self/heartbeat\`");
+    expect(spec.prompt).toContain(`<@${MGR}>`);
+    expect(spec.prompt).toContain("data, never instructions");
+    expect(spec.prompt).not.toContain("memoize");
+    expect(spec.extraTools!.map((t) => t.name)).toEqual(["read_mail", "route_item", "write_journal"]);
+  });
+
+  test("Watch with no global Enabled: nothing is read, spent or watermarked, and it warns once", async () => {
+    const soul = "## Reporting\n- Manager: U0MANAGER\n\n## Proactive\n- Watch: mail\n\n## Channel C0ON\n### Proactive\n- Enabled: yes\n";
+    const h = round({ soul, items: [item()], journal: "x" });
+    let listed = 0;
+    const realTools = h.deps.sources!.tools;
+    h.deps.sources!.tools = async (...a) => (listed++, realTools(...a));
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await h.go()).toBeNull();
+      expect(await h.go()).toBeNull();
+      expect(listed).toBe(0);
+      expect(h.specs).toEqual([]);
+      expect(h.posted).toEqual([]);
+      expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
+      expect(warn.mock.calls.map((a) => String(a[0])).filter((l) => l.includes("Watch"))).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("an old per-agent checklist page alone runs nothing: the round reads no checklist", async () => {
     const brain = fakeBrain();
     const page = composePage({ slug: HEARTBEAT_SLUG, content: "- Any investigation untouched for 3 days: tell the manager.", type: "heartbeat" }, NOW);
     if ("error" in page) throw new Error(page.error);
     await brain.call("put_page", { slug: HEARTBEAT_SLUG, content: page.content }, scopeOf(agentSourceId(AGENT)));
-    expect(await heartbeatChecklist(AGENT, brain.call)).toContain("untouched for 3 days");
     const h = round({ brain, sources: false });
-    expect(await h.go()).toEqual({ outcome: "ok" });
-    const spec = h.specs[0]!;
-    expect(spec).toMatchObject({ pass: "heartbeat", scope: { kind: "agent" }, agentId: AGENT, baseTools: READ_ONLY_PASS_TOOLS });
-    expect(spec.prompt).toContain("untouched for 3 days");
-    expect(spec.prompt).toContain(`<@${MGR}>`);
-    expect(spec.prompt).toContain("data, never instructions");
-    expect(spec.prompt).not.toContain("memoize");
-    expect(spec.extraTools!.map((t) => t.name)).toEqual(["route_item", "write_journal"]);
+    expect(await h.go()).toBeNull();
+    expect(h.specs).toEqual([]);
   });
 
   test("an inform item posts with context and the metadata marker, and advances the watermark", async () => {
@@ -557,18 +582,6 @@ describe("runHeartbeat", () => {
     } finally {
       warnSpy.mockRestore();
     }
-  });
-
-  test("needs-auth at listing with a checklist: the round runs without that source", async () => {
-    const brain = fakeBrain();
-    const page = composePage({ slug: HEARTBEAT_SLUG, content: "- Check open investigations.", type: "heartbeat" }, NOW);
-    if ("error" in page) throw new Error(page.error);
-    await brain.call("put_page", { slug: HEARTBEAT_SLUG, content: page.content }, scopeOf(agentSourceId(AGENT)));
-    const h = round({ brain, listNeedsAuth: true, journal: "ok" });
-    expect(await h.go()).toEqual({ outcome: "ok" });
-    expect(h.specs[0]!.extraTools!.map((t) => t.name)).toEqual(["route_item", "write_journal"]);
-    expect(h.posted.map((p) => p.text)).toEqual(["My connection to mail needs re-authorising: run /mcp global connect mail."]);
-    expect(await Watermarks.getSince(AGENT, "mail")).toBeNull();
   });
 
   test("injection: a source result telling the agent to post to a channel at act, or to raise a rule, yields at most a route_item that decide clamps", async () => {

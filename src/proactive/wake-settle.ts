@@ -4,7 +4,6 @@
  */
 import { env } from "../config/env";
 import * as ChannelWake from "../db/channel-wake-state";
-import * as WakeState from "../db/heartbeat-wake-state";
 import { m as metric } from "../metrics";
 import { settleWake, type WakeOutcome } from "./wake-gate";
 
@@ -24,16 +23,11 @@ export async function settleWakeRun(a: { agentId: string; runId?: string; scope?
   const outcome: WakeOutcome = a.outcome === "ok" || a.outcome === "stopped-budget" ? a.outcome : "error";
   const cfg = { slotMs: env.heartbeatMinutes() * 60_000, maxSleepMs: env.wakeMaxSleepHours() * 3_600_000 };
   const channel = a.runId ? await ChannelWake.channelOfRun(a.runId) : null;
-  if (channel) {
-    // A channel session grows, so a wake stopped by its cap will be stopped by it
-    // again: unlike the agent-level wake, it backs off as a failure does.
-    const s = settleWake(await ChannelWake.get(a.agentId, channel), outcome === "stopped-budget" ? "error" : outcome, a.now, cfg);
-    await ChannelWake.noteSettled(a.agentId, channel, { outcome, failures: s.failures, nextCheckAt: s.nextCheckAt }, a.now);
-    return;
-  }
-  // A channel wake's run with no row any more: a newer wake replaced it. That channel's state is the newer wake's.
-  if (a.scope?.startsWith("channel:")) return;
-  const state = await WakeState.get(a.agentId);
-  const s = settleWake(state, outcome, a.now, cfg);
-  await WakeState.noteSettled(a.agentId, { outcome, failures: s.failures, nextCheckAt: s.nextCheckAt }, a.now);
+  // No row with this run: a newer wake replaced it (that channel's state is the
+  // newer wake's), or a pre-rc.14 agent-level wake that was still open. Nothing to settle.
+  if (!channel) return;
+  // A channel session grows, so a wake stopped by its cap will be stopped by it
+  // again: it backs off as a failure does.
+  const s = settleWake(await ChannelWake.get(a.agentId, channel), outcome === "stopped-budget" ? "error" : outcome, a.now, cfg);
+  await ChannelWake.noteSettled(a.agentId, channel, { outcome, failures: s.failures, nextCheckAt: s.nextCheckAt }, a.now);
 }

@@ -60,12 +60,10 @@ import { backgroundAgentId, finishSkillCheck, startSkillCheck } from "./skill-ch
 import { runDueCommitments, type PromiseTransport } from "../proactive/promises";
 import type { ProactiveTransport } from "../proactive/dispatch";
 import { readPingPrefs } from "../proactive/prefs";
-import { runHeartbeat, tellManagerOnce } from "../proactive/heartbeat";
-import { runWake, type WakeDeps, type WakeResult, type WakeTransport } from "../proactive/wake";
-import { runChannelWakes } from "../proactive/channel-wake";
-import * as ChannelWake from "../db/channel-wake-state";
-import { channelSessionWakes, parseManager, wakeEligibility } from "../soul/proactive";
-import * as WakeState from "../db/heartbeat-wake-state";
+import { runHeartbeat } from "../proactive/heartbeat";
+import type { WakeDeps, WakeResult, WakeTransport } from "../proactive/wake";
+import { runChannelWakeNow, runChannelWakes } from "../proactive/channel-wake";
+import { parseManager } from "../soul/proactive";
 import type { BrainOpCall } from "../knowledge/memory-trail";
 import { bridgeExternalMcp } from "../gateway/core/external-mcp";
 import { anyProactiveEnabled } from "../soul/proactive";
@@ -462,10 +460,8 @@ export interface SchedulerSlack {
   proactive?: ProactiveTransport;
   /** The agent's own MCP sources, read as the agent (heartbeat round). Absent: no source is read. */
   sources?: SourceReader;
-  /** How a heartbeat wake's turn reaches its session. Absent: nobody wakes; personas stay on the round. */
+  /** How a channel's wake reaches its session. Absent: nobody wakes; personas stay on the round. */
   wake?: WakeTransport;
-  /** How a wake reads Slack. Absent: wakes run without the activity block. */
-  activity?: WakeDeps["activity"];
   /** Mono: the agent's OAuth credentials live in the CLI's own store, which the heartbeat cannot read (HeartbeatDeps.agentOAuthInCli). */
   agentOAuthInCli?: boolean;
   /** The manager and the backup manager (who may decide manager proposals). */
@@ -486,10 +482,6 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
     ...(slack
       ? {
           heartbeat: async (r: SlotRun) => {
-            const managerId = personaManager(r.personaId);
-            const eligible = wakeEligibility(r.personaId, managerId);
-            // Read at run time: the gateway sets these after building the scheduler deps.
-            const waking = eligible.ok && !!slack.wake;
             await runHeartbeat(r, {
               runner: deps.runner,
               call: deps.call,
@@ -500,52 +492,34 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
               ...(slack.sources ? { sources: slack.sources } : {}),
               ...(slack.proactive ? { proactive: slack.proactive } : {}),
               ...(slack.agentOAuthInCli ? { agentOAuthInCli: true } : {}),
-              ...(waking ? { skipChecklist: true } : {}),
               mcp: bridgeExternalMcp,
             });
-            if (waking) {
-              const wakeDeps = { call: deps.call, post: slack.post, transport: slack.wake!, managerId: personaManager, mandates: personaMandates, app: personaApp, ...(slack.activity ? { activity: slack.activity } : {}) };
-              await runWake(r, wakeDeps);
-              await runChannelWakes(r, wakeDeps);
-            } else if (!eligible.ok && eligible.reason) {
-              const why = eligible.reason === "no-manager" ? "I have no manager in my SOUL" : "every place it is on in has a Highest below act";
-              await tellManagerOnce(r, "wake-ineligible", `Proactiveness is on in my SOUL, but ${why}, so I can only summarise, not work on my own.`, {
-                managerId,
-                app: await personaApp(r.personaId).catch(() => undefined),
-                post: slack.post,
-                at: r.now,
-                tag: `[background] agent=${r.agentId} pass=heartbeat`,
-              });
-              console.warn(`[background] agent=${r.agentId}: Wake: yes but not eligible (${eligible.reason}); staying on the round`);
-            }
+            // Read at run time: the gateway sets this after building the scheduler deps.
+            // The heartbeat slot is the tick; each proactive channel wakes when it is due.
+            if (slack.wake) await runChannelWakes(r, wakeDepsFor(deps.call, slack, slack.wake));
           },
         }
       : {}),
   };
 }
 
-/** `/heartbeat now`: a wake outside the schedule, for a manager. Marked due, then the normal path: budget, caps and restraint are unchanged. */
+const wakeDepsFor = (call: BrainOpCall, slack: SchedulerSlack, transport: WakeTransport): WakeDeps => ({
+  call,
+  post: slack.post,
+  transport,
+  managerId: personaManager,
+  mandates: personaMandates,
+  app: personaApp,
+});
+
+/** `/heartbeat now` at a proactive channel's root: that channel's wake now, outside the slot. Budget and caps are unchanged. */
 export async function wakeNow(
   r: AgentGroup & { slot: string; now: Date },
+  channelId: string,
   deps: { call: BrainOpCall; slack: SchedulerSlack },
-): Promise<WakeResult | "not-eligible"> {
-  if (!deps.slack.wake || !wakeEligibility(r.personaId, personaManager(r.personaId)).ok) return "not-eligible";
-  await WakeState.markDue(r.agentId, r.now.getTime());
-  for (const channel of channelSessionWakes(r.personaId)) await ChannelWake.markDue(r.agentId, channel, r.now.getTime());
-  const wakeDeps = {
-    call: deps.call,
-    post: deps.slack.post,
-    transport: deps.slack.wake,
-    managerId: personaManager,
-    mandates: personaMandates,
-    app: personaApp,
-    ...(deps.slack.activity ? { activity: deps.slack.activity } : {}),
-  };
-  const result = await runWake(r, wakeDeps);
-  if (result === "woke") return result;
-  // Channel wakes run one at a time and after the agent's own: the rest go at the next slot.
-  const channel = await runChannelWakes(r, wakeDeps);
-  return channel === "woke" || channel === "failed" || channel === "no-budget" ? channel : result;
+): Promise<WakeResult | "not-proactive" | "no-transport"> {
+  if (!deps.slack.wake) return "no-transport";
+  return runChannelWakeNow(r, channelId, wakeDepsFor(deps.call, deps.slack, deps.slack.wake));
 }
 
 /** A persona's manager: the default persona's effective soul, a named persona's own structured soul. */

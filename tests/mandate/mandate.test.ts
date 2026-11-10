@@ -128,7 +128,8 @@ describe("listMandates", () => {
     // The channel's own approvers replace the global ones there.
     expect(sorted(ops.approvers)).toEqual(["UBACKUP", "UBOB", "USCOUT"]);
     expect(ops.inheritsGlobal).toBeUndefined();
-    expect(ops.proactive).toEqual({ enabled: true, highest: "act" });
+    // A proactive channel is a channel session: no per-channel ceiling to show.
+    expect(ops.proactive).toEqual({ enabled: true });
 
     const team = ms.find((m) => m.id === "channel:CTEAM")!;
     expect(sorted(team.approvers)).toEqual(["UALICE", "UBACKUP", "USCOUT"]);
@@ -180,8 +181,10 @@ describe("listMandates", () => {
   });
 
   test("heartbeat without wake, and an unreadable soul text reads as no heartbeat", async () => {
-    // One switch: `Enabled: yes` alone also wakes; `Wake: no` narrows to the round.
+    // A global `Enabled: yes` is the round only; a channel's own `Enabled: yes` wakes.
     setManagedDefaultSoul("## Proactive\n- Enabled: yes\n");
+    expect((await listMandates("default")).find((m) => m.id === "heartbeat")!.triggers).toEqual(["heartbeat round"]);
+    setManagedDefaultSoul("## Channel <#CONE>\n### Proactive\n- Enabled: yes\n");
     expect((await listMandates("default")).find((m) => m.id === "heartbeat")!.triggers).toEqual(["heartbeat round", "wake"]);
     setManagedDefaultSoul("## Proactive\n- Enabled: yes\n- Wake: no\n");
     const hb = (await listMandates("default")).find((m) => m.id === "heartbeat")!;

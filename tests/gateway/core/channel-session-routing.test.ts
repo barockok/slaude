@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createGateway, panelDispatchMeta } from "../../../src/gateway/core/gateway";
+import { createGateway, panelDispatchMeta, type GatewayOptions } from "../../../src/gateway/core/gateway";
 import { AgentManager, WakeBusyError } from "../../../src/agent/manager";
 import { MUST_REPLY_INSTRUCTION } from "../../../src/agent/must-reply";
 import type { Transport } from "../../../src/gateway/core/transport";
@@ -75,7 +75,7 @@ function richTransport() {
 type Gw = ReturnType<typeof makeGw>;
 let current: Gw | null = null;
 
-function makeGw(o: { apps?: Array<{ apiAppId: string; personaId: string }>; gateRunner?: GateRunner; panel?: any } = {}) {
+function makeGw(o: { apps?: Array<{ apiAppId: string; personaId: string }>; gateRunner?: GateRunner; panel?: any; wakeNow?: GatewayOptions["__wakeNow"] } = {}) {
   const cap = richTransport();
   if (o.apps) cap.t.apps = async () => o.apps!.map((a) => ({ ...a, teamId: "T", client: cap.client }));
   const agent = new AgentManager();
@@ -88,6 +88,7 @@ function makeGw(o: { apps?: Array<{ apiAppId: string; personaId: string }>; gate
   const real = makeSlackSurfaceFactory(cap.client);
   const h = createGateway(agent, cap.t, {
     ...(o.gateRunner ? { gateRunner: o.gateRunner } : {}),
+    ...(o.wakeNow ? { __wakeNow: o.wakeNow } : {}),
     ...(o.panel ? { panel: o.panel } : {}),
     surfaceFactory: (b) => {
       bindings.push(b);
@@ -166,6 +167,68 @@ describe("channel session routing", () => {
     expect(g.posts[0].thread_ts).toBeUndefined();
     await tick();
     expect(g.reacts.some((r) => r.timestamp === ts)).toBe(true);
+  });
+
+  describe("/heartbeat now", () => {
+    const PROACTIVE = "\n## Channel <#C4>\n### Proactive\n- Enabled: yes\n### Mandate\nWatch the release.\n";
+    const seam = (result: any) => {
+      const calls: { channel: string; persona: string }[] = [];
+      const fn = (async (r: any, channel: string) => (calls.push({ channel, persona: r.personaId }), result)) as any;
+      return { calls, fn };
+    };
+    beforeEach(() => {
+      writeSoulFixture({ ...WORLD, trusted: ["C1", "C2", "C4"] });
+      appendFileSync(paths.soul, MODE_BLOCK("C1") + PROACTIVE);
+    });
+    const text = (g: Gw) => g.posts.map((p: any) => String(p.text)).join(" ");
+
+    it("the manager at a proactive channel's root runs that channel's wake, and the reply is at root", async () => {
+      const w = seam("woke");
+      const g = makeGw({ wakeNow: w.fn });
+      await g.emit("message", rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4" }));
+      expect(w.calls).toEqual([{ channel: "C4", persona: "default" }]);
+      expect(text(g)).toContain("On it");
+      expect(g.posts[0].thread_ts).toBeUndefined();
+      expect(g.sends).toHaveLength(0);
+    });
+
+    it("busy says so plainly, and starts nothing", async () => {
+      const w = seam("busy");
+      const g = makeGw({ wakeNow: w.fn });
+      await g.emit("message", rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4" }));
+      expect(text(g)).toContain("busy");
+      expect(text(g)).not.toContain("Did not start");
+    });
+
+    it.each([
+      ["a thread of a proactive channel", (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4", thread_ts: "1000.1" })],
+      ["a channel session with no proactive", (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C1" })],
+      ["a classic channel", (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C2" })],
+    ])("in %s it says where it works and runs nothing", async (_n, args) => {
+      const w = seam("woke");
+      const g = makeGw({ wakeNow: w.fn });
+      await g.emit("message", args(g));
+      expect(w.calls).toEqual([]);
+      expect(text(g)).toContain("root of a channel");
+    });
+
+    it("in a DM it says where it works", async () => {
+      const w = seam("woke");
+      const g = makeGw({ wakeNow: w.fn });
+      const args = rootArgs(g, "/heartbeat now", { channel: "D0DM" });
+      (args.event as any).channel_type = "im";
+      await g.emit("message", args);
+      expect(w.calls).toEqual([]);
+      expect(text(g)).toContain("root of a channel");
+    });
+
+    it("anyone but the manager is refused, before anything else", async () => {
+      const w = seam("woke");
+      const g = makeGw({ wakeNow: w.fn });
+      await g.emit("message", rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4", user: "U0SOMEONE" }));
+      expect(w.calls).toEqual([]);
+      expect(text(g)).toContain("only this agent's manager");
+    });
   });
 
   it("works in the agent's own folder for this channel", async () => {

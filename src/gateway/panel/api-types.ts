@@ -56,7 +56,7 @@ export interface MandateView {
   channelId?: string;
   lastRunAt?: number | null;
   schedule?: string;
-  proactive?: { enabled: boolean; highest?: ProactiveLevel };
+  proactive?: { enabled: boolean };
   inheritsGlobal?: boolean;
   /** A sub-mandate's place. */
   boundary?: MandateBoundaryView;

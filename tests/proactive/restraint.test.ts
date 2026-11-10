@@ -125,7 +125,7 @@ describe("rules", () => {
 
   test("unchanged: the agent's own checklist or notes as evidence do not dedupe recurring posts", () => {
     const loose = configFrom("## Proactive\n- Enabled: yes\n- Cooldown: 0\n- Max per person per day: 50\n");
-    for (const own of ["self/heartbeat", "self/heartbeat-journal", "self/wake-journal", " SELF/Heartbeat "]) {
+    for (const own of ["self/heartbeat", "self/heartbeat-journal", "self/wake-journal", " SELF/Heartbeat ", "self/heartbeat/c0abcdef", "SELF/heartbeat/C0ABCDEF"]) {
       const history = [{ postedAt: NOW.getTime() - 26 * H, textHash: textHash("Yesterday's brief."), evidenceHash: textHash(own) }];
       expect(rule(checkProactive(req({ text: "Today's brief.", evidence: own }), ctx({ config: loose, history })))).toBe("ok");
       // The same text still dedupes.

@@ -7,22 +7,19 @@
 import type { WebClient } from "@slack/web-api";
 import type { CardPost } from "../background/proposal-cards";
 import * as ChannelWake from "../db/channel-wake-state";
-import * as WakeState from "../db/heartbeat-wake-state";
 import * as Posts from "../db/proactive-posts";
 import { redactSecrets } from "../gateway/core/status-text";
-import { composePage } from "../knowledge/memory-pages";
 import type { BrainOpCall } from "../knowledge/memory-trail";
 import { m as metric } from "../metrics";
-import { proactiveChannels, proactiveFor, proactiveRead, type ResolvedProactive } from "../soul/proactive";
-import { agentScope, HEARTBEAT_MAX_POSTS, sendProactive, type ProactivePostContext } from "./heartbeat";
+import { proactiveFor, proactiveRead, type ResolvedProactive } from "../soul/proactive";
+import { HEARTBEAT_MAX_POSTS, sendProactive, type ProactivePostContext } from "./heartbeat";
 import { minLevel, type Level } from "./levels";
 import { nextLocal } from "./promises";
-import { SELF_EVIDENCE, textHash, UNCHANGED_WINDOW_MS, type Audience, type RestraintRule } from "./restraint";
+import { isSelfEvidence, textHash, UNCHANGED_WINDOW_MS, type Audience, type RestraintRule } from "./restraint";
 import { mdToMrkdwn } from "../gateway/slack/format";
-import { JOURNAL_MAX_CHARS, loadRules, resolveLevel } from "./rules";
+import { loadRules, resolveLevel } from "./rules";
 import { clampNextCheck, type WakeGateConfig } from "./wake-gate";
 
-export const WAKE_JOURNAL_SLUG = "self/wake-journal";
 export const WAKE_SOURCE = "wake";
 
 /** What the wake tools need from the gateway. */
@@ -42,8 +39,8 @@ export interface WakeToolDeps {
 export interface WakeTurn {
   runId: string;
   deps: WakeToolDeps;
-  /** A channel session's wake: its channel. Its posts go only there, at root, and it has no journal. */
-  channelSession?: string;
+  /** The channel this wake runs in. Its posts go only there, at root, and it has no journal: the session is its record. */
+  channelSession: string;
 }
 
 /** The part of the Slack context these tools read. */
@@ -72,19 +69,11 @@ export interface ProactivePostToolArgs {
   item_id?: string;
 }
 
-/** Restraint refusals that pass with time, and when. */
-const NOT_NOW: ReadonlySet<RestraintRule> = new Set<RestraintRule>(["quiet-hours", "daily-cap", "cooldown"]);
+/** Restraint refusals that pass with time. A channel session has no cap or cooldown, so quiet hours are the one a wake meets. */
+const NOT_NOW: ReadonlySet<RestraintRule> = new Set<RestraintRule>(["quiet-hours"]);
 
-async function retryAfter(rule: RestraintRule, cfg: ResolvedProactive, a: { agentId: string; recipient: string; now: Date; timeZone: string }): Promise<string | undefined> {
-  if (rule === "cooldown") {
-    const history = await Posts.recentFor(a.agentId, a.recipient, a.now.getTime() - UNCHANGED_WINDOW_MS);
-    const latest = Math.max(-Infinity, ...history.map((h) => h.postedAt));
-    return Number.isFinite(latest) ? new Date(latest + cfg.cooldownHours * 3_600_000).toISOString() : undefined;
-  }
-  if (rule === "quiet-hours") return cfg.quietHours ? new Date(nextLocal(a.now, a.timeZone, cfg.quietHours.end)).toISOString() : undefined;
-  if (rule === "daily-cap") return new Date(nextLocal(a.now, a.timeZone, 0)).toISOString();
-  return undefined;
-}
+const retryAfter = (rule: RestraintRule, cfg: ResolvedProactive, a: { now: Date; timeZone: string }): string | undefined =>
+  rule === "quiet-hours" && cfg.quietHours ? new Date(nextLocal(a.now, a.timeZone, cfg.quietHours.end)).toISOString() : undefined;
 
 export async function proactivePostTool(c: WakeToolContext, a: ProactivePostToolArgs): Promise<ToolResult> {
   if (!c.wake) return err(NOT_A_WAKE);
@@ -92,23 +81,18 @@ export async function proactivePostTool(c: WakeToolContext, a: ProactivePostTool
   const personaId = personaOf(c);
   const managerId = deps.managerId(personaId);
   const own = c.wake.channelSession;
-  const places = own ? [own] : proactiveChannels(personaId);
-  // One place to work in: that is where a post goes.
-  const d = a.destination?.trim() || (places.length === 1 ? places[0]! : places.length === 0 ? "manager" : "");
-  if (!d) return err(`refused: say which destination: ${places.join(", ")}.`);
-  if (own && d !== own) return err(`refused: in this channel's session a post goes only to this channel (${own}).`);
+  const d = a.destination?.trim() || own;
+  if (d !== own) return err(`refused: in this channel's session a post goes only to this channel (${own}).`);
   const audience: Audience | null = d === "manager" || d === managerId ? "manager" : /^[CG][A-Z0-9]+$/.test(d) ? "channel" : /^[UW][A-Z0-9]+$/.test(d) ? "person" : null;
   if (!audience) return err("refused: destination must be \"manager\", a channel id or a user id.");
   const recipient = audience === "manager" ? managerId : d;
   if (!recipient) return err("refused: this agent has no manager.");
-  // A channel only with its own enabled `### Proactive` block, as in the round.
-  if (audience === "channel" && !places.includes(recipient)) return err("refused: you do not work in that channel on your own.");
   const text = mdToMrkdwn(a.text.trim());
   const kind = a.kind?.trim() || "update";
   // Your own notes say nothing about whether a post repeats an earlier one: as evidence they count as none.
   const given = a.evidence?.trim() ?? "";
   const itemId = a.item_id?.trim() || `text:${textHash(a.text).slice(0, 16)}`;
-  const evidence = given && !SELF_EVIDENCE.has(given.toLowerCase()) ? given : `item:${itemId}`;
+  const evidence = given && !isSelfEvidence(given) ? given : `item:${itemId}`;
   const asked: "ask" | "inform" = a.needs_reply ? "ask" : "inform";
 
   const now = deps.now();
@@ -146,7 +130,7 @@ export async function proactivePostTool(c: WakeToolContext, a: ProactivePostTool
   if (!sent.ok) {
     if (sent.kind === "restraint" && sent.rule) {
       const retryable = NOT_NOW.has(sent.rule);
-      const after = retryable ? await retryAfter(sent.rule, cfg, { agentId, recipient, now, timeZone }) : undefined;
+      const after = retryable ? retryAfter(sent.rule, cfg, { now, timeZone }) : undefined;
       metric.wakePostsTotal.inc({ agent: agentId, result: sent.rule });
       return ok({ refused: true, rule: sent.rule, retryable, ...(after ? { retryAfter: after } : {}) });
     }
@@ -184,7 +168,7 @@ async function unansweredRun(client: WebClient, channel: string, threadTs: strin
  */
 export async function wakeThreadRefusal(wake: WakeTurn, client: WebClient, channel: string, threadTs: string | undefined, personaId = "default"): Promise<string | null> {
   // A channel session's wake works in its own channel only, follow-ups included.
-  if (wake.channelSession && channel !== wake.channelSession) return "refused: when you woke in this channel's session, post_message works only in this channel. Keep the item in your notes for when someone there can act on it.";
+  if (channel !== wake.channelSession) return "refused: when you woke in this channel's session, post_message works only in this channel. Keep the item in your notes for when someone there can act on it.";
   const refused = "refused: when you woke on your own, post_message works only in the thread of a post you made. To start something new, use proactive_post.";
   if (!threadTs) return refused;
   const post = await Posts.findByMessage(channel, threadTs);
@@ -226,23 +210,15 @@ export async function readChannelTool(c: WakeToolContext, a: { channel: string; 
   }
 }
 
-/** The agent's notes and when it next needs to look. Code clamps the time. */
+/** When the agent next needs to look. Code clamps the time. A channel session's history is its own record, so its notes are not kept. */
 export async function finishRoundTool(c: WakeToolContext, a: { journal: string; next_check_at?: string }): Promise<ToolResult> {
   if (!c.wake) return err(NOT_A_WAKE);
   const { deps } = c.wake;
   const personaId = personaOf(c);
   const agentId = await deps.agentId(personaId);
   const now = deps.now();
-  // A channel session's history is its own record: only the next check is kept.
-  const channel = c.wake.channelSession;
-  if (!channel) {
-    const page = composePage({ slug: WAKE_JOURNAL_SLUG, content: redactSecrets(a.journal.trim()).slice(0, JOURNAL_MAX_CHARS), type: "heartbeat-journal" }, now);
-    if ("error" in page) return err(page.error);
-    await deps.call("put_page", { slug: WAKE_JOURNAL_SLUG, content: page.content }, agentScope(agentId));
-  }
   const proposed = a.next_check_at ? Date.parse(a.next_check_at) : null;
   const next = clampNextCheck(proposed, now.getTime(), deps.gate());
-  if (channel) await ChannelWake.noteFinished(agentId, channel, next, now.getTime());
-  else await WakeState.noteFinished(agentId, next, now.getTime());
+  await ChannelWake.noteFinished(agentId, c.wake.channelSession, next, now.getTime());
   return ok({ saved: true, nextCheckAt: new Date(next).toISOString() });
 }

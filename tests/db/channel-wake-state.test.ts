@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { db } from "../../src/db/schema";
+import * as Runs from "../../src/db/background-runs";
 import * as S from "../../src/db/channel-wake-state";
 
 beforeEach(async () => {
@@ -33,14 +34,16 @@ describe("channel wake state", () => {
     expect(s?.failures).toBe(2);
     expect(s?.checklistHash).toBe("h2");
   });
-  test("markDue moves only that channel's check, and creates no row", async () => {
-    await S.noteFinished("A1", "C1", 500, 150);
-    await S.noteFinished("A1", "C2", 600, 150);
-    await S.markDue("A1", "C1", 200);
-    expect((await S.get("A1", "C1"))?.nextCheckAt).toBe(200);
-    expect((await S.get("A1", "C2"))?.nextCheckAt).toBe(600);
-    await S.markDue("A1", "C3", 200);
-    expect(await S.get("A1", "C3")).toBeNull();
+  test("a start does not take a channel from a run still open; it may replace a closed or unknown one", async () => {
+    await db.run("DELETE FROM background_runs");
+    const open = await Runs.start({ agentId: "A1", pass: "heartbeat-wake", scope: "channel:C1", day: "2026-10-26", startedAt: 100 });
+    expect(await S.noteStart("A1", "C1", "h1", open, 100)).toBe(true);
+    expect(await S.noteStart("A1", "C1", "h2", "run2", 200)).toBe(false);
+    expect(await S.channelOfRun(open)).toBe("C1");
+    expect((await S.get("A1", "C1"))?.checklistHash).toBe("h1");
+    await Runs.finish(open, { tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, costUsd: 0, outcome: "ok" });
+    expect(await S.noteStart("A1", "C1", "h3", "run3", 300)).toBe(true);
+    expect(await S.channelOfRun("run3")).toBe("C1");
   });
   test("a settling run finds its channel, once", async () => {
     await S.noteStart("A1", "C1", "h", "run1", 100);

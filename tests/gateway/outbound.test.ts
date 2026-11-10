@@ -304,7 +304,7 @@ describe("the legacy slack tools", () => {
 
   it("a wake's legacy post_message refuses an approve", async () => {
     const { client, log } = fakeSlack();
-    const r = await slackHandlers.reply(ctx(client, { wake: { runId: "r", deps: {} as any } }), { text: "The price is $3" });
+    const r = await slackHandlers.reply(ctx(client, { wake: { runId: "r", deps: {} as any, channelSession: "C2" } }), { text: "The price is $3" });
     expect(r.isError).toBe(true);
     expect(log).toEqual([]);
     // A signed wake claim without a run is unattended too.

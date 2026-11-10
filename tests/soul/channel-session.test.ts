@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { __setProactiveSoulSource, channelSessionOn, channelSessionWakes, parseProactive, proactiveChannels, proactiveFor, proactiveRead, wakeEligibility } from "../../src/soul/proactive";
+import { __setProactiveSoulSource, anyProactiveEnabled, channelSessionOn, channelSessionWakes, parseProactive, proactiveFor, proactiveRead } from "../../src/soul/proactive";
 
 const soul = `## Channel <#C111>
 ### Session
@@ -27,13 +27,75 @@ describe("channel session mode", () => {
     expect(c.sessions).toEqual({ C111: "channel" });
     expect(c.invalidSessions).toEqual(["C333"]);
   });
-  test("a channel-mode channel leaves the agent-level wake and stays readable", () => {
+  test("a channel with Enabled: yes alone is a channel session with wakes, and stays readable", () => {
     __setProactiveSoulSource(() => soul);
     expect(channelSessionOn("a", "C111")).toBe(true);
-    expect(channelSessionOn("a", "C222")).toBe(false);
-    expect(proactiveChannels("a")).toEqual(["C222"]);
-    expect(channelSessionWakes("a")).toEqual(["C111"]);
-    expect(proactiveRead("a")).toContain("C111");
+    expect(channelSessionOn("a", "C222")).toBe(true);
+    expect(channelSessionWakes("a")).toEqual(["C111", "C222"]);
+    expect(proactiveRead("a")).toEqual(expect.arrayContaining(["C111", "C222"]));
+  });
+  test("Mode: channel without proactive is a channel session with no wakes", () => {
+    __setProactiveSoulSource(() => "## Channel <#C444>\n### Session\n- Mode: channel\n\n## Channel <#C555>\n### Session\n- Mode: channel\n### Proactive\n- Enabled: no\n");
+    expect(channelSessionOn("a", "C444")).toBe(true);
+    expect(channelSessionOn("a", "C555")).toBe(true);
+    expect(channelSessionWakes("a")).toEqual([]);
+  });
+  test("Enabled: no with no Mode is an ordinary classic channel", () => {
+    __setProactiveSoulSource(() => "## Channel <#C444>\n### Proactive\n- Enabled: no\n");
+    expect(channelSessionOn("a", "C444")).toBe(false);
+    expect(channelSessionWakes("a")).toEqual([]);
+  });
+  test("an invalid Mode with Enabled: yes gives no channel session and no wake, and warns", () => {
+    const text = "## Channel <#C666>\n### Session\n- Mode: nonsense\n### Proactive\n- Enabled: yes\n";
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      __setProactiveSoulSource(() => text);
+      expect(channelSessionOn("a", "C666")).toBe(false);
+      expect(channelSessionWakes("a")).toEqual([]);
+      expect(proactiveFor("a", "C666").enabled).toBe(false);
+      expect(proactiveRead("a")).toEqual([]);
+      expect(anyProactiveEnabled("a")).toBe(false);
+      expect(warn.mock.calls.map((x) => String(x[0])).join(" ")).toContain("C666");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  test("a global Enabled: yes starts no wake and warns once per soul hash", () => {
+    const text = "## Proactive\n- Enabled: yes\n\n## Channel <#C777>\n### Session\n- Mode: channel\n";
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      __setProactiveSoulSource(() => text);
+      expect(channelSessionWakes("a")).toEqual([]);
+      expect(channelSessionWakes("a")).toEqual([]);
+      proactiveFor("a");
+      const lines = warn.mock.calls.map((x) => String(x[0])).filter((l) => /global/i.test(l));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("persona=a");
+      __setProactiveSoulSource(() => text + "\n");
+      proactiveFor("a");
+      expect(warn.mock.calls.map((x) => String(x[0])).filter((l) => /global/i.test(l))).toHaveLength(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  test("a global Enabled: yes alone turns on no channel, but the summarising round still runs", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      __setProactiveSoulSource(() => "## Proactive\n- Enabled: yes\n- Watch: mail\n");
+      expect(anyProactiveEnabled("a")).toBe(true);
+      expect(proactiveFor("a").enabled).toBe(true);
+      expect(proactiveFor("a").watch).toEqual(["mail"]);
+      expect(channelSessionWakes("a")).toEqual([]);
+      expect(channelSessionOn("a", "C888")).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+  test("Wake: no still keeps a persona from waking; its channel sessions and read_channel stay", () => {
+    __setProactiveSoulSource(() => "## Proactive\n- Wake: no\n\n## Channel <#C999>\n### Proactive\n- Enabled: yes\n");
+    expect(channelSessionWakes("a")).toEqual([]);
+    expect(channelSessionOn("a", "C999")).toBe(true);
+    expect(proactiveRead("a")).toEqual(["C999"]);
   });
   test("per-channel limits do not apply in channel mode", () => {
     __setProactiveSoulSource(() => soul);
@@ -43,11 +105,13 @@ describe("channel session mode", () => {
     expect(r.cooldownHours).toBe(0);
     expect(r.maxPerPersonPerDay).toBe(Number.MAX_SAFE_INTEGER);
   });
-  test("a channel session wakes whatever its Highest says; a classic channel still does not", () => {
-    __setProactiveSoulSource(() => "## Channel <#C555>\n### Session\n- Mode: channel\n### Proactive\n- Enabled: yes\n- Highest: ask\n");
-    expect(wakeEligibility("a", "U1")).toEqual({ ok: true });
-    __setProactiveSoulSource(() => "## Channel <#C666>\n### Proactive\n- Enabled: yes\n- Highest: ask\n");
-    expect(wakeEligibility("a", "U1")).toEqual({ ok: false, reason: "no-act-destination" });
+  test("a proactive channel's limits do not apply, with or without Mode", () => {
+    __setProactiveSoulSource(() => "## Channel <#C666>\n### Proactive\n- Enabled: yes\n- Highest: ask\n- Cooldown: 4 hours\n- Max per day: 2\n");
+    const r = proactiveFor("a", "C666");
+    expect(r.highest).toBe("act");
+    expect(r.cooldownHours).toBe(0);
+    expect(r.maxPerPersonPerDay).toBe(Number.MAX_SAFE_INTEGER);
+    expect(channelSessionWakes("a")).toEqual(["C666"]);
   });
   test.each([
     ["valid first", "## Channel <#C777>\n### Session\n- Mode: channel\n- Mode: off\n"],

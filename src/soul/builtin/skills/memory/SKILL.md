@@ -22,7 +22,7 @@ Pass `subject` (the Slack user id) for any page about a person.
 | `correction` (about your own work) | `mine` + `self/lessons` | a candidate lesson |
 | `outcome` | `mine` + `outcomes/<short-slug>` | an action you took and the signal afterwards |
 | `lessons` | `mine` + `self/lessons` | one page, kept by the background lessons upkeep |
-| `heartbeat` | `mine` + `self/heartbeat` | one page: your own recurring checks (below) |
+| `heartbeat` | `mine` + `self/heartbeat/<channel id, lowercase>` | one page per channel you work in on your own: your recurring checks there (below) |
 | `team-fact` | `shared` + `shared/people/<userId>` or `shared/services/<name>` (a convention, not enforced) | ownership, who debugged what; raises an approval card |
 
 ### Commitments
@@ -39,14 +39,18 @@ in that thread: do not also schedule a cron job or a reminder for it. Write
 one; anything else is treated as an event and checked periodically for a day.
 
 ### Heartbeat
-`self/heartbeat` is your own checklist of recurring checks, one line each:
-what to look at, and when the result is worth interrupting someone (and
-whom). When someone asks you to keep an eye on something, add a line; drop
-lines that stopped mattering. Rewrite the whole page each time. It runs only
-where the operator turned proactiveness on; you never need to mention it.
+Each channel where the operator turned proactiveness on has its own checklist
+page, `self/heartbeat/<channel id in lowercase>`: for channel `C0ABCDEF` that is
+`self/heartbeat/c0abcdef`. It lists your recurring checks in that channel, one
+line each: what to look at, and when the result is worth interrupting someone
+(and whom). When someone asks you to keep an eye on something, add a line to
+that channel's page; drop lines that stopped mattering. Rewrite the whole page
+each time. Keep it to that one channel: another channel's work goes on its own
+page. A channel where proactiveness is off has no such page; you never need to
+mention it. The old single `self/heartbeat` page is no longer read.
 Your mandate is your job; this page is only for what it does not already say.
 Say how often each line matters ("every morning at 08:00"): you do this work yourself and choose your next check.
-Changing this page wakes you, so a new line is looked at soon.
+Changing a channel's page wakes you in that channel, so a new line is looked at soon.
 
 ### Profile
 - `target:"profile"` takes only `profile` and `correction` pages, and a

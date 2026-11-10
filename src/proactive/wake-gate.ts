@@ -3,7 +3,7 @@
  * no model, no database. Whether a wake may start, and when the next one is due
  * after a wake ended, are code's decisions; the agent only proposes a time.
  */
-import type { WakeState } from "../db/heartbeat-wake-state";
+import type { WakeState } from "../db/channel-wake-state";
 
 export interface WakeGateConfig {
   /** One heartbeat slot. The soonest a next check can be. */
@@ -16,7 +16,7 @@ export type GateResult =
   | { due: true; reason: "first" | "next-check" | "checklist-changed" | "max-sleep" }
   | { due: false; reason: "no-checklist" | "idle" };
 
-/** Whether a wake is due now. `checklistHash` covers the agent's job (mandates and checklist); null when it has neither. */
+/** Whether a wake is due now. `checklistHash` covers the channel's job (mandate and checklist page); null when it has neither. */
 export function wakeDue(state: WakeState | null, checklistHash: string | null, now: number, cfg: WakeGateConfig): GateResult {
   if (checklistHash === null) return { due: false, reason: "no-checklist" };
   if (!state || state.lastWakeAt === null) return { due: true, reason: "first" };

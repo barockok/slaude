@@ -1,34 +1,35 @@
 /**
- * The proactiveness switch (spec §10.2; invariant 3): a `## Proactive` section
- * of the persona's SOUL, plus `### Proactive` inside a `## Channel <#C…>`
- * block, in either direction.
+ * The proactiveness switch (spec §10.2; invariant 3): `### Proactive` inside a
+ * `## Channel <#C…>` block, and a `## Proactive` section for the round, in
+ * either direction.
  *
- * One setting turns it on, in the place it applies to:
+ * Proactive is defined per channel. Turning it on makes that channel a channel
+ * session with wakes:
  *
  *   ## Channel <#C…>
  *   ### Proactive
- *   - Enabled: yes           # the agent works on its own here; its mandate says what it may do
+ *   - Enabled: yes           # one long-lived session here, and the agent works on its own in it
  *
- *   ## Proactive
- *   - Enabled: yes           # the same for its manager's DM (and people who opted in)
+ * A channel can have the session without the wakes:
  *
- * Everything else is optional and has a sensible default:
+ *   ## Channel <#C…>
+ *   ### Session
+ *   - Mode: channel          # anything else is logged and reads as off: no session, no wakes
+ *
+ * `## Proactive` carries what is not about one channel. `Enabled: yes` there
+ * starts no wake (it warns once per soul); it turns on the summarising round
+ * and lets the round's posts reach the manager and people who opted in:
+ *   - Enabled: yes
  *   - Max per day: 6         # posts per recipient per day (either section)
  *   - Quiet hours: 21:00–08:00
  *   - Read: <#C…>, <#C…>     # further channels it may read, in any turn (global only)
  *   - Watch: mail, tracker   # external sources for the locked triage round (global only)
  *
  * Still honoured so a soul can narrow things, never needed to turn anything on:
- *   - Wake: no               # stay on the summarising round (global only)
- *   - Highest: ask           # lower the ceiling: ignore | inform | ask (default act)
+ *   - Wake: no               # this agent never wakes; its channel sessions stay (global only)
+ *   - Highest: ask           # lower the round's ceiling: ignore | inform | ask (default act)
  *   - Cooldown: 4 hours      # minimum gap between posts to one recipient
  *   - Max per person per day # the old name of Max per day
- *
- * A channel can also give the agent one long-lived session there:
- *
- *   ## Channel <#C…>
- *   ### Session
- *   - Mode: channel          # anything else is logged and reads as off
  *
  * Parsed here, deterministically, from the persona's SOUL text. Never through
  * the LLM structured extraction (a mis-extraction must never turn it on), never
@@ -56,7 +57,7 @@ export interface ProactiveConfig {
   watch: string[];
   /** The ceiling no learned reaction may raise the level past. */
   highest: Level;
-  /** Whether the agent itself wakes for its checklist (global only). */
+  /** False when the soul says `Wake: no`: this agent never wakes in any channel (global only). */
   wake: boolean;
   /** Channels this agent may read with read_channel (global only). */
   read: string[];
@@ -68,9 +69,13 @@ export interface ProactiveConfig {
   channelCooldownHours: Record<string, number>;
   /** Channel id → that channel's own `### Proactive` `Max per day`. */
   channelMaxPerDay: Record<string, number>;
-  /** Channel id → that channel's own `### Session` `Mode`, only when it is valid. */
+  /**
+   * Channel id → that channel's own written `### Session` `Mode`, only when it is valid.
+   * What the soul says, for export and the definition view: whether a channel has
+   * a session is {@link hasChannelSession}, which also counts `Enabled: yes`.
+   */
   sessions: Record<string, "channel">;
-  /** Channels with a `### Session` `Mode` that is not a known mode, once each; never in `sessions`. */
+  /** Channels with a `### Session` `Mode` that is not a known mode, once each; never in `sessions`. These read as off. */
   invalidSessions: string[];
 }
 
@@ -268,7 +273,13 @@ function configFor(personaId: string): ProactiveConfig | null {
     let c = memo.get(key);
     if (!c) {
       c = parseProactive(text);
-      for (const id of c.invalidSessions) console.warn(`[proactive] persona=${personaId} channel=${id}: unknown session Mode, staying on the default`);
+      for (const id of c.invalidSessions) console.warn(`[proactive] persona=${personaId} channel=${id}: unknown session Mode, so this channel has no channel session and no wakes`);
+      if (c.enabled) console.warn(`[proactive] persona=${personaId}: a global ## Proactive Enabled: yes no longer starts a wake. Proactive is per channel: set ### Proactive under a ## Channel block. The summarising round and Watch sources keep running.`);
+      for (const id of Object.keys(c.channels)) {
+        // Only the channels this release turned into sessions: a written Mode always ignored them.
+        if (!c.channels[id] || c.sessions[id] || !hasChannelSession(c, id)) continue;
+        if (id in c.channelHighest || id in c.channelCooldownHours || id in c.channelMaxPerDay) console.warn(`[proactive] persona=${personaId} channel=${id}: Highest, Cooldown and Max per day have no effect in a channel session`);
+      }
       if (memo.size > 64) memo.clear();
       memo.set(key, c);
     }
@@ -276,6 +287,12 @@ function configFor(personaId: string): ProactiveConfig | null {
   } catch {
     return null;
   }
+}
+
+/** Whether a parsed soul gives this channel one long-lived session: `Mode: channel`, or `Enabled: yes` (proactive means a channel session). An invalid `Mode` is off. */
+function hasChannelSession(c: ProactiveConfig, channelId: string): boolean {
+  if (c.invalidSessions.includes(channelId)) return false;
+  return c.sessions[channelId] === "channel" || c.channels[channelId] === true;
 }
 
 /**
@@ -287,43 +304,49 @@ function configFor(personaId: string): ProactiveConfig | null {
 export function proactiveFor(personaId: string, channelId?: string): ResolvedProactive {
   const c = configFor(personaId);
   if (!c) return { ...DISABLED };
-  const { wake: _wake, read: _read, channels, channelHighest, channelCooldownHours, channelMaxPerDay, sessions, invalidSessions: _invalid, ...global } = c;
+  const { wake: _wake, read: _read, channels, channelHighest, channelCooldownHours, channelMaxPerDay, sessions: _sessions, invalidSessions, ...global } = c;
   if (channelId === undefined) return global;
   const resolved: ResolvedProactive = {
     ...global,
-    enabled: channels[channelId] ?? global.enabled,
+    // An invalid Mode reads as off, whatever the rest of the channel's block says.
+    enabled: invalidSessions.includes(channelId) ? false : channels[channelId] ?? global.enabled,
     highest: channelHighest[channelId] ?? global.highest,
     cooldownHours: channelCooldownHours[channelId] ?? global.cooldownHours,
     maxPerPersonPerDay: channelMaxPerDay[channelId] ?? global.maxPerPersonPerDay,
   };
   // A channel session has no cap, cooldown or ceiling; `enabled` and quiet hours still apply.
-  if (sessions[channelId]) {
+  if (hasChannelSession(c, channelId)) {
     return { ...resolved, highest: "act", cooldownHours: 0, maxPerPersonPerDay: Number.MAX_SAFE_INTEGER };
   }
   return resolved;
 }
 
-/** The channels whose own `### Proactive` turns proactiveness on, for the agent-level wake: not those with a channel session. */
-export function proactiveChannels(personaId: string): string[] {
-  const c = configFor(personaId);
-  return c ? Object.entries(c.channels).filter(([id, on]) => on && !c.sessions[id]).map(([id]) => id).sort() : [];
-}
-
 /** Whether this agent runs one long-lived session in this channel. Any failure reads as off. */
 export function channelSessionOn(personaId: string, channelId: string): boolean {
-  return configFor(personaId)?.sessions[channelId] === "channel";
+  const c = configFor(personaId);
+  return !!c && hasChannelSession(c, channelId);
 }
 
-/** The channels whose wakes run in their channel session. */
+/** The channels this agent wakes in, each in its channel session. `Wake: no` wakes none of them. */
 export function channelSessionWakes(personaId: string): string[] {
   const c = configFor(personaId);
-  return c ? Object.entries(c.channels).filter(([id, on]) => on && c.sessions[id]).map(([id]) => id).sort() : [];
+  if (!c?.wake) return [];
+  return Object.entries(c.channels).filter(([id, on]) => on && hasChannelSession(c, id)).map(([id]) => id).sort();
+}
+
+/** Whether `Wake: no` is what keeps this persona's proactive channels from waking. */
+export function wakesSwitchedOff(personaId: string): boolean {
+  const c = configFor(personaId);
+  return !!c && !c.wake && Object.entries(c.channels).some(([id, on]) => on && hasChannelSession(c, id));
 }
 
 /** The channels this persona may read with read_channel: where it works on its own, and any its SOUL lists. */
 export function proactiveRead(personaId: string): string[] {
   const c = configFor(personaId);
-  return c ? [...new Set([...c.read, ...proactiveChannels(personaId), ...channelSessionWakes(personaId)])] : [];
+  if (!c) return [];
+  // Not channelSessionWakes: `Wake: no` stops the wakes, not the reading.
+  const own = Object.entries(c.channels).filter(([id, on]) => on && hasChannelSession(c, id)).map(([id]) => id);
+  return [...new Set([...c.read, ...own])];
 }
 
 /**
@@ -443,26 +466,8 @@ export function parseMandates(text: string): { global: string; channels: Record<
   return { global, channels };
 }
 
-export type WakeEligibility = { ok: true } | { ok: false; reason: "no-manager" | "no-act-destination" | null };
-
-/**
- * Whether a persona wakes: proactiveness is on somewhere, it has a manager, and
- * no soul line narrowed every enabled place below `act`. `reason: null` is a
- * persona that never turned proactiveness on (or said `Wake: no`); any other
- * reason is a misconfiguration worth saying out loud.
- */
-export function wakeEligibility(personaId: string, managerId: string | null): WakeEligibility {
-  const c = configFor(personaId);
-  if (!c?.wake || !(c.enabled || Object.values(c.channels).some(Boolean))) return { ok: false, reason: null };
-  if (!managerId) return { ok: false, reason: "no-manager" };
-  const globalAct = c.enabled && c.highest === "act";
-  // A channel session has no per-channel limits, so its Highest does not narrow it.
-  const channelAct = Object.entries(c.channels).some(([id, on]) => on && (c.sessions[id] || (c.channelHighest[id] ?? c.highest) === "act"));
-  return globalAct || channelAct ? { ok: true } : { ok: false, reason: "no-act-destination" };
-}
-
 /** True when the persona's SOUL enables proactiveness globally or in any channel. */
 export function anyProactiveEnabled(personaId: string): boolean {
   const c = configFor(personaId);
-  return !!c && (c.enabled || Object.values(c.channels).some(Boolean));
+  return !!c && (c.enabled || Object.entries(c.channels).some(([id, on]) => on && !c.invalidSessions.includes(id)));
 }

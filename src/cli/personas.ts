@@ -338,7 +338,7 @@ export async function exportAgentYaml(
     // With no prose left the soul is exported whole, and its own sections carry these settings.
     const exported = prose.trim() ? exportedChannelSettings(args.soulMd) : { channels: {}, dropped: [] };
     for (const d of exported.dropped) {
-      console.error(`[personas] warning: persona '${args.name}': channel ${d.channel}: ${d.keys.join(", ")} not exported, agent.yaml has no key for them${d.followsGlobal ? "; its proactive setting is left out too, so it follows the global switch" : ""}`);
+      console.error(`[personas] warning: persona '${args.name}': channel ${d.channel}: ${d.keys.join(", ")} not exported, agent.yaml has no key for them`);
     }
     const doc = agentDocument({
       name: args.name,

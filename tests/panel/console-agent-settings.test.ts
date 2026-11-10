@@ -184,7 +184,8 @@ describe("GET /panel/api/agents/:name/settings/:group", () => {
     expect(value(pro, "highest")).toMatchObject({ value: "ask", source: "soul" });
     expect(value(pro, "quiet")).toMatchObject({ value: "22:00 to 07:00", source: "soul" });
     expect(value(pro, "cap")).toMatchObject({ value: 6, source: "default" });
-    expect(pro.table?.rows).toEqual([["COPS", "no", "as global", "3 hours", "as global"]]);
+    // Per-channel Highest, Cooldown and Max per day no longer apply, so the table does not show them.
+    expect(pro.table?.rows).toEqual([["COPS", "no"]]);
     expect(pro.text).toContain("## Proactive");
     expect(pro.text).toContain("### Proactive");
 
