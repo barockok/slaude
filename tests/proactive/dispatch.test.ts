@@ -24,6 +24,7 @@ import {
 } from "../../src/proactive/dispatch";
 import type { ProactiveRule } from "../../src/proactive/rules";
 import { createGateway, type GatewayHandle } from "../../src/gateway/core/gateway";
+import * as RedisConn from "../../src/queue/redis";
 import { AgentManager, type BackgroundTurnRun, type InputSender } from "../../src/agent/manager";
 import type { DispatchMeta, QueueDispatch } from "../../src/gateway/core/dispatch";
 import { writeSoulFixture, WORLD } from "../../src/gateway/sim/soul-fixture";
@@ -303,12 +304,20 @@ describe("the mono gateway's proactive transport", () => {
       close: async () => {},
     } as unknown as QueueDispatch;
     h = createGateway(agent, slackTransport(), { queueDispatch: qd });
-    await h.__wake!.dispatch(
-      { teamId: "T", managerId: "U0MANAGER", channelId: "C1", threadTs: "channel:C1", personaId: "default", agentId: AGENT_ID, appId: undefined },
-      '<runtime-check kind="wake">look</runtime-check>',
-      { runId: "run-c", agentId: AGENT_ID },
-      { maxBudgetUsd: 1 },
-    );
+    // Gateway role reads the session lock from Redis before a channel wake. The
+    // queue here is a fake, so the lock is too: CI's sqlite job has no Redis.
+    const redis = spyOn(RedisConn, "getRedis").mockReturnValue({ exists: async () => 0 } as never);
+    try {
+      await h.__wake!.dispatch(
+        { teamId: "T", managerId: "U0MANAGER", channelId: "C1", threadTs: "channel:C1", personaId: "default", agentId: AGENT_ID, appId: undefined },
+        '<runtime-check kind="wake">look</runtime-check>',
+        { runId: "run-c", agentId: AGENT_ID },
+        { maxBudgetUsd: 1 },
+      );
+      expect(redis).toHaveBeenCalled();
+    } finally {
+      redis.mockRestore();
+    }
     const row = await Sessions.findByThread({ team_id: "T", channel_id: "C1", thread_ts: "channel:C1", persona_id: "default" });
     expect(row!.working_dir).toBe(channelWorkspaceDir(AGENT_ID, "C1"));
     expect(metas[0]).toMatchObject({ channelId: "C1", threadTs: "channel:C1", userId: AGENT_ID, postTarget: "channel", channelSession: true, wake: { maxBudgetUsd: 1 }, backgroundRunId: "run-c", origin: "cron" });

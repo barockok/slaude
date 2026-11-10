@@ -93,6 +93,9 @@ describe("dispatch signs the post target", () => {
   });
 });
 
+/** `details` is text on sqlite and a JSONB object on Postgres. */
+const detailsText = (d: unknown): string => (typeof d === "string" ? d : JSON.stringify(d));
+
 describe("dispatch and the channel session capability", () => {
   test("every node advertises it", () => {
     expect(NODE_CAPS).toContain(CHANNEL_SESSION_CAPABILITY);
@@ -137,10 +140,10 @@ describe("dispatch and the channel session capability", () => {
     expect(h.enqueued).toHaveLength(0);
     expect(h.events).toEqual([{ type: "error", sessionId: "S-cs", error: "no channel-session-capable node", code: "CHANNEL_SESSION_UNSUPPORTED" }]);
     await flushAudits();
-    const rows = await db.query<{ summary: string; details: string }>(`SELECT summary, details FROM audit_events WHERE action = 'guardrail.node.unsupported'`);
+    const rows = await db.query<{ summary: string; details: unknown }>(`SELECT summary, details FROM audit_events WHERE action = 'guardrail.node.unsupported'`);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.summary).toBe("no node on label default runs channel sessions; the turn was not dispatched");
-    expect(rows[0]!.details).toContain("channel-session/1");
+    expect(detailsText(rows[0]!.details)).toContain("channel-session/1");
   });
 });
 
@@ -288,11 +291,11 @@ describe("the /v1 tool plane", () => {
     await db.run("DELETE FROM audit_events WHERE action = 'guardrail.node.unsupported'");
     await runtime(gateway(), "personas/default/runtime", { post: "channel" }, "guardrails/1");
     await flushAudits();
-    const rows = await db.query<{ session_id: string; summary: string; details: string }>(`SELECT session_id, summary, details FROM audit_events WHERE action = 'guardrail.node.unsupported'`);
+    const rows = await db.query<{ session_id: string; summary: string; details: unknown }>(`SELECT session_id, summary, details FROM audit_events WHERE action = 'guardrail.node.unsupported'`);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.session_id).toBe("S-v1");
     expect(rows[0]!.summary).toBe("a node without the channel-session/1 capability asked for a channel session job; refused");
-    expect(rows[0]!.details).toContain("channel-session/1");
+    expect(detailsText(rows[0]!.details)).toContain("channel-session/1");
   });
 
   test("post: channel yields a channel-targeted context", () => {

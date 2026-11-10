@@ -190,6 +190,11 @@ beforeEach(() => {
   process.env.SLAUDE_IDLE_MINUTES = "0";
 });
 
+// The mock outlives this file: without this, later files get the dispatcher.
+afterAll(() => {
+  currentQuery = passthrough;
+});
+
 const noopExec = async () => ({ stdout: "", stderr: "", code: 0, truncated: false, timedOut: false });
 
 describe("remote wiring", () => {
