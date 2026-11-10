@@ -206,15 +206,15 @@ describe("channel session routing", () => {
     });
 
     it.each([
-      ["a thread of a proactive channel", (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4", thread_ts: "1000.1" })],
-      ["a channel session with no proactive", (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C1" })],
-      ["a classic channel", (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C2" })],
-    ])("in %s it says where it works and runs nothing", async (_n, args) => {
+      ["a thread of a proactive channel", false, (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4", thread_ts: "1000.1" })],
+      ["a channel session with no proactive", true, (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C1" })],
+      ["a classic channel", false, (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C2" })],
+    ])("in %s it says where it works and runs nothing", async (_n, expectPrivate, args) => {
       const w = seam("woke");
       const g = makeGw({ wakeNow: w.fn });
       await g.emit("message", args(g));
       expect(w.calls).toEqual([]);
-      if (_n === "a channel session with no proactive") {
+      if (expectPrivate) {
         expect(priv(g)).toContain("root of a channel");
         expect(g.posts).toHaveLength(0);
       } else {
@@ -1398,8 +1398,12 @@ describe("channel session routing", () => {
       await g.emit("message", rootArgs(g, at("/mention-only on"), { thread_ts: thread }));
       expect(g.ephemerals).toHaveLength(0);
       expect(g.posts.at(-1).thread_ts).toBe(thread);
+      const publicBefore = g.posts.length;
       await g.emit("message", rootArgs(g, at("/mode plan"), { thread_ts: thread, user: "U0MEMBER" }));
       expect(g.ephemerals).toHaveLength(0);
+      expect(g.posts.length).toBeGreaterThan(publicBefore);
+      expect(g.posts.at(-1).text).toContain("mode");
+      expect(g.posts.at(-1).thread_ts).toBe(thread);
     });
 
     it("in a classic channel a /1on1 or /soul denial is public as before", async () => {
