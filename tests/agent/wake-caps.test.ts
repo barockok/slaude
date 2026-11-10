@@ -18,6 +18,8 @@ let currentQuery: (args: QueryArgs) => any = passthrough;
 mock.module("@anthropic-ai/claude-agent-sdk", () => ({ ...realSdk, query: (args: QueryArgs) => currentQuery(args) }));
 
 const { AgentManager } = await import("../../src/agent/manager");
+const { resolveDocs, sessionGuardrails } = await import("../../src/guardrails/resolve");
+const { liveCalls } = await import("../../src/voice/turn-flags");
 import type { BackgroundTurnRun } from "../../src/agent/manager";
 import type { ModelTokens } from "../../src/background/prices";
 
@@ -257,5 +259,385 @@ describe("how a wake ends", () => {
     expect(b.users.some((u) => isCheck(String(u.message.content)))).toBe(false);
     await shutdown(mgr, normal.id);
     await shutdown(mgr, woken.id);
+  });
+});
+
+describe("a session changing between wake and normal turns", () => {
+  let booted: any[] = [];
+  beforeEach(() => {
+    booted = [];
+    const inner = currentQuery;
+    currentQuery = (args) => {
+      booted.push(args.options);
+      return inner(args);
+    };
+  });
+  const answer = (s: FakeSession) => {
+    s.emit(asst([{ type: "text", text: "ok" }]));
+    s.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(1, 1) }));
+  };
+  const texts = (s: FakeSession) => s.users.map((u) => String(u.message.content));
+  const expectWakeBoot = (o: any) => {
+    expect(o.disallowedTools).toContain("mcp__slaude_slack__reply");
+    expect(o.disallowedTools).not.toContain("mcp__slaude_runtime__proactive_post");
+  };
+  const expectNormalBoot = (o: any) => {
+    expect(o.disallowedTools).not.toContain("mcp__slaude_slack__reply");
+    expect(o.disallowedTools).toContain("mcp__slaude_runtime__proactive_post");
+    expect(o.maxBudgetUsd).toBeUndefined();
+    expect(o.maxTurns).toBeUndefined();
+  };
+  /** Lets the started flag land: a resume needs it. */
+  const settled = () => Bun.sleep(25);
+
+  it("a session booted for a normal turn restarts on its transcript for a wake", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(answer);
+    const b = plan(answer);
+    const seen = events(mgr, row.id);
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => seen.includes("done"), 3000, "done");
+    await settled();
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxBudgetUsd: 0.75, maxTurns: 12 } });
+    await until(() => finishes.length === 1, 3000, "finish");
+    expect(a.ended).toBe(true);
+    expect(texts(a)).toEqual(["hello"]);
+    expect(texts(b)).toEqual([BG]);
+    expect(booted).toHaveLength(2);
+    expect(booted[1].resume).toBe(row.id);
+    expect(booted[1].maxBudgetUsd).toBe(0.75);
+    expect(booted[1].maxTurns).toBe(12);
+    expectWakeBoot(booted[1]);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a session booted as a wake restarts as normal for a message after it, and approvals work again", async () => {
+    const mgr = new AgentManager();
+    const doc = { slug: "deploys", md: "---\nname: deploys\ndescription: about deploys\n\n---\n```rules\n- id: ask\n  on: tool\n  match: { tool: Deploy }\n  action: approve\n  message: Deploys need an approver.\n```", source: "file" as const, override: false, behindSource: false, enabled: true };
+    const set = resolveDocs([doc]);
+    mgr.setGuardrailResolver(async (_s: string, persona: string | undefined, channel: string | null) => sessionGuardrails(set, persona ?? "default", channel, { version: 5, proseMax: 4000 }));
+    const asked: string[] = [];
+    mgr.setPermissionResolver(async (_sid, tool, input) => {
+      asked.push(tool);
+      return { behavior: "allow", updatedInput: input };
+    });
+    const row = await mgr.ensureSession(thread());
+    await mgr.setPermissionMode(row.id, "bypassPermissions");
+    const a = plan(answer);
+    const b = plan(answer);
+    const seen = events(mgr, row.id);
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxBudgetUsd: 0.75, maxTurns: 12 } });
+    await until(() => finishes.length === 1, 3000, "finish");
+    await settled();
+    const pre = { hook_event_name: "PreToolUse", tool_name: "Deploy", tool_input: {}, tool_use_id: "t", session_id: "s", transcript_path: "", cwd: "/" };
+    const runPre = async (o: any) => {
+      const out: any[] = [];
+      for (const m of o.hooks.PreToolUse) for (const h of m.hooks) out.push(await h(pre, "t", { signal: new AbortController().signal }));
+      return out;
+    };
+    const during = await runPre(booted[0]);
+    expect(during.find((o) => o?.hookSpecificOutput)?.hookSpecificOutput.permissionDecisionReason).toContain("nobody is in this turn");
+    expect(asked).toHaveLength(0);
+    seen.length = 0;
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => seen.includes("done"), 3000, "done");
+    expect(a.ended).toBe(true);
+    expect(texts(b)).toEqual(["hello"]);
+    expect(booted).toHaveLength(2);
+    expect(booted[1].resume).toBe(row.id);
+    expectNormalBoot(booted[1]);
+    const after = await runPre(booted[1]);
+    expect(after.some((o) => o?.hookSpecificOutput?.permissionDecision === "allow")).toBe(true);
+    expect(asked).toEqual(["Deploy"]);
+    await shutdown(mgr, row.id);
+  });
+
+  for (const maxMinutes of [5, 0]) {
+    it(`a message during a wake with maxMinutes ${maxMinutes} is not pushed into it and runs in a normal boot after`, async () => {
+      const mgr = new AgentManager();
+      const row = await mgr.ensureSession(thread());
+      const a = plan(() => {}); // held until the test answers
+      const b = plan(answer);
+      const { run, finishes } = recorder();
+      await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 12, maxMinutes } });
+      await until(() => a.users.length === 1, 3000, "wake input");
+      const sent = mgr.sendMessage(row.id, "person");
+      await Bun.sleep(40);
+      expect(texts(a)).toEqual([BG]);
+      expect(booted).toHaveLength(1);
+      answer(a);
+      await sent;
+      await until(() => b.users.length === 1, 3000, "the person's turn");
+      expect(finishes).toHaveLength(1);
+      expect(texts(a)).toEqual([BG]);
+      expect(texts(b)).toEqual(["person"]);
+      expect(booted).toHaveLength(2);
+      expectNormalBoot(booted[1]);
+      await shutdown(mgr, row.id);
+    });
+  }
+
+  it("a wake sent during a normal turn waits for it, then boots as a wake", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(answer);
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => a.users.length === 1, 3000, "input");
+    const { run, finishes } = recorder();
+    const sent = mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 12 } });
+    await Bun.sleep(40);
+    expect(texts(a)).toEqual(["hello"]);
+    expect(booted).toHaveLength(1);
+    expect(a.ended).toBe(false);
+    answer(a);
+    await sent;
+    await until(() => finishes.length === 1, 3000, "finish");
+    expect(a.ended).toBe(true);
+    expect(texts(b)).toEqual([BG]);
+    expect(booted).toHaveLength(2);
+    expect(booted[1].maxTurns).toBe(12);
+    expectWakeBoot(booted[1]);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a session that never receives a wake does not reboot between turns", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(answer);
+    const seen = events(mgr, row.id);
+    await mgr.sendMessage(row.id, "one");
+    await until(() => seen.includes("done"), 3000, "done");
+    seen.length = 0;
+    await mgr.sendMessage(row.id, "two");
+    await until(() => seen.includes("done"), 3000, "second done");
+    expect(texts(a)).toEqual(["one", "two"]);
+    expect(booted).toHaveLength(1);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a wake on a new session boots once, as a wake", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(answer);
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 12 } });
+    await until(() => finishes.length === 1, 3000, "finish");
+    expect(texts(a)).toEqual([BG]);
+    expect(booted).toHaveLength(1);
+    expect(booted[0].maxTurns).toBe(12);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a suppressed message during a wake waits and is recorded on the normal boot after it", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(() => {});
+    const { run } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    mgr.suppressNextTurn(row.id);
+    const sent = mgr.sendMessage(row.id, "record me");
+    await Bun.sleep(30);
+    const hook = (o: any) => o.hooks.UserPromptSubmit[0].hooks[0]({ hook_event_name: "UserPromptSubmit", prompt: "x", session_id: "s", transcript_path: "", cwd: "/" }, undefined, { signal: new AbortController().signal });
+    // The wake's query must not consume the flag meant for the message behind it.
+    expect((await hook(booted[0])).continue).toBe(true);
+    answer(a);
+    await sent;
+    await until(() => b.users.length === 1, 3000, "recorded input");
+    expect(texts(b)).toEqual(["record me"]);
+    expectNormalBoot(booted[1]);
+    expect((await hook(booted[1])).continue).toBe(false);
+    answer(b);
+    await shutdown(mgr, row.id);
+  });
+
+  it("messages waiting at once keep their order, and one restart serves those of one kind", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(() => {});
+    const c = plan(answer);
+    const { run } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    const second = recorder("run-w2");
+    const sends = [
+      mgr.sendMessage(row.id, "one"),
+      mgr.sendMessage(row.id, "two"),
+      mgr.sendMessage(row.id, "second wake", { backgroundRun: second.run, wake: { maxTurns: 3 } }),
+    ];
+    await Bun.sleep(30);
+    expect(booted).toHaveLength(1);
+    answer(a);
+    await until(() => b.users.length === 2, 3000, "both messages");
+    expect(texts(b)).toEqual(["one", "two"]);
+    // The later wake still waits for those turns.
+    await Bun.sleep(30);
+    expect(booted).toHaveLength(2);
+    answer(b);
+    answer(b);
+    await Promise.all(sends);
+    await until(() => second.finishes.length === 1, 3000, "second wake");
+    expect(texts(c)).toEqual(["second wake"]);
+    expect(booted).toHaveLength(3);
+    expectNormalBoot(booted[1]);
+    expect(booted[2].maxTurns).toBe(3);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a wake on a session already booted as a wake gets a query of its own", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(answer);
+    const b = plan(answer);
+    const first = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: first.run, wake: { maxBudgetUsd: 1 } });
+    await until(() => first.finishes.length === 1, 3000, "first");
+    await settled();
+    const second = recorder("run-w2");
+    await mgr.sendMessage(row.id, "again", { backgroundRun: second.run, wake: { maxBudgetUsd: 0.25 } });
+    await until(() => second.finishes.length === 1, 3000, "second");
+    expect(a.ended).toBe(true);
+    expect(texts(b)).toEqual(["again"]);
+    expect(booted[1].maxBudgetUsd).toBe(0.25);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a person's message is released when a wake's session exits without a result", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(answer);
+    await mgr.sendMessage(row.id, BG, { wake: {} });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    const sent = mgr.sendMessage(row.id, "person");
+    await Bun.sleep(20);
+    mgr.abort(row.id);
+    await sent;
+    await until(() => b.users.length === 1, 3000, "person's turn");
+    expect(texts(b)).toEqual(["person"]);
+    expectNormalBoot(booted[1]);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a wake that ends without a ledger run still releases the message behind it", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(answer);
+    await mgr.sendMessage(row.id, BG, { wake: {} });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    const sent = mgr.sendMessage(row.id, "person");
+    await Bun.sleep(20);
+    answer(a);
+    await sent;
+    await until(() => b.users.length === 1, 3000, "person's turn");
+    expectNormalBoot(booted[1]);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a wake that fails to boot does not hold the messages behind it", async () => {
+    const mgr = new AgentManager();
+    await expect(mgr.sendMessage("no-such-session", BG, { wake: { maxMinutes: 5 } })).rejects.toThrow("session not found");
+    await expect(mgr.sendMessage("no-such-session", "person")).rejects.toThrow("session not found");
+  });
+
+  it("a wake arriving during a boot waits for it, then for its turn", async () => {
+    const mgr = new AgentManager();
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    let resolverCalled = false;
+    mgr.setGuardrailResolver(async () => {
+      resolverCalled = true;
+      await gate;
+      return null;
+    });
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(answer);
+    const first = mgr.sendMessage(row.id, "hello");
+    await until(() => resolverCalled, 3000, "boot under way");
+    const { run, finishes } = recorder();
+    const sent = mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 2 } });
+    await Bun.sleep(30);
+    open();
+    await first;
+    await until(() => a.users.length === 1, 3000, "first input");
+    await Bun.sleep(30);
+    expect(booted).toHaveLength(1);
+    expect(texts(a)).toEqual(["hello"]);
+    answer(a);
+    await sent;
+    await until(() => finishes.length === 1, 3000, "finish");
+    expect(booted).toHaveLength(2);
+    expect(booted[1].maxTurns).toBe(2);
+    await shutdown(mgr, row.id);
+  });
+
+  it("a wake waits while a voice call owns the session", async () => {
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(answer);
+    const b = plan(answer);
+    const seen = events(mgr, row.id);
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => seen.includes("done"), 3000, "done");
+    liveCalls.add(row.id);
+    try {
+      const { run, finishes } = recorder();
+      const sent = mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: { maxTurns: 2 } });
+      await Bun.sleep(60);
+      expect(a.ended).toBe(false);
+      expect(booted).toHaveLength(1);
+      // The call's own turns are not queued behind the waiting wake.
+      seen.length = 0;
+      await mgr.sendMessage(row.id, "said on the call");
+      await until(() => seen.includes("done"), 3000, "the call's turn");
+      expect(texts(a)).toEqual(["hello", "said on the call"]);
+      liveCalls.delete(row.id);
+      await sent;
+      await until(() => finishes.length === 1, 3000, "finish");
+      expect(texts(b)).toEqual([BG]);
+    } finally {
+      liveCalls.delete(row.id);
+    }
+    await shutdown(mgr, row.id);
+  });
+
+  it("no skill check follows a wake's turn, and a command pushed during it does not disturb the wait", async () => {
+    const work = (s: FakeSession, text: string) => {
+      if (text === "/compact") { s.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(1, 1) })); return; }
+      if (isCheck(text)) { s.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(2, 2) })); return; }
+      s.emit(asst([tool("Edit"), tool("Bash"), tool("Write"), tool("Edit"), tool("Bash")]));
+      s.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(1, 1) }));
+    };
+    const mgr = new AgentManager();
+    const row = await mgr.ensureSession(thread());
+    const a = plan(() => {});
+    const b = plan(work);
+    const { run, finishes } = recorder();
+    await mgr.sendMessage(row.id, BG, { backgroundRun: run, wake: {} });
+    await until(() => a.users.length === 1, 3000, "wake input");
+    expect(mgr.triggerCommand(row.id, "/compact")).toBe(true);
+    const sent = mgr.sendMessage(row.id, "person");
+    await Bun.sleep(20);
+    a.emit(asst([tool("Edit"), tool("Bash"), tool("Write"), tool("Edit"), tool("Bash")]));
+    a.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(1, 1) }));
+    await until(() => finishes.length === 1, 3000, "finish");
+    await Bun.sleep(30);
+    // The command's turn is still out: the input stays open until it ends.
+    expect(a.ended).toBe(false);
+    expect(a.users.some((u) => isCheck(String(u.message.content)))).toBe(false);
+    a.emit(res({ usage: usage(1, 1), modelUsage: modelUsage(1, 1) }));
+    await sent;
+    await until(() => b.users.length === 2, 3000, "person's turn and its check");
+    expect(texts(b)[0]).toBe("person");
+    expect(isCheck(texts(b)[1]!)).toBe(true);
+    await shutdown(mgr, row.id);
   });
 });
