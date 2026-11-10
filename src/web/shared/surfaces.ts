@@ -62,6 +62,13 @@ const slack: SurfaceInfo = {
 /** A thread key that is not a conversation thread: a run nobody started (`wake:...`, `cron:...`) or a channel session, live or archived (`channel:...`, `channel-archived:...`). */
 export const isSyntheticThread = (threadRef: string | null | undefined): boolean => !!threadRef && /^(wake|cron|channel|channel-archived):/.test(threadRef);
 
+/** The name of a channel session's thread key, live or archived; null for any other key. */
+export const channelSessionLabel = (threadRef: string | null | undefined): string | null => {
+  if (threadRef?.startsWith("channel:")) return "Channel session";
+  if (threadRef?.startsWith("channel-archived:")) return "Channel session (archived)";
+  return null;
+};
+
 const SURFACES: Readonly<Record<string, SurfaceInfo>> = { slack };
 
 /** The surface every record without one is on (records written before surfaces existed). */
