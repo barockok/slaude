@@ -53,6 +53,8 @@ describe("export to agent.yaml", () => {
     expect(text).not.toContain("user-token-live-secret");
     expect(text).not.toContain("live-secret");
     expect(text).toContain("${PERSONA_ANA_XOXP}");
+    // Editors with the YAML language server load the published schema from the first line.
+    expect(text.split("\n")[0]).toBe("# yaml-language-server: $schema=https://barockok.github.io/slaude/schemas/agent.schema.json");
 
     const p = renderDir(out, meta);
     const ana = p.personas.find((x) => x.name === "ana")!;

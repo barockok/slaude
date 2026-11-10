@@ -25,6 +25,7 @@ import { LABEL_RE } from "../queue/keys";
 import { readGuardrailDir } from "../guardrails/files";
 import { parseGuardrail } from "../guardrails/format";
 import { definitionGuardrailWarnings, parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
+import { AGENT_YAML_MODELINE } from "../persona/agent-schema";
 import { AGENT_YAML, agentDocument, documentPartsFromSoul, exportedChannelSettings, LEGACY_FILES, parseAgentYaml, proseOnlySoul } from "../persona/agent-def";
 import { extractSoulData } from "../soul/extract";
 import type { SoulData } from "../soul/data";
@@ -353,7 +354,8 @@ export async function exportAgentYaml(
     });
     const dir = join(out, "personas", args.name);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, AGENT_YAML), yamlStringify(doc, { lineWidth: 0 }));
+    // The modeline makes yaml-language-server editors complete and check the file.
+    writeFileSync(join(dir, AGENT_YAML), `${AGENT_YAML_MODELINE}\n${yamlStringify(doc, { lineWidth: 0 })}`);
   };
   const defaultSoul = read(join(home, "SOUL.md"));
   if (defaultSoul !== undefined) await write({ name: "default", soulMd: defaultSoul, mcpFile: ".mcp.json", mcpRaw: read(join(home, ".mcp.json")) });

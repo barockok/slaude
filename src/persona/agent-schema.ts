@@ -18,6 +18,11 @@ import { z } from "zod";
 import { GUARDRAIL_SLUG_RE } from "../guardrails/format";
 import { SKILL_SLUG_RE } from "../skills/loader";
 
+/** Where the docs site serves the generated JSON Schema (docs/site/build.mjs copies schemas/). */
+export const AGENT_SCHEMA_URL = "https://barockok.github.io/slaude/schemas/agent.schema.json";
+/** First line of an exported agent.yaml: editors running yaml-language-server read the schema from it. */
+export const AGENT_YAML_MODELINE = `# yaml-language-server: $schema=${AGENT_SCHEMA_URL}`;
+
 export const USER_ID_RE = /^[UW][A-Z0-9]+$/;
 export const CHANNEL_ID_RE = /^[CGD][A-Z0-9]+$/;
 export const BOUNDARY_RE = /^(?:channel:[CGD][A-Z0-9]+|trust:(?:public|trusted)|dm)$/;

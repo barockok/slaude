@@ -6,10 +6,9 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zodToJsonSchema } from "zod-to-json-schema";
-import { AgentSchema } from "../src/persona/agent-schema";
+import { AGENT_SCHEMA_URL, AgentSchema } from "../src/persona/agent-schema";
 
-/** Where the docs site serves the file (docs/site/build.mjs copies schemas/ to _site/schemas/). */
-export const AGENT_SCHEMA_URL = "https://barockok.github.io/slaude/schemas/agent.schema.json";
+export { AGENT_SCHEMA_URL };
 export const AGENT_SCHEMA_FILE = join(import.meta.dir, "..", "schemas", "agent.schema.json");
 
 /** zod-to-json-schema repeats a field's description inside its `anyOf` members; keep the outer one. */
