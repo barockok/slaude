@@ -13,7 +13,7 @@ import { parse as parseYaml, YAMLParseError } from "yaml";
 import { GUARDRAIL_SLUG_RE } from "../guardrails/format";
 import { MANDATE_LINE_MAX, subMandatesOf, type SubMandate } from "../soul/mandate-scope";
 import { SoulDataSchema, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
-import { channelOf, parseProactive } from "../soul/proactive";
+import { channelOf, endsInOpenFence, isCodeFence, parseProactive } from "../soul/proactive";
 import { SKILL_SLUG_RE } from "../skills/loader";
 import { PayloadError, safeKey } from "./sync/payload";
 
@@ -38,6 +38,8 @@ const APPROVER_KEYS = new Set(["user", "scope", "catchall", "channel"]);
 const CHANNELS_KEYS = new Set(["public", "trusted"]);
 const MEMORY_KEYS = new Set(["kbSources", "background"]);
 const CHANNEL_ENTRY_KEYS = new Set(["session", "proactive"]);
+/** Exactly what `channels` compiles to; anything else under a `## Channel` heading was authored. */
+const GENERATED_CHANNEL_SECTION_RE = /^## Channel <#[CGD][A-Z0-9]+>(?=\n###)(?:\n### Session\n- Mode: channel)?(?:\n### Proactive\n- Enabled: (?:yes|no))?$/;
 
 /** A soul section that agent.yaml keeps in its own keys (headings a SOUL.md may carry). */
 const STRUCTURED_HEADING_RE =
@@ -90,8 +92,8 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   refuseUnknown("", doc, TOP_KEYS);
   // Absent and empty mean different things for these (every one, none), and a
   // bare `key:` is neither: it fails rather than widen to "every".
-  const refuseNull = (key: string, m: Record<string, unknown>, field: string) => {
-    if (Object.hasOwn(m, field) && m[field] === null) fail(key, "has no value: list entries, write [] for none, or remove the key for all");
+  const refuseNull = (key: string, m: Record<string, unknown>, field: string, hint = "list entries, write [] for none, or remove the key for all") => {
+    if (Object.hasOwn(m, field) && m[field] === null) fail(key, `has no value: ${hint}`);
   };
   refuseNull("skills", doc, "skills");
 
@@ -258,17 +260,22 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   // the soul parser reads. The warnings below run on the authored soul alone:
   // this block is generated, not a section left in the prose by mistake.
   const channelsDoc = asMap("channels", doc.channels);
+  const authoredChannels = new Set(channelSections(soulText).map((s) => s.channel));
   let channelBlocks = "";
   for (const [channel, value] of Object.entries(channelsDoc)) {
     if (!CHANNEL_ID_RE.test(channel)) fail(`channels.${safeKey(channel)}`, "must be a channel id");
+    if (authoredChannels.has(channel)) fail(`channels.${channel}`, "also has a ## Channel section in soul: keep it in one place");
     const entry = asMap(`channels.${channel}`, value);
     refuseUnknown(`channels.${channel}.`, entry, CHANNEL_ENTRY_KEYS);
+    for (const field of CHANNEL_ENTRY_KEYS) refuseNull(`channels.${channel}.${field}`, entry, field, "set it, or remove the key");
     if (entry.session != null && entry.session !== "channel") fail(`channels.${channel}.session`, 'must be "channel"');
     if (entry.proactive != null && typeof entry.proactive !== "boolean") fail(`channels.${channel}.proactive`, "must be true or false");
-    channelBlocks += `\n\n## Channel <#${channel}>`;
-    if (entry.session === "channel") channelBlocks += "\n### Session\n- Mode: channel";
-    if (entry.proactive != null) channelBlocks += `\n### Proactive\n- Enabled: ${entry.proactive ? "yes" : "no"}`;
+    let settings = "";
+    if (entry.session === "channel") settings += "\n### Session\n- Mode: channel";
+    if (entry.proactive != null) settings += `\n### Proactive\n- Enabled: ${entry.proactive ? "yes" : "no"}`;
+    if (settings) channelBlocks += `\n\n## Channel <#${channel}>${settings}`;
   }
+  if (channelBlocks && endsInOpenFence(soulText)) fail("soul", "ends inside an open code fence, so the channels settings would not be read");
 
   for (const h of structuredHeadings(soulText)) {
     warnings.push(`persona '${name}': agent.yaml soul has a '${h}' section; mandates and access are read from their own keys, so that section is only prose`);
@@ -341,12 +348,37 @@ export function channelSettings(soulMd: string): Record<string, ChannelSetting> 
   return out;
 }
 
+/**
+ * What `personas export` can carry. A classic channel's limits have no key in
+ * agent.yaml, and a soul with `Enabled: yes` that lost them would be on with a
+ * raised ceiling, so that entry is left out and the channel follows the global
+ * switch. `Enabled: no` stays: the limits mean nothing there, and leaving it out
+ * could turn the channel on. A channel session has no such limits.
+ */
+export function exportedChannelSettings(soulMd: string): { channels: Record<string, ChannelSetting>; dropped: { channel: string; keys: string[]; followsGlobal: boolean }[] } {
+  const c = parseProactive(soulMd);
+  const channels = channelSettings(soulMd);
+  const dropped: { channel: string; keys: string[]; followsGlobal: boolean }[] = [];
+  for (const channel of new Set([...Object.keys(c.channelHighest), ...Object.keys(c.channelCooldownHours), ...Object.keys(c.channelMaxPerDay)])) {
+    if (c.sessions[channel]) continue;
+    const keys = [
+      ...(channel in c.channelHighest ? ["Highest"] : []),
+      ...(channel in c.channelCooldownHours ? ["Cooldown"] : []),
+      ...(channel in c.channelMaxPerDay ? ["Max per day"] : []),
+    ];
+    const followsGlobal = channels[channel]?.proactive === true;
+    if (followsGlobal) delete channels[channel];
+    dropped.push({ channel, keys, followsGlobal });
+  }
+  return { channels, dropped };
+}
+
 function channelSections(soulMd: string): { channel: string; lines: string[] }[] {
   const out: { channel: string; lines: string[] }[] = [];
   let open: string[] | null = null;
   let fenced = false;
   for (const line of soulMd.split(/\r?\n/)) {
-    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+    if (isCodeFence(line)) fenced = !fenced;
     else if (!fenced && /^#{1,2}\s/.test(line)) {
       const channel = channelOf(line);
       open = channel ? [] : null;
@@ -358,15 +390,17 @@ function channelSections(soulMd: string): { channel: string; lines: string[] }[]
 }
 
 /**
- * The compiled soul's `## Channel` sections for the channels `edited` has none
- * for, ready to append to it: a console edit of an agent.yaml persona's soul
- * changes the prose and keeps the structure. Empty when there are none.
+ * The generated `## Channel` sections of a compiled soul, for the channels
+ * `edited` has none for, ready to append to it: a console edit of an agent.yaml
+ * persona's soul changes the prose and keeps the structure. A section the author
+ * wrote is prose, so an edit can remove it. Empty when there are none.
  */
 export function compiledChannelSections(compiled: string, edited: string): string {
   const present = new Set(channelSections(edited).map((s) => s.channel));
   return channelSections(compiled)
-    .filter((s) => !present.has(s.channel))
-    .map((s) => `\n\n${s.lines.join("\n").trimEnd()}`)
+    .map((s) => ({ channel: s.channel, text: s.lines.join("\n").trimEnd() }))
+    .filter((s) => !present.has(s.channel) && GENERATED_CHANNEL_SECTION_RE.test(s.text))
+    .map((s) => `\n\n${s.text}`)
     .join("");
 }
 

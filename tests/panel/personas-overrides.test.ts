@@ -192,6 +192,44 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("panel persona overrides", () =>
       expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe(value);
     });
 
+    test("an authored channel section can be edited away", async () => {
+      await sync([compiled({ soulMd: "ana soul\n\n## Channel <#COPS>\n### Mandate\nWatch." })]);
+      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose" }, superadmin)))!.status).toBe(200);
+      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe("new prose");
+    });
+
+    test("an edit ending in an open fence is refused when there are sections to keep", async () => {
+      await sync([compiled()]);
+      const res = (await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose\n\`\`\`\ncode" }, superadmin)))!;
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toContain("code fence");
+      expect((await P.effectivePersonas("default"))[0]!.overridden).toEqual([]);
+    });
+
+    test("an open fence is allowed when no section needs keeping", async () => {
+      await sync([compiled({ soulMd: "ana soul" })]);
+      const value = "new prose\n\`\`\`\ncode";
+      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value }, superadmin)))!.status).toBe(200);
+      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe(value);
+    });
+
+    test("re-saving the stored text does not grow the soul", async () => {
+      await sync([compiled()]);
+      await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose" }, superadmin));
+      const value = (await P.effectivePersonas("default"))[0]!.soulMd;
+      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value }, superadmin)))!.status).toBe(200);
+      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe(value);
+    });
+
+    test("DELETE brings the compiled block back exactly once", async () => {
+      await sync([compiled()]);
+      await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose" }, superadmin));
+      expect((await panel.fetch(del("/panel/api/personas/ana/overrides/soul", superadmin)))!.status).toBe(200);
+      const soul = (await P.effectivePersonas("default"))[0]!.soulMd;
+      expect(soul).toBe(`ana soul${block}`);
+      expect(soul.split("## Channel").length - 1).toBe(1);
+    });
+
     test("a SOUL.md persona's edit is stored as written", async () => {
       await sync([compiled({ definition: undefined })]);
       expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose" }, superadmin)))!.status).toBe(200);

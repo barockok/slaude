@@ -345,8 +345,9 @@ export type StopGuard = (sessionId: string) => string | null;
 export type PersonaSoul = {
   soulMd: string;
   soulJson: unknown;
-  /** Present for a persona from an agent.yaml: `soulMd` is prose and `soulJson`
-   *  is compiled. `skills` limits the skills a session may load. */
+  /** Present for a persona from an agent.yaml: `soulMd` is prose plus the
+   *  `## Channel` sections its `channels` key compiles to, and `soulJson` is
+   *  compiled. `skills` limits the skills a session may load. */
   definition?: { skills?: string[]; guardrails?: string[] };
 };
 export type PersonaSoulResolver = (sessionId: string, persona: string | undefined) => Promise<PersonaSoul>;

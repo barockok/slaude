@@ -7,7 +7,8 @@ import { channelSettings, compiledChannelSections, parseAgentYaml } from "../../
 import { PayloadError, payloadVersionFor } from "../../src/persona/sync/payload";
 import { SoulDataSchema } from "../../src/soul/data";
 import { subMandatesOf } from "../../src/soul/mandate-scope";
-import { parseProactive } from "../../src/soul/proactive";
+import { endsInOpenFence, parseProactive } from "../../src/soul/proactive";
+import { sameDesired, type DesiredPersona } from "../../src/persona/effective";
 
 const FULL = `
 name: ana
@@ -234,6 +235,55 @@ describe("parseAgentYaml channels", () => {
   test("a persona with no channels key keeps its soul unchanged", () => {
     expect(compile("").spec.soul).toBe("You are the default agent.");
   });
+
+  test("an entry with no settings emits no heading", () => {
+    expect(compile("channels:\n  C0EXAMPLE: {}\n").spec.soul).toBe("You are the default agent.");
+    expect(compile("channels:\n  C0EXAMPLE:\n").spec.soul).toBe("You are the default agent.");
+  });
+
+  test.each([["session"], ["proactive"]])("refuses a bare %s", (key) => {
+    expect(err(() => compile(`channels:\n  C0EXAMPLE:\n    ${key}:\n`)).message).toContain(`channels.C0EXAMPLE.${key} has no value`);
+  });
+
+  test("errors name the key and omit the bad value", () => {
+    for (const line of ["session: not-a-mode-value", "proactive: not-a-mode-value"]) {
+      expect(err(() => compile(`channels:\n  C0EXAMPLE:\n    ${line}\n`)).message).not.toContain("not-a-mode-value");
+    }
+    const badKey = err(() => compile(`channels:\n  "not a channel secretvalue":\n    session: channel\n`)).message;
+    expect(badKey).not.toContain("secretvalue");
+    expect(badKey).toContain("must be a channel id");
+  });
+
+  test("a soul ending in an open code fence fails when channels has settings", () => {
+    const open = "name: default\nsoul: |\n  Prose.\n  \`\`\`\n  sample\n";
+    expect(err(() => parseAgentYaml("default", `${open}channels:\n  C0EXAMPLE:\n    session: channel\n`)).message).toContain("soul");
+    expect(parseAgentYaml("default", `${open}channels:\n  C0EXAMPLE: {}\n`).spec.soul).toContain("sample");
+    expect(parseAgentYaml("default", open).spec.soul).toContain("sample");
+  });
+
+  test("a soul with its own section for a listed channel fails, naming only the channel id", () => {
+    const yaml = "name: default\nsoul: |\n  Prose.\n\n  ## Channel <#C0EXAMPLE|private-name>\n  ### Mandate\n  Watch.\nchannels:\n  C0EXAMPLE:\n    session: channel\n";
+    const message = err(() => parseAgentYaml("default", yaml)).message;
+    expect(message).toContain("channels.C0EXAMPLE");
+    expect(message).not.toContain("private-name");
+    expect(message).not.toContain("Watch");
+  });
+
+  test("a fenced section, or a section for another channel, is not a clash", () => {
+    const fenced = "name: default\nsoul: |\n  \`\`\`\n  ## Channel <#C0EXAMPLE>\n  \`\`\`\n  ## Channel <#COTHER>\n  ### Mandate\n  Watch.\nchannels:\n  C0EXAMPLE:\n    session: channel\n";
+    expect(parseProactive(parseAgentYaml("default", fenced).spec.soul).sessions).toEqual({ C0EXAMPLE: "channel" });
+  });
+
+  test("compiling the same file twice leaves the stored persona unchanged", () => {
+    const row = (text: string): DesiredPersona => {
+      const { spec } = parseAgentYaml("default", text);
+      const { soulData, ...definition } = spec.definition;
+      return { name: "default", slackUserId: null, userToken: null, model: null, soulMd: spec.soul, soulJson: soulData, mcp: null, origin: "git", tombstonedAt: null, definition } as DesiredPersona;
+    };
+    const on = def("channels:\n  C0EXAMPLE:\n    session: channel\n    proactive: true\n");
+    expect(sameDesired(row(on), JSON.parse(JSON.stringify(row(on))))).toBe(true);
+    expect(sameDesired(row(on), row(def("channels:\n  C0EXAMPLE:\n    session: channel\n    proactive: false\n")))).toBe(false);
+  });
 });
 
 describe("channelSettings", () => {
@@ -261,6 +311,22 @@ describe("compiledChannelSections", () => {
     expect(compiledChannelSections(compiled, edited)).toBe("\n\n## Channel <#CONE>\n### Session\n- Mode: channel");
   });
 
+  test("an authored section is not kept, so an edit can remove it", () => {
+    const authored = [
+      "## Channel <#CONE>\n### Mandate\nWatch.",
+      "## Channel <#CONE|one>\n### Session\n- Mode: channel",
+      "## Channel <#CONE>\n### Session\n- Mode: channel\nand a note",
+      "## Channel <#CONE>\n### Proactive\n- Enabled: yes\n- Highest: ask",
+      "## Channel <#CONE>",
+    ];
+    for (const section of authored) expect(compiledChannelSections(`Prose.\n\n${section}`, "New prose.")).toBe("");
+  });
+
+  test("re-saving the kept text does not grow it", () => {
+    const once = `New prose.${compiledChannelSections(compiled, "New prose.")}`;
+    expect(compiledChannelSections(compiled, once)).toBe("");
+  });
+
   test("is empty when the soul has no channel sections, and ignores a fenced heading", () => {
     expect(compiledChannelSections("Prose.\n```\n## Channel <#CONE>\n```\n", "New prose.")).toBe("");
   });
@@ -268,6 +334,18 @@ describe("compiledChannelSections", () => {
   test("a section ends at the next heading of its level or above", () => {
     const soul = "## Channel <#CONE>\n### Session\n- Mode: channel\n\n## Values\n- be honest\n";
     expect(compiledChannelSections(soul, "New prose.")).toBe("\n\n## Channel <#CONE>\n### Session\n- Mode: channel");
+  });
+});
+
+describe("endsInOpenFence", () => {
+  test.each([
+    ["no fence", "Prose.\n", false],
+    ["a closed fence", "\`\`\`\ncode\n\`\`\`\n", false],
+    ["an open fence", "Prose.\n\`\`\`\ncode\n", true],
+    ["an open tilde fence", "~~~\ncode", true],
+    ["an indented open fence", "  \`\`\`\r\ncode\r\n", true],
+  ])("%s", (_name, text, open) => {
+    expect(endsInOpenFence(text)).toBe(open);
   });
 });
 

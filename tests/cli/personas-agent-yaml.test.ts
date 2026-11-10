@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,6 +86,49 @@ describe("export to agent.yaml", () => {
     const after = parseProactive(ana.soul);
     expect(after.sessions).toEqual(before.sessions);
     expect(after.channels).toEqual(before.channels);
+  });
+
+  async function exportChannels(blocks: string): Promise<{ channels: unknown; warned: string; out: string }> {
+    const h = home();
+    writeFileSync(join(h, "personas", "ana", "SOUL.md"), `${soulMd}\n${blocks}`);
+    const out = tmp();
+    const spy = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await exportAgentYaml(h, out, { extract: async () => extracted });
+      const doc = parseYaml(readFileSync(join(out, "personas", "ana", "agent.yaml"), "utf8")) as Record<string, unknown>;
+      return { channels: doc.channels, warned: spy.mock.calls.map((c) => String(c[0])).join("\n"), out };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  test("a classic channel with limits is left out and warned about, keeping the fallback", async () => {
+    const { channels, warned } = await exportChannels("## Channel <#CLIMIT>\n### Proactive\n- Enabled: yes\n- Highest: ask\n- Cooldown: 4 hours\n");
+    expect(channels).toBeUndefined();
+    expect(warned).toContain("CLIMIT");
+    expect(warned).toContain("Highest, Cooldown");
+    expect(warned).not.toContain("Max per day");
+  });
+
+  test("a classic channel with limits that is off stays off", async () => {
+    const { channels, warned } = await exportChannels("## Channel <#CLIMIT>\n### Proactive\n- Enabled: no\n- Max per day: 2\n");
+    expect(channels).toEqual({ CLIMIT: { proactive: false } });
+    expect(warned).toContain("Max per day");
+  });
+
+  test("a channel-mode channel carries proactive, with no warning", async () => {
+    const { channels, warned } = await exportChannels("## Channel <#CSESS>\n### Session\n- Mode: channel\n### Proactive\n- Enabled: yes\n- Highest: ask\n");
+    expect(channels).toEqual({ CSESS: { session: "channel", proactive: true } });
+    expect(warned).not.toContain("CSESS");
+  });
+
+  test("a soul of only structured sections keeps them in the soul, and still compiles", async () => {
+    const h = home();
+    writeFileSync(join(h, "personas", "ana", "SOUL.md"), "## Channel <#CSESS>\n### Session\n- Mode: channel\n");
+    const out = tmp();
+    await exportAgentYaml(h, out, { extract: async () => extracted });
+    const ana = renderDir(out, meta).personas.find((p) => p.name === "ana")!;
+    expect(parseProactive(ana.soul).sessions).toEqual({ CSESS: "channel" });
   });
 
   test("--persona exports one persona only, and asks no extraction for the others", async () => {

@@ -94,6 +94,7 @@ import { publishConfigReload } from "../core/config-reload";
 import * as Personas from "../../db/personas";
 import { OVERRIDE_FIELDS, type OverrideField, type DesiredPersona } from "../../persona/effective";
 import { compiledChannelSections } from "../../persona/agent-def";
+import { endsInOpenFence } from "../../soul/proactive";
 import { PERSONA_NAME_RE } from "../../persona/sync/payload";
 import { resolveDbConfig } from "../../db/client";
 import { assertHttpOnlyMcp, McpNotHttpOnlyError } from "../../persona/mcp-http-only";
@@ -1321,9 +1322,11 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
                 // channel sections in its soul included: only the prose changes,
                 // and extraction would find nothing in prose.
                 const one = await Personas.personaByName(tenant, name);
-                stored = one?.desired.definition
-                  ? { soulMd: v + compiledChannelSections(one.desired.soulMd, v), soulJson: one.desired.soulJson }
-                  : { soulMd: v, soulJson: await extractSoul(v) };
+                if (one?.desired.definition) {
+                  const kept = compiledChannelSections(one.desired.soulMd, v);
+                  if (kept && endsInOpenFence(v)) return json(400, { error: "the soul text ends inside an open code fence: close it so the channel settings can be kept" });
+                  stored = { soulMd: v + kept, soulJson: one.desired.soulJson };
+                } else stored = { soulMd: v, soulJson: await extractSoul(v) };
               } else if (field === "model") {
                 if (typeof v !== "string" || !v) return json(422, { error: "model value must be a non-empty string" });
               } else {

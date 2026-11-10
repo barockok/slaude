@@ -123,6 +123,16 @@ export function channelOf(heading: string): string | null {
   return CHANNEL_ID.test(id) ? id : null;
 }
 
+/** A line that opens or closes a code fence; a soul parser reads nothing inside one. */
+export const isCodeFence = (line: string): boolean => /^\s*(```|~~~)/.test(line);
+
+/** Whether `text` ends inside a code fence, so anything appended to it would not be read. */
+export function endsInOpenFence(text: string): boolean {
+  let fenced = false;
+  for (const line of text.split(/\r?\n/)) if (isCodeFence(line)) fenced = !fenced;
+  return fenced;
+}
+
 /** One `- Key: value` line (also `*`), comment after `#` dropped. */
 function keyValue(line: string): [string, string] | null {
   const m = /^\s*[-*]\s*([^:]+):\s*(.*)$/.exec(line);
@@ -170,7 +180,7 @@ export function parseProactive(text: string): ProactiveConfig {
   let where: { kind: "global" } | { kind: "channel"; id: string; sub: "proactive" | "session" | null } | null = null;
   let fenced = false;
   for (const line of text.split(/\r?\n/)) {
-    if (/^\s*(```|~~~)/.test(line)) {
+    if (isCodeFence(line)) {
       fenced = !fenced;
       continue;
     }
@@ -325,7 +335,7 @@ export function parseManager(text: string): string | null {
   let inReporting = false;
   let fenced = false;
   for (const line of text.split(/\r?\n/)) {
-    if (/^\s*(```|~~~)/.test(line)) {
+    if (isCodeFence(line)) {
       fenced = !fenced;
       continue;
     }
@@ -372,7 +382,7 @@ export function parseScopedMandates(text: string): ParsedMandates {
   let openMode: string | null = null;
   let fenced = false;
   for (const line of text.split(/\r?\n/)) {
-    if (/^\s*(```|~~~)/.test(line)) {
+    if (isCodeFence(line)) {
       fenced = !fenced;
       continue;
     }
