@@ -212,7 +212,7 @@ Proactive is now defined per channel, and turning it on means a channel session.
 | Invalid `Mode` | Reads as off: no session, no wakes, whatever `Enabled` says. Warned. |
 | `Enabled: no` with no `Mode` | An ordinary classic channel. |
 | Agent-level wake | Removed. No code path starts a `wake:<agent>:<slot>` session. A global `## Proactive` `Enabled: yes` starts no wake and warns once per soul hash. |
-| Summarising round | `runHeartbeat` and `Watch:` stay, as a round over watched sources only: no checklist. Its posts reach the manager and people who opted in. It no longer routes to a channel: every proactive channel is a channel session whose ceiling is `act`, and an item from a watched source is untrusted. |
+| Summarising round | `runHeartbeat` and `Watch:` stay, as a round over watched sources only, and only while the global `Enabled: yes` is set (without it no post could reach anyone, so nothing is read and it warns once): no checklist. Its posts reach the manager and people who opted in. It no longer routes to a channel: every proactive channel is a channel session whose ceiling is `act`, and an item from a watched source is untrusted. |
 | Checklist | Per channel, `self/heartbeat/<channel>` in the agent's slice, the channel id lowercased in one function (`channelChecklistSlug`) because gbrain stores slugs lowercased. The body goes into that channel's wake prompt as data inside a `<checklist>` block. The wake-due hash covers mandate plus page, so an edit wakes the channel. A page with no mandate is a job; neither is not. |
 | Migration | At wake start, a proactive channel with no page of its own gets a copy of the old per-agent `self/heartbeat` page, when the agent has exactly one proactive channel, once (recorded in `background_slots`). The old page stays. With several channels nothing is copied and it warns once. |
 | Timing | Unchanged: the heartbeat slot is the tick, `finish_round`'s `next_check_at` proposes the next look inside one slot and `SLAUDE_WAKE_MAX_SLEEP_HOURS`. |
@@ -231,8 +231,10 @@ stays, so old `wake:` rows still age out.
 
 Every channel with `Enabled: yes` becomes a channel session on upgrade: root
 mentions reply at root and root messages are recorded. A channel's `Highest`,
-`Cooldown` and `Max per day` have no effect in a channel session; the soul check
-warns for each such channel that lost them this way. A proactive channel needs
+`Cooldown` and `Max per day` have no effect in a channel session (a channel with
+`Highest: inform` wakes with ceiling `act`); a warning is logged for each channel
+that lost them this way. Each `Enabled: yes` channel with a mandate gets its own
+first wake and ongoing spend. A proactive channel needs
 nodes with `channel-session/1`, so a node on an older version cannot take its
 jobs.
 

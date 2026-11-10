@@ -46,9 +46,9 @@ channels:
     session: channel
 ```
 
-`Enabled: no` with no `Mode` is an ordinary channel. An unknown `Mode` in a soul reads as off for that channel, whatever `Enabled` says: no channel session and no wakes, and the soul check warns. An invalid value in `agent.yaml` fails the compile.
+`Enabled: no` with no `Mode` is an ordinary channel. An unknown `Mode` in a soul reads as off for that channel, whatever `Enabled` says: no channel session and no wakes, and a warning is logged. An invalid value in `agent.yaml` fails the compile.
 
-`## Proactive` at the top level is not about a channel. `Enabled: yes` there starts no wake and warns once; it only keeps the summarising round going, which reads the sources under `Watch:` and reports to the manager.
+`## Proactive` at the top level is not about a channel. `Enabled: yes` there starts no wake and warns once; it only keeps the summarising round going, which reads the sources under `Watch:` and reports to the manager. `Watch:` without it reads nothing and logs a warning.
 
 Two agents in one channel each have their own session and each records the channel for itself.
 
