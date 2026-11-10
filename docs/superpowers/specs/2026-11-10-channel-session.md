@@ -83,15 +83,25 @@ existing `slack_thread_ts` column. There is still one row per team, channel,
 thread and persona. `isSyntheticThread` learns the prefix, so the console labels
 it by channel.
 
-### One function for the thread key
+### The key stays out of the turn
 
-`event.thread_ts || eventTs` is computed in nine places in `gateway.ts`. All of
-them move to one function that returns the session key and the post target.
-The reserved key must never reach Slack as a `thread_ts`. Replies use the
-existing `postTarget: "channel"` seam, which drops the thread reference.
+The reserved key is used only to find or create the session. A root turn's
+`threadTs` stays the triggering message's `ts`, as it is today, so reactions,
+status, cards, error posts, lock lookups and the job token's `thread` claim all
+keep a real Slack value without changing the code that computes them. Replies
+reach root through the existing `postTarget: "channel"` seam. The job token
+carries a new signed `post: "channel"` claim, because the `/v1` tool plane
+rebuilds its context from the claims.
 
-Reactions, status and cards anchor on the triggering message, never on the
-session key.
+A wake has no triggering message, so it uses the reserved key as its thread,
+as today's `wake:` and `cron:` keys do. A wake never posts to its thread.
+
+### Delivery and de-duplication
+
+Inbound events are claimed once by channel and `ts`, but with one app per agent
+every app receives its own copy. A channel-session event is claimed per channel,
+`ts` and persona, or only the first agent would record it. An unmentioned root
+message is never parsed as a slash command.
 
 ### Cards
 
@@ -125,13 +135,25 @@ here it lasts longer. Sensitive work belongs in a `/1on1` thread.
 
 ## Wakes
 
-- `heartbeat_wake_state` moves from per agent to per agent and channel, through
-  a migration on both database schemas. Agent-level rows keep working for the
-  agent-level wake.
+- A new `channel_wake_state` table, keyed on agent and channel, on both database
+  schemas. `heartbeat_wake_state` stays as it is for the agent-level wake.
+  Changing its primary key would need a table rebuild on sqlite for no benefit.
 - A channel-mode channel leaves the agent-level wake, which keeps serving DMs
   and classic channels.
 - A channel wake dispatches into the channel session as the agent, with the
   existing caps and daily pool.
+- An agent runs one wake at a time across its channels, as it does today. A
+  channel that is due while another wake runs goes at the next slot.
+- A session boots either as a wake or as a normal session: caps and the wake's
+  tool set are fixed when the query starts. The channel session therefore
+  restarts on the same transcript when the kind of turn changes. It keeps the
+  conversation and costs a process start.
+- A wake is never merged with a person's message. A mention waits until the wake
+  ends, and a wake waits until a running turn ends.
+- A channel session works in its own folder under the agent's proactive folder,
+  shared with the threads under that channel's wake posts, one turn at a time.
+  The agent-wide folder would make a mention in one channel wait on work in
+  another.
 - The wake prompt drops the activity and notes blocks, because the session holds
   that history.
 - Plain wake text stays silent. Only `proactive_post` reaches people, at root.
@@ -157,6 +179,9 @@ here it lasts longer. Sensitive work belongs in a `/1on1` thread.
 
 No `Mode` means no change. Nodes advertise a new capability,
 `channel-session/1`, and only capable nodes receive jobs on a channel session.
+An older node would run a wake on a warm session with a person's tool set. A node
+with this capability is newer than `guardrails/1` and `agent-definition/1`, so
+one capability check is enough.
 
 ## Testing
 
