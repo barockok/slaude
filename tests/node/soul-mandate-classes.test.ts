@@ -15,6 +15,9 @@ import type { Persona } from "../../src/persona/types";
 import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
 import { SoulDataSchema } from "../../src/soul/data";
 import { bundleWithChannelClasses, bundleEtagForTests } from "../../src/gateway/api/tenants";
+import * as PerPersona from "../../src/soul/per-persona";
+import { mandateContext, normalizeChannelClasses } from "../../src/soul/mandate-scope";
+import { mandateTextFromSoulText } from "../../src/soul/persona-mandates";
 
 const KEYS = ["SLAUDE_ROLE", "SLAUDE_DB", "SLAUDE_PG_URL", "SLAUDE_HOME"] as const;
 const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
@@ -51,10 +54,10 @@ const SOULS = {
 
 const block = (p: string) => /<channel-mandate>[\s\S]*?<\/channel-mandate>/.exec(p)?.[0] ?? "";
 
-function nodePrompt(md: string, channel: string, extra: { channelClasses?: unknown; soulJson?: unknown } = {}) {
+function nodePrompt(md: string, channel: string, extra: { channelClasses?: unknown; soulJson?: unknown; tenantId?: string } = {}) {
   process.env.SLAUDE_ROLE = "node";
   const a = new AgentManager();
-  a.setPersonaSoulResolver(async () => ({ soulMd: md, soulJson: extra.soulJson ?? null, ...(extra.channelClasses ? { channelClasses: extra.channelClasses } : {}) }) as never);
+  a.setPersonaSoulResolver(async () => ({ soulMd: md, soulJson: extra.soulJson ?? null, ..."channelClasses" in extra ? { channelClasses: extra.channelClasses } : {}, ...(extra.tenantId ? { tenantId: extra.tenantId } : {}) }) as never);
   return a.__systemPromptForTests("s", "sam", { channelId: channel }).then(block);
 }
 
@@ -162,5 +165,87 @@ describe("the bundle carries the channel lists for a persona without a structure
     setSoulData(SoulDataSchema.parse({ trustedChannels: ["CTEAM01", "CNEW01"], allowedChannels: ["CPUB01"] }));
     const b = bundleEtagForTests(JSON.stringify(bundleWithChannelClasses({ personaId: "sam", soulMd: "x", soulJson: null } as never)));
     expect(a).not.toBe(b);
+  });
+});
+
+describe("a malformed channelClasses cannot break a session boot", () => {
+  const MALFORMED: Array<[string, unknown]> = [
+    ["empty object", {}],
+    ["null member", { trustedChannels: null, allowedChannels: [] }],
+    ["string", "x"],
+    ["array", []],
+    ["string member", { trustedChannels: "CTEAM01", allowedChannels: [] }],
+    ["number", 7],
+  ];
+  test.each(MALFORMED)("%s: no throw, no trust scope applied, one warning", async (_n, bad) => {
+    const warns: string[] = [];
+    const spy = spyOn(console, "warn").mockImplementation((...a: unknown[]) => { warns.push(a.map(String).join(" ")); });
+    try {
+      expect(await nodePrompt(SOULS.trustedOverride, "CTEAM01", { channelClasses: bad })).toBe("");
+      expect(await nodePrompt(SOULS.override, "CTEAM01", { channelClasses: bad })).toContain("Only triage asks.");
+    } finally {
+      spy.mockRestore();
+    }
+    expect(warns.filter((l) => l.includes("scope restrictions are not applied")).length).toBe(1);
+  });
+
+  test("non-string entries are dropped, strings kept", () => {
+    expect(normalizeChannelClasses({ trustedChannels: ["CA", 5, null], allowedChannels: ["CB"] })).toEqual({ trustedChannels: ["CA"], allowedChannels: ["CB"] });
+    expect(normalizeChannelClasses({ trustedChannels: "CA", allowedChannels: [] })).toBeUndefined();
+  });
+
+  test("mandateContext and mandateTextFromSoulText never throw on non-array lists", () => {
+    expect(mandateContext({ trustedChannels: null, allowedChannels: "x" } as never, "CA").trust).toBeNull();
+    expect(() => mandateTextFromSoulText(SOULS.publicReduce, {} as never)).not.toThrow();
+    expect(() => mandateTextFromSoulText(SOULS.publicReduce, "x" as never)).not.toThrow();
+  });
+
+  test("a channel in both lists is trusted (trusted wins), on the node and the gateway", async () => {
+    const both = { trustedChannels: ["CBOTH01"], allowedChannels: ["CBOTH01"] };
+    const md = `${head}## Scope public\n### Mandate\nPublic text.\n\n## Scope trusted\n### Mandate\nTrusted text.\n`;
+    const node = await nodePrompt(md, "CBOTH01", { channelClasses: both });
+    expect(node).toContain("Trusted text.");
+    expect(node).not.toContain("Public text.");
+  });
+
+  test("the warning is keyed by tenant and persona", async () => {
+    const warns: string[] = [];
+    const spy = spyOn(console, "warn").mockImplementation((...a: unknown[]) => { warns.push(a.map(String).join(" ")); });
+    try {
+      await nodePrompt(SOULS.publicReduce, "CPUB01", { tenantId: "t1" });
+      await nodePrompt(SOULS.publicReduce, "CPUB01", { tenantId: "t1" });
+      await nodePrompt(SOULS.publicReduce, "CPUB01", { tenantId: "t2" });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(warns.filter((l) => l.includes("scope restrictions are not applied")).length).toBe(2);
+  });
+
+  test("a gateway that could not read the lists says so: the node does not warn, the gateway does", async () => {
+    const node: string[] = [];
+    const nspy = spyOn(console, "warn").mockImplementation((...a: unknown[]) => { node.push(a.map(String).join(" ")); });
+    try {
+      expect(await nodePrompt(SOULS.publicReduce, "CPUB01", { channelClasses: null })).toBe("");
+    } finally {
+      nspy.mockRestore();
+    }
+    expect(node.filter((l) => l.includes("scope restrictions"))).toEqual([]);
+
+    const gw: string[] = [];
+    const gspy = spyOn(console, "warn").mockImplementation((...a: unknown[]) => { gw.push(a.map(String).join(" ")); });
+    const boom = spyOn(PerPersona, "soulDataFor").mockImplementation(() => { throw new Error("boom"); });
+    try {
+      const out = bundleWithChannelClasses({ personaId: "sam", tenantId: "t1", soulMd: "x", soulJson: null } as never) as { channelClasses?: unknown };
+      expect(out.channelClasses).toBeNull();
+    } finally {
+      boom.mockRestore();
+      gspy.mockRestore();
+    }
+    expect(gw.some((l) => l.includes("sam") && l.includes("channel lists"))).toBe(true);
+  });
+
+  test("a compiled (agent.yaml) soul is not given default lists", () => {
+    const b = bundleWithChannelClasses({ personaId: "ana", soulMd: "x", soulJson: { mandate: "m" }, definition: {} } as never);
+    expect("channelClasses" in b).toBe(false);
   });
 });

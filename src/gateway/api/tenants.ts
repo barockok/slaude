@@ -92,8 +92,9 @@ export interface RuntimeBundle {
    *  bundle has no structured soul (`soulJson` null, a SOUL.md persona). A node
    *  needs them to place `## Scope trusted|public` mandates when it parses the
    *  soul text itself. Part of the body, so the ETag changes with the lists.
-   *  An older node ignores it. */
-  channelClasses?: { trustedChannels: string[]; allowedChannels: string[] };
+   *  An older node ignores it. `null`: the gateway could not read the lists and
+   *  logged it, so a node does not warn a second time. */
+  channelClasses?: { trustedChannels: string[]; allowedChannels: string[] } | null;
 }
 
 type PersonaRow = {
@@ -295,8 +296,9 @@ export function bundleWithChannelClasses(bundle: RuntimeBundle): RuntimeBundle {
   try {
     const { trustedChannels, allowedChannels } = soulDataFor(bundle.personaId);
     return { ...bundle, channelClasses: { trustedChannels: [...trustedChannels], allowedChannels: [...allowedChannels] } };
-  } catch {
-    return bundle;
+  } catch (e) {
+    console.warn(`[runtime-bundle] persona=${bundle.personaId} tenant=${bundle.tenantId}: could not read the channel lists (${e instanceof Error ? e.message : String(e)}); the node gets none, so its trust-scope mandates are not applied`);
+    return { ...bundle, channelClasses: null };
   }
 }
 

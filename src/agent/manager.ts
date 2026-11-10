@@ -33,6 +33,7 @@ import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plu
 import { soulSystemBlock } from "../soul/loader";
 import { BUILTIN_PLUGIN_DIR, cliPluginName, pluginsNamedLikeBuiltin } from "../soul/builtin";
 import { personaSoulText } from "../persona/soul-source";
+import { normalizeChannelClasses } from "../soul/mandate-scope";
 import { effectiveMandateIn, mandateTextFromSoulText, personaMandateText } from "../soul/persona-mandates";
 import { compiledPromptSoul } from "../soul/per-persona";
 import { allowedSkillNames, sdkSkillsOption } from "./skill-allow";
@@ -390,7 +391,9 @@ export type PersonaSoul = {
   definition?: { skills?: string[]; guardrails?: string[] };
   /** The gateway's channel lists for a persona whose bundle has no structured
    *  soul; absent from an older gateway. */
-  channelClasses?: { trustedChannels: string[]; allowedChannels: string[] };
+  channelClasses?: { trustedChannels: string[]; allowedChannels: string[] } | null;
+  /** The bundle's tenant, to key per-persona warnings. */
+  tenantId?: string;
 };
 export type PersonaSoulResolver = (sessionId: string, persona: string | undefined) => Promise<PersonaSoul>;
 /** The owner guardrails a booting session carries (src/guardrails/resolve.ts),
@@ -1755,7 +1758,7 @@ export class AgentManager extends EventEmitter {
       // Owner Guidance right after the soul, before the channel mandate.
       // Enforced rules are never in the prompt: code checks them.
       ctx.guardrails?.promptBlock ?? "",
-      channelMandateBlock(ctx.channelId, soul.soulJson, sessionId, personaName, this.#personaSoulResolver ? { soulMd: soul.soulMd, classes: soul.channelClasses } : undefined),
+      channelMandateBlock(ctx.channelId, soul.soulJson, sessionId, personaName, this.#personaSoulResolver ? { soulMd: soul.soulMd, classes: soul.channelClasses, tenantId: soul.tenantId } : undefined),
       sessionModeBlock(ctx.lock ?? null, ctx.remote),
       mcpServers
         ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
@@ -2954,12 +2957,15 @@ export function __resetNodeSoulWarningsForTests(): void {
   warnedNoClasses.clear();
 }
 
-function nodeMandateText(node: { soulMd: string; classes?: { trustedChannels: string[]; allowedChannels: string[] } }, persona: string | undefined) {
-  const text = mandateTextFromSoulText(node.soulMd, node.classes);
-  const key = persona ?? "default";
-  if (!node.classes && !warnedNoClasses.has(key) && text.subMandates.some((m) => m.boundary === "trust:trusted" || m.boundary === "trust:public")) {
+function nodeMandateText(node: { soulMd: string; classes?: unknown; tenantId?: string }, persona: string | undefined) {
+  const classes = normalizeChannelClasses(node.classes);
+  const text = mandateTextFromSoulText(node.soulMd, classes);
+  const name = persona ?? "default";
+  const key = `${node.tenantId ?? ""}/${name}`;
+  // null: the gateway could not read its lists and said so; not warned twice.
+  if (!classes && node.classes !== null && !warnedNoClasses.has(key) && text.subMandates.some((m) => m.boundary === "trust:trusted" || m.boundary === "trust:public")) {
     warnedNoClasses.add(key);
-    console.warn(`[agent] persona=${key} has a ## Scope trusted/public mandate but the gateway sent no channel lists: scope restrictions are not applied on this node`);
+    console.warn(`[agent] persona=${name} has a ## Scope trusted/public mandate but the gateway sent no channel lists: scope restrictions are not applied on this node`);
   }
   return text;
 }
@@ -2969,7 +2975,7 @@ function channelMandateBlock(
   soulJson: unknown,
   sessionId: string,
   persona: string | undefined,
-  node?: { soulMd: string; classes?: { trustedChannels: string[]; allowedChannels: string[] } },
+  node?: { soulMd: string; classes?: unknown; tenantId?: string },
 ): string {
   if (!channelId) return "";
   let eff: string | undefined;
