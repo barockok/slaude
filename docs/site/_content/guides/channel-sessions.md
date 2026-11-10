@@ -55,9 +55,11 @@ DMs are unchanged.
 
 ## 4. Proactive
 
-With `### Proactive` and `Enabled: yes` on a channel in this mode, the agent wakes in the channel's session. It already holds the channel's history, so a wake reads no activity or notes block. It picks its own next look when it ends with `finish_round`; the runtime keeps that time between one heartbeat slot and the maximum sleep.
+With `### Proactive` and `Enabled: yes` on a channel in this mode, the agent wakes in the channel's session. A wake needs a manager and a mandate: a persona with no manager does not wake, and a channel with no mandate (its own or the persona's) is skipped. It already holds the channel's history, so a wake reads no activity or notes block. It picks its own next look when it ends with `finish_round`; the runtime keeps that time between one heartbeat slot and the maximum sleep.
 
-Plain text from a wake stays silent. Only `proactive_post` reaches people, and it posts at root. Approval requests are refused during a wake, because nobody is in the turn to answer them.
+Plain text from a wake stays silent. A wake reaches people with `proactive_post`, which posts at root, and with `post_message` for a follow-up in a thread of a post it made in that channel. It cannot `post_message` to another channel. Approval requests are refused during a wake, because nobody is in the turn to answer them.
+
+A wake uses its own tools only under the `bypass` permission mode (`SLAUDE_DEFAULT_MODE=bypass`). The runtime denies every permission request during a wake, since nobody is there to approve one, so in any other mode a tool that would prompt is refused.
 
 A wake and a person's turn never share a turn. A mention that arrives during a wake waits for it to end, and a wake waits for a running turn. An agent runs one wake at a time across its channels; a channel that is due while another wake runs goes at the next slot.
 
@@ -67,7 +69,7 @@ A wake and a person's turn never share a turn. A mention that arrives during a w
 
 `/new` at root, from the manager or one of that channel's approvers, retires the channel session. The next root message starts a new one that remembers nothing of the old conversation. Anyone else is refused.
 
-The old session stays in the console, labelled archived, and it is read-only: a console chat into it is refused. `/new` inside a thread changes nothing.
+The old session stays in the console, labelled archived, and it is read-only: a console chat into it is refused. Inside a thread, or in a channel without a channel session, `/new` is not a command: it reaches the agent as ordinary text, or a skill named `new`, as any other message would.
 
 ## 6. Refused commands and voice
 
@@ -77,6 +79,8 @@ Some commands make no sense for a whole channel, so they are refused at root:
 |---|---|
 | `/1on1`, `/env`, `/remote` | Refused: start a thread for this. Each ties a session to one person. |
 | `/mention-only`, `/ignore-thread` | Refused: they have no meaning at root. |
+
+`/mode` at root needs a manager or one of this channel's approvers, because it applies to every later speaker and wake in the channel. Anyone else is refused. In a thread, a DM or a channel without a channel session it works as it always has.
 
 Voice calls run in a thread. A channel session does not host one.
 

@@ -1,6 +1,6 @@
 # Channel session mode
 
-Status: proposed.
+Status: implemented.
 
 ## Goal
 
@@ -198,3 +198,7 @@ one capability check is enough.
 - Per-channel budgets or wake settings.
 - Injecting channel-session context into threads.
 - Changing DM or thread behavior.
+
+## Voice
+
+A wake never waits for a voice call: a wake on a session in a call is refused at once and its run closes. Channel sessions host no voice calls; a voice call runs in a thread.
