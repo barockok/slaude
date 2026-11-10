@@ -33,6 +33,11 @@ export interface WakeRunOptions {
   maxMinutes?: number;
 }
 
+/** A wake refused because a turn started on its channel session since `busy` was asked. Not a failure: nothing ran. */
+export class WakeTargetBusyError extends Error {
+  override readonly name = "WakeTargetBusyError";
+}
+
 /** Where a wake's turn goes. `channelId` is set for a channel session's wake. */
 export interface WakeTarget {
   teamId: string;

@@ -12,7 +12,7 @@ import * as WakeState from "../../src/db/heartbeat-wake-state";
 import { finishSkillCheck } from "../../src/background/skill-check";
 import { sweepStaleRuns } from "../../src/background/stale-runs";
 import { __setProactiveSoulSource } from "../../src/soul/proactive";
-import { checklistHash, type WakeDeps, type WakeRunOptions } from "../../src/proactive/wake";
+import { checklistHash, wakeGateConfig, WakeTargetBusyError, type WakeDeps, type WakeRunOptions } from "../../src/proactive/wake";
 import { runChannelWakes } from "../../src/proactive/channel-wake";
 import { finishRoundTool, proactivePostTool, WAKE_JOURNAL_SLUG, type WakeToolContext, type WakeToolDeps } from "../../src/proactive/wake-tools";
 import { agentPageBody } from "../../src/proactive/heartbeat";
@@ -156,6 +156,52 @@ describe("runChannelWakes", () => {
     expect(await openRuns()).toEqual([]);
   });
 
+  test("a lost race with a person's turn is no failure: the run closes, the state stays, the channel stays due", async () => {
+    const h = harness({ transport: { dispatch: async () => { throw new WakeTargetBusyError("C1"); } } });
+    await ChannelWake.noteStart(AGENT, "C1", "old", "old-run", NOW.getTime() - 2 * H);
+    await ChannelWake.noteSettled(AGENT, "C1", { outcome: "error", failures: 2, nextCheckAt: NOW.getTime() - MIN }, NOW.getTime() - H);
+    expect(await runChannelWakes(group, h.deps)).toBe("busy");
+    expect(await openRuns()).toEqual([]);
+    const st = await ChannelWake.get(AGENT, "C1");
+    expect(st?.lastWakeAt).toBe(NOW.getTime() - 2 * H);
+    expect(st?.checklistHash).toBe("old");
+    expect(st?.failures).toBe(2);
+    expect(st?.lastOutcome).toBe("error");
+    const ok = harness();
+    expect(await runChannelWakes(group, ok.deps)).toBe("woke");
+  });
+
+  test("a lost race on a first wake leaves the channel as never woken, and the next channel may go", async () => {
+    const sent: string[] = [];
+    const h = harness({
+      channelsOn: () => ["C1", "C2"],
+      transport: {
+        dispatch: async (t) => {
+          if (t.channelId === "C1") throw new WakeTargetBusyError("C1");
+          sent.push(t.channelId!);
+        },
+      },
+    });
+    expect(await runChannelWakes(group, h.deps)).toBe("woke");
+    expect(sent).toEqual(["C2"]);
+    expect((await ChannelWake.get(AGENT, "C1"))?.lastWakeAt ?? null).toBeNull();
+  });
+
+  test("repeated stopped-budget: the manager hears once per channel, with what to do about it", async () => {
+    const h = harness({ channelsOn: () => ["C1", "C2"] });
+    for (const c of ["C1", "C2"]) {
+      await ChannelWake.noteStart(AGENT, c, "x", "r", NOW.getTime() - H);
+      await ChannelWake.noteSettled(AGENT, c, { outcome: "stopped-budget", failures: 3, nextCheckAt: NOW.getTime() + H }, NOW.getTime() - MIN);
+    }
+    await runChannelWakes(group, h.deps);
+    await runChannelWakes(group, h.deps);
+    expect(h.posted).toHaveLength(2);
+    expect(h.posted[0]!.text).toContain("<#C1>");
+    expect(h.posted[0]!.text).toContain("/new");
+    expect(h.posted[0]!.text).toContain("too large");
+    expect(h.posted[1]!.text).toContain("<#C2>");
+  });
+
   test("a failed dispatch ends the run as an error and backs off that channel", async () => {
     const h = harness({ transport: { dispatch: async () => { throw new Error("queue down"); } } });
     expect(await runChannelWakes(group, h.deps)).toBe("failed");
@@ -198,6 +244,21 @@ describe("a channel wake's run ending", () => {
     expect(await ChannelWake.channelOfRun(runId)).toBeNull();
     expect((await ChannelWake.get(AGENT, "C2"))?.failures).toBe(2);
     expect((await WakeState.get(AGENT))?.failures).toBe(5);
+  });
+
+  test("stopped-budget backs off with the same growth as a failure, capped at the longest sleep", async () => {
+    await started();
+    const { slotMs, maxSleepMs } = wakeGateConfig();
+    let failures = 0;
+    for (let i = 0; i < 3; i++) {
+      const runId = await Runs.start({ agentId: AGENT, pass: "heartbeat-wake", scope: "channel:C1", day: "2026-10-26", startedAt: NOW.getTime() });
+      await ChannelWake.noteStart(AGENT, "C1", "h", runId, NOW.getTime());
+      await finish(runId, "stopped-budget");
+      failures = (await ChannelWake.get(AGENT, "C1"))!.failures;
+      expect((await ChannelWake.get(AGENT, "C1"))?.nextCheckAt).toBe(NOW.getTime() + Math.min(slotMs * 2 ** failures, maxSleepMs));
+      expect((await ChannelWake.get(AGENT, "C1"))?.lastOutcome).toBe("stopped-budget");
+    }
+    expect(failures).toBe(3);
   });
 
   test("a run of no channel still updates the agent-level state", async () => {

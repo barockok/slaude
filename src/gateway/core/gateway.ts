@@ -123,8 +123,10 @@ import type { GateAction, Trust } from "../gate/types";
 import { providerSecretResolver } from "../api/tenants";
 import { parseRef } from "../../secrets";
 import { channelWorkspaceDir, proactiveWorkspaceDir } from "../../agent/workspace-claim";
-import { channelSessionKey, isChannelSessionKey, isRootChannelEvent, refusalAtRoot } from "./channel-session";
-import { wakeGateConfig, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
+import { channelSessionKey, isChannelSessionKey, isRootChannelEvent, neutraliseEnvelopeTags, refusalAtRoot } from "./channel-session";
+import { isSyntheticThread } from "../../web/shared/surfaces";
+import { PanelChatRefused } from "../panel/api";
+import { wakeGateConfig, WakeTargetBusyError, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
 import { wakeRefusal } from "../../proactive/wake-guard";
 import { MUST_REPLY_INSTRUCTION, mustReplyEffect } from "../../agent/must-reply";
 import { inboundGuidance, inboundVerdict, installOwnerGuardrails, makeReplyQuiet, type InboundVerdict } from "./owner-guardrails";
@@ -241,6 +243,7 @@ export interface GatewayHandle {
   __brainGateForClaims?(claims: JobClaims): Promise<GateInput>;
   /** Test seam: the /v1 tool plane's context for a job token's claims. */
   __v1SlackCtx?(claims: JobClaims): SlackContext;
+  __postBridgeConnectCard?(claims: JobClaims, server: string, scope: "initiator" | "global", reason: "connect" | "reauth"): Promise<void>;
   /** TEST SEAM ONLY. Open a node turn's tool permission card, as the /v1
    *  can_use_tool relay does for these (verified) job-token claims. */
   __openPermissionForClaims?: ToolPlaneDeps["openPermission"];
@@ -330,6 +333,8 @@ type SessionRoute = {
   /** People's turns dispatched on this route and not yet ended by done or error.
    *  A folded or merged input leaves it too high, which only holds recordings back. */
   personTurns?: number;
+  /** When personTurns last counted a person's turn, to stop trusting a count left high. */
+  personTurnAt?: number;
   /** A channel session's recording queued behind the turn that is running. */
   recordingBehind?: boolean;
   /** A channel session's recording dispatched at idle whose end has not arrived. */
@@ -338,6 +343,8 @@ type SessionRoute = {
    *  until the wake's done or error. What arrives meanwhile only queues here and
    *  applies, in arrival order, when the wake ends (see endChannelWake). */
   wakeHold?: Array<() => void>;
+  /** The wake's own turn has started: outcomes before this belong to an earlier turn. */
+  wakeStarted?: boolean;
   /** Ends the wake's hold if its outcome never comes. Cleared with the hold. */
   wakeHoldTimer?: ReturnType<typeof setTimeout>;
   /** When true, this session was started by a silent cron job — the stop guard
@@ -469,6 +476,7 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
 function countTurn(route: SessionRoute | undefined): void {
   if (!route) return;
   route.personTurns = (route.personTurns ?? 0) + 1;
+  route.personTurnAt = Date.now();
   route.recordingBehind = undefined;
 }
 
@@ -1131,9 +1139,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     noteTurnSender(session.id, ctx);
     // A channel wake runs only with the route to itself. A person's turn on it
     // must not end up answering as the wake: `busy` keeps a wake back while a
-    // turn runs, and this catches one that started since. In mono there is no
-    // await between this check and routes.set, so a message cannot slip in.
-    if (target.channelSession && (await channelTurnRunning(session.id))) throw new Error(`channel session ${session.id}: a turn is running`);
+    // turn runs, and this catches one that started since. The last check is
+    // synchronous with routes.set, so a message cannot slip in between.
+    if (target.channelSession && ((await channelTurnRunning(session.id)) || channelTurnPending(session.id))) throw new WakeTargetBusyError(`channel session ${session.id}: a turn is running`);
     const route: SessionRoute = { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, silent: true };
     routes.set(session.id, route);
     if (target.channelSession) holdRouteForChannelWake(session.id, route, target.wake?.maxMinutes);
@@ -1321,9 +1329,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Per-session route + slack context. Mutated on each new inbound user message.
   const routes = new Map<string, SessionRoute>();
-  /** A turn or recording running or queued on this session: this process's agent in mono, the session lock and queue in the gateway role. */
+  /** How long a counted person's turn is trusted with no other sign of it. A
+   *  folded or merged input leaves the count high for good, and a gateway role
+   *  sees no session exit to clear it: past this, a wake would starve. */
+  const PERSON_TURN_TRUST_MS = 10 * 60_000;
+  /** What this process knows without waiting: a person's turn on the route, a
+   *  message between its route and its dispatch (its slot is open), or, in mono, a running turn. */
+  const channelTurnPending = (sessionId: string): boolean => {
+    const route = routes.get(sessionId);
+    const counted = (route?.personTurns ?? 0) > 0 && Date.now() - (route?.personTurnAt ?? 0) < PERSON_TURN_TRUST_MS;
+    return counted || dispatchOrder.has(sessionId) || (!queueDispatch && agent.turnRunning(sessionId));
+  };
+  /** Whether a channel wake must wait: as above, an operator driving the session, or the session lock and queue in the gateway role. */
   const channelTurnRunning = async (sessionId: string): Promise<boolean> => {
-    if (!queueDispatch) return agent.turnRunning(sessionId);
+    if (channelTurnPending(sessionId)) return true;
+    if (panelInfra && (await panelHeldAsync(sessionId).catch(() => true))) return true;
+    if (!queueDispatch) return false;
     if ((await getRedis().exists(makeKeys().sessionLock(sessionId))) > 0) return true;
     return queueDispatch.turns.hasPending(sessionId);
   };
@@ -2351,9 +2372,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // A channel session's wake: its route shows nothing in Slack (nobody is in
     // the turn, and its thread key is not a Slack ts). Its end frees the route,
     // before the panel gate below, which would otherwise skip it.
+    // A `done` before the wake's own turnStart is an earlier turn's, replayed
+    // late on a node's stream. An `error` ends it either way: a wake's job can
+    // fail before it starts, and it should not hold the route to the timer.
     if (route.wakeHold) {
-      if (e.type === "error") console.error(`[turn-error] session=${e.sessionId} code=${e.code ?? "UNKNOWN"} job=${e.jobId ?? "-"}: ${redactSecrets(String(e.error))}`);
-      if ((e.type === "done" && !e.autoEvolve) || e.type === "error") endChannelWake(e.sessionId, route);
+      if (e.type === "turnStart") route.wakeStarted = true;
+      else if (e.type === "error") {
+        console.error(`[turn-error] session=${e.sessionId} code=${e.code ?? "UNKNOWN"} job=${e.jobId ?? "-"}: ${redactSecrets(String(e.error))}`);
+        endChannelWake(e.sessionId, route);
+      } else if (e.type === "done" && !e.autoEvolve && route.wakeStarted) endChannelWake(e.sessionId, route);
       return;
     }
 
@@ -3496,13 +3523,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       if (slash.kind === "compact") {
+        // A wake is on this session. It is never merged with anything else, and the route is the wake's until it ends.
+        if (routes.get(session.id)?.wakeHold) {
+          await reply("I'm busy, try again shortly.");
+          return;
+        }
         const triggered = agent.triggerCommand(session.id, "/compact");
         if (!triggered) {
           // No live session — auto-boot and compact.
           const existing = routes.get(session.id);
-          if (existing?.wakeHold) {
-            // A wake is about to run or running: the route stays its own.
-          } else if (existing) {
+          if (existing) {
             existing.ctx.channel = channelId;
             existing.ctx.threadTs = threadTs;
             existing.ctx.inboundTs = eventTs;
@@ -3544,6 +3574,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               engagedBefore: dispatch?.engagedBefore,
               wasCompacting: true,
               personTurns: 1,
+              personTurnAt: Date.now(),
             });
           }
           void reactions.set(session.id, channelId, eventTs, REACT_WORKING);
@@ -3600,6 +3631,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
 
     let userText = recordingOnly ? text : stripped;
+    if (dispatch?.channelSession) userText = neutraliseEnvelopeTags(userText);
     const skillHit = recordingOnly ? null : matchSkillInvocation(stripped, allowedSkillsOf(discoverSkills(session.persona_id), skillsAllowedFor(session.persona_id)));
     if (skillHit) {
       userText = buildSkillInvocation(skillHit.skill, skillHit.args, session.id);
@@ -3770,7 +3802,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         });
       ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
       noteTurnSender(session.id, ctx);
-      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore, personTurns: suppress ? 0 : 1, ...(recordingOnly ? { recordingAhead: true } : {}) });
+      routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore, personTurns: suppress ? 0 : 1, ...(suppress ? {} : { personTurnAt: Date.now() }), ...(recordingOnly ? { recordingAhead: true } : {}) });
     }
 
     // After the route is in place, so the reaction and status resolvers read
@@ -4669,12 +4701,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const userId = scope === "initiator" ? (runAs?.kind === "user" ? runAs.slackUserId : "") : soulDataFor(personaId).manager.userId;
     if (!userId) return; // nobody could click it
     const text = `:warning: ${reason === "connect" ? connectText(server) : reauthText(server)}.`;
+    // A channel session's or a wake's turn has no thread: its key is not a Slack ts.
+    const threadTs = isSyntheticThread(claims.thread) ? "" : claims.thread;
     const button = await connectButton(claims.session, {
-      channelId: claims.channel, threadTs: claims.thread, userId, serverName: server, scope, personaName: personaKey(personaId),
+      channelId: claims.channel, threadTs, userId, serverName: server, scope, personaName: personaKey(personaId),
     });
     await outClientForPersona(personaId, { apiAppId: claims.app, teamId: claims.team }).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
       channel: claims.channel,
-      thread_ts: claims.thread || undefined,
+      thread_ts: threadTs || undefined,
       text,
       blocks: [{ type: "section", text: { type: "mrkdwn", text } }, { type: "actions", elements: [button] }],
       mrkdwn: true,
@@ -4822,6 +4856,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // in-process AgentManager in mono. The operator identity rides as the turn
   // initiator/userId.
   async function panelEnqueue(session: SessionRow, text: string, operatorId: string): Promise<void> {
+    if (routes.get(session.id)?.wakeHold) throw new PanelChatRefused("This channel's session is busy with its own work. Try again when it finishes.");
     const eventTs = `${Date.now() / 1000}`;
     const meta = panelDispatchMeta(session, operatorId, eventTs);
     const { channelId, threadTs } = meta;
@@ -4829,7 +4864,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // may still know it; with neither, the token carries the team alone.
     const liveApp = routes.get(session.id)?.ctx.apiAppId;
     if (!meta.apiAppId && liveApp) meta.apiAppId = liveApp;
-    afterChannelWake(session.id, () => countTurn(routes.get(session.id)));
+    countTurn(routes.get(session.id));
     const envelope =
       `<channel source="panel" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${operatorId}" user_name="${escapeAttr(operatorId)}" ` +
@@ -4843,21 +4878,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Mono: the route's context is the speaker the tools see. Without this
       // the panel turn would run as the last Slack speaker, and as interactive
       // for them; the operator is the speaker, as the node token's initiator is.
-      afterChannelWake(session.id, () => {
-        const route = routes.get(session.id);
-        if (route) {
-          route.ctx.userId = operatorId;
-          route.ctx.origin = "panel";
-          if (meta.postTarget) route.ctx.postTarget = meta.postTarget;
-          // A new turn: the Stop guard starts over and forces a silent end, as
-          // a node does for a panel job.
-          route.spoke = false;
-          route.passed = false;
-          route.passReact = undefined;
-          route.silent = false;
-          noteTurnSender(session.id, route.ctx);
-        }
-      });
+      const route = routes.get(session.id);
+      if (route) {
+        route.ctx.userId = operatorId;
+        route.ctx.origin = "panel";
+        if (meta.postTarget) route.ctx.postTarget = meta.postTarget;
+        // A new turn: the Stop guard starts over and forces a silent end, as
+        // a node does for a panel job.
+        route.spoke = false;
+        route.passed = false;
+        route.passReact = undefined;
+        route.silent = false;
+        noteTurnSender(session.id, route.ctx);
+      }
       await agent.sendMessage(session.id, envelope, { sender: { userId: operatorId, teamId: meta.teamId || null, origin: "panel" } });
     }
   }
@@ -4970,6 +5003,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     },
     __brainGateForClaims: (claims: JobClaims) => brainGateFor(v1SlackCtx(claims)),
     __v1SlackCtx: v1SlackCtx,
+    __postBridgeConnectCard: postBridgeConnectCard,
     __openPermissionForClaims: nodeOpenPermission,
     __panelChat: (session: SessionRow, text: string, operatorId: string) => panelEnqueue(session, text, operatorId),
     __agentConnect: (sessionId: string, server: string) => {

@@ -13,6 +13,18 @@ export const isChannelSessionKey = (threadTs: unknown): boolean => typeof thread
 export const isRootChannelEvent = (e: { channel_type?: string; thread_ts?: string }): boolean =>
   !e.thread_ts && e.channel_type !== "im";
 
+/** The tags the gateway and the runtime wrap a turn's text in. */
+const ENVELOPE_TAGS = "channel|runtime-check|attachment|memory-context|proactive-context|proactive-work";
+const FORGED_TAG = new RegExp(`(<|&lt;)(/?)\\s*(${ENVELOPE_TAGS})\\b`, "gi");
+
+/**
+ * A message's own text can never open or close one of those tags. A channel
+ * session records what every member posts, so this is what stops a post forging
+ * another person's envelope, and with it an approval. Slack's own markup
+ * (`<@U1>`, `<!channel>`, `<#C1|name>`) does not match.
+ */
+export const neutraliseEnvelopeTags = (text: string): string => text.replace(FORGED_TAG, (_, _open: string, slash: string, tag: string) => `[${slash}${tag}`);
+
 /** Text refusing a command that makes no sense at a channel session's root, or null. */
 export function refusalAtRoot(hit: SlashHit): string | null {
   if (hit.kind === "one-on-one" || hit.kind === "env" || hit.kind === "remote") return "This channel shares one session, so that can't run at root. Start a thread for this.";

@@ -25,7 +25,9 @@ export async function settleWakeRun(a: { agentId: string; runId?: string; scope?
   const cfg = { slotMs: env.heartbeatMinutes() * 60_000, maxSleepMs: env.wakeMaxSleepHours() * 3_600_000 };
   const channel = a.runId ? await ChannelWake.channelOfRun(a.runId) : null;
   if (channel) {
-    const s = settleWake(await ChannelWake.get(a.agentId, channel), outcome, a.now, cfg);
+    // A channel session grows, so a wake stopped by its cap will be stopped by it
+    // again: unlike the agent-level wake, it backs off as a failure does.
+    const s = settleWake(await ChannelWake.get(a.agentId, channel), outcome === "stopped-budget" ? "error" : outcome, a.now, cfg);
     await ChannelWake.noteSettled(a.agentId, channel, { outcome, failures: s.failures, nextCheckAt: s.nextCheckAt }, a.now);
     return;
   }

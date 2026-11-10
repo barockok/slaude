@@ -17,7 +17,7 @@ import { personaDefaultModel } from "../persona/registry";
 import { channelSessionWakes } from "../soul/proactive";
 import { line, OUT_OF_BUDGET_TEXT, tellManagerOnce } from "./heartbeat";
 import { loadRules } from "./rules";
-import { checklistHash, FAILURES_WORTH_A_NOTICE, wakeCaps, wakeGateConfig, type WakeDeps, type WakeResult } from "./wake";
+import { checklistHash, FAILURES_WORTH_A_NOTICE, wakeCaps, wakeGateConfig, WakeTargetBusyError, type WakeDeps, type WakeResult } from "./wake";
 import { wakeDue } from "./wake-gate";
 
 /** A channel wake's ledger scope: how settling tells its run from an agent-level one after the channel's row moved on. */
@@ -37,17 +37,21 @@ export async function runChannelWakes(r: AgentGroup & { slot: string; now: Date;
   const m = deps.mandates(r.personaId, channels);
   const cfg = (deps.gate ?? wakeGateConfig)();
 
-  const due: { channel: string; mandate: string; hash: string; at: number; reason: string }[] = [];
+  const due: { channel: string; mandate: string; hash: string; at: number; reason: string; state: ChannelWake.ChannelWakeState | null }[] = [];
   for (const channel of channels) {
     const mandate = m.channels[channel] ?? m.global;
     const hash = mandate ? checklistHash(mandate) : null;
     const state = await ChannelWake.get(r.agentId, channel);
     if (state && state.failures >= FAILURES_WORTH_A_NOTICE) {
-      await tellManagerOnce(r, `wake-failures:${channel}`, `My last ${state.failures} recurring checks in <#${channel}> failed (last result: ${line(state.lastOutcome) || "unknown"}). Please take a look.`, notice);
+      if (state.lastOutcome === "stopped-budget") {
+        await tellManagerOnce(r, `wake-budget:${channel}`, `My last ${state.failures} recurring checks in <#${channel}> ran out of their per-run budget. This channel's session may be too large for the per-run cap. \`/new\` in the channel starts it over.`, notice);
+      } else {
+        await tellManagerOnce(r, `wake-failures:${channel}`, `My last ${state.failures} recurring checks in <#${channel}> failed (last result: ${line(state.lastOutcome) || "unknown"}). Please take a look.`, notice);
+      }
     }
     const gate = wakeDue(state, hash, now, cfg);
     count(gate.reason);
-    if (gate.due) due.push({ channel, mandate: mandate!, hash: hash!, at: state?.nextCheckAt ?? 0, reason: gate.reason });
+    if (gate.due) due.push({ channel, mandate: mandate!, hash: hash!, at: state?.nextCheckAt ?? 0, reason: gate.reason, state });
   }
   if (due.length === 0) return "idle";
   due.sort((a, b) => a.at - b.at || a.channel.localeCompare(b.channel));
@@ -98,6 +102,15 @@ export async function runChannelWakes(r: AgentGroup & { slot: string; now: Date;
       console.log(`${tag}: woke in <#${d.channel}> (${d.reason})`);
       return "woke";
     } catch (e) {
+      if (e instanceof WakeTargetBusyError) {
+        // A turn started since `busy`: the wake never ran. The state goes back, so
+        // settling finds no channel for this run, and the channel stays due.
+        await ChannelWake.undoStart(r.agentId, d.channel, run.runId, d.state, now).catch(() => {});
+        await finishSkillCheck({ runId: run.runId, agentId: run.agentId, usage: {}, outcome: "ok", pass: "heartbeat-wake" }).catch(() => {});
+        count("busy");
+        console.log(`${tag}: <#${d.channel}> started a turn first; its wake waits`);
+        continue;
+      }
       console.error(`${tag}: could not start in <#${d.channel}>: ${e instanceof Error ? e.message : String(e)}`);
       await finishSkillCheck({ runId: run.runId, agentId: run.agentId, usage: {}, outcome: "error", pass: "heartbeat-wake" }).catch(() => {});
       return "failed";

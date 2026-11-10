@@ -361,6 +361,10 @@ const grantDetails = (g: AgentGrants.AgentGrantRow) => ({
   createdBy: g.createdBy,
 });
 
+
+/** A console turn the session cannot take now: its message is shown to the operator as it is. */
+export class PanelChatRefused extends Error {}
+
 export interface PanelApiDeps {
   registry: Registry | null;
   pubsub: PubSub | null;
@@ -1484,6 +1488,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
                 await deps.panelLock.release(id, operatorId).catch(() => {});
                 await deps.onLockReleased?.(id);
               }
+              if (e instanceof PanelChatRefused) return json(409, { error: e.message });
               console.error(`[panel] chat enqueue failed session=${id}:`, e);
               return json(502, { error: "chat enqueue failed" });
             }
@@ -1491,7 +1496,12 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           }
           // No lock backend (mono without Redis): dispatch without exclusivity.
           audit({ action: "chat", operator: operatorId, role, session: id });
-          await deps.chat(row, parsed.data.text, operatorId);
+          try {
+            await deps.chat(row, parsed.data.text, operatorId);
+          } catch (e) {
+            if (e instanceof PanelChatRefused) return json(409, { error: e.message });
+            throw e;
+          }
           return json(202, { ok: true });
         }
 

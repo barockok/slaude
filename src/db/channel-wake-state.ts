@@ -29,6 +29,19 @@ export async function noteStart(agentId: string, channelId: string, checklistHas
   );
 }
 
+/**
+ * A wake started and then never ran (a person's turn began first): the row goes
+ * back to what it was. Only while this run still owns it. `previous` null is a
+ * channel with no row before: its wake then reads as never having happened.
+ */
+export async function undoStart(agentId: string, channelId: string, runId: string, previous: Pick<ChannelWakeState, "lastWakeAt" | "checklistHash"> | null, now: number): Promise<void> {
+  await db.run(
+    `UPDATE channel_wake_state SET last_wake_at = ?, checklist_hash = ?, open_run_id = NULL, updated_at = ?
+     WHERE agent_id = ? AND channel_id = ? AND open_run_id = ?`,
+    [previous?.lastWakeAt ?? null, previous?.checklistHash ?? null, now, agentId, channelId, runId],
+  );
+}
+
 /** The agent called finish_round. `nextCheckAt` is already clamped. */
 export async function noteFinished(agentId: string, channelId: string, nextCheckAt: number, now: number): Promise<void> {
   await db.run(
