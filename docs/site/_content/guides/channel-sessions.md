@@ -1,0 +1,114 @@
+# Channel Sessions
+
+A channel session gives one agent one long-lived session for one channel. Normally each root mention starts a new session and a thread under it. In a channel session, root mentions reply at root in the same conversation, and the agent reads along with everything said at root, so a mention can build on what the channel has been talking about. Threads and DMs do not change.
+
+Use it for a channel where the context builds up over days: a release channel, an incident channel, a team's daily channel. Keep the default for a channel where each question stands alone, because the shared session costs more (see [What it costs](#7-what-it-costs)).
+
+> **Prerequisites:** You have a persona with a `SOUL.md` or `agent.yaml`, and the agent is in the channel. On a multi-node deployment, every node that can receive the channel's jobs must be on a version that advertises `channel-session/1` (see [Node version](#10-node-version)).
+
+---
+
+## 1. Turn it on
+
+It is a per-agent, per-channel setting, declared in the agent's definition. No command turns it on, and nothing is inferred by a model.
+
+In `SOUL.md`:
+
+```markdown
+## Channel <#C0EXAMPLE>
+### Session
+- Mode: channel
+### Proactive
+- Enabled: yes
+```
+
+Or in `agent.yaml`, under the top-level `channels` key:
+
+```yaml
+channels:
+  C0EXAMPLE:
+    session: channel
+    proactive: true
+```
+
+`Mode` and `session` default to today's behaviour when absent. An unknown value in a soul leaves the channel on today's behaviour and the soul check warns. An invalid value in `agent.yaml` fails the compile. `### Proactive` is optional; leave it out for a channel session with no wakes.
+
+Two agents in one channel each have their own session and each records the channel for itself.
+
+## 2. What happens at root
+
+| Root message | Result |
+|---|---|
+| Mentions this agent | A turn in the channel session; the reply is posted at root |
+| Anything else, including mentions of other people or agents | Recorded in the session; the model does not run |
+| `/new` from the manager or one of this channel's approvers | Archives the session; the next message starts a new one |
+
+Recording starts when the mode is on. Older history is not backfilled. A recorded message carries its sender and timestamp, the same as a message in a thread, and the usual ignore, block and redaction filters run first. Files are recorded by name and are not downloaded.
+
+Permission and approval cards for a root turn appear in a thread under the message that triggered them, so root stays readable.
+
+## 3. Threads
+
+Threads work as they always have. A mention in a thread starts or continues that thread's own session, and replies under a post the agent made during a wake get a session too. A thread session gets no channel-session context injected; if it needs the channel's history, the agent reads it with its Slack tools.
+
+DMs are unchanged.
+
+## 4. Proactive
+
+With `### Proactive` and `Enabled: yes` on a channel in this mode, the agent wakes in the channel's session. It already holds the channel's history, so a wake reads no activity or notes block. It picks its own next look when it ends with `finish_round`; the runtime keeps that time between one heartbeat slot and the maximum sleep.
+
+Plain text from a wake stays silent. Only `proactive_post` reaches people, and it posts at root. Approval requests are refused during a wake, because nobody is in the turn to answer them.
+
+A wake and a person's turn never share a turn. A mention that arrives during a wake waits for it to end, and a wake waits for a running turn. An agent runs one wake at a time across its channels; a channel that is due while another wake runs goes at the next slot.
+
+`Highest`, `Cooldown` and `Max per day` do not apply to a channel in this mode. The operator-wide per-run caps and the daily pool still do.
+
+## 5. Starting over with `/new`
+
+`/new` at root, from the manager or one of that channel's approvers, retires the channel session. The next root message starts a new one that remembers nothing of the old conversation. Anyone else is refused.
+
+The old session stays in the console, labelled archived, and it is read-only: a console chat into it is refused. `/new` inside a thread changes nothing.
+
+## 6. Refused commands and voice
+
+Some commands make no sense for a whole channel, so they are refused at root:
+
+| Command at root | Result |
+|---|---|
+| `/1on1`, `/env`, `/remote` | Refused: start a thread for this. Each ties a session to one person. |
+| `/mention-only`, `/ignore-thread` | Refused: they have no meaning at root. |
+
+Voice calls run in a thread. A channel session does not host one.
+
+## 7. What it costs
+
+Recording is cheap per message, but a channel session is not free.
+
+- Each root message, mentioned or not, is a queued job, and a session that has gone idle starts its process to record one.
+- Recording does not call the model, so the next turn pays for the backlog: everything said since the last turn is in the prompt.
+- A busy channel fills the context window sooner and compacts more often.
+- Each wake resumes the whole session. As the channel's history grows, wakes get more expensive.
+- A wake that hits its per-run budget backs off, like any failed wake. After repeated budget stops in a row the manager is told, once, that the channel's session may be too large for the per-run cap, and that `/new` starts it over.
+
+The budget cap on a wake counts only that wake: a resumed process starts its spend at zero, so a channel's lifetime spend does not count against it.
+
+If a channel is mostly noise, this mode is the wrong fit. Keep the default and mention the agent when you need it.
+
+## 8. Sensitive work belongs in a thread
+
+Every root turn and wake runs as the agent, so no person's credentials are involved. But the agent's own tool results stay in the shared session, and a later speaker in the channel could ask about them. Do sensitive work in a `/1on1` thread, where the session belongs to one person.
+
+## 9. Switching the mode
+
+- **On:** existing threads keep working under their own keys.
+- **Off:** the channel session goes dormant. Root messages return to today's path, and the session is not deleted.
+- **On again:** the same session resumes. Use `/new` to start clean instead.
+
+## 10. Node version
+
+On a multi-node deployment, a job on a channel session goes only to nodes that advertise `channel-session/1`. If none is available, the turn fails visibly instead of falling back to a thread, which would split the conversation. Upgrade every node before you turn the mode on for a channel.
+
+## See also
+
+- [Engagement and approvals](engagement.md): the mention model, `/1on1`, slash commands.
+- [Configuration](../reference/configuration.md): the persona schema, wake settings and budgets.
