@@ -1,12 +1,6 @@
 Heartbeat for {{NOW}} ({{TIME_ZONE}}), in the agent's own memory.
 
-Look through your recurring checks and the sources you watch, and route each item that is worth someone's attention. You do not post: you route, and the runtime decides what is posted, where, and how far it goes.
-
-Your recurring checks, from `{{HEARTBEAT_SLUG}}`. Run each one with `read_pages`, `list_pages` and `search` (your open commitments and investigations, team facts, the channels' pages):
-
-<checklist>
-{{CHECKLIST}}
-</checklist>
+Look through the sources you watch, and route each item that is worth someone's attention. You do not post: you route, and the runtime decides what is posted, where, and how far it goes.
 
 Your journal from the last round (open items, handled item ids per source, what to look at again):
 

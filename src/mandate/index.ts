@@ -153,8 +153,8 @@ export async function listMandates(personaName: string): Promise<Mandate[]> {
     });
   }
 
-  // One switch: wakes run when the global section or any channel turns them on.
-  const onChannels = proactive ? Object.entries(proactive.channels).filter(([, on]) => on).map(([id]) => id).sort() : [];
+  // A channel's own Proactive starts its wakes; a global Enabled turns on only the round. An invalid Mode reads as off.
+  const onChannels = proactive ? Object.entries(proactive.channels).filter(([id, on]) => on && !proactive.invalidSessions.includes(id)).map(([id]) => id).sort() : [];
   if (proactive && (proactive.enabled || onChannels.length > 0)) {
     const parts: string[] = [];
     if (proactive.enabled) {
@@ -167,7 +167,7 @@ export async function listMandates(personaName: string): Promise<Mandate[]> {
       kind: "heartbeat",
       title: "Heartbeat",
       instructions: parts.join(" "),
-      triggers: proactive.wake ? ["heartbeat round", "wake"] : ["heartbeat round"],
+      triggers: proactive.wake && onChannels.length ? ["heartbeat round", "wake"] : ["heartbeat round"],
       approvers: await approversIn(),
       source: "proactive",
     });

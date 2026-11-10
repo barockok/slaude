@@ -2,11 +2,10 @@ import { beforeEach, afterEach, describe, expect, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import * as Runs from "../../src/db/background-runs";
 import * as Sessions from "../../src/db/sessions";
-import * as WakeState from "../../src/db/heartbeat-wake-state";
+import * as ChannelWake from "../../src/db/channel-wake-state";
 import { parseSlashCommand } from "../../src/gateway/slack/commands";
 import { __setProactiveSoulSource } from "../../src/soul/proactive";
 import { wakeStatusText } from "../../src/proactive/wake-status";
-import { fakeBrain } from "../memory/fake-brain";
 
 const NOW = new Date("2026-10-26T12:00:00Z");
 const T = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
@@ -15,12 +14,12 @@ async function ledger(pass: string, cost: number, outcome: Runs.RunOutcome) {
   await Runs.finish(id, { tokens: T, costUsd: cost, outcome });
 }
 const status = (over: Record<string, unknown> = {}) =>
-  wakeStatusText({ personaId: "default", agentId: "A1", managerId: "U0MANAGER", budget: { limitUsd: 1, proactiveLimitUsd: 3, timeZone: "UTC" }, call: fakeBrain().call, now: NOW, ...over });
+  wakeStatusText({ personaId: "default", agentId: "A1", managerId: "U0MANAGER", budget: { limitUsd: 1, proactiveLimitUsd: 3, timeZone: "UTC" }, now: NOW, ...over });
 
 beforeEach(async () => {
-  __setProactiveSoulSource(() => "## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n");
+  __setProactiveSoulSource(() => "## Channel <#CONE>\n### Proactive\n- Enabled: yes\n\n## Channel <#CTWO>\n### Proactive\n- Enabled: yes\n");
   await db.run("DELETE FROM background_runs");
-  await db.run("DELETE FROM heartbeat_wake_state");
+  await db.run("DELETE FROM channel_wake_state");
 });
 afterEach(() => __setProactiveSoulSource(null));
 
@@ -35,20 +34,26 @@ describe("/heartbeat status", () => {
     await ledger("heartbeat-wake", 1, "stopped-budget");
     await ledger("heartbeat", 0, "skipped-budget");
     await ledger("skill-check", 0.25, "ok");
-    await WakeState.noteStart("A1", "h", NOW.getTime());
+    await ChannelWake.noteStart("A1", "CONE", "h", "run-1", NOW.getTime());
     const t = await status();
-    expect(t).toContain("Mode: wakes");
     expect(t).toContain("proactive $1.50 of $3.00, learning $0.25 of $1.00");
     expect(t).toContain("Refused by budget today: 1");
     expect(t).toContain("2 wakes");
     expect(t).toContain("1 stopped by a cap");
-    expect(t).toContain("Last wake: 2026-10-26 12:00 UTC");
+    expect(t).toContain("<#CONE>: last wake 2026-10-26 12:00 UTC");
+    expect(t).toContain("<#CTWO>: no wake yet");
+    expect(t).not.toContain("Mode:");
+    expect(t).not.toContain("Last wake:");
   });
-  test("one shared budget, and a persona that cannot wake says why", async () => {
-    __setProactiveSoulSource(() => "## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: ask\n");
+  test("one shared budget; a global Enabled: yes alone lists no channel", async () => {
+    __setProactiveSoulSource(() => "## Proactive\n- Enabled: yes\n");
     const t = await status({ budget: { limitUsd: 1, timeZone: "UTC" } });
     expect(t).toContain("one shared budget");
-    expect(t).toContain("every place it is on in has a Highest below act");
+    expect(t).toContain("No channel has proactive on.");
+  });
+  test("no manager: says that no wake runs", async () => {
+    const t = await status({ managerId: null });
+    expect(t).toContain("no manager");
   });
 });
 

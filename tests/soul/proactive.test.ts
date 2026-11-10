@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { inWindow, parseClock, parseManager, parseMandates, parseProactive, parseScopedMandates, proactiveFor, proactiveRead, wakeEligibility, __setProactiveSoulSource } from "../../src/soul/proactive";
+import { inWindow, parseClock, parseManager, parseMandates, parseProactive, parseScopedMandates, proactiveFor, proactiveRead, __setProactiveSoulSource } from "../../src/soul/proactive";
 import { FIELD_ALIASES, mutateOverride } from "../../src/soul/overrides";
 import { EXTRACTION_PROMPT, SoulDataSchema } from "../../src/soul/data";
 
@@ -133,8 +133,9 @@ describe("a channel's own Cooldown and Max per day", () => {
     expect(c.channelCooldownHours).toEqual({});
     expect(c.channelMaxPerDay).toEqual({});
   });
-  it("apply only to that channel", () => {
-    __setProactiveSoulSource(() => SOUL(TEXT));
+  it("apply only to that channel (one that is not a channel session: Enabled: yes would make it one, which has no limits)", () => {
+    const off = TEXT.replaceAll("### Proactive\n- Enabled: yes", "### Proactive\n- Enabled: no");
+    __setProactiveSoulSource(() => SOUL(off));
     const own = proactiveFor("default", "C0TEAMCHAN");
     expect(own.cooldownHours).toBe(0.5);
     expect(own.maxPerPersonPerDay).toBe(12);
@@ -160,39 +161,6 @@ describe("Wake and Read", () => {
     expect(c.read).toEqual([]);
   });
 
-  const eligible = (soul: string, manager: string | null = "U0MANAGER") => {
-    __setProactiveSoulSource(() => SOUL(soul));
-    const r = wakeEligibility("default", manager);
-    __setProactiveSoulSource(null);
-    return r;
-  };
-  it("a persona wakes with Wake: yes, a manager, and act on an enabled channel", () => {
-    expect(eligible("## Proactive\n- Wake: yes\n\n## Channel C0TEAMCHAN\n### Proactive\n- Enabled: yes\n- Highest: act\n")).toEqual({ ok: true });
-  });
-  it("or act globally while enabled globally", () => {
-    expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n")).toEqual({ ok: true });
-  });
-  it("Enabled: yes alone is enough, globally or in a channel", () => {
-    expect(eligible("## Proactive\n- Enabled: yes\n")).toEqual({ ok: true });
-    expect(eligible("## Channel C0TEAMCHAN\n### Proactive\n- Enabled: yes\n")).toEqual({ ok: true });
-  });
-  it("off everywhere is simply not waking, with no reason to warn about", () => {
-    expect(eligible("## Proactive\n- Enabled: no\n")).toEqual({ ok: false, reason: null });
-    expect(eligible("## Proactive\n- Wake: yes\n- Highest: act\n")).toEqual({ ok: false, reason: null });
-    expect(eligible("## Channel C0TEAMCHAN\n### Proactive\n- Enabled: no\n- Highest: act\n")).toEqual({ ok: false, reason: null });
-  });
-  it("Wake: no opts out", () => {
-    expect(eligible("## Proactive\n- Enabled: yes\n- Wake: no\n")).toEqual({ ok: false, reason: null });
-  });
-  it("no manager is refused", () => {
-    expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n", null)).toEqual({ ok: false, reason: "no-manager" });
-  });
-  it("a ceiling below act narrows it, and says why", () => {
-    expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: ask\n")).toEqual({ ok: false, reason: "no-act-destination" });
-  });
-  it("a channel's ceiling replaces the global one", () => {
-    expect(eligible("## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n\n## Channel C0TEAMCHAN\n### Proactive\n- Enabled: yes\n- Highest: inform\n")).toEqual({ ok: true });
-  });
   it("proactiveRead lists only the persona's Read channels", () => {
     __setProactiveSoulSource(() => SOUL("## Proactive\n- Read: C0OTHERCHA\n"));
     expect(proactiveRead("default")).toEqual(["C0OTHERCHA"]);
@@ -207,7 +175,8 @@ describe("proactiveFor", () => {
     expect(proactiveFor("default", "C0OTHER").enabled).toBe(false);
     const ch = proactiveFor("default", "C0TEAMCHAN");
     expect(ch.enabled).toBe(true);
-    expect(ch.maxPerPersonPerDay).toBe(2);
+    // Enabled: yes alone makes a channel session, which has no per-channel limits.
+    expect(ch.maxPerPersonPerDay).toBe(Number.MAX_SAFE_INTEGER);
   });
 
   it("passes the persona name to the soul source", () => {

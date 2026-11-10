@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, describe, expect, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import * as Posts from "../../src/db/proactive-posts";
-import * as WakeState from "../../src/db/heartbeat-wake-state";
+import * as ChannelWake from "../../src/db/channel-wake-state";
 import { __setProactiveSoulSource } from "../../src/soul/proactive";
 import { finishRoundTool, proactivePostTool, readChannelTool, wakeThreadRefusal, type WakeToolContext, type WakeToolDeps } from "../../src/proactive/wake-tools";
 import { composeRulePage } from "../../src/proactive/rules";
@@ -39,7 +39,7 @@ function harness(over: Partial<WakeToolDeps> = {}, history: unknown = { messages
       },
     },
   };
-  const ctx: WakeToolContext = { client: client as never, channel: MGR, wake: { runId: "run-1", deps }, apiAppId: "A0APP", teamId: "T0TEAM" };
+  const ctx: WakeToolContext = { client: client as never, channel: MGR, wake: { runId: "run-1", deps, channelSession: "C0ONCHANNE" }, apiAppId: "A0APP", teamId: "T0TEAM" };
   return { ctx, deps, brain, posted, bound };
 }
 const post = (over: Record<string, unknown> = {}) => ({ destination: "C0ONCHANNE", kind: "daily brief", text: "Today's numbers are up.", evidence: "projects/numbers", item_id: "brief-1", ...over });
@@ -48,7 +48,7 @@ const parsed = (r: { content: { text: string }[] }) => JSON.parse(r.content[0]!.
 beforeEach(async () => {
   __setProactiveSoulSource(() => SOUL);
   await db.run("DELETE FROM proactive_posts");
-  await db.run("DELETE FROM heartbeat_wake_state");
+  await db.run("DELETE FROM channel_wake_state");
 });
 afterEach(() => __setProactiveSoulSource(null));
 
@@ -71,7 +71,7 @@ describe("proactive_post", () => {
     expect(r.isError).toBe(true);
     expect(h.posted).toEqual([]);
   });
-  test("a channel without its own enabled block is refused", async () => {
+  test("any channel but its own is refused", async () => {
     const h = harness();
     const r = await proactivePostTool(h.ctx, post({ destination: "C0UNLISTED" }));
     expect(r.isError).toBe(true);
@@ -79,7 +79,7 @@ describe("proactive_post", () => {
   });
   test("the checklist or notes count as no evidence, and do not make later posts look repeated", async () => {
     const h = harness();
-    expect(parsed(await proactivePostTool(h.ctx, post({ evidence: "self/heartbeat", item_id: "a", text: "First." }))).posted).toBe(true);
+    expect(parsed(await proactivePostTool(h.ctx, post({ evidence: "self/heartbeat/c0onchanne", item_id: "a", text: "First." }))).posted).toBe(true);
     await db.run("UPDATE proactive_posts SET posted_at = posted_at - 7200000");
     expect(parsed(await proactivePostTool(h.ctx, post({ evidence: "self/wake-journal", item_id: "b", text: "Second." }))).posted).toBe(true);
   });
@@ -93,12 +93,6 @@ describe("proactive_post", () => {
     expect(row?.topic).toBe("update");
     expect(row?.context?.level).toBe("inform");
   });
-  test("several places: it must say which", async () => {
-    const h = harness();
-    const r = await proactivePostTool(h.ctx, { text: "Which?" });
-    expect(r.isError).toBe(true);
-    expect(h.posted).toEqual([]);
-  });
   test("the same item goes out once", async () => {
     const h = harness();
     await proactivePostTool(h.ctx, post());
@@ -106,12 +100,10 @@ describe("proactive_post", () => {
     expect(again).toEqual({ refused: true, rule: "already-posted", retryable: false });
     expect(h.posted).toHaveLength(1);
   });
-  test("no rule keeps the asked level; a ceiling lowers it", async () => {
+  test("no rule keeps the asked level", async () => {
     const h = harness();
     const a = parsed(await proactivePostTool(h.ctx, post({ needs_reply: true })));
     expect((await Posts.findByMessage("C0ONCHANNE", a.ts))?.context?.level).toBe("ask");
-    const b = parsed(await proactivePostTool(h.ctx, post({ destination: "C0ASKCHANN", needs_reply: true, item_id: "brief-2", evidence: "projects/other", text: "Other." })));
-    expect((await Posts.findByMessage("C0ASKCHANN", b.ts))?.context?.level).toBe("inform");
   });
   test("a taught ignore rule refuses", async () => {
     const h = harness();
@@ -122,15 +114,21 @@ describe("proactive_post", () => {
     expect(r).toEqual({ refused: true, rule: "ignored", retryable: false });
     expect(h.posted).toEqual([]);
   });
-  test("a cooldown says when to retry", async () => {
-    __setProactiveSoulSource(() => "## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n- Max per person per day: 20\n\n## Channel C0ONCHANNE\n### Proactive\n- Enabled: yes\n- Cooldown: 2\n- Max per day: 20\n");
+  test("a channel's Cooldown has no effect: a channel session has no limits", async () => {
+    __setProactiveSoulSource(() => "## Proactive\n- Max per person per day: 20\n\n## Channel C0ONCHANNE\n### Proactive\n- Enabled: yes\n- Cooldown: 2\n- Max per day: 20\n");
     const h = harness();
     await proactivePostTool(h.ctx, post());
     const r = parsed(await proactivePostTool(h.ctx, post({ item_id: "brief-2", text: "Later batch.", evidence: "projects/later" })));
+    expect(r.posted).toBe(true);
+  });
+  test("quiet hours say when to retry", async () => {
+    __setProactiveSoulSource(() => "## Proactive\n- Quiet hours: 09:00-17:00\n\n## Channel C0ONCHANNE\n### Proactive\n- Enabled: yes\n");
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
     expect(r.refused).toBe(true);
-    expect(r.rule).toBe("cooldown");
+    expect(r.rule).toBe("quiet-hours");
     expect(r.retryable).toBe(true);
-    expect(r.retryAfter).toBe(new Date(NOW.getTime() + 2 * H).toISOString());
+    expect(r.retryAfter).toBe(new Date("2026-10-26T17:00:00Z").toISOString());
   });
   test("at most the run's post cap", async () => {
     const h = harness();
@@ -167,8 +165,6 @@ describe("post_message in a wake", () => {
     const refused = await wakeThreadRefusal(w, thread(AGENT), "C0OTHER", r.ts);
     expect(refused).toContain("refused");
     expect(refused).toContain("this channel");
-    // The agent-level wake is not limited to one channel by this rule.
-    expect(await wakeThreadRefusal(h.ctx.wake!, thread(AGENT), "C0ONCHANNE", r.ts)).toBeNull();
   });
 
   test("one follow-up until someone answers", async () => {
@@ -230,11 +226,11 @@ describe("read_channel", () => {
 });
 
 describe("finish_round", () => {
-  test("saves the notes and clamps the time: a year away becomes the longest sleep", async () => {
+  test("stores the clamped time: a year away becomes the longest sleep", async () => {
     const h = harness();
     const r = parsed(await finishRoundTool(h.ctx, { journal: "Open: batch 2.", next_check_at: "2027-10-26T12:00:00Z" }));
     expect(r.nextCheckAt).toBe(new Date(NOW.getTime() + 24 * H).toISOString());
-    const s = await WakeState.get(AGENT);
+    const s = await ChannelWake.get(AGENT, "C0ONCHANNE");
     expect(s?.nextCheckAt).toBe(NOW.getTime() + 24 * H);
     expect(s?.finishedAt).toBe(NOW.getTime());
   });

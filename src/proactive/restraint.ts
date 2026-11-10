@@ -69,6 +69,14 @@ export const UNCHANGED_WINDOW_MS = 7 * 24 * 60 * 60_000;
  * recurring check as `unchanged` for the whole window.
  */
 export const SELF_EVIDENCE: ReadonlySet<string> = new Set(["self/heartbeat", "self/heartbeat-journal", "self/wake-journal"]);
+/** The prefix of a channel's own checklist page (`self/heartbeat/<channel>`). */
+const SELF_EVIDENCE_PREFIX = "self/heartbeat/";
+
+/** Whether `evidence` names the agent's own checklist or notes (see SELF_EVIDENCE). */
+export const isSelfEvidence = (evidence: string): boolean => {
+  const e = evidence.trim().toLowerCase();
+  return SELF_EVIDENCE.has(e) || e.startsWith(SELF_EVIDENCE_PREFIX);
+};
 
 /** A hash of the text as a reader sees it: Slack markup, case and spacing ignored. */
 export function textHash(text: string): string {
@@ -115,7 +123,7 @@ export function checkProactive(req: ProactiveRequest, ctx: RestraintContext): { 
   // repeat) the same evidence, to the same recipient within the window.
   const hash = textHash(req.text);
   const evidence = req.evidence?.trim() ?? "";
-  const ev = evidence && !SELF_EVIDENCE.has(evidence.toLowerCase()) ? textHash(evidence) : null;
+  const ev = evidence && !isSelfEvidence(evidence) ? textHash(evidence) : null;
   if (ctx.history.some((h) => t - h.postedAt < UNCHANGED_WINDOW_MS && (h.textHash === hash || (ev !== null && h.evidenceHash === ev)))) return no("unchanged");
   return { ok: true };
 }

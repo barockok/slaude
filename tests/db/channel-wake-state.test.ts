@@ -33,15 +33,6 @@ describe("channel wake state", () => {
     expect(s?.failures).toBe(2);
     expect(s?.checklistHash).toBe("h2");
   });
-  test("markDue moves only that channel's check, and creates no row", async () => {
-    await S.noteFinished("A1", "C1", 500, 150);
-    await S.noteFinished("A1", "C2", 600, 150);
-    await S.markDue("A1", "C1", 200);
-    expect((await S.get("A1", "C1"))?.nextCheckAt).toBe(200);
-    expect((await S.get("A1", "C2"))?.nextCheckAt).toBe(600);
-    await S.markDue("A1", "C3", 200);
-    expect(await S.get("A1", "C3")).toBeNull();
-  });
   test("a settling run finds its channel, once", async () => {
     await S.noteStart("A1", "C1", "h", "run1", 100);
     expect(await S.channelOfRun("run1")).toBe("C1");

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { WakeState } from "../../src/db/heartbeat-wake-state";
+import type { WakeState } from "../../src/db/channel-wake-state";
 import { clampNextCheck, DEFAULT_SLEEP_MS, settleWake, wakeDue, type WakeGateConfig } from "../../src/proactive/wake-gate";
 
 const MIN = 60_000;
