@@ -238,6 +238,8 @@ export interface GatewayHandle {
   /** TEST SEAM ONLY. The brain gate input a node turn's /v1 tools see for
    *  these (verified) job-token claims. */
   __brainGateForClaims?(claims: JobClaims): Promise<GateInput>;
+  /** Test seam: the /v1 tool plane's context for a job token's claims. */
+  __v1SlackCtx?(claims: JobClaims): SlackContext;
   /** TEST SEAM ONLY. Open a node turn's tool permission card, as the /v1
    *  can_use_tool relay does for these (verified) job-token claims. */
   __openPermissionForClaims?: ToolPlaneDeps["openPermission"];
@@ -430,8 +432,8 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
     // Channel-target crons must post at channel root, not threaded under the
     // originating thread. The surface binding is the single seam every post
     // tool (reply/upload/getHistory) reads, so drop the thread ref here when
-    // the context is channel-targeted. postTarget is only set for crons; normal
-    // inbound sessions leave it unset and keep their thread.
+    // the context is channel-targeted. postTarget is only set for crons and a
+    // channel session's root turns; other sessions leave it unset and keep their thread.
     get threadRef() { return ctx.postTarget === "channel" ? undefined : ctx.threadTs; },
     get inboundRef() { return ctx.inboundTs; },
     get userId() { return ctx.userId; },
@@ -4419,6 +4421,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       sessionId: claims.session,
       // Signed at dispatch; absent (an older gateway) reads as not interactive.
       ...(claims.origin ? { origin: claims.origin } : {}),
+      // Signed at dispatch: a root turn on a channel session posts at the root.
+      ...(claims.post === "channel" ? { postTarget: "channel" as const } : {}),
       // The job's recorded senders (merged messages included); mono and a
       // token with no job claim have none, which refuses a profile write.
       turnSenders: async () => (queueDispatch && claims.job ? queueDispatch.turns.turnSenders(claims.job) : null),
@@ -4680,6 +4684,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return route ? brainGateFor(route.ctx) : undefined;
     },
     __brainGateForClaims: (claims: JobClaims) => brainGateFor(v1SlackCtx(claims)),
+    __v1SlackCtx: v1SlackCtx,
     __openPermissionForClaims: nodeOpenPermission,
     __panelChat: (session: SessionRow, text: string, operatorId: string) => panelEnqueue(session, text, operatorId),
     __agentConnect: (sessionId: string, server: string) => {

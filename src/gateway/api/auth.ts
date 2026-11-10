@@ -77,6 +77,10 @@ export interface JobClaims {
   /** This job is a heartbeat wake (bgRun is its run), signed at dispatch: the
    *  tool plane applies the wake's allow-list. Absent = a normal turn. */
   wake?: boolean;
+  /** Where this turn's replies go, signed at dispatch: "channel" is the channel
+   *  root (a root turn on a channel session), the `thread` claim stays the
+   *  turn's real Slack ts. Absent = in the thread. */
+  post?: "channel";
   /** First issue time (unix seconds), carried across token-refresh so the
    *  token's total life is capped. Absent = this token's own `iat`. */
   iat0?: number;

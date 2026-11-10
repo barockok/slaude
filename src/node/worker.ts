@@ -31,7 +31,7 @@ import { createSessionMcp, SESSION_MCP_NAME } from "../agent/session-mcp";
 import { env } from "../config/env";
 import { m as metric, metrics } from "../metrics";
 import { bundleSessionGuardrails } from "../guardrails/node";
-import { AGENT_DEFINITION_CAPABILITY, GUARDRAILS_CAPABILITY } from "../guardrails/capability";
+import { AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, GUARDRAILS_CAPABILITY } from "../guardrails/capability";
 import type { SessionGuardrails } from "../guardrails/resolve";
 import type { FiringEvent } from "../guardrails/audit";
 import { assertNodeIdUsable, DEFAULT_LABEL, LABEL_RE, labelTurnsQueue, makeKeys, nodeTurnsQueue, type Keys } from "../queue/keys";
@@ -362,7 +362,7 @@ export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: st
 }
 
 /** What this node advertises on its heartbeat (and on every bundle fetch). */
-export const NODE_CAPS: readonly string[] = [GUARDRAILS_CAPABILITY, AGENT_DEFINITION_CAPABILITY];
+export const NODE_CAPS: readonly string[] = [GUARDRAILS_CAPABILITY, AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY];
 
 /** The session's owner guardrails from its runtime bundle (none when the
  *  gateway sends none). A refused bundle (GUARDRAILS_UNAVAILABLE) fails the boot. */
