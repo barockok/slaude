@@ -16,7 +16,7 @@ export interface WakeState {
   checklistHash: string | null;
 }
 
-type Row = {
+export type WakeRow = {
   agent_id: string;
   next_check_at: number | string | null;
   last_wake_at: number | string | null;
@@ -28,9 +28,8 @@ type Row = {
 
 const num = (v: number | string | null): number | null => (v === null ? null : Number(v));
 
-export async function get(agentId: string): Promise<WakeState | null> {
-  const r = await db.one<Row>(`SELECT * FROM heartbeat_wake_state WHERE agent_id = ?`, [agentId]);
-  if (!r) return null;
+/** Maps the columns this table shares with channel_wake_state. */
+export function toWakeState(r: WakeRow): WakeState {
   return {
     agentId: r.agent_id,
     nextCheckAt: num(r.next_check_at),
@@ -40,6 +39,11 @@ export async function get(agentId: string): Promise<WakeState | null> {
     failures: Number(r.failures),
     checklistHash: r.checklist_hash,
   };
+}
+
+export async function get(agentId: string): Promise<WakeState | null> {
+  const r = await db.one<WakeRow>(`SELECT * FROM heartbeat_wake_state WHERE agent_id = ?`, [agentId]);
+  return r ? toWakeState(r) : null;
 }
 
 /** A wake is starting: remember when, and which checklist it saw. */

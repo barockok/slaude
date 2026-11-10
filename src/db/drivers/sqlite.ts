@@ -264,6 +264,20 @@ CREATE TABLE IF NOT EXISTS heartbeat_wake_state (
   checklist_hash TEXT,
   updated_at     INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS channel_wake_state (
+  agent_id       TEXT    NOT NULL,
+  channel_id     TEXT    NOT NULL,
+  next_check_at  INTEGER,
+  last_wake_at   INTEGER,
+  finished_at    INTEGER,
+  last_outcome   TEXT,
+  failures       INTEGER NOT NULL DEFAULT 0,
+  checklist_hash TEXT,
+  open_run_id    TEXT,
+  updated_at     INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, channel_id)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_wake_open_run ON channel_wake_state (open_run_id);
 
 CREATE TABLE IF NOT EXISTS heartbeat_watermarks (
   agent_id   TEXT    NOT NULL,
