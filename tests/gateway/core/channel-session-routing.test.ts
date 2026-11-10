@@ -7,7 +7,8 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { appendFileSync } from "node:fs";
 import { createGateway, panelDispatchMeta } from "../../../src/gateway/core/gateway";
-import { AgentManager } from "../../../src/agent/manager";
+import { AgentManager, WakeBusyError } from "../../../src/agent/manager";
+import { MUST_REPLY_INSTRUCTION } from "../../../src/agent/must-reply";
 import type { Transport } from "../../../src/gateway/core/transport";
 import type { SessionBinding, Surface } from "../../../src/gateway/core/surface";
 import { makeSlackSurfaceFactory } from "../../../src/gateway/slack/surface";
@@ -415,6 +416,145 @@ describe("channel session routing", () => {
       expect(recordFailures()).toBe(before + 1);
       expect(g.posts).toHaveLength(0);
       expect(reactionsOn(g, r)).toHaveLength(0);
+    });
+  });
+
+  describe("a wake on the channel session", () => {
+    const WAKE = { teamId: "T", managerId: WORLD.manager, channelId: "C1", threadTs: "channel:C1", personaId: "default", agentId: "U0AGENT", appId: undefined };
+    const caps = { maxBudgetUsd: 1, maxTurns: 40, maxMinutes: 15 };
+    const run = { runId: "run-wake", agentId: "U0AGENT" };
+
+    function makeWakeGw() {
+      const cap = richTransport();
+      const agent = new AgentManager();
+      let guard!: (id: string) => string | null;
+      const orig = agent.setStopGuard.bind(agent);
+      agent.setStopGuard = ((fn: any) => { guard = fn; orig(fn); }) as any;
+      const sends: { id: string; text: string; wake?: unknown }[] = [];
+      agent.sendMessage = async (id: string, text: string, opts?: any) => void sends.push({ id, text, ...(opts?.wake ? { wake: opts.wake } : {}) });
+      agent.suppressNextTurn = () => {};
+      const bindings: SessionBinding[] = [];
+      const real = makeSlackSurfaceFactory(cap.client);
+      const h = createGateway(agent, cap.t, { surfaceFactory: (b) => { bindings.push(b); return real(b); } });
+      return { ...cap, agent, sends, bindings, h, guard: (id: string) => guard(id) };
+    }
+    const done = (g: ReturnType<typeof makeWakeGw>, id: string) => g.agent.emit("event", { type: "done", sessionId: id } as any);
+    const channelSession = async () => (await Sessions.findByThread({ team_id: "T", channel_id: "C1", thread_ts: "channel:C1", persona_id: "default" }))!;
+
+    it("does not start while a person's turn runs: the route stays theirs", async () => {
+      const g = makeWakeGw();
+      const m = nextTs();
+      await g.emit("message", rootArgs(g as any, `<@${BOT}> work`, { ts: m }));
+      const id = g.sends[0]!.id;
+      let running = true;
+      g.agent.turnRunning = () => running;
+      expect(await g.h.__wake!.busy!(WAKE as any)).toBe(true);
+      await expect(g.h.__wake!.dispatch(WAKE, "<wake/>", run, caps)).rejects.toThrow(/running/);
+      expect(g.guard(id)).toBe(MUST_REPLY_INSTRUCTION);
+      expect(g.bindings.at(-1)!.inboundRef).toBe(m);
+      expect(g.sends).toHaveLength(1);
+      running = false;
+      done(g, id);
+      await tick();
+      expect(await g.h.__wake!.busy!(WAKE as any)).toBe(false);
+    });
+
+    it("runs in the channel's session and folder when nothing else runs, reaching nobody", async () => {
+      const g = makeWakeGw();
+      await g.h.__wake!.dispatch(WAKE, "<wake/>", run, caps);
+      const s = await channelSession();
+      expect(s.working_dir).toContain("/proactive/channels/C1");
+      await tick();
+      expect(g.sends.at(-1)).toMatchObject({ id: s.id, text: "<wake/>", wake: caps });
+      expect(g.guard(s.id)).toBeNull();
+      expect(g.bindings.at(-1)!.threadRef).toBeUndefined();
+      g.agent.emit("event", { type: "toolCall", sessionId: s.id, tool: "Read", input: {} } as any);
+      done(g, s.id);
+      await tick();
+      expect(g.posts).toHaveLength(0);
+      expect(g.reacts).toHaveLength(0);
+    });
+
+    it("a recording during the wake leaves the wake's route alone", async () => {
+      const g = makeWakeGw();
+      await g.h.__wake!.dispatch(WAKE, "<wake/>", run, caps);
+      const id = (await channelSession()).id;
+      const wakeRef = g.bindings.at(-1)!.inboundRef;
+      await g.emit("message", rootArgs(g as any, "chatter", { user: "U0OTHER" }));
+      await tick();
+      expect(g.sends.at(-1)!.text).toContain("chatter");
+      expect(g.bindings.at(-1)!.inboundRef).toBe(wakeRef);
+      expect(g.bindings.at(-1)!.userId).toBe("U0AGENT");
+      expect(g.guard(id)).toBeNull();
+    });
+
+    it("a mention during the wake gets its own route when the wake ends", async () => {
+      const g = makeWakeGw();
+      await g.h.__wake!.dispatch(WAKE, "<wake/>", run, caps);
+      const id = (await channelSession()).id;
+      const wakeRef = g.bindings.at(-1)!.inboundRef;
+      const m = nextTs();
+      await g.emit("message", rootArgs(g as any, `<@${BOT}> are you there`, { ts: m }));
+      await tick();
+      // Sent straight on (the agent runs it after the wake); the route waits.
+      expect(g.sends.at(-1)!.text).toContain("are you there");
+      expect(g.bindings.at(-1)!.inboundRef).toBe(wakeRef);
+      expect(g.guard(id)).toBeNull();
+      // It shows it was received without waiting for the wake.
+      expect(g.reacts.some((r) => r.timestamp === m && r.name === "eyes")).toBe(true);
+      done(g, id);
+      await tick();
+      expect(g.bindings.at(-1)!.inboundRef).toBe(m);
+      expect(g.bindings.at(-1)!.userId).toBe(SENDER);
+      expect(g.guard(id)).toBe(MUST_REPLY_INSTRUCTION);
+      done(g, id);
+      await tick();
+      expect(g.reacts.filter((r) => r.timestamp === m).map((r) => r.name)).toContain("white_check_mark");
+    });
+
+    it("the arrivals during a wake apply in order: a recording then a mention", async () => {
+      const g = makeWakeGw();
+      await g.h.__wake!.dispatch(WAKE, "<wake/>", run, caps);
+      const id = (await channelSession()).id;
+      await g.emit("message", rootArgs(g as any, "chatter", { user: "U0OTHER" }));
+      const m = nextTs();
+      await g.emit("message", rootArgs(g as any, `<@${BOT}> go`, { ts: m }));
+      done(g, id); // the wake
+      await tick();
+      expect(g.bindings.at(-1)!.inboundRef).toBe(m);
+      done(g, id); // the recording ends quietly
+      await tick();
+      expect(g.reacts.filter((r) => r.timestamp === m).map((r) => r.name)).not.toContain("white_check_mark");
+      done(g, id); // the mention
+      await tick();
+      expect(g.reacts.filter((r) => r.timestamp === m).map((r) => r.name)).toContain("white_check_mark");
+    });
+
+    it("a failed wake says nothing in Slack and releases the route", async () => {
+      const g = makeWakeGw();
+      await g.h.__wake!.dispatch(WAKE, "<wake/>", run, caps);
+      const id = (await channelSession()).id;
+      g.agent.emit("event", { type: "error", sessionId: id, error: "boom", code: "TURN_FAILED" } as any);
+      await tick();
+      expect(g.posts).toHaveLength(0);
+      const m = nextTs();
+      await g.emit("message", rootArgs(g as any, `<@${BOT}> hi`, { ts: m }));
+      expect(g.bindings.at(-1)!.inboundRef).toBe(m);
+    });
+
+    it("a wake refused for a voice call is not logged as a failure and releases the route", async () => {
+      const g = makeWakeGw();
+      const errors: string[] = [];
+      const spy = spyOn(console, "error").mockImplementation((...a: unknown[]) => void errors.push(a.join(" ")));
+      g.agent.sendMessage = async () => { throw new WakeBusyError("s1"); };
+      await g.h.__wake!.dispatch(WAKE, "<wake/>", run, caps);
+      await tick();
+      spy.mockRestore();
+      expect(errors.filter((e) => e.includes("turn failed"))).toEqual([]);
+      g.agent.sendMessage = async () => {};
+      const m = nextTs();
+      await g.emit("message", rootArgs(g as any, `<@${BOT}> hi`, { ts: m }));
+      expect(g.bindings.at(-1)!.inboundRef).toBe(m);
     });
   });
 

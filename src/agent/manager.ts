@@ -1079,6 +1079,15 @@ export class AgentManager extends EventEmitter {
     return (this.#live.get(sessionId)?.pendingInputs ?? 0) > 0;
   }
 
+  /** Whether a turn is running or about to on this session: an input the CLI has
+   *  not folded away, a boot or a send under way, or queued work. Unlike
+   *  isTurnInFlight, a count left high by a folded input does not read as busy. */
+  turnRunning(sessionId: string): boolean {
+    if (this.#booting.has(sessionId) || this.#sendsInProgress.has(sessionId) || this.#kindQueue.has(sessionId)) return true;
+    const live = this.#live.get(sessionId);
+    return !!live && live.pendingInputs > 0 && !this.#onlyFoldedLeft(live);
+  }
+
   /** True when the session works in the agent's proactive folder and another
    *  session holds that folder now, so a message sent to it would wait for
    *  the folder. False for a session anywhere else, or one that holds it. */

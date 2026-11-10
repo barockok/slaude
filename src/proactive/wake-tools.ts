@@ -6,6 +6,7 @@
  */
 import type { WebClient } from "@slack/web-api";
 import type { CardPost } from "../background/proposal-cards";
+import * as ChannelWake from "../db/channel-wake-state";
 import * as WakeState from "../db/heartbeat-wake-state";
 import * as Posts from "../db/proactive-posts";
 import { redactSecrets } from "../gateway/core/status-text";
@@ -41,6 +42,8 @@ export interface WakeToolDeps {
 export interface WakeTurn {
   runId: string;
   deps: WakeToolDeps;
+  /** A channel session's wake: its channel. Its posts go only there, at root, and it has no journal. */
+  channelSession?: string;
 }
 
 /** The part of the Slack context these tools read. */
@@ -88,10 +91,12 @@ export async function proactivePostTool(c: WakeToolContext, a: ProactivePostTool
   const { deps, runId } = c.wake;
   const personaId = personaOf(c);
   const managerId = deps.managerId(personaId);
-  const places = proactiveChannels(personaId);
+  const own = c.wake.channelSession;
+  const places = own ? [own] : proactiveChannels(personaId);
   // One place to work in: that is where a post goes.
   const d = a.destination?.trim() || (places.length === 1 ? places[0]! : places.length === 0 ? "manager" : "");
   if (!d) return err(`refused: say which destination: ${places.join(", ")}.`);
+  if (own && d !== own) return err(`refused: in this channel's session a post goes only to this channel (${own}).`);
   const audience: Audience | null = d === "manager" || d === managerId ? "manager" : /^[CG][A-Z0-9]+$/.test(d) ? "channel" : /^[UW][A-Z0-9]+$/.test(d) ? "person" : null;
   if (!audience) return err("refused: destination must be \"manager\", a channel id or a user id.");
   const recipient = audience === "manager" ? managerId : d;
@@ -226,11 +231,16 @@ export async function finishRoundTool(c: WakeToolContext, a: { journal: string; 
   const personaId = personaOf(c);
   const agentId = await deps.agentId(personaId);
   const now = deps.now();
-  const page = composePage({ slug: WAKE_JOURNAL_SLUG, content: redactSecrets(a.journal.trim()).slice(0, JOURNAL_MAX_CHARS), type: "heartbeat-journal" }, now);
-  if ("error" in page) return err(page.error);
-  await deps.call("put_page", { slug: WAKE_JOURNAL_SLUG, content: page.content }, agentScope(agentId));
+  // A channel session's history is its own record: only the next check is kept.
+  const channel = c.wake.channelSession;
+  if (!channel) {
+    const page = composePage({ slug: WAKE_JOURNAL_SLUG, content: redactSecrets(a.journal.trim()).slice(0, JOURNAL_MAX_CHARS), type: "heartbeat-journal" }, now);
+    if ("error" in page) return err(page.error);
+    await deps.call("put_page", { slug: WAKE_JOURNAL_SLUG, content: page.content }, agentScope(agentId));
+  }
   const proposed = a.next_check_at ? Date.parse(a.next_check_at) : null;
   const next = clampNextCheck(proposed, now.getTime(), deps.gate());
-  await WakeState.noteFinished(agentId, next, now.getTime());
+  if (channel) await ChannelWake.noteFinished(agentId, channel, next, now.getTime());
+  else await WakeState.noteFinished(agentId, next, now.getTime());
   return ok({ saved: true, nextCheckAt: new Date(next).toISOString() });
 }

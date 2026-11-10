@@ -62,7 +62,9 @@ import type { ProactiveTransport } from "../proactive/dispatch";
 import { readPingPrefs } from "../proactive/prefs";
 import { runHeartbeat, tellManagerOnce } from "../proactive/heartbeat";
 import { runWake, type WakeDeps, type WakeResult, type WakeTransport } from "../proactive/wake";
-import { parseManager, wakeEligibility } from "../soul/proactive";
+import { runChannelWakes } from "../proactive/channel-wake";
+import * as ChannelWake from "../db/channel-wake-state";
+import { channelSessionWakes, parseManager, wakeEligibility } from "../soul/proactive";
 import * as WakeState from "../db/heartbeat-wake-state";
 import type { BrainOpCall } from "../knowledge/memory-trail";
 import { bridgeExternalMcp } from "../gateway/core/external-mcp";
@@ -502,7 +504,9 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
               mcp: bridgeExternalMcp,
             });
             if (waking) {
-              await runWake(r, { call: deps.call, post: slack.post, transport: slack.wake!, managerId: personaManager, mandates: personaMandates, app: personaApp, ...(slack.activity ? { activity: slack.activity } : {}) });
+              const wakeDeps = { call: deps.call, post: slack.post, transport: slack.wake!, managerId: personaManager, mandates: personaMandates, app: personaApp, ...(slack.activity ? { activity: slack.activity } : {}) };
+              await runWake(r, wakeDeps);
+              await runChannelWakes(r, wakeDeps);
             } else if (!eligible.ok && eligible.reason) {
               const why = eligible.reason === "no-manager" ? "I have no manager in my SOUL" : "every place it is on in has a Highest below act";
               await tellManagerOnce(r, "wake-ineligible", `Proactiveness is on in my SOUL, but ${why}, so I can only summarise, not work on my own.`, {
@@ -527,7 +531,8 @@ export async function wakeNow(
 ): Promise<WakeResult | "not-eligible"> {
   if (!deps.slack.wake || !wakeEligibility(r.personaId, personaManager(r.personaId)).ok) return "not-eligible";
   await WakeState.markDue(r.agentId, r.now.getTime());
-  return runWake(r, {
+  for (const channel of channelSessionWakes(r.personaId)) await ChannelWake.markDue(r.agentId, channel, r.now.getTime());
+  const wakeDeps = {
     call: deps.call,
     post: deps.slack.post,
     transport: deps.slack.wake,
@@ -535,7 +540,12 @@ export async function wakeNow(
     mandates: personaMandates,
     app: personaApp,
     ...(deps.slack.activity ? { activity: deps.slack.activity } : {}),
-  });
+  };
+  const result = await runWake(r, wakeDeps);
+  if (result === "woke") return result;
+  // Channel wakes run one at a time and after the agent's own: the rest go at the next slot.
+  const channel = await runChannelWakes(r, wakeDeps);
+  return channel === "woke" || channel === "failed" || channel === "no-budget" ? channel : result;
 }
 
 /** A persona's manager: the default persona's effective soul, a named persona's own structured soul. */

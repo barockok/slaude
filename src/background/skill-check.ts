@@ -260,7 +260,7 @@ export async function finishSkillCheck(
   }
   settleMetrics(a.agentId, outcome, total, pass);
   if (pass === "heartbeat-wake") {
-    await settleWakeRun({ agentId: a.agentId, outcome, costUsd: total, ...(a.stats ? { stats: a.stats } : {}), now: (deps.now ?? (() => new Date()))().getTime() }).catch((e) =>
+    await settleWakeRun({ agentId: a.agentId, runId: a.runId, scope: run.scope, outcome, costUsd: total, ...(a.stats ? { stats: a.stats } : {}), now: (deps.now ?? (() => new Date()))().getTime() }).catch((e) =>
       console.error(`[background] agent=${a.agentId} pass=${pass}: could not settle the wake: ${e instanceof Error ? e.message : String(e)}`),
     );
   }

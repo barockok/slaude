@@ -334,6 +334,12 @@ type SessionRoute = {
   recordingBehind?: boolean;
   /** A channel session's recording dispatched at idle whose end has not arrived. */
   recordingAhead?: boolean;
+  /** Set while a channel session's wake runs on this route: it is the wake's
+   *  until the wake's done or error. What arrives meanwhile only queues here and
+   *  applies, in arrival order, when the wake ends (see endChannelWake). */
+  wakeHold?: Array<() => void>;
+  /** Ends the wake's hold if its outcome never comes. Cleared with the hold. */
+  wakeHoldTimer?: ReturnType<typeof setTimeout>;
   /** When true, this session was started by a silent cron job — the stop guard
    *  must not force a reply (the job ran without intending to post to Slack). */
   silent?: boolean;
@@ -1057,7 +1063,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const persona = personaId && personaId !== "default" ? personaId : "default";
     const session = await agent.ensureSession(
       { team_id: post.teamId, channel_id: post.channelId, thread_ts: post.messageTs, persona_id: persona },
-      post.audience === "channel" ? { workingDir: proactiveWorkspaceDir(post.agentId) } : {},
+      post.audience === "channel" ? { workingDir: channelSessionOn(persona, post.channelId) ? channelWorkspaceDir(post.agentId, post.channelId) : proactiveWorkspaceDir(post.agentId) } : {},
     );
     await Sessions.setEngaged(session.id, true);
     if (!session.slack_app_id && post.appId) await Sessions.setSlackApp(session.id, post.appId);
@@ -1084,7 +1090,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * thread only) creates its session in the agent's proactive folder.
    */
   const dispatchThreadTurn = async (
-    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean; appId?: string | null; sharedFolder?: boolean; wake?: WakeRunOptions },
+    target: { teamId: string; channelId: string; threadTs: string; personaId: string | undefined; userId: string; engage?: boolean; appId?: string | null; sharedFolder?: boolean; wake?: WakeRunOptions; channelSession?: boolean },
     envelope: string,
     run: { runId: string; agentId: string },
     pass: TurnPass,
@@ -1093,7 +1099,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const persona = target.personaId;
     const session = await agent.ensureSession(
       { team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: persona ?? "default" },
-      target.sharedFolder ? { workingDir: proactiveWorkspaceDir(run.agentId) } : {},
+      target.channelSession ? { workingDir: channelWorkspaceDir(run.agentId, channelId) } : target.sharedFolder ? { workingDir: proactiveWorkspaceDir(run.agentId) } : {},
     );
     if (target.engage) await Sessions.setEngaged(session.id, true);
     // A thread a heartbeat post just opened has no app of its own yet: the
@@ -1113,35 +1119,52 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       inboundTs: String(Date.now()),
       userId,
       teamId,
-      postTarget: "thread",
+      postTarget: target.channelSession ? "channel" : "thread",
       personaId: persona,
       origin: "cron",
     };
     ctx.requestApproval = target.wake
       ? refuseApprovalInWake
       : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req, persona: ctx.personaId });
-    if (target.wake) ctx.wake = { runId: run.runId, deps: wakeToolDeps };
+    if (target.wake) ctx.wake = { runId: run.runId, deps: wakeToolDeps, ...(target.channelSession ? { channelSession: channelId } : {}) };
     ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
     noteTurnSender(session.id, ctx);
-    routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, silent: true });
+    // A channel wake runs only with the route to itself. A person's turn on it
+    // must not end up answering as the wake: `busy` keeps a wake back while a
+    // turn runs, and this catches one that started since. In mono there is no
+    // await between this check and routes.set, so a message cannot slip in.
+    if (target.channelSession && (await channelTurnRunning(session.id))) throw new Error(`channel session ${session.id}: a turn is running`);
+    const route: SessionRoute = { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, silent: true };
+    routes.set(session.id, route);
+    if (target.channelSession) holdRouteForChannelWake(session.id, route, target.wake?.maxMinutes);
     if (queueDispatch) {
-      await queueDispatch.dispatch(session, envelope, {
-        teamId,
-        channelId,
-        threadTs,
-        eventTs: String(Date.now() / 1000),
-        userId,
-        personaId: persona,
-        ...(app.apiAppId ? { apiAppId: app.apiAppId } : {}),
-        origin: "cron",
-        backgroundRunId: run.runId,
-        ...(target.wake ? { wake: target.wake } : {}),
-      });
+      try {
+        await queueDispatch.dispatch(session, envelope, {
+          teamId,
+          channelId,
+          threadTs,
+          eventTs: String(Date.now() / 1000),
+          userId,
+          personaId: persona,
+          ...(app.apiAppId ? { apiAppId: app.apiAppId } : {}),
+          origin: "cron",
+          backgroundRunId: run.runId,
+          ...(target.wake ? { wake: target.wake } : {}),
+          ...(target.channelSession ? { postTarget: "channel" as const, channelSession: true } : {}),
+        });
+      } catch (e) {
+        if (target.channelSession) endChannelWake(session.id, route);
+        throw e;
+      }
     } else if (pass === "heartbeat-turn" || pass === "heartbeat-wake") {
       // Not awaited: the turn may wait for the agent's proactive folder (one
       // turn there at a time), and a round dispatching several items must not
       // block on it. A turn that then fails leaves its run to the stale sweep.
       void agent.sendMessage(session.id, envelope, { backgroundRun: ledgerTurnRun({ runId: run.runId, agentId: run.agentId, pass }), ...(target.wake ? { wake: target.wake } : {}) }).catch((e) => {
+        // A channel wake that never started has nothing running on its route.
+        if (target.channelSession) endChannelWake(session.id, route);
+        // A voice call owns the session: the run is closed and the wake is settled, not failed.
+        if ((e as { code?: string })?.code === "WAKE_BUSY") return;
         console.error(`[proactive] heartbeat turn failed session=${session.id}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
       });
     } else {
@@ -1163,11 +1186,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     dispatch: async (target, envelope, run, caps) => {
       const persona = target.personaId && target.personaId !== "default" ? target.personaId : undefined;
       await dispatchThreadTurn(
-        { teamId: target.teamId, channelId: target.managerId, threadTs: target.threadTs, personaId: persona, userId: target.agentId, appId: target.appId ?? null, sharedFolder: true, wake: caps },
+        { teamId: target.teamId, channelId: target.channelId ?? target.managerId, threadTs: target.threadTs, personaId: persona, userId: target.agentId, appId: target.appId ?? null, ...(target.channelId ? { channelSession: true } : { sharedFolder: true }), wake: caps },
         envelope,
         run,
         "heartbeat-wake",
       );
+    },
+    busy: async (target) => {
+      if (!target.channelId) return false;
+      const session = await Sessions.findByThread({ team_id: target.teamId, channel_id: target.channelId, thread_ts: channelSessionKey(target.channelId), persona_id: target.personaId || "default" });
+      if (!session) return false;
+      return channelTurnRunning(session.id);
     },
   };
   // Promise checks (phase E): a due commitment's check turn goes into the
@@ -1292,6 +1321,47 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Per-session route + slack context. Mutated on each new inbound user message.
   const routes = new Map<string, SessionRoute>();
+  /** A turn or recording running or queued on this session: this process's agent in mono, the session lock and queue in the gateway role. */
+  const channelTurnRunning = async (sessionId: string): Promise<boolean> => {
+    if (!queueDispatch) return agent.turnRunning(sessionId);
+    if ((await getRedis().exists(makeKeys().sessionLock(sessionId))) > 0) return true;
+    return queueDispatch.turns.hasPending(sessionId);
+  };
+  /** The longest a wake's route is held, past its own wall clock, if its outcome never arrives. */
+  const CHANNEL_WAKE_MARGIN_MINUTES = 15;
+  const CHANNEL_WAKE_NO_CLOCK_MINUTES = 120;
+  /** A channel session's wake owns the route until it ends: done, error, or a failure to start. */
+  const holdRouteForChannelWake = (sessionId: string, route: SessionRoute, maxMinutes: number | undefined): void => {
+    route.wakeHold = [];
+    const minutes = maxMinutes && maxMinutes > 0 ? maxMinutes + CHANNEL_WAKE_MARGIN_MINUTES : CHANNEL_WAKE_NO_CLOCK_MINUTES;
+    route.wakeHoldTimer = setTimeout(() => endChannelWake(sessionId, route), minutes * 60_000);
+    route.wakeHoldTimer.unref?.();
+  };
+  /**
+   * The wake is over: its route goes, so nothing of it (no refused approvals,
+   * no silent Stop guard) carries into the next turn, and what arrived during
+   * it now applies in arrival order, each building its route as it would have.
+   */
+  function endChannelWake(sessionId: string, route: SessionRoute): void {
+    if (routes.get(sessionId) !== route || !route.wakeHold) return;
+    if (route.wakeHoldTimer) clearTimeout(route.wakeHoldTimer);
+    const held = route.wakeHold;
+    route.wakeHold = undefined;
+    routes.delete(sessionId);
+    for (const apply of held) {
+      try {
+        apply();
+      } catch (e) {
+        console.error(`[gateway] could not apply a held message session=${sessionId}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+  /** Runs now, or when the channel wake on this session ends. */
+  const afterChannelWake = (sessionId: string, apply: () => void): void => {
+    const held = routes.get(sessionId)?.wakeHold;
+    if (held) held.push(apply);
+    else apply();
+  };
   const firstFailurePost = createOnceGuard();
 
   // On every registry install, bring warm routes in line with it:
@@ -2277,6 +2347,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     console.log(`[agent-evt] ${e.type} session=${e.sessionId}${"tool" in e ? ` tool=${e.tool}` : ""}${"error" in e ? ` err=${redactSecrets(String(e.error))}` : ""}`);
     const route = routes.get(e.sessionId);
     if (!route) return;
+
+    // A channel session's wake: its route shows nothing in Slack (nobody is in
+    // the turn, and its thread key is not a Slack ts). Its end frees the route,
+    // before the panel gate below, which would otherwise skip it.
+    if (route.wakeHold) {
+      if (e.type === "error") console.error(`[turn-error] session=${e.sessionId} code=${e.code ?? "UNKNOWN"} job=${e.jobId ?? "-"}: ${redactSecrets(String(e.error))}`);
+      if ((e.type === "done" && !e.autoEvolve) || e.type === "error") endChannelWake(e.sessionId, route);
+      return;
+    }
 
     // Active-surface lock (design §Active-surface lock, outbound gate): while an
     // operator drives this session from the panel, suppress the Slack-facing
@@ -3421,7 +3500,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (!triggered) {
           // No live session — auto-boot and compact.
           const existing = routes.get(session.id);
-          if (existing) {
+          if (existing?.wakeHold) {
+            // A wake is about to run or running: the route stays its own.
+          } else if (existing) {
             existing.ctx.channel = channelId;
             existing.ctx.threadTs = threadTs;
             existing.ctx.inboundTs = eventTs;
@@ -3615,6 +3696,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // The previous message's tail first (arrival order).
     await order.ready;
 
+    // During a channel wake the route stays the wake's: this message reaches
+    // the agent now (which runs it after the wake) and its route state applies
+    // when the wake ends. The received reaction goes on now: it can wait a while.
+    const applyRoute = () => {
     // A recording that arrives during a running turn runs behind it: the turn
     // keeps its own message, speaker and cards. Its done is left to the flag.
     const existingRoute = routes.get(session.id);
@@ -3697,6 +3782,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       presence.enter(session.id, STATUS_THINKING);
       void status.set(session.id, channelId, threadTs, "thinking…");
     }
+    };
+    if (routes.get(session.id)?.wakeHold && !suppress) void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
+    afterChannelWake(session.id, applyRoute);
 
     // The dispatch tail (queue enqueue in gateway role, in-process
     // AgentManager in mono). Extracted so the active-surface lock can defer
@@ -4623,7 +4711,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     ctx.requestApproval = claims.wake
       ? refuseApprovalInWake
       : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, app, ...req, persona: ctx.personaId });
-    if (claims.wake && claims.bgRun) ctx.wake = { runId: claims.bgRun, deps: wakeToolDeps };
+    if (claims.wake && claims.bgRun) ctx.wake = { runId: claims.bgRun, deps: wakeToolDeps, ...(isChannelSessionKey(claims.thread) ? { channelSession: claims.channel } : {}) };
     // A signed wake has nobody to approve a held reply, with or without a run.
     if (claims.wake) ctx.unattended = true;
     // A held reply is decided before the job token expires, or not posted.
@@ -4741,7 +4829,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // may still know it; with neither, the token carries the team alone.
     const liveApp = routes.get(session.id)?.ctx.apiAppId;
     if (!meta.apiAppId && liveApp) meta.apiAppId = liveApp;
-    countTurn(routes.get(session.id));
+    afterChannelWake(session.id, () => countTurn(routes.get(session.id)));
     const envelope =
       `<channel source="panel" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${operatorId}" user_name="${escapeAttr(operatorId)}" ` +
@@ -4755,19 +4843,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Mono: the route's context is the speaker the tools see. Without this
       // the panel turn would run as the last Slack speaker, and as interactive
       // for them; the operator is the speaker, as the node token's initiator is.
-      const route = routes.get(session.id);
-      if (route) {
-        route.ctx.userId = operatorId;
-        route.ctx.origin = "panel";
-        if (meta.postTarget) route.ctx.postTarget = meta.postTarget;
-        // A new turn: the Stop guard starts over and forces a silent end, as
-        // a node does for a panel job.
-        route.spoke = false;
-        route.passed = false;
-        route.passReact = undefined;
-        route.silent = false;
-        noteTurnSender(session.id, route.ctx);
-      }
+      afterChannelWake(session.id, () => {
+        const route = routes.get(session.id);
+        if (route) {
+          route.ctx.userId = operatorId;
+          route.ctx.origin = "panel";
+          if (meta.postTarget) route.ctx.postTarget = meta.postTarget;
+          // A new turn: the Stop guard starts over and forces a silent end, as
+          // a node does for a panel job.
+          route.spoke = false;
+          route.passed = false;
+          route.passReact = undefined;
+          route.silent = false;
+          noteTurnSender(session.id, route.ctx);
+        }
+      });
       await agent.sendMessage(session.id, envelope, { sender: { userId: operatorId, teamId: meta.teamId || null, origin: "panel" } });
     }
   }
