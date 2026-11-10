@@ -416,7 +416,9 @@ d("gateway↔node E2E (real Redis)", () => {
     bootFailure = null;
     emulateStopHook = false;
     await settleNode();
-  });
+    // bun's default hook timeout is 5s; settleNode bounds itself (aborts a hung
+    // turn at 8s, reports a leak at 45s), so the hook must outlast it.
+  }, 60_000);
 
   test("message → enqueue → node claims → shim reply lands via the REST tool plane", async () => {
     posts.length = 0;
