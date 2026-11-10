@@ -7,6 +7,8 @@ export interface OutboundCard {
   text?: string;
   blocks?: any[];
   actionIds: string[];
+  /** Set when Slack would show the card to this user alone (chat.postEphemeral). */
+  ephemeralTo?: string;
   resolved: boolean;
   raw: any;
 }
@@ -66,6 +68,12 @@ export class SimTransport implements Transport {
       chat: {
         postMessage: async (a: any) => push(classify(extractActionIds(a.blocks)), a.channel, a.thread_ts, a.text, a.blocks, a),
         update: async (a: any) => push("message", a.channel, a.ts, a.text, a.blocks, a),
+        // Visible to a.user alone in Slack; the sim has one view, so it lands as a message whose raw args carry the recipient.
+        postEphemeral: async (a: any) => {
+          const r = push("message", a.channel, a.thread_ts, a.text, a.blocks, a);
+          this.outbound.at(-1)!.ephemeralTo = a.user;
+          return r;
+        },
       },
       reactions: {
         add: async (a: any) => push("reaction", a.channel, a.timestamp, `:${a.name}:`, undefined, a),

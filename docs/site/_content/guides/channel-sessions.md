@@ -88,7 +88,7 @@ A wake and a person's turn never share a turn. A mention that arrives during a w
 
 ## 5. Starting over with `/new`
 
-`/new` at root, from the manager or one of that channel's approvers, retires the channel session. The next root message starts a new one that remembers nothing of the old conversation. Anyone else is refused.
+`/new` at root, from the manager or one of that channel's approvers, retires the channel session. The next root message starts a new one that remembers nothing of the old conversation. Anyone else is refused, and so is `/new` when the channel has no session yet. Those refusals are shown only to the person who tried it (see section 6); the confirmation that the session was reset stays a normal message, so the channel sees it.
 
 The old session stays in the console, labelled archived, and it is read-only: a console chat into it is refused. Inside a thread, or in a channel without a channel session, `/new` is not a command: it reaches the agent as ordinary text, or a skill named `new`, as any other message would.
 
@@ -102,6 +102,20 @@ Some commands make no sense for a whole channel, so they are refused at root:
 | `/mention-only`, `/ignore-thread` | Refused: they have no meaning at root. |
 
 `/mode` at root needs a manager or one of this channel's approvers, because it applies to every later speaker and wake in the channel. Anyone else is refused. In a thread, a DM or a channel without a channel session it works as it always has.
+
+At root, a command the sender is not allowed or not able to run is answered with an ephemeral message: only the person who sent the command sees it, nobody else in the channel does. Like any ephemeral message it disappears when Slack clears it, it is not kept in the channel history, and it is shown again each time the command is retried.
+
+These are private:
+
+- The refused commands above (`/1on1`, `/env`, `/remote`, `/mention-only`, `/ignore-thread`, `/unignore-thread`).
+- The `/mode` refusal for someone who is not a manager or approver, and the `/new` refusals (not allowed, or no session to start over yet).
+- `/compact` while a wake is running ("I'm busy, try again shortly").
+- `/heartbeat now` and `/heartbeat` status when the sender is not the manager, when the channel is not proactive, when the channel is busy, or when the wake did not start.
+- Other commands the sender may not run: `/soul`, ignoring or unignoring a user, the cron commands, `/model`, `/bash`, `/mcp` global connect, and a cron change the manager denied. Also private are `/link` when the surface cannot reply privately, and `/mcp` when it cannot be used yet.
+
+These stay public: everything that succeeds (including the `/new` confirmation, so the channel sees the session was reset, and "On it." for `/heartbeat now`), command output such as `/help`, and results or input errors such as "cron job not found", an invalid cron expression or an unknown MCP server. Refusals in a thread, a DM or a channel without a channel session are public, as before.
+
+When Slack cannot show the message privately, nothing is posted publicly. This happens when the agent posts as a user, when the sender is outside the workspace (Slack Connect), when the sender is not in the channel, or when the permission is missing. The person sees an x reaction on their message instead, and the failure is logged and counted.
 
 Voice calls run in a thread. A channel session does not host one.
 

@@ -181,6 +181,7 @@ describe("channel session routing", () => {
       appendFileSync(paths.soul, MODE_BLOCK("C1") + PROACTIVE);
     });
     const text = (g: Gw) => g.posts.map((p: any) => String(p.text)).join(" ");
+    const priv = (g: Gw) => g.ephemerals.map((p: any) => String(p.text)).join(" ");
 
     it("the manager at a proactive channel's root runs that channel's wake, and the reply is at root", async () => {
       const w = seam("woke");
@@ -196,20 +197,30 @@ describe("channel session routing", () => {
       const w = seam("busy");
       const g = makeGw({ wakeNow: w.fn });
       await g.emit("message", rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4" }));
-      expect(text(g)).toContain("busy");
-      expect(text(g)).not.toContain("Did not start");
+      expect(priv(g)).toContain("busy");
+      expect(priv(g)).not.toContain("Did not start");
+      expect(g.ephemerals).toHaveLength(1);
+      expect(g.ephemerals[0].user).toBe(SENDER);
+      expect(g.ephemerals[0].thread_ts).toBeUndefined();
+      expect(g.posts).toHaveLength(0);
     });
 
     it.each([
-      ["a thread of a proactive channel", (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4", thread_ts: "1000.1" })],
-      ["a channel session with no proactive", (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C1" })],
-      ["a classic channel", (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C2" })],
-    ])("in %s it says where it works and runs nothing", async (_n, args) => {
+      ["a thread of a proactive channel", false, (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4", thread_ts: "1000.1" })],
+      ["a channel session with no proactive", true, (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C1" })],
+      ["a classic channel", false, (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C2" })],
+    ])("in %s it says where it works and runs nothing", async (_n, expectPrivate, args) => {
       const w = seam("woke");
       const g = makeGw({ wakeNow: w.fn });
       await g.emit("message", args(g));
       expect(w.calls).toEqual([]);
-      expect(text(g)).toContain("root of a channel");
+      if (expectPrivate) {
+        expect(priv(g)).toContain("root of a channel");
+        expect(g.posts).toHaveLength(0);
+      } else {
+        expect(text(g)).toContain("root of a channel");
+        expect(g.ephemerals).toHaveLength(0);
+      }
     });
 
     it("in a DM it says where it works", async () => {
@@ -227,7 +238,9 @@ describe("channel session routing", () => {
       const g = makeGw({ wakeNow: w.fn });
       await g.emit("message", rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4", user: "U0SOMEONE" }));
       expect(w.calls).toEqual([]);
-      expect(text(g)).toContain("only this agent's manager");
+      expect(priv(g)).toContain("only this agent's manager");
+      expect(g.ephemerals[0].user).toBe("U0SOMEONE");
+      expect(g.posts).toHaveLength(0);
     });
   });
 
@@ -706,7 +719,10 @@ describe("channel session routing", () => {
       const before = g.sends.length;
       await g.emit("message", rootArgs(g as any, `<@${BOT}> /compact`));
       await tick();
-      expect(g.posts.map((p) => p.text).join(" ")).toContain("busy, try again shortly");
+      expect(g.ephemerals.map((p) => p.text).join(" ")).toContain("busy, try again shortly");
+      expect(g.ephemerals.at(-1).user).toBe(SENDER);
+      expect(g.ephemerals.at(-1).thread_ts).toBeUndefined();
+      expect(g.posts.map((p) => p.text).join(" ")).not.toContain("busy, try again shortly");
       expect(g.sends).toHaveLength(before);
       expect(g.bindings.at(-1)!.inboundRef).toBe(wakeRef);
       expect(g.guard(id)).toBeNull();
@@ -946,13 +962,16 @@ describe("channel session routing", () => {
       ["/ignore-thread", "inside a thread"],
       ["/unignore-thread", "inside a thread"],
     ] as const) {
-      it(`${cmd} at root is refused at root, changing nothing`, async () => {
+      it(`${cmd} at root is refused to the sender only, changing nothing`, async () => {
         const g = makeGw();
         const ts = nextTs();
         await g.emit("message", rootArgs(g, at(cmd), { ts }));
-        expect(g.posts).toHaveLength(1);
-        expect(g.posts[0].text).toContain(says);
-        expect(g.posts[0].thread_ts).toBeUndefined();
+        expect(g.posts).toHaveLength(0);
+        expect(g.ephemerals).toHaveLength(1);
+        expect(g.ephemerals[0].text).toContain(says);
+        expect(g.ephemerals[0].user).toBe(SENDER);
+        expect(g.ephemerals[0].channel).toBe("C1");
+        expect("thread_ts" in g.ephemerals[0]).toBe(false);
         expect(await OneOnOne.find("C1", ts)).toBeNull();
         expect(await MentionOnly.find("C1", ts)).toBeNull();
         expect(g.sends).toHaveLength(0);
@@ -993,8 +1012,10 @@ describe("channel session routing", () => {
       const g = makeGw();
       const old = await seed(g);
       await g.emit("message", rootArgs(g, at("/new"), { user: "U0MEMBER" }));
-      expect(g.posts.at(-1).text).toContain("Only a manager or this channel's approvers");
-      expect(g.posts.at(-1).thread_ts).toBeUndefined();
+      expect(g.ephemerals.at(-1).text).toContain("Only a manager or this channel's approvers");
+      expect(g.ephemerals.at(-1).user).toBe("U0MEMBER");
+      expect("thread_ts" in g.ephemerals.at(-1)).toBe(false);
+      expect(g.posts.filter((p) => String(p.text).includes("Only a manager"))).toHaveLength(0);
       expect((await row(old)).slack_thread_ts).toBe("channel:C1");
     });
 
@@ -1085,8 +1106,10 @@ describe("channel session routing", () => {
         const id = await seed(g);
         const before = await modeOf(id);
         await g.emit("message", rootArgs(g, at("/mode bypass"), { user: "U0MEMBER" }));
-        expect(g.posts.at(-1).text).toContain("Only a manager or this channel's approvers");
-        expect(g.posts.at(-1).thread_ts).toBeUndefined();
+        expect(g.ephemerals.at(-1).text).toContain("Only a manager or this channel's approvers");
+        expect(g.ephemerals.at(-1).user).toBe("U0MEMBER");
+        expect("thread_ts" in g.ephemerals.at(-1)).toBe(false);
+        expect(g.posts.filter((p) => String(p.text).includes("Only a manager"))).toHaveLength(0);
         expect(await modeOf(id)).toBe(before);
       });
 
@@ -1145,8 +1168,11 @@ describe("channel session routing", () => {
     it("/new with no session yet creates none", async () => {
       const g = makeGw();
       await g.emit("message", rootArgs(g, at("/new")));
-      expect(g.posts).toHaveLength(1);
-      expect(g.posts[0].thread_ts).toBeUndefined();
+      expect(g.posts).toHaveLength(0);
+      expect(g.ephemerals).toHaveLength(1);
+      expect(g.ephemerals[0].text).toContain("no session to start over");
+      expect(g.ephemerals[0].user).toBe(SENDER);
+      expect("thread_ts" in g.ephemerals[0]).toBe(false);
       expect(await COUNT()).toBe(0);
     });
 
@@ -1310,6 +1336,98 @@ describe("channel session routing", () => {
       await g.h.__panelChat!(await row(id), "operator note", "U0OPER");
       await g.surfaces.at(-1)!.reply({ text: "from the console" });
       expect(g.posts.at(-1).thread_ts).toBeUndefined();
+    });
+  });
+
+  describe("refusals are ephemeral to the sender", () => {
+    const at = (t: string) => `<@${BOT}> ${t}`;
+    const failing = (g: Gw) => { g.client.chat.postEphemeral = async () => { throw new Error("not_in_channel"); }; };
+
+    it("the successful /new confirmation is still a public root message", async () => {
+      const g = makeGw();
+      await g.emit("message", rootArgs(g, at("hello")));
+      await g.emit("message", rootArgs(g, at("/new")));
+      expect(g.ephemerals).toHaveLength(0);
+      expect(g.posts.at(-1).text).toContain("Started this channel's session over");
+      expect(g.posts.at(-1).thread_ts).toBeUndefined();
+    });
+
+    it("the recipient is the sender, never the channel, and a retry is shown again", async () => {
+      const g = makeGw();
+      await g.emit("message", rootArgs(g, at("/1on1"), { user: "U0MEMBER" }));
+      await g.emit("message", rootArgs(g, at("/1on1"), { user: "U0MEMBER" }));
+      expect(g.ephemerals).toHaveLength(2);
+      for (const e of g.ephemerals) {
+        expect(e.user).toBe("U0MEMBER");
+        expect(e.user).not.toBe(e.channel);
+        expect(e.channel).toBe("C1");
+      }
+      expect(g.posts).toHaveLength(0);
+    });
+
+    it("a failed ephemeral post stays private: no public post, the error reaction, no throw", async () => {
+      const g = makeGw();
+      failing(g);
+      const ts = nextTs();
+      await g.emit("message", rootArgs(g, at("/1on1"), { ts }));
+      expect(g.posts).toHaveLength(0);
+      expect(g.reacts.some((r) => r.timestamp === ts && r.name === "x")).toBe(true);
+    });
+
+    it("a failed ephemeral on a /new refusal also reacts and posts nothing", async () => {
+      const g = makeGw();
+      failing(g);
+      const ts = nextTs();
+      await g.emit("message", rootArgs(g, at("/new"), { ts }));
+      expect(g.posts).toHaveLength(0);
+      expect(g.reacts.some((r) => r.timestamp === ts && r.name === "x")).toBe(true);
+    });
+
+    it("a client with no postEphemeral falls back to the reaction", async () => {
+      const g = makeGw();
+      delete g.client.chat.postEphemeral;
+      const ts = nextTs();
+      await g.emit("message", rootArgs(g, at("/env"), { ts }));
+      expect(g.posts).toHaveLength(0);
+      expect(g.reacts.some((r) => r.timestamp === ts && r.name === "x")).toBe(true);
+    });
+
+    it("the same commands in a thread of the channel stay public and in the thread", async () => {
+      const g = makeGw();
+      const thread = nextTs();
+      await g.emit("message", rootArgs(g, at("/mention-only on"), { thread_ts: thread }));
+      expect(g.ephemerals).toHaveLength(0);
+      expect(g.posts.at(-1).thread_ts).toBe(thread);
+      const publicBefore = g.posts.length;
+      await g.emit("message", rootArgs(g, at("/mode plan"), { thread_ts: thread, user: "U0MEMBER" }));
+      expect(g.ephemerals).toHaveLength(0);
+      expect(g.posts.length).toBeGreaterThan(publicBefore);
+      expect(g.posts.at(-1).text).toContain("mode");
+      expect(g.posts.at(-1).thread_ts).toBe(thread);
+    });
+
+    it("in a classic channel a /1on1 or /soul denial is public as before", async () => {
+      const g = makeGw();
+      await g.emit("message", rootArgs(g, at("/soul list"), { channel: "C2", user: "U0MEMBER" }));
+      expect(g.ephemerals).toHaveLength(0);
+      expect(g.posts.at(-1).text).toContain("manager-only");
+    });
+
+    it("in a DM a denial is public as before", async () => {
+      const g = makeGw();
+      const args = rootArgs(g, "/heartbeat now", { channel: "D0DM" });
+      (args.event as any).channel_type = "im";
+      await g.emit("message", args);
+      expect(g.ephemerals).toHaveLength(0);
+      expect(g.posts.at(-1).text).toContain("root of a channel");
+    });
+
+    it("a manager-only command denied at root is ephemeral too", async () => {
+      const g = makeGw();
+      await g.emit("message", rootArgs(g, at("/soul list"), { user: "U0MEMBER" }));
+      expect(g.ephemerals).toHaveLength(1);
+      expect(g.ephemerals[0].user).toBe("U0MEMBER");
+      expect(g.posts).toHaveLength(0);
     });
   });
 });

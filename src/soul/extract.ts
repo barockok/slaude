@@ -2,6 +2,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
+import { env } from "../config/env";
 import { loadSoul, soulSystemBlock, loadApproverEntries } from "./loader";
 import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData, type ApproverEntry } from "./data";
 import { applyOverrides } from "./overrides";
@@ -334,6 +335,11 @@ export function soulDataBase(): SoulData {
  *  in every session — no reload. See src/soul/overrides.ts. */
 export function soulData(): SoulData {
   const base = soulDataBase();
+  // The overlay lives in the database, which a node never opens. A node does
+  // not apply runtime overrides: the gateway enforces the lists they edit. Only
+  // the tier-3 default bundle's soulJson (read here on the gateway) carries
+  // them, and only channelMandateBlock reads that.
+  if (env.role() === "node") return base;
   try {
     return applyOverrides(base, SoulOverrides.listSync());
   } catch {

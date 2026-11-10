@@ -99,10 +99,24 @@ export function subMandatesOf(soul: SoulMandates): SubMandate[] {
 /** The lists that decide a channel's class. */
 export type ChannelClasses = Pick<SoulData, "trustedChannels" | "allowedChannels">;
 
+/**
+ * Lists from a bundle, or undefined when the field is not an object whose two
+ * members are arrays. Non-string entries are dropped. A malformed field reads
+ * as absent, never as a throw or a substring match.
+ */
+export function normalizeChannelClasses(raw: unknown): ChannelClasses | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+  const { trustedChannels, allowedChannels } = raw as Record<string, unknown>;
+  if (!Array.isArray(trustedChannels) || !Array.isArray(allowedChannels)) return undefined;
+  const strings = (a: unknown[]) => a.filter((x): x is string => typeof x === "string");
+  return { trustedChannels: strings(trustedChannels), allowedChannels: strings(allowedChannels) };
+}
+
 /** Where `channelId` sits for a soul's lists: the same classes the rest of the runtime reads. */
 export function mandateContext(classes: ChannelClasses, channelId: string | null | undefined): MandateContext {
   if (!channelId) return {};
-  const trust = classes.trustedChannels.includes(channelId) ? "trusted" : classes.allowedChannels.includes(channelId) ? "public" : null;
+  const has = (list: unknown) => Array.isArray(list) && list.includes(channelId);
+  const trust = has(classes?.trustedChannels) ? "trusted" : has(classes?.allowedChannels) ? "public" : null;
   return { channelId, trust, dm: channelId.startsWith("D") };
 }
 

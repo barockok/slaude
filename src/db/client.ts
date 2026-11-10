@@ -209,6 +209,10 @@ export function assertNodeMayOpen(cfg: DbConfig, role: "mono" | "gateway" | "nod
 }
 
 let nodeRefusalLogged = false;
+/** Test seam: the refusal logs once per process; tests that watch for it re-arm it. */
+export function __resetNodeRefusalLogForTests(): void {
+  nodeRefusalLogged = false;
+}
 function guardNode(cfg: DbConfig): void {
   try {
     assertNodeMayOpen(cfg, env.role());

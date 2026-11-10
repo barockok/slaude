@@ -18,7 +18,7 @@
 import { personaSoulText } from "../persona/soul-source";
 import type { SoulData } from "./data";
 import { cachedSoulData, channelMandate, soulData } from "./extract";
-import { mandateContext, resolveMandate, subMandatesOf, type ChannelClasses, type MandateContext, type ResolvedMandate, type SubMandate } from "./mandate-scope";
+import { mandateContext, normalizeChannelClasses, resolveMandate, subMandatesOf, type ChannelClasses, type MandateContext, type ResolvedMandate, type SubMandate } from "./mandate-scope";
 import { compiledSoulFor, soulDataFor } from "./per-persona";
 import { parseScopedMandates } from "./proactive";
 
@@ -42,6 +42,19 @@ function fromSoul(soul: SoulData, classes: ChannelClasses): PersonaMandateText {
   return { global: soul.mandate?.trim() ?? "", ...(soul.identity?.voice ? { voice: soul.identity.voice } : {}), channels, subMandates: subMandatesOf(soul), classes };
 }
 
+/**
+ * The mandates a soul text states, by the deterministic parse alone: no cache,
+ * no database, no registry. A node uses it on the soul text its bundle carries.
+ */
+export function mandateTextFromSoulText(text: string, classes?: unknown): PersonaMandateText {
+  const parsed = parseScopedMandates(text);
+  const subMandates = subMandatesOf({
+    channelOverrides: Object.entries(parsed.channels).map(([channel, mandate]) => ({ channel, mandate, mandateMode: parsed.modes[channel], approvers: [] })),
+    scopeMandates: parsed.scopes,
+  });
+  return { global: parsed.global.trim(), channels: parsed.channels, subMandates, classes: normalizeChannelClasses(classes) ?? NO_CLASSES };
+}
+
 export function personaMandateText(personaId: string | null | undefined): PersonaMandateText {
   try {
     if (!personaId || personaId === "default") {
@@ -54,12 +67,7 @@ export function personaMandateText(personaId: string | null | undefined): Person
     const classes = soulDataFor(personaId);
     const cached = cachedSoulData(text);
     if (cached) return fromSoul(cached, classes);
-    const parsed = parseScopedMandates(text);
-    const subMandates = subMandatesOf({
-      channelOverrides: Object.entries(parsed.channels).map(([channel, mandate]) => ({ channel, mandate, mandateMode: parsed.modes[channel], approvers: [] })),
-      scopeMandates: parsed.scopes,
-    });
-    return { global: parsed.global.trim(), channels: parsed.channels, subMandates, classes };
+    return mandateTextFromSoulText(text, classes);
   } catch {
     return { global: "", channels: {}, subMandates: [], classes: NO_CLASSES };
   }
