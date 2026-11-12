@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { surfaceTools, createSurfaceMcp, SURFACE_MCP_NAME } from "../src/gateway/core/surface-mcp";
 import { setSoulData } from "../src/soul/extract";
 import { SoulDataSchema } from "../src/soul/data";
@@ -102,6 +102,7 @@ describe("soul_override — clear and validation branches", () => {
     await SO.clear();
     setSoulData(soul);
   });
+  afterAll(async () => { await SO.clear(); });
 
   function overrideTool() {
     const def = surfaceTools(fakeSurface(), { initiator: () => "U0MGR" }).find((d) => d.name === "soul_override");

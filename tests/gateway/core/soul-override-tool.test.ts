@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll } from "bun:test";
 import { surfaceTools } from "../../../src/gateway/core/surface-mcp";
 import { setSoulData } from "../../../src/soul/extract";
 import { SoulDataSchema } from "../../../src/soul/data";
@@ -30,6 +30,7 @@ describe("soul_override MCP tool", () => {
     await SO.clear();
     setSoulData(soul);
   });
+  afterAll(async () => { await SO.clear(); });
 
   it("manager-initiated turn mutates the store", async () => {
     const r = await toolFor("U0MGR").handler({ field: "trust", action: "add", value: "C0MCP" });
