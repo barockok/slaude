@@ -106,17 +106,40 @@ record are equal, and access code compares internal ids, never strings.
 
 ### Merging
 
-Owner decision: records merge automatically, by email, with no console step.
+Owner decision: records merge automatically on proof, with no console step in the
+normal path. A Slack profile email counts as proof only in a workspace the owner
+opts in, and then only for ordinary access.
 
-- When a person proves both identities (the portal link ties their Slack identity
-  to an OIDC account whose email is verified), the record holding the Slack
-  binding and the record holding that email become one.
-- The survivor is the record that holds the verified email, otherwise the older
-  one. Bindings, grants, credentials and memory slices move to it. Old ids keep
-  resolving through an alias table, and audit rows are never rewritten. A
-  `user.merged` audit event is written.
-- A merge never rests on two declared bindings, and an email shown on a Slack
-  profile is not proof by itself.
+1. **Proof path, always on.** A portal login proves control of the identity
+   provider account and its verified email. The delivered portal link proves
+   control of the Slack account. When both are proven for one person, the record
+   holding the Slack binding and the record holding that email become one, at
+   once and in full, including manager and approver grants.
+2. **Workspace trust, opt in, off by default.** A workspace definition may set
+   `trustProfileEmail: true`. Then a Slack user who is a full member of that
+   workspace (not a guest, not a user from another workspace such as a Slack
+   Connect external) and whose Slack profile email is confirmed merges into the
+   record holding that email, without the portal step. This activates ordinary
+   access only. Manager and approver grants stay inactive until the proof path
+   completes. Reason: a workspace admin, or an external organisation in a shared
+   channel, controls what a profile shows, so a profile email is weaker proof than
+   a login. The owner accepts that trust for a workspace they administer.
+3. **Never automatic.**
+   - Conflicts: the same email with a different verified Slack account in the same
+     workspace, or two different verified emails on one side. The console shows a
+     "same person?" proposal.
+   - Aliases: `a+x@` and `a@` stay distinct bindings; joining them is a human act.
+   - Records that represent an agent or a bot.
+   - Any merge that would rest on two declared bindings.
+4. **Survivor.** The record that holds the verified email, otherwise the older
+   one. Bindings, grants, credentials and memory slices move to it. Old ids keep
+   resolving through an alias table, and audit rows are never rewritten.
+5. **Transparency and undo.** Every automatic merge writes a `user.merged` audit
+   event that lists what moved, including any grants that became active because
+   of the merge, and sends the person a short message in Slack saying what was
+   linked. A merge can be undone from the console for a limited time, using the
+   moved-items list in the audit event.
+6. **The console is for exceptions only:** conflict proposals, aliases and undo.
 
 ## Creation on reference
 
@@ -161,7 +184,8 @@ Records are created the first time they are referenced.
   accounts, Slack identities and the Slack ids already in sessions, grants and
   audit. Sync creates declared records and reports them.
 - **C, access on internal ids.** Grants and admission resolve the acting user
-  first. `email:` in an ACL starts to work through the portal link.
+  first. `email:` in an ACL starts to work through the portal link, and the
+  optional workspace `trustProfileEmail` setting arrives here.
 - **D, sessions and thread-scoped tables** gain a boundary column read through a
   resolver, and the unique indexes move after one release.
 - **E, environments as definitions** and the `environment:` key.
