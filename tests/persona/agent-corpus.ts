@@ -180,7 +180,7 @@ for (const f of REF_FIELDS) {
   for (const v of own.unresolvable) {
     bad(`${f.id}: ${v} parses but cannot be resolved yet`, f.at(v), false, isKey ? ["cannot be resolved yet", `'${SCHEME_OF(v)}'`] : [f.path, `'${SCHEME_OF(v)}'`, "cannot be resolved yet"]);
   }
-  for (const v of [`${f.role === "user" ? "slack:user" : "slack:channel"}:`, `${f.role === "user" ? "slack:user" : "slack:channel"}:T0EXAMPLE/`, `${f.role === "user" ? "slack:user" : "slack:channel"}:${f.role === "user" ? C : U}`, `${own.typed[0]} `, ` ${own.typed[0]}`, `${own.typed[0]}\n`, `${own.typed[0]}:x`, `x${own.typed[0]}`]) {
+  for (const v of [`${f.role === "user" ? "slack:user" : "slack:channel"}:`, `${f.role === "user" ? "slack:user" : "slack:channel"}:T0EXAMPLE/`, `${f.role === "user" ? "slack:user" : "slack:channel"}:${f.role === "user" ? C : U}`, `${own.typed[0]} `, ` ${own.typed[0]}`, own.typed[0]!.toUpperCase(), own.typed[0]!.replace(/[A-Z0-9]+$/, (m) => m.toLowerCase()), own.typed[0]!.replace(/^slack/, "Slack"), `${own.typed[0]}\n`, `${own.typed[0]}:x`, `x${own.typed[0]}`]) {
     bad(`${f.id}: malformed ${JSON.stringify(v)}`, f.at(v));
   }
 }
@@ -194,6 +194,11 @@ for (const f of REF_FIELDS.filter((x) => x.role === "user")) {
   bad(`${f.id}: phone without a plus`, f.at("whatsapp:phone:620000000000"));
 }
 bad("slackUserId: a channel reference", { slackUserId: SC });
+bad("slackUserId: failures name the expected form", { slackUserId: SC }, true, ["slackUserId must be a Slack user reference such as slack:user:U0EXAMPLE, or a bare Slack id"]);
+bad("slackUserId: a list names the expected form", { slackUserId: ["a"] }, true, ["slackUserId must be a Slack user reference such as slack:user:U0EXAMPLE"]);
+bad("slackUserId: an unusable typed value names the expected form, not the value", { slackUserId: "email:a@@example.com" }, true, ["slackUserId must be a Slack user reference"]);
+bad("user fields: an upper-case email scheme is refused", { access: { manager: "EMAIL:a@example.com" } });
+bad("channels key: a whatsapp group key is a placeholder in the path", { channels: { "whatsapp:group:g1": {} } }, false, ["channels.<key>", "'whatsapp'", "cannot be resolved yet"]);
 bad("slackUserId: a typed email is refused at compile", { slackUserId: "email:a@example.com" }, false, ["slackUserId", "'email'", "cannot be resolved yet"]);
 ok("slackUserId: typed with a workspace", { slackUserId: "slack:user:T0EXAMPLE/U0EXAMPLE" }, []);
 bad("scoped boundary: a typed duplicate of the legacy form", { mandate: { scoped: [{ boundary: `channel:${C}`, text: "x" }, { boundary: SC, text: "y" }] } }, false, ["mandate.scoped[1].boundary", "repeats"]);

@@ -38,6 +38,20 @@ describe("agent.yaml corpus", () => {
     });
   }
 
+  test("a channels key that is not a Slack channel id or reference is never named in a path or warning", () => {
+    const secret = "grp-secret-9f3";
+    for (const key of [`whatsapp:group:${secret}`, `boundary:${secret}`, `${secret}`]) {
+      let msg = "";
+      try {
+        parseAgentYaml(CORPUS_DIR, `name: ana\nsoul: x\nchannels:\n  "${key}": {}\n`);
+      } catch (e) {
+        msg = (e as Error).message;
+      }
+      expect(msg).not.toBe("");
+      expect(msg).not.toContain(secret);
+    }
+  });
+
   test("no refusal echoes a value from the input", () => {
     const secret = "secret value 9f3";
     for (const yaml of [

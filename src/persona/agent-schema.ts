@@ -96,6 +96,7 @@ const mapping = (msg = "must be a mapping") => z.record(z.unknown(), typeMessage
 /** A key may be left out or written as a bare `key:`; both mean "not set". */
 const optional = <T extends z.ZodTypeAny>(s: T) => s.nullable().optional();
 
+const SLACK_USER_MSG = "must be a Slack user reference such as slack:user:U0EXAMPLE, or a bare Slack id (deprecated), as text";
 const BOUNDARY_MSG = "must be a channel reference (slack:channel:<id>), trust:public, trust:trusted or dm";
 const BOUNDARY_FIELD_RE = new RegExp(anchored(`${CHANNEL_REF_SRC}|${SRC.selector}|${SRC.legacyBoundary}`));
 
@@ -238,14 +239,14 @@ export const AgentSchema = z
         z
           .union(
             [
-              z.string().regex(new RegExp(anchored(USER_REF_SRC))).superRefine((v, ctx) => {
+              z.string().regex(new RegExp(anchored(USER_REF_SRC)), SLACK_USER_MSG).superRefine((v, ctx) => {
                 const r = parseRef(v, ["user"]);
                 if (!r.ok) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `is not a valid reference: ${r.reason}` });
               }),
-              z.string().regex(/^[^:]*$/),
+              z.string().regex(/^[^:]*$/, SLACK_USER_MSG),
               z.number(),
             ],
-            { errorMap: () => ({ message: "must be a user reference (slack:user:<id>) or a bare Slack user id (deprecated), as text" }) },
+            { errorMap: () => ({ message: SLACK_USER_MSG }) },
           )
           .describe("The agent's own Slack user, as a user reference. Write slack:user:U0EXAMPLE; a bare Slack user id is accepted for one more release with a warning. Example: slack:user:U0EXAMPLE"),
       ),

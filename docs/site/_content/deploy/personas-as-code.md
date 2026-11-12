@@ -283,14 +283,17 @@ but name no user or channel, so no field takes them.
 
 Rules, applied before anything looks a reference up:
 
-- The scheme and kind are lower case; Slack ids are upper case, as Slack issues
-  them. The ids are the same shapes as before (`U` or `W` for users, `C`, `G` or
-  `D` for channels); a workspace is `T` followed by upper-case letters and digits.
-- An email address is trimmed, folded to NFKC and lower-cased. Plus-addressing
-  and dots are kept, so `a+x@` and `a@` are different. A display name, angle
-  brackets, whitespace, two `@`, an empty part, a domain without a dot or an
-  address over 254 characters is refused. A non-ASCII domain is stored in its
-  ASCII (IDNA) form.
+- Case is not folded. The scheme and kind must be lower case and Slack ids
+  upper case, as Slack issues them; `Slack:user:u0example` is refused, in the
+  editor too. The ids are the same shapes as before (`U` or `W` for users, `C`,
+  `G` or `D` for channels); a workspace is `T` followed by upper-case letters
+  and digits.
+- An email address is trimmed and lower-cased. The local part must be ASCII:
+  fullwidth letters and other compatibility characters are refused, not folded
+  to ASCII. Plus-addressing and dots are kept, so `a+x@` and `a@` are different.
+  A display name, angle brackets, whitespace, two `@`, an empty part, a domain
+  without a dot or an address over 254 characters is refused. The domain is
+  folded (NFKC) and stored in its ASCII (IDNA) form.
 - A phone number is E.164 with the leading `+`.
 - Each scheme fixes its number of leading segments, so a `:` in the last one
   needs no escaping. There is no percent-encoding and no empty segment. A
@@ -308,8 +311,8 @@ release; write `slack:` references until then.
 
 **The transition.** A bare Slack id (`U0EXAMPLE`, `C0EXAMPLE`) is accepted for
 one more release, read as the matching Slack reference, with a warning that names
-the field path (never the value) in the `personas render` output and in the sync
-checks that run it. The same goes for the older boundary form `channel:C0EXAMPLE`,
+the field path (never the value) in the `personas render` output (which CI runs;
+the gateway sync report does not carry these warnings yet). The same goes for the older boundary form `channel:C0EXAMPLE`,
 read as `slack:channel:C0EXAMPLE`. The release after the first stable one that
 carries this refuses both. `personas export --format agent-yaml` already writes
 the typed form, so exporting then rendering gives no warning.

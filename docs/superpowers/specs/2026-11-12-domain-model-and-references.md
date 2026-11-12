@@ -65,14 +65,14 @@ workspace can never silently re-point an existing reference.
 
 Applied at parse time, before any lookup.
 
-- Scheme and kind: lowercase. Slack ids: uppercase, as Slack issues them.
-- Email: trim, NFKC, lowercase the whole address. Plus-addressing and dots are
+- Scheme and kind are lowercase and Slack ids (and workspace ids) uppercase, as Slack issues them. A reference written in another case is refused, not folded.
+- Email: trim, lowercase the whole address. The local part must be ASCII: compatibility characters (fullwidth letters, the Kelvin sign) are refused, not folded. The domain is folded (NFKC, then IDNA). Plus-addressing and dots are
   kept: `a+x@` and `a@` are different bindings, and joining them is a human act.
   Display names, angle brackets and whitespace are refused.
 - Phone: E.164 only, with the leading `+`.
 - A `:` inside the last segment needs no escaping, because each scheme fixes the
   number of leading segments. No percent-encoding. No empty segment.
-- Length cap 256.
+- Length cap 256 (an email reference may carry its full 254-character address after `email:`).
 
 ### Resolution
 
@@ -84,7 +84,7 @@ record are equal, and access code compares internal ids, never strings.
 
 - A bare Slack id (`U0...`, `C0...`) in `agent.yaml` is accepted for one release,
   read as the matching Slack reference, with a warning that names the file and
-  field in the sync report and in `slaude validate`. The release after refuses it.
+  field in `personas render` output (which CI runs). The release after refuses it.
 - `mandate.scoped[].boundary` of the form `channel:<id>` is the bare Slack
   shortcut. It becomes `slack:channel:<id>`, with the old form accepted and
   warned for one release. `trust:*` and `dm` are unchanged.

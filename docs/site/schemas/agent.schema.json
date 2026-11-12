@@ -33,7 +33,7 @@
           "anyOf": [
             {
               "type": "string",
-              "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64})$"
+              "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64})$"
             },
             {
               "type": "string",
@@ -102,7 +102,7 @@
                     "properties": {
                       "boundary": {
                         "type": "string",
-                        "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|trust:(?:public|trusted)|dm|channel:[CGD][A-Z0-9]+)$",
+                        "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|trust:(?:public|trusted)|dm|channel:[CGD][A-Z0-9]+)$",
                         "description": "Where this sub-mandate applies: a channel reference such as slack:channel:C0EXAMPLE for one channel, trust:public or trust:trusted for every channel of that class, or dm for direct messages. Each boundary may appear once. The older channel:<id> is accepted for one more release with a warning; write slack:channel:<id>. Example: slack:channel:C0EXAMPLE"
                       },
                       "mode": {
@@ -150,7 +150,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
+                  "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
                 },
                 {
                   "type": "null"
@@ -162,7 +162,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
+                  "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
                 },
                 {
                   "type": "null"
@@ -179,7 +179,7 @@
                     "properties": {
                       "user": {
                         "type": "string",
-                        "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$",
+                        "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$",
                         "description": "The approver, as a user reference such as slack:user:U0EXAMPLE. A bare Slack user id is accepted for one more release with a warning. Required. Example: slack:user:U0EXAMPLE"
                       },
                       "scope": {
@@ -205,7 +205,7 @@
                         "anyOf": [
                           {
                             "type": "string",
-                            "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
+                            "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
                           },
                           {
                             "type": "null"
@@ -237,7 +237,7 @@
                           "type": "array",
                           "items": {
                             "type": "string",
-                            "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
+                            "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
                           }
                         },
                         {
@@ -252,7 +252,7 @@
                           "type": "array",
                           "items": {
                             "type": "string",
-                            "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
+                            "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
                           }
                         },
                         {
@@ -276,7 +276,7 @@
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
+                    "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
                   }
                 },
                 {
@@ -291,7 +291,7 @@
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
+                    "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
                   }
                 },
                 {
@@ -440,7 +440,7 @@
             ]
           },
           "propertyNames": {
-            "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
+            "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
           }
         },
         {

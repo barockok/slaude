@@ -13,8 +13,8 @@ import { parse as parseYaml, YAMLParseError } from "yaml";
 import { MANDATE_LINE_MAX, subMandatesOf, type SubMandate } from "../soul/mandate-scope";
 import { SoulDataSchema, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
 import { channelOf, endsInOpenFence, isCodeFence, parseProactive } from "../soul/proactive";
-import { AgentSchema, BOUNDARY_RE, CHANNEL_ID_RE, CHANNEL_KEY_RE, DESCRIPTION_MAX, USER_ID_RE, type AgentFile } from "./agent-schema";
-import { parseRef, refScheme } from "../refs/parse";
+import { AgentSchema, BOUNDARY_RE, CHANNEL_ID_RE, DESCRIPTION_MAX, USER_ID_RE, type AgentFile } from "./agent-schema";
+import { anchored, parseRef, refScheme, SRC } from "../refs/parse";
 import type { Ref } from "../refs/types";
 import type { ZodIssue } from "zod";
 import { PayloadError, safeKey } from "./sync/payload";
@@ -51,10 +51,13 @@ function firstIssue(issues: ZodIssue[]): { path: string; message: string } {
   return { path: base, message: issue.message };
 }
 
+/** A `channels` key that is safe to name in a path: a Slack channel id or reference, bare or typed. Any other key is a placeholder. */
+const SLACK_KEY_RE = new RegExp(anchored(`${SRC.slackChannel}|${SRC.bareChannel}`));
+
 /** One path segment: a schema key as is, an index in brackets, a `channels` key only when it is a channel id. */
 function pathSegment(seg: string | number, i: number, path: (string | number)[]): string {
   if (typeof seg === "number") return `[${seg}]`;
-  if (i === 1 && path[0] === "channels") return CHANNEL_KEY_RE.test(seg) ? seg : safeKey(seg);
+  if (i === 1 && path[0] === "channels") return SLACK_KEY_RE.test(seg) ? seg : "<key>";
   return seg;
 }
 
@@ -250,10 +253,11 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   let channelBlocks = "";
   const seenChannel = new Set<string>();
   for (const [key, entry] of Object.entries(file.channels ?? {})) {
-    const channel = slackId(`channels.${key}`, key, "channel");
-    if (seenChannel.has(channel)) fail(`channels.${key}`, "repeats an earlier channel");
+    const keyPath = `channels.${SLACK_KEY_RE.test(key) ? key : "<key>"}`;
+    const channel = slackId(keyPath, key, "channel");
+    if (seenChannel.has(channel)) fail(keyPath, "repeats an earlier channel");
     seenChannel.add(channel);
-    if (authoredChannels.has(channel)) fail(`channels.${key}`, "also has a ## Channel section in soul: keep it in one place");
+    if (authoredChannels.has(channel)) fail(keyPath, "also has a ## Channel section in soul: keep it in one place");
     let settings = "";
     if (entry?.session === "channel") settings += "\n### Session\n- Mode: channel";
     if (entry?.proactive != null) settings += `\n### Proactive\n- Enabled: ${entry.proactive ? "yes" : "no"}`;

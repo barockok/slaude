@@ -7,6 +7,10 @@
  *   email      email:<address>
  *   selectors  trust:public  trust:trusted  dm   (a class of places, not one record)
  *
+ * Case is not folded: the scheme and kind are lower case and Slack ids (and
+ * workspaces) upper case already, or the reference is refused. Only an email
+ * address is normalised (trimmed, lower-cased, domain folded).
+ *
  * Each scheme fixes how many leading segments it has, so a `:` inside the last
  * segment needs no escaping. There is no percent-encoding and no empty segment.
  *
@@ -19,6 +23,8 @@ import { CHANNEL_ID_SRC, USER_ID_SRC } from "./ids";
 import { INTERNAL_KINDS, SELECTORS, SERVICES, type InternalKind, type ParseResult, type Ref, type RefRole, type SelectorName, type Service } from "./types";
 
 export const REF_MAX = 256;
+/** An email reference may carry its full 254-character address after `email:`. */
+export const EMAIL_REF_MAX = REF_MAX + "email:".length - 2;
 export const EMAIL_MAX = 254;
 
 const WS = "T[A-Z0-9]+";
@@ -48,7 +54,7 @@ export const USER_REF_SRC = [SRC.slackUser, SRC.whatsappPhone, SRC.telegramUser,
 /** Typed channel references only. */
 export const CHANNEL_REF_SRC = [SRC.slackChannel, SRC.whatsappGroup, SRC.internalBoundary].join("|");
 /** A shape check that bounds the length first, so a regex over it stays small. */
-export const anchored = (alts: string): string => `^(?=[\\s\\S]{1,${REF_MAX}}$)(?:${alts})$`;
+export const anchored = (alts: string): string => `^(?=[\\s\\S]{1,${EMAIL_REF_MAX}}$)(?:${alts})$`;
 
 const RE = {
   workspace: new RegExp(`^${WS}$`),
@@ -61,6 +67,7 @@ const RE = {
   // Control characters, format characters (zero-width, bidi) and every kind of space.
   blank: /[\p{Cc}\p{Cf}\p{Z}]/u,
   scheme: /^[A-Za-z]+$/,
+  lower: /^[a-z]+$/,
   emailLocal: /^[a-z0-9!#$&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$&'*+/=?^_`{|}~-]+)*$/,
   emailLabel: /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/,
 };
@@ -91,14 +98,16 @@ export function parseRef(input: string, accept?: readonly RefRole[]): ParseResul
 function parseAny(input: unknown): ParseResult {
   if (typeof input !== "string") return fail("reference must be text");
   if (input.length === 0) return fail("reference is empty");
-  if (input.length > REF_MAX) return fail(`reference is longer than ${REF_MAX} characters`);
+  const isEmail = input.startsWith("email:");
+  if (input.length > (isEmail ? EMAIL_REF_MAX : REF_MAX)) return fail(isEmail ? `email address is longer than ${EMAIL_MAX} characters` : `reference is longer than ${REF_MAX} characters`);
   const first = input.indexOf(":");
   const head = first < 0 ? input : input.slice(0, first);
   if (first < 0) {
     return (SELECTORS as readonly string[]).includes(input) ? ok({ kind: "selector", name: input as SelectorName }) : fail("reference has no scheme (expected scheme:...)");
   }
   if (!RE.scheme.test(head)) return fail("reference scheme is not a known scheme");
-  const scheme = head.toLowerCase();
+  if (!RE.lower.test(head)) return fail("reference scheme and kind must be lower case");
+  const scheme = head;
   if (scheme === "trust") {
     return (SELECTORS as readonly string[]).includes(input) ? ok({ kind: "selector", name: input as SelectorName }) : fail("selector must be trust:public, trust:trusted or dm");
   }
@@ -124,21 +133,20 @@ function parseExternal(service: Service, rest: string): ParseResult {
   const id = rest.slice(i + 1);
   if (kindRaw === "" || id === "") return fail("reference has an empty segment");
   if (!RE.scheme.test(kindRaw)) return fail("reference kind is not valid for its scheme");
-  const kind = kindRaw.toLowerCase();
+  if (!RE.lower.test(kindRaw)) return fail("reference scheme and kind must be lower case");
+  const kind = kindRaw;
   if (service === "slack") {
     if (kind !== "user" && kind !== "channel") return fail("reference kind is not valid for its scheme");
-    // Upper-casing must not fold lookalikes (dotless i) into ASCII.
-    if (!/^[\x21-\x7e]+$/.test(id)) return fail("Slack ids are plain ASCII");
     const slash = id.indexOf("/");
     let workspace: string | undefined;
     let bare = id;
     if (slash >= 0) {
-      workspace = id.slice(0, slash).toUpperCase();
+      workspace = id.slice(0, slash);
       bare = id.slice(slash + 1);
       if (workspace === "" || bare === "") return fail("reference has an empty segment");
       if (!RE.workspace.test(workspace)) return fail("Slack workspace id must be T followed by upper-case letters and digits");
     }
-    const upper = bare.toUpperCase();
+    const upper = bare;
     if (!(kind === "user" ? RE.slackUser : RE.slackChannel).test(upper)) {
       return fail(kind === "user" ? "Slack user id must start with U or W, then upper-case letters and digits" : "Slack channel id must start with C, G or D, then upper-case letters and digits");
     }
@@ -154,20 +162,25 @@ function parseExternal(service: Service, rest: string): ParseResult {
 }
 
 function parseEmail(raw: string): ParseResult {
-  const trimmed = raw.trim().normalize("NFKC").toLowerCase();
+  const trimmed = raw.trim();
   if (trimmed === "") return fail("email address is empty");
   if (trimmed.length > EMAIL_MAX) return fail(`email address is longer than ${EMAIL_MAX} characters`);
   if (RE.blank.test(trimmed)) return fail("email address contains whitespace or control characters");
   if (/[<>"(),:;[\]\\%]/.test(trimmed)) return fail("email address must be a plain address, with no display name, brackets or quoting");
   const at = trimmed.indexOf("@");
   if (at < 0 || at !== trimmed.lastIndexOf("@")) return fail("email address must contain exactly one @");
-  const local = trimmed.slice(0, at);
+  // The local part is checked as written, before any Unicode folding: a fullwidth
+  // letter or the Kelvin sign is refused, never folded into ASCII. Only the domain is folded.
+  const localRaw = trimmed.slice(0, at);
   const domainRaw = trimmed.slice(at + 1);
-  if (local === "") return fail("email address has an empty local part");
+  if (localRaw === "") return fail("email address has an empty local part");
   if (domainRaw === "") return fail("email address has an empty domain");
+  if (!/^[\x21-\x7e]+$/.test(localRaw)) return fail("email local part must be plain ASCII");
+  const local = localRaw.toLowerCase();
   if (local.length > 64 || !RE.emailLocal.test(local)) return fail("email local part has characters or dots that are not allowed");
-  if (!domainRaw.includes(".")) return fail("email domain needs a dot");
-  const domain = domainToASCII(domainRaw);
+  const folded = domainRaw.normalize("NFKC").toLowerCase();
+  if (!folded.includes(".")) return fail("email domain needs a dot");
+  const domain = domainToASCII(folded);
   if (domain === "") return fail("email domain is not valid");
   if (domain.length > 253 || domain.length + 1 + local.length > EMAIL_MAX) return fail(`email address is longer than ${EMAIL_MAX} characters`);
   const labels = domain.split(".");

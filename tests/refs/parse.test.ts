@@ -86,28 +86,58 @@ describe("parseRef refuses", () => {
     bad("x".repeat(257));
   });
 
-  test("lookalike letters do not fold into Slack ids", () => {
-    bad("slack:user:\u0131D0EXAMPLE"); // dotless i upper-cases to I
-    bad("slack:user:U0EXAMPL\u00DF"); // sharp s upper-cases to SS
+  test("lookalike letters are not Slack ids", () => {
+    bad("slack:user:\u0131D0EXAMPLE");
+    bad("slack:user:U0EXAMPL\u00DF");
   });
 });
 
 describe("normalisation", () => {
-  test("scheme and kind are lower-cased, Slack ids upper-cased", () => {
-    expect(formatRef(good("SLACK:User:u0example"))).toBe("slack:user:U0EXAMPLE");
-    expect(formatRef(good("Slack:Channel:t0example/c0example"))).toBe("slack:channel:T0EXAMPLE/C0EXAMPLE");
-    expect(formatRef(good("WhatsApp:Phone:+620000000000"))).toBe("whatsapp:phone:+620000000000");
-    expect(formatRef(good("USER:Mixed-Case"))).toBe("user:Mixed-Case");
+  test("case is not folded for the scheme, the kind or Slack ids: non-canonical case is refused", () => {
+    for (const v of ["SLACK:user:U0EXAMPLE", "Slack:User:t0x/u0aaaa", "slack:USER:U0EXAMPLE", "slack:user:u0example", "slack:channel:c0example", "slack:user:t0example/U0EXAMPLE", "slack:user:T0EXAMPLE/u0example", "slack:channel:T0example/C0EXAMPLE",
+      "WhatsApp:phone:+620000000000", "whatsapp:Group:g1", "Telegram:user:9", "USER:abc", "Boundary:abc", "EMAIL:a@example.com", "Email:a@example.com"]) {
+      const reason = bad(v);
+      expect(reason.length).toBeGreaterThan(0);
+    }
+    expect(bad("SLACK:user:U0EXAMPLE")).toBe("reference scheme and kind must be lower case");
+    expect(bad("slack:User:U0EXAMPLE")).toBe("reference scheme and kind must be lower case");
+    expect(good("user:abc")).toEqual({ kind: "internal", type: "user", id: "abc" });
+    expect(good("user:Mixed-Case")).toEqual({ kind: "internal", type: "user", id: "Mixed-Case" }); // internal ids keep their case
   });
 
-  test("email: trim, NFKC, lower-case, plus-addressing and dots kept, IDNA domain", () => {
+  test("email: trim, lower-case, plus-addressing and dots kept, IDNA domain", () => {
     expect(formatRef(good("email:  A.B+Tag@Example.COM  "))).toBe("email:a.b+tag@example.com");
-    expect(formatRef(good("email:\uFF21@example.com"))).toBe("email:a@example.com"); // fullwidth A
     expect(formatRef(good("email:a@B\u00FCcher.example"))).toBe("email:a@xn--bcher-kva.example");
     expect(good("email:a+x@example.com")).not.toEqual(good("email:a@example.com"));
     expect(good("email:a.b@example.com")).not.toEqual(good("email:ab@example.com"));
-    expect(formatRef(good("EMAIL:a@example.com"))).toBe("email:a@example.com");
     expect(formatRef(good("email:a@example.com\n"))).toBe("email:a@example.com"); // trim covers the address only
+  });
+
+  test("email: the local part must be ASCII, compatibility characters are refused not folded; the domain is folded", () => {
+    for (const local of ["\uFF21", "\uFF41bc", "\u212A", "a\u212A", "\u2460", "\uFB01", "\u00FC", "a\u0131"]) {
+      expect(bad(`email:${local}@example.com`)).toBe("email local part must be plain ASCII");
+    }
+    expect(formatRef(good("email:a@\uFF45xample.com"))).toBe("email:a@example.com"); // fullwidth domain letter
+    expect(formatRef(good("email:a@\u212Aelvin.example"))).toBe("email:a@kelvin.example"); // Kelvin sign in the domain folds
+    bad("email:a\uFF20example.com"); // fullwidth @ is not an @
+  });
+
+  test("email length boundaries: 254 characters accepted, 255 refused; 64-character local part accepted, 65 refused", () => {
+    const domain = (n: number) => { // n characters, labels of at most 63
+      const labels: string[] = [];
+      let left = n;
+      while (left > 0) { const take = Math.min(63, left > 64 ? 63 : left); labels.push("d".repeat(take)); left -= take + 1; }
+      return labels.join(".");
+    };
+    const addr = (local: number, total: number) => `${"a".repeat(local)}@${domain(total - local - 1)}`;
+    const a254 = addr(64, 254);
+    expect(a254.length).toBe(254);
+    expect(parseRef(`email:${a254}`).ok).toBe(true);
+    const a255 = addr(64, 255);
+    expect(a255.length).toBe(255);
+    expect(bad(`email:${a255}`)).toBe("email address is longer than 254 characters");
+    expect(parseRef(`email:${"a".repeat(64)}@example.com`).ok).toBe(true);
+    expect(bad(`email:${"a".repeat(65)}@example.com`)).toBe("email local part has characters or dots that are not allowed");
   });
 
   test("a workspace qualifier is kept and is part of the identity", () => {
@@ -120,7 +150,7 @@ describe("normalisation", () => {
 });
 
 describe("canonical round trip", () => {
-  const inputs = [...ACCEPT.map(([i]) => i), "SLACK:USER:u0example", "email: A@Example.COM", "slack:user:t0example/u0example", "Telegram:User:9"];
+  const inputs = [...ACCEPT.map(([i]) => i), "email: A@Example.COM", "slack:user:T0EXAMPLE/U0EXAMPLE", "telegram:user:9"];
   for (const i of inputs) {
     test(i, () => {
       const ref = good(i);

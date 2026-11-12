@@ -33,7 +33,9 @@ this is slice A, the grammar only.
   `mandate-scope.ts` expects. Other schemes parse and validate and are refused at
   compile, naming the field and the scheme, until records exist.
 - A bare id, and the older `channel:<id>` boundary, are accepted for one more
-  release with one warning per field path. `personas render` prints them;
+  release with one warning per field path. `personas render` prints them (the
+  gateway sync report does not carry compile warnings yet, and `slaude validate`
+  does not read agent.yaml);
   `personas export --format agent-yaml` writes the typed form.
 
 ## Decisions worth keeping
@@ -41,10 +43,16 @@ this is slice A, the grammar only.
 - A reference in the wrong field is a validation error, not a compile error: a
   channel reference in a user field fails in the editor too, because the JSON
   Schema carries a pattern per field kind.
-- Upper-casing a Slack id must not fold lookalikes (a dotless i) into ASCII, so
-  Slack ids are required to be plain ASCII before they are normalised.
+- Case is not folded for Slack ids, the scheme or the kind: a reference in the
+  wrong case is refused, so the parser is never looser than the schema and the
+  editor and the validator agree. Only an email is normalised.
+- An email's local part must be ASCII and is checked before any Unicode folding,
+  so fullwidth letters and the Kelvin sign are refused, not folded into a
+  different address. The domain alone is folded (NFKC, then IDNA).
 - Email normalisation stops short of joining identities: plus-addressing and dots
   stay, because merging two addresses is a human act.
+- A `channels:` key is named in a path or warning only when it is a Slack channel
+  id or reference; any other key shows as `<key>`.
 - Multiple Slack workspaces per deploy are now planned, so references carry an
   optional workspace from the start; the compile drops it while one workspace is
   connected.
