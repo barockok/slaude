@@ -6,7 +6,7 @@
  * second time while the dead leader's claim is fresh, and checks it exactly
  * once after STALE_CLAIM_MS. Gated on SLAUDE_REDIS_TEST_URL.
  */
-import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { Redis } from "ioredis";
 import { cleanupPrefix, realEnabled, realRedis, testPrefix, until } from "../queue/real";
 import { makeKeys } from "../../src/queue/keys";
@@ -38,6 +38,14 @@ beforeEach(async () => {
   await db.run("DELETE FROM background_slots");
   for (const s of spies) s.mockRestore();
   spies = (["log", "warn", "debug"] as const).map((k) => spyOn(console, k).mockImplementation(() => {}));
+});
+
+// Restore the console spies after each test: a spy left installed keeps its call
+// history, and a later file that spies on console.warn gets that same mock back
+// with the old calls still in it.
+afterEach(() => {
+  for (const s of spies) s.mockRestore();
+  spies = [];
 });
 
 describe.skipIf(!realEnabled)("promise check failover against real Redis", () => {
