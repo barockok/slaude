@@ -175,7 +175,7 @@ describe("parseAgentYaml", () => {
     ["bad mandate boundary", "name: ana\nsoul: x\nmandate:\n  scoped:\n    - { boundary: nope, text: t }\n", /mandate\.scoped\[0\]\.boundary/],
     ["missing mandate text", "name: ana\nsoul: x\nmandate:\n  scoped:\n    - { boundary: dm }\n", /mandate\.scoped\[0\]\.text/],
     ["repeated boundary", "name: ana\nsoul: x\nmandate:\n  scoped:\n    - { boundary: dm, text: a }\n    - { boundary: dm, text: b }\n", /repeats an earlier boundary/],
-    ["bad manager id", "name: ana\nsoul: x\naccess:\n  manager: alice\n", /access\.manager must be a Slack user id/],
+    ["bad manager id", "name: ana\nsoul: x\naccess:\n  manager: alice\n", /access\.manager must be a user reference/],
     ["bad approver user", "name: ana\nsoul: x\naccess:\n  approvers:\n    - { user: bob }\n", /access\.approvers\[0\]\.user/],
     ["missing approver user", "name: ana\nsoul: x\naccess:\n  approvers:\n    - { scope: x }\n", /access\.approvers\[0\]\.user is required/],
     ["bad catchall", "name: ana\nsoul: x\naccess:\n  approvers:\n    - { user: UBOB, catchall: maybe }\n", /access\.approvers\[0\]\.catchall/],
@@ -244,11 +244,11 @@ describe("parseAgentYaml channels", () => {
   });
 
   test("refuses a key that is not a channel id", () => {
-    expect(err(() => compile("channels:\n  general:\n    session: channel\n")).message).toContain("must be a channel id");
+    expect(err(() => compile("channels:\n  general:\n    session: channel\n")).message).toContain("must be a channel reference");
   });
 
   test("a channels block does not warn about a structured soul section", () => {
-    expect(compile("channels:\n  C0EXAMPLE:\n    session: channel\n").warnings).toEqual([]);
+    expect(compile("channels:\n  slack:channel:C0EXAMPLE:\n    session: channel\n").warnings).toEqual([]);
   });
 
   test("a persona with no channels key keeps its soul unchanged", () => {
@@ -270,7 +270,7 @@ describe("parseAgentYaml channels", () => {
     }
     const badKey = err(() => compile(`channels:\n  "not a channel secretvalue":\n    session: channel\n`)).message;
     expect(badKey).not.toContain("secretvalue");
-    expect(badKey).toContain("must be a channel id");
+    expect(badKey).toContain("must be a channel reference");
   });
 
   test("a soul ending in an open code fence fails when channels has settings", () => {
@@ -404,5 +404,53 @@ describe("renderDir with agent.yaml", () => {
     const p = renderDir(repo({ default: { "SOUL.md": "default soul" } }), meta);
     expect(p.version).toBe(1);
     expect(p.personas[0]).toEqual({ name: "default", soul: "default soul" });
+  });
+});
+
+describe("typed references compile down to the Slack ids the runtime reads", () => {
+  const typed = [
+    "name: ana", "soul: x", "slackUserId: slack:user:T0EXAMPLE/UANA1",
+    "mandate:", "  scoped:", "    - { boundary: slack:channel:T0EXAMPLE/COPS, text: Watch. }", "    - { boundary: trust:public, text: Quiet. }",
+    "access:", "  manager: slack:user:UBOSS", "  backupManager: slack:user:T0EXAMPLE/UDEP",
+    "  approvers: [{ user: slack:user:UBOB, channel: slack:channel:COPS }]",
+    "  channels: { public: [slack:channel:CPUB], trusted: [slack:channel:T0EXAMPLE/CTEAM] }",
+    "  dm: [slack:user:UFRIEND]", "  blocked: [slack:user:UNOISY]",
+    "channels:", "  slack:channel:COPS: { proactive: true }", "",
+  ].join("\n");
+  const bare = typed
+    .replace("slack:user:T0EXAMPLE/UANA1", "UANA1").replace("slack:channel:T0EXAMPLE/COPS", "channel:COPS").replace(/slack:user:T0EXAMPLE\//g, "")
+    .replace(/slack:(?:user|channel):(?:T0EXAMPLE\/)?/g, "").replace("  COPS: { proactive", "  COPS: { proactive");
+
+  test("typed and bare forms compile to identical data, the bare one with warnings", () => {
+    const a = parseAgentYaml("ana", typed);
+    const b = parseAgentYaml("ana", bare);
+    expect(a.warnings).toEqual([]);
+    expect(b.warnings.length).toBeGreaterThan(8);
+    expect(a.spec).toEqual(b.spec);
+    expect(a.spec.slackUserId).toBe("UANA1");
+    const d = a.spec.definition.soulData;
+    expect(d.manager.userId).toBe("UBOSS");
+    expect(d.backupManager.userId).toBe("UDEP");
+    expect(d.trustedChannels).toEqual(["CTEAM"]);
+    expect(d.channelOverrides.find((c) => c.channel === "COPS")?.mandate).toBe("Watch.");
+    expect(a.spec.soul).toContain("## Channel <#COPS>");
+  });
+
+  test("each bare field gets one warning that names the field and not the value", () => {
+    const w = parseAgentYaml("ana", bare).warnings;
+    expect(new Set(w).size).toBe(w.length);
+    for (const path of ["slackUserId", "mandate.scoped[0].boundary", "access.manager", "access.backupManager", "access.approvers[0].user", "access.approvers[0].channel", "access.channels.public[0]", "access.channels.trusted[0]", "access.dm[0]", "access.blocked[0]"]) {
+      expect(w.filter((x) => x.includes(` ${path} `))).toHaveLength(1);
+    }
+    for (const x of w) if (!x.includes(" channels.")) expect(x).not.toMatch(/UANA1|UBOSS|UBOB|COPS|CPUB|CTEAM|UFRIEND|UNOISY/);
+  });
+
+  test("an unresolvable scheme is refused naming the path and the scheme, with no value", () => {
+    const e = err(() => parseAgentYaml("ana", "name: ana\nsoul: x\naccess:\n  dm: [slack:user:UOK, email:person@example.com]\n"));
+    expect(e).toBeInstanceOf(PayloadError);
+    expect(e.message).toContain("access.dm[1]");
+    expect(e.message).toContain("'email'");
+    expect(e.message).toContain("cannot be resolved yet");
+    expect(e.message).not.toContain("person@example.com");
   });
 });

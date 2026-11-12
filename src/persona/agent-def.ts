@@ -13,7 +13,9 @@ import { parse as parseYaml, YAMLParseError } from "yaml";
 import { MANDATE_LINE_MAX, subMandatesOf, type SubMandate } from "../soul/mandate-scope";
 import { SoulDataSchema, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
 import { channelOf, endsInOpenFence, isCodeFence, parseProactive } from "../soul/proactive";
-import { AgentSchema, CHANNEL_ID_RE, DESCRIPTION_MAX, type AgentFile } from "./agent-schema";
+import { AgentSchema, BOUNDARY_RE, CHANNEL_ID_RE, DESCRIPTION_MAX, USER_ID_RE, type AgentFile } from "./agent-schema";
+import { anchored, parseRef, refScheme, SRC } from "../refs/parse";
+import type { Ref } from "../refs/types";
 import type { ZodIssue } from "zod";
 import { PayloadError, safeKey } from "./sync/payload";
 
@@ -49,10 +51,13 @@ function firstIssue(issues: ZodIssue[]): { path: string; message: string } {
   return { path: base, message: issue.message };
 }
 
+/** A `channels` key that is safe to name in a path: a Slack channel id or reference, bare or typed. Any other key is a placeholder. */
+const SLACK_KEY_RE = new RegExp(anchored(`${SRC.slackChannel}|${SRC.bareChannel}`));
+
 /** One path segment: a schema key as is, an index in brackets, a `channels` key only when it is a channel id. */
 function pathSegment(seg: string | number, i: number, path: (string | number)[]): string {
   if (typeof seg === "number") return `[${seg}]`;
-  if (i === 1 && path[0] === "channels") return CHANNEL_ID_RE.test(seg) ? seg : safeKey(seg);
+  if (i === 1 && path[0] === "channels") return SLACK_KEY_RE.test(seg) ? seg : "<key>";
   return seg;
 }
 
@@ -104,6 +109,28 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const doc = raw as Record<string, unknown>;
 
   const warnings: string[] = [];
+  /**
+   * A reference field read down to the bare Slack id the runtime uses today. A
+   * bare id is accepted with a warning that names the field, never the value;
+   * a `slack:` reference loses its workspace for now; any other scheme parses
+   * but cannot be resolved until records exist, and is refused here.
+   */
+  const slackId = (path: string, value: string | number, role: "user" | "channel"): string => {
+    const v = String(value);
+    if (!v.includes(":")) {
+      const writeAs = role === "user" ? "slack:user:<id>" : "slack:channel:<id>";
+      warnings.push(`persona '${name}': agent.yaml ${path} is a bare Slack id, which is accepted for one more release; write ${writeAs}`);
+      return v;
+    }
+    const r = parseRef(v, [role]);
+    if (!r.ok) return fail(path, `is not a valid reference: ${r.reason}`);
+    return resolvedSlackId(path, r.ref);
+  };
+  const resolvedSlackId = (path: string, ref: Ref): string => {
+    if (ref.kind === "external" && ref.service === "slack") return ref.id;
+    if (ref.kind === "selector") return fail(path, "is a selector, which is not a reference to one record and cannot be used here");
+    return fail(path, `uses the '${refScheme(ref)}' scheme, which cannot be resolved yet: records for it arrive in a later release, so for now write a slack: reference`);
+  };
   // Shape (keys, types, patterns, lengths, nulls) is the schema's; see agent-schema.ts.
   const checked = AgentSchema.safeParse(doc);
   if (!checked.success) {
@@ -118,7 +145,8 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const model = file.model ?? undefined;
   const userToken = file.userToken ?? undefined;
   const runsOn = file.runsOn ?? undefined;
-  const slackUserId = file.slackUserId == null ? undefined : String(file.slackUserId);
+  const slackUserIdRaw = file.slackUserId == null ? undefined : String(file.slackUserId);
+  const slackUserId = slackUserIdRaw ? slackId("slackUserId", slackUserIdRaw, "user") : undefined;
   const provider = file.provider ?? undefined;
   const mcp = file.mcp ?? undefined;
   const skills = noRepeats("skills", file.skills ?? undefined);
@@ -141,7 +169,18 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const seenBoundary = new Set<string>();
   (mandate.scoped ?? []).forEach((e, i) => {
     const key = `mandate.scoped[${i}]`;
-    const boundary = e.boundary;
+    // The compiled form is what mandate-scope.ts reads: channel:<id>, trust:<class> or dm.
+    let boundary: string;
+    if (BOUNDARY_RE.test(e.boundary)) {
+      boundary = e.boundary;
+      if (boundary.startsWith("channel:")) {
+        warnings.push(`persona '${name}': agent.yaml ${key}.boundary is the older channel:<id> form, which is accepted for one more release; write slack:channel:<id>`);
+      }
+    } else {
+      const r = parseRef(e.boundary, ["channel", "selector"]);
+      if (!r.ok) return fail(`${key}.boundary`, `is not a valid reference: ${r.reason}`);
+      boundary = r.ref.kind === "selector" ? r.ref.name : `channel:${resolvedSlackId(`${key}.boundary`, r.ref)}`;
+    }
     if (seenBoundary.has(boundary)) fail(`${key}.boundary`, "repeats an earlier boundary");
     seenBoundary.add(boundary);
     // As a soul's `Mode:` line: absent is override, and an unknown value reads
@@ -170,13 +209,13 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const access = file.access ?? {};
   const channelLists = access.channels ?? {};
   const approvers: ApproverEntry[] = [];
-  (access.approvers ?? []).forEach((e) => {
+  (access.approvers ?? []).forEach((e, i) => {
     const entryOut: ApproverEntry = {
-      userId: e.user,
+      userId: slackId(`access.approvers[${i}].user`, e.user, "user"),
       scope: e.scope ?? "anything",
       catchall: typeof e.catchall === "boolean" ? e.catchall : e.scope == null,
     };
-    if (e.channel) channelBlock(e.channel).approvers.push(entryOut);
+    if (e.channel) channelBlock(slackId(`access.approvers[${i}].channel`, e.channel, "channel")).approvers.push(entryOut);
     else approvers.push(entryOut);
   });
   const redact = access.redact ?? [];
@@ -187,17 +226,18 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
       fail(`access.redact[${i}]`, "is not a valid regular expression");
     }
   });
-  const manager = access.manager ?? undefined;
-  const backupManager = access.backupManager ?? undefined;
+  const manager = access.manager ? slackId("access.manager", access.manager, "user") : undefined;
+  const backupManager = access.backupManager ? slackId("access.backupManager", access.backupManager, "user") : undefined;
+  const idList = (path: string, list: string[] | null | undefined, role: "user" | "channel") => (list ?? []).map((v, i) => slackId(`${path}[${i}]`, v, role));
 
   const soulData = SoulDataSchema.parse({
     identity: { name, ...(description ? { role: description } : {}) },
     manager: manager ? { userId: manager } : {},
     backupManager: backupManager ? { userId: backupManager } : {},
-    allowedChannels: channelLists.public ?? [],
-    trustedChannels: channelLists.trusted ?? [],
-    blockedUsers: access.blocked ?? [],
-    dmAllowedUsers: access.dm ?? [],
+    allowedChannels: idList("access.channels.public", channelLists.public, "channel"),
+    trustedChannels: idList("access.channels.trusted", channelLists.trusted, "channel"),
+    blockedUsers: idList("access.blocked", access.blocked, "user"),
+    dmAllowedUsers: idList("access.dm", access.dm, "user"),
     approvers,
     redactPatterns: redact,
     approvalTimeoutSeconds: access.approvalTimeoutSeconds ?? 0,
@@ -211,8 +251,13 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   // this block is generated, not a section left in the prose by mistake.
   const authoredChannels = new Set(channelSections(soulText).map((s) => s.channel));
   let channelBlocks = "";
-  for (const [channel, entry] of Object.entries(file.channels ?? {})) {
-    if (authoredChannels.has(channel)) fail(`channels.${channel}`, "also has a ## Channel section in soul: keep it in one place");
+  const seenChannel = new Set<string>();
+  for (const [key, entry] of Object.entries(file.channels ?? {})) {
+    const keyPath = `channels.${SLACK_KEY_RE.test(key) ? key : "<key>"}`;
+    const channel = slackId(keyPath, key, "channel");
+    if (seenChannel.has(channel)) fail(keyPath, "repeats an earlier channel");
+    seenChannel.add(channel);
+    if (authoredChannels.has(channel)) fail(keyPath, "also has a ## Channel section in soul: keep it in one place");
     let settings = "";
     if (entry?.session === "channel") settings += "\n### Session\n- Mode: channel";
     if (entry?.proactive != null) settings += `\n### Proactive\n- Enabled: ${entry.proactive ? "yes" : "no"}`;
@@ -373,6 +418,10 @@ export interface AgentDocumentInput {
   channels?: Record<string, ChannelSetting> | null;
 }
 
+/** The canonical typed form of a Slack id, for export. An id of another shape is left as it is (the schema refuses it, as it always did). */
+const slackUserRef = (id: string): string => (USER_ID_RE.test(id) ? `slack:user:${id}` : id);
+const slackChannelRef = (id: string): string => (CHANNEL_ID_RE.test(id) ? `slack:channel:${id}` : id);
+
 const nonEmpty = <T extends object>(o: T): boolean => Object.keys(o).length > 0;
 
 /** The mandate and access parts of a document for a parsed soul. */
@@ -383,22 +432,22 @@ export function documentPartsFromSoul(data: SoulData): Pick<AgentDocumentInput, 
 /** An agent as its agent.yaml document (empty parts left out), for export and the console. */
 export function agentDocument(i: AgentDocumentInput): Record<string, unknown> {
   const approvers = [
-    ...i.access.approvers.map((a) => ({ user: a.userId, scope: a.scope, catchall: a.catchall })),
-    ...i.access.channelOverrides.flatMap((c) => c.approvers.map((a) => ({ user: a.userId, scope: a.scope, catchall: a.catchall, channel: c.channel }))),
+    ...i.access.approvers.map((a) => ({ user: slackUserRef(a.userId), scope: a.scope, catchall: a.catchall })),
+    ...i.access.channelOverrides.flatMap((c) => c.approvers.map((a) => ({ user: slackUserRef(a.userId), scope: a.scope, catchall: a.catchall, channel: slackChannelRef(c.channel) }))),
   ];
   const access: Record<string, unknown> = {
-    ...(i.access.manager.userId ? { manager: i.access.manager.userId } : {}),
-    ...(i.access.backupManager.userId ? { backupManager: i.access.backupManager.userId } : {}),
+    ...(i.access.manager.userId ? { manager: slackUserRef(i.access.manager.userId) } : {}),
+    ...(i.access.backupManager.userId ? { backupManager: slackUserRef(i.access.backupManager.userId) } : {}),
     ...(approvers.length ? { approvers } : {}),
     ...(i.access.allowedChannels.length || i.access.trustedChannels.length
-      ? { channels: { ...(i.access.allowedChannels.length ? { public: i.access.allowedChannels } : {}), ...(i.access.trustedChannels.length ? { trusted: i.access.trustedChannels } : {}) } }
+      ? { channels: { ...(i.access.allowedChannels.length ? { public: i.access.allowedChannels.map(slackChannelRef) } : {}), ...(i.access.trustedChannels.length ? { trusted: i.access.trustedChannels.map(slackChannelRef) } : {}) } }
       : {}),
-    ...(i.access.dmAllowedUsers.length ? { dm: i.access.dmAllowedUsers } : {}),
-    ...(i.access.blockedUsers.length ? { blocked: i.access.blockedUsers } : {}),
+    ...(i.access.dmAllowedUsers.length ? { dm: i.access.dmAllowedUsers.map(slackUserRef) } : {}),
+    ...(i.access.blockedUsers.length ? { blocked: i.access.blockedUsers.map(slackUserRef) } : {}),
     ...(i.access.redactPatterns.length ? { redact: i.access.redactPatterns } : {}),
     ...(i.access.approvalTimeoutSeconds > 0 ? { approvalTimeoutSeconds: i.access.approvalTimeoutSeconds } : {}),
   };
-  const scoped = i.mandate.scoped.map((s) => ({ boundary: s.boundary, mode: s.mode, text: s.text }));
+  const scoped = i.mandate.scoped.map((s) => ({ boundary: s.boundary.startsWith("channel:") ? slackChannelRef(s.boundary.slice("channel:".length)) : s.boundary, mode: s.mode, text: s.text }));
   const mandate: Record<string, unknown> = {
     ...(i.mandate.global.trim() ? { global: i.mandate.global.trim() } : {}),
     ...(scoped.length ? { scoped } : {}),
@@ -411,7 +460,7 @@ export function agentDocument(i: AgentDocumentInput): Record<string, unknown> {
     name: i.name,
     ...(i.description ? { description: i.description } : {}),
     ...(i.model ? { model: i.model } : {}),
-    ...(i.slackUserId ? { slackUserId: i.slackUserId } : {}),
+    ...(i.slackUserId ? { slackUserId: slackUserRef(i.slackUserId) } : {}),
     ...(i.userToken ? { userToken: i.userToken } : {}),
     ...(i.provider != null ? { provider: i.provider } : {}),
     ...(i.runsOn ? { runsOn: i.runsOn } : {}),
@@ -422,6 +471,6 @@ export function agentDocument(i: AgentDocumentInput): Record<string, unknown> {
     ...(i.skills != null ? { skills: i.skills } : {}),
     ...(i.guardrails?.length ? { guardrails: i.guardrails } : {}),
     ...(nonEmpty(memory) ? { memory } : {}),
-    ...(i.channels && nonEmpty(i.channels) ? { channels: i.channels } : {}),
+    ...(i.channels && nonEmpty(i.channels) ? { channels: Object.fromEntries(Object.entries(i.channels).map(([k, v]) => [slackChannelRef(k), v])) } : {}),
   };
 }

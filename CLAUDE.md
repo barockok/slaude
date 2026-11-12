@@ -99,12 +99,13 @@ Stack: **Bun + TypeScript**. Deps: `@anthropic-ai/claude-agent-sdk`, `@slack/bol
 - [x] **Provider:** any Anthropic-compatible API (`ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` + provider-qualified `SLAUDE_MODEL`). No claude-code OAuth path.
 - [x] **Deploy unit:** one container = one persona = one `SOUL.md`. No `/personality` switch. Multi-agent via multi-deploy, or one Slack app per persona on a shared gateway (see the 2026-11-01 app-persona-routing note).
 - [ ] Sandboxing: per-session git worktree vs container-per-session. Defer; per-thread cwd under `$SLAUDE_HOME/workspaces/` for MVP.
-- [ ] Multi-tenant slack workspaces: not needed (one deploy = one workspace). Defer indefinitely.
+- [ ] Multiple Slack workspaces per deploy: planned. References and bindings are workspace-qualified from the start (see the 2026-11-12 spec, `docs/superpowers/specs/2026-11-12-domain-model-and-references.md`).
 
 ## Findings Log
 
 Entries live in `docs/site/_content/field-notes/<date>-<slug>.md` and publish to the docs site. Add a new file per significant finding/decision/mistake; index it below as one line (date, a short title with the key detail, the link; the full write-up lives in the note). Newest first.
 
+- [2026-11-12: Typed references: agent.yaml names users and channels as `slack:user:<id>`, `slack:channel:<id>` (or email, phone, internal ids) through one parser in `src/refs/`; bare ids and `channel:<id>` boundaries are accepted and warned for one release; non-Slack schemes validate but are refused at compile until records exist](docs/site/_content/field-notes/2026-11-12-typed-references.md)
 - [2026-11-11: agent.yaml has one definition, a Zod schema the validator parses with and `docs/site/schemas/agent.schema.json` is generated from (drift fails a test); editors get help via a `yaml-language-server` modeline, unknown keys fail at every level](docs/site/_content/field-notes/2026-11-11-agent-yaml-schema.md)
 - [2026-11-11: A node never reads a database for a persona's soul: `soulData()` skips the overlay on a node, and a bundle without `soulJson` is parsed from its own soul text, so a SOUL.md persona keeps its `<channel-mandate>`](docs/site/_content/field-notes/2026-11-11-node-soul-without-database.md)
 - [2026-11-10: Proactive means a channel session: per-channel switch, `self/heartbeat/<channel>` lowercased in one function, agent-level wake removed, migration claimed in `background_slots` not inferred](docs/site/_content/field-notes/2026-11-10-proactive-per-channel.md)

@@ -17,6 +17,10 @@ export interface CorpusCase {
   yaml: string;
   ok: boolean;
   shape?: boolean;
+  /** An accepted case: the field paths that get a warning, exactly (each once). Left out: warnings are not checked. */
+  warns?: string[];
+  /** A refused case: text the message must contain (a field path, a scheme). */
+  msgs?: string[];
 }
 
 type Doc = Record<string, unknown>;
@@ -31,18 +35,38 @@ const toYaml = (patch: Doc) => {
   return stringify(d, { lineWidth: 0 });
 };
 /** An accepted input. */
-const ok = (id: string, patch: Doc) => void cases.push({ id, yaml: toYaml(patch), ok: true });
+const ok = (id: string, patch: Doc, warns?: string[]) => void cases.push({ id, yaml: toYaml(patch), ok: true, ...(warns ? { warns } : {}) });
 /** A refused input; `shape` false when only code, not the schema, can say no. */
-const bad = (id: string, patch: Doc, shape = true) => void cases.push({ id, yaml: toYaml(patch), ok: false, shape });
+const bad = (id: string, patch: Doc, shape = true, msgs?: string[]) => void cases.push({ id, yaml: toYaml(patch), ok: false, shape, ...(msgs ? { msgs } : {}) });
 const rawBad = (id: string, yaml: string, shape = false) => void cases.push({ id, yaml, ok: false, shape });
 const rawOk = (id: string, yaml: string) => void cases.push({ id, yaml, ok: true });
 
 const U = "U0EXAMPLE";
 const C = "C0EXAMPLE";
+const SU = `slack:user:${U}`;
+const SC = `slack:channel:${C}`;
 
 // ---- accepted
 ok("minimal", {});
 ok("full", {
+  description: "Handles support",
+  model: "provider/model-name",
+  slackUserId: SU,
+  userToken: "${PERSONA_ANA_XOXP}",
+  provider: { apiKey: "env://PERSONA_ANA_KEY" },
+  runsOn: "finance",
+  mandate: { global: "Answer.", scoped: [{ boundary: SC, mode: "extend", text: "More." }, { boundary: "trust:public", mode: "reduce", text: "Less." }, { boundary: "dm", text: "Dm." }] },
+  access: {
+    manager: SU, backupManager: "slack:user:W0EXAMPLE",
+    approvers: [{ user: SU, scope: "budget", catchall: false }, { user: SU, channel: SC }],
+    channels: { public: [SC], trusted: ["slack:channel:G0EXAMPLE"] }, dm: [SU], blocked: [SU], redact: ["sk-[a-z]+"], approvalTimeoutSeconds: 120,
+  },
+  mcp: { mcpServers: { tracker: { type: "http", url: "https://tracker.example.com/mcp" } } },
+  skills: ["release-notes"], guardrails: ["no-email"],
+  memory: { kbSources: ["kb-handbook"], background: { budgetUsd: 2 } },
+  channels: { [SC]: { session: "channel", proactive: true } },
+}, []);
+ok("full, bare legacy ids", {
   description: "Handles support",
   model: "provider/model-name",
   slackUserId: U,
@@ -59,7 +83,7 @@ ok("full", {
   skills: ["release-notes"], guardrails: ["no-email"],
   memory: { kbSources: ["kb-handbook"], background: { budgetUsd: 2 } },
   channels: { [C]: { session: "channel", proactive: true } },
-});
+}, ["slackUserId", "mandate.scoped[0].boundary", "access.manager", "access.backupManager", "access.approvers[0].user", "access.approvers[1].user", "access.approvers[1].channel", "access.channels.public[0]", "access.channels.trusted[0]", "access.dm[0]", "access.blocked[0]", `channels.${C}`]);
 for (const k of ["description", "model", "slackUserId", "userToken", "provider", "runsOn", "mcp", "guardrails", "mandate", "access", "memory", "channels"]) ok(`null ${k}`, { [k]: null });
 ok("empty strings", { description: "", model: "", userToken: "", runsOn: "" });
 ok("description at the limit", { description: "x".repeat(2000) });
@@ -94,6 +118,95 @@ ok("channel entry session", { channels: { [C]: { session: "channel" } } });
 ok("channel entry proactive off", { channels: { [C]: { proactive: false } } });
 ok("private and dm channel ids", { channels: { G0EXAMPLE: { proactive: true }, D0EXAMPLE: { proactive: false } } });
 
+
+
+// ---- typed references, field by field
+type RefField = {
+  id: string;
+  role: "user" | "channel";
+  path: string;
+  /** The patch that puts `v` in the field. */
+  at: (v: string) => Doc;
+};
+const REF_FIELDS: RefField[] = [
+  { id: "slackUserId", role: "user", path: "slackUserId", at: (v) => ({ slackUserId: v }) },
+  { id: "manager", role: "user", path: "access.manager", at: (v) => ({ access: { manager: v } }) },
+  { id: "backupManager", role: "user", path: "access.backupManager", at: (v) => ({ access: { backupManager: v } }) },
+  { id: "approver user", role: "user", path: "access.approvers[0].user", at: (v) => ({ access: { approvers: [{ user: v }] } }) },
+  { id: "approver channel", role: "channel", path: "access.approvers[0].channel", at: (v) => ({ access: { approvers: [{ user: SU, channel: v }] } }) },
+  { id: "public", role: "channel", path: "access.channels.public[0]", at: (v) => ({ access: { channels: { public: [v] } } }) },
+  { id: "trusted", role: "channel", path: "access.channels.trusted[0]", at: (v) => ({ access: { channels: { trusted: [v] } } }) },
+  { id: "dm", role: "user", path: "access.dm[0]", at: (v) => ({ access: { dm: [v] } }) },
+  { id: "blocked", role: "user", path: "access.blocked[0]", at: (v) => ({ access: { blocked: [v] } }) },
+  { id: "channels key", role: "channel", path: "channels.", at: (v) => ({ channels: { [v]: {} } }) },
+  { id: "scoped boundary", role: "channel", path: "mandate.scoped[0].boundary", at: (v) => ({ mandate: { scoped: [{ boundary: v, text: "x" }] } }) },
+];
+const OWN: Record<"user" | "channel", { typed: string[]; bare: string; other: string; wrongKind: string[]; unresolvable: string[] }> = {
+  user: {
+    typed: [SU, "slack:user:W0EXAMPLE", "slack:user:T0EXAMPLE/U0EXAMPLE"],
+    bare: U,
+    other: SC,
+    wrongKind: [SC, "slack:channel:T0EXAMPLE/C0EXAMPLE", "boundary:room1", "whatsapp:group:g1", "agent:ana", "env:sandbox", "node:n1", "trust:public", "dm"],
+    unresolvable: ["email:a@example.com", "email:a+x@example.com", "user:abc", "whatsapp:phone:+620000000000", "telegram:user:12345"],
+  },
+  channel: {
+    typed: [SC, "slack:channel:G0EXAMPLE", "slack:channel:D0EXAMPLE", "slack:channel:T0EXAMPLE/C0EXAMPLE"],
+    bare: C,
+    other: SU,
+    wrongKind: [SU, "slack:user:T0EXAMPLE/U0EXAMPLE", "user:abc", "email:a@example.com", "whatsapp:phone:+620000000000", "telegram:user:12345", "agent:ana", "env:sandbox", "node:n1", "trust:public", "dm"],
+    unresolvable: ["boundary:room1", "whatsapp:group:g1"],
+  },
+};
+const SCHEME_OF = (v: string) => v.split(":")[0]!;
+for (const f of REF_FIELDS) {
+  const own = OWN[f.role];
+  const isKey = f.id === "channels key";
+  const isBoundary = f.id === "scoped boundary";
+  for (const v of own.typed) ok(`${f.id}: typed ${v}`, f.at(v), []);
+  if (isBoundary) {
+    ok(`${f.id}: selectors need no warning`, { mandate: { scoped: [{ boundary: "trust:public", text: "x" }, { boundary: "trust:trusted", text: "x" }, { boundary: "dm", text: "x" }] } }, []);
+    ok(`${f.id}: legacy channel:<id> warns`, f.at(`channel:${C}`), [f.path]);
+  } else {
+    ok(`${f.id}: bare legacy id warns`, f.at(own.bare), [isKey ? `channels.${own.bare}` : f.path]);
+  }
+  const wrong = isBoundary || isKey ? own.wrongKind.filter((v) => !(isBoundary && (v === "trust:public" || v === "dm"))) : own.wrongKind;
+  for (const v of wrong) {
+    // A selector is not a reference to one record: refused in every field but a boundary.
+    if (isKey && (v === "trust:public" || v === "dm")) continue;
+    // slackUserId's bare form is any text without a colon, so a lone `dm` is a (warned) bare id there.
+    if (f.id === "slackUserId" && v === "dm") continue;
+    bad(`${f.id}: wrong kind ${v}`, f.at(v));
+  }
+  for (const v of own.unresolvable) {
+    bad(`${f.id}: ${v} parses but cannot be resolved yet`, f.at(v), false, isKey ? ["cannot be resolved yet", `'${SCHEME_OF(v)}'`] : [f.path, `'${SCHEME_OF(v)}'`, "cannot be resolved yet"]);
+  }
+  for (const v of [`${f.role === "user" ? "slack:user" : "slack:channel"}:`, `${f.role === "user" ? "slack:user" : "slack:channel"}:T0EXAMPLE/`, `${f.role === "user" ? "slack:user" : "slack:channel"}:${f.role === "user" ? C : U}`, `${own.typed[0]} `, ` ${own.typed[0]}`, own.typed[0]!.toUpperCase(), own.typed[0]!.replace(/[A-Z0-9]+$/, (m) => m.toLowerCase()), own.typed[0]!.replace(/^slack/, "Slack"), `${own.typed[0]}\n`, `${own.typed[0]}:x`, `x${own.typed[0]}`]) {
+    bad(`${f.id}: malformed ${JSON.stringify(v)}`, f.at(v));
+  }
+}
+// Users that only code can refuse (shape fine, address not).
+for (const f of REF_FIELDS.filter((x) => x.role === "user")) {
+  bad(`${f.id}: email with a double dot`, f.at("email:a..b@example.com"), false, [f.path]);
+  bad(`${f.id}: email domain with a bare hyphen label`, f.at("email:a@-example.com"), false, [f.path]);
+  bad(`${f.id}: email without a dot in the domain`, f.at("email:a@example"));
+  bad(`${f.id}: email with two @`, f.at("email:a@@example.com"));
+  bad(`${f.id}: email with a display name`, f.at("email:Ana <a@example.com>"));
+  bad(`${f.id}: phone without a plus`, f.at("whatsapp:phone:620000000000"));
+}
+bad("slackUserId: a channel reference", { slackUserId: SC });
+bad("slackUserId: failures name the expected form", { slackUserId: SC }, true, ["slackUserId must be a Slack user reference such as slack:user:U0EXAMPLE, or a bare Slack id"]);
+bad("slackUserId: a list names the expected form", { slackUserId: ["a"] }, true, ["slackUserId must be a Slack user reference such as slack:user:U0EXAMPLE"]);
+bad("slackUserId: an unusable typed value names the expected form, not the value", { slackUserId: "email:a@@example.com" }, true, ["slackUserId must be a Slack user reference"]);
+bad("user fields: an upper-case email scheme is refused", { access: { manager: "EMAIL:a@example.com" } });
+bad("channels key: a whatsapp group key is a placeholder in the path", { channels: { "whatsapp:group:g1": {} } }, false, ["channels.<key>", "'whatsapp'", "cannot be resolved yet"]);
+bad("slackUserId: a typed email is refused at compile", { slackUserId: "email:a@example.com" }, false, ["slackUserId", "'email'", "cannot be resolved yet"]);
+ok("slackUserId: typed with a workspace", { slackUserId: "slack:user:T0EXAMPLE/U0EXAMPLE" }, []);
+bad("scoped boundary: a typed duplicate of the legacy form", { mandate: { scoped: [{ boundary: `channel:${C}`, text: "x" }, { boundary: SC, text: "y" }] } }, false, ["mandate.scoped[1].boundary", "repeats"]);
+bad("scoped boundary: a workspace form duplicates the plain one", { mandate: { scoped: [{ boundary: SC, text: "x" }, { boundary: `slack:channel:T0EXAMPLE/${C}`, text: "y" }] } }, false, ["mandate.scoped[1].boundary", "repeats"]);
+bad("channels key: a typed and a bare key for one channel", { channels: { [SC]: {}, [C]: {} } }, false, ["repeats an earlier channel"]);
+ok("channels key: two different channels", { channels: { [SC]: {}, "slack:channel:G0EXAMPLE": {} } }, []);
+ok("access: typed everywhere, no warning", { slackUserId: SU, access: { manager: SU, dm: [SU], channels: { public: [SC] }, approvers: [{ user: SU, channel: SC }] }, channels: { [SC]: { proactive: true } } }, []);
+ok("access: a mix of typed and bare warns for the bare ones only", { access: { manager: SU, backupManager: U, dm: [SU, U] } }, ["access.backupManager", "access.dm[1]"]);
 
 // ---- refused: id, channel and boundary patterns at their edges
 const USER_EDGES = ["U", "W", "u0example", "U-x", "U0EX AMPLE", "U0EXAMPLE\n", " U0EXAMPLE", "C0EXAMPLE", "U0EXAMPLE-1", "UABC_D"];
