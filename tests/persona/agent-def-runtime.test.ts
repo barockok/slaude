@@ -278,7 +278,7 @@ describe("the Definition view", () => {
     const doc = parseYaml(v.yaml) as Record<string, any>;
     expect(doc.name).toBe("ana");
     expect(doc.mandate.global).toBe("Answer support questions.");
-    expect(doc.access.manager).toBe("UBOSS");
+    expect(doc.access.manager).toBe("slack:user:UBOSS");
     expect(doc.skills).toEqual(["triage"]);
     expect(doc.guardrails).toEqual(["only-scout"]);
     expect(doc.memory.kbSources).toEqual(["kb-handbook"]);
@@ -295,8 +295,8 @@ describe("the Definition view", () => {
     withChannels.soulMd += "\n\n## Channel <#COPS>\n### Session\n- Mode: channel\n### Proactive\n- Enabled: no\n\n## Channel <#CTEAM>\n### Proactive\n- Enabled: yes";
     setPersonaRegistry(managed(withChannels));
     expect((parseYaml(agentDefinitionView("ana").yaml) as Record<string, any>).channels).toEqual({
-      COPS: { session: "channel", proactive: false },
-      CTEAM: { proactive: true },
+      "slack:channel:COPS": { session: "channel", proactive: false },
+      "slack:channel:CTEAM": { proactive: true },
     });
     setPersonaRegistry(managed(compiledPersona()));
     expect(parseYaml(agentDefinitionView("ana").yaml) as Record<string, any>).not.toHaveProperty("channels");

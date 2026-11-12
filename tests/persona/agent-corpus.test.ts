@@ -16,15 +16,24 @@ describe("agent.yaml corpus", () => {
   for (const c of CORPUS) {
     test(`${c.ok ? "accepts" : "refuses"}: ${c.id}`, () => {
       let thrown: unknown;
+      let compiled: ReturnType<typeof parseAgentYaml> | undefined;
       try {
-        parseAgentYaml(CORPUS_DIR, c.yaml);
+        compiled = parseAgentYaml(CORPUS_DIR, c.yaml);
       } catch (e) {
         thrown = e;
       }
       if (c.ok) {
         expect(thrown).toBeUndefined();
+        if (c.warns) {
+          const ws = compiled!.warnings.filter((w) => !w.includes("soul has a"));
+          expect(ws).toHaveLength(c.warns.length);
+          c.warns.forEach((p) => expect(ws.filter((w) => w.includes(` ${p} `))).toHaveLength(1));
+          // A warning names the field, never the value (a channels key is its own path).
+          for (const w of ws) if (!w.includes(" channels.")) expect(w).not.toMatch(/[CUWG]0EXAMPLE/);
+        }
       } else {
         expect(thrown).toBeInstanceOf(PayloadError);
+        for (const m of c.msgs ?? []) expect((thrown as Error).message).toContain(m);
       }
     });
   }
@@ -38,6 +47,11 @@ describe("agent.yaml corpus", () => {
       `name: ana\nsoul: x\nmandate:\n  scoped:\n    - { boundary: ${secret}, text: x }\n`,
       `name: ana\nsoul: x\nchannels:\n  C0EXAMPLE:\n    session: ${secret}\n`,
       `name: ana\nsoul: x\nskills: [${secret}]\n`,
+      `name: ana\nsoul: x\naccess:\n  manager: slack:user:${secret}\n`,
+      `name: ana\nsoul: x\naccess:\n  dm: [email:${secret}@nodot]\n`,
+      `name: ana\nsoul: x\nslackUserId: email:${secret}@example.com\n`,
+      `name: ana\nsoul: x\nmandate:\n  scoped:\n    - { boundary: "slack:channel:${secret}", text: x }\n`,
+      `name: ana\nsoul: x\nchannels:\n  "slack:channel:${secret}": {}\n`,
       `name: ana\nsoul: ${secret}\naccess:\n  approvalTimeoutSeconds: ${secret}\n`,
     ]) {
       let msg = "";

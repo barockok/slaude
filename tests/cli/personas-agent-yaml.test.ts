@@ -82,7 +82,7 @@ describe("export to agent.yaml", () => {
     const out = tmp();
     await exportAgentYaml(h, out, { extract: async () => extracted });
     const doc = parseYaml(readFileSync(join(out, "personas", "ana", "agent.yaml"), "utf8")) as Record<string, unknown>;
-    expect(doc.channels).toEqual({ CSESS: { session: "channel", proactive: true }, CQUIET: { proactive: false } });
+    expect(doc.channels).toEqual({ "slack:channel:CSESS": { session: "channel", proactive: true }, "slack:channel:CQUIET": { proactive: false } });
     const ana = renderDir(out, meta).personas.find((p) => p.name === "ana")!;
     const before = parseProactive(source);
     const after = parseProactive(ana.soul);
@@ -106,24 +106,24 @@ describe("export to agent.yaml", () => {
 
   test("an Enabled: yes channel with limits exports as proactive: the limits have no effect in a channel session", async () => {
     const { channels, warned } = await exportChannels("## Channel <#CLIMIT>\n### Proactive\n- Enabled: yes\n- Highest: ask\n- Cooldown: 4 hours\n");
-    expect(channels).toEqual({ CLIMIT: { proactive: true } });
+    expect(channels).toEqual({ "slack:channel:CLIMIT": { proactive: true } });
     expect(warned).not.toContain("CLIMIT");
   });
 
   test("a channel with an invalid Mode exports as off", async () => {
     const { channels } = await exportChannels("## Channel <#CBAD>\n### Session\n- Mode: thread\n### Proactive\n- Enabled: yes\n");
-    expect(channels).toEqual({ CBAD: { proactive: false } });
+    expect(channels).toEqual({ "slack:channel:CBAD": { proactive: false } });
   });
 
   test("a classic channel with limits that is off stays off", async () => {
     const { channels, warned } = await exportChannels("## Channel <#CLIMIT>\n### Proactive\n- Enabled: no\n- Max per day: 2\n");
-    expect(channels).toEqual({ CLIMIT: { proactive: false } });
+    expect(channels).toEqual({ "slack:channel:CLIMIT": { proactive: false } });
     expect(warned).toContain("Max per day");
   });
 
   test("a channel-mode channel carries proactive, with no warning", async () => {
     const { channels, warned } = await exportChannels("## Channel <#CSESS>\n### Session\n- Mode: channel\n### Proactive\n- Enabled: yes\n- Highest: ask\n");
-    expect(channels).toEqual({ CSESS: { session: "channel", proactive: true } });
+    expect(channels).toEqual({ "slack:channel:CSESS": { session: "channel", proactive: true } });
     expect(warned).not.toContain("CSESS");
   });
 
@@ -134,6 +134,52 @@ describe("export to agent.yaml", () => {
     await exportAgentYaml(h, out, { extract: async () => extracted });
     const ana = renderDir(out, meta).personas.find((p) => p.name === "ana")!;
     expect(parseProactive(ana.soul).sessions).toEqual({ CSESS: "channel" });
+  });
+
+  test("export writes the typed form, and compiling it again gives the same data with no warning", async () => {
+    const out = tmp();
+    await exportAgentYaml(home(), out, { extract: async () => extracted });
+    const text = readFileSync(join(out, "personas", "ana", "agent.yaml"), "utf8");
+    const doc = parseYaml(text) as Record<string, any>;
+    expect(doc.slackUserId).toBe("slack:user:UTESTUSER1");
+    expect(doc.access.manager).toBe("slack:user:UBOSS");
+    expect(doc.access.approvers.map((a: any) => [a.user, a.channel])).toEqual([["slack:user:UBOB", undefined], ["slack:user:UEVE", "slack:channel:COPS"]]);
+    expect(doc.access.channels).toEqual({ public: ["slack:channel:CPUB"], trusted: ["slack:channel:CTEAM"] });
+    expect(doc.access.dm).toEqual(["slack:user:UFRIEND"]);
+    expect(doc.access.blocked).toEqual(["slack:user:UNOISY"]);
+    expect(doc.mandate.scoped.map((m: any) => m.boundary).sort()).toEqual(["dm", "slack:channel:COPS"]);
+    // No bare id is left anywhere in the file.
+    expect(text).not.toMatch(/(?:manager|user|dm|blocked|public|trusted|channel|boundary): \[?[UWCGD][A-Z0-9]+\b/);
+    const warnings: string[] = [];
+    const ana = renderDir(out, meta, undefined, (w) => warnings.push(...w)).personas.find((p) => p.name === "ana")!;
+    expect(warnings.filter((w) => w.includes("bare Slack id") || w.includes("older channel:"))).toEqual([]);
+    const c = ana.definition!.soulData;
+    for (const k of ["manager", "approvers", "allowedChannels", "trustedChannels", "blockedUsers", "dmAllowedUsers", "scopeMandates"] as const) {
+      expect(c[k]).toEqual(extracted[k]);
+    }
+    expect(subMandatesOf(c)).toEqual(subMandatesOf(extracted));
+    expect(ana.slackUserId).toBe("UTESTUSER1");
+  });
+
+  test("a bare id in an agent.yaml reaches render's warnings and the command line, naming the field and not the value", () => {
+    const dir = tmp();
+    for (const [n, body] of [["default", ""], ["ana", "slackUserId: UANA1\n"]] as const) {
+      mkdirSync(join(dir, "personas", n), { recursive: true });
+      writeFileSync(join(dir, "personas", n, "agent.yaml"), `name: ${n}\nsoul: x\n${body}access:\n  manager: UBOSS\n  dm: [slack:user:UOK]\nmandate:\n  scoped:\n    - { boundary: "channel:COPS", text: y }\n`);
+    }
+    const warnings: string[] = [];
+    renderDir(dir, meta, undefined, (w) => warnings.push(...w));
+    const fromYaml = warnings.filter((w) => w.includes("agent.yaml"));
+    expect(fromYaml).toHaveLength(5);
+    expect(fromYaml.filter((w) => w.includes("persona 'ana': agent.yaml"))).toHaveLength(3);
+    for (const path of ["slackUserId", "access.manager", "mandate.scoped[0].boundary"]) expect(warnings.filter((w) => w.includes(`persona 'ana': agent.yaml ${path} `))).toHaveLength(1);
+    for (const w of warnings) expect(w).not.toMatch(/UANA1|UBOSS|COPS|UOK/);
+
+    const run = Bun.spawnSync(["bun", "src/cli/personas.ts", "render", dir, "--check"], { cwd: join(import.meta.dir, "..", ".."), stderr: "pipe", stdout: "pipe" });
+    expect(run.exitCode).toBe(0);
+    const err = run.stderr.toString();
+    expect(err).toContain("[personas] warning: persona 'ana': agent.yaml access.manager is a bare Slack id");
+    expect(err).not.toMatch(/UANA1|UBOSS|COPS/);
   });
 
   test("--persona exports one persona only, and asks no extraction for the others", async () => {

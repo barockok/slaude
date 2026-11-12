@@ -30,16 +30,25 @@
     "slackUserId": {
       "anyOf": [
         {
-          "type": [
-            "string",
-            "number"
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64})$"
+            },
+            {
+              "type": "string",
+              "pattern": "^[^:]*$"
+            },
+            {
+              "type": "number"
+            }
           ]
         },
         {
           "type": "null"
         }
       ],
-      "description": "The agent's Slack user id, as text. Example: U0EXAMPLE"
+      "description": "The agent's own Slack user, as a user reference. Write slack:user:U0EXAMPLE; a bare Slack user id is accepted for one more release with a warning. Example: slack:user:U0EXAMPLE"
     },
     "userToken": {
       "type": [
@@ -93,8 +102,8 @@
                     "properties": {
                       "boundary": {
                         "type": "string",
-                        "pattern": "^(?:channel:[CGD][A-Z0-9]+|trust:(?:public|trusted)|dm)$",
-                        "description": "Where this sub-mandate applies: channel:<channel id> for one channel, trust:public or trust:trusted for every channel of that class, or dm for direct messages. Each boundary may appear once. Example: channel:C0EXAMPLE"
+                        "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|trust:(?:public|trusted)|dm|channel:[CGD][A-Z0-9]+)$",
+                        "description": "Where this sub-mandate applies: a channel reference such as slack:channel:C0EXAMPLE for one channel, trust:public or trust:trusted for every channel of that class, or dm for direct messages. Each boundary may appear once. The older channel:<id> is accepted for one more release with a warning; write slack:channel:<id>. Example: slack:channel:C0EXAMPLE"
                       },
                       "mode": {
                         "description": "How the text combines with the global mandate: override (replace it, the default), extend (add to it) or reduce (restrict it). Matching ignores case and surrounding spaces. A value that is none of these is accepted with a warning and read as extend, so a typo keeps the global mandate instead of replacing it. Example: extend",
@@ -141,25 +150,25 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^[UW][A-Z0-9]+$"
+                  "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "The person who manages this agent and can approve for it. Example: U0EXAMPLE"
+              "description": "The person who manages this agent and can approve for it, as a user reference. Write slack:user:U0EXAMPLE; a bare Slack user id is accepted for one more release with a warning. Example: slack:user:U0EXAMPLE"
             },
             "backupManager": {
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^[UW][A-Z0-9]+$"
+                  "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Who covers when the manager is away. Example: U0EXAMPLE"
+              "description": "Who covers when the manager is away, as a user reference. Write slack:user:U0EXAMPLE; a bare Slack user id is accepted for one more release with a warning. Example: slack:user:U0EXAMPLE"
             },
             "approvers": {
               "anyOf": [
@@ -170,8 +179,8 @@
                     "properties": {
                       "user": {
                         "type": "string",
-                        "pattern": "^[UW][A-Z0-9]+$",
-                        "description": "Slack user id of the approver. Required. Example: U0EXAMPLE"
+                        "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$",
+                        "description": "The approver, as a user reference such as slack:user:U0EXAMPLE. A bare Slack user id is accepted for one more release with a warning. Required. Example: slack:user:U0EXAMPLE"
                       },
                       "scope": {
                         "anyOf": [
@@ -196,13 +205,13 @@
                         "anyOf": [
                           {
                             "type": "string",
-                            "pattern": "^[CGD][A-Z0-9]+$"
+                            "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
                           },
                           {
                             "type": "null"
                           }
                         ],
-                        "description": "Make this person an approver for one channel only. Leave it out for an approver everywhere. Example: C0EXAMPLE"
+                        "description": "Make this person an approver for one channel only, as a channel reference such as slack:channel:C0EXAMPLE (a bare Slack channel id is accepted for one more release with a warning). Leave it out for an approver everywhere. Example: slack:channel:C0EXAMPLE"
                       }
                     },
                     "required": [
@@ -228,14 +237,14 @@
                           "type": "array",
                           "items": {
                             "type": "string",
-                            "pattern": "^[CGD][A-Z0-9]+$"
+                            "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
                           }
                         },
                         {
                           "type": "null"
                         }
                       ],
-                      "description": "Channels where the agent may speak with anyone present. Example: [C0EXAMPLE]"
+                      "description": "Channels where the agent may speak with anyone present, as channel references. Write slack:channel:C0EXAMPLE; bare Slack channel ids are accepted for one more release with a warning. Example: [slack:channel:C0EXAMPLE]"
                     },
                     "trusted": {
                       "anyOf": [
@@ -243,14 +252,14 @@
                           "type": "array",
                           "items": {
                             "type": "string",
-                            "pattern": "^[CGD][A-Z0-9]+$"
+                            "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
                           }
                         },
                         {
                           "type": "null"
                         }
                       ],
-                      "description": "Channels whose members the agent trusts with more, such as the team's own channel. Example: [C0EXAMPLE]"
+                      "description": "Channels whose members the agent trusts with more, such as the team's own channel, as channel references. Write slack:channel:C0EXAMPLE; bare Slack channel ids are accepted for one more release with a warning. Example: [slack:channel:C0EXAMPLE]"
                     }
                   },
                   "additionalProperties": false
@@ -267,14 +276,14 @@
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "pattern": "^[UW][A-Z0-9]+$"
+                    "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
                   }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Users the agent answers in direct messages. Example: [U0EXAMPLE]"
+              "description": "Users the agent answers in direct messages, as user references. Write slack:user:U0EXAMPLE; bare Slack user ids are accepted for one more release with a warning. Example: [slack:user:U0EXAMPLE]"
             },
             "blocked": {
               "anyOf": [
@@ -282,14 +291,14 @@
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "pattern": "^[UW][A-Z0-9]+$"
+                    "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
                   }
                 },
                 {
                   "type": "null"
                 }
               ],
-              "description": "Users the agent ignores everywhere. Example: [U0EXAMPLE]"
+              "description": "Users the agent ignores everywhere, as user references. Write slack:user:U0EXAMPLE; bare Slack user ids are accepted for one more release with a warning. Example: [slack:user:U0EXAMPLE]"
             },
             "redact": {
               "anyOf": [
@@ -431,14 +440,14 @@
             ]
           },
           "propertyNames": {
-            "pattern": "^[CGD][A-Z0-9]+$"
+            "pattern": "^(?=[\\s\\S]{1,256}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
           }
         },
         {
           "type": "null"
         }
       ],
-      "description": "Per-channel behaviour, keyed by channel id. Example: { C0EXAMPLE: { session: channel, proactive: true } }"
+      "description": "Per-channel behaviour, keyed by channel reference. Write slack:channel:C0EXAMPLE; a bare Slack channel id key is accepted for one more release with a warning. Example: { \"slack:channel:C0EXAMPLE\": { session: channel, proactive: true } }"
     }
   },
   "required": [

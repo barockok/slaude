@@ -18,14 +18,18 @@
 import { z } from "zod";
 import { GUARDRAIL_SLUG_RE } from "../guardrails/format";
 import { SKILL_SLUG_RE } from "../skills/loader";
+import { CHANNEL_ID_RE, USER_ID_RE } from "../refs/ids";
+import { anchored, CHANNEL_REF_SRC, parseRef, SRC, USER_REF_SRC } from "../refs/parse";
+import type { RefRole } from "../refs/types";
+
+export { CHANNEL_ID_RE, USER_ID_RE };
 
 /** Where the docs site serves the generated JSON Schema (docs/site/build.mjs copies docs/site/schemas/). */
 export const AGENT_SCHEMA_URL = "https://barockok.github.io/slaude/schemas/agent.schema.json";
 /** First line of an exported agent.yaml: editors running yaml-language-server read the schema from it. */
 export const AGENT_YAML_MODELINE = `# yaml-language-server: $schema=${AGENT_SCHEMA_URL}`;
 
-export const USER_ID_RE = /^[UW][A-Z0-9]+$/;
-export const CHANNEL_ID_RE = /^[CGD][A-Z0-9]+$/;
+/** The legacy boundary forms: `channel:<id>` (the bare Slack shortcut), the trust classes and dm. */
 export const BOUNDARY_RE = /^(?:channel:[CGD][A-Z0-9]+|trust:(?:public|trusted)|dm)$/;
 export const DESCRIPTION_MAX = 2000;
 /** The one `session` value there is. */
@@ -48,16 +52,42 @@ const typeMessage = (m: { other: string; null?: string; missing?: string }): z.R
 });
 
 const text = (what: string) => z.string(typeMessage({ other: `must be ${what}` }));
-const idString = (re: RegExp, what: string) => {
-  const msg = `must be a ${what} (${re.source})`;
-  return z.string(typeMessage({ other: msg })).regex(re, msg);
+
+/**
+ * A reference field. The shape (a typed reference of the right kind, or the
+ * legacy bare Slack id) is one pattern, so the JSON Schema carries it; what
+ * only code can check (an email's domain, say) is a refinement. Messages name
+ * the kinds, never the value. The typed form is the one to write: the bare id
+ * is accepted for one more release and warned about when the file compiles.
+ */
+const refField = (role: "user" | "channel", opts: { required?: boolean } = {}) => {
+  const what = role === "user" ? "user reference (slack:user:<id>, email:<address>, ...)" : "channel reference (slack:channel:<id>, ...)";
+  const bare = role === "user" ? SRC.bareUser : SRC.bareChannel;
+  const typed = role === "user" ? USER_REF_SRC : CHANNEL_REF_SRC;
+  const msg = `must be a ${what}, or a bare Slack ${role === "user" ? "user" : "channel"} id (deprecated)`;
+  const re = new RegExp(anchored(`${typed}|${bare}`));
+  return z
+    .string(typeMessage({ other: msg, ...(opts.required ? { missing: "is required", null: "is required" } : {}) }))
+    .regex(re, msg)
+    .superRefine((v, ctx) => {
+      const why = refProblem(v, role);
+      if (why) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `is not a valid reference: ${why}` });
+    });
 };
+/** Why a string that has the right shape is still not a usable reference, or undefined. Fixed text, no value. */
+function refProblem(v: string, role: "user" | "channel"): string | undefined {
+  if ((role === "user" ? USER_ID_RE : CHANNEL_ID_RE).test(v)) return undefined;
+  const r = parseRef(v, [role]);
+  return r.ok ? undefined : r.reason;
+}
+const refList = (role: "user" | "channel") =>
+  z.array(refField(role), typeMessage({ other: `must be a list of ${role} references` }));
+const userRef = () => refField("user");
+const channelRef = () => refField("channel");
 const slugs = (re: RegExp, nullMessage?: string) => {
   const msg = `must be a slug (${re.source})`;
   return z.array(z.string(typeMessage({ other: msg })).regex(re, msg), typeMessage({ other: "must be a list of slugs", null: nullMessage }));
 };
-const idList = (re: RegExp, what: string) =>
-  z.array(idString(re, `${what} id`), typeMessage({ other: `must be a list of ${what} ids` }));
 // z.record builds its result with plain assignment, so a `__proto__` key in
 // provider or mcp is dropped from the parsed value (it does not become the
 // prototype). The old code passed the YAML map through untouched; the key is
@@ -66,14 +96,22 @@ const mapping = (msg = "must be a mapping") => z.record(z.unknown(), typeMessage
 /** A key may be left out or written as a bare `key:`; both mean "not set". */
 const optional = <T extends z.ZodTypeAny>(s: T) => s.nullable().optional();
 
+const BOUNDARY_MSG = "must be a channel reference (slack:channel:<id>), trust:public, trust:trusted or dm";
+const BOUNDARY_FIELD_RE = new RegExp(anchored(`${CHANNEL_REF_SRC}|${SRC.selector}|${SRC.legacyBoundary}`));
+
 const scopedEntry = z
   .object(
     {
       boundary: z
-        .string(typeMessage({ other: "must be channel:<id>, trust:public, trust:trusted or dm" }))
-        .regex(BOUNDARY_RE, "must be channel:<id>, trust:public, trust:trusted or dm")
+        .string(typeMessage({ other: BOUNDARY_MSG }))
+        .regex(BOUNDARY_FIELD_RE, BOUNDARY_MSG)
+        .superRefine((v, ctx) => {
+          if (BOUNDARY_RE.test(v)) return;
+          const r = parseRef(v, ["channel", "selector"]);
+          if (!r.ok) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `is not a valid reference: ${r.reason}` });
+        })
         .describe(
-          "Where this sub-mandate applies: channel:<channel id> for one channel, trust:public or trust:trusted for every channel of that class, or dm for direct messages. Each boundary may appear once. Example: channel:C0EXAMPLE",
+          "Where this sub-mandate applies: a channel reference such as slack:channel:C0EXAMPLE for one channel, trust:public or trust:trusted for every channel of that class, or dm for direct messages. Each boundary may appear once. The older channel:<id> is accepted for one more release with a warning; write slack:channel:<id>. Example: slack:channel:C0EXAMPLE",
         ),
       mode: z
         .unknown()
@@ -93,10 +131,7 @@ const scopedEntry = z
 const approverEntry = z
   .object(
     {
-      user: z
-        .string(typeMessage({ other: `must be a Slack user id (${USER_ID_RE.source})`, missing: "is required", null: "is required" }))
-        .regex(USER_ID_RE, `must be a Slack user id (${USER_ID_RE.source})`)
-        .describe("Slack user id of the approver. Required. Example: U0EXAMPLE"),
+      user: refField("user", { required: true }).describe("The approver, as a user reference such as slack:user:U0EXAMPLE. A bare Slack user id is accepted for one more release with a warning. Required. Example: slack:user:U0EXAMPLE"),
       scope: optional(
         z
           .string(typeMessage({ other: "must be a string" }))
@@ -109,8 +144,8 @@ const approverEntry = z
           .describe("true if this person is asked when no other approver's scope fits. Defaults to true when scope is left out, false otherwise."),
       ),
       channel: optional(
-        idString(CHANNEL_ID_RE, "Slack channel id").describe(
-          "Make this person an approver for one channel only. Leave it out for an approver everywhere. Example: C0EXAMPLE",
+        channelRef().describe(
+          "Make this person an approver for one channel only, as a channel reference such as slack:channel:C0EXAMPLE (a bare Slack channel id is accepted for one more release with a warning). Leave it out for an approver everywhere. Example: slack:channel:C0EXAMPLE",
         ),
       ),
     },
@@ -121,8 +156,8 @@ const approverEntry = z
 const accessSchema = z
   .object(
     {
-      manager: optional(idString(USER_ID_RE, "Slack user id").describe("The person who manages this agent and can approve for it. Example: U0EXAMPLE")),
-      backupManager: optional(idString(USER_ID_RE, "Slack user id").describe("Who covers when the manager is away. Example: U0EXAMPLE")),
+      manager: optional(userRef().describe("The person who manages this agent and can approve for it, as a user reference. Write slack:user:U0EXAMPLE; a bare Slack user id is accepted for one more release with a warning. Example: slack:user:U0EXAMPLE")),
+      backupManager: optional(userRef().describe("Who covers when the manager is away, as a user reference. Write slack:user:U0EXAMPLE; a bare Slack user id is accepted for one more release with a warning. Example: slack:user:U0EXAMPLE")),
       approvers: optional(
         z
           .array(approverEntry, typeMessage({ other: "must be a list of { user, scope, catchall }" }))
@@ -132,16 +167,16 @@ const accessSchema = z
         z
           .object(
             {
-              public: optional(idList(CHANNEL_ID_RE, "Slack channel").describe("Channels where the agent may speak with anyone present. Example: [C0EXAMPLE]")),
-              trusted: optional(idList(CHANNEL_ID_RE, "Slack channel").describe("Channels whose members the agent trusts with more, such as the team's own channel. Example: [C0EXAMPLE]")),
+              public: optional(refList("channel").describe("Channels where the agent may speak with anyone present, as channel references. Write slack:channel:C0EXAMPLE; bare Slack channel ids are accepted for one more release with a warning. Example: [slack:channel:C0EXAMPLE]")),
+              trusted: optional(refList("channel").describe("Channels whose members the agent trusts with more, such as the team's own channel, as channel references. Write slack:channel:C0EXAMPLE; bare Slack channel ids are accepted for one more release with a warning. Example: [slack:channel:C0EXAMPLE]")),
             },
             typeMessage({ other: "must be a mapping" }),
           )
           .strict()
           .describe("Which channels the agent works in, by trust class."),
       ),
-      dm: optional(idList(USER_ID_RE, "Slack user").describe("Users the agent answers in direct messages. Example: [U0EXAMPLE]")),
-      blocked: optional(idList(USER_ID_RE, "Slack user").describe("Users the agent ignores everywhere. Example: [U0EXAMPLE]")),
+      dm: optional(refList("user").describe("Users the agent answers in direct messages, as user references. Write slack:user:U0EXAMPLE; bare Slack user ids are accepted for one more release with a warning. Example: [slack:user:U0EXAMPLE]")),
+      blocked: optional(refList("user").describe("Users the agent ignores everywhere, as user references. Write slack:user:U0EXAMPLE; bare Slack user ids are accepted for one more release with a warning. Example: [slack:user:U0EXAMPLE]")),
       redact: optional(
         z
           .array(
@@ -161,6 +196,8 @@ const accessSchema = z
     typeMessage({ other: "must be a mapping" }),
   )
   .strict();
+
+const CHANNEL_KEY_RE = new RegExp(anchored(`${CHANNEL_REF_SRC}|${SRC.bareChannel}`));
 
 const channelEntry = z
   .object(
@@ -196,11 +233,21 @@ export const AgentSchema = z
           .describe(`One or two lines on what the agent is for; it becomes the agent's role. At most ${DESCRIPTION_MAX} characters. Example: Handles support questions for the platform team.`),
       ),
       model: optional(text("a string").describe("Model the agent runs on, provider-qualified. Leave out for the deployment default. Example: provider/model-name")),
-      // An unquoted id can read as a YAML number, which is accepted and written as text.
+      // A bare id is any text without a colon (an unquoted one can read as a YAML number); the typed form is checked as a user reference.
       slackUserId: optional(
         z
-          .union([z.string(), z.number()], typeMessage({ other: "must be a string" }))
-          .describe("The agent's Slack user id, as text. Example: U0EXAMPLE"),
+          .union(
+            [
+              z.string().regex(new RegExp(anchored(USER_REF_SRC))).superRefine((v, ctx) => {
+                const r = parseRef(v, ["user"]);
+                if (!r.ok) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `is not a valid reference: ${r.reason}` });
+              }),
+              z.string().regex(/^[^:]*$/),
+              z.number(),
+            ],
+            { errorMap: () => ({ message: "must be a user reference (slack:user:<id>) or a bare Slack user id (deprecated), as text" }) },
+          )
+          .describe("The agent's own Slack user, as a user reference. Write slack:user:U0EXAMPLE; a bare Slack user id is accepted for one more release with a warning. Example: slack:user:U0EXAMPLE"),
       ),
       userToken: optional(
         text("a string").describe("Slack user token to post as the agent's own user, as a placeholder that CI fills in, never the token itself. Example: ${PERSONA_ANA_XOXP}"),
@@ -257,11 +304,11 @@ export const AgentSchema = z
       channels: optional(
         z
           .record(
-            z.string().regex(CHANNEL_ID_RE, "must be a channel id"),
+            z.string().regex(CHANNEL_KEY_RE, "must be a channel reference (slack:channel:<id>) or a bare Slack channel id"),
             optional(channelEntry),
             typeMessage({ other: "must be a mapping" }),
           )
-          .describe("Per-channel behaviour, keyed by channel id. Example: { C0EXAMPLE: { session: channel, proactive: true } }"),
+          .describe("Per-channel behaviour, keyed by channel reference. Write slack:channel:C0EXAMPLE; a bare Slack channel id key is accepted for one more release with a warning. Example: { \"slack:channel:C0EXAMPLE\": { session: channel, proactive: true } }"),
       ),
     },
     typeMessage({ other: "must be a mapping of the agent's fields" }),
@@ -269,4 +316,5 @@ export const AgentSchema = z
   .strict()
   .describe("A slaude agent: one file per persona, at personas/<name>/agent.yaml. Unknown keys are refused at every level.");
 
+export { CHANNEL_KEY_RE };
 export type AgentFile = z.infer<typeof AgentSchema>;
