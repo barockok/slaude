@@ -107,7 +107,7 @@ The file's fields, with placeholders throughout:
 name: support-bot                 # required: must equal the directory name
 description: Answers support questions in the team channels
 model: provider/model-name
-slackUserId: UTESTUSER1           # required for a named persona
+slackUserId: slack:user:UTESTUSER1   # required for a named persona
 userToken: ${PERSONA_SUPPORT_BOT_XOXP}
 provider:                         # as persona.yaml: references, never values
   baseUrl: https://llm.example.com
@@ -118,26 +118,26 @@ soul: |                           # required: prose only, identity and voice
 mandate:
   global: Answer questions about the product and file bugs.
   scoped:
-    - boundary: channel:CTEAMCHAN  # channel:<id>, trust:public, trust:trusted or dm
+    - boundary: slack:channel:CTEAMCHAN  # a channel reference, trust:public, trust:trusted or dm
       mode: extend                # override (default), extend or reduce
       text: Also triage the deploy queue here.
     - boundary: trust:public
       mode: reduce
       text: Share nothing internal in public channels.
 access:
-  manager: UMANAGER1
-  backupManager: UDEPUTY1
+  manager: slack:user:UMANAGER1
+  backupManager: slack:user:UDEPUTY1
   approvers:
-    - user: UAPPROVER1
+    - user: slack:user:UAPPROVER1
       scope: budget changes
       catchall: false
-    - user: UAPPROVER2            # no scope: a catchall approver
-      channel: CTEAMCHAN          # optional: only in this channel
+    - user: slack:user:UAPPROVER2            # no scope: a catchall approver
+      channel: slack:channel:CTEAMCHAN   # optional: only in this channel
   channels:
-    public: [CPUBLIC1]
-    trusted: [CTEAMCHAN]
-  dm: [UFRIEND1]
-  blocked: [UNOISY1]
+    public: [slack:channel:CPUBLIC1]
+    trusted: [slack:channel:CTEAMCHAN]
+  dm: [slack:user:UFRIEND1]
+  blocked: [slack:user:UNOISY1]
   redact: ["internal-[0-9]+"]     # regular expressions
   approvalTimeoutSeconds: 300     # optional; absent or 0 uses the default persona's timeout
 mcp:                              # the same shape as mcp.json
@@ -154,8 +154,8 @@ memory:
   background:
     budgetUsd: 2
     timezone: UTC
-channels:                         # per-channel settings, keyed by channel id
-  CTEAMCHAN:
+channels:                         # per-channel settings, keyed by channel reference
+  "slack:channel:CTEAMCHAN":
     session: channel              # one long-lived session for this channel, no wakes needed
     proactive: true               # the agent works on its own here; on its own this also gives the channel session
 ```
@@ -170,7 +170,7 @@ such a persona's soul changes the prose and keeps the structure.
 **`channels`** compiles to the `## Channel` block a `SOUL.md` would carry
 (`### Session` with `Mode: channel`, `### Proactive` with `Enabled:`), appended
 to the soul. `proactive: true` alone gives the channel a channel session with
-wakes; `session: channel` alone gives it the session without wakes. A key that is not a channel id, a `session` other than `channel`, a
+wakes; `session: channel` alone gives it the session without wakes. A key that is not a channel reference, a `session` other than `channel`, a
 `proactive` that is not a boolean, a bare `session:` or `proactive:`, or an
 unknown key fails the sync. So does a `soul` that already has a `## Channel`
 section for a listed channel, or that ends inside an open code fence. A console
@@ -193,8 +193,8 @@ defined this way uses only its own approvers, then its managers: an on-disk
 `SOUL.md` and `SLAUDE_APPROVERS` are not consulted, and with neither nobody can
 approve. A `SOUL.md` persona keeps its existing fallback to the default.
 
-**Errors.** A malformed value (a bad id, a bad regular expression, a boundary
-that is not one of the four, a `name` that differs from the directory), an
+**Errors.** A malformed value (a bad reference, a bad regular expression, a boundary
+that is not a channel reference, `trust:public`, `trust:trusted` or `dm`, a `name` that differs from the directory), an
 unknown key or a duplicate key fails the sync with a message naming the persona
 and the key. A bare `skills:` or `memory.kbSources:` with no value fails too:
 remove the key for all, or write `[]` for none.
@@ -249,6 +249,70 @@ or a limit unset. A few rules need more than a shape (the name matching its
 directory, a repeated boundary, a valid redaction pattern, a soul that carries
 its own `## Channel` section for a channel under `channels:`); the editor does
 not check those, and the sync does.
+
+## References
+
+Wherever `agent.yaml` names a person or a place it takes a typed reference: the
+text says what kind of thing it points to, so a bare id is never the long-term
+form. The design is in the
+[domain objects and references spec](https://github.com/barockok/slaude/blob/main/docs/superpowers/specs/2026-11-12-domain-model-and-references.md)
+and the [field note](../field-notes/2026-11-12-typed-references.md).
+
+| Form | Example | Takes |
+|---|---|---|
+| Slack user | `slack:user:U0EXAMPLE` | user fields |
+| Slack channel | `slack:channel:C0EXAMPLE` | channel fields |
+| Slack, workspace-qualified | `slack:user:T0EXAMPLE/U0EXAMPLE`, `slack:channel:T0EXAMPLE/C0EXAMPLE` | the same fields |
+| WhatsApp | `whatsapp:phone:+620000000000`, `whatsapp:group:<id>` | user, channel |
+| Telegram | `telegram:user:12345` | user fields |
+| Email | `email:person@example.com` | user fields |
+| Internal records | `user:<id>`, `boundary:<id>` | user, channel |
+| Selectors | `trust:public`, `trust:trusted`, `dm` | `mandate.scoped[].boundary` only |
+
+The fields that take references, and what each accepts:
+
+| Field | Kind |
+|---|---|
+| `slackUserId`, `access.manager`, `access.backupManager`, `access.approvers[].user`, `access.dm[]`, `access.blocked[]` | user |
+| `access.approvers[].channel`, `access.channels.public[]`, `access.channels.trusted[]`, the keys of `channels:` | channel |
+| `mandate.scoped[].boundary` | channel, or one selector |
+
+A user reference in a channel field (or the reverse) is refused, as is a
+selector anywhere but `boundary`. `agent:`, `env:` and `node:` references parse
+but name no user or channel, so no field takes them.
+
+Rules, applied before anything looks a reference up:
+
+- The scheme and kind are lower case; Slack ids are upper case, as Slack issues
+  them. The ids are the same shapes as before (`U` or `W` for users, `C`, `G` or
+  `D` for channels); a workspace is `T` followed by upper-case letters and digits.
+- An email address is trimmed, folded to NFKC and lower-cased. Plus-addressing
+  and dots are kept, so `a+x@` and `a@` are different. A display name, angle
+  brackets, whitespace, two `@`, an empty part, a domain without a dot or an
+  address over 254 characters is refused. A non-ASCII domain is stored in its
+  ASCII (IDNA) form.
+- A phone number is E.164 with the leading `+`.
+- Each scheme fixes its number of leading segments, so a `:` in the last one
+  needs no escaping. There is no percent-encoding and no empty segment. A
+  reference is at most 256 characters.
+
+Refusals name the field and the kind of mistake, never the value.
+
+**What compiles today.** Records for people and places do not exist yet, so only
+`slack:` references can be turned into something the runtime uses: they compile
+to the same Slack ids as before (the workspace qualifier is read and dropped
+while one workspace is connected). Every other scheme parses and validates, then
+fails the compile with a message such as `access.dm[1] uses the 'email' scheme,
+which cannot be resolved yet`. It will work once the records arrive in a later
+release; write `slack:` references until then.
+
+**The transition.** A bare Slack id (`U0EXAMPLE`, `C0EXAMPLE`) is accepted for
+one more release, read as the matching Slack reference, with a warning that names
+the field path (never the value) in the `personas render` output and in the sync
+checks that run it. The same goes for the older boundary form `channel:C0EXAMPLE`,
+read as `slack:channel:C0EXAMPLE`. The release after the first stable one that
+carries this refuses both. `personas export --format agent-yaml` already writes
+the typed form, so exporting then rendering gives no warning.
 
 ## Placeholders
 
