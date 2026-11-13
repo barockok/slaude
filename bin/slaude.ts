@@ -69,6 +69,10 @@ switch (sub) {
     entry = "src/cli/guardrails.ts";
     rest = argv.slice(1);
     break;
+  case "domain":
+    entry = "src/cli/domain.ts";
+    rest = argv.slice(1);
+    break;
   case "-h":
   case "--help":
     console.log(
@@ -83,6 +87,7 @@ switch (sub) {
         "  slaude brain connect  OAuth-bootstrap the remote brain link (SLAUDE_BRAIN_URL)",
         "  slaude brain reembed --model-mismatch|--adopt [--apply]  repair embedding labels or the brain record (dry run by default)",
         "  slaude guardrails import <dir> [--prune] [--dry-run] [--repair]  store GUARDRAIL.md folders as owner guardrails",
+        "  slaude domain reconcile [--dry-run] [--json]  backfill and repair users, bindings and boundaries",
         "",
         "SLAUDE_HOME resolves to $SLAUDE_HOME, else the cwd if it has SOUL.md, else ~/.slaude.",
       ].join("\n"),
