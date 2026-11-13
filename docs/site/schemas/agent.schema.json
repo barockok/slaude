@@ -406,6 +406,78 @@
       ],
       "description": "Knowledge bases and background learning."
     },
+    "proactive": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "true turns on the summarising round and lets its posts reach the manager and people who opted in. It starts no wake: waking is per channel (channels.<ref>.proactive). Leave the key out for off."
+            },
+            "read": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Further channels the agent may read with read_channel, in any turn. Example: [slack:channel:C0EXAMPLE]"
+            },
+            "watch": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[^,\\n]+$"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "External sources the summarising round reads, by name. Example: [mail, tracker]"
+            },
+            "quietHours": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{1,2}:\\d{2}\\s*[-\\u2013]\\s*\\d{1,2}:\\d{2}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Hours when the round does not post, local time, as HH:MM-HH:MM. A window that ends before it starts wraps midnight. Example: 21:00-08:00"
+            },
+            "maxPerDay": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Most proactive posts to one person per day. Example: 6"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "What is not about one channel: further channels to read, sources to watch, quiet hours and the post cap. Waking is set per channel under channels."
+    },
     "channels": {
       "anyOf": [
         {

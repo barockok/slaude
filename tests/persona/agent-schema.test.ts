@@ -35,8 +35,8 @@ describe("docs/site/schemas/agent.schema.json", () => {
 
   test("unknown keys fail at every level", () => {
     const json = JSON.stringify(buildAgentJsonSchema());
-    // One additionalProperties:false per object: top, mandate, scoped entry, access, approver, access.channels, memory, channel entry.
-    expect(json.match(/"additionalProperties":false/g)?.length).toBe(8);
+    // One additionalProperties:false per object: top, mandate, scoped entry, access, approver, access.channels, memory, proactive, channel entry.
+    expect(json.match(/"additionalProperties":false/g)?.length).toBe(9);
   });
 });
 

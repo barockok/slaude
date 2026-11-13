@@ -454,3 +454,41 @@ describe("typed references compile down to the Slack ids the runtime reads", () 
     expect(e.message).not.toContain("person@example.com");
   });
 });
+
+describe("parseAgentYaml proactive", () => {
+  const compile = (extra: string) => parseAgentYaml("default", def(extra));
+
+  test("the global key compiles to the section the parser reads", () => {
+    const { spec } = compile(
+      "proactive:\n  enabled: true\n  read: [slack:channel:C0EXAMPLE, slack:channel:C0OTHER]\n  watch: [mail, tracker]\n  quietHours: 21:00-08:00\n  maxPerDay: 6\n",
+    );
+    const c = parseProactive(spec.soul);
+    expect(c.enabled).toBe(true);
+    expect(c.read).toEqual(["C0EXAMPLE", "C0OTHER"]);
+    expect(c.watch).toEqual(["mail", "tracker"]);
+    expect(c.quietHours).toEqual({ start: 21 * 60, end: 8 * 60 });
+    expect(c.maxPerPersonPerDay).toBe(6);
+  });
+
+  test("a key left out writes nothing, and the soul text is unchanged", () => {
+    expect(compile("proactive: {}\n").spec.soul).toBe(compile("").spec.soul);
+  });
+
+  test("a ## Proactive section in the soul is refused when the key is also used", () => {
+    const e = (() => { try { parseAgentYaml("default", "name: default\nsoul: |\n  Hi.\n\n  ## Proactive\n  - Read: <#C0EXAMPLE>\nproactive:\n  maxPerDay: 3\n"); } catch (x) { return x as Error; } })();
+    expect(e).toBeInstanceOf(PayloadError);
+    expect(e!.message).toContain("proactive");
+  });
+
+  test("an impossible window is refused without echoing it", () => {
+    const e = (() => { try { compile("proactive:\n  quietHours: 25:00-08:00\n"); } catch (x) { return x as Error; } })();
+    expect(e).toBeInstanceOf(PayloadError);
+    expect(e!.message).toContain("proactive.quietHours");
+    expect(e!.message).not.toContain("25:00");
+  });
+
+  test("an unknown key under it is refused", () => {
+    const e = (() => { try { compile("proactive:\n  wake: true\n"); } catch (x) { return x as Error; } })();
+    expect(e!.message).toContain("proactive.wake");
+  });
+});

@@ -221,6 +221,40 @@ const channelEntry = z
   )
   .strict();
 
+
+const proactiveSchema = z
+  .object(
+    {
+      enabled: z
+        .boolean(typeMessage({ other: "must be true or false", null: "has no value: set it, or remove the key" }))
+        .describe("true turns on the summarising round and lets its posts reach the manager and people who opted in. It starts no wake: waking is per channel (channels.<ref>.proactive). Leave the key out for off.")
+        .optional(),
+      read: optional(
+        refList("channel").describe("Further channels the agent may read with read_channel, in any turn. Example: [slack:channel:C0EXAMPLE]"),
+      ),
+      watch: optional(
+        z
+          .array(z.string(typeMessage({ other: "must be a source name" })).regex(/^[^,\n]+$/, "must be one source name, without commas"), typeMessage({ other: "must be a list of source names", null: NO_VALUE }))
+          .describe("External sources the summarising round reads, by name. Example: [mail, tracker]"),
+      ),
+      quietHours: optional(
+        z
+          .string(typeMessage({ other: "must be a window such as 21:00-08:00" }))
+          .regex(/^\d{1,2}:\d{2}\s*[-\u2013]\s*\d{1,2}:\d{2}$/, "must be a window such as 21:00-08:00")
+          .describe("Hours when the round does not post, local time, as HH:MM-HH:MM. A window that ends before it starts wraps midnight. Example: 21:00-08:00"),
+      ),
+      maxPerDay: optional(
+        z
+          .number(typeMessage({ other: "must be a whole number" }))
+          .int("must be a whole number")
+          .positive("must be at least 1")
+          .describe("Most proactive posts to one person per day. Example: 6"),
+      ),
+    },
+    typeMessage({ other: "must be a mapping" }),
+  )
+  .strict();
+
 export const AgentSchema = z
   .object(
     {
@@ -302,6 +336,7 @@ export const AgentSchema = z
           .strict()
           .describe("Knowledge bases and background learning."),
       ),
+      proactive: optional(proactiveSchema.describe("What is not about one channel: further channels to read, sources to watch, quiet hours and the post cap. Waking is set per channel under channels.")),
       channels: optional(
         z
           .record(
