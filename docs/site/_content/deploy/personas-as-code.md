@@ -416,8 +416,9 @@ References in `agent.yaml` (manager, approvers, channels, blocked and dm lists,
 proactive channels) create what is missing as declared records: a Slack user
 becomes a user with a declared binding, a Slack channel a declared boundary. A
 declared record grants nothing and an existing record is never changed. A short
-Slack reference means the tenant's one connected workspace; with none or
-several the sync is refused (422) naming the persona and field. The report's
+Slack reference means the tenant's one connected workspace; with several the
+sync is refused (422) naming the persona and field, and with none it succeeds
+with a warning and creates no Slack records. The report's
 `records` lists `created` (or `wouldCreate` in a dry run) with Slack references
 as written and emails masked. A mistyped id creates an empty record, so a pull
 request check should send `?dryRun=1&strict=1`: strict refuses (422, listing

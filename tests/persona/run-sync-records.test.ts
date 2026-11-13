@@ -75,12 +75,18 @@ describe.skipIf(!isPg)("sync creates declared records", () => {
     expect(ok.records.created).toEqual([]);
   });
 
-  test("a short Slack reference is refused with zero or several workspaces, naming persona and field", async () => {
+  test("with no workspace connected a sync succeeds with a warning and creates no Slack records", async () => {
     await db.run("DELETE FROM slack_apps");
-    const none = await runSync(T, payload(ACCESS), { dryRun: false, env, by: "ci" }).catch((x) => x);
-    expect(none.status).toBe(422);
-    expect(none.message).toMatch(/persona 'default'|persona 'ana'/);
-    expect(none.message).toContain("access.manager");
+    const r = await runSync(T, payload(ACCESS), { dryRun: false, env, by: "ci" });
+    expect(r.warnings).toContain("no Slack workspace is connected, records for Slack references were not created");
+    expect(r.records.created).toEqual([]);
+    expect(await count("personas")).toBe(2);
+    expect(await count("bindings")).toBe(0);
+    expect(await count("boundaries")).toBe(0);
+  });
+
+  test("a short Slack reference is refused with several workspaces, naming persona and field", async () => {
+    await db.run("DELETE FROM slack_apps");
     await seedWorkspace(T, WS, "A1");
     await seedWorkspace(T, "T1EXAMPLE", "A2");
     const many = await runSync(T, payload(ACCESS), { dryRun: true, env, by: "ci" }).catch((x) => x);

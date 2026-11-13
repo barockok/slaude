@@ -31,7 +31,6 @@ beforeEach(async () => {
   // The persona tables are Postgres-only (migration 0011).
   if (process.env.SLAUDE_DB !== "pg") return;
   for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
-  await seedWorkspace();
 });
 const pgOnly = describe.skipIf(process.env.SLAUDE_DB !== "pg");
 afterEach(async () => {
@@ -52,12 +51,14 @@ pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
   });
 
   test("strict=1 refuses a sync whose references would create a record; without it the report lists them", async () => {
-    for (const t of ["user_aliases", "bindings", "boundaries", "users"]) await db.run(`DELETE FROM ${t}`);
+    for (const t of ["user_aliases", "bindings", "boundaries", "users", "slack_apps"]) await db.run(`DELETE FROM ${t}`);
+    await seedWorkspace();
     const refused = await api().fetch(post(DEPLOY, body, "?dryRun=1&strict=1"));
     expect(refused!.status).toBe(422);
     expect(await refused!.text()).toContain("would create a record");
     const plain = await api().fetch(post(DEPLOY, body, "?dryRun=1"));
     expect((await plain!.json() as any).records.wouldCreate.length).toBeGreaterThan(0);
+    await db.run("DELETE FROM slack_apps");
   });
 
   test("an unknown field is a 422 by default; with SLAUDE_DEPLOY_STRICT=0 the response carries ignoredFields; a newer version is a 422", async () => {

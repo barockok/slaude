@@ -304,6 +304,14 @@ export async function runSync(
   let wouldCreate: RecordEntry[] = [];
   try {
     workspaces = refUses.length ? await tenantWorkspaces(tenant) : [];
+    if (refUses.length && workspaces.length === 0) {
+      // No workspace to place a short Slack reference in: skip those records (non-Slack ones still create).
+      const keep = refUses.filter((u) => !(u.ref.kind === "external" && u.ref.service === "slack" && !u.ref.workspace));
+      if (keep.length < refUses.length) {
+        warnings.push("no Slack workspace is connected, records for Slack references were not created");
+        refUses.splice(0, refUses.length, ...keep);
+      }
+    }
     wouldCreate = await planRefs(refUses, workspaces);
   } catch (e) {
     if (e instanceof RefRefusal) throw new SyncFailure(422, e.message);
