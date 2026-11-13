@@ -146,9 +146,9 @@ async function main() {
         portal: role !== "node" ? (req: Request) => slack.fetchPortal(req) : undefined,
       },
     });
-    slack = createGateway(agent, transport, { mcpConnectEnabled: mcpOAuthHealthy, backgroundLearning: true });
+    slack = createGateway(agent, transport, { mcpConnectEnabled: mcpOAuthHealthy, backgroundLearning: true, domainReconcile: true });
   } else {
-    slack = createSlackApp(agent, { mcpConnectEnabled: mcpOAuthHealthy, backgroundLearning: true });
+    slack = createSlackApp(agent, { mcpConnectEnabled: mcpOAuthHealthy, backgroundLearning: true, domainReconcile: true });
     health = startHealthServer({
       liveSessions: () => agent.liveCount(),
       v1: role !== "node" ? (req) => slack.fetchV1(req) : undefined,
