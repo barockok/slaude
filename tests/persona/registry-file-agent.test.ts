@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { paths } from "../../src/config/home";
 import {
   __resetPersonaRegistry,
+  __setPersonaStateLoader,
   getPersonaRegistry,
   loadPersonaRegistry,
   managedPersonaDefinition,
@@ -33,6 +34,8 @@ beforeEach(() => {
   (paths as { personas: string }).personas = join(root, "personas");
   (paths as { soul: string }).soul = join(root, "SOUL.md");
   __resetPersonaRegistry();
+  // The filesystem, whatever the database of a shared test run holds.
+  __setPersonaStateLoader(async () => ({ registry: loadPersonaRegistry(), managed: null }));
 });
 
 afterEach(() => {

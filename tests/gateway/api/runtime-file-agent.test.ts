@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { paths } from "../../../src/config/home";
-import { __resetPersonaRegistry, refreshPersonaState } from "../../../src/persona/registry";
+import { __resetPersonaRegistry, __setPersonaStateLoader, loadPersonaRegistry, refreshPersonaState } from "../../../src/persona/registry";
 import { handleTenantRuntime } from "../../../src/gateway/api/tenants";
 import { __resetSoulDataMemo } from "../../../src/soul/extract";
 
@@ -30,6 +30,8 @@ beforeAll(async () => {
     "name: default\nsoul: |\n  You are the default.\naccess:\n  manager: slack:user:U0BOSS\nskills: [release-notes]\nguardrails: [no-outbound]\n",
   );
   __resetPersonaRegistry();
+  // The filesystem, whatever the database of a shared test run holds.
+  __setPersonaStateLoader(async () => ({ registry: loadPersonaRegistry(), managed: null }));
   await refreshPersonaState("default");
 });
 afterAll(() => {
