@@ -76,6 +76,11 @@ function parseSoul(raw: unknown): SoulData | null {
   return out;
 }
 
+/** A persona's own stored structure (its `soul_json`), with none of the default persona's inherited access; null when it has none or it does not parse. */
+export function ownStoredSoul(persona: string): SoulData | null {
+  return ownSoul(persona);
+}
+
 function ownSoul(persona: string): SoulData | null {
   try {
     const raw = getPersonaRegistry().lookupByName(persona)?.soulJson;

@@ -6,7 +6,7 @@ import { startSimCluster, type SimCluster } from "./cluster";
 import { writeSoulFixture, WORLD, type SoulFixture } from "./soul-fixture";
 import { findLayer, resolveRole, ROLE_NAMES } from "./roles";
 import { AgentManager, type AgentEvent } from "../../agent/manager";
-import { __resetSoulDataMemo, loadSoulData, setSoulData, soulData } from "../../soul/extract";
+import { __resetSoulDataMemo, soulData } from "../../soul/extract";
 import { paths } from "../../config/home";
 import { m as metric } from "../../metrics";
 
@@ -93,11 +93,6 @@ export class SimSession {
    *  actor is the real SOUL.md manager so approval/authz behaves as in prod; chat happens in
    *  a synthetic DM thread. cli.ts has already pointed db + workspaces at $SLAUDE_HOME/sim/. */
   static async #createShared(opts: { agent: "stub" | "real"; behavior?: string }): Promise<SimSession> {
-    // Same prewarm as server.ts main(): warm the structured-soul cache from the real
-    // SOUL.md. Best-effort — falls back to regex internally if the LLM is unavailable.
-    try { setSoulData(await loadSoulData()); }
-    catch (e) { console.warn("[sim] soul prewarm failed (regex fallback):", e); }
-
     const manager = soulData().manager?.userId;
     const actor = manager ?? "U0MGR";
     const transport = new SimTransport({ users: manager ? { [manager]: "You (manager)" } : {} });

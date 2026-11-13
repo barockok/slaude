@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { inWindow, parseClock, parseManager, parseMandates, parseProactive, parseScopedMandates, proactiveFor, proactiveRead, __setProactiveSoulSource } from "../../src/soul/proactive";
 import { FIELD_ALIASES, mutateOverride } from "../../src/soul/overrides";
-import { EXTRACTION_PROMPT, SoulDataSchema } from "../../src/soul/data";
+import { SoulDataSchema } from "../../src/soul/data";
+import { EXTRACTION_PROMPT } from "../../src/cli/extraction-prompt";
 
 const SOUL = (body: string) => `# Persona\n\n## Identity\n- Name: Helper\n\n${body}\n`;
 

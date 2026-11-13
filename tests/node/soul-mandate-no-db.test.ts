@@ -1,7 +1,7 @@
 /**
- * A node builds a SOUL.md persona's channel mandate from the soul text the
+ * A node builds a persona's channel mandate from the structured soul the
  * gateway sent in the runtime bundle, never from a database or from the
- * node's own disk. A filesystem persona's bundle carries `soulJson: null`.
+ * node's own disk, and never by reading the soul text.
  */
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -39,14 +39,11 @@ afterAll(() => {
   __resetSoulDataMemo();
 });
 
-const SOUL = [
-  "# Sam",
-  "## Mandate",
-  "Keep the board tidy.",
-  "## Channel CTEAM01",
-  "### Mandate",
-  "In this channel only triage incoming asks.",
-].join("\n");
+const SOUL_TEXT = "# Sam\nKeeps the board tidy.";
+const COMPILED = {
+  mandate: "Keep the board tidy.",
+  channelOverrides: [{ channel: "CTEAM01", mandate: "In this channel only triage incoming asks.", approvers: [] }],
+};
 
 function capture() {
   const errs: string[] = [];
@@ -58,11 +55,11 @@ function capture() {
 }
 
 describe("node channel mandate without a database", () => {
-  test("soulJson null: the channel mandate is parsed from the bundle's soul text, no database access", async () => {
+  test("the channel mandate comes from the bundle's structured soul, no database access", async () => {
     const c = capture();
     try {
       const agent = new AgentManager();
-      agent.setPersonaSoulResolver(async () => ({ soulMd: SOUL, soulJson: null }));
+      agent.setPersonaSoulResolver(async () => ({ soulMd: SOUL_TEXT, soulJson: COMPILED }));
       const prompt = await agent.__systemPromptForTests("s-1", "sam", { channelId: "CTEAM01" });
       expect(prompt).toContain("<channel-mandate>");
       expect(prompt).toContain("In this channel only triage incoming asks.");
@@ -72,6 +69,19 @@ describe("node channel mandate without a database", () => {
       c.restore();
     }
     expect(c.errs.filter((l) => l.includes("[db]"))).toEqual([]);
+  });
+
+  test("a bundle with no structured soul gets no channel mandate: the soul text is never read for one", async () => {
+    const c = capture();
+    try {
+      const agent = new AgentManager();
+      const text = "# Sam\n## Mandate\nKeep the board tidy.\n## Channel CTEAM01\n### Mandate\nIn this channel only triage incoming asks.";
+      agent.setPersonaSoulResolver(async () => ({ soulMd: text, soulJson: null }));
+      const prompt = await agent.__systemPromptForTests("s-1", "sam", { channelId: "CTEAM01" });
+      expect(prompt).not.toContain("<channel-mandate>");
+    } finally {
+      c.restore();
+    }
   });
 
   test("soulData() on a node never reaches for the database", () => {
@@ -88,10 +98,10 @@ describe("node channel mandate without a database", () => {
     expect(c.errs.filter((l) => l.includes("[db]"))).toEqual([]);
   });
 
-  test("personaMandateText on a node does not read the database either", () => {
+  test("personaMandateText for a compiled persona does not read the database either", () => {
     const c = capture();
     try {
-      const sam = { name: "sam", slackUserId: "U0P", config: { slackUserId: "U0P", name: "sam" }, outClient: null, soulMd: SOUL } as unknown as Persona;
+      const sam = { name: "sam", slackUserId: "U0P", config: { slackUserId: "U0P", name: "sam" }, outClient: null, soulMd: SOUL_TEXT, soulJson: COMPILED, definition: {} } as unknown as Persona;
       setPersonaRegistry({
         lookupByUserId: () => null, lookupByName: (n) => (n === "sam" ? sam : null), list: () => [sam],
         isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,

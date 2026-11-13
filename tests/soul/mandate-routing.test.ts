@@ -12,7 +12,7 @@ import { withChannelClasses } from "../../src/gateway/api/tenants";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
 import type { Persona } from "../../src/persona/types";
 import { SoulDataSchema, type SoulData } from "../../src/soul/data";
-import { __resetSoulDataMemo, channelMandate, effectiveSoulForChannel, extractSoulData, setSoulData, soulData } from "../../src/soul/extract";
+import { __resetSoulDataMemo, channelMandate, effectiveSoulForChannel, setSoulData, soulData } from "../../src/soul/extract";
 import { effectiveMandateIn, personaMandateText } from "../../src/soul/persona-mandates";
 import { effectiveSoulForChannelFor } from "../../src/soul/per-persona";
 import { makeNodeVoiceHost } from "../../src/voice/hosts";
@@ -123,10 +123,10 @@ describe("consumers go through the resolver", () => {
     expect(await agent.__systemPromptForTests("s2", "ana", { channelId: "CELSE" })).not.toContain("<channel-mandate>");
   });
 
-  test("scheduler: a named persona's text with no cached extraction uses the parse, the default's lists and the resolver", () => {
-    const md = "# Scout\n\n## Mandate\nScout.\n\n## Scope public\n### Mandate\nMode: reduce\nQuiet here.\n\n## Scope trusted\n### Mandate\nOpen up.\n";
+  test("scheduler: a named persona's stored structure uses its own mandates, the default's lists and the resolver", () => {
+    const scout = { mandate: "Scout.", scopeMandates: [{ scope: "public", mandate: "Quiet here.", mode: "reduce" }, { scope: "trusted", mandate: "Open up." }] };
     setSoulData(SoulDataSchema.parse({ trustedChannels: ["CTEAM"], allowedChannels: ["CPUB"] }));
-    setPersonaRegistry(registry([{ name: "scout", soulMd: md, soulJson: {} }]));
+    setPersonaRegistry(registry([{ name: "scout", soulMd: "# Scout\n", soulJson: scout }]));
     const m = personaMandates("scout", ["CPUB", "CTEAM", "CELSE"]);
     expect(m.channels.CPUB).toBe("Scout.\n\nLimit for public channels (this narrows the mandate above and wins over it wherever they conflict):\nQuiet here.");
     expect(m.channels.CTEAM).toBe("Open up.");
@@ -163,7 +163,7 @@ describe("consumers go through the resolver", () => {
   });
 });
 
-describe("a named persona's turn prompt with no structured soul (mono)", () => {
+describe("a named persona's turn prompt (mono)", () => {
   const prompt = (persona: string, channelId: string) => new AgentManager().__systemPromptForTests("s", persona, { channelId });
 
   test("the default persona's sub-mandates never reach a named persona", async () => {
@@ -176,7 +176,7 @@ describe("a named persona's turn prompt with no structured soul (mono)", () => {
 
   test("a named persona's own reduce reaches its turn, compared against its own global", async () => {
     setSoulData(SoulDataSchema.parse({ mandate: "Default global." }));
-    setPersonaRegistry(registry([{ name: "scout", soulMd: "# Scout\n\n## Mandate\nScout.\n\n## Channel C0OPS\n### Mandate\nMode: reduce\nNo paging.\n" }]));
+    setPersonaRegistry(registry([{ name: "scout", soulMd: "# Scout\n", soulJson: { mandate: "Scout.", channelOverrides: [{ channel: "C0OPS", mandate: "No paging.", mandateMode: "reduce", approvers: [] }] } }]));
     const text = await prompt("scout", "C0OPS");
     expect(text).toContain("<channel-mandate>\nFor this channel your mandate is: Scout.\n\nLimit for this channel");
     expect(text).toContain("No paging.");
@@ -190,11 +190,11 @@ describe("a named persona's turn prompt with no structured soul (mono)", () => {
   });
 });
 
-describe("scheduler: an empty mandate block in a no-Mode soul", () => {
-  test("reads as the empty string, as before; an absent block is null", () => {
+describe("scheduler: an empty channel mandate", () => {
+  test("reads as null (it follows the global one), like an absent block", () => {
     setSoulData(SoulDataSchema.parse({}));
-    setPersonaRegistry(registry([{ name: "scout", soulMd: "## Mandate\nScout.\n\n## Channel C0EMPTY\n### Mandate\n\n## Channel C0OWN\n### Mandate\nOwn.\n" }]));
-    expect(personaMandates("scout", ["C0EMPTY", "C0OWN", "C0NONE"]).channels).toEqual({ C0EMPTY: "", C0OWN: "Own.", C0NONE: null });
+    setPersonaRegistry(registry([{ name: "scout", soulMd: "# Scout\n", soulJson: { mandate: "Scout.", channelOverrides: [{ channel: "C0EMPTY", mandate: "", approvers: [] }, { channel: "C0OWN", mandate: "Own.", approvers: [] }] } }]));
+    expect(personaMandates("scout", ["C0EMPTY", "C0OWN", "C0NONE"]).channels).toEqual({ C0EMPTY: null, C0OWN: "Own.", C0NONE: null });
   });
 });
 
@@ -210,39 +210,12 @@ describe("scheduler parts", () => {
   });
 });
 
-describe("extraction outage: the approvers-only fallback", () => {
-  const useSoul = (text: string) => {
-    writeFileSync(paths.soul, text);
+describe("nothing installed", () => {
+  test("the default structure is empty: no mandate, no channel lists, so nobody is admitted", () => {
     __resetSoulDataMemo();
-  };
-  let saved: string | null = null;
-  beforeEach(() => {
-    saved = existsSync(paths.soul) ? readFileSync(paths.soul, "utf8") : null;
-  });
-  afterEach(() => {
-    if (saved === null) rmSync(paths.soul, { force: true });
-    else writeFileSync(paths.soul, saved);
-  });
-
-  const scoped = "## Mandate\nHelp.\n\n## Channel C0OPS\n### Mandate\nMode: reduce\nNo paging.\n\n## Scope dm\n### Mandate\nMode: extend\nBe brief.\n\n## Scope public\n### Mandate\nQuiet.\n";
-
-  test("a scoped soul keeps its global, channel and dm mandates by their modes", () => {
-    useSoul(scoped);
-    expect(effectiveSoulForChannel("C0OPS").mandate).toBe("Help.\n\nLimit for this channel (this narrows the mandate above and wins over it wherever they conflict):\nNo paging.");
-    expect(effectiveSoulForChannel("D0ALICE").mandate).toContain("Be brief.");
-    expect(effectiveSoulForChannel("C0ELSE").mandate).toBe("Help.");
-  });
-
-  test("no channel list is invented, so admission does not widen", () => {
-    useSoul(`${scoped}\n## Allowed channels\n- C0PUBLIC\n`);
+    expect(effectiveSoulForChannel("C0OPS").mandate).toBeUndefined();
     expect(soulData().allowedChannels).toEqual([]);
     expect(soulData().trustedChannels).toEqual([]);
-  });
-
-  test("a soul without the syntax falls back as it always has", () => {
-    useSoul("## Mandate\nHelp.\n\n## Channel C0OPS\n### Mandate\nOwn.\n");
-    expect(soulData().mandate).toBeUndefined();
-    expect(soulData().channelOverrides).toEqual([]);
   });
 });
 
@@ -256,11 +229,5 @@ describe("scope blocks and the raw persona text", () => {
     expect(elsewhere).not.toContain("DM-ONLY-TEXT");
     expect(elsewhere).toContain("## Values");
     expect(await agent.__systemPromptForTests("s2", "ana", { channelId: "D0ALICE" })).toContain("For this channel your mandate is: DM-ONLY-TEXT");
-  });
-
-  test("the extractor still reads scope blocks", async () => {
-    let system = "";
-    await extractSoulData(md, { strict: false, call: async (s) => ((system = s), "{not json") });
-    expect(system).toContain("DM-ONLY-TEXT");
   });
 });

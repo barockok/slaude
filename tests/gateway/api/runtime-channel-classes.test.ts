@@ -1,6 +1,6 @@
 /**
- * The runtime bundle of a persona without a structured soul carries the
- * gateway's channel lists, and its ETag follows them.
+ * The runtime bundle carries the structure, not the gateway's channel lists as a
+ * separate field: a node reads no soul text, so there is nothing to place by them.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -34,26 +34,16 @@ const get = (persona: string, inm?: string) =>
   handleTenantRuntime(new Request("http://gw/x", { headers: inm ? { "if-none-match": inm } : {} }), "default", persona);
 
 describe("runtime bundle channel lists", () => {
-  test("present for a null-soulJson persona; 304 on the same etag; 200 with new lists after a change", async () => {
-    setSoulData(SoulDataSchema.parse({ trustedChannels: ["CTEAM01"], allowedChannels: ["CPUB01"] }));
-    const first = await get("plain");
-    expect(first.status).toBe(200);
-    const body = (await first.json()) as { soulJson: unknown; channelClasses?: unknown };
-    expect(body.soulJson).toBeNull();
-    expect(body.channelClasses).toEqual({ trustedChannels: ["CTEAM01"], allowedChannels: ["CPUB01"] });
-    const etag = first.headers.get("etag")!;
-    expect((await get("plain", etag)).status).toBe(304);
-
-    setSoulData(SoulDataSchema.parse({ trustedChannels: ["CTEAM01", "CNEW01"], allowedChannels: ["CPUB01"] }));
-    const again = await get("plain", etag);
-    expect(again.status).toBe(200);
-    expect(again.headers.get("etag")).not.toBe(etag);
-    expect(((await again.json()) as { channelClasses: unknown }).channelClasses).toEqual({ trustedChannels: ["CTEAM01", "CNEW01"], allowedChannels: ["CPUB01"] });
-  });
-
   test("the default persona's bundle has a structured soul and no separate lists", async () => {
     const body = (await (await get("default")).json()) as { soulJson: unknown; channelClasses?: unknown };
     expect(body.soulJson).not.toBeNull();
+    expect(body.channelClasses).toBeUndefined();
+  });
+
+  test("a persona with no structure ships none, and no channel lists either", async () => {
+    setSoulData(SoulDataSchema.parse({ trustedChannels: ["CTEAM01"] }));
+    const body = (await (await get("plain")).json()) as { soulJson: unknown; channelClasses?: unknown };
+    expect(body.soulJson).toBeNull();
     expect(body.channelClasses).toBeUndefined();
   });
 });

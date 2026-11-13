@@ -1,9 +1,9 @@
 /**
  * One sync, in two phases. Phase one runs outside any transaction: parse,
- * resolve placeholders, and extract the structured soul for every soul whose
- * text changed. No model call ever runs while database locks are held. Phase
- * two is the single transaction in applySync. Any failure in phase one applies
- * nothing. Messages name a variable, persona or revision, never a value.
+ * resolve placeholders, and take each persona's structure from its agent.yaml
+ * (a persona that has none is refused, unless its soul is unchanged from what
+ * is stored). No model call runs. Phase two is the single transaction in
+ * applySync. Any failure in phase one applies nothing. Messages name a variable, persona or revision, never a value.
  */
 import { flag } from "../../config/security-switches";
 import {
@@ -13,7 +13,6 @@ import {
 import { applyGuardrailChange, readGuardrails } from "../../db/guardrails";
 import { auditChange } from "../../guardrails/audit";
 import { parseGuardrail, reservedNameProblem } from "../../guardrails/format";
-import { extractSoulData } from "../../soul/extract";
 import { emitAudit } from "../../audit/emit";
 import {
   applySync, desiredPersonas, effectivePersonas, backgroundColumnPresent, definitionColumnPresent, kbSourcesColumnPresent, providerColumnPresent, syncState, StaleRevisionError,
@@ -137,7 +136,7 @@ export async function runSync(
   tenant: string,
   raw: unknown,
   opts: {
-    dryRun: boolean; env: Record<string, string | undefined>; by: string; extract?: (text: string) => Promise<unknown>;
+    dryRun: boolean; env: Record<string, string | undefined>; by: string;
     /** The labels live nodes carry (the registry's node-label view). Absent
      *  (no queue: a single process) = no label warnings. */
     liveLabels?: () => Promise<ReadonlySet<string>>;
@@ -147,7 +146,6 @@ export async function runSync(
     installedKbSources?: () => string[];
   },
 ): Promise<SyncReport> {
-  const extract = opts.extract ?? ((t: string) => extractSoulData(t, { strict: true }));
   let payload;
   const allIgnored = unknownFieldPaths(raw);
   const ignoredFields = allIgnored.slice(0, MAX_REPORTED_FIELDS);
@@ -233,20 +231,10 @@ export async function runSync(
       soulJson = p.definition.soulData; // an agent.yaml: compiled, no model call
     } else if (prev && !prev.definition && prev.soulMd === p.soul && !effective.get(p.name)?.overridden.includes("soul")) {
       soulJson = prev.soulJson; // unchanged soul: no model call
-    } else if (opts.dryRun) {
-      // A dry run reports created/updated/unchanged, which never depends on the
-      // structured soul. Extracting here would let any caller with the preview
-      // token spend model calls (and write the extraction cache) per request.
-      soulJson = null;
     } else {
-      try {
-        soulJson = await extract(p.soul);
-      } catch (e) {
-        const cls = e instanceof Error ? e.constructor.name : typeof e;
-        const msg = (e instanceof Error ? e.message : String(e)).slice(0, 200);
-        console.error(`[persona-sync] soul extraction failed persona=${p.name}: ${cls}: ${msg}`);
-        throw new SyncFailure(502, `soul extraction failed for persona '${p.name}'`);
-      }
+      // A soul with no agent.yaml has no structure: nothing reads access out of prose any more.
+      throw new SyncFailure(422,
+        `persona '${p.name}' has no agent.yaml: a persona is defined by one. Convert it with \`personas export --format agent-yaml\` (or \`personas migrate\` on its home) and sync the result`);
     }
     rows.push({
       name: p.name, slackUserId: p.slackUserId ?? null, userToken: p.userToken ?? null, model: p.model ?? null,

@@ -13,7 +13,6 @@ import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { __setGrantsReader } from "../../../src/access/role";
 import type { Grant } from "../../../src/access/grants";
-import { writeSoulCacheEntry } from "../../../src/soul/extract";
 import { SoulDataSchema } from "../../../src/soul/data";
 
 const BOT = {
@@ -172,9 +171,8 @@ describe("stored grants", () => {
 
 describe("/heartbeat for a filesystem persona", () => {
   it("its heartbeat recipient (its own SOUL.md manager) is never refused", async () => {
-    // The cached extraction is accepted only when its ids appear in the text.
+    // Its manager is read from the soul text's Reporting section (no structured soul).
     const soulMd = "# SOUL\n\n## Identity\nAlpha on files.\n\n## Reporting\n- Manager: <@UFILEMGR>\n";
-    writeSoulCacheEntry(soulMd, SoulDataSchema.parse({ manager: { userId: "UFILEMGR" } }));
     setPersonaRegistry(registry(undefined, { soulMd }));
     writeSoulFixture(WORLD);
     const g = setup();

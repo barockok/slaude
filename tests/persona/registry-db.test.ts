@@ -8,7 +8,6 @@ import { paths } from "../../src/config/home";
 import * as P from "../../src/db/personas";
 import {
   __resetPersonaRegistry,
-  __setDiskSoulDataLoader,
   __setPersonaStateLoader,
   buildPersonaRegistry,
   getPersonaRegistry,
@@ -311,8 +310,7 @@ describe.skipIf(!isPg)("the default persona's soul pair", () => {
     expect(soulDataBase().approvers.map((a) => a.userId)).toEqual(["UDBAPPROVER"]);
   });
 
-  test("with no managed default row, both come from disk", async () => {
-    __setDiskSoulDataLoader(async () => SoulDataSchema.parse(approvers("UDISKAPPROVER")));
+  test("with no managed default row, the text comes from disk and the structure is empty", async () => {
     await P.applySync("default", [defRow("db default", approvers("UDBAPPROVER")), row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
     await refresh();
     expect(personaSoulText()).toBe("db default");
@@ -320,7 +318,8 @@ describe.skipIf(!isPg)("the default persona's soul pair", () => {
     await P.applySync("default", [row("ana")], meta("r2", "2026-10-01T11:00:00Z"));
     await refresh();
     expect(personaSoulText()).toBe(loadSoul());
-    expect(soulDataBase().approvers.map((a) => a.userId)).toEqual(["UDISKAPPROVER"]);
+    // Nothing reads access out of the disk text: with no agent.yaml there is none.
+    expect(soulDataBase().approvers).toEqual([]);
   });
 
   test("a default row whose structure is invalid keeps the previous pair, and the rest installs", async () => {

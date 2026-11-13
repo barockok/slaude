@@ -6,7 +6,6 @@ import { createSlackApp } from "./gateway/slack/adapter";
 import { createGateway } from "./gateway/core/gateway";
 import { createHttpSlackTransport } from "./gateway/slack/http-transport";
 import { startHealthServer, deployHandlerForRole, brainImportHandlerForRole } from "./health";
-import { loadSoulData, setSoulData } from "./soul/extract";
 import { assertOAuthKeyCanary } from "./agent/mcp-oauth/store";
 import { sharedLoopback } from "./agent/mcp-oauth/shared-loopback";
 import { verifyState } from "./agent/mcp-oauth/state";
@@ -69,15 +68,6 @@ async function main() {
   const db = await getDb();
   console.log(`[db] ${db.dialect} (${db.driver}) ready`);
   await SoulOverrides.refresh();
-
-  // Warm the structured-soul cache before sessions start. Best-effort: the
-  // extractor falls back to regex parsing internally on any failure, so
-  // boot never blocks on LLM availability.
-  try {
-    setSoulData(await loadSoulData());
-  } catch (e) {
-    console.warn("[slaude] soul prewarm failed (continuing with regex fallback):", e);
-  }
 
   // Load persona registry. A tenant never synced as code reads the filesystem
   // (absent ~/.slaude/personas/ = single-bot mode); a managed one reads its

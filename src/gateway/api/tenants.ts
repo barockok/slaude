@@ -88,13 +88,6 @@ export interface RuntimeBundle {
    *  load (absent: every skill). A node without the agent-definition/1
    *  capability is refused such a bundle. */
   definition?: { skills?: string[]; guardrails?: string[] };
-  /** The channel lists that class a channel (trusted, public) for a persona whose
-   *  bundle has no structured soul (`soulJson` null, a SOUL.md persona). A node
-   *  needs them to place `## Scope trusted|public` mandates when it parses the
-   *  soul text itself. Part of the body, so the ETag changes with the lists.
-   *  An older node ignores it. `null`: the gateway could not read the lists and
-   *  logged it, so a node does not warn a second time. */
-  channelClasses?: { trustedChannels: string[]; allowedChannels: string[] } | null;
 }
 
 type PersonaRow = {
@@ -283,23 +276,6 @@ export function withChannelClasses(persona: string, soulJson: unknown): unknown 
   if (!Array.isArray(scopes) || scopes.length === 0) return soulJson;
   const { trustedChannels, allowedChannels } = soulDataFor(persona);
   return { ...soulJson, trustedChannels, allowedChannels };
-}
-
-/**
- * A bundle with no structured soul ships the lists the gateway classes channels
- * by for that persona (`soulDataFor`: its own, else the default soul's), so a
- * node that parses the soul text places a trust-scope mandate as the gateway
- * does. A bundle with a structured soul is returned as is.
- */
-export function bundleWithChannelClasses(bundle: RuntimeBundle): RuntimeBundle {
-  if (bundle.soulJson != null) return bundle;
-  try {
-    const { trustedChannels, allowedChannels } = soulDataFor(bundle.personaId);
-    return { ...bundle, channelClasses: { trustedChannels: [...trustedChannels], allowedChannels: [...allowedChannels] } };
-  } catch (e) {
-    console.warn(`[runtime-bundle] persona=${bundle.personaId} tenant=${bundle.tenantId}: could not read the channel lists (${e instanceof Error ? e.message : String(e)}); the node gets none, so its trust-scope mandates are not applied`);
-    return { ...bundle, channelClasses: null };
-  }
 }
 
 async function buildManagedBundle(tenantId: string, personaId: string, label?: string): Promise<RuntimeBundle | null> {
@@ -604,7 +580,6 @@ export async function handleTenantRuntime(
     });
   }
   if (guardrails) bundle = { ...bundle, guardrails };
-  bundle = bundleWithChannelClasses(bundle);
   // An older node would ignore a skill list and attached guardrails, and leave
   // the compiled mandate out of the prompt, so an agent.yaml persona is refused
   // to one: the same version-skew rule as enforced guardrails.
