@@ -16,6 +16,14 @@
  *       writes one agent.yaml per persona instead: the structured parts come
  *       from the existing soul extraction (the cache, else a model call), and
  *       the soul keeps its prose.
+ *   personas migrate <name|default> [--out <dir>] [--keep-soul] [--allow-loss]
+ *       A SOUL.md persona in $SLAUDE_HOME becomes an agent.yaml beside it, and
+ *       SOUL.md moves to SOUL.md.pre-agent-yaml (the loader refuses both). The
+ *       access it used to inherit from the default persona is written out, and
+ *       the file is compared with what the soul read before it is written.
+ *       --out writes a copy under <dir> and touches nothing else. A soul that
+ *       sets Wake, Highest or Cooldown under ## Proactive is refused (the file
+ *       has no key for them and would be looser) unless --allow-loss.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -28,6 +36,7 @@ import { definitionGuardrailWarnings, parsePayload, PayloadError, PERSONA_NAME_R
 import { AGENT_YAML_MODELINE } from "../persona/agent-schema";
 import { AGENT_YAML, agentDocument, documentPartsFromSoul, exportedChannelSettings, LEGACY_FILES, parseAgentYaml, proseOnlySoul } from "../persona/agent-def";
 import { extractSoulData } from "../soul/extract";
+import { migratePersona } from "../persona/migrate";
 import type { SoulData } from "../soul/data";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
@@ -425,8 +434,20 @@ if (import.meta.main) {
         : exportHome(paths.home, out);
       console.error(`[personas] exported to ${out}`);
       if (variables.length) console.error(`[personas] set these in the gateway environment: ${variables.join(", ")}`);
+    } else if (cmd === "migrate" && rest[0]) {
+      const r = await migratePersona({
+        home: paths.home,
+        name: rest[0],
+        extract: (soulMd) => extractSoulData(soulMd, { strict: true }),
+        ...(flag("--out") ? { out: flag("--out")! } : {}),
+        keepSoul: flags.has("--keep-soul"),
+        allowLoss: flags.has("--allow-loss"),
+      });
+      for (const w of r.warnings) console.error(`[personas] warning: ${w}`);
+      console.error(`[personas] wrote ${r.file}`);
+      if (r.soulMovedTo) console.error(`[personas] moved SOUL.md to ${r.soulMovedTo}`);
     } else {
-      console.error("usage: personas render <dir> [--revision <sha>] [--committed-at <iso>] [--check] | personas export [--out <dir>] [--format files|agent-yaml] [--persona <name>]");
+      console.error("usage: personas migrate <name|default> [--out <dir>] [--keep-soul] [--allow-loss] | personas render <dir> [--revision <sha>] [--committed-at <iso>] [--check] | personas export [--out <dir>] [--format files|agent-yaml] [--persona <name>]");
       process.exit(2);
     }
   } catch (e) {

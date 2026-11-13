@@ -138,6 +138,7 @@ const REF_FIELDS: RefField[] = [
   { id: "trusted", role: "channel", path: "access.channels.trusted[0]", at: (v) => ({ access: { channels: { trusted: [v] } } }) },
   { id: "dm", role: "user", path: "access.dm[0]", at: (v) => ({ access: { dm: [v] } }) },
   { id: "blocked", role: "user", path: "access.blocked[0]", at: (v) => ({ access: { blocked: [v] } }) },
+  { id: "proactive read", role: "channel", path: "proactive.read[0]", at: (v) => ({ proactive: { read: [v] } }) },
   { id: "channels key", role: "channel", path: "channels.", at: (v) => ({ channels: { [v]: {} } }) },
   { id: "scoped boundary", role: "channel", path: "mandate.scoped[0].boundary", at: (v) => ({ mandate: { scoped: [{ boundary: v, text: "x" }] } }) },
 ];

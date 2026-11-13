@@ -12,7 +12,7 @@
 import { parse as parseYaml, YAMLParseError } from "yaml";
 import { MANDATE_LINE_MAX, subMandatesOf, type SubMandate } from "../soul/mandate-scope";
 import { SoulDataSchema, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
-import { channelOf, endsInOpenFence, isCodeFence, parseProactive } from "../soul/proactive";
+import { channelOf, endsInOpenFence, isCodeFence, parseProactive, parseWindow } from "../soul/proactive";
 import { AgentSchema, BOUNDARY_RE, CHANNEL_ID_RE, DESCRIPTION_MAX, USER_ID_RE, type AgentFile } from "./agent-schema";
 import { anchored, parseRef, refScheme, SRC } from "../refs/parse";
 import type { Ref } from "../refs/types";
@@ -265,6 +265,26 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   }
   if (channelBlocks && endsInOpenFence(soulText)) fail("soul", "ends inside an open code fence, so the channels settings would not be read");
 
+  // The global `proactive` key compiles to the `## Proactive` section parseProactive reads.
+  let proactiveBlock = "";
+  const pro = file.proactive;
+  if (pro) {
+    const lines: string[] = [];
+    if (pro.enabled != null) lines.push(`- Enabled: ${pro.enabled ? "yes" : "no"}`);
+    if (pro.read?.length) lines.push(`- Read: ${pro.read.map((v, i) => `<#${slackId(`proactive.read[${i}]`, v, "channel")}>`).join(", ")}`);
+    if (pro.watch?.length) lines.push(`- Watch: ${pro.watch.map((w) => w.trim()).join(", ")}`);
+    if (pro.quietHours) {
+      if (!parseWindow(pro.quietHours)) fail("proactive.quietHours", "is not a valid window: hours are 0 to 23, minutes 0 to 59");
+      lines.push(`- Quiet hours: ${pro.quietHours}`);
+    }
+    if (pro.maxPerDay != null) lines.push(`- Max per day: ${pro.maxPerDay}`);
+    if (lines.length) {
+      if (hasProactiveSection(soulText)) fail("proactive", "is also written as a ## Proactive section in soul: keep it in one place");
+      if (endsInOpenFence(soulText)) fail("soul", "ends inside an open code fence, so the proactive settings would not be read");
+      proactiveBlock = `\n\n## Proactive\n${lines.join("\n")}`;
+    }
+  }
+
   for (const h of structuredHeadings(soulText)) {
     warnings.push(`persona '${name}': agent.yaml soul has a '${h}' section; mandates and access are read from their own keys, so that section is only prose`);
   }
@@ -272,7 +292,7 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   return {
     spec: {
       name,
-      soul: soulText + channelBlocks,
+      soul: soulText + proactiveBlock + channelBlocks,
       ...(slackUserId ? { slackUserId } : {}),
       ...(userToken ? { userToken } : {}),
       ...(model ? { model } : {}),
@@ -290,6 +310,16 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
     },
     warnings,
   };
+}
+
+/** Whether the authored soul has a `## Proactive` section outside a code fence. */
+function hasProactiveSection(soul: string): boolean {
+  let fenced = false;
+  for (const line of soul.split("\n")) {
+    if (isCodeFence(line)) fenced = !fenced;
+    else if (!fenced && /^##\s+proactive\s*$/i.test(line.trim())) return true;
+  }
+  return false;
 }
 
 function structuredHeadings(soul: string): string[] {
@@ -368,6 +398,59 @@ export function exportedChannelSettings(soulMd: string): { channels: Record<stri
   return { channels, dropped };
 }
 
+const clock = (m: number): string => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+/**
+ * A soul's global `## Proactive` section as agent.yaml's `proactive` key holds
+ * it: only what the soul wrote, so a migrated file compiles back to the same
+ * section. `Wake`, `Highest` and `Cooldown` have no key (they only narrow, and
+ * waking is per channel); they come back as `dropped` so the author hears of it.
+ */
+export function globalProactive(soulMd: string): { proactive: Record<string, unknown>; dropped: string[] } {
+  const section = proactiveSectionLines(soulMd);
+  const c = parseProactive(soulMd);
+  const proactive: Record<string, unknown> = {};
+  const dropped: string[] = [];
+  const has = (key: string) => section.some((l) => new RegExp(`^\\s*[-*]\\s*${key}\\s*:`, "i").test(l));
+  if (has("enabled")) proactive.enabled = c.enabled;
+  if (c.read.length) proactive.read = c.read.map(slackChannelRef);
+  if (c.watch.length) proactive.watch = c.watch;
+  if (c.quietHours) proactive.quietHours = `${clock(c.quietHours.start)}-${clock(c.quietHours.end)}`;
+  if (has("max per day") || has("max per person per day")) proactive.maxPerDay = c.maxPerPersonPerDay;
+  if (has("wake")) dropped.push("Wake");
+  if (has("highest")) dropped.push("Highest");
+  if (has("cooldown")) dropped.push("Cooldown");
+  return { proactive, dropped };
+}
+
+/** The lines of the first global `## Proactive` section outside a code fence. */
+function proactiveSectionLines(soulMd: string): string[] {
+  const out: string[] = [];
+  let inside = false;
+  let fenced = false;
+  for (const line of soulMd.split(/\r?\n/)) {
+    if (isCodeFence(line)) fenced = !fenced;
+    if (!fenced && /^#{1,2}\s/.test(line)) inside = /^##\s+proactive\s*$/i.test(line.trim());
+    else if (!fenced && /^###\s/.test(line)) inside = false;
+    else if (inside) out.push(line);
+  }
+  return out;
+}
+
+/** A soul with its global `## Proactive` section removed (the `proactive` key holds it). */
+export function withoutProactiveSection(soulMd: string): string {
+  const kept: string[] = [];
+  let skipping = false;
+  let fenced = false;
+  for (const line of soulMd.split("\n")) {
+    if (isCodeFence(line)) fenced = !fenced;
+    if (!fenced && /^#{1,2}\s/.test(line)) skipping = /^##\s+proactive\s*$/i.test(line.trim());
+    else if (!fenced && /^###\s/.test(line)) skipping = false; // parseProactive stops reading the section here too
+    if (!skipping) kept.push(line);
+  }
+  return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";
+}
+
 function channelSections(soulMd: string): { channel: string; lines: string[] }[] {
   const out: { channel: string; lines: string[] }[] = [];
   let open: string[] | null = null;
@@ -416,6 +499,8 @@ export interface AgentDocumentInput {
   kbSources?: string[] | null;
   background?: unknown;
   channels?: Record<string, ChannelSetting> | null;
+  /** The global `proactive` key, as written (see {@link globalProactive}). */
+  proactive?: Record<string, unknown> | null;
 }
 
 /** The canonical typed form of a Slack id, for export. An id of another shape is left as it is (the schema refuses it, as it always did). */
@@ -471,6 +556,7 @@ export function agentDocument(i: AgentDocumentInput): Record<string, unknown> {
     ...(i.skills != null ? { skills: i.skills } : {}),
     ...(i.guardrails?.length ? { guardrails: i.guardrails } : {}),
     ...(nonEmpty(memory) ? { memory } : {}),
+    ...(i.proactive && nonEmpty(i.proactive) ? { proactive: i.proactive } : {}),
     ...(i.channels && nonEmpty(i.channels) ? { channels: Object.fromEntries(Object.entries(i.channels).map(([k, v]) => [slackChannelRef(k), v])) } : {}),
   };
 }
