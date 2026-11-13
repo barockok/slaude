@@ -119,6 +119,16 @@ describe("migratePersona", () => {
     expect(a.soulMd).toContain("Voice: terse, direct.");
   });
 
+  test("an extraction that leaves the mandate mode out migrates: absent means override", async () => {
+    put("SOUL.md", DEFAULT_SOUL);
+    const noMode = async (soul: string) => {
+      const d = structure(soul);
+      return { ...d, channelOverrides: d.channelOverrides.map(({ mandateMode: _m, ...c }) => c) } as SoulData;
+    };
+    await migratePersona({ home, name: "default", extract: noMode });
+    expect(readFileAgent(home, "default")!.soulJson.channelOverrides[0]!.mandateMode).toBe("override");
+  });
+
   test("a named persona gets the access it used to inherit written out, and its own proactive key", async () => {
     put("SOUL.md", DEFAULT_SOUL);
     put("personas/sam/SOUL.md", SAM_SOUL);
