@@ -50,6 +50,10 @@ const NO_TENANT_TABLES = new Set([
   "portal_oauth_flows",
   "slack_oauth_flows",
   "remote_keys",
+  "users", // domain records (0038) are deployment-global like accounts
+  "bindings",
+  "boundaries",
+  "user_aliases",
   "node_plugins", // a node credential is deployment-global, like node_revocations
 ]);
 

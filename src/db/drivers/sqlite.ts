@@ -319,6 +319,55 @@ CREATE TABLE IF NOT EXISTS slack_identities (
 CREATE INDEX IF NOT EXISTS idx_slack_identities_account
   ON slack_identities (account_id);
 
+CREATE TABLE IF NOT EXISTS users (
+  id           TEXT   PRIMARY KEY,
+  kind         TEXT   NOT NULL DEFAULT 'person',
+  display_name TEXT,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bindings (
+  id          TEXT   PRIMARY KEY,
+  user_id     TEXT   NOT NULL REFERENCES users (id),
+  service     TEXT   NOT NULL,
+  kind        TEXT   NOT NULL,
+  workspace   TEXT   NOT NULL DEFAULT '',
+  value       TEXT   NOT NULL,
+  state       TEXT   NOT NULL DEFAULT 'observed',
+  source      TEXT   NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  verified_at INTEGER,
+  UNIQUE (service, kind, workspace, value),
+  CHECK (state IN ('declared', 'observed', 'verified')),
+  CHECK (service <> 'slack' OR workspace <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_bindings_user ON bindings (user_id);
+
+CREATE TABLE IF NOT EXISTS boundaries (
+  id           TEXT   PRIMARY KEY,
+  kind         TEXT   NOT NULL DEFAULT 'channel',
+  display_name TEXT,
+  service      TEXT   NOT NULL,
+  workspace    TEXT   NOT NULL DEFAULT '',
+  value        TEXT   NOT NULL,
+  state        TEXT   NOT NULL DEFAULT 'observed',
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL,
+  UNIQUE (service, workspace, value),
+  CHECK (state IN ('declared', 'observed', 'verified')),
+  CHECK (service <> 'slack' OR workspace <> '')
+);
+
+CREATE TABLE IF NOT EXISTS user_aliases (
+  old_id         TEXT   PRIMARY KEY,
+  user_id        TEXT   NOT NULL REFERENCES users (id),
+  merged_at      INTEGER NOT NULL,
+  audit_event_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_user_aliases_user ON user_aliases (user_id);
+
 -- Gateway-owned MCP credentials, one owner per row (see 0008_mcp_credentials.sql).
 CREATE TABLE IF NOT EXISTS mcp_credentials (
   id            TEXT    PRIMARY KEY,
