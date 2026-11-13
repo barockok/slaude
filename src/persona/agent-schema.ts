@@ -234,7 +234,7 @@ const proactiveSchema = z
       ),
       watch: optional(
         z
-          .array(z.string(typeMessage({ other: "must be a source name" })).regex(/^[^,\n]+$/, "must be one source name, without commas"), typeMessage({ other: "must be a list of source names", null: NO_VALUE }))
+          .array(z.string(typeMessage({ other: "must be a source name" })).regex(/^[^,#\r\n\u2028\u2029]+$/, "must be one source name, without commas, # or line breaks"), typeMessage({ other: "must be a list of source names", null: NO_VALUE }))
           .describe("External sources the summarising round reads, by name. Example: [mail, tracker]"),
       ),
       quietHours: optional(

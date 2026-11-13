@@ -445,6 +445,7 @@ export function withoutProactiveSection(soulMd: string): string {
   for (const line of soulMd.split("\n")) {
     if (isCodeFence(line)) fenced = !fenced;
     if (!fenced && /^#{1,2}\s/.test(line)) skipping = /^##\s+proactive\s*$/i.test(line.trim());
+    else if (!fenced && /^###\s/.test(line)) skipping = false; // parseProactive stops reading the section here too
     if (!skipping) kept.push(line);
   }
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim() + "\n";

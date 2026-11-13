@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../../src/config/home";
@@ -14,7 +14,8 @@ import {
 } from "../../src/persona/registry";
 import { personaSoulText } from "../../src/persona/soul-source";
 import { compiledSoulFor, soulDataFor } from "../../src/soul/per-persona";
-import { soulData } from "../../src/soul/extract";
+import { loadSoulData, soulData } from "../../src/soul/extract";
+import { loadSoul } from "../../src/soul/loader";
 import { channelSessionOn, proactiveRead } from "../../src/soul/proactive";
 
 let root: string;
@@ -80,6 +81,12 @@ describe("a persona directory with an agent.yaml", () => {
     expect(p.outClient).not.toBeNull();
   });
 
+  test("a config.json that does not read stops the load instead of dropping the token", () => {
+    put(join(root, "personas/ana/agent.yaml"), "name: ana\nslackUserId: slack:user:U0ANA\nsoul: x\n");
+    put(join(root, "personas/ana/config.json"), "{ not json");
+    expect(() => loadPersonaRegistry()).toThrow(/config\.json is not a valid JSON object/);
+  });
+
   test("no Slack user anywhere stops the load", () => {
     put(join(root, "personas/ana/agent.yaml"), "name: ana\nsoul: x\n");
     expect(() => loadPersonaRegistry()).toThrow(/no Slack user/);
@@ -140,6 +147,17 @@ describe("the default persona with $SLAUDE_HOME/agent.yaml", () => {
     expect(compiledSoulFor("default")?.manager.userId).toBe("U0BOSS");
     expect(channelSessionOn("default", "C0HOME")).toBe(true);
     expect(getPersonaRegistry().isManaged()).toBe(false);
+  });
+
+  test("with no SOUL.md, nothing seeds a starter beside it, and the boot prewarm needs no model", async () => {
+    put(join(root, "agent.yaml"), DEFAULT);
+    expect(loadSoul()).toBe("");
+    expect(existsSync(join(root, "SOUL.md"))).toBe(false);
+    expect((await loadSoulData()).approvers).toEqual([]);
+    expect(existsSync(join(root, "SOUL.md"))).toBe(false);
+    // The boot order: prewarm, then the registry load; the file is still readable.
+    expect(await refreshPersonaState("default")).toBe(true);
+    expect(soulData().manager.userId).toBe("U0BOSS");
   });
 
   test("SOUL.md beside it is refused", () => {

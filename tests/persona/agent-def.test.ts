@@ -487,6 +487,13 @@ describe("parseAgentYaml proactive", () => {
     expect(e!.message).not.toContain("25:00");
   });
 
+  test("a watch name the section parser would cut or lose is refused", () => {
+    for (const bad of ["ops #alerts", "a\u2028b", "a\rb"]) {
+      const e = (() => { try { compile(`proactive:\n  watch: [${JSON.stringify(bad)}]\n`); } catch (x) { return x as Error; } })();
+      expect(e).toBeInstanceOf(PayloadError);
+    }
+  });
+
   test("an unknown key under it is refused", () => {
     const e = (() => { try { compile("proactive:\n  wake: true\n"); } catch (x) { return x as Error; } })();
     expect(e!.message).toContain("proactive.wake");

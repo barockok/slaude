@@ -15,7 +15,7 @@
  * Secrets are never copied. A soul text that holds a token-shaped value is
  * refused; a persona's Slack user token stays in config.json.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { stringify as yamlStringify } from "yaml";
 import { AGENT_YAML_MODELINE } from "./agent-schema";
@@ -45,6 +45,8 @@ export interface MigrateOptions {
   out?: string;
   /** In place only: leave SOUL.md where it is (the loader then refuses the persona until it is moved). */
   keepSoul?: boolean;
+  /** Migrate although the soul sets `Wake`, `Highest` or `Cooldown`, which agent.yaml has no key for (they only narrow, so the file would be looser). */
+  allowLoss?: boolean;
 }
 
 export interface MigrateResult {
@@ -57,7 +59,7 @@ export interface MigrateResult {
 /** The suffix SOUL.md gets when it is moved aside. */
 export const SOUL_BACKUP_SUFFIX = ".pre-agent-yaml";
 
-const TOKEN_SHAPE = /xox[baprs]-[0-9A-Za-z-]{10,}|sk-ant-[0-9A-Za-z_-]{20,}|ghp_[0-9A-Za-z]{36}|AGE-SECRET-KEY-1[0-9A-Z]{58}|-----BEGIN [A-Z ]*PRIVATE KEY/;
+const TOKEN_SHAPE = /xox[baprs]-[0-9A-Za-z-]{10,}|xapp-[0-9A-Za-z-]{10,}|sk-ant-[0-9A-Za-z_-]{20,}|sk-[A-Za-z0-9]{20,}|ghp_[0-9A-Za-z]{36}|github_pat_[0-9A-Za-z_]{20,}|glpat-[0-9A-Za-z_-]{20,}|AKIA[0-9A-Z]{16}|AGE-SECRET-KEY-1[0-9A-Z]{58}|Bearer\s+[A-Za-z0-9._~+\/-]{20,}|-----BEGIN [A-Z ]*PRIVATE KEY/;
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
 
@@ -72,20 +74,29 @@ export async function migratePersona(o: MigrateOptions): Promise<MigrateResult> 
     throw new PayloadError(existsSync(join(dir, AGENT_YAML)) ? `persona '${name}' already has an ${AGENT_YAML}` : `persona '${name}' has no SOUL.md to migrate`);
   }
   if (existsSync(join(dir, AGENT_YAML))) throw new PayloadError(`persona '${name}' already has an ${AGENT_YAML}; remove it first to migrate again`);
-  if (TOKEN_SHAPE.test(soulMd.replace(/^[-*]\s.*;\s.*$/gm, ""))) {
+  if (TOKEN_SHAPE.test(soulMd)) {
     throw new PayloadError(`persona '${name}': SOUL.md holds a value shaped like a secret; remove it first, a migrated file is meant for git`);
   }
 
   const own = await o.extract(soulMd);
+  const warnings: string[] = [];
   let effective = own;
   if (name !== "default") {
     const defDir = o.home;
     const defSoul = read(join(defDir, "SOUL.md"));
-    if (defSoul !== undefined) effective = withAclFallback(own, await o.extract(defSoul));
-    else if (existsSync(join(defDir, AGENT_YAML))) {
-      // The default is already migrated: what it compiles to is what this persona inherited.
-      effective = withAclFallback(own, parseAgentYaml("default", readFileSync(join(defDir, AGENT_YAML), "utf8")).spec.definition.soulData);
+    let def: SoulData | null = null;
+    if (defSoul !== undefined) def = await o.extract(defSoul);
+    // The default is already migrated: what it compiles to is what this persona inherited.
+    else if (existsSync(join(defDir, AGENT_YAML))) def = parseAgentYaml("default", readFileSync(join(defDir, AGENT_YAML), "utf8")).spec.definition.soulData;
+    if (def) {
+      effective = withAclFallback(own, def);
+      const mine = (own.trustedChannels.length || own.allowedChannels.length) > 0;
+      const differs = JSON.stringify([[...own.trustedChannels].sort(), [...own.allowedChannels].sort()]) !== JSON.stringify([[...def.trustedChannels].sort(), [...def.allowedChannels].sort()]);
+      if (mine && differs) {
+        warnings.push(`persona '${name}': it lists its own trusted or public channels; a SOUL.md persona's knowledge scope and trust classes were read from the default persona's lists, an agent.yaml persona's from its own, so review which channels count as trusted`);
+      }
     }
+    warnings.push(`persona '${name}': access added at runtime with /soul is not in the file: only what the soul text says is written`);
   }
 
   let slackUserId: string | undefined;
@@ -99,11 +110,13 @@ export async function migratePersona(o: MigrateOptions): Promise<MigrateResult> 
     if (!slackUserId) throw new PayloadError(`persona '${name}': config.json has no slackUserId`);
   }
 
-  const warnings: string[] = [];
   const prose = withoutProactiveSection(proseOnlySoul(soulMd));
   const exported = exportedChannelSettings(soulMd);
   for (const d of exported.dropped) warnings.push(`persona '${name}': channel ${d.channel}: ${d.keys.join(", ")} not carried over, agent.yaml has no key for them`);
   const global = globalProactive(soulMd);
+  if (global.dropped.length && !o.allowLoss) {
+    throw new PayloadError(`persona '${name}': the soul sets ${global.dropped.join(", ")} under ## Proactive, which agent.yaml has no key for; the file would be looser than the soul. Remove the line(s) or pass --allow-loss`);
+  }
   if (global.dropped.length) warnings.push(`persona '${name}': ## Proactive ${global.dropped.join(", ")} not carried over, agent.yaml has no key for ${global.dropped.length > 1 ? "them" : "it"}`);
 
   const doc = agentDocument({
@@ -124,11 +137,19 @@ export async function migratePersona(o: MigrateOptions): Promise<MigrateResult> 
 
   const file = join(dirOf(o.out ?? o.home), AGENT_YAML);
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, yaml);
+  const tmp = `${file}.tmp`;
+  writeFileSync(tmp, yaml);
+  renameSync(tmp, file);
   const result: MigrateResult = { file, warnings };
   if (!o.out && !o.keepSoul) {
     const moved = `${soulFile}${SOUL_BACKUP_SUFFIX}`;
-    renameSync(soulFile, moved);
+    try {
+      renameSync(soulFile, moved);
+    } catch (e) {
+      // Both files would stop the persona loading: put things back.
+      rmSync(file, { force: true });
+      throw new PayloadError(`persona '${name}': could not move SOUL.md aside (${(e as { code?: string }).code ?? "error"}); nothing was changed`);
+    }
     result.soulMovedTo = moved;
   }
   return result;

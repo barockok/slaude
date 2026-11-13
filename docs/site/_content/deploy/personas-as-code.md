@@ -540,7 +540,7 @@ SLAUDE_HOME=/path/to/home bun run personas migrate sam --out ./migrated
 to `SOUL.md.pre-agent-yaml`, because the loader refuses both together. With
 `--out <dir>` it writes a copy under `<dir>` and touches nothing else (use it to
 migrate a copy that lives in a repository). `--keep-soul` leaves SOUL.md where it
-is. It never overwrites an agent.yaml.
+is. It never overwrites an agent.yaml, and if SOUL.md cannot be moved it removes the file it wrote.
 
 What it does so the persona behaves as before:
 
@@ -549,7 +549,12 @@ What it does so the persona behaves as before:
   inherits nothing, so migration writes the inherited values into the file.
 - The global `## Proactive` section becomes the `proactive` key (`read`,
   `watch`, `quietHours`, `maxPerDay`, `enabled`). `Wake`, `Highest` and `Cooldown`
-  have no key and are reported when the soul set them.
+  have no key, and dropping them would loosen the persona, so a soul that sets
+  one is refused unless you pass `--allow-loss`.
+- A named persona that lists its own trusted or public channels is warned: a
+  SOUL.md persona's knowledge scope and trust classes came from the default
+  persona's lists, an agent.yaml persona's come from its own. Access added at
+  runtime with `/soul` is not in the file; only what the soul text says is written.
 - Before writing, it compiles the file and compares access, mandates and
   proactive settings with what the soul read. A difference stops the migration
   with the field named, and nothing is written.

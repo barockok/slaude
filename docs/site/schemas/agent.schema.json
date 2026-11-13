@@ -436,7 +436,7 @@
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "pattern": "^[^,\\n]+$"
+                    "pattern": "^[^,#\\r\\n\\u2028\\u2029]+$"
                   }
                 },
                 {

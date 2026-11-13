@@ -48,15 +48,15 @@ export interface PersonaRegistry {
   defaultPersona?(): DefaultPersonaFields | null;
 }
 
-/** The config.json of a persona directory, or null when it has none or it does not read. */
-function readPersonaConfig(configPath: string): Partial<PersonaConfig> | null {
+/** The config.json of a persona directory, or null when it has none. */
+function readPersonaConfig(name: string, configPath: string): Partial<PersonaConfig> | null {
   if (!existsSync(configPath)) return null;
+  // A config.json that does not read would drop the persona's user token and post as the bot: stop instead.
   try {
     const c = JSON.parse(readFileSync(configPath, "utf8")) as Partial<PersonaConfig>;
-    return c && typeof c === "object" && !Array.isArray(c) ? c : null;
-  } catch {
-    return null;
-  }
+    if (c && typeof c === "object" && !Array.isArray(c)) return c;
+  } catch { /* reported below */ }
+  throw new Error(`persona '${name}': config.json is not a valid JSON object`);
 }
 
 /**
@@ -66,7 +66,7 @@ function readPersonaConfig(configPath: string): Partial<PersonaConfig> | null {
  * ask for the definition work unchanged.
  */
 function fileAgentPersona(name: string, configPath: string, a: FileAgent): Persona {
-  const cfg = readPersonaConfig(configPath);
+  const cfg = readPersonaConfig(name, configPath);
   const slackUserId = a.slackUserId ?? (typeof cfg?.slackUserId === "string" ? cfg.slackUserId : "");
   if (!slackUserId) throw new Error(`persona '${name}': no Slack user: set slackUserId in agent.yaml or config.json`);
   const slackApiUrl = env.slack.apiUrl();

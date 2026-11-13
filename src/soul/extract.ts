@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "../config/home";
 import { env } from "../config/env";
-import { loadSoul, soulSystemBlock, loadApproverEntries } from "./loader";
+import { defaultDefinedByAgentYaml, loadSoul, soulSystemBlock, loadApproverEntries } from "./loader";
 import { SoulDataSchema, EXTRACTION_PROMPT, type SoulData, type ApproverEntry } from "./data";
 import { applyOverrides } from "./overrides";
 import { resolveSoulMandate, usesScopedMandates } from "./mandate-scope";
@@ -262,6 +262,8 @@ function scopedMandatesFallback(): Partial<SoulData> {
  * Safe to call repeatedly; cheap after first call.
  */
 export async function loadSoulData(): Promise<SoulData> {
+  // Defined by an agent.yaml: its structure is installed from the file at boot, never extracted.
+  if (defaultDefinedByAgentYaml()) return SoulDataSchema.parse({});
   return extractSoulData(loadSoul(), { strict: false });
 }
 

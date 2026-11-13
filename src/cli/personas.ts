@@ -16,12 +16,14 @@
  *       writes one agent.yaml per persona instead: the structured parts come
  *       from the existing soul extraction (the cache, else a model call), and
  *       the soul keeps its prose.
- *   personas migrate <name|default> [--out <dir>] [--keep-soul]
+ *   personas migrate <name|default> [--out <dir>] [--keep-soul] [--allow-loss]
  *       A SOUL.md persona in $SLAUDE_HOME becomes an agent.yaml beside it, and
  *       SOUL.md moves to SOUL.md.pre-agent-yaml (the loader refuses both). The
  *       access it used to inherit from the default persona is written out, and
  *       the file is compared with what the soul read before it is written.
- *       --out writes a copy under <dir> and touches nothing else.
+ *       --out writes a copy under <dir> and touches nothing else. A soul that
+ *       sets Wake, Highest or Cooldown under ## Proactive is refused (the file
+ *       has no key for them and would be looser) unless --allow-loss.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -439,12 +441,13 @@ if (import.meta.main) {
         extract: (soulMd) => extractSoulData(soulMd, { strict: true }),
         ...(flag("--out") ? { out: flag("--out")! } : {}),
         keepSoul: flags.has("--keep-soul"),
+        allowLoss: flags.has("--allow-loss"),
       });
       for (const w of r.warnings) console.error(`[personas] warning: ${w}`);
       console.error(`[personas] wrote ${r.file}`);
       if (r.soulMovedTo) console.error(`[personas] moved SOUL.md to ${r.soulMovedTo}`);
     } else {
-      console.error("usage: personas migrate <name|default> [--out <dir>] [--keep-soul] | personas render <dir> [--revision <sha>] [--committed-at <iso>] [--check] | personas export [--out <dir>] [--format files|agent-yaml] [--persona <name>]");
+      console.error("usage: personas migrate <name|default> [--out <dir>] [--keep-soul] [--allow-loss] | personas render <dir> [--revision <sha>] [--committed-at <iso>] [--check] | personas export [--out <dir>] [--format files|agent-yaml] [--persona <name>]");
       process.exit(2);
     }
   } catch (e) {

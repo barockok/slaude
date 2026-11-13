@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { paths } from "../config/home";
 import { brainEnabled } from "../knowledge/brain";
 import { renderRuntimeFile } from "./runtime/render";
@@ -145,8 +146,15 @@ the most specific match applies: a channel block, then a trust class, then dm.
 - <@channel-dba-id>:  migrations, SQL, schema changes
 `;
 
+/** Whether $SLAUDE_HOME/agent.yaml defines the default persona (then SOUL.md is neither read nor seeded). */
+export function defaultDefinedByAgentYaml(): boolean {
+  return existsSync(join(paths.home, "agent.yaml"));
+}
+
 export function loadSoul(soulPath?: string): string {
   const target = soulPath ?? paths.soul;
+  // A starter SOUL.md next to an agent.yaml would stop the process at the next load.
+  if (target === paths.soul && !existsSync(target) && defaultDefinedByAgentYaml()) return "";
   if (target === paths.soul && !existsSync(target)) {
     writeFileSync(target, STARTER_PERSONA, "utf8");
     console.warn(

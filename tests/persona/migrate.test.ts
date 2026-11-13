@@ -185,9 +185,39 @@ describe("migratePersona", () => {
     expect(existsSync(join(home, "agent.yaml"))).toBe(false);
   });
 
-  test("proactive settings with no key are named, not silently dropped", async () => {
+  test("a soul that sets Wake, Highest or Cooldown is refused, since the file would be looser", async () => {
+    put("SOUL.md", `${DEFAULT_SOUL}\n## Proactive\n- Wake: no\n- Highest: inform\n- Read: <#C0WORK>\n`);
+    const e = await migratePersona({ home, name: "default", extract }).catch((x) => x as Error);
+    expect(e).toBeInstanceOf(PayloadError);
+    expect(e.message).toContain("Wake, Highest");
+    expect(existsSync(join(home, "agent.yaml"))).toBe(false);
+    expect(existsSync(join(home, "SOUL.md"))).toBe(true);
+  });
+
+  test("--allow-loss migrates anyway and names what was not carried over", async () => {
     put("SOUL.md", `${DEFAULT_SOUL}\n## Proactive\n- Wake: no\n- Read: <#C0WORK>\n`);
-    const r = await migratePersona({ home, name: "default", extract });
+    const r = await migratePersona({ home, name: "default", extract, allowLoss: true });
     expect(r.warnings.join("\n")).toContain("Wake not carried over");
+  });
+
+  test("a secret on a bullet line with a semicolon is still refused", async () => {
+    put("SOUL.md", `${DEFAULT_SOUL}\n- note; ${"xo" + "xb"}-1234567890-abcdef\n`);
+    await expect(migratePersona({ home, name: "default", extract })).rejects.toThrow(/shaped like a secret/);
+  });
+
+  test("a named persona with its own channel lists is told the trust classes change", async () => {
+    put("SOUL.md", DEFAULT_SOUL);
+    put("personas/sam/SOUL.md", SAM_SOUL);
+    put("personas/sam/config.json", JSON.stringify({ slackUserId: "U0SAM" }));
+    const own = async (soul: string) => (soul === SAM_SOUL ? { ...structure(soul), trustedChannels: ["C0SAM"] } : structure(soul));
+    const r = await migratePersona({ home, name: "sam", extract: own });
+    expect(r.warnings.join("\n")).toContain("review which channels count as trusted");
+    expect(r.warnings.join("\n")).toContain("added at runtime with /soul");
+  });
+
+  test("the Proactive section stops where the parser stops: prose after a ### stays", async () => {
+    put("SOUL.md", `${DEFAULT_SOUL}\n## Proactive\n- Read: <#C0WORK>\n### Notes\nKeep this line.\n`);
+    await migratePersona({ home, name: "default", extract });
+    expect(readFileAgent(home, "default")!.soulMd).toContain("Keep this line.");
   });
 });
