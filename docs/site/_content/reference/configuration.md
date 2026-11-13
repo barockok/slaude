@@ -584,7 +584,7 @@ Metrics: `slaude_decision_requests_total{adapter,outcome}` (outcome `ok`, `timeo
 | `SLAUDE_AUTO_EVOLVE` | No | `1` | Auto-evolve after each substantial user turn. When `1`, the manager injects an internal `<auto-evolve>` prompt so the agent decides whether to save or refine a skill. Set to `0` to disable. |
 | `SLAUDE_SOUL_PARSE_MAX_TOKENS` | No | `8192` | `max_tokens` budget for the SOUL.md reader used by `personas migrate` and `personas export`. Raise when a slower model needs more headroom (thinking-mode providers emit thinking + text blocks that both count). Non-positive or non-finite values fall back to `8192`. |
 | `SLAUDE_SOUL_PARSE_MODEL` | No | `SLAUDE_MODEL` or `claude-haiku-4-5-20251001` | Model `personas migrate` uses to read an old SOUL.md. Defaults to `SLAUDE_MODEL` when set, otherwise `claude-haiku-4-5-20251001`. |
-| `SLAUDE_SOUL_CACHE_DIR` | No | `$SLAUDE_HOME/cache` | Directory for the extracted-`SoulData` cache. In the gateway topology `$SLAUDE_HOME` is a volume nodes and agent turns can write, so a planted cache file could install forged approvers; point this at pod-local storage on gateways (`deploy/k8s-scale` mounts an `emptyDir`, `docker-compose.scale.yaml` a `tmpfs`). Every cache hit is also re-checked: each Slack id in it must appear verbatim in the soul text, and when `SLAUDE_MASTER_KEY` is set the entry must carry a MAC from a key derived from it (only a key holder can write a trusted entry). A hit failing either check is discarded and the soul re-extracted. |
+| `SLAUDE_SOUL_CACHE_DIR` | No | `$SLAUDE_HOME/cache` | Where `personas migrate` and `personas export` keep their cache of a model's reading of an old SOUL.md. Nothing at runtime reads it, so a gateway needs no pod-local cache. |
 
 ### External MCP env references
 
@@ -1170,15 +1170,15 @@ bun run validate-soul
 
 # Exit codes
 #   0 — ok (all required fields present; warnings may still print)
-#   1 — missing required fields (identity.name, manager.userId, or mandate)
-#   2 — extraction failure (missing auth: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN, or provider unreachable)
+#   1 — missing required fields (name, access.manager, or mandate.global), or a SOUL.md with no agent.yaml
+#   2 — an agent.yaml that does not compile (the message names the persona and the key)
 ```
 
 **What it does (`src/cli/validate.ts` + `src/soul/validate.ts`):**
 
-1. `loadSoulData()` — cache hit (`~/.slaude/cache/soul.<sha>.json`) → return; otherwise call the provider's `/v1/messages` with `EXTRACTION_PROMPT`, validate with `SoulDataSchema`, assert every extracted Slack id appears verbatim in `SOUL.md`, cache, return. On any failure → regex fallback (`approvers` only).
+1. `readFileAgent()` compiles each `agent.yaml` under `$SLAUDE_HOME` (the default persona's and each named persona's) with the same parser a synced file uses: no model call. A persona with a `SOUL.md` and no `agent.yaml` is reported with the command that converts it.
 2. `validateSoul(data)` — check the three required fields; emit warnings for empty `approvers`, empty channels, redundant backup manager, invalid `redactPatterns` regexes.
-3. Print `missing` to stderr, `warnings` to stderr, and `ok` to stdout; exit with the code above.
+3. Print each persona's `missing` to stderr, its `warnings` to stderr, and `ok` to stdout; exit with the code above.
 
 ```bash
 # Success

@@ -68,13 +68,12 @@ describe("e2e overlay", () => {
     expect(c.readinessProbe.exec.command).toEqual(["pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "slaude"]);
   });
 
-  test("the gateway patch is env only: the bot-token placeholder, and no soul cache setting (nothing reads one)", () => {
+  test("the gateway patch is env only: the bot-token placeholder", () => {
     const envOf = (c: any, n: string) => c.env?.find((e: any) => e.name === n)?.value;
     const patch = kustomization.patches
       .map((p: any) => parse(p.patch)[0])
       .find((d: any) => d.kind === "Deployment" && d.metadata.name === "slaude-gateway");
     const patched = patch.spec.template.spec.containers.find((c: any) => c.name === "gateway");
-    expect(envOf(patched, "SLAUDE_SOUL_CACHE_DIR")).toBeUndefined();
     // Env only: the patch adds no volume, mount or image.
     expect(Object.keys(patched).sort()).toEqual(["env", "name"]);
     expect(patched.env.map((e: any) => e.name)).toEqual(["SLACK_BOT_TOKEN"]);

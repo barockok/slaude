@@ -138,6 +138,12 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("panel persona overrides", () =>
     expect((await P.effectivePersonas("default"))[0]!.overridden).toEqual([]);
   });
 
+  test("a soul override for a persona that does not exist is a 404, not a misleading agent.yaml message", async () => {
+    await sync([row("ana")]);
+    const res = (await panel.fetch(put("/panel/api/personas/nobody/overrides/soul", { value: "new" }, superadmin)))!;
+    expect(res.status).toBe(404);
+  });
+
   test("a persona cannot be onboarded from the console: it is defined by an agent.yaml and synced", async () => {
     const res = (await panel.fetch(post("/panel/api/personas", { name: "cat", soul: "s", slackUserId: "UTESTCAT1" }, superadmin)))!;
     expect(res.status).toBe(409);

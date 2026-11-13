@@ -231,3 +231,12 @@ describe("scope blocks and the raw persona text", () => {
     expect(await agent.__systemPromptForTests("s2", "ana", { channelId: "D0ALICE" })).toContain("For this channel your mandate is: DM-ONLY-TEXT");
   });
 });
+
+describe("personaManager for a persona synced before agent.yaml", () => {
+  test("reads the manager from its stored structure, even when the soul text has no Reporting section", async () => {
+    const { personaManager } = await import("../../src/background/scheduler");
+    setSoulData(SoulDataSchema.parse({ manager: { userId: "UDEFMGR" } }));
+    setPersonaRegistry(registry([{ name: "scout", soulMd: "# Scout\nNo reporting section here.\n", soulJson: { manager: { userId: "USTOREDMGR" } } }]));
+    expect(personaManager("scout")).toBe("USTOREDMGR");
+  });
+});

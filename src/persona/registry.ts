@@ -239,7 +239,6 @@ export function __setPersonaStateLoader(f: ((tenant: string) => Promise<PersonaS
   stateLoader = f ?? loadPersonaState;
 }
 
-
 let registry: PersonaRegistry | null = null;
 /** Bumped on every install; a rebuild that started before a newer install
  *  discards its result instead of overwriting fresher state. */
@@ -393,7 +392,9 @@ export function labelsInUse(r: PersonaRegistry = getPersonaRegistry()): string[]
  * default persona's soul pair — its text and its structured soul, always from
  * one source, so approvals and ACLs never disagree with the soul in the prompt:
  *  - a managed `default` row: both from the row;
- *  - none (unmanaged, or no live `default` row): both from disk. Only a switch
+ *  - none (unmanaged, or no live `default` row): an unmanaged tenant takes the file default
+ *    (its agent.yaml) at boot; a managed tenant with no `default` row has an empty structure, so
+ *    nobody is admitted. Only a switch
  *    away from the row reloads them; boot already set the disk pair;
  *  - a row whose structure fails validation: the previous pair stays (neither
  *    half is installed), while the rest of the snapshot still installs.

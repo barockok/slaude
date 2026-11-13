@@ -263,7 +263,7 @@ stateDiagram-v2
 | **Session id already exists** — flag lost between CLI persist and `markStarted` | `stderr` match `session already in use` | Flip to `resume: sessionId` and retry |
 | **MCP stream closed** — external MCP disconnect tears down the shared transport pool, all `slaude_*` tools fail with `Stream closed` | `tool_use_result` string match `stream closed` | Auto-reload at turn end (`reload` + synthetic `continue`); circuit breaker after 2 consecutive reloads — surfaces error instead |
 | **Token budget critical** (≥ 92% of context window) | `TokenBudget.evaluateThreshold` (edge-triggered, one-shot per session) | Transport can surface a warning / trigger cooperative resume; `fallback 200k` when `modelUsage` absent |
-| **Extraction failure** | Any throw in `loadSoulData` | Regex fallback (approvers only), gateway gates stay on safe base |
+| **A persona with no agent.yaml** | A `SOUL.md` and no `agent.yaml` at boot | The process stops and names `personas migrate`; nothing falls back to reading the prose |
 
 All recovery is **silent to the user** except the circuit-open case — Next.js-style, the happy path never mentions errors; a dedicated section does.
 
@@ -321,7 +321,7 @@ Migrations are inline in `src/db/schema.ts` — checked via `PRAGMA table_info` 
 
 | Artifact | Source of truth | How it gets there |
 |---|---|---|
-| `SOUL.md` | Operator edits or `seed STARTER_PERSONA` | Manual; re-extracted on change |
+| `agent.yaml` | Operator edits, or a starter seeded into a bare home | Manual; read at boot, no extraction |
 | `mcp.json` | Operator | Manual; loaded by `loadExternalMcp`, merged into `mcpServers` per session |
 | `slaude.json` / `slaude.lock` | `bun run install-deps` | Declares `plugins`/`skills`/`knowledge` git sources; `--frozen` for Docker/CI |
 | `skills/*/SKILL.md` | Git repos + runtime `write_skill` | Hot-reloaded via `discoverSkills` each turn; synced back via `sync_manifest` |
@@ -339,7 +339,7 @@ The system prompt is a composition — not a single file.
 ```mermaid
 flowchart TB
   Base["<b>RUNTIME BASELINE</b> — src/soul/loader.ts:RUNTIME_BASELINE<br/>Hardcoded, non-negotiable, ships with the code.<br/>Slack output discipline, formatting, approval discipline, engagement,<br/>channel trust, KB-first, skill evolution, harness overrides.<br/>SOUL.md cannot override it. A slaude release updates it."]
-  Persona["<b>&lt;persona&gt;</b> — ~/.slaude/SOUL.md<br/>Operator-authored. Defines who the agent is.<br/>Identity, mandate, values, manager, allowlists, approvers,<br/>per-channel overrides (## Channel &lt;#Cxxx&gt;).<br/>Seeded as STARTER_PERSONA on first boot when missing."]
+  Persona["<b>&lt;persona&gt;</b> — ~/.slaude/agent.yaml<br/>Operator-authored. Defines who the agent is.<br/>Identity, mandate, values, manager, allowlists, approvers,<br/>per-channel overrides (## Channel &lt;#Cxxx&gt;).<br/>Seeded as STARTER_PERSONA on first boot when missing."]
   Mandate["<b>&lt;channel-mandate&gt;</b> — when SOUL.md has a ## Channel override<br/>The effective mandate there (override, extend or reduce), also for ## Scope blocks.<br/>Approvers are replaced too; manager and backup stay catchalls."]
   Reminder["<b>&lt;system-reminder&gt;</b> — skills + session mode + memory context<br/>Injected per turn: discovered skills, 1on1 mode block, brain memory recall."]
   Out["Claude child system prompt<br/>preset: claude_code + append"]

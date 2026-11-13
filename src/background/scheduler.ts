@@ -70,7 +70,7 @@ import { anyProactiveEnabled } from "../soul/proactive";
 import { env } from "../config/env";
 import { personaApp } from "./digest";
 import { soulData } from "../soul/extract";
-import { compiledSoulFor } from "../soul/per-persona";
+import { compiledSoulFor, ownStoredSoul } from "../soul/per-persona";
 import { personaSoulText } from "../persona/soul-source";
 import type { MandateParts } from "../soul/mandate-scope";
 import { effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
@@ -528,8 +528,8 @@ export function personaManager(personaId: string): string | null {
     if (!personaId || personaId === "default") return soulData().manager.userId ?? null;
     const compiled = compiledSoulFor(personaId);
     if (compiled) return compiled.manager.userId ?? null;
-    // A persona with no compiled structure: the soul text's own Reporting section.
-    return parseManager(personaSoulText(personaId));
+    // A persona synced before agent.yaml: its stored structure, else the soul text's Reporting section.
+    return ownStoredSoul(personaId)?.manager.userId ?? parseManager(personaSoulText(personaId));
   } catch {
     return null;
   }

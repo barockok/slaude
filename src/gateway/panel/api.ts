@@ -382,7 +382,6 @@ export interface PanelApiDeps {
   onUnlock?: (sessionId: string) => void;
   /** SSE poll cadence (ms). Default 300. */
   eventsPollMs?: number;
-  /** Strict soul extraction for runtime persona changes. Default: the real extractor. */
   /** The plugin inventory's sources, for GET /panel/api/plugins. Absent or null
    *  (mono: no nodes report) = an empty, unavailable view. */
   plugins?: InventorySources | null;
@@ -1280,7 +1279,8 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
                 // channel sections in its soul included: only the prose changes,
                 // and extraction would find nothing in prose.
                 const one = await Personas.personaByName(tenant, name);
-                if (one?.desired.definition) {
+                if (!one) return json(404, { error: `no persona named '${name}'` });
+                if (one.desired.definition) {
                   const kept = compiledChannelSections(one.desired.soulMd, v);
                   if (kept && endsInOpenFence(v)) return json(400, { error: "the soul text ends inside an open code fence: close it so the channel settings can be kept" });
                   stored = { soulMd: v + kept, soulJson: one.desired.soulJson };

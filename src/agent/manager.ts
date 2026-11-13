@@ -2942,6 +2942,9 @@ function compiledMandateBlock(soul: PersonaSoul): string {
  * A node never reads a database, the registry or its own disk, and reads no soul
  * text: a bundle with no structured soul yields no channel mandate.
  */
+/** Personas already warned about a bundle with no structured soul, once each per process. */
+const warnedNoStructure = new Set<string>();
+
 function channelMandateBlock(
   channelId: string | null | undefined,
   soulJson: unknown,
@@ -2962,7 +2965,13 @@ function channelMandateBlock(
     eff = resolveSoulMandate(parsed.data, channelId, parsed.data).text.trim();
   } else if (onNode) {
     // A node never reads a database or the registry, and reads no soul text: a bundle
-    // with no structure has nothing to place a channel mandate by.
+    // with no structure has nothing to place a channel mandate by. Said once per persona,
+    // because an older gateway (or a persona never converted to agent.yaml) sends exactly this.
+    const key = persona ?? "default";
+    if (!warnedNoStructure.has(key)) {
+      warnedNoStructure.add(key);
+      console.warn(`[agent] persona=${key}: the runtime bundle has no structured soul, so no channel mandate applies on this node (define the persona as an agent.yaml, and run the gateway and nodes on the same release)`);
+    }
     return "";
   } else {
     const own = personaMandateText(persona);

@@ -84,6 +84,22 @@ describe("node channel mandate without a database", () => {
     }
   });
 
+  test("a bundle with no structured soul says so once per persona, not on every turn", async () => {
+    const c = capture();
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const agent = new AgentManager();
+      agent.setPersonaSoulResolver(async () => ({ soulMd: "# Sam\n", soulJson: null }));
+      await agent.__systemPromptForTests("s-1", "once-persona", { channelId: "CTEAM01" });
+      await agent.__systemPromptForTests("s-2", "once-persona", { channelId: "CTEAM01" });
+      const said = warn.mock.calls.filter((a) => String(a[0]).includes("persona=once-persona") && String(a[0]).includes("no structured soul"));
+      expect(said).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+      c.restore();
+    }
+  });
+
   test("soulData() on a node never reaches for the database", () => {
     const c = capture();
     try {

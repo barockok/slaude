@@ -64,7 +64,7 @@ export function checkDiskPersonas(home: string = paths.home, personasDir: string
   if (legacy.length) {
     throw new Error(
       `persona(s) ${legacy.map((n) => `'${n}'`).join(", ")} have a SOUL.md and no agent.yaml. A persona's access and mandates are read from agent.yaml only. ` +
-        `Convert each with: bun run personas migrate <name|default> (then review the file and restart).`,
+        `Convert each with: bun run personas migrate <name|default> (then review the file and restart), or delete the directory if it is not a persona.`,
     );
   }
   const file = join(home, AGENT_YAML);
