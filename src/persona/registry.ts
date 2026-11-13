@@ -9,7 +9,7 @@ import type { PersonaBackground, PersonaDefinition, PersonaProvider } from "./sy
 import { effectivePersonas, isManaged, stateVersion } from "../db/personas";
 import { resolveDbConfig } from "../db/client";
 import { SoulDataSchema, type SoulData } from "../soul/data";
-import { __resetSoulDataMemo, loadSoulData, setSoulData } from "../soul/extract";
+import { __resetSoulDataMemo, setSoulData } from "../soul/extract";
 import { readFileAgent, type FileAgent } from "./file-agent";
 
 export type { Persona, PersonaConfig };
@@ -233,17 +233,12 @@ export async function buildPersonaRegistry(tenant: string): Promise<PersonaRegis
 }
 
 let stateLoader: (tenant: string) => Promise<PersonaState> = loadPersonaState;
-let diskSoulDataLoader: () => Promise<SoulData> = loadSoulData;
 
 /** Test seam: replace how a rebuild reads the tenant's state (null restores). */
 export function __setPersonaStateLoader(f: ((tenant: string) => Promise<PersonaState>) | null) {
   stateLoader = f ?? loadPersonaState;
 }
 
-/** Test seam: replace the disk structured-soul read (null restores). */
-export function __setDiskSoulDataLoader(f: (() => Promise<SoulData>) | null) {
-  diskSoulDataLoader = f ?? loadSoulData;
-}
 
 let registry: PersonaRegistry | null = null;
 /** Bumped on every install; a rebuild that started before a newer install
@@ -424,7 +419,8 @@ export async function refreshPersonaState(tenant: string): Promise<boolean> {
     const f = state.registry.defaultPersona!()!;
     pair = { text: f.soulMd!, data: SoulDataSchema.parse(f.soulJson), fromDb: true };
   } else if (defaultPairFromDb) {
-    pair = { text: null, data: await diskSoulDataLoader(), fromDb: false };
+    // Back from a managed row to a home with no agent.yaml: no structure, so nobody is admitted.
+    pair = { text: null, data: SoulDataSchema.parse({}), fromDb: false };
   }
   if (ticket !== generation) return false; // a newer install won
   registry = state.registry;
@@ -493,7 +489,6 @@ export function __resetPersonaRegistry() {
   managedDefaultSoul = null;
   defaultPairFromDb = false;
   stateLoader = loadPersonaState;
-  diskSoulDataLoader = loadSoulData;
 }
 
 /**
