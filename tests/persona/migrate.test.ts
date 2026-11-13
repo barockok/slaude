@@ -187,7 +187,7 @@ describe("migratePersona", () => {
 
   test("a soul that sets Wake, Highest or Cooldown is refused, since the file would be looser", async () => {
     put("SOUL.md", `${DEFAULT_SOUL}\n## Proactive\n- Wake: no\n- Highest: inform\n- Read: <#C0WORK>\n`);
-    const e = await migratePersona({ home, name: "default", extract }).catch((x) => x as Error);
+    const e = (await migratePersona({ home, name: "default", extract }).catch((x) => x)) as Error;
     expect(e).toBeInstanceOf(PayloadError);
     expect(e.message).toContain("Wake, Highest");
     expect(existsSync(join(home, "agent.yaml"))).toBe(false);
