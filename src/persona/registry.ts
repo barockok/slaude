@@ -10,6 +10,7 @@ import { effectivePersonas, isManaged, stateVersion } from "../db/personas";
 import { resolveDbConfig } from "../db/client";
 import { SoulDataSchema, type SoulData } from "../soul/data";
 import { __resetSoulDataMemo, loadSoulData, setSoulData } from "../soul/extract";
+import { readFileAgent, type FileAgent } from "./file-agent";
 
 export type { Persona, PersonaConfig };
 
@@ -24,6 +25,8 @@ export type DefaultPersonaFields = {
   definition?: PersonaDefinition | null;
   /** Its stored structure, only with a definition: a boot checks that it parses. */
   soulJson?: unknown;
+  /** Set only for a default persona defined by $SLAUDE_HOME/agent.yaml: its soul text. */
+  soulMd?: string;
 };
 
 export interface PersonaRegistry {
@@ -43,6 +46,40 @@ export interface PersonaRegistry {
    *  or null when the tenant has no live `default` row. The default persona is
    *  not in `list()`. Absent on a filesystem registry. */
   defaultPersona?(): DefaultPersonaFields | null;
+}
+
+/** The config.json of a persona directory, or null when it has none or it does not read. */
+function readPersonaConfig(configPath: string): Partial<PersonaConfig> | null {
+  if (!existsSync(configPath)) return null;
+  try {
+    const c = JSON.parse(readFileSync(configPath, "utf8")) as Partial<PersonaConfig>;
+    return c && typeof c === "object" && !Array.isArray(c) ? c : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A persona defined by an agent.yaml on disk. Its Slack identity is the file's
+ * `slackUserId`, else config.json's; its token only ever comes from config.json.
+ * It carries the same fields a database-backed persona does, so readers that
+ * ask for the definition work unchanged.
+ */
+function fileAgentPersona(name: string, configPath: string, a: FileAgent): Persona {
+  const cfg = readPersonaConfig(configPath);
+  const slackUserId = a.slackUserId ?? (typeof cfg?.slackUserId === "string" ? cfg.slackUserId : "");
+  if (!slackUserId) throw new Error(`persona '${name}': no Slack user: set slackUserId in agent.yaml or config.json`);
+  const slackApiUrl = env.slack.apiUrl();
+  const userToken = typeof cfg?.userToken === "string" && cfg.userToken ? cfg.userToken : undefined;
+  return {
+    name,
+    slackUserId,
+    soulMd: a.soulMd,
+    config: { slackUserId, name, ...(userToken ? { userToken } : {}) },
+    outClient: userToken ? new WebClient(userToken, slackApiUrl ? { slackApiUrl } : undefined) : null,
+    soulJson: a.soulJson,
+    definition: a.definition,
+  };
 }
 
 function loadPersonas(): Persona[] {
@@ -67,6 +104,15 @@ function loadPersonas(): Persona[] {
 
     const configPath = join(dir, "config.json");
     const soulPath = join(dir, "SOUL.md");
+
+    // An agent.yaml defines the persona. A malformed one stops the process: skipping
+    // the persona would let its name fall through to the default persona.
+    const fileAgent = readFileAgent(dir, entry);
+    if (fileAgent) {
+      for (const w of fileAgent.warnings) console.warn(`[persona] ${w}`);
+      out.push(fileAgentPersona(entry, configPath, fileAgent));
+      continue;
+    }
 
     if (!existsSync(configPath) || !existsSync(soulPath)) {
       console.warn(`[persona] skipping ${entry}: missing config.json or SOUL.md`);
@@ -100,6 +146,7 @@ function snapshot(
     tombstoned: Array<{ name: string; slackUserId: string }>;
     defaultPersona: DefaultPersonaFields | null;
   },
+  fileDefault?: DefaultPersonaFields | null,
 ): PersonaRegistry {
   const byUserId = new Map<string, Persona>(personas.map((p) => [p.slackUserId, p]));
   const byName = new Map<string, Persona>(personas.map((p) => [p.name, p]));
@@ -113,12 +160,20 @@ function snapshot(
     isMultiPersonaMode: () => personas.length > 0,
     isManaged: () => managed !== undefined,
     tombstonedPersonaFor: (id) => retired.get(id) ?? null,
-    ...(managed ? { defaultPersona: () => managed.defaultPersona } : {}),
+    ...(managed ? { defaultPersona: () => managed.defaultPersona } : fileDefault ? { defaultPersona: () => fileDefault } : {}),
   };
 }
 
+/** The default persona defined by $SLAUDE_HOME/agent.yaml, as the fields a managed `default` row carries; null without the file. */
+function loadFileDefault(): DefaultPersonaFields | null {
+  const a = readFileAgent(paths.home, "default");
+  if (!a) return null;
+  for (const w of a.warnings) console.warn(`[persona] ${w}`);
+  return { model: null, mcp: null, definition: a.definition, soulJson: a.soulJson, soulMd: a.soulMd };
+}
+
 export function loadPersonaRegistry(): PersonaRegistry {
-  return snapshot(loadPersonas());
+  return snapshot(loadPersonas(), undefined, loadFileDefault());
 }
 
 export interface PersonaState {
@@ -294,10 +349,10 @@ export function managedPersonaProvider(name: string | undefined, r: PersonaRegis
 
 /**
  * A persona's agent.yaml additions (undefined name = the default persona), or
- * null when it has no agent.yaml (always null on a filesystem registry).
+ * null when it has no agent.yaml.
  */
 export function managedPersonaDefinition(name: string | undefined, r: PersonaRegistry = getPersonaRegistry()): PersonaDefinition | null {
-  if (!r.isManaged()) return null;
+  // A filesystem persona has one only when an agent.yaml on disk defines it.
   if (!name || name === "default") return r.defaultPersona?.()?.definition ?? null;
   return r.lookupByName(name)?.definition ?? null;
 }
@@ -364,6 +419,10 @@ export async function refreshPersonaState(tenant: string): Promise<boolean> {
       console.error(`[persona] the default persona's compiled structure is invalid tenant=${tenant}; it has no access until a sync repairs it`);
       pair = { text: def.soulMd, data: SoulDataSchema.parse({}), fromDb: true };
     } else console.error(`[persona] the default persona's soul structure is invalid tenant=${tenant}; keeping the previous default soul`);
+  } else if (state.registry.defaultPersona?.()?.soulMd !== undefined) {
+    // $SLAUDE_HOME/agent.yaml: compiled at load, so a pair that does not parse is a bug, not data.
+    const f = state.registry.defaultPersona!()!;
+    pair = { text: f.soulMd!, data: SoulDataSchema.parse(f.soulJson), fromDb: true };
   } else if (defaultPairFromDb) {
     pair = { text: null, data: await diskSoulDataLoader(), fromDb: false };
   }

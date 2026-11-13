@@ -17,7 +17,8 @@
  */
 import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { getPersonaRegistry, managedPersonaProvider } from "../../persona/registry";
+import { getPersonaRegistry, managedPersonaDefinition, managedPersonaProvider } from "../../persona/registry";
+import { personaSoulText } from "../../persona/soul-source";
 import { db } from "../../db/schema";
 import { resolveDbConfig } from "../../db/client";
 import { effectivePersonas, isManaged } from "../../db/personas";
@@ -29,7 +30,6 @@ import { baseUrlProblem, internalHostsFrom } from "../../persona/provider-base-u
 import { logResolveEvent } from "../core/provider-secrets";
 import { decrypt, masterKey, MasterKeyError } from "../../db/crypto";
 import { env } from "../../config/env";
-import { loadSoul } from "../../soul/loader";
 import { soulData } from "../../soul/extract";
 import { soulDataFor } from "../../soul/per-persona";
 import { skillRootsFor } from "../../skills/loader";
@@ -414,6 +414,22 @@ async function buildBundle(tenantId: string, personaId: string, label?: string):
     const fsPersona = getPersonaRegistry().lookupByName(personaId);
     if (!fsPersona) return null;
     let personaSoul = "";
+    if (fsPersona.definition) {
+      // Defined by an agent.yaml on disk: its text and its compiled structure, as a managed persona's bundle carries them.
+      return {
+        tenantId,
+        personaId,
+        providerCreds: envProviderCreds(),
+        soulMd: fsPersona.soulMd ?? "",
+        soulJson: withChannelClasses(personaId, fsPersona.soulJson ?? null),
+        slackUserId: fsPersona.slackUserId ?? null,
+        mcpJson: null,
+        mcpServers: bridgedServerNames(personaId, scope),
+        skillsPaths: skillRootsFor(personaId),
+        defaultModel: env.model(),
+        definition: bundleDefinition(fsPersona.definition),
+      };
+    }
     // A database-backed persona has no soulPath: it ships the empty soul here
     // until this tier is rewritten to serve effective state.
     if (fsPersona.soulPath) {
@@ -443,7 +459,7 @@ async function buildBundle(tenantId: string, personaId: string, label?: string):
   Object.assign(providerCreds, envProviderCreds());
   let soulMd = "";
   try {
-    soulMd = loadSoul();
+    soulMd = personaSoulText();
   } catch {
     /* no SOUL.md on disk — bundle ships an empty soul */
   }
@@ -453,6 +469,8 @@ async function buildBundle(tenantId: string, personaId: string, label?: string):
   } catch {
     /* structured extraction unavailable */
   }
+  // A default defined by $SLAUDE_HOME/agent.yaml carries its skills and guardrails to the node.
+  const defaultDefinition = managedPersonaDefinition(undefined);
   return {
     tenantId,
     personaId: "default",
@@ -464,6 +482,7 @@ async function buildBundle(tenantId: string, personaId: string, label?: string):
     mcpServers: bridgedServerNames(undefined, scope),
     skillsPaths: skillRootsFor(),
     defaultModel: env.model(),
+    ...(defaultDefinition ? { definition: bundleDefinition(defaultDefinition) } : {}),
   };
 }
 
