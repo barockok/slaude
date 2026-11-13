@@ -7,7 +7,6 @@ import { __resetMasterKeyCache } from "../../src/db/crypto";
 import * as P from "../../src/db/personas";
 import { __resetPersonaRegistry, whenPersonaRegistrySettled } from "../../src/persona/registry";
 import type { DesiredPersona } from "../../src/persona/effective";
-import { SoulExtractionError } from "../../src/soul/extract";
 import * as AuditEvents from "../../src/db/audit-events";
 import { flushAudits } from "../../src/audit/emit";
 
@@ -20,10 +19,8 @@ const operator = cookie("alice@example.com");
 
 let reloads = 0;
 const pubsub = { publishReload: async () => { reloads++; return 1; } } as any;
-const mk = (extractSoul?: (t: string) => Promise<unknown>) =>
-  createPanelApi({ registry: null, pubsub, panelLock: null, chat: async () => {}, extractSoul });
-const okExtract = async (t: string) => ({ extracted: t });
-let panel = mk(okExtract);
+const mk = () => createPanelApi({ registry: null, pubsub, panelLock: null, chat: async () => {} });
+let panel = mk();
 
 const req = (method: string, path: string, who: string, body?: unknown, o: { csrf?: boolean } = {}) =>
   new Request(`https://panel.example.com${path}`, {
@@ -55,7 +52,7 @@ beforeEach(async () => {
   __resetRoleCache();
   for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
   reloads = 0;
-  panel = mk(okExtract);
+  panel = mk();
 });
 afterAll(async () => {
   // Leftover persona rows make later files see a populated table (fail-closed on a missing default).
@@ -133,206 +130,24 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("panel persona overrides", () =>
     expect((await panel.fetch(put("/panel/api/personas/ana/overrides/runsOn", { value: "finance" }, superadmin)))!.status).toBe(422);
   });
 
-  test("a soul override runs strict extraction; a failure refuses it", async () => {
+  test("a soul override for a persona with no agent.yaml is refused: its soul has no structure to keep", async () => {
     await sync([row("ana")]);
-    const failing = mk(async () => { throw new SoulExtractionError("boom"); });
-    expect((await failing.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new" }, superadmin)))!.status).toBe(502);
+    const res = (await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new" }, superadmin)))!;
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain("no agent.yaml");
     expect((await P.effectivePersonas("default"))[0]!.overridden).toEqual([]);
-    expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new" }, superadmin)))!.status).toBe(200);
-    const ana = (await P.effectivePersonas("default"))[0]!;
-    expect(ana.soulMd).toBe("new");
-    expect(ana.soulJson).toEqual({ extracted: "new" });
   });
 
-  test("an extraction failure's 502 is generic; the provider text stays in the server log", async () => {
+  test("a soul override for a persona that does not exist is a 404, not a misleading agent.yaml message", async () => {
     await sync([row("ana")]);
-    const failing = mk(async () => { throw new SoulExtractionError("soul extraction failed: extractor http 500: provider-body-detail"); });
-    const err = spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const res = await failing.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new" }, superadmin));
-      expect(res!.status).toBe(502);
-      const text = await res!.text();
-      expect(text).not.toContain("provider-body-detail");
-      expect(text).not.toContain("extractor http");
-      expect(JSON.parse(text).error).toMatch(/soul extraction failed/);
-      expect(err.mock.calls.some((c) => c.map(String).join(" ").includes("provider-body-detail"))).toBe(true);
-    } finally {
-      err.mockRestore();
-    }
-    // Onboarding a persona goes through the same mapping.
-    const onboard = await failing.fetch(post("/panel/api/personas", { name: "cat", soul: "s", slackUserId: "UTESTCAT1" }, superadmin));
-    expect(onboard!.status).toBe(502);
-    expect(await onboard!.text()).not.toContain("provider-body-detail");
+    const res = (await panel.fetch(put("/panel/api/personas/nobody/overrides/soul", { value: "new" }, superadmin)))!;
+    expect(res.status).toBe(404);
   });
 
-  test("runtime writes to a never-synced tenant are refused", async () => {
-    expect((await panel.fetch(put("/panel/api/personas/ana/overrides/model", { value: "m" }, superadmin)))!.status).toBe(409);
-  });
-
-  test("an override on a missing persona is 404 for PUT and DELETE", async () => {
-    await sync([row("ana")]);
-    expect((await panel.fetch(put("/panel/api/personas/ghost/overrides/model", { value: "m" }, superadmin)))!.status).toBe(404);
-    expect((await panel.fetch(del("/panel/api/personas/ghost/overrides/model", superadmin)))!.status).toBe(404);
-  });
-
-  describe("a soul edit and the compiled channel settings", () => {
-    const block = "\n\n## Channel <#COPS>\n### Session\n- Mode: channel";
-    const compiled = (over: Partial<DesiredPersona> = {}) => row("ana", { soulMd: `ana soul${block}`, definition: {}, ...over });
-
-    test("an agent.yaml persona keeps its channel sections", async () => {
-      await sync([compiled()]);
-      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose" }, superadmin)))!.status).toBe(200);
-      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe(`new prose${block}`);
-    });
-
-    test("a channel section the edit carries is not added twice", async () => {
-      await sync([compiled()]);
-      const value = "new prose\n\n## Channel <#COPS>\n### Proactive\n- Enabled: no";
-      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value }, superadmin)))!.status).toBe(200);
-      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe(value);
-    });
-
-    test("an authored channel section can be edited away", async () => {
-      await sync([compiled({ soulMd: "ana soul\n\n## Channel <#COPS>\n### Mandate\nWatch." })]);
-      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose" }, superadmin)))!.status).toBe(200);
-      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe("new prose");
-    });
-
-    test("an edit ending in an open fence is refused when there are sections to keep", async () => {
-      await sync([compiled()]);
-      const res = (await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose\n\`\`\`\ncode" }, superadmin)))!;
-      expect(res.status).toBe(400);
-      expect(((await res.json()) as { error: string }).error).toContain("code fence");
-      expect((await P.effectivePersonas("default"))[0]!.overridden).toEqual([]);
-    });
-
-    test("an open fence is allowed when no section needs keeping", async () => {
-      await sync([compiled({ soulMd: "ana soul" })]);
-      const value = "new prose\n\`\`\`\ncode";
-      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value }, superadmin)))!.status).toBe(200);
-      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe(value);
-    });
-
-    test("re-saving the stored text does not grow the soul", async () => {
-      await sync([compiled()]);
-      await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose" }, superadmin));
-      const value = (await P.effectivePersonas("default"))[0]!.soulMd;
-      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value }, superadmin)))!.status).toBe(200);
-      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe(value);
-    });
-
-    test("DELETE brings the compiled block back exactly once", async () => {
-      await sync([compiled()]);
-      await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose" }, superadmin));
-      expect((await panel.fetch(del("/panel/api/personas/ana/overrides/soul", superadmin)))!.status).toBe(200);
-      const soul = (await P.effectivePersonas("default"))[0]!.soulMd;
-      expect(soul).toBe(`ana soul${block}`);
-      expect(soul.split("## Channel").length - 1).toBe(1);
-    });
-
-    test("a SOUL.md persona's edit is stored as written", async () => {
-      await sync([compiled({ definition: undefined })]);
-      expect((await panel.fetch(put("/panel/api/personas/ana/overrides/soul", { value: "new prose" }, superadmin)))!.status).toBe(200);
-      expect((await P.effectivePersonas("default"))[0]!.soulMd).toBe("new prose");
-    });
-  });
-
-  test("DELETE clears an override and reloads", async () => {
-    await sync([row("ana")]);
-    await P.setOverride("default", "ana", "model", "m", "ops");
-    const res = (await panel.fetch(del("/panel/api/personas/ana/overrides/model", superadmin)))!;
-    expect(res.status).toBe(200);
-    expect((await res.json() as any).removed).toBe(true);
-    expect((await P.effectivePersonas("default"))[0]!.overridden).toEqual([]);
-    expect(reloads).toBe(1);
-  });
-
-  test("a runtime onboard may not take a git-managed name", async () => {
-    await sync([row("ana")]);
-    expect((await panel.fetch(post("/panel/api/personas", { name: "ana", slackUserId: "UTESTUSER9", soul: "x" }, superadmin)))!.status).toBe(409);
-  });
-
-  test("a runtime onboard validates the name and identity, and never echoes the token", async () => {
-    await sync([row("ana")]);
-    expect((await panel.fetch(post("/panel/api/personas", { name: "Bad Name", slackUserId: "U1", soul: "x" }, superadmin)))!.status).toBe(422);
-    expect((await panel.fetch(post("/panel/api/personas", { name: "zed", soul: "x" }, superadmin)))!.status).toBe(422);
-    expect((await panel.fetch(post("/panel/api/personas", { name: "zed", slackUserId: "UANA", soul: "x" }, superadmin)))!.status).toBe(409);
-    const logs: string[] = [];
-    const spy = console.log; const spyE = console.error;
-    console.log = (...a: unknown[]) => { logs.push(a.join(" ")); };
-    console.error = (...a: unknown[]) => { logs.push(a.join(" ")); };
-    let text: string;
-    try {
-      const res = (await panel.fetch(post("/panel/api/personas", { name: "zed", slackUserId: "UZED", soul: "x", userToken: TOKEN }, superadmin)))!;
-      expect(res.status).toBe(200);
-      text = await res.text();
-    } finally { console.log = spy; console.error = spyE; }
-    expect(text).not.toContain(TOKEN);
-    expect(logs.join("\n")).not.toContain(TOKEN);
-    expect(reloads).toBe(1);
-    const zed = (await P.effectivePersonas("default")).find((p) => p.name === "zed")!;
-    expect(zed.origin).toBe("runtime");
-    expect(zed.userToken).toBe(TOKEN);
-    const listed = await (await panel.fetch(get("/panel/api/personas", superadmin)))!.text();
-    expect(listed).not.toContain(TOKEN);
-  });
-
-  const HTTP = { mcpServers: { svc: { type: "http", url: "https://mcp.example.com", headers: { a: "b" } } } };
-  const STDIO = { mcpServers: { evil: { type: "stdio", command: "sh", args: ["-c", "x"] } } };
-  const SSE = { mcpServers: { s1: { type: "sse", url: "https://mcp.example.com" } } };
-
-  test("an mcp override is http-only", async () => {
-    await sync([row("ana")]);
-    const p = "/panel/api/personas/ana/overrides/mcp";
-    for (const bad of [STDIO, SSE]) {
-      const res = (await panel.fetch(put(p, { value: bad }, superadmin)))!;
-      expect(res.status).toBe(422);
-      const msg = ((await res.json()) as any).error as string;
-      expect(msg).not.toContain("sh");
-      expect((await P.effectivePersonas("default"))[0]!.overridden).toEqual([]);
-    }
-    expect((await panel.fetch(put(p, { value: HTTP }, superadmin)))!.status).toBe(200);
-  });
-
-  test("a runtime onboard's mcp is http-only", async () => {
-    await sync([row("ana")]);
-    const mk1 = (mcp: unknown) => post("/panel/api/personas", { name: "zed", slackUserId: "UZED", soul: "x", mcp }, superadmin);
-    const res = (await panel.fetch(mk1(STDIO)))!;
-    expect(res.status).toBe(422);
-    expect(JSON.stringify(await res.json())).toContain("evil");
-    expect((await panel.fetch(mk1(SSE)))!.status).toBe(422);
-    expect((await P.effectivePersonas("default")).some((p) => p.name === "zed")).toBe(false);
-    expect((await panel.fetch(mk1(HTTP)))!.status).toBe(200);
-  });
-
-  test("a bad persona name in the path is 422, after the role check", async () => {
-    await sync([row("ana")]);
-    for (const n of ["%E0", "a%2Fb"]) {
-      expect((await panel.fetch(put(`/panel/api/personas/${n}/overrides/model`, { value: "m" }, superadmin)))!.status).toBe(422);
-      expect((await panel.fetch(del(`/panel/api/personas/${n}/overrides/model`, superadmin)))!.status).toBe(422);
-      expect((await panel.fetch(put(`/panel/api/personas/${n}/overrides/model`, { value: "m" }, operator)))!.status).toBe(403);
-    }
-  });
-
-  test("PUT and DELETE both 409 on a never-synced tenant", async () => {
-    const p = "/panel/api/personas/ana/overrides/model";
-    expect((await panel.fetch(put(p, { value: "m" }, superadmin)))!.status).toBe(409);
-    expect((await panel.fetch(del(p, superadmin)))!.status).toBe(409);
-  });
-
-  test("a runtime onboard rejects an empty model", async () => {
-    await sync([row("ana")]);
-    expect((await panel.fetch(post("/panel/api/personas", { name: "zed", slackUserId: "UZED", soul: "x", model: "" }, superadmin)))!.status).toBe(422);
-  });
-
-  test("GET skips a persona a racing sync added between the two reads", async () => {
-    await sync([row("ana"), row("bea")]);
-    const real = P.desiredPersonas;
-    const spy = spyOn(P, "desiredPersonas").mockImplementation(async (...a) => (await real(...a)).filter((d) => d.name !== "bea"));
-    try {
-      const body = (await (await panel.fetch(get("/panel/api/personas", superadmin)))!.json()) as any;
-      expect(body.personas.map((p: any) => p.name)).toEqual(["ana"]);
-    } finally { spy.mockRestore(); }
+  test("a persona cannot be onboarded from the console: it is defined by an agent.yaml and synced", async () => {
+    const res = (await panel.fetch(post("/panel/api/personas", { name: "cat", soul: "s", slackUserId: "UTESTCAT1" }, superadmin)))!;
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain("agent.yaml");
   });
 
   test("mutations without the anti-CSRF header are refused first", async () => {
@@ -359,7 +174,7 @@ describe.skipIf(process.env.SLAUDE_DB === "pg")("panel persona routes on sqlite"
     __resetRoleCache();
   });
   test("GET, POST, PUT and DELETE are 409 'persona sync requires Postgres'", async () => {
-    const p = mk(okExtract);
+    const p = mk();
     for (const r of [
       get("/panel/api/personas", superadmin),
       post("/panel/api/personas", { name: "ana", soul: "x", slackUserId: "UTESTUSER1" }, superadmin),

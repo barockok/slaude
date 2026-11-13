@@ -2,12 +2,12 @@ import { describe, it, expect, afterEach, spyOn } from "bun:test";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../src/persona/registry";
 import type { Persona } from "../../src/persona/types";
 import { SoulDataSchema } from "../../src/soul/data";
-import { writeSoulCacheEntry } from "../../src/soul/extract";
 import { monoPersonaSoul } from "../../src/voice/mono-soul";
 import { instructionsFrom } from "../../src/voice/hosts";
 
-const persona = (name: string, soulMd: string): Persona =>
-  ({ name, slackUserId: "U0PER1", soulMd, config: { slackUserId: "U0PER1", name }, outClient: null }) as Persona;
+// `data` is the persona's compiled structure, as an agent.yaml gives it.
+const persona = (name: string, soulMd: string, data?: unknown): Persona =>
+  ({ name, slackUserId: "U0PER1", soulMd, config: { slackUserId: "U0PER1", name }, outClient: null, ...(data ? { soulJson: data, definition: {} } : {}) }) as Persona;
 
 function registry(personas: Persona[], managed: boolean): PersonaRegistry {
   return {
@@ -23,23 +23,23 @@ function registry(personas: Persona[], managed: boolean): PersonaRegistry {
 afterEach(() => __resetPersonaRegistry());
 
 describe("monoPersonaSoul", () => {
-  it("a named persona speaks with its own extracted soul, channel mandate applied", () => {
+  it("a named persona speaks with its own compiled soul, channel mandate applied", () => {
     const md = "# Ops Bot\nRuns the on-call rota for #team-channel C0OPS1.";
-    writeSoulCacheEntry(md, SoulDataSchema.parse({
+    const data = SoulDataSchema.parse({
       identity: { name: "Ops Bot", role: "on-call helper" },
       values: ["calm"],
       mandate: "keep the rota",
       channelOverrides: [{ channel: "C0OPS1", mandate: "only incidents" }],
-    }));
-    setPersonaRegistry(registry([persona("ops-bot", md)], true));
+    });
+    setPersonaRegistry(registry([persona("ops-bot", md, data)], true));
     const plain = instructionsFrom(monoPersonaSoul("ops-bot", "C0OTHER01"), "b");
     expect(plain).toContain("You are Ops Bot, on-call helper.");
     expect(plain).toContain("Mandate: keep the rota");
     expect(instructionsFrom(monoPersonaSoul("ops-bot", "C0OPS1"), "b")).toContain("Mandate: only incidents");
   });
 
-  it("without an extracted soul the voice still carries the persona's name, not the default's", () => {
-    setPersonaRegistry(registry([persona("helper", "# never extracted")], false));
+  it("without a compiled soul the voice still carries the persona's name, not the default's", () => {
+    setPersonaRegistry(registry([persona("helper", "# no structure")], false));
     expect(instructionsFrom(monoPersonaSoul("helper", "C1"), "b")).toContain("You are helper.");
   });
 
@@ -61,13 +61,13 @@ describe("monoPersonaSoul", () => {
 describe("monoPersonaSoul scoped mandates", () => {
   it("a named persona's channel limit and dm scope go through the resolver", () => {
     const md = "# Ops Bot\nRuns the rota in C0OPS1, D0ALICE1.";
-    writeSoulCacheEntry(md, SoulDataSchema.parse({
+    const data = SoulDataSchema.parse({
       identity: { name: "Ops Bot" },
       mandate: "keep the rota",
       channelOverrides: [{ channel: "C0OPS1", mandate: "no paging", mandateMode: "reduce" }],
       scopeMandates: [{ scope: "dm", mandate: "be brief" }],
-    }));
-    setPersonaRegistry(registry([persona("ops-bot", md)], true));
+    });
+    setPersonaRegistry(registry([persona("ops-bot", md, data)], true));
     const limited = instructionsFrom(monoPersonaSoul("ops-bot", "C0OPS1"), "b");
     expect(limited).toContain("Mandate: keep the rota");
     expect(limited).toContain("Limit for this channel");

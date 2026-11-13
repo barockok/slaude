@@ -46,7 +46,7 @@ flowchart LR
 | **Gateway** | `src/gateway/slack/*` | Trust boundary. Ingest, dedup, channel-mode, engagement, slash commands, MCP + OAuth wiring, stop guard |
 | **AgentManager** | `src/agent/manager.ts` | `Map<sessionId, LiveSession>` over `@anthropic-ai/claude-agent-sdk`. Prompt iterable, resume, idle TTL, token budget, hooks |
 | **Modules** | `src/{soul,skills,knowledge,memory,persona}` | Persona (two-layer prompt), skills, KB brain, episodic memory, persona registry |
-| **Persistence** | `bun:sqlite` + `~/.slaude/` PVC | Per-thread sqlite rows + markdown on disk (SOUL.md, mcp.json, slaude.json/lock, wikis) |
+| **Persistence** | `bun:sqlite` + `~/.slaude/` PVC | Per-thread sqlite rows + markdown on disk (agent.yaml, mcp.json, slaude.json/lock, wikis) |
 | **Observability** | `src/health.ts`, `src/metrics.ts` | `/healthz`, `/readyz`, `/metrics` (Prometheus), per-channel + per-model labels |
 
 > **Next.js parity check:** Next.js docs put the diagram first, then explain each layer top-to-bottom with a table. We do the same. If you only read the diagram and this table, you can navigate the codebase.
@@ -56,7 +56,7 @@ flowchart LR
 | Term | Meaning |
 |---|---|
 | **Surface** | Platform-neutral `reply`/`edit`/`upload` contract (`src/gateway/core/surface.ts`). Slack adapter is one implementation; the sim drives the same surface over a fake transport. |
-| **SoulData** | Typed JSON projection of `SOUL.md` (`src/soul/data.ts`). Gateway reads it; the model never decides policy. |
+| **SoulData** | Typed JSON compiled from `agent.yaml` (`src/soul/data.ts`). Gateway reads it; the model never decides policy. |
 | **LiveSession** | One `SDK Query` loop in `AgentManager` (`Map<sessionId, LiveSession>`). Holds the prompt iterable, abort, idle timer, turn buffer. |
 | **Engagement** | Per-thread boolean (`sessions.engaged`) — is this thread "talking to slaude" right now? Controls whether plain replies are handled. |
 
@@ -123,11 +123,11 @@ The gateway also drives ambient UI outside the surface: `eyes` on receive, `gear
 
 ## Trust boundary
 
-> **Rule:** the LLM extracts policy, the gateway enforces it. Never the reverse.
+> **Rule:** policy is written down in a typed file, the gateway enforces it. The model never decides it, and never reads it out of prose.
 
-### Extraction: SOUL.md → typed SoulData
+### Structure: agent.yaml → typed SoulData
 
-At boot (and on every `sha256(SOUL.md)` change) an **ephemeral, tool-free Claude turn** projects the operator's free-form `SOUL.md` into a typed JSON validated by Zod:
+A persona's `agent.yaml` (`src/persona/agent-def.ts`, schema in `src/persona/agent-schema.ts`) compiles deterministically, at load or at sync, into a typed JSON validated by Zod. There is no model call: a persona with only a `SOUL.md` is refused at boot, and `personas migrate` converts it once, with a person reviewing the result.
 
 ```ts
 // src/soul/data.ts — SoulDataSchema (abridged)
@@ -147,11 +147,9 @@ At boot (and on every `sha256(SOUL.md)` change) an **ephemeral, tool-free Claude
 }
 ```
 
-Caching: `~/.slaude/cache/soul.<sha>.json`. Any extraction failure falls back to a regex parser that only recovers `approvers` — the gateway never breaks open.
+**References are typed.** Users and channels are written as `slack:user:<id>` and `slack:channel:<id>` (parsed in `src/refs/`), so an id says what kind of thing it names, and a malformed one is an error naming the key, never a silent drop.
 
-**Id grounding check** — every Slack id the extractor returns must appear verbatim in `SOUL.md` (`src/soul/extract.ts:assertIdsGroundedInPersona`). This blocks the LLM from inventing approvers or whitelisting channels the operator never authorized.
-
-Runtime overlays (`/soul` slash command) apply on top via `soul_overrides` sqlite table and are read per-message — no restart needed. Overlay failures never take the gates down (fallback to `SOUL.md` base).
+Runtime overlays (`/soul` slash command) apply on top via `soul_overrides` sqlite table and are read per-message — no restart needed. Overlay failures never take the gates down (fallback to the `agent.yaml` base).
 
 ### Enforcement: gateway only
 
@@ -167,8 +165,8 @@ All five gates live in `src/gateway/slack/*` and run **before or around** the mo
 
 ```mermaid
 flowchart LR
-  Op["Operator edits<br/>SOUL.md"]
-  Extract["LLM extract<br/>ephemeral, tool-free turn"]
+  Op["Operator edits<br/>agent.yaml"]
+  Extract["Compile<br/>schema + parser, no model"]
   Data["SoulData JSON<br/>Zod-validated"]
   Cache["sha cache<br/>cache/soul.&lt;sha&gt;.json"]
   Gates["Gateway gates"]
@@ -177,7 +175,7 @@ flowchart LR
   Over["channelOverrides<br/>+ runtime overrides overlay"]
 
   Op --> Extract --> Data --> Cache --> Gates --> Out
-  Data -->|grounded ids<br/>verbatim check against SOUL.md| Extract
+  Data -->|typed refs<br/>validated by schema| Extract
   Over --> Gates
   Gates --> Appr
   Op -.->|any gate failure falls back safe, never open| Gates
@@ -265,7 +263,7 @@ stateDiagram-v2
 | **Session id already exists** — flag lost between CLI persist and `markStarted` | `stderr` match `session already in use` | Flip to `resume: sessionId` and retry |
 | **MCP stream closed** — external MCP disconnect tears down the shared transport pool, all `slaude_*` tools fail with `Stream closed` | `tool_use_result` string match `stream closed` | Auto-reload at turn end (`reload` + synthetic `continue`); circuit breaker after 2 consecutive reloads — surfaces error instead |
 | **Token budget critical** (≥ 92% of context window) | `TokenBudget.evaluateThreshold` (edge-triggered, one-shot per session) | Transport can surface a warning / trigger cooperative resume; `fallback 200k` when `modelUsage` absent |
-| **Extraction failure** | Any throw in `loadSoulData` | Regex fallback (approvers only), gateway gates stay on safe base |
+| **A persona with no agent.yaml** | A `SOUL.md` and no `agent.yaml` at boot | The process stops and names `personas migrate`; nothing falls back to reading the prose |
 
 All recovery is **silent to the user** except the circuit-open case — Next.js-style, the happy path never mentions errors; a dedicated section does.
 
@@ -305,7 +303,7 @@ Migrations are inline in `src/db/schema.ts` — checked via `PRAGMA table_info` 
 
 ```
 ~/.slaude/
-├── SOUL.md                         # operator-authored persona (seeded if missing)
+├── agent.yaml                      # the default persona (a starter is seeded on first boot)
 ├── mcp.json                        # external MCP servers (stdio/http/sse)
 ├── slaude.json                     # dependency manifest (plugins, skills, KBs)
 ├── slaude.lock                     # pinned shas
@@ -323,7 +321,7 @@ Migrations are inline in `src/db/schema.ts` — checked via `PRAGMA table_info` 
 
 | Artifact | Source of truth | How it gets there |
 |---|---|---|
-| `SOUL.md` | Operator edits or `seed STARTER_PERSONA` | Manual; re-extracted on change |
+| `agent.yaml` | Operator edits, or a starter seeded into a bare home | Manual; read at boot, no extraction |
 | `mcp.json` | Operator | Manual; loaded by `loadExternalMcp`, merged into `mcpServers` per session |
 | `slaude.json` / `slaude.lock` | `bun run install-deps` | Declares `plugins`/`skills`/`knowledge` git sources; `--frozen` for Docker/CI |
 | `skills/*/SKILL.md` | Git repos + runtime `write_skill` | Hot-reloaded via `discoverSkills` each turn; synced back via `sync_manifest` |
@@ -341,7 +339,7 @@ The system prompt is a composition — not a single file.
 ```mermaid
 flowchart TB
   Base["<b>RUNTIME BASELINE</b> — src/soul/loader.ts:RUNTIME_BASELINE<br/>Hardcoded, non-negotiable, ships with the code.<br/>Slack output discipline, formatting, approval discipline, engagement,<br/>channel trust, KB-first, skill evolution, harness overrides.<br/>SOUL.md cannot override it. A slaude release updates it."]
-  Persona["<b>&lt;persona&gt;</b> — ~/.slaude/SOUL.md<br/>Operator-authored. Defines who the agent is.<br/>Identity, mandate, values, manager, allowlists, approvers,<br/>per-channel overrides (## Channel &lt;#Cxxx&gt;).<br/>Seeded as STARTER_PERSONA on first boot when missing."]
+  Persona["<b>&lt;persona&gt;</b> — ~/.slaude/agent.yaml<br/>Operator-authored. Defines who the agent is.<br/>Identity, mandate, values, manager, allowlists, approvers,<br/>per-channel overrides (## Channel &lt;#Cxxx&gt;).<br/>Seeded as STARTER_PERSONA on first boot when missing."]
   Mandate["<b>&lt;channel-mandate&gt;</b> — when SOUL.md has a ## Channel override<br/>The effective mandate there (override, extend or reduce), also for ## Scope blocks.<br/>Approvers are replaced too; manager and backup stay catchalls."]
   Reminder["<b>&lt;system-reminder&gt;</b> — skills + session mode + memory context<br/>Injected per turn: discovered skills, 1on1 mode block, brain memory recall."]
   Out["Claude child system prompt<br/>preset: claude_code + append"]

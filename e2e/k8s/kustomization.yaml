@@ -26,16 +26,6 @@ patches:
         namespace: slaude-scale
       data:
         SLAUDE_OUTBOUND_INTERNAL_HOSTS: "mock-mcp,vault,mock-llm"
-  # The gateway's soul cache in the default directory under the shared $SLAUDE_HOME
-  # ($SLAUDE_HOME/cache). Only gateways read it: nodes no longer read the soul cache, they take
-  # the soul from the gateway's runtime bundle. The base keeps it pod-local (an emptyDir) so a
-  # file planted on the shared volume by a node or an agent turn cannot forge approvers. This
-  # patch deliberately drops that hardening, in this throwaway test cluster only: the mock LLM
-  # cannot answer the soul-extraction call, so the harness seeds one signed cache entry from one
-  # gateway pod, and every gateway replica must see it, including a pod that replaces a killed
-  # one, and it must survive the gateway restart the harness does after seeding. In a pod-local
-  # directory each new gateway pod would boot without it and fall back to a soul with no manager.
-  # Never copy this patch into a real deployment.
   - patch: |-
       apiVersion: apps/v1
       kind: Deployment
@@ -48,8 +38,6 @@ patches:
             containers:
               - name: gateway
                 env:
-                  - name: SLAUDE_SOUL_CACHE_DIR
-                    value: /data/cache
                   # Workaround for a gateway bug: in HTTP mode the gateway still reads
                   # SLACK_BOT_TOKEN on every inbound message (for attachment downloads) and
                   # drops the turn when it is unset, although real deploys register bot tokens

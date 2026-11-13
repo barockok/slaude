@@ -10,7 +10,7 @@ Deploy slaude the way you deploy any long-lived bot: one persona per deploy, per
 ```mermaid
 flowchart TB
   Slack["Slack<br/>Socket Mode"]
-  Srv["slaude server<br/>SOUL.md (persona) · $SLAUDE_HOME (state) · ANTHROPIC_* (provider)"]
+  Srv["slaude server<br/>agent.yaml (persona) · $SLAUDE_HOME (state) · ANTHROPIC_* (provider)"]
   Health["health :8080<br/>/healthz · /readyz"]
   Metrics["metrics :8080<br/>/metrics"]
   Store["skills / KB<br/>PVC or disk"]
@@ -21,7 +21,7 @@ flowchart TB
   Srv --> Store
 ```
 
-> **One deploy = one persona = one `SOUL.md`.** Multi-agent means multi-deploy — each agent gets its own `SOUL.md`, its own volume, and its own Slack identity. See [Multi-agent](#multi-agent-via-multi-deploy) below.
+> **One deploy = one default persona = one `agent.yaml`.** Multi-agent means multi-deploy (or named personas), and each agent gets its own `agent.yaml`, its own volume, and its own Slack identity. See [Multi-agent](#multi-agent-via-multi-deploy) below.
 
 ---
 
@@ -58,12 +58,12 @@ cp .env.example .env
 | `ANTHROPIC_BASE_URL` | No | `https://api.anthropic.com` | Override for OpenRouter, Z.ai, self-hosted gateways |
 | `ANTHROPIC_AUTH_TOKEN` | No | — | Bearer token for gateways that prefer it over `x-api-key` |
 | `SLAUDE_MODEL` | Conditional | `claude-sonnet-4-6` | Provider-qualified model id. **Required** when `ANTHROPIC_BASE_URL` points at a non-Anthropic gateway |
-| `SLAUDE_HOME` | No | `~/.slaude` (bare metal) / `/data` (container) | Home dir — SOUL.md, skills, KB, db, workspaces |
+| `SLAUDE_HOME` | No | `~/.slaude` (bare metal) / `/data` (container) | Home dir — agent.yaml, skills, KB, db, workspaces |
 | `SLAUDE_HEALTH_PORT` | No | `8080` | Health server port. `0` disables |
 | `SLAUDE_IDLE_MINUTES` | No | `15` | Per-thread idle TTL; `0` disables |
 | `SLAUDE_DEFAULT_MODE` | No | `ask` | Permission mode: `ask` / `accept-edits` / `bypass` / `plan` / `dont-ask` |
 | `SLAUDE_AUTO_ALLOW_TOOLS` | No | `Read,Grep,Glob,LS` | Comma-separated tools auto-allowed without approval gate |
-| `SLAUDE_APPROVERS` | No | — | Fallback approver allowlist when `SOUL.md` has no `## Approvers` |
+| `SLAUDE_APPROVERS` | No | — | Fallback approver allowlist when `agent.yaml` has no `access.approvers` |
 | `SLAUDE_METRICS_LABELS` | No | — | Static Prometheus labels, e.g. `agent=hermes,env=prod` |
 | `ANTHROPIC_MODEL` | No | — | CLI-native fallback when `SLAUDE_MODEL` is unset |
 | `ANTHROPIC_SMALL_FAST_MODEL` | No | — | Haiku-class model for compaction / sub-tasks |
@@ -101,7 +101,7 @@ Telemetry is automatically disabled when `ANTHROPIC_BASE_URL` points at a non-An
 
 ```
 $SLAUDE_HOME/
-  SOUL.md            # persona — operator-authored, required
+  agent.yaml         # persona — operator-authored (a starter is seeded on first boot)
   .env               # optional dotenv (loaded before process env)
   .mcp.json          # external MCP servers (supports ${VAR} substitution)
   slaude.json        # dependency manifest (skills / KB)
@@ -110,7 +110,7 @@ $SLAUDE_HOME/
   workspaces/        # per-thread cwd
   skills/            # installed skills
   knowledge/         # installed KB wikis
-  cache/             # extracted SoulData + policy embeddings
+  cache/             # policy embeddings
   .claude/           # Claude Code config + OAuth creds (file-based on Linux)
 ```
 
@@ -137,23 +137,21 @@ Two overrides for split-volume mounts:
 git clone https://github.com/barockok/slaude.git && cd slaude
 cp .env.example .env          # fill SLACK_* + ANTHROPIC_*
 mkdir -p data                 # will be mounted as /data = $SLAUDE_HOME
-cat > data/SOUL.md <<'MD'
-# Soul
-
-I am slaude — your team mate.
-
-## Mandate
-...
-
-## Manager
-@zidni — Slack user ID U...
-
-## Approvers
-- U... (manager)
-MD
+cat > data/agent.yaml <<'YAML'
+name: default
+soul: |
+  # Persona
+  I am slaude, your team mate.
+mandate:
+  global: What this agent is meant to accomplish.
+access:
+  manager: slack:user:U0EXAMPLE        # your Slack user id
+  approvers:
+    - { user: slack:user:U0EXAMPLE, scope: anything }
+YAML
 ```
 
-`docker-compose.yaml` mounts `./data:/data` and sets `SLAUDE_HOME=/data`. The container reads secrets from env (or `/data/.env`) and the persona from `/data/SOUL.md`. External MCP servers are declared in `/data/.mcp.json` with `${VAR}` substitution — e.g. `GRAFANA_URL` / `GRAFANA_API_KEY` flow through from `.env` automatically.
+`docker-compose.yaml` mounts `./data:/data` and sets `SLAUDE_HOME=/data`. The container reads secrets from env (or `/data/.env`) and the persona from `/data/agent.yaml`. External MCP servers are declared in `/data/.mcp.json` with `${VAR}` substitution — e.g. `GRAFANA_URL` / `GRAFANA_API_KEY` flow through from `.env` automatically.
 
 ```yaml
 # docker-compose.yaml (abridged — see repo for full file)
@@ -230,7 +228,7 @@ No data loss — `db.sqlite`, workspaces, and installed skills live on the `./da
 # Edit the Secret + ConfigMap first
 vim deploy/k8s/slaude.yaml
 #  - Secret/slaude-secrets:  replace REPLACE_xoxb / REPLACE_xapp / REPLACE_sk-ant
-#  - ConfigMap/slaude-config: paste the persona SOUL.md under SOUL.md: |
+#  - ConfigMap/slaude-config: paste the persona agent.yaml under agent.yaml: |
 #  - Deployment: set image: ghcr.io/<owner>/slaude:<tag>
 
 kubectl apply -f deploy/k8s/slaude.yaml
@@ -244,7 +242,7 @@ kubectl -n slaude logs -f deploy/slaude
 |---|---|---|
 | `Namespace` | `slaude` | Isolation |
 | `Secret` | `slaude-secrets` | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `ANTHROPIC_API_KEY` (+ optional `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`) |
-| `ConfigMap` | `slaude-config` | `SLAUDE_MODEL`, `SLACK_ALLOWED_USERS`, and `SOUL.md` (mounted at `/data/SOUL.md` via `subPath`) |
+| `ConfigMap` | `slaude-config` | `SLAUDE_MODEL`, `SLACK_ALLOWED_USERS`, and `agent.yaml` (mounted at `/data/agent.yaml` via `subPath`) |
 | `PersistentVolumeClaim` | `slaude-data` | `1Gi`, `ReadWriteOnce` — SQLite + workspaces + skills + KB |
 | `Deployment` | `slaude` | `replicas: 1`, `strategy: Recreate`, probes on `:8080` |
 

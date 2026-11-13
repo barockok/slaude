@@ -54,7 +54,6 @@ import { isWakeTurn, makeNodePermissionResolver } from "./shims/permission";
 import { makeNodeStopGuard } from "./stop-guard";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
-import { normalizeChannelClasses } from "../soul/mandate-scope";
 import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
 import { lockFromClaims } from "./session-lock";
 import { type NodeManifest, loadNodeManifest, makeNodeLocalMcpResolver } from "./manifest";
@@ -358,7 +357,7 @@ export function makeBridgedNamesResolver(deps: BundleResolverDeps): (sessionId: 
 export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined) => Promise<PersonaSoul> {
   return async (sessionId, persona) => {
     const bundle = await sessionBundle(deps, sessionId, persona);
-    return { soulMd: bundle.soulMd, soulJson: bundle.soulJson, tenantId: bundle.tenantId, ...(bundle.channelClasses === null ? { channelClasses: null } : normalizeChannelClasses(bundle.channelClasses) ? { channelClasses: normalizeChannelClasses(bundle.channelClasses)! } : {}), ...(bundle.definition ? { definition: bundle.definition } : {}) };
+    return { soulMd: bundle.soulMd, soulJson: bundle.soulJson, tenantId: bundle.tenantId, ...(bundle.definition ? { definition: bundle.definition } : {}) };
   };
 }
 

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { paths } from "../../src/config/home";
-import { extractSoulData, soulCachePath, writeSoulCacheEntry } from "../../src/soul/extract";
+import { extractSoulData, soulCachePath, writeSoulCacheEntry } from "../../src/cli/legacy-soul-extract";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import { SoulDataSchema } from "../../src/soul/data";
 

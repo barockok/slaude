@@ -14,10 +14,9 @@ beforeEach(() => {
 });
 
 describe("loadSoul", () => {
-  test("seeds starter persona when missing", () => {
-    const out = loadSoul();
-    expect(out).toContain("# Persona");
-    expect(existsSync(paths.soul)).toBe(true);
+  test("returns empty text when there is no SOUL.md, and writes nothing", () => {
+    expect(loadSoul()).toBe("");
+    expect(existsSync(paths.soul)).toBe(false);
   });
   test("returns existing file unchanged", () => {
     writeFileSync(paths.soul, "# Custom Persona\n");

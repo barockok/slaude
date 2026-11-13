@@ -27,8 +27,8 @@ const SCOUT_JSON = {
   ],
 };
 
-// The mandate text lives in the soul text, which is what the mandate read
-// model and the scheduler read (no extraction cache here: the parse applies).
+// The mandates come from the persona's structured soul (SCOUT_JSON); the soul text
+// carries the proactive switches, which are read from it.
 const SCOUT_MD = `# Scout
 
 ## Mandate
@@ -112,6 +112,7 @@ describe("listMandates", () => {
       "global",
       "channel:COPS",
       "channel:CQUIET",
+      "channel:CREVIEW",
       "channel:CTEAM",
       "heartbeat",
       ...[active.id, longJob.id].sort().map((id) => `cron:${id}`),
@@ -135,8 +136,9 @@ describe("listMandates", () => {
     expect(sorted(team.approvers)).toEqual(["UALICE", "UBACKUP", "USCOUT"]);
     expect(team.proactive).toBeUndefined();
 
-    // An approvers-only block of soul_json is access, not a mandate: not listed.
-    expect(ms.some((m) => m.id === "channel:CREVIEW")).toBe(false);
+    // An approvers-only block of the stored structure is listed too, so its approvers show: it follows the global mandate.
+    expect(ms.find((m) => m.id === "channel:CREVIEW")!).toMatchObject({ instructions: "", inheritsGlobal: true });
+    expect(sorted(ms.find((m) => m.id === "channel:CREVIEW")!.approvers)).toEqual(["UBACKUP", "UDAVE", "USCOUT"]);
     // A block with no mandate text, proactive only.
     const quiet = ms.find((m) => m.id === "channel:CQUIET")!;
     expect(quiet).toMatchObject({ instructions: "", inheritsGlobal: true, proactive: { enabled: false } });
@@ -232,16 +234,10 @@ describe("listMandates", () => {
     expect(sorted(c.approvers)).toEqual(["UBACKUP", "UBOB", "USCOUT"]);
   });
 
-  test("filesystem persona (no soul_json): mandates from its soul text, heartbeat from a channel switch, its crons", async () => {
+  test("a persona with a stored structure: its own mandates, heartbeat from a channel switch, its crons", async () => {
     const md = `# Pilot
 
-## Mandate
-- Keep the release train on time.
-- Flag blockers early.
-
 ## Channel <#CREL|release>
-### Mandate
-Post the release status every morning.
 ### Proactive
 - Enabled: yes
 
@@ -249,9 +245,13 @@ Post the release status every morning.
 ### Proactive
 - Enabled: no
 `;
+    const pilotJson = {
+      mandate: "Keep the release train on time. Flag blockers early.",
+      channelOverrides: [{ channel: "CREL", mandate: "Post the release status every morning.", approvers: [] }],
+    };
     // A default soul with its own channel block must not leak into the persona's list.
     setSoulData(SoulDataSchema.parse({ ...DEFAULT, channelOverrides: [{ channel: "CDEF", approvers: [{ userId: "UOPS", scope: "x", catchall: false }] }] }));
-    setPersonaRegistry(registryWith([{ name: "pilot", soulMd: md }]));
+    setPersonaRegistry(registryWith([{ name: "pilot", soulJson: pilotJson, soulMd: md }]));
     const j = await cron("pilot", "morning sweep", "*/30 * * * *", "CREL");
     const ms = await listMandates("pilot");
     expect(ms.map((m) => m.id)).toEqual(["global", "channel:CMUTE", "channel:CREL", "heartbeat", `cron:${j.id}`]);
@@ -277,10 +277,10 @@ Post the release status every morning.
     }
   });
 
-  test("a named persona with no soul text of its own reads the default persona's soul text", async () => {
+  test("a named persona with no structure shows no mandate: nothing reads one out of the default's soul text", async () => {
     setManagedDefaultSoul("# Default\n\n## Mandate\nThe default soul text mandate.\n");
     setPersonaRegistry(registryWith([{ name: "bare" }]));
-    expect((await listMandates("bare"))[0]).toMatchObject({ id: "global", instructions: "The default soul text mandate." });
+    expect((await listMandates("bare")).find((m) => m.id === "global")).toBeUndefined();
   });
 
   test("filesystem persona with only a global proactive switch shows the heartbeat", async () => {
@@ -291,35 +291,23 @@ Post the release status every morning.
 });
 
 describe("listMandates scoped mandates", () => {
-  const SCOPED_MD = `# Scoped
-
-## Mandate
-Keep the team informed.
-
-## Channel <#CTEAM|team>
-### Mandate
-Mode: extend
-Answer team questions.
-
-## Channel <#CQUIET|quiet>
-### Proactive
-- Enabled: no
-
-## Channel <#CPUB2|pub2>
-### Mandate
-Replace it here.
-
-## Scope public
-### Mandate
-Mode: reduce
-No internals.
-
-## Scope dm
-### Mandate
-Be brief.
-`;
+  // The structure carries the mandates; the text only the proactive switch for CQUIET.
+  const SCOPED_MD = `# Scoped\n\n## Channel <#CQUIET|quiet>\n### Proactive\n- Enabled: no\n`;
+  const SCOPED_JSON = {
+    allowedChannels: ["CQUIET", "CPUB2"],
+    trustedChannels: ["CTEAM"],
+    mandate: "Keep the team informed.",
+    channelOverrides: [
+      { channel: "CTEAM", mandate: "Answer team questions.", mandateMode: "extend", approvers: [] },
+      { channel: "CPUB2", mandate: "Replace it here.", approvers: [] },
+    ],
+    scopeMandates: [
+      { scope: "public", mandate: "No internals.", mode: "reduce" },
+      { scope: "dm", mandate: "Be brief." },
+    ],
+  };
   const scoped = () => {
-    setPersonaRegistry(registryWith([{ name: "scoped", soulJson: { allowedChannels: ["CQUIET", "CPUB2"], trustedChannels: ["CTEAM"] }, soulMd: SCOPED_MD }]));
+    setPersonaRegistry(registryWith([{ name: "scoped", soulJson: SCOPED_JSON, soulMd: SCOPED_MD }]));
     return listMandates("scoped");
   };
   const byId = (ms: Awaited<ReturnType<typeof listMandates>>, id: string) => ms.find((m) => m.id === id)!;

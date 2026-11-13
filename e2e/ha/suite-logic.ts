@@ -182,14 +182,13 @@ export function caseJournalRows(rows: MockJournalRow[], mark: number, name: stri
 }
 
 /**
- * What src/soul/extract.ts logs when a gateway's boot read of the structured soul did not hit the
- * seeded cache entry. A hit logs nothing. A rejected entry logs "cache invalid at <path>,
- * re-extracting: <why>"; a miss or a rejection then calls the (mock) model, which cannot answer,
- * and logs the regex fallback, which leaves the soul without a manager.
+ * What a gateway logs when it booted without the seeded agent.yaml. A bare home logs
+ * "seeded a starter agent.yaml" (the starter names no manager, so the suite's manager DMs would
+ * be ignored); a SOUL.md left beside the seeded file stops the boot with the second message.
  */
 const SOUL_BOOT_PROBLEMS: Array<{ marker: string; cause: string }> = [
-  { marker: "[soul] cache invalid at", cause: "the seeded soul cache entry was rejected (signature, schema or grounding)" },
-  { marker: "falling back to regex parser", cause: "the soul cache missed, so the soul fell back to the regex parse and has no manager" },
+  { marker: "seeded a starter agent.yaml", cause: "the gateway booted without the seeded agent.yaml and wrote its own starter, which names no manager" },
+  { marker: "have a SOUL.md and no agent.yaml", cause: "a SOUL.md was left in the home without an agent.yaml, so the boot stopped" },
 ];
 
 /**
@@ -226,16 +225,14 @@ export function registeredApps(listOutput: string): string[] {
 }
 
 /**
- * The in-pod shell command whose `sha256sum` output feeds bootFingerprint: SOUL.md and every soul
- * cache entry, from the directory extraction reads. That is SLAUDE_SOUL_CACHE_DIR when set, else
- * $SLAUDE_HOME/cache, as cacheDir() in src/soul/extract.ts decides; run in the gateway container,
- * the variables are that container's. Missing files are not an error.
+ * The in-pod shell command whose `sha256sum` output feeds bootFingerprint: the persona's
+ * agent.yaml, which the gateway reads only at startup. Run in the gateway container, $SLAUDE_HOME
+ * is that container's. A missing file is not an error.
  */
-export const STARTUP_FILES_SCRIPT =
-  'sha256sum "$SLAUDE_HOME"/SOUL.md "${SLAUDE_SOUL_CACHE_DIR:-$SLAUDE_HOME/cache}"/soul.*.json 2>/dev/null || true';
+export const STARTUP_FILES_SCRIPT = 'sha256sum "$SLAUDE_HOME"/agent.yaml 2>/dev/null || true';
 
 /**
- * One digest of everything the slaude pods read only at startup: SOUL.md and the soul cache
+ * One digest of everything the slaude pods read only at startup: agent.yaml
  * (from `sha256sum` output, keyed by file name), the registered-app set, and the data of the
  * ConfigMap their env comes from (`kubectl get configmap -o json`; env is read at pod start).
  */
@@ -251,11 +248,11 @@ export function bootFingerprint(
     .filter((p) => p.length === 2 && /^[0-9a-f]{64}$/.test(p[0]!))
     .map(([sum, path]) => `${path!.slice(path!.lastIndexOf("/") + 1)} ${sum}`)
     .sort();
-  // Before the first seed SOUL.md may not exist yet (a gateway that has not booted far enough to
+  // Before the first seed agent.yaml may not exist yet (a gateway that has not booted far enough to
   // write its starter): that is a defined state, not an error. After the seed it must exist.
-  if (!files.some((f) => f.startsWith("SOUL.md "))) {
-    if (opts.requireSoul !== false) throw new Error("no SOUL.md checksum in the fingerprint input");
-    files.push("SOUL.md absent");
+  if (!files.some((f) => f.startsWith("agent.yaml "))) {
+    if (opts.requireSoul !== false) throw new Error("no agent.yaml checksum in the fingerprint input");
+    files.push("agent.yaml absent");
   }
   const canon = [...files, "--", ...registeredApps(appListOutput), "--", ...configEntries(configMapJson)].join("\n");
   return createHash("sha256").update(canon).digest("hex").slice(0, 32);

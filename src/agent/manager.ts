@@ -33,8 +33,7 @@ import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plu
 import { soulSystemBlock } from "../soul/loader";
 import { BUILTIN_PLUGIN_DIR, cliPluginName, pluginsNamedLikeBuiltin } from "../soul/builtin";
 import { personaSoulText } from "../persona/soul-source";
-import { normalizeChannelClasses } from "../soul/mandate-scope";
-import { effectiveMandateIn, mandateTextFromSoulText, personaMandateText } from "../soul/persona-mandates";
+import { effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
 import { compiledPromptSoul } from "../soul/per-persona";
 import { allowedSkillNames, sdkSkillsOption } from "./skill-allow";
 import { resolveSoulMandate } from "../soul/mandate-scope";
@@ -389,10 +388,7 @@ export type PersonaSoul = {
    *  `## Channel` sections its `channels` key compiles to, and `soulJson` is
    *  compiled. `skills` limits the skills a session may load. */
   definition?: { skills?: string[]; guardrails?: string[] };
-  /** The gateway's channel lists for a persona whose bundle has no structured
-   *  soul; absent from an older gateway. */
-  channelClasses?: { trustedChannels: string[]; allowedChannels: string[] } | null;
-  /** The bundle's tenant, to key per-persona warnings. */
+  /** The bundle's tenant. */
   tenantId?: string;
 };
 export type PersonaSoulResolver = (sessionId: string, persona: string | undefined) => Promise<PersonaSoul>;
@@ -1758,7 +1754,7 @@ export class AgentManager extends EventEmitter {
       // Owner Guidance right after the soul, before the channel mandate.
       // Enforced rules are never in the prompt: code checks them.
       ctx.guardrails?.promptBlock ?? "",
-      channelMandateBlock(ctx.channelId, soul.soulJson, sessionId, personaName, this.#personaSoulResolver ? { soulMd: soul.soulMd, classes: soul.channelClasses, tenantId: soul.tenantId } : undefined),
+      channelMandateBlock(ctx.channelId, soul.soulJson, sessionId, personaName, !!this.#personaSoulResolver),
       sessionModeBlock(ctx.lock ?? null, ctx.remote),
       mcpServers
         ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
@@ -2943,39 +2939,18 @@ function compiledMandateBlock(soul: PersonaSoul): string {
  * is present but does not parse yields NO channel mandate: falling back to the
  * global soul would hand this persona another persona's mandate.
  *
- * A node (`node` set) never reads a database, the registry or its own disk: a
- * bundle without a structured soul (a filesystem persona's) is parsed from the
- * soul text the bundle carries, with the deterministic parse. The gateway may
- * read a cached LLM extraction of the same text instead, so the two are equal
- * when no extraction is cached, not always. Trust-scope mandates are placed by
- * the channel lists the bundle carries; without them (an older gateway) they
- * are not applied, which {@link nodeMandateText} warns about.
+ * A node never reads a database, the registry or its own disk, and reads no soul
+ * text: a bundle with no structured soul yields no channel mandate.
  */
-const warnedNoClasses = new Set<string>();
-/** Test seam: the no-classes warning is once per persona and process. */
-export function __resetNodeSoulWarningsForTests(): void {
-  warnedNoClasses.clear();
-}
-
-function nodeMandateText(node: { soulMd: string; classes?: unknown; tenantId?: string }, persona: string | undefined) {
-  const classes = normalizeChannelClasses(node.classes);
-  const text = mandateTextFromSoulText(node.soulMd, classes);
-  const name = persona ?? "default";
-  const key = `${node.tenantId ?? ""}/${name}`;
-  // null: the gateway could not read its lists and said so; not warned twice.
-  if (!classes && node.classes !== null && !warnedNoClasses.has(key) && text.subMandates.some((m) => m.boundary === "trust:trusted" || m.boundary === "trust:public")) {
-    warnedNoClasses.add(key);
-    console.warn(`[agent] persona=${name} has a ## Scope trusted/public mandate but the gateway sent no channel lists: scope restrictions are not applied on this node`);
-  }
-  return text;
-}
+/** Personas already warned about a bundle with no structured soul, once each per process. */
+const warnedNoStructure = new Set<string>();
 
 function channelMandateBlock(
   channelId: string | null | undefined,
   soulJson: unknown,
   sessionId: string,
   persona: string | undefined,
-  node?: { soulMd: string; classes?: unknown; tenantId?: string },
+  onNode = false,
 ): string {
   if (!channelId) return "";
   let eff: string | undefined;
@@ -2988,8 +2963,18 @@ function channelMandateBlock(
   if (parsed?.success) {
     base = parsed.data.mandate?.trim();
     eff = resolveSoulMandate(parsed.data, channelId, parsed.data).text.trim();
+  } else if (onNode) {
+    // A node never reads a database or the registry, and reads no soul text: a bundle
+    // with no structure has nothing to place a channel mandate by. Said once per persona,
+    // because an older gateway (or a persona never converted to agent.yaml) sends exactly this.
+    const key = persona ?? "default";
+    if (!warnedNoStructure.has(key)) {
+      warnedNoStructure.add(key);
+      console.warn(`[agent] persona=${key}: the runtime bundle has no structured soul, so no channel mandate applies on this node (define the persona as an agent.yaml, and run the gateway and nodes on the same release)`);
+    }
+    return "";
   } else {
-    const own = node ? nodeMandateText(node, persona) : personaMandateText(persona);
+    const own = personaMandateText(persona);
     base = own.global;
     eff = effectiveMandateIn(own, channelId).text.trim();
   }

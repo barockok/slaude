@@ -40,7 +40,7 @@ change applies at once on the replica that made it and within a few seconds on
 the others. Grants are keyed by persona name, so a persona renamed in git is a
 new persona and its grants must be re-created. Operators see grants but cannot
 change them. A stored approver grant applies in every channel, unlike the
-approvers in a SOUL.md `## Channel` block, which replace the global list in
+approvers in an agent.yaml `access.approvers` entry with a `channel`, which replace the global list in
 their channel only. A channel grant takes a channel id (`C` or `G`); for DMs,
 give the person a user member grant with DM only. A deny grant also removes
 the user from every approval card, the default persona's included. The console

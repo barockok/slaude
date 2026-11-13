@@ -154,7 +154,7 @@ async function must(what: string, r: Promise<{ stdout: string; stderr: string; c
   return got.stdout;
 }
 
-/** Fingerprint of the startup-only state (SOUL.md, soul cache, registered apps), read in a gateway pod. */
+/** Fingerprint of the startup-only state (agent.yaml, registered apps), read in a gateway pod. */
 async function fingerprintIn(pod: string, requireSoul = true): Promise<string> {
   const sums = await must(
     "checksumming the soul",

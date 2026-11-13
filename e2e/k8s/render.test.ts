@@ -68,35 +68,15 @@ describe("e2e overlay", () => {
     expect(c.readinessProbe.exec.command).toEqual(["pg_isready", "-h", "127.0.0.1", "-p", "5432", "-U", "slaude"]);
   });
 
-  test("the gateway's soul cache is the default directory under the shared $SLAUDE_HOME, not the base's pod-local one", () => {
-    const base = (file: string) => parse(readFileSync(join(dir, "../../deploy/k8s-scale", file), "utf8"));
-    const container = (file: string, name: string) =>
-      base(file).find((d) => d.kind === "Deployment").spec.template.spec.containers.find((c: any) => c.name === name);
+  test("the gateway patch is env only: the bot-token placeholder", () => {
     const envOf = (c: any, n: string) => c.env?.find((e: any) => e.name === n)?.value;
-    const gw = container("40-gateway.yaml", "gateway");
-    const node = container("50-node.yaml", "node");
-    const home = envOf(gw, "SLAUDE_HOME");
-    // The base still keeps the gateway's cache pod-local, which is what this patch overrides.
-    const local = envOf(gw, "SLAUDE_SOUL_CACHE_DIR");
-    expect(local).toBeTruthy();
-    expect(local.startsWith(`${home}/`)).toBe(false);
-    // Nodes share $SLAUDE_HOME with the gateway and set no cache directory. They no longer read
-    // the soul cache (they take the soul from the gateway's runtime bundle); this only checks
-    // that the base gives them no other soul-cache setting.
-    expect(envOf(node, "SLAUDE_HOME")).toBe(home);
-    expect(envOf(node, "SLAUDE_SOUL_CACHE_DIR")).toBeUndefined();
-    // $SLAUDE_HOME is the shared claim's mount in both tiers.
-    for (const c of [gw, node]) expect(c.volumeMounts.find((m: any) => m.name === "slaude-home").mountPath).toBe(home);
-
     const patch = kustomization.patches
       .map((p: any) => parse(p.patch)[0])
       .find((d: any) => d.kind === "Deployment" && d.metadata.name === "slaude-gateway");
     const patched = patch.spec.template.spec.containers.find((c: any) => c.name === "gateway");
-    expect(envOf(patched, "SLAUDE_SOUL_CACHE_DIR")).toBe(`${home}/cache`);
-    // Env only: the patch adds no volume, mount or image, and no env beyond the
-    // soul cache and the bot-token placeholder.
+    // Env only: the patch adds no volume, mount or image.
     expect(Object.keys(patched).sort()).toEqual(["env", "name"]);
-    expect(patched.env.map((e: any) => e.name).sort()).toEqual(["SLACK_BOT_TOKEN", "SLAUDE_SOUL_CACHE_DIR"]);
+    expect(patched.env.map((e: any) => e.name)).toEqual(["SLACK_BOT_TOKEN"]);
   });
 
   test("the overlay builds on deploy/k8s-local and includes both services", () => {

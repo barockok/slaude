@@ -11,9 +11,9 @@ Slaude is a Slack-native runtime for [Claude Code](https://docs.anthropic.com/en
 | Concept | What it means |
 |---|---|
 | **1 thread = 1 session** | Each Slack thread maps to a persistent Claude session. The SDK `resume` flag keeps conversation history across idle restarts (default TTL: 15 min). |
-| **Two-layer persona** | A hardcoded runtime baseline (Slack output rules, approval discipline, engagement model) + your operator-defined `SOUL.md` (name, role, voice, manager, mandate, approvers). You only author the second layer. |
+| **Two-layer persona** | A hardcoded runtime baseline (Slack output rules, approval discipline, engagement model) + your operator-defined `agent.yaml` (name, role, voice, manager, mandate, approvers). You only author the second layer. |
 | **Slack output via MCP** | The agent never streams raw text to Slack. All output goes through an in-process MCP server (`mcp__slaude_slack__reply` / `edit` / `upload` / `request_approval`). Tables, code blocks, and links are auto-converted to Slack mrkdwn. |
-| **Headless, single-container** | One container = one persona = one `SOUL.md`. Run it on any host that can reach Slack via Socket Mode. Scale to more agents by deploying more containers. |
+| **Headless, single-container** | One container = one default persona = one `agent.yaml`. Run it on any host that can reach Slack via Socket Mode. Scale to more agents by deploying more containers. |
 
 > **Note:** Slaude is inspired by [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) but is Slack-only and powered by the official Claude Agent SDK.
 
@@ -116,35 +116,33 @@ Key environment variables:
 
 > **Note:** `SLAUDE_DEFAULT_MODE` values: `ask` (prompt per tool), `accept-edits` (auto-allow reads/writes), `bypass` (YOLO — rely on approval gate + persona mandate), `plan` (read-only), `dont-ask` (deny unapproved).
 
-### 5. Seed the persona (SOUL.md)
+### 5. Define the persona (agent.yaml)
 
-On first boot Slaude auto-seeds `~/.slaude/SOUL.md` with a starter scaffold. To customize before first boot:
+On first boot of an empty home Slaude writes a starter `~/.slaude/agent.yaml` (no manager yet). To write yours before first boot:
 
 ```bash
 mkdir -p ~/.slaude   # or ./data for Docker
-cat > ~/.slaude/SOUL.md <<'MD'
-## Identity
-- Name: slaude
-- Role: senior platform engineer
-- Voice: concise, direct
-
-## Reporting
-- Manager: U0XXXXXXXXX
-- Manager handle: @you
-
-## Mandate
-- Help the team ship; refuse destructive ops without explicit approval.
-MD
+cat > ~/.slaude/agent.yaml <<'YAML'
+name: default
+description: senior platform engineer
+soul: |
+  # Persona
+  Concise, direct.
+access:
+  manager: slack:user:U0XXXXXXXXX
+mandate:
+  global: Help the team ship; refuse destructive ops without explicit approval.
+YAML
 ```
 
 Validate at any time:
 
 ```bash
 bun run validate-soul
-# exit 0 = ok, 1 = missing required fields, 2 = extraction failure
+# exit 0 = ok, 1 = missing required fields (or a SOUL.md with no agent.yaml), 2 = a file that does not compile
 ```
 
-Required fields: `identity.name`, `manager.userId`, `mandate`. See [SOUL Guide](../reference/configuration.md) for the full schema.
+Required: `name`, `access.manager`, `mandate.global`. A persona kept as a `SOUL.md` is refused at boot; `bun run personas migrate default` converts it. See the [agent.yaml reference](../reference/configuration.md#soul) for every key.
 
 ### 6. Run
 
@@ -162,13 +160,13 @@ bun run start
 # Place persona + env where compose expects them
 mkdir -p ./data
 cp .env ./data/.env        # or ensure SLACK_* / ANTHROPIC_* are exported
-cp ~/.slaude/SOUL.md ./data/SOUL.md  # if you customized it
+cp ~/.slaude/agent.yaml ./data/agent.yaml  # if you customized it
 
 docker compose up -d --build
 docker compose logs -f
 ```
 
-Docker mounts `./data` → `/data` (`SLAUDE_HOME`) as a persistent volume holding `SOUL.md`, `mcp.json`, `slaude.json`, `db.sqlite`, skills, and knowledge bases.
+Docker mounts `./data` → `/data` (`SLAUDE_HOME`) as a persistent volume holding `agent.yaml`, `mcp.json`, `slaude.json`, `db.sqlite`, skills, and knowledge bases.
 
 > **Note:** `docker compose` reads env from `./.env` on the host and forwards it into the container. `~/.slaude/.env` and `./data/.env` are also loaded inside the container via `SLAUDE_HOME`. Any one location works — `./.env` is simplest for Docker.
 
@@ -236,7 +234,7 @@ Common first-run issues:
 | `invalid_auth` from Slack | Reinstall the app after manifest changes; confirm `xoxb-` and `xapp-` are not swapped |
 | `Socket Mode` connection fails | Verify `SLACK_APP_TOKEN` has `connections:write` and Socket Mode is enabled |
 | `ANTHROPIC_API_KEY` / OAuth errors | Confirm exactly one auth mode is set; gateways need `SLAUDE_MODEL` |
-| No DM reply but `/healthz` ok | Check `SOUL.md` `## Reporting` → `Manager` is your Slack user ID (`U...`), not your handle |
+| No DM reply but `/healthz` ok | Check `agent.yaml` `access.manager` is `slack:user:` plus your Slack user ID (`U...`), not your handle |
 
 ## Next Steps
 

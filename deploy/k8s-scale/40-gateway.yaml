@@ -75,13 +75,6 @@ spec:
               value: gateway
             - name: SLAUDE_HTTP_PORT
               value: "8080"
-            # Strict soul extraction (persona sync) caches its result. The
-            # default, $SLAUDE_HOME/cache, is on the shared volume every node
-            # and agent turn can write, so a planted cache file could install
-            # forged approvers. Keep the gateway's cache pod-local; a cache hit
-            # is also re-checked against the soul text before it is used.
-            - name: SLAUDE_SOUL_CACHE_DIR
-              value: /soul-cache
           ports:
             - name: http
               containerPort: 8080
@@ -103,8 +96,6 @@ spec:
           volumeMounts:
             - name: slaude-home
               mountPath: /data
-            - name: soul-cache
-              mountPath: /soul-cache
             # SLAUDE_VAULT_K8S_TOKEN_PATH (20-config.yaml) points here.
             - name: vault-token
               mountPath: /var/run/secrets/vault
@@ -120,10 +111,6 @@ spec:
         - name: slaude-home
           persistentVolumeClaim:
             claimName: slaude-home
-        # Pod-local: a restart loses it, which only costs a re-extraction.
-        - name: soul-cache
-          emptyDir:
-            sizeLimit: 64Mi
         # A ServiceAccount token for Vault's Kubernetes login only: audience
         # `vault`, ten minutes, refreshed by the kubelet. Unused until
         # SLAUDE_VAULT_ADDR is set. Never mounted on a node.

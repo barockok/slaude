@@ -16,17 +16,23 @@ PGLite can also hold managed personas, but it is managed through the panel, not
 [field note](../field-notes/2026-10-01-personas-as-code.md).
 
 A deployment that has never been synced keeps working from the filesystem
-(`$SLAUDE_HOME/SOUL.md` and `personas/`) exactly as before. The first
+(`$SLAUDE_HOME/agent.yaml` and `personas/`) exactly as before. The first
 successful sync makes the tenant managed; from then on the database is its
 only source for every persona field. Two operator-level files stay as
 fallbacks for the *default* persona only, never merged with a managed value:
 the global `.mcp.json` when the default persona's synced `mcp` is empty, and
-`$SLAUDE_HOME/SOUL.md` after an `allowEmpty` retirement in `mono` (see below).
+`$SLAUDE_HOME/agent.yaml` after an `allowEmpty` retirement in `mono` (see below).
 A per-persona directory (`personas/<name>/`) is never read for a managed
 tenant. Sqlite deployments stay on the filesystem: `/deploy` and the panel's
 persona routes answer 409 `persona sync requires Postgres` there.
 
 ## Repository layout
+
+> **The three-file layout below is the older form.** A persona synced from it has
+> no structure to run on, so a changed or new one is refused at sync (a 422 that
+> names `personas export --format agent-yaml`). Use [one file](#one-file-agentyaml)
+> for every persona. This section stays for reading a repository that still has
+> the old layout.
 
 ```
 personas/
@@ -95,11 +101,11 @@ which would mix two sources. The default persona needs no `slackUserId`.
 
 ## One file: agent.yaml
 
-A persona can be defined by a single `personas/<name>/agent.yaml` instead of
-`persona.yaml`, `SOUL.md` and `mcp.json`. The two forms can coexist in one
-repository, persona by persona; a directory that has an `agent.yaml` must not
-also have those three files (that is a sync error), and directories without one
-behave exactly as above.
+A persona is defined by a single `personas/<name>/agent.yaml`, which replaces
+`persona.yaml`, `SOUL.md` and `mcp.json`. A directory that has an `agent.yaml`
+must not also have those three files (that is a sync error). A directory without
+one is the older layout: it syncs only while its soul text is unchanged from what
+is stored, and `personas render` warns about it.
 
 The file's fields, with placeholders throughout:
 
@@ -368,8 +374,8 @@ For pull-request jobs, also set `SLAUDE_DEPLOY_PREVIEW_TOKEN` (same trim and
 unset). It is accepted only with `?dryRun=1`; presented on an apply it gets the
 same 401 as a wrong token. A PR workflow can run on unreviewed code, so it must
 never hold a credential that can apply. The deploy token still works for both.
-A dry run makes no model call: it reports what would change without extracting
-any soul.
+No sync makes a model call: a persona's structure is compiled from its
+`agent.yaml`.
 
 ## The endpoint
 
@@ -439,24 +445,17 @@ Behaviour to know:
   gate — is refused rather than given the default persona's.
 - An empty `personas` array is refused unless `allowEmpty: true`, which
   retires every persona, `default` included. What happens next depends on the
-  topology. In `mono` the default persona reverts to the on-disk `SOUL.md` and
+  topology. In `mono` the default persona reverts to the on-disk `agent.yaml` and
   keeps answering. In the gateway topology **every turn stops, the default
   persona's included**: the tenant is still managed and has no live persona,
   so a node's runtime bundle request is 404 and no turn can boot. Sync a set
   that includes `default` to recover.
-- Each soul is run through a strict structured extraction (a model call). If
-  extraction fails the sync fails with 502 and nothing is written. A dry run
-  skips extraction.
-  The result is cached by soul text in `$SLAUDE_SOUL_CACHE_DIR` (default
-  `$SLAUDE_HOME/cache`). On gateways point it at pod-local storage, as
-  `deploy/k8s-scale` does with an `emptyDir`: `$SLAUDE_HOME` is shared with
-  nodes, and a cache file written there by an agent turn could otherwise plant
-  approvers. `docker-compose.scale.yaml` gives the gateway a `tmpfs` for it. A
-  cache hit whose Slack ids do not all appear in the soul text is discarded and
-  re-extracted, and when `SLAUDE_MASTER_KEY` is set (it is on every gateway)
-  each entry is signed with a key derived from it, over the soul text's full
-  sha256 and the extracted data, so an unsigned or altered entry is also a
-  miss.
+- Every persona must carry its `agent.yaml` definition. A persona without one
+  is refused with a 422 that names it and the command that converts it
+  (`personas export --format agent-yaml`), unless its soul text is unchanged from
+  what is stored, in which case it keeps its stored structure. A dry run applies
+  the same check, so a preview never reports a sync that would fail. Nothing is
+  extracted: the structure is compiled from the file.
 - Every sync wipes all runtime overrides for the tenant.
 
 ## Validate on pull requests
@@ -514,8 +513,9 @@ bun run personas export --format agent-yaml --persona support-bot --out ./person
 ```
 
 It writes one `personas/<name>/agent.yaml` per persona with the same secret
-handling as above. The structured parts come from the existing soul extraction
-(its cache, else a model call), and the soul keeps its prose: the sections that
+handling as above. This is the one place a model still reads a soul: the
+structured parts come from a one-time extraction (its cache, else a model call,
+every id grounded in the text), and the soul keeps its prose: the sections that
 moved into their own keys (`## Mandate`, `## Reporting`, approvers, channels,
 redaction and so on) are dropped from it, and anything it does not recognise
 stays. It reads `$SLAUDE_HOME`, so a deployment already managed from a git
@@ -528,7 +528,7 @@ what was extracted.
 A deployment that keeps its personas in `$SLAUDE_HOME` (no sync) can use the same
 file. `$SLAUDE_HOME/agent.yaml` defines the default persona and
 `personas/<name>/agent.yaml` a named one. It compiles with the same parser as a
-synced file, so nothing about the persona goes through soul extraction: access,
+synced file, so nothing about the persona goes through extraction: access,
 mandates, skills and proactive settings are read from the file as written.
 
 ```sh
@@ -566,8 +566,10 @@ A file on disk cannot set `model`, `mcp`, `runsOn`, `provider`, `memory.kbSource
 where each one lives instead (the model from `SLAUDE_MODEL`, MCP servers from
 `mcp.json`, the token and Slack id from `config.json`). A malformed file stops
 the process at boot with the persona and key named, because skipping the persona
-would let its name fall through to the default persona. Starting from this
-release a SOUL.md persona still works unchanged.
+would let its name fall through to the default persona. A `SOUL.md` with no
+`agent.yaml` beside it stops the gateway and mono at boot (a managed tenant is
+unaffected: its personas come from the database), and the message names
+`personas migrate`. A fresh home gets a starter `agent.yaml`.
 
 ## Runtime overrides
 
@@ -710,5 +712,5 @@ Pull requests from forks receive no repository secrets, so their dry run sends
 an empty bearer and gets 401; run the preview from a branch in the repository,
 or treat the fork's `render --check` as the gate. The dry-run report in
 `report.json` can be posted to the pull request with any comment action. `curl --fail-with-body` makes a 401, 409 (stale), 422 (invalid)
-or 502 (extraction failed) fail the job and still prints the error body, which
+(a persona with no `agent.yaml`) fail the job and still prints the error body, which
 names the variable, persona or revision at fault and never a secret value.

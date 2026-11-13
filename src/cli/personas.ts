@@ -35,7 +35,7 @@ import { parseGuardrail } from "../guardrails/format";
 import { definitionGuardrailWarnings, parsePayload, PayloadError, PERSONA_NAME_RE, PERSONA_VAR_PREFIX, resolvePlaceholders, safeKey, capPaths, payloadVersionFor, providerWarnings, type SyncPayload } from "../persona/sync/payload";
 import { AGENT_YAML_MODELINE } from "../persona/agent-schema";
 import { AGENT_YAML, agentDocument, documentPartsFromSoul, exportedChannelSettings, LEGACY_FILES, parseAgentYaml, proseOnlySoul } from "../persona/agent-def";
-import { extractSoulData } from "../soul/extract";
+import { extractSoulData } from "./legacy-soul-extract";
 import { migratePersona } from "../persona/migrate";
 import type { SoulData } from "../soul/data";
 
@@ -70,6 +70,7 @@ export function renderDir(
       personas.push(compiled.spec);
       continue;
     }
+    definitionWarnings.push(`persona '${name}' has no agent.yaml: its soul can be synced only while it is unchanged from what is stored; convert it with \`personas export --format agent-yaml\``);
     const yaml = read(join(root, name, "persona.yaml"));
     let cfg: { slackUserId?: string; userToken?: string; model?: string; provider?: unknown; runsOn?: string; kbSources?: unknown; background?: unknown };
     try {

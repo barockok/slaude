@@ -6,40 +6,30 @@
 //   bun /tmp/seed-persona.ts --persona-id alpha --api-app-id A0X --team-id T0X \
 //     --bot-token <t> --signing-secret <s> --bot-user-id U0X
 //
-// 1. SOUL.md = the sim WORLD fixture + a `Persona-ID: <id>` line (the mock LLM reads it).
-// 2. The structured soul cache file. The gateway normally builds it with an LLM call; the mock
-//    LLM would answer with garbage and the regex fallback never fills the manager, so a DM from
-//    the manager would be ignored. Seeding the cache sidesteps that. The entry is written by the
-//    image's writeSoulCacheEntry (signed with SLAUDE_MASTER_KEY) into the directory this
-//    process's SLAUDE_SOUL_CACHE_DIR names, so the exec'd process must see the same value as the
-//    gateway that reads it: the e2e overlay sets it on the gateway container, and kubectl exec
-//    inherits the container's environment.
-// 3. slack-app add (the same logic as `bun run slack-app add`).
-// 4. Self-verify with the LLM endpoint unreachable: a cache hit must yield manager U0MGR.
+// 1. $SLAUDE_HOME/agent.yaml = the sim WORLD fixture (manager, backup, approver, channels) as an
+//    agent.yaml, with a `Persona-ID: <id>` line in its soul prose (the mock LLM reads it). Any
+//    SOUL.md is removed: the gateway refuses a home that has both.
+// 2. slack-app add (the same logic as `bun run slack-app add`).
+// 3. Self-verify: the file compiles and yields manager U0MGR, with no model involved.
 //
-// SAFETY: this overwrites $SLAUDE_HOME/SOUL.md, so it refuses to run unless SLAUDE_E2E_SEED=1 is
+// SAFETY: this overwrites $SLAUDE_HOME/agent.yaml, so it refuses to run unless SLAUDE_E2E_SEED=1 is
 // set (callers pass it through execIn, e.g. execIn(pod, "gateway", ["env", "SLAUDE_E2E_SEED=1",
-// "bun", "/tmp/seed-persona.ts", ...])). It also refuses to replace a SOUL.md that has no
+// "bun", "/tmp/seed-persona.ts", ...])). It also refuses to replace an agent.yaml that has no
 // `Persona-ID:` line (not written by this script) unless it is the gateway's untouched starter
-// persona or SLAUDE_E2E_SEED_FORCE=1 is also set. On a fresh cluster the gateway writes that
-// starter at boot, so it must stay replaceable. The decision lives in ./soul-guard.ts (pure, unit
-// tested); the driver copies it into the pod next to this file. It refuses, too, when the tenant
-// is managed by personas as code: the gateway then takes its souls from the database.
-// Re-running is idempotent: SOUL.md is rewritten whole and the registry row is an upsert.
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+// or SLAUDE_E2E_SEED_FORCE=1 is also set. On a fresh cluster the gateway writes that starter at
+// boot, so it must stay replaceable. The decision lives in ./soul-guard.ts (pure, unit tested);
+// the driver copies it into the pod next to this file. It refuses, too, when the tenant is managed
+// by personas as code: the gateway then takes its personas from the database.
+// Re-running is idempotent: agent.yaml is rewritten whole and the registry row is an upsert.
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { stringify as yamlStringify } from "yaml";
 import { paths } from "/app/src/config/home.ts";
 import { main as slackApp } from "/app/src/cli/slack-app.ts";
 import { dbDialect } from "/app/src/db/client.ts";
 import { isManaged } from "/app/src/db/personas.ts";
-import { WORLD, writeSoulFixture } from "/app/src/gateway/sim/soul-fixture.ts";
-import {
-  __resetSoulDataMemo,
-  loadSoulData,
-  soulCachePath,
-  soulDataBase,
-  writeSoulCacheEntry,
-} from "/app/src/soul/extract.ts";
-import { loadSoul } from "/app/src/soul/loader.ts";
+import { WORLD } from "/app/src/gateway/sim/soul-fixture.ts";
+import { readFileAgent } from "/app/src/persona/file-agent.ts";
 import { classifySoul, seedRefusal } from "./soul-guard.ts";
 
 function flagsOf(argv: string[]): Record<string, string> {
@@ -63,37 +53,43 @@ for (const k of ["persona-id", "api-app-id", "team-id", "bot-token", "signing-se
   if (!f[k]) fail(`missing --${k}`);
 }
 
+const agentFile = join(paths.home, "agent.yaml");
+const soulFile = join(paths.home, "SOUL.md");
+
 // Guard: nothing is written before these pass.
-const soulKind = classifySoul(existsSync(paths.soul) ? readFileSync(paths.soul, "utf8") : null);
-const refusal = seedRefusal(soulKind, process.env, paths.soul);
+const soulKind = classifySoul(existsSync(agentFile) ? readFileSync(agentFile, "utf8") : null);
+const refusal = seedRefusal(soulKind, process.env, agentFile);
 if (refusal) fail(refusal);
-// A tenant synced as personas as code reads its souls from the database, never from SOUL.md or
-// this cache, so seeding it would succeed and change nothing the gateway uses.
-// deploy/k8s-local/verify-ha.sh syncs one (with a default soul that names no manager).
+// A tenant synced as personas as code reads its personas from the database, never from
+// agent.yaml, so seeding it would succeed and change nothing the gateway uses.
+// deploy/k8s-local/verify-ha.sh syncs one (with a default persona that names no manager).
 if (dbDialect() === "pg" && (await isManaged("default"))) {
   fail(
     "refusing to seed: tenant 'default' is managed by personas as code (a /deploy sync ran on this cluster, " +
-      "for example deploy/k8s-local/verify-ha.sh), so the gateway ignores SOUL.md and the soul cache. " +
+      "for example deploy/k8s-local/verify-ha.sh), so the gateway ignores agent.yaml. " +
       "This suite needs a never-synced tenant: a fresh cluster (deploy/k8s-local/down.sh, then e2e/up.sh).",
   );
 }
-console.log(`[seed-persona] replacing a SOUL.md of kind '${soulKind}'`);
+console.log(`[seed-persona] replacing an agent.yaml of kind '${soulKind}'`);
 
-// 1. SOUL.md
-writeSoulFixture(WORLD);
-appendFileSync(paths.soul, `\nPersona-ID: ${f["persona-id"]}\n`, "utf8");
+// 1. agent.yaml, and no SOUL.md beside it.
+const doc = {
+  name: "default",
+  soul: `# SOUL\n\nSim agent.\n\nPersona-ID: ${f["persona-id"]}\n`,
+  access: {
+    manager: `slack:user:${WORLD.manager}`,
+    ...(WORLD.backup ? { backupManager: `slack:user:${WORLD.backup}` } : {}),
+    approvers: WORLD.approvers.map((user) => ({ user: `slack:user:${user}`, scope: "anything" })),
+    channels: {
+      public: WORLD.allowed.map((c) => `slack:channel:${c}`),
+      trusted: WORLD.trusted.map((c) => `slack:channel:${c}`),
+    },
+  },
+};
+writeFileSync(agentFile, yamlStringify(doc, { lineWidth: 0 }), "utf8");
+rmSync(soulFile, { force: true });
 
-// 2. Soul cache, through extraction's own writer: the same file name and directory
-//    (SLAUDE_SOUL_CACHE_DIR, else $SLAUDE_HOME/cache) and, when SLAUDE_MASTER_KEY is set as it is
-//    in the cluster pods, the same signed envelope, so the entry is one extraction accepts. The
-//    data is the base soul writeSoulFixture installed (no runtime overlay): what an extraction
-//    would have cached.
-const soulText = loadSoul();
-const cacheFile = writeSoulCacheEntry(soulText, soulDataBase());
-if (!cacheFile) fail("SLAUDE_MASTER_KEY is set but unusable: no soul cache entry was written");
-if (cacheFile !== soulCachePath(soulText)) fail(`cache written to ${cacheFile}, but extraction reads ${soulCachePath(soulText)}`);
-
-// 3. Registry row
+// 2. Registry row
 const code = await slackApp(
   [
     "add",
@@ -108,16 +104,12 @@ const code = await slackApp(
 );
 if (code !== 0) fail(`slack-app add exited ${code}`);
 
-// 4. Self-verify through the gateway's boot read (loadSoulData: the MAC, schema and grounding
-//    checks). Any extraction attempt hits a closed port and falls back to the regex parse, which
-//    never fills the manager, so only a cache hit yields it.
-__resetSoulDataMemo();
-process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:1";
-const data = await loadSoulData();
-if (data.manager?.userId !== WORLD.manager) {
-  fail(`soul cache was not hit (manager=${data.manager?.userId ?? "none"}, expected ${WORLD.manager})`);
+// 3. Self-verify: the file the gateway will read compiles and names the manager.
+const agent = readFileAgent(paths.home, "default");
+if (agent?.soulJson.manager.userId !== WORLD.manager) {
+  fail(`agent.yaml did not compile to manager ${WORLD.manager} (got ${agent?.soulJson.manager.userId ?? "none"})`);
 }
-console.log(`[seed-persona] soul cache hit at ${cacheFile}, manager ${data.manager.userId}`);
+console.log(`[seed-persona] agent.yaml written at ${agentFile}, manager ${agent.soulJson.manager.userId}`);
 // Exit explicitly: an open database handle must not keep a finished seed alive (observed with
 // PGLite reopening a persisted data directory, which the host test of this script uses).
 process.exit(0);

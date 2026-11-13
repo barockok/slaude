@@ -1,17 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { extractSoulData, SoulExtractionError } from "../../src/soul/extract";
+import { extractSoulData, SoulExtractionError } from "../../src/cli/legacy-soul-extract";
 
 const SOUL = "# Ana\nManager: <@UTESTUSER1>\n";
 const failing = async () => { throw new Error("provider down"); };
 
 describe("extractSoulData", () => {
-  test("strict: a failing extractor throws instead of degrading", async () => {
-    await expect(extractSoulData(SOUL, { strict: true, call: failing })).rejects.toThrow(SoulExtractionError);
-  });
-
-  test("non-strict: a failing extractor falls back, as loadSoulData always has", async () => {
-    const d = await extractSoulData(SOUL, { strict: false, call: failing });
-    expect(Array.isArray(d.approvers)).toBe(true);
+  test("a failing extractor throws instead of degrading", async () => {
+    await expect(extractSoulData(SOUL, { call: failing })).rejects.toThrow(SoulExtractionError);
   });
 
   test("the same text is extracted once and then served from the sha cache", async () => {

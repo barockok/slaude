@@ -5,6 +5,8 @@ date: 2026-11-11
 
 # A node builds a persona's channel mandate from the bundle
 
+> **Superseded in rc.17:** nodes no longer parse soul text, and the `channelClasses` bundle field is gone; a bundle with no structured soul gets no channel mandate. See [agent.yaml only](2026-11-14-agent-yaml-only.md).
+
 **Date:** 2026-11-11
 **Status:** branch `fix/node-soul-db`, on top of `v0.46.0-rc.14`.
 

@@ -14,7 +14,7 @@ import {
 } from "../../src/persona/registry";
 import { personaSoulText } from "../../src/persona/soul-source";
 import { compiledSoulFor, soulDataFor } from "../../src/soul/per-persona";
-import { loadSoulData, soulData } from "../../src/soul/extract";
+import { soulData } from "../../src/soul/extract";
 import { loadSoul } from "../../src/soul/loader";
 import { channelSessionOn, proactiveRead } from "../../src/soul/proactive";
 
@@ -149,11 +149,10 @@ describe("the default persona with $SLAUDE_HOME/agent.yaml", () => {
     expect(getPersonaRegistry().isManaged()).toBe(false);
   });
 
-  test("with no SOUL.md, nothing seeds a starter beside it, and the boot prewarm needs no model", async () => {
+  test("with no SOUL.md, nothing seeds a starter beside it", async () => {
     put(join(root, "agent.yaml"), DEFAULT);
     expect(loadSoul()).toBe("");
     expect(existsSync(join(root, "SOUL.md"))).toBe(false);
-    expect((await loadSoulData()).approvers).toEqual([]);
     expect(existsSync(join(root, "SOUL.md"))).toBe(false);
     // The boot order: prewarm, then the registry load; the file is still readable.
     expect(await refreshPersonaState("default")).toBe(true);

@@ -98,7 +98,6 @@ import { endsInOpenFence } from "../../soul/proactive";
 import { PERSONA_NAME_RE } from "../../persona/sync/payload";
 import { resolveDbConfig } from "../../db/client";
 import { assertHttpOnlyMcp, McpNotHttpOnlyError } from "../../persona/mcp-http-only";
-import { extractSoulData, SoulExtractionError } from "../../soul/extract";
 import { kbMode, kbView, mcpServersView, personaNodes, providerView, soulView, type NodeView, type PanelRole as PersonaViewRole } from "./persona-view";
 import { installedKbSourceIds } from "../../knowledge/persona-kb";
 import { discoverSkills } from "../../skills/loader";
@@ -383,8 +382,6 @@ export interface PanelApiDeps {
   onUnlock?: (sessionId: string) => void;
   /** SSE poll cadence (ms). Default 300. */
   eventsPollMs?: number;
-  /** Strict soul extraction for runtime persona changes. Default: the real extractor. */
-  extractSoul?: (text: string) => Promise<unknown>;
   /** The plugin inventory's sources, for GET /panel/api/plugins. Absent or null
    *  (mono: no nodes report) = an empty, unavailable view. */
   plugins?: InventorySources | null;
@@ -418,7 +415,6 @@ export interface PanelApi {
 export function createPanelApi(deps: PanelApiDeps): PanelApi {
   const pollMs = deps.eventsPollMs ?? 300;
   const authRoutes = createAuthRoutes();
-  const extractSoul = deps.extractSoul ?? ((t: string) => extractSoulData(t, { strict: true }));
   const installedKbSources = deps.installedKbSources ?? installedKbSourceIds;
   const panelRole = deps.role ?? "gateway";
   const guardrailApiDeps = (): GuardrailApiDeps => ({ agents: () => agentNames(), names: deps.names ?? null, turnsRunOn: panelRole === "mono" ? "this-process" : "nodes" });
@@ -1165,12 +1161,6 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             e instanceof Personas.NameTakenError ||
             e instanceof Personas.IdentityTakenError
           ) return json(409, { error: e.message });
-          if (e instanceof SoulExtractionError) {
-            // The cause can carry provider response text: server log only,
-            // truncated, as the pipeline's sync does.
-            console.error(`[panel] soul extraction failed: ${e.message.slice(0, 200)}`);
-            return json(502, { error: "soul extraction failed" });
-          }
           return null;
         };
         const readBody = async (): Promise<Record<string, unknown> | null> => {
@@ -1257,46 +1247,9 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         if (seg.length === 3 && req.method === "POST") {
           const denied = requireSuperadmin(role, { action: "persona.create", operator: operatorId });
           if (denied) return denied;
-          const b = await readBody();
-          if (!b) return json(400, { error: "invalid JSON body" });
-          const name = b.name;
-          if (typeof name !== "string" || !PERSONA_NAME_RE.test(name)) {
-            return json(422, { error: "persona name must match ^[a-z0-9][a-z0-9-]{0,62}$" });
-          }
-          if (typeof b.soul !== "string" || !b.soul.trim()) return json(422, { error: "soul text is required" });
-          if (name !== "default" && (typeof b.slackUserId !== "string" || !b.slackUserId)) {
-            return json(422, { error: "slackUserId is required" });
-          }
-          if (b.model != null && (typeof b.model !== "string" || !b.model)) return json(422, { error: "model must be a non-empty string" });
-          if (b.userToken != null && typeof b.userToken !== "string") return json(422, { error: "userToken must be a string" });
-          if (b.mcp != null) {
-            try { assertHttpOnlyMcp(b.mcp); } catch (e) {
-              if (e instanceof McpNotHttpOnlyError) return json(422, { error: e.message });
-              throw e;
-            }
-          }
-          try {
-            const row: DesiredPersona = {
-              name,
-              slackUserId: typeof b.slackUserId === "string" ? b.slackUserId : null,
-              userToken: typeof b.userToken === "string" && b.userToken ? b.userToken : null,
-              model: typeof b.model === "string" ? b.model : null,
-              soulMd: b.soul,
-              soulJson: await extractSoul(b.soul),
-              mcp: b.mcp ?? null,
-              origin: "runtime",
-              tombstonedAt: null,
-            };
-            await Personas.createRuntimePersona(tenant, row, operatorId);
-          } catch (e) {
-            const r = status(e);
-            if (r) return r;
-            throw e;
-          }
-          const reload = await publishConfigReload(deps.pubsub, tenant);
-          // The detail names the persona only; the body (and its userToken) is never logged.
-          audit({ action: "persona.create", operator: operatorId, role, outcome: "ok", detail: { tenantId: tenant, persona: name } });
-          return json(200, { ok: true, name, ...reload });
+          // A persona is defined by an agent.yaml, which is synced from git. Created here it
+          // would have no structure to run on (nothing reads access out of prose any more).
+          return json(409, { error: "a persona is defined by an agent.yaml and synced from git; it cannot be created from the console" });
         }
 
         // PUT|DELETE /panel/api/personas/:name/overrides/:field
@@ -1326,11 +1279,12 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
                 // channel sections in its soul included: only the prose changes,
                 // and extraction would find nothing in prose.
                 const one = await Personas.personaByName(tenant, name);
-                if (one?.desired.definition) {
+                if (!one) return json(404, { error: `no persona named '${name}'` });
+                if (one.desired.definition) {
                   const kept = compiledChannelSections(one.desired.soulMd, v);
                   if (kept && endsInOpenFence(v)) return json(400, { error: "the soul text ends inside an open code fence: close it so the channel settings can be kept" });
                   stored = { soulMd: v + kept, soulJson: one.desired.soulJson };
-                } else stored = { soulMd: v, soulJson: await extractSoul(v) };
+                } else return json(409, { error: "this persona has no agent.yaml, so its soul has no structure to keep; define it as an agent.yaml and sync it" });
               } else if (field === "model") {
                 if (typeof v !== "string" || !v) return json(422, { error: "model value must be a non-empty string" });
               } else {
