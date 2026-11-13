@@ -103,7 +103,7 @@ Restart recovery works the same way: on a plain, non-mention message the gateway
 
 ## 2. Channel controls and identity
 
-SOUL.md declares who may talk to the agent and who is never heard.
+The persona's `agent.yaml` declares who may talk to the agent and who is never heard. Section names below (`## Trusted channels`, `## Approvers` and so on) are the old SOUL.md headings; each is now a key under `access:` (`access.channels.trusted`, `access.approvers`, `access.blocked`, `access.dm`, `access.approvalTimeoutSeconds`, `mandate.scoped`), listed in the [reference](../reference/configuration.md#soul).
 
 ### 2.1 `allowedChannels` vs `trustedChannels`
 

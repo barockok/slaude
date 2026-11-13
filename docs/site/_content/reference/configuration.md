@@ -11,7 +11,7 @@ On this page:
 - [Runtime environment variables](#runtime-env)
 - [Filesystem layout — SLAUDE_HOME](#filesystem)
 - [Connect broker](#connect-broker)
-- [SOUL.md — persona schema](#soul)
+- [Persona definition — agent.yaml](#soul)
 - [Dependency manifests — slaude.json & slaude.lock](#manifests)
 - [External MCP — .mcp.json](#external-mcp)
 - [Validation — bun run validate-soul](#validation)
@@ -582,8 +582,8 @@ Metrics: `slaude_decision_requests_total{adapter,outcome}` (outcome `ok`, `timeo
 | `SLAUDE_BACKGROUND_TIMEZONE` | No | `UTC` | IANA timezone whose midnight-to-midnight day bounds the budget. A persona's `background.timezone` overrides it; an invalid value falls back to `UTC` with a warning. |
 | `SLAUDE_PRICE_TABLE` | No | built-in list prices | Per-model token prices (USD per million tokens: `input`, `output`, `cache_read`, `cache_write`), as inline JSON or a file path when the value does not start with `{`. A custom table replaces the built-in one. Lookup is exact after stripping an `anthropic/` prefix and then a trailing `-YYYYMMDD` snapshot date, so `claude-haiku-4-5-20251001` prices as `claude-haiku-4-5`. The built-in table has no prices for retired or legacy models (Sonnet 4, Opus 4/4.1/4.5, Sonnet 4.5, the 3.x line); add them here. Background runs are priced by the model the CLI reports, so an unset or unpriced `SLAUDE_MODEL` still runs; a reported model with no price ends that run as `error` after one turn. Boot logs one warning naming each configured model the table lacks. |
 | `SLAUDE_AUTO_EVOLVE` | No | `1` | Auto-evolve after each substantial user turn. When `1`, the manager injects an internal `<auto-evolve>` prompt so the agent decides whether to save or refine a skill. Set to `0` to disable. |
-| `SLAUDE_SOUL_PARSE_MAX_TOKENS` | No | `8192` | `max_tokens` budget for the soul extractor LLM call. Raise when a slower model needs more headroom (thinking-mode providers emit thinking + text blocks that both count). Non-positive or non-finite values fall back to `8192`. |
-| `SLAUDE_SOUL_PARSE_MODEL` | No | `SLAUDE_MODEL` or `claude-haiku-4-5-20251001` | Model used for the SOUL.md → JSON extraction pass. Defaults to `SLAUDE_MODEL` when set, otherwise `claude-haiku-4-5-20251001`. |
+| `SLAUDE_SOUL_PARSE_MAX_TOKENS` | No | `8192` | `max_tokens` budget for the SOUL.md reader used by `personas migrate` and `personas export`. Raise when a slower model needs more headroom (thinking-mode providers emit thinking + text blocks that both count). Non-positive or non-finite values fall back to `8192`. |
+| `SLAUDE_SOUL_PARSE_MODEL` | No | `SLAUDE_MODEL` or `claude-haiku-4-5-20251001` | Model `personas migrate` uses to read an old SOUL.md. Defaults to `SLAUDE_MODEL` when set, otherwise `claude-haiku-4-5-20251001`. |
 | `SLAUDE_SOUL_CACHE_DIR` | No | `$SLAUDE_HOME/cache` | Directory for the extracted-`SoulData` cache. In the gateway topology `$SLAUDE_HOME` is a volume nodes and agent turns can write, so a planted cache file could install forged approvers; point this at pod-local storage on gateways (`deploy/k8s-scale` mounts an `emptyDir`, `docker-compose.scale.yaml` a `tmpfs`). Every cache hit is also re-checked: each Slack id in it must appear verbatim in the soul text, and when `SLAUDE_MASTER_KEY` is set the entry must carry a MAC from a key derived from it (only a key holder can write a trusted entry). A hit failing either check is discarded and the soul re-extracted. |
 
 ### External MCP env references
@@ -670,17 +670,17 @@ GRAFANA_API_KEY=
 
 | Path | What it holds |
 |------|---------------|
-| `~/.slaude/SOUL.md` | Persona — the operator-authored identity file. Auto-seeded with the starter scaffold on first boot if missing. See [SOUL.md](#soul). |
+| `~/.slaude/agent.yaml` | The default persona: one file for its identity, access and mandates. Seeded with a starter on first boot of an empty home. See [Persona definition](#soul). |
 | `~/.slaude/.env` | Env file auto-loaded by `src/config/env.ts` (`loadDotenv(paths.env)`) without overriding existing `process.env`. Docker compose also reads `./.env` from the repo root. |
 | `~/.slaude/.mcp.json` | External MCP servers. Mounted into the container at `/data/.mcp.json` (discovered via session cwd parent chain). See [External MCP](#external-mcp). |
 | `~/.slaude/slaude.json` | Dependency manifest — plugins, skills, knowledge bases. See [Manifests](#manifests). |
 | `~/.slaude/slaude.lock` | Pinned shas for every manifest entry. See [Manifests](#manifests). |
 | `~/.slaude/skills/` | Installed skills — one dir per slug containing `SKILL.md`. Hot-reloaded each turn; mounted as a local plugin (`paths.home` with `skipMcpDiscovery: true`). |
 | `~/.slaude/knowledge/` | Installed KB wikis — one dir per label. Indexed into the brain at boot and nightly maintenance. |
-| `~/.slaude/cache/` | Extracted `SoulData` JSON keyed by `sha256(SOUL.md)`, policy embeddings. Safe to delete — re-extracted on next boot. |
+| `~/.slaude/cache/` | Policy embeddings, and the cache `personas migrate` keeps of its reading of an old SOUL.md. Safe to delete. |
 | `~/.slaude/workspaces/` | Per-session cwd — `workspaces/<team>-<channel>-<thread>[__persona]/`. Each thread gets its own git worktree-like dir. |
 | `~/.slaude/.claude/` | Claude Code config dir (`CLAUDE_CONFIG_DIR`). Holds `installed_plugins.json`, plugin cache, project transcripts (`projects/`). In `/1on1` mode the child is pointed at `$SLAUDE_HOME/oauth/<userId>` for OAuth isolation. |
-| `~/.slaude/personas/` | Multi-persona operator-created directory. Presence means multi-bot mode; each named persona has its own `SOUL.md` and `mcp.json` overlay. |
+| `~/.slaude/personas/` | Multi-persona operator-created directory. Presence means multi-bot mode; each named persona has its own `agent.yaml` and `mcp.json` overlay. |
 | `~/.slaude/db.sqlite` | `bun:sqlite` — `sessions`, `brain`, `soul_overrides`, `kb_ingest_jobs` tables. Override via `SLAUDE_DB_PATH` for PVC `subPath` mounts. Absent when `SLAUDE_DB=pg`; move an existing file with `bun run migrate-sqlite` (idempotent, `--dry-run` to preview). |
 
 ```bash
@@ -746,41 +746,43 @@ SLAUDE_ENCRYPTION_KEY=$(openssl rand -base64 32)   # 32 random bytes, base64
 
 ---
 
-## SOUL.md — persona schema <a id="soul"></a>
+## Persona definition: agent.yaml <a id="soul"></a>
 
-`SOUL.md` is the operator-authored file at `~/.slaude/SOUL.md` (or `~/.slaude/personas/<name>/SOUL.md` in multi-persona mode). On first boot if the file is missing, slaude seeds the **starter scaffold** from `src/soul/loader.ts` — fill it in before going live.
+A persona is defined by one `agent.yaml`: `$SLAUDE_HOME/agent.yaml` for the default persona and `$SLAUDE_HOME/personas/<name>/agent.yaml` for a named one. Everything that decides who may do what (manager, approvers, channel lists, mandates, redaction, proactive settings) is read from it as written, by a parser and a schema, with no model call. The prose that shapes the agent's voice sits in its `soul:` key. Editors get completion and checking from the [published JSON Schema](../deploy/personas-as-code.md#editor-help-and-the-json-schema).
+
+On first boot of an empty home, slaude seeds a starter `agent.yaml` with no manager: fill it in before going live. A persona with a `SOUL.md` and no `agent.yaml` stops the process at boot and names the command that converts it: `bun run personas migrate <name|default>` (see [An agent.yaml on disk](../deploy/personas-as-code.md#an-agentyaml-on-disk)).
 
 The runtime enforces two layers:
 
-- **Runtime baseline** (in code, `RUNTIME_BASELINE` in `loader.ts`) — non-negotiable rules about Slack output discipline, formatting, approval, engagement, channel trust, KB-first, skill evolution, and harness overrides. You never author this; a new release can tighten it without touching your persona.
-- **Persona** (your `SOUL.md`) — who the agent is: name, role, voice, manager, mandate, values, channels, approvers, redaction. This is what the agent's system prompt renders inside `<persona>…</persona>`.
+- **Runtime baseline** (in code, `RUNTIME_BASELINE` in `loader.ts`): non-negotiable rules about Slack output discipline, formatting, approval, engagement, channel trust, KB-first, skill evolution, and harness overrides. You never author this; a new release can tighten it without touching your persona.
+- **Persona** (your `agent.yaml`): who the agent is and what it may do. The `soul:` prose renders inside `<persona>...</persona>` in the system prompt.
 
-Structured extraction (`src/soul/extract.ts`) calls the configured provider with `EXTRACTION_PROMPT` (`src/soul/data.ts`), validates the JSON with `SoulDataSchema` (zod), checks that every extracted Slack id appears verbatim in the raw persona (hallucinated ids are rejected), and caches the result at `~/.slaude/cache/soul.<sha>.json` (or `$SLAUDE_SOUL_CACHE_DIR`) keyed by `sha256(SOUL.md)`. A cache hit gets the same grounding check before use, so a forged cache file is treated as a miss. On any extraction failure it falls back to a regex parser that only fills `approvers`.
+Reading an old `SOUL.md` into an `agent.yaml` is the one place a model is still used, and only inside `personas migrate` and `personas export --format agent-yaml`, where a person reviews the result before it is written (provider settings: `SLAUDE_SOUL_PARSE_MODEL`, `SLAUDE_SOUL_PARSE_MAX_TOKENS`, `SLAUDE_SOUL_CACHE_DIR`).
 
-### Validated schema — what extraction looks for
+### Fields: what the runtime reads, and where each one lived in SOUL.md
 
-Every field below is optional in the markdown (the extractor omits what it cannot find), but three are **required** for `bun run validate-soul` to pass: `identity.name`, `manager.userId`, `mandate`.
+Every field below is optional in the file, but three are **required** for `bun run validate-soul` to pass: `identity.name` (the `name` key), `manager.userId` (`access.manager`) and `mandate` (`mandate.global`). The last column names the SOUL.md section the same thing used to be written in, for reading old files.
 
-| Field | Source section in SOUL.md | Type | Required | What to write |
+| Field | agent.yaml key (was SOUL.md section) | Type | Required | What to write |
 |-------|---------------------------|------|----------|---------------|
-| `identity.name` | `## Identity` | string | **Yes** | Agent display name |
-| `identity.role` | `## Identity` | string | No | One line — e.g. `engineering teammate in #platform` |
-| `identity.voice` | `## Identity` | string | No | e.g. `terse, direct, no filler. fragments OK.` |
-| `manager.userId` | `## Reporting` | `U…` / `W…` | **Yes** | Slack user id of the person the agent reports to |
-| `manager.handle` | `## Reporting` | string | No | e.g. `@barock` |
-| `backupManager.userId` | `## Reporting` (Backup manager) | `U…` / `W…` | No | Fallback manager — same engagement authority as primary |
-| `backupManager.handle` | `## Reporting` | string | No | e.g. `@deputy` |
-| `allowedChannels` | `## Allowed channels` / `## Public channels` | `C…` / `G…` / `D…` ids | No | Public-interaction zones — anyone in the channel can address slaude (public eyes, avoid unsolicited internal dumps) |
-| `trustedChannels` | `## Trusted channels` / `## Team channel` / `## Home channel` | `C…` / `G…` / `D…` ids | No | Internal team channels where slaude operates as a member — engagement identical to allowed, but agent gets `trust="trusted"` and may show MCP servers, skill names, internals |
-| `blockedUsers` | `## Blocked` / `## Blacklist` / `## Ignore` | `U…` / `W…` ids | No | Inbound messages from these users are dropped at the adapter gate — no logs leaked to the agent, no token spend |
-| `dmAllowedUsers` | `## DM allowlist` / `## Allowed DMs` | `U…` / `W…` ids | No | Users allowed to DM slaude besides manager/backup. Grants DM chat only — not admin authority |
-| `approvers` | `## Approvers` | `{userId, scope, catchall}` entries | No | Who may approve `request_approval` — see [Approvers](#approvers) |
-| `redactPatterns` | `## Redaction` | regex strings | No | JS regex sources (without `/…/` wrappers, without flags) matched global + case-insensitive; substrings replaced with `[REDACTED]` in outbound `reply`/`edit`/upload comments |
-| `approvalTimeoutSeconds` | `## Approval timeout` | integer ≥ 0 | No | Auto-deny `request_approval` blocks after N seconds with no click. `0` or omitted = wait forever |
-| `mandate` | `## Mandate` | string | **Yes** | What the agent is meant to accomplish — drives every turn |
-| `values` | `## Values` | string[] | No | 1–2 lines of operating principles unique to the persona |
-| `channelOverrides` | `## Channel <#Cxxx\|name>` blocks | `{channel, mandate?, mandateMode?, approvers}` per block | No | Per-channel sub-mandate and approvers, see [Channel overrides](#channel-overrides) |
-| `scopeMandates` | `## Scope dm\|public\|trusted` blocks | `{scope, mandate, mode?}` per block | No | Sub-mandate for direct messages or a channel class, see [Scoped mandates](#scoped-mandates) |
+| `identity.name` | `name` (was `## Identity`) | string | **Yes** | Agent display name |
+| `identity.role` | `description` (was `## Identity`) | string | No | One line — e.g. `engineering teammate in #platform` |
+| `identity.voice` | `soul` (prose) (was `## Identity`) | string | No | e.g. `terse, direct, no filler. fragments OK.` |
+| `manager.userId` | `access.manager` (was `## Reporting`) | `U…` / `W…` | **Yes** | Slack user id of the person the agent reports to |
+| `manager.handle` | (none; write it in the soul prose) (was `## Reporting`) | string | No | e.g. `@barock` |
+| `backupManager.userId` | `access.backupManager` (was `## Reporting` (Backup manager)) | `U…` / `W…` | No | Fallback manager — same engagement authority as primary |
+| `backupManager.handle` | (none) (was `## Reporting`) | string | No | e.g. `@deputy` |
+| `allowedChannels` | `access.channels.public` (was `## Allowed channels` / `## Public channels`) | `C…` / `G…` / `D…` ids | No | Public-interaction zones — anyone in the channel can address slaude (public eyes, avoid unsolicited internal dumps) |
+| `trustedChannels` | `access.channels.trusted` (was `## Trusted channels` / `## Team channel` / `## Home channel`) | `C…` / `G…` / `D…` ids | No | Internal team channels where slaude operates as a member — engagement identical to allowed, but agent gets `trust="trusted"` and may show MCP servers, skill names, internals |
+| `blockedUsers` | `access.blocked` (was `## Blocked` / `## Blacklist` / `## Ignore`) | `U…` / `W…` ids | No | Inbound messages from these users are dropped at the adapter gate — no logs leaked to the agent, no token spend |
+| `dmAllowedUsers` | `access.dm` (was `## DM allowlist` / `## Allowed DMs`) | `U…` / `W…` ids | No | Users allowed to DM slaude besides manager/backup. Grants DM chat only — not admin authority |
+| `approvers` | `access.approvers` (was `## Approvers`) | `{userId, scope, catchall}` entries | No | Who may approve `request_approval` — see [Approvers](#approvers) |
+| `redactPatterns` | `access.redact` (was `## Redaction`) | regex strings | No | JS regex sources (without `/…/` wrappers, without flags) matched global + case-insensitive; substrings replaced with `[REDACTED]` in outbound `reply`/`edit`/upload comments |
+| `approvalTimeoutSeconds` | `access.approvalTimeoutSeconds` (was `## Approval timeout`) | integer ≥ 0 | No | Auto-deny `request_approval` blocks after N seconds with no click. `0` or omitted = wait forever |
+| `mandate` | `mandate.global` (was `## Mandate`) | string | **Yes** | What the agent is meant to accomplish — drives every turn |
+| `values` | `soul` (prose) (was `## Values`) | string[] | No | 1–2 lines of operating principles unique to the persona |
+| `channelOverrides` | `mandate.scoped` (boundary `slack:channel:<id>`) and `access.approvers[].channel` (was `## Channel <#Cxxx\|name>` blocks) | `{channel, mandate?, mandateMode?, approvers}` per block | No | Per-channel sub-mandate and approvers, see [Channel overrides](#channel-overrides) |
+| `scopeMandates` | `mandate.scoped` (boundary `trust:public`, `trust:trusted` or `dm`) (was `## Scope dm\|public\|trusted` blocks) | `{scope, mandate, mode?}` per block | No | Sub-mandate for direct messages or a channel class, see [Scoped mandates](#scoped-mandates) |
 
 ### Required vs warnings — what `validate-soul` checks
 
@@ -793,9 +795,9 @@ Every field below is optional in the markdown (the extractor omits what it canno
   - `backupManager.userId === manager.userId` → backup is redundant.
   - Any `redactPatterns` entry that fails `new RegExp(p, "gi")` → rejected as invalid regex.
 
-### Writing SOUL.md — section cookbook
+### Legacy: the SOUL.md section syntax
 
-Every list below is **one id per line**, in any of these forms: `<@U0XXXXXXXXX>`, `<#C0123456789|name>`, raw `U0XXXXXXXXX` / `C0123456789`. Trailing `;` starts an inline comment.
+The sections below are the old SOUL.md syntax. Nothing reads them as structure any more; they are kept so an old file can be read, and `personas migrate` turns them into the keys above. Every list below is **one id per line**, in any of these forms: `<@U0XXXXXXXXX>`, `<#C0123456789|name>`, raw `U0XXXXXXXXX` / `C0123456789`. Trailing `;` starts an inline comment.
 
 ```markdown
 # Persona
@@ -946,11 +948,23 @@ Limit for public channels (this narrows the mandate above and wins over it where
 
 A named persona reads its own mandates and blocks (the default persona's are never inherited), and its channel classes are the same lists that admit it (`withAclFallback`). Every reader of a mandate goes through `resolveMandate` in `src/soul/mandate-scope.ts`: the turn's system prompt, the heartbeat and wake prompts, voice calls and the console's Mandates tab.
 
-> **Template stub block.** The seeded `SOUL.md` contains a `## Channel <#C0123456789|example-channel>` stub with a placeholder id — the extractor skips it (placeholder ids like `C0123456789` and `<@manager-id>` are ignored). Delete the stub or fill it with a real channel id.
 
-### Minimal valid SOUL.md
+### Minimal valid agent.yaml
 
-This is the smallest file that passes `bun run validate-soul`:
+The smallest file that passes `bun run validate-soul`:
+
+```yaml
+name: slaude
+soul: |
+  # Persona
+  Own the #engineering Slack surface: triage, ship, keep context warm.
+access:
+  manager: slack:user:U0MANAGER123
+mandate:
+  global: Own the #engineering Slack surface: triage, ship, keep context warm.
+```
+
+The same persona in the old SOUL.md syntax, which `personas migrate` converts:
 
 ```markdown
 # Persona
@@ -967,8 +981,8 @@ This is the smallest file that passes `bun run validate-soul`:
 
 ```bash
 bun run validate-soul
-# [validate] ok                        → exit 0
-# [validate] missing required fields:  → exit 1
+# [validate] default: ok               → exit 0
+# [validate] default: missing required fields:  → exit 1
 #   - identity.name
 #   - manager.userId
 #   - mandate
@@ -977,11 +991,11 @@ bun run validate-soul
 #   - allowedChannels + trustedChannels both empty — only manager/backup can chat outside DMs
 ```
 
-Add the optional sections above as your workspace grows. Update `SOUL.md` without a restart — `soulData()` re-reads overrides on every call, and the extractor cache is keyed by `sha256(SOUL.md)` so an edit triggers a fresh extraction on next boot.
+Add the optional sections above as your workspace grows. Edit `agent.yaml` and restart the gateway to apply it. Runtime overrides (below) apply without one: `soulData()` re-reads them on every call.
 
 ### Runtime overrides without redeploy <a id="runtime-overrides"></a>
 
-Managers can mutate ACLs at runtime without editing `SOUL.md` or restarting. The `soul_overrides` sqlite table (effective view = `(base ∪ adds) − removes` per field) backs two surfaces:
+Managers can mutate ACLs at runtime without editing `agent.yaml` or restarting. The `soul_overrides` sqlite table (effective view = `(base ∪ adds) − removes` per field) backs two surfaces:
 
 - Slash: `/soul trust <#Cxxx>` / `/soul allow <#Cxxx>` / `/soul block <@Uxxx>` / `/soul dm <@Uxxx>` and their remove counterparts.
 - MCP: `slaude_soul_override` with the same `FIELD_ALIASES` (`trust`→`trustedChannels`, `allow`→`allowedChannels`, `dm`→`dmAllowedUsers`, `block`→`blockedUsers`).
