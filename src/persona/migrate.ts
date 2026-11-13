@@ -155,6 +155,20 @@ export async function migratePersona(o: MigrateOptions): Promise<MigrateResult> 
   return result;
 }
 
+/**
+ * A channel block as it behaves: an absent mandate mode is `override` (what the
+ * resolver reads), and a mandate is its trimmed text. Without this an extraction
+ * that leaves the mode out would differ from a file that states it.
+ */
+function blocks(xs: SoulData["channelOverrides"]) {
+  return xs
+    .map((c) => {
+      const mandate = c.mandate?.trim() || null;
+      return { channel: c.channel, approvers: c.approvers, mandate, mode: mandate ? (c.mandateMode ?? "override") : null };
+    })
+    .sort((a, b) => a.channel.localeCompare(b.channel));
+}
+
 /** The fields that decide who may do what, and what the agent works on, must be the same. Names the field, never a value. */
 function assertSame(name: string, before: SoulData, beforeProactive: ReturnType<typeof parseProactive>, after: SoulData, afterProactive: ReturnType<typeof parseProactive>): void {
   const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
@@ -163,7 +177,7 @@ function assertSame(name: string, before: SoulData, beforeProactive: ReturnType<
     ["manager", before.manager.userId, after.manager.userId],
     ["backup manager", before.backupManager.userId, after.backupManager.userId],
     ["approvers", before.approvers, after.approvers],
-    ["channel blocks", before.channelOverrides, after.channelOverrides],
+    ["channel blocks", blocks(before.channelOverrides), blocks(after.channelOverrides)],
     ["public channels", sorted(before.allowedChannels), sorted(after.allowedChannels)],
     ["trusted channels", sorted(before.trustedChannels), sorted(after.trustedChannels)],
     ["dm allowlist", sorted(before.dmAllowedUsers), sorted(after.dmAllowedUsers)],
