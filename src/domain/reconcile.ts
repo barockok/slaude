@@ -23,8 +23,9 @@
  *
  * Safe to rerun and to race: every write is the repo's insert-or-ignore, a
  * Postgres advisory lock serialises runners, and an in-process queue
- * serialises runs sharing one connection. A non-dry run writes one summary
- * audit event (`domain.reconciled`) and no per-row events.
+ * serialises runs sharing one connection. A non-dry run that created something
+ * or found a conflict writes one summary audit event (`domain.reconciled`) and
+ * no per-row events; a no-op run writes none.
  */
 import { audit, type AuditInput } from "../audit/index";
 import * as Domain from "../db/domain";
@@ -344,7 +345,8 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
   }
 
   report.finishedAt = Date.now();
-  if (!dry) {
+  // A no-op run (nothing created, no conflict) stays silent: boot would otherwise add one audit row per start.
+  if (!dry && (totalCreated(report) > 0 || report.conflicts.length > 0)) {
     const write = opts.audit ?? ((i: AuditInput) => audit(i));
     await write({
       actorKind: "system",
@@ -411,7 +413,8 @@ export async function reconcileAtBoot(o: {
   const log = o.log ?? ((m: string) => console.log(`[domain] ${m}`));
   try {
     const r = await (o.run ?? reconcile)({ liveTeamIds: o.liveTeamIds, log });
-    log(`reconcile done: ${totalCreated(r)} created, ${r.conflicts.length} conflict(s)\n${formatReconcileReport(r)}`);
+    if (totalCreated(r) === 0 && r.conflicts.length === 0) log("reconcile: nothing to do");
+    else log(`reconcile done: ${totalCreated(r)} created, ${r.conflicts.length} conflict(s)\n${formatReconcileReport(r)}`);
     return r;
   } catch (e) {
     console.error(`[domain] reconcile failed (boot continues): ${e instanceof Error ? e.message : String(e)}`);

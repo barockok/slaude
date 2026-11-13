@@ -126,6 +126,16 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(JSON.stringify(events[0])).not.toMatch(/example\.com/);
     });
 
+    test("a no-op run writes no summary event", async () => {
+      await reconcile(opts());
+      expect(events).toHaveLength(0);
+      await seed();
+      await reconcile(opts());
+      expect(events).toHaveLength(1);
+      await reconcile(opts());
+      expect(events).toHaveLength(1);
+    });
+
     test("a rerun is a no-op", async () => {
       await seed();
       await reconcile(opts());
@@ -266,6 +276,13 @@ for (const dialect of ["sqlite", "pg"] as const) {
 }
 
 describe("reconcileAtBoot", () => {
+  test("a no-op run logs one line", async () => {
+    const lines: string[] = [];
+    const empty = { created: 0, existing: 0, skipped: {} };
+    const report = { dryRun: false, conflicts: [], startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
+    await reconcileAtBoot({ role: "mono", liveTeamIds: () => [], run: async () => report, log: (m) => lines.push(m) });
+    expect(lines).toEqual(["reconcile: nothing to do"]);
+  });
   test("does nothing on a node", async () => {
     let called = false;
     const r = await reconcileAtBoot({ role: "node", liveTeamIds: () => [], run: async () => (called = true, null as never) });
