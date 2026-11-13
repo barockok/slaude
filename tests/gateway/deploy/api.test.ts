@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { seedWorkspace } from "../../helpers/workspace";
 import { db } from "../../../src/db/schema";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import { createDeployApi, DEPLOY_MAX_BODY_BYTES } from "../../../src/gateway/deploy/api";
@@ -30,6 +31,7 @@ beforeEach(async () => {
   // The persona tables are Postgres-only (migration 0011).
   if (process.env.SLAUDE_DB !== "pg") return;
   for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
+  await seedWorkspace();
 });
 const pgOnly = describe.skipIf(process.env.SLAUDE_DB !== "pg");
 afterEach(async () => {
@@ -47,6 +49,15 @@ pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
     const res = await api().fetch(post(DEPLOY));
     expect(res!.status).toBe(200);
     expect((await res!.json() as any).created).toEqual(["default", "ana"]);
+  });
+
+  test("strict=1 refuses a sync whose references would create a record; without it the report lists them", async () => {
+    for (const t of ["user_aliases", "bindings", "boundaries", "users"]) await db.run(`DELETE FROM ${t}`);
+    const refused = await api().fetch(post(DEPLOY, body, "?dryRun=1&strict=1"));
+    expect(refused!.status).toBe(422);
+    expect(await refused!.text()).toContain("would create a record");
+    const plain = await api().fetch(post(DEPLOY, body, "?dryRun=1"));
+    expect((await plain!.json() as any).records.wouldCreate.length).toBeGreaterThan(0);
   });
 
   test("an unknown field is a 422 by default; with SLAUDE_DEPLOY_STRICT=0 the response carries ignoredFields; a newer version is a 422", async () => {

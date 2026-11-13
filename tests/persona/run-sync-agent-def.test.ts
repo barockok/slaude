@@ -1,5 +1,6 @@
 // A persona from an agent.yaml through a real sync. Postgres-only: run with SLAUDE_DB=pg.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { seedWorkspace } from "../helpers/workspace";
 import { db } from "../../src/db/schema";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import * as P from "../../src/db/personas";
@@ -37,6 +38,7 @@ beforeEach(async () => {
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
   __resetMasterKeyCache();
   if (isPg) for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
+  if (isPg) await seedWorkspace();
   __resetPersonaRegistry();
 });
 afterAll(async () => {

@@ -8,6 +8,8 @@
  * here combines the layers itself.
  */
 import { randomUUID } from "node:crypto";
+import { ensureRefs, type RecordEntry, type RefUse } from "../domain/sync-refs";
+import type { DomainEvent } from "./domain";
 import { db, dbDialect } from "./schema";
 import { GLOBAL_SCOPE, versionScope } from "./skill-versions";
 import { encrypt, decrypt, isEncrypted } from "./crypto";
@@ -39,6 +41,10 @@ export class StaleRevisionError extends Error {
 
 export interface ApplyResult {
   created: string[]; updated: string[]; unchanged: string[]; tombstoned: string[]; overridesWiped: number;
+  /** Declared domain records this sync created (ids and masked references). */
+  records?: RecordEntry[];
+  /** Audit events for those records; the caller emits them after commit. */
+  domainEvents?: DomainEvent[];
 }
 
 type Row = {
@@ -183,6 +189,8 @@ export async function applySync(
   tenant: string,
   rows: DesiredPersona[],
   meta: { revision: string; committedAt: number; by: string },
+  /** References the personas carry; missing records are created in this transaction, in state declared. */
+  refs?: { uses: RefUse[]; workspaces: string[] },
 ): Promise<ApplyResult> {
   return db.transaction(async (tx) => {
     const now = Date.now();
@@ -245,6 +253,11 @@ export async function applySync(
     }
     const wiped = await tx.run(`DELETE FROM persona_overrides WHERE tenant_id = ?`, [tenant]);
     result.overridesWiped = wiped.changes ?? 0;
+    if (refs) {
+      const made = await ensureRefs(refs.uses, refs.workspaces, tx);
+      result.records = made.created;
+      result.domainEvents = made.events;
+    }
     return result;
   });
 }

@@ -1,5 +1,6 @@
 // tests/persona/run-sync.test.ts
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { seedWorkspace } from "../helpers/workspace";
 import { db } from "../../src/db/schema";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import * as P from "../../src/db/personas";
@@ -28,6 +29,7 @@ beforeEach(async () => {
   // The persona tables are Postgres-only (migration 0011).
   if (process.env.SLAUDE_DB !== "pg") return;
   for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
+  await seedWorkspace();
 });
 
 describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync", () => {

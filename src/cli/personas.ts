@@ -6,6 +6,12 @@
  *       it, so a malformed file fails the pull request rather than the deploy.
  *       A guardrails/<slug>/GUARDRAIL.md folder rides along (payload version 5
  *       when it holds any); a guardrail's own validation errors are warnings.
+ *       This command only renders; the pipeline posts the payload to
+ *       POST /deploy/v1/tenants/<tenant>/personas. Add ?strict=1 (with
+ *       &dryRun=1 on a pull request) to refuse a reference that would create a
+ *       domain record: a mistyped user or channel id otherwise creates an empty
+ *       declared record. Default off. The report's `records` lists what was or
+ *       would be created (Slack references as written, emails masked).
  *   personas export [--out <dir>]
  *       $SLAUDE_HOME → repository layout. Every userToken, header and env value
  *       is replaced by a ${PERSONA_*} placeholder and the variables are listed.
