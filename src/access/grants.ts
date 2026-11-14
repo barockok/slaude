@@ -1,4 +1,5 @@
 import { parseRef } from "../refs/parse";
+import type { State } from "../db/domain";
 import type { SoulData } from "../soul/data";
 import { channelApproversOf, soulDataFor } from "../soul/per-persona";
 import type { AgentGrantRow, GrantRole, SubjectKind } from "../db/agent-grants";
@@ -22,13 +23,19 @@ export interface Grant {
   id?: string;
   expiresAt?: number | null;
   /**
-   * The typed Slack reference behind a user or channel subject (none for a
-   * workspace grant). `workspace` is absent for a bare id or a short form;
-   * `userId` is the internal user a stored grant resolved to. Read by the
-   * internal-id path only; the legacy readers compare subjectKind and subjectId.
+   * The typed reference behind a user or channel subject (none for a workspace
+   * grant). Slack subjects: `workspace` is absent for a bare id or a short form,
+   * `userId` and `state` say which user and binding state the subject resolved to
+   * (set by the reader, not stored). Read by the internal-id path only; the
+   * legacy readers compare subjectKind and subjectId.
    */
-  subject?: { service: "slack"; workspace?: string; userId?: string | null };
+  subject?: GrantSubject;
 }
+
+export type GrantSubject =
+  | { service: "slack"; workspace?: string; userId?: string | null; state?: State }
+  | { service: "email"; address: string }
+  | { service: "user"; userId: string };
 
 const soulGrant = (subjectKind: SubjectKind, subjectId: string, role: GrantRole, extra: Partial<Grant> = {}): Grant => ({
   subjectKind, subjectId, role, deny: false, dmOnly: false, source: "soul", ...extra,
