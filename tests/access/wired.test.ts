@@ -18,14 +18,18 @@ const email = (address: string, role: Grant["role"]) => g({ subjectKind: "user",
 
 function raw(text: string, name: string, labels: Record<string, string>): number {
   const want = Object.entries(labels).map(([k, v]) => `${k}="${v}"`);
-  const line = text.split("\n").find((l) => l.startsWith(name + "{") && want.every((w) => l.includes(w)));
-  return line ? Number(line.split(" ").pop()) : 0;
+  return text
+    .split("\n")
+    .filter((l) => l.startsWith(name + "{") && want.every((w) => l.includes(w)))
+    .reduce((sum, l) => sum + Number(l.split(" ").pop()), 0);
 }
 let baseline = "";
 const count = (name: string, labels: Record<string, string>): number => raw(metrics.render(), name, labels) - raw(baseline, name, labels);
 
 let saved: string | undefined;
 beforeEach(async () => {
+  // Shadows another test file left running would otherwise land in this test's counts.
+  await settleShadows();
   baseline = metrics.render();
   saved = process.env.SLAUDE_ACCESS_SOURCE;
   delete process.env.SLAUDE_ACCESS_SOURCE;
