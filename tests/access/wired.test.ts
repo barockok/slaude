@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:
 import { __resetDecide } from "../../src/access/decide";
 import type { Grant } from "../../src/access/grants";
 import { SITES, type SiteId } from "../../src/access/sites";
-import { MAX_INFLIGHT, admitAt, approversAt, checkAt, deniedAt, roleAt, sameAt, settleShadows } from "../../src/access/wired";
+import { MAX_INFLIGHT, admitAt, approversAt, checkAt, deniedAt, listAt, roleAt, sameAt, settleShadows } from "../../src/access/wired";
 import * as Domain from "../../src/db/domain";
 import { metrics } from "../../src/metrics";
 import * as Actor from "../../src/refs/actor";
@@ -74,6 +74,10 @@ function probe(site: SiteId, kind: (typeof SITES)[number]["kind"], teamId: strin
     case "same": {
       const o = { site, persona: "scout", teamId, userId: SELF, otherUserId: OTHER, otherTeamId: teamId };
       return { site, legacy: false, run: () => sameAt(o) };
+    }
+    case "list": {
+      const o = { site, persona: "scout", teamId, legacy: [OTHER], roles: ["manager" as const], grants: () => grants };
+      return { site, legacy: [OTHER], run: () => listAt(o) };
     }
     case "denied": {
       const o = { site, persona: "scout", teamId, userId: SELF, grants };
