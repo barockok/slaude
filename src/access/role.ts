@@ -1,6 +1,5 @@
 import * as AgentGrants from "../db/agent-grants";
 import { m } from "../metrics";
-import { USER_ID_RE } from "../refs/ids";
 import { managedPersonaDefinition } from "../persona/registry";
 import { effectiveGrants, grantFromRow, type Grant, type GrantRole } from "./grants";
 
@@ -48,11 +47,15 @@ export function isDenied(grants: readonly Grant[], userId: string): boolean {
  * Every user whose {@link roleFromGrants} on `channelId` is one of `roles`,
  * over already loaded grants (soul-derived and stored user grants). Sync.
  */
+/** A subject written as a typed reference or an address: `email:...`, `user:...`, `slack:user:...`, `a@b`. Never a bare Slack id. */
+export const isTypedSubject = (id: string): boolean => id.includes(":") || id.includes("@");
+
 export function usersWithRole(grants: readonly Grant[], roles: readonly Role[], channelId?: string | null): string[] {
   // Only Slack user ids: the result is used to DM people and to match clicks, and
   // an `email:` or `user:` subject is neither. Until the access flip (slice C,
   // rc.20) such a subject must also never empty an allowlist, so it is dropped here.
-  const users = new Set(grants.filter((g) => g.subjectKind === "user" && !g.deny && USER_ID_RE.test(g.subjectId)).map((g) => g.subjectId));
+  // Only typed subjects (a colon or an at sign) are dropped; any other id is kept exactly as before.
+  const users = new Set(grants.filter((g) => g.subjectKind === "user" && !g.deny && !isTypedSubject(g.subjectId)).map((g) => g.subjectId));
   return [...users].filter((u) => {
     const r = roleFromGrants(grants, u, channelId);
     return r !== null && roles.includes(r);

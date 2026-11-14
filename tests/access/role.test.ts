@@ -219,7 +219,17 @@ describe("non-Slack subjects never reach the legacy readers", () => {
     invalidateGrants();
   };
 
-  test("usersWithRole returns only Slack user ids, whatever the role", () => {
+  test("usersWithRole drops only typed subjects (a colon or an at sign); every other id stays as before", () => {
+    const grants: Grant[] = [
+      stored({ subjectKind: "user", subjectId: "u0lower", role: "approver" }),
+      stored({ subjectKind: "user", subjectId: "ODDID-1", role: "approver" }),
+      stored({ subjectKind: "user", subjectId: "a@example.com", role: "approver" }),
+      stored({ subjectKind: "user", subjectId: "email:a@example.com", role: "approver" }),
+    ];
+    expect(usersWithRole(grants, ["approver"]).sort()).toEqual(["ODDID-1", "u0lower"]);
+  });
+
+  test("usersWithRole returns Slack-shaped ids and odd ids, never a typed subject", () => {
     const grants: Grant[] = [
       stored({ subjectKind: "user", subjectId: MAIL, role: "manager" }),
       stored({ subjectKind: "user", subjectId: "user:abc123", role: "approver" }),
@@ -228,7 +238,7 @@ describe("non-Slack subjects never reach the legacy readers", () => {
       stored({ subjectKind: "user", subjectId: "UALICE", role: "approver" }),
       stored({ subjectKind: "user", subjectId: "WGRID1", role: "manager" }),
     ];
-    expect(usersWithRole(grants, ["approver", "manager"]).sort()).toEqual(["UALICE", "WGRID1"]);
+    expect(usersWithRole(grants, ["approver", "manager"]).sort()).toEqual(["+628123456789", "UALICE", "WGRID1"]);
     expect(usersWithRole(grants, ["manager"])).toEqual(["WGRID1"]);
   });
 
