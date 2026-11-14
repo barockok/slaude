@@ -163,7 +163,7 @@ for (const dialect of ["sqlite", "pg"] as const) {
         await legacyLogin("c", "c@example.com", { iss: ISS2 });
         await legacyLogin("p", "p@example.com", { proven: true });
         const r = await reconcile(opts());
-        expect(r.unprovenEmails).toEqual({ total: 3, byIssuer: { [ISS]: 2, [ISS2]: 1 }, demoted: 0 });
+        expect(r.unprovenEmails).toEqual({ total: 3, byIssuer: { [ISS]: 2, [ISS2]: 1 }, demoted: 0, unaccounted: 0 });
         expect(JSON.stringify(r)).not.toContain("a@example.com");
         const text = formatReconcileReport(r);
         expect(text).toContain("unproven email bindings: 3");
@@ -184,7 +184,7 @@ for (const dialect of ["sqlite", "pg"] as const) {
         await legacyLogin("p", "p@example.com", { proven: true });
         const slackB = await Domain.ensureBinding({ ...slack("U0EXAMPLE"), userId: ua, state: "verified", source: "link" }, db);
         const r = await reconcile(demoteOpts());
-        expect(r.unprovenEmails).toEqual({ total: 1, byIssuer: { [ISS]: 1 }, demoted: 1 });
+        expect(r.unprovenEmails).toEqual({ total: 1, byIssuer: { [ISS]: 1 }, demoted: 1, unaccounted: 0 });
         const a = await fb(mailKey("a@example.com"));
         expect(a?.state).toBe("observed");
         expect(a?.verified_at).toBeNull();
@@ -199,7 +199,7 @@ for (const dialect of ["sqlite", "pg"] as const) {
         await legacyLogin("a", "a@example.com");
         await reconcile(demoteOpts());
         const again = await reconcile(demoteOpts());
-        expect(again.unprovenEmails).toEqual({ total: 0, byIssuer: {}, demoted: 0 });
+        expect(again.unprovenEmails).toEqual({ total: 0, byIssuer: {}, demoted: 0, unaccounted: 0 });
         // a proven login is modelled by flagging the account and raising the binding, as projectLogin does
         await db.run("UPDATE accounts SET email_proven = ? WHERE subject = 'a'", [dialect === "pg" ? true : 1]);
         await db.run("UPDATE bindings SET state = 'verified' WHERE value = 'a@example.com'");
@@ -207,18 +207,18 @@ for (const dialect of ["sqlite", "pg"] as const) {
         expect(await state("a@example.com")).toBe("verified");
       });
 
-      test("a verified email binding with no account behind it, or another account's address, is unproven", async () => {
-        const orphan = await Domain.ensureBinding({ ...mailKey("orphan@example.com"), state: "verified", source: "adopt" }, db);
+      test("a verified binding with no account behind it is reported as unaccounted and never demoted; another account's address is unproven", async () => {
+        await Domain.ensureBinding({ ...mailKey("orphan@example.com"), state: "verified", source: "adopt" }, db);
         const other = await legacyLogin("p", "p@example.com", { proven: true });
         await Domain.ensureBinding({ ...mailKey("moved@example.com"), userId: other, state: "verified", source: "adopt" }, db);
         const r = await reconcile(demoteOpts());
-        expect(r.unprovenEmails.total).toBe(2);
-        expect(r.unprovenEmails.byIssuer["(no account)"]).toBe(1);
-        expect(r.unprovenEmails.byIssuer[ISS]).toBe(1);
-        expect(await state("orphan@example.com")).toBe("observed");
+        expect(r.unprovenEmails).toEqual({ total: 1, byIssuer: { [ISS]: 1 }, demoted: 1, unaccounted: 1 });
+        expect(await state("orphan@example.com")).toBe("verified");
         expect(await state("moved@example.com")).toBe("observed");
         expect(await state("p@example.com")).toBe("verified");
-        void orphan;
+        const text = formatReconcileReport(r);
+        expect(text).toContain("unaccounted");
+        expect(text).not.toContain("@example.com");
       });
 
       test("an address that differs only by case or domain folding still matches the proving account", async () => {
@@ -559,6 +559,16 @@ for (const dialect of ["sqlite", "pg"] as const) {
         expect(await count("bindings")).toBe(1);
       });
 
+      test("typed grant subjects are counted in the report and the text, and left alone", async () => {
+        await grant("user", "email:a@example.com");
+        await grant("user", "a@example.com");
+        await grant("user", "U0EXAMPLE");
+        const r = await reconcile(opts());
+        expect(r.typedGrantSubjects).toBe(2);
+        expect(formatReconcileReport(r)).toContain("typed subject");
+        expect((await db.query("SELECT id FROM agent_grants")).length).toBe(3);
+      });
+
       test("pages: more rows than one page are all filled", async () => {
         for (let i = 0; i < 7; i++) await stored(`gr-p${i}`, "channel", `C0PAGE${i}`);
         for (let i = 0; i < 5; i++) await lockRow(`C0LOCK${i}`, "1.1", null);
@@ -617,14 +627,14 @@ describe("reconcileAtBoot", () => {
   test("a no-op run logs one line", async () => {
     const lines: string[] = [];
     const empty = { created: 0, existing: 0, skipped: {} };
-    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, grantSubjects: empty, lockTeams: empty, workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 }, unprovenEmails: { total: 0, byIssuer: {}, demoted: 0 }, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
+    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, grantSubjects: empty, lockTeams: empty, workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 }, unprovenEmails: { total: 0, byIssuer: {}, demoted: 0, unaccounted: 0 }, typedGrantSubjects: 0, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
     await reconcileAtBoot({ role: "mono", liveTeamIds: () => [], run: async () => report, log: (m) => lines.push(m) });
     expect(lines).toEqual(["reconcile: nothing to do"]);
   });
   test("unproven email bindings are reported at boot, never acted on", async () => {
     const lines: string[] = [];
     const empty = { created: 0, existing: 0, skipped: {} };
-    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, grantSubjects: empty, lockTeams: empty, workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 }, unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0 }, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
+    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, grantSubjects: empty, lockTeams: empty, workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 }, unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0, unaccounted: 0 }, typedGrantSubjects: 0, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
     await reconcileAtBoot({ role: "mono", liveTeamIds: () => [], run: async () => report, log: (m) => lines.push(m) });
     expect(lines.join("\n")).toContain("2 verified email binding(s) have no proof");
     expect(lines.join("\n")).toContain("--demote-unproven-emails --apply");

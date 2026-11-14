@@ -90,6 +90,12 @@ export interface UnprovenEmails {
   byIssuer: Record<string, number>;
   /** Bindings set back to observed by this run (0 unless demotion was asked for and this is not a dry run). */
   demoted: number;
+  /**
+   * Verified email bindings whose user has no account at all (a merge or a console
+   * grant created them). Reported only: nothing can prove or disprove them, so they
+   * are never demoted. Not part of `total`.
+   */
+  unaccounted: number;
 }
 
 export const NO_ACCOUNT = "(no account)";
@@ -136,6 +142,8 @@ export interface ReconcileReport {
   workspaceGrants: WorkspaceGrantReport;
   /** Verified email bindings no proving login backs, per issuer of the user's oidc binding; counts only, never an address. */
   unprovenEmails: UnprovenEmails;
+  /** Stored user grants whose subject is typed (a colon or an at sign). The legacy readers drop them until the access flip; report only. */
+  typedGrantSubjects: number;
   startedAt: number;
   finishedAt: number;
 }
@@ -218,7 +226,8 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     grantSubjects: empty(),
     lockTeams: empty(),
     workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 },
-    unprovenEmails: { total: 0, byIssuer: {}, demoted: 0 },
+    unprovenEmails: { total: 0, byIssuer: {}, demoted: 0, unaccounted: 0 },
+    typedGrantSubjects: 0,
     startedAt,
     finishedAt: startedAt,
   };
@@ -506,6 +515,10 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
   await fillLockTeams(c, { dry, pageSize, pg, place, report: report.lockTeams });
   report.workspaceGrants = await workspaceGrantReport(c, { pageSize, pg, workspaces });
 
+  report.typedGrantSubjects = Number(
+    (await c.one<{ n: number }>("SELECT COUNT(*) AS n FROM agent_grants WHERE subject_kind = 'user' AND (subject_id LIKE '%:%' OR subject_id LIKE '%@%')"))?.n ?? 0,
+  );
+
   // 4. Unproven email bindings: reported on every run, demoted only on request.
   report.unprovenEmails = await unprovenEmailBindings(c, { demote: !!opts.demoteUnprovenEmails && !dry, pageSize: opts.pageSize ?? PAGE_SIZE });
   if (report.unprovenEmails.demoted > 0) {
@@ -544,15 +557,24 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
  */
 export async function unprovenEmailBindings(c: DbClient, o: { demote: boolean; pageSize?: number }): Promise<UnprovenEmails> {
   const pageSize = o.pageSize ?? PAGE_SIZE;
-  const out: UnprovenEmails = { total: 0, byIssuer: {}, demoted: 0 };
-  // user id + normalised address pairs a proving account backs. Accounts are few; read them once.
+  const out: UnprovenEmails = { total: 0, byIssuer: {}, demoted: 0, unaccounted: 0 };
+  // Per live user (aliases resolved): the addresses a proving account backs, and whether any account exists at all.
   const proven = new Set<string>();
-  const accts = await c.query<{ issuer: string; subject: string; email: string }>("SELECT issuer, subject, email FROM accounts WHERE email_proven = ?", [c.dialect === "pg" ? true : 1]);
+  const hasAccount = new Set<string>();
+  const accts = await c.query<{ issuer: string; subject: string; email: string; email_proven: boolean | number }>("SELECT issuer, subject, email, email_proven FROM accounts");
   for (const a of accts) {
+    const raw = await userForAccount(a, c);
+    const uid = raw ? await Domain.resolveUserId(raw, c) : null;
+    if (!uid) continue;
+    hasAccount.add(uid);
     const mail = normaliseEmail(a.email);
-    const uid = await userForAccount(a, c);
-    if (mail && uid) proven.add(`${uid}\0${mail}`);
+    if (mail && Boolean(a.email_proven)) proven.add(`${uid}\0${mail}`);
   }
+  const liveCache = new Map<string, string | null>();
+  const live = async (id: string): Promise<string | null> => {
+    if (!liveCache.has(id)) liveCache.set(id, await Domain.resolveUserId(id, c));
+    return liveCache.get(id)!;
+  };
   let after = "";
   for (;;) {
     const page = await c.query<{ id: string; user_id: string; value: string }>(
@@ -561,7 +583,14 @@ export async function unprovenEmailBindings(c: DbClient, o: { demote: boolean; p
     );
     if (page.length === 0) break;
     after = page[page.length - 1]!.id;
-    const unproven = page.filter((b) => !proven.has(`${b.user_id}\0${b.value}`));
+    const unproven: typeof page = [];
+    for (const b of page) {
+      const uid = await live(b.user_id);
+      if (uid && proven.has(`${uid}\0${b.value}`)) continue;
+      // No account behind the user: nothing to judge by, so report and leave it alone.
+      if (!uid || !hasAccount.has(uid)) out.unaccounted++;
+      else unproven.push(b);
+    }
     if (unproven.length) {
       const users = [...new Set(unproven.map((b) => b.user_id))];
       const issuerOf = new Map<string, string>();
@@ -804,7 +833,9 @@ export function formatReconcileReport(r: ReconcileReport): string {
     for (const row of w.rows) lines.push(`    grant=${row.grantId} team=${row.teamId}`);
     if (w.mismatched > w.rows.length) lines.push(`    ... and ${w.mismatched - w.rows.length} more`);
   }
+  if (r.typedGrantSubjects > 0) lines.push(`  stored grants with a typed subject (email or user reference): ${r.typedGrantSubjects}; the legacy readers ignore them until the access flip`);
   const u = r.unprovenEmails;
+  if (u.unaccounted > 0) lines.push(`  unaccounted verified email bindings: ${u.unaccounted} (no account behind them, from a merge or the console); reported, never demoted`);
   if (u.total === 0) lines.push("  unproven email bindings: none");
   else {
     const per = Object.entries(u.byIssuer).map(([k, n]) => `${k} ${n}`).join(", ");

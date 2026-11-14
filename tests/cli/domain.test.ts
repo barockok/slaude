@@ -11,7 +11,8 @@ const report = (dryRun: boolean): ReconcileReport => ({
   grantSubjects: { created: 0, existing: 0, skipped: {} },
   lockTeams: { created: 0, existing: 0, skipped: {} },
   workspaceGrants: { total: 1, mismatched: 1, rows: [{ grantId: "grant-1", teamId: "T0EXAMPLE" }], unjudged: 0 },
-  unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0 },
+  unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0, unaccounted: 0 },
+  typedGrantSubjects: 0,
   startedAt: 1,
   finishedAt: 2,
 });
