@@ -55,14 +55,14 @@ async function held(userId: string, c: DbClient): Promise<Held> {
 
 type Subject = { service: "slack"; workspace?: string; id: string } | { service: "email"; address: string } | { service: "user"; userId: string };
 
-async function reaches(s: Subject, userId: string, h: Held, c: DbClient): Promise<boolean> {
+async function reaches(s: Subject, record: string, h: Held, c: DbClient): Promise<boolean> {
   switch (s.service) {
     case "slack":
       return h.slack.some((b) => b.id === s.id && (!s.workspace || s.workspace === b.team));
     case "email":
       return h.verifiedEmails.has(s.address);
     case "user":
-      return (await Domain.resolveUserId(s.userId, c)) === userId;
+      return (await Domain.resolveUserId(s.userId, c)) === record;
   }
 }
 

@@ -337,6 +337,9 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
           if (!linked.ok && linked.reason === "link-used") {
             return json(400, { error: "onboarding link already used" });
           }
+          if (!linked.ok && linked.reason === "vetoed") {
+            return json(409, { error: "that chat identity cannot be connected to this account until an operator allows it" });
+          }
           if (!linked.ok) {
             return json(409, { error: "that chat identity is already connected to another account" });
           }

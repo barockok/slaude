@@ -48,6 +48,13 @@
  *    team ids, never changed): the report must be clean before the access
  *    flip makes workspace grants compare the team.
  *
+ * 6. Merges and conflicts (slice C, rc.21). A projection that finds a record
+ *    holding a proven value merges it through the engine (src/domain/merge.ts,
+ *    kind proof); the `user.merged` events are audited one by one. A conflict
+ *    (a proven address or a Slack identity held by a record the engine will not
+ *    merge) also opens a `conflict` proposal for the console (ids only; a dry
+ *    run writes none).
+ *
  * Safe to rerun and to race: every write is the repo's insert-or-ignore, a
  * Postgres advisory lock serialises runners, and an in-process queue
  * serialises runs sharing one connection. A non-dry run that created something
@@ -55,6 +62,8 @@
  * no per-row events; a no-op run writes none.
  */
 import { audit, type AuditInput } from "../audit/index";
+import { emitDomainEvents } from "../audit/domain";
+import { proposeMerge } from "./merge";
 import { env } from "../config/env";
 import { warnInactiveRefs } from "../access/grant-state";
 import { formatRef, parseRef } from "../refs/parse";
@@ -298,11 +307,13 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
       continue;
     }
     const events = await inTx((tx) => projectLogin({ issuer: a.issuer, subject: a.subject, email: a.email, emailProven: proven, previousEmail: null }, tx));
-    void events;
+    await emitMerges(events);
     const u = await userForAccount(a, c);
     accUser.set(a.id, u);
     const after = mail ? await Domain.findBinding({ service: "email", kind: "address", workspace: "", value: mail }, c) : null;
     if (u && mail && after && after.user_id !== u) {
+      // A proven address held by another record is the "same person?" question for the console.
+      if (proven) await proposeConflict(c, u, after.user_id, "email");
       report.conflicts.push({ kind: "email", accountId: a.id, heldByUserId: after.user_id });
       skip(rA, "email_conflict");
       userId === null ? rA.created++ : rA.existing++;
@@ -346,10 +357,11 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
       skip(rS, "no_user");
       continue;
     }
-    await inTx((tx) => projectLink({ issuer: a.issuer, subject: a.subject, teamId: s.team_id, slackUserId: s.slack_user_id }, tx));
+    await emitMerges(await inTx((tx) => projectLink({ issuer: a.issuer, subject: a.subject, teamId: s.team_id, slackUserId: s.slack_user_id }, tx)));
     const after = await Domain.findBinding(key, c);
     if (after && after.user_id === userId && after.state === "verified") rS.created++;
     else {
+      if (after && userId) await proposeConflict(c, userId, after.user_id, "slack");
       report.conflicts.push({ kind: "slack", accountId: a.id, ...(after ? { heldByUserId: after.user_id } : {}) });
       skip(rS, "conflict");
     }
@@ -549,6 +561,19 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     }).catch((e) => console.warn(`[domain] reconcile summary audit failed: ${(e as Error).message}`));
   }
   return report;
+}
+
+/** The audit, cache drop and notice hook of merges a projection made (the batch itself writes one summary). */
+async function emitMerges(events: readonly Domain.DomainEvent[]): Promise<void> {
+  const merged = events.filter((e) => e.action === "user.merged");
+  if (merged.length > 0) await emitDomainEvents(merged, { actorId: "system" });
+}
+
+/** A conflict the reconciler found becomes a proposal (reason `conflict`; ids only). Never merges anything. */
+async function proposeConflict(c: DbClient, mine: string, theirs: string, source: "email" | "slack"): Promise<void> {
+  const live = (await Domain.resolveUserId(theirs, c)) ?? theirs;
+  if (live === mine) return; // a record data comparison, not an access decision
+  await proposeMerge(c, mine, live, "conflict", { why: "reconcile", source });
 }
 
 /**

@@ -57,14 +57,14 @@ export async function userForAccount(a: { issuer: string; subject: string }, tx:
 }
 
 /** The account's user, creating the user and a verified oidc binding when absent. */
-async function ensureAccountUser(a: { issuer: string; subject: string }, tx: DbClient, events: DomainEvent[]): Promise<string> {
+async function ensureAccountUser(a: { issuer: string; subject: string }, tx: DbClient, events: DomainEvent[]): Promise<{ userId: string; oidcBindingId: string }> {
   const r = await Domain.ensureBinding({ ...oidcKey(a), state: "verified", source: "oidc-login" }, tx);
   events.push(...r.events);
-  return r.userId;
+  return { userId: r.userId, oidcBindingId: r.binding.id };
 }
 
 function logConflict(what: string): void {
-  console.warn(`[domain] ${what} is held by another verified user, both left untouched (needs the console)`);
+  console.warn(`[domain] ${what} is held by another record that cannot merge on this proof, both left untouched (a merge proposal is open for the console)`);
 }
 
 /**
@@ -82,7 +82,7 @@ export async function projectLogin(
 ): Promise<DomainEvent[]> {
   return guardedProjection(tx, "login", [] as DomainEvent[], async () => {
     const events: DomainEvent[] = [];
-    const userId = await ensureAccountUser(a, tx, events);
+    const { userId, oidcBindingId } = await ensureAccountUser(a, tx, events);
 
     const next = normaliseEmail(a.email);
     const prev = a.previousEmail ? normaliseEmail(a.previousEmail) : null;
@@ -98,7 +98,7 @@ export async function projectLogin(
     }
     if (a.emailProven === true) {
       const r = await Domain.adoptBinding(
-        { service: "email", kind: "address", workspace: "", value: next, toUserId: userId, state: "verified" },
+        { service: "email", kind: "address", workspace: "", value: next, toUserId: userId, state: "verified", oidcBindingId },
         tx,
       );
       if (r.conflict) logConflict("account email");
@@ -123,9 +123,9 @@ export async function projectLink(
 ): Promise<DomainEvent[]> {
   return guardedProjection(tx, "link", [] as DomainEvent[], async () => {
     const events: DomainEvent[] = [];
-    const userId = await ensureAccountUser(a, tx, events);
+    const { userId, oidcBindingId } = await ensureAccountUser(a, tx, events);
     const r = await Domain.adoptBinding(
-      { service: "slack", kind: "user", workspace: a.teamId, value: a.slackUserId, toUserId: userId, state: "verified" },
+      { service: "slack", kind: "user", workspace: a.teamId, value: a.slackUserId, toUserId: userId, state: "verified", oidcBindingId },
       tx,
     );
     if (r.conflict) logConflict("slack identity");
