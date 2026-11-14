@@ -26,6 +26,8 @@ if [ ! -s "$report" ]; then
   exit 1
 fi
 
+# The program is JavaScript: its template literals use $ on purpose, so the single quotes are right.
+# shellcheck disable=SC2016
 bun -e '
 const rows = JSON.parse(await Bun.file(process.argv[1]).text());
 const pad = (s, n) => String(s).padEnd(n);
