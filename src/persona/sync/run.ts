@@ -304,13 +304,22 @@ export async function runSync(
   let wouldCreate: RecordEntry[] = [];
   try {
     workspaces = refUses.length ? await tenantWorkspaces(tenant) : [];
+    const bare = (u: RefUse) => u.ref.kind === "external" && u.ref.service === "slack" && !u.ref.workspace;
     if (refUses.length && workspaces.length === 0) {
       // No workspace to place a short Slack reference in: skip those records (non-Slack ones still create).
-      const keep = refUses.filter((u) => !(u.ref.kind === "external" && u.ref.service === "slack" && !u.ref.workspace));
+      const keep = refUses.filter((u) => !bare(u));
       if (keep.length < refUses.length) {
         warnings.push("no Slack workspace is connected, records for Slack references were not created");
         refUses.splice(0, refUses.length, ...keep);
       }
+    } else if (workspaces.length > 1 && !opts.strict) {
+      // Several workspaces: a bare id is ambiguous. Skip it and say which field; strict refuses at planRefs.
+      const keep: RefUse[] = [];
+      for (const u of refUses) {
+        if (bare(u)) warnings.push(`persona '${u.persona}': workspace is ambiguous, no record created for ${u.field}`);
+        else keep.push(u);
+      }
+      refUses.splice(0, refUses.length, ...keep);
     }
     wouldCreate = await planRefs(refUses, workspaces);
   } catch (e) {
@@ -345,7 +354,8 @@ export async function runSync(
   }
 
   try {
-    const { records: createdRecords = [], domainEvents = [], ...applied } = await applySync(tenant, rows, meta, { uses: refUses, workspaces });
+    const { records: createdRecords = [], domainEvents = [], recordsFailed = false, ...applied } = await applySync(tenant, rows, meta, { uses: refUses, workspaces });
+    if (recordsFailed) warnings.push("records could not be created for this sync (the persona sync was applied); run `slaude domain reconcile` or sync again");
     auditPersonaSync(tenant, opts.by, meta.revision, applied);
     await auditRecords(tenant, opts.by, meta.revision, createdRecords, domainEvents);
     let guardrails: GuardrailSyncReport | undefined;

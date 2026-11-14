@@ -8,6 +8,7 @@
  * here combines the layers itself.
  */
 import { randomUUID } from "node:crypto";
+import { guardedProjection } from "./account-projection";
 import { ensureRefs, type RecordEntry, type RefUse } from "../domain/sync-refs";
 import type { DomainEvent } from "./domain";
 import { db, dbDialect } from "./schema";
@@ -45,6 +46,8 @@ export interface ApplyResult {
   records?: RecordEntry[];
   /** Audit events for those records; the caller emits them after commit. */
   domainEvents?: DomainEvent[];
+  /** The record writes failed and were rolled back to a savepoint; the persona sync still committed. */
+  recordsFailed?: boolean;
 }
 
 type Row = {
@@ -254,9 +257,14 @@ export async function applySync(
     const wiped = await tx.run(`DELETE FROM persona_overrides WHERE tenant_id = ?`, [tenant]);
     result.overridesWiped = wiped.changes ?? 0;
     if (refs) {
-      const made = await ensureRefs(refs.uses, refs.workspaces, tx);
-      result.records = made.created;
-      result.domainEvents = made.events;
+      // Savepoint: a CHECK, FK, unique or deadlock failure here must not roll back the persona sync.
+      const made = await guardedProjection(tx, "sync records", null, () => ensureRefs(refs.uses, refs.workspaces, tx));
+      if (made) {
+        result.records = made.created;
+        result.domainEvents = made.events;
+      } else {
+        result.recordsFailed = true;
+      }
     }
     return result;
   });

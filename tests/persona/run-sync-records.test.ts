@@ -85,15 +85,42 @@ describe.skipIf(!isPg)("sync creates declared records", () => {
     expect(await count("boundaries")).toBe(0);
   });
 
-  test("a short Slack reference is refused with several workspaces, naming persona and field", async () => {
+  test("several workspaces: a bare Slack id warns and creates no record, other records still create", async () => {
     await db.run("DELETE FROM slack_apps");
     await seedWorkspace(T, WS, "A1");
     await seedWorkspace(T, "T1EXAMPLE", "A2");
-    const many = await runSync(T, payload(ACCESS), { dryRun: true, env, by: "ci" }).catch((x) => x);
+    const access = `${ACCESS}  dm: [slack:user:U8EXAMPLE]\n`;
+    const r = await runSync(T, payload(access), { dryRun: false, env, by: "ci" });
+    expect(r.warnings.some((w) => w.includes("workspace is ambiguous, no record created for access.manager"))).toBe(true);
+    expect(r.warnings.some((w) => w.includes("no record created for access.channels.public[0]"))).toBe(true);
+    expect(r.records.created).toEqual([]);
+    expect(await count("personas")).toBe(2);
+    expect(await count("bindings")).toBe(0);
+    expect(await count("boundaries")).toBe(0);
+  });
+
+  test("several workspaces under strict refuse with persona and field, applying nothing", async () => {
+    await db.run("DELETE FROM slack_apps");
+    await seedWorkspace(T, WS, "A1");
+    await seedWorkspace(T, "T1EXAMPLE", "A2");
+    const many = await runSync(T, payload(ACCESS), { dryRun: true, strict: true, env, by: "ci" }).catch((x) => x);
     expect(many.status).toBe(422);
     expect(many.message).toContain("persona 'ana': access.manager");
     expect(many.message).toContain("2 Slack workspaces");
     expect(await count("personas")).toBe(0);
+  });
+
+  test("a failing record write does not roll back the persona sync", async () => {
+    await db.run("ALTER TABLE bindings ADD CONSTRAINT test_no_sync CHECK (source IS DISTINCT FROM 'sync')");
+    try {
+      const r = await runSync(T, payload(ACCESS), { dryRun: false, env, by: "ci" });
+      expect(await count("personas")).toBe(2);
+      expect(r.records.created).toEqual([]);
+      expect(r.warnings.some((w) => w.includes("records could not be created"))).toBe(true);
+      expect(await count("bindings")).toBe(0);
+    } finally {
+      await db.run("ALTER TABLE bindings DROP CONSTRAINT test_no_sync");
+    }
   });
 
   test("a typo creates an empty declared record that the report lists", async () => {
