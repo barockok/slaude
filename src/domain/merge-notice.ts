@@ -267,6 +267,7 @@ export async function sendMergeNotice(mergeId: string): Promise<NoticeResult | n
     }
   }
 
-  const state: NoticeResult = person === "sent" && managersFailed === 0 ? "sent" : "failed";
+  const clean = person === "sent" && managersFailed < 1;
+  const state: NoticeResult = clean ? "sent" : "failed";
   return settle(merge, state, { person, managers_sent: managersSent, managers_failed: managersFailed, ...(errors.length ? { errors } : {}) });
 }
