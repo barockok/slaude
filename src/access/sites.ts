@@ -62,6 +62,18 @@ export const SITES = [
   { id: "proposal.manager_decider", group: 16, kind: "same", where: "proposal card click: the clicker is one of the persona's managers" },
   { id: "proposal.apply_is_manager", group: 16, kind: "same", where: "proposal apply: the approver is a manager (shared memory writes)" },
   { id: "gateway.brain_gate.role", group: 16, kind: "role", where: "brain gate input: the speaker's manager role" },
+  // Task 17: 1on1, remote, env, oauth home.
+  { id: "remote.active_lock_owner", group: 17, kind: "same", where: "remote target: a user-machine environment needs a lock owned by its owner" },
+  { id: "remote.offer_connect_lock_owner", group: 17, kind: "same", where: "/remote status: offer the connect form to the lock owner only" },
+  { id: "remote.own_current", group: 17, kind: "same", where: "/remote on: the thread's current environment is the speaker's own" },
+  { id: "remote.thread_identity_run_as", group: 17, kind: "same", where: "thread identity: the remote target's owner is the identity the turn runs as" },
+  { id: "env.own_environment", group: 17, kind: "same", where: "/env use: an environment belongs to the speaker" },
+  { id: "env.use_lock_owner", group: 17, kind: "same", where: "/env use: the speaker owns the thread's 1on1 lock" },
+  { id: "env.inherit_lock_by_env", group: 17, kind: "same", where: "/env use: the existing binding is the speaker's own (lock inheritance)" },
+  { id: "env.turn_off_owner", group: 17, kind: "same", where: "/env off: the speaker owns the environment" },
+  { id: "env.release_lock_owner", group: 17, kind: "same", where: "/env off: the lock still belongs to the environment's owner" },
+  { id: "env.remove_lock_owner", group: 17, kind: "same", where: "/env remove: the lock still belongs to the environment's owner" },
+  { id: "gateway.remote_ctx.role", group: 17, kind: "role", where: "/remote and /env context: the speaker's manager role" },
 ] as const;
 
 export type SiteId = (typeof SITES)[number]["id"];

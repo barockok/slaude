@@ -5,6 +5,7 @@
  * environment to it, or saves a new one; `off`, `key` and status map to
  * `/env`. The Connect form below is the private way to give the address.
  */
+import { sameAt } from "../../access/wired";
 import { env } from "../../config/env";
 import * as Envs from "../../db/environments";
 import { activeRemoteTarget, boundEnv } from "../../remote/active";
@@ -44,7 +45,7 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
       await ctx.reply("Remote mode: *off* — tools run on the server.");
       // Offer the form only to someone who could turn it on here: no lock, or their own.
       const lock = await OneOnOne.find(channelId, threadTs);
-      if (ctx.offerConnect && (!lock || lock.locked_user === userId)) await ctx.offerConnect();
+      if (ctx.offerConnect && (!lock || sameAt({ site: "remote.offer_connect_lock_owner", persona: null, teamId, userId, otherUserId: lock.locked_user, otherTeamId: lock.team_id }))) await ctx.offerConnect();
       return;
     }
     let info = null;
@@ -70,7 +71,7 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
     return;
   }
   const current = await boundEnv(channelId, threadTs);
-  const ownCurrent = current && current.env.userId === userId && current.env.teamId === teamId ? current : null;
+  const ownCurrent = current && sameAt({ site: "remote.own_current", persona: null, teamId, userId, otherUserId: current.env.userId, otherTeamId: current.env.teamId }) && current.env.teamId === teamId ? current : null;
   const dir = hit.dir ?? ownCurrent?.binding.dir;
   if (!dir) {
     await ctx.reply("Send `/remote` and click *Connect your machine*, or use `/remote <tailcat-address> <directory>`.");

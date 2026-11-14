@@ -2167,7 +2167,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const reply = async (text: string) => {
       await outClientForPersona(i.personaId, i.app).chat.postMessage({ channel: channelId, thread_ts: threadTs, text, mrkdwn: true }); // runtime-ui: gateway notice, card or command reply
     };
-    const isManager = await isManagerOf(i.personaId, userId);
+    const isManager = await managerAt("gateway.remote_ctx.role", i.personaId, userId, teamId);
     return {
       teamId, channelId, threadTs, userId, sessionId,
       isManager,
