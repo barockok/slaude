@@ -625,6 +625,8 @@ something or found a conflict (two accounts with one email) writes one
 |------|----------|---------|-------------|
 | `SLAUDE_SLACK_TEAM_ID` | No | `""` | Read only by `slaude domain reconcile`, and only on sqlite. Comma-separated Slack workspace ids (for example `T0EXAMPLE`) the command attributes Slack ids to. Postgres reads each tenant's installed Slack apps instead and ignores it. With none set on sqlite, rows that carry no workspace of their own are skipped and counted, not guessed. |
 | `SLAUDE_ACCESS_SOURCE` | No | `shadow` | Which answer the access decision seam returns, read on every call. `legacy`: the string path only, no resolver. `shadow`: return the legacy answer, also compute the internal-id answer and count and log any disagreement (`slaude_access_shadow_total`). `internal`: reserved for the access flip; behaves as `shadow` in rc.19. An unknown value reads as `legacy`. See [Reading the access shadow metrics](../deploy/access-shadow.md). |
+| `SLAUDE_AUTO_MERGE` | No | `on` | Whether a proof (the portal link, or a login with a proven email) merges two user records automatically. `off`, `0`, `false` or `no` turns every automatic merge into a proposal on the console Proposals page and moves nothing. Read on every call. Console approvals are not affected. |
+| `SLAUDE_MERGE_NOTICE` | No | `on` | Whether a merge sends its Slack notice (one DM to the person and, when a manager or approver grant activates, one to the persona's manager). `off`, `0`, `false` or `no` sends nothing and marks the ledger row `skipped`. The merge itself is unchanged. Read on every call. |
 
 ### External MCP env references
 
