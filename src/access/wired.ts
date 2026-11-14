@@ -24,9 +24,10 @@ import { env } from "../config/env";
 import { m } from "../metrics";
 import type { AdmitResult } from "./admission";
 import { admit } from "./admission";
-import { decideAdmit, decideApprovers, decideRole, decideSame, showAdmit, showRole } from "./decide";
+import { decideAdmit, decideApprovers, decideCheck, decideDenied, decideRole, decideSame, showAdmit, showRole } from "./decide";
+import type { EngineActor } from "./authority";
 import type { Grant } from "./grants";
-import { roleFromGrants, usersWithRole, type Role } from "./role";
+import { isDenied, roleFromGrants, usersWithRole, type Role } from "./role";
 import type { SiteId } from "./sites";
 
 /** Shadows in flight at once, per process. */
@@ -142,4 +143,50 @@ export function sameAt(o: {
     }),
   );
   return legacy;
+}
+
+/** Whether a deny grant reaches the user (`isDenied`), shadowed. */
+export function deniedAt(o: {
+  site: SiteId;
+  persona: string | null | undefined;
+  teamId: string | null | undefined;
+  userId: string;
+  grants: readonly Grant[];
+}): boolean {
+  const legacy = isDenied(o.grants, o.userId);
+  shadow(o.site, legacy ? "denied" : "clear", o.teamId, () => decideDenied({ ...o, teamId: o.teamId! }));
+  return legacy;
+}
+
+/**
+ * A check the site already made with its own legacy reader (an allowlist, a
+ * soul field), shadowed against `internal`, the engine's twin over `grants`.
+ * `legacy` is returned as given. `grants` is read lazily, in the background, so
+ * a site that has none loaded pays nothing in the foreground.
+ */
+export function checkAt<T extends boolean | string>(o: {
+  site: SiteId;
+  persona: string | null | undefined;
+  teamId: string | null | undefined;
+  userId: string | null | undefined;
+  legacy: T;
+  grants: () => Promise<readonly Grant[]> | readonly Grant[];
+  fresh?: boolean;
+  internal: (i: { grants: Grant[]; actor: EngineActor }) => T;
+}): T {
+  const known = !!o.teamId && !!o.userId;
+  shadow(o.site, String(o.legacy), known ? o.teamId : null, async () =>
+    decideCheck<T>({
+      site: o.site,
+      persona: o.persona,
+      teamId: o.teamId!,
+      userId: o.userId!,
+      grants: await o.grants(),
+      fresh: o.fresh ?? true,
+      legacy: o.legacy,
+      show: String,
+      internal: o.internal,
+    }),
+  );
+  return o.legacy;
 }

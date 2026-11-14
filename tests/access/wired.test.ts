@@ -2,11 +2,14 @@ import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:
 import { __resetDecide } from "../../src/access/decide";
 import type { Grant } from "../../src/access/grants";
 import { SITES, type SiteId } from "../../src/access/sites";
-import { MAX_INFLIGHT, admitAt, approversAt, roleAt, sameAt, settleShadows } from "../../src/access/wired";
+import { MAX_INFLIGHT, admitAt, approversAt, checkAt, deniedAt, roleAt, sameAt, settleShadows } from "../../src/access/wired";
 import * as Domain from "../../src/db/domain";
 import { metrics } from "../../src/metrics";
 import * as Actor from "../../src/refs/actor";
 import * as Authority from "../../src/access/authority";
+
+import { roleInternal } from "../../src/access/authority";
+const roleInternalProbe = (gs: Grant[], actor: any): boolean => roleInternal(gs, actor) === "manager";
 
 const T1 = "T0EXAMPLE";
 const SELF = "U0EXAMPLE";
@@ -72,6 +75,14 @@ function probe(site: SiteId, kind: (typeof SITES)[number]["kind"], teamId: strin
       const o = { site, persona: "scout", teamId, userId: SELF, otherUserId: OTHER, otherTeamId: teamId };
       return { site, legacy: false, run: () => sameAt(o) };
     }
+    case "denied": {
+      const o = { site, persona: "scout", teamId, userId: SELF, grants };
+      return { site, legacy: false, run: () => deniedAt(o) };
+    }
+    case "check": {
+      const o = { site, persona: "scout", teamId, userId: SELF, legacy: false, grants: () => grants, internal: ({ grants: gs, actor }: any) => roleInternalProbe(gs, actor) };
+      return { site, legacy: false, run: () => checkAt(o) };
+    }
   }
 }
 
@@ -101,7 +112,7 @@ describe("every registered site returns the legacy value", () => {
       });
       test("the engine throws", async () => {
         await verifiedUser();
-        for (const fn of ["admitInternal", "roleInternal", "usersWithRoleInternal"] as const) spyOn(Authority, fn).mockImplementation(() => { throw new Error("engine bug"); });
+        for (const fn of ["admitInternal", "roleInternal", "usersWithRoleInternal", "isDeniedInternal"] as const) spyOn(Authority, fn).mockImplementation(() => { throw new Error("engine bug"); });
         spyOn(Actor, "sameUser").mockImplementation(() => { throw new Error("engine bug"); });
         const p = probe(s.id, s.kind, T1);
         expect(p.run()).toEqual(p.legacy as never);

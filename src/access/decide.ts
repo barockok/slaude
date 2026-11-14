@@ -24,9 +24,9 @@ import { m } from "../metrics";
 import * as Actor from "../refs/actor";
 import type { ActorKey } from "../refs/actor";
 import { admit, type AdmitResult } from "./admission";
-import { admitInternal, grantSubject, resolveGrantSubjects, roleInternal, usersWithRoleInternal, type EngineActor, type SubjectLookup } from "./authority";
+import { admitInternal, grantSubject, isDeniedInternal, resolveGrantSubjects, roleInternal, usersWithRoleInternal, type EngineActor, type SubjectLookup } from "./authority";
 import type { Grant } from "./grants";
-import { roleFromGrants, usersWithRole, type Role } from "./role";
+import { isDenied, roleFromGrants, usersWithRole, type Role } from "./role";
 
 const LOG_EVERY_MS = 60_000;
 const lastLogged = new Map<string, number>();
@@ -221,5 +221,51 @@ export async function decideSame(o: { site: string; persona: string | null | und
     legacy: !!o.a.slackUserId && o.a.slackUserId === o.b.slackUserId,
     show: (v) => (v ? "same" : "different"),
     compute: async () => ({ value: await Actor.sameUser(o.a, o.b) }),
+  });
+}
+
+/**
+ * A boolean or small-valued check the legacy way over some grants, with a
+ * caller-supplied internal twin. For sites whose legacy answer is not one of
+ * admit, role or approvers (an allowlist click, a soul-field reader, a deny
+ * filter). `legacy` is already computed by the caller; it is what comes back.
+ * `internal` receives the grants resolved to people and the acting user.
+ * `fresh` reads the resolver without its cache (privileged questions, D9).
+ */
+export async function decideCheck<T>(o: {
+  site: string;
+  persona: string | null | undefined;
+  teamId: string;
+  userId: string;
+  grants: readonly Grant[];
+  fresh: boolean;
+  legacy: T;
+  show: (v: T) => string;
+  internal: (i: { grants: Grant[]; actor: EngineActor }) => T;
+}): Promise<T> {
+  return decide({
+    site: o.site,
+    persona: o.persona,
+    legacy: o.legacy,
+    show: o.show,
+    compute: async () => {
+      const i = await engineInput({ teamId: o.teamId, userId: o.userId, grants: o.grants, fresh: o.fresh });
+      return { value: o.internal({ grants: i.grants, actor: i.actor }), userId: i.userId };
+    },
+  });
+}
+
+/** Whether a deny grant reaches the user. A deny applies from observed bindings too (Rule C), so the resolver may serve its cache. */
+export async function decideDenied(o: { site: string; persona: string | null | undefined; teamId: string; userId: string; grants: readonly Grant[] }): Promise<boolean> {
+  return decideCheck({
+    site: o.site,
+    persona: o.persona,
+    teamId: o.teamId,
+    userId: o.userId,
+    grants: o.grants,
+    fresh: false,
+    legacy: isDenied(o.grants, o.userId),
+    show: (v) => (v ? "denied" : "clear"),
+    internal: ({ grants, actor }) => isDeniedInternal(grants, actor),
   });
 }
