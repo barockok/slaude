@@ -4,7 +4,7 @@ import { __setGrantsReader, invalidateGrants } from "../../src/access/role";
 import type { Grant } from "../../src/access/grants";
 import { db } from "../../src/db/schema";
 import { mergeUsers, type MergeInput } from "../../src/domain/merge";
-import { flushMergeNotices, setMergeNoticeSender, type NoticePost } from "../../src/domain/merge-notice";
+import { beginNoticeRun, flushMergeNotices, setMergeNoticeSender, sweepPendingNotices, type NoticePost } from "../../src/domain/merge-notice";
 import { verifyLinkToken } from "../../src/gateway/portal/link-token";
 
 const TEAM = "T0EXAMPLE";
@@ -175,10 +175,87 @@ describe("the merge notice", () => {
     expect(sent).toEqual([]);
   });
 
-  test("no sender registered (a CLI process): the notice is failed, visible in the console", async () => {
+  test("no sender registered (a CLI process): the notice is skipped with the reason no sender", async () => {
     setMergeNoticeSender(null);
     const out = await proofMerge();
+    expect(await noticeState(out.merge.id)).toBe("skipped");
+    const ev = await db.one<{ details: unknown }>("SELECT details FROM audit_events WHERE action = 'user.merge_notice'");
+    expect(JSON.stringify(ev!.details)).toContain("no sender");
+  });
+
+  test("a notice still pending after ten minutes is swept to failed, a fresh one is left", async () => {
+    setMergeNoticeSender(null);
+    process.env.SLAUDE_MERGE_NOTICE = "off";
+    const out = await proofMerge();
+    await db.run("UPDATE user_merges SET notice_state = 'pending', created_at = ? WHERE id = ?", [Date.now() - 11 * 60_000, out.merge.id]);
+    expect(await sweepPendingNotices()).toBe(1);
     expect(await noticeState(out.merge.id)).toBe("failed");
+    await db.run("UPDATE user_merges SET notice_state = 'pending', created_at = ? WHERE id = ?", [Date.now() - 60_000, out.merge.id]);
+    expect(await sweepPendingNotices()).toBe(0);
+  });
+
+  test("no text carries an emoji shortcode", async () => {
+    await proofMerge();
+    for (const m of sent) expect(m.text).not.toMatch(/:[a-z0-9_+-]{2,}:/);
+  });
+
+  test("under shadow the person is told the accounts are linked and access is unchanged, and no manager is told", async () => {
+    process.env.SLAUDE_ACCESS_SOURCE = "shadow";
+    const s = await person({ oidc: "sub-1", slack: "U0SURV", slackState: "verified" });
+    const l = await person({ slack: "U0BOSS" });
+    await putGrant("g-mgr", "U0BOSS", "manager");
+    const out = await mergeUsers({ survivorId: s, loserId: l, kind: "console", actor: "UOP" });
+    await flushMergeNotices();
+    if (out.status !== "merged") throw new Error("not merged");
+    expect(sent.map((x) => x.channel)).toEqual(["U0SURV"]);
+    expect(sent[0]!.text).toContain("access is unchanged");
+    expect(sent[0]!.text).not.toContain("became active");
+    expect(await noticeState(out.merge.id)).toBe("sent");
+  });
+
+  test("the first portal link of an existing manager, under internal, tells only the person: nothing newly activated", async () => {
+    const s = await person({ oidc: "sub-1" });
+    const l = await person({ slack: "U0BOSS" });
+    await putGrant("g-mgr", "U0BOSS", "manager");
+    const held = (await Domain.findBinding(slackKey("U0BOSS")))!;
+    await mergeUsers({ survivorId: s, loserId: l, kind: "proof", actor: "system", raise: { bindingId: held.id }, proof: { slackBindingId: held.id } });
+    await flushMergeNotices();
+    expect(sent.map((x) => x.channel)).toEqual(["U0BOSS"]);
+  });
+
+  test("at most 3 manager DMs per merge; the rest are skipped, and the notice is still sent", async () => {
+    __setGrantsReader(async (persona) =>
+      persona === "scout"
+        ? ["U0M1", "U0M2", "U0M3", "U0M4", "U0M5"].map((id) => ({ subjectKind: "user", subjectId: id, role: "manager", deny: false, dmOnly: false, source: "console" }) as unknown as Grant)
+        : [],
+    );
+    const out = await proofMerge();
+    expect(sent.filter((x) => x.channel.startsWith("U0M"))).toHaveLength(3);
+    expect(await noticeState(out.merge.id)).toBe("sent");
+    const ev = await db.one<{ details: unknown }>("SELECT details FROM audit_events WHERE action = 'user.merge_notice'");
+    const d = typeof ev!.details === "string" ? JSON.parse(ev!.details) : (ev!.details as Record<string, unknown>);
+    expect(d.managers_skipped).toBe(2);
+  });
+
+  test("a reconcile run shares 10 manager DMs across its merges", async () => {
+    __setGrantsReader(async (persona) =>
+      persona === "scout"
+        ? ["U0M1", "U0M2", "U0M3"].map((id) => ({ subjectKind: "user", subjectId: id, role: "manager", deny: false, dmOnly: false, source: "console" }) as unknown as Grant)
+        : [],
+    );
+    const end = beginNoticeRun(4);
+    await proofMerge();
+    await Domain._wipeForTests();
+    await db.run("DELETE FROM agent_grants");
+    await proofMerge();
+    await end();
+    expect(sent.filter((x) => x.channel.startsWith("U0M"))).toHaveLength(4);
+  });
+
+  test("a manager the app cannot reach (another workspace) does not fail the notice", async () => {
+    setMergeNoticeSender({ ...post, post: async (m) => { sent.push({ channel: m.channel, text: m.text }); if (m.channel === "U0BOSS") throw Object.assign(new Error("x"), { data: { error: "user_not_found" } }); } });
+    const out = await proofMerge();
+    expect(await noticeState(out.merge.id)).toBe("sent");
   });
 
   test("a person with no Slack binding has nobody to tell: skipped", async () => {

@@ -63,6 +63,7 @@
  */
 import { audit, type AuditInput } from "../audit/index";
 import { emitDomainEvents } from "../audit/domain";
+import { beginNoticeRun, sweepPendingNotices } from "./merge-notice";
 import { proposeMerge } from "./merge";
 import { env } from "../config/env";
 import { warnInactiveRefs } from "../access/grant-state";
@@ -194,6 +195,16 @@ let queue: Promise<unknown> = Promise.resolve();
 
 /** Run a reconcile. Throws only on an unexpected database failure; per-row oddities are reported. */
 export async function reconcile(opts: ReconcileOptions = {}): Promise<ReconcileReport> {
+  // The merges this run makes share a small budget of manager DMs (a backfill must not message a manager ten times over).
+  const endNotices = beginNoticeRun();
+  try {
+    return await reconcileRun(opts);
+  } finally {
+    await endNotices().catch(() => {});
+  }
+}
+
+async function reconcileRun(opts: ReconcileOptions): Promise<ReconcileReport> {
   if (opts.unlocked) return run(opts);
   // In-process queue first: one connection (sqlite, PGLite) must not interleave two runs.
   const prev = queue;
@@ -886,6 +897,8 @@ export async function reconcileAtBoot(o: {
   if (o.role === "node") return null;
   const log = o.log ?? ((m: string) => console.log(`[domain] ${m}`));
   try {
+    // A notice still pending long after its merge was never sent (the process that made it died): say so.
+    await sweepPendingNotices().then((n) => n > 0 && log(`${n} merge notice(s) were never sent (marked failed)`)).catch(() => {});
     const r = await (o.run ?? reconcile)({ liveTeamIds: o.liveTeamIds, log });
     if (totalCreated(r) === 0 && r.conflicts.length === 0) log("reconcile: nothing to do");
     else log(`reconcile done: ${totalCreated(r)} created, ${r.conflicts.length} conflict(s)\n${formatReconcileReport(r)}`);

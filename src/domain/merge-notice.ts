@@ -14,9 +14,18 @@
  *  - Through the gateway's own outbound path: `cardPoster(transport)`, the bot of
  *    the Slack app the workspace has, registered by `createGateway`
  *    (`setMergeNoticeSender`). A node never sends. A process with no gateway (the
- *    CLI) has no sender and the notice is `failed`, which the console shows.
+ *    CLI) has no sender and the notice is `skipped` with the reason `no sender`;
+ *    a row still `pending` after ten minutes (the sending process died) is
+ *    marked `failed` by `sweepPendingNotices`, which the boot reconcile runs.
+ *  - At most 3 manager DMs per merge and, inside one reconcile run, 10 in all
+ *    (`beginNoticeRun`); the rest are counted as skipped. A manager DM that fails
+ *    because the manager is not reachable from this workspace's app (another
+ *    workspace) is skipped, not failed.
+ *  - When the access source is not `internal` a merge changes no authorization,
+ *    so the DM says the accounts were linked and access is unchanged, and no
+ *    manager is told.
  *  - A single attempt. `notice_state` becomes `sent` or `failed` (or `skipped`: the
- *    switch is off, a node, nobody to tell). A failure never reverts the merge and
+ *    switch is off, no sender in this process (the CLI), nobody to tell). A failure never reverts the merge and
  *    is never retried; the audit event `user.merge_notice` says which DM failed.
  *  - `SLAUDE_MERGE_NOTICE=off` sends nothing (rollback switch for the notice alone).
  *
@@ -57,6 +66,45 @@ export function setMergeNoticeSender(s: NoticePost | null): () => void {
     if (sender === s) sender = null;
   };
 }
+
+/** Manager DMs one merge may send. */
+export const MANAGER_DMS_PER_MERGE = 3;
+/** Manager DMs one reconcile run may send in all. */
+export const MANAGER_DMS_PER_RUN = 10;
+let runBudget: { left: number } | null = null;
+/** Start a bounded run (a reconcile): its notices share `max` manager DMs. The returned function waits for them and ends the run. */
+export function beginNoticeRun(max: number = MANAGER_DMS_PER_RUN): () => Promise<void> {
+  const mine = { left: max };
+  runBudget = mine;
+  return async () => {
+    await flushMergeNotices();
+    if (runBudget === mine) runBudget = null;
+  };
+}
+
+/** Rows still pending this long after the merge were never sent (the sending process died): mark them failed. */
+export const PENDING_NOTICE_MS = 10 * 60 * 1000;
+export async function sweepPendingNotices(now: number = Date.now()): Promise<number> {
+  const stale = await db.query<{ id: string; survivor_id: string }>(
+    "SELECT id, survivor_id FROM user_merges WHERE notice_state = 'pending' AND created_at < ?",
+    [now - PENDING_NOTICE_MS],
+  );
+  let n = 0;
+  for (const r of stale) {
+    const u = await db.run("UPDATE user_merges SET notice_state = 'failed' WHERE id = ? AND notice_state = 'pending'", [r.id]);
+    if ((u.changes ?? 0) === 0) continue;
+    n++;
+    m.mergeNoticeTotal.inc({ result: "failed" });
+    await audit({
+      actorKind: "system", actorId: "system", action: "user.merge_notice", targetKind: "user", targetId: r.survivor_id,
+      summary: "merge notice failed", details: { merge_id: r.id, result: "failed", reason: "no sender" },
+    });
+  }
+  return n;
+}
+
+/** Slack errors that mean "this manager cannot be reached from this app" (another workspace, a deactivated account). */
+const UNREACHABLE = new Set(["user_not_found", "users_not_found", "channel_not_found", "user_disabled", "cannot_dm_bot", "user_not_visible", "no_slack_app_for_workspace", "not_in_channel"]);
 
 const inflight = new Set<Promise<void>>();
 const claimed = new Set<string>();
@@ -168,8 +216,14 @@ export function personText(f: Facts, link: string | null): string {
   if (f.slackCount > 0) parts.push(plural(f.slackCount, "Slack account", "Slack accounts"));
   if (f.emails.length > 0) parts.push(`the address ${f.emails.map(escape).join(", ")}`);
   if (f.otherCount > 0) parts.push(plural(f.otherCount, "other identity", "other identities"));
-  const lines = [`:link: Two records of you were linked ${how}.`];
+  const lines = [`Two records of you were linked ${how}.`];
   lines.push(`Linked: ${parts.length ? parts.join(" and ") : "an empty record"}.`);
+  if (mv.access_source !== undefined && mv.access_source !== "internal") {
+    // Authorization still reads the old way: nothing changed for this person.
+    lines.push("Your access is unchanged: the accounts are linked, and no grant was added or removed.");
+    lines.push(`This was not you or not expected? Tell the manager of the agent or the deployment operator. A merge can be undone until ${day(merge.undo_until)}.`);
+    return lines.join("\n");
+  }
   const act = mv.activated.map((a) => `${escape(a.persona)} (${escape(a.role)})`);
   lines.push(
     mv.activated.length === 0
@@ -193,7 +247,7 @@ export function managerText(f: Facts, persona: string, roles: string[]): string 
   const how = f.merge.kind === "proof" ? "automatically, after a sign-in link was proved" : "by an operator";
   const who = f.who ? `a person (${escape(f.who)})` : "a person";
   return [
-    `:bust_in_silhouette: Access change on ${escape(persona)}: ${who} now holds ${escape([...new Set(roles)].join(", "))} there, because two of their records were merged ${how}.`,
+    `Access change on ${escape(persona)}: ${who} now holds ${escape([...new Set(roles)].join(", "))} there, because two of their records were merged ${how}.`,
     `If this is unexpected, an operator can undo the merge in the console until ${day(f.merge.undo_until)}.`,
   ].join("\n");
 }
@@ -212,7 +266,7 @@ export async function sendMergeNotice(mergeId: string): Promise<NoticeResult | n
   const bindings = await db.query<Domain.BindingRow>("SELECT * FROM bindings WHERE user_id = ? ORDER BY created_at, id", [live]);
   const target = pickTarget(merge, bindings);
   if (!target) return settle(merge, "skipped", { reason: "no-slack-binding" });
-  if (!sender) return settle(merge, "failed", { reason: "no-sender" });
+  if (!sender) return settle(merge, "skipped", { reason: "no sender" });
   const s = sender;
 
   const movedIds = new Set(merge.moved.bindings.map((b) => b.id));
@@ -247,6 +301,7 @@ export async function sendMergeNotice(mergeId: string): Promise<NoticeResult | n
   for (const a of merge.moved.activated) if (a.privileged) byPersona.set(a.persona, [...(byPersona.get(a.persona) ?? []), a.role]);
   let managersSent = 0;
   let managersFailed = 0;
+  let managersSkipped = 0;
   const told = new Set<string>();
   for (const [persona, roles] of byPersona) {
     let managers: string[] = [];
@@ -260,17 +315,27 @@ export async function sendMergeNotice(mergeId: string): Promise<NoticeResult | n
     for (const mgr of managers) {
       if (own.has(mgr) || told.has(`${persona}|${mgr}`)) continue;
       told.add(`${persona}|${mgr}`);
+      // Caps: per merge, and per bounded run (a reconcile). Over the cap is skipped, never sent late.
+      if (managersSent + managersFailed >= MANAGER_DMS_PER_MERGE || (runBudget && runBudget.left <= 0)) {
+        managersSkipped++;
+        continue;
+      }
+      if (runBudget) runBudget.left--;
       try {
         await send(mgr, managerText(facts, persona, roles), persona);
         managersSent++;
       } catch (e) {
-        managersFailed++;
-        errors.push(`manager:${whyFailed(e)}`);
+        const why = whyFailed(e);
+        if (UNREACHABLE.has(why)) managersSkipped++; // another workspace or an account this app cannot see
+        else {
+          managersFailed++;
+          errors.push(`manager:${why}`);
+        }
       }
     }
   }
 
   const clean = person === "sent" && managersFailed < 1;
   const state: NoticeResult = clean ? "sent" : "failed";
-  return settle(merge, state, { person, managers_sent: managersSent, managers_failed: managersFailed, ...(errors.length ? { errors } : {}) });
+  return settle(merge, state, { person, managers_sent: managersSent, managers_failed: managersFailed, managers_skipped: managersSkipped, ...(errors.length ? { errors } : {}) });
 }
