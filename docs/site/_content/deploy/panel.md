@@ -29,6 +29,7 @@ dark themes follow the browser, and every page works at phone width.
 | **Approvals and audit** | Every permission and approval decision, refusal and expiry, and every console change, newest first, filterable by agent, action, actor, decision and time. An event the agent itself did shows the agent's name as its actor, not its bot user id. |
 | **Access** | Console roles (read only, from the role file; superadmins only, operators see a note) and every stored agent grant. |
 | **Users** and **Boundaries** | The domain records (superadmin only, read only). *Users* lists every person and bot the deployment has matched: the preferred binding (a verified email, else a Slack id), how many of its bindings are verified, observed or declared, its alias count and when it was created. A user's drawer lists each binding (service, workspace, masked value, state, source) and the ids merged into it. *Boundaries* lists channels and groups with service, workspace, state, display name and age. Both filter by state and service and search by the start of a value. |
+| **Merges** and **Proposals** | Superadmin only. *Merges* is the ledger of user merges: kind (proof or console), when, what moved, which grants became active, whether the Slack notice was sent, and until when it can be undone. *Proposals* lists pairs of records the system refused to merge by itself, for an operator to approve or dismiss. See [Merges and proposals](#merges-and-proposals). |
 | **Memory** | Memory stores with page counts; a store lists its pages; a page shows its content, type, tags and links. Read only. Below the stores, *Write rules* shows per agent what it may write without asking and who must approve the rest. |
 | **Environments** | Node pools (labels, live nodes, last heartbeat), each agent's placement label, and personal environments (secrets never shown). |
 | **Resources: Skills** | Every skill an agent can use, filterable by source, agent and status, with search. A skill's page shows its `SKILL.md` rendered (raw and copy too), where it came from, which agents have it, its files, per-agent usage and related proposals. |
@@ -236,9 +237,9 @@ These two pages read the records described in the typed references
 spec: a *user* (a person or bot), the *bindings* that tie it to a service
 identity, and *boundaries* (a Slack channel, later a WhatsApp group). They
 are a projection kept in step with accounts, portal links, first sight and
-agent.yaml sync. Nothing here changes a record and nothing reads these for
-access yet; the pages carry a note saying so. Resolving a conflict and
-undoing a merge arrive in a later release.
+agent.yaml sync. These two pages change nothing and carry a note saying so.
+Merging, undoing a merge and settling a conflict are on the Merges and
+Proposals pages below.
 
 The API is `GET /panel/api/users`, `GET /panel/api/users/:id` and
 `GET /panel/api/boundaries`, all superadmin only (an operator gets `403`, and
@@ -268,6 +269,72 @@ the denied attempt is audited like any other superadmin action).
   matches a user that has a binding with every given state, service and
   prefix. A detail request also accepts the id of a merged user and answers
   with the user it became.
+
+## Merges and proposals
+
+When a person proves who they are (a portal link, a sign-in with a proven
+email) and another record already holds that Slack id or address, the two
+records are merged into one and the old id becomes an alias. Every merge writes a
+ledger row; the ledger, not the audit trail, is what undo reads. Both pages are
+superadmin only: an operator gets `403` and the refused attempt is audited. Every
+mutation is audited as the operator and, like the grant POST, needs the
+`x-panel-csrf` header.
+
+Routes:
+
+- `GET /panel/api/merges?state&cursor&limit` and `GET /panel/api/merges/:id`.
+- `POST /panel/api/merges/:id/undo-preview` returns what an undo would move and
+  what it would leave, without writing.
+- `POST /panel/api/merges/:id/undo` with `{ "reason": "..." }` (required, at least
+  3 characters) undoes the merge.
+- `GET /panel/api/merge-proposals?state&cursor&limit`,
+  `POST /panel/api/merge-proposals/:id/approve` and
+  `POST /panel/api/merge-proposals/:id/dismiss`.
+
+**Masking.** No answer carries a full email address or a Slack id: an address is
+`a***@example.com` and any other identifier shows its first and last two
+characters. Record, binding and grant ids are shown whole.
+
+**The notice.** After a merge commits the person gets one Slack DM (what was
+linked with the address masked, how many grants became active, which privileged
+grants stay inactive and why, with a fresh portal link when the Slack binding is
+unverified, and who to tell). When a privileged grant activates, the persona's
+manager gets one too. It is a single attempt through the gateway's own Slack app;
+the ledger row says `sent`, `failed` or `skipped` (the switch is off, or the person
+has no Slack binding) and a failure never reverts the merge and is not retried: the
+merge detail says so and shows which message failed. `SLAUDE_MERGE_NOTICE=off`
+sends nothing.
+
+**Undo.** Allowed for seven days from the merge, while the merge is applied. It
+runs in one transaction: the merged-away record comes back with its original id,
+and each binding, stored grant and alias goes back only when it is still where the
+merge put it. Anything changed since is left as it is and listed as skipped with
+the reason. A binding state the merge raised goes back only when it is still
+verified with the recorded time; undo never lowers any other binding. Undoing a
+proof merge also removes the link between the Slack account and the sign-in
+account (the account stays) and records a veto: that pair cannot link again, and
+the engine will not merge it again, until an operator lifts the veto. What undo
+does not do, shown beside every merge:
+
+- It moves records and grants. Credentials and memory slices were never moved, so
+  it does not touch them.
+- Items changed after the merge are not reverted.
+- Past the window it is refused.
+- A merge that a later merge chained onto must be undone later-first.
+- A deleted account is not restored.
+
+**Proposals.** A proposal is written when the engine refuses a merge: a
+conflict (the same email and a different verified Slack account in one workspace)
+or two different emails. *Approve* asks the server first what the merge would
+activate; you then type `merge` and the page sends the grants it listed
+(`persona:role:entry`), which the server checks against what would activate now.
+A changed list is refused with the current one, and a proposal whose records are
+gone or already one is refused as stale. The any-verified refusal still applies: a
+record that holds a verified binding is never merged here, and an approval never
+raises a binding state. A conflict between two verified records is settled by
+unlinking or deleting the losing account first (the existing flows), then
+approving. *Dismiss* keeps the records apart; the same pair is not proposed again
+for the same reason. Aliases (`a+x@` against `a@`) are never merged and have no page.
 
 ## Enabling it
 

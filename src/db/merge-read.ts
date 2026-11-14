@@ -8,25 +8,14 @@ import { db as globalDb, type DbClient } from "./schema";
 import * as Domain from "./domain";
 import type { BindingRow, UserRow } from "./domain";
 import { clampLimit, maskActor, maskIdentifier, parseCursor, pickPreferred, type PageOpts } from "./domain-read";
-import { parseMergeRow, UNDO_WINDOW_MS, type MergeRow } from "../domain/merge";
+import { parseMergeRow, type MergeRow } from "../domain/merge";
+import { PROOF_UNDO_LIMIT, UNDO_LIMITS } from "../domain/merge-limits";
 import type {
   MergeBindingView, MergeDetail, MergeListItem, MergePage, NoticeState, ProposalItem, ProposalPage, ProposalSide, StateCounts,
 } from "../gateway/panel/api-types";
 
 const h = (tx?: DbClient): DbClient => tx ?? globalDb;
 const num = (v: unknown) => Number(v);
-const days = Math.round(UNDO_WINDOW_MS / 86_400_000);
-
-/** What undo can and cannot do, shown with every merge and in the release note. */
-export const UNDO_LIMITS: readonly string[] = [
-  "Undo moves records and grants back. Credentials and memory slices were never moved, so undo does not touch them.",
-  "Items changed after the merge (a binding unlinked, a grant revoked or edited) are not reverted: they are left as they are and listed as skipped.",
-  `Past the window (${days} days) undo is refused.`,
-  "A merge that a later merge chained onto must be undone later-first.",
-  "A deleted account is not restored.",
-];
-export const PROOF_UNDO_LIMIT =
-  "Undoing a proof merge also removes the link between the Slack account and the sign-in account, and forbids that pair from linking again until an operator lifts the veto.";
 
 export function listItem(r: MergeRow, now: number): MergeListItem {
   return {

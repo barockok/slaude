@@ -22,6 +22,7 @@ import {
 } from "./resources-fixtures";
 import { pluginFixtures } from "./plugin-fixtures";
 import { domainFixtures } from "./domain-fixtures";
+import { listItemOf, mergeFixtures } from "./merge-fixtures";
 import type { AgentSettingsGroup, GuardrailTestRequest } from "../../../gateway/panel/api-types";
 import { CHANNEL_LABELS, USER_NAMES, allGrantsOf, createFixtures, sessionHistory, sessionScript, type ConsoleFixtures } from "./fixtures";
 
@@ -108,6 +109,7 @@ export function installStub(): void {
   /** Events waiting to go out on each session's live tail (operator chat replies). */
   const pendingEvents = new Map<string, Array<{ delay: number; event: SessionEvent }>>();
   let nextGrant = 100;
+  let mergeState: ReturnType<typeof mergeFixtures> | null = null;
 
   const realFetch = window.fetch.bind(window);
 
@@ -156,6 +158,47 @@ export function installStub(): void {
     }
     if (seg[1] === "sessions") return sessions(method, seg, query, body, isSuper);
     if (seg[1] === "memory") return memory(seg, query, isSuper);
+    if (seg[1] === "merges" || seg[1] === "merge-proposals") {
+      const action = seg[1] === "merges" ? (seg[3] === "undo" ? "merge.undo" : seg[3] === "undo-preview" ? "merge.undo.preview" : "merge.read") : seg[3] === "approve" ? "merge.proposal.approve" : seg[3] === "dismiss" ? "merge.proposal.dismiss" : "merge.read";
+      if (!isSuper) return json(403, { error: `action '${action}' requires the superadmin role`, required: "superadmin" });
+      const mf = mergeState ?? (mergeState = mergeFixtures(startedAt));
+      const state = query.get("state");
+      if (seg[1] === "merges") {
+        if (seg.length === 2) {
+          if (method !== "GET") return json(405, { error: "method not allowed" });
+          return json(200, { items: empty ? [] : mf.merges.filter((m) => !state || m.state === state).map(listItemOf), nextCursor: null });
+        }
+        const m = mf.merges.find((x) => x.id === decodeURIComponent(seg[2]!));
+        if (!m) return json(404, { error: "not found" });
+        if (seg.length === 3) return method === "GET" ? json(200, m) : json(405, { error: "method not allowed" });
+        if (method !== "POST") return json(405, { error: "method not allowed" });
+        if (!m.undoable) return json(409, { error: m.state === "undone" ? "this merge was already undone" : "the undo window has passed", reason: m.state === "undone" ? "already-undone" : "past-window" });
+        const lists = mf.undo[m.id] ?? { moved: { bindings: [], grants: [], aliases: [], restored: [], unlinked: false }, skipped: [] };
+        if (seg[3] === "undo-preview") return json(200, { mergeId: m.id, undoable: true, ...lists });
+        const reason = String((body as { reason?: string } | null)?.reason ?? "").trim();
+        if (reason.length < 3) return json(400, { error: "reason: a reason of at least 3 characters is required" });
+        Object.assign(m, { state: "undone", undoable: false, undoneAt: Date.now(), undoneBy: "l***@example.com" });
+        return json(200, { status: "undone", mergeId: m.id, ...lists, merge: m });
+      }
+      if (seg.length === 2) {
+        if (method !== "GET") return json(405, { error: "method not allowed" });
+        return json(200, { items: empty ? [] : mf.proposals.filter((p) => !state || p.state === state), nextCursor: null });
+      }
+      const p = mf.proposals.find((x) => x.id === decodeURIComponent(seg[2]!));
+      if (!p || method !== "POST") return json(p ? 405 : 404, { error: p ? "method not allowed" : "no such proposal" });
+      if (p.state !== "open") return json(409, { error: `this proposal is already ${p.state}`, state: p.state });
+      if (p.stale) return json(409, { error: `stale proposal: ${p.staleReason}`, stale: true });
+      if (seg[3] === "dismiss") {
+        Object.assign(p, { state: "dismissed", resolvedBy: "l***@example.com", resolvedAt: Date.now() });
+        return json(200, { ok: true });
+      }
+      const want = mf.activates[p.id] ?? [];
+      const given = (body as { activates?: string[] } | null)?.activates;
+      if (given === undefined) return json(200, { status: "confirm", survivorId: p.a.id, loserId: p.b.id, activates: want, inactivePrivileged: [] });
+      if (JSON.stringify([...given].sort()) !== JSON.stringify([...want].sort())) return json(409, { error: "the grants this merge would activate are not the ones you confirmed", activates: want, inactivePrivileged: [] });
+      Object.assign(p, { state: "merged", resolvedBy: "l***@example.com", resolvedAt: Date.now() });
+      return json(200, { status: "merged", merge: mf.merges[0] });
+    }
     if (path === "/api/users" || path === "/api/boundaries" || path.startsWith("/api/users/")) {
       if (method !== "GET") return json(405, { error: "method not allowed" });
       if (!isSuper) return json(403, { error: "action 'domain.read' requires the superadmin role", required: "superadmin" });

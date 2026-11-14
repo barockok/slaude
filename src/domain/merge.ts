@@ -38,8 +38,9 @@ import { env } from "../config/env";
 import { m } from "../metrics";
 import { diffReach, grantsReaching, type GrantDiff } from "./merge-reach";
 
+import { UNDO_WINDOW_MS } from "./merge-limits";
 /** D1: how long a merge can be undone. */
-export const UNDO_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+export { UNDO_WINDOW_MS };
 
 export type MergeKind = "proof" | "console";
 export type RefusalReason = "verified-loser" | "bot-or-agent" | "two-emails" | "veto" | "auto-merge-off" | "stale";
