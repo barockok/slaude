@@ -198,6 +198,24 @@ Records are created the first time they are referenced.
 - **C, access on internal ids.** Grants and admission resolve the acting user
   first. `email:` in an ACL starts to work through the portal link, and the
   optional workspace `trustProfileEmail` setting arrives here.
+  - **Merging. Implemented** in slice C (v0.46.0-rc.21): merge on proof, the
+    notice, undo and the console Merges and Proposals pages. See the
+    [merging field note](../../site/_content/field-notes/2026-11-14-domain-access-merging.md).
+    What differs from the Merging section above:
+    - No console override for verified losers. The engine refuses, for every
+      kind including the console, a merge where the merged-away record holds any
+      verified binding; the operator unlinks or deletes the losing account first,
+      then approves.
+    - Console approval uses a typed confirmation echo: the operator sends back
+      the list of grants the merge would activate, and a stale list is refused.
+    - The undo window is 7 days, and undo works from the merge ledger
+      (`user_merges`), not from the audit event.
+    - Undoing a proof merge also unlinks the Slack account and writes a veto on
+      the pair. A login merge on a proven email cannot be vetoed (known gap).
+    - Profile-email trust (`trustProfileEmail`, point 2 above) is deferred to its
+      own later slice and is not read or written by C.
+    - Aliases are never merged and have no console page; the proposal reasons
+      are only `conflict` and `two-emails`.
 - **D, sessions and thread-scoped tables** gain a boundary column read through a
   resolver, and the unique indexes move after one release.
 - **E, environments as definitions** and the `environment:` key.
