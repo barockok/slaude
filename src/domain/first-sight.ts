@@ -25,6 +25,7 @@ import { env } from "../config/env";
 import { db as globalDb, type DbClient } from "../db/schema";
 import * as Domain from "../db/domain";
 import type { DomainEvent } from "../db/domain";
+import { trackFirstSight } from "./first-sight-flush";
 
 export const LRU_CAP = 5000;
 export const RECHECK_MS = 10 * 60 * 1000;
@@ -175,6 +176,7 @@ export function createFirstSight(deps: FirstSightDeps = {}): FirstSight {
     });
     inflight.set(key, p);
     pending.add(p);
+    trackFirstSight(p);
   }
 
   return {
@@ -272,13 +274,13 @@ export function observeFromAudit(input: {
     const userOk = input.actorKind === "slack_user" && USER_RE.test(input.actorId) && !SYSTEM_USERS.has(input.actorId);
     const channelOk = !!input.channelId && CHANNEL_RE.test(input.channelId);
     if (!userOk && !channelOk) return;
-    void workspaceForAudit(input.sessionId)
+    void trackFirstSight(workspaceForAudit(input.sessionId)
       .then((teamId) => {
         if (!teamId) return;
         if (userOk) observeSlackUser({ teamId, userId: input.actorId, tenantId: input.tenantId });
         if (channelOk) observeSlackChannel({ teamId, channelId: input.channelId!, tenantId: input.tenantId });
       })
-      .catch(() => {});
+      .catch(() => {}));
   } catch {
     /* never into the caller */
   }

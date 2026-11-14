@@ -5,6 +5,8 @@ import { join } from "node:path";
 // Import-free module: safe to load before SLAUDE_HOME is set below.
 import { settleBrainWork, whileClosing } from "../src/knowledge/brain-work";
 import { stopRunningLoops } from "../src/gateway/core/running-loops";
+// Import-free too: waits for fire-and-forget domain-record writes (first sight).
+import { flushFirstSightWork } from "../src/domain/first-sight-flush";
 
 // Isolate every test run under a fresh $SLAUDE_HOME so db/schema bootstrap and
 // soul/loader writes don't touch the operator's real ~/.slaude.
@@ -50,6 +52,9 @@ afterEach(() => whileClosing(settleBrainWork), 60_000);
 // into later files, e.g. while facade.test pointed the facade at an
 // unmigrated PGLite. Stop any still running after each test.
 afterEach(() => stopRunningLoops());
+// First sight writes records fire-and-forget (session create, audit). Settle them
+// after each test so none lands after a wipe or a closed database in the next one.
+afterEach(() => flushFirstSightWork());
 
 // Real-PG leg only: unlike the sqlite/PGLite legs (fresh store per run), the
 // test Postgres persists across runs while most tests emit deterministic

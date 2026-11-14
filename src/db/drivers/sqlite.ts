@@ -7,6 +7,7 @@
  * durable gate state). A sqlite install moves forward via
  * `bun run migrate-sqlite`.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Database } from "bun:sqlite";
 import { ensureHome } from "../../config/home";
 import type { DbClient, Row, RunResult } from "../client";
@@ -710,10 +711,15 @@ export function bootstrapSqliteSchema(db: Database): void {
   }
 }
 
+/** Set while a transaction body runs, so a nested `transaction` does not wait for its own lock. */
+const inTransaction = new AsyncLocalStorage<SqliteClient>();
+
 class SqliteClient implements DbClient {
   readonly dialect = "sqlite" as const;
   readonly driver = "bun-sqlite";
   constructor(readonly raw: Database) {}
+  /** One connection cannot interleave two transactions: later ones queue behind the running one. */
+  #txTail: Promise<unknown> = Promise.resolve();
 
   query<T = Row>(sql: string, params: unknown[] = []): Promise<T[]> {
     try {
@@ -750,6 +756,20 @@ class SqliteClient implements DbClient {
   }
 
   async transaction<T>(fn: (tx: DbClient) => Promise<T>): Promise<T> {
+    // Nested (same async context): no queueing, as before (a nested BEGIN fails loudly).
+    if (inTransaction.getStore() === this) return this.#run(fn);
+    const prev = this.#txTail;
+    let release!: () => void;
+    this.#txTail = new Promise<void>((r) => (release = r));
+    await prev.catch(() => {});
+    try {
+      return await inTransaction.run(this, () => this.#run(fn));
+    } finally {
+      release();
+    }
+  }
+
+  async #run<T>(fn: (tx: DbClient) => Promise<T>): Promise<T> {
     this.raw.exec("BEGIN");
     try {
       const out = await fn(this);
