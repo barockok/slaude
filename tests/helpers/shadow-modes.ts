@@ -97,3 +97,28 @@ export function legacyUnderEveryMode<T>(label: string, scenario: () => Promise<T
     }
   }
 }
+
+/**
+ * Like {@link legacyUnderEveryMode}, with the baseline taken by running the
+ * scenario first under source=legacy (it must reset its own state, since it
+ * runs again). For scenarios whose outcome is a transcript, not a few values.
+ */
+export function sameAsLegacyBaseline<T>(label: string, scenario: () => Promise<T>, sanity?: (baseline: T) => void): void {
+  test(`${label}: the legacy baseline is sane`, async () => {
+    process.env.SLAUDE_ACCESS_SOURCE = "legacy";
+    sanity?.(await scenario());
+  });
+  for (const mode of MODES) {
+    for (const how of BREAKS) {
+      test(`${label}: ${mode} source, ${how}: same as the legacy baseline`, async () => {
+        process.env.SLAUDE_ACCESS_SOURCE = "legacy";
+        const want = await scenario();
+        await settleShadows();
+        process.env.SLAUDE_ACCESS_SOURCE = mode;
+        breakIt(how);
+        expect(await scenario()).toEqual(want);
+        await settleShadows();
+      });
+    }
+  }
+}
