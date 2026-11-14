@@ -86,6 +86,32 @@ export async function tenantWorkspaces(tenant: string, c: DbClient = globalDb): 
   return rows.map((r) => r.team_id).filter(Boolean);
 }
 
+let singleCache: { until: number; v: string | undefined } | null = null;
+/** Forget the cached answer of {@link singleWorkspace} (tests). */
+export function __resetSingleWorkspace(): void {
+  singleCache = null;
+}
+/**
+ * The deployment's one connected workspace, or undefined when it has none or
+ * several (the same single-workspace rule as sync and the reconciler). Postgres
+ * reads the tenant's slack_apps; sqlite the workspace its Slack bindings are in.
+ * Cached for 30 s; a read error is undefined.
+ */
+export async function singleWorkspace(c: DbClient = globalDb): Promise<string | undefined> {
+  if (singleCache && Date.now() < singleCache.until) return singleCache.v;
+  let v: string | undefined;
+  try {
+    const ws = c.dialect === "pg"
+      ? await tenantWorkspaces("default", c)
+      : (await c.query<{ workspace: string }>("SELECT DISTINCT workspace FROM bindings WHERE service = 'slack' AND kind = 'user' AND workspace <> '' LIMIT 3")).map((r) => r.workspace);
+    v = ws.length === 1 ? ws[0] : undefined;
+  } catch {
+    v = undefined;
+  }
+  singleCache = { until: Date.now() + 30_000, v };
+  return v;
+}
+
 /** The workspace for each use, or a refusal naming persona and field. */
 function placed(uses: RefUse[], workspaces: string[]): Array<{ use: RefUse; workspace: string }> {
   return uses.map((use) => {

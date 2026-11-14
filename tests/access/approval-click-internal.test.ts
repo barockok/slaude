@@ -14,6 +14,7 @@ import * as PendingGates from "../../src/db/pending-gates";
 import { db } from "../../src/db/schema";
 import { ApprovalGate } from "../../src/gateway/slack/approval-gate";
 import * as Actor from "../../src/refs/actor";
+import { __resetSingleWorkspace } from "../../src/domain/sync-refs";
 import { __resetDecide } from "../../src/access/decide";
 import { SoulDataSchema } from "../../src/soul/data";
 import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
@@ -28,6 +29,7 @@ const slackGrant = (id: string, role: Grant["role"], o: Partial<Grant> = {}) => 
 let saved: string | undefined;
 let grants: Grant[] = [];
 beforeEach(async () => {
+  __resetSingleWorkspace();
   saved = process.env.SLAUDE_ACCESS_SOURCE;
   process.env.SLAUDE_ACCESS_SOURCE = "internal";
   await Domain._wipeForTests();
@@ -113,8 +115,17 @@ describe("an approver by email", () => {
     expect(await status(id)).toBe("pending");
   });
 
-  test("a click that names no workspace is refused", async () => {
+  test("a click that names no workspace uses the deployment's one workspace", async () => {
     await person("U0APPROVER", "verified", MAIL);
+    const h = harness();
+    const id = await h.open();
+    await h.click(id, "U0APPROVER", null);
+    expect(await status(id)).toBe("approved");
+  });
+
+  test("a click that names no workspace is refused when the deployment has several", async () => {
+    await person("U0APPROVER", "verified", MAIL);
+    await Domain.ensureBinding({ service: "slack", kind: "user", workspace: "T0OTHER", value: "U0ELSE", state: "observed", source: "test" });
     const h = harness();
     const id = await h.open();
     await h.click(id, "U0APPROVER", null);
@@ -246,4 +257,39 @@ describe("under shadow nothing changes", () => {
     await h.click(id, "U0DIRECT");
     expect(await status(id)).toBe("approved");
   });
+});
+
+describe("a card made under internal stays closed when the source is flipped back", () => {
+  beforeEach(() => {
+    grants = [emailGrant(MAIL, "approver")];
+  });
+  for (const source of ["shadow", "legacy", "unset"]) {
+    test(`${source}: an email-only approver list is never read as anyone (poll card)`, async () => {
+      await person("U0APPROVER", "verified", MAIL);
+      const h = harness();
+      const id = await h.open();
+      expect((await PendingGates.get(id))?.payload.approvers).toEqual(["!nobody"]);
+      if (source === "unset") delete process.env.SLAUDE_ACCESS_SOURCE;
+      else process.env.SLAUDE_ACCESS_SOURCE = source;
+      await h.click(id, "U0RANDOM");
+      expect(await status(id)).toBe("pending");
+      await h.click(id, "U0APPROVER");
+      expect(await status(id)).toBe("pending");
+    });
+
+    test(`${source}: the same for a live waiter`, async () => {
+      await person("U0APPROVER", "verified", MAIL);
+      const h = harness();
+      const done = h.gate.request({ channel: "C0EXAMPLE", threadTs: "1.1", summary: "x", sessionId: "S-live", persona: PERSONA, app: { teamId: TEAM } });
+      for (let i = 0; i < 500 && h.posts.length === 0; i++) await Bun.sleep(1);
+      const id = h.posts[0].blocks.find((b: any) => b.type === "actions").elements[0].action_id.split(":").pop();
+      expect((await PendingGates.get(id))?.payload.approvers).toEqual(["!nobody"]);
+      if (source === "unset") delete process.env.SLAUDE_ACCESS_SOURCE;
+      else process.env.SLAUDE_ACCESS_SOURCE = source;
+      await h.click(id, "U0RANDOM");
+      expect(await status(id)).toBe("pending");
+      void done;
+      await PendingGates.resolve(id, "cancelled", "system");
+    });
+  }
 });

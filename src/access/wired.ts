@@ -34,7 +34,7 @@ import { env } from "../config/env";
 import { m } from "../metrics";
 import type { AdmitResult } from "./admission";
 import { admit } from "./admission";
-import { decideAdmit, decideApproverSplit, decideApprovers, decideCheck, decideDenied, decideList, decideRole, decideSame, showAdmit, showRole, type ApproverSplit } from "./decide";
+import { logOncePerMinute, decideAdmit, decideApproverSplit, decideApprovers, decideCheck, decideDenied, decideList, decideRole, decideSame, showAdmit, showRole, type ApproverSplit } from "./decide";
 import type { EngineActor, EngineOpts } from "./authority";
 import type { Grant } from "./grants";
 import { isDenied, roleFromGrants, usersWithRole, type Role } from "./role";
@@ -102,6 +102,7 @@ async function route<T>(o: { site: SiteId; legacy: T; show: (v: T) => string; te
   try {
     if (!o.teamId) {
       m.accessShadowTotal.inc({ site: o.site, outcome: "no_team" });
+      logOncePerMinute(`${o.site}|no_team`, () => `[access] internal call without a workspace site=${o.site}: ordinary questions use legacy, privileged ones are refused`);
       m.accessDecisionTotal.inc({ source: "fallback_legacy", site: o.site, result: o.show(o.unanswered) });
       return o.unanswered;
     }

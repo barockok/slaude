@@ -44,7 +44,7 @@ export function __resetDecide(): void {
   liveCache.clear();
 }
 
-function logOncePerMinute(key: string, line: () => string): void {
+export function logOncePerMinute(key: string, line: () => string): void {
   const now = Date.now();
   const last = lastLogged.get(key);
   if (last !== undefined && now - last < LOG_EVERY_MS) return;

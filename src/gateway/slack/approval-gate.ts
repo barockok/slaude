@@ -8,6 +8,7 @@ import { deriveSoulGrants } from "../../access/grants";
 import type { SiteId } from "../../access/sites";
 import { approverSplitAt, checkAt, deniedAt } from "../../access/wired";
 import { slackIdsFor } from "../../refs/actor";
+import { singleWorkspace } from "../../domain/sync-refs";
 import { channelApproversOf, redactPatternsFor } from "../../soul/per-persona";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
@@ -57,6 +58,14 @@ const NOBODY = "!nobody";
  * ids come from `slackIdsFor`.
  */
 type Resolved = { ids: Set<string>; users: Set<string> };
+
+/**
+ * The allowlist as stored in `payload.approvers`. A card whose only approvers are
+ * users (email or user entries) stores the NOBODY sentinel here, so a reader that
+ * does not know `approverUsers` (the source flipped back, an older binary) sees a
+ * list that admits nobody, never an empty one, which means anyone.
+ */
+const storedIds = (r: Resolved): Set<string> => (r.users.size > 0 && r.ids.size === 0 ? new Set([NOBODY]) : r.ids);
 
 /** The Slack ids to name on the card and to DM: the allowlist plus the verified Slack ids of the listed users. */
 async function contactIds(r: Resolved, teamId: string | undefined): Promise<Set<string>> {
@@ -202,7 +211,7 @@ export class ApprovalGate {
         // A deny grant on the card's persona refuses the clicker even when the
         // card lists them or admits anyone (an empty allowlist). Read at click
         // time, so a deny added after the card was posted applies too.
-        const clickTeam: string | undefined = (body as any).team?.id ?? (body as any).user?.team_id;
+        const clickTeam: string | undefined = (body as any).team?.id ?? (body as any).user?.team_id ?? (await singleWorkspace());
         const deniedClicker = async (pendingRow: PendingGates.PendingGate): Promise<boolean> => {
           const persona = (pendingRow.payload.personaName as string | undefined) ?? "default";
           return (await deniedAt({ site: "approval.click_denied", persona, teamId: clickTeam, userId, grants: await loadGrants(persona) }));
@@ -381,7 +390,7 @@ export class ApprovalGate {
    *  deny removes everyone the chain named, nobody may approve (never anyone).
    *  An empty set stays "anyone"; the click handler refuses a denied clicker. */
   async #resolveApprovers(req: ApprovalRequest): Promise<Resolved> {
-    const teamId = req.app?.teamId;
+    const teamId = req.app?.teamId ?? (await singleWorkspace());
     if (req.persona && req.persona !== "default") {
       // The persona's approvers and managers; when it has none (and is not an agent.yaml persona) the default persona's managers.
       // Legacy and shadow: the Slack ids of `approversFor`. Internal: the people the grants name, also by email and user.
@@ -423,7 +432,7 @@ export class ApprovalGate {
       const r = await approverSplitAt({
         site: "approval.default_managers",
         persona: "default",
-        teamId: req.app?.teamId,
+        teamId: req.app?.teamId ?? (await singleWorkspace()),
         grants: deriveSoulGrants(soul, channelApproversOf(soul)),
         roles: ["manager"],
         legacy: managers,
@@ -526,8 +535,8 @@ export class ApprovalGate {
   async open(req: ApprovalRequest): Promise<{ pendingId: string }> {
     const id = this.#mintId();
     const resolved = await this.#resolveApprovers(req);
-    const approvers = resolved.ids;
-    const shown = await contactIds(resolved, req.app?.teamId);
+    const approvers = storedIds(resolved);
+    const shown = await contactIds(resolved, req.app?.teamId ?? (await singleWorkspace()));
     const timeoutSec = this.#timeoutSeconds(req.persona);
     await PendingGates.create({
       id,
@@ -592,7 +601,7 @@ export class ApprovalGate {
   /** Who may decide `req` (the set the card would name). Empty: anyone may click. */
   async approversFor(req: ApprovalRequest): Promise<string[]> {
     const r = await this.#resolveApprovers(req);
-    return [...(await contactIds(r, req.app?.teamId))].filter((a) => a !== NOBODY);
+    return [...(await contactIds(r, req.app?.teamId ?? (await singleWorkspace())))].filter((a) => a !== NOBODY);
   }
 
   /** The held text, to each approver's DM (best effort: an approver who cannot be reached can still deny). */
@@ -610,8 +619,8 @@ export class ApprovalGate {
 
   async request(req: ApprovalRequest, abortSignal?: AbortSignal): Promise<ApprovalDecision> {
     const resolved = await this.#resolveApprovers(req);
-    const approvers = resolved.ids;
-    const shown = await contactIds(resolved, req.app?.teamId);
+    const approvers = storedIds(resolved);
+    const shown = await contactIds(resolved, req.app?.teamId ?? (await singleWorkspace()));
     // A held text is for named approvers only: "anyone may click" would let
     // the thread approve what it was held from.
     if (req.privateDetail !== undefined && ((approvers.size === 0 && resolved.users.size === 0) || [...shown].every((a) => a === NOBODY))) {
