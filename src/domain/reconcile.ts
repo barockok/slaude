@@ -166,6 +166,8 @@ const skip = (s: SourceReport, reason: string) => {
 };
 
 const USER_RE = /^U[A-Z0-9]+$/;
+/** Slackbot and bot ids (B...): never given a binding. */
+const BOT_ID_RE = /^USLACKBOT$|^B[A-Z0-9]+$/;
 const BOUNDARY_RE = /^[CGD][A-Z0-9]+$/;
 const DEFAULT_TENANT = "default";
 
@@ -416,6 +418,8 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     }
   }
   const userId = (rep: SourceReport, raw: string): boolean => {
+    // A bot or Slackbot is never a person: no declared binding, and so no user, for it.
+    if (BOT_ID_RE.test(raw)) return skip(rep, "bot"), false;
     if (raw.startsWith("W")) return skip(rep, "grid"), false;
     if (!USER_RE.test(raw)) return skip(rep, "not_slack_id"), false;
     return true;
@@ -623,7 +627,7 @@ async function fillGrantSubjects(c: DbClient, o: PlumbOpts): Promise<void> {
     const work: Array<{ id: string; ref: string | null; uid: string | null }> = [];
     for (const row of page) {
       const user = row.kind === "user";
-      if (/^USLACKBOT$|^B[A-Z0-9]+$/.test(row.sid)) {
+      if (BOT_ID_RE.test(row.sid)) {
         skip(o.report, "bot");
         continue;
       }

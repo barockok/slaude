@@ -536,8 +536,27 @@ for (const dialect of ["sqlite", "pg"] as const) {
         expect(r.grantSubjects.skipped.grid).toBe(1);
         expect(r.grantSubjects.skipped.not_slack_id).toBe(1);
         expect((await grantRow("gr-bot"))!.subject_ref).toBeNull();
-        // The task 11 pass itself writes no user; the slice B grant-user step already records a declared binding for the id.
+        // Neither the task 11 pass nor the grant-user step writes a user or a binding for a bot id.
         expect((await grantRow("gr-bot"))!.subject_user_id).toBeNull();
+      });
+
+      test("the grant-user step skips bot ids: no declared binding is created for USLACKBOT or a B id", async () => {
+        await stored("gr-bot1", "user", "USLACKBOT");
+        await stored("gr-bot2", "user", "B0EXAMPLE");
+        await stored("gr-real", "user", "U0EXAMPLE");
+        const dry = await reconcile(opts({ dryRun: true }));
+        expect(dry.sources.grantUsers.skipped.bot).toBe(2);
+        expect(dry.sources.grantUsers.created).toBe(1);
+        const r = await reconcile(opts());
+        expect(r.sources.grantUsers.skipped.bot).toBe(2);
+        expect(r.sources.grantUsers.created).toBe(1);
+        expect(await fb({ service: "slack", kind: "user", workspace: WS, value: "USLACKBOT" })).toBeNull();
+        expect(await fb({ service: "slack", kind: "user", workspace: WS, value: "B0EXAMPLE" })).toBeNull();
+        expect((await fb({ service: "slack", kind: "user", workspace: WS, value: "U0EXAMPLE" }))?.state).toBe("declared");
+        // A second run changes nothing.
+        const again = await reconcile(opts());
+        expect(again.sources.grantUsers.created).toBe(0);
+        expect(await count("bindings")).toBe(1);
       });
 
       test("pages: more rows than one page are all filled", async () => {
