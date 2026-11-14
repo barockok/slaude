@@ -140,9 +140,29 @@ describe("GET /panel/api/users", () => {
     expect(await ids("service=email")).toEqual([a.userId, c.userId].sort());
     expect(await ids("service=slack&state=declared")).toEqual([b.userId]);
     expect(await ids("q=U0AL")).toEqual([a.userId]);
-    expect(await ids("q=Car")).toEqual([c.userId]);
+    expect(await ids("q=Car")).toEqual([]);
     expect(await ids("q=%25")).toEqual([]);
     expect(await ids("q=0ALPHA")).toEqual([]);
+  });
+
+  test("q never matches an email or phone binding, so a prefix cannot confirm an address", async () => {
+    const a = await Domain.ensureBinding(slack("U0ALPHA", "verified"));
+    await Domain.ensureBinding({ ...mail("alice@example.com"), userId: a.userId });
+    const b = await Domain.ensureBinding(mail("alan@example.com", "declared"));
+    const p = await Domain.ensureBinding({ service: "whatsapp", kind: "phone", workspace: "", value: "+15550001234", state: "declared", source: "test" });
+    await Domain.ensureBinding({ service: "oidc", kind: "subject", workspace: "https://idp.example.com", value: "alina@example.com", state: "verified", source: "test", userId: a.userId });
+    const ids = async (qs: string) => ((await get(`/panel/api/users?${qs}`)).body as UserPage).items.map((i) => i.id).sort();
+    // The slack binding still answers q for its own user; the email ones answer nothing.
+    expect(await ids("q=U0AL")).toEqual([a.userId]);
+    expect(await ids("q=al")).toEqual([]);
+    expect(await ids("q=ali")).toEqual([]);
+    expect(await ids("q=alan")).toEqual([]);
+    expect(await ids("q=alice@example.com")).toEqual([]);
+    expect(await ids("service=email&q=al")).toEqual([]);
+    expect(await ids("q=%2B1555")).toEqual([]);
+    // Without q the email bindings still list and filter.
+    expect(await ids("service=email")).toEqual([a.userId, b.userId].sort());
+    expect(p.userId).toBeTruthy();
   });
 
   test("bad parameters are 400", async () => {
@@ -216,7 +236,7 @@ describe("masking", () => {
     const search = await get("/panel/api/users?q=jane");
     const bounds = await get("/panel/api/boundaries");
     expect(users.body.items).toHaveLength(3);
-    expect(search.body.items).toHaveLength(1);
+    expect(search.body.items).toHaveLength(0);
     for (const r of [users, detail, search, bounds]) {
       expect(r.status).toBe(200);
       expect(r.text).not.toMatch(/jane\.doe|pending\.person|oidc\.user|\+15550001234|5550001234/);

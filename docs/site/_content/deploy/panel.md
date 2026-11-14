@@ -257,11 +257,13 @@ the denied attempt is audited like any other superadmin action).
 - **Masking.** Email addresses (and any value shaped like one, such as a
   sign-in subject) are shown as `a***@example.com`, phone numbers keep their
   last two digits. The full value is never in a list or a detail answer. The
-  *search* box matches the start of the stored value, so a superadmin who
-  types a prefix can confirm an address exists; that is the one way to look
-  an address up and it needs the superadmin role.
+  *search* box matches the start of a stored value, but never a masked one:
+  an email binding, a phone binding or a value shaped like an address (a
+  sign-in subject) does not answer a search, so a prefix cannot be used to
+  confirm that an address exists. Find a user by a Slack id, or list with
+  `service=email` and no search to see the masked rows.
 - **Filters and paging.** `state` (`declared`, `observed`, `verified`),
-  `service` (`slack`, `email`, ...), `q` (value prefix), `limit` (default 50,
+  `service` (`slack`, `email`, ...), `q` (value prefix, never an email, phone or address-shaped value), `limit` (default 50,
   at most 200) and `cursor` (from `nextCursor`). Newest first. A user filter
   matches a user that has a binding with every given state, service and
   prefix. A detail request also accepts the id of a merged user and answers

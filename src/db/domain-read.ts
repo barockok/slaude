@@ -30,7 +30,12 @@ export function maskValue(service: string, kind: string, value: string): string 
 export interface DomainFilter {
   state?: State;
   service?: string;
-  /** Prefix of a binding or boundary value. */
+  /**
+   * Prefix of a binding or boundary value. Never matches a user binding that is
+   * masked in the answer (service email, kind phone, or a value shaped like an
+   * address, such as an oidc subject): a prefix search would otherwise confirm
+   * an address one character at a time.
+   */
   q?: string;
 }
 export interface PageOpts {
@@ -88,7 +93,7 @@ export async function listUsers(f: DomainFilter, o: PageOpts = {}, now: number =
   if (f.state) { inner.push("b.state = ?"); args.push(f.state); }
   if (f.service) { inner.push("b.service = ?"); args.push(f.service); }
   if (f.q) {
-    inner.push("(b.value LIKE ? ESCAPE '\\' OR b.value LIKE ? ESCAPE '\\')");
+    inner.push("b.service <> 'email' AND b.kind <> 'phone' AND b.value NOT LIKE '%@%' AND (b.value LIKE ? ESCAPE '\\' OR b.value LIKE ? ESCAPE '\\')");
     args.push(likePrefix(f.q), likePrefix(f.q.toLowerCase()));
   }
   if (inner.length) where.push(`EXISTS (SELECT 1 FROM bindings b WHERE b.user_id = u.id AND ${inner.join(" AND ")})`);
