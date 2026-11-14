@@ -117,6 +117,23 @@ export async function getBoundary(id: string, tx?: DbClient): Promise<BoundaryRo
   return h(tx).one<BoundaryRow>("SELECT * FROM boundaries WHERE id = ?", [id]);
 }
 
+/**
+ * A user's bindings of one service, optionally one kind and workspace, in the
+ * given states only (read only; the resolver's helper). Oldest first.
+ */
+export async function bindingsOf(
+  userId: string,
+  q: { service: string; kind?: string; workspace?: string; states: readonly State[] },
+  tx?: DbClient,
+): Promise<BindingRow[]> {
+  if (q.states.length === 0) return [];
+  const where = ["user_id = ?", "service = ?", `state IN (${marks(q.states.length)})`];
+  const params: unknown[] = [userId, q.service, ...q.states];
+  if (q.kind !== undefined) { where.push("kind = ?"); params.push(q.kind); }
+  if (q.workspace !== undefined) { where.push("workspace = ?"); params.push(q.workspace); }
+  return h(tx).query<BindingRow>(`SELECT * FROM bindings WHERE ${where.join(" AND ")} ORDER BY created_at, id`, params);
+}
+
 /** Raise a binding's state (never lower it). */
 async function raiseBinding(c: DbClient, id: string, state: State, source: string | undefined, now: number): Promise<void> {
   const lower = LOWER_THAN[state];

@@ -5,6 +5,7 @@
  * mutable at the provider and subject is not. Email is carried for display and
  * refreshed on each login.
  */
+import { invalidateActors } from "../refs/actor";
 import * as Domain from "./domain";
 import { randomUUID } from "node:crypto";
 import { db } from "./schema";
@@ -149,12 +150,13 @@ export async function linkSlackIdentity(
     return { result: { ok: true, created: true } as const, events };
   });
   await emitAfterCommit(out.events);
+  invalidateActors();
   return out.result;
 }
 
 /** Remove a binding, but only when it belongs to the calling account. */
 export async function unlinkSlackIdentity(teamId: string, slackUserId: string, accountId: string): Promise<boolean> {
-  return db.transaction(async (tx) => {
+  const done = await db.transaction(async (tx) => {
     const r = await tx.run(
       "DELETE FROM slack_identities WHERE team_id = ? AND slack_user_id = ? AND account_id = ?",
       [teamId, slackUserId, accountId],
@@ -164,6 +166,8 @@ export async function unlinkSlackIdentity(teamId: string, slackUserId: string, a
     if (acct) await projectUnlink({ issuer: acct.issuer, subject: acct.subject, teamId, slackUserId }, tx);
     return true;
   });
+  invalidateActors();
+  return done;
 }
 
 /**
@@ -171,7 +175,7 @@ export async function unlinkSlackIdentity(teamId: string, slackUserId: string, a
  * go with it by ON DELETE CASCADE) and clean up the bindings it projected.
  */
 export async function deleteAccount(accountId: string): Promise<boolean> {
-  return db.transaction(async (tx) => {
+  const done = await db.transaction(async (tx) => {
     const acct = await tx.one<AccountRow>("SELECT * FROM accounts WHERE id = ?", [accountId]);
     if (!acct) return false;
     const ids = await tx.query<SlackIdentityRow>("SELECT * FROM slack_identities WHERE account_id = ?", [accountId]);
@@ -182,6 +186,8 @@ export async function deleteAccount(accountId: string): Promise<boolean> {
     const r = await tx.run("DELETE FROM accounts WHERE id = ?", [accountId]);
     return (r.changes ?? 0) > 0;
   });
+  invalidateActors();
+  return done;
 }
 
 export async function slackIdentitiesForAccount(accountId: string): Promise<SlackIdentityRow[]> {

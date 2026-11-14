@@ -277,6 +277,8 @@ export const m = {
   wakeDurationSeconds: metrics.histogram("slaude_wake_duration_seconds", "How long one heartbeat wake ran, labeled by agent.", [10, 30, 60, 120, 300, 600, 900, 1800]),
   wakeCapHitTotal: metrics.counter("slaude_wake_cap_hit_total", "Heartbeat wakes a cap stopped, labeled by agent and cap (usd|turns|minutes)."),
   wakePostsTotal: metrics.counter("slaude_wake_posts_total", "Heartbeat wake posts, labeled by agent and result (posted, or the refusal)."),
+  actorResolveTotal: metrics.counter("slaude_actor_resolve_total", "Acting-user lookups for access decisions, labeled by result (found|unseen|cached|error)."),
+  actorResolveFailuresTotal: metrics.counter("slaude_actor_resolve_failures_total", "Acting-user lookups that failed on a database error."),
   grantsReadFailuresTotal: metrics.counter("slaude_grants_read_failures_total", "Stored agent grant reads that failed; access fell back to the soul-derived grants alone."),
   auditWriteFailuresTotal: metrics.counter("slaude_audit_write_failures_total", "Audit events that could not be written (database row or stdout line). The decision they record still stands."),
   backgroundRunsTotal: metrics.counter("slaude_background_runs_total", "Background learning pass runs, labeled by agent, pass and outcome (ok|skipped-budget|stopped-budget|error)."),
