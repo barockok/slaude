@@ -88,7 +88,7 @@ async function decide<T>(o: {
   if (md === "internal") {
     let next: Internal<T>;
     try {
-      next = await o.compute();
+      next = await withDeadline(o.compute(), env.access.timeoutMs());
     } catch (e) {
       const name = e instanceof Error ? e.name : "error";
       m.accessShadowTotal.inc({ site: o.site, outcome: "new_error" });
@@ -182,17 +182,12 @@ async function lookupFor(grants: readonly Grant[], teamId: string, skipSlackId?:
   const slackFound = new Map<string, SlackFound>();
   const live = new Map<string, string>();
   let budget = o.cap ?? MAX_LOOKUPS_PER_CALL;
-  // A privileged question never serves the shared 5 s lookups (D9).
-  const useCache = !o.fresh;
-  const liveOf = async (id: string) => {
-    if (live.has(id)) return;
-    const hit = useCache ? cached(liveCache, id) : undefined;
-    if (hit) return void live.set(id, hit.v);
-    if (--budget < 0) throw new LookupCap();
-    const v = (await Domain.resolveUserId(id)) ?? id;
-    if (useCache) remember(liveCache, id, v);
-    live.set(id, v);
-  };
+  // A privileged question in the live path never serves the shared 5 s lookups (D9). Shadow always may: it must not raise the database load.
+  const useCache = !o.fresh || mode() !== "internal";
+  // Plan the distinct subjects first, then resolve them a few at a time.
+  const slackKeys = new Map<string, { ws: string; id: string }>();
+  const liveIds = new Set<string>();
+  const userRefs: string[] = [];
   for (const g of grants) {
     if (g.subjectKind !== "user") continue;
     const s = grantSubject(g);
@@ -200,27 +195,69 @@ async function lookupFor(grants: readonly Grant[], teamId: string, skipSlackId?:
     if (s.service === "slack") {
       if (g.subjectId !== skipSlackId) {
         const ws = s.workspace ?? teamId;
-        const k = `${ws}/${g.subjectId}`;
-        if (!slackFound.has(k)) {
-          const hit = useCache ? cached(slackCache, k) : undefined;
-          if (hit) slackFound.set(k, hit.v);
-          else {
-            if (--budget < 0) throw new LookupCap();
-            const b = await Domain.findBinding({ service: "slack", kind: "user", workspace: ws, value: g.subjectId });
-            const v = b ? { userId: b.user_id, state: b.state } : null;
-            if (useCache) remember(slackCache, k, v);
-            slackFound.set(k, v);
-          }
-        }
-        const f = slackFound.get(k);
-        if (f) await liveOf(f.userId);
+        slackKeys.set(`${ws}/${g.subjectId}`, { ws, id: g.subjectId });
       }
-      if (s.userId) await liveOf(s.userId);
-    } else if (s.service === "user") {
-      await liveOf(s.userId);
-    }
+      if (s.userId) userRefs.push(s.userId);
+    } else if (s.service === "user") userRefs.push(s.userId);
   }
+  const spend = () => {
+    if (--budget < 0) throw new LookupCap();
+  };
+  const slackTasks = [...slackKeys].map(([k, v]) => async () => {
+    const hit = useCache ? cached(slackCache, k) : undefined;
+    if (hit) return void slackFound.set(k, hit.v);
+    spend();
+    const b = await Domain.findBinding({ service: "slack", kind: "user", workspace: v.ws, value: v.id });
+    const r = b ? { userId: b.user_id, state: b.state } : null;
+    if (useCache) remember(slackCache, k, r);
+    slackFound.set(k, r);
+  });
+  await pool(slackTasks, LOOKUP_CONCURRENCY);
+  for (const f of slackFound.values()) if (f) liveIds.add(f.userId);
+  for (const id of userRefs) liveIds.add(id);
+  const liveTasks = [...liveIds].map((id) => async () => {
+    const hit = useCache ? cached(liveCache, id) : undefined;
+    if (hit) return void live.set(id, hit.v);
+    spend();
+    const v = (await Domain.resolveUserId(id)) ?? id;
+    if (useCache) remember(liveCache, id, v);
+    live.set(id, v);
+  });
+  await pool(liveTasks, LOOKUP_CONCURRENCY);
   return { slack: (ws, id) => slackFound.get(`${ws}/${id}`) ?? null, live: (id) => live.get(id) ?? id };
+}
+
+/** Subjects resolved at once per call. */
+export const LOOKUP_CONCURRENCY = 8;
+/** Run `tasks` with at most `n` in flight; the first failure rejects. */
+async function pool(tasks: Array<() => Promise<void>>, n: number): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    while (next < tasks.length) await tasks[next++]!();
+  };
+  await Promise.all(Array.from({ length: Math.min(n, tasks.length) }, worker));
+}
+
+/** The resolver did not answer within the deadline: a resolver failure (D10). */
+class AccessTimeout extends Error {
+  constructor() {
+    super("access decision deadline exceeded");
+    this.name = "AccessTimeout";
+  }
+}
+/** `p`, or a rejection after `ms` (the work is not cancelled; its late result is dropped). */
+export function withDeadline<T>(p: Promise<T>, ms: number): Promise<T> {
+  if (!(ms > 0)) return p;
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => {
+      m.actorResolveFailuresTotal.inc();
+      reject(new AccessTimeout());
+    }, ms);
+    p.then(
+      (v) => (clearTimeout(t), resolve(v)),
+      (e) => (clearTimeout(t), reject(e)),
+    );
+  });
 }
 
 interface EngineInput {
@@ -233,11 +270,12 @@ interface EngineInput {
 async function engineInput(o: { teamId: string; userId: string; grants: readonly Grant[]; fresh: boolean }): Promise<EngineInput> {
   const live = mode() === "internal";
   const opts = engineOpts();
-  const acting = await Actor.actingUser(o.teamId, o.userId, { fresh: o.fresh });
+  // `fresh` (a privileged question, D9) only matters when the answer is used; the shadow keeps the 5 s cache, as rc.19 did for the database load.
+  const acting = await Actor.actingUser(o.teamId, o.userId, { fresh: o.fresh && live });
   const actor: EngineActor = { teamId: o.teamId, slackUserId: o.userId, acting };
   if (!acting) return { actor, grants: [...o.grants], opts };
   try {
-    const lookup = await lookupFor(o.grants, o.teamId, o.userId, { fresh: o.fresh, cap: live ? MAX_LOOKUPS_INTERNAL : MAX_LOOKUPS_PER_CALL });
+    const lookup = await lookupFor(o.grants, o.teamId, o.userId, { fresh: o.fresh && live, cap: live ? MAX_LOOKUPS_INTERNAL : MAX_LOOKUPS_PER_CALL });
     return { actor, grants: resolveGrantSubjects(o.grants, o.teamId, lookup), opts, userId: acting.userId };
   } catch (e) {
     // The records could not be read: when the answer is used this is a resolver failure (D10).

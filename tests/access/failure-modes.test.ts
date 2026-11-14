@@ -293,3 +293,59 @@ describe("workspace grants compare the team only under internal (D12)", () => {
     });
   }
 });
+
+describe("a hung resolver (SLAUDE_ACCESS_TIMEOUT_MS)", () => {
+  beforeEach(() => {
+    process.env.SLAUDE_ACCESS_TIMEOUT_MS = "40";
+  });
+  afterEach(() => {
+    delete process.env.SLAUDE_ACCESS_TIMEOUT_MS;
+  });
+  const hang = () => spyOn(Actor, "actingUser").mockImplementation(() => new Promise(() => {}));
+
+  test("is a resolver failure: ordinary falls back to legacy, privileged is refused, both counted", async () => {
+    hang();
+    const t0 = Date.now();
+    expect(await decideAdmit(admitArgs([slack(SELF, "member")]))).toEqual({ ok: true });
+    expect(await decideRole(roleArgs([slack(SELF, "manager")]))).toBe("member");
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(count("slaude_access_decision_total", { source: "fallback_legacy" })).toBe(2);
+    expect(plainCount("slaude_actor_resolve_failures_total")).toBeGreaterThanOrEqual(2);
+  });
+
+  test("the wired helpers never wait past the deadline", async () => {
+    hang();
+    expect(await roleAt({ site: "gateway.cron.role", persona: "scout", teamId: T1, userId: SELF, grants: [slack(SELF, "manager")] })).toBe("member");
+  });
+
+  test("a slow lookup of many subjects resolves a few at a time", async () => {
+    delete process.env.SLAUDE_ACCESS_TIMEOUT_MS;
+    let inflight = 0;
+    let peak = 0;
+    spyOn(Domain, "findBinding").mockImplementation((async () => {
+      inflight++;
+      peak = Math.max(peak, inflight);
+      await Bun.sleep(5);
+      inflight--;
+      return null;
+    }) as never);
+    await person().catch(() => {});
+    const grants = Array.from({ length: 30 }, (_, i) => slack(`U0M${String(i).padStart(3, "0")}`, "member"));
+    await decideRole(roleArgs(grants, { userId: "U0NONE" }));
+    expect(peak).toBeLessThanOrEqual(9);
+  });
+});
+
+describe("the shadow keeps the shared cache", () => {
+  test("a second shadow decision over the same grants reads no record again", async () => {
+    process.env.SLAUDE_ACCESS_SOURCE = "shadow";
+    await person({ mail: "a@example.com" });
+    const grants = [slack(OTHER, "member"), slack(SELF, "manager")];
+    await decideRole(roleArgs(grants));
+    const spy = spyOn(Domain, "findBinding");
+    const acting = spyOn(Actor, "actingUser");
+    await decideRole(roleArgs(grants));
+    expect(spy).not.toHaveBeenCalled();
+    expect(acting.mock.calls.at(-1)![2]).toMatchObject({ fresh: false });
+  });
+});

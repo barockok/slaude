@@ -723,6 +723,15 @@ export const env = {
      * holds for direct Slack entries; `email:` and `user:` entries always need it.
      * Only read while the source is `internal`.
      */
+    /**
+     * Most milliseconds one internal-source decision may wait for the records
+     * (default 1500). A decision that takes longer is a resolver failure: ordinary
+     * questions fall back to legacy, privileged ones are refused. 0 turns it off.
+     */
+    timeoutMs: (): number => {
+      const n = Number(opt("SLAUDE_ACCESS_TIMEOUT_MS", "1500"));
+      return Number.isFinite(n) && n >= 0 ? n : 1500;
+    },
     privilegedNeedsVerified: (): boolean => {
       const raw = opt("SLAUDE_PRIVILEGED_NEEDS_VERIFIED", "0").trim().toLowerCase();
       return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
