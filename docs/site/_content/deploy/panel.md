@@ -298,12 +298,17 @@ characters. Record, binding and grant ids are shown whole.
 **The notice.** After a merge commits the person gets one Slack DM (what was
 linked with the address masked, how many grants became active, which privileged
 grants stay inactive and why, with a fresh portal link when the Slack binding is
-unverified, and who to tell). When a privileged grant activates, the persona's
-manager gets one too. It is a single attempt through the gateway's own Slack app;
-the ledger row says `sent`, `failed` or `skipped` (the switch is off, or the person
-has no Slack binding) and a failure never reverts the merge and is not retried: the
-merge detail says so and shows which message failed. `SLAUDE_MERGE_NOTICE=off`
-sends nothing.
+unverified, and who to tell). When a privileged grant newly activates, the
+persona's manager gets one too, at most 3 per merge and 10 per reconcile run (the
+rest are skipped; a manager the app cannot reach is skipped, not a failure). Only
+while `SLAUDE_ACCESS_SOURCE=internal` does a merge change access: under any other
+source the DM says the accounts were linked and access is unchanged, and no manager
+is told. It is a single attempt through the gateway's own Slack app. The ledger row
+says `sent`, `failed` or `skipped` (the switch is off, the person has no Slack
+binding, or the process had no sender, such as the CLI); a notice still pending ten
+minutes later is marked `failed` at the next boot. A failure never reverts the merge
+and is not retried: the merge detail says so and shows which message failed.
+`SLAUDE_MERGE_NOTICE=off` sends nothing.
 
 **Undo.** Allowed for seven days from the merge, while the merge is applied. It
 runs in one transaction: the merged-away record comes back with its original id,
@@ -312,8 +317,12 @@ merge put it. Anything changed since is left as it is and listed as skipped with
 the reason. A binding state the merge raised goes back only when it is still
 verified with the recorded time; undo never lowers any other binding. Undoing a
 proof merge also removes the link between the Slack account and the sign-in
-account (the account stays) and records a veto: that pair cannot link again, and
-the engine will not merge it again, until an operator lifts the veto. What undo
+account (the account stays) and records a veto: that pair (for a login merge, the
+email and the sign-in) cannot link or merge again until an operator lifts it. A
+veto is keyed by hashed identity, so it holds after an unlink, and it is listed
+under *Vetoes* on the Merges page with a *Lift* action (a reason is required and
+it is audited); `GET /panel/api/merge-vetoes` and
+`POST /panel/api/merge-vetoes/:id/lift` are the routes. What undo
 does not do, shown beside every merge:
 
 - It moves records and grants. Credentials and memory slices were never moved, so
@@ -325,15 +334,21 @@ does not do, shown beside every merge:
 
 **Proposals.** A proposal is written when the engine refuses a merge: a
 conflict (the same email and a different verified Slack account in one workspace)
-or two different emails. *Approve* asks the server first what the merge would
-activate; you then type `merge` and the page sends the grants it listed
-(`persona:role:entry`), which the server checks against what would activate now.
-A changed list is refused with the current one, and a proposal whose records are
+or two different emails. *Approve* asks the server first what the merge would do; the dialog shows which
+record is kept and which is merged away, how many bindings and grants move, and the
+grants it would activate. You type `merge` and the page sends that whole outcome
+back, which the server checks against what would happen now.
+A changed outcome is refused with the current one, and a proposal whose records are
 gone or already one is refused as stale. The any-verified refusal still applies: a
 record that holds a verified binding is never merged here, and an approval never
 raises a binding state. A conflict between two verified records is settled by
 unlinking or deleting the losing account first (the existing flows), then
-approving. *Dismiss* keeps the records apart; the same pair is not proposed again
+approving. One known case: a login whose token did not prove its email leaves an
+observed email on that account's record, which can block the address's real owner
+from ever merging (the record holds a verified sign-in). Nothing resolves it
+automatically. The proposal says so: delete the squatting account with the existing
+account flow (its sign-in binding goes with it, so the record no longer holds
+anything verified), then approve, or dismiss it. *Dismiss* keeps the records apart; the same pair is not proposed again
 for the same reason. Aliases (`a+x@` against `a@`) are never merged and have no page.
 
 ## Enabling it

@@ -29,8 +29,11 @@ undo that works from its own record rather than from the audit trail.
   id order), a reason (`conflict` or `two-emails`), a state (`open`,
   `dismissed`, `merged`) and evidence. A pair and reason is unique, so
   re-detecting the same conflict does not pile up rows.
-- `merge_vetoes` holds the pairs an undo forbade, keyed on a Slack binding id
-  and an OIDC binding id, unique per pair.
+- `merge_vetoes` holds the pairs an undo forbade, keyed on two hashed identity
+  keys (sha256 of `slack:<team>/<id>`, `oidc:<issuer>#<subject>` or `email:<address>`),
+  stored in sorted order and unique per pair. Keys are values, not binding ids,
+  so a veto survives an unlink and a binding re-created with a new id, and the
+  table holds no address and no Slack id.
 
 `moved` stores ids and prior values, never a binding value: the loser's own row
 data, each binding and grant with its `from` and `to`, the states the merge
@@ -59,7 +62,7 @@ event carries the same ids as the readable record.
 - **Refuse and propose.** For every kind, console included, the engine refuses
   and writes a proposal instead when: the loser holds any verified binding; either
   record is a bot or an agent; two different verified emails would land on one
-  record; a veto names the (Slack binding, OIDC binding) pair; or, for a proof
+  record; a veto names a pair with one key on each record; or, for a proof
   merge, `SLAUDE_AUTO_MERGE` is off.
 - **Survivor rule.** The record holding the verified email wins. Otherwise the
   older record wins, ties broken by id.
@@ -128,19 +131,32 @@ a deleted account is not restored.
 A proof merge that rested on a Slack link also removes the `slack_identities`
 row the proof rested on (the link row only; the Slack binding goes back to the
 loser and the account stays), so the person is no longer linked to the account.
-It then inserts a veto on (Slack binding id, OIDC binding id of the account) that
-the engine and the link flow refuse until an operator lifts it. The veto is
-keyed on the two binding ids, not on an email.
+It then inserts a veto on the pair the ledger recorded at merge time: the Slack
+key (or, for a login merge, the raised email's key) with the account's sign-in
+key. The engine and the link flow refuse the pair until an operator lifts it
+from the Merges page (`POST /panel/api/merge-vetoes/:id/lift`, a reason is
+required, audited). The pair comes from the ledger, so the veto holds even when
+the person unlinked before the undo.
 
-### Known gaps
+### Known gap: an unproven login can squat an address
 
-- Undoing a login merge that rested on a proven email cannot be vetoed. There is
-  no Slack-to-account link for the veto to name, so the next login that proves
-  the same email can merge the records again. The undo itself works; it is not
-  sticky.
-- A veto is keyed on binding ids. If the link is removed and the binding is later
-  deleted and created again, the new binding has a new id and the old veto no
-  longer matches it.
+A login whose token did not prove the email leaves an `observed` email binding
+on the account's record. If the real owner of that address later proves it, the
+engine sees a loser that holds a verified binding (the squatter's sign-in) and
+refuses, and the console cannot resolve it because approving never merges a
+record that holds a verified binding. Nothing resolves it automatically. The
+proposal shows a hint, and the operator either dismisses it or demotes or deletes
+the squatting account with the existing account flow (deleting it removes its sign-in binding) and then approves.
+
+## What a merge claims about access
+
+A merge links records. Authorization changes only while `SLAUDE_ACCESS_SOURCE`
+is `internal`, so under `shadow` or `legacy` the ledger records `activated` as
+empty (the would-be list is kept as `would_activate`), the person is told that
+access is unchanged and no manager is told. Under `internal`, activation counts
+only genuinely new reach (the reach of both records before the merge is
+subtracted) and a privileged grant needs the acting Slack binding itself to be
+verified (Rules A and D).
 
 ## Console and API
 
@@ -152,6 +168,7 @@ non-superadmin gets 403 and an audit row for the refusal):
   (a reason of at least three characters is required)
 - `GET /panel/api/merge-proposals`
 - `POST /panel/api/merge-proposals/:id/approve`, `POST .../:id/dismiss`
+- `GET /panel/api/merge-vetoes`, `POST /panel/api/merge-vetoes/:id/lift`
 
 Every POST carries the panel's anti-CSRF header check, as the grant POST does.
 Mutations are audited as the operator. Answers never carry a full address or a
@@ -160,11 +177,14 @@ Slack id; masking happens in the read layer so a caller cannot forget it.
 Approving a proposal runs the engine with kind `console` and keeps every refusal
 above, including the verified-loser refusal: a verified-versus-verified conflict
 is settled by unlinking or deleting the losing account first, then approving.
-Approval uses a typed confirmation echo. The first call runs the merge inside a
-transaction it rolls back and answers with the grants it would activate as
-`persona:role:entry` lines. The merge happens only when the same list is sent
-back in `activates`. A list that differs from what would activate now is refused
-with the current list, so the operator never approves a stale picture.
+Approval uses a typed confirmation echo of the whole outcome. The first call runs
+the merge inside a transaction it rolls back and answers with which record
+survives and which is merged away (masked labels), how many bindings and stored
+grants move, the grants it would activate and the privileged ones that stay
+inactive. The merge happens only when that same object is sent back in `confirm`;
+a different one (the world changed, or the direction flipped) is refused with the
+current one, and an empty grant list is not a blind approval. Refusals,
+mismatches and refused undo previews are audited.
 
 ## Metrics
 

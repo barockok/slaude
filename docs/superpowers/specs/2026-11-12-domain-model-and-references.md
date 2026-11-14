@@ -207,11 +207,12 @@ Records are created the first time they are referenced.
       verified binding; the operator unlinks or deletes the losing account first,
       then approves.
     - Console approval uses a typed confirmation echo: the operator sends back
-      the list of grants the merge would activate, and a stale list is refused.
+      the whole outcome (direction, counts, grants it would activate), and a stale one is refused.
     - The undo window is 7 days, and undo works from the merge ledger
       (`user_merges`), not from the audit event.
     - Undoing a proof merge also unlinks the Slack account and writes a veto on
-      the pair. A login merge on a proven email cannot be vetoed (known gap).
+      the pair, keyed by hashed identity (a login merge is vetoed on its email
+      and sign-in keys); an operator lifts it from the console.
     - Profile-email trust (`trustProfileEmail`, point 2 above) is deferred to its
       own later slice and is not read or written by C.
     - Aliases are never merged and have no console page; the proposal reasons
