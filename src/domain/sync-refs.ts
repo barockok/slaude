@@ -63,6 +63,8 @@ export function collectRefs(persona: string, soul: SoulData, soulText: string): 
   soul.trustedChannels?.forEach((c, i) => add(`access.channels.trusted[${i}]`, bareChannel(c)));
   soul.blockedUsers?.forEach((u, i) => add(`access.blocked[${i}]`, bareUser(u)));
   soul.dmAllowedUsers?.forEach((u, i) => add(`access.dm[${i}]`, bareUser(u)));
+  // `email:` and `user:` references (only compiled while the access source is `internal`): the same declared records, nothing granted by them.
+  soul.accessRefs?.forEach((r, i) => add(`access.${r.field} (reference ${i})`, r.ref.service === "email" ? { kind: "email", address: r.ref.address } : { kind: "internal", type: "user", id: r.ref.userId }));
   soul.channelOverrides?.forEach((o, i) => {
     add(`mandate.scoped / channels (channel ${i})`, bareChannel(o.channel));
     o.approvers?.forEach((a, j) => add(`access.approvers (channel ${i}, entry ${j})`, bareUser(a.userId)));

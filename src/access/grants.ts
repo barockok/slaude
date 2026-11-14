@@ -80,9 +80,29 @@ export function deriveSoulGrants(soul: SoulData, channelApprovers: Map<string, s
   for (const c of ids([...soul.trustedChannels, ...soul.allowedChannels])) out.push(soulGrant("channel", c, "member"));
   for (const id of ids(soul.dmAllowedUsers)) out.push(soulGrant("user", id, "member", { dmOnly: true }));
   for (const id of ids(soul.blockedUsers)) out.push(soulGrant("user", id, "member", { deny: true }));
-  return out.map((g) => {
+  const slackGrants = out.map((g) => {
     const w = ws.get(`${g.subjectKind}:${g.subjectId}`);
     return { ...g, subject: { service: "slack" as const, ...(w ? { workspace: w } : {}) } };
+  });
+  return [...slackGrants, ...refGrants(soul)];
+}
+
+/**
+ * The `email:` and `user:` references of agent.yaml access as grants (task 22).
+ * They exist only in a soul compiled while the access source was `internal`, and
+ * the legacy readers ignore a subject that is not a Slack id, so they decide
+ * nothing until the internal path reads them.
+ */
+function refGrants(soul: SoulData): Grant[] {
+  return (soul.accessRefs ?? []).map((r) => {
+    const subjectId = r.ref.service === "email" ? `email:${r.ref.address}` : `user:${r.ref.userId}`;
+    const subject: GrantSubject = r.ref.service === "email" ? { service: "email", address: r.ref.address } : { service: "user", userId: r.ref.userId };
+    return soulGrant("user", subjectId, r.role, {
+      subject,
+      ...(r.deny ? { deny: true } : {}),
+      ...(r.dmOnly ? { dmOnly: true } : {}),
+      ...(r.channel ? { channelId: r.channel } : {}),
+    });
   });
 }
 
@@ -94,6 +114,9 @@ export function grantFromRow(r: AgentGrantRow): Grant {
   };
   if (r.subjectKind === "workspace") return g;
   const parsed = r.subjectRef ? parseRef(r.subjectRef) : null;
+  // A person named by email or by internal user (stored only while the access source was `internal`).
+  if (parsed?.ok && parsed.ref.kind === "email") return { ...g, subject: { service: "email", address: parsed.ref.address } };
+  if (parsed?.ok && parsed.ref.kind === "internal" && parsed.ref.type === "user") return { ...g, subject: { service: "user", userId: parsed.ref.id } };
   const workspace = parsed?.ok && parsed.ref.kind === "external" ? parsed.ref.workspace : undefined;
   return { ...g, subject: { service: "slack", ...(workspace ? { workspace } : {}), ...(r.subjectUserId ? { userId: r.subjectUserId } : {}) } };
 }

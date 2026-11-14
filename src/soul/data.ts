@@ -69,6 +69,27 @@ export const AccessEntrySchema = z.object({
 });
 export type AccessEntry = z.infer<typeof AccessEntrySchema>;
 
+/**
+ * One `email:` or `user:` reference from agent.yaml access (slice C task 22,
+ * only compiled while `SLAUDE_ACCESS_SOURCE=internal`). Kept apart from the
+ * legacy arrays on purpose: those carry Slack ids that older readers compare as
+ * strings, and a name that is not a Slack id must never reach them. A binary
+ * that does not know this key drops it, so the entry is inert there.
+ */
+export const AccessRefSchema = z.object({
+  field: z.enum(["manager", "backupManager", "approvers", "blocked", "dm"]),
+  ref: z.discriminatedUnion("service", [
+    z.object({ service: z.literal("email"), address: z.string().min(3).max(254) }),
+    z.object({ service: z.literal("user"), userId: z.string().min(1).max(64) }),
+  ]),
+  role: z.enum(["manager", "approver", "member"]),
+  deny: z.boolean().default(false),
+  dmOnly: z.boolean().default(false),
+  /** An approver scoped to one channel. */
+  channel: z.string().regex(/^[CGD][A-Z0-9]+$/).optional(),
+});
+export type AccessRef = z.infer<typeof AccessRefSchema>;
+
 export const SoulDataSchema = z.object({
   identity: z
     .object({
@@ -140,6 +161,8 @@ export const SoulDataSchema = z.object({
   scopeMandates: z.array(ScopeMandateSchema).default([]),
   /** Typed Slack references behind the access arrays above (agent.yaml only; a soul extracted from prose has none). */
   accessEntries: z.array(AccessEntrySchema).default([]),
+  /** The `email:` and `user:` references of agent.yaml access (internal source only); never in the arrays above. */
+  accessRefs: z.array(AccessRefSchema).default([]),
 });
 
 export type ApproverEntry = z.infer<typeof ApproverEntrySchema>;
