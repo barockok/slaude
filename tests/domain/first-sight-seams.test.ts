@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { audit } from "../../src/audit/index";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
@@ -9,6 +9,7 @@ const WS = "T0EXAMPLE";
 const nap = () => new Promise((r) => setTimeout(r, 20));
 
 describe("first sight seams (global db)", () => {
+  afterAll(() => setLiveWorkspaces(() => []));
   beforeEach(async () => {
     for (const t of ["bindings", "boundaries", "users", "audit_events", "sessions"]) await db.run(`DELETE FROM ${t}`);
     resetFirstSight();
