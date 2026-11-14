@@ -6,6 +6,8 @@ import { db } from "../../src/db/schema";
 import { mergeUsers, type MergeInput } from "../../src/domain/merge";
 import { beginNoticeRun, flushMergeNotices, setMergeNoticeSender, sweepPendingNotices, type NoticePost } from "../../src/domain/merge-notice";
 import { verifyLinkToken } from "../../src/gateway/portal/link-token";
+import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
+import { SoulDataSchema } from "../../src/soul/data";
 
 const TEAM = "T0EXAMPLE";
 const slackKey = (value: string) => ({ service: "slack", kind: "user", workspace: TEAM, value });
@@ -42,6 +44,8 @@ const saved: Record<string, string | undefined> = {};
 const ENV = ["SLAUDE_MERGE_NOTICE", "SLAUDE_ROLE", "SLAUDE_PORTAL", "SLAUDE_PANEL_SECRET", "SLAUDE_PANEL_PUBLIC_URL"];
 beforeEach(async () => {
   process.env.SLAUDE_ACCESS_SOURCE = "internal";
+  // Managers also come from the soul fields: other test files in the same process leave theirs in the module memo.
+  setSoulData(SoulDataSchema.parse({}));
   for (const k of ENV) saved[k] = process.env[k];
   await db.run("DELETE FROM agent_grants");
   await db.run("DELETE FROM audit_events");
@@ -58,6 +62,7 @@ afterEach(() => {
   for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   setMergeNoticeSender(null);
   __setGrantsReader(null);
+  __resetSoulDataMemo();
   invalidateGrants();
   spyOn(console, "log").mockRestore();
   spyOn(console, "warn").mockRestore();
