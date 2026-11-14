@@ -140,4 +140,4 @@ export function DomainList<T>(p: DomainListProps<T>): ReactNode {
 }
 
 export const STATE_TONE = { declared: "neutral", observed: "accent", verified: "success" } as const;
-export const READ_ONLY_NOTE = "Read only in this release. Resolving conflicts and undoing a merge arrive in a later release.";
+export const READ_ONLY_NOTE = "Read only in this release. Merges and proposals have their own pages.";

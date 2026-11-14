@@ -59,7 +59,36 @@ export type DomainEvent =
   | { action: "user.created"; userId: string }
   | { action: "binding.created"; userId: string; bindingId: string; service: string; state: State }
   | { action: "boundary.created"; boundaryId: string; service: string; state: State }
-  | { action: "user.adopted"; userId: string; fromUserId: string; bindingIds: string[] };
+  | { action: "user.adopted"; userId: string; fromUserId: string; bindingIds: string[] }
+  | {
+      /** A merge through the engine (src/domain/merge.ts). Ids and counts only. */
+      action: "user.merged";
+      mergeId: string;
+      survivorId: string;
+      loserId: string;
+      kind: "proof" | "console";
+      actor: string;
+      bindingIds: string[];
+      grantIds: string[];
+      raisedBindingIds: string[];
+      activated: number;
+      inactivePrivileged: number;
+    }
+  | {
+      /** An undo of a merge (src/domain/merge-undo.ts). Ids and reasons only. */
+      action: "user.merge_undone";
+      mergeId: string;
+      survivorId: string;
+      loserId: string;
+      actor: string;
+      reason: string;
+      bindingIds: string[];
+      grantIds: string[];
+      aliasIds: string[];
+      restoredBindingIds: string[];
+      unlinked: boolean;
+      skipped: Array<{ kind: string; id: string; reason: string }>;
+    };
 
 export interface BindingKey {
   service: string;
@@ -73,7 +102,7 @@ export interface BoundaryKey {
   value: string;
 }
 
-const RANK: Record<State, number> = { declared: 0, observed: 1, verified: 2 };
+export const RANK: Record<State, number> = { declared: 0, observed: 1, verified: 2 };
 const LOWER_THAN: Record<State, State[]> = { declared: [], observed: ["declared"], verified: ["declared", "observed"] };
 
 type Tx = DbClient | undefined;
@@ -135,7 +164,7 @@ export async function bindingsOf(
 }
 
 /** Raise a binding's state (never lower it). */
-async function raiseBinding(c: DbClient, id: string, state: State, source: string | undefined, now: number): Promise<void> {
+export async function raiseBinding(c: DbClient, id: string, state: State, source: string | undefined, now: number): Promise<void> {
   const lower = LOWER_THAN[state];
   if (lower.length === 0) return;
   await c.run(
@@ -279,6 +308,8 @@ export async function resolveUserId(id: string, tx?: DbClient): Promise<string |
 export interface AdoptInput extends BindingKey {
   toUserId: string;
   state: "verified";
+  /** The oidc binding of the account whose proof this is, recorded in the merge ledger so an undo can veto the pair. */
+  oidcBindingId?: string;
 }
 export interface AdoptResult {
   adopted: boolean;
@@ -295,10 +326,13 @@ export interface AdoptResult {
  * user holds anything verified, nothing changes and `conflict` is set: two
  * verified records are never merged here.
  *
- * Concurrent adopts of one held binding: on Postgres the holder's user row is
- * locked first and re-read, and the move must change exactly the rows read, or
- * nothing is written and `conflict` is set. A passed `tx` must be a
- * transaction (the move runs under a savepoint).
+ * The move is `mergeUsers` kind `proof` (src/domain/merge.ts): both user rows
+ * are locked, the move must change exactly the rows read or nothing is written
+ * and `conflict` is set, and a ledger row records it for undo. The engine also
+ * refuses a bot or agent holder, a veto, two different verified emails on one
+ * record and `SLAUDE_AUTO_MERGE=off` (each writes a proposal and sets
+ * `conflict`). A passed `tx` must be a transaction (the move runs under a
+ * savepoint).
  */
 export async function adoptBinding(i: AdoptInput, tx?: DbClient): Promise<AdoptResult> {
   needWorkspace(i.service, i.workspace);
@@ -317,36 +351,26 @@ export async function adoptBinding(i: AdoptInput, tx?: DbClient): Promise<AdoptR
       return { adopted: false, movedBindingIds: [], binding: (await findBinding(key, c))!, events: [] };
     }
     const conflict: AdoptResult = { adopted: false, conflict: true, movedBindingIds: [], binding: held, events: [] };
-    if (c.dialect === "pg") {
-      // READ COMMITTED: two adopts of the same held binding would both read the holder's bindings and both move them.
-      // Lock the holder row, then re-read: the loser of the lock sees the winner's result (or no holder at all).
-      if (!(await c.one("SELECT id FROM users WHERE id = ? FOR UPDATE", [held.user_id]))) return conflict;
-      const again = await findBinding(key, c);
-      if (!again || again.user_id !== held.user_id) return conflict;
-    }
-    const theirs = await c.query<BindingRow>("SELECT * FROM bindings WHERE user_id = ? ORDER BY created_at, id", [held.user_id]);
-    if (theirs.some((b) => RANK[b.state] === RANK.verified)) return conflict;
-    const moved = theirs.map((b) => b.id);
-    // A savepoint so a mismatch below undoes the partial move, whatever transaction the caller holds.
-    await c.exec("SAVEPOINT adopt_move");
-    const upd = await c.run("UPDATE bindings SET user_id = ?, updated_at = ? WHERE user_id = ?", [toUserId, now, held.user_id]);
-    if ((upd.changes ?? 0) !== moved.length) {
-      // The rows moved under us (a stale read): write nothing, no event.
-      await c.exec("ROLLBACK TO SAVEPOINT adopt_move");
-      await c.exec("RELEASE SAVEPOINT adopt_move");
-      return conflict;
-    }
-    await c.run("INSERT INTO user_aliases (old_id, user_id, merged_at) VALUES (?, ?, ?) ON CONFLICT (old_id) DO NOTHING", [held.user_id, toUserId, now]);
-    // Aliases that pointed at the old user now point at the new one.
-    await c.run("UPDATE user_aliases SET user_id = ? WHERE user_id = ? AND old_id <> ?", [toUserId, held.user_id, held.user_id]);
-    await c.run("DELETE FROM users WHERE id = ?", [held.user_id]);
-    await c.exec("RELEASE SAVEPOINT adopt_move");
-    await raiseBinding(c, held.id, "verified", undefined, now);
+    // The move itself (lock, compare-and-set, aliases, grants, ledger) is the merge engine's. The target survives, as it always has.
+    // Loaded here, not at the top: the engine imports this module and the audit and actor modules that import it.
+    const { mergeUsers } = await import("../domain/merge");
+    const out = await mergeUsers(
+      {
+        survivorId: toUserId,
+        loserId: held.user_id,
+        kind: "proof",
+        actor: "system",
+        raise: { bindingId: held.id },
+        proof: { slackBindingId: held.service === "slack" ? held.id : null, oidcBindingId: i.oidcBindingId ?? null },
+      },
+      c,
+    );
+    if (out.status !== "merged") return conflict;
     return {
       adopted: true,
-      movedBindingIds: moved,
+      movedBindingIds: out.movedBindingIds,
       binding: (await findBinding(key, c))!,
-      events: [{ action: "user.adopted", userId: toUserId, fromUserId: held.user_id, bindingIds: moved }],
+      events: [{ action: "user.adopted", userId: toUserId, fromUserId: held.user_id, bindingIds: out.movedBindingIds }, ...out.events],
     };
   });
 }
@@ -354,5 +378,5 @@ export async function adoptBinding(i: AdoptInput, tx?: DbClient): Promise<AdoptR
 /** Tests: settle fire-and-forget first-sight writes, then clear every domain table (children first). */
 export async function _wipeForTests(): Promise<void> {
   await flushFirstSightWork();
-  for (const t of ["user_aliases", "bindings", "boundaries", "users"]) await globalDb.run(`DELETE FROM ${t}`);
+  for (const t of ["merge_vetoes", "merge_proposals", "user_merges", "user_aliases", "bindings", "boundaries", "users"]) await globalDb.run(`DELETE FROM ${t}`);
 }

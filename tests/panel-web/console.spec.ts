@@ -27,6 +27,8 @@ const PAGES: Array<{ path: string; heading: string | RegExp; ready: string; sub?
   { path: "/panel/audit", heading: "Approvals and audit", ready: "Bash: run the test suite" },
   { path: "/panel/access", heading: "Access", ready: "bob@example.com", sub: "Console roles" },
   { path: "/panel/users", heading: "Users", ready: "j***@example.com" },
+  { path: "/panel/merges", heading: "Merges", ready: "2 bindings, 1 grants" },
+  { path: "/panel/proposals", heading: "Proposals", ready: "j***@example.com" },
   { path: "/panel/boundaries", heading: "Boundaries", ready: "C1EXAMPLE" },
   { path: "/panel/memory", heading: "Memory", ready: "kb-handbook" },
   { path: "/panel/memory/shared", heading: /Shared/, ready: "decisions/queue-library" },
@@ -76,7 +78,7 @@ test("the shell loads with the signed-in superadmin", async ({ page }) => {
 test("the sidebar reaches every top-level page", async ({ page }) => {
   await page.goto("/panel/");
   const nav = page.getByRole("navigation", { name: "Console navigation" });
-  for (const name of ["Agents", "Sessions", "Approvals and audit", "Access", "Users", "Boundaries", "Memory", "Environments", "Skills", "Guardrails", "Overview"]) {
+  for (const name of ["Agents", "Sessions", "Approvals and audit", "Access", "Users", "Merges", "Proposals", "Boundaries", "Memory", "Environments", "Skills", "Guardrails", "Overview"]) {
     await nav.getByRole("link", { name, exact: true }).click();
     await expect(h1(page)).toHaveText(name);
   }
@@ -855,6 +857,94 @@ test("Users filters by state and opens a read-only detail drawer", async ({ page
 test("Users is refused to an operator", async ({ page }) => {
   await page.goto("/panel/users?as=operator");
   await expect(page.getByRole("main").getByText("Your console role cannot see this.")).toBeVisible();
+});
+
+test("Merges lists the ledger, opens a detail with the limits, and undoes after a preview and a reason", async ({ page }) => {
+  await page.goto("/panel/merges");
+  await settled(page, "2 bindings, 1 grants");
+  await expect(page.getByRole("main").getByText("failed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("main").getByText("Window passed")).toBeVisible();
+  await page.getByRole("row").filter({ hasText: "Proof" }).first().click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toContainText("j***@example.com");
+  await expect(drawer).toContainText("U0***LE");
+  await expect(drawer).toContainText("Credentials and memory slices were never moved");
+  await expect(drawer).toContainText("later-first");
+  await expect(drawer).toContainText("A deleted account is not restored");
+  await expect(drawer).toContainText("person sent; managers sent 1, failed 0");
+  await drawer.getByRole("button", { name: "Undo this merge" }).click();
+  const dialog = page.getByRole("dialog", { name: "Undo this merge?" });
+  await expect(dialog.getByLabel("Undo preview")).toContainText("2 bindings, 1 grants");
+  await expect(dialog).toContainText("link between the Slack account and the sign-in account will be removed");
+  const confirm = dialog.getByRole("button", { name: "Undo merge" });
+  await expect(confirm).toBeDisabled();
+  await dialog.getByLabel("Reason").fill("wrong person");
+  await expect(confirm).toBeEnabled();
+  await confirm.click();
+  await expect(toasts(page).getByText("Merge undone")).toBeVisible();
+});
+
+test("Merges: a failed notice says the merge stands, a past-window merge cannot be undone, the list filters", async ({ page }) => {
+  await page.goto("/panel/merges");
+  await settled(page, "2 bindings, 1 grants");
+  await page.getByRole("row").filter({ hasText: "Console" }).first().click();
+  await expect(page.getByRole("dialog")).toContainText("The merge stands. The notice is not retried");
+  await page.keyboard.press("Escape");
+  await page.getByRole("row").filter({ hasText: "Window passed" }).first().click();
+  await expect(page.getByRole("dialog").getByRole("button", { name: "Undo this merge" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: /State/ }).click();
+  await page.getByRole("menuitemradio", { name: "Undone" }).click();
+  await expect(page.getByRole("main").getByText("2 bindings, 1 grants")).toHaveCount(1);
+});
+
+test("Merges: a veto can be lifted only with a reason", async ({ page }) => {
+  await page.goto("/panel/merges");
+  await settled(page, "2 bindings, 1 grants");
+  const card = page.getByRole("main").locator(".sl-section").filter({ hasText: "Vetoes" });
+  await expect(card).toContainText("names nothing a person could be recognised by");
+  await card.getByRole("button", { name: "Lift" }).click();
+  const dialog = page.getByRole("dialog", { name: "Lift this veto?" });
+  const confirm = dialog.getByRole("button", { name: "Lift veto" });
+  await expect(confirm).toBeDisabled();
+  await dialog.getByLabel("Reason").fill("it was the right person");
+  await confirm.click();
+  await expect(toasts(page).getByText("Veto lifted")).toBeVisible();
+});
+
+test("Proposals: a refused-for-a-verified-record proposal says where to go", async ({ page }) => {
+  await page.goto("/panel/proposals");
+  await settled(page, "j***@example.com");
+  await expect(page.getByRole("main").getByText("may be squatting the address", { exact: false })).toBeVisible();
+});
+
+test("Merges is refused to an operator", async ({ page }) => {
+  await page.goto("/panel/merges?as=operator");
+  await expect(page.getByRole("main").getByText("Your console role cannot see this.")).toBeVisible();
+});
+
+test("Proposals: review lists the grants, the button needs the typed word, approve merges; a stale one cannot be reviewed", async ({ page }) => {
+  await page.goto("/panel/proposals");
+  await settled(page, "j***@example.com");
+  await expect(page.getByRole("main").getByText("Stale")).toBeVisible();
+  await expect(page.getByRole("row").filter({ hasText: "k***@example.com" }).getByRole("button", { name: "Review" })).toBeDisabled();
+  await page.getByRole("row").filter({ hasText: "j***@example.com" }).getByRole("button", { name: "Review" }).click();
+  const dialog = page.getByRole("dialog", { name: "Merge these records?" });
+  await expect(dialog.getByLabel("What this merge would do")).toContainText("scout:member:grant:g-1");
+  const approve = dialog.getByRole("button", { name: "Approve merge" });
+  await expect(approve).toBeDisabled();
+  await dialog.getByLabel('Type "merge" to confirm').fill("merge");
+  await expect(approve).toBeEnabled();
+  await approve.click();
+  await expect(toasts(page).getByText("Records merged")).toBeVisible();
+});
+
+test("Proposals: dismiss asks first", async ({ page }) => {
+  await page.goto("/panel/proposals");
+  await settled(page, "j***@example.com");
+  await page.getByRole("row").filter({ hasText: "j***@example.com" }).getByRole("button", { name: "Dismiss" }).click();
+  await page.getByRole("dialog", { name: "Dismiss this proposal?" }).getByRole("button", { name: "Dismiss" }).click();
+  await expect(toasts(page).getByText("Proposal dismissed")).toBeVisible();
 });
 
 test("Boundaries shows an empty state", async ({ page }) => {

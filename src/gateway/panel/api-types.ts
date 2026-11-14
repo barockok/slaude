@@ -1185,3 +1185,134 @@ export interface BoundaryPage {
   items: BoundaryListItem[];
   nextCursor: string | null;
 }
+
+// --- Merges and proposals (slice C, rc.21) -----------------------------------
+// Every value that names a person is masked here: an address as `a***@example.com`,
+// any other identifier (a Slack id, a sign-in subject) as its first and last
+// characters. Ids of records, bindings and grants are not values and are shown whole.
+
+export type MergeKind = "proof" | "console";
+export type MergeState = "applied" | "undone";
+export type NoticeState = "pending" | "sent" | "failed" | "skipped";
+
+export interface MergeListItem {
+  id: string;
+  createdAt: number;
+  kind: MergeKind;
+  state: MergeState;
+  /** `system` for a proof merge, the operator (masked) for a console merge. */
+  actor: string;
+  survivorId: string;
+  loserId: string;
+  undoUntil: number;
+  /** Applied and inside the undo window now (the server still checks chained merges). */
+  undoable: boolean;
+  noticeState: NoticeState;
+  counts: { bindings: number; grants: number; activated: number; inactivePrivileged: number };
+}
+
+export interface MergePage {
+  items: MergeListItem[];
+  nextCursor: string | null;
+}
+
+export interface MergeBindingView {
+  id: string;
+  service: string;
+  kind: string;
+  workspace: string;
+  /** Masked. */
+  value: string;
+  state: DomainState | null;
+  /** Where the binding is now: with the survivor, with another record, or gone. */
+  now: "survivor" | "elsewhere" | "removed";
+}
+
+export interface MergeDetail extends MergeListItem {
+  undoneAt: number | null;
+  undoneBy: string | null;
+  loserKind: string;
+  /** Ids of the two bindings a proof merge rested on. */
+  proof: { slackBindingId: string | null; oidcBindingId: string | null };
+  bindings: MergeBindingView[];
+  grants: Array<{ id: string; persona: string; now: "survivor" | "elsewhere" | "removed" }>;
+  raised: Array<{ bindingId: string; fromState: string; verifiedAt: number | null }>;
+  aliases: { added: number; repointed: number };
+  activated: Array<{ persona: string; role: string; source: string; entry: string; privileged: boolean }>;
+  inactivePrivileged: Array<{ persona: string; role: string; entry: string }>;
+  notice: { state: NoticeState; detail: string | null };
+  /** What undo can and cannot do, for the page. */
+  limits: string[];
+}
+
+export interface UndoListsView {
+  moved: { bindings: string[]; grants: string[]; aliases: string[]; restored: string[]; unlinked: boolean };
+  skipped: Array<{ kind: string; id: string; reason: string }>;
+}
+export type UndoPreviewResponse = UndoListsView & { mergeId: string; undoable: true };
+export interface UndoRequest {
+  /** Why; required. */
+  reason: string;
+}
+export type UndoResponse = UndoListsView & { mergeId: string; status: "undone"; merge: MergeDetail };
+
+export interface ProposalSide {
+  id: string;
+  exists: boolean;
+  kind: string | null;
+  /** A verified address or the best binding, masked; null when the record has none or is gone. */
+  preferred: string | null;
+  bindings: StateCounts;
+}
+
+export interface ProposalItem {
+  id: string;
+  createdAt: number;
+  reason: "conflict" | "two-emails";
+  state: "open" | "dismissed" | "merged";
+  a: ProposalSide;
+  b: ProposalSide;
+  /** Open, but the pair can no longer be merged as proposed (a record is gone or they are one). */
+  stale: boolean;
+  staleReason: string | null;
+  /** Why the engine refused it, when that points the operator somewhere (a squatted address, a veto); null otherwise. */
+  hint: string | null;
+  resolvedBy: string | null;
+  resolvedAt: number | null;
+}
+
+export interface ProposalPage {
+  items: ProposalItem[];
+  nextCursor: string | null;
+}
+
+/** What an approval would do, masked; the operator echoes it back to confirm. */
+export interface ApprovalOutcome {
+  survivor: string;
+  loser: string;
+  bindings: number;
+  grants: number;
+  activates: string[];
+  inactivePrivileged: string[];
+}
+export interface ApproveProposalRequest {
+  /** The outcome the server showed, echoed back. Omit to ask for it. An empty list is not a blind approval: the whole object must match. */
+  confirm?: ApprovalOutcome;
+}
+export type ApproveProposalResponse =
+  | { status: "confirm"; outcome: ApprovalOutcome }
+  | { status: "merged"; merge: MergeDetail };
+
+/** A veto an undo left: it forbids a pair from joining again until lifted. It names nothing a person could be recognised by. */
+export interface MergeVetoItem {
+  id: string;
+  createdBy: string;
+  createdAt: number;
+  mergeId: string | null;
+}
+export interface MergeVetoList {
+  items: MergeVetoItem[];
+}
+export interface LiftVetoRequest {
+  reason: string;
+}

@@ -22,7 +22,7 @@ for (const dialect of ["sqlite", "pg"] as const) {
       await db.close();
     });
     beforeEach(async () => {
-      for (const t of ["user_aliases", "bindings", "boundaries", "users", "slack_identities", "accounts", "agent_grants", "sessions", "audit_events"]) {
+      for (const t of ["merge_vetoes", "merge_proposals", "user_merges", "user_aliases", "bindings", "boundaries", "users", "slack_identities", "accounts", "agent_grants", "sessions", "audit_events"]) {
         await db.run(`DELETE FROM ${t}`);
       }
       if (dialect === "pg") {
@@ -314,6 +314,39 @@ for (const dialect of ["sqlite", "pg"] as const) {
       const again = await reconcile(opts());
       expect(again.conflicts).toHaveLength(1);
       expect(await count("bindings")).toBe(3); // 2 oidc + 1 email
+    });
+
+    test("a conflict becomes an open merge proposal (ids only); a dry run and a rerun add none", async () => {
+      await account("old", "dup@example.com", 10);
+      await account("new", "dup@example.com", 20);
+      await reconcile(opts({ dryRun: true }));
+      expect(await count("merge_proposals")).toBe(0);
+      await reconcile(opts());
+      const rows = await db.query<{ user_a: string; user_b: string; reason: string; state: string; evidence: string }>("SELECT * FROM merge_proposals");
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ reason: "conflict", state: "open" });
+      const oldUser = (await fb({ service: "oidc", kind: "subject", workspace: ISS, value: "old" }))!.user_id;
+      const newUser = (await fb({ service: "oidc", kind: "subject", workspace: ISS, value: "new" }))!.user_id;
+      expect([rows[0]!.user_a, rows[0]!.user_b].sort()).toEqual([oldUser, newUser].sort());
+      expect(rows[0]!.evidence).not.toContain("example.com");
+      await reconcile(opts());
+      expect(await count("merge_proposals")).toBe(1);
+      expect(await count("user_merges")).toBe(0);
+    });
+
+    test("a Slack identity held by a verified record is a proposal, an unverified holder merges through the engine", async () => {
+      await account("a", "a@example.com", 10);
+      await account("b", "b@example.com", 20);
+      await identity("a", WS, "U0HELD");
+      await reconcile(opts()); // a's user now holds U0HELD verified
+      await identity("b", WS, "U0HELD2");
+      // An observed record that holds U0HELD2 (seen in Slack first).
+      const seen = await Domain.ensureBinding({ service: "slack", kind: "user", workspace: WS, value: "U0HELD2", state: "observed", source: "test" }, db);
+      const r = await reconcile(opts());
+      expect(r.conflicts).toEqual([]);
+      const row = await db.one<{ kind: string; loser_id: string }>("SELECT kind, loser_id FROM user_merges");
+      expect(row).toMatchObject({ kind: "proof", loser_id: seen.userId });
+      expect(await Domain.getUser(seen.userId, db)).toBeNull();
     });
 
     test("ambiguous workspace: grants, audit actors and null-team sessions are skipped and counted", async () => {

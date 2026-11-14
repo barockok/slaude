@@ -27,6 +27,22 @@ export function maskValue(service: string, kind: string, value: string): string 
   return value;
 }
 
+/**
+ * For views of a merge or a proposal, where one of the records may belong to
+ * another person: an address or phone as `maskValue`, any other identifier (a
+ * Slack id, a sign-in subject) as its first and last two characters.
+ */
+export function maskIdentifier(service: string, kind: string, value: string): string {
+  if (service === "email" || kind === "phone" || EMAIL_SHAPE.test(value)) return maskValue(service, kind, value);
+  return value.length <= 5 ? "***" : `${value.slice(0, 2)}***${value.slice(-2)}`;
+}
+
+/** An operator or actor id for display: `system` as is, an address masked, anything else shortened. */
+export function maskActor(actor: string | null): string | null {
+  if (actor === null) return null;
+  return actor === "system" ? actor : maskIdentifier("", "", actor);
+}
+
 export interface DomainFilter {
   state?: State;
   service?: string;
@@ -51,14 +67,14 @@ const marks = (n: number) => Array.from({ length: n }, () => "?").join(", ");
 const likePrefix = (q: string) => q.replace(/[\\%_]/g, (c) => `\\${c}`) + "%";
 
 /** Cursor is `<created_at>:<id>`; an unreadable one is `null`. */
-function parseCursor(c: string | undefined): { at: number; id: string } | null | undefined {
+export function parseCursor(c: string | undefined): { at: number; id: string } | null | undefined {
   if (c === undefined) return undefined;
   const m = /^(\d{1,15}):([A-Za-z0-9-]{1,48})$/.exec(c);
   return m ? { at: Number(m[1]), id: m[2]! } : null;
 }
 export const validCursor = (c: string | undefined) => parseCursor(c) !== null;
 
-function clampLimit(limit: number | undefined): number {
+export function clampLimit(limit: number | undefined): number {
   return Math.min(DOMAIN_PAGE_MAX, Math.max(1, limit ?? DOMAIN_PAGE_DEFAULT));
 }
 
@@ -67,7 +83,7 @@ function clampLimit(limit: number | undefined): number {
  * last resort: a user with only declared or non-Slack bindings (an email not
  * yet verified) still shows its best binding rather than nothing.
  */
-function pickPreferred<T extends Pick<BindingRow, "service" | "state" | "created_at" | "id">>(rows: T[]): T | null {
+export function pickPreferred<T extends Pick<BindingRow, "service" | "state" | "created_at" | "id">>(rows: T[]): T | null {
   const rank = (s: string) => (s === "verified" ? 0 : s === "observed" ? 1 : 2);
   const byAge = (a: T, b: T) => Number(a.created_at) - Number(b.created_at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   const mail = rows.filter((r) => r.service === "email" && r.state === "verified").sort(byAge)[0];

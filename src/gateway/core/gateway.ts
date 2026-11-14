@@ -182,6 +182,7 @@ import { startCronLeader } from "./cron-leader";
 import { defaultSchedulerDeps, leaderElect, personaManager, startBackgroundScheduler, wakeNow, type SchedulerSlack } from "../../background/scheduler";
 import { budgetConfigFor } from "../../background/config";
 import { cardPoster, registerProposalActions } from "../../background/proposal-cards";
+import { setMergeNoticeSender } from "../../domain/merge-notice";
 import { digestRecipientOf, personaApp } from "../../background/digest";
 import { createSlackNames, type NameContext, type SlackNameClient } from "../panel/slack-names";
 import { createLookupClients, teamLookupToken } from "../panel/lookup-clients";
@@ -969,6 +970,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     managers: backgroundManagers,
     digestRecipient: () => digestRecipientOf(soulData()),
   };
+  // The notice a user merge sends (slice C task 27) goes out through the same runtime DM path as a card:
+  // the bot of the workspace's Slack app. A node never sends; the gateway that committed the merge does.
+  const unsetMergeNoticeSender = env.role() === "node" ? () => {} : setMergeNoticeSender({ post: cardPoster(t), ...(t.apps ? { apps: () => t.apps!() } : {}) });
   // A proposal is decided by the managers of the persona that owns it (roleOf "manager").
   const proposalManagers = async (personaName: string, teamId?: string): Promise<string[]> =>
     (await approversAt({ site: "gateway.proposal_managers", persona: personaName, teamId, grants: await loadGrants(personaName), roles: ["manager"] }));
@@ -5052,6 +5056,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       stopSkillVersionReconciler();
       stopOwnerGuardrails();
       pluginInventory?.stop();
+      unsetMergeNoticeSender();
       if (panelSweeper) clearInterval(panelSweeper);
       await panelResumeUnsub?.().catch(() => {});
       await panelHoldUnsub?.().catch(() => {});

@@ -8,11 +8,26 @@
 import { invalidateActors } from "../refs/actor";
 import * as Domain from "./domain";
 import { randomUUID } from "node:crypto";
-import { db } from "./schema";
+import { db, type DbClient } from "./schema";
 import { emitDomainEvents } from "../audit/domain";
 import type { DomainEvent } from "./domain";
 import { claimLinkToken } from "./link-token-uses";
-import { projectAccountDeletion, projectLink, projectLogin, projectUnlink } from "./account-projection";
+import { guardedProjection, projectAccountDeletion, projectLink, projectLogin, projectUnlink } from "./account-projection";
+import { oidcKey, orderedPair, slackKey } from "../domain/merge-keys";
+
+/**
+ * Whether a merge undo forbade linking this Slack identity to this account
+ * (merge_vetoes, keyed by value, so it holds after an unlink). A domain-table
+ * failure must never fail or abort a link: the read runs under a savepoint and
+ * a failure counts as not vetoed (the link is the person's own proof; the veto
+ * is an operator brake, and the merge engine checks it again before any move).
+ */
+async function isVetoed(a: { teamId: string; slackUserId: string; issuer: string; subject: string }, tx: DbClient): Promise<boolean> {
+  return guardedProjection(tx, "veto check", false, async () => {
+    const pair = orderedPair(slackKey(a.teamId, a.slackUserId), oidcKey(a.issuer, a.subject));
+    return (await tx.one("SELECT id FROM merge_vetoes WHERE key_a = ? AND key_b = ?", pair)) !== null;
+  });
+}
 
 /** Audit the events a projection returned, after commit. Never throws. */
 async function emitAfterCommit(events: DomainEvent[]): Promise<void> {
@@ -109,7 +124,8 @@ export async function accountIdsForSlackUserAnyTeam(slackUserId: string): Promis
  * rejection. That does not survive an unlink, so a redemption that names a
  * link token (`token`) also claims the token's jti in the single-use ledger,
  * in the same transaction. A token already used while no link of this account
- * stands is refused with "link-used": the unlink-then-replay case.
+ * stands is refused with "link-used": the unlink-then-replay case. A pair an
+ * undone merge vetoed is refused with "vetoed" (the token is not spent).
  */
 export async function linkSlackIdentity(
   i: { teamId: string; slackUserId: string; accountId: string; via: string; token?: { jti: string; expiresAt: number } },
@@ -117,6 +133,7 @@ export async function linkSlackIdentity(
   | { ok: true; created: boolean }
   | { ok: false; reason: "already-linked"; existingAccountId: string }
   | { ok: false; reason: "link-used" }
+  | { ok: false; reason: "vetoed" }
 > {
   // Select-then-insert and the projection share one transaction. A replay
   // (same account) or a refusal (other account) returns before any write.
@@ -131,6 +148,11 @@ export async function linkSlackIdentity(
         result: { ok: false, reason: "already-linked", existingAccountId: existing.account_id } as const,
         events: [] as DomainEvent[],
       };
+    }
+    // An operator forbade this (Slack binding, account) pair when undoing a merge: refused before the token is spent.
+    const acctRow = await tx.one<AccountRow>("SELECT * FROM accounts WHERE id = ?", [i.accountId]);
+    if (acctRow && (await isVetoed({ teamId: i.teamId, slackUserId: i.slackUserId, issuer: acctRow.issuer, subject: acctRow.subject }, tx))) {
+      return { result: { ok: false, reason: "vetoed" } as const, events: [] as DomainEvent[] };
     }
     // A link will be written, so only now is the token spent: a refusal above must not burn it.
     // On Postgres a concurrent claim of the same jti waits here for the winner; when the

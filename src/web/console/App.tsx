@@ -11,6 +11,8 @@ import { AgentDetailPage, isAgentTab } from "./pages/agent/AgentDetailPage";
 import { AgentsPage } from "./pages/AgentsPage";
 import { BoundariesPage } from "./pages/domain/BoundariesPage";
 import { UsersPage } from "./pages/domain/UsersPage";
+import { MergesPage } from "./pages/domain/MergesPage";
+import { ProposalsPage } from "./pages/domain/ProposalsPage";
 import { AuditPage } from "./pages/AuditPage";
 import { EnvironmentsPage } from "./pages/EnvironmentsPage";
 import { MemoryPageView } from "./pages/memory/MemoryPageView";
@@ -36,6 +38,8 @@ export const NAV: NavEntry[] = [
   { label: "Approvals and audit", to: "/audit", description: "Every permission decision and console change, newest first.", keywords: "log history" },
   { label: "Access", to: "/access", description: "Console roles and the grants that decide who can work with each agent.", keywords: "grants roles" },
   { label: "Users", to: "/users", description: "People and bots the deployment knows and how each was matched (superadmin, read only).", keywords: "people bindings identity accounts" },
+  { label: "Merges", to: "/merges", description: "Records joined into one person, what each merge moved, and undo for seven days (superadmin).", keywords: "undo identity accounts people" },
+  { label: "Proposals", to: "/proposals", description: "Pairs of records the system would not merge by itself, for an operator to approve or dismiss (superadmin).", keywords: "merge conflict identity people" },
   { label: "Boundaries", to: "/boundaries", description: "Channels and groups the deployment knows (superadmin, read only).", keywords: "channels groups" },
   { label: "Memory", to: "/memory", description: "Browse the memory stores your agents read and write.", keywords: "brain pages stores" },
   { label: "Environments", to: "/environments", description: "Where agents run: node pools, placement and personal environments.", keywords: "nodes" },
@@ -64,6 +68,8 @@ function renderPage(path: string, entry: NavEntry | null) {
   if (path === "/sessions") return <SessionsPage />;
   if (path === "/audit") return <AuditPage />;
   if (path === "/users") return <UsersPage />;
+  if (path === "/merges") return <MergesPage />;
+  if (path === "/proposals") return <ProposalsPage />;
   if (path === "/boundaries") return <BoundariesPage />;
   if (path === "/memory") return <MemoryStoresPage />;
   if (path === "/environments") return <EnvironmentsPage />;
