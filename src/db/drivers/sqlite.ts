@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS one_on_one_locks (
   locked_user TEXT    NOT NULL,
   created_by  TEXT    NOT NULL,
   created_at  INTEGER NOT NULL,
+  team_id     TEXT,
   PRIMARY KEY (channel_id, thread_ts)
 );
 
@@ -305,8 +306,18 @@ CREATE TABLE IF NOT EXISTS accounts (
   email      TEXT    NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
+  email_proven INTEGER NOT NULL DEFAULT 0,
   UNIQUE (issuer, subject)
 );
+
+CREATE TABLE IF NOT EXISTS link_token_uses (
+  jti           TEXT    PRIMARY KEY,
+  team_id       TEXT    NOT NULL,
+  slack_user_id TEXT    NOT NULL,
+  used_at       INTEGER NOT NULL,
+  expires_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_link_token_uses_expires ON link_token_uses (expires_at);
 
 CREATE TABLE IF NOT EXISTS slack_identities (
   team_id       TEXT    NOT NULL,
@@ -500,7 +511,9 @@ CREATE TABLE IF NOT EXISTS agent_grants (
   created_by   TEXT    NOT NULL,
   created_at   INTEGER NOT NULL,
   expires_at   INTEGER,
-  note         TEXT
+  note         TEXT,
+  subject_ref     TEXT,
+  subject_user_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_agent_grants_persona ON agent_grants (persona);
 
@@ -670,6 +683,17 @@ export function bootstrapSqliteSchema(db: Database): void {
   if (!oooLockCols.some((c) => c.name === "open_scope")) {
     db.run(`ALTER TABLE one_on_one_locks ADD COLUMN open_scope TEXT`);
   }
+
+  // Migration: access on internal ids (pg 0040). All additive and nullable.
+  if (!oooLockCols.some((c) => c.name === "team_id")) db.run(`ALTER TABLE one_on_one_locks ADD COLUMN team_id TEXT`);
+  const acctCols = db.query(`PRAGMA table_info(accounts)`).all() as Array<{ name: string }>;
+  if (!acctCols.some((c) => c.name === "email_proven")) {
+    db.run(`ALTER TABLE accounts ADD COLUMN email_proven INTEGER NOT NULL DEFAULT 0`);
+  }
+  const grantCols = db.query(`PRAGMA table_info(agent_grants)`).all() as Array<{ name: string }>;
+  if (!grantCols.some((c) => c.name === "subject_ref")) db.run(`ALTER TABLE agent_grants ADD COLUMN subject_ref TEXT`);
+  if (!grantCols.some((c) => c.name === "subject_user_id")) db.run(`ALTER TABLE agent_grants ADD COLUMN subject_user_id TEXT`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_agent_grants_subject_user ON agent_grants (subject_user_id)`);
 
   // Migration: record the /1on1 lock owner active when the job was created. Cron
   // runs for DM/channel-target jobs key on a synthetic `cron:<id>` thread that
