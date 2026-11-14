@@ -391,7 +391,7 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(await count("bindings")).toBe(120);
       expect(await count("boundaries")).toBe(60);
       // A transaction per page of 50 (plus the per-account ones, none here), not one per actor or channel.
-      expect(txs).toBeLessThanOrEqual(8);
+      expect(txs).toBeLessThanOrEqual(11); // plus a transaction per page of grants filled with their ref and user
       stmts = 0;
       txs = 0;
       const again = await reconcile(opts({ db: wrap(db), pageSize: 50 }));
@@ -447,6 +447,150 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(await db.one("SELECT 1 FROM bindings GROUP BY service, kind, workspace, value HAVING COUNT(*) > 1")).toBeNull();
       expect(await db.one("SELECT 1 FROM users u WHERE NOT EXISTS (SELECT 1 FROM bindings b WHERE b.user_id = u.id)")).toBeNull();
     });
+
+    describe("grant subjects, lock teams and the workspace report (slice C task 11)", () => {
+      const pgv = (b: boolean) => (dialect === "pg" ? b : b ? 1 : 0);
+      async function stored(id: string, kind: string, sid: string, o: { ref?: string | null; uid?: string | null; tenant?: string } = {}) {
+        const cols = ["id", "persona", "subject_kind", "subject_id", "role", "deny", "dm_only", "created_by", "created_at", "subject_ref", "subject_user_id"];
+        const vals: unknown[] = [id, "sam", kind, sid, "member", pgv(false), pgv(false), "test", 1, o.ref ?? null, o.uid ?? null];
+        if (dialect === "pg") (cols.push("tenant_id"), vals.push(o.tenant ?? "default"));
+        await db.run(`INSERT INTO agent_grants (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`, vals);
+      }
+      async function lockRow(ch: string, ts: string, team: string | null) {
+        await db.run("INSERT INTO one_on_one_locks (channel_id, thread_ts, locked_user, created_by, created_at, team_id) VALUES (?, ?, ?, ?, ?, ?)", [ch, ts, "U0EXAMPLE", "U0EXAMPLE", 1, team]);
+      }
+      const grantRow = (id: string) => db.one<{ subject_ref: string | null; subject_user_id: string | null }>("SELECT subject_ref, subject_user_id FROM agent_grants WHERE id = ?", [id]);
+      beforeEach(async () => {
+        await db.run("DELETE FROM one_on_one_locks");
+      });
+
+      test("fills the ref and the user for Slack grants in the single workspace", async () => {
+        await stored("gr-u", "user", "U0EXAMPLE");
+        await stored("gr-c", "channel", "C0EXAMPLE");
+        const r = await reconcile(opts());
+        const u = await grantRow("gr-u");
+        expect(u!.subject_ref).toBe(`slack:user:${WS}/U0EXAMPLE`);
+        const b = await fb({ service: "slack", kind: "user", workspace: WS, value: "U0EXAMPLE" });
+        expect(u!.subject_user_id).toBe(b!.user_id);
+        expect((await grantRow("gr-c"))!.subject_ref).toBe(`slack:channel:${WS}/C0EXAMPLE`);
+        expect((await grantRow("gr-c"))!.subject_user_id).toBeNull();
+        expect(r.grantSubjects.created).toBe(2);
+      });
+
+      test("a second run changes nothing and writes no audit", async () => {
+        await stored("gr-u", "user", "U0EXAMPLE");
+        await reconcile(opts());
+        events.length = 0;
+        const r = await reconcile(opts());
+        expect(r.grantSubjects.created).toBe(0);
+        expect(r.lockTeams.created).toBe(0);
+        expect(events).toEqual([]);
+      });
+
+      test("a dry run reports and writes nothing", async () => {
+        await stored("gr-u", "user", "U0EXAMPLE");
+        await lockRow("C0EXAMPLE", "1.1", null);
+        const r = await reconcile(opts({ dryRun: true }));
+        expect(r.grantSubjects.created).toBe(1);
+        expect(r.lockTeams.created).toBe(1);
+        expect((await grantRow("gr-u"))!.subject_ref).toBeNull();
+        expect((await db.one<{ team_id: string | null }>("SELECT team_id FROM one_on_one_locks"))!.team_id).toBeNull();
+      });
+
+      test("never overwrites a value already stored", async () => {
+        await stored("gr-keep", "user", "U0EXAMPLE", { ref: `slack:user:${WS2}/U0EXAMPLE`, uid: "keep-user" });
+        await reconcile(opts());
+        const g = await grantRow("gr-keep");
+        expect(g!.subject_ref).toBe(`slack:user:${WS2}/U0EXAMPLE`);
+        expect(g!.subject_user_id).toBe("keep-user");
+      });
+
+      test("a ref with no user yet is filled, and the user follows once the binding exists", async () => {
+        await stored("gr-u", "user", "U0EXAMPLE", { ref: `slack:user:${WS}/U0EXAMPLE` });
+        // The grant-user source creates the declared binding in the same run, so the user is filled.
+        await reconcile(opts());
+        expect((await grantRow("gr-u"))!.subject_user_id).not.toBeNull();
+      });
+
+      test("ambiguous and missing workspaces are skipped and counted, nothing written", async () => {
+        await stored("gr-u", "user", "U0EXAMPLE");
+        await lockRow("C0EXAMPLE", "1.1", null);
+        if (dialect === "pg") await db.run("INSERT INTO slack_apps (api_app_id, team_id, tenant_id, bot_token, signing_secret, created_at, updated_at) VALUES ('A1', ?, 'default', 'x', 'y', 1, 1)", [WS2]);
+        const r = await reconcile(opts({ liveTeamIds: () => [WS, WS2] }));
+        expect(r.grantSubjects.skipped.ambiguous).toBe(1);
+        expect(r.lockTeams.skipped.ambiguous).toBe(1);
+        expect((await grantRow("gr-u"))!.subject_ref).toBeNull();
+        const none = await reconcile(opts({ liveTeamIds: () => [] }));
+        if (dialect === "sqlite") {
+          expect(none.grantSubjects.skipped.no_workspace).toBe(1);
+          expect(none.lockTeams.skipped.no_workspace).toBe(1);
+        }
+      });
+
+      test("a bot, USLACKBOT, a grid id and a malformed id are skipped; no user is created for them", async () => {
+        await stored("gr-bot", "user", "USLACKBOT");
+        await stored("gr-grid", "user", "W0EXAMPLE");
+        await stored("gr-bad", "user", "lowercase");
+        const r = await reconcile(opts());
+        expect(r.grantSubjects.skipped.bot).toBe(1);
+        expect(r.grantSubjects.skipped.grid).toBe(1);
+        expect(r.grantSubjects.skipped.not_slack_id).toBe(1);
+        expect((await grantRow("gr-bot"))!.subject_ref).toBeNull();
+        // The task 11 pass itself writes no user; the slice B grant-user step already records a declared binding for the id.
+        expect((await grantRow("gr-bot"))!.subject_user_id).toBeNull();
+      });
+
+      test("pages: more rows than one page are all filled", async () => {
+        for (let i = 0; i < 7; i++) await stored(`gr-p${i}`, "channel", `C0PAGE${i}`);
+        for (let i = 0; i < 5; i++) await lockRow(`C0LOCK${i}`, "1.1", null);
+        const r = await reconcile(opts({ pageSize: 2 }));
+        expect(r.grantSubjects.created).toBeGreaterThanOrEqual(7);
+        expect(r.lockTeams.created).toBe(5);
+        expect(Number((await db.one<{ n: number }>("SELECT COUNT(*) AS n FROM agent_grants WHERE subject_ref IS NULL"))!.n)).toBe(0);
+        expect(Number((await db.one<{ n: number }>("SELECT COUNT(*) AS n FROM one_on_one_locks WHERE team_id IS NULL"))!.n)).toBe(0);
+      });
+
+      test("lock teams: only NULL rows are filled, a set team stays", async () => {
+        await lockRow("C0EXAMPLE", "1.1", null);
+        await lockRow("C0EXAMPLE", "2.2", WS2);
+        await reconcile(opts());
+        const rows = await db.query<{ thread_ts: string; team_id: string }>("SELECT thread_ts, team_id FROM one_on_one_locks ORDER BY thread_ts");
+        expect(rows.map((x) => x.team_id)).toEqual([WS, WS2]);
+      });
+
+      test("the workspace report lists grants naming an unconnected team, ids only", async () => {
+        await stored("gr-ok", "workspace", WS);
+        await stored("gr-other", "workspace", "T9OTHER");
+        const r = await reconcile(opts({ dryRun: true }));
+        expect(r.workspaceGrants).toEqual({ total: 2, mismatched: 1, rows: [{ grantId: "gr-other", teamId: "T9OTHER" }], unjudged: 0 });
+        const text = formatReconcileReport(r);
+        expect(text).toContain("grant=gr-other team=T9OTHER");
+        expect(text).toContain("workspace grants: 1 of 2");
+      });
+
+      test("the workspace report changes nothing, even on a real run", async () => {
+        await stored("gr-other", "workspace", "T9OTHER");
+        const r = await reconcile(opts());
+        expect(r.workspaceGrants.mismatched).toBe(1);
+        expect(await count("agent_grants")).toBe(1);
+        expect(events.filter((e) => e.action === "domain.reconciled")).toEqual([]);
+      });
+
+      test("a tenant with no known workspace is not judged", async () => {
+        await stored("gr-other", "workspace", "T9OTHER");
+        const r = await reconcile(opts({ liveTeamIds: () => [] }));
+        if (dialect === "sqlite") expect(r.workspaceGrants).toEqual({ total: 1, mismatched: 0, rows: [], unjudged: 1 });
+      });
+
+      test("a summary audit is written when rows were filled, never one per row", async () => {
+        await stored("gr-a", "channel", "C0AAA");
+        await stored("gr-b", "channel", "C0BBB");
+        await reconcile(opts());
+        const sums = events.filter((e) => e.action === "domain.reconciled");
+        expect(sums.length).toBe(1);
+        expect(events.length).toBe(1);
+      });
+    });
   });
 }
 
@@ -454,14 +598,14 @@ describe("reconcileAtBoot", () => {
   test("a no-op run logs one line", async () => {
     const lines: string[] = [];
     const empty = { created: 0, existing: 0, skipped: {} };
-    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, unprovenEmails: { total: 0, byIssuer: {}, demoted: 0 }, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
+    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, grantSubjects: empty, lockTeams: empty, workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 }, unprovenEmails: { total: 0, byIssuer: {}, demoted: 0 }, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
     await reconcileAtBoot({ role: "mono", liveTeamIds: () => [], run: async () => report, log: (m) => lines.push(m) });
     expect(lines).toEqual(["reconcile: nothing to do"]);
   });
   test("unproven email bindings are reported at boot, never acted on", async () => {
     const lines: string[] = [];
     const empty = { created: 0, existing: 0, skipped: {} };
-    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0 }, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
+    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, grantSubjects: empty, lockTeams: empty, workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 }, unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0 }, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
     await reconcileAtBoot({ role: "mono", liveTeamIds: () => [], run: async () => report, log: (m) => lines.push(m) });
     expect(lines.join("\n")).toContain("2 verified email binding(s) have no proof");
     expect(lines.join("\n")).toContain("--demote-unproven-emails --apply");

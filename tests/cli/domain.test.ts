@@ -8,6 +8,9 @@ const report = (dryRun: boolean): ReconcileReport => ({
   sources: { accounts: src(), slackIdentities: src(), grantUsers: src(), grantChannels: src(), sessionChannels: src(), auditActors: src() },
   conflicts: [{ kind: "email", accountId: "acc-1", heldByUserId: "usr-1" }],
   linkTokensPurged: 0,
+  grantSubjects: { created: 0, existing: 0, skipped: {} },
+  lockTeams: { created: 0, existing: 0, skipped: {} },
+  workspaceGrants: { total: 1, mismatched: 1, rows: [{ grantId: "grant-1", teamId: "T0EXAMPLE" }], unjudged: 0 },
   unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0 },
   startedAt: 1,
   finishedAt: 2,
@@ -23,6 +26,7 @@ describe("slaude domain reconcile", () => {
     expect(lines[0]).toContain("dry run");
     expect(lines[0]).toContain("would create 1");
     expect(lines[0]).toContain("acc-1");
+    expect(lines[0]).toContain("grant=grant-1 team=T0EXAMPLE");
   });
   test("--json prints the report object", async () => {
     const lines: string[] = [];

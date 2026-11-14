@@ -35,6 +35,19 @@
  *    unless the caller passes `demoteUnprovenEmails` (the CLI, explicitly), in
  *    which case they go back to observed. The boot hook never passes it.
  *
+ * 5. Grant and lock plumbing (slice C, task 11). Stored Slack grants get
+ *    `subject_ref` and `subject_user_id` (the user the Slack binding in the
+ *    tenant's single workspace points at, alias resolved; rows with no binding
+ *    yet keep NULL and are counted), and old `one_on_one_locks` rows get
+ *    `team_id`. Both are placed only when the tenant has exactly one
+ *    workspace (otherwise counted `ambiguous` or `no_workspace`), never
+ *    overwrite a value, and never create a user (a bot or USLACKBOT grant is
+ *    skipped as `bot`). Paged by keyset, one transaction per page, no
+ *    per-row audit; a dry run only counts. Workspace-kind grants whose team
+ *    is not one of the tenant's connected workspaces are REPORTED (grant and
+ *    team ids, never changed): the report must be clean before the access
+ *    flip makes workspace grants compare the team.
+ *
  * Safe to rerun and to race: every write is the repo's insert-or-ignore, a
  * Postgres advisory lock serialises runners, and an in-process queue
  * serialises runs sharing one connection. A non-dry run that created something
@@ -42,6 +55,7 @@
  * no per-row events; a no-op run writes none.
  */
 import { audit, type AuditInput } from "../audit/index";
+import { formatRef, parseRef } from "../refs/parse";
 import * as Domain from "../db/domain";
 import { normaliseEmail, projectLink, projectLogin, userForAccount } from "../db/account-projection";
 import { purgeExpiredLinkTokens } from "../db/link-token-uses";
@@ -80,6 +94,26 @@ export interface UnprovenEmails {
 
 export const NO_ACCOUNT = "(no account)";
 
+/** A stored workspace-kind grant whose team is not a connected workspace of its tenant (ids only). */
+export interface WorkspaceGrantMismatch {
+  grantId: string;
+  /** The team id the grant names. */
+  teamId: string;
+}
+
+export interface WorkspaceGrantReport {
+  /** Workspace-kind grants examined. */
+  total: number;
+  /** Grants whose team is not a connected workspace of their tenant. */
+  mismatched: number;
+  /** The first MISMATCH_LIST_CAP of them. */
+  rows: WorkspaceGrantMismatch[];
+  /** Grants not judged because their tenant has no known workspace. */
+  unjudged: number;
+}
+
+export const MISMATCH_LIST_CAP = 200;
+
 export interface ReconcileReport {
   dryRun: boolean;
   sources: {
@@ -94,6 +128,12 @@ export interface ReconcileReport {
   conflicts: Conflict[];
   /** Expired link token ledger rows removed (would be, in a dry run). */
   linkTokensPurged: number;
+  /** Stored Slack grants: `subject_ref` and `subject_user_id` filled (would be, in a dry run). created = rows changed. */
+  grantSubjects: SourceReport;
+  /** Old one-on-one lock rows: `team_id` filled (would be, in a dry run). created = rows changed. */
+  lockTeams: SourceReport;
+  /** Workspace grants that name a team the tenant is not connected to. Report only. */
+  workspaceGrants: WorkspaceGrantReport;
   /** Verified email bindings no proving login backs, per issuer of the user's oidc binding; counts only, never an address. */
   unprovenEmails: UnprovenEmails;
   startedAt: number;
@@ -173,6 +213,9 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     },
     conflicts: [],
     linkTokensPurged: 0,
+    grantSubjects: empty(),
+    lockTeams: empty(),
+    workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 },
     unprovenEmails: { total: 0, byIssuer: {}, demoted: 0 },
     startedAt,
     finishedAt: startedAt,
@@ -454,6 +497,11 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     report.linkTokensPurged = Number(n?.n ?? 0);
   } else report.linkTokensPurged = await purgeExpiredLinkTokens(c);
 
+  // 5. Grant subjects, lock teams and the workspace-grant report (all keyed on the workspace placement above).
+  await fillGrantSubjects(c, { dry, pageSize, pg, place, report: report.grantSubjects });
+  await fillLockTeams(c, { dry, pageSize, pg, place, report: report.lockTeams });
+  report.workspaceGrants = await workspaceGrantReport(c, { pageSize, pg, workspaces });
+
   // 4. Unproven email bindings: reported on every run, demoted only on request.
   report.unprovenEmails = await unprovenEmailBindings(c, { demote: !!opts.demoteUnprovenEmails && !dry, pageSize: opts.pageSize ?? PAGE_SIZE });
   if (report.unprovenEmails.demoted > 0) {
@@ -470,14 +518,14 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
 
   report.finishedAt = Date.now();
   // A no-op run (nothing created, no conflict) stays silent: boot would otherwise add one audit row per start.
-  if (!dry && (totalCreated(report) > 0 || report.conflicts.length > 0)) {
+  if (!dry && (totalCreated(report) > 0 || report.conflicts.length > 0 || report.grantSubjects.created > 0 || report.lockTeams.created > 0)) {
     const write = opts.audit ?? ((i: AuditInput) => audit(i));
     await write({
       actorKind: "system",
       actorId: "system",
       action: SUMMARY_ACTION,
       targetKind: "domain",
-      summary: `domain reconcile: ${totalCreated(report)} record(s) created, ${report.conflicts.length} conflict(s)`,
+      summary: `domain reconcile: ${totalCreated(report)} record(s) created, ${report.conflicts.length} conflict(s), ${report.grantSubjects.created} grant(s) and ${report.lockTeams.created} lock(s) filled`,
       details: { ...report },
     }).catch((e) => console.warn(`[domain] reconcile summary audit failed: ${(e as Error).message}`));
   }
@@ -537,6 +585,174 @@ export async function unprovenEmailBindings(c: DbClient, o: { demote: boolean; p
   return out;
 }
 
+
+type Place = (tenant: string) => { ws: string } | { reason: "ambiguous" | "no_workspace" };
+interface PlumbOpts {
+  dry: boolean;
+  pageSize: number;
+  pg: boolean;
+  place: Place;
+  report: SourceReport;
+}
+
+const SLACK_USER_RE = /^[UW][A-Z0-9]+$/;
+const SLACK_CHANNEL_RE = /^[CG][A-Z0-9]+$/;
+
+/**
+ * Fill `subject_ref` and `subject_user_id` on stored Slack grants. A row is
+ * complete when it has its ref and, for a user subject, its user id. The user
+ * id is only ever taken from an existing binding (nothing is created here),
+ * so a grant whose person has not been seen keeps NULL and is counted
+ * `no_binding` on every run until first sight or the reconciler's binding
+ * step creates it. Existing values are never overwritten.
+ */
+async function fillGrantSubjects(c: DbClient, o: PlumbOpts): Promise<void> {
+  const T = o.pg ? "tenant_id" : "'default'";
+  let after = "";
+  for (;;) {
+    const page = await c.query<{ id: string; tenant: string; kind: string; sid: string; ref: string | null; uid: string | null }>(
+      `SELECT id, ${T} AS tenant, subject_kind AS kind, subject_id AS sid, subject_ref AS ref, subject_user_id AS uid
+         FROM agent_grants
+        WHERE subject_kind IN ('user', 'channel') AND id > ?
+          AND (subject_ref IS NULL OR (subject_kind = 'user' AND subject_user_id IS NULL))
+        ORDER BY id LIMIT ?`,
+      [after, o.pageSize],
+    );
+    if (page.length === 0) break;
+    after = page[page.length - 1]!.id;
+    const work: Array<{ id: string; ref: string | null; uid: string | null }> = [];
+    for (const row of page) {
+      const user = row.kind === "user";
+      if (/^USLACKBOT$|^B[A-Z0-9]+$/.test(row.sid)) {
+        skip(o.report, "bot");
+        continue;
+      }
+      if (user && row.sid.startsWith("W")) {
+        skip(o.report, "grid");
+        continue;
+      }
+      if (!(user ? SLACK_USER_RE : SLACK_CHANNEL_RE).test(row.sid)) {
+        skip(o.report, "not_slack_id");
+        continue;
+      }
+      // The workspace the ref already names, else the tenant's single workspace.
+      let ws: string | null = null;
+      if (row.ref) {
+        const p = parseRef(row.ref);
+        if (p.ok && p.ref.kind === "external" && p.ref.workspace) ws = p.ref.workspace;
+      }
+      if (ws === null) {
+        const p = o.place(row.tenant);
+        if ("reason" in p) {
+          skip(o.report, p.reason);
+          continue;
+        }
+        ws = p.ws;
+      }
+      let ref = row.ref;
+      if (!ref) ref = formatRef({ kind: "external", service: "slack", type: user ? "user" : "channel", id: row.sid, workspace: ws });
+      let uid = row.uid;
+      if (user && !uid) {
+        const b = await Domain.findBinding({ service: "slack", kind: "user", workspace: ws, value: row.sid }, c);
+        uid = b ? ((await Domain.resolveUserId(b.user_id, c)) ?? b.user_id) : null;
+        if (!uid && row.ref) {
+          skip(o.report, "no_binding");
+          continue;
+        }
+        if (!uid) skip(o.report, "no_binding");
+      }
+      if (ref === row.ref && uid === row.uid) continue;
+      work.push({ id: row.id, ref: row.ref ? null : ref, uid: row.uid ? null : uid });
+    }
+    if (work.length) {
+      if (o.dry) o.report.created += work.length;
+      else {
+        await c.transaction(async (tx) => {
+          for (const w of work) {
+            // Compare-and-set per column: a value written since the read stays.
+            const r = await tx.run(
+              "UPDATE agent_grants SET subject_ref = COALESCE(subject_ref, ?), subject_user_id = COALESCE(subject_user_id, ?) WHERE id = ? AND (subject_ref IS NULL OR subject_user_id IS NULL)",
+              [w.ref, w.uid, w.id],
+            );
+            o.report.created += r.changes ?? 0;
+          }
+        });
+      }
+    }
+    if (page.length < o.pageSize) break;
+  }
+  // Rows already complete, for the report: counted without reading them.
+  const done = await c.one<{ n: number | string }>(
+    "SELECT COUNT(*) AS n FROM agent_grants WHERE subject_kind IN ('user', 'channel') AND subject_ref IS NOT NULL AND (subject_kind = 'channel' OR subject_user_id IS NOT NULL)",
+  );
+  o.report.existing = Number(done?.n ?? 0);
+}
+
+/** Fill `one_on_one_locks.team_id` on old rows where the tenant has exactly one workspace. */
+async function fillLockTeams(c: DbClient, o: PlumbOpts): Promise<void> {
+  const T = o.pg ? "tenant_id" : "'default'";
+  let after: { ch: string; ts: string } | null = null;
+  for (;;) {
+    const page: Array<{ ch: string; ts: string; tenant: string }> = await c.query(
+      `SELECT channel_id AS ch, thread_ts AS ts, ${T} AS tenant FROM one_on_one_locks
+        WHERE team_id IS NULL AND (channel_id, thread_ts) > (?, ?)
+        ORDER BY channel_id, thread_ts LIMIT ?`,
+      [after?.ch ?? "", after?.ts ?? "", o.pageSize],
+    );
+    if (page.length === 0) break;
+    after = { ch: page[page.length - 1]!.ch, ts: page[page.length - 1]!.ts };
+    const work: Array<{ ch: string; ts: string; tenant: string; ws: string }> = [];
+    for (const row of page) {
+      const p = o.place(row.tenant);
+      if ("reason" in p) skip(o.report, p.reason);
+      else work.push({ ...row, ws: p.ws });
+    }
+    if (o.dry) o.report.created += work.length;
+    else if (work.length) {
+      await c.transaction(async (tx) => {
+        for (const w of work) {
+          const r = await tx.run(
+            `UPDATE one_on_one_locks SET team_id = ? WHERE channel_id = ? AND thread_ts = ? AND team_id IS NULL${o.pg ? " AND tenant_id = ?" : ""}`,
+            o.pg ? [w.ws, w.ch, w.ts, w.tenant] : [w.ws, w.ch, w.ts],
+          );
+          o.report.created += r.changes ?? 0;
+        }
+      });
+    }
+    if (page.length < o.pageSize) break;
+  }
+  const done = await c.one<{ n: number | string }>("SELECT COUNT(*) AS n FROM one_on_one_locks WHERE team_id IS NOT NULL");
+  o.report.existing = Number(done?.n ?? 0);
+}
+
+/** Workspace-kind grants naming a team the tenant is not connected to. Read only. */
+async function workspaceGrantReport(c: DbClient, o: { pageSize: number; pg: boolean; workspaces: Map<string, Set<string>> }): Promise<WorkspaceGrantReport> {
+  const T = o.pg ? "tenant_id" : "'default'";
+  const out: WorkspaceGrantReport = { total: 0, mismatched: 0, rows: [], unjudged: 0 };
+  let after = "";
+  for (;;) {
+    const page = await c.query<{ id: string; tenant: string; sid: string }>(
+      `SELECT id, ${T} AS tenant, subject_id AS sid FROM agent_grants WHERE subject_kind = 'workspace' AND id > ? ORDER BY id LIMIT ?`,
+      [after, o.pageSize],
+    );
+    if (page.length === 0) break;
+    after = page[page.length - 1]!.id;
+    for (const r of page) {
+      out.total++;
+      const known = o.workspaces.get(r.tenant);
+      if (!known || known.size === 0) {
+        out.unjudged++;
+        continue;
+      }
+      if (known.has(r.sid)) continue;
+      out.mismatched++;
+      if (out.rows.length < MISMATCH_LIST_CAP) out.rows.push({ grantId: r.id, teamId: r.sid });
+    }
+    if (page.length < o.pageSize) break;
+  }
+  return out;
+}
+
 const bk = (k: { service: string; kind: string; workspace: string; value: string }) => `binding\0${k.service}\0${k.kind}\0${k.workspace}\0${k.value}`;
 
 async function hasVerified(c: DbClient, userId: string): Promise<boolean> {
@@ -572,6 +788,17 @@ export function formatReconcileReport(r: ReconcileReport): string {
     for (const c of r.conflicts) {
       lines.push(`    ${c.kind} account=${c.accountId}${c.heldByUserId ? ` held-by-user=${c.heldByUserId}` : ""}${c.heldByAccountId ? ` held-by-account=${c.heldByAccountId}` : ""}`);
     }
+  }
+  for (const [label, s] of [["grant subjects", r.grantSubjects], ["lock teams", r.lockTeams]] as const) {
+    const skipped = Object.entries(s.skipped).map(([k, n]) => `${k} ${n}`).join(", ");
+    lines.push(`  ${label.padEnd(17)} ${verb} ${s.created} filled, complete ${s.existing}${skipped ? `, skipped (${skipped})` : ""}`);
+  }
+  const w = r.workspaceGrants;
+  if (w.mismatched === 0) lines.push(`  workspace grants: ${w.total} checked, none name an unconnected team${w.unjudged ? ` (${w.unjudged} not judged: no known workspace)` : ""}`);
+  else {
+    lines.push(`  workspace grants: ${w.mismatched} of ${w.total} name a team this tenant is not connected to (fix or delete before the access flip)`);
+    for (const row of w.rows) lines.push(`    grant=${row.grantId} team=${row.teamId}`);
+    if (w.mismatched > w.rows.length) lines.push(`    ... and ${w.mismatched - w.rows.length} more`);
   }
   const u = r.unprovenEmails;
   if (u.total === 0) lines.push("  unproven email bindings: none");
