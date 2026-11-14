@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { audit } from "../../src/audit/index";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
@@ -54,5 +54,21 @@ describe("first sight seams (global db)", () => {
     await nap();
     await flushFirstSight();
     expect((await Domain.findBoundary({ service: "slack", workspace: WS, value: "D0EXAMPLE" }))?.kind).toBe("dm");
+  });
+
+  test("a session lookup that found nothing is not repeated within the TTL", async () => {
+    setLiveWorkspaces(() => [WS, "T1EXAMPLE"]);
+    const spy = spyOn(db, "one");
+    try {
+      for (let i = 0; i < 3; i++) {
+        await audit({ actorKind: "slack_user", actorId: "U0NEGCACHE", action: "x.y", sessionId: "no-such-session" }, { sink: () => {} });
+        await nap();
+      }
+      await flushFirstSight();
+      const lookups = spy.mock.calls.filter((c) => String(c[0]).includes("FROM sessions WHERE id"));
+      expect(lookups.length).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

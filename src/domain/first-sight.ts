@@ -19,6 +19,12 @@
  *    `system` and inside an async-local guard, so the audit seam that calls
  *    this module never observes its own output. More than 50 new records in
  *    one minute: one summary event for the window, no more per-row events.
+ *  - Bounded: at most QUEUE_CAP observations wait (the oldest are dropped and
+ *    counted, one log line per minute), at most ROW_CAP new records are
+ *    written per minute (the rest are dropped and counted, and the window's
+ *    summary event carries the count), and a session lookup that found no
+ *    workspace is not repeated for NEG_TTL_MS. A dropped key is not cached, so
+ *    it is observed again on its next appearance or by the reconciler.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { env } from "../config/env";
@@ -31,6 +37,9 @@ export const LRU_CAP = 5000;
 export const RECHECK_MS = 10 * 60 * 1000;
 export const BURST_WINDOW_MS = 60 * 1000;
 export const BURST_LIMIT = 50;
+export const QUEUE_CAP = 1000;
+export const ROW_CAP = 500;
+export const NEG_TTL_MS = 30 * 1000;
 export const SUMMARY_ACTION = "domain.first_sight.burst";
 const LOG_CAP = 5000;
 
@@ -55,7 +64,11 @@ export interface FirstSightDeps {
   /** Write the audit events of new records. Default: `emitDomainEvents`. */
   emit?: (events: readonly DomainEvent[], opts: { tenantId?: string }) => Promise<void>;
   /** Write the one burst summary. Default: `audit`. */
-  summary?: (i: { tenantId?: string; count: number; windowMs: number }) => Promise<void>;
+  summary?: (i: { tenantId?: string; count: number; windowMs: number; dropped: number }) => Promise<void>;
+  /** Pending-queue cap (default QUEUE_CAP). */
+  queueCap?: number;
+  /** New records written per minute (default ROW_CAP). */
+  rowCap?: number;
   now?: () => number;
   log?: (msg: string) => void;
 }
@@ -83,6 +96,8 @@ export function createFirstSight(deps: FirstSightDeps = {}): FirstSight {
   const getDb = deps.db ?? (() => globalDb);
   const role = deps.role ?? (() => env.role());
   const now = deps.now ?? Date.now;
+  const queueCap = deps.queueCap ?? QUEUE_CAP;
+  const rowCap = deps.rowCap ?? ROW_CAP;
   const log = deps.log ?? ((m: string) => console.warn(`[domain] ${m}`));
   const emit =
     deps.emit ??
@@ -100,8 +115,8 @@ export function createFirstSight(deps: FirstSightDeps = {}): FirstSight {
         actorId: "first-sight",
         action: SUMMARY_ACTION,
         targetKind: "domain",
-        summary: `first sight: more than ${BURST_LIMIT} new records in a minute (${i.count} so far); per-record events suppressed for the window`,
-        details: { count: i.count, window_ms: i.windowMs },
+        summary: `first sight: more than ${BURST_LIMIT} new records in a minute (${i.count} so far); per-record events suppressed for the window${i.dropped ? `; ${i.dropped} observation(s) dropped` : ""}`,
+        details: { count: i.count, window_ms: i.windowMs, dropped: i.dropped },
       });
     });
 
@@ -113,6 +128,24 @@ export function createFirstSight(deps: FirstSightDeps = {}): FirstSight {
   let windowStart = 0;
   let windowCount = 0;
   let windowSummarised = false;
+  let waiting: Array<{ key: string; dropped: boolean }> = [];
+  let rowWindowStart = 0;
+  let rowCount = 0;
+  let windowDropped = 0;
+  let capSummarised = false;
+  let dropsUnlogged = 0;
+  let lastDropLog = 0;
+
+  const noteDrop = (why: string): void => {
+    windowDropped += 1;
+    dropsUnlogged += 1;
+    const t = now();
+    if (t - lastDropLog >= BURST_WINDOW_MS) {
+      lastDropLog = t;
+      log(`first sight dropped ${dropsUnlogged} observation(s) (${why}); they are seen again on their next appearance or by the reconciler`);
+      dropsUnlogged = 0;
+    }
+  };
 
   const cached = (key: string): boolean => {
     const at = lru.get(key);
@@ -150,28 +183,64 @@ export function createFirstSight(deps: FirstSightDeps = {}): FirstSight {
         await guard.run(true, () => emit(events, { tenantId }));
       } else if (!windowSummarised) {
         windowSummarised = true;
-        await guard.run(true, () => summary({ tenantId, count: windowCount, windowMs: BURST_WINDOW_MS }));
+        await guard.run(true, () => summary({ tenantId, count: windowCount, windowMs: BURST_WINDOW_MS, dropped: windowDropped }));
       }
     } catch (e) {
       logOnce("audit", e);
     }
   }
 
+  /** True when the per-minute row cap is spent (and rolls the window). */
+  function rowCapSpent(): boolean {
+    const t = now();
+    if (t - rowWindowStart >= BURST_WINDOW_MS) {
+      rowWindowStart = t;
+      rowCount = 0;
+      windowDropped = 0;
+      capSummarised = false;
+    }
+    return rowCount >= rowCap;
+  }
+
   function start(key: string, tenantId: string | undefined, write: (c: DbClient) => Promise<DomainEvent[]>): void {
     if (role() === "node" || insideFirstSight()) return;
     if (cached(key) || inflight.has(key)) return;
+    const job = { key, dropped: false };
+    waiting.push(job);
+    if (waiting.length > queueCap) {
+      const old = waiting.shift()!;
+      old.dropped = true;
+      inflight.delete(old.key);
+      noteDrop("queue full");
+    }
     const run = async (): Promise<void> => {
+      if (job.dropped) return;
+      const at = waiting.indexOf(job);
+      if (at >= 0) waiting.splice(at, 1);
       try {
+        if (rowCapSpent()) {
+          noteDrop("per-minute record cap");
+          if (!capSummarised) {
+            capSummarised = true;
+            try {
+              await guard.run(true, () => summary({ tenantId, count: rowCount, windowMs: BURST_WINDOW_MS, dropped: windowDropped }));
+            } catch (e) {
+              logOnce("audit", e);
+            }
+          }
+          return;
+        }
         const c = getDb();
         const events = await c.transaction((tx) => write(tx));
         remember(key);
+        if (events.length) rowCount += 1;
         await record(events, tenantId);
       } catch (e) {
         logOnce(key, e);
       }
     };
     const p: Promise<void> = (queue = queue.then(run, run) as Promise<void>).finally(() => {
-      inflight.delete(key);
+      if (inflight.get(key) === p) inflight.delete(key);
       pending.delete(p);
     });
     inflight.set(key, p);
@@ -217,6 +286,14 @@ export function createFirstSight(deps: FirstSightDeps = {}): FirstSight {
       windowStart = 0;
       windowCount = 0;
       windowSummarised = false;
+      waiting = [];
+      rowWindowStart = 0;
+      rowCount = 0;
+      windowDropped = 0;
+      capSummarised = false;
+      dropsUnlogged = 0;
+      lastDropLog = 0;
+      sessionMiss.clear();
     },
   };
 }
@@ -240,18 +317,28 @@ export function setLiveWorkspaces(fn: () => readonly string[]): void {
 }
 
 const sessionTeam = new Map<string, string>();
+/** session id -> when a lookup last found no workspace. */
+const sessionMiss = new Map<string, number>();
 
 async function workspaceForAudit(sessionId: string | null | undefined): Promise<string | null> {
   if (sessionId) {
     const hit = sessionTeam.get(sessionId);
     if (hit) return hit;
+    const missAt = sessionMiss.get(sessionId);
+    if (missAt !== undefined && Date.now() - missAt < NEG_TTL_MS) return liveOnly();
     const row = await globalDb.one<{ slack_team_id: string | null }>("SELECT slack_team_id FROM sessions WHERE id = ?", [sessionId]);
     if (row?.slack_team_id) {
       if (sessionTeam.size >= LRU_CAP) sessionTeam.clear();
       sessionTeam.set(sessionId, row.slack_team_id);
       return row.slack_team_id;
     }
+    if (sessionMiss.size >= LRU_CAP) sessionMiss.clear();
+    sessionMiss.set(sessionId, Date.now());
   }
+  return liveOnly();
+}
+
+function liveOnly(): string | null {
   const teams = liveTeams();
   return teams.length === 1 ? teams[0]! : null;
 }

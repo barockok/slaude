@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import * as Domain from "../../src/db/domain";
 import { type DbClient, openDb } from "../../src/db/client";
 import { runMigrations } from "../../src/db/migrate";
-import { createFirstSight, insideFirstSight, observeFromAudit, BURST_LIMIT, type FirstSightDeps } from "../../src/domain/first-sight";
+import { createFirstSight, insideFirstSight, observeFromAudit, BURST_LIMIT, ROW_CAP, QUEUE_CAP, type FirstSightDeps } from "../../src/domain/first-sight";
 import type { DomainEvent } from "../../src/db/domain";
 
 const WS = "T0EXAMPLE";
@@ -41,17 +41,19 @@ for (const dialect of ["sqlite", "pg"] as const) {
     let emitted: DomainEvent[];
     let logs: string[];
     let summaries: number;
+    let summaryDrops: number[];
     let counter: ReturnType<typeof counting>;
     const make = (o: FirstSightDeps = {}) => {
       emitted = [];
       logs = [];
       summaries = 0;
+      summaryDrops = [];
       counter = counting(base);
       return createFirstSight({
         db: () => counter.db,
         role: () => "mono",
         emit: async (e) => void emitted.push(...e),
-        summary: async () => void summaries++,
+        summary: async (i) => void (summaries++, summaryDrops.push(i.dropped)),
         log: (m) => void logs.push(m),
         ...o,
       });
@@ -195,6 +197,40 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(await count("bindings")).toBe(BURST_LIMIT + 20);
       expect(emitted.length).toBe(BURST_LIMIT * 2);
       expect(summaries).toBe(1);
+    });
+
+    test("a full pending queue drops the oldest, counts it and logs once", async () => {
+      const fs = make({ queueCap: 5 });
+      for (let i = 0; i < 12; i++) fs.observeSlackUser({ teamId: WS, userId: `U${String(i).padStart(4, "0")}QUEUE` });
+      await fs.flush();
+      // The first job was already running; of the rest only the newest 5 waited.
+      expect(await count("bindings")).toBeLessThan(12);
+      expect(await Domain.findBinding({ service: "slack", kind: "user", workspace: WS, value: "U0011QUEUE" }, base)).not.toBeNull();
+      expect(await Domain.findBinding({ service: "slack", kind: "user", workspace: WS, value: "U0001QUEUE" }, base)).toBeNull();
+      expect(logs.filter((l) => l.includes("dropped")).length).toBeLessThanOrEqual(1);
+      // A dropped key is not cached: seeing it again writes it.
+      fs.observeSlackUser({ teamId: WS, userId: "U0001QUEUE" });
+      await fs.flush();
+      expect(await Domain.findBinding({ service: "slack", kind: "user", workspace: WS, value: "U0001QUEUE" }, base)).not.toBeNull();
+    });
+
+    test("a per-minute cap on new rows drops the rest and the summary notes the drops", async () => {
+      let t = 5_000_000;
+      const fs = make({ rowCap: 10, now: () => t });
+      for (let i = 0; i < 25; i++) fs.observeSlackUser({ teamId: WS, userId: `U${String(i).padStart(4, "0")}ROWCAP` });
+      await fs.flush();
+      expect(await count("bindings")).toBe(10);
+      expect(summaryDrops.some((d) => d > 0)).toBe(true);
+      // The next minute writes again.
+      t += 61_000;
+      fs.observeSlackUser({ teamId: WS, userId: "U9999ROWCAP" });
+      await fs.flush();
+      expect(await count("bindings")).toBe(11);
+    });
+
+    test("defaults", () => {
+      expect(QUEUE_CAP).toBe(1000);
+      expect(ROW_CAP).toBe(500);
     });
 
     test("the LRU re-checks after 10 minutes", async () => {
