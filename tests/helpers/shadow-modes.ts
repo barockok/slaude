@@ -81,7 +81,7 @@ export function useShadowEnv(extra?: { before?: () => void | Promise<void>; afte
 }
 
 /** One test per (mode, break): the scenario's decisions equal `expected`. Also run once with source=legacy as the baseline. */
-export function legacyUnderEveryMode<T>(label: string, scenario: () => Promise<T>, expected: T): void {
+export function legacyUnderEveryMode<T>(label: string, scenario: () => Promise<T>, expected: Awaited<T>): void {
   test(`${label}: the legacy baseline`, async () => {
     process.env.SLAUDE_ACCESS_SOURCE = "legacy";
     expect(await scenario()).toEqual(expected);

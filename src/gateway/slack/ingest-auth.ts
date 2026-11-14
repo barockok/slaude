@@ -1,4 +1,9 @@
+import { roleInternal } from "../../access/authority";
+import { deriveSoulGrants } from "../../access/grants";
+import { checkAt } from "../../access/wired";
 import type { SoulData } from "../../soul/data";
+import { channelApproversOf } from "../../soul/per-persona";
+import type { SeamCtx } from "./model-auth";
 
 /**
  * Authorisation gate for the /ingest command (Task 10).
@@ -11,9 +16,20 @@ import type { SoulData } from "../../soul/data";
  * All fields are optional in the SoulData schema (`.partial().default({})`),
  * so the function is defensive against missing data.
  */
-export function canTriggerIngest(userId: string, soul: SoulData): boolean {
-  if (soul.manager?.userId === userId) return true;
-  if (soul.backupManager?.userId === userId) return true;
-  if (soul.approvers?.some((a) => a.userId === userId)) return true;
-  return false;
+export function canTriggerIngest(userId: string, soul: SoulData, seam: SeamCtx = {}): boolean {
+  const legacy =
+    soul.manager?.userId === userId || soul.backupManager?.userId === userId || !!soul.approvers?.some((a) => a.userId === userId);
+  // Slice C task 15: shadowed against the engine over the soul's grants; the answer is the one above.
+  return checkAt({
+    site: "ingest_auth.can_trigger",
+    persona: seam.persona,
+    teamId: seam.teamId,
+    userId,
+    legacy,
+    grants: () => deriveSoulGrants(soul, channelApproversOf(soul)),
+    internal: ({ grants, actor }) => {
+      const r = roleInternal(grants, actor);
+      return r === "manager" || r === "approver";
+    },
+  });
 }

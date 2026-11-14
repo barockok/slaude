@@ -1766,6 +1766,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const servers: Record<string, McpServerConfig> = {
       [SURFACE_MCP_NAME]: createSurfaceMcp(route.surface, {
         initiator: () => route.ctx.userId,
+        teamId: () => route.ctx.teamId,
         auditContext: () => ({
           persona: route.ctx.personaId, sessionId,
           channelId: route.ctx.channel, threadTs: route.ctx.threadTs ?? route.ctx.inboundTs,
@@ -2861,13 +2862,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       // /mode here persists for every later speaker and wake of the channel.
-      if (slash.kind === "mode" && !(await isManagerOrApprover(dispatch.personaId, userId, channelId))) {
+      if (slash.kind === "mode" && !(await isManagerOrApprover(dispatch.personaId, userId, channelId, teamId))) {
         await replyPrivately("Only a manager or this channel's approvers can change this channel's permission mode.");
         return;
       }
     }
     if (slash?.kind === "new" && dispatch?.channelSession) {
-      if (!(await isManagerOrApprover(dispatch.personaId, userId, channelId))) {
+      if (!(await isManagerOrApprover(dispatch.personaId, userId, channelId, teamId))) {
         await replyPrivately("Only a manager or this channel's approvers can start the session over.");
         return;
       }
@@ -3093,14 +3094,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // /soul writes soul_overrides, which apply to the default persona's soul
         // only, so the gate is the default persona's role, from any app.
         const soul = soulData();
-        if (!soul.manager.userId || userId !== soul.manager.userId || !(await isManagerOf("default", userId))) {
+        if (!soul.manager.userId || !sameAt({ site: "soul_override.slash_manager_same", persona: "default", teamId, userId, otherUserId: soul.manager.userId }) || !(await managerAt("soul_override.slash_role", "default", userId, teamId))) {
           await replyPrivately(":lock: `/soul` is manager-only.");
           return;
         }
         if (slash.kind === "soul") {
           const res = await mutateOverride(
             { field: slash.field, action: slash.action, value: slash.value, by: userId },
-            { managerId: soul.manager.userId },
+            { managerId: soul.manager.userId, teamId, persona: "default" },
           );
           if (res.ok) {
             auditSoulOverride("soul.override.set", {
@@ -3285,7 +3286,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "ignore" || slash.kind === "unignore") {
         if (slash.kind === "ignore") {
           if (slash.target === "user") {
-            if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId))) {
+            if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId, teamId))) {
               await replyPrivately(":no_entry: only manager or approver can ignore users");
               return;
             }
@@ -3326,7 +3327,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
         if (slash.kind === "unignore") {
           if (slash.target === "user") {
-            if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId))) {
+            if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId, teamId))) {
               await replyPrivately(":no_entry: only manager or approver can unignore users");
               return;
             }
@@ -3546,7 +3547,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
       if (slash.kind === "model") {
         const soul = effectiveSoulForChannelFor(dispatch?.personaId, channelId);
-        if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId)) && !canChangeModel(userId, { ...soul, approvers: [] })) {
+        if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId, teamId)) && !canChangeModel(userId, { ...soul, approvers: [] }, { persona: dispatch?.personaId, teamId })) {
           await replyPrivately(":lock: `/model`: manager, approver, or DM-allowed users only.");
           return;
         }

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { surfaceContract } from "../../tools/contracts/surface";
 import type { Surface } from "./surface";
+import { sameAt } from "../../access/wired";
 import { mutateOverride, FIELD_ALIASES, type FieldAlias } from "../../soul/overrides";
 import { auditSoulOverride, type ThreadCtx } from "../../audit/events";
 import * as SoulOverrides from "../../db/soul-overrides";
@@ -33,6 +34,8 @@ export interface SurfaceMcpOpts {
   /** Resolves the CURRENT turn's inbound platform user id (live getter — the
    *  gateway mutates ctx per turn). Required to mount manager-gated tools. */
   initiator?: () => string | undefined;
+  /** The current turn's workspace, live like `initiator`. Used only by the shadow of the manager compare. */
+  teamId?: () => string | undefined;
   /** The current turn's persona, session and thread, for the audit rows the
    *  manager-gated tools write. Live getter, like `initiator`. */
   auditContext?: () => ThreadCtx;
@@ -172,7 +175,9 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
         const who = initiator();
         // Primary manager only (owner: "only Manager") — checked against the
         // signed inbound Slack user id, not the model's intent.
-        if (!soul.manager.userId || who !== soul.manager.userId) {
+        const persona = opts.auditContext?.().persona;
+        const teamId = opts.teamId?.();
+        if (!who || !soul.manager.userId || !sameAt({ site: "soul_override.tool_manager_same", persona, teamId, userId: who, otherUserId: soul.manager.userId })) {
           return fail("soul_override is manager-only: this turn was not initiated by the manager.");
         }
         if (action === "list") {
@@ -186,7 +191,7 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
           return ok(`cleared runtime overrides for ${field}`);
         }
         if (!value) return fail("value is required for add/remove");
-        const res = await mutateOverride({ field: field as FieldAlias, action, value, by: who }, { managerId: soul.manager.userId });
+        const res = await mutateOverride({ field: field as FieldAlias, action, value, by: who }, { managerId: soul.manager.userId, teamId, persona });
         if (res.ok) {
           auditSoulOverride("soul.override.set", {
             ...opts.auditContext?.(), userId: who, field: res.field, op: action, value: res.value, via: "agent_tool",

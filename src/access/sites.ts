@@ -38,6 +38,14 @@ export const SITES = [
   { id: "approval.click_allowlist", group: 14, kind: "check", where: "approval click: the clicker is on the card's allowlist (live waiter)" },
   { id: "approval.click_allowlist_poll", group: 14, kind: "check", where: "approval click: the clicker is on the card's allowlist (node poll or foreign row)" },
   { id: "approval.click_denied", group: 14, kind: "denied", where: "approval click: a deny grant refuses the clicker" },
+  // Task 15: soul-field readers.
+  { id: "model_auth.can_change", group: 15, kind: "check", where: "/model: manager, backup, approver or DM-allowed user named in the soul" },
+  { id: "ingest_auth.can_trigger", group: 15, kind: "check", where: "/ingest: manager, backup or approver named in the soul" },
+  { id: "soul_override.self_lockout", group: 15, kind: "same", where: "soul override: refuse to block the manager" },
+  { id: "soul_override.slash_manager_same", group: 15, kind: "same", where: "/soul: the speaker is the soul's primary manager" },
+  { id: "soul_override.slash_role", group: 15, kind: "role", where: "/soul: manager role on the default persona" },
+  { id: "soul_override.tool_manager_same", group: 15, kind: "same", where: "soul_override tool: the turn's initiator is the soul's primary manager" },
+  { id: "mcp_tools.manager_or_approver", group: 15, kind: "role", where: "slack and slash tools: manager or approver role (isManagerOrApprover)" },
 ] as const;
 
 export type SiteId = (typeof SITES)[number]["id"];
