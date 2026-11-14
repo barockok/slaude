@@ -37,6 +37,13 @@
  *   GET    /panel/api/users?state&service&q&cursor&limit   domain users (superadmin; read only, emails masked)
  *   GET    /panel/api/users/:id                    one user: bindings and aliases (superadmin)
  *   GET    /panel/api/boundaries?state&service&q&cursor&limit  domain boundaries (superadmin)
+ *   GET    /panel/api/merges?state&cursor&limit    the user merge ledger (superadmin; emails and Slack ids masked)
+ *   GET    /panel/api/merges/:id                   one merge: moved ids, activated grants, notice state, undo limits
+ *   POST   /panel/api/merges/:id/undo-preview      what an undo would move and skip (superadmin, no write)
+ *   POST   /panel/api/merges/:id/undo              { reason } undo within the window (superadmin; audited)
+ *   GET    /panel/api/merge-proposals?state&cursor&limit  pairs a human settles (superadmin)
+ *   POST   /panel/api/merge-proposals/:id/approve  { activates? } merge kind console after a typed confirmation (superadmin; audited)
+ *   POST   /panel/api/merge-proposals/:id/dismiss  drop a proposal (superadmin; audited)
  *   GET    /panel/api/agents/:name                 one agent: mandates and effective grants
  *   GET    /panel/api/agents/:name/grants          effective grants (soul and console)
  *   POST   /panel/api/agents/:name/grants          store a console grant (superadmin)
@@ -125,6 +132,7 @@ import { GUARDRAIL_SLUG_RE } from "../../guardrails/format";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
 import * as DomainRead from "../../db/domain-read";
+import { handleMergeRoutes } from "./merges-api";
 import { agentStoreNames, displayTitle, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
 import { agentIdSync } from "../../knowledge/agent-identity";
 import { storeKind } from "../../knowledge/scope";
@@ -217,6 +225,11 @@ export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "skill.version.private",
   "console.roles.read",
   "domain.read",
+  "merge.read",
+  "merge.undo.preview",
+  "merge.undo",
+  "merge.proposal.approve",
+  "merge.proposal.dismiss",
   "skill.retire",
   "skill.restore",
   "guardrail.toggle",
@@ -1073,6 +1086,16 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         return seg[2] === "users"
           ? json(200, (await DomainRead.listUsers(filter, { cursor, limit })) satisfies UserPage)
           : json(200, (await DomainRead.listBoundaries(filter, { cursor, limit })) satisfies BoundaryPage);
+      }
+
+      // Merges and merge proposals (slice C, rc.21): superadmin only, mutations audited as the operator.
+      if (seg[2] === "merges" || seg[2] === "merge-proposals") {
+        const handled = await handleMergeRoutes(req, url, seg, {
+          operatorId,
+          role,
+          requireSuper: (action) => requireSuperadmin(role, { action, operator: operatorId }),
+        });
+        return handled ?? json(404, { error: "not found" });
       }
 
       // GET /panel/api/plugins: the plugin inventory. Read-only, any operator;

@@ -56,6 +56,8 @@ export interface MergeInput {
   proof?: { slackBindingId?: string | null; oidcBindingId?: string | null };
   /** The proof path's own binding: raised to verified after the move and recorded in `raised`. */
   raise?: { bindingId: string };
+  /** The caller rolls its transaction back (a console preview): the attempt is not counted in the merge metrics. */
+  dryRun?: boolean;
 }
 
 export interface MovedShape {
@@ -153,6 +155,7 @@ export async function mergeUsers(i: MergeInput, tx?: DbClient): Promise<MergeOut
 }
 
 function count(i: MergeInput, out: MergeOutcome): MergeOutcome {
+  if (i.dryRun) return out;
   m.userMergesTotal.inc({ kind: i.kind, result: out.status });
   return out;
 }
