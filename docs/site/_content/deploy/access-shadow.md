@@ -110,3 +110,28 @@ Set `SLAUDE_ACCESS_SOURCE=legacy` and restart to stop the comparison. It is
 safe at any time, because the legacy answer is the one already in force. Going
 back to rc.18 is safe while no email grants exist, and none can be created in
 rc.19.
+
+## Flipping to internal (rc.20) and back
+
+Set `SLAUDE_ACCESS_SOURCE=internal` only after the gate above holds. The default
+stays `shadow`. Email and user references (agent.yaml, stored grants, the console
+form) are accepted only while the source is `internal`.
+
+Failure behaviour under `internal`: when the user records cannot be read in time
+(`SLAUDE_ACCESS_TIMEOUT_MS`, default 1500) ordinary access uses the legacy result
+for that call and every privileged answer is refused. Watch
+`slaude_access_decision_total{source="fallback_legacy"}` and
+`slaude_actor_resolve_failures_total`.
+
+**Before flipping back to `shadow` or `legacy`: delete the email and user grants
+and agent.yaml references, or accept that email denies stop applying.** While
+they exist and the source is not `internal` they are inactive, so a person who
+was blocked only by an email entry is admitted again. The gateway logs this at
+boot and `slaude domain reconcile` prints the count of stored grants with a typed
+subject.
+
+Limits to know: sites with no workspace on the call (heartbeat and digest
+recipients, the background managers) use the soul's Slack ids, so a manager
+named only by email gets no such DMs and `/soul` refuses them. On the default
+persona, only managers can be named by email for approvals; scope-matched and
+env-list approvers stay Slack ids.

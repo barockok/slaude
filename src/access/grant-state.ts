@@ -18,6 +18,9 @@
  * Slack subjects have no state (they are in effect as they always were).
  */
 import * as Domain from "../db/domain";
+import { db } from "../db/schema";
+import { getPersonaRegistry } from "../persona/registry";
+import { soulDataFor } from "../soul/per-persona";
 import { env } from "../config/env";
 import type { Grant } from "./grants";
 import { grantSubject } from "./authority";
@@ -56,5 +59,51 @@ export async function grantState(g: Grant): Promise<GrantState | null> {
     return verified.length ? "active" : "pending: Slack binding not verified";
   } catch {
     return null;
+  }
+}
+
+export interface InactiveRefs {
+  /** Stored grants naming a person by email or user reference. */
+  stored: number;
+  /** Of those, denies. */
+  storedDeny: number;
+  /** `email:` and `user:` entries in compiled agent.yaml access (accessRefs). */
+  soulRefs: number;
+  /** Of those, denies (`access.blocked`). */
+  soulDeny: number;
+}
+
+/** What exists that only the internal source reads. Read only. */
+export async function inactiveRefs(): Promise<InactiveRefs> {
+  const out: InactiveRefs = { stored: 0, storedDeny: 0, soulRefs: 0, soulDeny: 0 };
+  const rows = await db.query<{ deny: boolean | number }>("SELECT deny FROM agent_grants WHERE subject_kind = 'user' AND (subject_id LIKE 'email:%' OR subject_id LIKE 'user:%')");
+  out.stored = rows.length;
+  out.storedDeny = rows.filter((r) => Boolean(r.deny)).length;
+  const reg = getPersonaRegistry();
+  for (const name of ["default", ...reg.list().map((p) => p.name).filter((n) => n !== "default")]) {
+    for (const r of soulDataFor(name).accessRefs ?? []) {
+      out.soulRefs++;
+      if (r.deny) out.soulDeny++;
+    }
+  }
+  return out;
+}
+
+/**
+ * One boot line when email or user references exist but the access source is
+ * not internal: they are inactive then, and a deny by email is NOT enforced.
+ * Never throws.
+ */
+export async function warnInactiveRefs(log: (m: string) => void = (m) => console.warn(`[access] ${m}`)): Promise<void> {
+  try {
+    if (env.access.source() === "internal") return;
+    const r = await inactiveRefs();
+    if (r.stored + r.soulRefs === 0) return;
+    log(
+      `${r.stored} stored grant(s) and ${r.soulRefs} agent.yaml access reference(s) name a person by email or user and are inactive: SLAUDE_ACCESS_SOURCE is not internal. ` +
+        `Denies by email are NOT enforced (${r.storedDeny + r.soulDeny}); a person they block is admitted again. Set SLAUDE_ACCESS_SOURCE=internal, or delete them.`,
+    );
+  } catch {
+    /* a boot line must never fail boot */
   }
 }

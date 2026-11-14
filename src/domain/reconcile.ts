@@ -55,6 +55,8 @@
  * no per-row events; a no-op run writes none.
  */
 import { audit, type AuditInput } from "../audit/index";
+import { env } from "../config/env";
+import { warnInactiveRefs } from "../access/grant-state";
 import { formatRef, parseRef } from "../refs/parse";
 import * as Domain from "../db/domain";
 import { normaliseEmail, projectLink, projectLogin, userForAccount } from "../db/account-projection";
@@ -833,7 +835,7 @@ export function formatReconcileReport(r: ReconcileReport): string {
     for (const row of w.rows) lines.push(`    grant=${row.grantId} team=${row.teamId}`);
     if (w.mismatched > w.rows.length) lines.push(`    ... and ${w.mismatched - w.rows.length} more`);
   }
-  if (r.typedGrantSubjects > 0) lines.push(`  stored grants with a typed subject (email or user reference): ${r.typedGrantSubjects}; the legacy readers ignore them until the access flip`);
+  if (r.typedGrantSubjects > 0) lines.push(`  stored grants with a typed subject (email or user reference): ${r.typedGrantSubjects}; ${env.access.source() === "internal" ? "the internal source reads them" : "these grants are inactive (SLAUDE_ACCESS_SOURCE is not internal); denies by email are NOT enforced"}`);
   const u = r.unprovenEmails;
   if (u.unaccounted > 0) lines.push(`  unaccounted verified email bindings: ${u.unaccounted} (no account behind them, from a merge or the console); reported, never demoted`);
   if (u.total === 0) lines.push("  unproven email bindings: none");
@@ -863,6 +865,7 @@ export async function reconcileAtBoot(o: {
     if (totalCreated(r) === 0 && r.conflicts.length === 0) log("reconcile: nothing to do");
     else log(`reconcile done: ${totalCreated(r)} created, ${r.conflicts.length} conflict(s)\n${formatReconcileReport(r)}`);
     // Report only: demotion is an operator's explicit CLI run, never the boot hook's.
+    await warnInactiveRefs();
     if (r.unprovenEmails.total > 0) {
       log(`${r.unprovenEmails.total} verified email binding(s) have no proof of the address (before rc.19); nothing reads them for access yet. Report and fix: slaude domain reconcile --demote-unproven-emails --apply`);
     }

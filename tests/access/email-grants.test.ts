@@ -9,7 +9,7 @@
  */
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { __resetDecide, decideAdmit, decideRole } from "../../src/access/decide";
-import { grantState } from "../../src/access/grant-state";
+import { grantState, inactiveRefs, warnInactiveRefs } from "../../src/access/grant-state";
 import { grantFromRow } from "../../src/access/grants";
 import { invalidateGrants, loadGrants } from "../../src/access/role";
 import * as Accounts from "../../src/db/accounts";
@@ -183,5 +183,29 @@ describe("only under SLAUDE_ACCESS_SOURCE=internal", () => {
     process.env.SLAUDE_ACCESS_SOURCE = "shadow";
     expect(await admit()).toEqual({ ok: false, reason: "whitelist" });
     expect(await grantState(grantFromRow((await AgentGrants.listForPersona(PERSONA))[0]!))).toBe("inactive: access source is not internal");
+  });
+});
+
+describe("rolling back from internal (a boot warning)", () => {
+  test("stored email grants and denies are counted and warned about when the source is not internal", async () => {
+    await grantEmail("member");
+    await grantEmail("member", { deny: true, address: "blocked@example.com" });
+    expect(await inactiveRefs()).toMatchObject({ stored: 2, storedDeny: 1 });
+    const lines: string[] = [];
+    await warnInactiveRefs((m) => lines.push(m));
+    expect(lines).toEqual([]); // still internal: they are read
+    process.env.SLAUDE_ACCESS_SOURCE = "shadow";
+    await warnInactiveRefs((m) => lines.push(m));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("inactive");
+    expect(lines[0]).toContain("Denies by email are NOT enforced (1)");
+    expect(lines[0]).not.toContain("example.com");
+  });
+
+  test("nothing stored, nothing said", async () => {
+    process.env.SLAUDE_ACCESS_SOURCE = "shadow";
+    const lines: string[] = [];
+    await warnInactiveRefs((m) => lines.push(m));
+    expect(lines).toEqual([]);
   });
 });
