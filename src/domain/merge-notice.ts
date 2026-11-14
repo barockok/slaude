@@ -70,7 +70,10 @@ export function queueMergeNotice(mergeId: string): void {
   const p = sendMergeNotice(mergeId)
     .then(() => {})
     .catch((e) => console.warn(`[merge-notice] ${mergeId}: ${(e as Error).message}`))
-    .finally(() => inflight.delete(p));
+    .finally(() => {
+      inflight.delete(p);
+      claimed.delete(mergeId); // the ledger's notice_state, not this set, keeps a settled notice from going out again
+    });
   inflight.add(p);
 }
 
