@@ -7,6 +7,8 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { __setGrantsReader } from "../../src/access/role";
 import { settleShadows } from "../../src/access/wired";
+import { AgentManager } from "../../src/agent/manager";
+import { createGateway } from "../../src/gateway/core/gateway";
 import { digestRecipientOf } from "../../src/background/digest";
 import { personaManager } from "../../src/background/scheduler";
 import * as Actor from "../../src/refs/actor";
@@ -98,5 +100,56 @@ describe("proactive_rule", () => {
     await settleShadows();
     for (const site of ["rule_tool.approvers", "rule_tool.own_turn", "rule_tool.can_approve"]) expect(decisions(site)).toBeGreaterThan(0);
     expect(compared("rule_tool.approvers")).toBeGreaterThan(0);
+  });
+});
+
+describe("/bash and the bridge connect card through the gateway", () => {
+  const TEAM = "T";
+  // Event timestamps are deduplicated by the gateway, so every scenario run needs fresh ones.
+  let n = 70_000;
+  async function gatewayScenario(): Promise<Record<string, string[]>> {
+    writeSoulFixture(WORLD);
+    __setGrantsReader(async () => []);
+    const posts: any[] = [];
+    const handlers = new Map<string, (a: any) => Promise<void>>();
+    const client = {
+      auth: { test: async () => ({ user_id: "U_SLAUDE", bot_id: "B_SLAUDE", team: TEAM, url: "x" }) },
+      chat: { postMessage: async (a: any) => (posts.push(a), { ok: true, ts: `${posts.length}.5` }), update: async () => ({ ok: true }) },
+      reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
+      conversations: { info: async () => ({}), members: async () => ({}), replies: async () => ({}) },
+      users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
+      search: { messages: async () => ({}) },
+      assistant: { threads: { setStatus: async () => ({ ok: true }) } },
+    } as any;
+    const t = { client, action: () => {}, event: (n: string, fn: any) => handlers.set(n, fn), use: () => {}, start: async () => {}, stop: async () => {} } as any;
+    const agent = new AgentManager();
+    agent.sendMessage = async () => {};
+    const h = createGateway(agent, t, {});
+    const out: Record<string, string[]> = {};
+    for (const [who, user] of [["manager", WORLD.manager], ["backup", WORLD.backup!], ["member", "U0MEMBER"]] as const) {
+      const before = posts.length;
+      await handlers.get("message")!({ event: { type: "message", channel: "D_BASH", channel_type: "im", user, team: TEAM, ts: `${++n}.1`, text: "/bash echo shadow-smoke" }, client, context: { teamId: TEAM } });
+      out[who] = posts.slice(before).map((p) => String(p.text).slice(0, 40));
+    }
+    const before = posts.length;
+    await h.__postBridgeConnectCard!({ persona: "default", session: "s", team: TEAM, channel: "D_BASH", thread: "1.5", initiator: WORLD.manager, runAs: "agent", app: "A1" } as never, "svc", "global", "connect");
+    out.card = posts.slice(before).map((p) => String(p.text).slice(0, 30));
+    await h.stop();
+    return out;
+  }
+  sameAsLegacyBaseline("/bash role and the connect notify target", gatewayScenario, (b) => {
+    expect(b.manager!.join()).toContain("shadow-smoke");
+    expect(b.backup!.join()).toContain("shadow-smoke");
+    expect(b.member!.join()).not.toContain("shadow-smoke");
+    expect(b.card!.length).toBe(1);
+  });
+
+  test("both sites count decisions and compare", async () => {
+    await gatewayScenario();
+    await settleShadows();
+    for (const site of ["gateway.bash.role", "gateway.connect_notify_target"]) {
+      expect(decisions(site)).toBeGreaterThan(0);
+      expect(compared(site)).toBeGreaterThan(0);
+    }
   });
 });
