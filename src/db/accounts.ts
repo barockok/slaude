@@ -121,11 +121,6 @@ export async function linkSlackIdentity(
   // Select-then-insert and the projection share one transaction. A replay
   // (same account) or a refusal (other account) returns before any write.
   const out = await db.transaction(async (tx) => {
-    // Claim first: on Postgres a concurrent claim of the same jti waits here for
-    // the winner, then reads the winner's committed link below.
-    const claimed = i.token
-      ? await claimLinkToken({ jti: i.token.jti, teamId: i.teamId, slackUserId: i.slackUserId, expiresAt: i.token.expiresAt }, tx)
-      : true;
     const existing = await tx.one<SlackIdentityRow>(
       "SELECT * FROM slack_identities WHERE team_id = ? AND slack_user_id = ?",
       [i.teamId, i.slackUserId],
@@ -137,7 +132,17 @@ export async function linkSlackIdentity(
         events: [] as DomainEvent[],
       };
     }
-    if (!claimed) return { result: { ok: false, reason: "link-used" } as const, events: [] as DomainEvent[] };
+    // A link will be written, so only now is the token spent: a refusal above must not burn it.
+    // On Postgres a concurrent claim of the same jti waits here for the winner; when the
+    // winner linked this same account, this call is its replay and succeeds as a no-op.
+    const claimed = i.token
+      ? await claimLinkToken({ jti: i.token.jti, teamId: i.teamId, slackUserId: i.slackUserId, expiresAt: i.token.expiresAt }, tx)
+      : true;
+    if (!claimed) {
+      const winner = await tx.one<SlackIdentityRow>("SELECT * FROM slack_identities WHERE team_id = ? AND slack_user_id = ?", [i.teamId, i.slackUserId]);
+      if (winner && winner.account_id === i.accountId) return { result: { ok: true, created: false } as const, events: [] as DomainEvent[] };
+      return { result: { ok: false, reason: "link-used" } as const, events: [] as DomainEvent[] };
+    }
     await tx.run(
       `INSERT INTO slack_identities (team_id, slack_user_id, account_id, linked_at, linked_via)
        VALUES (?, ?, ?, ?, ?)`,

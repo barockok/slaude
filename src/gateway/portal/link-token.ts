@@ -61,5 +61,8 @@ export function verifyLinkToken(
   if (c.typ !== "link") return { ok: false, reason: "wrong_type" };
   if (typeof c.team !== "string" || !c.team) return { ok: false, reason: "malformed" };
   if (typeof c.slackUser !== "string" || !c.slackUser) return { ok: false, reason: "malformed" };
+  // The single-use ledger needs both: a token without them would reach a NOT NULL insert.
+  if (typeof c.jti !== "string" || !c.jti) return { ok: false, reason: "malformed" };
+  if (typeof c.exp !== "number" || !Number.isFinite(c.exp)) return { ok: false, reason: "malformed" };
   return { ok: true, claims: c };
 }
