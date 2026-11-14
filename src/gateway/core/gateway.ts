@@ -1539,9 +1539,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // current turn's author (not the session creator) drives KB scoping.
   type BrainGateCtx = Pick<SlackContext, "channel" | "threadTs" | "userId" | "teamId" | "personaId" | "origin" | "turnSenders">;
   // `lockedUser`: the thread's lock owner when the caller already read it.
-  const brainGateFor = async (ctx: BrainGateCtx, known?: { lockedUser: string | null }): Promise<GateInput> => {
+  const brainGateFor = async (ctx: BrainGateCtx, known?: { lockedUser: string | null; lockedTeamId?: string | null }): Promise<GateInput> => {
     const soul = trustSoulFor(ctx.personaId);
-    const lockedUser = known ? known.lockedUser : ((await OneOnOne.find(ctx.channel, ctx.threadTs))?.locked_user ?? null);
+    const lockRow = known ? null : await OneOnOne.find(ctx.channel, ctx.threadTs);
+    const lockedUser = known ? known.lockedUser : (lockRow?.locked_user ?? null);
+    const lockedTeamId = known ? (known.lockedTeamId ?? null) : (lockRow?.team_id ?? null);
     // The persona's Slack user ID as the agent brain-slice key, the process
     // agent otherwise (shared with the console's history reader). Managed +
     // not live: it throws, so the gate refuses rather than reading or writing
@@ -1561,8 +1563,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return senders ? { turnSenders: senders } : {};
       })()),
       lockedUser,
+      lockedTeamId,
       channelTrust: channelTrustFor(ctx.channel, soul),
-      isManager: await isManagerOf(ctx.personaId, ctx.userId),
+      isManager: await managerAt("gateway.brain_gate.role", ctx.personaId, ctx.userId, ctx.teamId),
       agentId: personaAgentId,
       threadKey: `${ctx.channel}:${ctx.threadTs}`,
     };
@@ -1669,7 +1672,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // the message hot path never boots the local engine or connects the remote
   // one. A brain not open yet (or closing) means no block, silently.
   const turnMemoryBlock = async (m: {
-    channel: string; threadTs: string; userId: string; teamId: string; personaId?: string; lockedUser: string | null;
+    channel: string; threadTs: string; userId: string; teamId: string; personaId?: string; lockedUser: string | null; lockedTeamId?: string | null;
   }): Promise<string> => {
     if (!brainEnabled() || !brainReady()) return "";
     try {
@@ -1678,7 +1681,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         channel: m.channel, threadTs: m.threadTs, userId: m.userId, teamId: m.teamId, personaId: m.personaId,
         origin: "slack", turnSenders: () => [sender],
       };
-      const g = await brainGateFor(ctx, { lockedUser: m.lockedUser });
+      const g = await brainGateFor(ctx, { lockedUser: m.lockedUser, lockedTeamId: m.lockedTeamId });
       const inner = await buildTurnMemoryContext({
         call: brainCallIfOpen,
         scope: turnBrainScope(g, personaKbSourceIds(m.personaId)),
@@ -3725,7 +3728,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // A suppressed message is recorded only; no turn runs, so no context.
       suppress
         ? ""
-        : turnMemoryBlock({ channel: channelId, threadTs, userId, teamId, personaId: dispatch?.personaId, lockedUser: oneOnOneLock?.locked_user ?? null }),
+        : turnMemoryBlock({ channel: channelId, threadTs, userId, teamId, personaId: dispatch?.personaId, lockedUser: oneOnOneLock?.locked_user ?? null, lockedTeamId: oneOnOneLock?.team_id ?? null }),
       suppress ? "" : turnProactiveBlock({ channel: channelId, threadTs, eventTs, personaId: dispatch?.personaId, firstTurn: !session.claude_started }),
     ]);
     if (env.metricsPerUser()) {

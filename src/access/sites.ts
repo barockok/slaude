@@ -46,6 +46,22 @@ export const SITES = [
   { id: "soul_override.slash_role", group: 15, kind: "role", where: "/soul: manager role on the default persona" },
   { id: "soul_override.tool_manager_same", group: 15, kind: "same", where: "soul_override tool: the turn's initiator is the soul's primary manager" },
   { id: "mcp_tools.manager_or_approver", group: 15, kind: "role", where: "slack and slash tools: manager or approver role (isManagerOrApprover)" },
+  // Task 16: knowledge and memory scope.
+  { id: "brain_gate.lock_owner", group: 16, kind: "same", where: "brain write gate: in a 1on1 only the lock owner's own slice is writable" },
+  { id: "brain_gate.turn_sender_same", group: 16, kind: "same", where: "turn brain scope: the sole sender of the turn is the speaker" },
+  { id: "brain_gate.manager_approver", group: 16, kind: "same", where: "kb-admin approval: the approver is one of the persona's managers" },
+  { id: "kb_tools.lock_owner", group: 16, kind: "same", where: "kb_memoize: in a 1on1 the speaker is the lock owner" },
+  { id: "kb_tools.memory_about", group: 16, kind: "same", where: "memory_about: the asked person is the turn's own sender" },
+  { id: "kb_scope.lock_owner", group: 16, kind: "same", where: "brain scope: the speaker owns the thread's 1on1 lock" },
+  { id: "memory_scope.lock_owner", group: 16, kind: "same", where: "memory scope: the speaker owns the thread's 1on1 lock" },
+  { id: "memory_scope.run_as_speaker", group: 16, kind: "same", where: "memory scope: the carried identity is the speaker" },
+  { id: "memory_scope.run_as_lock", group: 16, kind: "same", where: "memory scope: the carried identity is the lock owner" },
+  { id: "memory_scope.claim_live_same", group: 16, kind: "same", where: "claimed lock owner equals the live lock owner" },
+  { id: "memory_scope.live_speaker_same", group: 16, kind: "same", where: "live lock owner is the speaker (the claim is used otherwise)" },
+  { id: "proposal.person_decider", group: 16, kind: "same", where: "proposal card click: the clicker is the person the proposal is for" },
+  { id: "proposal.manager_decider", group: 16, kind: "same", where: "proposal card click: the clicker is one of the persona's managers" },
+  { id: "proposal.apply_is_manager", group: 16, kind: "same", where: "proposal apply: the approver is a manager (shared memory writes)" },
+  { id: "gateway.brain_gate.role", group: 16, kind: "role", where: "brain gate input: the speaker's manager role" },
 ] as const;
 
 export type SiteId = (typeof SITES)[number]["id"];

@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { sameAt } from "../access/wired";
 import { loadKbs, type KbEntry } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient, synthesizeFromHits } from "./brain-think";
@@ -226,7 +227,7 @@ function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined,
   }
   const scope = target === "shared" ? { ...base, sourceId: SHARED_SOURCE } : base;
   if (g.lockedUser !== null) {
-    if (g.userId !== g.lockedUser || scope.sourceId !== userSourceId(g.lockedUser)) return { error: LOCK_REFUSAL };
+    if (!sameAt({ site: "kb_tools.lock_owner", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }) || scope.sourceId !== userSourceId(g.lockedUser)) return { error: LOCK_REFUSAL };
   }
   return { scope };
 }
@@ -603,8 +604,9 @@ export const brainHandlers = {
     // Only for the one person whose own turn this is (the turn's senders, not
     // the live ctx, which on mono flips to whoever posted mid-turn): one
     // person's memory never shows inside another person's turn.
-    const sender = ownTurnSender(await d.gate());
-    if (!sender || sender.userId !== p.userId) return err(MEMORY_ABOUT_REFUSAL);
+    const gate = await d.gate();
+    const sender = ownTurnSender(gate);
+    if (!sender || !sameAt({ site: "kb_tools.memory_about", persona: gate.agentId, teamId: sender.teamId, userId: sender.userId, otherUserId: p.userId })) return err(MEMORY_ABOUT_REFUSAL);
     try {
       const entries = await collectMemoryAbout(d.call ?? brainCall, await d.scope(), sender);
       return ok(entries.length > 0 ? formatMemoryAbout(entries) : `Nothing is recorded about ${p.userId} in what this turn can read.`);

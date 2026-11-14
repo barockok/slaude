@@ -25,6 +25,7 @@
  *   lesson-promotion  → the decision is recorded; the operator acts in git.
  * A write that fails puts the row back to open, so it can be clicked again.
  */
+import { sameAt } from "../access/wired";
 import { auditSkill } from "../audit/events";
 import * as Proposals from "../db/proposals";
 import { emitAudit } from "../audit/emit";
@@ -239,15 +240,15 @@ export interface DecideDeps {
 export type ClickResult = { ok: true; line: string } | { ok: false; text: string };
 
 /** Who may decide a proposal: its person for a person's, the manager or backup for the manager's. */
-export function mayDecide(p: Pick<Proposal, "toKind" | "toUser">, by: string, managers: readonly string[]): boolean {
-  if (p.toKind === "person") return p.toUser !== null && p.toUser !== "" && by === p.toUser;
-  return managers.includes(by);
+export function mayDecide(p: Pick<Proposal, "toKind" | "toUser">, by: string, managers: readonly string[], seam: { persona?: string | null; teamId?: string | null } = {}): boolean {
+  if (p.toKind === "person") return p.toUser !== null && p.toUser !== "" && sameAt({ persona: seam.persona, teamId: seam.teamId, site: "proposal.person_decider", userId: by, otherUserId: p.toUser });
+  return managers.some((mgr) => sameAt({ persona: seam.persona, teamId: seam.teamId, site: "proposal.manager_decider", userId: by, otherUserId: mgr }));
 }
 
 /** Apply an approved team-fact or promote through memory_save, as `by`, with the click as the approval. */
 async function applyWrite(p: Proposal, w: { pages: PageArg[]; target: MemoizeTarget }, by: string, deps: DecideDeps, teamId?: string): Promise<{ ok: true } | { ok: false; reason: string }> {
   const managers = await deps.managers(personaOfAgent(p.agentId), teamId);
-  const isManager = managers.includes(by);
+  const isManager = managers.some((mgr) => sameAt({ site: "proposal.apply_is_manager", persona: personaOfAgent(p.agentId), teamId, userId: by, otherUserId: mgr }));
   // Shared memory is the team's: only the manager or backup ever writes it
   // from a card, whatever the gate below would allow.
   if (w.target === "shared" && !isManager) return { ok: false, reason: "only the manager can add to shared memory" };
@@ -303,7 +304,7 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   const p = await Proposals.get(a.id);
   if (!p || p.kind === Proposals.SKILL_RETIRED_KIND) return { ok: false, text: ":grey_question: this proposal no longer exists" };
   if (!fromCardApp(p, a.from)) return { ok: false, text: WRONG_APP };
-  if (!mayDecide(p, a.by, await deps.managers(personaOfAgent(p.agentId), a.from?.teamId))) {
+  if (!mayDecide(p, a.by, await deps.managers(personaOfAgent(p.agentId), a.from?.teamId), { persona: personaOfAgent(p.agentId), teamId: a.from?.teamId })) {
     return { ok: false, text: `:no_entry: <@${a.by}>, only ${p.toKind === "person" ? "the person it is for" : "the manager"} can decide this proposal. It stays open.` };
   }
   const at = deps.now().getTime();
