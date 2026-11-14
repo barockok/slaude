@@ -27,6 +27,8 @@ const APPS = [
       ["agents", "agents", "triage"],
       ["agent-access", "agents/scout/access", "Covering approvals this week"],
       ["sessions", "sessions", "Compare queue libraries"],
+      ["users", "users", "j***@example.com"],
+      ["boundaries", "boundaries", "C1EXAMPLE"],
       ["session-timeline", "sessions/s_7f21", "Allowed Bash: run the test suite"],
       ["audit", "audit", "Bash: run the test suite"],
       ["access", "access", "bob@example.com"],

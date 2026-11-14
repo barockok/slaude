@@ -21,6 +21,7 @@ import {
   validateOwnerGuardrail, writeOwnerGuardrail,
 } from "./resources-fixtures";
 import { pluginFixtures } from "./plugin-fixtures";
+import { domainFixtures } from "./domain-fixtures";
 import type { AgentSettingsGroup, GuardrailTestRequest } from "../../../gateway/panel/api-types";
 import { CHANNEL_LABELS, USER_NAMES, allGrantsOf, createFixtures, sessionHistory, sessionScript, type ConsoleFixtures } from "./fixtures";
 
@@ -155,6 +156,24 @@ export function installStub(): void {
     }
     if (seg[1] === "sessions") return sessions(method, seg, query, body, isSuper);
     if (seg[1] === "memory") return memory(seg, query, isSuper);
+    if (path === "/api/users" || path === "/api/boundaries" || path.startsWith("/api/users/")) {
+      if (method !== "GET") return json(405, { error: "method not allowed" });
+      if (!isSuper) return json(403, { error: "action 'domain.read' requires the superadmin role", required: "superadmin" });
+      const dom = domainFixtures(startedAt);
+      if (path.startsWith("/api/users/")) {
+        const d = dom.details[decodeURIComponent(path.slice("/api/users/".length))];
+        return d ? json(200, d) : json(404, { error: "not found" });
+      }
+      const state = query.get("state"), service = query.get("service"), qs = query.get("q");
+      const pick = <T extends { state?: string }>(rows: T[], svc: (r: T) => string, val: (r: T) => string) =>
+        empty ? [] : rows.filter((r) => (!state || (r as { state?: string }).state === state) && (!service || svc(r) === service) && (!qs || val(r).startsWith(qs)));
+      if (path === "/api/boundaries") return json(200, { items: pick(dom.boundaries, (r) => r.service, (r) => r.value), nextCursor: null });
+      const items = empty ? [] : dom.users.filter((u) => {
+        const d = dom.details[u.id]!;
+        return d.bindings.some((x) => (!state || x.state === state) && (!service || x.service === service) && (!qs || x.value.startsWith(qs)));
+      });
+      return json(200, { items, nextCursor: null });
+    }
     if (path === "/api/environments") return json(200, fx.environments);
     if (path === "/api/plugins") return method === "GET" ? json(200, pluginFixtures(Date.now(), empty, mono)) : json(405, { error: "method not allowed" });
     if (seg[1] === "skills") return skillsRoute(method, seg, isSuper);

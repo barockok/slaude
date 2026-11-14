@@ -26,6 +26,8 @@ const PAGES: Array<{ path: string; heading: string | RegExp; ready: string; sub?
   { path: "/panel/sessions/s_7f21/audit", heading: /Release checklist for the console/, ready: "Denied: restart the staging deploy" },
   { path: "/panel/audit", heading: "Approvals and audit", ready: "Bash: run the test suite" },
   { path: "/panel/access", heading: "Access", ready: "bob@example.com", sub: "Console roles" },
+  { path: "/panel/users", heading: "Users", ready: "j***@example.com" },
+  { path: "/panel/boundaries", heading: "Boundaries", ready: "C1EXAMPLE" },
   { path: "/panel/memory", heading: "Memory", ready: "kb-handbook" },
   { path: "/panel/memory/shared", heading: /Shared/, ready: "decisions/queue-library" },
   { path: "/panel/memory/shared/page?slug=runbooks%2Fdeploy-rollback", heading: "Rolling back a deploy", ready: "Announce the rollback", sub: "Content" },
@@ -74,7 +76,7 @@ test("the shell loads with the signed-in superadmin", async ({ page }) => {
 test("the sidebar reaches every top-level page", async ({ page }) => {
   await page.goto("/panel/");
   const nav = page.getByRole("navigation", { name: "Console navigation" });
-  for (const name of ["Agents", "Sessions", "Approvals and audit", "Access", "Memory", "Environments", "Skills", "Guardrails", "Overview"]) {
+  for (const name of ["Agents", "Sessions", "Approvals and audit", "Access", "Users", "Boundaries", "Memory", "Environments", "Skills", "Guardrails", "Overview"]) {
     await nav.getByRole("link", { name, exact: true }).click();
     await expect(h1(page)).toHaveText(name);
   }
@@ -832,4 +834,30 @@ test("grant subjects show their names, ids as secondary text", async ({ page }) 
   await page.goto("/panel/agents/scout/access");
   const table = page.getByRole("table", { name: "Grants on scout" });
   await expect(table.getByRole("row").filter({ hasText: "#team" }).first()).toContainText("CTEAM");
+});
+
+test("Users filters by state and opens a read-only detail drawer", async ({ page }) => {
+  await page.goto("/panel/users");
+  await settled(page, "j***@example.com");
+  await expect(page.getByRole("main").getByText("Read only in this release", { exact: false })).toBeVisible();
+  await expect(page.getByRole("main").getByText("Unmatched", { exact: true })).toBeVisible();
+  await page.getByRole("cell", { name: /j\*\*\*@example.com/ }).first().click();
+  const drawer = page.getByRole("dialog");
+  await expect(drawer).toContainText("U3EXAMPLE");
+  await expect(drawer).toContainText("Aliases");
+  await expect(drawer.getByRole("button", { name: /merge|undo|resolve/i })).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await page.goto("/panel/users?state=verified");
+  await settled(page, "j***@example.com");
+  await expect(page.getByRole("main").getByText("U1EXAMPLE")).toHaveCount(0);
+});
+
+test("Users is refused to an operator", async ({ page }) => {
+  await page.goto("/panel/users?as=operator");
+  await expect(page.getByRole("main").getByText("Your console role cannot see this.")).toBeVisible();
+});
+
+test("Boundaries shows an empty state", async ({ page }) => {
+  await page.goto("/panel/boundaries?stubEmpty=1");
+  await expect(page.getByRole("main").getByText("No boundaries yet")).toBeVisible();
 });
