@@ -380,7 +380,7 @@ function auditProposal(p: Proposal, by: string, decision: "allow" | "deny", outc
 export async function restoreRetiredSkill(a: { id: string; by: string; from?: ClickOrigin }, deps: Pick<DecideDeps, "managers" | "now">): Promise<ClickResult> {
   const r = await Proposals.get(a.id);
   if (!r || r.kind !== Proposals.SKILL_RETIRED_KIND) return { ok: false, text: ":grey_question: this retirement no longer exists" };
-  if (!(await deps.managers(personaOfAgent(r.agentId), a.from?.teamId)).includes(a.by)) return { ok: false, text: `:no_entry: <@${a.by}>, only the manager can restore a skill.` };
+  if (!(await deps.managers(personaOfAgent(r.agentId), a.from?.teamId)).some((mgr) => sameAt({ site: "proposal.restore_manager", persona: personaOfAgent(r.agentId), teamId: a.from?.teamId, userId: a.by, otherUserId: mgr }))) return { ok: false, text: `:no_entry: <@${a.by}>, only the manager can restore a skill.` };
   if (!fromCardApp(r, a.from)) return { ok: false, text: WRONG_APP };
   if (r.status !== "approved") return { ok: false, text: ":lock: this skill was already restored" };
   const pl = r.payload as Partial<Proposals.SkillRetiredPayload>;

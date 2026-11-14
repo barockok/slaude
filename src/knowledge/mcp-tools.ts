@@ -220,7 +220,7 @@ function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined,
   if (target === "profile") {
     const sender = ownTurnSender(g);
     const own = sender ? speakerProfileSource(sender.teamId, sender.userId) : null;
-    if (!sender || own === null || (subject !== undefined && subject !== sender.userId)) {
+    if (!sender || own === null || (subject !== undefined && !sameAt({ site: "kb_tools.profile_subject", persona: g.agentId, teamId: sender.teamId, userId: subject, otherUserId: sender.userId }))) {
       return { error: PROFILE_REFUSAL };
     }
     return { scope: { ...base, sourceId: own }, speaker: sender.userId };
@@ -377,7 +377,7 @@ async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scop
       const pg = readPageRecord(await getPageOrNull(call, slug, only));
       if (!pg || pg.superseded) continue;
       const subject = pg.meta.subject;
-      if (subject !== undefined ? subject !== sender.userId : !(m.fixed.includes(slug) || m.where === "profile")) continue;
+      if (subject !== undefined ? !sameAt({ site: "kb_tools.memory_about_subject", persona: null, teamId: sender.teamId, userId: subject, otherUserId: sender.userId }) : !(m.fixed.includes(slug) || m.where === "profile")) continue;
       entries.push({
         where: m.where,
         slug,

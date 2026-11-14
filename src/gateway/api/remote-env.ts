@@ -1,3 +1,4 @@
+import { sameAt } from "../../access/wired";
 import type { JobClaims } from "./auth";
 import { json } from "./http";
 import { parseRunAs } from "../../agent/credential-owner";
@@ -21,7 +22,7 @@ export async function handleRemoteEnv(_req: Request, claims: JobClaims): Promise
   if (!target?.env || target.env.id !== ref.id || target.env.hash !== ref.hash) return json(409, { error: "the thread's environment changed" });
   if (target.env.trust === "user-machine") {
     const runAs = parseRunAs(claims.runAs);
-    if (!runAs || runAs.kind !== "user" || runAs.slackUserId !== b.env.userId) {
+    if (!runAs || runAs.kind !== "user" || !sameAt({ site: "remote.env_api_owner_same", persona: claims.persona, teamId: claims.team, userId: runAs.slackUserId, otherUserId: b.env.userId, otherTeamId: b.env.teamId })) {
       return json(403, { error: "a personal environment is only served to its owner's turns" });
     }
   }

@@ -2104,7 +2104,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
     if (action === "lock") {
       const prevTarget = await Remote.findTarget(ctx.channel, threadTs);
-      if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true });
+      if (prevTarget && !sameAt({ site: "gateway.one_on_one_agent_lock.prev_target_same", persona: ctx.personaId, teamId: ctx.teamId, userId, otherUserId: prevTarget.user_id, otherTeamId: prevTarget.team_id })) await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true });
       await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId, teamId: ctx.teamId || null });
       auditOneOnOne("one_on_one.locked", { userId, sessionId, channelId: ctx.channel, threadTs, persona: ctx.personaId, lockedUser: userId, via: "agent_tool" });
       agent.reload(sessionId);
@@ -2342,8 +2342,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // Checks run BEFORE the guarded resolve so an unauthorized click never
     // consumes the card.
     const clicker = (body as any).user?.id;
-    if (clicker !== ctx.userId) return;
     const cardTeam: string | undefined = (body as any).team?.id ?? (body as any).user?.team_id;
+    if (!sameAt({ site: "gateway.connect_card.clicker_same", persona: ctx.personaName, teamId: cardTeam, userId: clicker, otherUserId: ctx.userId })) return;
     if (ctx.scope === "initiator") {
       const lock = await OneOnOne.find(ctx.channelId, ctx.threadTs);
       if (!lock || !sameAt({ site: "gateway.connect_card.lock_owner", persona: ctx.personaName, teamId: cardTeam, userId: clicker, otherUserId: lock.locked_user, otherTeamId: lock.team_id })) return;
@@ -3015,7 +3015,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "one-on-one") {
         if (slash.action === "on") {
           const prevTarget = await Remote.findTarget(channelId, threadTs);
-          if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(channelId, threadTs, { sessionId: session.id, userMachineOnly: true });
+          if (prevTarget && !sameAt({ site: "gateway.one_on_one_slash.prev_target_same", persona: dispatch?.personaId, teamId, userId, otherUserId: prevTarget.user_id, otherTeamId: prevTarget.team_id })) await endRemoteForThread(channelId, threadTs, { sessionId: session.id, userMachineOnly: true });
           await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId, teamId });
           auditOneOnOne("one_on_one.locked", { userId, sessionId: session.id, channelId, threadTs, persona: dispatch?.personaId, lockedUser: userId, via: "slash" });
           agent.reload(session.id);

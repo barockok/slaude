@@ -146,7 +146,7 @@ export function decodeRemoteOffer(raw: string | undefined, clicker: string | und
   }
   const str = (x: unknown): x is string => typeof x === "string" && x.length > 0;
   if (!v || !str(v.s) || !str(v.tm) || !str(v.c) || !str(v.t) || !str(v.u) || typeof v.i !== "number") return { ok: false, reason: "invalid" };
-  if (v.u !== clicker) return { ok: false, reason: "invalid" };
+  if (!sameAt({ site: "remote.offer_clicker_same", persona: null, teamId: v.tm, userId: v.u, otherUserId: clicker })) return { ok: false, reason: "invalid" };
   const offer: RemoteOffer = { sessionId: v.s, teamId: v.tm, channelId: v.c, threadTs: v.t, userId: v.u, apiAppId: str(v.a) ? v.a : undefined, issuedAt: v.i };
   // A small allowance for clock skew between replicas; anything further ahead is not ours.
   if (v.i - now > 60_000) return { ok: false, reason: "invalid" };

@@ -16,6 +16,7 @@
  * same recipient within 7 days posts nothing. A refusal names its rule. What is "meaningfully new" and whether
  * content concerns a channel are the model's calls, not checked here.
  */
+import { sameAt } from "../access/wired";
 import { createHash } from "node:crypto";
 import { localParts } from "../background/calendar";
 import type { Audience } from "../db/proactive-posts";
@@ -96,7 +97,7 @@ export function checkProactive(req: ProactiveRequest, ctx: RestraintContext): { 
 
   if (req.audience === "manager") {
     if (!cfg.enabled) return no("disabled");
-    if (!ctx.managerId || req.recipient !== ctx.managerId) return no("not-manager");
+    if (!ctx.managerId || !sameAt({ site: "restraint.manager_recipient", persona: null, teamId: null, userId: req.recipient, otherUserId: ctx.managerId })) return no("not-manager");
   } else if (req.audience === "person") {
     if (!cfg.enabled) return no("disabled");
     if (!ctx.prefs.pings) return no("not-opted-in");

@@ -83,6 +83,19 @@ export const SITES = [
   { id: "rule_tool.can_approve", group: 18, kind: "same", where: "proactive rule: a person (the speaker or a card clicker) is one of the rule's approvers" },
   { id: "rule_tool.own_turn", group: 18, kind: "same", where: "proactive rule: the turn's sole sender is the speaker" },
   { id: "gateway.bash.role", group: 18, kind: "role", where: "/bash: manager role" },
+  // Task 18, found by the full-src guard (not in the plan's map).
+  { id: "proposal.restore_manager", group: 18, kind: "same", where: "retired skill restore click: the clicker is one of the persona's managers" },
+  { id: "gateway.one_on_one_agent_lock.prev_target_same", group: 18, kind: "same", where: "agent 1on1 lock: the thread's remote target belongs to the new lock owner" },
+  { id: "gateway.one_on_one_slash.prev_target_same", group: 18, kind: "same", where: "/1on1 on: the thread's remote target belongs to the new lock owner" },
+  { id: "gateway.connect_card.clicker_same", group: 18, kind: "same", where: "connect card click: the clicker is the person the card was posted for" },
+  { id: "bridge.card_scope_lock_same", group: 18, kind: "same", where: "bridge connect card: the carried identity still holds the thread's lock" },
+  { id: "remote.offer_clicker_same", group: 18, kind: "same", where: "remote connect form: the clicker is the person the offer was issued to" },
+  { id: "remote.env_api_owner_same", group: 18, kind: "same", where: "environment endpoint: the turn's carried identity owns a personal environment" },
+  { id: "restraint.manager_recipient", group: 18, kind: "same", where: "proactive post to the manager: the recipient is the persona's manager (no workspace on the call)" },
+  { id: "kb_tools.profile_subject", group: 18, kind: "same", where: "kb_memoize profile: a named subject is the turn's sender" },
+  { id: "kb_tools.memory_about_subject", group: 18, kind: "same", where: "memory_about listing: a page's subject is the turn's sender" },
+  { id: "pass_tools.profile_subject", group: 18, kind: "same", where: "background pass profile write: a named subject is the pass's person (no workspace on the call)" },
+  { id: "permission.stamp_expect_same", group: 18, kind: "same", where: "turn stamp: the token's initiator is the turn's sole sender (no workspace on the call)" },
 ] as const;
 
 export type SiteId = (typeof SITES)[number]["id"];

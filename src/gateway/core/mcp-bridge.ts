@@ -41,6 +41,7 @@
  * Not bridged (§4.2.9): server notifications (the standalone SSE stream is
  * never opened), sampling, prompts and resources.
  */
+import { sameAt } from "../../access/wired";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -545,7 +546,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
     const runAs = parseRunAs(claims.runAs);
     if (runAs?.kind === "user") {
       if (claims.lock === undefined) return "initiator"; // an older gateway's token: unknown, try
-      return claims.lock?.user === runAs.slackUserId ? "initiator" : null;
+      return sameAt({ site: "bridge.card_scope_lock_same", persona: claims.persona, teamId: claims.team, userId: claims.lock?.user, otherUserId: runAs.slackUserId }) ? "initiator" : null;
     }
     return claims.lock ? null : "global";
   }
