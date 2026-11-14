@@ -830,22 +830,22 @@ class SqliteClient implements DbClient {
     }
   }
 
-  async transaction<T>(fn: (tx: DbClient) => Promise<T>): Promise<T> {
+  async transaction<T>(fn: (tx: DbClient) => Promise<T>, opts?: { immediate?: boolean }): Promise<T> {
     // Nested (same async context): no queueing, as before (a nested BEGIN fails loudly).
-    if (inTransaction.getStore() === this) return this.#run(fn);
+    if (inTransaction.getStore() === this) return this.#run(fn, opts?.immediate);
     const prev = this.#txTail;
     let release!: () => void;
     this.#txTail = new Promise<void>((r) => (release = r));
     await prev.catch(() => {});
     try {
-      return await inTransaction.run(this, () => this.#run(fn));
+      return await inTransaction.run(this, () => this.#run(fn, opts?.immediate));
     } finally {
       release();
     }
   }
 
-  async #run<T>(fn: (tx: DbClient) => Promise<T>): Promise<T> {
-    this.raw.exec("BEGIN");
+  async #run<T>(fn: (tx: DbClient) => Promise<T>, immediate?: boolean): Promise<T> {
+    this.raw.exec(immediate ? "BEGIN IMMEDIATE" : "BEGIN");
     try {
       const out = await fn(this);
       this.raw.exec("COMMIT");

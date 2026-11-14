@@ -91,7 +91,7 @@ describe("upgrade from 0040", () => {
       const r = await runMigrations(db, { log: () => {}, migrations: all });
       expect(r.applied).toEqual(["0041"]);
       expect(await db.one("SELECT 1 AS x FROM users WHERE id = 'u1'")).not.toBeNull();
-      expect(await db.one("SELECT COUNT(*) AS n FROM user_merges")).toEqual({ n: 0 });
+      expect(Number((await db.one<{ n: number }>("SELECT COUNT(*) AS n FROM user_merges"))!.n)).toBe(0);
       expect((await runMigrations(db, { log: () => {}, migrations: all })).applied).toEqual([]);
     } finally {
       await db.close();
