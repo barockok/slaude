@@ -90,7 +90,8 @@
     "file": "src/access/wired.ts",
     "pattern": "user-id-dot-eq",
     "lines": [
-      "const legacy = o.userId === o.otherUserId;"
+      "const legacy = o.userId === o.otherUserId;",
+      "return o.userId === o.otherUserId;"
     ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
@@ -98,7 +99,8 @@
     "file": "src/access/wired.ts",
     "pattern": "id-compare",
     "lines": [
-      "const legacy = o.userId === o.otherUserId;"
+      "const legacy = o.userId === o.otherUserId;",
+      "return o.userId === o.otherUserId;"
     ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
@@ -447,8 +449,8 @@
     "file": "src/gateway/core/gateway.ts",
     "pattern": "manager-user-id",
     "lines": [
-      "legacy: [soulData().manager.userId, soulData().backupManager.userId].filter((u): u is string => !!u),",
-      "if (!soul.manager.userId || !sameAt({ site: \"soul_override.slash_manager_same\", persona: \"default\", teamId, userId, otherUserId: soul.manager.userId }) || !(await managerAt(\"soul_override.slash_role\", \"default\", userId, teamId))) {",
+      "const legacy = [soulData().manager.userId, soulData().backupManager.userId].filter((u): u is string => !!u);",
+      "if (!soul.manager.userId || !(await sameAt({ site: \"soul_override.slash_manager_same\", persona: \"default\", teamId, userId, otherUserId: soul.manager.userId })) || !(await managerAt(\"soul_override.slash_role\", \"default\", userId, teamId))) {",
       "{ managerId: soul.manager.userId, teamId, persona: \"default\" },",
       "(soulDataFor(persona).manager.userId ? \"\" : \" (no manager set in SOUL.md)\"),",
       "const userId = scope === \"initiator\" ? (runAs?.kind === \"user\" ? runAs.slackUserId : \"\") : soulDataFor(personaId).manager.userId;"
@@ -459,7 +461,7 @@
     "file": "src/gateway/core/gateway.ts",
     "pattern": "backup-manager-user-id",
     "lines": [
-      "legacy: [soulData().manager.userId, soulData().backupManager.userId].filter((u): u is string => !!u),"
+      "const legacy = [soulData().manager.userId, soulData().backupManager.userId].filter((u): u is string => !!u);"
     ],
     "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background"
   },
@@ -518,7 +520,7 @@
     "file": "src/gateway/core/surface-mcp.ts",
     "pattern": "manager-user-id",
     "lines": [
-      "if (!who || !soul.manager.userId || !sameAt({ site: \"soul_override.tool_manager_same\", persona, teamId, userId: who, otherUserId: soul.manager.userId })) {",
+      "if (!who || !soul.manager.userId || !(await sameAt({ site: \"soul_override.tool_manager_same\", persona, teamId, userId: who, otherUserId: soul.manager.userId }))) {",
       "const res = await mutateOverride({ field: field as FieldAlias, action, value, by: who }, { managerId: soul.manager.userId, teamId, persona });"
     ],
     "reason": "passes the soul's manager id to mutateOverride, whose self-lockout compare is the registered soul_override.self_lockout site"
@@ -616,7 +618,8 @@
     "file": "src/gateway/slack/approval-gate.ts",
     "pattern": "approvers-has",
     "lines": [
-      "legacy: approvers.size === 0 || approvers.has(userId),"
+      "legacy: approvers.size === 0 || approvers.has(userId),",
+      "if (approvers.has(userId)) return !opts.privilegedNeedsVerified || actor.acting?.verified === true;"
     ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
@@ -624,7 +627,9 @@
     "file": "src/gateway/slack/approval-gate.ts",
     "pattern": "id-membership",
     "lines": [
-      "legacy: approvers.size === 0 || approvers.has(userId),"
+      "legacy: approvers.size === 0 || approvers.has(userId),",
+      "if (approvers.has(userId)) return !opts.privilegedNeedsVerified || actor.acting?.verified === true;",
+      "if (!a || !a.verified || !users.has(a.userId)) return false;"
     ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
@@ -774,8 +779,8 @@
     "file": "src/knowledge/gated-dispatch.ts",
     "pattern": "neq-user-id",
     "lines": [
-      "return g.userId !== null && sameAt({ site: \"brain_gate.lock_owner\", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }) && scope.sourceId === userSourceId(g.userId) ? \"auto\" : \"deny\";",
-      "const own = sender !== null && g.userId !== null && sameAt({ site: \"brain_gate.turn_sender_same\", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: sender.userId, otherTeamId: sender.teamId }) && (sender.teamId ?? null) === g.teamId;"
+      "return g.userId !== null && (await sameAt({ site: \"brain_gate.lock_owner\", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) && scope.sourceId === userSourceId(g.userId) ? \"auto\" : \"deny\";",
+      "const own = sender !== null && g.userId !== null && (await sameAt({ site: \"brain_gate.turn_sender_same\", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: sender.userId, otherTeamId: sender.teamId })) && (sender.teamId ?? null) === g.teamId;"
     ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
@@ -808,7 +813,7 @@
     "file": "src/knowledge/mcp-tools.ts",
     "pattern": "id-compare",
     "lines": [
-      "if (subject !== undefined ? !(shadowBudget-- > 0 ? sameAt({ site: \"kb_tools.memory_about_subject\", persona: null, teamId: sender.teamId, userId: subject, otherUserId: sender.userId }) : subject === sender.userId) : !(m.fixed.includes(slug) || m.where === \"profile\")) continue;"
+      "if (subject !== undefined ? !(shadowBudget-- > 0 ? (await sameAt({ site: \"kb_tools.memory_about_subject\", persona: null, teamId: sender.teamId, userId: subject, otherUserId: sender.userId })) : subject === sender.userId) : !(m.fixed.includes(slug) || m.where === \"profile\")) continue;"
     ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
@@ -832,8 +837,8 @@
     "file": "src/memory/scope.ts",
     "pattern": "neq-user-id",
     "lines": [
-      "if (g.userId !== null && g.lockedUser !== null && !sameAt({ ...seam, site: \"memory_scope.lock_owner\", userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) return NONE;",
-      "if (g.userId !== null && !sameAt({ ...seam, site: \"memory_scope.run_as_speaker\", userId: g.userId, otherUserId: runAs })) return NONE;",
+      "if (g.userId !== null && g.lockedUser !== null && !(await sameAt({ ...seam, site: \"memory_scope.lock_owner\", userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }))) return NONE;",
+      "if (g.userId !== null && !(await sameAt({ ...seam, site: \"memory_scope.run_as_speaker\", userId: g.userId, otherUserId: runAs }))) return NONE;",
       "if (g.userId !== null && isDmChannel(opts.channel)) return both(g.userId, userSourceId(g.userId));"
     ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
@@ -842,8 +847,8 @@
     "file": "src/memory/scope.ts",
     "pattern": "locked-user-cmp",
     "lines": [
-      "if (g.userId !== null && g.lockedUser !== null && !sameAt({ ...seam, site: \"memory_scope.lock_owner\", userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) return NONE;",
-      "if (g.lockedUser !== null && !sameAt({ ...seam, site: \"memory_scope.run_as_lock\", userId: g.lockedUser, otherUserId: runAs, otherTeamId: g.lockedTeamId })) return NONE;"
+      "if (g.userId !== null && g.lockedUser !== null && !(await sameAt({ ...seam, site: \"memory_scope.lock_owner\", userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }))) return NONE;",
+      "if (g.lockedUser !== null && !(await sameAt({ ...seam, site: \"memory_scope.run_as_lock\", userId: g.lockedUser, otherUserId: runAs, otherTeamId: g.lockedTeamId }))) return NONE;"
     ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
@@ -1066,7 +1071,7 @@
     "pattern": "blocked",
     "lines": [
       "block: \"blockedUsers\",",
-      "if (field === \"blockedUsers\" && i.action === \"add\" && opts.managerId && sameAt({ site: \"soul_override.self_lockout\", persona: opts.persona, teamId: opts.teamId, userId: value, otherUserId: opts.managerId })) {"
+      "if (field === \"blockedUsers\" && i.action === \"add\" && opts.managerId && (await sameAt({ site: \"soul_override.self_lockout\", persona: opts.persona, teamId: opts.teamId, userId: value, otherUserId: opts.managerId }))) {"
     ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
@@ -1146,5 +1151,13 @@
       "fx.me.slackIdentities = fx.me.slackIdentities.filter((s) => s.teamId !== b.teamId || s.slackUserId !== b.slackUserId);"
     ],
     "reason": "console front end display"
+  },
+  {
+    "file": "src/access/decide.ts",
+    "pattern": "id-membership",
+    "lines": [
+      "if (u && !users.includes(u)) users.push(u);"
+    ],
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   }
 ]

@@ -34,8 +34,8 @@ export interface PermissionDeciderArgs {
 export async function canDecidePermission(a: PermissionDeciderArgs): Promise<boolean> {
   if (!a.clicker) return false;
   const seam = { persona: a.persona, teamId: a.teamId, userId: a.clicker };
-  if (a.initiator && sameAt({ ...seam, site: "permission.initiator_same", otherUserId: a.initiator })) return true;
-  if (a.lockOwner && sameAt({ ...seam, site: "permission.lock_owner_same", otherUserId: a.lockOwner, otherTeamId: a.lockTeamId })) return true;
-  const role = roleAt({ ...seam, site: "permission.role", channelId: a.channel, grants: await loadGrants(a.persona) });
+  if (a.initiator && (await sameAt({ ...seam, site: "permission.initiator_same", otherUserId: a.initiator }))) return true;
+  if (a.lockOwner && (await sameAt({ ...seam, site: "permission.lock_owner_same", otherUserId: a.lockOwner, otherTeamId: a.lockTeamId }))) return true;
+  const role = (await roleAt({ ...seam, site: "permission.role", channelId: a.channel, grants: await loadGrants(a.persona) }));
   return role === "approver" || role === "manager";
 }

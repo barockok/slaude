@@ -707,12 +707,25 @@ export const env = {
      * Which answer the access seam (`src/access/decide.ts`) returns, read on every
      * call: `legacy` runs the string path only (no resolver); `shadow` (default)
      * returns the legacy answer and also computes the internal-id answer, counting
-     * and logging every disagreement; `internal` is reserved for the access flip
-     * and, until then, behaves as `shadow`. An unknown value reads as `legacy`.
+     * and logging every disagreement; `internal` returns the internal-id answer
+     * and computes the legacy one in the background (reverse shadow). An unknown
+     * value reads as `legacy`. The default stays `shadow`: the flip is a
+     * deliberate configuration change, and `email:` and `user:` references are
+     * accepted only while this is `internal`.
      */
     source: (): "legacy" | "shadow" | "internal" => {
       const raw = opt("SLAUDE_ACCESS_SOURCE", "shadow").trim().toLowerCase();
       return raw === "shadow" || raw === "internal" || raw === "legacy" ? raw : "legacy";
+    },
+    /**
+     * D2: a direct `slack:user:` manager or approver entry also needs the acting
+     * Slack binding verified (the portal link). Default off, so today's behaviour
+     * holds for direct Slack entries; `email:` and `user:` entries always need it.
+     * Only read while the source is `internal`.
+     */
+    privilegedNeedsVerified: (): boolean => {
+      const raw = opt("SLAUDE_PRIVILEGED_NEEDS_VERIFIED", "0").trim().toLowerCase();
+      return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
     },
   },
   remote: {

@@ -12,11 +12,17 @@
  *    (`slaude_access_shadow_total{site,outcome=mismatch}`) and logged once per
  *    (site, persona, reason) per minute with INTERNAL ids only; an error in the
  *    new path counts `new_error` and never changes the answer.
- *  - `internal`: reserved for the access flip (task 20). Until then it behaves
- *    as `shadow`: the legacy answer is returned.
+ *  - `internal` (the flip, task 20): the internal-id answer is returned and the
+ *    legacy answer is the reverse shadow (a difference counts
+ *    `slaude_access_shadow_total{outcome=legacy_disagrees}`). When the resolver
+ *    cannot answer the call falls back by what was asked (D10): ordinary access
+ *    (admit, deny, same person, recipient lists) uses the legacy string result,
+ *    with a Slack deny still applying; every privileged answer (manager, approver,
+ *    approvers, an allowlist or soul-field check) is refused and never taken from
+ *    legacy. Such a call counts `slaude_access_decision_total{source="fallback_legacy"}`.
+ *    Privileged questions read the resolver fresh (D9). The default stays `shadow`.
  *
- * Nothing in this file lets the internal answer out. That is the whole point of
- * this release.
+ * Under `legacy` and `shadow` nothing in this file lets the internal answer out.
  */
 import * as Domain from "../db/domain";
 import { env } from "../config/env";
@@ -24,7 +30,7 @@ import { m } from "../metrics";
 import * as Actor from "../refs/actor";
 import type { ActorKey } from "../refs/actor";
 import { admit, type AdmitResult } from "./admission";
-import { admitInternal, grantSubject, isDeniedInternal, resolveGrantSubjects, roleInternal, usersWithRoleInternal, type EngineActor, type SubjectLookup } from "./authority";
+import { admitInternal, grantSubject, isDeniedInternal, resolveGrantSubjects, roleInternal, usersWithRoleInternal, type EngineActor, type EngineOpts, type Principal, type SubjectLookup } from "./authority";
 import type { Grant } from "./grants";
 import { isDenied, roleFromGrants, usersWithRole, type Role } from "./role";
 
@@ -47,10 +53,11 @@ function logOncePerMinute(key: string, line: () => string): void {
   console.warn(line());
 }
 
-/** Which path to run: `internal` is not live yet, so it shadows. */
-function mode(): "legacy" | "shadow" {
-  return env.access.source() === "legacy" ? "legacy" : "shadow";
-}
+/** Which path to run. */
+const mode = (): "legacy" | "shadow" | "internal" => env.access.source();
+
+/** The engine options the environment sets (D2). */
+const engineOpts = (): EngineOpts => (mode() === "internal" ? { privilegedNeedsVerified: env.access.privilegedNeedsVerified() } : {});
 
 interface Internal<T> {
   value: T;
@@ -58,7 +65,7 @@ interface Internal<T> {
   userId?: string;
 }
 
-/** Return `legacy`; in shadow mode also run `compute` and record how it compares. */
+/** Return the answer of the configured source; in shadow mode also run `compute` and record how it compares. */
 async function decide<T>(o: {
   site: string;
   persona: string | null | undefined;
@@ -67,13 +74,52 @@ async function decide<T>(o: {
   compute: () => Promise<Internal<T>>;
   /** Why two answers differ, for the log; defaults to `legacy->internal`. */
   reason?: (legacy: T, next: T) => string | null;
+  /**
+   * What `internal` returns when the internal path cannot answer (resolver down,
+   * engine error): the legacy result for ordinary questions, a refusal for
+   * privileged ones (D10). Never throws.
+   */
+  onFailure?: (legacy: T) => T;
 }): Promise<T> {
-  m.accessDecisionTotal.inc({ source: "legacy", site: o.site, result: o.show(o.legacy) });
-  if (mode() === "legacy") return o.legacy;
+  const md = mode();
   const persona = o.persona || "default";
+  const differs = (legacy: T, next: T): string | null =>
+    o.reason ? o.reason(legacy, next) : o.show(legacy) === o.show(next) ? null : `${o.show(legacy)}->${o.show(next)}`;
+  if (md === "internal") {
+    let next: Internal<T>;
+    try {
+      next = await o.compute();
+    } catch (e) {
+      const name = e instanceof Error ? e.name : "error";
+      m.accessShadowTotal.inc({ site: o.site, outcome: "new_error" });
+      let v = o.legacy;
+      try {
+        v = o.onFailure ? o.onFailure(o.legacy) : o.legacy;
+      } catch {
+        /* a fallback must not throw; keep the legacy value for an ordinary question */
+      }
+      m.accessDecisionTotal.inc({ source: "fallback_legacy", site: o.site, result: o.show(v) });
+      logOncePerMinute(`${o.site}|${persona}|fallback:${name}`, () => `[access] internal fallback site=${o.site} persona=${persona} kind=${name}`);
+      return v;
+    }
+    m.accessDecisionTotal.inc({ source: "internal", site: o.site, result: o.show(next.value) });
+    try {
+      const why = differs(o.legacy, next.value);
+      if (why === null) m.accessShadowTotal.inc({ site: o.site, outcome: "match" });
+      else {
+        m.accessShadowTotal.inc({ site: o.site, outcome: "legacy_disagrees" });
+        logOncePerMinute(`${o.site}|${persona}|${why}`, () => `[access] legacy disagrees site=${o.site} persona=${persona} reason=${why} user=${next.userId ?? "none"}`);
+      }
+    } catch {
+      /* the reverse shadow is advisory */
+    }
+    return next.value;
+  }
+  m.accessDecisionTotal.inc({ source: "legacy", site: o.site, result: o.show(o.legacy) });
+  if (md === "legacy") return o.legacy;
   try {
     const next = await o.compute();
-    const why = o.reason ? o.reason(o.legacy, next.value) : o.show(o.legacy) === o.show(next.value) ? null : `${o.show(o.legacy)}->${o.show(next.value)}`;
+    const why = differs(o.legacy, next.value);
     if (why === null) {
       m.accessShadowTotal.inc({ site: o.site, outcome: "match" });
     } else {
@@ -94,6 +140,8 @@ async function decide<T>(o: {
 
 /** The most distinct subjects one shadow resolves; a persona with more is dropped, not allowed to flood the database. */
 export const MAX_LOOKUPS_PER_CALL = 40;
+/** The same bound when the answer is used (`internal`): a larger persona must still be decided, so this is generous. */
+export const MAX_LOOKUPS_INTERNAL = 500;
 /** How long a resolved subject is shared between shadows (matches the actor cache). */
 const LOOKUP_TTL_MS = 5_000;
 const LOOKUP_CACHE_MAX = 5_000;
@@ -130,17 +178,19 @@ function remember<V>(map: Map<string, { until: number; v: V }>, key: string, v: 
  * seconds, and one call resolves at most MAX_LOOKUPS_PER_CALL distinct
  * subjects (past that it throws LookupCap and the shadow is counted dropped).
  */
-async function lookupFor(grants: readonly Grant[], teamId: string, skipSlackId?: string): Promise<SubjectLookup> {
+async function lookupFor(grants: readonly Grant[], teamId: string, skipSlackId?: string, o: { fresh?: boolean; cap?: number } = {}): Promise<SubjectLookup> {
   const slackFound = new Map<string, SlackFound>();
   const live = new Map<string, string>();
-  let budget = MAX_LOOKUPS_PER_CALL;
+  let budget = o.cap ?? MAX_LOOKUPS_PER_CALL;
+  // A privileged question never serves the shared 5 s lookups (D9).
+  const useCache = !o.fresh;
   const liveOf = async (id: string) => {
     if (live.has(id)) return;
-    const hit = cached(liveCache, id);
+    const hit = useCache ? cached(liveCache, id) : undefined;
     if (hit) return void live.set(id, hit.v);
     if (--budget < 0) throw new LookupCap();
     const v = (await Domain.resolveUserId(id)) ?? id;
-    remember(liveCache, id, v);
+    if (useCache) remember(liveCache, id, v);
     live.set(id, v);
   };
   for (const g of grants) {
@@ -152,13 +202,13 @@ async function lookupFor(grants: readonly Grant[], teamId: string, skipSlackId?:
         const ws = s.workspace ?? teamId;
         const k = `${ws}/${g.subjectId}`;
         if (!slackFound.has(k)) {
-          const hit = cached(slackCache, k);
+          const hit = useCache ? cached(slackCache, k) : undefined;
           if (hit) slackFound.set(k, hit.v);
           else {
             if (--budget < 0) throw new LookupCap();
             const b = await Domain.findBinding({ service: "slack", kind: "user", workspace: ws, value: g.subjectId });
             const v = b ? { userId: b.user_id, state: b.state } : null;
-            remember(slackCache, k, v);
+            if (useCache) remember(slackCache, k, v);
             slackFound.set(k, v);
           }
         }
@@ -176,19 +226,34 @@ async function lookupFor(grants: readonly Grant[], teamId: string, skipSlackId?:
 interface EngineInput {
   actor: EngineActor;
   grants: Grant[];
+  opts: EngineOpts;
   userId?: string;
 }
 
 async function engineInput(o: { teamId: string; userId: string; grants: readonly Grant[]; fresh: boolean }): Promise<EngineInput> {
+  const live = mode() === "internal";
+  const opts = engineOpts();
   const acting = await Actor.actingUser(o.teamId, o.userId, { fresh: o.fresh });
   const actor: EngineActor = { teamId: o.teamId, slackUserId: o.userId, acting };
-  if (!acting) return { actor, grants: [...o.grants] };
-  const lookup = await lookupFor(o.grants, o.teamId, o.userId);
-  return { actor, grants: resolveGrantSubjects(o.grants, o.teamId, lookup), userId: acting.userId };
+  if (!acting) return { actor, grants: [...o.grants], opts };
+  try {
+    const lookup = await lookupFor(o.grants, o.teamId, o.userId, { fresh: o.fresh, cap: live ? MAX_LOOKUPS_INTERNAL : MAX_LOOKUPS_PER_CALL });
+    return { actor, grants: resolveGrantSubjects(o.grants, o.teamId, lookup), opts, userId: acting.userId };
+  } catch (e) {
+    // The records could not be read: when the answer is used this is a resolver failure (D10).
+    if (live && !(e instanceof LookupCap) && !(e instanceof Actor.ActorResolveError)) {
+      m.actorResolveFailuresTotal.inc();
+      throw new Actor.ActorResolveError(e);
+    }
+    throw e;
+  }
 }
 
 export const showAdmit = (r: AdmitResult) => (r.ok ? "ok" : r.reason);
 export const showRole = (r: Role | null) => r ?? "none";
+
+/** A privileged role is refused (never taken from legacy) when the resolver cannot say who is acting: it drops to member. */
+const demote = (r: Role | null): Role | null => (r === "manager" || r === "approver" ? "member" : r);
 
 /** Whether a message reaches the persona. Ordinary check: the resolver may serve its 5 s cache. */
 export async function decideAdmit(o: {
@@ -207,8 +272,10 @@ export async function decideAdmit(o: {
     show: showAdmit,
     compute: async () => {
       const i = await engineInput({ teamId: o.teamId, userId: o.userId, grants: o.grants, fresh: false });
-      return { value: admitInternal({ grants: i.grants, actor: i.actor, channelId: o.channelId, isDM: o.isDM }), userId: i.userId };
+      return { value: admitInternal({ grants: i.grants, actor: i.actor, channelId: o.channelId, isDM: o.isDM, opts: i.opts }), userId: i.userId };
     },
+    // Ordinary admission: the legacy string result for this call, a Slack deny still applying, a workspace grant for its own workspace only.
+    onFailure: () => admit({ grants: o.grants, userId: o.userId, channelId: o.channelId, isDM: o.isDM, teamId: o.teamId }),
   });
 }
 
@@ -228,15 +295,44 @@ export async function decideRole(o: {
     show: showRole,
     compute: async () => {
       const i = await engineInput({ teamId: o.teamId, userId: o.userId, grants: o.grants, fresh: true });
-      return { value: roleInternal(i.grants, i.actor, o.channelId), userId: i.userId };
+      return { value: roleInternal(i.grants, i.actor, o.channelId, i.opts), userId: i.userId };
     },
+    // Manager and approver are never taken from legacy when the resolver is down.
+    onFailure: () => demote(roleFromGrants(o.grants, o.userId, o.channelId, o.teamId)),
   });
+}
+
+/**
+ * The Slack ids a list of principals stands for: a Slack subject is its own id;
+ * an `email:` subject is the user holding that VERIFIED email, and a `user:`
+ * subject that user; both then give their Slack ids in the workspace. A
+ * privileged list keeps only verified Slack bindings for those (Rule D); an
+ * ordinary one also takes observed ones (to reach the person, Rule F). Reads the
+ * records fresh.
+ */
+async function principalIds(people: readonly Principal[], teamId: string, privileged: boolean): Promise<{ slackIds: string[]; userIds: string[]; ids: string[] }> {
+  const direct: string[] = [];
+  const users: string[] = [];
+  for (const p of people) {
+    if (p.slackId) {
+      direct.push(p.slackId);
+      continue;
+    }
+    const u = p.email ? await Actor.userOfVerifiedEmail(p.email) : p.userId ? ((await Domain.resolveUserId(p.userId)) ?? p.userId) : null;
+    if (u && !users.includes(u)) users.push(u);
+  }
+  const ids = [...direct];
+  for (const u of users) for (const id of await Actor.slackIdsFor(u, teamId, { verifiedOnly: privileged })) if (!ids.includes(id)) ids.push(id);
+  return { slackIds: direct, userIds: users, ids };
 }
 
 /**
  * A list of Slack ids a site holds (managers, approvers, a recipient), compared
  * with who the grants name for `roles`. `legacy` is returned as the caller made
- * it; the shadow compares the people the grants name.
+ * it; the shadow compares the people the grants name. Under `internal` the
+ * people the grants name are returned, as Slack ids (see {@link principalIds}).
+ * `refuseOnFailure` (a privileged list): an outage returns no one instead of
+ * the legacy list.
  */
 export async function decideList(o: {
   site: string;
@@ -246,19 +342,24 @@ export async function decideList(o: {
   roles: readonly Role[];
   channelId?: string | null;
   legacy: string[];
+  refuseOnFailure?: boolean;
 }): Promise<string[]> {
+  const privileged = o.roles.some((r) => r !== "member");
   return decide<string[]>({
     site: o.site,
     persona: o.persona,
     legacy: o.legacy,
     show: (ids) => `${ids.length}`,
     compute: async () => {
-      const lookup = await lookupFor(o.grants, o.teamId);
+      const live = mode() === "internal";
+      const lookup = await lookupFor(o.grants, o.teamId, undefined, live ? { fresh: privileged, cap: MAX_LOOKUPS_INTERNAL } : {});
       const grants = resolveGrantSubjects(o.grants, o.teamId, lookup);
       const people = usersWithRoleInternal(grants, o.roles, o.channelId, { teamId: o.teamId });
+      if (live) return { value: (await principalIds(people, o.teamId, privileged)).ids };
       // The internal list as legacy-shaped ids: Slack people only; the others are what differs.
       return { value: people.map((p) => p.slackId ?? `~${p.key.split(":")[0]}`) };
     },
+    onFailure: (legacy) => (o.refuseOnFailure ? [] : legacy),
     reason: (before, after) => {
       const a = new Set(before);
       const b = new Set(after);
@@ -275,7 +376,7 @@ export async function decideList(o: {
   });
 }
 
-/** Who holds one of `roles`: the legacy Slack ids are returned; the shadow compares the people the grants name. */
+/** Who holds one of `roles`: the legacy Slack ids are returned; the shadow compares the people the grants name. Privileged: an outage returns no one. */
 export async function decideApprovers(o: {
   site: string;
   persona: string | null | undefined;
@@ -284,10 +385,66 @@ export async function decideApprovers(o: {
   roles: readonly Role[];
   channelId?: string | null;
 }): Promise<string[]> {
-  return decideList({ ...o, legacy: usersWithRole(o.grants, o.roles, o.channelId) });
+  return decideList({ ...o, legacy: usersWithRole(o.grants, o.roles, o.channelId), refuseOnFailure: true });
 }
 
-/** Whether two Slack identities are the same person (initiator, lock owner). Legacy: the same id string. */
+/** Approvers split for a card: direct Slack ids, and the user ids that `email:` and `user:` entries name. */
+export interface ApproverSplit {
+  slackIds: string[];
+  userIds: string[];
+}
+
+/**
+ * Who may approve, for a card that stores an allowlist (task 21). Under
+ * `legacy` and `shadow` the legacy Slack ids are returned with no user ids.
+ * Under `internal`: `slackIds` are the Slack subjects the grants name, `userIds`
+ * the live users that `email:` (verified email) and `user:` entries name. A click
+ * from such a user is decided at click time (their Slack binding must be
+ * verified); the ids to reach them are `Actor.slackIdsFor`. An outage returns
+ * no one.
+ */
+export async function decideApproverSplit(o: {
+  site: string;
+  persona: string | null | undefined;
+  teamId: string;
+  grants: readonly Grant[];
+  roles: readonly Role[];
+  channelId?: string | null;
+  legacy?: string[];
+}): Promise<ApproverSplit> {
+  const legacy = o.legacy ?? usersWithRole(o.grants, o.roles, o.channelId);
+  if (mode() !== "internal") {
+    await decideList({ ...o, legacy, refuseOnFailure: true });
+    return { slackIds: legacy, userIds: [] };
+  }
+  let out: ApproverSplit = { slackIds: [], userIds: [] };
+  await decide<string[]>({
+    site: o.site,
+    persona: o.persona,
+    legacy,
+    show: (ids) => `${ids.length}`,
+    compute: async () => {
+      const lookup = await lookupFor(o.grants, o.teamId, undefined, { fresh: true, cap: MAX_LOOKUPS_INTERNAL });
+      const people = usersWithRoleInternal(resolveGrantSubjects(o.grants, o.teamId, lookup), o.roles, o.channelId, { teamId: o.teamId });
+      const r = await principalIds(people, o.teamId, true);
+      out = { slackIds: r.slackIds, userIds: r.userIds };
+      return { value: [...r.slackIds, ...r.userIds] };
+    },
+    onFailure: () => {
+      out = { slackIds: [], userIds: [] };
+      return [];
+    },
+    reason: (before, after) => {
+      const a = new Set(before);
+      const extra = after.filter((x) => !a.has(x));
+      const missing = before.filter((x) => !after.includes(x));
+      return extra.length || missing.length ? `+${extra.length},-${missing.length}` : null;
+    },
+  });
+  return out;
+}
+
+/** Whether two Slack identities are the same person (initiator, lock owner). Legacy: the same id string. Rule G under `internal`. */
 export async function decideSame(o: { site: string; persona: string | null | undefined; a: ActorKey; b: ActorKey }): Promise<boolean> {
   return decide({
     site: o.site,
@@ -302,9 +459,12 @@ export async function decideSame(o: { site: string; persona: string | null | und
  * A boolean or small-valued check the legacy way over some grants, with a
  * caller-supplied internal twin. For sites whose legacy answer is not one of
  * admit, role or approvers (an allowlist click, a soul-field reader, a deny
- * filter). `legacy` is already computed by the caller; it is what comes back.
- * `internal` receives the grants resolved to people and the acting user.
- * `fresh` reads the resolver without its cache (privileged questions, D9).
+ * filter). `legacy` is already computed by the caller; it is what comes back
+ * unless the source is `internal`.
+ * `internal` receives the grants resolved to people, the acting user and the
+ * engine options. `fresh` reads the resolver without its cache (privileged
+ * questions, D9). `onFailure` is the answer when the resolver cannot say who is
+ * acting (default: the legacy value for a deny, a refusal for anything else).
  */
 export async function decideCheck<T>(o: {
   site: string;
@@ -315,7 +475,8 @@ export async function decideCheck<T>(o: {
   fresh: boolean;
   legacy: T;
   show: (v: T) => string;
-  internal: (i: { grants: Grant[]; actor: EngineActor }) => T;
+  internal: (i: { grants: Grant[]; actor: EngineActor; opts: EngineOpts }) => T;
+  onFailure?: (legacy: T) => T;
 }): Promise<T> {
   return decide({
     site: o.site,
@@ -324,12 +485,13 @@ export async function decideCheck<T>(o: {
     show: o.show,
     compute: async () => {
       const i = await engineInput({ teamId: o.teamId, userId: o.userId, grants: o.grants, fresh: o.fresh });
-      return { value: o.internal({ grants: i.grants, actor: i.actor }), userId: i.userId };
+      return { value: o.internal({ grants: i.grants, actor: i.actor, opts: i.opts }), userId: i.userId };
     },
+    onFailure: o.onFailure ?? ((legacy) => (typeof legacy === "boolean" ? (false as T) : legacy)),
   });
 }
 
-/** Whether a deny grant reaches the user. A deny applies from observed bindings too (Rule C), so the resolver may serve its cache. */
+/** Whether a deny grant reaches the user. A deny applies from observed bindings too (Rule C), so the resolver may serve its cache. A resolver failure never removes a Slack deny. */
 export async function decideDenied(o: { site: string; persona: string | null | undefined; teamId: string; userId: string; grants: readonly Grant[] }): Promise<boolean> {
   return decideCheck({
     site: o.site,
@@ -340,6 +502,7 @@ export async function decideDenied(o: { site: string; persona: string | null | u
     fresh: false,
     legacy: isDenied(o.grants, o.userId),
     show: (v) => (v ? "denied" : "clear"),
-    internal: ({ grants, actor }) => isDeniedInternal(grants, actor),
+    internal: ({ grants, actor, opts }) => isDeniedInternal(grants, actor, opts),
+    onFailure: (legacy) => legacy,
   });
 }

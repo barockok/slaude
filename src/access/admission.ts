@@ -20,8 +20,13 @@ export type AdmitResult = { ok: true } | { ok: false; reason: "blocked_user" | "
  * `grants`: the persona's effective grants, i.e. `loadGrants(personaName)`
  * from ./role (keyed by persona NAME, not id). `isDM`: Slack channel_type
  * "im" only; a group DM ("mpim") counts as a channel, as today.
+ *
+ * `teamId` (D12, slice C): when given, a workspace grant counts only for the
+ * workspace it names. Only the `internal` access source passes it (as the
+ * fallback when the resolver is down); every other caller omits it and gets the
+ * legacy answer, where a workspace grant admits everyone.
  */
-export function admit(o: { grants: readonly Grant[]; userId: string; channelId: string; isDM: boolean }): AdmitResult {
+export function admit(o: { grants: readonly Grant[]; userId: string; channelId: string; isDM: boolean; teamId?: string }): AdmitResult {
   const mine = o.grants.filter((g) => g.subjectKind === "user" && g.subjectId === o.userId);
   if (mine.some((g) => g.deny)) return { ok: false, reason: "blocked_user" };
   const live = mine.filter((g) => !g.deny);
@@ -31,6 +36,6 @@ export function admit(o: { grants: readonly Grant[]; userId: string; channelId: 
   }
   const channel = o.grants.some((g) => !g.deny && g.subjectKind === "channel" && g.subjectId === o.channelId);
   const storedMember = live.some((g) => g.source === "console" && g.role === "member" && !g.dmOnly);
-  const workspace = o.grants.some((g) => !g.deny && g.subjectKind === "workspace");
+  const workspace = o.grants.some((g) => !g.deny && g.subjectKind === "workspace" && (o.teamId === undefined || g.subjectId === o.teamId));
   return channel || storedMember || workspace ? { ok: true } : { ok: false, reason: "whitelist" };
 }

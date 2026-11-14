@@ -2156,7 +2156,7 @@ describe("turnSenders: who sent the inputs the CLI is processing (phase C, invar
     };
     const written: string[] = [];
     const r = await brainHandlers.kb_memoize(profileWrite, {
-      scope: () => resolveBrainScope({ ...gate, kbSources: [] }),
+      scope: async () => (await resolveBrainScope({ ...gate, kbSources: [] })),
       gate: () => gate,
       managers: () => [],
       requestApproval: async () => ({ approved: false, by: "x" }),

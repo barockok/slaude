@@ -77,13 +77,6 @@ describe("SLAUDE_ACCESS_SOURCE", () => {
     await decideAdmit(admitArgs([slack(SELF, "member")]));
     expect(spy).toHaveBeenCalledTimes(1);
   });
-
-  test("internal is not live yet: it returns the legacy answer", async () => {
-    process.env.SLAUDE_ACCESS_SOURCE = "internal";
-    await verifiedUser();
-    const r = await decideAdmit(admitArgs([email("a@example.com", "member")]));
-    expect(r).toEqual({ ok: false, reason: "whitelist" });
-  });
 });
 
 describe("shadow", () => {

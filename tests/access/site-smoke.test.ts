@@ -68,6 +68,7 @@ export const LIVE_ONLY: Record<string, string> = {
   "gateway.brain_managers": "the managers callback of the kb tools, called when a kb-admin approval is decided inside a live agent turn",
   "gateway.background_managers": "the scheduler's managers callback, called by the background timer when it posts a digest or a person's proposals",
   "bridge.card_scope_lock_same": "cardScope inside the MCP bridge, reached when a node's tool call needs a connect card",
+  "approval.resolve_default_managers": "the fallback of a named persona that has no approver or manager of its own; the smoke world's souls always name a manager",
   "pass_tools.profile_subject": "the background pass's memory tool, reached from a model-driven pass turn",
 };
 
@@ -132,11 +133,28 @@ const exercisers: Record<string, () => Promise<void>> = {
     const { pendingId } = await poll.open({ channel: "C0EXAMPLE", threadTs: "1.1", summary: "poll", sessionId: "S-smoke-poll", app: { teamId: TEAM }, persona: "scout" });
     await fire(`slaude_appr:approve:${pendingId}`, "U0APPR");
   },
+  async managedDefaultApproval() {
+    // An agent.yaml default persona: its file's managers are the whole answer.
+    const { __resetPersonaRegistry, setPersonaRegistry } = await import("../../src/persona/registry");
+    const { __resetSoulDataMemo } = await import("../../src/soul/extract");
+    setSoulData(SoulDataSchema.parse({ manager: { userId: MGR }, backupManager: { userId: BAK } }));
+    setPersonaRegistry({
+      lookupByUserId: () => null, lookupByName: () => null, list: () => [], isMultiPersonaMode: () => false, isManaged: () => true,
+      tombstonedPersonaFor: () => null, defaultPersona: () => ({ definition: {} }),
+    } as never);
+    try {
+      const app: any = { action: () => {}, client: { chat: { postMessage: async () => ({ ok: true, ts: "1.1" }), update: async () => ({ ok: true }) } } };
+      await new ApprovalGate(app, [], { gateBus: null }).open({ channel: "C0EXAMPLE", threadTs: "1.1", summary: "managed", sessionId: "S-smoke-managed", app: { teamId: TEAM } });
+    } finally {
+      __resetPersonaRegistry();
+      __resetSoulDataMemo();
+    }
+  },
   async soulFields() {
     const soul = SoulDataSchema.parse({ manager: { userId: MGR }, backupManager: { userId: BAK }, approvers: [{ userId: "U0APP", scope: "anything", catchall: true }], dmAllowedUsers: ["U0DM"] });
     for (const u of [MGR, "U0DM", "U0X"]) {
-      canChangeModel(u, soul, { persona: "default", teamId: TEAM });
-      canTriggerIngest(u, soul, { persona: "default", teamId: TEAM });
+      (await canChangeModel(u, soul, { persona: "default", teamId: TEAM }));
+      (await canTriggerIngest(u, soul, { persona: "default", teamId: TEAM }));
       await isManagerOrApprover("default", u, "C0EXAMPLE", TEAM);
     }
     await mutateOverride({ field: "block", action: "add", value: "U0Z", by: MGR }, { managerId: MGR, teamId: TEAM });
@@ -149,26 +167,26 @@ const exercisers: Record<string, () => Promise<void>> = {
   async knowledgeAndMemory() {
     resetStandingGrants();
     const own = userSourceId("U0ONE");
-    classifyBrainOp("put_page", { clientId: "x", sourceId: own, allowedSources: [own] }, gateOf({ lockedUser: "U0ONE" }));
-    resolveBrainScope({ ...gateOf({ lockedUser: "U0ONE" }), kbSources: [] });
-    turnBrainScope(gateOf({ turnSenders: [{ userId: "U0ONE", teamId: TEAM, origin: "slack" }] }), []);
+    (await classifyBrainOp("put_page", { clientId: "x", sourceId: own, allowedSources: [own] }, gateOf({ lockedUser: "U0ONE" })));
+    (await resolveBrainScope({ ...gateOf({ lockedUser: "U0ONE" }), kbSources: [] }));
+    (await turnBrainScope(gateOf({ turnSenders: [{ userId: "U0ONE", teamId: TEAM, origin: "slack" }] }), []));
     const g = gateOf();
-    await gatedBrainCall("sync_brain", { scope: resolveBrainScope({ ...g, kbSources: [] }), gate: g, managers: [MGR], describe: "x", requestApproval: async () => ({ approved: true, by: MGR }), call: async () => "ok" });
+    await gatedBrainCall("sync_brain", { scope: (await resolveBrainScope({ ...g, kbSources: [] })), gate: g, managers: [MGR], describe: "x", requestApproval: async () => ({ approved: true, by: MGR }), call: async () => "ok" });
     const brain = fakeBrain();
-    const deps = (gate: GateInput): BrainToolDeps => ({ scope: () => resolveBrainScope({ ...gate, kbSources: [] }), gate: () => gate, managers: () => [], requestApproval: async () => ({ approved: true, by: MGR }), call: (n, p, s) => brain.call(n, p, s) });
+    const deps = (gate: GateInput): BrainToolDeps => ({ scope: async () => (await resolveBrainScope({ ...gate, kbSources: [] })), gate: () => gate, managers: () => [], requestApproval: async () => ({ approved: true, by: MGR }), call: (n, p, s) => brain.call(n, p, s) });
     const sender = { userId: "U0ONE", teamId: TEAM, origin: "slack" as const };
     await brainHandlers.kb_memoize({ pages: [{ slug: "n", content: "hello", type: "person-note" } as never], target: "mine" }, deps(gateOf({ lockedUser: "U0ONE" })));
     await brainHandlers.kb_memoize({ pages: [{ slug: "profile", content: "hi", type: "profile" } as never], target: "profile", subject: "U0ONE" } as never, deps(gateOf({ turnSenders: [sender] })));
-    const profileScope = resolveBrainScope({ ...gateOf({ turnSenders: [sender] }), kbSources: [] });
+    const profileScope = (await resolveBrainScope({ ...gateOf({ turnSenders: [sender] }), kbSources: [] }));
     await brain.call("put_page", { slug: "people/u0one", content: "---\ntype: person-note\nas_of: 2026-10-20\nconfidence: told\nsubject: U0ONE\n---\nlikes diffs" }, { ...profileScope, sourceId: agentSourceId("U0AGENT"), allowedSources: [agentSourceId("U0AGENT")] });
     await brainHandlers.memory_about({ userId: "U0ONE" }, deps(gateOf({ turnSenders: [sender] })));
-    memoryScopeFor(gateOf({ lockedUser: "U0ONE" }));
-    memoryScopeFor(gateOf(), { runAsUser: "U0ONE" });
-    memoryScopeFor(gateOf({ userId: null, lockedUser: "U0TWO" }), { runAsUser: "U0ONE" });
-    withClaimLock(gateOf({ lockedUser: "U0TWO" }), "U0ONE");
-    withClaimLock(gateOf({ lockedUser: "U0ONE" }), "U0TWO");
-    mayDecide({ toKind: "person", toUser: "U0ONE" }, "U0ONE", [], { teamId: TEAM });
-    mayDecide({ toKind: "manager", toUser: null }, MGR, [MGR], { teamId: TEAM });
+    (await memoryScopeFor(gateOf({ lockedUser: "U0ONE" })));
+    (await memoryScopeFor(gateOf(), { runAsUser: "U0ONE" }));
+    (await memoryScopeFor(gateOf({ userId: null, lockedUser: "U0TWO" }), { runAsUser: "U0ONE" }));
+    (await withClaimLock(gateOf({ lockedUser: "U0TWO" }), "U0ONE"));
+    (await withClaimLock(gateOf({ lockedUser: "U0ONE" }), "U0TWO"));
+    (await mayDecide({ toKind: "person", toUser: "U0ONE" }, "U0ONE", [], { teamId: TEAM }));
+    (await mayDecide({ toKind: "manager", toUser: null }, MGR, [MGR], { teamId: TEAM }));
     // A proposal card click that applies a write, and a retired skill restore.
     const agentId = await backgroundAgentId("default");
     const pid = await Proposals.insert({ agentId, kind: "team-fact", toKind: "manager", toUser: null, scope: "agent", payload: { pages: [{ slug: "fact", content: "x", type: "team-fact", confidence: "told" }], target: "shared" } as never, createdAt: Date.now() });
@@ -210,7 +228,7 @@ const exercisers: Record<string, () => Promise<void>> = {
       const tok = mintJobToken({ tenant: "t1", persona: "default", session: "S1", team: TEAM, channel: "C0EXAMPLE", thread: "7.0", initiator: "U0OWNER", scope: "turn", runAs: "user:U0OWNER", remote: { addr: t7.addr, dir: t7.dir, env: t7.env } } as any);
       await api.fetch(new Request("http://gw/v1/tenants/t1/remote-env", { headers: { authorization: "Bearer smoke-node-token", [JOB_HEADER]: tok } }));
     }
-    decodeRemoteOffer(encodeRemoteOffer({ sessionId: "S", teamId: TEAM, channelId: "C", threadTs: "1.0", userId: "U0OWNER", issuedAt: Date.now() }), "U0OWNER");
+    (await decodeRemoteOffer(encodeRemoteOffer({ sessionId: "S", teamId: TEAM, channelId: "C", threadTs: "1.0", userId: "U0OWNER", issuedAt: Date.now() }), "U0OWNER"));
   },
   async backgroundAndRules() {
     personaManager("default");
@@ -346,5 +364,32 @@ describe("scripted smoke", () => {
     expect(rows.filter((r) => r.count === 0 && !r.live).map((r) => r.id)).toEqual([]);
     expect(rows.filter((r) => r.count > 0 && r.live).map((r) => `${r.id} counted but listed as live only`)).toEqual([]);
     expect(Object.keys(LIVE_ONLY).filter((id) => !SITES.some((s) => s.id === id))).toEqual([]);
+  }, 60_000);
+
+  test("under internal every exerciser still runs through its real path without throwing, and every site counts", async () => {
+    process.env.SLAUDE_ACCESS_SOURCE = "internal";
+    // A fresh world: the first run left its environments, locks and targets behind.
+    await Domain._wipeForTests();
+    await OneOnOne._wipeForTests();
+    await Remote._wipeForTests();
+    await db.run("DELETE FROM cron_jobs");
+    for (const t of ["environment_bindings", "environments"]) await db.run(`DELETE FROM ${t}`).catch(() => {});
+    try {
+      const before = decisionCounts();
+      const failures: string[] = [];
+      for (const [name, run] of Object.entries(exercisers)) {
+        try {
+          await run();
+        } catch (e) {
+          failures.push(`${name}: ${e instanceof Error ? e.stack ?? e.message : String(e)}`);
+        }
+      }
+      expect(failures).toEqual([]);
+      const after = decisionCounts();
+      const silent = SITES.filter((s) => (after.get(s.id) ?? 0) - (before.get(s.id) ?? 0) === 0 && !LIVE_ONLY[s.id]).map((s) => s.id);
+      expect(silent).toEqual([]);
+    } finally {
+      process.env.SLAUDE_ACCESS_SOURCE = "shadow";
+    }
   }, 60_000);
 });

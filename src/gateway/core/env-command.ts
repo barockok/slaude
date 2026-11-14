@@ -164,13 +164,13 @@ export async function useEnvironment(
     await ctx.reply(`:x: Environment kind \`${env.kind}\` is not available on this deployment.`);
     return false;
   }
-  if (!sameAt({ site: "env.own_environment", persona: null, teamId, userId, otherUserId: env.userId, otherTeamId: env.teamId }) || env.teamId !== teamId) {
+  if (!(await sameAt({ site: "env.own_environment", persona: null, teamId, userId, otherUserId: env.userId, otherTeamId: env.teamId })) || env.teamId !== teamId) {
     await ctx.reply(":x: You can only use your own environments.");
     return false;
   }
   const trust = trustOf(env);
   const lock = await OneOnOne.find(channelId, threadTs);
-  if (lock && !sameAt({ site: "env.use_lock_owner", persona: null, teamId, userId, otherUserId: lock.locked_user, otherTeamId: lock.team_id })) {
+  if (lock && !(await sameAt({ site: "env.use_lock_owner", persona: null, teamId, userId, otherUserId: lock.locked_user, otherTeamId: lock.team_id }))) {
     await ctx.reply(`:lock: This thread is a 1on1 with <@${lock.locked_user}>; only its owner can choose its environment.`);
     return false;
   }
@@ -231,7 +231,7 @@ export async function useEnvironment(
     if (existing && existing.env.id !== env.id) await endRemoteForThread(channelId, threadTs, { sessionId: ctx.sessionId, cleanup: deps.cleanup });
     // Inherit "we created the lock" only from this user's own binding: a stale
     // one from someone else must never make another person's lock releasable.
-    let lockByEnv = !!existing && sameAt({ site: "env.inherit_lock_by_env", persona: null, teamId, userId, otherUserId: existing.env.userId, otherTeamId: existing.env.teamId }) && existing.binding.lock_by_env === 1;
+    let lockByEnv = !!existing && (await sameAt({ site: "env.inherit_lock_by_env", persona: null, teamId, userId, otherUserId: existing.env.userId, otherTeamId: existing.env.teamId })) && existing.binding.lock_by_env === 1;
     if (!lock) {
       await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId, teamId });
       auditOneOnOne("one_on_one.locked", { userId, sessionId: ctx.sessionId, channelId, threadTs, lockedUser: userId, via: "env" });
@@ -287,7 +287,7 @@ function kindsHelp(): string {
 /** Who may end the thread's environment: its owner or the manager; for a
  *  sandbox in a thread that is not locked, anyone the thread admits. */
 async function mayTurnOff(ctx: EnvCommandCtx, b: { env: StoredEnv }): Promise<boolean> {
-  if (sameAt({ site: "env.turn_off_owner", persona: null, teamId: ctx.teamId, userId: ctx.userId, otherUserId: b.env.userId, otherTeamId: b.env.teamId }) || ctx.isManager) return true;
+  if ((await sameAt({ site: "env.turn_off_owner", persona: null, teamId: ctx.teamId, userId: ctx.userId, otherUserId: b.env.userId, otherTeamId: b.env.teamId })) || ctx.isManager) return true;
   if (trustOf(b.env) !== "provisioned") return false;
   const lock = await OneOnOne.find(ctx.channelId, ctx.threadTs);
   return !lock || lock.open_scope !== null;
@@ -361,7 +361,7 @@ export async function handleEnvCommand(hit: EnvHit, ctx: EnvCommandCtx, deps: En
     const { lockByRemote } = await endRemoteForThread(channelId, threadTs, { sessionId: ctx.sessionId, cleanup: deps.cleanup });
     // Only release a lock that is still this environment owner's: a stale row never unlocks someone else.
     const heldBy = lockByRemote ? await OneOnOne.find(channelId, threadTs) : null;
-    if (lockByRemote && sameAt({ site: "env.release_lock_owner", persona: null, teamId: b.env.teamId, userId: b.env.userId, otherUserId: heldBy?.locked_user, otherTeamId: heldBy?.team_id })) {
+    if (lockByRemote && (await sameAt({ site: "env.release_lock_owner", persona: null, teamId: b.env.teamId, userId: b.env.userId, otherUserId: heldBy?.locked_user, otherTeamId: heldBy?.team_id }))) {
       await OneOnOne.unlock(channelId, threadTs);
       auditOneOnOne("one_on_one.unlocked", { userId: ctx.userId, sessionId: ctx.sessionId, channelId, threadTs, lockedUser: b.env.userId, via: "env" });
     }
@@ -531,7 +531,7 @@ export async function removeEnvironment(e: StoredEnv, ctx: EnvCommandCtx, deps: 
     const here = b.channel_id === ctx.channelId && b.thread_ts === ctx.threadTs;
     const { lockByRemote } = await endRemoteForThread(b.channel_id, b.thread_ts, here ? { sessionId: ctx.sessionId, cleanup: deps.cleanup } : {});
     const heldBy = lockByRemote ? await OneOnOne.find(b.channel_id, b.thread_ts) : null;
-    if (lockByRemote && sameAt({ site: "env.remove_lock_owner", persona: null, teamId: e.teamId, userId: e.userId, otherUserId: heldBy?.locked_user, otherTeamId: heldBy?.team_id })) {
+    if (lockByRemote && (await sameAt({ site: "env.remove_lock_owner", persona: null, teamId: e.teamId, userId: e.userId, otherUserId: heldBy?.locked_user, otherTeamId: heldBy?.team_id }))) {
       await OneOnOne.unlock(b.channel_id, b.thread_ts);
       auditOneOnOne("one_on_one.unlocked", { userId: ctx.userId, sessionId: here ? ctx.sessionId : null, channelId: b.channel_id, threadTs: b.thread_ts, lockedUser: e.userId, via: "env" });
     }

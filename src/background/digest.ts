@@ -156,7 +156,8 @@ export function renderDigest(input: DigestInput): { text: string; blocks: Block[
 export function digestRecipientOf(soul: { manager: { userId?: string }; backupManager: { userId?: string } }): string | null {
   const legacy = soul.manager.userId || soul.backupManager.userId || null;
   // Slice C task 18: shadowed against the default persona's grants (no workspace on the call, so counted no_team).
-  listAt({ site: "digest.recipient", persona: "default", teamId: null, legacy: legacy ? [legacy] : [], roles: ["manager"], grants: () => loadGrants("default") });
+  // No workspace on the call: the answer is the soul's in every mode, so the call is not awaited.
+  void listAt({ site: "digest.recipient", persona: "default", teamId: null, legacy: legacy ? [legacy] : [], roles: ["manager"], grants: () => loadGrants("default") });
   return legacy;
 }
 

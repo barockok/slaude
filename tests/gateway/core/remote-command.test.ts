@@ -296,28 +296,28 @@ describe("/remote connect form", () => {
     expect(offers).toBe(0);
   });
 
-  it("offer round-trips for its user, and is invalid for anyone else or when malformed", () => {
+  it("offer round-trips for its user, and is invalid for anyone else or when malformed", async () => {
     const raw = encodeRemoteOffer(offer);
-    expect(decodeRemoteOffer(raw, "U_A", offer.issuedAt + 1000)).toEqual({ ok: true, offer });
-    expect(decodeRemoteOffer(raw, "U_B", offer.issuedAt)).toEqual({ ok: false, reason: "invalid" });
-    expect(decodeRemoteOffer("not json", "U_A")).toEqual({ ok: false, reason: "invalid" });
-    expect(decodeRemoteOffer(JSON.stringify({ s: "S1" }), "U_A")).toEqual({ ok: false, reason: "invalid" });
-    expect(decodeRemoteOffer(undefined, "U_A")).toEqual({ ok: false, reason: "invalid" });
+    expect((await decodeRemoteOffer(raw, "U_A", offer.issuedAt + 1000))).toEqual({ ok: true, offer });
+    expect((await decodeRemoteOffer(raw, "U_B", offer.issuedAt))).toEqual({ ok: false, reason: "invalid" });
+    expect((await decodeRemoteOffer("not json", "U_A"))).toEqual({ ok: false, reason: "invalid" });
+    expect((await decodeRemoteOffer(JSON.stringify({ s: "S1" }), "U_A"))).toEqual({ ok: false, reason: "invalid" });
+    expect((await decodeRemoteOffer(undefined, "U_A"))).toEqual({ ok: false, reason: "invalid" });
   });
 
-  it("offer expires after the TTL and rejects a far-future issue time", () => {
+  it("offer expires after the TTL and rejects a far-future issue time", async () => {
     const raw = encodeRemoteOffer(offer);
-    expect(decodeRemoteOffer(raw, "U_A", offer.issuedAt + REMOTE_OFFER_TTL_MS + 1)).toEqual({ ok: false, reason: "expired", offer });
-    expect(decodeRemoteOffer(raw, "U_A", offer.issuedAt - 5 * 60_000).ok).toBe(false);
+    expect((await decodeRemoteOffer(raw, "U_A", offer.issuedAt + REMOTE_OFFER_TTL_MS + 1))).toEqual({ ok: false, reason: "expired", offer });
+    expect((await decodeRemoteOffer(raw, "U_A", offer.issuedAt - 5 * 60_000)).ok).toBe(false);
   });
 
-  it("button carries the offer; modal carries it as metadata and prefills the directory", () => {
+  it("button carries the offer; modal carries it as metadata and prefills the directory", async () => {
     const btn = (remoteOfferBlocks(offer) as any[])[1].elements[0];
     expect(btn.action_id).toBe(REMOTE_OPEN_ACTION);
-    expect(decodeRemoteOffer(btn.value, "U_A", offer.issuedAt).ok).toBe(true);
+    expect((await decodeRemoteOffer(btn.value, "U_A", offer.issuedAt)).ok).toBe(true);
     const modal = remoteConnectModal(offer, "~/repo") as any;
     expect(modal.callback_id).toBe(REMOTE_CONNECT_VIEW);
-    expect(decodeRemoteOffer(modal.private_metadata, "U_A", offer.issuedAt).ok).toBe(true);
+    expect((await decodeRemoteOffer(modal.private_metadata, "U_A", offer.issuedAt)).ok).toBe(true);
     expect(modal.blocks[1].element.initial_value).toBe("~/repo");
     expect((remoteConnectModal(offer) as any).blocks[1].element.initial_value).toBeUndefined();
   });

@@ -13,7 +13,19 @@ import * as Domain from "../../src/db/domain";
 import { metrics } from "../../src/metrics";
 import * as Actor from "../../src/refs/actor";
 
-export const MODES = ["legacy", "shadow", "internal"] as const;
+/**
+ * The modes whose every decision must equal rc.19's legacy answer (the safety
+ * proof of the default). `internal` is not here: it returns the engine result and
+ * has its own tests (tests/access/internal-*.test.ts, failure-modes.test.ts).
+ * An unset SLAUDE_ACCESS_SOURCE reads as `shadow`, covered by the harness env.
+ */
+export const MODES = ["legacy", "shadow", "unset"] as const;
+/** Set SLAUDE_ACCESS_SOURCE for a mode; `unset` removes the variable (the shipped default). */
+export function setMode(mode: string): void {
+  if (mode === "unset") delete process.env.SLAUDE_ACCESS_SOURCE;
+  else process.env.SLAUDE_ACCESS_SOURCE = mode;
+}
+
 export type Break = "none" | "resolver_throws" | "engine_throws" | "engine_disagrees";
 export const BREAKS: Break[] = ["none", "resolver_throws", "engine_throws", "engine_disagrees"];
 
@@ -89,7 +101,7 @@ export function legacyUnderEveryMode<T>(label: string, scenario: () => Promise<T
   for (const mode of MODES) {
     for (const how of BREAKS) {
       test(`${label}: ${mode} source, ${how}: same decisions as the baseline`, async () => {
-        process.env.SLAUDE_ACCESS_SOURCE = mode;
+        setMode(mode);
         breakIt(how);
         expect(await scenario()).toEqual(expected);
         await settleShadows();
@@ -114,7 +126,7 @@ export function sameAsLegacyBaseline<T>(label: string, scenario: () => Promise<T
         process.env.SLAUDE_ACCESS_SOURCE = "legacy";
         const want = await scenario();
         await settleShadows();
-        process.env.SLAUDE_ACCESS_SOURCE = mode;
+        setMode(mode);
         breakIt(how);
         expect(await scenario()).toEqual(want);
         await settleShadows();

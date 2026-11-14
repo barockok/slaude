@@ -177,7 +177,7 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
         // signed inbound Slack user id, not the model's intent.
         const persona = opts.auditContext?.().persona;
         const teamId = opts.teamId?.();
-        if (!who || !soul.manager.userId || !sameAt({ site: "soul_override.tool_manager_same", persona, teamId, userId: who, otherUserId: soul.manager.userId })) {
+        if (!who || !soul.manager.userId || !(await sameAt({ site: "soul_override.tool_manager_same", persona, teamId, userId: who, otherUserId: soul.manager.userId }))) {
           return fail("soul_override is manager-only: this turn was not initiated by the manager.");
         }
         if (action === "list") {

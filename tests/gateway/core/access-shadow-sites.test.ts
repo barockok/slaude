@@ -136,7 +136,7 @@ describe("gateway sites keep the legacy decision", () => {
     expect(await scenario()).toEqual({ manager: 1, member: 1, stranger: 0, lock_owner: 1, lock_manager: 1, lock_other: 0 });
   });
 
-  for (const mode of ["legacy", "shadow", "internal"] as const) {
+  for (const mode of ["legacy", "shadow"] as const) {
     for (const how of ["none", "resolver_throws", "engine_throws", "engine_disagrees"] as Break[]) {
       test(`${mode} source, ${how}: same decisions as the legacy baseline`, async () => {
         process.env.SLAUDE_ACCESS_SOURCE = mode;

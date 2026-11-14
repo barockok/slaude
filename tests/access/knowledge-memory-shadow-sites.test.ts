@@ -26,15 +26,15 @@ const gate = (o: Partial<GateInput> = {}): GateInput => ({
 describe("brain write gate and scope", () => {
   const scenario = async () => {
     const own = userSourceId("U0ONE");
-    const tier = (g: GateInput, src: string) => classifyBrainOp("put_page", { clientId: g.userId ?? "x", sourceId: src, allowedSources: [src] }, g);
+    const tier = async (g: GateInput, src: string) => (await classifyBrainOp("put_page", { clientId: g.userId ?? "x", sourceId: src, allowedSources: [src] }, g));
     return {
-      ownerOwnSlice: tier(gate({ lockedUser: "U0ONE" }), own),
-      ownerShared: tier(gate({ lockedUser: "U0ONE" }), "shared"),
-      otherLock: tier(gate({ lockedUser: "U0TWO" }), own),
-      scopeOwner: resolveBrainScope({ ...gate({ lockedUser: "U0ONE" }), kbSources: [] }).sourceId,
-      scopeOther: resolveBrainScope({ ...gate({ lockedUser: "U0TWO" }), kbSources: [] }).sourceId,
-      turn: turnBrainScope(gate({ turnSenders: [{ userId: "U0ONE", teamId: TEAM, origin: "slack" }] }), []).profileSource ?? null,
-      turnOther: turnBrainScope(gate({ turnSenders: [{ userId: "U0TWO", teamId: TEAM, origin: "slack" }] }), []).profileSource ?? null,
+      ownerOwnSlice: await tier(gate({ lockedUser: "U0ONE" }), own),
+      ownerShared: await tier(gate({ lockedUser: "U0ONE" }), "shared"),
+      otherLock: await tier(gate({ lockedUser: "U0TWO" }), own),
+      scopeOwner: (await resolveBrainScope({ ...gate({ lockedUser: "U0ONE" }), kbSources: [] })).sourceId,
+      scopeOther: (await resolveBrainScope({ ...gate({ lockedUser: "U0TWO" }), kbSources: [] })).sourceId,
+      turn: (await turnBrainScope(gate({ turnSenders: [{ userId: "U0ONE", teamId: TEAM, origin: "slack" }] }), [])).profileSource ?? null,
+      turnOther: (await turnBrainScope(gate({ turnSenders: [{ userId: "U0TWO", teamId: TEAM, origin: "slack" }] }), [])).profileSource ?? null,
     };
   };
   const expected = async () => {
@@ -76,7 +76,7 @@ describe("kb-admin approval", () => {
   const run = async (by: string) => {
     const g = gate();
     const r = await gatedBrainCall("sync_brain", {
-      scope: resolveBrainScope({ ...g, kbSources: [] }), gate: g, managers: ["U0MGR"], describe: "x",
+      scope: (await resolveBrainScope({ ...g, kbSources: [] })), gate: g, managers: ["U0MGR"], describe: "x",
       requestApproval: async () => ({ approved: true, by }), call: async () => "done",
     });
     return r.ok;
@@ -91,19 +91,19 @@ describe("kb-admin approval", () => {
 });
 
 describe("kb tools", () => {
-  const depsFor = (g: GateInput): BrainToolDeps => {
-    const scope = resolveBrainScope({ ...g, kbSources: [] });
+  const depsFor = async (g: GateInput): Promise<BrainToolDeps> => {
+    const scope = (await resolveBrainScope({ ...g, kbSources: [] }));
     const b = fakeBrain();
     return { scope: () => scope, gate: () => g, managers: () => [], requestApproval: async () => ({ approved: true, by: "U0MGR" }), call: (n, p, s) => b.call(n, p, s) };
   };
   const scenario = async () => {
     const memo = async (g: GateInput) => {
-      const r = await brainHandlers.kb_memoize({ pages: [{ slug: "note", content: "hello", type: "person-note" } as never], target: "mine" }, depsFor(g));
+      const r = await brainHandlers.kb_memoize({ pages: [{ slug: "note", content: "hello", type: "person-note" } as never], target: "mine" }, (await depsFor(g)));
       return !r.isError;
     };
     const about = async (asked: string) => {
       const g = gate({ turnSenders: [{ userId: "U0ONE", teamId: TEAM, origin: "slack" }] });
-      const r = await brainHandlers.memory_about({ userId: asked }, depsFor(g));
+      const r = await brainHandlers.memory_about({ userId: asked }, (await depsFor(g)));
       return !r.isError;
     };
     return { ownerLocked: await memo(gate({ lockedUser: "U0ONE" })), otherLocked: await memo(gate({ lockedUser: "U0TWO" })), aboutSelf: await about("U0ONE"), aboutOther: await about("U0TWO") };
@@ -119,15 +119,15 @@ describe("kb tools", () => {
 
 describe("memory scope", () => {
   const scenario = async () => ({
-    own: memoryScopeFor(gate({ lockedUser: "U0ONE" }))?.write?.sourceId ?? null,
-    other: memoryScopeFor(gate({ lockedUser: "U0TWO" })).write,
-    runAsSpeaker: memoryScopeFor(gate(), { runAsUser: "U0ONE" }).write?.sourceId ?? null,
-    runAsOther: memoryScopeFor(gate(), { runAsUser: "U0TWO" }).write,
-    runAsLock: memoryScopeFor(gate({ userId: null, lockedUser: "U0TWO" }), { runAsUser: "U0ONE" }).write,
-    claimSame: withClaimLock(gate({ lockedUser: "U0ONE" }), "U0ONE").lockedUser,
-    claimOther: withClaimLock(gate({ lockedUser: "U0TWO" }), "U0ONE").lockedUser,
-    claimOwn: withClaimLock(gate({ lockedUser: "U0ONE" }), "U0TWO").lockedUser,
-    claimNone: withClaimLock(gate(), "U0TWO").lockedUser,
+    own: (await memoryScopeFor(gate({ lockedUser: "U0ONE" })))?.write?.sourceId ?? null,
+    other: (await memoryScopeFor(gate({ lockedUser: "U0TWO" }))).write,
+    runAsSpeaker: (await memoryScopeFor(gate(), { runAsUser: "U0ONE" })).write?.sourceId ?? null,
+    runAsOther: (await memoryScopeFor(gate(), { runAsUser: "U0TWO" })).write,
+    runAsLock: (await memoryScopeFor(gate({ userId: null, lockedUser: "U0TWO" }), { runAsUser: "U0ONE" })).write,
+    claimSame: (await withClaimLock(gate({ lockedUser: "U0ONE" }), "U0ONE")).lockedUser,
+    claimOther: (await withClaimLock(gate({ lockedUser: "U0TWO" }), "U0ONE")).lockedUser,
+    claimOwn: (await withClaimLock(gate({ lockedUser: "U0ONE" }), "U0TWO")).lockedUser,
+    claimNone: (await withClaimLock(gate(), "U0TWO")).lockedUser,
   });
   legacyUnderEveryMode("lock, run-as and claim compares", scenario, {
     own: userSourceId("U0ONE"),
@@ -145,18 +145,18 @@ describe("memory scope", () => {
     await settleShadows();
     for (const site of ["memory_scope.lock_owner", "memory_scope.run_as_speaker", "memory_scope.run_as_lock", "memory_scope.claim_live_same", "memory_scope.live_speaker_same"]) expect(decisions(site)).toBeGreaterThan(0);
   });
-  test("agent slice still the default for an unlocked turn", () => {
-    expect(memoryScopeFor(gate()).write?.sourceId).toBe(agentSourceId(AGENT));
+  test("agent slice still the default for an unlocked turn", async () => {
+    expect((await memoryScopeFor(gate())).write?.sourceId).toBe(agentSourceId(AGENT));
   });
 });
 
 describe("proposal cards", () => {
   const scenario = async () => ({
-    person: mayDecide({ toKind: "person", toUser: "U0ONE" }, "U0ONE", [], { teamId: TEAM }),
-    notPerson: mayDecide({ toKind: "person", toUser: "U0ONE" }, "U0TWO", ["U0TWO"], { teamId: TEAM }),
-    manager: mayDecide({ toKind: "manager", toUser: null }, "U0MGR", ["U0MGR"], { teamId: TEAM }),
-    notManager: mayDecide({ toKind: "manager", toUser: null }, "U0ONE", ["U0MGR"], { teamId: TEAM }),
-    noTeam: mayDecide({ toKind: "manager", toUser: null }, "U0MGR", ["U0MGR"]),
+    person: (await mayDecide({ toKind: "person", toUser: "U0ONE" }, "U0ONE", [], { teamId: TEAM })),
+    notPerson: (await mayDecide({ toKind: "person", toUser: "U0ONE" }, "U0TWO", ["U0TWO"], { teamId: TEAM })),
+    manager: (await mayDecide({ toKind: "manager", toUser: null }, "U0MGR", ["U0MGR"], { teamId: TEAM })),
+    notManager: (await mayDecide({ toKind: "manager", toUser: null }, "U0ONE", ["U0MGR"], { teamId: TEAM })),
+    noTeam: (await mayDecide({ toKind: "manager", toUser: null }, "U0MGR", ["U0MGR"])),
   });
   legacyUnderEveryMode("who may decide", scenario, { person: true, notPerson: false, manager: true, notManager: false, noTeam: true });
   test("counts decisions; no workspace is not compared", async () => {

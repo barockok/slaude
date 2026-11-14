@@ -39,8 +39,8 @@ useShadowEnv({
 });
 
 describe("model and ingest readers", () => {
-  const model = async () => Object.fromEntries(WHO.map((u) => [u, canChangeModel(u, soul, { persona: "default", teamId: TEAM })]));
-  const ingest = async () => Object.fromEntries(WHO.map((u) => [u, canTriggerIngest(u, soul, { persona: "default", teamId: TEAM })]));
+  const model = async () => Object.fromEntries(await Promise.all(WHO.map(async (u) => [u, await canChangeModel(u, soul, { persona: "default", teamId: TEAM })])));
+  const ingest = async () => Object.fromEntries(await Promise.all(WHO.map(async (u) => [u, await canTriggerIngest(u, soul, { persona: "default", teamId: TEAM })])));
   legacyUnderEveryMode("canChangeModel", model, { U0MGR: true, U0BAK: true, U0APP: true, U0DM: true, U0NOBODY: false });
   legacyUnderEveryMode("canTriggerIngest", ingest, { U0MGR: true, U0BAK: true, U0APP: true, U0DM: false, U0NOBODY: false });
 
@@ -55,8 +55,8 @@ describe("model and ingest readers", () => {
   });
 
   test("without a workspace the legacy answer stands and nothing is compared", async () => {
-    expect(canChangeModel("U0DM", soul)).toBe(true);
-    expect(canTriggerIngest("U0DM", soul)).toBe(false);
+    expect((await canChangeModel("U0DM", soul))).toBe(true);
+    expect((await canTriggerIngest("U0DM", soul))).toBe(false);
     await settleShadows();
     expect(compared("model_auth.can_change") + compared("ingest_auth.can_trigger")).toBe(0);
   });

@@ -19,7 +19,7 @@ useShadowEnv();
 const member = (id: string): Grant => ({ subjectKind: "user", subjectId: id, role: "member", deny: false, dmOnly: false, source: "console", subject: { service: "slack" } });
 const people = (n: number) => Array.from({ length: n }, (_, i) => `U0P${String(i).padStart(4, "0")}`);
 const seen = () => Domain.ensureBinding({ service: "slack", kind: "user", workspace: TEAM, value: "U0EXAMPLE", state: "observed", source: "test" });
-const admit = (grants: Grant[], user = "U0EXAMPLE") => admitAt({ site: "gateway.admit", persona: "scout", teamId: TEAM, userId: user, channelId: "D0DM", isDM: true, grants });
+const admit = async (grants: Grant[], user = "U0EXAMPLE") => (await admitAt({ site: "gateway.admit", persona: "scout", teamId: TEAM, userId: user, channelId: "D0DM", isDM: true, grants }));
 
 describe("shadow load", () => {
   test("resolved subjects are shared between shadows: the second admit reads no binding", async () => {
@@ -85,7 +85,7 @@ describe("shadow load", () => {
     }
     const sender = { userId: "U0ONE", teamId: TEAM, origin: "slack" as const };
     const g = { userId: "U0ONE", teamId: TEAM, interactive: true, origin: "slack" as const, lockedUser: null, channelTrust: "trusted" as const, isManager: false, agentId: agent, threadKey: "C0EXAMPLE:1.1", turnSenders: [sender] };
-    const deps: BrainToolDeps = { scope: () => resolveBrainScope({ ...g, kbSources: [] }), gate: () => g, managers: () => [], requestApproval: async () => ({ approved: true, by: "U0ONE" }), call: (n, p, s) => brain.call(n, p, s) };
+    const deps: BrainToolDeps = { scope: async () => (await resolveBrainScope({ ...g, kbSources: [] })), gate: () => g, managers: () => [], requestApproval: async () => ({ approved: true, by: "U0ONE" }), call: (n, p, s) => brain.call(n, p, s) };
     const r = await brainHandlers.memory_about({ userId: "U0ONE" }, deps);
     expect(r.isError).toBeUndefined();
     await settleShadows();

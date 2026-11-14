@@ -32,8 +32,8 @@ export type DecodedEnvOffer =
   | { ok: false; reason: "invalid" }
   | { ok: false; reason: "expired"; offer: EnvOffer };
 
-export function decodeEnvOffer(raw: string | undefined, clicker: string | undefined, now = Date.now()): DecodedEnvOffer {
-  const d: DecodedOffer = decodeRemoteOffer(raw, clicker, now);
+export async function decodeEnvOffer(raw: string | undefined, clicker: string | undefined, now = Date.now()): Promise<DecodedEnvOffer> {
+  const d: DecodedOffer = await decodeRemoteOffer(raw, clicker, now);
   if (!("offer" in d)) return d;
   let extra: { e?: unknown; k?: unknown } = {};
   try { extra = JSON.parse(raw!); } catch {}

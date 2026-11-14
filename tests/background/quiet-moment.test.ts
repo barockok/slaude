@@ -443,7 +443,7 @@ describe("turn end counts thread activity", () => {
     const mem = makeScopedMemory({
       provider: () => provider,
       ready: async () => {},
-      scopeFor: async (sid) => ({ ...memoryScopeFor(gate({ lockedUser: "U0ALICE" })), ...(sid === "S-mono" ? { activityAgentId: AGENT } : {}) }),
+      scopeFor: async (sid) => ({ ...(await memoryScopeFor(gate({ lockedUser: "U0ALICE" }))), ...(sid === "S-mono" ? { activityAgentId: AGENT } : {}) }),
     });
     await mem.syncTurn({ sessionId: "S-mono", user: "u", assistant: "a" });
     expect(await ThreadActivity.get("S-mono")).toMatchObject({ agentId: AGENT, turns: 1, scope: "user:U0ALICE" });

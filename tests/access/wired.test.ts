@@ -7,6 +7,7 @@ import * as Domain from "../../src/db/domain";
 import { metrics } from "../../src/metrics";
 import * as Actor from "../../src/refs/actor";
 import * as Authority from "../../src/access/authority";
+import { setMode } from "../helpers/shadow-modes";
 
 import { roleInternal } from "../../src/access/authority";
 const roleInternalProbe = (gs: Grant[], actor: any): boolean => roleInternal(gs, actor) === "manager";
@@ -61,31 +62,31 @@ function probe(site: SiteId, kind: (typeof SITES)[number]["kind"], teamId: strin
   switch (kind) {
     case "admit": {
       const o = { site, persona: "scout", teamId, userId: SELF, channelId: "D0DM", isDM: true, grants };
-      return { site, legacy: { ok: false, reason: "whitelist" }, run: () => admitAt(o) };
+      return { site, legacy: { ok: false, reason: "whitelist" }, run: async () => (await admitAt(o)) };
     }
     case "role": {
       const o = { site, persona: "scout", teamId, userId: SELF, channelId: null, grants };
-      return { site, legacy: null, run: () => roleAt(o) };
+      return { site, legacy: null, run: async () => (await roleAt(o)) };
     }
     case "approvers": {
       const o = { site, persona: "scout", teamId, grants, roles: ["manager" as const] };
-      return { site, legacy: [], run: () => approversAt(o) };
+      return { site, legacy: [], run: async () => (await approversAt(o)) };
     }
     case "same": {
       const o = { site, persona: "scout", teamId, userId: SELF, otherUserId: OTHER, otherTeamId: teamId };
-      return { site, legacy: false, run: () => sameAt(o) };
+      return { site, legacy: false, run: async () => (await sameAt(o)) };
     }
     case "list": {
       const o = { site, persona: "scout", teamId, legacy: [OTHER], roles: ["manager" as const], grants: () => grants };
-      return { site, legacy: [OTHER], run: () => listAt(o) };
+      return { site, legacy: [OTHER], run: async () => (await listAt(o)) };
     }
     case "denied": {
       const o = { site, persona: "scout", teamId, userId: SELF, grants };
-      return { site, legacy: false, run: () => deniedAt(o) };
+      return { site, legacy: false, run: async () => (await deniedAt(o)) };
     }
     case "check": {
       const o = { site, persona: "scout", teamId, userId: SELF, legacy: false, grants: () => grants, internal: ({ grants: gs, actor }: any) => roleInternalProbe(gs, actor) };
-      return { site, legacy: false, run: () => checkAt(o) };
+      return { site, legacy: false, run: async () => (await checkAt(o)) };
     }
   }
 }
@@ -93,14 +94,14 @@ function probe(site: SiteId, kind: (typeof SITES)[number]["kind"], teamId: strin
 describe("every registered site returns the legacy value", () => {
   for (const s of SITES) {
     describe(s.id, () => {
-      for (const mode of ["shadow", "legacy"] as const) {
+      for (const mode of ["shadow", "legacy", "unset"] as const) {
         test(`${mode}: the engine disagrees`, async () => {
-          process.env.SLAUDE_ACCESS_SOURCE = mode;
+          setMode(mode);
           await verifiedUser();
           const p = probe(s.id, s.kind, T1);
-          expect(p.run()).toEqual(p.legacy as never);
+          expect(await p.run()).toEqual(p.legacy as never);
           await settleShadows();
-          if (mode === "shadow") {
+          if (mode !== "legacy") {
             expect(count("slaude_access_shadow_total", { site: s.id, outcome: "mismatch" }) + count("slaude_access_shadow_total", { site: s.id, outcome: "match" })).toBe(1);
           }
           expect(count("slaude_access_decision_total", { source: "legacy", site: s.id })).toBeGreaterThanOrEqual(1);
@@ -110,7 +111,7 @@ describe("every registered site returns the legacy value", () => {
         spyOn(Actor, "actingUser").mockRejectedValue(new Error("db down"));
         spyOn(Actor, "sameUser").mockRejectedValue(new Error("db down"));
         const p = probe(s.id, s.kind, T1);
-        expect(p.run()).toEqual(p.legacy as never);
+        expect(await p.run()).toEqual(p.legacy as never);
         await settleShadows();
         expect(count("slaude_access_shadow_total", { site: s.id, outcome: "match" })).toBe(0);
       });
@@ -119,15 +120,33 @@ describe("every registered site returns the legacy value", () => {
         for (const fn of ["admitInternal", "roleInternal", "usersWithRoleInternal", "isDeniedInternal"] as const) spyOn(Authority, fn).mockImplementation(() => { throw new Error("engine bug"); });
         spyOn(Actor, "sameUser").mockImplementation(() => { throw new Error("engine bug"); });
         const p = probe(s.id, s.kind, T1);
-        expect(p.run()).toEqual(p.legacy as never);
+        expect(await p.run()).toEqual(p.legacy as never);
         await settleShadows();
         expect(count("slaude_access_shadow_total", { site: s.id, outcome: "new_error" })).toBeGreaterThanOrEqual(1);
       });
+      for (const how of ["resolver_throws", "engine_throws", "records_throw"] as const) {
+        test(`internal: ${how} never throws into the caller`, async () => {
+          process.env.SLAUDE_ACCESS_SOURCE = "internal";
+          await verifiedUser();
+          if (how === "resolver_throws") {
+            spyOn(Actor, "actingUser").mockRejectedValue(new Error("db down"));
+            spyOn(Actor, "sameUser").mockRejectedValue(new Error("db down"));
+          } else if (how === "records_throw") {
+            spyOn(Domain, "findBinding").mockRejectedValue(new Error("db down"));
+            spyOn(Domain, "resolveUserId").mockRejectedValue(new Error("db down"));
+          } else {
+            for (const fn of ["admitInternal", "roleInternal", "usersWithRoleInternal", "isDeniedInternal"] as const) spyOn(Authority, fn).mockImplementation(() => { throw new Error("engine bug"); });
+            spyOn(Actor, "sameUser").mockImplementation(() => { throw new Error("engine bug"); });
+          }
+          const p = probe(s.id, s.kind, T1);
+          await expect(Promise.resolve(p.run())).resolves.toBeDefined();
+        });
+      }
       test("an unknown workspace never reaches the engine and keeps the legacy value", async () => {
         const acting = spyOn(Actor, "actingUser");
         const same = spyOn(Actor, "sameUser");
         const p = probe(s.id, s.kind, null);
-        expect(p.run()).toEqual(p.legacy as never);
+        expect(await p.run()).toEqual(p.legacy as never);
         await settleShadows();
         expect(acting).not.toHaveBeenCalled();
         expect(same).not.toHaveBeenCalled();
@@ -142,9 +161,9 @@ describe("hot path", () => {
     process.env.SLAUDE_ACCESS_SOURCE = "legacy";
     const acting = spyOn(Actor, "actingUser");
     const same = spyOn(Actor, "sameUser");
-    admitAt({ site: "gateway.admit", persona: "scout", teamId: T1, userId: SELF, channelId: "D0DM", isDM: true, grants: [slack(SELF, "member")] });
-    roleAt({ site: "gateway.cron.role", persona: "scout", teamId: T1, userId: SELF, grants: [slack(SELF, "member")] });
-    sameAt({ site: "gateway.mcp_slash.lock_owner", persona: "scout", teamId: T1, userId: SELF, otherUserId: SELF, otherTeamId: T1 });
+    (await admitAt({ site: "gateway.admit", persona: "scout", teamId: T1, userId: SELF, channelId: "D0DM", isDM: true, grants: [slack(SELF, "member")] }));
+    (await roleAt({ site: "gateway.cron.role", persona: "scout", teamId: T1, userId: SELF, grants: [slack(SELF, "member")] }));
+    (await sameAt({ site: "gateway.mcp_slash.lock_owner", persona: "scout", teamId: T1, userId: SELF, otherUserId: SELF, otherTeamId: T1 }));
     await settleShadows();
     expect(acting).not.toHaveBeenCalled();
     expect(same).not.toHaveBeenCalled();
@@ -155,7 +174,7 @@ describe("hot path", () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     spyOn(Actor, "actingUser").mockImplementation(async () => (await gate, null));
-    const out = roleAt({ site: "gateway.cron.role", persona: "scout", teamId: T1, userId: SELF, grants: [slack(SELF, "manager")] });
+    const out = (await roleAt({ site: "gateway.cron.role", persona: "scout", teamId: T1, userId: SELF, grants: [slack(SELF, "manager")] }));
     expect(out).toBe("manager");
     release();
     await settleShadows();
@@ -165,7 +184,7 @@ describe("hot path", () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const spy = spyOn(Actor, "actingUser").mockImplementation(async () => (await gate, null));
-    for (let i = 0; i < 1000; i++) roleAt({ site: "gateway.cron.role", persona: "scout", teamId: T1, userId: SELF, grants: [slack(SELF, "manager")] });
+    for (let i = 0; i < 1000; i++) (await roleAt({ site: "gateway.cron.role", persona: "scout", teamId: T1, userId: SELF, grants: [slack(SELF, "manager")] }));
     await Bun.sleep(5);
     expect(count("slaude_access_shadow_total", { site: "gateway.cron.role", outcome: "dropped" })).toBe(1000 - MAX_INFLIGHT);
     expect(spy).toHaveBeenCalledTimes(MAX_INFLIGHT);
@@ -178,16 +197,16 @@ describe("an email grant for a linked user", () => {
   test("shadow records a mismatch while the answer stays legacy", async () => {
     await verifiedUser();
     const grants = [email("a@example.com", "manager")];
-    expect(roleAt({ site: "gateway.cron.role", persona: "scout", teamId: T1, userId: SELF, grants })).toBeNull();
+    expect((await roleAt({ site: "gateway.cron.role", persona: "scout", teamId: T1, userId: SELF, grants }))).toBeNull();
     await settleShadows();
     expect(count("slaude_access_shadow_total", { site: "gateway.cron.role", outcome: "mismatch" })).toBe(1);
   });
 });
 
 describe("sameAt", () => {
-  test("legacy is the string compare, whatever the workspaces say", () => {
-    expect(sameAt({ site: "gateway.mcp_slash.lock_owner", persona: null, teamId: T1, userId: SELF, otherUserId: SELF, otherTeamId: "T1EXAMPLE" })).toBe(true);
-    expect(sameAt({ site: "gateway.mcp_slash.lock_owner", persona: null, teamId: T1, userId: SELF, otherUserId: OTHER, otherTeamId: T1 })).toBe(false);
-    expect(sameAt({ site: "gateway.mcp_slash.lock_owner", persona: null, teamId: T1, userId: "", otherUserId: "", otherTeamId: T1 })).toBe(true);
+  test("legacy is the string compare, whatever the workspaces say", async () => {
+    expect((await sameAt({ site: "gateway.mcp_slash.lock_owner", persona: null, teamId: T1, userId: SELF, otherUserId: SELF, otherTeamId: "T1EXAMPLE" }))).toBe(true);
+    expect((await sameAt({ site: "gateway.mcp_slash.lock_owner", persona: null, teamId: T1, userId: SELF, otherUserId: OTHER, otherTeamId: T1 }))).toBe(false);
+    expect((await sameAt({ site: "gateway.mcp_slash.lock_owner", persona: null, teamId: T1, userId: "", otherUserId: "", otherTeamId: T1 }))).toBe(true);
   });
 });

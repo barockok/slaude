@@ -578,7 +578,7 @@ async function editCanvasEnd(
  *  managers count everywhere. `personaName` absent means the default. */
 export async function isManagerOrApprover(personaName: string | null | undefined, userId?: string | null, channelId?: string | null, teamId?: string | null): Promise<boolean> {
   if (!userId) return false;
-  const r = roleAt({ site: "mcp_tools.manager_or_approver", persona: personaName, teamId, userId, channelId, grants: await loadGrants(personaName) });
+  const r = (await roleAt({ site: "mcp_tools.manager_or_approver", persona: personaName, teamId, userId, channelId, grants: await loadGrants(personaName) }));
   return r === "manager" || r === "approver";
 }
 

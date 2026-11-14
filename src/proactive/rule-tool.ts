@@ -26,7 +26,7 @@ import { backgroundAgentId } from "../background/skill-check";
 import * as OneOnOne from "../db/one-on-one";
 import type { SlackContext } from "../gateway/slack/mcp-tools";
 import { loadGrants } from "../access/role";
-import { approversAt, sameAt } from "../access/wired";
+import { approversAt, sameAt, someSameAt } from "../access/wired";
 import { brainCall } from "../knowledge/brain";
 import { SUPERSEDED_TAG, supersededSlugs, type BrainOpCall } from "../knowledge/memory-trail";
 import { agentSourceId, type BrainScope } from "../knowledge/scope";
@@ -65,7 +65,7 @@ const mention = (id: string) => `<@${id}>`;
  */
 async function ruleApprovers(personaName: string | null | undefined, channel: string | null, teamId?: string | null): Promise<string[]> {
   const grants = await loadGrants(personaName);
-  return approversAt({ site: "rule_tool.approvers", persona: personaName, teamId, grants, roles: channel ? ["manager", "approver"] : ["manager"], channelId: channel });
+  return (await approversAt({ site: "rule_tool.approvers", persona: personaName, teamId, grants, roles: channel ? ["manager", "approver"] : ["manager"], channelId: channel }));
 }
 
 /** True when the running turn holds exactly one sender: this person, from Slack. */
@@ -74,7 +74,7 @@ async function ownTurn(ctx: SlackContext, userId: string): Promise<boolean> {
   if (!senders || senders.length !== 1) return false;
   const s = senders[0]!;
   // A team on both sides must agree; mono records none when Slack sent none.
-  return s.origin === "slack" && sameAt({ site: "rule_tool.own_turn", persona: ctx.personaId, teamId: ctx.teamId, userId: s.userId, otherUserId: userId, otherTeamId: s.teamId }) && (!s.teamId || !ctx.teamId || s.teamId === ctx.teamId);
+  return s.origin === "slack" && (await sameAt({ site: "rule_tool.own_turn", persona: ctx.personaId, teamId: ctx.teamId, userId: s.userId, otherUserId: userId, otherTeamId: s.teamId })) && (!s.teamId || !ctx.teamId || s.teamId === ctx.teamId);
 }
 
 /** Whitespace-collapsed and lowercased, so a quote matches its message however it was spaced or cased. */
@@ -153,12 +153,12 @@ export async function proactiveRule(
 
   // Lowering here applies at once; raising, or any global rule, needs an approver for the scope.
   const approvers = await ruleApprovers(ctx.personaId, channel, ctx.teamId);
-  const canApprove = (u: string) => approvers.some((a) => sameAt({ site: "rule_tool.can_approve", persona: ctx.personaId, teamId: ctx.teamId, userId: u, otherUserId: a }));
+  const canApprove = (u: string): Promise<boolean> => someSameAt(approvers, (a) => ({ site: "rule_tool.can_approve", persona: ctx.personaId, teamId: ctx.teamId, userId: u, otherUserId: a }));
   let approvedBy: string | undefined;
-  if (((raising || scope === "global") && !canApprove(userId)) || unverified) {
+  if (((raising || scope === "global") && !(await canApprove(userId))) || unverified) {
     // Global and DM: only the manager or backup, and a card in this thread
     // would be addressed to the channel's approvers, so no card for anyone else.
-    if (!channel && !canApprove(userId)) {
+    if (!channel && !(await canApprove(userId))) {
       return err(`refused: ask ${approvers.length > 0 ? approvers.map(mention).join(" or ") : "the manager"} to set this; only they can approve it here`);
     }
     const who = approvers.length > 0 ? approvers.map(mention).join(channel ? ", " : " or ") : "the manager";
@@ -170,7 +170,7 @@ export async function proactiveRule(
     if (!r.approved) return err(`not approved${r.by ? ` by ${mention(r.by)}` : ""}${r.note ? `: ${r.note}` : ""}; the rule was not changed`);
     // The card's clickers come from the channel's approver list (or anyone,
     // when it has none), so check the clicker against the channel too.
-    if (!canApprove(r.by)) return err(`refused: ${mention(r.by)} cannot approve this; it needs ${who}`);
+    if (!(await canApprove(r.by))) return err(`refused: ${mention(r.by)} cannot approve this; it needs ${who}`);
     approvedBy = r.by;
   }
 

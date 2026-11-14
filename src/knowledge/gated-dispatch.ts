@@ -1,4 +1,4 @@
-import { sameAt } from "../access/wired";
+import { sameAt, someSameAt } from "../access/wired";
 import type { BrainScope, ChannelTrust } from "./scope";
 import { agentSourceId, isProfileSourceId, resolveBrainScope, speakerProfileSource, userSourceId } from "./scope";
 
@@ -92,7 +92,7 @@ export const BRAIN_OP_CLASSES: Readonly<Record<"read" | "write" | "destructive" 
   manager: [...MANAGER_OPS],
 };
 
-export function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): GateTier {
+export async function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): Promise<GateTier> {
   if (READ_OPS.has(op)) return "auto";
   if (MANAGER_OPS.has(op)) return "manager";
   if (DESTRUCTIVE_OPS.has(op)) {
@@ -108,7 +108,7 @@ export function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): Ga
     // and public would carry the thread out without that person's approval.
     // Checked before the background branch, so no turn in a lock is exempt.
     if (g.lockedUser !== null) {
-      return g.userId !== null && sameAt({ site: "brain_gate.lock_owner", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }) && scope.sourceId === userSourceId(g.userId) ? "auto" : "deny";
+      return g.userId !== null && (await sameAt({ site: "brain_gate.lock_owner", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) && scope.sourceId === userSourceId(g.userId) ? "auto" : "deny";
     }
     if (g.userId === null) return "auto"; // background turn — agent's own mind
     if (scope.sourceId === agentSourceId(g.agentId)) return "auto"; // agent's own private slice
@@ -141,9 +141,9 @@ export function soleSlackSender(g: GateInput): TurnSender | null {
  * their profile readable in someone else's turn; and while the senders are
  * mixed or unknown it is nobody's own turn, so no profile is read at all.
  */
-export function turnBrainScope(g: GateInput, kbSources: string[]): BrainScope {
+export async function turnBrainScope(g: GateInput, kbSources: string[]): Promise<BrainScope> {
   const sender = soleSlackSender(g);
-  const own = sender !== null && g.userId !== null && sameAt({ site: "brain_gate.turn_sender_same", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: sender.userId, otherTeamId: sender.teamId }) && (sender.teamId ?? null) === g.teamId;
+  const own = sender !== null && g.userId !== null && (await sameAt({ site: "brain_gate.turn_sender_same", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: sender.userId, otherTeamId: sender.teamId })) && (sender.teamId ?? null) === g.teamId;
   return resolveBrainScope({ ...g, teamId: own ? g.teamId : null, kbSources });
 }
 
@@ -227,7 +227,7 @@ function liveGrant(key: string | null, now: number): boolean {
 }
 
 export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<GatedResult> {
-  const tier = classifyBrainOp(op, d.scope, d.gate);
+  const tier = await classifyBrainOp(op, d.scope, d.gate);
   if (tier === "deny") {
     return { ok: false, reason: `kb operation "${op}" is not allowed from this channel` };
   }
@@ -249,7 +249,7 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
       category: tier === "manager" ? "kb-admin" : "kb",
     });
     if (!r.approved) return { ok: false, reason: `denied by ${r.by}${r.note ? `: ${r.note}` : ""}` };
-    if (tier === "manager" && !d.managers.some((mgr) => sameAt({ site: "brain_gate.manager_approver", persona: d.gate.agentId, teamId: d.gate.teamId, userId: r.by, otherUserId: mgr }))) {
+    if (tier === "manager" && !(await someSameAt(d.managers, (mgr) => ({ site: "brain_gate.manager_approver", persona: d.gate.agentId, teamId: d.gate.teamId, userId: r.by, otherUserId: mgr })))) {
       return { ok: false, reason: `kb operation "${op}" needs manager approval — approved by ${r.by}, who is not the manager` };
     }
     // First approval opens a standing grant scoped to (thread, this writer) —

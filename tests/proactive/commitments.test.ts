@@ -142,7 +142,7 @@ describe("write hooks", () => {
       turnSenders: [{ userId: "U0ALICE", teamId: TEAM, origin: "slack" }],
     };
     const deps: BrainToolDeps = {
-      scope: () => resolveBrainScope({ ...g, kbSources: [] }),
+      scope: async () => (await resolveBrainScope({ ...g, kbSources: [] })),
       gate: () => g,
       managers: () => ["U0MGR"],
       requestApproval: async () => ({ approved: true, by: "U0MGR" }),
@@ -167,7 +167,7 @@ describe("write hooks", () => {
     const r = await brainHandlers.kb_memoize(
       { pages: [{ slug: "notes/x", content: "x", summary: "x" }] },
       {
-        scope: () => resolveBrainScope({ ...g, kbSources: [] }),
+        scope: async () => (await resolveBrainScope({ ...g, kbSources: [] })),
         gate: () => g,
         managers: () => [],
         requestApproval: async () => ({ approved: true, by: "U0MGR" }),
