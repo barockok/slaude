@@ -848,8 +848,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return undefined;
   };
   /** Whether the user is a manager of the persona (roleOf; persona NAME, absent = default). */
-  const isManagerOf = async (personaName: string | null | undefined, userId: string | null | undefined): Promise<boolean> =>
-    !!userId && (await roleOf(personaName, userId)) === "manager";
+  const isManagerOf = async (personaName: string | null | undefined, userId: string | null | undefined, teamId?: string | null): Promise<boolean> =>
+    !!userId && (await roleOf(personaName, userId, undefined, teamId)) === "manager";
   // Surfaces resolve their client on every call, so a sync that rotates,
   // removes or re-points a persona's userToken reaches surfaces built before
   // it, including the one the in-process surface MCP of a warm session holds

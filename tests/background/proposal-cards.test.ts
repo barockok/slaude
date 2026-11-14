@@ -607,3 +607,41 @@ describe("managers are the proposal's persona's", () => {
   });
 });
 
+describe("the click's workspace reaches the managers lookup (slice C task 12)", () => {
+  const teams: Array<string | undefined> = [];
+  const managers = (_persona: string, teamId?: string) => (teams.push(teamId), [MANAGER, BACKUP]);
+
+  test("a click from a known workspace passes it; the answer is the same either way", async () => {
+    teams.length = 0;
+    const { deps } = setup({ managers });
+    const a = await teamFact();
+    expect((await decideProposal({ id: a, verb: "reject", by: ALICE, from: { teamId: "T0EXAMPLE" } }, deps)).ok).toBe(false);
+    expect(teams).toEqual(["T0EXAMPLE"]);
+    const b = await teamFact();
+    teams.length = 0;
+    expect((await decideProposal({ id: b, verb: "reject", by: MANAGER, from: { teamId: "T0EXAMPLE" } }, deps)).ok).toBe(true);
+    expect(teams[0]).toBe("T0EXAMPLE");
+  });
+
+  test("an unknown workspace passes none and decides as before", async () => {
+    teams.length = 0;
+    const { deps } = setup({ managers });
+    const id = await teamFact();
+    expect((await decideProposal({ id, verb: "reject", by: MANAGER }, deps)).ok).toBe(true);
+    expect(teams).toEqual([undefined]);
+  });
+
+  test("the write gate still carries no team: a card is never a profile turn", async () => {
+    const { deps, brain } = setup({ managers });
+    const id = await teamFact();
+    await decideProposal({ id, verb: "approve", by: MANAGER, from: { teamId: "T0EXAMPLE" } }, deps);
+    expect(brain.calls.every((c) => !c.scope.sourceId.startsWith("profile"))).toBe(true);
+  });
+
+  test("a skill restore passes the click's workspace too", async () => {
+    teams.length = 0;
+    const row = await Proposals.recordSkillRetired({ agentId: AGENT, payload: { slug: "x", retiredId: "missing", persona: "default", reason: "unused", uses: 0, lastUsedAt: null }, at: NOW - DAY });
+    await restoreRetiredSkill({ id: row, by: MANAGER, from: { teamId: "T0EXAMPLE" } }, { managers, now: () => new Date(NOW) });
+    expect(teams).toEqual(["T0EXAMPLE"]);
+  });
+});

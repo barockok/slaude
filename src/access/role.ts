@@ -161,8 +161,15 @@ export async function approversFor(personaName: string, channelId?: string | nul
   return usersWithRole(await loadGrants("default"), ["manager"]);
 }
 
-/** `roleFromGrants` over {@link loadGrants}; `personaName` is the persona NAME. */
-export async function roleOf(personaName: string | null | undefined, userId: string, channelId?: string | null): Promise<Role | null> {
+/**
+ * `roleFromGrants` over {@link loadGrants}; `personaName` is the persona NAME.
+ * `teamId` is the workspace the user spoke in, when the caller knows it. The
+ * answer never depends on it (a Slack id is compared as a string until the
+ * access flip, slice C task 20); it is accepted so every caller can pass the
+ * team now and the seam wiring (`src/access/wired.ts`) can read it.
+ */
+export async function roleOf(personaName: string | null | undefined, userId: string, channelId?: string | null, teamId?: string | null): Promise<Role | null> {
+  void teamId;
   return roleFromGrants(await loadGrants(personaName), userId, channelId);
 }
 

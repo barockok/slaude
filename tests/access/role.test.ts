@@ -125,6 +125,14 @@ describe("roleOf and the stored-grant loader", () => {
     expect(await roleOf("default", "UALICE")).toBeNull();
   });
 
+  test("the team is accepted and never changes the answer (task 12)", async () => {
+    await AgentGrants.create({ persona: "default", subjectKind: "user", subjectId: "UALICE", role: "manager", createdBy: "UMGR" });
+    for (const team of [undefined, null, "", "T0EXAMPLE", "T1EXAMPLE"]) {
+      expect(await roleOf("default", "UALICE", null, team)).toBe("manager");
+      expect(await roleOf("default", "UBOB", null, team)).toBeNull();
+    }
+  });
+
   test("cached within the TTL until invalidated", async () => {
     let reads = 0;
     __setGrantsReader(async () => {
