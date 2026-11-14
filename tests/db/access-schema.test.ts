@@ -126,7 +126,7 @@ describe("upgrade from 0039 keeps existing rows", () => {
       await db.run(`INSERT INTO one_on_one_locks (channel_id, thread_ts, locked_user, created_by, created_at) VALUES ('C0EXAMPLE', '1.1', 'U0EXAMPLE', 'U0EXAMPLE', 1)`);
       await db.run(`INSERT INTO accounts (id, issuer, subject, email, created_at, updated_at) VALUES ('a1', 'https://idp.example.com', 's1', 'a@example.com', 1, 1)`);
       const r = await runMigrations(db, { log: () => {}, migrations: all });
-      expect(r.applied).toEqual(["0040"]);
+      expect(r.applied).toEqual(["0040", "0041"]);
       expect(await db.one("SELECT 1 AS x FROM agent_grants WHERE id = 'g1' AND role = 'manager' AND subject_ref IS NULL AND subject_user_id IS NULL")).not.toBeNull();
       expect(await db.one("SELECT 1 AS x FROM one_on_one_locks WHERE locked_user = 'U0EXAMPLE' AND team_id IS NULL")).not.toBeNull();
       expect(await db.one("SELECT 1 AS x FROM accounts WHERE id = 'a1' AND email_proven = FALSE")).not.toBeNull();

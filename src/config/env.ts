@@ -737,6 +737,18 @@ export const env = {
       return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
     },
   },
+  merge: {
+    /**
+     * `SLAUDE_AUTO_MERGE` (default on): records merge automatically when a proof
+     * (the portal link, a login with a proven email) lands on a record that holds
+     * nothing verified. `off` turns every automatic merge into a proposal for the
+     * console; nothing is moved. Read on every call.
+     */
+    auto: (): boolean => {
+      const raw = opt("SLAUDE_AUTO_MERGE", "on").trim().toLowerCase();
+      return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
+    },
+  },
   remote: {
     /** `/remote` — run a thread's shell and file tools on the initiator's own
      *  machine over tailcat SSH. Default off; ships behind this flag. */

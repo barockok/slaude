@@ -1,5 +1,7 @@
 import { audit, type AuditDeps } from "./index";
 import type { DomainEvent } from "../db/domain";
+import { invalidateActors } from "../refs/actor";
+import { queueMergeNotice } from "../domain/merge-notice";
 
 export interface DomainAuditOptions {
   actorId?: string;
@@ -16,22 +18,37 @@ export interface DomainAuditOptions {
  * redaction beyond what `audit` already does.
  */
 export async function emitDomainEvents(events: readonly DomainEvent[], opts: DomainAuditOptions = {}, deps?: AuditDeps): Promise<void> {
-  if (opts.suppress) return;
+  if (opts.suppress) {
+    // A batch caller writes its own summary, but a merge still drops cached actors and queues its notice.
+    for (const e of events) {
+      if (e.action === "user.merged") {
+        invalidateActors();
+        queueMergeNotice(e.mergeId);
+      }
+    }
+    return;
+  }
   for (const e of events) {
     await audit(
       {
         tenantId: opts.tenantId,
         persona: opts.persona ?? null,
-        actorKind: "system",
-        actorId: opts.actorId ?? "system",
+        actorKind: e.action === "user.merged" && e.kind === "console" ? "operator" : "system",
+        actorId: e.action === "user.merged" ? e.actor : opts.actorId ?? "system",
         action: e.action,
         targetKind: e.action === "boundary.created" ? "boundary" : e.action === "binding.created" ? "binding" : "user",
-        targetId: e.action === "boundary.created" ? e.boundaryId : e.action === "binding.created" ? e.bindingId : e.userId,
+        targetId:
+          e.action === "boundary.created" ? e.boundaryId : e.action === "binding.created" ? e.bindingId : e.action === "user.merged" ? e.survivorId : e.userId,
         summary: summary(e),
         details: details(e),
       },
       deps,
     );
+    // A merge changes who a Slack id is: drop cached actors and queue the notice, only after the commit that this call follows.
+    if (e.action === "user.merged") {
+      invalidateActors();
+      queueMergeNotice(e.mergeId);
+    }
   }
 }
 
@@ -41,6 +58,7 @@ function summary(e: DomainEvent): string {
     case "binding.created": return `binding created (${e.service}, ${e.state})`;
     case "boundary.created": return `boundary created (${e.service}, ${e.state})`;
     case "user.adopted": return `user adopted ${e.bindingIds.length} binding(s) from a merged record`;
+    case "user.merged": return `user records merged (${e.kind}): ${e.bindingIds.length} binding(s), ${e.grantIds.length} stored grant(s) moved, ${e.activated} grant(s) became active`;
   }
 }
 
@@ -50,5 +68,11 @@ function details(e: DomainEvent): Record<string, unknown> {
     case "binding.created": return { user_id: e.userId, binding_id: e.bindingId, service: e.service, state: e.state };
     case "boundary.created": return { boundary_id: e.boundaryId, service: e.service, state: e.state };
     case "user.adopted": return { user_id: e.userId, from_user_id: e.fromUserId, binding_ids: e.bindingIds };
+    case "user.merged":
+      return {
+        merge_id: e.mergeId, survivor_id: e.survivorId, loser_id: e.loserId, kind: e.kind,
+        binding_ids: e.bindingIds, grant_ids: e.grantIds, raised_binding_ids: e.raisedBindingIds,
+        activated: e.activated, inactive_privileged: e.inactivePrivileged,
+      };
   }
 }
