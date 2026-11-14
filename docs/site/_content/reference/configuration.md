@@ -594,13 +594,27 @@ It fills them at boot, after Slack auth, and you can run the same repair by hand
 on the gateway or mono host (a node has no database and refuses it):
 
 ```sh
-slaude domain reconcile [--dry-run] [--json]
+slaude domain reconcile [--dry-run] [--json] [--demote-unproven-emails [--apply]]
 ```
 
 | Flag | Meaning |
 |------|---------|
 | `--dry-run` | Report what would be created and write nothing. |
 | `--json` | Print the report as JSON instead of text. |
+| `--demote-unproven-emails` | Names the unproven email section. On its own it changes nothing; the report is printed on every run. |
+| `--apply` | With `--demote-unproven-emails`, set verified email bindings that no login proved back to `observed`. A login with proof raises them again. Not allowed with `--dry-run`, and the gateway's boot reconcile never does it. |
+
+The report has these sections besides the created and existing counts:
+
+| Section | Meaning |
+|---------|---------|
+| `grant subjects` | Stored Slack grants given a subject reference and user. Rows with no single workspace are skipped and counted. |
+| `lock teams` | One-on-one locks given the workspace they were taken in, when the tenant has one workspace. |
+| `workspace grants` | Workspace grants whose subject is not a team this tenant is connected to. Fix or delete these before the access flip. |
+| `unproven email bindings` | Verified email bindings with no proving login, counted per issuer, never an address. |
+| `link tokens` | Expired rows purged from the single-use link ledger. |
+
+Bot ids are skipped (reason `bot`), never given a user.
 
 The command is safe to run again: a second run creates nothing. It exits `0` on
 success, `1` if the run fails and `2` for a usage error. A run that created
@@ -610,6 +624,7 @@ something or found a conflict (two accounts with one email) writes one
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
 | `SLAUDE_SLACK_TEAM_ID` | No | `""` | Read only by `slaude domain reconcile`, and only on sqlite. Comma-separated Slack workspace ids (for example `T0EXAMPLE`) the command attributes Slack ids to. Postgres reads each tenant's installed Slack apps instead and ignores it. With none set on sqlite, rows that carry no workspace of their own are skipped and counted, not guessed. |
+| `SLAUDE_ACCESS_SOURCE` | No | `shadow` | Which answer the access decision seam returns, read on every call. `legacy`: the string path only, no resolver. `shadow`: return the legacy answer, also compute the internal-id answer and count and log any disagreement (`slaude_access_shadow_total`). `internal`: reserved for the access flip; behaves as `shadow` in rc.19. An unknown value reads as `legacy`. See [Reading the access shadow metrics](../deploy/access-shadow.md). |
 
 ### External MCP env references
 
