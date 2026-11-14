@@ -5,6 +5,8 @@
  *   GET  /panel/api/merges/:id                             one merge with its limits and notice state
  *   POST /panel/api/merges/:id/undo-preview                what an undo would move and skip (no write)
  *   POST /panel/api/merges/:id/undo                        { reason } undo it (reason required)
+ *   GET  /panel/api/merge-vetoes                           vetoes an undo left (hashed, nothing a person is recognised by)
+ *   POST /panel/api/merge-vetoes/:id/lift                  { reason } lift a veto (required, audited)
  *   GET  /panel/api/merge-proposals?state&cursor&limit     pairs a human settles
  *   POST /panel/api/merge-proposals/:id/approve            { activates? } merge kind console, typed confirmation
  *   POST /panel/api/merge-proposals/:id/dismiss            drop the proposal
@@ -22,9 +24,10 @@ import { DOMAIN_PAGE_MAX, validCursor } from "../../db/domain-read";
 import { getMergeDetail, listMerges, listProposals } from "../../db/merge-read";
 import { previewUndo, undoMerge, UNDO_REFUSAL_TEXT, type UndoLists } from "../../domain/merge-undo";
 import { approveProposal, dismissProposal } from "../../domain/merge-proposals";
+import { liftVeto, listVetoes } from "../../domain/merge-vetoes";
 import type { RefusalReason } from "../../domain/merge";
 import type {
-  ApproveProposalResponse, MergePage, MergeDetail, ProposalPage, UndoPreviewResponse, UndoResponse,
+  ApproveProposalResponse, MergePage, MergeVetoList, MergeDetail, ProposalPage, UndoPreviewResponse, UndoResponse,
 } from "./api-types";
 
 const json = (status: number, body: unknown): Response =>
@@ -48,7 +51,18 @@ const listQuery = (states: readonly [string, ...string[]]) =>
 const mergesQuery = listQuery(["applied", "undone"]);
 const proposalsQuery = listQuery(["open", "dismissed", "merged"]);
 const undoBody = z.object({ reason: z.string().trim().min(3, "a reason of at least 3 characters is required").max(500) }).strict();
-const approveBody = z.object({ activates: z.array(z.string().min(1).max(300)).max(500).optional() }).strict();
+const outcomeShape = z
+  .object({
+    survivor: z.string().max(200),
+    loser: z.string().max(200),
+    bindings: z.number().int().min(0),
+    grants: z.number().int().min(0),
+    activates: z.array(z.string().min(1).max(300)).max(500),
+    inactivePrivileged: z.array(z.string().min(1).max(300)).max(500),
+  })
+  .strict();
+const approveBody = z.object({ confirm: outcomeShape.optional() }).strict();
+const liftBody = z.object({ reason: z.string().trim().min(3, "a reason of at least 3 characters is required").max(500) }).strict();
 const dismissBody = z.object({}).strict();
 
 const issuesLine = (e: z.ZodError) => e.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
@@ -103,6 +117,7 @@ export async function handleMergeRoutes(req: Request, url: URL, seg: string[], c
       const denied = ctx.requireSuper("merge.undo.preview");
       if (denied) return denied;
       const out = await previewUndo(id);
+      if (out.status === "refused") audit({ action: "merge.undo.preview", operator: operatorId, role, outcome: "error", detail: { mergeId: id, refused: out.reason } });
       if (out.status === "refused") return json(out.reason === "not-found" ? 404 : 409, { error: out.message, reason: out.reason });
       audit({ action: "merge.undo.preview", operator: operatorId, role, outcome: "ok", detail: { mergeId: id } });
       return json(200, { mergeId: id, undoable: true, ...lists(out) } satisfies UndoPreviewResponse);
@@ -123,6 +138,30 @@ export async function handleMergeRoutes(req: Request, url: URL, seg: string[], c
       if (out.status !== "undone") return json(500, { error: "unexpected undo result" });
       const merge = (await getMergeDetail(id))!;
       return json(200, { status: "undone", mergeId: id, ...lists(out), merge } satisfies UndoResponse);
+    }
+    return json(404, { error: "not found" });
+  }
+
+  // --- vetoes -----------------------------------------------------------------
+  if (seg[2] === "merge-vetoes") {
+    if (seg.length === 3) {
+      if (req.method !== "GET") return json(405, { error: "method not allowed" });
+      const denied = ctx.requireSuper("merge.read");
+      if (denied) return denied;
+      return json(200, { items: await listVetoes() } satisfies MergeVetoList);
+    }
+    const id = decode(seg[3]);
+    if (id === null) return json(404, { error: "not found" });
+    if (seg.length === 5 && seg[4] === "lift") {
+      if (req.method !== "POST") return json(405, { error: "method not allowed" });
+      const denied = ctx.requireSuper("merge.veto.lift");
+      if (denied) return denied;
+      const parsed = await bodyOf(req);
+      if (!parsed.ok) return parsed.res;
+      const b = liftBody.safeParse(parsed.value);
+      if (!b.success) return json(400, { error: issuesLine(b.error) });
+      const out = await liftVeto({ id, operator: operatorId, reason: b.data.reason });
+      return out.status === "lifted" ? json(200, { ok: true }) : json(404, { error: "no such veto" });
     }
     return json(404, { error: "not found" });
   }
@@ -148,16 +187,18 @@ export async function handleMergeRoutes(req: Request, url: URL, seg: string[], c
       if (!parsed.ok) return parsed.res;
       const b = approveBody.safeParse(parsed.value);
       if (!b.success) return json(400, { error: issuesLine(b.error) });
-      const out = await approveProposal({ id, operator: operatorId, activates: b.data.activates });
+      const out = await approveProposal({ id, operator: operatorId, confirm: b.data.confirm });
+      const refusedAudit = (why: string) => audit({ action: "merge.proposal.approve", operator: operatorId, role, outcome: "error", detail: { proposalId: id, refused: why } });
       switch (out.status) {
         case "not-found": return json(404, { error: "no such proposal" });
-        case "not-open": return json(409, { error: `this proposal is already ${out.state}`, state: out.state });
-        case "stale": return json(409, { error: `stale proposal: ${out.reason}`, stale: true });
-        case "refused": return json(409, { error: REFUSAL_TEXT[out.reason], reason: out.reason });
+        case "not-open": refusedAudit("not-open"); return json(409, { error: `this proposal is already ${out.state}`, state: out.state });
+        case "stale": refusedAudit("stale"); return json(409, { error: `stale proposal: ${out.reason}`, stale: true });
+        case "refused": refusedAudit(out.reason); return json(409, { error: REFUSAL_TEXT[out.reason], reason: out.reason });
         case "confirm-mismatch":
-          return json(409, { error: "the grants this merge would activate are not the ones you confirmed", activates: out.activates, inactivePrivileged: out.inactivePrivileged });
+          refusedAudit("confirm-mismatch");
+          return json(409, { error: "what this merge would do is not what you confirmed", outcome: out.outcome });
         case "confirm":
-          return json(200, { status: "confirm", survivorId: out.survivorId, loserId: out.loserId, activates: out.activates, inactivePrivileged: out.inactivePrivileged } satisfies ApproveProposalResponse);
+          return json(200, { status: "confirm", outcome: out.outcome } satisfies ApproveProposalResponse);
         case "merged":
           return json(200, { status: "merged", merge: (await getMergeDetail(out.merge.id))! } satisfies ApproveProposalResponse);
       }

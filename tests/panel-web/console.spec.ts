@@ -898,6 +898,26 @@ test("Merges: a failed notice says the merge stands, a past-window merge cannot 
   await expect(page.getByRole("main").getByText("2 bindings, 1 grants")).toHaveCount(1);
 });
 
+test("Merges: a veto can be lifted only with a reason", async ({ page }) => {
+  await page.goto("/panel/merges");
+  await settled(page, "2 bindings, 1 grants");
+  const card = page.getByRole("main").locator(".sl-section").filter({ hasText: "Vetoes" });
+  await expect(card).toContainText("names nothing a person could be recognised by");
+  await card.getByRole("button", { name: "Lift" }).click();
+  const dialog = page.getByRole("dialog", { name: "Lift this veto?" });
+  const confirm = dialog.getByRole("button", { name: "Lift veto" });
+  await expect(confirm).toBeDisabled();
+  await dialog.getByLabel("Reason").fill("it was the right person");
+  await confirm.click();
+  await expect(toasts(page).getByText("Veto lifted")).toBeVisible();
+});
+
+test("Proposals: a refused-for-a-verified-record proposal says where to go", async ({ page }) => {
+  await page.goto("/panel/proposals");
+  await settled(page, "j***@example.com");
+  await expect(page.getByRole("main").getByText("may be squatting the address", { exact: false })).toBeVisible();
+});
+
 test("Merges is refused to an operator", async ({ page }) => {
   await page.goto("/panel/merges?as=operator");
   await expect(page.getByRole("main").getByText("Your console role cannot see this.")).toBeVisible();
@@ -910,7 +930,7 @@ test("Proposals: review lists the grants, the button needs the typed word, appro
   await expect(page.getByRole("row").filter({ hasText: "k***@example.com" }).getByRole("button", { name: "Review" })).toBeDisabled();
   await page.getByRole("row").filter({ hasText: "j***@example.com" }).getByRole("button", { name: "Review" }).click();
   const dialog = page.getByRole("dialog", { name: "Merge these records?" });
-  await expect(dialog.getByLabel("Grants this merge would activate")).toContainText("scout:member:grant:g-1");
+  await expect(dialog.getByLabel("What this merge would do")).toContainText("scout:member:grant:g-1");
   const approve = dialog.getByRole("button", { name: "Approve merge" });
   await expect(approve).toBeDisabled();
   await dialog.getByLabel('Type "merge" to confirm').fill("merge");

@@ -41,6 +41,8 @@
  *   GET    /panel/api/merges/:id                   one merge: moved ids, activated grants, notice state, undo limits
  *   POST   /panel/api/merges/:id/undo-preview      what an undo would move and skip (superadmin, no write)
  *   POST   /panel/api/merges/:id/undo              { reason } undo within the window (superadmin; audited)
+ *   GET    /panel/api/merge-vetoes                 vetoes an undo left (superadmin)
+ *   POST   /panel/api/merge-vetoes/:id/lift       { reason } lift one (superadmin; audited)
  *   GET    /panel/api/merge-proposals?state&cursor&limit  pairs a human settles (superadmin)
  *   POST   /panel/api/merge-proposals/:id/approve  { activates? } merge kind console after a typed confirmation (superadmin; audited)
  *   POST   /panel/api/merge-proposals/:id/dismiss  drop a proposal (superadmin; audited)
@@ -227,6 +229,7 @@ export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "domain.read",
   "merge.read",
   "merge.undo.preview",
+  "merge.veto.lift",
   "merge.undo",
   "merge.proposal.approve",
   "merge.proposal.dismiss",
@@ -1089,7 +1092,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
       }
 
       // Merges and merge proposals (slice C, rc.21): superadmin only, mutations audited as the operator.
-      if (seg[2] === "merges" || seg[2] === "merge-proposals") {
+      if (seg[2] === "merges" || seg[2] === "merge-proposals" || seg[2] === "merge-vetoes") {
         const handled = await handleMergeRoutes(req, url, seg, {
           operatorId,
           role,

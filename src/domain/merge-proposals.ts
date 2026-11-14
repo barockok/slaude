@@ -9,12 +9,15 @@
  * conflict is resolved by unlinking or deleting the losing account first (the
  * existing flows), then approving. The merge never raises a binding state.
  *
- * Typed confirmation. The operator must name the grants the merge would
- * activate: `approveProposal` first runs the merge inside a transaction it rolls
- * back and answers `confirm` with those lines (`persona:role:entry`, no address
- * and no Slack id). The merge happens only when the same list comes back in
- * `activates`; a list that differs from what would activate NOW (the world
- * changed since the operator looked) is refused with the current list.
+ * Typed confirmation. `approveProposal` first runs the merge inside a
+ * transaction it rolls back and answers `confirm` with the whole outcome: which
+ * record survives and which is merged away (masked labels), how many bindings
+ * and stored grants move, the grants it would activate and the privileged ones
+ * that stay inactive (`persona:role:entry`, no address and no Slack id). The
+ * merge happens only when the same outcome comes back in `confirm`; an outcome
+ * that differs from what would happen NOW (the world changed since the operator
+ * looked, or the direction flipped) is refused with the current one. An empty
+ * list is not a blind approval: the whole object must match.
  */
 import * as Domain from "../db/domain";
 import { db as globalDb, type DbClient } from "../db/schema";
@@ -23,6 +26,7 @@ import { emitAudit } from "../audit/emit";
 import { m } from "../metrics";
 import { mergeUsers, type MergeRow, type RefusalReason } from "./merge";
 import type { GrantDiff } from "./merge-reach";
+import { recordLabel } from "../db/merge-read";
 
 export interface ProposalRow {
   id: string;
@@ -41,13 +45,26 @@ export function activationLines(activated: GrantDiff["activated"]): string[] {
   return [...new Set(activated.map((a) => `${a.persona}:${a.role}:${a.entry}`))].sort();
 }
 
+/** What an approval would do, echoed back by the operator. Labels are masked; nothing here is an address or a Slack id. */
+export interface ApprovalOutcome {
+  survivor: string;
+  loser: string;
+  bindings: number;
+  grants: number;
+  activates: string[];
+  inactivePrivileged: string[];
+}
+const sameOutcome = (a: ApprovalOutcome, b: ApprovalOutcome): boolean =>
+  JSON.stringify([a.survivor, a.loser, a.bindings, a.grants, [...a.activates].sort(), [...a.inactivePrivileged].sort()]) ===
+  JSON.stringify([b.survivor, b.loser, b.bindings, b.grants, [...b.activates].sort(), [...b.inactivePrivileged].sort()]);
+
 export type ApproveOutcome =
   | { status: "not-found" }
   | { status: "not-open"; state: string }
   | { status: "stale"; reason: string }
   | { status: "refused"; reason: RefusalReason }
-  | { status: "confirm"; survivorId: string; loserId: string; activates: string[]; inactivePrivileged: GrantDiff["inactivePrivileged"] }
-  | { status: "confirm-mismatch"; activates: string[]; inactivePrivileged: GrantDiff["inactivePrivileged"] }
+  | { status: "confirm"; outcome: ApprovalOutcome }
+  | { status: "confirm-mismatch"; outcome: ApprovalOutcome }
   | { status: "merged"; merge: MergeRow };
 
 /** Thrown inside the transaction to roll it back and carry the answer out. */
@@ -57,7 +74,7 @@ class Rollback extends Error {
   }
 }
 
-export async function approveProposal(i: { id: string; operator: string; activates?: string[] }): Promise<ApproveOutcome> {
+export async function approveProposal(i: { id: string; operator: string; confirm?: ApprovalOutcome }): Promise<ApproveOutcome> {
   let result: ApproveOutcome;
   let events: Domain.DomainEvent[] = [];
   try {
@@ -70,18 +87,21 @@ export async function approveProposal(i: { id: string; operator: string; activat
       if (!a || !b) return { status: "stale", reason: "a record of this proposal no longer exists" } as const;
       if (a === b) return { status: "stale", reason: "the two records are already one" } as const;
 
+      const labels = new Map([[a, await recordLabel(a, c)], [b, await recordLabel(b, c)]]);
       const out = await mergeUsers({ survivorId: a, loserId: b, kind: "console", actor: i.operator, pickSurvivor: true, dryRun: true }, c);
       if (out.status === "refused") throw new Rollback({ status: "refused", reason: out.reason }); // drops any proposal the refusal wrote
       if (out.status === "noop") return { status: "stale", reason: "the two records are already one" } as const;
       const moved = out.merge.moved;
-      const lines = activationLines(moved.activated);
-      if (i.activates === undefined) {
-        throw new Rollback({ status: "confirm", survivorId: out.survivorId, loserId: out.loserId, activates: lines, inactivePrivileged: moved.inactive_privileged });
-      }
-      const given = [...new Set(i.activates)].sort();
-      if (given.length !== lines.length || given.some((l, n) => l !== lines[n])) {
-        throw new Rollback({ status: "confirm-mismatch", activates: lines, inactivePrivileged: moved.inactive_privileged });
-      }
+      const outcome: ApprovalOutcome = {
+        survivor: labels.get(out.survivorId) ?? "record",
+        loser: labels.get(out.loserId) ?? "record",
+        bindings: moved.bindings.length,
+        grants: moved.grants.length,
+        activates: activationLines(moved.would_activate ?? moved.activated),
+        inactivePrivileged: [...new Set((moved.would_inactive_privileged ?? moved.inactive_privileged).map((g) => `${g.persona}:${g.role}:${g.entry}`))].sort(),
+      };
+      if (i.confirm === undefined) throw new Rollback({ status: "confirm", outcome });
+      if (!sameOutcome(i.confirm, outcome)) throw new Rollback({ status: "confirm-mismatch", outcome });
       const upd = await c.run(
         "UPDATE merge_proposals SET state = 'merged', resolved_by = ?, resolved_at = ? WHERE id = ? AND state = 'open'",
         [i.operator, Date.now(), p.id],

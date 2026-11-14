@@ -122,6 +122,11 @@ export async function getMergeDetail(id: string, now: number = Date.now(), tx?: 
   };
 }
 
+/** A record's masked label for the console and a typed confirmation: its best binding, masked. */
+export async function recordLabel(id: string, c: DbClient): Promise<string> {
+  return (await side(id, c)).preferred ?? "record without bindings";
+}
+
 async function side(id: string, c: DbClient): Promise<ProposalSide> {
   const u = await c.one<UserRow>("SELECT * FROM users WHERE id = ?", [id]);
   if (!u) return { id, exists: false, kind: null, preferred: null, bindings: { declared: 0, observed: 0, verified: 0 } };
@@ -130,6 +135,16 @@ async function side(id: string, c: DbClient): Promise<ProposalSide> {
   for (const b of bs) counts[b.state]++;
   const pref = pickPreferred(bs);
   return { id, exists: true, kind: u.kind, preferred: pref ? (pref.service === "email" ? maskIdentifier("email", pref.kind, pref.value) : `${pref.service} ${pref.kind} ${maskIdentifier(pref.service, pref.kind, pref.value)}`) : null, bindings: counts };
+}
+
+/** What the engine's refusal means for the operator. The squat case is documented in the panel docs. */
+function hintFor(evidence: string): string | null {
+  const why = (safeParse(evidence) as { why?: string } | null)?.why;
+  if (why === "verified-loser") {
+    return "One record holds a verified binding (a sign-in). If it is an account that signed in with an address it did not prove, it may be squatting the address: demote or delete that account (the existing account flows), then approve. Otherwise dismiss.";
+  }
+  if (why === "veto") return "An undone merge forbade this pair. Lift the veto on the Merges page first, then approve.";
+  return null;
 }
 
 export async function listProposals(f: { state?: "open" | "dismissed" | "merged" }, o: PageOpts = {}, tx?: DbClient): Promise<ProposalPage> {
@@ -141,7 +156,7 @@ export async function listProposals(f: { state?: "open" | "dismissed" | "merged"
   const cur = parseCursor(o.cursor);
   if (cur) { where.push("(created_at < ? OR (created_at = ? AND id < ?))"); args.push(cur.at, cur.at, cur.id); }
   const rows = await c.query<{
-    id: string; created_at: number; user_a: string; user_b: string; reason: "conflict" | "two-emails"; state: "open" | "dismissed" | "merged";
+    id: string; created_at: number; user_a: string; user_b: string; reason: "conflict" | "two-emails"; state: "open" | "dismissed" | "merged"; evidence: string;
     resolved_by: string | null; resolved_at: number | null;
   }>(`SELECT * FROM merge_proposals ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY created_at DESC, id DESC LIMIT ?`, [...args, limit + 1]);
   const page = rows.slice(0, limit);
@@ -164,6 +179,7 @@ export async function listProposals(f: { state?: "open" | "dismissed" | "merged"
       b: await side(p.user_b, c),
       stale,
       staleReason,
+      hint: p.state === "open" ? hintFor(p.evidence) : null,
       resolvedBy: maskActor(p.resolved_by),
       resolvedAt: p.resolved_at === null ? null : num(p.resolved_at),
     });

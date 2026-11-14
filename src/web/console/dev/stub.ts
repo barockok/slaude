@@ -158,11 +158,20 @@ export function installStub(): void {
     }
     if (seg[1] === "sessions") return sessions(method, seg, query, body, isSuper);
     if (seg[1] === "memory") return memory(seg, query, isSuper);
-    if (seg[1] === "merges" || seg[1] === "merge-proposals") {
-      const action = seg[1] === "merges" ? (seg[3] === "undo" ? "merge.undo" : seg[3] === "undo-preview" ? "merge.undo.preview" : "merge.read") : seg[3] === "approve" ? "merge.proposal.approve" : seg[3] === "dismiss" ? "merge.proposal.dismiss" : "merge.read";
+    if (seg[1] === "merges" || seg[1] === "merge-proposals" || seg[1] === "merge-vetoes") {
+      const action = seg[1] === "merges" ? (seg[3] === "undo" ? "merge.undo" : seg[3] === "undo-preview" ? "merge.undo.preview" : "merge.read") : seg[1] === "merge-vetoes" ? "merge.veto.lift" : seg[3] === "approve" ? "merge.proposal.approve" : seg[3] === "dismiss" ? "merge.proposal.dismiss" : "merge.read";
       if (!isSuper) return json(403, { error: `action '${action}' requires the superadmin role`, required: "superadmin" });
       const mf = mergeState ?? (mergeState = mergeFixtures(startedAt));
       const state = query.get("state");
+      if (seg[1] === "merge-vetoes") {
+        if (seg.length === 2) return method === "GET" ? json(200, { items: empty ? [] : mf.vetoes }) : json(405, { error: "method not allowed" });
+        if (method !== "POST" || seg[3] !== "lift") return json(405, { error: "method not allowed" });
+        if (String((body as { reason?: string } | null)?.reason ?? "").trim().length < 3) return json(400, { error: "reason: a reason of at least 3 characters is required" });
+        const at = mf.vetoes.findIndex((v) => v.id === decodeURIComponent(seg[2]!));
+        if (at < 0) return json(404, { error: "no such veto" });
+        mf.vetoes.splice(at, 1);
+        return json(200, { ok: true });
+      }
       if (seg[1] === "merges") {
         if (seg.length === 2) {
           if (method !== "GET") return json(405, { error: "method not allowed" });
@@ -192,10 +201,10 @@ export function installStub(): void {
         Object.assign(p, { state: "dismissed", resolvedBy: "l***@example.com", resolvedAt: Date.now() });
         return json(200, { ok: true });
       }
-      const want = mf.activates[p.id] ?? [];
-      const given = (body as { activates?: string[] } | null)?.activates;
-      if (given === undefined) return json(200, { status: "confirm", survivorId: p.a.id, loserId: p.b.id, activates: want, inactivePrivileged: [] });
-      if (JSON.stringify([...given].sort()) !== JSON.stringify([...want].sort())) return json(409, { error: "the grants this merge would activate are not the ones you confirmed", activates: want, inactivePrivileged: [] });
+      const want = { survivor: p.a.preferred ?? "record", loser: p.b.preferred ?? "record", bindings: 1, grants: 1, activates: mf.activates[p.id] ?? [], inactivePrivileged: [] };
+      const given = (body as { confirm?: unknown } | null)?.confirm;
+      if (given === undefined) return json(200, { status: "confirm", outcome: want });
+      if (JSON.stringify(given) !== JSON.stringify(want)) return json(409, { error: "what this merge would do is not what you confirmed", outcome: want });
       Object.assign(p, { state: "merged", resolvedBy: "l***@example.com", resolvedAt: Date.now() });
       return json(200, { status: "merged", merge: mf.merges[0] });
     }

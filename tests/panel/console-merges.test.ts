@@ -52,7 +52,7 @@ async function seedMerge() {
   await Domain.ensureBinding({ ...oidc("sub-1"), userId: s });
   const l = (await Domain.ensureBinding({ ...slack("U0LOSE") })).userId;
   await Domain.ensureBinding({ ...mail("lose@example.com"), userId: l });
-  await putGrant("g1", "U0LOSE", "member");
+  await putGrant("g1", `user:${l}`, "approver");
   await db.run("UPDATE agent_grants SET subject_user_id = ? WHERE id = 'g1'", [l]);
   const out = await mergeUsers({ survivorId: s, loserId: l, kind: "console", actor: "lead@example.com" });
   if (out.status !== "merged") throw new Error("seed merge failed");
@@ -89,6 +89,8 @@ const ROUTES: Array<[string, string]> = [
   ["GET", "/panel/api/merges/m1"],
   ["POST", "/panel/api/merges/m1/undo-preview"],
   ["POST", "/panel/api/merges/m1/undo"],
+  ["GET", "/panel/api/merge-vetoes"],
+  ["POST", "/panel/api/merge-vetoes/v1/lift"],
   ["GET", "/panel/api/merge-proposals"],
   ["POST", "/panel/api/merge-proposals/p1/approve"],
   ["POST", "/panel/api/merge-proposals/p1/dismiss"],
@@ -111,7 +113,7 @@ describe("auth and roles", () => {
     expect(refused).toHaveLength(ROUTES.length);
     expect(new Set(refused.map((x) => x.actor_id))).toEqual(new Set(["alice@example.com"]));
     expect(refused.map((x) => x.action).sort()).toEqual(
-      ["panel.merge.proposal.approve", "panel.merge.proposal.dismiss", "panel.merge.read", "panel.merge.read", "panel.merge.read", "panel.merge.undo", "panel.merge.undo.preview"].sort(),
+      ["panel.merge.proposal.approve", "panel.merge.proposal.dismiss", "panel.merge.read", "panel.merge.read", "panel.merge.read", "panel.merge.read", "panel.merge.undo", "panel.merge.undo.preview", "panel.merge.veto.lift"].sort(),
     );
     expect(await Domain.getUser(l)).toBeNull(); // the merge stands
     expect((await getMerge(merge.id))!.state).toBe("applied");
@@ -217,6 +219,8 @@ describe("undo", () => {
     expect(late.status).toBe(409);
     expect(late.body.reason).toBe("past-window");
     expect((await post(`/panel/api/merges/${merge.id}/undo-preview`)).status).toBe(409);
+    await flushAudits();
+    expect(await count("audit_events", "action = 'panel.merge.undo.preview'")).toBe(1); // the refused preview is audited
     await db.run("UPDATE user_merges SET undo_until = ? WHERE id = ?", [Date.now() + 100000, merge.id]);
     expect((await post(`/panel/api/merges/${merge.id}/undo`, { reason: "now fine" })).status).toBe(200);
     const again = await post(`/panel/api/merges/${merge.id}/undo`, { reason: "again" });
@@ -233,7 +237,8 @@ describe("proposals", () => {
     await Domain.ensureBinding({ ...oidc("sub-1"), userId: s });
     const l = (await Domain.ensureBinding({ ...slack("U0LOSE") })).userId;
     await Domain.ensureBinding({ ...mail("lose@example.com"), userId: l });
-    await putGrant("g1", "U0LOSE", "member");
+    await putGrant("g1", `user:${l}`, "approver");
+    await db.run("UPDATE agent_grants SET subject_user_id = ? WHERE id = 'g1'", [l]);
     const id = await proposeMerge(db, s, l, "conflict", { why: "test" });
     return { s, l, id };
   }
@@ -253,22 +258,23 @@ describe("proposals", () => {
     expect((await call("/panel/api/merge-proposals?state=bogus")).status).toBe(400);
   });
 
-  test("approve without the list answers the grants it would activate and merges nothing", async () => {
+  test("approve without the outcome answers the whole outcome, including the grants it would activate and merges nothing", async () => {
     const { id, l } = await seedProposal();
     const r = await post(`/panel/api/merge-proposals/${id}/approve`);
     expect(r.status).toBe(200);
-    expect(r.body as ApproveProposalResponse).toMatchObject({ status: "confirm", activates: ["scout:member:grant:g1"] });
+    expect(r.body as ApproveProposalResponse).toMatchObject({ status: "confirm", outcome: { activates: ["scout:approver:grant:g1"], bindings: 2, grants: 1 } });
     noLeak(r.text);
     expect(await Domain.getUser(l)).not.toBeNull();
   });
 
-  test("approve with the list merges as the operator; a wrong list is 409 with the current one", async () => {
+  test("approve with the outcome merges as the operator; a different outcome is 409 with the current one and is audited", async () => {
     const { id, l } = await seedProposal();
-    const bad = await post(`/panel/api/merge-proposals/${id}/approve`, { activates: [] });
+    const shown = ((await post(`/panel/api/merge-proposals/${id}/approve`)).body as { outcome: any }).outcome;
+    const bad = await post(`/panel/api/merge-proposals/${id}/approve`, { confirm: { ...shown, activates: [] } });
     expect(bad.status).toBe(409);
-    expect(bad.body.activates).toEqual(["scout:member:grant:g1"]);
+    expect(bad.body.outcome).toEqual(shown);
     expect(await Domain.getUser(l)).not.toBeNull();
-    const ok = await post(`/panel/api/merge-proposals/${id}/approve`, { activates: ["scout:member:grant:g1"] });
+    const ok = await post(`/panel/api/merge-proposals/${id}/approve`, { confirm: shown });
     expect(ok.status).toBe(200);
     const out = ok.body as ApproveProposalResponse;
     expect(out.status).toBe("merged");
@@ -278,14 +284,16 @@ describe("proposals", () => {
     await flushAudits();
     expect(await count("audit_events", "action = 'user.merged' AND actor_kind = 'operator' AND actor_id = 'lead@example.com'")).toBe(1);
     expect(await count("audit_events", "action = 'merge.proposal.approved'")).toBe(1);
-    // A second approve of the settled proposal is refused.
-    expect((await post(`/panel/api/merge-proposals/${id}/approve`, { activates: [] })).status).toBe(409);
+    // The mismatch above and this settled proposal are refusals, and both are audited.
+    expect((await post(`/panel/api/merge-proposals/${id}/approve`, { confirm: shown })).status).toBe(409);
+    await flushAudits();
+    expect(await count("audit_events", "action = 'panel.merge.proposal.approve' AND decision IS NULL")).toBe(2);
   });
 
   test("a stale proposal is refused", async () => {
     const { s, l, id } = await seedProposal();
     await mergeUsers({ survivorId: s, loserId: l, kind: "console", actor: "UOP" });
-    const r = await post(`/panel/api/merge-proposals/${id}/approve`, { activates: [] });
+    const r = await post(`/panel/api/merge-proposals/${id}/approve`);
     expect(r.status).toBe(409);
     expect(r.body.stale).toBe(true);
     expect((await post("/panel/api/merge-proposals/nope/approve")).status).toBe(404);
@@ -297,7 +305,7 @@ describe("proposals", () => {
     const b = (await Domain.ensureBinding({ ...slack("U0LOSE", "verified") })).userId;
     await Domain.ensureBinding({ ...oidc("sub-b"), userId: b });
     const id = await proposeMerge(db, a, b, "conflict", {});
-    const r = await post(`/panel/api/merge-proposals/${id}/approve`, { activates: [] });
+    const r = await post(`/panel/api/merge-proposals/${id}/approve`);
     expect(r.status).toBe(409);
     expect(r.body.reason).toBe("verified-loser");
     expect(r.text).toContain("unlink or delete the losing account");
@@ -314,5 +322,56 @@ describe("proposals", () => {
     expect(page.items[0]).toMatchObject({ state: "dismissed", resolvedBy: "l***@example.com" });
     await flushAudits();
     expect(await count("audit_events", "action = 'merge.proposal.dismissed' AND actor_id = 'lead@example.com'")).toBe(1);
+  });
+});
+
+describe("vetoes", () => {
+  async function undoneProofMerge() {
+    await Domain.ensureBinding({ ...slack("U0SEEN") });
+    const { upsertAccount, linkSlackIdentity } = await import("../../src/db/accounts");
+    const a = await upsertAccount({ issuer: "https://idp.example.com", subject: "sub-9", email: "alice.real@example.com", emailProven: true });
+    await linkSlackIdentity({ teamId: WS, slackUserId: "U0SEEN", accountId: a.id, via: "signed-link" });
+    const ledger = (await db.one<{ id: string }>("SELECT id FROM user_merges WHERE kind = 'proof'"))!;
+    expect((await post(`/panel/api/merges/${ledger.id}/undo`, { reason: "wrong person" })).status).toBe(200);
+    return { a, ledger };
+  }
+
+  test("an undo leaves a veto the list shows without anything a person is recognised by; lifting needs a reason and is audited", async () => {
+    await undoneProofMerge();
+    const r = await call("/panel/api/merge-vetoes");
+    expect(r.status).toBe(200);
+    expect(r.body.items).toHaveLength(1);
+    noLeak(r.text);
+    expect(r.text).not.toContain("U0SEEN");
+    const id = r.body.items[0].id as string;
+    expect((await post(`/panel/api/merge-vetoes/${id}/lift`, {})).status).toBe(400);
+    expect((await post(`/panel/api/merge-vetoes/${id}/lift`, { reason: "ab" })).status).toBe(400);
+    expect(await count("merge_vetoes")).toBe(1);
+    expect((await post(`/panel/api/merge-vetoes/${id}/lift`, { reason: "it was the right person" }, superadmin, false)).status).toBe(403);
+    expect((await post(`/panel/api/merge-vetoes/${id}/lift`, { reason: "it was the right person" })).status).toBe(200);
+    expect(await count("merge_vetoes")).toBe(0);
+    await flushAudits();
+    const ev = await db.one<{ actor_id: string; actor_kind: string }>("SELECT actor_id, actor_kind FROM audit_events WHERE action = 'merge.veto.lifted'");
+    expect(ev).toEqual({ actor_id: "lead@example.com", actor_kind: "operator" });
+    expect((await post(`/panel/api/merge-vetoes/${id}/lift`, { reason: "again" })).status).toBe(404);
+  });
+
+  test("with the veto lifted the pair can link again", async () => {
+    const { a } = await undoneProofMerge();
+    const { linkSlackIdentity } = await import("../../src/db/accounts");
+    expect(await linkSlackIdentity({ teamId: WS, slackUserId: "U0SEEN", accountId: a.id, via: "signed-link" })).toEqual({ ok: false, reason: "vetoed" });
+    const id = ((await call("/panel/api/merge-vetoes")).body.items[0].id) as string;
+    await post(`/panel/api/merge-vetoes/${id}/lift`, { reason: "operator decided" });
+    expect((await linkSlackIdentity({ teamId: WS, slackUserId: "U0SEEN", accountId: a.id, via: "signed-link" })).ok).toBe(true);
+  });
+
+  test("a proposal the engine refused for a veto or a verified record carries a hint", async () => {
+    const a = (await Domain.ensureBinding({ ...slack("U0OTHER", "verified") })).userId;
+    await Domain.ensureBinding({ ...oidc("sub-a"), userId: a });
+    const b = (await Domain.ensureBinding({ ...slack("U0LOSE", "verified") })).userId;
+    await Domain.ensureBinding({ ...oidc("sub-b"), userId: b });
+    const id = await proposeMerge(db, a, b, "conflict", { why: "verified-loser" });
+    const page = (await call("/panel/api/merge-proposals")).body as ProposalPage;
+    expect(page.items.find((p) => p.id === id)!.hint).toContain("squatting");
   });
 });

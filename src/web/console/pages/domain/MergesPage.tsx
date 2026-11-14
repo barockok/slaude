@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { MergeBindingView, MergeDetail, MergeListItem, NoticeState, UndoPreviewResponse, UndoResponse } from "../../../../gateway/panel/api-types";
+import type { MergeBindingView, MergeDetail, MergeListItem, MergeVetoItem, MergeVetoList, NoticeState, UndoPreviewResponse, UndoResponse } from "../../../../gateway/panel/api-types";
 import { Badge, Button, Dialog, EmptyState, Field, FilterChip, Input, KeyValue, PageHeader, Table, useToast, type BadgeTone, type Column, type FilterOption } from "../../../ui";
 import { TimeAgo } from "../../../shared/TimeAgo";
 import { api } from "../../client";
@@ -38,6 +38,7 @@ const COLUMNS: Column<MergeListItem>[] = [
 ];
 
 export function MergesPage() {
+  const role = useRole();
   const [state, setState] = useState("");
   const [open, setOpen] = useState<string | null>(null);
   const list = usePagedList<MergeListItem>(`/api/merges?limit=50${state ? `&state=${state}` : ""}`);
@@ -68,6 +69,7 @@ export function MergesPage() {
           )}
         </div>
       )}
+      {role === "superadmin" && <VetoCard />}
       <MergeDrawer id={open} onClose={() => setOpen(null)} onChanged={list.reload} />
     </>
   );
@@ -225,5 +227,67 @@ function UndoDialog({ id, onClose, onDone }: { id: string | null; onClose: () =>
         </Field>
       </div>
     </Dialog>
+  );
+}
+
+/** Vetoes an undo left. Lifting one lets the pair link or merge again, so it asks for a reason. */
+function VetoCard() {
+  const v = useApi<MergeVetoList>("/api/merge-vetoes");
+  const toast = useToast();
+  const [lifting, setLifting] = useState<MergeVetoItem | null>(null);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { setReason(""); setError(null); }, [lifting?.id]);
+  const items = v.data?.items ?? [];
+  if (v.error || items.length === 0) return null;
+  const lift = async () => {
+    if (!lifting) return;
+    setBusy(true);
+    try {
+      await api.post(`/api/merge-vetoes/${encodeURIComponent(lifting.id)}/lift`, { reason: reason.trim() });
+      toast({ tone: "success", title: "Veto lifted", description: "That pair can link or merge again." });
+      setLifting(null);
+      v.reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="sl-section">
+      <h3 className="sl-subhead">Vetoes</h3>
+      <p className="sl-caption">An undo forbids the pair it undid from linking or merging again until you lift the veto here. A veto names nothing a person could be recognised by.</p>
+      <Table<MergeVetoItem>
+        label="Vetoes"
+        rows={items}
+        rowKey={(x) => x.id}
+        columns={[
+          { key: "when", header: "Made", width: "8.5rem", render: (x) => <TimeAgo at={x.createdAt} /> },
+          { key: "by", header: "By", render: (x) => x.createdBy },
+          { key: "merge", header: "From merge", render: (x) => <span className="sl-mono sl-break">{x.mergeId ?? "none"}</span> },
+          { key: "act", header: "", width: "7rem", render: (x) => <Button size="sm" onClick={() => setLifting(x)}>Lift</Button> },
+        ]}
+      />
+      <Dialog
+        open={lifting !== null}
+        onClose={() => (busy ? undefined : setLifting(null))}
+        size="sm"
+        title="Lift this veto?"
+        description="The pair can link or merge again. Recorded in the audit trail."
+        footer={
+          <>
+            <Button onClick={() => setLifting(null)} disabled={busy}>Cancel</Button>
+            <Button variant="danger" loading={busy} disabled={reason.trim().length < 3 || busy} onClick={lift}>Lift veto</Button>
+          </>
+        }
+      >
+        {error && <p className="sl-form__error" role="alert">{error}</p>}
+        <Field label="Reason" hint="Required. Recorded with the lift.">
+          {(p) => <Input id={p.id} aria-describedby={p.describedBy} value={reason} maxLength={500} onChange={(e) => setReason(e.target.value)} />}
+        </Field>
+      </Dialog>
+    </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ApproveProposalResponse, ProposalItem, ProposalSide } from "../../../../gateway/panel/api-types";
+import type { ApprovalOutcome, ApproveProposalResponse, ProposalItem, ProposalSide } from "../../../../gateway/panel/api-types";
 import { ApiError } from "../../../lib/api";
 import { Badge, Button, Dialog, EmptyState, Field, FilterChip, Input, PageHeader, Table, useToast, type Column, type FilterOption } from "../../../ui";
 import { TimeAgo } from "../../../shared/TimeAgo";
@@ -38,7 +38,12 @@ export function ProposalsPage() {
     { key: "reason", header: "Reason", width: "7rem", skeleton: 0.5, render: (p) => REASON_LABEL[p.reason] },
     { key: "a", header: "Record", skeleton: 0.7, render: (p) => side(p.a) },
     { key: "b", header: "Other record", skeleton: 0.7, render: (p) => side(p.b) },
-    { key: "state", header: "State", width: "8rem", skeleton: 0.5, render: (p) => (p.stale ? <Badge tone="warning" title={p.staleReason ?? undefined}>Stale</Badge> : <Badge tone={p.state === "open" ? "accent" : "neutral"}>{p.state}</Badge>) },
+    { key: "state", header: "State", width: "16rem", skeleton: 0.5, render: (p) => (
+      <span className="sl-stack">
+        <span>{p.stale ? <Badge tone="warning" title={p.staleReason ?? undefined}>Stale</Badge> : <Badge tone={p.state === "open" ? "accent" : "neutral"}>{p.state}</Badge>}</span>
+        {p.hint && <span className="sl-caption">{p.hint}</span>}
+      </span>
+    ) },
     { key: "act", header: "", width: "11rem", skeleton: 0.4, render: (p) => (
       p.state === "open" && role === "superadmin" ? (
         <span className="sl-nowrap">
@@ -85,7 +90,7 @@ export const CONFIRM_WORD = "merge";
 
 function ReviewDialog({ p, onClose, onDone }: { p: ProposalItem | null; onClose: () => void; onDone: () => void }) {
   const toast = useToast();
-  const [preview, setPreview] = useState<Extract<ApproveProposalResponse, { status: "confirm" }> | null>(null);
+  const [preview, setPreview] = useState<ApprovalOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -97,7 +102,7 @@ function ReviewDialog({ p, onClose, onDone }: { p: ProposalItem | null; onClose:
     if (!id) return;
     let live = true;
     api.post<ApproveProposalResponse>(`/api/merge-proposals/${encodeURIComponent(id)}/approve`, {}).then(
-      (r) => live && (r.status === "confirm" ? setPreview(r) : setError("Unexpected answer.")),
+      (r) => live && (r.status === "confirm" ? setPreview(r.outcome) : setError("Unexpected answer.")),
       (e) => live && setError(e instanceof Error ? e.message : String(e)),
     );
     return () => { live = false; };
@@ -106,13 +111,13 @@ function ReviewDialog({ p, onClose, onDone }: { p: ProposalItem | null; onClose:
     if (!id || !preview) return;
     setBusy(true);
     try {
-      await api.post<ApproveProposalResponse>(`/api/merge-proposals/${encodeURIComponent(id)}/approve`, { activates: preview.activates });
+      await api.post<ApproveProposalResponse>(`/api/merge-proposals/${encodeURIComponent(id)}/approve`, { confirm: preview });
       toast({ tone: "success", title: "Records merged", description: "It is in Merges, where it can be undone for seven days." });
       onDone();
     } catch (e) {
       // A changed list comes back as 409 with the current one: show it and ask again.
-      const body = e instanceof ApiError ? (e.body as { activates?: string[] } | null) : null;
-      if (body?.activates && preview) setPreview({ ...preview, activates: body.activates });
+      const body = e instanceof ApiError ? (e.body as { outcome?: ApprovalOutcome } | null) : null;
+      if (body?.outcome) setPreview(body.outcome);
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
@@ -137,7 +142,9 @@ function ReviewDialog({ p, onClose, onDone }: { p: ProposalItem | null; onClose:
         {error && <p className="sl-form__error" role="alert">{error}</p>}
         {!preview && !error && <p className="sl-caption">Checking what the merge would activate.</p>}
         {preview && (
-          <div className="sl-stack" aria-label="Grants this merge would activate">
+          <div className="sl-stack" aria-label="What this merge would do">
+            <p>Keeps <strong>{preview.survivor}</strong> and merges away <strong>{preview.loser}</strong>.</p>
+            <p>Moves {preview.bindings} bindings and {preview.grants} stored grants.</p>
             {preview.activates.length === 0 ? (
               <p>No grant becomes active.</p>
             ) : (
@@ -147,11 +154,11 @@ function ReviewDialog({ p, onClose, onDone }: { p: ProposalItem | null; onClose:
               </>
             )}
             {preview.inactivePrivileged.length > 0 && (
-              <p className="sl-caption">Still waiting for a verified Slack binding: {preview.inactivePrivileged.map((g) => `${g.persona} (${g.role})`).join(", ")}.</p>
+              <p className="sl-caption">Privileged grants that stay inactive until the Slack binding is verified: {preview.inactivePrivileged.join(", ")}.</p>
             )}
           </div>
         )}
-        <Field label={`Type "${CONFIRM_WORD}" to confirm`} hint="You confirm the grants listed above.">
+        <Field label={`Type "${CONFIRM_WORD}" to confirm`} hint="You confirm the direction, the counts and the grants listed above.">
           {(f) => <Input id={f.id} aria-describedby={f.describedBy} value={typed} autoComplete="off" onChange={(e) => setTyped(e.target.value)} />}
         </Field>
       </div>

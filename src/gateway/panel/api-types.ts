@@ -1275,6 +1275,8 @@ export interface ProposalItem {
   /** Open, but the pair can no longer be merged as proposed (a record is gone or they are one). */
   stale: boolean;
   staleReason: string | null;
+  /** Why the engine refused it, when that points the operator somewhere (a squatted address, a veto); null otherwise. */
+  hint: string | null;
   resolvedBy: string | null;
   resolvedAt: number | null;
 }
@@ -1284,10 +1286,33 @@ export interface ProposalPage {
   nextCursor: string | null;
 }
 
+/** What an approval would do, masked; the operator echoes it back to confirm. */
+export interface ApprovalOutcome {
+  survivor: string;
+  loser: string;
+  bindings: number;
+  grants: number;
+  activates: string[];
+  inactivePrivileged: string[];
+}
 export interface ApproveProposalRequest {
-  /** The grants the merge would activate (`persona:role:entry`), echoed back. Omit to ask for the list. */
-  activates?: string[];
+  /** The outcome the server showed, echoed back. Omit to ask for it. An empty list is not a blind approval: the whole object must match. */
+  confirm?: ApprovalOutcome;
 }
 export type ApproveProposalResponse =
-  | { status: "confirm"; survivorId: string; loserId: string; activates: string[]; inactivePrivileged: Array<{ persona: string; role: string; entry: string }> }
+  | { status: "confirm"; outcome: ApprovalOutcome }
   | { status: "merged"; merge: MergeDetail };
+
+/** A veto an undo left: it forbids a pair from joining again until lifted. It names nothing a person could be recognised by. */
+export interface MergeVetoItem {
+  id: string;
+  createdBy: string;
+  createdAt: number;
+  mergeId: string | null;
+}
+export interface MergeVetoList {
+  items: MergeVetoItem[];
+}
+export interface LiftVetoRequest {
+  reason: string;
+}
