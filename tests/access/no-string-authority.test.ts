@@ -23,7 +23,7 @@ describe("no string authority outside the seam", () => {
       expect(() => readFileSync(e.file, "utf8")).not.toThrow();
       expect(Object.keys(PATTERNS)).toContain(e.pattern);
       expect(e.reason.trim().length).toBeGreaterThan(10);
-      expect(e.count).toBeGreaterThan(0);
+      expect(e.lines.length).toBeGreaterThan(0);
     }
   });
 
@@ -61,15 +61,26 @@ describe("no string authority outside the seam", () => {
       expect(sample('if (!sameAt({ site: "no.such.site", userId, otherUserId: lock.locked_user })) return;').length).toBeGreaterThan(0);
     });
 
-    test("a compare added to an already allowlisted file is caught by the count", () => {
-      const entry: AllowEntry = { file: "src/example/new-site.ts", pattern: "locked_user", count: 1, reason: "a reviewed display line" };
+    test("a compare added to, or swapped in, an already allowlisted file is caught by the line text", () => {
+      const entry: AllowEntry = { file: "src/example/new-site.ts", pattern: "locked_user", lines: ["log(lock.locked_user);"], reason: "a reviewed display line" };
       expect(sample("log(lock.locked_user);", [entry])).toEqual([]);
       expect(sample("log(lock.locked_user);\nif (lock.locked_user === userId) ok();", [entry]).length).toBeGreaterThan(0);
+      // The reviewed line replaced by a different compare: same count, still caught, and the old line is stale.
+      const swapped = sample("if (lock.locked_user === userId) ok();", [entry]).join("\n");
+      expect(swapped).toContain("unregistered");
+      expect(swapped).toContain("stale allowlist line");
+    });
+
+    test("a registered site call exempts only what is inside it", () => {
+      expect(sample('if (!sameAt({ site: "gateway.admit", userId, otherUserId: lock.locked_user })) return;')).toEqual([]);
+      expect(sample('if (!sameAt({ site: "gateway.admit", userId, otherUserId: lock.locked_user }) && ctx.userId === soul.manager.userId) return;').length).toBeGreaterThan(0);
+      expect(sample('if (managers.includes(by) || sameAt({ site: "gateway.admit", userId: a, otherUserId: b })) return;').length).toBeGreaterThan(0);
+      expect(sample('const own = g.userId !== null && sameAt({ site: "gateway.admit", userId: g.userId, otherUserId: x });').length).toBeGreaterThan(0);
     });
 
     test("an allowlist entry that no longer matches anything is reported", () => {
-      const entry: AllowEntry = { file: "src/example/new-site.ts", pattern: "locked_user", count: 1, reason: "a reviewed display line" };
-      expect(sample("const x = 1;", [entry]).join(" ")).toContain("stale allowlist entry");
+      const entry: AllowEntry = { file: "src/example/new-site.ts", pattern: "locked_user", lines: ["log(lock.locked_user);"], reason: "a reviewed display line" };
+      expect(sample("const x = 1;", [entry]).join(" ")).toContain("stale allowlist line");
     });
 
     test("comments, null checks and string literals are not compares", () => {

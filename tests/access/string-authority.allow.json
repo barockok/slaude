@@ -2,781 +2,1149 @@
   {
     "file": "src/access/admission.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "const mine = o.grants.filter((g) => g.subjectKind === \"user\" && g.subjectId === o.userId);"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/access/authority.ts",
     "pattern": "id-compare",
-    "count": 4,
+    "lines": [
+      "if (g.subjectId === a.slackUserId && (!s.workspace || s.workspace === a.teamId)) {",
+      "if (acting && s.userId && s.userId === acting.userId && (s.state === \"observed\" || s.state === \"verified\")) {",
+      "if (acting && s.userId === acting.userId) return { ordinary: true, deny: true, privileged: acting.verified };",
+      "const same = q.key === p.key || (!!p.userId && !!q.userId && p.userId === q.userId);"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/access/authority.ts",
     "pattern": "user-id-dot-eq",
-    "count": 3,
+    "lines": [
+      "if (acting && s.userId && s.userId === acting.userId && (s.state === \"observed\" || s.state === \"verified\")) {",
+      "if (acting && s.userId === acting.userId) return { ordinary: true, deny: true, privileged: acting.verified };",
+      "const same = q.key === p.key || (!!p.userId && !!q.userId && p.userId === q.userId);"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/access/decide.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "legacy: !!o.a.slackUserId && o.a.slackUserId === o.b.slackUserId,"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/access/grants.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "for (const id of ids([soul.manager.userId, soul.backupManager.userId])) out.push(soulGrant(\"user\", id, \"manager\"));"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/access/grants.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "for (const id of ids([soul.manager.userId, soul.backupManager.userId])) out.push(soulGrant(\"user\", id, \"manager\"));"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/access/grants.ts",
     "pattern": "dm-allowed",
-    "count": 1,
+    "lines": [
+      "for (const id of ids(soul.dmAllowedUsers)) out.push(soulGrant(\"user\", id, \"member\", { dmOnly: true }));"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/access/grants.ts",
     "pattern": "blocked",
-    "count": 1,
+    "lines": [
+      "for (const id of ids(soul.blockedUsers)) out.push(soulGrant(\"user\", id, \"member\", { deny: true }));"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/access/role.ts",
     "pattern": "eq-user-id",
-    "count": 2,
+    "lines": [
+      "const mine = grants.filter((g) => g.subjectKind === \"user\" && g.subjectId === userId);",
+      "return grants.some((g) => g.deny && g.subjectKind === \"user\" && g.subjectId === userId);"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/access/role.ts",
     "pattern": "id-compare",
-    "count": 2,
+    "lines": [
+      "const mine = grants.filter((g) => g.subjectKind === \"user\" && g.subjectId === userId);",
+      "return grants.some((g) => g.deny && g.subjectKind === \"user\" && g.subjectId === userId);"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/access/wired.ts",
     "pattern": "user-id-dot-eq",
-    "count": 1,
+    "lines": [
+      "const legacy = o.userId === o.otherUserId;"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/access/wired.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "const legacy = o.userId === o.otherUserId;"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/agent/manager.ts",
     "pattern": "locked_user",
-    "count": 1,
+    "lines": [
+      "? (await this.#lockFor(sessionId, channel, threadTs))?.locked_user"
+    ],
     "reason": "reads the lock owner to pick the identity a turn runs as (a storage key until slice D)"
   },
   {
     "file": "src/agent/manager.ts",
     "pattern": "user-id-dot-eq",
-    "count": 1,
+    "lines": [
+      "if (!out.some((o) => o.userId === s.userId && o.teamId === s.teamId && o.origin === s.origin)) out.push({ userId: s.userId, teamId: s.teamId, origin: s.origin });"
+    ],
     "reason": "dedupes a turn's senders by (user, team, origin); merging identical entries, not a decision"
   },
   {
     "file": "src/agent/manager.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "if (!out.some((o) => o.userId === s.userId && o.teamId === s.teamId && o.origin === s.origin)) out.push({ userId: s.userId, teamId: s.teamId, origin: s.origin });"
+    ],
     "reason": "dedupes a turn's senders by (user, team, origin); merging identical entries, not a decision"
   },
   {
     "file": "src/agent/session-mode.ts",
     "pattern": "locked_user",
-    "count": 3,
+    "lines": [
+      "? `Active scope constraint (applies to all guests — not the session owner <@${lock.locked_user}>): ${lock.open_scope.trim()}`",
+      "return renderRuntimeFile(\"modules/one-on-one-open.md\", { LOCKED_USER: lock.locked_user, SCOPE_LINE: scopeLine });",
+      "return renderRuntimeFile(\"modules/one-on-one-locked.md\", { LOCKED_USER: lock.locked_user });"
+    ],
     "reason": "text, audit detail or a log line naming the lock owner or manager; no decision"
   },
   {
     "file": "src/background/digest.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "const legacy = soul.manager.userId || soul.backupManager.userId || null;"
+    ],
     "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background"
   },
   {
     "file": "src/background/digest.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "const legacy = soul.manager.userId || soul.backupManager.userId || null;"
+    ],
     "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background"
   },
   {
     "file": "src/background/pass-tools.ts",
     "pattern": "eq-user-id",
-    "count": 1,
+    "lines": [
+      "return transcripts.some((t) => t.author === userId && squash(t.text).includes(q));"
+    ],
     "reason": "scopes a background pass or a query to one person's own data; the person is already fixed by the caller"
   },
   {
     "file": "src/background/pass-tools.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "return transcripts.some((t) => t.author === userId && squash(t.text).includes(q));"
+    ],
     "reason": "scopes a background pass or a query to one person's own data; the person is already fixed by the caller"
   },
   {
     "file": "src/background/passes/nightly-review.ts",
     "pattern": "eq-user-id",
-    "count": 1,
+    "lines": [
+      "return turns.filter((t) => t.author === userId || t.author === AGENT_AUTHOR || t.author === SYSTEM_AUTHOR);"
+    ],
     "reason": "scopes a background pass or a query to one person's own data; the person is already fixed by the caller"
   },
   {
     "file": "src/background/passes/nightly-review.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "return turns.filter((t) => t.author === userId || t.author === AGENT_AUTHOR || t.author === SYSTEM_AUTHOR);"
+    ],
     "reason": "scopes a background pass or a query to one person's own data; the person is already fixed by the caller"
   },
   {
     "file": "src/background/proposal-cards.ts",
     "pattern": "id-compare",
-    "count": 2,
+    "lines": [
+      "if (p && p.status === \"open\" && p.agentId === a.agentId && p.toKind === \"person\" && p.toUser === a.userId) rows.push(p);",
+      "return getPersonaRegistry().list().find((p) => p.slackUserId === agentId && p.name)?.name ?? \"default\";"
+    ],
     "reason": "lists a person's own open proposals (a query keyed by the person the batch is for); compares a persona's own Slack identity (registry, sync), not a person's access"
   },
   {
     "file": "src/background/scheduler.ts",
     "pattern": "manager-user-id",
-    "count": 2,
+    "lines": [
+      "if (!personaId || personaId === \"default\") legacy = soulData().manager.userId ?? null;",
+      "legacy = compiled ? (compiled.manager.userId ?? null) : (ownStoredSoul(personaId)?.manager.userId ?? parseManager(personaSoulText(personaId)));"
+    ],
     "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background"
   },
   {
     "file": "src/cli/extraction-prompt.ts",
     "pattern": "blocked",
-    "count": 2,
+    "lines": [
+      "\"blockedUsers\": string[],",
+      "- blockedUsers: ids the persona explicitly marks as banned, blocked, ignored, blacklisted, or \"do not respond\". Look for sections titled \"Blocked\", \"Blacklist\", \"Ignore\", \"Banned\". Empty array if no such section."
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/cli/extraction-prompt.ts",
     "pattern": "dm-allowed",
-    "count": 2,
+    "lines": [
+      "\"dmAllowedUsers\": string[],",
+      "- dmAllowedUsers: ids allowed to DM slaude directly besides the manager. Look for sections titled \"DM allowlist\", \"Allowed DMs\", \"Direct message allowlist\", \"Who can DM\". Empty array if no such section."
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/cli/legacy-soul-extract.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "if (data.manager.userId) ids.add(data.manager.userId);"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/cli/legacy-soul-extract.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "if (data.backupManager.userId) ids.add(data.backupManager.userId);"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/cli/legacy-soul-extract.ts",
     "pattern": "blocked",
-    "count": 1,
+    "lines": [
+      "for (const u of data.blockedUsers) ids.add(u);"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/cli/legacy-soul-extract.ts",
     "pattern": "dm-allowed",
-    "count": 1,
+    "lines": [
+      "for (const u of data.dmAllowedUsers) ids.add(u);"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/db/account-projection.ts",
     "pattern": "eq-user-id",
-    "count": 3,
+    "lines": [
+      "if (old && old.user_id === userId && old.state === \"verified\") {",
+      "if (!held || held.user_id === userId) {",
+      "if (b && b.user_id === userId && b.state === \"verified\") await tx.run(\"DELETE FROM bindings WHERE id = ?\", [b.id]);"
+    ],
     "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
   },
   {
     "file": "src/db/account-projection.ts",
     "pattern": "id-compare",
-    "count": 3,
+    "lines": [
+      "if (old && old.user_id === userId && old.state === \"verified\") {",
+      "if (!held || held.user_id === userId) {",
+      "if (b && b.user_id === userId && b.state === \"verified\") await tx.run(\"DELETE FROM bindings WHERE id = ?\", [b.id]);"
+    ],
     "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
   },
   {
     "file": "src/db/domain.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "if (held.user_id === toUserId) {"
+    ],
     "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
   },
   {
     "file": "src/db/drivers/sqlite.ts",
     "pattern": "locked_user",
-    "count": 1,
+    "lines": [
+      "locked_user TEXT NOT NULL,"
+    ],
     "reason": "SQL text or row shape for the lock and proposal tables"
   },
   {
     "file": "src/db/drivers/sqlite.ts",
     "pattern": "dm-allowed",
-    "count": 1,
+    "lines": [
+      "('trustedChannels','allowedChannels','dmAllowedUsers','blockedUsers')),"
+    ],
     "reason": "SQL text or row shape for the lock and proposal tables"
   },
   {
     "file": "src/db/drivers/sqlite.ts",
     "pattern": "blocked",
-    "count": 1,
+    "lines": [
+      "('trustedChannels','allowedChannels','dmAllowedUsers','blockedUsers')),"
+    ],
     "reason": "SQL text or row shape for the lock and proposal tables"
   },
   {
     "file": "src/db/one-on-one.ts",
     "pattern": "locked_user",
-    "count": 5,
+    "lines": [
+      "locked_user: string;",
+      "`INSERT INTO one_on_one_locks (channel_id, thread_ts, locked_user, created_by, created_at, open_scope, team_id)",
+      "DO UPDATE SET locked_user = excluded.locked_user, created_by = excluded.created_by,",
+      "lock: Pick<OneOnOneLockRow, \"locked_user\" | \"team_id\">,",
+      "if (lock.locked_user !== who.userId) return \"other\";"
+    ],
     "reason": "SQL text or row shape for the lock and proposal tables; the pure team-aware ownership helper from task 12; it has no live caller (the gateway compares through sameAt)"
   },
   {
     "file": "src/db/one-on-one.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "if (lock.locked_user !== who.userId) return \"other\";"
+    ],
     "reason": "the pure team-aware ownership helper from task 12; it has no live caller (the gateway compares through sameAt)"
   },
   {
     "file": "src/db/slack-oauth-flows.ts",
     "pattern": "user-id-dot-eq",
-    "count": 1,
+    "lines": [
+      "typeof f.userId === \"string\" &&"
+    ],
     "reason": "SQL text or row shape for the lock and proposal tables"
   },
   {
     "file": "src/db/soul-overrides.ts",
     "pattern": "dm-allowed",
-    "count": 1,
+    "lines": [
+      "| \"dmAllowedUsers\""
+    ],
     "reason": "SQL text or row shape for the lock and proposal tables"
   },
   {
     "file": "src/db/soul-overrides.ts",
     "pattern": "blocked",
-    "count": 1,
+    "lines": [
+      "| \"blockedUsers\";"
+    ],
     "reason": "SQL text or row shape for the lock and proposal tables"
   },
   {
     "file": "src/domain/first-sight.ts",
     "pattern": "id-membership",
-    "count": 1,
+    "lines": [
+      "if (!i || !i.teamId || !USER_RE.test(i.userId ?? \"\") || SYSTEM_USERS.has(i.userId)) return;"
+    ],
     "reason": "filters Slackbot and system ids out of first sight; not an access decision"
   },
   {
     "file": "src/domain/reconcile.ts",
     "pattern": "eq-user-id",
-    "count": 3,
+    "lines": [
+      "userId !== null && (mail === null || (emailHeld?.user_id === userId && (!proven || emailHeld.state === \"verified\")));",
+      "if (held && held.state === \"verified\" && userId !== null && held.user_id === userId) {",
+      "if (after && after.user_id === userId && after.state === \"verified\") rS.created++;"
+    ],
     "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
   },
   {
     "file": "src/domain/reconcile.ts",
     "pattern": "neq-user-id",
-    "count": 2,
+    "lines": [
+      "userId !== null && (mail === null || (emailHeld?.user_id === userId && (!proven || emailHeld.state === \"verified\")));",
+      "if (held && held.state === \"verified\" && userId !== null && held.user_id === userId) {"
+    ],
     "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
   },
   {
     "file": "src/domain/reconcile.ts",
     "pattern": "id-compare",
-    "count": 5,
+    "lines": [
+      "userId !== null && (mail === null || (emailHeld?.user_id === userId && (!proven || emailHeld.state === \"verified\")));",
+      "else if (mail && emailHeld && emailHeld.user_id !== userId && (await hasVerified(c, emailHeld.user_id))) {",
+      "if (held && held.state === \"verified\" && userId !== null && held.user_id === userId) {",
+      "if (held && held.user_id !== userId && (await hasVerified(c, held.user_id))) {",
+      "if (after && after.user_id === userId && after.state === \"verified\") rS.created++;"
+    ],
+    "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
+  },
+  {
+    "file": "src/domain/reconcile.ts",
+    "pattern": "id-membership",
+    "lines": [
+      "if (!uid || !hasAccount.has(uid)) out.unaccounted++;"
+    ],
     "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
   },
   {
     "file": "src/domain/sync-refs.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "if (soul.manager?.userId) add(\"access.manager\", bareUser(soul.manager.userId));"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/domain/sync-refs.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "if (soul.backupManager?.userId) add(\"access.backupManager\", bareUser(soul.backupManager.userId));"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/domain/sync-refs.ts",
     "pattern": "blocked",
-    "count": 1,
+    "lines": [
+      "soul.blockedUsers?.forEach((u, i) => add(`access.blocked[${i}]`, bareUser(u)));"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/domain/sync-refs.ts",
     "pattern": "dm-allowed",
-    "count": 1,
+    "lines": [
+      "soul.dmAllowedUsers?.forEach((u, i) => add(`access.dm[${i}]`, bareUser(u)));"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/gateway/api/jobs.ts",
     "pattern": "locked_user",
-    "count": 1,
+    "lines": [
+      "carried.kind === \"user\" ? carried.slackUserId : lock?.locked_user,"
+    ],
     "reason": "picks the identity signed into a job token (runAs key, slice D)"
   },
   {
     "file": "src/gateway/core/env-command.ts",
     "pattern": "locked_user",
-    "count": 1,
+    "lines": [
+      "await ctx.reply(`:lock: This thread is a 1on1 with <@${lock.locked_user}>; only its owner can choose its environment.`);"
+    ],
     "reason": "text, audit detail or a log line naming the lock owner or manager; no decision"
   },
   {
     "file": "src/gateway/core/gateway.ts",
     "pattern": "manager-user-id",
-    "count": 4,
-    "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background; the soul's manager id passed on, or read for a notice; the checks around it are registered sites (soul_override.*, gateway.connect_notify_target)"
+    "lines": [
+      "legacy: [soulData().manager.userId, soulData().backupManager.userId].filter((u): u is string => !!u),",
+      "if (!soul.manager.userId || !sameAt({ site: \"soul_override.slash_manager_same\", persona: \"default\", teamId, userId, otherUserId: soul.manager.userId }) || !(await managerAt(\"soul_override.slash_role\", \"default\", userId, teamId))) {",
+      "{ managerId: soul.manager.userId, teamId, persona: \"default\" },",
+      "(soulDataFor(persona).manager.userId ? \"\" : \" (no manager set in SOUL.md)\"),",
+      "const userId = scope === \"initiator\" ? (runAs?.kind === \"user\" ? runAs.slackUserId : \"\") : soulDataFor(personaId).manager.userId;"
+    ],
+    "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background; text, audit detail or a log line naming the lock owner or manager; no decision; the soul's manager id passed on, or read for a notice; the checks around it are registered sites (soul_override.*, gateway.connect_notify_target)"
   },
   {
     "file": "src/gateway/core/gateway.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "legacy: [soulData().manager.userId, soulData().backupManager.userId].filter((u): u is string => !!u),"
+    ],
     "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background"
   },
   {
     "file": "src/gateway/core/gateway.ts",
     "pattern": "locked_user",
-    "count": 15,
+    "lines": [
+      "const lockedUser = (await OneOnOne.find(row.channelId, row.threadTs))?.locked_user ?? null;",
+      "const lockedUser = known ? known.lockedUser : (lockRow?.locked_user ?? null);",
+      "return `:lock: this 1on1 thread belongs to <@${lock.locked_user}> — only they can connect MCP servers here.`;",
+      "console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — 1on1 locked to ${lock.locked_user}`);",
+      "console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — remote mode, 1on1 locked to ${lock.locked_user}`);",
+      "await reply(`:lock: only the session owner (<@${existing.locked_user}>) can lock it.`);",
+      "auditOneOnOne(\"one_on_one.locked\", { userId, sessionId: session.id, channelId, threadTs, persona: dispatch?.personaId, lockedUser: existing.locked_user, via: \"slash\", mode: \"relock\" });",
+      "await reply(`:lock: *1on1 re-locked* — only <@${existing.locked_user}> and the manager are heard again.`);",
+      "auditOneOnOne(\"one_on_one.unlocked\", { userId, sessionId: session.id, channelId, threadTs, persona: dispatch?.personaId, lockedUser: existing.locked_user, via: \"slash\" });",
+      "await reply(`:lock: \\`/mcp\\` in a 1on1 thread is for the lock owner — only <@${lock.locked_user}> can connect here.`);",
+      "oauthUser: cronLock?.locked_user,",
+      ": turnMemoryBlock({ channel: channelId, threadTs, userId, teamId, personaId: dispatch?.personaId, lockedUser: oneOnOneLock?.locked_user ?? null, lockedTeamId: oneOnOneLock?.team_id ?? null }),",
+      "? ` one_on_one=\"true\" locked_user=\"<@${oneOnOneLock.locked_user}>\"`",
+      ": ` one_on_one=\"false\" locked_user=\"\"`;",
+      "`trust=\"restricted\" one_on_one=\"false\" locked_user=\"\">\\n${text}\\n</channel>\\n\\n` +"
+    ],
     "reason": "text, audit detail or a log line naming the lock owner or manager; no decision"
   },
   {
     "file": "src/gateway/core/gateway.ts",
     "pattern": "id-compare",
-    "count": 3,
+    "lines": [
+      "if ((row.runAs ?? null) !== lockedUser) throw new Error(\"the thread's /1on1 lock changed since the promise; not speaking there\");",
+      "userId: ctx.userId && ctx.userId !== personaAgentId ? ctx.userId : null,",
+      "const initialDir = existing?.user_id === decoded.offer.userId ? existing.dir : undefined;"
+    ],
     "reason": "refuses a stale promise whose carried identity no longer matches the thread's lock; fails toward not speaking, both ids written by this gateway; treats the persona's own id as no person (the agent is not a speaker); prefills a default directory in the connect form; convenience, not access"
   },
   {
     "file": "src/gateway/core/gateway.ts",
     "pattern": "neq-user-id",
-    "count": 1,
+    "lines": [
+      "userId: ctx.userId && ctx.userId !== personaAgentId ? ctx.userId : null,"
+    ],
     "reason": "treats the persona's own id as no person (the agent is not a speaker)"
   },
   {
     "file": "src/gateway/core/gateway.ts",
     "pattern": "id-membership",
-    "count": 4,
+    "lines": [
+      "return users.some((u) => members.has(u));",
+      "if ((await getSelfUserIds()).has(userId)) {",
+      "const otherAppBots = mentionsBot ? [] : mentions.filter((u): u is string => Boolean(u) && u !== botId && selfBotUsers.has(u!));",
+      "(u) => u && u !== botId && (!selfBotUsers.has(u) || absentAppBots.has(u)) && !registry.lookupByUserId(u),"
+    ],
     "reason": "recognises the bot or app's own user ids (self messages), not a person's access"
   },
   {
     "file": "src/gateway/core/surface-mcp.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "if (!who || !soul.manager.userId || !sameAt({ site: \"soul_override.tool_manager_same\", persona, teamId, userId: who, otherUserId: soul.manager.userId })) {",
+      "const res = await mutateOverride({ field: field as FieldAlias, action, value, by: who }, { managerId: soul.manager.userId, teamId, persona });"
+    ],
     "reason": "passes the soul's manager id to mutateOverride, whose self-lockout compare is the registered soul_override.self_lockout site"
   },
   {
     "file": "src/gateway/core/thread-identity.ts",
     "pattern": "locked_user",
-    "count": 1,
+    "lines": [
+      "lock: lockRow ? { user: lockRow.locked_user, openScope: lockRow.open_scope } : null,"
+    ],
     "reason": "text, audit detail or a log line naming the lock owner or manager; no decision"
   },
   {
     "file": "src/gateway/gate/context.ts",
     "pattern": "id-compare",
-    "count": 2,
+    "lines": [
+      "return text.replace(MENTION_RE, (_m, id: string) => (id === botUserId ? \"<agent>\" : \"<user>\"));",
+      "m.user === botUserId ||"
+    ],
     "reason": "recognises the bot or app's own user ids (self messages), not a person's access"
   },
   {
     "file": "src/gateway/panel/api.ts",
     "pattern": "locked_user",
-    "count": 1,
+    "lines": [
+      "lockedUser: held.locked_user, via: \"panel\","
+    ],
     "reason": "console display or audit detail (operator tooling, not a speaker decision)"
   },
   {
     "file": "src/gateway/panel/settings-view.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "const managers = [def.manager.userId, def.backupManager.userId].filter((u): u is string => !!u);"
+    ],
     "reason": "console display or audit detail (operator tooling, not a speaker decision)"
   },
   {
     "file": "src/gateway/panel/settings-view.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "const managers = [def.manager.userId, def.backupManager.userId].filter((u): u is string => !!u);"
+    ],
     "reason": "console display or audit detail (operator tooling, not a speaker decision)"
   },
   {
     "file": "src/gateway/sim/engine.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "const manager = soulData().manager?.userId;"
+    ],
     "reason": "the simulation gateway and its role helpers"
   },
   {
     "file": "src/gateway/sim/repl.ts",
     "pattern": "id-membership",
-    "count": 1,
+    "lines": [
+      "const id = (ROLE_NAMES as readonly string[]).includes(who) ? resolveRole(who, soulData()) : who;"
+    ],
     "reason": "the simulation gateway and its role helpers"
   },
   {
     "file": "src/gateway/sim/repl.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "if (!soulData().manager?.userId) {"
+    ],
     "reason": "the simulation gateway and its role helpers"
   },
   {
     "file": "src/gateway/sim/roles.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "case \"manager\": return soul.manager?.userId;"
+    ],
     "reason": "the simulation gateway and its role helpers"
   },
   {
     "file": "src/gateway/sim/roles.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "case \"backup\": return soul.backupManager?.userId;"
+    ],
     "reason": "the simulation gateway and its role helpers"
   },
   {
     "file": "src/gateway/sim/soul-fixture.ts",
     "pattern": "dm-allowed",
-    "count": 1,
+    "lines": [
+      "dmAllowedUsers: f.dmAllowed ?? [],"
+    ],
     "reason": "the simulation gateway and its role helpers"
   },
   {
     "file": "src/gateway/slack/approval-gate.ts",
     "pattern": "approvers-has",
-    "count": 1,
+    "lines": [
+      "legacy: approvers.size === 0 || approvers.has(userId),"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/approval-gate.ts",
     "pattern": "id-membership",
-    "count": 1,
+    "lines": [
+      "legacy: approvers.size === 0 || approvers.has(userId),"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/approval-gate.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "const managers = [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);"
+    ],
     "reason": "the default approver chain built from the soul's managers; each click on it is checked by the registered approval.click_allowlist sites"
   },
   {
     "file": "src/gateway/slack/approval-gate.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "const managers = [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);"
+    ],
     "reason": "the default approver chain built from the soul's managers; each click on it is checked by the registered approval.click_allowlist sites"
   },
   {
     "file": "src/gateway/slack/ingest-auth.ts",
     "pattern": "user-id-dot-eq",
-    "count": 1,
+    "lines": [
+      "soul.manager?.userId === userId || soul.backupManager?.userId === userId || !!soul.approvers?.some((a) => a.userId === userId);"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/ingest-auth.ts",
     "pattern": "eq-user-id",
-    "count": 1,
+    "lines": [
+      "soul.manager?.userId === userId || soul.backupManager?.userId === userId || !!soul.approvers?.some((a) => a.userId === userId);"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/ingest-auth.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "soul.manager?.userId === userId || soul.backupManager?.userId === userId || !!soul.approvers?.some((a) => a.userId === userId);"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/ingest-auth.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "soul.manager?.userId === userId || soul.backupManager?.userId === userId || !!soul.approvers?.some((a) => a.userId === userId);"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/ingest-auth.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "soul.manager?.userId === userId || soul.backupManager?.userId === userId || !!soul.approvers?.some((a) => a.userId === userId);"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/mcp-tools.ts",
     "pattern": "locked_user",
-    "count": 1,
+    "lines": [
+      "oauthUser: cronLock?.locked_user ?? undefined,"
+    ],
     "reason": "text, audit detail or a log line naming the lock owner or manager; no decision"
   },
   {
     "file": "src/gateway/slack/model-auth.ts",
     "pattern": "user-id-dot-eq",
-    "count": 3,
+    "lines": [
+      "soul.manager?.userId === userId ||",
+      "soul.backupManager?.userId === userId ||",
+      "!!soul.approvers?.some((a) => a.userId === userId) ||"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/model-auth.ts",
     "pattern": "eq-user-id",
-    "count": 3,
+    "lines": [
+      "soul.manager?.userId === userId ||",
+      "soul.backupManager?.userId === userId ||",
+      "!!soul.approvers?.some((a) => a.userId === userId) ||"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/model-auth.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "soul.manager?.userId === userId ||"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/model-auth.ts",
     "pattern": "id-compare",
-    "count": 3,
+    "lines": [
+      "soul.manager?.userId === userId ||",
+      "soul.backupManager?.userId === userId ||",
+      "!!soul.approvers?.some((a) => a.userId === userId) ||"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/model-auth.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "soul.backupManager?.userId === userId ||"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/model-auth.ts",
     "pattern": "dm-allowed",
-    "count": 1,
+    "lines": [
+      "!!soul.dmAllowedUsers?.includes(userId);"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/model-auth.ts",
     "pattern": "id-membership",
-    "count": 1,
+    "lines": [
+      "!!soul.dmAllowedUsers?.includes(userId);"
+    ],
     "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
   },
   {
     "file": "src/gateway/slack/permission-gate.ts",
     "pattern": "locked_user",
-    "count": 1,
+    "lines": [
+      "lockOwner = lock?.locked_user ?? null;"
+    ],
     "reason": "reads the lock owner to hand to canDecidePermission, whose compares are registered sites"
   },
   {
     "file": "src/knowledge/gated-dispatch.ts",
     "pattern": "locked-user-cmp",
-    "count": 1,
+    "lines": [
+      "if (g.lockedUser !== null) {"
+    ],
+    "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
+  },
+  {
+    "file": "src/knowledge/gated-dispatch.ts",
+    "pattern": "neq-user-id",
+    "lines": [
+      "return g.userId !== null && sameAt({ site: \"brain_gate.lock_owner\", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }) && scope.sourceId === userSourceId(g.userId) ? \"auto\" : \"deny\";",
+      "const own = sender !== null && g.userId !== null && sameAt({ site: \"brain_gate.turn_sender_same\", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: sender.userId, otherTeamId: sender.teamId }) && (sender.teamId ?? null) === g.teamId;"
+    ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
   {
     "file": "src/knowledge/gated-dispatch.ts",
     "pattern": "user-id-dot-eq",
-    "count": 2,
+    "lines": [
+      "if (g.userId === null) return \"auto\"; // background turn — agent's own mind",
+      "if (!g.interactive || g.origin !== \"slack\" || g.userId === null) return false;"
+    ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
   {
     "file": "src/knowledge/mcp-tools.ts",
     "pattern": "user-id-dot-eq",
-    "count": 1,
+    "lines": [
+      "if (g.userId === null || !g.interactive || g.origin !== \"slack\") return null;"
+    ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
   {
     "file": "src/knowledge/mcp-tools.ts",
     "pattern": "locked-user-cmp",
-    "count": 1,
+    "lines": [
+      "if (g.lockedUser !== null) {"
+    ],
+    "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
+  },
+  {
+    "file": "src/knowledge/mcp-tools.ts",
+    "pattern": "id-compare",
+    "lines": [
+      "if (subject !== undefined ? !(shadowBudget-- > 0 ? sameAt({ site: \"kb_tools.memory_about_subject\", persona: null, teamId: sender.teamId, userId: subject, otherUserId: sender.userId }) : subject === sender.userId) : !(m.fixed.includes(slug) || m.where === \"profile\")) continue;"
+    ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
   {
     "file": "src/knowledge/scope.ts",
     "pattern": "user-id-dot-eq",
-    "count": 1,
+    "lines": [
+      "if (i.userId === null) {"
+    ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
   {
     "file": "src/knowledge/scope.ts",
     "pattern": "locked-user-cmp",
-    "count": 1,
+    "lines": [
+      "if (i.lockedUser !== null) {"
+    ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
   {
     "file": "src/memory/scope.ts",
     "pattern": "neq-user-id",
-    "count": 1,
+    "lines": [
+      "if (g.userId !== null && g.lockedUser !== null && !sameAt({ ...seam, site: \"memory_scope.lock_owner\", userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) return NONE;",
+      "if (g.userId !== null && !sameAt({ ...seam, site: \"memory_scope.run_as_speaker\", userId: g.userId, otherUserId: runAs })) return NONE;",
+      "if (g.userId !== null && isDmChannel(opts.channel)) return both(g.userId, userSourceId(g.userId));"
+    ],
+    "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
+  },
+  {
+    "file": "src/memory/scope.ts",
+    "pattern": "locked-user-cmp",
+    "lines": [
+      "if (g.userId !== null && g.lockedUser !== null && !sameAt({ ...seam, site: \"memory_scope.lock_owner\", userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) return NONE;",
+      "if (g.lockedUser !== null && !sameAt({ ...seam, site: \"memory_scope.run_as_lock\", userId: g.lockedUser, otherUserId: runAs, otherTeamId: g.lockedTeamId })) return NONE;"
+    ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
   {
     "file": "src/node/session-lock.ts",
     "pattern": "locked_user",
-    "count": 1,
+    "lines": [
+      "locked_user: c.lock.user,"
+    ],
     "reason": "maps a token's lock claim to a lock row shape; data"
   },
   {
     "file": "src/persona/agent-def.ts",
     "pattern": "blocked",
-    "count": 3,
+    "lines": [
+      "blockedUsers: idList(\"access.blocked\", access.blocked, { field: \"blocked\", kind: \"user\", role: \"member\", deny: true }),",
+      "access: Pick<SoulData, \"manager\" | \"backupManager\" | \"approvers\" | \"channelOverrides\" | \"allowedChannels\" | \"trustedChannels\" | \"dmAllowedUsers\" | \"blockedUsers\" | \"redactPatterns\" | \"approvalTimeoutSeconds\">;",
+      "...(i.access.blockedUsers.length ? { blocked: i.access.blockedUsers.map(slackUserRef) } : {}),"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/persona/agent-def.ts",
     "pattern": "dm-allowed",
-    "count": 3,
+    "lines": [
+      "dmAllowedUsers: idList(\"access.dm\", access.dm, { field: \"dm\", kind: \"user\", role: \"member\", dmOnly: true }),",
+      "access: Pick<SoulData, \"manager\" | \"backupManager\" | \"approvers\" | \"channelOverrides\" | \"allowedChannels\" | \"trustedChannels\" | \"dmAllowedUsers\" | \"blockedUsers\" | \"redactPatterns\" | \"approvalTimeoutSeconds\">;",
+      "...(i.access.dmAllowedUsers.length ? { dm: i.access.dmAllowedUsers.map(slackUserRef) } : {}),"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/persona/agent-def.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "...(i.access.manager.userId ? { manager: slackUserRef(i.access.manager.userId) } : {}),"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/persona/agent-def.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "...(i.access.backupManager.userId ? { backupManager: slackUserRef(i.access.backupManager.userId) } : {}),"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/persona/effective.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "return a.slackUserId === b.slackUserId && a.userToken === b.userToken && a.model === b.model &&"
+    ],
     "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
   },
   {
     "file": "src/persona/migrate.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "[\"manager\", before.manager.userId, after.manager.userId],"
+    ],
     "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
   },
   {
     "file": "src/persona/migrate.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "[\"backup manager\", before.backupManager.userId, after.backupManager.userId],"
+    ],
     "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
   },
   {
     "file": "src/persona/migrate.ts",
     "pattern": "dm-allowed",
-    "count": 1,
+    "lines": [
+      "[\"dm allowlist\", sorted(before.dmAllowedUsers), sorted(after.dmAllowedUsers)],"
+    ],
     "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
   },
   {
     "file": "src/persona/migrate.ts",
     "pattern": "blocked",
-    "count": 1,
+    "lines": [
+      "[\"blocked users\", sorted(before.blockedUsers), sorted(after.blockedUsers)],"
+    ],
     "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
   },
   {
     "file": "src/persona/registry.ts",
     "pattern": "id-membership",
-    "count": 1,
+    "lines": [
+      "(managed?.tombstoned ?? []).filter((t) => !byUserId.has(t.slackUserId)).map((t) => [t.slackUserId, t.name]),"
+    ],
     "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
   },
   {
     "file": "src/persona/sync/payload.ts",
     "pattern": "id-membership",
-    "count": 1,
+    "lines": [
+      "if (users.has(s.slackUserId)) throw new PayloadError(`duplicate slackUserId on persona '${s.name}'`);"
+    ],
     "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
   },
   {
     "file": "src/proactive/feedback.ts",
     "pattern": "eq-user-id",
-    "count": 1,
+    "lines": [
+      "const counts = (post: ProactivePost, userId: string): boolean => post.audience === \"channel\" || post.recipient === userId;"
+    ],
     "reason": "attributes a proactive post's reply to its recipient for feedback counts; not access"
   },
   {
     "file": "src/proactive/feedback.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "const counts = (post: ProactivePost, userId: string): boolean => post.audience === \"channel\" || post.recipient === userId;"
+    ],
     "reason": "attributes a proactive post's reply to its recipient for feedback counts; not access"
   },
   {
     "file": "src/proactive/heartbeat.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "const audience: Audience | null = channel ? \"channel\" : a.managerId && d === a.managerId ? \"manager\" : USER_ID.test(d) ? \"person\" : null;"
+    ],
     "reason": "classifies a destination (manager, person, channel) for restraint; the manager check itself is the registered restraint.manager_recipient site"
   },
   {
     "file": "src/proactive/rule-tool.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "if (userId === agentId) return err(NOT_OWN_TURN_REFUSAL);"
+    ],
     "reason": "refuses a rule taught by the agent's own id; the agent is not a person"
   },
   {
     "file": "src/proactive/wake-tools.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "const audience: Audience | null = d === \"manager\" || d === managerId ? \"manager\" : /^[CG][A-Z0-9]+$/.test(d) ? \"channel\" : /^[UW][A-Z0-9]+$/.test(d) ? \"person\" : null;"
+    ],
     "reason": "classifies a destination (manager, person, channel) for restraint; the manager check itself is the registered restraint.manager_recipient site"
   },
   {
     "file": "src/queue/turns.ts",
     "pattern": "user-id-dot-eq",
-    "count": 1,
+    "lines": [
+      "const ok = v.every((s) => s && typeof s.userId === \"string\" && (s.teamId === null || typeof s.teamId === \"string\") && (s.origin === null || typeof s.origin === \"string\"));"
+    ],
     "reason": "type check on a decoded token field"
   },
   {
     "file": "src/refs/actor.ts",
     "pattern": "id-compare",
-    "count": 2,
+    "lines": [
+      "if (a.teamId === b.teamId && a.slackUserId === b.slackUserId) return true;",
+      "return !!x && !!y && x.verified && y.verified && x.userId === y.userId;"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/refs/actor.ts",
     "pattern": "user-id-dot-eq",
-    "count": 1,
+    "lines": [
+      "return !!x && !!y && x.verified && y.verified && x.userId === y.userId;"
+    ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
   },
   {
     "file": "src/soul/data.ts",
     "pattern": "blocked",
-    "count": 1,
+    "lines": [
+      "blockedUsers: z.array(z.string().regex(/^[UW][A-Z0-9]+$/)).default([]),"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/data.ts",
     "pattern": "dm-allowed",
-    "count": 1,
+    "lines": [
+      "dmAllowedUsers: z.array(z.string().regex(/^[UW][A-Z0-9]+$/)).default([]),"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/extract.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "for (const id of [base.manager?.userId, base.backupManager?.userId]) {"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/extract.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "for (const id of [base.manager?.userId, base.backupManager?.userId]) {"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/loader.ts",
     "pattern": "id-membership",
-    "count": 2,
+    "lines": [
+      "if (eligible && !seen.has(e.userId)) {",
+      "if (!seen.has(e.userId)) {"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/overrides.ts",
     "pattern": "dm-allowed",
-    "count": 1,
+    "lines": [
+      "dm: \"dmAllowedUsers\","
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/overrides.ts",
     "pattern": "blocked",
-    "count": 1,
+    "lines": [
+      "block: \"blockedUsers\",",
+      "if (field === \"blockedUsers\" && i.action === \"add\" && opts.managerId && sameAt({ site: \"soul_override.self_lockout\", persona: opts.persona, teamId: opts.teamId, userId: value, otherUserId: opts.managerId })) {"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/per-persona.ts",
     "pattern": "blocked",
-    "count": 2,
+    "lines": [
+      "return { ...p, blockedUsers: [...new Set([...def.blockedUsers, ...p.blockedUsers])] };",
+      "blockedUsers: list(p.blockedUsers, def.blockedUsers),"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/per-persona.ts",
     "pattern": "manager-user-id",
-    "count": 1,
+    "lines": [
+      "const ownsManagers = !!(p.manager.userId || p.backupManager.userId);"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/per-persona.ts",
     "pattern": "backup-manager-user-id",
-    "count": 1,
+    "lines": [
+      "const ownsManagers = !!(p.manager.userId || p.backupManager.userId);"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/per-persona.ts",
     "pattern": "dm-allowed",
-    "count": 1,
+    "lines": [
+      "dmAllowedUsers: list(p.dmAllowedUsers, def.dmAllowedUsers),"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/validate.ts",
     "pattern": "manager-user-id",
-    "count": 3,
+    "lines": [
+      "if (!data.manager?.userId?.trim()) missing.push(\"manager.userId\");",
+      "data.manager?.userId &&",
+      "data.backupManager.userId === data.manager.userId"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/validate.ts",
     "pattern": "backup-manager-user-id",
-    "count": 3,
+    "lines": [
+      "data.backupManager?.userId &&",
+      "data.backupManager.userId === data.manager.userId",
+      "warnings.push(\"backupManager.userId equals manager.userId — backup is redundant\");"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/validate.ts",
     "pattern": "user-id-dot-eq",
-    "count": 1,
+    "lines": [
+      "data.backupManager.userId === data.manager.userId"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/soul/validate.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "data.backupManager.userId === data.manager.userId"
+    ],
     "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
   },
   {
     "file": "src/web/portal/dev/stub.ts",
     "pattern": "id-compare",
-    "count": 1,
+    "lines": [
+      "fx.me.slackIdentities = fx.me.slackIdentities.filter((s) => s.teamId !== b.teamId || s.slackUserId !== b.slackUserId);"
+    ],
     "reason": "console front end display"
   }
 ]
