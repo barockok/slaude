@@ -50,6 +50,25 @@ export const ScopeMandateSchema = z.object({
   mode: lenientMode,
 });
 
+/**
+ * One Slack reference from agent.yaml access, kept with what the legacy arrays
+ * drop: its workspace (absent for a bare id or a short `slack:` form) and how
+ * it grants. The arrays stay authoritative for legacy decisions; entries feed
+ * the internal-id path (slice C). Only Slack references exist in this release.
+ */
+export const AccessEntrySchema = z.object({
+  field: z.enum(["manager", "backupManager", "approvers", "blocked", "dm", "channels.public", "channels.trusted"]),
+  kind: z.enum(["user", "channel"]),
+  id: z.string().regex(/^[UWCGD][A-Z0-9]+$/),
+  workspace: z.string().regex(/^T[A-Z0-9]+$/).optional(),
+  role: z.enum(["manager", "approver", "member"]),
+  deny: z.boolean().default(false),
+  dmOnly: z.boolean().default(false),
+  /** An approver scoped to one channel. */
+  channel: z.string().regex(/^[CGD][A-Z0-9]+$/).optional(),
+});
+export type AccessEntry = z.infer<typeof AccessEntrySchema>;
+
 export const SoulDataSchema = z.object({
   identity: z
     .object({
@@ -119,6 +138,8 @@ export const SoulDataSchema = z.object({
   channelOverrides: z.array(ChannelOverrideSchema).default([]),
   /** Sub-mandates for direct messages and the two channel classes. */
   scopeMandates: z.array(ScopeMandateSchema).default([]),
+  /** Typed Slack references behind the access arrays above (agent.yaml only; a soul extracted from prose has none). */
+  accessEntries: z.array(AccessEntrySchema).default([]),
 });
 
 export type ApproverEntry = z.infer<typeof ApproverEntrySchema>;

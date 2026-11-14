@@ -426,7 +426,13 @@ describe("typed references compile down to the Slack ids the runtime reads", () 
     const b = parseAgentYaml("ana", bare);
     expect(a.warnings).toEqual([]);
     expect(b.warnings.length).toBeGreaterThan(8);
-    expect(a.spec).toEqual(b.spec);
+    // The typed form also keeps the workspace it names in accessEntries; everything else is identical.
+    const noWorkspace = (spec: typeof a.spec) => ({
+      ...spec,
+      definition: { ...spec.definition, soulData: { ...spec.definition.soulData, accessEntries: spec.definition.soulData.accessEntries.map(({ workspace: _w, ...e }) => e) } },
+    });
+    expect(noWorkspace(a.spec)).toEqual(noWorkspace(b.spec));
+    expect(a.spec.definition.soulData.accessEntries.find((e) => e.field === "backupManager")?.workspace).toBe("T0EXAMPLE");
     expect(a.spec.slackUserId).toBe("UANA1");
     const d = a.spec.definition.soulData;
     expect(d.manager.userId).toBe("UBOSS");
