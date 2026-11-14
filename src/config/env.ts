@@ -702,6 +702,19 @@ export const env = {
       return raw === "1" || raw === "true" || raw === "yes";
     },
   },
+  access: {
+    /**
+     * Which answer the access seam (`src/access/decide.ts`) returns, read on every
+     * call: `legacy` runs the string path only (no resolver); `shadow` (default)
+     * returns the legacy answer and also computes the internal-id answer, counting
+     * and logging every disagreement; `internal` is reserved for the access flip
+     * and, until then, behaves as `shadow`. An unknown value reads as `legacy`.
+     */
+    source: (): "legacy" | "shadow" | "internal" => {
+      const raw = opt("SLAUDE_ACCESS_SOURCE", "shadow").trim().toLowerCase();
+      return raw === "shadow" || raw === "internal" || raw === "legacy" ? raw : "legacy";
+    },
+  },
   remote: {
     /** `/remote` — run a thread's shell and file tools on the initiator's own
      *  machine over tailcat SSH. Default off; ships behind this flag. */

@@ -53,7 +53,7 @@ const NONE: Match = { ordinary: false, deny: false, privileged: false };
 const SLACK_ID = /^[UW][A-Z0-9]+$/;
 
 /** The subject of a grant: its own, else read from the stored text (a bare Slack id, or a hand-written typed form). */
-function subjectOf(g: Grant): GrantSubject | null {
+export function grantSubject(g: Grant): GrantSubject | null {
   if (g.subject && g.subject.service !== "slack") return g.subject;
   if (g.subjectId.startsWith("email:")) return { service: "email", address: g.subjectId.slice("email:".length) };
   if (g.subjectId.startsWith("user:")) return { service: "user", userId: g.subjectId.slice("user:".length) };
@@ -63,7 +63,7 @@ function subjectOf(g: Grant): GrantSubject | null {
 
 function matchActor(g: Grant, a: EngineActor, opts: EngineOpts): Match {
   if (g.subjectKind !== "user") return NONE;
-  const s = subjectOf(g);
+  const s = grantSubject(g);
   if (!s) return NONE;
   const acting = a.acting;
   switch (s.service) {
@@ -99,7 +99,7 @@ export interface Principal {
 
 function principalOf(g: Grant): Principal | null {
   if (g.subjectKind !== "user") return null;
-  const s = subjectOf(g);
+  const s = grantSubject(g);
   if (!s) return null;
   if (s.service === "slack") return { key: `slack:${g.subjectId}`, slackId: g.subjectId, ...(s.userId ? { userId: s.userId } : {}) };
   if (s.service === "email") return { key: `email:${s.address}`, email: s.address };
@@ -179,7 +179,7 @@ export function usersWithRoleInternal(grants: readonly Grant[], roles: readonly 
   const seen = new Map<string, Principal>();
   for (const g of grants) {
     if (g.deny || g.subjectKind !== "user") continue;
-    const s = subjectOf(g);
+    const s = grantSubject(g);
     if (s?.service === "slack" && s.workspace && o.teamId && s.workspace !== o.teamId) continue;
     const p = principalOf(g);
     if (p && !seen.has(p.key)) seen.set(p.key, p);
@@ -207,7 +207,7 @@ export interface SubjectLookup {
 export function resolveGrantSubjects(grants: readonly Grant[], teamId: string, lookup: SubjectLookup): Grant[] {
   return grants.map((g) => {
     if (g.subjectKind !== "user") return g;
-    const s = subjectOf(g);
+    const s = grantSubject(g);
     if (!s) return g;
     if (s.service === "user") return { ...g, subject: { service: "user", userId: lookup.live(s.userId) } };
     if (s.service !== "slack") return g;
