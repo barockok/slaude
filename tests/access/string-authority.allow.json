@@ -1,0 +1,782 @@
+[
+  {
+    "file": "src/access/admission.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/access/authority.ts",
+    "pattern": "id-compare",
+    "count": 4,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/access/authority.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 3,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/access/decide.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/access/grants.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/access/grants.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/access/grants.ts",
+    "pattern": "dm-allowed",
+    "count": 1,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/access/grants.ts",
+    "pattern": "blocked",
+    "count": 1,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/access/role.ts",
+    "pattern": "eq-user-id",
+    "count": 2,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/access/role.ts",
+    "pattern": "id-compare",
+    "count": 2,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/access/wired.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 1,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/access/wired.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/agent/manager.ts",
+    "pattern": "locked_user",
+    "count": 1,
+    "reason": "reads the lock owner to pick the identity a turn runs as (a storage key until slice D)"
+  },
+  {
+    "file": "src/agent/manager.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 1,
+    "reason": "dedupes a turn's senders by (user, team, origin); merging identical entries, not a decision"
+  },
+  {
+    "file": "src/agent/manager.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "dedupes a turn's senders by (user, team, origin); merging identical entries, not a decision"
+  },
+  {
+    "file": "src/agent/session-mode.ts",
+    "pattern": "locked_user",
+    "count": 3,
+    "reason": "text, audit detail or a log line naming the lock owner or manager; no decision"
+  },
+  {
+    "file": "src/background/digest.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background"
+  },
+  {
+    "file": "src/background/digest.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background"
+  },
+  {
+    "file": "src/background/pass-tools.ts",
+    "pattern": "eq-user-id",
+    "count": 1,
+    "reason": "scopes a background pass or a query to one person's own data; the person is already fixed by the caller"
+  },
+  {
+    "file": "src/background/pass-tools.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "scopes a background pass or a query to one person's own data; the person is already fixed by the caller"
+  },
+  {
+    "file": "src/background/passes/nightly-review.ts",
+    "pattern": "eq-user-id",
+    "count": 1,
+    "reason": "scopes a background pass or a query to one person's own data; the person is already fixed by the caller"
+  },
+  {
+    "file": "src/background/passes/nightly-review.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "scopes a background pass or a query to one person's own data; the person is already fixed by the caller"
+  },
+  {
+    "file": "src/background/proposal-cards.ts",
+    "pattern": "id-compare",
+    "count": 2,
+    "reason": "lists a person's own open proposals (a query keyed by the person the batch is for); compares a persona's own Slack identity (registry, sync), not a person's access"
+  },
+  {
+    "file": "src/background/scheduler.ts",
+    "pattern": "manager-user-id",
+    "count": 2,
+    "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background"
+  },
+  {
+    "file": "src/cli/extraction-prompt.ts",
+    "pattern": "blocked",
+    "count": 2,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/cli/extraction-prompt.ts",
+    "pattern": "dm-allowed",
+    "count": 2,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/cli/legacy-soul-extract.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/cli/legacy-soul-extract.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/cli/legacy-soul-extract.ts",
+    "pattern": "blocked",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/cli/legacy-soul-extract.ts",
+    "pattern": "dm-allowed",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/db/account-projection.ts",
+    "pattern": "eq-user-id",
+    "count": 3,
+    "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
+  },
+  {
+    "file": "src/db/account-projection.ts",
+    "pattern": "id-compare",
+    "count": 3,
+    "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
+  },
+  {
+    "file": "src/db/domain.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
+  },
+  {
+    "file": "src/db/drivers/sqlite.ts",
+    "pattern": "locked_user",
+    "count": 1,
+    "reason": "SQL text or row shape for the lock and proposal tables"
+  },
+  {
+    "file": "src/db/drivers/sqlite.ts",
+    "pattern": "dm-allowed",
+    "count": 1,
+    "reason": "SQL text or row shape for the lock and proposal tables"
+  },
+  {
+    "file": "src/db/drivers/sqlite.ts",
+    "pattern": "blocked",
+    "count": 1,
+    "reason": "SQL text or row shape for the lock and proposal tables"
+  },
+  {
+    "file": "src/db/one-on-one.ts",
+    "pattern": "locked_user",
+    "count": 5,
+    "reason": "SQL text or row shape for the lock and proposal tables; the pure team-aware ownership helper from task 12; it has no live caller (the gateway compares through sameAt)"
+  },
+  {
+    "file": "src/db/one-on-one.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "the pure team-aware ownership helper from task 12; it has no live caller (the gateway compares through sameAt)"
+  },
+  {
+    "file": "src/db/slack-oauth-flows.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 1,
+    "reason": "SQL text or row shape for the lock and proposal tables"
+  },
+  {
+    "file": "src/db/soul-overrides.ts",
+    "pattern": "dm-allowed",
+    "count": 1,
+    "reason": "SQL text or row shape for the lock and proposal tables"
+  },
+  {
+    "file": "src/db/soul-overrides.ts",
+    "pattern": "blocked",
+    "count": 1,
+    "reason": "SQL text or row shape for the lock and proposal tables"
+  },
+  {
+    "file": "src/domain/first-sight.ts",
+    "pattern": "id-membership",
+    "count": 1,
+    "reason": "filters Slackbot and system ids out of first sight; not an access decision"
+  },
+  {
+    "file": "src/domain/reconcile.ts",
+    "pattern": "eq-user-id",
+    "count": 3,
+    "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
+  },
+  {
+    "file": "src/domain/reconcile.ts",
+    "pattern": "neq-user-id",
+    "count": 2,
+    "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
+  },
+  {
+    "file": "src/domain/reconcile.ts",
+    "pattern": "id-compare",
+    "count": 5,
+    "reason": "compares internal user ids or binding rows, not Slack id strings (the domain layer)"
+  },
+  {
+    "file": "src/domain/sync-refs.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/domain/sync-refs.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/domain/sync-refs.ts",
+    "pattern": "blocked",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/domain/sync-refs.ts",
+    "pattern": "dm-allowed",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/gateway/api/jobs.ts",
+    "pattern": "locked_user",
+    "count": 1,
+    "reason": "picks the identity signed into a job token (runAs key, slice D)"
+  },
+  {
+    "file": "src/gateway/core/env-command.ts",
+    "pattern": "locked_user",
+    "count": 1,
+    "reason": "text, audit detail or a log line naming the lock owner or manager; no decision"
+  },
+  {
+    "file": "src/gateway/core/gateway.ts",
+    "pattern": "manager-user-id",
+    "count": 4,
+    "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background; the soul's manager id passed on, or read for a notice; the checks around it are registered sites (soul_override.*, gateway.connect_notify_target)"
+  },
+  {
+    "file": "src/gateway/core/gateway.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "the legacy list a shadowed listAt site returns; the value is the soul's and the engine is compared in the background"
+  },
+  {
+    "file": "src/gateway/core/gateway.ts",
+    "pattern": "locked_user",
+    "count": 15,
+    "reason": "text, audit detail or a log line naming the lock owner or manager; no decision"
+  },
+  {
+    "file": "src/gateway/core/gateway.ts",
+    "pattern": "id-compare",
+    "count": 3,
+    "reason": "refuses a stale promise whose carried identity no longer matches the thread's lock; fails toward not speaking, both ids written by this gateway; treats the persona's own id as no person (the agent is not a speaker); prefills a default directory in the connect form; convenience, not access"
+  },
+  {
+    "file": "src/gateway/core/gateway.ts",
+    "pattern": "neq-user-id",
+    "count": 1,
+    "reason": "treats the persona's own id as no person (the agent is not a speaker)"
+  },
+  {
+    "file": "src/gateway/core/gateway.ts",
+    "pattern": "id-membership",
+    "count": 4,
+    "reason": "recognises the bot or app's own user ids (self messages), not a person's access"
+  },
+  {
+    "file": "src/gateway/core/surface-mcp.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "passes the soul's manager id to mutateOverride, whose self-lockout compare is the registered soul_override.self_lockout site"
+  },
+  {
+    "file": "src/gateway/core/thread-identity.ts",
+    "pattern": "locked_user",
+    "count": 1,
+    "reason": "text, audit detail or a log line naming the lock owner or manager; no decision"
+  },
+  {
+    "file": "src/gateway/gate/context.ts",
+    "pattern": "id-compare",
+    "count": 2,
+    "reason": "recognises the bot or app's own user ids (self messages), not a person's access"
+  },
+  {
+    "file": "src/gateway/panel/api.ts",
+    "pattern": "locked_user",
+    "count": 1,
+    "reason": "console display or audit detail (operator tooling, not a speaker decision)"
+  },
+  {
+    "file": "src/gateway/panel/settings-view.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "console display or audit detail (operator tooling, not a speaker decision)"
+  },
+  {
+    "file": "src/gateway/panel/settings-view.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "console display or audit detail (operator tooling, not a speaker decision)"
+  },
+  {
+    "file": "src/gateway/sim/engine.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "the simulation gateway and its role helpers"
+  },
+  {
+    "file": "src/gateway/sim/repl.ts",
+    "pattern": "id-membership",
+    "count": 1,
+    "reason": "the simulation gateway and its role helpers"
+  },
+  {
+    "file": "src/gateway/sim/repl.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "the simulation gateway and its role helpers"
+  },
+  {
+    "file": "src/gateway/sim/roles.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "the simulation gateway and its role helpers"
+  },
+  {
+    "file": "src/gateway/sim/roles.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "the simulation gateway and its role helpers"
+  },
+  {
+    "file": "src/gateway/sim/soul-fixture.ts",
+    "pattern": "dm-allowed",
+    "count": 1,
+    "reason": "the simulation gateway and its role helpers"
+  },
+  {
+    "file": "src/gateway/slack/approval-gate.ts",
+    "pattern": "approvers-has",
+    "count": 1,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/approval-gate.ts",
+    "pattern": "id-membership",
+    "count": 1,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/approval-gate.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "the default approver chain built from the soul's managers; each click on it is checked by the registered approval.click_allowlist sites"
+  },
+  {
+    "file": "src/gateway/slack/approval-gate.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "the default approver chain built from the soul's managers; each click on it is checked by the registered approval.click_allowlist sites"
+  },
+  {
+    "file": "src/gateway/slack/ingest-auth.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 1,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/ingest-auth.ts",
+    "pattern": "eq-user-id",
+    "count": 1,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/ingest-auth.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/ingest-auth.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/ingest-auth.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/mcp-tools.ts",
+    "pattern": "locked_user",
+    "count": 1,
+    "reason": "text, audit detail or a log line naming the lock owner or manager; no decision"
+  },
+  {
+    "file": "src/gateway/slack/model-auth.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 3,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/model-auth.ts",
+    "pattern": "eq-user-id",
+    "count": 3,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/model-auth.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/model-auth.ts",
+    "pattern": "id-compare",
+    "count": 3,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/model-auth.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/model-auth.ts",
+    "pattern": "dm-allowed",
+    "count": 1,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/model-auth.ts",
+    "pattern": "id-membership",
+    "count": 1,
+    "reason": "the legacy value of a shadowed checkAt site; the engine twin is compared in the background"
+  },
+  {
+    "file": "src/gateway/slack/permission-gate.ts",
+    "pattern": "locked_user",
+    "count": 1,
+    "reason": "reads the lock owner to hand to canDecidePermission, whose compares are registered sites"
+  },
+  {
+    "file": "src/knowledge/gated-dispatch.ts",
+    "pattern": "locked-user-cmp",
+    "count": 1,
+    "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
+  },
+  {
+    "file": "src/knowledge/gated-dispatch.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 2,
+    "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
+  },
+  {
+    "file": "src/knowledge/mcp-tools.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 1,
+    "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
+  },
+  {
+    "file": "src/knowledge/mcp-tools.ts",
+    "pattern": "locked-user-cmp",
+    "count": 1,
+    "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
+  },
+  {
+    "file": "src/knowledge/scope.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 1,
+    "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
+  },
+  {
+    "file": "src/knowledge/scope.ts",
+    "pattern": "locked-user-cmp",
+    "count": 1,
+    "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
+  },
+  {
+    "file": "src/memory/scope.ts",
+    "pattern": "neq-user-id",
+    "count": 1,
+    "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
+  },
+  {
+    "file": "src/node/session-lock.ts",
+    "pattern": "locked_user",
+    "count": 1,
+    "reason": "maps a token's lock claim to a lock row shape; data"
+  },
+  {
+    "file": "src/persona/agent-def.ts",
+    "pattern": "blocked",
+    "count": 3,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/persona/agent-def.ts",
+    "pattern": "dm-allowed",
+    "count": 3,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/persona/agent-def.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/persona/agent-def.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/persona/effective.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
+  },
+  {
+    "file": "src/persona/migrate.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
+  },
+  {
+    "file": "src/persona/migrate.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
+  },
+  {
+    "file": "src/persona/migrate.ts",
+    "pattern": "dm-allowed",
+    "count": 1,
+    "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
+  },
+  {
+    "file": "src/persona/migrate.ts",
+    "pattern": "blocked",
+    "count": 1,
+    "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
+  },
+  {
+    "file": "src/persona/registry.ts",
+    "pattern": "id-membership",
+    "count": 1,
+    "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
+  },
+  {
+    "file": "src/persona/sync/payload.ts",
+    "pattern": "id-membership",
+    "count": 1,
+    "reason": "compares a persona's own Slack identity (registry, sync), not a person's access"
+  },
+  {
+    "file": "src/proactive/feedback.ts",
+    "pattern": "eq-user-id",
+    "count": 1,
+    "reason": "attributes a proactive post's reply to its recipient for feedback counts; not access"
+  },
+  {
+    "file": "src/proactive/feedback.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "attributes a proactive post's reply to its recipient for feedback counts; not access"
+  },
+  {
+    "file": "src/proactive/heartbeat.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "classifies a destination (manager, person, channel) for restraint; the manager check itself is the registered restraint.manager_recipient site"
+  },
+  {
+    "file": "src/proactive/rule-tool.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "refuses a rule taught by the agent's own id; the agent is not a person"
+  },
+  {
+    "file": "src/proactive/wake-tools.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "classifies a destination (manager, person, channel) for restraint; the manager check itself is the registered restraint.manager_recipient site"
+  },
+  {
+    "file": "src/queue/turns.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 1,
+    "reason": "type check on a decoded token field"
+  },
+  {
+    "file": "src/refs/actor.ts",
+    "pattern": "id-compare",
+    "count": 2,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/refs/actor.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 1,
+    "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/soul/data.ts",
+    "pattern": "blocked",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/data.ts",
+    "pattern": "dm-allowed",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/extract.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/extract.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/loader.ts",
+    "pattern": "id-membership",
+    "count": 2,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/overrides.ts",
+    "pattern": "dm-allowed",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/overrides.ts",
+    "pattern": "blocked",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/per-persona.ts",
+    "pattern": "blocked",
+    "count": 2,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/per-persona.ts",
+    "pattern": "manager-user-id",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/per-persona.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/per-persona.ts",
+    "pattern": "dm-allowed",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/validate.ts",
+    "pattern": "manager-user-id",
+    "count": 3,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/validate.ts",
+    "pattern": "backup-manager-user-id",
+    "count": 3,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/validate.ts",
+    "pattern": "user-id-dot-eq",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/soul/validate.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "reads or writes a soul field as data (compile, validate, extract, migrate, schema); no access decision"
+  },
+  {
+    "file": "src/web/portal/dev/stub.ts",
+    "pattern": "id-compare",
+    "count": 1,
+    "reason": "console front end display"
+  }
+]
