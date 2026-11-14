@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Accounts from "../../src/db/accounts";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
+import { oidcKey as oidcVetoKey, orderedPair, slackKey as slackVetoKey } from "../../src/domain/merge-keys";
 
 /**
  * Proof paths run through the merge engine (slice C, task 26): the observable
@@ -90,7 +91,8 @@ describe("link", () => {
     const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     const sb = (await Domain.findBinding(slack("U0SEEN")))!;
     const ob = (await Domain.findBinding(oidc("sub-1")))!;
-    await db.run("INSERT INTO merge_vetoes (id, slack_binding_id, oidc_binding_id, created_by, created_at) VALUES ('v1', ?, ?, 'op', 1)", [sb.id, ob.id]);
+    void ob;
+    await db.run("INSERT INTO merge_vetoes (id, key_a, key_b, created_by, created_at) VALUES ('v1', ?, ?, 'op', 1)", orderedPair(slackVetoKey(TEAM, "U0SEEN"), oidcVetoKey(ISS, "sub-1")));
     const token = { jti: "veto-test", expiresAt: Date.now() + 60_000 };
     expect(await Accounts.linkSlackIdentity({ teamId: TEAM, slackUserId: "U0SEEN", accountId: a.id, via: "signed-link", token })).toEqual({ ok: false, reason: "vetoed" });
     expect(await Accounts.accountForSlackUser(TEAM, "U0SEEN")).toBeNull();

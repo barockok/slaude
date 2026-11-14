@@ -12,14 +12,21 @@ import { db, type DbClient } from "./schema";
 import { emitDomainEvents } from "../audit/domain";
 import type { DomainEvent } from "./domain";
 import { claimLinkToken } from "./link-token-uses";
-import { projectAccountDeletion, projectLink, projectLogin, projectUnlink } from "./account-projection";
+import { guardedProjection, projectAccountDeletion, projectLink, projectLogin, projectUnlink } from "./account-projection";
+import { oidcKey, orderedPair, slackKey } from "../domain/merge-keys";
 
-/** Whether a merge undo forbade linking this Slack identity to this account (merge_vetoes). */
+/**
+ * Whether a merge undo forbade linking this Slack identity to this account
+ * (merge_vetoes, keyed by value, so it holds after an unlink). A domain-table
+ * failure must never fail or abort a link: the read runs under a savepoint and
+ * a failure counts as not vetoed (the link is the person's own proof; the veto
+ * is an operator brake, and the merge engine checks it again before any move).
+ */
 async function isVetoed(a: { teamId: string; slackUserId: string; issuer: string; subject: string }, tx: DbClient): Promise<boolean> {
-  const sb = await Domain.findBinding({ service: "slack", kind: "user", workspace: a.teamId, value: a.slackUserId }, tx);
-  const ob = await Domain.findBinding({ service: "oidc", kind: "subject", workspace: a.issuer, value: a.subject }, tx);
-  if (!sb || !ob) return false;
-  return (await tx.one("SELECT id FROM merge_vetoes WHERE slack_binding_id = ? AND oidc_binding_id = ?", [sb.id, ob.id])) !== null;
+  return guardedProjection(tx, "veto check", false, async () => {
+    const pair = orderedPair(slackKey(a.teamId, a.slackUserId), oidcKey(a.issuer, a.subject));
+    return (await tx.one("SELECT id FROM merge_vetoes WHERE key_a = ? AND key_b = ?", pair)) !== null;
+  });
 }
 
 /** Audit the events a projection returned, after commit. Never throws. */

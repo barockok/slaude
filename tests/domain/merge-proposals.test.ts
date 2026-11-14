@@ -27,6 +27,7 @@ const proposal = async (a: string, b: string, reason: "conflict" | "two-emails" 
 const state = async (id: string) => (await db.one<{ state: string; resolved_by: string | null }>("SELECT state, resolved_by FROM merge_proposals WHERE id = ?", [id]))!;
 
 beforeEach(async () => {
+  process.env.SLAUDE_ACCESS_SOURCE = "internal";
   await db.run("DELETE FROM agent_grants");
   await db.run("DELETE FROM audit_events");
   await Domain._wipeForTests();
@@ -35,6 +36,7 @@ beforeEach(async () => {
   spyOn(console, "log").mockImplementation(() => {});
 });
 afterEach(() => {
+  delete process.env.SLAUDE_ACCESS_SOURCE;
   delete process.env.SLAUDE_MERGE_NOTICE;
   spyOn(console, "warn").mockRestore();
   spyOn(console, "log").mockRestore();

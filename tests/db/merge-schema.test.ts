@@ -70,13 +70,14 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(await proposal("p8", "d", "e", "conflict", "dismissed")).toBe(true);
     });
 
-    test("a veto is unique per (Slack binding, oidc binding)", async () => {
-      const veto = (id: string, s: string, o: string) =>
-        ins(db, `INSERT INTO merge_vetoes (id, slack_binding_id, oidc_binding_id, created_by, created_at) VALUES (?, ?, ?, 'op', 1)`, [id, s, o]);
-      expect(await veto("v1", "sb1", "ob1")).toBe(true);
-      expect(await veto("v2", "sb1", "ob1")).toBe(false);
-      expect(await veto("v3", "sb1", "ob2")).toBe(true);
-      expect(await veto("v4", "sb2", "ob1")).toBe(true);
+    test("a veto is unique per pair of keys, and a key never pairs with itself", async () => {
+      const veto = (id: string, a: string, b: string) =>
+        ins(db, `INSERT INTO merge_vetoes (id, key_a, key_b, created_by, created_at) VALUES (?, ?, ?, 'op', 1)`, [id, a, b]);
+      expect(await veto("v1", "k1", "k2")).toBe(true);
+      expect(await veto("v2", "k1", "k2")).toBe(false);
+      expect(await veto("v3", "k1", "k3")).toBe(true);
+      expect(await veto("v4", "k0", "k2")).toBe(true);
+      expect(await veto("v5", "k9", "k9")).toBe(false);
     });
   });
 }

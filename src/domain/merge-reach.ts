@@ -39,7 +39,7 @@ export interface ReachedGrant {
 }
 
 interface Held {
-  slack: { team: string; id: string }[];
+  slack: { team: string; id: string; verified: boolean }[];
   verifiedEmails: Set<string>;
   hasVerifiedSlack: boolean;
 }
@@ -47,7 +47,7 @@ interface Held {
 async function held(userId: string, c: DbClient): Promise<Held> {
   const bs = await c.query<Domain.BindingRow>("SELECT * FROM bindings WHERE user_id = ? ORDER BY created_at, id", [userId]);
   return {
-    slack: bs.filter((b) => b.service === "slack" && b.kind === "user" && b.state !== "declared").map((b) => ({ team: b.workspace, id: b.value })),
+    slack: bs.filter((b) => b.service === "slack" && b.kind === "user" && b.state !== "declared").map((b) => ({ team: b.workspace, id: b.value, verified: b.state === "verified" })),
     verifiedEmails: new Set(bs.filter((b) => b.service === "email" && b.state === "verified").map((b) => b.value)),
     hasVerifiedSlack: bs.some((b) => b.service === "slack" && b.kind === "user" && b.state === "verified"),
   };
@@ -66,8 +66,18 @@ async function reaches(s: Subject, record: string, h: Held, c: DbClient): Promis
   }
 }
 
+/**
+ * Rules A and D: privileged access flows only through an acting Slack binding
+ * that is itself verified. A direct `slack:` entry acts through the binding it
+ * names (verified only when SLAUDE_PRIVILEGED_NEEDS_VERIFIED asks); `email:` and
+ * `user:` entries act through any of the person's Slack bindings and need one
+ * verified (and for email, the address verified too).
+ */
 function privilegedEffective(s: Subject, h: Held): boolean {
-  if (s.service === "slack") return !env.access.privilegedNeedsVerified() || h.hasVerifiedSlack;
+  if (s.service === "slack") {
+    if (!env.access.privilegedNeedsVerified()) return true;
+    return h.slack.some((b) => b.id === s.id && (!s.workspace || s.workspace === b.team) && b.verified);
+  }
   if (s.service === "email") return h.verifiedEmails.has(s.address) && h.hasVerifiedSlack;
   return h.hasVerifiedSlack;
 }

@@ -37,6 +37,7 @@ import { emitDomainEvents } from "../audit/domain";
 import { env } from "../config/env";
 import { m } from "../metrics";
 import { diffReach, grantsReaching, type GrantDiff } from "./merge-reach";
+import { bindingKey, orderedPair } from "./merge-keys";
 
 import { UNDO_WINDOW_MS } from "./merge-limits";
 /** D1: how long a merge can be undone. */
@@ -69,8 +70,16 @@ export interface MovedShape {
   aliases_added: string[];
   aliases_repointed: Array<{ old_id: string; from: string; to: string }>;
   proof_binding_ids: { slack: string | null; oidc: string | null };
+  /** Grants that took effect. Empty unless SLAUDE_ACCESS_SOURCE=internal: under any other source authorization did not change. */
   activated: Array<{ persona: string; role: string; source: string; entry: string; privileged: boolean }>;
   inactive_privileged: Array<{ persona: string; role: string; entry: string }>;
+  /** What the merge would activate under `internal` (what the console confirmation echoes). Absent on rows from before it existed. */
+  would_activate?: Array<{ persona: string; role: string; source: string; entry: string; privileged: boolean }>;
+  would_inactive_privileged?: Array<{ persona: string; role: string; entry: string }>;
+  /** SLAUDE_ACCESS_SOURCE when the merge ran. */
+  access_source?: string;
+  /** Hashed keys (src/domain/merge-keys.ts) of the pair an undo vetoes; null when the merge rested on no link. */
+  veto_pair?: [string, string] | null;
 }
 
 export interface MergeRow {
@@ -171,17 +180,23 @@ async function run(i: MergeInput, c: DbClient): Promise<MergeOutcome> {
   let S = await live(i.survivorId);
   let L = await live(i.loserId);
   const locked = new Set<string>();
+  let settled = false;
   for (let n = 0; n < 4; n++) {
     await lockUsers(c, [S, L].filter((x) => !locked.has(x)));
     locked.add(S);
     locked.add(L);
     const S2 = await Domain.resolveUserId(i.survivorId, c);
     const L2 = await Domain.resolveUserId(i.loserId, c);
-    if (S2 === S && L2 === L) break;
+    if (S2 === S && L2 === L) {
+      settled = true;
+      break;
+    }
     if (!S2 || !L2) throw new Error("user does not exist");
     S = S2;
     L = L2;
   }
+  // The ids kept moving under us (merges chained faster than we could lock): fail closed, nothing was written.
+  if (!settled) return { status: "refused", reason: "stale", survivorId: S, loserId: L };
   if (sameKey(S, L)) return { status: "noop", merge: await appliedFor([...new Set([i.loserId, i.survivorId, L])], c), survivorId: S };
 
   // 2. Re-read under the lock. The loser's bindings are read first, in the one query form the adopt race test intercepts.
@@ -214,27 +229,37 @@ async function run(i: MergeInput, c: DbClient): Promise<MergeOutcome> {
   if (i.kind === "proof" && !env.merge.auto()) return refuse("auto-merge-off", "conflict");
   if (loser.kind !== "person" || surv.kind !== "person") return refuse("bot-or-agent", "conflict");
   if (loserBindings.some((b) => b.state === "verified")) return refuse("verified-loser", "conflict");
-  const allIds = [...loserBindings, ...survBindings].map((b) => b.id);
-  if (allIds.length > 0) {
-    const ph = allIds.map(() => "?").join(", ");
-    const vetoes = await c.query<{ slack_binding_id: string; oidc_binding_id: string }>(
-      `SELECT slack_binding_id, oidc_binding_id FROM merge_vetoes WHERE slack_binding_id IN (${ph}) AND oidc_binding_id IN (${ph})`,
-      [...allIds, ...allIds],
+  // A veto names a pair of identity keys; it holds when one is on each record, in either order.
+  const keysOf = (bs: BindingRow[]) => new Set(bs.map(bindingKey).filter((k): k is string => k !== null));
+  const loserKeys = keysOf(loserBindings);
+  const survKeys = keysOf(survBindings);
+  if (loserKeys.size > 0 && survKeys.size > 0) {
+    const l = [...loserKeys];
+    const sv = [...survKeys];
+    const vetoed = await c.one(
+      `SELECT id FROM merge_vetoes WHERE (key_a IN (${l.map(() => "?").join(", ")}) AND key_b IN (${sv.map(() => "?").join(", ")}))
+         OR (key_a IN (${sv.map(() => "?").join(", ")}) AND key_b IN (${l.map(() => "?").join(", ")}))`,
+      [...l, ...sv, ...sv, ...l],
     );
-    const onLoser = new Set(loserBindings.map((b) => b.id));
-    if (vetoes.some((v) => onLoser.has(v.slack_binding_id) !== onLoser.has(v.oidc_binding_id))) return refuse("veto", "conflict");
+    if (vetoed) return refuse("veto", "conflict");
   }
   const raise = i.raise ? loserBindings.find((b) => b.id === i.raise!.bindingId) : undefined;
+  // The proof binding must still be on the loser after the lock (an undo may have returned it, an unlink removed it):
+  // merging without raising it would grant the proof's access without the proof.
+  if (i.raise && !raise) return { status: "refused", reason: "stale", survivorId: S, loserId: L };
   if (raise && raise.service === "email") {
     const other = survBindings.find((b) => b.service === "email" && b.state === "verified" && b.value !== raise.value);
     if (other) return refuse("two-emails", "two-emails");
   }
 
   // 5. The move, under a savepoint so any failure leaves nothing behind.
-  const before = await grantsReaching(S, c);
+  // What reached either record before counts as already reached: only genuinely new reach is "activated".
+  const before = [...(await grantsReaching(S, c)), ...(await grantsReaching(L, c))];
   const now = Date.now();
   await c.exec("SAVEPOINT merge_move");
+  let open = true;
   const rollback = async () => {
+    open = false;
     await c.exec("ROLLBACK TO SAVEPOINT merge_move");
     await c.exec("RELEASE SAVEPOINT merge_move");
   };
@@ -268,6 +293,17 @@ async function run(i: MergeInput, c: DbClient): Promise<MergeOutcome> {
     }
 
     const diff: GrantDiff = diffReach(before, await grantsReaching(S, c));
+    // Authorization changes only under `internal`; under shadow or legacy a merge links records and access is unchanged.
+    const source = env.access.source();
+    const internal = source === "internal";
+    // The veto pair an undo records: the link's Slack key (or the raised email's) with the account's sign-in key.
+    const keyOfId = (id: string | null | undefined) => {
+      const b = id ? [...loserBindings, ...survBindings].find((x) => x.id === id) : undefined;
+      return b ? bindingKey(b) : null;
+    };
+    const first = keyOfId(i.proof?.slackBindingId) ?? (raise ? bindingKey(raise) : null);
+    const second = keyOfId(i.proof?.oidcBindingId);
+    const veto_pair = i.kind === "proof" && first && second && first !== second ? orderedPair(first, second) : null;
     const moved: MovedShape = {
       loser: { id: L, kind: loser.kind, display_name: loser.display_name, created_at: Number(loser.created_at) },
       bindings: loserBindings.map((b) => ({ id: b.id, from: L, to: S })),
@@ -276,8 +312,12 @@ async function run(i: MergeInput, c: DbClient): Promise<MergeOutcome> {
       aliases_added: (added.changes ?? 0) > 0 ? [L] : [],
       aliases_repointed: repointed.map((a) => ({ old_id: a.old_id, from: L, to: S })),
       proof_binding_ids: { slack: i.proof?.slackBindingId ?? null, oidc: i.proof?.oidcBindingId ?? null },
-      activated: diff.activated,
-      inactive_privileged: diff.inactivePrivileged,
+      activated: internal ? diff.activated : [],
+      inactive_privileged: internal ? diff.inactivePrivileged : [],
+      would_activate: diff.activated,
+      would_inactive_privileged: diff.inactivePrivileged,
+      access_source: source,
+      veto_pair,
     };
     const id = randomUUID();
     await c.run(
@@ -286,6 +326,7 @@ async function run(i: MergeInput, c: DbClient): Promise<MergeOutcome> {
       [id, now, i.kind, S, L, i.actor, JSON.stringify({ slack: moved.proof_binding_ids.slack, oidc: moved.proof_binding_ids.oidc }), JSON.stringify(moved), now + UNDO_WINDOW_MS],
     );
     await c.exec("RELEASE SAVEPOINT merge_move");
+    open = false;
     const merge = (await getMerge(id, c))!;
     const events: DomainEvent[] = [
       {
@@ -296,7 +337,8 @@ async function run(i: MergeInput, c: DbClient): Promise<MergeOutcome> {
     ];
     return { status: "merged", merge, survivorId: S, loserId: L, movedBindingIds: moved.bindings.map((b) => b.id), events };
   } catch (e) {
-    await rollback();
+    // Keep the original error: a failed rollback (or a savepoint already released) must not replace it.
+    if (open) await rollback().catch(() => {});
     throw e;
   }
 }

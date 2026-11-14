@@ -421,14 +421,16 @@ CREATE TABLE IF NOT EXISTS merge_proposals (
 CREATE INDEX IF NOT EXISTS idx_merge_proposals_state ON merge_proposals (state);
 
 CREATE TABLE IF NOT EXISTS merge_vetoes (
-  id               TEXT   PRIMARY KEY,
-  slack_binding_id TEXT   NOT NULL,
-  oidc_binding_id  TEXT   NOT NULL,
-  created_by       TEXT   NOT NULL,
-  created_at       INTEGER NOT NULL,
-  merge_id         TEXT,
-  UNIQUE (slack_binding_id, oidc_binding_id)
+  id         TEXT   PRIMARY KEY,
+  key_a      TEXT   NOT NULL,
+  key_b      TEXT   NOT NULL,
+  created_by TEXT   NOT NULL,
+  created_at INTEGER NOT NULL,
+  merge_id   TEXT,
+  UNIQUE (key_a, key_b),
+  CHECK (key_a <> key_b)
 );
+CREATE INDEX IF NOT EXISTS idx_merge_vetoes_b ON merge_vetoes (key_b);
 
 -- Gateway-owned MCP credentials, one owner per row (see 0008_mcp_credentials.sql).
 CREATE TABLE IF NOT EXISTS mcp_credentials (
@@ -548,6 +550,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS idx_audit_events_scope ON audit_events (persona, id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events (session_id, id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events (actor_id, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_action_target ON audit_events (action, target_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_actor_kind ON audit_events (actor_kind, actor_id);
 
 CREATE TABLE IF NOT EXISTS agent_grants (

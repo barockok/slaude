@@ -15,7 +15,7 @@
  *    `verified_at`. Undo never lowers any other binding;
  *  - a proof merge ALSO removes the `slack_identities` row the proof rested on
  *    (the link row only; the account stays), so the person is no longer linked,
- *    and inserts a veto on (Slack binding id, oidc binding id) that
+ *    and inserts a veto on the hashed (Slack or email, sign-in) key pair that
  *    `linkSlackIdentity` and the merge engine refuse until an operator lifts it.
  *
  * Limits (shown in the console and the release note): records and grants only
@@ -81,7 +81,7 @@ interface Plan extends UndoLists {
   aliasRemoves: string[];
   stateRestores: Array<{ id: string; to_state: string; verified_at: number | null }>;
   unlink: { teamId: string; slackUserId: string; accountId: string } | null;
-  veto: { slack: string; oidc: string } | null;
+  veto: [string, string] | null;
 }
 
 /** Why a merge cannot be undone right now, from what is readable without a lock. */
@@ -152,9 +152,10 @@ async function plan(merge: MergeRow, c: DbClient): Promise<Plan> {
     else out.stateRestores.push({ id: r.binding_id, to_state: r.from_state, verified_at: num(r.verified_at) });
   }
 
+  // The pair an undo forbids (a link, or a login's email) is in the ledger by key, so it holds even when the bindings are gone.
+  if (merge.kind === "proof" && mv.veto_pair) out.veto = mv.veto_pair;
   // A proof merge rested on a link: the slack_identities row goes, the account stays.
   if (merge.kind === "proof" && mv.proof_binding_ids.slack && mv.proof_binding_ids.oidc) {
-    out.veto = { slack: mv.proof_binding_ids.slack, oidc: mv.proof_binding_ids.oidc };
     const sb = await readBinding(mv.proof_binding_ids.slack);
     const ob = await readBinding(mv.proof_binding_ids.oidc);
     if (!sb || !ob) {
@@ -268,9 +269,9 @@ async function run(i: UndoInput, c: DbClient): Promise<UndoOutcome> {
   }
   if (p.veto) {
     await c.run(
-      `INSERT INTO merge_vetoes (id, slack_binding_id, oidc_binding_id, created_by, created_at, merge_id) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT (slack_binding_id, oidc_binding_id) DO NOTHING`,
-      [randomUUID(), p.veto.slack, p.veto.oidc, i.actor, now, merge.id],
+      `INSERT INTO merge_vetoes (id, key_a, key_b, created_by, created_at, merge_id) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (key_a, key_b) DO NOTHING`,
+      [randomUUID(), p.veto[0], p.veto[1], i.actor, now, merge.id],
     );
   }
 

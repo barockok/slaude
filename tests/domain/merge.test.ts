@@ -4,6 +4,7 @@ import * as Domain from "../../src/db/domain";
 import { db, type DbClient } from "../../src/db/schema";
 import { mergeUsers, UNDO_WINDOW_MS, type MergeInput } from "../../src/domain/merge";
 import { actingUser, actorCacheSize } from "../../src/refs/actor";
+import { oidcKey as oidcVetoKey, orderedPair, slackKey as slackVetoKey } from "../../src/domain/merge-keys";
 
 const TEAM = "T0EXAMPLE";
 const slackKey = (value: string) => ({ service: "slack", kind: "user", workspace: TEAM, value });
@@ -26,8 +27,10 @@ beforeEach(async () => {
   await db.run("DELETE FROM audit_events");
   await Domain._wipeForTests();
   delete process.env.SLAUDE_AUTO_MERGE;
+  process.env.SLAUDE_ACCESS_SOURCE = "internal";
 });
 afterEach(() => {
+  delete process.env.SLAUDE_ACCESS_SOURCE;
   delete process.env.SLAUDE_AUTO_MERGE;
   spyOn(console, "log").mockRestore();
 });
@@ -160,7 +163,9 @@ describe("mergeUsers", () => {
     const l = await person({ slack: "U0LOSE" });
     const sb = (await Domain.findBinding(slackKey("U0LOSE")))!;
     const ob = (await Domain.findBinding(oidcKey("sub-1")))!;
-    await db.run("INSERT INTO merge_vetoes (id, slack_binding_id, oidc_binding_id, created_by, created_at) VALUES ('v1', ?, ?, 'op', 1)", [sb.id, ob.id]);
+    void sb;
+    void ob;
+    await db.run("INSERT INTO merge_vetoes (id, key_a, key_b, created_by, created_at) VALUES ('v1', ?, ?, 'op', 1)", orderedPair(slackVetoKey(TEAM, "U0LOSE"), oidcVetoKey("https://idp.example.com", "sub-1")));
     expect(await merge(input(s, l))).toMatchObject({ status: "refused", reason: "veto" });
     expect(await merge(input(s, l, { kind: "proof", actor: "system" }))).toMatchObject({ status: "refused", reason: "veto" });
     expect(await Domain.getUser(l)).not.toBeNull();
@@ -211,7 +216,8 @@ describe("mergeUsers", () => {
     expect(r.status).toBe("merged");
     if (r.status !== "merged") return;
     const act = r.merge.moved.activated.map((a) => a.entry).sort();
-    expect(act).toEqual(["grant:g-email-manager", "grant:g-email-member", "grant:g-slack-member", "grant:g-user-approver"]);
+    // g-slack-member named the loser's own Slack id: it reached that record before the merge, so it is not new reach.
+    expect(act).toEqual(["grant:g-email-manager", "grant:g-email-member", "grant:g-user-approver"]);
     expect(r.merge.moved.activated.find((a) => a.entry === "grant:g-email-manager")).toMatchObject({ persona: "scout", role: "manager", source: "console", privileged: true });
     expect(r.merge.moved.inactive_privileged).toEqual([]);
     expect(r.merge.moved.raised).toEqual([{ binding_id: held.id, from_state: "observed", to_state: "verified", verified_at: expect.any(Number) }]);

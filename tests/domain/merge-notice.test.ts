@@ -41,6 +41,7 @@ const post: NoticePost = {
 const saved: Record<string, string | undefined> = {};
 const ENV = ["SLAUDE_MERGE_NOTICE", "SLAUDE_ROLE", "SLAUDE_PORTAL", "SLAUDE_PANEL_SECRET", "SLAUDE_PANEL_PUBLIC_URL"];
 beforeEach(async () => {
+  process.env.SLAUDE_ACCESS_SOURCE = "internal";
   for (const k of ENV) saved[k] = process.env[k];
   await db.run("DELETE FROM agent_grants");
   await db.run("DELETE FROM audit_events");
@@ -53,6 +54,7 @@ beforeEach(async () => {
   spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => {
+  delete process.env.SLAUDE_ACCESS_SOURCE;
   for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   setMergeNoticeSender(null);
   __setGrantsReader(null);
@@ -197,9 +199,10 @@ describe("the merge notice", () => {
 
   test("mrkdwn is escaped", async () => {
     const s = await person({ oidc: "sub-1", slack: "U0SURV", slackState: "verified" });
-    const l = await person({ slack: "U0LOSE" });
-    await putGrant("g1", "U0LOSE", "member", "a<b>&c");
-    await mergeUsers({ survivorId: s, loserId: l, kind: "console", actor: "UOP" });
+    const l = await person({ email: "boss@example.com" });
+    await putGrant("g1", "email:boss@example.com", "member", "a<b>&c");
+    const held = (await Domain.findBinding(mailKey("boss@example.com")))!;
+    await mergeUsers({ survivorId: s, loserId: l, kind: "proof", actor: "system", raise: { bindingId: held.id } });
     await flushMergeNotices();
     expect(sent[0]!.text).toContain("a&lt;b&gt;&amp;c");
   });

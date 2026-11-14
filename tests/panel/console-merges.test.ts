@@ -62,6 +62,7 @@ async function seedMerge() {
 const saved: Record<string, string | undefined> = {};
 const ENV = ["SLAUDE_PANEL_SECRET", "SLAUDE_PANEL_SUPERADMIN", "SLAUDE_PANEL_OPERATORS", "SLAUDE_MERGE_NOTICE"];
 beforeEach(async () => {
+  process.env.SLAUDE_ACCESS_SOURCE = "internal";
   for (const k of ENV) saved[k] = process.env[k];
   process.env.SLAUDE_PANEL_SECRET = SECRET;
   process.env.SLAUDE_PANEL_SUPERADMIN = "lead@example.com";
@@ -75,6 +76,7 @@ beforeEach(async () => {
   spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(async () => {
+  delete process.env.SLAUDE_ACCESS_SOURCE;
   await flushAudits();
   for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   __resetRoleCache();

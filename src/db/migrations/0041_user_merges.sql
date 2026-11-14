@@ -50,15 +50,25 @@ CREATE TABLE IF NOT EXISTS merge_proposals (
 );
 CREATE INDEX IF NOT EXISTS idx_merge_proposals_state ON merge_proposals (state);
 
--- Undo of a proof merge forbids the same (Slack binding, account) pair from
--- linking again until an operator lifts the veto. Keyed on the oidc binding of
--- the account, never on an email binding.
+-- Undo of a proof merge forbids the same pair from joining again until an
+-- operator lifts the veto. A pair is two keys, never binding ids (a person who
+-- unlinks before the undo gets a new binding id on the next Slack message, and
+-- a binding id veto would be dead): the sha256 hex of `slack:<team>/<user id>`,
+-- `oidc:<issuer>#<subject>` or `email:<address>` (src/domain/merge-keys.ts), so
+-- no address or Slack id is stored here. The two keys are stored in sorted order.
+-- A link veto pairs a Slack key with the account's oidc key; a login (email)
+-- merge pairs the email key with the account's oidc key.
 CREATE TABLE IF NOT EXISTS merge_vetoes (
-  id               TEXT   PRIMARY KEY,
-  slack_binding_id TEXT   NOT NULL,
-  oidc_binding_id  TEXT   NOT NULL,
-  created_by       TEXT   NOT NULL,
-  created_at       BIGINT NOT NULL,
-  merge_id         TEXT,
-  UNIQUE (slack_binding_id, oidc_binding_id)
+  id         TEXT   PRIMARY KEY,
+  key_a      TEXT   NOT NULL,
+  key_b      TEXT   NOT NULL,
+  created_by TEXT   NOT NULL,
+  created_at BIGINT NOT NULL,
+  merge_id   TEXT,
+  UNIQUE (key_a, key_b),
+  CHECK (key_a <> key_b)
 );
+CREATE INDEX IF NOT EXISTS idx_merge_vetoes_b ON merge_vetoes (key_b);
+
+-- The merge detail reads the notice's audit event by (action, target).
+CREATE INDEX IF NOT EXISTS idx_audit_events_action_target ON audit_events (action, target_id);

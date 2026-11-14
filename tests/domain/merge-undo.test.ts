@@ -6,21 +6,22 @@ import { db } from "../../src/db/schema";
 import { mergeUsers, getMerge, UNDO_WINDOW_MS, type MergeInput } from "../../src/domain/merge";
 import { previewUndo, undoMerge, type UndoOutcome } from "../../src/domain/merge-undo";
 import { actingUser } from "../../src/refs/actor";
+import { oidcKey, orderedPair, slackKey } from "../../src/domain/merge-keys";
 
 const TEAM = "T0EXAMPLE";
 const ISS = "https://idp.example.com";
-const slackKey = (value: string) => ({ service: "slack", kind: "user", workspace: TEAM, value });
+const slackBinding = (value: string) => ({ service: "slack", kind: "user", workspace: TEAM, value });
 const mailKey = (value: string) => ({ service: "email", kind: "address", workspace: "", value });
-const oidcKey = (subject: string) => ({ service: "oidc", kind: "subject", workspace: ISS, value: subject });
+const oidcBinding = (subject: string) => ({ service: "oidc", kind: "subject", workspace: ISS, value: subject });
 /** JSONB comes back parsed on Postgres and as text on sqlite. */
 const dj = (v: unknown) => (typeof v === "string" ? JSON.parse(v) : (v as Record<string, any>));
 const count = async (t: string, where = "1 = 1") => Number((await db.one<{ n: number }>(`SELECT COUNT(*) AS n FROM ${t} WHERE ${where}`))!.n);
 
 async function person(opts: { slack?: string; slackState?: Domain.State; email?: string; emailState?: Domain.State; oidc?: string } = {}) {
   const u = await Domain.ensureUser({ displayName: opts.slack ? `name-${opts.slack}` : null });
-  if (opts.slack) await Domain.ensureBinding({ ...slackKey(opts.slack), userId: u.id, state: opts.slackState ?? "observed", source: "test" });
+  if (opts.slack) await Domain.ensureBinding({ ...slackBinding(opts.slack), userId: u.id, state: opts.slackState ?? "observed", source: "test" });
   if (opts.email) await Domain.ensureBinding({ ...mailKey(opts.email), userId: u.id, state: opts.emailState ?? "observed", source: "test" });
-  if (opts.oidc) await Domain.ensureBinding({ ...oidcKey(opts.oidc), userId: u.id, state: "verified", source: "test" });
+  if (opts.oidc) await Domain.ensureBinding({ ...oidcBinding(opts.oidc), userId: u.id, state: "verified", source: "test" });
   return u.id;
 }
 const input = (survivorId: string, loserId: string, over: Partial<MergeInput> = {}): MergeInput => ({ survivorId, loserId, kind: "console", actor: "UOPERATOR", ...over });
@@ -65,9 +66,9 @@ describe("undoMerge", () => {
     const out = done(await undo(m.id, { reason: "wrong person" }));
     const back = (await Domain.getUser(l))!;
     expect(back).toMatchObject({ id: l, kind: before.kind, display_name: before.display_name, created_at: before.created_at });
-    expect((await Domain.findBinding(slackKey("U0LOSE")))?.user_id).toBe(l);
+    expect((await Domain.findBinding(slackBinding("U0LOSE")))?.user_id).toBe(l);
     expect((await Domain.findBinding(mailKey("lose@example.com")))?.user_id).toBe(l);
-    expect((await Domain.findBinding(slackKey("U0SURV")))?.user_id).toBe(s);
+    expect((await Domain.findBinding(slackBinding("U0SURV")))?.user_id).toBe(s);
     expect((await db.one<{ subject_user_id: string }>("SELECT subject_user_id FROM agent_grants WHERE id = ?", [g.id]))!.subject_user_id).toBe(l);
     expect(await Domain.resolveUserId("old-l")).toBe(l);
     expect(await Domain.resolveUserId(l)).toBe(l);
@@ -111,7 +112,7 @@ describe("undoMerge", () => {
     await db.run("UPDATE agent_grants SET subject_user_id = ? WHERE id = ?", [third, g2.id]); // repointed after the merge
     const out = done(await undo(m.id));
     expect((await Domain.findBinding(mailKey("lose@example.com")))?.user_id).toBe(third);
-    expect((await Domain.findBinding(slackKey("U0LOSE")))?.user_id).toBe(l);
+    expect((await Domain.findBinding(slackBinding("U0LOSE")))?.user_id).toBe(l);
     expect(out.skipped.map((x) => `${x.kind}:${x.id}`).sort()).toEqual([`binding:${mail.id}`, `grant:${g1.id}`, `grant:${g2.id}`].sort());
     for (const x of out.skipped) expect(x.reason.length).toBeGreaterThan(3);
     expect((await db.one<{ subject_user_id: string }>("SELECT subject_user_id FROM agent_grants WHERE id = ?", [g2.id]))!.subject_user_id).toBe(third);
@@ -128,8 +129,8 @@ describe("undoMerge", () => {
     expect(after).toMatchObject({ user_id: l, state: "observed", verified_at: null });
     expect(out.moved.restored).toEqual([held.id]);
     // Survivor's own verified bindings stay verified.
-    expect((await Domain.findBinding(slackKey("U0SURV")))?.state).toBe("verified");
-    expect((await Domain.findBinding(oidcKey("sub-1")))?.state).toBe("verified");
+    expect((await Domain.findBinding(slackBinding("U0SURV")))?.state).toBe("verified");
+    expect((await Domain.findBinding(oidcBinding("sub-1")))?.state).toBe("verified");
   });
 
   test("a raised binding re-verified since (another verified_at) is left verified and reported", async () => {
@@ -149,8 +150,8 @@ describe("undoMerge", () => {
     const l = await person({ slack: "U0LOSE", slackState: "observed" });
     const m = await merged(input(s, l));
     done(await undo(m.id));
-    expect((await Domain.findBinding(slackKey("U0LOSE")))?.state).toBe("observed");
-    expect((await Domain.findBinding(slackKey("U0SURV")))?.state).toBe("verified");
+    expect((await Domain.findBinding(slackBinding("U0LOSE")))?.state).toBe("observed");
+    expect((await Domain.findBinding(slackBinding("U0SURV")))?.state).toBe("verified");
   });
 });
 
@@ -185,11 +186,11 @@ describe("window and refusals", () => {
     expect(await undo(m1.id)).toMatchObject({ status: "refused", reason: "chained" });
     expect(await Domain.getUser(a)).toBeNull();
     done(await undo(m2.id));
-    expect((await Domain.findBinding(slackKey("U0AAA")))?.user_id).toBe(b); // M2 gave the binding back to b
+    expect((await Domain.findBinding(slackBinding("U0AAA")))?.user_id).toBe(b); // M2 gave the binding back to b
     done(await undo(m1.id));
-    expect((await Domain.findBinding(slackKey("U0AAA")))?.user_id).toBe(a);
-    expect((await Domain.findBinding(slackKey("U0BBB")))?.user_id).toBe(b);
-    expect((await Domain.findBinding(slackKey("U0CCC")))?.user_id).toBe(c);
+    expect((await Domain.findBinding(slackBinding("U0AAA")))?.user_id).toBe(a);
+    expect((await Domain.findBinding(slackBinding("U0BBB")))?.user_id).toBe(b);
+    expect((await Domain.findBinding(slackBinding("U0CCC")))?.user_id).toBe(c);
     expect(await count("users")).toBe(3);
   });
 
@@ -237,14 +238,16 @@ describe("proof merges: the link is undone too", () => {
   test("the slack_identities row is removed, the binding goes back observed to the loser, and the pair is vetoed", async () => {
     const { seen, a, mergeId } = await linked();
     expect(await Accounts.accountForSlackUser(TEAM, "U0SEEN")).not.toBeNull();
-    const sb = (await Domain.findBinding(slackKey("U0SEEN")))!;
-    const ob = (await Domain.findBinding(oidcKey("sub-1")))!;
+    const sb = (await Domain.findBinding(slackBinding("U0SEEN")))!;
+    const ob = (await Domain.findBinding(oidcBinding("sub-1")))!;
     const out = done(await undo(mergeId));
     expect(out.moved.unlinked).toBe(true);
     expect(await Accounts.accountForSlackUser(TEAM, "U0SEEN")).toBeNull();
-    expect((await Domain.findBinding(slackKey("U0SEEN")))).toMatchObject({ user_id: seen, state: "observed" });
-    expect((await Domain.findBinding(oidcKey("sub-1")))?.user_id).not.toBe(seen);
-    expect(await db.one("SELECT id FROM merge_vetoes WHERE slack_binding_id = ? AND oidc_binding_id = ?", [sb.id, ob.id])).not.toBeNull();
+    expect((await Domain.findBinding(slackBinding("U0SEEN")))).toMatchObject({ user_id: seen, state: "observed" });
+    expect((await Domain.findBinding(oidcBinding("sub-1")))?.user_id).not.toBe(seen);
+    void sb;
+    void ob;
+    expect(await db.one("SELECT id FROM merge_vetoes WHERE key_a = ? AND key_b = ?", orderedPair(slackKey(TEAM, "U0SEEN"), oidcKey(ISS, "sub-1")))).not.toBeNull();
     // The account itself is not touched.
     expect(await Accounts.findAccountById(a.id)).not.toBeNull();
   });
@@ -265,17 +268,17 @@ describe("proof merges: the link is undone too", () => {
   test("the engine refuses to merge the vetoed pair again, by any kind", async () => {
     const { seen, mergeId } = await linked();
     done(await undo(mergeId));
-    const acctUser = (await Domain.findBinding(oidcKey("sub-1")))!.user_id;
+    const acctUser = (await Domain.findBinding(oidcBinding("sub-1")))!.user_id;
     expect(await mergeUsers(input(acctUser, seen))).toMatchObject({ status: "refused", reason: "veto" });
   });
 
   test("a post-merge unlink stays unlinked and is reported: no row is re-created, the link is listed as skipped", async () => {
     const { seen, a, mergeId } = await linked();
     expect(await Accounts.unlinkSlackIdentity(TEAM, "U0SEEN", a.id)).toBe(true);
-    expect(await Domain.findBinding(slackKey("U0SEEN"))).toBeNull(); // the unlink removed the verified binding
+    expect(await Domain.findBinding(slackBinding("U0SEEN"))).toBeNull(); // the unlink removed the verified binding
     const out = done(await undo(mergeId));
     expect(await Accounts.accountForSlackUser(TEAM, "U0SEEN")).toBeNull();
-    expect(await Domain.findBinding(slackKey("U0SEEN"))).toBeNull();
+    expect(await Domain.findBinding(slackBinding("U0SEEN"))).toBeNull();
     expect(out.moved.unlinked).toBe(false);
     expect(out.skipped.map((x) => x.kind as string).sort()).toEqual(["binding", "link", "state"].sort());
     expect(out.skipped.find((x) => x.kind === "link")!.reason).toContain("unlinked");
