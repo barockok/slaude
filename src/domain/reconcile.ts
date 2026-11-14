@@ -21,6 +21,12 @@
  * counted as `ambiguous`, or `no_workspace` when it has none). A Slack record
  * is never written with workspace ''.
  *
+ * The Slack-id sources are read in keyset pages (PAGE_SIZE): each page selects
+ * the distinct ids with a LEFT JOIN to the bound record in the tenant's
+ * workspace, and writes the missing ones in one transaction per page with the
+ * repo's insert-or-ignore. A fully reconciled boot costs one read per page and
+ * no transaction. Audit actors are walked through idx_audit_events_actor_kind.
+ *
  * Safe to rerun and to race: every write is the repo's insert-or-ignore, a
  * Postgres advisory lock serialises runners, and an in-process queue
  * serialises runs sharing one connection. A non-dry run that created something
@@ -33,6 +39,7 @@ import { normaliseEmail, projectLink, projectLogin, userForAccount } from "../db
 import { db as globalDb, type DbClient } from "../db/schema";
 
 export const RECONCILE_LOCK_KEY: [number, number] = [0x534c4155, 2];
+export const PAGE_SIZE = 500;
 const LOCK_TIMEOUT_MS = 5 * 60_000;
 const SUMMARY_ACTION = "domain.reconciled";
 
@@ -78,6 +85,8 @@ export interface ReconcileOptions {
   liveTeamIds?: () => Promise<string[]> | string[];
   /** Summary audit writer; defaults to the audit module. */
   audit?: (input: AuditInput) => Promise<void>;
+  /** Rows per page of the Slack-id sources (default PAGE_SIZE). */
+  pageSize?: number;
   /** Skip the lock and the in-process queue (tests of the insert-or-ignore path). */
   unlocked?: boolean;
   log?: (msg: string) => void;
@@ -256,93 +265,153 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     }
   }
 
-  // 3. Slack ids not yet bound.
-  const ensureUserBinding = async (rep: SourceReport, ws: string, value: string, state: Domain.State, source: string) => {
-    const key = { service: "slack", kind: "user", workspace: ws, value };
-    const k = bk(key);
-    const held = seen.has(k) ? true : !!(await Domain.findBinding(key, c));
-    seen.add(k);
-    if (dry) {
-      held ? rep.existing++ : rep.created++;
-      return;
+  // 3. Slack ids not yet bound, in pages.
+  const pageSize = opts.pageSize ?? PAGE_SIZE;
+  const RANK: Record<Domain.State, number> = { declared: 0, observed: 1, verified: 2 };
+  const tenantsOf = async (table: string, where: string): Promise<string[]> =>
+    pg ? (await c.query<{ t: string }>(`SELECT DISTINCT tenant_id AS t FROM ${table} WHERE ${where} ORDER BY 1`)).map((r) => r.t) : [DEFAULT_TENANT];
+  const tf = pg ? "AND tenant_id = ?" : "";
+  const tp = (tenant: string): unknown[] => (pg ? [tenant] : []);
+
+  interface Cand {
+    team: string;
+    v: string;
+    bstate: Domain.State | null;
+  }
+  /**
+   * Walk one source tenant by tenant. `fetch` returns one page after the cursor
+   * (null: first page) with each row's current state in `ws` (null when absent);
+   * rows whose id is out of scope or whose workspace cannot be placed are
+   * counted as before; the rest are written one transaction per page.
+   */
+  async function walk(
+    rep: SourceReport,
+    kind: "user" | "boundary",
+    tenants: string[],
+    state: Domain.State,
+    source: string,
+    idOk: (rep: SourceReport, raw: string) => boolean,
+    fetch: (tenant: string, ws: string | null, after: { team: string; v: string } | null) => Promise<Cand[]>,
+  ): Promise<void> {
+    for (const tenant of tenants) {
+      const p = place(tenant);
+      const tenantWs = "ws" in p ? p.ws : null;
+      let after: { team: string; v: string } | null = null;
+      for (;;) {
+        const page = await fetch(tenant, tenantWs, after);
+        if (page.length === 0) break;
+        after = { team: page[page.length - 1]!.team, v: page[page.length - 1]!.v };
+        const work: Array<{ ws: string; v: string }> = [];
+        for (const row of page) {
+          if (!idOk(rep, row.v)) continue;
+          let ws = row.team;
+          if (!ws) {
+            if ("reason" in p) {
+              skip(rep, p.reason);
+              continue;
+            }
+            ws = p.ws;
+          }
+          const k = kind === "user" ? bk({ service: "slack", kind: "user", workspace: ws, value: row.v }) : `boundary\0${ws}\0${row.v}`;
+          const known = seen.has(k) || row.bstate !== null;
+          seen.add(k);
+          if (dry) {
+            known ? rep.existing++ : rep.created++;
+          } else if (row.bstate !== null && RANK[row.bstate] >= RANK[state]) {
+            rep.existing++;
+          } else {
+            work.push({ ws, v: row.v });
+          }
+        }
+        if (work.length) {
+          await inTx(async (tx) => {
+            for (const w of work) {
+              const created =
+                kind === "user"
+                  ? (await Domain.ensureBinding({ service: "slack", kind: "user", workspace: w.ws, value: w.v, state, source }, tx)).created
+                  : (await Domain.ensureBoundary({ service: "slack", workspace: w.ws, value: w.v, kind: w.v.startsWith("D") ? "dm" : "channel", state }, tx)).created;
+              created ? rep.created++ : rep.existing++;
+            }
+          });
+        }
+        if (page.length < pageSize) break;
+      }
     }
-    const r = await inTx((tx) => Domain.ensureBinding({ ...key, state, source }, tx));
-    r.created ? rep.created++ : rep.existing++;
-  };
-  const ensureBoundaryRecord = async (rep: SourceReport, ws: string, value: string, state: Domain.State) => {
-    const key = { service: "slack", workspace: ws, value };
-    const k = `boundary\0${key.workspace}\0${key.value}`;
-    const held = seen.has(k) ? true : !!(await Domain.findBoundary(key, c));
-    seen.add(k);
-    if (dry) {
-      held ? rep.existing++ : rep.created++;
-      return;
-    }
-    const kind = value.startsWith("D") ? "dm" : "channel";
-    const r = await inTx((tx) => Domain.ensureBoundary({ ...key, kind, state }, tx));
-    r.created ? rep.created++ : rep.existing++;
-  };
+  }
   const userId = (rep: SourceReport, raw: string): boolean => {
     if (raw.startsWith("W")) return skip(rep, "grid"), false;
     if (!USER_RE.test(raw)) return skip(rep, "not_slack_id"), false;
     return true;
   };
+  const boundaryId = (rep: SourceReport, raw: string): boolean => (BOUNDARY_RE.test(raw) ? true : (skip(rep, "not_slack_id"), false));
+  const JOIN_USER = "LEFT JOIN bindings b ON b.service = 'slack' AND b.kind = 'user' AND b.workspace = ? AND b.value = s.v";
+  const JOIN_BOUNDARY = "LEFT JOIN boundaries b ON b.service = 'slack' AND b.workspace = ? AND b.value = s.v";
+  const asCands = (rows: Array<{ team?: string; v: string; bstate: Domain.State | null }>): Cand[] =>
+    rows.map((r) => ({ team: r.team ?? "", v: r.v, bstate: r.bstate ?? null }));
 
   const rGU = report.sources.grantUsers;
-  for (const g of await c.query<{ tenant_id: string; subject_id: string }>(
-    `SELECT DISTINCT ${T} AS tenant_id, subject_id FROM agent_grants WHERE subject_kind = 'user' ORDER BY 1, 2`,
-  )) {
-    if (!userId(rGU, g.subject_id)) continue;
-    const p = place(g.tenant_id);
-    if ("reason" in p) skip(rGU, p.reason);
-    else await ensureUserBinding(rGU, p.ws, g.subject_id, "declared", "grant");
-  }
+  await walk(
+    rGU, "user", await tenantsOf("agent_grants", "subject_kind = 'user'"), "declared", "grant", userId,
+    async (tenant, ws, after) =>
+      asCands(
+        await c.query(
+          `SELECT s.v AS v, b.state AS bstate FROM (
+             SELECT DISTINCT subject_id AS v FROM agent_grants
+             WHERE subject_kind = 'user' ${tf} AND subject_id > ? ORDER BY 1 LIMIT ?) s
+           ${JOIN_USER} ORDER BY s.v`,
+          [...tp(tenant), after?.v ?? "", pageSize, ws],
+        ),
+      ),
+  );
 
   const rGC = report.sources.grantChannels;
   const wsSubjects = await c.one<{ n: number }>("SELECT COUNT(*) AS n FROM agent_grants WHERE subject_kind = 'workspace'");
   if (Number(wsSubjects?.n ?? 0) > 0) rGC.skipped.workspace_subject = Number(wsSubjects!.n);
-  for (const g of await c.query<{ tenant_id: string; subject_id: string }>(
-    `SELECT DISTINCT ${T} AS tenant_id, subject_id FROM agent_grants WHERE subject_kind = 'channel' ORDER BY 1, 2`,
-  )) {
-    if (!BOUNDARY_RE.test(g.subject_id)) {
-      skip(rGC, "not_slack_id");
-      continue;
-    }
-    const p = place(g.tenant_id);
-    if ("reason" in p) skip(rGC, p.reason);
-    else await ensureBoundaryRecord(rGC, p.ws, g.subject_id, "declared");
-  }
+  await walk(
+    rGC, "boundary", await tenantsOf("agent_grants", "subject_kind = 'channel'"), "declared", "grant", boundaryId,
+    async (tenant, ws, after) =>
+      asCands(
+        await c.query(
+          `SELECT s.v AS v, b.state AS bstate FROM (
+             SELECT DISTINCT subject_id AS v FROM agent_grants
+             WHERE subject_kind = 'channel' ${tf} AND subject_id > ? ORDER BY 1 LIMIT ?) s
+           ${JOIN_BOUNDARY} ORDER BY s.v`,
+          [...tp(tenant), after?.v ?? "", pageSize, ws],
+        ),
+      ),
+  );
 
   const rSC = report.sources.sessionChannels;
-  for (const s of await c.query<{ tenant_id: string; slack_team_id: string | null; slack_channel_id: string }>(
-    `SELECT DISTINCT ${T} AS tenant_id, slack_team_id, slack_channel_id FROM sessions
-     WHERE slack_channel_id IS NOT NULL AND slack_channel_id <> '' ORDER BY 1, 2, 3`,
-  )) {
-    if (!BOUNDARY_RE.test(s.slack_channel_id)) {
-      skip(rSC, "not_slack_id");
-      continue;
-    }
-    let ws = s.slack_team_id ?? "";
-    if (!ws) {
-      const p = place(s.tenant_id);
-      if ("reason" in p) {
-        skip(rSC, p.reason);
-        continue;
-      }
-      ws = p.ws;
-    }
-    await ensureBoundaryRecord(rSC, ws, s.slack_channel_id, "observed");
-  }
+  await walk(
+    rSC, "boundary", await tenantsOf("sessions", "slack_channel_id IS NOT NULL AND slack_channel_id <> ''"), "observed", "session", boundaryId,
+    async (tenant, ws, after) =>
+      asCands(
+        await c.query(
+          `SELECT s.team AS team, s.v AS v, b.state AS bstate FROM (
+             SELECT DISTINCT COALESCE(slack_team_id, '') AS team, slack_channel_id AS v FROM sessions
+             WHERE slack_channel_id IS NOT NULL AND slack_channel_id <> '' ${tf}
+               AND (COALESCE(slack_team_id, ''), slack_channel_id) > (?, ?) ORDER BY 1, 2 LIMIT ?) s
+           LEFT JOIN boundaries b ON b.service = 'slack' AND b.workspace = COALESCE(NULLIF(s.team, ''), ?) AND b.value = s.v
+           ORDER BY s.team, s.v`,
+          [...tp(tenant), after?.team ?? "", after?.v ?? "", pageSize, ws],
+        ),
+      ),
+  );
 
   const rAA = report.sources.auditActors;
-  for (const e of await c.query<{ tenant_id: string; actor_id: string }>(
-    `SELECT DISTINCT ${T} AS tenant_id, actor_id FROM audit_events WHERE actor_kind = 'slack_user' ORDER BY 1, 2`,
-  )) {
-    if (!userId(rAA, e.actor_id)) continue;
-    const p = place(e.tenant_id);
-    if ("reason" in p) skip(rAA, p.reason);
-    else await ensureUserBinding(rAA, p.ws, e.actor_id, "observed", "audit");
-  }
+  await walk(
+    rAA, "user", await tenantsOf("audit_events", "actor_kind = 'slack_user'"), "observed", "audit", userId,
+    async (tenant, ws, after) =>
+      asCands(
+        await c.query(
+          `SELECT s.v AS v, b.state AS bstate FROM (
+             SELECT DISTINCT actor_id AS v FROM audit_events
+             WHERE actor_kind = 'slack_user' ${tf} AND actor_id > ? ORDER BY 1 LIMIT ?) s
+           ${JOIN_USER} ORDER BY s.v`,
+          [...tp(tenant), after?.v ?? "", pageSize, ws],
+        ),
+      ),
+  );
 
   report.finishedAt = Date.now();
   // A no-op run (nothing created, no conflict) stays silent: boot would otherwise add one audit row per start.

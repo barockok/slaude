@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import * as Domain from "../../src/db/domain";
 import { type DbClient, openDb } from "../../src/db/client";
 import { runMigrations } from "../../src/db/migrate";
-import { formatReconcileReport, reconcile, reconcileAtBoot, type ReconcileOptions } from "../../src/domain/reconcile";
+import { formatReconcileReport, reconcile, reconcileAtBoot, totalCreated, type ReconcileOptions } from "../../src/domain/reconcile";
 import type { AuditInput } from "../../src/audit/index";
 
 const ISS = "https://idp.example.com";
@@ -224,6 +224,45 @@ for (const dialect of ["sqlite", "pg"] as const) {
         expect((await fb(slack("U1EXAMPLE")))?.state).toBe("declared");
       });
     }
+
+    test("a large backfill is batched: a handful of transactions and queries, and a no-op rerun reads in pages only", async () => {
+      {
+        for (let i = 0; i < 120; i++) {
+          const id = `U${String(i).padStart(5, "0")}BATCH`;
+          await actor(id);
+          if (i % 2 === 0) await actor(id); // duplicates collapse
+          if (i < 70) await grant("user", id);
+        }
+        for (let i = 0; i < 60; i++) await session(i % 3 === 0 ? null : WS, `C${String(i).padStart(5, "0")}BATCH`);
+        await actor("W0GRIDBATCH");
+      }
+      let stmts = 0;
+      let txs = 0;
+      const wrap = (c: DbClient): DbClient =>
+        new Proxy(c, {
+          get(t, k, r) {
+            const v = Reflect.get(t, k, r);
+            if (k === "transaction") return (fn: (tx: DbClient) => Promise<unknown>) => (txs++, t.transaction((tx) => fn(wrap(tx))));
+            if (typeof v === "function" && (k === "run" || k === "one" || k === "query")) return (...a: unknown[]) => (stmts++, (v as (...x: unknown[]) => unknown).apply(t, a));
+            return typeof v === "function" ? v.bind(t) : v;
+          },
+        });
+      const first = await reconcile(opts({ db: wrap(db), pageSize: 50 }));
+      expect(first.sources.auditActors.created + first.sources.grantUsers.created).toBe(120);
+      expect(first.sources.grantUsers.created).toBe(70);
+      expect(first.sources.auditActors).toMatchObject({ created: 50, existing: 70, skipped: { grid: 1 } });
+      expect(first.sources.sessionChannels.created).toBe(60);
+      expect(await count("bindings")).toBe(120);
+      expect(await count("boundaries")).toBe(60);
+      // A transaction per page of 50 (plus the per-account ones, none here), not one per actor or channel.
+      expect(txs).toBeLessThanOrEqual(8);
+      stmts = 0;
+      txs = 0;
+      const again = await reconcile(opts({ db: wrap(db), pageSize: 50 }));
+      expect(totalCreated(again)).toBe(0);
+      expect(txs).toBe(0);
+      expect(stmts).toBeLessThanOrEqual(40);
+    }, 60_000);
 
     test("rolling-deploy repair: an identity and an account with no binding are fixed", async () => {
       await account("a", "alice@example.com");

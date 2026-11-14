@@ -487,6 +487,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS idx_audit_events_scope ON audit_events (persona, id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events (session_id, id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events (actor_id, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_actor_kind ON audit_events (actor_kind, actor_id);
 
 CREATE TABLE IF NOT EXISTS agent_grants (
   id           TEXT    PRIMARY KEY,
