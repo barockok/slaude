@@ -380,6 +380,56 @@ CREATE TABLE IF NOT EXISTS user_aliases (
 );
 CREATE INDEX IF NOT EXISTS idx_user_aliases_user ON user_aliases (user_id);
 
+CREATE TABLE IF NOT EXISTS user_merges (
+  id             TEXT   PRIMARY KEY,
+  created_at     INTEGER NOT NULL,
+  kind           TEXT   NOT NULL,
+  survivor_id    TEXT   NOT NULL,
+  loser_id       TEXT   NOT NULL,
+  state          TEXT   NOT NULL DEFAULT 'applied',
+  actor          TEXT   NOT NULL DEFAULT '',
+  proof          TEXT   NOT NULL DEFAULT '{}',
+  moved          TEXT   NOT NULL DEFAULT '{}',
+  audit_event_id TEXT,
+  undo_until     INTEGER NOT NULL,
+  undone_at      INTEGER,
+  undone_by      TEXT,
+  notice_state   TEXT   NOT NULL DEFAULT 'pending',
+  CHECK (kind IN ('proof', 'console')),
+  CHECK (state IN ('applied', 'undone')),
+  CHECK (notice_state IN ('pending', 'sent', 'failed', 'skipped')),
+  CHECK (survivor_id <> loser_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_merges_loser_applied ON user_merges (loser_id) WHERE state = 'applied';
+CREATE INDEX IF NOT EXISTS idx_user_merges_survivor ON user_merges (survivor_id);
+
+CREATE TABLE IF NOT EXISTS merge_proposals (
+  id          TEXT   PRIMARY KEY,
+  created_at  INTEGER NOT NULL,
+  user_a      TEXT   NOT NULL,
+  user_b      TEXT   NOT NULL,
+  reason      TEXT   NOT NULL,
+  state       TEXT   NOT NULL DEFAULT 'open',
+  evidence    TEXT   NOT NULL DEFAULT '{}',
+  resolved_by TEXT,
+  resolved_at INTEGER,
+  UNIQUE (user_a, user_b, reason),
+  CHECK (reason IN ('conflict', 'two-emails')),
+  CHECK (state IN ('open', 'dismissed', 'merged')),
+  CHECK (user_a <> user_b)
+);
+CREATE INDEX IF NOT EXISTS idx_merge_proposals_state ON merge_proposals (state);
+
+CREATE TABLE IF NOT EXISTS merge_vetoes (
+  id               TEXT   PRIMARY KEY,
+  slack_binding_id TEXT   NOT NULL,
+  oidc_binding_id  TEXT   NOT NULL,
+  created_by       TEXT   NOT NULL,
+  created_at       INTEGER NOT NULL,
+  merge_id         TEXT,
+  UNIQUE (slack_binding_id, oidc_binding_id)
+);
+
 -- Gateway-owned MCP credentials, one owner per row (see 0008_mcp_credentials.sql).
 CREATE TABLE IF NOT EXISTS mcp_credentials (
   id            TEXT    PRIMARY KEY,
