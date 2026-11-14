@@ -34,6 +34,8 @@ const lastLogged = new Map<string, number>();
 /** Forget which mismatches were logged (tests). */
 export function __resetDecide(): void {
   lastLogged.clear();
+  slackCache.clear();
+  liveCache.clear();
 }
 
 function logOncePerMinute(key: string, line: () => string): void {
@@ -79,6 +81,10 @@ async function decide<T>(o: {
       logOncePerMinute(`${o.site}|${persona}|${why}`, () => `[access] shadow mismatch site=${o.site} persona=${persona} reason=${why} user=${next.userId ?? "none"}`);
     }
   } catch (e) {
+    if (e instanceof LookupCap) {
+      m.accessShadowTotal.inc({ site: o.site, outcome: "dropped" });
+      return o.legacy;
+    }
     m.accessShadowTotal.inc({ site: o.site, outcome: "new_error" });
     const name = e instanceof Error ? e.name : "error";
     logOncePerMinute(`${o.site}|${persona}|error:${name}`, () => `[access] shadow error site=${o.site} persona=${persona} kind=${name}`);
@@ -86,12 +92,56 @@ async function decide<T>(o: {
   return o.legacy;
 }
 
-/** Look up, once, what the grants' Slack and user subjects point at, so the engine can match by user. */
+/** The most distinct subjects one shadow resolves; a persona with more is dropped, not allowed to flood the database. */
+export const MAX_LOOKUPS_PER_CALL = 40;
+/** How long a resolved subject is shared between shadows (matches the actor cache). */
+const LOOKUP_TTL_MS = 5_000;
+const LOOKUP_CACHE_MAX = 5_000;
+type SlackFound = { userId: string; state: Domain.State } | null;
+const slackCache = new Map<string, { until: number; v: SlackFound }>();
+const liveCache = new Map<string, { until: number; v: string }>();
+Actor.onActorsInvalidated(() => {
+  slackCache.clear();
+  liveCache.clear();
+});
+/** Forget shared lookups (tests). */
+export function __resetLookups(): void {
+  slackCache.clear();
+  liveCache.clear();
+}
+class LookupCap extends Error {
+  constructor() {
+    super("too many subjects to resolve");
+    this.name = "LookupCap";
+  }
+}
+function cached<V>(map: Map<string, { until: number; v: V }>, key: string): { v: V } | undefined {
+  const hit = map.get(key);
+  return hit && Date.now() < hit.until ? hit : undefined;
+}
+function remember<V>(map: Map<string, { until: number; v: V }>, key: string, v: V): void {
+  if (map.size >= LOOKUP_CACHE_MAX) map.clear();
+  map.set(key, { until: Date.now() + LOOKUP_TTL_MS, v });
+}
+
+/**
+ * Look up what the grants' Slack and user subjects point at, so the engine can
+ * match by user. Resolved subjects are shared between shadows for a few
+ * seconds, and one call resolves at most MAX_LOOKUPS_PER_CALL distinct
+ * subjects (past that it throws LookupCap and the shadow is counted dropped).
+ */
 async function lookupFor(grants: readonly Grant[], teamId: string, skipSlackId?: string): Promise<SubjectLookup> {
-  const slackFound = new Map<string, { userId: string; state: Domain.State } | null>();
+  const slackFound = new Map<string, SlackFound>();
   const live = new Map<string, string>();
+  let budget = MAX_LOOKUPS_PER_CALL;
   const liveOf = async (id: string) => {
-    if (!live.has(id)) live.set(id, (await Domain.resolveUserId(id)) ?? id);
+    if (live.has(id)) return;
+    const hit = cached(liveCache, id);
+    if (hit) return void live.set(id, hit.v);
+    if (--budget < 0) throw new LookupCap();
+    const v = (await Domain.resolveUserId(id)) ?? id;
+    remember(liveCache, id, v);
+    live.set(id, v);
   };
   for (const g of grants) {
     if (g.subjectKind !== "user") continue;
@@ -102,8 +152,15 @@ async function lookupFor(grants: readonly Grant[], teamId: string, skipSlackId?:
         const ws = s.workspace ?? teamId;
         const k = `${ws}/${g.subjectId}`;
         if (!slackFound.has(k)) {
-          const b = await Domain.findBinding({ service: "slack", kind: "user", workspace: ws, value: g.subjectId });
-          slackFound.set(k, b ? { userId: b.user_id, state: b.state } : null);
+          const hit = cached(slackCache, k);
+          if (hit) slackFound.set(k, hit.v);
+          else {
+            if (--budget < 0) throw new LookupCap();
+            const b = await Domain.findBinding({ service: "slack", kind: "user", workspace: ws, value: g.subjectId });
+            const v = b ? { userId: b.user_id, state: b.state } : null;
+            remember(slackCache, k, v);
+            slackFound.set(k, v);
+          }
         }
         const f = slackFound.get(k);
         if (f) await liveOf(f.userId);

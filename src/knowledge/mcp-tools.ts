@@ -364,6 +364,8 @@ const rowSlugs = (rows: unknown): string[] =>
  */
 async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scope: BrainScope, sender: TurnSender): Promise<MemoryEntry[]> {
   const entries: MemoryEntry[] = [];
+  // At most this many subject compares per listing go to the shadow; the rest compare as strings only.
+  let shadowBudget = 3;
   for (const m of memorySources(scope, sender)) {
     const only: BrainScope = { ...scope, sourceId: m.source, allowedSources: [m.source] };
     const listed = new Set<string>();
@@ -377,7 +379,7 @@ async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scop
       const pg = readPageRecord(await getPageOrNull(call, slug, only));
       if (!pg || pg.superseded) continue;
       const subject = pg.meta.subject;
-      if (subject !== undefined ? !sameAt({ site: "kb_tools.memory_about_subject", persona: null, teamId: sender.teamId, userId: subject, otherUserId: sender.userId }) : !(m.fixed.includes(slug) || m.where === "profile")) continue;
+      if (subject !== undefined ? !(shadowBudget-- > 0 ? sameAt({ site: "kb_tools.memory_about_subject", persona: null, teamId: sender.teamId, userId: subject, otherUserId: sender.userId }) : subject === sender.userId) : !(m.fixed.includes(slug) || m.where === "profile")) continue;
       entries.push({
         where: m.where,
         slug,

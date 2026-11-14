@@ -50,7 +50,20 @@ export class ActorResolveError extends Error {
 }
 
 const TTL_MS = 5_000;
+/** Most entries the actor cache holds; past it the oldest go first (insertion order). */
+export let ACTOR_CACHE_MAX = 5_000;
+/** Lower the bound (tests). */
+export function __setActorCacheMax(n: number): void {
+  ACTOR_CACHE_MAX = n;
+}
 const cache = new Map<string, { until: number; actor: ActingUser }>();
+const invalidationHooks: Array<() => void> = [];
+/** Run `f` whenever the cache is dropped (other short caches that derive from the same records). */
+export function onActorsInvalidated(f: () => void): void {
+  invalidationHooks.push(f);
+}
+/** Cached entries (tests). */
+export const actorCacheSize = (): number => cache.size;
 let generation = 0;
 const keyOf = (teamId: string, slackUserId: string) => `${teamId}\0${slackUserId}`;
 
@@ -58,6 +71,7 @@ const keyOf = (teamId: string, slackUserId: string) => `${teamId}\0${slackUserId
 export function invalidateActors(): void {
   generation++;
   cache.clear();
+  for (const f of invalidationHooks) f();
 }
 // A grant change also drops the cache, so a pending console edit never serves a stale actor.
 AgentGrants.onGrantsChanged(() => invalidateActors());
@@ -98,7 +112,18 @@ export async function actingUser(teamId: string, slackUserId: string, ctx: Actor
   m.actorResolveTotal.inc({ result: actor ? "found" : "unseen" });
   // An unseen id is not cached (first sight may create it a moment later); a
   // read that raced an invalidation is not cached either.
-  if (actor && !ctx.tx && gen === generation) cache.set(k, { until: now + TTL_MS, actor });
+  if (actor && !ctx.tx && gen === generation) {
+    cache.delete(k);
+    cache.set(k, { until: now + TTL_MS, actor });
+    // Bound the cache: drop expired entries first, then the oldest.
+    if (cache.size > ACTOR_CACHE_MAX) {
+      for (const [key, v] of cache) if (v.until <= now) cache.delete(key);
+      for (const key of cache.keys()) {
+        if (cache.size <= ACTOR_CACHE_MAX) break;
+        cache.delete(key);
+      }
+    }
+  }
   return actor;
 }
 

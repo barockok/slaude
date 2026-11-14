@@ -31,7 +31,7 @@ import { isDenied, roleFromGrants, usersWithRole, type Role } from "./role";
 import type { SiteId } from "./sites";
 
 /** Shadows in flight at once, per process. */
-export const MAX_INFLIGHT = 256;
+export const MAX_INFLIGHT = 16;
 
 const pending = new Set<Promise<void>>();
 
