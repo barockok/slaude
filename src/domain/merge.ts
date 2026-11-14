@@ -130,7 +130,7 @@ export async function proposeMerge(
 }
 
 /** Take the row lock on both users, lowest id first. Postgres: FOR UPDATE. sqlite: a no-op write (the write lock). */
-async function lockUsers(c: DbClient, ids: string[]): Promise<void> {
+export async function lockUsers(c: DbClient, ids: string[]): Promise<void> {
   for (const id of [...new Set(ids)].sort()) {
     if (c.dialect === "pg") await c.one("SELECT id FROM users WHERE id = ? FOR UPDATE", [id]);
     else await c.run("UPDATE users SET updated_at = updated_at WHERE id = ?", [id]);

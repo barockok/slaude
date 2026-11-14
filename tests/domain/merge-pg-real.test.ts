@@ -5,6 +5,7 @@ import type { DbClient } from "../../src/db/client";
 import { openBunSql } from "../../src/db/drivers/pg";
 import { runMigrations } from "../../src/db/migrate";
 import { mergeUsers } from "../../src/domain/merge";
+import { undoMerge } from "../../src/domain/merge-undo";
 
 /**
  * The merge engine against a REAL Postgres server, two connections racing
@@ -98,6 +99,37 @@ describe.skipIf(!enabled)("merge engine on real Postgres, two connections", () =
         } else {
           expect(await Domain.getUser(l, c1)).not.toBeNull();
         }
+      }
+    });
+  });
+  test("an undo racing a merge of its survivor, and two undos of one merge, end consistent", async () => {
+    await withScratchDb(async (c1, c2) => {
+      for (let round = 0; round < 6; round++) {
+        const s = await person(c1, `U0SUR${round}`);
+        const l = await person(c1, `U0LOS${round}`);
+        const x = await person(c1, `U0XXX${round}`);
+        const first = await c1.transaction((tx) => mergeUsers({ survivorId: s, loserId: l, kind: "console", actor: "UOP" }, tx));
+        if (first.status !== "merged") throw new Error("setup merge failed");
+        const [u, mg] = await Promise.all([
+          c1.transaction((tx) => undoMerge({ mergeId: first.merge.id, actor: "op", reason: "race" }, tx)),
+          c2.transaction((tx) => mergeUsers({ survivorId: x, loserId: s, kind: "console", actor: "UOP" }, tx)),
+        ]);
+        expect(await n(c1, "SELECT COUNT(*) AS n FROM bindings b LEFT JOIN users u ON u.id = b.user_id WHERE u.id IS NULL")).toBe(0);
+        if (u.status === "undone") expect(await Domain.getUser(l, c1)).not.toBeNull();
+        else expect(u).toMatchObject({ status: "refused", reason: "chained" });
+        if (u.status === "refused") expect(mg.status).toBe("merged");
+        expect(await n(c1, `SELECT COUNT(*) AS n FROM user_merges WHERE state = 'applied' AND loser_id = '${l}'`)).toBe(u.status === "undone" ? 0 : 1);
+
+        const s2 = await person(c1, `U0SUQ${round}`);
+        const l2 = await person(c1, `U0LOQ${round}`);
+        const m2 = await c1.transaction((tx) => mergeUsers({ survivorId: s2, loserId: l2, kind: "console", actor: "UOP" }, tx));
+        if (m2.status !== "merged") throw new Error("setup merge failed");
+        const [a, b] = await Promise.all([
+          c1.transaction((tx) => undoMerge({ mergeId: m2.merge.id, actor: "op", reason: "race" }, tx)),
+          c2.transaction((tx) => undoMerge({ mergeId: m2.merge.id, actor: "op", reason: "race" }, tx)),
+        ]);
+        expect([a.status, b.status].sort()).toEqual(["refused", "undone"]);
+        expect(await n(c1, `SELECT COUNT(*) AS n FROM users WHERE id = '${l2}'`)).toBe(1);
       }
     });
   });

@@ -73,6 +73,21 @@ export type DomainEvent =
       raisedBindingIds: string[];
       activated: number;
       inactivePrivileged: number;
+    }
+  | {
+      /** An undo of a merge (src/domain/merge-undo.ts). Ids and reasons only. */
+      action: "user.merge_undone";
+      mergeId: string;
+      survivorId: string;
+      loserId: string;
+      actor: string;
+      reason: string;
+      bindingIds: string[];
+      grantIds: string[];
+      aliasIds: string[];
+      restoredBindingIds: string[];
+      unlinked: boolean;
+      skipped: Array<{ kind: string; id: string; reason: string }>;
     };
 
 export interface BindingKey {
