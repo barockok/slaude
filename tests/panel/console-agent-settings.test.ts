@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { createPanelApi } from "../../src/gateway/panel/api";
 import { __resetRoleCache } from "../../src/gateway/panel/auth/roles";
 import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
-import { db } from "../../src/db/schema";
+import { db, dbDialect } from "../../src/db/schema";
 import { setSoulData } from "../../src/soul/extract";
 import { SoulDataSchema } from "../../src/soul/data";
 import { setManagedDefaultSoul } from "../../src/persona/soul-source";
@@ -227,6 +227,19 @@ describe("GET /panel/api/agents/:name/settings/:group", () => {
     // scout's soul names no redaction patterns or timeout: the default agent's apply, and the page says so.
     expect(value(family(g, "redaction"), "own-patterns")).toMatchObject({ value: "0 patterns", source: "default" });
     expect(value(family(g, "approvals"), "timeout")).toMatchObject({ value: "300 seconds", source: "default" });
+  });
+
+  test("a planted non-Slack approver row never shows in the approver list", async () => {
+    const pg = dbDialect() === "pg";
+    const cols = ["id", "persona", "subject_kind", "subject_id", "role", "deny", "dm_only", "created_by", "created_at"];
+    const vals: unknown[] = ["plant-1", "scout", "user", "email:a@example.com", "approver", pg ? false : 0, pg ? false : 0, "test", 1];
+    if (pg) (cols.push("tenant_id"), vals.push("default"));
+    await db.run(`INSERT INTO agent_grants (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`, vals);
+    invalidateGrants();
+    const g = (await all("scout")).body;
+    const approvers = value(family(g, "approvals"), "approvers").value as string[];
+    expect(approvers).toEqual(expect.arrayContaining(["UMGR"]));
+    expect(approvers.some((a) => a.includes("@"))).toBe(false);
   });
 
   test("learned rules that cannot be read say so instead of failing the tab", async () => {

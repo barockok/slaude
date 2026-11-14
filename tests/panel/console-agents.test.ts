@@ -207,6 +207,15 @@ describe("POST /panel/api/agents/:name/grants", () => {
     expect(row!.details).toMatchObject({ grantId: grant.id, subjectKind: "user", subjectId: "UNEW", role: "member", deny: false, note: "pilot" });
   });
 
+  test("a non-Slack subject is refused with the access flip message and stores nothing", async () => {
+    for (const subjectId of ["email:a@example.com", "user:abc123"]) {
+      const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { ...body, subjectId });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toContain("not supported until the access flip");
+    }
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
   test("zod validation: missing and unknown fields, bad enums, bad types", async () => {
     const bad = async (b: unknown) => {
       const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, b);

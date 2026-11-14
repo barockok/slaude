@@ -88,6 +88,14 @@ describe("agent_grants repo", () => {
     expect(await AgentGrants.listAll()).toEqual([]);
   });
 
+  test("a non-Slack subject is refused until the access flip, whatever the kind", async () => {
+    for (const subjectId of ["email:a@example.com", "a@example.com", "user:abc123", "slack:user:UALICE", "whatsapp:phone:+628123456789"]) {
+      await expect(AgentGrants.create({ ...base, subjectId })).rejects.toThrow(/not supported until the access flip/);
+    }
+    await expect(AgentGrants.create({ ...base, subjectKind: "channel", subjectId: "boundary:abc" })).rejects.toThrow(/not supported until the access flip/);
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
   test("tenant is written and filtered on Postgres only", async () => {
     await AgentGrants.create({ ...base, tenantId: "t2" });
     await AgentGrants.create({ ...base, subjectId: "UBOB" });

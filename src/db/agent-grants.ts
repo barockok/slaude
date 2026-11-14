@@ -94,6 +94,12 @@ export async function create(input: CreateGrantInput, now: number = Date.now()):
       `agent grant: a channel subject_id must be a channel, not a DM (${JSON.stringify(input.subjectId)}); DMs are covered by a user member grant with dm_only`,
     );
   }
+  // Any reference that is not a bare Slack id (email, internal user, phone, a
+  // typed slack: reference) waits for the access flip: the legacy readers and
+  // the approval allowlist only understand Slack ids.
+  if (/[:@]/.test(input.subjectId)) {
+    throw new Error("agent grant: a non-Slack subject is not supported until the access flip");
+  }
   const idShape = SUBJECT_ID_RE[input.subjectKind];
   if (!idShape.re.test(input.subjectId)) {
     throw new Error(`agent grant: a ${input.subjectKind} subject_id must be ${idShape.shape}, got ${JSON.stringify(input.subjectId)}`);

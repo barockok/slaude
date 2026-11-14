@@ -3,7 +3,7 @@ import { SoulDataSchema, type SoulData } from "../../src/soul/data";
 import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
 import { deriveSoulGrants, effectiveGrants, type Grant } from "../../src/access/grants";
-import { __setGrantsReader, invalidateGrants, loadGrants, roleFromGrants, roleOf } from "../../src/access/role";
+import { __setGrantsReader, approversFor, invalidateGrants, loadGrants, roleFromGrants, roleOf, usersWithRole } from "../../src/access/role";
 import { db } from "../../src/db/schema";
 import * as AgentGrants from "../../src/db/agent-grants";
 import * as SO from "../../src/db/soul-overrides";
@@ -191,5 +191,61 @@ describe("roleOf and the stored-grant loader", () => {
     const grants = deriveSoulGrants({ ...s, dmAllowedUsers: [""], blockedUsers: [""] }, new Map([["", ["UX"]], ["CX", ["", "UY"]]]));
     expect(grants.every((g) => g.subjectId && (g.channelId === undefined || g.channelId))).toBe(true);
     expect(grants.map((g) => g.subjectId)).toEqual(["UY"]);
+  });
+});
+
+/**
+ * Slice C, defect 3: until the access flip, no non-Slack subject reaches a
+ * legacy list. A row planted by hand (the API and the repo refuse to write one)
+ * must not come back as an approver id to DM, to match a click, or to fill an
+ * allowlist.
+ */
+describe("non-Slack subjects never reach the legacy readers", () => {
+  const MAIL = "email:a@example.com";
+  const plant = async (persona: string, subjectId: string, role: string, extra: { deny?: boolean; kind?: string } = {}) => {
+    const pg = (await import("../../src/db/schema")).dbDialect() === "pg";
+    const cols = ["id", "persona", "subject_kind", "subject_id", "role", "deny", "dm_only", "created_by", "created_at"];
+    const vals: unknown[] = [`plant-${Math.random()}`, persona, extra.kind ?? "user", subjectId, role, pg ? !!extra.deny : extra.deny ? 1 : 0, pg ? false : 0, "test", 1];
+    if (pg) (cols.push("tenant_id"), vals.push("default"));
+    await db.run(`INSERT INTO agent_grants (${cols.join(",")}) VALUES (${cols.map(() => "?").join(",")})`, vals);
+    invalidateGrants();
+  };
+
+  test("usersWithRole returns only Slack user ids, whatever the role", () => {
+    const grants: Grant[] = [
+      stored({ subjectKind: "user", subjectId: MAIL, role: "manager" }),
+      stored({ subjectKind: "user", subjectId: "user:abc123", role: "approver" }),
+      stored({ subjectKind: "user", subjectId: "slack:user:UWRITTEN", role: "approver" }),
+      stored({ subjectKind: "user", subjectId: "+628123456789", role: "approver" }),
+      stored({ subjectKind: "user", subjectId: "UALICE", role: "approver" }),
+      stored({ subjectKind: "user", subjectId: "WGRID1", role: "manager" }),
+    ];
+    expect(usersWithRole(grants, ["approver", "manager"]).sort()).toEqual(["UALICE", "WGRID1"]);
+    expect(usersWithRole(grants, ["manager"])).toEqual(["WGRID1"]);
+  });
+
+  test("a planted email approver row never appears in approversFor", async () => {
+    const baseline = (await approversFor("scout")).sort();
+    await plant("scout", MAIL, "approver");
+    await plant("scout", MAIL, "manager");
+    const ids = (await approversFor("scout")).sort();
+    expect(ids).toEqual(baseline);
+    expect(ids.length).toBeGreaterThan(0);
+    expect(ids.some((i) => i.includes("@"))).toBe(false);
+  });
+
+  test("a real Slack approver beside a planted email approver is the whole list", async () => {
+    await plant("scout", MAIL, "approver");
+    await plant("scout", "UREAL", "approver");
+    const ids = await approversFor("scout");
+    expect(ids).toContain("UREAL");
+    expect(ids.some((i) => i.includes("@"))).toBe(false);
+  });
+
+  test("a planted email deny or member row changes nobody's role", async () => {
+    await plant("default", MAIL, "member", { deny: true });
+    await plant("default", MAIL, "member");
+    expect(await roleOf("default", "UMGR")).toBe("manager");
+    expect(await roleOf("default", "UALICE")).toBeNull();
   });
 });
