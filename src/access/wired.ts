@@ -24,7 +24,7 @@ import { env } from "../config/env";
 import { m } from "../metrics";
 import type { AdmitResult } from "./admission";
 import { admit } from "./admission";
-import { decideAdmit, decideApprovers, decideCheck, decideDenied, decideRole, decideSame, showAdmit, showRole } from "./decide";
+import { decideAdmit, decideApprovers, decideCheck, decideDenied, decideList, decideRole, decideSame, showAdmit, showRole } from "./decide";
 import type { EngineActor } from "./authority";
 import type { Grant } from "./grants";
 import { isDenied, roleFromGrants, usersWithRole, type Role } from "./role";
@@ -187,6 +187,27 @@ export function checkAt<T extends boolean | string>(o: {
       show: String,
       internal: o.internal,
     }),
+  );
+  return o.legacy;
+}
+
+/**
+ * A list of Slack ids a site already built its own way (the soul's managers, a
+ * digest recipient), shadowed against who the persona's grants name for
+ * `roles`. `legacy` is returned as given. `grants` is read lazily, in the
+ * background, and only when a workspace is known.
+ */
+export function listAt(o: {
+  site: SiteId;
+  persona: string | null | undefined;
+  teamId: string | null | undefined;
+  legacy: string[];
+  roles: readonly Role[];
+  channelId?: string | null;
+  grants: () => Promise<readonly Grant[]> | readonly Grant[];
+}): string[] {
+  shadow(o.site, `${o.legacy.length}`, o.teamId, async () =>
+    decideList({ site: o.site, persona: o.persona, teamId: o.teamId!, grants: await o.grants(), roles: o.roles, channelId: o.channelId, legacy: o.legacy }),
   );
   return o.legacy;
 }

@@ -74,6 +74,15 @@ export const SITES = [
   { id: "env.release_lock_owner", group: 17, kind: "same", where: "/env off: the lock still belongs to the environment's owner" },
   { id: "env.remove_lock_owner", group: 17, kind: "same", where: "/env remove: the lock still belongs to the environment's owner" },
   { id: "gateway.remote_ctx.role", group: 17, kind: "role", where: "/remote and /env context: the speaker's manager role" },
+  // Task 18: background and display.
+  { id: "scheduler.persona_manager", group: 18, kind: "list", where: "heartbeat and wake recipient: the persona's manager from its soul (no workspace on the call)" },
+  { id: "digest.recipient", group: 18, kind: "list", where: "weekly digest recipient: the default persona's manager, else the backup (no workspace on the call)" },
+  { id: "gateway.background_managers", group: 18, kind: "list", where: "proposal and digest managers: the default soul's manager and backup (no workspace on the call)" },
+  { id: "gateway.connect_notify_target", group: 18, kind: "role", where: "bridge connect card for the agent's shared identity: the soul's manager holds the manager role" },
+  { id: "rule_tool.approvers", group: 18, kind: "approvers", where: "proactive rule: who may approve it (managers, and a channel's approvers)" },
+  { id: "rule_tool.can_approve", group: 18, kind: "same", where: "proactive rule: a person (the speaker or a card clicker) is one of the rule's approvers" },
+  { id: "rule_tool.own_turn", group: 18, kind: "same", where: "proactive rule: the turn's sole sender is the speaker" },
+  { id: "gateway.bash.role", group: 18, kind: "role", where: "/bash: manager role" },
 ] as const;
 
 export type SiteId = (typeof SITES)[number]["id"];

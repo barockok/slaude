@@ -19,7 +19,7 @@ import { trustSoulFor, approvalTimeoutFor, effectiveSoulForChannelFor, soulDataF
 import { observeSlackChannel, observeSlackUser, setLiveWorkspaces } from "../../domain/first-sight";
 import { loadGrants, roleOf } from "../../access/role";
 import type { SiteId } from "../../access/sites";
-import { admitAt, approversAt, roleAt, sameAt } from "../../access/wired";
+import { admitAt, approversAt, listAt, roleAt, sameAt } from "../../access/wired";
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
 import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
@@ -919,10 +919,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // and a person's proposals to their DM. Both carry buttons, so they go out
   // as the bot of the app (interactivity-bound, like the gates); chat:write
   // with im:write lets a bot post to a user id, which opens its DM.
-  const backgroundManagers = (): string[] => {
-    const soul = soulData();
-    return [soul.manager.userId, soul.backupManager.userId].filter((u): u is string => !!u);
-  };
+  const backgroundManagers = (): string[] =>
+    // Shadowed (slice C task 18) against the default persona's grants; no workspace here, so counted no_team.
+    listAt({
+      site: "gateway.background_managers", persona: "default", teamId: null, roles: ["manager"], grants: () => loadGrants("default"),
+      legacy: [soulData().manager.userId, soulData().backupManager.userId].filter((u): u is string => !!u),
+    });
   /** The persona's servers as the MCP bridge serves them (bridgeExternalMcp:
    *  the managed persona's config; files only with the operator's opt-in). */
   const bridgeServers = (claims: JobClaims) =>
@@ -3647,7 +3649,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         return;
       }
       if (slash.kind === "bash") {
-        if (!(await isManagerOf(dispatch?.personaId, userId))) {
+        if (!(await managerAt("gateway.bash.role", dispatch?.personaId, userId, teamId))) {
           await replyPrivately(":no_entry: `/bash` is manager-only");
           return;
         }
@@ -4764,6 +4766,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const runAs = parseRunAs(claims.runAs);
     const userId = scope === "initiator" ? (runAs?.kind === "user" ? runAs.slackUserId : "") : soulDataFor(personaId).manager.userId;
     if (!userId) return; // nobody could click it
+    // The agent's shared identity is the manager's: shadow that the soul's manager holds the role (value unused).
+    if (scope !== "initiator" && env.access.source() !== "legacy") void roleAt({ site: "gateway.connect_notify_target", persona: personaId, teamId: claims.team, userId, grants: await loadGrants(personaId) });
     const text = `:warning: ${reason === "connect" ? connectText(server) : reauthText(server)}.`;
     // A channel session's or a wake's turn has no thread: its key is not a Slack ts.
     const threadTs = isSyntheticThread(claims.thread) ? "" : claims.thread;

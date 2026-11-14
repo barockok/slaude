@@ -176,19 +176,24 @@ export async function decideRole(o: {
   });
 }
 
-/** Who holds one of `roles`: the legacy Slack ids are returned; the shadow compares the people the grants name. */
-export async function decideApprovers(o: {
+/**
+ * A list of Slack ids a site holds (managers, approvers, a recipient), compared
+ * with who the grants name for `roles`. `legacy` is returned as the caller made
+ * it; the shadow compares the people the grants name.
+ */
+export async function decideList(o: {
   site: string;
   persona: string | null | undefined;
   teamId: string;
   grants: readonly Grant[];
   roles: readonly Role[];
   channelId?: string | null;
+  legacy: string[];
 }): Promise<string[]> {
   return decide<string[]>({
     site: o.site,
     persona: o.persona,
-    legacy: usersWithRole(o.grants, o.roles, o.channelId),
+    legacy: o.legacy,
     show: (ids) => `${ids.length}`,
     compute: async () => {
       const lookup = await lookupFor(o.grants, o.teamId);
@@ -211,6 +216,18 @@ export async function decideApprovers(o: {
       return [...kinds(extra, "+"), ...kinds(missing, "-")].join(",");
     },
   });
+}
+
+/** Who holds one of `roles`: the legacy Slack ids are returned; the shadow compares the people the grants name. */
+export async function decideApprovers(o: {
+  site: string;
+  persona: string | null | undefined;
+  teamId: string;
+  grants: readonly Grant[];
+  roles: readonly Role[];
+  channelId?: string | null;
+}): Promise<string[]> {
+  return decideList({ ...o, legacy: usersWithRole(o.grants, o.roles, o.channelId) });
 }
 
 /** Whether two Slack identities are the same person (initiator, lock owner). Legacy: the same id string. */

@@ -34,6 +34,8 @@
  * claimed and is not re-run.
  */
 import type { Redis } from "ioredis";
+import { loadGrants } from "../access/role";
+import { listAt } from "../access/wired";
 import * as Runs from "../db/background-runs";
 import * as Sessions from "../db/sessions";
 import { claimSlot } from "../db/background-slots";
@@ -524,15 +526,21 @@ export async function wakeNow(
 
 /** A persona's manager: the default persona's effective soul, a named persona's own structured soul. */
 export function personaManager(personaId: string): string | null {
+  let legacy: string | null = null;
   try {
-    if (!personaId || personaId === "default") return soulData().manager.userId ?? null;
-    const compiled = compiledSoulFor(personaId);
-    if (compiled) return compiled.manager.userId ?? null;
-    // A persona synced before agent.yaml: its stored structure, else the soul text's Reporting section.
-    return ownStoredSoul(personaId)?.manager.userId ?? parseManager(personaSoulText(personaId));
+    if (!personaId || personaId === "default") legacy = soulData().manager.userId ?? null;
+    else {
+      const compiled = compiledSoulFor(personaId);
+      // A persona synced before agent.yaml: its stored structure, else the soul text's Reporting section.
+      legacy = compiled ? (compiled.manager.userId ?? null) : (ownStoredSoul(personaId)?.manager.userId ?? parseManager(personaSoulText(personaId)));
+    }
   } catch {
     return null;
   }
+  // Slice C task 18: shadowed against the persona's grants. The call carries no
+  // workspace, so the engine is not asked (counted no_team); the value is the soul's.
+  listAt({ site: "scheduler.persona_manager", persona: personaId || "default", teamId: null, legacy: legacy ? [legacy] : [], roles: ["manager"], grants: () => loadGrants(personaId || "default") });
+  return legacy;
 }
 
 export interface PersonaMandates {
