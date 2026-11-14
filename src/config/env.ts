@@ -748,6 +748,16 @@ export const env = {
       const raw = opt("SLAUDE_AUTO_MERGE", "on").trim().toLowerCase();
       return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
     },
+    /**
+     * `SLAUDE_MERGE_NOTICE` (default on): the Slack notice a merge sends to the
+     * person (and to the manager of a persona whose privileged grant activates).
+     * `off` sends nothing and marks the ledger row `skipped`; the rollback switch
+     * for the notice alone. Read on every call.
+     */
+    notice: (): boolean => {
+      const raw = opt("SLAUDE_MERGE_NOTICE", "on").trim().toLowerCase();
+      return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
+    },
   },
   remote: {
     /** `/remote` — run a thread's shell and file tools on the initiator's own
