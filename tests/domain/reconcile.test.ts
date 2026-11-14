@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import * as Domain from "../../src/db/domain";
 import { type DbClient, openDb } from "../../src/db/client";
 import { runMigrations } from "../../src/db/migrate";
+import { normaliseEmail } from "../../src/db/account-projection";
 import { formatReconcileReport, reconcile, reconcileAtBoot, totalCreated, type ReconcileOptions } from "../../src/domain/reconcile";
 import type { AuditInput } from "../../src/audit/index";
 
@@ -139,6 +140,116 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(r.linkTokensPurged).toBe(1);
       expect(await count("link_token_uses")).toBe(1);
       expect((await reconcile(opts())).linkTokensPurged).toBe(0);
+    });
+
+    describe("unproven email bindings (D16)", () => {
+      const ISS2 = "https://idp2.example.com";
+      const mailKey = (v: string) => ({ service: "email", kind: "address", workspace: "", value: v });
+      /** The rc.18 state: an account, its verified oidc binding and a verified email binding, with no proof recorded. */
+      async function legacyLogin(sub: string, email: string, o: { iss?: string; proven?: boolean } = {}) {
+        const iss = o.iss ?? ISS;
+        const flag = dialect === "pg" ? !!o.proven : o.proven ? 1 : 0;
+        await db.run("INSERT INTO accounts (id, issuer, subject, email, email_proven, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 1)", [`acc-${sub}`, iss, sub, email, flag]);
+        const o1 = await Domain.ensureBinding({ service: "oidc", kind: "subject", workspace: iss, value: sub, state: "verified", source: "oidc-login" }, db);
+        await Domain.ensureBinding({ ...mailKey(normaliseEmail(email)!), userId: o1.userId, state: "verified", source: "adopt" }, db);
+        return o1.userId;
+      }
+      const state = async (v: string) => (await fb(mailKey(v)))?.state;
+      const demoteOpts = (o: ReconcileOptions = {}) => opts({ demoteUnprovenEmails: true, ...o });
+
+      test("the report counts verified email bindings no proving login backs, per issuer, with no address in it", async () => {
+        await legacyLogin("a", "a@example.com");
+        await legacyLogin("b", "b@example.com");
+        await legacyLogin("c", "c@example.com", { iss: ISS2 });
+        await legacyLogin("p", "p@example.com", { proven: true });
+        const r = await reconcile(opts());
+        expect(r.unprovenEmails).toEqual({ total: 3, byIssuer: { [ISS]: 2, [ISS2]: 1 }, demoted: 0 });
+        expect(JSON.stringify(r)).not.toContain("a@example.com");
+        const text = formatReconcileReport(r);
+        expect(text).toContain("unproven email bindings: 3");
+        expect(text).toContain(`${ISS} 2`);
+        expect(text).not.toContain("@example.com");
+      });
+
+      test("a plain run, a dry run and a run without --apply never change a state", async () => {
+        await legacyLogin("a", "a@example.com");
+        await reconcile(opts());
+        await reconcile(opts({ dryRun: true, demoteUnprovenEmails: true }));
+        await reconcile(opts({ demoteUnprovenEmails: false }));
+        expect(await state("a@example.com")).toBe("verified");
+      });
+
+      test("the demote option demotes to observed, only unproven ones, and nothing else", async () => {
+        const ua = await legacyLogin("a", "a@example.com");
+        await legacyLogin("p", "p@example.com", { proven: true });
+        const slackB = await Domain.ensureBinding({ ...slack("U0EXAMPLE"), userId: ua, state: "verified", source: "link" }, db);
+        const r = await reconcile(demoteOpts());
+        expect(r.unprovenEmails).toEqual({ total: 1, byIssuer: { [ISS]: 1 }, demoted: 1 });
+        const a = await fb(mailKey("a@example.com"));
+        expect(a?.state).toBe("observed");
+        expect(a?.verified_at).toBeNull();
+        expect(a?.user_id).toBe(ua);
+        expect(await state("p@example.com")).toBe("verified");
+        expect((await fb({ service: "oidc", kind: "subject", workspace: ISS, value: "a" }))?.state).toBe("verified");
+        expect((await fb(slack("U0EXAMPLE")))?.state).toBe(slackB.binding.state);
+        expect((await fb(slack("U0EXAMPLE")))?.state).toBe("verified");
+      });
+
+      test("a rerun finds nothing, and the next login with proof is not undone by it", async () => {
+        await legacyLogin("a", "a@example.com");
+        await reconcile(demoteOpts());
+        const again = await reconcile(demoteOpts());
+        expect(again.unprovenEmails).toEqual({ total: 0, byIssuer: {}, demoted: 0 });
+        // a proven login is modelled by flagging the account and raising the binding, as projectLogin does
+        await db.run("UPDATE accounts SET email_proven = ? WHERE subject = 'a'", [dialect === "pg" ? true : 1]);
+        await db.run("UPDATE bindings SET state = 'verified' WHERE value = 'a@example.com'");
+        expect((await reconcile(demoteOpts())).unprovenEmails.total).toBe(0);
+        expect(await state("a@example.com")).toBe("verified");
+      });
+
+      test("a verified email binding with no account behind it, or another account's address, is unproven", async () => {
+        const orphan = await Domain.ensureBinding({ ...mailKey("orphan@example.com"), state: "verified", source: "adopt" }, db);
+        const other = await legacyLogin("p", "p@example.com", { proven: true });
+        await Domain.ensureBinding({ ...mailKey("moved@example.com"), userId: other, state: "verified", source: "adopt" }, db);
+        const r = await reconcile(demoteOpts());
+        expect(r.unprovenEmails.total).toBe(2);
+        expect(r.unprovenEmails.byIssuer["(no account)"]).toBe(1);
+        expect(r.unprovenEmails.byIssuer[ISS]).toBe(1);
+        expect(await state("orphan@example.com")).toBe("observed");
+        expect(await state("moved@example.com")).toBe("observed");
+        expect(await state("p@example.com")).toBe("verified");
+        void orphan;
+      });
+
+      test("an address that differs only by case or domain folding still matches the proving account", async () => {
+        const u = await legacyLogin("p", "Mixed.Case@Example.com", { proven: true });
+        void u;
+        const r = await reconcile(opts());
+        expect(r.unprovenEmails.total).toBe(0);
+      });
+
+      test("demotion writes one audit event with counts only", async () => {
+        await legacyLogin("a", "a@example.com");
+        await reconcile(demoteOpts());
+        const e = events.find((x) => x.action === "domain.emails_demoted");
+        expect(e).toBeDefined();
+        expect(JSON.stringify(e)).not.toContain("example.com/");
+        expect(JSON.stringify(e)).not.toContain("a@example.com");
+        expect(e!.details).toMatchObject({ demoted: 1, byIssuer: { [ISS]: 1 } });
+      });
+
+      test("the boot hook only reports: it never asks for demotion", async () => {
+        await legacyLogin("a", "a@example.com");
+        let seen: ReconcileOptions | undefined;
+        await reconcileAtBoot({
+          role: "mono",
+          liveTeamIds: () => [WS],
+          log: () => {},
+          run: async (o) => ((seen = o), reconcile({ ...opts(), ...o, db })),
+        });
+        expect(seen?.demoteUnprovenEmails).toBeUndefined();
+        expect(await state("a@example.com")).toBe("verified");
+      });
     });
 
     test("one summary audit event per run, none in a dry run", async () => {
@@ -343,9 +454,17 @@ describe("reconcileAtBoot", () => {
   test("a no-op run logs one line", async () => {
     const lines: string[] = [];
     const empty = { created: 0, existing: 0, skipped: {} };
-    const report = { dryRun: false, conflicts: [], startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
+    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, unprovenEmails: { total: 0, byIssuer: {}, demoted: 0 }, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
     await reconcileAtBoot({ role: "mono", liveTeamIds: () => [], run: async () => report, log: (m) => lines.push(m) });
     expect(lines).toEqual(["reconcile: nothing to do"]);
+  });
+  test("unproven email bindings are reported at boot, never acted on", async () => {
+    const lines: string[] = [];
+    const empty = { created: 0, existing: 0, skipped: {} };
+    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0 }, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
+    await reconcileAtBoot({ role: "mono", liveTeamIds: () => [], run: async () => report, log: (m) => lines.push(m) });
+    expect(lines.join("\n")).toContain("2 verified email binding(s) have no proof");
+    expect(lines.join("\n")).toContain("--demote-unproven-emails --apply");
   });
   test("does nothing on a node", async () => {
     let called = false;

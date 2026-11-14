@@ -27,6 +27,14 @@
  * repo's insert-or-ignore. A fully reconciled boot costs one read per page and
  * no transaction. Audit actors are walked through idx_audit_events_actor_kind.
  *
+ * 4. Unproven email bindings (slice C, D16). A verified email binding is
+ *    "proven" only when an account whose last login proved its address
+ *    (accounts.email_proven) sits on the same user and carries that address.
+ *    Every other verified email binding (all of them from before rc.19) is
+ *    counted per issuer in the report. Every run reports; none changes a state
+ *    unless the caller passes `demoteUnprovenEmails` (the CLI, explicitly), in
+ *    which case they go back to observed. The boot hook never passes it.
+ *
  * Safe to rerun and to race: every write is the repo's insert-or-ignore, a
  * Postgres advisory lock serialises runners, and an in-process queue
  * serialises runs sharing one connection. A non-dry run that created something
@@ -62,6 +70,16 @@ export interface Conflict {
   heldByAccountId?: string;
 }
 
+export interface UnprovenEmails {
+  total: number;
+  /** Issuer (or "(no account)" when the user holds no oidc binding) to count. */
+  byIssuer: Record<string, number>;
+  /** Bindings set back to observed by this run (0 unless demotion was asked for and this is not a dry run). */
+  demoted: number;
+}
+
+export const NO_ACCOUNT = "(no account)";
+
 export interface ReconcileReport {
   dryRun: boolean;
   sources: {
@@ -76,6 +94,8 @@ export interface ReconcileReport {
   conflicts: Conflict[];
   /** Expired link token ledger rows removed (would be, in a dry run). */
   linkTokensPurged: number;
+  /** Verified email bindings no proving login backs, per issuer of the user's oidc binding; counts only, never an address. */
+  unprovenEmails: UnprovenEmails;
   startedAt: number;
   finishedAt: number;
 }
@@ -90,6 +110,11 @@ export interface ReconcileOptions {
   audit?: (input: AuditInput) => Promise<void>;
   /** Rows per page of the Slack-id sources (default PAGE_SIZE). */
   pageSize?: number;
+  /**
+   * Set verified email bindings that no proving login backs back to observed.
+   * Off by default and never set by the boot hook; ignored in a dry run.
+   */
+  demoteUnprovenEmails?: boolean;
   /** Skip the lock and the in-process queue (tests of the insert-or-ignore path). */
   unlocked?: boolean;
   log?: (msg: string) => void;
@@ -148,6 +173,7 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     },
     conflicts: [],
     linkTokensPurged: 0,
+    unprovenEmails: { total: 0, byIssuer: {}, demoted: 0 },
     startedAt,
     finishedAt: startedAt,
   };
@@ -428,6 +454,20 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     report.linkTokensPurged = Number(n?.n ?? 0);
   } else report.linkTokensPurged = await purgeExpiredLinkTokens(c);
 
+  // 4. Unproven email bindings: reported on every run, demoted only on request.
+  report.unprovenEmails = await unprovenEmailBindings(c, { demote: !!opts.demoteUnprovenEmails && !dry, pageSize: opts.pageSize ?? PAGE_SIZE });
+  if (report.unprovenEmails.demoted > 0) {
+    const write = opts.audit ?? ((i: AuditInput) => audit(i));
+    await write({
+      actorKind: "system",
+      actorId: "system",
+      action: "domain.emails_demoted",
+      targetKind: "domain",
+      summary: `domain reconcile: ${report.unprovenEmails.demoted} unproven email binding(s) set back to observed`,
+      details: { demoted: report.unprovenEmails.demoted, byIssuer: report.unprovenEmails.byIssuer },
+    }).catch((e) => console.warn(`[domain] email demotion audit failed: ${(e as Error).message}`));
+  }
+
   report.finishedAt = Date.now();
   // A no-op run (nothing created, no conflict) stays silent: boot would otherwise add one audit row per start.
   if (!dry && (totalCreated(report) > 0 || report.conflicts.length > 0)) {
@@ -442,6 +482,59 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     }).catch((e) => console.warn(`[domain] reconcile summary audit failed: ${(e as Error).message}`));
   }
   return report;
+}
+
+/**
+ * Verified email bindings that no proving login backs. Read in keyset pages;
+ * a demotion is a compare-and-set per row (still verified), so a binding a
+ * login raised in between stays as it is. Only `verified` email bindings are
+ * touched, and only down to observed: no other binding, user or state moves.
+ */
+export async function unprovenEmailBindings(c: DbClient, o: { demote: boolean; pageSize?: number }): Promise<UnprovenEmails> {
+  const pageSize = o.pageSize ?? PAGE_SIZE;
+  const out: UnprovenEmails = { total: 0, byIssuer: {}, demoted: 0 };
+  // user id + normalised address pairs a proving account backs. Accounts are few; read them once.
+  const proven = new Set<string>();
+  const accts = await c.query<{ issuer: string; subject: string; email: string }>("SELECT issuer, subject, email FROM accounts WHERE email_proven = ?", [c.dialect === "pg" ? true : 1]);
+  for (const a of accts) {
+    const mail = normaliseEmail(a.email);
+    const uid = await userForAccount(a, c);
+    if (mail && uid) proven.add(`${uid}\0${mail}`);
+  }
+  let after = "";
+  for (;;) {
+    const page = await c.query<{ id: string; user_id: string; value: string }>(
+      "SELECT id, user_id, value FROM bindings WHERE service = 'email' AND kind = 'address' AND state = 'verified' AND id > ? ORDER BY id LIMIT ?",
+      [after, pageSize],
+    );
+    if (page.length === 0) break;
+    after = page[page.length - 1]!.id;
+    const unproven = page.filter((b) => !proven.has(`${b.user_id}\0${b.value}`));
+    if (unproven.length) {
+      const users = [...new Set(unproven.map((b) => b.user_id))];
+      const issuerOf = new Map<string, string>();
+      for (const r of await c.query<{ user_id: string; workspace: string }>(
+        `SELECT user_id, workspace FROM bindings WHERE service = 'oidc' AND kind = 'subject' AND user_id IN (${users.map(() => "?").join(",")}) ORDER BY created_at, id`,
+        users,
+      )) {
+        if (!issuerOf.has(r.user_id)) issuerOf.set(r.user_id, r.workspace);
+      }
+      for (const b of unproven) {
+        const issuer = issuerOf.get(b.user_id) ?? NO_ACCOUNT;
+        out.total++;
+        out.byIssuer[issuer] = (out.byIssuer[issuer] ?? 0) + 1;
+        if (o.demote) {
+          const r = await c.run(
+            "UPDATE bindings SET state = 'observed', verified_at = NULL, updated_at = ? WHERE id = ? AND state = 'verified'",
+            [Date.now(), b.id],
+          );
+          out.demoted += r.changes ?? 0;
+        }
+      }
+    }
+    if (page.length < pageSize) break;
+  }
+  return out;
 }
 
 const bk = (k: { service: string; kind: string; workspace: string; value: string }) => `binding\0${k.service}\0${k.kind}\0${k.workspace}\0${k.value}`;
@@ -480,6 +573,13 @@ export function formatReconcileReport(r: ReconcileReport): string {
       lines.push(`    ${c.kind} account=${c.accountId}${c.heldByUserId ? ` held-by-user=${c.heldByUserId}` : ""}${c.heldByAccountId ? ` held-by-account=${c.heldByAccountId}` : ""}`);
     }
   }
+  const u = r.unprovenEmails;
+  if (u.total === 0) lines.push("  unproven email bindings: none");
+  else {
+    const per = Object.entries(u.byIssuer).map(([k, n]) => `${k} ${n}`).join(", ");
+    lines.push(`  unproven email bindings: ${u.total} (${per}); ${u.demoted > 0 ? `${u.demoted} set back to observed` : "none changed"}`);
+    if (u.demoted === 0 && !r.dryRun) lines.push("    to set them back to observed (a login with proof raises them again): slaude domain reconcile --demote-unproven-emails --apply");
+  }
   if (r.linkTokensPurged > 0) lines.push(`  link tokens: ${r.linkTokensPurged} expired ledger row(s) ${r.dryRun ? "would be purged" : "purged"}`);
   return lines.join("\n");
 }
@@ -500,6 +600,10 @@ export async function reconcileAtBoot(o: {
     const r = await (o.run ?? reconcile)({ liveTeamIds: o.liveTeamIds, log });
     if (totalCreated(r) === 0 && r.conflicts.length === 0) log("reconcile: nothing to do");
     else log(`reconcile done: ${totalCreated(r)} created, ${r.conflicts.length} conflict(s)\n${formatReconcileReport(r)}`);
+    // Report only: demotion is an operator's explicit CLI run, never the boot hook's.
+    if (r.unprovenEmails.total > 0) {
+      log(`${r.unprovenEmails.total} verified email binding(s) have no proof of the address (before rc.19); nothing reads them for access yet. Report and fix: slaude domain reconcile --demote-unproven-emails --apply`);
+    }
     return r;
   } catch (e) {
     console.error(`[domain] reconcile failed (boot continues): ${e instanceof Error ? e.message : String(e)}`);
