@@ -34,6 +34,9 @@
  * Console API (agent platform; shapes in ./api-types). Reads: any operator.
  * Mutations: superadmin, each one audited with actor_kind operator.
  *   GET    /panel/api/agents                       agents with mandate and grant counts
+ *   GET    /panel/api/users?state&service&q&cursor&limit   domain users (superadmin; read only, emails masked)
+ *   GET    /panel/api/users/:id                    one user: bindings and aliases (superadmin)
+ *   GET    /panel/api/boundaries?state&service&q&cursor&limit  domain boundaries (superadmin)
  *   GET    /panel/api/agents/:name                 one agent: mandates and effective grants
  *   GET    /panel/api/agents/:name/grants          effective grants (soul and console)
  *   POST   /panel/api/agents/:name/grants          store a console grant (superadmin)
@@ -121,6 +124,7 @@ import { MAX_MATCH_CHARS } from "../../guardrails/pattern";
 import { GUARDRAIL_SLUG_RE } from "../../guardrails/format";
 import * as PendingGates from "../../db/pending-gates";
 import * as AuditEvents from "../../db/audit-events";
+import * as DomainRead from "../../db/domain-read";
 import { agentStoreNames, displayTitle, localMemoryBrowser, memoryUnavailableReason, storeLabel, type MemoryBrowser } from "../../knowledge/memory-browse";
 import { agentIdSync } from "../../knowledge/agent-identity";
 import { storeKind } from "../../knowledge/scope";
@@ -134,6 +138,9 @@ import type {
   MemoryPagesResponse,
   MemoryStoresResponse,
   AuditPageResponse,
+  BoundaryPage,
+  UserDetail,
+  UserPage,
   AgentDetailResponse,
   AgentGrantsResponse,
   SessionDetailResponse,
@@ -209,6 +216,7 @@ export const SUPERADMIN_ACTIONS: ReadonlySet<string> = new Set([
   "memory.private",
   "skill.version.private",
   "console.roles.read",
+  "domain.read",
   "skill.retire",
   "skill.restore",
   "guardrail.toggle",
@@ -304,6 +312,15 @@ const auditQuerySchema = z
     since: timeParam.optional(),
     until: timeParam.optional(),
     ...pageParams,
+  })
+  .strict();
+const domainQuerySchema = z
+  .object({
+    state: z.enum(["declared", "observed", "verified"]).optional(),
+    service: z.string().min(1).max(32).optional(),
+    q: z.string().min(1).max(128).optional(),
+    cursor: z.string().min(1).max(64).optional(),
+    limit: z.coerce.number().int().min(1).max(DomainRead.DOMAIN_PAGE_MAX).optional(),
   })
   .strict();
 const pageQuerySchema = z.object(pageParams).strict();
@@ -1029,6 +1046,26 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
           { cursor, limit },
         );
         return json(200, { ...page, items: await labelAudit(page.items) } satisfies AuditPageResponse);
+      }
+
+      // GET /panel/api/users, /users/:id, /boundaries: the domain records,
+      // read only. Superadmin only: it lists every person the deployment has
+      // seen. Emails and phones are masked in every answer (db/domain-read).
+      if ((seg[2] === "users" && seg.length <= 4) || (seg[2] === "boundaries" && seg.length === 3)) {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        const denied = requireSuperadmin(role, { action: "domain.read", operator: operatorId });
+        if (denied) return denied;
+        if (seg[2] === "users" && seg.length === 4) {
+          const detail = await DomainRead.getUserDetail(seg[3]!);
+          return detail ? json(200, detail satisfies UserDetail) : json(404, { error: "not found" });
+        }
+        const q = domainQuerySchema.safeParse(queryOf(url));
+        if (!q.success) return json(400, { error: issuesLine(q.error) });
+        const { cursor, limit, ...filter } = q.data;
+        if (!DomainRead.validCursor(cursor)) return json(400, { error: "cursor: invalid cursor" });
+        return seg[2] === "users"
+          ? json(200, (await DomainRead.listUsers(filter, { cursor, limit })) satisfies UserPage)
+          : json(200, (await DomainRead.listBoundaries(filter, { cursor, limit })) satisfies BoundaryPage);
       }
 
       // GET /panel/api/plugins: the plugin inventory. Read-only, any operator;
