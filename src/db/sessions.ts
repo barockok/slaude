@@ -1,5 +1,6 @@
 import { db, type SessionRow } from "./schema";
 import { randomUUID } from "node:crypto";
+import { observeSlackChannel } from "../domain/first-sight";
 
 export type ThreadKey = {
   team_id: string;
@@ -75,6 +76,8 @@ export async function createForThread(args: {
       personaId,
     ],
   );
+  // First sight: this is the one place a session row is created (the node has no store that creates rows).
+  observeSlackChannel({ teamId: args.thread.team_id, channelId: args.thread.channel_id });
   return (await findById(id))!;
 }
 

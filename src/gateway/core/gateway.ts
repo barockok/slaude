@@ -17,6 +17,7 @@ import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slac
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
 import { trustSoulFor, approvalTimeoutFor, effectiveSoulForChannelFor, soulDataFor } from "../../soul/per-persona";
 import { admit } from "../../access/admission";
+import { observeSlackChannel, observeSlackUser, setLiveWorkspaces } from "../../domain/first-sight";
 import { loadGrants, roleOf, usersWithRole } from "../../access/role";
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
@@ -1322,6 +1323,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         console.error(`[slack-auth] ${who}auth.test failed:`, e?.data?.error ?? e?.message);
       }
     }
+    // First sight resolves an audit event's workspace from the connected teams (a node never gets here).
+    setLiveWorkspaces(() => [...authTeams]);
     // Domain records: backfill and repair, after Slack auth, never blocking boot
     // (reconcileAtBoot logs a failure and returns). A node has no database.
     if (opts.domainReconcile === true) {
@@ -4177,6 +4180,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const drop = await o.afterSelfEcho();
       if (drop) return drop;
     }
+    // First sight: whoever reaches this point is a real Slack user, admitted or about to be
+    // refused below (blocked, not granted, ignored), so every outcome records the actor.
+    observeSlackUser({ teamId, userId });
+    observeSlackChannel({ teamId, channelId });
     // Ignore gate: temp/permanent ignores for users or threads. /unignore* must
     // bypass it — otherwise a thread-ignore drops the very message meant to lift it
     // (the /unignore-thread is in the ignored thread), and the thread is stuck
