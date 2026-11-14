@@ -232,7 +232,7 @@ export async function useEnvironment(
     // one from someone else must never make another person's lock releasable.
     let lockByEnv = existing?.env.userId === userId && existing.binding.lock_by_env === 1;
     if (!lock) {
-      await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
+      await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId, teamId });
       auditOneOnOne("one_on_one.locked", { userId, sessionId: ctx.sessionId, channelId, threadTs, lockedUser: userId, via: "env" });
       lockByEnv = true;
     }

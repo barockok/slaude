@@ -2090,7 +2090,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (action === "lock") {
       const prevTarget = await Remote.findTarget(ctx.channel, threadTs);
       if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true });
-      await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
+      await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId, teamId: ctx.teamId || null });
       auditOneOnOne("one_on_one.locked", { userId, sessionId, channelId: ctx.channel, threadTs, persona: ctx.personaId, lockedUser: userId, via: "agent_tool" });
       agent.reload(sessionId);
       return `Locked this thread to a 1on1 with <@${userId}> — only they and the manager are heard here now.`;
@@ -2098,7 +2098,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (action === "open") {
       const existing = await OneOnOne.find(ctx.channel, threadTs);
       if (!existing) {
-        await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId });
+        await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId, teamId: ctx.teamId || null });
         auditOneOnOne("one_on_one.locked", { userId, sessionId, channelId: ctx.channel, threadTs, persona: ctx.personaId, lockedUser: userId, via: "agent_tool", mode: "open" });
       }
       await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true }); // open mode forbids remote
@@ -2999,7 +2999,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (slash.action === "on") {
           const prevTarget = await Remote.findTarget(channelId, threadTs);
           if (prevTarget && prevTarget.user_id !== userId) await endRemoteForThread(channelId, threadTs, { sessionId: session.id, userMachineOnly: true });
-          await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId });
+          await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId, teamId });
           auditOneOnOne("one_on_one.locked", { userId, sessionId: session.id, channelId, threadTs, persona: dispatch?.personaId, lockedUser: userId, via: "slash" });
           agent.reload(session.id);
           await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release. Ask me to open it to guests when needed.`);

@@ -778,6 +778,8 @@ describe("gateway uncovered branches", () => {
       const locked = await g.h.__agentOneOnOne(session.id, "lock");
       expect(locked).toContain("1on1");
       expect((await OneOnOne.find("D_MGR", ts))?.locked_user).toBe(WORLD.manager);
+      // the lock records the workspace it was taken in (slice C task 12)
+      expect((await OneOnOne.find("D_MGR", ts))?.team_id).toBe("T");
 
       // release → unlocked again
       const released = await g.h.__agentOneOnOne(session.id, "off");
