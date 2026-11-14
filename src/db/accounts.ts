@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./schema";
 import { emitDomainEvents } from "../audit/domain";
 import type { DomainEvent } from "./domain";
+import { claimLinkToken } from "./link-token-uses";
 import { projectAccountDeletion, projectLink, projectLogin, projectUnlink } from "./account-projection";
 
 /** Audit the events a projection returned, after commit. Never throws. */
@@ -102,16 +103,28 @@ export async function accountIdsForSlackUserAnyTeam(slackUserId: string): Promis
 /**
  * Bind a Slack identity to an account.
  *
- * Rebinding to a DIFFERENT account is refused rather than overwritten. That
- * refusal is what makes a replayed onboarding link harmless: the second
- * redemption can only be a no-op (same account) or a rejection.
+ * Rebinding to a DIFFERENT account is refused rather than overwritten: a
+ * replay while the link stands can only be a no-op (same account) or a
+ * rejection. That does not survive an unlink, so a redemption that names a
+ * link token (`token`) also claims the token's jti in the single-use ledger,
+ * in the same transaction. A token already used while no link of this account
+ * stands is refused with "link-used": the unlink-then-replay case.
  */
 export async function linkSlackIdentity(
-  i: { teamId: string; slackUserId: string; accountId: string; via: string },
-): Promise<{ ok: true; created: boolean } | { ok: false; reason: "already-linked"; existingAccountId: string }> {
+  i: { teamId: string; slackUserId: string; accountId: string; via: string; token?: { jti: string; expiresAt: number } },
+): Promise<
+  | { ok: true; created: boolean }
+  | { ok: false; reason: "already-linked"; existingAccountId: string }
+  | { ok: false; reason: "link-used" }
+> {
   // Select-then-insert and the projection share one transaction. A replay
   // (same account) or a refusal (other account) returns before any write.
   const out = await db.transaction(async (tx) => {
+    // Claim first: on Postgres a concurrent claim of the same jti waits here for
+    // the winner, then reads the winner's committed link below.
+    const claimed = i.token
+      ? await claimLinkToken({ jti: i.token.jti, teamId: i.teamId, slackUserId: i.slackUserId, expiresAt: i.token.expiresAt }, tx)
+      : true;
     const existing = await tx.one<SlackIdentityRow>(
       "SELECT * FROM slack_identities WHERE team_id = ? AND slack_user_id = ?",
       [i.teamId, i.slackUserId],
@@ -123,6 +136,7 @@ export async function linkSlackIdentity(
         events: [] as DomainEvent[],
       };
     }
+    if (!claimed) return { result: { ok: false, reason: "link-used" } as const, events: [] as DomainEvent[] };
     await tx.run(
       `INSERT INTO slack_identities (team_id, slack_user_id, account_id, linked_at, linked_via)
        VALUES (?, ?, ?, ?, ?)`,

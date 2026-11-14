@@ -128,6 +128,19 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(again.sources.accounts.existing).toBe(1);
     });
 
+    test("expired link token rows are purged, live ones kept, and a dry run purges nothing", async () => {
+      const now = Date.now();
+      await db.run("INSERT INTO link_token_uses (jti, team_id, slack_user_id, used_at, expires_at) VALUES ('dead', 'T0EXAMPLE', 'U0EXAMPLE', 1, ?)", [now - 1000]);
+      await db.run("INSERT INTO link_token_uses (jti, team_id, slack_user_id, used_at, expires_at) VALUES ('live', 'T0EXAMPLE', 'U0EXAMPLE', 1, ?)", [now + 600_000]);
+      const dry = await reconcile(opts({ dryRun: true }));
+      expect(dry.linkTokensPurged).toBe(1);
+      expect(await count("link_token_uses")).toBe(2);
+      const r = await reconcile(opts());
+      expect(r.linkTokensPurged).toBe(1);
+      expect(await count("link_token_uses")).toBe(1);
+      expect((await reconcile(opts())).linkTokensPurged).toBe(0);
+    });
+
     test("one summary audit event per run, none in a dry run", async () => {
       await seed();
       await reconcile(opts({ dryRun: true }));

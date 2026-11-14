@@ -332,7 +332,11 @@ export function createPortalApi(deps: PortalApiDeps = {}): PortalApi {
             slackUserId: verified.claims.slackUser,
             accountId: guarded.account.id,
             via: "signed-link",
+            token: { jti: verified.claims.jti, expiresAt: verified.claims.exp * 1000 },
           });
+          if (!linked.ok && linked.reason === "link-used") {
+            return json(400, { error: "onboarding link already used" });
+          }
           if (!linked.ok) {
             return json(409, { error: "that chat identity is already connected to another account" });
           }

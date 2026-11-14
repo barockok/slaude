@@ -3,7 +3,9 @@ import { createPortalApi } from "../../../src/gateway/portal/api";
 import { mintPortalSession, PORTAL_AT_COOKIE } from "../../../src/gateway/portal/session";
 import { mintLinkToken } from "../../../src/gateway/portal/link-token";
 import { mintSession } from "../../../src/gateway/panel/auth/session";
+import { db } from "../../../src/db/schema";
 import * as Accounts from "../../../src/db/accounts";
+import { countLinkTokenUses } from "../../../src/db/link-token-uses";
 import type { PortalMeResponse } from "../../../src/gateway/portal/api-types";
 
 const ISS = "https://idp.example.com";
@@ -30,6 +32,7 @@ beforeEach(async () => {
   process.env.SLAUDE_PANEL_SECRET = SECRET;
   process.env.SLAUDE_PANEL_OIDC_ISSUER = ISS;
   await Accounts._wipeForTests();
+  await db.run("DELETE FROM link_token_uses");
   await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
 });
 
@@ -111,6 +114,77 @@ describe("redeeming an onboarding link", () => {
     const again = await api.fetch(post({ token: t }, signedIn("sub-1", "alice@example.com")));
 
     expect(again!.status).toBe(200);
+  });
+
+  // Defect 4 of the slice C plan: unlinking deleted the only record of the use.
+  test("a token cannot relink after an unlink within its lifetime", async () => {
+    const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
+    const api = createPortalApi();
+    const cookie = signedIn("sub-1", "alice@example.com");
+    expect((await api.fetch(post({ token: t }, cookie)))!.status).toBe(200);
+    const acct = await Accounts.findAccountBySubject(ISS, "sub-1");
+    expect(await Accounts.unlinkSlackIdentity("TTESTTEAM1", "UTESTUSER1", acct!.id)).toBe(true);
+
+    const replay = await api.fetch(post({ token: t }, cookie));
+
+    expect(replay!.status).toBe(400);
+    expect(((await replay!.json()) as { error: string }).error).toMatch(/already used/);
+    expect(await Accounts.accountForSlackUser("TTESTTEAM1", "UTESTUSER1")).toBeNull();
+  });
+
+  test("a replay by another account while the link stands changes nothing", async () => {
+    const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
+    const api = createPortalApi();
+    await api.fetch(post({ token: t }, signedIn("sub-1", "alice@example.com")));
+    const other = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-2", email: "bob@example.com" });
+
+    const res = await api.fetch(post({ token: t }, signedIn("sub-2", "bob@example.com")));
+
+    expect(res!.status).toBe(409);
+    expect((await Accounts.accountForSlackUser("TTESTTEAM1", "UTESTUSER1"))?.id).not.toBe(other.id);
+  });
+
+  test("a fresh token for the same identity works after an unlink", async () => {
+    const api = createPortalApi();
+    const cookie = signedIn("sub-1", "alice@example.com");
+    await api.fetch(post({ token: mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" }) }, cookie));
+    const acct = await Accounts.findAccountBySubject(ISS, "sub-1");
+    await Accounts.unlinkSlackIdentity("TTESTTEAM1", "UTESTUSER1", acct!.id);
+
+    const res = await api.fetch(post({ token: mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" }) }, cookie));
+
+    expect(res!.status).toBe(200);
+    expect((await Accounts.accountForSlackUser("TTESTTEAM1", "UTESTUSER1"))?.email).toBe("alice@example.com");
+  });
+
+  test("two concurrent redeems of one token produce one link", async () => {
+    const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
+    const api = createPortalApi();
+    const cookie = signedIn("sub-1", "alice@example.com");
+
+    const [a, b] = await Promise.all([api.fetch(post({ token: t }, cookie)), api.fetch(post({ token: t }, cookie))]);
+
+    const bodies = [(await a!.json()) as { created?: boolean }, (await b!.json()) as { created?: boolean }];
+    expect([a!.status, b!.status]).toEqual([200, 200]);
+    expect(bodies.filter((x) => x.created === true)).toHaveLength(1);
+    const acct = await Accounts.findAccountBySubject(ISS, "sub-1");
+    expect(await Accounts.slackIdentitiesForAccount(acct!.id)).toHaveLength(1);
+    expect(await countLinkTokenUses()).toBe(1);
+  });
+
+  test("two accounts racing one token: one link, the other refused", async () => {
+    const other = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-2", email: "bob@example.com" });
+    const t = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" });
+    const api = createPortalApi();
+
+    const rs = await Promise.all([
+      api.fetch(post({ token: t }, signedIn("sub-1", "alice@example.com"))),
+      api.fetch(post({ token: t }, signedIn("sub-2", "bob@example.com"))),
+    ]);
+
+    expect(rs.map((r) => r!.status).sort()).toEqual([200, 409]);
+    const owner = await Accounts.accountForSlackUser("TTESTTEAM1", "UTESTUSER1");
+    expect([other.id, (await Accounts.findAccountBySubject(ISS, "sub-1"))!.id]).toContain(owner!.id);
   });
 
   test("the confirmation page does not itself bind", async () => {

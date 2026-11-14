@@ -36,6 +36,7 @@
 import { audit, type AuditInput } from "../audit/index";
 import * as Domain from "../db/domain";
 import { normaliseEmail, projectLink, projectLogin, userForAccount } from "../db/account-projection";
+import { purgeExpiredLinkTokens } from "../db/link-token-uses";
 import { db as globalDb, type DbClient } from "../db/schema";
 
 export const RECONCILE_LOCK_KEY: [number, number] = [0x534c4155, 2];
@@ -73,6 +74,8 @@ export interface ReconcileReport {
   };
   /** Rows skipped because a Slack-shaped id is out of scope (Grid ids, workspace subjects), all sources. */
   conflicts: Conflict[];
+  /** Expired link token ledger rows removed (would be, in a dry run). */
+  linkTokensPurged: number;
   startedAt: number;
   finishedAt: number;
 }
@@ -144,6 +147,7 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
       auditActors: empty(),
     },
     conflicts: [],
+    linkTokensPurged: 0,
     startedAt,
     finishedAt: startedAt,
   };
@@ -417,6 +421,13 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
       ),
   );
 
+  // Link token ledger rows are dead once the token has expired. Housekeeping, so it neither
+  // counts as a created record nor makes a run write a summary audit event.
+  if (dry) {
+    const n = await c.one<{ n: number | string }>("SELECT COUNT(*) AS n FROM link_token_uses WHERE expires_at <= ?", [Date.now()]);
+    report.linkTokensPurged = Number(n?.n ?? 0);
+  } else report.linkTokensPurged = await purgeExpiredLinkTokens(c);
+
   report.finishedAt = Date.now();
   // A no-op run (nothing created, no conflict) stays silent: boot would otherwise add one audit row per start.
   if (!dry && (totalCreated(report) > 0 || report.conflicts.length > 0)) {
@@ -469,6 +480,7 @@ export function formatReconcileReport(r: ReconcileReport): string {
       lines.push(`    ${c.kind} account=${c.accountId}${c.heldByUserId ? ` held-by-user=${c.heldByUserId}` : ""}${c.heldByAccountId ? ` held-by-account=${c.heldByAccountId}` : ""}`);
     }
   }
+  if (r.linkTokensPurged > 0) lines.push(`  link tokens: ${r.linkTokensPurged} expired ledger row(s) ${r.dryRun ? "would be purged" : "purged"}`);
   return lines.join("\n");
 }
 
