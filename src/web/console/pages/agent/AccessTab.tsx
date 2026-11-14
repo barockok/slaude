@@ -7,7 +7,7 @@ import { RoleBadge, Subject } from "../../components/GrantParts";
 import { AgentSettings } from "../../components/SettingsFamilies";
 import { useRole } from "../../hooks/useRole";
 import { absoluteTime, expiryLabel, shortDate } from "../../lib/format";
-import { ROLE_LABEL, SUBJECT_LABEL } from "../../lib/grants";
+import { ROLE_LABEL, STATE_HINT, STATE_LABEL, STATE_TONE, SUBJECT_LABEL } from "../../lib/grants";
 import { GrantDialog } from "./GrantDialog";
 
 export const PROPAGATION_NOTE = "Changes apply on this gateway immediately and on other replicas within a few seconds.";
@@ -38,7 +38,7 @@ function columns(canEdit: boolean, onRevoke: (g: ConsoleGrantView) => void): Col
         />
       ),
     },
-    { key: "role", header: "Role", width: "8rem", skeleton: 0.5, render: (g) => <RoleBadge role={g.role} /> },
+    { key: "role", header: "Role", width: "8rem", skeleton: 0.5, render: (g) => (g.state ? <span className="sl-inline"><RoleBadge role={g.role} /><Badge tone={STATE_TONE[g.state]} title={STATE_HINT[g.state]}>{STATE_LABEL[g.state]}</Badge></span> : <RoleBadge role={g.role} />) },
     { key: "deny", header: "Deny", width: "5rem", skeleton: 0.4, render: (g) => (g.deny ? <Badge tone="danger">Deny</Badge> : <span className="sl-faint">No</span>) },
     { key: "dm", header: "DM only", width: "5.5rem", skeleton: 0.4, render: (g) => (g.dmOnly ? <Badge>DM only</Badge> : <span className="sl-faint">No</span>) },
     {

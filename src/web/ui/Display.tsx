@@ -7,8 +7,8 @@ import { cx } from "./cx";
 
 export type BadgeTone = "neutral" | "accent" | "success" | "warning" | "danger";
 
-export function Badge({ tone = "neutral", children, className }: { tone?: BadgeTone; children: ReactNode; className?: string }) {
-  return <span className={cx("sl-badge", `sl-badge--${tone}`, className)}>{children}</span>;
+export function Badge({ tone = "neutral", children, className, title }: { tone?: BadgeTone; children: ReactNode; className?: string; title?: string }) {
+  return <span className={cx("sl-badge", `sl-badge--${tone}`, className)} title={title}>{children}</span>;
 }
 
 export interface CardProps extends Omit<HTMLAttributes<HTMLElement>, "title"> {

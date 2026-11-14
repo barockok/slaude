@@ -336,3 +336,70 @@ describe("GET /panel/api/grants", () => {
     expect((await call("POST", "/panel/api/grants", superadmin, {})).status).toBe(405);
   });
 });
+
+describe("email and user subjects, only under SLAUDE_ACCESS_SOURCE=internal (slice C task 22)", () => {
+  let savedSource: string | undefined;
+  beforeEach(() => {
+    savedSource = process.env.SLAUDE_ACCESS_SOURCE;
+    process.env.SLAUDE_ACCESS_SOURCE = "internal";
+  });
+  afterEach(() => {
+    if (savedSource === undefined) delete process.env.SLAUDE_ACCESS_SOURCE;
+    else process.env.SLAUDE_ACCESS_SOURCE = savedSource;
+  });
+
+  test("a superadmin stores an email grant by reference; it is audited and shows its state", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "email:Pending@Example.com", role: "manager", note: "on call" });
+    expect(r.status).toBe(201);
+    const grant = (r.body as CreateGrantResponse).grant;
+    expect(grant).toMatchObject({ source: "console", subjectKind: "user", subjectId: "email:pending@example.com", role: "manager", state: "pending: no verified email binding" });
+    const [row] = await AgentGrants.listAll();
+    expect(row).toMatchObject({ subjectRef: "email:pending@example.com" });
+    expect(row!.subjectUserId).toBeTruthy();
+    const [audit] = await auditRows("grant.created");
+    expect(audit).toMatchObject({ actorKind: "operator", actorId: "lead@example.com", persona: "scout", targetKind: "grant", targetId: grant.id });
+    expect(audit!.details).toMatchObject({ subjectKind: "user", subjectId: "email:pending@example.com", role: "manager" });
+  });
+
+  test("the same superadmin guard: an operator is refused and nothing is stored", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", operator, { subject: "email:a@example.com", role: "member" });
+    expect(r.status).toBe(403);
+    expect(await AgentGrants.listAll()).toEqual([]);
+    expect(await auditRows("grant.created")).toEqual([]);
+  });
+
+  test("the state follows the person: no verified email, Slack not verified, active", async () => {
+    const Domain = await import("../../src/db/domain");
+    const list = async () => ((await call("GET", "/panel/api/agents/scout/grants", operator)).body as { grants: ConsoleGrantView[] }).grants.find((g) => g.source === "console")!;
+    await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "email:boss@example.com", role: "manager" });
+    expect((await list()).state).toBe("pending: no verified email binding");
+    const b = await Domain.findBinding({ service: "email", kind: "address", workspace: "", value: "boss@example.com" });
+    await Domain.adoptBinding({ service: "email", kind: "address", workspace: "", value: "boss@example.com", toUserId: b!.user_id, state: "verified" });
+    expect((await list()).state).toBe("pending: Slack binding not verified");
+    await Domain.ensureBinding({ service: "slack", kind: "user", workspace: "T0EXAMPLE", value: "U0BOSS", state: "verified", source: "test", userId: b!.user_id });
+    expect((await list()).state).toBe("active");
+    // The cross-agent list carries it too.
+    expect(((await call("GET", "/panel/api/grants", operator)).body as AllGrantsResponse).grants[0]!.state).toBe("active");
+  });
+
+  test("a Slack grant has no state", async () => {
+    await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "slack:user:T0EXAMPLE/U0EXAMPLE", role: "member" });
+    const g = ((await call("GET", "/panel/api/agents/scout/grants", operator)).body as { grants: ConsoleGrantView[] }).grants.find((x) => x.source === "console")!;
+    expect(g.state).toBeUndefined();
+  });
+
+  test("a user reference to no record is a clear 400", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "user:no-such", role: "member" });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toContain("names no record");
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
+  test("under shadow the same request is refused with the access flip message", async () => {
+    process.env.SLAUDE_ACCESS_SOURCE = "shadow";
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "email:a@example.com", role: "member" });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toContain("not supported until the access flip");
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+});

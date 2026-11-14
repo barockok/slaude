@@ -15,6 +15,8 @@ import { db } from "../../src/db/schema";
 import { ApprovalGate } from "../../src/gateway/slack/approval-gate";
 import * as Actor from "../../src/refs/actor";
 import { __resetDecide } from "../../src/access/decide";
+import { SoulDataSchema } from "../../src/soul/data";
+import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
 
 const TEAM = "T0EXAMPLE";
 const PERSONA = "scout";
@@ -32,11 +34,14 @@ beforeEach(async () => {
   Actor.invalidateActors();
   __resetDecide();
   grants = [];
+  // No soul of its own: a persona's approvers are the grants below, not what another test file left installed.
+  setSoulData(SoulDataSchema.parse({}));
   __setGrantsReader(async () => grants);
   spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(async () => {
   await settleShadows();
+  __resetSoulDataMemo();
   __setGrantsReader(null);
   if (saved === undefined) delete process.env.SLAUDE_ACCESS_SOURCE;
   else process.env.SLAUDE_ACCESS_SOURCE = saved;
