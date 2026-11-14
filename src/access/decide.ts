@@ -130,8 +130,8 @@ async function engineInput(o: { teamId: string; userId: string; grants: readonly
   return { actor, grants: resolveGrantSubjects(o.grants, o.teamId, lookup), userId: acting.userId };
 }
 
-const showAdmit = (r: AdmitResult) => (r.ok ? "ok" : r.reason);
-const showRole = (r: Role | null) => r ?? "none";
+export const showAdmit = (r: AdmitResult) => (r.ok ? "ok" : r.reason);
+export const showRole = (r: Role | null) => r ?? "none";
 
 /** Whether a message reaches the persona. Ordinary check: the resolver may serve its 5 s cache. */
 export async function decideAdmit(o: {

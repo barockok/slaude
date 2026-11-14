@@ -279,7 +279,7 @@ export const m = {
   wakePostsTotal: metrics.counter("slaude_wake_posts_total", "Heartbeat wake posts, labeled by agent and result (posted, or the refusal)."),
   actorResolveTotal: metrics.counter("slaude_actor_resolve_total", "Acting-user lookups for access decisions, labeled by result (found|unseen|cached|error)."),
   actorResolveFailuresTotal: metrics.counter("slaude_actor_resolve_failures_total", "Acting-user lookups that failed on a database error."),
-  accessShadowTotal: metrics.counter("slaude_access_shadow_total", "Shadow comparisons of the legacy and internal-id access answers, labeled by site and outcome (match|mismatch|new_error)."),
+  accessShadowTotal: metrics.counter("slaude_access_shadow_total", "Shadow comparisons of the legacy and internal-id access answers, labeled by site and outcome (match|mismatch|new_error|no_team|dropped)."),
   accessDecisionTotal: metrics.counter("slaude_access_decision_total", "Access decisions made through the seam, labeled by source of the returned answer (legacy), site and result."),
   grantsReadFailuresTotal: metrics.counter("slaude_grants_read_failures_total", "Stored agent grant reads that failed; access fell back to the soul-derived grants alone."),
   auditWriteFailuresTotal: metrics.counter("slaude_audit_write_failures_total", "Audit events that could not be written (database row or stdout line). The decision they record still stands."),
