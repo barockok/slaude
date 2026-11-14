@@ -5,7 +5,7 @@ import { effectiveSoulForChannel, soulData } from "../../soul/extract";
 import { approversFor, loadGrants } from "../../access/role";
 import { roleInternal } from "../../access/authority";
 import type { SiteId } from "../../access/sites";
-import { approversAt, checkAt, deniedAt } from "../../access/wired";
+import { checkAt, deniedAt, listAt } from "../../access/wired";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
@@ -347,7 +347,7 @@ export class ApprovalGate {
     if (req.persona && req.persona !== "default") {
       const ids = await approversFor(req.persona, req.channel);
       // Shadow only: the answer above is the one used (it includes the default persona's fallback).
-      approversAt({ site: "approval.resolve_approvers", persona: req.persona, teamId: req.app?.teamId, grants: await loadGrants(req.persona), roles: ["approver", "manager"], channelId: req.channel });
+      listAt({ site: "approval.resolve_approvers", persona: req.persona, teamId: req.app?.teamId, legacy: ids, grants: () => loadGrants(req.persona!), roles: ["approver", "manager"], channelId: req.channel });
       if (ids.length) return new Set(ids);
       console.warn(`[approval-gate] persona=${req.persona} has no approver or manager, nor does the default persona: nobody can approve`);
       return new Set([NOBODY]);

@@ -4767,7 +4767,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const userId = scope === "initiator" ? (runAs?.kind === "user" ? runAs.slackUserId : "") : soulDataFor(personaId).manager.userId;
     if (!userId) return; // nobody could click it
     // The agent's shared identity is the manager's: shadow that the soul's manager holds the role (value unused).
-    if (scope !== "initiator" && env.access.source() !== "legacy") void roleAt({ site: "gateway.connect_notify_target", persona: personaId, teamId: claims.team, userId, grants: await loadGrants(personaId) });
+    if (scope !== "initiator" && env.access.source() !== "legacy") {
+      // Detached: nothing here may delay or fail the card.
+      void (async () => roleAt({ site: "gateway.connect_notify_target", persona: personaId, teamId: claims.team, userId, grants: await loadGrants(personaId) }))().catch(() => {});
+    }
     const text = `:warning: ${reason === "connect" ? connectText(server) : reauthText(server)}.`;
     // A channel session's or a wake's turn has no thread: its key is not a Slack ts.
     const threadTs = isSyntheticThread(claims.thread) ? "" : claims.thread;
