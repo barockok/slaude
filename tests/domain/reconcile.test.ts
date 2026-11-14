@@ -42,8 +42,9 @@ for (const dialect of ["sqlite", "pg"] as const) {
     const count = async (t: string) => Number((await db.one<{ n: number }>(`SELECT COUNT(*) AS n FROM ${t}`))!.n);
 
     let seq = 0;
-    async function account(sub: string, email: string, at = 1000 + seq++) {
-      await db.run("INSERT INTO accounts (id, issuer, subject, email, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)", [`acc-${sub}`, ISS, sub, email, at, at]);
+    async function account(sub: string, email: string, at = 1000 + seq++, proven = true) {
+      const flag = dialect === "pg" ? proven : proven ? 1 : 0;
+      await db.run("INSERT INTO accounts (id, issuer, subject, email, email_proven, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", [`acc-${sub}`, ISS, sub, email, flag, at, at]);
     }
     async function identity(sub: string, team: string, user: string) {
       await db.run("INSERT INTO slack_identities (team_id, slack_user_id, account_id, linked_at, linked_via) VALUES (?, ?, ?, ?, ?)", [team, user, `acc-${sub}`, 1, "test"]);
@@ -114,6 +115,17 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect((await fbd({ service: "slack", workspace: WS, value: "C1EXAMPLE" }))?.state).toBe("observed");
       expect(await db.one("SELECT 1 FROM bindings WHERE value = 'U9EXAMPLE'")).toBeNull(); // agent actor
       expect(await db.one("SELECT 1 FROM bindings WHERE workspace = ''  AND service = 'slack'")).toBeNull();
+    });
+
+    test("an account whose login never proved the address gets an observed email binding, and a rerun is a no-op", async () => {
+      await account("u", "unproven@example.com", 5000, false);
+      const first = await reconcile(opts());
+      expect(first.sources.accounts.created).toBe(1);
+      const mail = await fb({ service: "email", kind: "address", workspace: "", value: "unproven@example.com" });
+      expect(mail?.state).toBe("observed");
+      const again = await reconcile(opts());
+      expect(again.sources.accounts.created).toBe(0);
+      expect(again.sources.accounts.existing).toBe(1);
     });
 
     test("one summary audit event per run, none in a dry run", async () => {

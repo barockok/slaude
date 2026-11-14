@@ -176,8 +176,8 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
   // 1. accounts
   const accUser = new Map<string, string | null>(); // account id -> user id (null: dry run, not created yet)
   const plannedEmail = new Map<string, string>(); // normalised email -> account id (dry run)
-  const accounts = await c.query<{ id: string; issuer: string; subject: string; email: string }>(
-    "SELECT id, issuer, subject, email FROM accounts ORDER BY created_at, id",
+  const accounts = await c.query<{ id: string; issuer: string; subject: string; email: string; email_proven: boolean | number }>(
+    "SELECT id, issuer, subject, email, email_proven FROM accounts ORDER BY created_at, id",
   );
   const rA = report.sources.accounts;
   for (const a of accounts) {
@@ -185,7 +185,11 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     if (mail === null) skip(rA, "bad_email");
     const userId = await userForAccount(a, c);
     const emailHeld = mail ? await Domain.findBinding({ service: "email", kind: "address", workspace: "", value: mail }, c) : null;
-    const complete = userId !== null && (mail === null || (emailHeld?.user_id === userId && emailHeld.state === "verified"));
+    // An account whose last login proved the address needs a verified binding; one that did not (or predates
+    // email_proven) needs the binding on its user in any state. A bound verified one is never lowered here.
+    const proven = Boolean(a.email_proven);
+    const complete =
+      userId !== null && (mail === null || (emailHeld?.user_id === userId && (!proven || emailHeld.state === "verified")));
     if (complete) {
       rA.existing++;
       accUser.set(a.id, userId);
@@ -207,7 +211,7 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
       accUser.set(a.id, userId);
       continue;
     }
-    const events = await inTx((tx) => projectLogin({ issuer: a.issuer, subject: a.subject, email: a.email, previousEmail: null }, tx));
+    const events = await inTx((tx) => projectLogin({ issuer: a.issuer, subject: a.subject, email: a.email, emailProven: proven, previousEmail: null }, tx));
     void events;
     const u = await userForAccount(a, c);
     accUser.set(a.id, u);

@@ -27,6 +27,8 @@ export interface AccountRow {
   issuer: string;
   subject: string;
   email: string;
+  /** The last login's token proved the address (email_verified === true and an email claim). Boolean on pg, 0 or 1 on sqlite. */
+  email_proven?: boolean | number;
   created_at: number;
   updated_at: number;
 }
@@ -44,20 +46,22 @@ export interface SlackIdentityRow {
  * The domain-record projection (user, oidc and email bindings) rides in the
  * same transaction under a savepoint, so it can never fail the login.
  */
-export async function upsertAccount(i: { issuer: string; subject: string; email: string }): Promise<AccountRow> {
+export async function upsertAccount(i: { issuer: string; subject: string; email: string; emailProven?: boolean }): Promise<AccountRow> {
   const now = Date.now();
+  const proven = i.emailProven === true;
+  const provenParam = db.dialect === "pg" ? proven : proven ? 1 : 0;
   const { row, events } = await db.transaction(async (tx) => {
     const before = await tx.one<AccountRow>("SELECT * FROM accounts WHERE issuer = ? AND subject = ?", [i.issuer, i.subject]);
     await tx.run(
-      `INSERT INTO accounts (id, issuer, subject, email, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
+      `INSERT INTO accounts (id, issuer, subject, email, email_proven, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(issuer, subject)
-       DO UPDATE SET email = excluded.email, updated_at = excluded.updated_at`,
-      [randomUUID(), i.issuer, i.subject, i.email, now, now],
+       DO UPDATE SET email = excluded.email, email_proven = excluded.email_proven, updated_at = excluded.updated_at`,
+      [randomUUID(), i.issuer, i.subject, i.email, provenParam, now, now],
     );
     const after = await tx.one<AccountRow>("SELECT * FROM accounts WHERE issuer = ? AND subject = ?", [i.issuer, i.subject]);
     if (!after) throw new Error("account upsert did not produce a row");
-    const events = await projectLogin({ ...i, previousEmail: before?.email ?? null }, tx);
+    const events = await projectLogin({ ...i, emailProven: proven, previousEmail: before?.email ?? null }, tx);
     return { row: after, events };
   });
   await emitAfterCommit(events);

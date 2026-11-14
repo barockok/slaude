@@ -116,7 +116,8 @@ export function createPortalAuthRoutes(deps: PortalAuthRoutesDeps = {}): PortalA
     }
 
     // No role check, on purpose: see the module comment.
-    await upsertAccount({ issuer: cfg.issuer, subject: who.sub, email: who.identity });
+    // The email binding is verified only when the token proved the address.
+    await upsertAccount({ issuer: cfg.issuer, subject: who.sub, email: who.identity, emailProven: who.emailProven });
 
     const claims = { sub: who.sub, email: who.identity, iss: cfg.issuer };
     return redirect(safePortalReturnTo(flow.payload.returnTo), [
