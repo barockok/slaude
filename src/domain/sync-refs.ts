@@ -101,9 +101,9 @@ export async function singleWorkspace(c: DbClient = globalDb): Promise<string | 
   if (singleCache && Date.now() < singleCache.until) return singleCache.v;
   let v: string | undefined;
   try {
-    const ws = c.dialect === "pg"
-      ? await tenantWorkspaces("default", c)
-      : (await c.query<{ workspace: string }>("SELECT DISTINCT workspace FROM bindings WHERE service = 'slack' AND kind = 'user' AND workspace <> '' LIMIT 3")).map((r) => r.workspace);
+    let ws = c.dialect === "pg" ? await tenantWorkspaces("default", c) : [];
+    // No connected-app rows (sqlite, or a deployment that has none): the workspace the Slack bindings are in.
+    if (ws.length === 0) ws = (await c.query<{ workspace: string }>("SELECT DISTINCT workspace FROM bindings WHERE service = 'slack' AND kind = 'user' AND workspace <> '' LIMIT 3")).map((r) => r.workspace);
     v = ws.length === 1 ? ws[0] : undefined;
   } catch {
     v = undefined;
