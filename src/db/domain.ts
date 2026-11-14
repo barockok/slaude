@@ -276,6 +276,11 @@ export interface AdoptResult {
  * bindings move to `toUserId` and the old id becomes an alias. If the other
  * user holds anything verified, nothing changes and `conflict` is set: two
  * verified records are never merged here.
+ *
+ * Concurrent adopts of one held binding: on Postgres the holder's user row is
+ * locked first and re-read, and the move must change exactly the rows read, or
+ * nothing is written and `conflict` is set. A passed `tx` must be a
+ * transaction (the move runs under a savepoint).
  */
 export async function adoptBinding(i: AdoptInput, tx?: DbClient): Promise<AdoptResult> {
   needWorkspace(i.service, i.workspace);
@@ -293,16 +298,31 @@ export async function adoptBinding(i: AdoptInput, tx?: DbClient): Promise<AdoptR
       await raiseBinding(c, held.id, "verified", undefined, now);
       return { adopted: false, movedBindingIds: [], binding: (await findBinding(key, c))!, events: [] };
     }
-    const theirs = await c.query<BindingRow>("SELECT * FROM bindings WHERE user_id = ? ORDER BY created_at, id", [held.user_id]);
-    if (theirs.some((b) => RANK[b.state] === RANK.verified)) {
-      return { adopted: false, conflict: true, movedBindingIds: [], binding: held, events: [] };
+    const conflict: AdoptResult = { adopted: false, conflict: true, movedBindingIds: [], binding: held, events: [] };
+    if (c.dialect === "pg") {
+      // READ COMMITTED: two adopts of the same held binding would both read the holder's bindings and both move them.
+      // Lock the holder row, then re-read: the loser of the lock sees the winner's result (or no holder at all).
+      if (!(await c.one("SELECT id FROM users WHERE id = ? FOR UPDATE", [held.user_id]))) return conflict;
+      const again = await findBinding(key, c);
+      if (!again || again.user_id !== held.user_id) return conflict;
     }
+    const theirs = await c.query<BindingRow>("SELECT * FROM bindings WHERE user_id = ? ORDER BY created_at, id", [held.user_id]);
+    if (theirs.some((b) => RANK[b.state] === RANK.verified)) return conflict;
     const moved = theirs.map((b) => b.id);
-    await c.run("UPDATE bindings SET user_id = ?, updated_at = ? WHERE user_id = ?", [toUserId, now, held.user_id]);
+    // A savepoint so a mismatch below undoes the partial move, whatever transaction the caller holds.
+    await c.exec("SAVEPOINT adopt_move");
+    const upd = await c.run("UPDATE bindings SET user_id = ?, updated_at = ? WHERE user_id = ?", [toUserId, now, held.user_id]);
+    if ((upd.changes ?? 0) !== moved.length) {
+      // The rows moved under us (a stale read): write nothing, no event.
+      await c.exec("ROLLBACK TO SAVEPOINT adopt_move");
+      await c.exec("RELEASE SAVEPOINT adopt_move");
+      return conflict;
+    }
     await c.run("INSERT INTO user_aliases (old_id, user_id, merged_at) VALUES (?, ?, ?) ON CONFLICT (old_id) DO NOTHING", [held.user_id, toUserId, now]);
     // Aliases that pointed at the old user now point at the new one.
     await c.run("UPDATE user_aliases SET user_id = ? WHERE user_id = ? AND old_id <> ?", [toUserId, held.user_id, held.user_id]);
     await c.run("DELETE FROM users WHERE id = ?", [held.user_id]);
+    await c.exec("RELEASE SAVEPOINT adopt_move");
     await raiseBinding(c, held.id, "verified", undefined, now);
     return {
       adopted: true,

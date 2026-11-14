@@ -128,7 +128,7 @@ for (const dialect of ["sqlite", "pg"] as const) {
       const old = await Domain.ensureBinding(slack("U0EXAMPLE"), db);
       await Domain.ensureBinding(slack("U0SECOND", { userId: old.userId, state: "declared" }), db);
       const target = await Domain.ensureUser({}, db);
-      const r = await Domain.adoptBinding({ service: "slack", kind: "user", workspace: WS, value: "U0EXAMPLE", toUserId: target.id, state: "verified" }, db);
+      const r = await db.transaction((tx) => Domain.adoptBinding({ service: "slack", kind: "user", workspace: WS, value: "U0EXAMPLE", toUserId: target.id, state: "verified" }, tx));
       expect(r.conflict).toBeUndefined();
       expect(r.adopted).toBe(true);
       expect(r.movedBindingIds.length).toBe(2);
@@ -168,6 +168,39 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(r.movedBindingIds).toEqual([]);
       expect(await count("user_aliases")).toBe(0);
       expect((await Domain.findBinding({ service: "slack", kind: "user", workspace: WS, value: "U0EXAMPLE" }, db))?.user_id).toBe(other.userId);
+    });
+
+    test("adopt that lost a race to another adopt of the same binding reports a conflict and writes nothing", async () => {
+      const old = await Domain.ensureBinding(slack("U0EXAMPLE"), db);
+      await Domain.ensureBinding(slack("U0SECOND", { userId: old.userId, state: "declared" }), db);
+      const first = await Domain.ensureUser({}, db);
+      const second = await Domain.ensureUser({}, db);
+      const key = { service: "slack", kind: "user", workspace: WS, value: "U0EXAMPLE" };
+      // The loser's read of the holder's bindings is stale: the winner adopts between that read and the loser's write.
+      let stale: unknown[] | undefined;
+      const racing = (inner: DbClient) => new Proxy(inner, {
+        get(t, p, r) {
+          if (p !== "query") return Reflect.get(t, p, r);
+          return async (sql: string, params?: unknown[]) => {
+            const rows = await t.query(sql, params as never);
+            if (!stale && sql.includes("FROM bindings WHERE user_id")) {
+              stale = rows;
+              await Domain.adoptBinding({ ...key, toUserId: first.id, state: "verified" }, t);
+            }
+            return rows;
+          };
+        },
+      }) as DbClient;
+      const r = await db.transaction((tx) => Domain.adoptBinding({ ...key, toUserId: second.id, state: "verified" }, racing(tx)));
+      expect(r.conflict).toBe(true);
+      expect(r.adopted).toBe(false);
+      expect(r.events).toEqual([]);
+      expect(r.movedBindingIds).toEqual([]);
+      const rows = await db.query<{ user_id: string }>("SELECT user_id FROM bindings");
+      expect(rows.length).toBe(2);
+      expect(rows.every((b) => b.user_id === first.id)).toBe(true);
+      expect(await count("user_aliases")).toBe(1);
+      expect(await Domain.resolveUserId(old.userId, db)).toBe(first.id);
     });
 
     test("adopt refuses when the contested binding itself is verified for another user", async () => {
