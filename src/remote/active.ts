@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sameAt } from "../access/wired";
 import * as Envs from "../db/environments";
 import * as OneOnOne from "../db/one-on-one";
 import { getKind, trustOf, type StoredEnv } from "./kinds";
@@ -29,7 +30,7 @@ export async function activeRemoteTarget(channelId: string, threadTs: string): P
   if (!b) return null;
   const { binding, env } = b;
   const trust = trustOf(env);
-  if (trust === "user-machine" && (!lock || lock.open_scope !== null || lock.locked_user !== env.userId)) return null;
+  if (trust === "user-machine" && (!lock || lock.open_scope !== null || !sameAt({ site: "remote.active_lock_owner", persona: null, teamId: env.teamId, userId: env.userId, otherUserId: lock.locked_user, otherTeamId: lock.team_id }))) return null;
   const kind = getKind(env.kind)!;
   return {
     teamId: env.teamId,

@@ -2,7 +2,10 @@ import { clientForApp, type AppRef, type Transport, type WebClientLike } from ".
 import { loadApprovers, selectApprovers, selectApproversFrom } from "../../soul/loader";
 import { managedPersonaDefinition } from "../../persona/registry";
 import { effectiveSoulForChannel, soulData } from "../../soul/extract";
-import { approversFor, isDenied, loadGrants } from "../../access/role";
+import { approversFor, loadGrants } from "../../access/role";
+import { roleInternal } from "../../access/authority";
+import type { SiteId } from "../../access/sites";
+import { checkAt, deniedAt, listAt } from "../../access/wired";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
@@ -173,8 +176,32 @@ export class ApprovalGate {
         // A deny grant on the card's persona refuses the clicker even when the
         // card lists them or admits anyone (an empty allowlist). Read at click
         // time, so a deny added after the card was posted applies too.
-        const deniedClicker = async (pendingRow: PendingGates.PendingGate): Promise<boolean> =>
-          isDenied(await loadGrants((pendingRow.payload.personaName as string | undefined) ?? "default"), userId);
+        const clickTeam: string | undefined = (body as any).team?.id ?? (body as any).user?.team_id;
+        const deniedClicker = async (pendingRow: PendingGates.PendingGate): Promise<boolean> => {
+          const persona = (pendingRow.payload.personaName as string | undefined) ?? "default";
+          return deniedAt({ site: "approval.click_denied", persona, teamId: clickTeam, userId, grants: await loadGrants(persona) });
+        };
+        // The card's allowlist, as it was stored; an empty one admits anyone.
+        // The legacy answer is the set membership. Shadowed: would the
+        // internal-id path call the clicker an approver or manager of the
+        // card's persona on the card's channel?
+        const onAllowlist = (site: SiteId, pendingRow: PendingGates.PendingGate, approvers: Set<string>): boolean => {
+          const persona = (pendingRow.payload.personaName as string | undefined) ?? "default";
+          const channel = (pendingRow.payload.channel as string | undefined) ?? null;
+          return checkAt({
+            site,
+            persona,
+            teamId: clickTeam,
+            userId,
+            legacy: approvers.size === 0 || approvers.has(userId),
+            grants: () => loadGrants(persona),
+            internal: ({ grants, actor }) => {
+              if (approvers.size === 0) return true;
+              const r = roleInternal(grants, actor, channel);
+              return r === "approver" || r === "manager";
+            },
+          });
+        };
         // Durable row is the source of truth for "still open?".
         const row = await PendingGates.get(id);
         if (!row || row.status !== "pending") {
@@ -212,7 +239,7 @@ export class ApprovalGate {
             // authorize the clicker — checked BEFORE the guarded resolve so a
             // non-approver click never consumes the row.
             const approvers = new Set<string>((row.payload.approvers as string[] | undefined) ?? []);
-            if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed(row));
+            if (!onAllowlist("approval.click_allowlist_poll", row, approvers)) return void (await notAllowed(row));
             if (await deniedClicker(row)) return void (await notAllowed(row, true));
             const resolved = await PendingGates.resolve(id, approved ? "approved" : "denied", userId);
             if (!resolved) return void (await stale());
@@ -246,7 +273,7 @@ export class ApprovalGate {
         const approvers = new Set<string>(
           (row.payload.approvers as string[] | undefined) ?? [...pending.approvers],
         );
-        if (approvers.size > 0 && !approvers.has(userId)) return void (await notAllowed(row));
+        if (!onAllowlist("approval.click_allowlist", row, approvers)) return void (await notAllowed(row));
         if (await deniedClicker(row)) return void (await notAllowed(row, true));
 
         // Exactly one click wins the guarded UPDATE; a duplicate or a race
@@ -319,6 +346,8 @@ export class ApprovalGate {
   async #resolveApprovers(req: ApprovalRequest): Promise<Set<string>> {
     if (req.persona && req.persona !== "default") {
       const ids = await approversFor(req.persona, req.channel);
+      // Shadow only: the answer above is the one used (it includes the default persona's fallback).
+      listAt({ site: "approval.resolve_approvers", persona: req.persona, teamId: req.app?.teamId, legacy: ids, grants: () => loadGrants(req.persona!), roles: ["approver", "manager"], channelId: req.channel });
       if (ids.length) return new Set(ids);
       console.warn(`[approval-gate] persona=${req.persona} has no approver or manager, nor does the default persona: nobody can approve`);
       return new Set([NOBODY]);
@@ -326,7 +355,7 @@ export class ApprovalGate {
     const chain = this.#defaultChain(req);
     if (chain.size === 0) return chain;
     const grants = await loadGrants("default");
-    const kept = [...chain].filter((u) => !isDenied(grants, u));
+    const kept = [...chain].filter((u) => !deniedAt({ site: "approval.resolve_denied", persona: "default", teamId: req.app?.teamId, userId: u, grants }));
     if (kept.length === chain.size) return chain;
     if (kept.length) return new Set(kept);
     console.warn("[approval-gate] every approver for this request is denied on the default persona: nobody can approve");

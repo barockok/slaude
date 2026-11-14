@@ -67,9 +67,17 @@ function logConflict(what: string): void {
   console.warn(`[domain] ${what} is held by another verified user, both left untouched (needs the console)`);
 }
 
-/** Login: ensure the user, the oidc binding and the verified email binding; move the email on change. */
+/**
+ * Login: ensure the user and the oidc binding, then the email binding; move the
+ * email on change. The email binding is `verified` only when the login proved
+ * the address (`emailProven`: email_verified === true on a real email claim).
+ * Otherwise it is `observed`: ensured on the account's user when nobody holds
+ * it, never moved from another user, and a verified one already held by this
+ * user is left as it is (a state never lowers). A value that is not an email
+ * address makes no email binding.
+ */
 export async function projectLogin(
-  a: { issuer: string; subject: string; email: string; previousEmail: string | null },
+  a: { issuer: string; subject: string; email: string; emailProven?: boolean; previousEmail: string | null },
   tx: DbClient,
 ): Promise<DomainEvent[]> {
   return guardedProjection(tx, "login", [] as DomainEvent[], async () => {
@@ -88,12 +96,22 @@ export async function projectLogin(
       console.warn("[domain] account email does not normalise, email binding skipped");
       return events;
     }
-    const r = await Domain.adoptBinding(
-      { service: "email", kind: "address", workspace: "", value: next, toUserId: userId, state: "verified" },
-      tx,
-    );
-    if (r.conflict) logConflict("account email");
-    events.push(...r.events);
+    if (a.emailProven === true) {
+      const r = await Domain.adoptBinding(
+        { service: "email", kind: "address", workspace: "", value: next, toUserId: userId, state: "verified" },
+        tx,
+      );
+      if (r.conflict) logConflict("account email");
+      events.push(...r.events);
+    } else {
+      // Another user's binding is left exactly as it is: no move, no state change.
+      const key = { service: "email", kind: "address", workspace: "", value: next };
+      const held = await Domain.findBinding(key, tx);
+      if (!held || held.user_id === userId) {
+        const r = await Domain.ensureBinding({ ...key, userId, state: "observed", source: "oidc-login" }, tx);
+        events.push(...r.events);
+      }
+    }
     return events;
   });
 }

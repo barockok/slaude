@@ -74,6 +74,7 @@
             { "path": "deploy/mcp-bridge", "label": "MCP bridge" },
             { "path": "deploy/knowledge-scope", "label": "Knowledge scope" },
             { "path": "deploy/alerts", "label": "Alerts runbook" },
+            { "path": "deploy/access-shadow", "label": "Access shadow metrics" },
             { "path": "deploy/rollback", "label": "Rollback runbook" },
             { "path": "deploy/brain-migration", "label": "Brain migration" }
           ]

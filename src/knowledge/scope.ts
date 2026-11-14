@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sameAt } from "../access/wired";
 import type { SoulData } from "../soul/data";
 
 export type ChannelTrust = "trusted" | "public" | "unknown";
@@ -27,6 +28,8 @@ export interface ScopeInput {
   teamId: string | null;
   /** /1on1 lock owner for this thread, if locked. */
   lockedUser: string | null;
+  /** The workspace the lock was taken in, when known (shadow only). */
+  lockedTeamId?: string | null;
   channelTrust: ChannelTrust;
   isManager: boolean;
   kbSources: string[];
@@ -146,7 +149,7 @@ function baseScope(i: ScopeInput): BrainScope {
     };
   }
   if (i.lockedUser !== null) {
-    if (i.lockedUser === i.userId) {
+    if (sameAt({ site: "kb_scope.lock_owner", persona: i.agentId, teamId: i.teamId, userId: i.userId, otherUserId: i.lockedUser, otherTeamId: i.lockedTeamId })) {
       const own = userSourceId(i.userId);
       return {
         clientId: i.userId,

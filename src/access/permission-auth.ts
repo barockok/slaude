@@ -1,4 +1,5 @@
-import { roleOf } from "./role";
+import { loadGrants } from "./role";
+import { roleAt, sameAt } from "./wired";
 
 export interface PermissionDeciderArgs {
   /** Slack user who clicked the card. */
@@ -14,6 +15,11 @@ export interface PermissionDeciderArgs {
   persona: string | null;
   /** Channel the card was posted in. */
   channel: string | null;
+  /** The workspace the click came from, when the caller knows it. Used only
+   *  by the shadow of the internal-id path; the answer never depends on it. */
+  teamId?: string | null;
+  /** The workspace the lock was taken in (null for a lock written before it was recorded). */
+  lockTeamId?: string | null;
 }
 
 /**
@@ -22,12 +28,14 @@ export interface PermissionDeciderArgs {
  * (channel-aware). A turn with no initiator therefore needs an approver or a
  * manager. The role is `roleOf` over the persona's effective grants (its own
  * soul with per-unit fallback, plus stored grants), so approvers are
- * channel-aware with replace semantics.
+ * channel-aware with replace semantics. The three comparisons run through the
+ * shadow seam (slice C task 14) and still return the string answer.
  */
 export async function canDecidePermission(a: PermissionDeciderArgs): Promise<boolean> {
   if (!a.clicker) return false;
-  if (a.initiator && a.clicker === a.initiator) return true;
-  if (a.lockOwner && a.clicker === a.lockOwner) return true;
-  const role = await roleOf(a.persona, a.clicker, a.channel);
+  const seam = { persona: a.persona, teamId: a.teamId, userId: a.clicker };
+  if (a.initiator && sameAt({ ...seam, site: "permission.initiator_same", otherUserId: a.initiator })) return true;
+  if (a.lockOwner && sameAt({ ...seam, site: "permission.lock_owner_same", otherUserId: a.lockOwner, otherTeamId: a.lockTeamId })) return true;
+  const role = roleAt({ ...seam, site: "permission.role", channelId: a.channel, grants: await loadGrants(a.persona) });
   return role === "approver" || role === "manager";
 }

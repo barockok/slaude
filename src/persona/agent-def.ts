@@ -11,7 +11,7 @@
  */
 import { parse as parseYaml, YAMLParseError } from "yaml";
 import { MANDATE_LINE_MAX, subMandatesOf, type SubMandate } from "../soul/mandate-scope";
-import { SoulDataSchema, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
+import { SoulDataSchema, type AccessEntry, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
 import { channelOf, endsInOpenFence, isCodeFence, parseProactive, parseWindow } from "../soul/proactive";
 import { AgentSchema, BOUNDARY_RE, CHANNEL_ID_RE, DESCRIPTION_MAX, USER_ID_RE, type AgentFile } from "./agent-schema";
 import { anchored, parseRef, refScheme, SRC } from "../refs/parse";
@@ -115,17 +115,19 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
    * a `slack:` reference loses its workspace for now; any other scheme parses
    * but cannot be resolved until records exist, and is refused here.
    */
-  const slackId = (path: string, value: string | number, role: "user" | "channel"): string => {
+  const slackRef = (path: string, value: string | number, role: "user" | "channel"): { id: string; workspace?: string } => {
     const v = String(value);
     if (!v.includes(":")) {
       const writeAs = role === "user" ? "slack:user:<id>" : "slack:channel:<id>";
       warnings.push(`persona '${name}': agent.yaml ${path} is a bare Slack id, which is accepted for one more release; write ${writeAs}`);
-      return v;
+      return { id: v };
     }
     const r = parseRef(v, [role]);
     if (!r.ok) return fail(path, `is not a valid reference: ${r.reason}`);
-    return resolvedSlackId(path, r.ref);
+    const id = resolvedSlackId(path, r.ref);
+    return r.ref.kind === "external" && r.ref.workspace ? { id, workspace: r.ref.workspace } : { id };
   };
+  const slackId = (path: string, value: string | number, role: "user" | "channel"): string => slackRef(path, value, role).id;
   const resolvedSlackId = (path: string, ref: Ref): string => {
     if (ref.kind === "external" && ref.service === "slack") return ref.id;
     if (ref.kind === "selector") return fail(path, "is a selector, which is not a reference to one record and cannot be used here");
@@ -207,15 +209,27 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   });
 
   const access = file.access ?? {};
+  const accessEntries: AccessEntry[] = [];
+  /** Read one access reference and keep its typed form beside the bare id the legacy arrays carry. */
+  const entryId = (
+    path: string,
+    value: string | number,
+    e: Pick<AccessEntry, "field" | "kind" | "role"> & Partial<Pick<AccessEntry, "deny" | "dmOnly" | "channel">>,
+  ): string => {
+    const r = slackRef(path, value, e.kind);
+    accessEntries.push({ deny: false, dmOnly: false, ...e, id: r.id, ...(r.workspace ? { workspace: r.workspace } : {}) });
+    return r.id;
+  };
   const channelLists = access.channels ?? {};
   const approvers: ApproverEntry[] = [];
   (access.approvers ?? []).forEach((e, i) => {
+    const channel = e.channel ? slackId(`access.approvers[${i}].channel`, e.channel, "channel") : undefined;
     const entryOut: ApproverEntry = {
-      userId: slackId(`access.approvers[${i}].user`, e.user, "user"),
+      userId: entryId(`access.approvers[${i}].user`, e.user, { field: "approvers", kind: "user", role: "approver", ...(channel ? { channel } : {}) }),
       scope: e.scope ?? "anything",
       catchall: typeof e.catchall === "boolean" ? e.catchall : e.scope == null,
     };
-    if (e.channel) channelBlock(slackId(`access.approvers[${i}].channel`, e.channel, "channel")).approvers.push(entryOut);
+    if (channel) channelBlock(channel).approvers.push(entryOut);
     else approvers.push(entryOut);
   });
   const redact = access.redact ?? [];
@@ -226,24 +240,26 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
       fail(`access.redact[${i}]`, "is not a valid regular expression");
     }
   });
-  const manager = access.manager ? slackId("access.manager", access.manager, "user") : undefined;
-  const backupManager = access.backupManager ? slackId("access.backupManager", access.backupManager, "user") : undefined;
-  const idList = (path: string, list: string[] | null | undefined, role: "user" | "channel") => (list ?? []).map((v, i) => slackId(`${path}[${i}]`, v, role));
+  const manager = access.manager ? entryId("access.manager", access.manager, { field: "manager", kind: "user", role: "manager" }) : undefined;
+  const backupManager = access.backupManager ? entryId("access.backupManager", access.backupManager, { field: "backupManager", kind: "user", role: "manager" }) : undefined;
+  const idList = (path: string, list: string[] | null | undefined, e: Pick<AccessEntry, "field" | "kind" | "role"> & Partial<Pick<AccessEntry, "deny" | "dmOnly">>) =>
+    (list ?? []).map((v, i) => entryId(`${path}[${i}]`, v, e));
 
   const soulData = SoulDataSchema.parse({
     identity: { name, ...(description ? { role: description } : {}) },
     manager: manager ? { userId: manager } : {},
     backupManager: backupManager ? { userId: backupManager } : {},
-    allowedChannels: idList("access.channels.public", channelLists.public, "channel"),
-    trustedChannels: idList("access.channels.trusted", channelLists.trusted, "channel"),
-    blockedUsers: idList("access.blocked", access.blocked, "user"),
-    dmAllowedUsers: idList("access.dm", access.dm, "user"),
+    allowedChannels: idList("access.channels.public", channelLists.public, { field: "channels.public", kind: "channel", role: "member" }),
+    trustedChannels: idList("access.channels.trusted", channelLists.trusted, { field: "channels.trusted", kind: "channel", role: "member" }),
+    blockedUsers: idList("access.blocked", access.blocked, { field: "blocked", kind: "user", role: "member", deny: true }),
+    dmAllowedUsers: idList("access.dm", access.dm, { field: "dm", kind: "user", role: "member", dmOnly: true }),
     approvers,
     redactPatterns: redact,
     approvalTimeoutSeconds: access.approvalTimeoutSeconds ?? 0,
     ...(global?.trim() ? { mandate: global.trim() } : {}),
     channelOverrides: [...channels.values()],
     scopeMandates: scopes,
+    accessEntries,
   });
 
   // Per-channel session and proactive settings compile to the `## Channel` block

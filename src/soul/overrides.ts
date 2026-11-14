@@ -1,3 +1,4 @@
+import { sameAt } from "../access/wired";
 import type { SoulData } from "./data";
 import * as SO from "../db/soul-overrides";
 import type { OverrideField, OverrideRow } from "../db/soul-overrides";
@@ -44,7 +45,7 @@ export type MutateResult =
  *  enforces id shape + the self-lockout guard, and is shared by slash + MCP. */
 export async function mutateOverride(
   i: { field: FieldAlias | OverrideField; action: "add" | "remove"; value: string; by: string },
-  opts: { managerId?: string },
+  opts: { managerId?: string; /** The workspace the change is made in; used only by the shadow of the self-lockout compare. */ teamId?: string | null; persona?: string | null },
 ): Promise<MutateResult> {
   const field: OverrideField =
     (FIELD_ALIASES as Record<string, OverrideField>)[i.field] ?? (i.field as OverrideField);
@@ -54,7 +55,7 @@ export async function mutateOverride(
   if (!(isChannel ? CHANNEL_RE : USER_RE).test(value)) {
     return { ok: false, reason: `\`${value}\` is not a valid ${isChannel ? "channel (C…/G…/D…)" : "user (U…/W…)"} id` };
   }
-  if (field === "blockedUsers" && i.action === "add" && opts.managerId && value === opts.managerId) {
+  if (field === "blockedUsers" && i.action === "add" && opts.managerId && sameAt({ site: "soul_override.self_lockout", persona: opts.persona, teamId: opts.teamId, userId: value, otherUserId: opts.managerId })) {
     return { ok: false, reason: "refusing to block the manager (self-lockout guard)" };
   }
   await SO.upsert({ field, value, action: i.action, created_by: i.by });

@@ -25,6 +25,7 @@
  *   lesson-promotion  → the decision is recorded; the operator acts in git.
  * A write that fails puts the row back to open, so it can be clicked again.
  */
+import { sameAt } from "../access/wired";
 import { auditSkill } from "../audit/events";
 import * as Proposals from "../db/proposals";
 import { emitAudit } from "../audit/emit";
@@ -226,8 +227,10 @@ export async function postPersonProposals(a: { agentId: string; userId: string; 
 
 export interface DecideDeps {
   /** The managers (Slack user ids) of the persona named `personaName`: the
-   *  persona that owns the proposal. May be async; always awaited here. */
-  managers: (personaName: string) => string[] | Promise<string[]>;
+   *  persona that owns the proposal. May be async; always awaited here.
+   *  `teamId` is the workspace the click came from, when the interaction named
+   *  one; the answer does not depend on it today (slice C task 12 plumbing). */
+  managers: (personaName: string, teamId?: string) => string[] | Promise<string[]>;
   call: BrainOpCall;
   now: () => Date;
   /** The brain can take a write without booting (brainReady). Absent: assumed open. */
@@ -237,20 +240,22 @@ export interface DecideDeps {
 export type ClickResult = { ok: true; line: string } | { ok: false; text: string };
 
 /** Who may decide a proposal: its person for a person's, the manager or backup for the manager's. */
-export function mayDecide(p: Pick<Proposal, "toKind" | "toUser">, by: string, managers: readonly string[]): boolean {
-  if (p.toKind === "person") return p.toUser !== null && p.toUser !== "" && by === p.toUser;
-  return managers.includes(by);
+export function mayDecide(p: Pick<Proposal, "toKind" | "toUser">, by: string, managers: readonly string[], seam: { persona?: string | null; teamId?: string | null } = {}): boolean {
+  if (p.toKind === "person") return p.toUser !== null && p.toUser !== "" && sameAt({ persona: seam.persona, teamId: seam.teamId, site: "proposal.person_decider", userId: by, otherUserId: p.toUser });
+  return managers.some((mgr) => sameAt({ persona: seam.persona, teamId: seam.teamId, site: "proposal.manager_decider", userId: by, otherUserId: mgr }));
 }
 
 /** Apply an approved team-fact or promote through memory_save, as `by`, with the click as the approval. */
-async function applyWrite(p: Proposal, w: { pages: PageArg[]; target: MemoizeTarget }, by: string, deps: DecideDeps): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const managers = await deps.managers(personaOfAgent(p.agentId));
-  const isManager = managers.includes(by);
+async function applyWrite(p: Proposal, w: { pages: PageArg[]; target: MemoizeTarget }, by: string, deps: DecideDeps, teamId?: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const managers = await deps.managers(personaOfAgent(p.agentId), teamId);
+  const isManager = managers.some((mgr) => sameAt({ site: "proposal.apply_is_manager", persona: personaOfAgent(p.agentId), teamId, userId: by, otherUserId: mgr }));
   // Shared memory is the team's: only the manager or backup ever writes it
   // from a card, whatever the gate below would allow.
   if (w.target === "shared" && !isManager) return { ok: false, reason: "only the manager can add to shared memory" };
   // The approver is the actor; a card is never someone's /1on1 turn, so no
-  // lock and no profile: the write lands in shared or the agent's own slice.
+  // lock and no profile: the write lands in shared or the agent's own slice. The
+  // click's workspace therefore goes to the managers lookup only, never into the
+  // gate: a team here would add the approver's profile source to the scope.
   const gate: GateInput = { userId: by, teamId: null, interactive: false, lockedUser: null, channelTrust: "trusted", isManager, agentId: p.agentId, threadKey: null };
   const scope = resolveBrainScope({ userId: by, teamId: null, lockedUser: null, channelTrust: "trusted", isManager, kbSources: [], agentId: p.agentId });
   const d: BrainToolDeps = {
@@ -299,7 +304,7 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   const p = await Proposals.get(a.id);
   if (!p || p.kind === Proposals.SKILL_RETIRED_KIND) return { ok: false, text: ":grey_question: this proposal no longer exists" };
   if (!fromCardApp(p, a.from)) return { ok: false, text: WRONG_APP };
-  if (!mayDecide(p, a.by, await deps.managers(personaOfAgent(p.agentId)))) {
+  if (!mayDecide(p, a.by, await deps.managers(personaOfAgent(p.agentId), a.from?.teamId), { persona: personaOfAgent(p.agentId), teamId: a.from?.teamId })) {
     return { ok: false, text: `:no_entry: <@${a.by}>, only ${p.toKind === "person" ? "the person it is for" : "the manager"} can decide this proposal. It stays open.` };
   }
   const at = deps.now().getTime();
@@ -329,7 +334,7 @@ export async function decideProposal(a: { id: string; verb: "approve" | "reject"
   }
   let res: { ok: true } | { ok: false; reason: string };
   try {
-    res = await applyWrite(p, w, a.by, deps);
+    res = await applyWrite(p, w, a.by, deps, a.from?.teamId);
   } catch (e) {
     res = { ok: false, reason: e instanceof Error ? e.message : String(e) };
   }
@@ -375,7 +380,7 @@ function auditProposal(p: Proposal, by: string, decision: "allow" | "deny", outc
 export async function restoreRetiredSkill(a: { id: string; by: string; from?: ClickOrigin }, deps: Pick<DecideDeps, "managers" | "now">): Promise<ClickResult> {
   const r = await Proposals.get(a.id);
   if (!r || r.kind !== Proposals.SKILL_RETIRED_KIND) return { ok: false, text: ":grey_question: this retirement no longer exists" };
-  if (!(await deps.managers(personaOfAgent(r.agentId))).includes(a.by)) return { ok: false, text: `:no_entry: <@${a.by}>, only the manager can restore a skill.` };
+  if (!(await deps.managers(personaOfAgent(r.agentId), a.from?.teamId)).some((mgr) => sameAt({ site: "proposal.restore_manager", persona: personaOfAgent(r.agentId), teamId: a.from?.teamId, userId: a.by, otherUserId: mgr }))) return { ok: false, text: `:no_entry: <@${a.by}>, only the manager can restore a skill.` };
   if (!fromCardApp(r, a.from)) return { ok: false, text: WRONG_APP };
   if (r.status !== "approved") return { ok: false, text: ":lock: this skill was already restored" };
   const pl = r.payload as Partial<Proposals.SkillRetiredPayload>;

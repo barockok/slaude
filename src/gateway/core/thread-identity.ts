@@ -8,6 +8,7 @@
  */
 import * as OneOnOne from "../../db/one-on-one";
 import { activeRemoteTarget } from "../../remote/active";
+import { sameAt } from "../../access/wired";
 import { env } from "../../config/env";
 import type { RemoteClaim } from "../../remote/fingerprint";
 
@@ -31,7 +32,7 @@ export async function threadIdentity(
   // Remote mode (spec §4.5): a user-machine environment is signed in only for
   // its owner; a provisioned sandbox carries no personal secrets (spec §4).
   const target = env.remote.enabled() ? await activeRemoteTarget(channel, thread) : null;
-  const applies = !!target && (target.env?.trust === "provisioned" || target.userId === runAsUser);
+  const applies = !!target && (target.env?.trust === "provisioned" || sameAt({ site: "remote.thread_identity_run_as", persona: null, teamId: target.teamId, userId: target.userId, otherUserId: runAsUser }));
   return {
     runAsUser,
     lock: lockRow ? { user: lockRow.locked_user, openScope: lockRow.open_scope } : null,

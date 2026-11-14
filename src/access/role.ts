@@ -47,8 +47,15 @@ export function isDenied(grants: readonly Grant[], userId: string): boolean {
  * Every user whose {@link roleFromGrants} on `channelId` is one of `roles`,
  * over already loaded grants (soul-derived and stored user grants). Sync.
  */
+/** A subject written as a typed reference or an address: `email:...`, `user:...`, `slack:user:...`, `a@b`. Never a bare Slack id. */
+export const isTypedSubject = (id: string): boolean => id.includes(":") || id.includes("@");
+
 export function usersWithRole(grants: readonly Grant[], roles: readonly Role[], channelId?: string | null): string[] {
-  const users = new Set(grants.filter((g) => g.subjectKind === "user" && !g.deny).map((g) => g.subjectId));
+  // Only Slack user ids: the result is used to DM people and to match clicks, and
+  // an `email:` or `user:` subject is neither. Until the access flip (slice C,
+  // rc.20) such a subject must also never empty an allowlist, so it is dropped here.
+  // Only typed subjects (a colon or an at sign) are dropped; any other id is kept exactly as before.
+  const users = new Set(grants.filter((g) => g.subjectKind === "user" && !g.deny && !isTypedSubject(g.subjectId)).map((g) => g.subjectId));
   return [...users].filter((u) => {
     const r = roleFromGrants(grants, u, channelId);
     return r !== null && roles.includes(r);
@@ -157,8 +164,15 @@ export async function approversFor(personaName: string, channelId?: string | nul
   return usersWithRole(await loadGrants("default"), ["manager"]);
 }
 
-/** `roleFromGrants` over {@link loadGrants}; `personaName` is the persona NAME. */
-export async function roleOf(personaName: string | null | undefined, userId: string, channelId?: string | null): Promise<Role | null> {
+/**
+ * `roleFromGrants` over {@link loadGrants}; `personaName` is the persona NAME.
+ * `teamId` is the workspace the user spoke in, when the caller knows it. The
+ * answer never depends on it (a Slack id is compared as a string until the
+ * access flip, slice C task 20); it is accepted so every caller can pass the
+ * team now and the seam wiring (`src/access/wired.ts`) can read it.
+ */
+export async function roleOf(personaName: string | null | undefined, userId: string, channelId?: string | null, teamId?: string | null): Promise<Role | null> {
+  void teamId;
   return roleFromGrants(await loadGrants(personaName), userId, channelId);
 }
 

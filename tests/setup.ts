@@ -56,6 +56,15 @@ afterEach(() => stopRunningLoops());
 // after each test so none lands after a wipe or a closed database in the next one.
 afterEach(() => flushFirstSightWork());
 
+// Access shadows run detached. Settle them after each test, and drop the actor and lookup
+// caches and the mismatch log map, so no shadow, cached actor or log throttle leaks into the next test.
+afterEach(async () => {
+  const { settleShadows } = await import("../src/access/wired");
+  await settleShadows();
+  (await import("../src/refs/actor")).invalidateActors();
+  (await import("../src/access/decide")).__resetDecide();
+});
+
 // Real-PG leg only: unlike the sqlite/PGLite legs (fresh store per run), the
 // test Postgres persists across runs while most tests emit deterministic
 // event ids, thread ts values and gate tokens. Durable rows from a previous

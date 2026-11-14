@@ -54,6 +54,7 @@ const NO_TENANT_TABLES = new Set([
   "bindings",
   "boundaries",
   "user_aliases",
+  "link_token_uses", // single-use ledger of portal link tokens (0040), keyed by the token id, like accounts
   "node_plugins", // a node credential is deployment-global, like node_revocations
 ]);
 

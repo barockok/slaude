@@ -353,6 +353,33 @@ describe("ApprovalGate", () => {
       });
     });
 
+    test("a named persona whose only stored approver is a non-Slack subject falls back to the default managers, never to nobody", async () => {
+      const alpha = { name: "alpha", slackUserId: "U0ALPHAP", outClient: null, soulJson: {} } as any;
+      setPersonaRegistry({
+        lookupByUserId: () => null, lookupByName: (n) => (n === "alpha" ? alpha : null), list: () => [alpha],
+        isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+      });
+      const planted = (role: "approver" | "manager"): Grant => ({ subjectKind: "user", subjectId: "email:a@example.com", role, deny: false, dmOnly: false, source: "console" });
+      __setGrantsReader(async (persona) => (persona === "alpha" ? [planted("approver"), planted("manager")] : []));
+      try {
+        const f = fakeApp();
+        const gate = new ApprovalGate(f.app, []);
+        let resolved = false;
+        setSoulData(SoulDataSchema.parse({ manager: { userId: "UDEFMGR" } }));
+        const p = gate.request({ channel: "CPLAIN", threadTs: "T", summary: "x", persona: "alpha" }).then((d) => ((resolved = true), d));
+        const id = await approveId(f);
+        await f.fire(id, "U0RANDOM1");
+        await new Promise((r) => setTimeout(r, 5));
+        expect(resolved).toBe(false);
+        await f.fire(id, "UDEFMGR");
+        expect(await p).toMatchObject({ approved: true, by: "UDEFMGR" });
+      } finally {
+        __resetPersonaRegistry();
+        __setGrantsReader(null);
+        __resetSoulDataMemo();
+      }
+    });
+
     test("a named persona: a deny added after the card was posted refuses the click", async () => {
       const alpha = { name: "alpha", slackUserId: "U0ALPHAP", outClient: null, soulJson: { manager: { userId: "UALPHAMGR" }, approvers: [{ userId: "UALPHAAPP", scope: "anything", catchall: true }] } } as any;
       setPersonaRegistry({

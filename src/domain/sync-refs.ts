@@ -40,13 +40,22 @@ export interface RecordEntry {
 
 export class RefRefusal extends Error {}
 
-const bareUser = (id: string): Ref => ({ kind: "external", service: "slack", type: "user", id });
-const bareChannel = (id: string): Ref => ({ kind: "external", service: "slack", type: "channel", id });
+const slackRef = (type: "user" | "channel", id: string, workspace?: string): Ref => ({ kind: "external", service: "slack", type: type, id, ...(workspace ? { workspace } : {}) });
 
 /** Every reference a compiled persona carries. Ids that are not Slack-shaped are left to the compiler's own check. */
 export function collectRefs(persona: string, soul: SoulData, soulText: string): RefUse[] {
   const out: RefUse[] = [];
   const add = (field: string, ref: Ref) => out.push({ persona, field, ref });
+  // The compiled arrays carry bare ids; `accessEntries` remembers the workspace the author wrote. An id written
+  // with two different workspaces is left bare (it then needs the tenant's single workspace, or is refused).
+  const written = new Map<string, string | null>();
+  for (const e of soul.accessEntries ?? []) {
+    const k = `${e.kind}:${e.id}`;
+    const w = e.workspace ?? null;
+    written.set(k, !written.has(k) || written.get(k) === w ? w : null);
+  }
+  const bareUser = (id: string): Ref => slackRef("user", id, written.get(`user:${id}`) ?? undefined);
+  const bareChannel = (id: string): Ref => slackRef("channel", id, written.get(`channel:${id}`) ?? undefined);
   if (soul.manager?.userId) add("access.manager", bareUser(soul.manager.userId));
   if (soul.backupManager?.userId) add("access.backupManager", bareUser(soul.backupManager.userId));
   soul.approvers?.forEach((a, i) => add(`access.approvers[${i}].user`, bareUser(a.userId)));

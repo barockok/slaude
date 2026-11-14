@@ -25,7 +25,8 @@
 import { backgroundAgentId } from "../background/skill-check";
 import * as OneOnOne from "../db/one-on-one";
 import type { SlackContext } from "../gateway/slack/mcp-tools";
-import { loadGrants, usersWithRole } from "../access/role";
+import { loadGrants } from "../access/role";
+import { approversAt, sameAt } from "../access/wired";
 import { brainCall } from "../knowledge/brain";
 import { SUPERSEDED_TAG, supersededSlugs, type BrainOpCall } from "../knowledge/memory-trail";
 import { agentSourceId, type BrainScope } from "../knowledge/scope";
@@ -62,9 +63,9 @@ const mention = (id: string) => `<@${id}>`;
  * check as the admin commands): its managers for global and DM rules, its
  * managers and the channel's approvers for a channel rule.
  */
-async function ruleApprovers(personaName: string | null | undefined, channel: string | null): Promise<string[]> {
+async function ruleApprovers(personaName: string | null | undefined, channel: string | null, teamId?: string | null): Promise<string[]> {
   const grants = await loadGrants(personaName);
-  return channel ? usersWithRole(grants, ["manager", "approver"], channel) : usersWithRole(grants, ["manager"]);
+  return approversAt({ site: "rule_tool.approvers", persona: personaName, teamId, grants, roles: channel ? ["manager", "approver"] : ["manager"], channelId: channel });
 }
 
 /** True when the running turn holds exactly one sender: this person, from Slack. */
@@ -73,7 +74,7 @@ async function ownTurn(ctx: SlackContext, userId: string): Promise<boolean> {
   if (!senders || senders.length !== 1) return false;
   const s = senders[0]!;
   // A team on both sides must agree; mono records none when Slack sent none.
-  return s.origin === "slack" && s.userId === userId && (!s.teamId || !ctx.teamId || s.teamId === ctx.teamId);
+  return s.origin === "slack" && sameAt({ site: "rule_tool.own_turn", persona: ctx.personaId, teamId: ctx.teamId, userId: s.userId, otherUserId: userId, otherTeamId: s.teamId }) && (!s.teamId || !ctx.teamId || s.teamId === ctx.teamId);
 }
 
 /** Whitespace-collapsed and lowercased, so a quote matches its message however it was spaced or cased. */
@@ -151,8 +152,8 @@ export async function proactiveRule(
   }
 
   // Lowering here applies at once; raising, or any global rule, needs an approver for the scope.
-  const approvers = await ruleApprovers(ctx.personaId, channel);
-  const canApprove = (u: string) => approvers.includes(u);
+  const approvers = await ruleApprovers(ctx.personaId, channel, ctx.teamId);
+  const canApprove = (u: string) => approvers.some((a) => sameAt({ site: "rule_tool.can_approve", persona: ctx.personaId, teamId: ctx.teamId, userId: u, otherUserId: a }));
   let approvedBy: string | undefined;
   if (((raising || scope === "global") && !canApprove(userId)) || unverified) {
     // Global and DM: only the manager or backup, and a card in this thread

@@ -22,6 +22,8 @@
  * when it was sent, and also when there is nobody to send it to (no manager
  * configured, logged); `error` when every post failed.
  */
+import { loadGrants } from "../access/role";
+import { listAt } from "../access/wired";
 import * as Runs from "../db/background-runs";
 import type { BackgroundRun } from "../db/background-runs";
 import { previousSlotState, setSlotState } from "../db/background-slots";
@@ -152,7 +154,10 @@ export function renderDigest(input: DigestInput): { text: string; blocks: Block[
 
 /** The digest's one recipient: the manager, else the backup manager (only when no manager is set), else nobody. */
 export function digestRecipientOf(soul: { manager: { userId?: string }; backupManager: { userId?: string } }): string | null {
-  return soul.manager.userId || soul.backupManager.userId || null;
+  const legacy = soul.manager.userId || soul.backupManager.userId || null;
+  // Slice C task 18: shadowed against the default persona's grants (no workspace on the call, so counted no_team).
+  listAt({ site: "digest.recipient", persona: "default", teamId: null, legacy: legacy ? [legacy] : [], roles: ["manager"], grants: () => loadGrants("default") });
+  return legacy;
 }
 
 /** The Monday-to-Sunday week before the persona-local day `today`. */

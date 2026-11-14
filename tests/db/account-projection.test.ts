@@ -21,7 +21,7 @@ afterEach(() => {
 
 describe("account projection: login", () => {
   test("login creates the user, the oidc binding and the verified email binding", async () => {
-    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "Alice@Example.com" });
+    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "Alice@Example.com", emailProven: true });
     const o = await Domain.findBinding(oidc("sub-1"));
     const e = await Domain.findBinding(mail("alice@example.com"));
     expect(o?.state).toBe("verified");
@@ -31,16 +31,16 @@ describe("account projection: login", () => {
   });
 
   test("a second login adds nothing", async () => {
-    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
-    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
+    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     expect(await count("users")).toBe(1);
     expect(await count("bindings")).toBe(2);
   });
 
   test("an email change moves the verified email binding", async () => {
-    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     const userId = (await Domain.findBinding(oidc("sub-1")))!.user_id;
-    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice.new@example.com" });
+    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice.new@example.com", emailProven: true });
     expect(await Domain.findBinding(mail("alice@example.com"))).toBeNull();
     expect((await Domain.findBinding(mail("alice.new@example.com")))?.user_id).toBe(userId);
     expect(await count("users")).toBe(1);
@@ -48,7 +48,7 @@ describe("account projection: login", () => {
 
   test("an email held by an observed user is adopted, with an alias", async () => {
     const seen = await Domain.ensureBinding({ ...mail("alice@example.com"), state: "observed", source: "test" });
-    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     const e = await Domain.findBinding(mail("alice@example.com"));
     expect(e?.state).toBe("verified");
     expect(e?.user_id).toBe((await Domain.findBinding(oidc("sub-1")))!.user_id);
@@ -58,8 +58,8 @@ describe("account projection: login", () => {
 
   test("a verified-vs-verified email clash keeps both and does not fail the login", async () => {
     const warn = spyOn(console, "warn").mockImplementation(() => {});
-    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "shared@example.com" });
-    const other = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-2", email: "shared@example.com" });
+    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "shared@example.com", emailProven: true });
+    const other = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-2", email: "shared@example.com", emailProven: true });
     expect(other.subject).toBe("sub-2");
     const a = (await Domain.findBinding(oidc("sub-1")))!.user_id;
     const b = (await Domain.findBinding(oidc("sub-2")))!.user_id;
@@ -70,7 +70,7 @@ describe("account projection: login", () => {
 
   test("an email that cannot normalise is skipped with a warning", async () => {
     const warn = spyOn(console, "warn").mockImplementation(() => {});
-    const acct = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "not an email" });
+    const acct = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "not an email", emailProven: true });
     expect(acct.email).toBe("not an email");
     expect(await Domain.findBinding(oidc("sub-1"))).not.toBeNull();
     expect(await count("bindings")).toBe(1);
@@ -84,7 +84,7 @@ describe("account projection: login", () => {
       throw new Error("unreachable");
     });
     try {
-      const acct = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+      const acct = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
       expect((await Accounts.findAccountBySubject(ISS, "sub-1"))?.id).toBe(acct.id);
       expect(await count("bindings")).toBe(0);
       expect(await count("users")).toBe(0);
@@ -93,8 +93,94 @@ describe("account projection: login", () => {
       bad.mockRestore();
     }
     // The next login repairs it.
-    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     expect(await count("bindings")).toBe(2);
+  });
+});
+
+describe("account projection: email proof", () => {
+  const login = (subject: string, email: string, emailProven?: boolean) =>
+    Accounts.upsertAccount({ issuer: ISS, subject, email, ...(emailProven === undefined ? {} : { emailProven }) });
+
+  test("an unproven login (absent or false) binds the email as observed, never verified", async () => {
+    await login("sub-1", "alice@example.com");
+    expect((await Domain.findBinding(mail("alice@example.com")))?.state).toBe("observed");
+    await login("sub-2", "bob@example.com", false);
+    expect((await Domain.findBinding(mail("bob@example.com")))?.state).toBe("observed");
+    // the oidc binding is the account's own and stays verified
+    expect((await Domain.findBinding(oidc("sub-1")))?.state).toBe("verified");
+  });
+
+  test("the observed email binding sits on the account's user", async () => {
+    await login("sub-1", "alice@example.com");
+    expect((await Domain.findBinding(mail("alice@example.com")))!.user_id).toBe((await Domain.findBinding(oidc("sub-1")))!.user_id);
+  });
+
+  test("an unproven login never takes a binding another user holds, whatever its state", async () => {
+    const seen = await Domain.ensureBinding({ ...mail("alice@example.com"), state: "observed", source: "test" });
+    await login("sub-1", "alice@example.com");
+    expect((await Domain.findBinding(mail("alice@example.com")))!.user_id).toBe(seen.userId);
+    expect(await count("user_aliases")).toBe(0);
+  });
+
+  test("a verified binding held by another user is never taken, proven or not", async () => {
+    spyOn(console, "warn").mockImplementation(() => {});
+    await login("sub-1", "shared@example.com", true);
+    const holder = (await Domain.findBinding(mail("shared@example.com")))!.user_id;
+    await login("sub-2", "shared@example.com", false);
+    await login("sub-3", "shared@example.com", true);
+    const b = (await Domain.findBinding(mail("shared@example.com")))!;
+    expect(b.user_id).toBe(holder);
+    expect(b.state).toBe("verified");
+  });
+
+  test("an unproven login does not lower a verified binding of the same user", async () => {
+    await login("sub-1", "alice@example.com", true);
+    await login("sub-1", "alice@example.com", false);
+    expect((await Domain.findBinding(mail("alice@example.com")))?.state).toBe("verified");
+  });
+
+  test("a later login with proof raises observed to verified", async () => {
+    await login("sub-1", "alice@example.com", false);
+    expect((await Domain.findBinding(mail("alice@example.com")))?.state).toBe("observed");
+    await login("sub-1", "alice@example.com", true);
+    expect((await Domain.findBinding(mail("alice@example.com")))?.state).toBe("verified");
+  });
+
+  test("a proven login adopts an email held by an unverified user", async () => {
+    await Domain.ensureBinding({ ...mail("alice@example.com"), state: "observed", source: "test" });
+    await login("sub-1", "alice@example.com", true);
+    expect((await Domain.findBinding(mail("alice@example.com")))?.state).toBe("verified");
+  });
+
+  test("an identity that is not an email makes no email binding at all", async () => {
+    spyOn(console, "warn").mockImplementation(() => {});
+    await login("sub-1", "alice", false);
+    await login("sub-2", "bob", true);
+    expect(await count("bindings")).toBe(2); // the two oidc bindings only
+  });
+
+  test("an email change deletes only a verified old binding of this user", async () => {
+    await login("sub-1", "old@example.com", true);
+    await login("sub-1", "new@example.com", false);
+    expect(await Domain.findBinding(mail("old@example.com"))).toBeNull();
+    expect((await Domain.findBinding(mail("new@example.com")))?.state).toBe("observed");
+    // an observed old binding is left in place
+    await login("sub-1", "newer@example.com", false);
+    expect((await Domain.findBinding(mail("new@example.com")))?.state).toBe("observed");
+    // and a verified old binding of ANOTHER user is never deleted by this account's change
+    await login("sub-2", "theirs@example.com", true);
+    await db.run("UPDATE accounts SET email = 'theirs@example.com' WHERE subject = 'sub-1'");
+    await login("sub-1", "mine@example.com", true);
+    expect((await Domain.findBinding(mail("theirs@example.com")))?.state).toBe("verified");
+  });
+
+  test("the account row stores whether the last login was proven", async () => {
+    const a = await login("sub-1", "alice@example.com", true);
+    expect(Boolean(a.email_proven)).toBe(true);
+    const b = await login("sub-1", "alice@example.com", false);
+    expect(Boolean(b.email_proven)).toBe(false);
+    expect(Boolean((await login("sub-9", "z@example.com")).email_proven)).toBe(false);
   });
 });
 
@@ -103,7 +189,7 @@ describe("account projection: slack link", () => {
     Accounts.linkSlackIdentity({ teamId: TEAM, slackUserId: id, accountId, via: "signed-link" });
 
   test("link creates the verified slack binding on the account's user", async () => {
-    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     expect(await link(a.id)).toEqual({ ok: true, created: true });
     const s = await Domain.findBinding(slack("U0EXAMPLE"));
     expect(s?.state).toBe("verified");
@@ -112,7 +198,7 @@ describe("account projection: slack link", () => {
 
   test("an observed user for that slack id is adopted and aliased", async () => {
     const seen = await Domain.ensureBinding({ ...slack("U0EXAMPLE"), state: "observed", source: "test" });
-    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     await link(a.id);
     const s = await Domain.findBinding(slack("U0EXAMPLE"));
     expect(s?.user_id).toBe((await Domain.findBinding(oidc("sub-1")))!.user_id);
@@ -120,8 +206,8 @@ describe("account projection: slack link", () => {
   });
 
   test("a replayed link is a no-op and a link to another account is refused", async () => {
-    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
-    const b = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-2", email: "bob@example.com" });
+    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
+    const b = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-2", email: "bob@example.com", emailProven: true });
     await link(a.id);
     const before = await count("bindings");
     expect(await link(a.id)).toEqual({ ok: true, created: false });
@@ -132,7 +218,7 @@ describe("account projection: slack link", () => {
 
   test("a projection error does not fail the link", async () => {
     spyOn(console, "warn").mockImplementation(() => {});
-    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     const bad = spyOn(Domain, "adoptBinding").mockImplementation(async (_i, tx) => {
       await tx!.run("INSERT INTO bindings (id) VALUES ('broken')");
       throw new Error("unreachable");
@@ -147,7 +233,7 @@ describe("account projection: slack link", () => {
   });
 
   test("unlink removes the projected binding", async () => {
-    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     await link(a.id);
     expect(await Accounts.unlinkSlackIdentity(TEAM, "U0EXAMPLE", a.id)).toBe(true);
     expect(await Domain.findBinding(slack("U0EXAMPLE"))).toBeNull();
@@ -155,15 +241,15 @@ describe("account projection: slack link", () => {
   });
 
   test("unlink by a different account removes nothing", async () => {
-    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
-    const b = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-2", email: "bob@example.com" });
+    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
+    const b = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-2", email: "bob@example.com", emailProven: true });
     await link(a.id);
     expect(await Accounts.unlinkSlackIdentity(TEAM, "U0EXAMPLE", b.id)).toBe(false);
     expect(await Domain.findBinding(slack("U0EXAMPLE"))).not.toBeNull();
   });
 
   test("unlink leaves a slack binding that belongs to another user", async () => {
-    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     await link(a.id);
     const other = await Domain.ensureUser();
     await db.run("UPDATE bindings SET user_id = ? WHERE service = 'slack'", [other.id]);
@@ -174,7 +260,7 @@ describe("account projection: slack link", () => {
 
 describe("account projection: deletion", () => {
   test("deleting an account drops oidc and email bindings, demotes slack, and removes an empty user", async () => {
-    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     await Accounts.linkSlackIdentity({ teamId: TEAM, slackUserId: "U0EXAMPLE", accountId: a.id, via: "signed-link" });
     const userId = (await Domain.findBinding(oidc("sub-1")))!.user_id;
     expect(await Accounts.deleteAccount(a.id)).toBe(true);
@@ -188,7 +274,7 @@ describe("account projection: deletion", () => {
   });
 
   test("an account with no slack link leaves no user behind", async () => {
-    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com" });
+    const a = await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "alice@example.com", emailProven: true });
     await Accounts.deleteAccount(a.id);
     expect(await count("users")).toBe(0);
     expect(await count("bindings")).toBe(0);

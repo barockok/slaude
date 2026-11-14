@@ -1,5 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { db, dbDialect } from "./schema";
+import { formatRef, parseRef } from "../refs/parse";
+import type { Ref } from "../refs/types";
+import * as Domain from "./domain";
 
 /**
  * Stored agent grants (migration 0032): who may use or administer a persona,
@@ -32,13 +35,20 @@ export interface AgentGrantRow {
   /** Epoch ms; null = never. */
   expiresAt: number | null;
   note: string | null;
+  /** The typed reference of a user or channel subject (`slack:user:T0.../U...`); null for a workspace subject and for old rows. Slack only until the access flip. */
+  subjectRef: string | null;
+  /** The internal user the subject resolved to when the grant was made (or the reconciler later filled); null when unknown. */
+  subjectUserId: string | null;
 }
 
 export interface CreateGrantInput {
   tenantId?: string;
   persona: string;
-  subjectKind: SubjectKind;
-  subjectId: string;
+  /** With `subject`, may be left out; when given it must agree with the reference. */
+  subjectKind?: SubjectKind;
+  subjectId?: string;
+  /** A typed Slack reference naming the subject (`slack:user:T0EXAMPLE/U0EXAMPLE`, `slack:channel:C0EXAMPLE`). Any other scheme is refused until the access flip. */
+  subject?: string;
   role: GrantRole;
   deny?: boolean;
   dmOnly?: boolean;
@@ -79,31 +89,74 @@ function changed(persona: string | null) {
   }
 }
 
+/** The kind, id and typed reference a grant input names, or an Error naming the problem. */
+function subjectOf(input: CreateGrantInput): { kind: SubjectKind; id: string; ref: string | null; workspace?: string } {
+  if (input.subject !== undefined) {
+    const parsed = parseRef(input.subject, ["user", "channel"]);
+    if (!parsed.ok) throw new Error("agent grant: subject is not a valid reference");
+    const r = parsed.ref;
+    if (r.kind !== "external" || r.service !== "slack" || (r.type !== "user" && r.type !== "channel")) {
+      throw new Error("agent grant: a non-Slack subject is not supported until the access flip");
+    }
+    if ((input.subjectKind && input.subjectKind !== r.type) || (input.subjectId && input.subjectId !== r.id)) {
+      throw new Error("agent grant: subject does not match subject_kind and subject_id");
+    }
+    return { kind: r.type, id: r.id, ref: formatRef(r), ...(r.workspace ? { workspace: r.workspace } : {}) };
+  }
+  if (!SUBJECT_KINDS.includes(input.subjectKind as SubjectKind)) throw new Error(`agent grant: invalid subject_kind ${JSON.stringify(input.subjectKind)}`);
+  if (!input.subjectId) throw new Error("agent grant: subject_id is required");
+  return { kind: input.subjectKind as SubjectKind, id: input.subjectId, ref: null };
+}
+
 export async function create(input: CreateGrantInput, now: number = Date.now()): Promise<AgentGrantRow> {
   if (!GRANT_ROLES.includes(input.role)) throw new Error(`agent grant: invalid role ${JSON.stringify(input.role)}`);
-  if (!SUBJECT_KINDS.includes(input.subjectKind)) throw new Error(`agent grant: invalid subject_kind ${JSON.stringify(input.subjectKind)}`);
-  if (!input.subjectId) throw new Error("agent grant: subject_id is required");
+  if (input.subject === undefined && input.subjectKind === undefined && input.subjectId === undefined) throw new Error("agent grant: subject is required");
   if (!input.persona) throw new Error("agent grant: persona is required");
-  if (input.subjectKind !== "user") {
-    if (input.role !== "member") throw new Error(`agent grant: a ${input.subjectKind} subject can only be granted member, not ${input.role}`);
-    if (input.deny) throw new Error(`agent grant: deny applies to user subjects only, not ${input.subjectKind}`);
-    if (input.dmOnly) throw new Error(`agent grant: dm_only applies to user subjects only, not ${input.subjectKind}`);
+  const subj = subjectOf(input);
+  const subjectKind = subj.kind;
+  const subjectId = subj.id;
+  if (subjectKind !== "user") {
+    if (input.role !== "member") throw new Error(`agent grant: a ${subjectKind} subject can only be granted member, not ${input.role}`);
+    if (input.deny) throw new Error(`agent grant: deny applies to user subjects only, not ${subjectKind}`);
+    if (input.dmOnly) throw new Error(`agent grant: dm_only applies to user subjects only, not ${subjectKind}`);
   }
-  if (input.subjectKind === "channel" && /^D[A-Z0-9]+$/.test(input.subjectId)) {
+  if (subjectKind === "channel" && /^D[A-Z0-9]+$/.test(subjectId)) {
     throw new Error(
-      `agent grant: a channel subject_id must be a channel, not a DM (${JSON.stringify(input.subjectId)}); DMs are covered by a user member grant with dm_only`,
+      `agent grant: a channel subject_id must be a channel, not a DM (${JSON.stringify(subjectId)}); DMs are covered by a user member grant with dm_only`,
     );
   }
-  const idShape = SUBJECT_ID_RE[input.subjectKind];
-  if (!idShape.re.test(input.subjectId)) {
-    throw new Error(`agent grant: a ${input.subjectKind} subject_id must be ${idShape.shape}, got ${JSON.stringify(input.subjectId)}`);
+  // Any reference that is not a bare Slack id (email, internal user, phone, a
+  // typed slack: reference) waits for the access flip: the legacy readers and
+  // the approval allowlist only understand Slack ids. A typed Slack reference
+  // goes in `subject`, not here.
+  if (/[:@]/.test(subjectId)) {
+    throw new Error("agent grant: a non-Slack subject is not supported until the access flip");
+  }
+  const idShape = SUBJECT_ID_RE[subjectKind];
+  if (!idShape.re.test(subjectId)) {
+    throw new Error(`agent grant: a ${subjectKind} subject_id must be ${idShape.shape}, got ${JSON.stringify(subjectId)}`);
+  }
+  // The typed reference to keep: given, or the short form of the bare id. A workspace subject has none.
+  let subjectRef = subj.ref;
+  if (!subjectRef && subjectKind !== "workspace") {
+    const ref: Ref = { kind: "external", service: "slack", type: subjectKind, id: subjectId };
+    subjectRef = formatRef(ref);
+  }
+  // The user, only when the binding already exists and the workspace is known; never creates a record.
+  let subjectUserId: string | null = null;
+  if (subjectKind === "user" && subj.workspace) {
+    try {
+      subjectUserId = (await Domain.findBinding({ service: "slack", kind: "user", workspace: subj.workspace, value: subjectId }))?.user_id ?? null;
+    } catch {
+      subjectUserId = null;
+    }
   }
   const row: AgentGrantRow = {
     id: randomUUID(),
     tenantId: input.tenantId ?? DEFAULT_TENANT,
     persona: input.persona,
-    subjectKind: input.subjectKind,
-    subjectId: input.subjectId,
+    subjectKind,
+    subjectId,
     role: input.role,
     deny: input.deny ?? false,
     dmOnly: input.dmOnly ?? false,
@@ -111,13 +164,15 @@ export async function create(input: CreateGrantInput, now: number = Date.now()):
     createdAt: now,
     expiresAt: input.expiresAt ?? null,
     note: input.note ?? null,
+    subjectRef,
+    subjectUserId,
   };
   const pg = dbDialect() === "pg";
   const bool = (b: boolean) => (pg ? b : b ? 1 : 0);
-  const cols = ["id", "persona", "subject_kind", "subject_id", "role", "deny", "dm_only", "created_by", "created_at", "expires_at", "note"];
+  const cols = ["id", "persona", "subject_kind", "subject_id", "role", "deny", "dm_only", "created_by", "created_at", "expires_at", "note", "subject_ref", "subject_user_id"];
   const params: unknown[] = [
     row.id, row.persona, row.subjectKind, row.subjectId, row.role, bool(row.deny), bool(row.dmOnly),
-    row.createdBy, row.createdAt, row.expiresAt, row.note,
+    row.createdBy, row.createdAt, row.expiresAt, row.note, row.subjectRef, row.subjectUserId,
   ];
   if (pg) {
     cols.push("tenant_id");
@@ -176,6 +231,8 @@ type Row = {
   created_at: number | string;
   expires_at: number | string | null;
   note: string | null;
+  subject_ref?: string | null;
+  subject_user_id?: string | null;
 };
 
 function mapRow(r: Row): AgentGrantRow {
@@ -192,5 +249,7 @@ function mapRow(r: Row): AgentGrantRow {
     createdAt: Number(r.created_at),
     expiresAt: r.expires_at == null ? null : Number(r.expires_at),
     note: r.note,
+    subjectRef: r.subject_ref ?? null,
+    subjectUserId: r.subject_user_id ?? null,
   };
 }

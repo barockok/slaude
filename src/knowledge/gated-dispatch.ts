@@ -1,3 +1,4 @@
+import { sameAt } from "../access/wired";
 import type { BrainScope, ChannelTrust } from "./scope";
 import { agentSourceId, isProfileSourceId, resolveBrainScope, speakerProfileSource, userSourceId } from "./scope";
 
@@ -44,6 +45,8 @@ export interface GateInput {
    *  profile write. */
   turnSenders?: readonly TurnSender[];
   lockedUser: string | null;
+  /** The workspace the lock was taken in, when known. Read only by the shadow of the identity compare. */
+  lockedTeamId?: string | null;
   channelTrust: ChannelTrust;
   isManager: boolean;
   /** This agent's identity — writes to its own `agent-<id>` slice auto-pass. */
@@ -105,7 +108,7 @@ export function classifyBrainOp(op: string, scope: BrainScope, g: GateInput): Ga
     // and public would carry the thread out without that person's approval.
     // Checked before the background branch, so no turn in a lock is exempt.
     if (g.lockedUser !== null) {
-      return g.userId !== null && g.lockedUser === g.userId && scope.sourceId === userSourceId(g.userId) ? "auto" : "deny";
+      return g.userId !== null && sameAt({ site: "brain_gate.lock_owner", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }) && scope.sourceId === userSourceId(g.userId) ? "auto" : "deny";
     }
     if (g.userId === null) return "auto"; // background turn — agent's own mind
     if (scope.sourceId === agentSourceId(g.agentId)) return "auto"; // agent's own private slice
@@ -140,7 +143,7 @@ export function soleSlackSender(g: GateInput): TurnSender | null {
  */
 export function turnBrainScope(g: GateInput, kbSources: string[]): BrainScope {
   const sender = soleSlackSender(g);
-  const own = sender !== null && g.userId !== null && sender.userId === g.userId && (sender.teamId ?? null) === g.teamId;
+  const own = sender !== null && g.userId !== null && sameAt({ site: "brain_gate.turn_sender_same", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: sender.userId, otherTeamId: sender.teamId }) && (sender.teamId ?? null) === g.teamId;
   return resolveBrainScope({ ...g, teamId: own ? g.teamId : null, kbSources });
 }
 
@@ -246,7 +249,7 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
       category: tier === "manager" ? "kb-admin" : "kb",
     });
     if (!r.approved) return { ok: false, reason: `denied by ${r.by}${r.note ? `: ${r.note}` : ""}` };
-    if (tier === "manager" && !d.managers.includes(r.by)) {
+    if (tier === "manager" && !d.managers.some((mgr) => sameAt({ site: "brain_gate.manager_approver", persona: d.gate.agentId, teamId: d.gate.teamId, userId: r.by, otherUserId: mgr }))) {
       return { ok: false, reason: `kb operation "${op}" needs manager approval — approved by ${r.by}, who is not the manager` };
     }
     // First approval opens a standing grant scoped to (thread, this writer) —

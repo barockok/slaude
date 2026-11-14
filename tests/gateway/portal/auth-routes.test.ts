@@ -14,6 +14,7 @@ import {
   verifyPortalSession,
 } from "../../../src/gateway/portal/session";
 import * as Accounts from "../../../src/db/accounts";
+import * as Domain from "../../../src/db/domain";
 
 const ISSUER = "https://idp.example.com/realms/slaude";
 const SECRET = "p".repeat(32);
@@ -25,7 +26,7 @@ const DISCO = {
 const b = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url");
 const idToken = (c: Record<string, unknown>) => `${b({ alg: "RS256" })}.${b(c)}.sig`;
 
-function stubIdp(opts: { email?: string; sub?: string; nonceRef: { value: string } }) {
+function stubIdp(opts: { email?: string; sub?: string; emailVerified?: unknown; nonceRef: { value: string } }) {
   return (async (url: string | URL) => {
     const s = String(url);
     if (s.endsWith("/.well-known/openid-configuration")) {
@@ -40,6 +41,7 @@ function stubIdp(opts: { email?: string; sub?: string; nonceRef: { value: string
             sub: opts.sub ?? "sub-1",
             email: opts.email ?? "alice@example.com",
             nonce: opts.nonceRef.value,
+            ...(opts.emailVerified === undefined ? {} : { email_verified: opts.emailVerified }),
             exp: Math.floor(Date.now() / 1000) + 300,
           }),
         }),
@@ -56,7 +58,7 @@ const call = (routes: ReturnType<typeof createPortalAuthRoutes>, path: string, i
 
 /** Drive login → callback, returning the callback response. */
 async function completeLogin(
-  opts: { email?: string; sub?: string; returnTo?: string; tamperState?: boolean } = {},
+  opts: { email?: string; sub?: string; emailVerified?: unknown; returnTo?: string; tamperState?: boolean } = {},
 ) {
   const nonceRef = { value: "" };
   const routes = createPortalAuthRoutes({ fetchImpl: stubIdp({ ...opts, nonceRef }) });
@@ -120,6 +122,24 @@ describe("portal auth routes", () => {
 
     const account = await Accounts.findAccountBySubject(ISSUER, "sub-1");
     expect(account?.email).toBe("alice@example.com");
+  });
+
+  // The email binding is verified only on proof from the token itself.
+  test("email_verified true binds the email as verified and marks the account proven", async () => {
+    await completeLogin({ email: "alice@example.com", sub: "sub-1", emailVerified: true });
+    const account = await Accounts.findAccountBySubject(ISSUER, "sub-1");
+    expect(Boolean(account?.email_proven)).toBe(true);
+    const e = await Domain.findBinding({ service: "email", kind: "address", workspace: "", value: "alice@example.com" });
+    expect(e?.state).toBe("verified");
+  });
+
+  test("a token without email_verified logs in but binds the email as observed", async () => {
+    const { res } = await completeLogin({ email: "alice@example.com", sub: "sub-1" });
+    expect(res.status).toBe(302);
+    const account = await Accounts.findAccountBySubject(ISSUER, "sub-1");
+    expect(Boolean(account?.email_proven)).toBe(false);
+    const e = await Domain.findBinding({ service: "email", kind: "address", workspace: "", value: "alice@example.com" });
+    expect(e?.state).toBe("observed");
   });
 
   test("logging in twice keeps one account and refreshes the email", async () => {

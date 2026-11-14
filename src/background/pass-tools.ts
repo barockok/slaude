@@ -21,6 +21,7 @@
  * Tool results pass through redactSecrets, and a page or proposal carrying a
  * credential-like value is refused (CREDENTIAL_REFUSAL), as memory_save does.
  */
+import { sameAt } from "../access/wired";
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { redactSecrets } from "../gateway/core/status-text";
@@ -192,7 +193,7 @@ function composeOne(pg: PassPage, ctx: PassToolContext, now: Date): Composed | {
   if (pg.type !== "profile" && pg.type !== "correction") return { error: 'refused: the profile takes pages of type profile or correction' };
   if (pg.type === "profile" && pg.slug !== "profile") return { error: 'refused: a profile page uses slug "profile"' };
   const userId = ctx.scope.userId;
-  if (pg.subject !== undefined && pg.subject !== userId) return { error: QUOTE_REFUSAL };
+  if (pg.subject !== undefined && !sameAt({ site: "pass_tools.profile_subject", persona: ctx.agentId, teamId: null, userId: pg.subject, otherUserId: userId })) return { error: QUOTE_REFUSAL };
   if (!quotedFromOwnTurn(pg.quote, userId, ctx.transcripts)) return { error: QUOTE_REFUSAL };
   const { quote, target: _t, ...page } = pg;
   const c = composePage(
