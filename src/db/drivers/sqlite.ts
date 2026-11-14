@@ -7,6 +7,7 @@
  * durable gate state). A sqlite install moves forward via
  * `bun run migrate-sqlite`.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Database } from "bun:sqlite";
 import { ensureHome } from "../../config/home";
 import type { DbClient, Row, RunResult } from "../client";
@@ -319,6 +320,55 @@ CREATE TABLE IF NOT EXISTS slack_identities (
 CREATE INDEX IF NOT EXISTS idx_slack_identities_account
   ON slack_identities (account_id);
 
+CREATE TABLE IF NOT EXISTS users (
+  id           TEXT   PRIMARY KEY,
+  kind         TEXT   NOT NULL DEFAULT 'person',
+  display_name TEXT,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bindings (
+  id          TEXT   PRIMARY KEY,
+  user_id     TEXT   NOT NULL REFERENCES users (id),
+  service     TEXT   NOT NULL,
+  kind        TEXT   NOT NULL,
+  workspace   TEXT   NOT NULL DEFAULT '',
+  value       TEXT   NOT NULL,
+  state       TEXT   NOT NULL DEFAULT 'observed',
+  source      TEXT   NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  verified_at INTEGER,
+  UNIQUE (service, kind, workspace, value),
+  CHECK (state IN ('declared', 'observed', 'verified')),
+  CHECK (service <> 'slack' OR workspace <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_bindings_user ON bindings (user_id);
+
+CREATE TABLE IF NOT EXISTS boundaries (
+  id           TEXT   PRIMARY KEY,
+  kind         TEXT   NOT NULL DEFAULT 'channel',
+  display_name TEXT,
+  service      TEXT   NOT NULL,
+  workspace    TEXT   NOT NULL DEFAULT '',
+  value        TEXT   NOT NULL,
+  state        TEXT   NOT NULL DEFAULT 'observed',
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL,
+  UNIQUE (service, workspace, value),
+  CHECK (state IN ('declared', 'observed', 'verified')),
+  CHECK (service <> 'slack' OR workspace <> '')
+);
+
+CREATE TABLE IF NOT EXISTS user_aliases (
+  old_id         TEXT   PRIMARY KEY,
+  user_id        TEXT   NOT NULL REFERENCES users (id),
+  merged_at      INTEGER NOT NULL,
+  audit_event_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_user_aliases_user ON user_aliases (user_id);
+
 -- Gateway-owned MCP credentials, one owner per row (see 0008_mcp_credentials.sql).
 CREATE TABLE IF NOT EXISTS mcp_credentials (
   id            TEXT    PRIMARY KEY,
@@ -437,6 +487,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
 CREATE INDEX IF NOT EXISTS idx_audit_events_scope ON audit_events (persona, id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events (session_id, id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events (actor_id, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_actor_kind ON audit_events (actor_kind, actor_id);
 
 CREATE TABLE IF NOT EXISTS agent_grants (
   id           TEXT    PRIMARY KEY,
@@ -661,10 +712,15 @@ export function bootstrapSqliteSchema(db: Database): void {
   }
 }
 
+/** Set while a transaction body runs, so a nested `transaction` does not wait for its own lock. */
+const inTransaction = new AsyncLocalStorage<SqliteClient>();
+
 class SqliteClient implements DbClient {
   readonly dialect = "sqlite" as const;
   readonly driver = "bun-sqlite";
   constructor(readonly raw: Database) {}
+  /** One connection cannot interleave two transactions: later ones queue behind the running one. */
+  #txTail: Promise<unknown> = Promise.resolve();
 
   query<T = Row>(sql: string, params: unknown[] = []): Promise<T[]> {
     try {
@@ -701,6 +757,20 @@ class SqliteClient implements DbClient {
   }
 
   async transaction<T>(fn: (tx: DbClient) => Promise<T>): Promise<T> {
+    // Nested (same async context): no queueing, as before (a nested BEGIN fails loudly).
+    if (inTransaction.getStore() === this) return this.#run(fn);
+    const prev = this.#txTail;
+    let release!: () => void;
+    this.#txTail = new Promise<void>((r) => (release = r));
+    await prev.catch(() => {});
+    try {
+      return await inTransaction.run(this, () => this.#run(fn));
+    } finally {
+      release();
+    }
+  }
+
+  async #run<T>(fn: (tx: DbClient) => Promise<T>): Promise<T> {
     this.raw.exec("BEGIN");
     try {
       const out = await fn(this);

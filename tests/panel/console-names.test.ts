@@ -4,6 +4,8 @@
  * labels on mandates, audit rows and history mentions.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { flushFirstSightWork } from "../../src/domain/first-sight-flush";
+import { setLiveWorkspaces } from "../../src/domain/first-sight";
 import { createPanelApi } from "../../src/gateway/panel/api";
 import { __resetRoleCache } from "../../src/gateway/panel/auth/roles";
 import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
@@ -319,6 +321,10 @@ describe("panel API: sessions pages, names and audit labels", () => {
   it("rows, detail and audit carry channel labels from the stub Slack client", async () => {
     await seed(1, "CTEAM");
     await seed(1, "CGONE");
+    // Session creation records the channels fire-and-forget (first sight, with audit events): settle them before reading audit.
+    await flushFirstSightWork();
+    // A gateway booted by an earlier file may have registered live workspaces: the audit row below must not trigger first-sight rows of its own.
+    setLiveWorkspaces(() => []);
     const { client } = stubSlack({ channels: { CTEAM: { name: "team" } }, fail: ["CGONE"] });
     const names = createSlackNames({ clientFor: () => client });
     const api = createPanelApi({ registry: null, pubsub: null, panelLock: null, chat: async () => {}, names });

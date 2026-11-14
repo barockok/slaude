@@ -9,6 +9,8 @@ import { api } from "./client";
 import { AccessPage } from "./pages/AccessPage";
 import { AgentDetailPage, isAgentTab } from "./pages/agent/AgentDetailPage";
 import { AgentsPage } from "./pages/AgentsPage";
+import { BoundariesPage } from "./pages/domain/BoundariesPage";
+import { UsersPage } from "./pages/domain/UsersPage";
 import { AuditPage } from "./pages/AuditPage";
 import { EnvironmentsPage } from "./pages/EnvironmentsPage";
 import { MemoryPageView } from "./pages/memory/MemoryPageView";
@@ -33,6 +35,8 @@ export const NAV: NavEntry[] = [
   { label: "Sessions", to: "/sessions", description: "Live and recent conversations, with a timeline you can step into.", keywords: "threads" },
   { label: "Approvals and audit", to: "/audit", description: "Every permission decision and console change, newest first.", keywords: "log history" },
   { label: "Access", to: "/access", description: "Console roles and the grants that decide who can work with each agent.", keywords: "grants roles" },
+  { label: "Users", to: "/users", description: "People and bots the deployment knows and how each was matched (superadmin, read only).", keywords: "people bindings identity accounts" },
+  { label: "Boundaries", to: "/boundaries", description: "Channels and groups the deployment knows (superadmin, read only).", keywords: "channels groups" },
   { label: "Memory", to: "/memory", description: "Browse the memory stores your agents read and write.", keywords: "brain pages stores" },
   { label: "Environments", to: "/environments", description: "Where agents run: node pools, placement and personal environments.", keywords: "nodes" },
   { label: "Skills", to: "/skills", group: "Resources", description: "Every skill your agents can use, where it came from and how often it is used.", keywords: "plugins resources" },
@@ -59,6 +63,8 @@ function renderPage(path: string, entry: NavEntry | null) {
   if (path === "/access") return <AccessPage />;
   if (path === "/sessions") return <SessionsPage />;
   if (path === "/audit") return <AuditPage />;
+  if (path === "/users") return <UsersPage />;
+  if (path === "/boundaries") return <BoundariesPage />;
   if (path === "/memory") return <MemoryStoresPage />;
   if (path === "/environments") return <EnvironmentsPage />;
   if (path === "/skills") return <SkillsPage />;

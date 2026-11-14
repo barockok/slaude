@@ -148,10 +148,11 @@ Records are created the first time they are referenced.
 - Definition sync resolves every reference inside the apply transaction and
   creates what is missing in state `declared`. The sync report lists what it
   created next to the warnings.
-- The first message from an unknown Slack user, or in an unknown channel, creates
-  an `observed` record that grants nothing. Without this, sessions and audit
-  could not be keyed by internal ids.
-- A binding is unique per (service, kind, value). Creation is insert-or-ignore
+- An observed record is created wherever a session or audit row is written,
+  including for an actor that was refused, and at a pre-admission point in the
+  gateway so a message refused at a gate is recorded too. It grants nothing.
+  Without this, sessions and audit could not be keyed by internal ids.
+- A binding is unique per (service, kind, workspace, value). Creation is insert-or-ignore
   then re-read, so two gateway replicas cannot create duplicates.
 - A typo creates an empty, unmatched record. Sync lists every created record, and
   a strict mode refuses a reference that would create one. The console flags
@@ -180,9 +181,20 @@ Records are created the first time they are referenced.
   parse and validate, then are refused at compile with a clear message until
   slice B resolves them. The JSON Schema is regenerated. This unblocks migrating
   `sam` and the default persona once, to the new grammar.
-- **B, records.** `users`, `bindings`, `boundaries`, `user_aliases`. Backfill from
-  accounts, Slack identities and the Slack ids already in sessions, grants and
-  audit. Sync creates declared records and reports them.
+- **B, records. Implemented** (v0.46.0-rc.18). `users`, `bindings`,
+  `boundaries`, `user_aliases` (no `merged_into`; the alias table is the only
+  merge record). Backfill from accounts, Slack identities and the Slack ids
+  already in sessions, grants and audit. Sync creates declared records and
+  reports them, with a strict mode. What differs from the plan above:
+  - Backfill is a reconciler (`slaude domain reconcile`, also run at gateway
+    boot), not a migration step, so rolling deploys and sqlite are covered.
+  - The merge on proof is the adopt rule only, and only for an unverified
+    (observed or declared) record. Two verified records are a reported
+    conflict, left for slice C.
+  - Observed records follow session and audit writes (see Creation on
+    reference), not every event.
+  - The console shows Users and Boundaries read only; conflict and undo UI
+    wait for slice C.
 - **C, access on internal ids.** Grants and admission resolve the acting user
   first. `email:` in an ACL starts to work through the portal link, and the
   optional workspace `trustProfileEmail` setting arrives here.

@@ -586,6 +586,31 @@ Metrics: `slaude_decision_requests_total{adapter,outcome}` (outcome `ok`, `timeo
 | `SLAUDE_SOUL_PARSE_MODEL` | No | `SLAUDE_MODEL` or `claude-haiku-4-5-20251001` | Model `personas migrate` uses to read an old SOUL.md. Defaults to `SLAUDE_MODEL` when set, otherwise `claude-haiku-4-5-20251001`. |
 | `SLAUDE_SOUL_CACHE_DIR` | No | `$SLAUDE_HOME/cache` | Where `personas migrate` and `personas export` keep their cache of a model's reading of an old SOUL.md. Nothing at runtime reads it, so a gateway needs no pod-local cache. |
 
+### Domain records <a id="domain-records"></a>
+
+The gateway keeps records for users, the identities bound to them and
+channels (see the [domain records field note](../field-notes/2026-11-14-domain-records.md)).
+It fills them at boot, after Slack auth, and you can run the same repair by hand
+on the gateway or mono host (a node has no database and refuses it):
+
+```sh
+slaude domain reconcile [--dry-run] [--json]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--dry-run` | Report what would be created and write nothing. |
+| `--json` | Print the report as JSON instead of text. |
+
+The command is safe to run again: a second run creates nothing. It exits `0` on
+success, `1` if the run fails and `2` for a usage error. A run that created
+something or found a conflict (two accounts with one email) writes one
+`domain.reconciled` audit event.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_SLACK_TEAM_ID` | No | `""` | Read only by `slaude domain reconcile`, and only on sqlite. Comma-separated Slack workspace ids (for example `T0EXAMPLE`) the command attributes Slack ids to. Postgres reads each tenant's installed Slack apps instead and ignores it. With none set on sqlite, rows that carry no workspace of their own are skipped and counted, not guessed. |
+
 ### External MCP env references
 
 Any env var referenced via `${VAR}` inside `~/.slaude/.mcp.json` is expanded at load time (see [External MCP](#external-mcp)), except gateway-only variables (the list under `SLAUDE_NODE_BOOT_CHECK`, for example `${SLACK_BOT_TOKEN}` or `${SLAUDE_MASTER_KEY}`). Those are left as written and their name is logged: the file is on a volume agent turns can write. Give an MCP server its own credential variable instead. Common examples:

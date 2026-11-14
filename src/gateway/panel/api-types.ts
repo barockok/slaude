@@ -1095,3 +1095,69 @@ export interface AgentGuardrailsResponse {
   prose: { chars: number; max: number; skipped: Array<{ slug: string; name: string; chars: number }> };
   failure: string | null;
 }
+
+// --- Domain records (read-only) ----------------------------------------------
+
+export type DomainState = "declared" | "observed" | "verified";
+
+export interface StateCounts {
+  declared: number;
+  observed: number;
+  verified: number;
+}
+
+export interface UserListItem {
+  id: string;
+  kind: string;
+  /** A verified email, else the best Slack binding, else null (no bindings). Masked. */
+  preferred: string | null;
+  bindings: StateCounts;
+  aliasCount: number;
+  createdAt: number;
+  /** Every binding is declared and the record is older than seven days. */
+  unmatched: boolean;
+}
+
+export interface UserPage {
+  items: UserListItem[];
+  nextCursor: string | null;
+}
+
+export interface BindingView {
+  id: string;
+  service: string;
+  kind: string;
+  workspace: string;
+  value: string;
+  state: DomainState;
+  source: string;
+  createdAt: number;
+  verifiedAt: number | null;
+}
+
+export interface UserDetail {
+  id: string;
+  kind: string;
+  displayName: string | null;
+  createdAt: number;
+  unmatched: boolean;
+  bindings: BindingView[];
+  aliases: { oldId: string; mergedAt: number }[];
+}
+
+export interface BoundaryListItem {
+  id: string;
+  kind: string;
+  service: string;
+  workspace: string;
+  value: string;
+  state: DomainState;
+  displayName: string | null;
+  createdAt: number;
+  unmatched: boolean;
+}
+
+export interface BoundaryPage {
+  items: BoundaryListItem[];
+  nextCursor: string | null;
+}

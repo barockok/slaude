@@ -17,6 +17,7 @@ import { parseSlashCommand, helpText, humanModeName, MODE_LABELS } from "../slac
 import { soulData, soulDataBase, effectiveSoulForChannel } from "../../soul/extract";
 import { trustSoulFor, approvalTimeoutFor, effectiveSoulForChannelFor, soulDataFor } from "../../soul/per-persona";
 import { admit } from "../../access/admission";
+import { observeSlackChannel, observeSlackUser, setLiveWorkspaces } from "../../domain/first-sight";
 import { loadGrants, roleOf, usersWithRole } from "../../access/role";
 import { indexWritten, runAsOf } from "../../proactive/commitment-index";
 import type { CommitmentRow } from "../../db/commitments";
@@ -416,6 +417,8 @@ export interface GatewayOptions {
    *  node, and only with the brain enabled. Default false, so no test starts it
    *  by building a gateway; server.ts turns it on. */
   backgroundLearning?: boolean;
+  /** Run the domain-record reconciler once Slack auth is known (server.ts sets it; tests do not). */
+  domainReconcile?: boolean;
 }
 
 /** Redis-backed primitives the control panel needs — injected together so a
@@ -1305,10 +1308,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // single-app transport has one identity, logged as before.
   void (async () => {
     const apps = t.apps ? await t.apps() : [{ apiAppId: "", teamId: "", client: t.client }];
+    const authTeams = new Set<string>();
     for (const a of apps) {
       const who = a.apiAppId ? `app=${a.apiAppId} ` : "";
       try {
         const res = await a.client.auth.test();
+        if (typeof (res as any).team_id === "string" && (res as any).team_id) authTeams.add((res as any).team_id);
         const scopesHeader = (res as any).response_metadata?.scopes ?? (res as any).headers?.["x-oauth-scopes"];
         console.log(
           `[slack-auth] ${who}team=${(res as any).team} user=${(res as any).user} bot_user=${(res as any).user_id} bot_id=${(res as any).bot_id} url=${(res as any).url}`,
@@ -1317,6 +1322,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       } catch (e: any) {
         console.error(`[slack-auth] ${who}auth.test failed:`, e?.data?.error ?? e?.message);
       }
+    }
+    // First sight resolves an audit event's workspace from the connected teams (a node never gets here).
+    setLiveWorkspaces(() => [...authTeams]);
+    // Domain records: backfill and repair, after Slack auth, never blocking boot
+    // (reconcileAtBoot logs a failure and returns). A node has no database.
+    if (opts.domainReconcile === true) {
+      const { reconcileAtBoot } = await import("../../domain/reconcile");
+      void reconcileAtBoot({ role: env.role(), liveTeamIds: () => [...authTeams] });
     }
   })().catch((e) => console.error("[slack-auth] app listing failed:", e?.message ?? e));
 
@@ -4167,6 +4180,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const drop = await o.afterSelfEcho();
       if (drop) return drop;
     }
+    // First sight: whoever reaches this point is a real Slack user, admitted or about to be
+    // refused below (blocked, not granted, ignored), so every outcome records the actor.
+    observeSlackUser({ teamId, userId });
+    observeSlackChannel({ teamId, channelId });
     // Ignore gate: temp/permanent ignores for users or threads. /unignore* must
     // bypass it — otherwise a thread-ignore drops the very message meant to lift it
     // (the /unignore-thread is in the ignored thread), and the thread is stuck

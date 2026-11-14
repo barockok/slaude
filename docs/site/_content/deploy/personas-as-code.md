@@ -412,6 +412,20 @@ managed yet refuses its first sync with 503 naming the migration. With
 what a real sync of the same body would produce, including how many runtime
 overrides it would wipe.
 
+References in `agent.yaml` (manager, approvers, channels, blocked and dm lists,
+proactive channels) create what is missing as declared records: a Slack user
+becomes a user with a declared binding, a Slack channel a declared boundary. A
+declared record grants nothing and an existing record is never changed. A short
+Slack reference means the tenant's one connected workspace; with several the
+sync is refused (422) naming the persona and field, and with none it succeeds
+with a warning and creates no Slack records. The report's
+`records` lists `created` (or `wouldCreate` in a dry run) with Slack references
+as written and emails masked. A mistyped id creates an empty record, so a pull
+request check should send `?dryRun=1&strict=1`: strict refuses (422, listing
+them) any reference that would create a record. Strict is off by default. A
+sync that creates more than 20 records also writes one `domain.sync_created`
+audit event. Non-Slack references still do not compile in access fields.
+
 Behaviour to know:
 
 - `version` is the payload format; absent means 1, and `personas render` always

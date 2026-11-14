@@ -365,10 +365,10 @@ describe.skipIf(process.env.SLAUDE_DB !== "pg")("runSync provider references (WS
     expect(dry.warnings).toContain("persona 'ana' no longer declares provider; it now uses tenant/node credentials");
     const r = await runSync(T, next, { dryRun: false, env, by: "ci" });
     expect(r.updated).toEqual(["ana"]);
-    expect(r.warnings).toEqual(["persona 'ana' no longer declares provider; it now uses tenant/node credentials"]);
+    expect(r.warnings.filter((w) => !w.startsWith("no Slack workspace"))).toEqual(["persona 'ana' no longer declares provider; it now uses tenant/node credentials"]);
     const again = await runSync(T, payload([{ ...ana, model: "m-1" }], { revision: "r3", committedAt: "2026-10-01T12:00:00Z" }),
       { dryRun: false, env, by: "ci" });
-    expect(again.warnings).toEqual([]);
+    expect(again.warnings.filter((w) => !w.startsWith("no Slack workspace"))).toEqual([]);
   });
 
   test("a persona with a baseUrl and no credential is refused at sync (M-1)", async () => {

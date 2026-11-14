@@ -28,6 +28,7 @@ dark themes follow the browser, and every page works at phone width.
 | **Sessions** | Live and recent sessions with filters by agent and status. A session has a *Timeline*, a *Chat* tab and its *Audit* events. |
 | **Approvals and audit** | Every permission and approval decision, refusal and expiry, and every console change, newest first, filterable by agent, action, actor, decision and time. An event the agent itself did shows the agent's name as its actor, not its bot user id. |
 | **Access** | Console roles (read only, from the role file; superadmins only, operators see a note) and every stored agent grant. |
+| **Users** and **Boundaries** | The domain records (superadmin only, read only). *Users* lists every person and bot the deployment has matched: the preferred binding (a verified email, else a Slack id), how many of its bindings are verified, observed or declared, its alias count and when it was created. A user's drawer lists each binding (service, workspace, masked value, state, source) and the ids merged into it. *Boundaries* lists channels and groups with service, workspace, state, display name and age. Both filter by state and service and search by the start of a value. |
 | **Memory** | Memory stores with page counts; a store lists its pages; a page shows its content, type, tags and links. Read only. Below the stores, *Write rules* shows per agent what it may write without asking and who must approve the rest. |
 | **Environments** | Node pools (labels, live nodes, last heartbeat), each agent's placement label, and personal environments (secrets never shown). |
 | **Resources: Skills** | Every skill an agent can use, filterable by source, agent and status, with search. A skill's page shows its `SKILL.md` rendered (raw and copy too), where it came from, which agents have it, its files, per-agent usage and related proposals. |
@@ -228,6 +229,45 @@ is the point; it does not let them read it.
 
 Persona definitions need the persona tables, which exist on Postgres only: on
 a sqlite deployment the API answers `409`, and an unknown name answers `404`.
+
+## Domain records: Users and Boundaries
+
+These two pages read the records described in the typed references
+spec: a *user* (a person or bot), the *bindings* that tie it to a service
+identity, and *boundaries* (a Slack channel, later a WhatsApp group). They
+are a projection kept in step with accounts, portal links, first sight and
+agent.yaml sync. Nothing here changes a record and nothing reads these for
+access yet; the pages carry a note saying so. Resolving a conflict and
+undoing a merge arrive in a later release.
+
+The API is `GET /panel/api/users`, `GET /panel/api/users/:id` and
+`GET /panel/api/boundaries`, all superadmin only (an operator gets `403`, and
+the denied attempt is audited like any other superadmin action).
+
+- **States.** A record is *declared* (named in an agent.yaml, not seen),
+  *observed* (seen sending or being used) or *verified* (proven, for
+  example by a portal link or sign-in). A state only goes up.
+- **Unmatched.** A user whose bindings are all declared, or a boundary that
+  is declared, and that was created more than seven days ago. It usually
+  means an agent.yaml names someone who never showed up: a typo, or a person
+  who has not used the agent yet. A user with no bindings is not flagged.
+- **Preferred binding.** A verified email, else the best Slack binding
+  (verified first, then oldest); a user holding only other bindings shows
+  the best of those.
+- **Masking.** Email addresses (and any value shaped like one, such as a
+  sign-in subject) are shown as `a***@example.com`, phone numbers keep their
+  last two digits. The full value is never in a list or a detail answer. The
+  *search* box matches the start of a stored value, but never a masked one:
+  an email binding, a phone binding or a value shaped like an address (a
+  sign-in subject) does not answer a search, so a prefix cannot be used to
+  confirm that an address exists. Find a user by a Slack id, or list with
+  `service=email` and no search to see the masked rows.
+- **Filters and paging.** `state` (`declared`, `observed`, `verified`),
+  `service` (`slack`, `email`, ...), `q` (value prefix, never an email, phone or address-shaped value), `limit` (default 50,
+  at most 200) and `cursor` (from `nextCursor`). Newest first. A user filter
+  matches a user that has a binding with every given state, service and
+  prefix. A detail request also accepts the id of a merged user and answers
+  with the user it became.
 
 ## Enabling it
 

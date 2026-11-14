@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import * as AuditEvents from "../db/audit-events";
 import { m } from "../metrics";
+import { observeFromAudit } from "../domain/first-sight";
 import { redactSummary, redactValue } from "./redact";
 
 /**
@@ -103,7 +104,11 @@ export async function audit(input: AuditInput, deps: AuditDeps = {}): Promise<vo
     await insert(ev, detailsJson);
   } catch (err) {
     fail(ev.action, err);
+    return;
   }
+  // First sight (slice B): a Slack user actor or channel on a written event is observed.
+  // Skipped when a caller injects its own insert (tests, previews): nothing real was written.
+  if (!deps.insert) observeFromAudit(input);
 }
 
 function stdoutLine(ev: AuditEvents.AuditEvent, detailsJson: string): string {

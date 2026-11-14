@@ -26,6 +26,9 @@ import { assertNoProviderRefsInMono } from "../../gateway/core/provider-secrets"
 import { internalHostsFrom } from "../provider-base-url";
 import { dbDialect } from "../../db/client";
 import { masterKey, MasterKeyError } from "../../db/crypto";
+import { collectRefs, planRefs, RefRefusal, tenantWorkspaces, type RecordEntry, type RefUse } from "../../domain/sync-refs";
+import { emitDomainEvents } from "../../audit/domain";
+import { audit } from "../../audit/index";
 
 function masterKeySet(): boolean {
   try {
@@ -56,7 +59,19 @@ export interface GuardrailSyncReport {
   behindSource: string[];
 }
 
-export type SyncReport = ApplyResult & {
+/** More records than this in one sync also write one summary audit event. */
+export const SYNC_SUMMARY_THRESHOLD = 20;
+/** Most references a strict refusal lists. */
+const STRICT_LIST_MAX = 20;
+
+/** Declared records a sync created (or would create, in a dry run). */
+export interface RecordsReport {
+  created: RecordEntry[];
+  wouldCreate: RecordEntry[];
+}
+
+export type SyncReport = Omit<ApplyResult, "records" | "domainEvents"> & {
+  records: RecordsReport;
   revision: string; dryRun: boolean; ignoredFields: string[]; ignoredFieldsTotal: number;
   guardrails?: GuardrailSyncReport;
   /** Applied anyway, reported by persona name: provider/model pairing (WS-A
@@ -144,6 +159,8 @@ export async function runSync(
     vault?: VaultConfig | null;
     /** The installed KB source ids, for the unknown-kbSources warning. Default: $SLAUDE_HOME/knowledge. */
     installedKbSources?: () => string[];
+    /** Refuse a sync whose references would create a record (listing them). Default off. */
+    strict?: boolean;
   },
 ): Promise<SyncReport> {
   let payload;
@@ -277,11 +294,50 @@ export async function runSync(
   }
   const meta = { revision: payload.revision, committedAt: Date.parse(payload.committedAt), by: opts.by };
 
+  // References the personas carry: planned now (read only) so a refusal or a
+  // strict failure applies nothing, created in applySync's transaction later.
+  const refUses: RefUse[] = rows.flatMap((r, i) => {
+    const d = payload.personas[i]?.definition;
+    return d ? collectRefs(r.name, d.soulData as never, payload.personas[i]!.soul) : [];
+  });
+  let workspaces: string[] = [];
+  let wouldCreate: RecordEntry[] = [];
+  try {
+    workspaces = refUses.length ? await tenantWorkspaces(tenant) : [];
+    const bare = (u: RefUse) => u.ref.kind === "external" && u.ref.service === "slack" && !u.ref.workspace;
+    if (refUses.length && workspaces.length === 0) {
+      // No workspace to place a short Slack reference in: skip those records (non-Slack ones still create).
+      const keep = refUses.filter((u) => !bare(u));
+      if (keep.length < refUses.length) {
+        warnings.push("no Slack workspace is connected, records for Slack references were not created");
+        refUses.splice(0, refUses.length, ...keep);
+      }
+    } else if (workspaces.length > 1 && !opts.strict) {
+      // Several workspaces: a bare id is ambiguous. Skip it and say which field; strict refuses at planRefs.
+      const keep: RefUse[] = [];
+      for (const u of refUses) {
+        if (bare(u)) warnings.push(`persona '${u.persona}': workspace is ambiguous, no record created for ${u.field}`);
+        else keep.push(u);
+      }
+      refUses.splice(0, refUses.length, ...keep);
+    }
+    wouldCreate = await planRefs(refUses, workspaces);
+  } catch (e) {
+    if (e instanceof RefRefusal) throw new SyncFailure(422, e.message);
+    throw e;
+  }
+  if (opts.strict && wouldCreate.length) {
+    const shown = wouldCreate.slice(0, STRICT_LIST_MAX).map((r) => `${r.ref} (${r.personas.join(", ")})`).join("; ");
+    const more = wouldCreate.length > STRICT_LIST_MAX ? ` and ${wouldCreate.length - STRICT_LIST_MAX} more` : "";
+    throw new SyncFailure(422, `strict: ${wouldCreate.length} reference(s) would create a record: ${shown}${more}. Fix the reference, or sync without strict to create declared records`);
+  }
+  if (wouldCreate.length) warnings.push(`${wouldCreate.length} reference(s) will create declared records (see records); a mistyped id creates an empty record that matches nobody`);
+
   const guardrailPlan = payload.guardrails ? await planGuardrails(tenant, payload.guardrails, rows.map((r) => r.name), warnings) : undefined;
 
   if (opts.dryRun) {
     const incoming = new Set(rows.map((r) => r.name));
-    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields, ignoredFieldsTotal, warnings };
+    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields, ignoredFieldsTotal, warnings, records: { created: [], wouldCreate } };
     // Same rule as applySync.
     for (const r of rows) {
       const prev = desired.get(r.name);
@@ -298,8 +354,10 @@ export async function runSync(
   }
 
   try {
-    const applied = await applySync(tenant, rows, meta);
+    const { records: createdRecords = [], domainEvents = [], recordsFailed = false, ...applied } = await applySync(tenant, rows, meta, { uses: refUses, workspaces });
+    if (recordsFailed) warnings.push("records could not be created for this sync (the persona sync was applied); run `slaude domain reconcile` or sync again");
     auditPersonaSync(tenant, opts.by, meta.revision, applied);
+    await auditRecords(tenant, opts.by, meta.revision, createdRecords, domainEvents);
     let guardrails: GuardrailSyncReport | undefined;
     if (guardrailPlan) {
       // Its own transaction, after the personas: the guardrail set carries its
@@ -309,10 +367,28 @@ export async function runSync(
       auditChange(r, { tenantId: tenant, actorKind: "system", actorId: opts.by, via: "deploy", revision: meta.revision });
       guardrails = { ...guardrailPlan.report, created: r.created, updated: r.updated, unchanged: r.unchanged, removed: r.removed };
     }
-    return { ...applied, revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal, warnings, ...(guardrails ? { guardrails } : {}) };
+    return { ...applied, records: { created: createdRecords, wouldCreate: [] }, revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal, warnings, ...(guardrails ? { guardrails } : {}) };
   } catch (e) {
     if (e instanceof StaleRevisionError) throw new SyncFailure(409, e.message);
+    if (e instanceof RefRefusal) throw new SyncFailure(422, e.message);
     throw e;
+  }
+}
+
+/** After commit: the domain events, and one summary event when a sync created many records. Never fails the sync. */
+async function auditRecords(tenant: string, by: string, revision: string, created: RecordEntry[], events: Parameters<typeof emitDomainEvents>[0]): Promise<void> {
+  try {
+    await emitDomainEvents(events, { tenantId: tenant, actorId: by });
+    if (created.length > SYNC_SUMMARY_THRESHOLD) {
+      await audit({
+        tenantId: tenant, persona: "default", actorKind: "system", actorId: by, action: "domain.sync_created",
+        targetKind: "tenant", targetId: tenant,
+        summary: `persona sync ${revision}: ${created.length} declared record(s) created`,
+        details: { revision, count: created.length, users: created.filter((r) => r.type === "user").length, boundaries: created.filter((r) => r.type === "boundary").length },
+      });
+    }
+  } catch (e) {
+    console.warn(`[persona-sync] domain audit failed tenant=${tenant}: ${(e as Error).message}`);
   }
 }
 
