@@ -48,14 +48,14 @@ async function seed(b: Brain) {
 type Read = { name: string; slug: unknown; scope: BrainScope };
 
 /** A turn: the live ctx (`userId`, lock, trust) builds the scope; `turnSenders` is who the running turn holds. */
-function setup(brain: Brain, over: Partial<GateInput> = {}) {
+async function setup(brain: Brain, over: Partial<GateInput> = {}) {
   const reads: Read[] = [];
   const g: GateInput = {
     userId: "U0ALICE", teamId: TEAM, interactive: true, origin: "slack", lockedUser: null,
     channelTrust: "trusted", isManager: false, agentId: AGENT, threadKey: "C0CHAN:1.1",
     turnSenders: [ALICE], ...over,
   };
-  const scope = resolveBrainScope({ ...g, kbSources: [] });
+  const scope = (await resolveBrainScope({ ...g, kbSources: [] }));
   const deps: BrainToolDeps = {
     scope: () => scope,
     gate: () => g,
@@ -75,7 +75,7 @@ describe("memory_about for the person asking", () => {
   test("a channel turn: profile, the agent's note and the team fact, each told or inferred with its date", async () => {
     const b = fakeBrain();
     await seed(b);
-    const s = setup(b);
+    const s = (await setup(b));
     const r = await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps);
     expect(r.isError).toBeUndefined();
     const out = text(r);
@@ -89,7 +89,7 @@ describe("memory_about for the person asking", () => {
   test("in a channel turn, a note written into user-<id> during that person's /1on1 is NOT included", async () => {
     const b = fakeBrain();
     await seed(b);
-    const s = setup(b);
+    const s = (await setup(b));
     const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
     expect(out).not.toContain("Worried about the release date.");
     expect(s.reads.some((r) => r.scope.allowedSources.includes(userSourceId("U0ALICE")))).toBe(false);
@@ -98,7 +98,7 @@ describe("memory_about for the person asking", () => {
   test("in their own /1on1 the note from their own slice is included", async () => {
     const b = fakeBrain();
     await seed(b);
-    const s = setup(b, { lockedUser: "U0ALICE" });
+    const s = (await setup(b, { lockedUser: "U0ALICE" }));
     const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
     expect(out).toContain("[inferred] person-note, from their /1on1 notes, as of 2026-10-22 (slug people/u0alice)\nWorried about the release date.");
     expect(out).toContain("Call me Al.");
@@ -109,7 +109,7 @@ describe("memory_about for the person asking", () => {
     const b = fakeBrain();
     await seed(b);
     await put(b, userSourceId("U0BOB"), "people/u0alice", page("Bob's /1on1 note about Alice.", { type: "person-note" }, "2026-10-22"));
-    const s = setup(b, { lockedUser: "U0BOB" });
+    const s = (await setup(b, { lockedUser: "U0BOB" }));
     const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
     expect(out).toContain("Call me Al.");
     expect(out).not.toContain("Bob's /1on1 note");
@@ -119,7 +119,7 @@ describe("memory_about for the person asking", () => {
   test("every read is limited to one source the turn can already read", async () => {
     const b = fakeBrain();
     await seed(b);
-    const s = setup(b, { lockedUser: "U0ALICE" });
+    const s = (await setup(b, { lockedUser: "U0ALICE" }));
     await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps);
     expect(s.reads.length).toBeGreaterThan(0);
     for (const r of s.reads) {
@@ -137,7 +137,7 @@ describe("memory_about for the person asking", () => {
     // The same slug tagged in the user slice does not hide the shared copy.
     await put(b, SHARED_SOURCE, "people/u0alice", page("Shared note on Alice.", { type: "person-note" }, "2026-10-24"));
     await tag(b, userSourceId("U0ALICE"), "people/u0alice");
-    const s = setup(b, { lockedUser: "U0ALICE" });
+    const s = (await setup(b, { lockedUser: "U0ALICE" }));
     const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
     expect(out).not.toContain("Prefers a diff over a description.");
     expect(out).not.toContain("Worried about the release date.");
@@ -148,7 +148,7 @@ describe("memory_about for the person asking", () => {
   test("a corrected person-note under a new slug appears; the one it supersedes does not", async () => {
     const b = fakeBrain();
     await seed(b);
-    const s = setup(b);
+    const s = (await setup(b));
     const w = await brainHandlers.kb_memoize({
       subject: "U0ALICE",
       pages: [{ slug: "people/u0alice-2", content: "Prefers a call over a long thread.", summary: "s", type: "person-note", supersedes: "people/u0alice" }],
@@ -162,7 +162,7 @@ describe("memory_about for the person asking", () => {
   test("a correction-* page in the profile appears", async () => {
     const b = fakeBrain();
     await seed(b);
-    const s = setup(b);
+    const s = (await setup(b));
     const w = await brainHandlers.kb_memoize({
       target: "profile",
       pages: [{ slug: "correction-name", content: "Not Alicia: Alice.", summary: "s", type: "correction", confidence: "told" }],
@@ -176,7 +176,7 @@ describe("memory_about for the person asking", () => {
   test("a typed page about someone else is not shown, wherever it lives", async () => {
     const b = fakeBrain();
     await seed(b);
-    const s = setup(b);
+    const s = (await setup(b));
     await brainHandlers.kb_memoize({ subject: "U0BOB", pages: [{ slug: "people/bob-notes", content: "Bob reviews fast.", summary: "s", type: "person-note" }] }, s.deps);
     // A fixed slug carrying another person's subject is not shown either.
     await put(b, SHARED_SOURCE, "people/u0alice", page("Mislabelled.", { type: "person-note", subject: "U0BOB" }, "2026-10-24"));
@@ -191,7 +191,7 @@ describe("memory_about for the person asking", () => {
     await seed(b);
     await put(b, PUBLIC_SOURCE, "notes/alice-ci", page("Asked about CI twice.", { type: "person-note", subject: "U0ALICE" }, "2026-10-24"));
     await put(b, PUBLIC_SOURCE, "people/u0alice", page("Old public note.", { type: "person-note" }, "2026-10-23"));
-    const s = setup(b, { channelTrust: "public" });
+    const s = (await setup(b, { channelTrust: "public" }));
     const out = text(await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps));
     expect(out).toContain("[inferred] person-note, from the public notes, as of 2026-10-24 (slug notes/alice-ci)\nAsked about CI twice.");
     expect(out).toContain("(slug people/u0alice)\nOld public note.");
@@ -200,7 +200,7 @@ describe("memory_about for the person asking", () => {
   });
 
   test("nothing held: says so", async () => {
-    const s = setup(fakeBrain());
+    const s = (await setup(fakeBrain()));
     const r = await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps);
     expect(r.isError).toBeUndefined();
     expect(text(r)).toBe("Nothing is recorded about U0ALICE in what this turn can read.");
@@ -211,7 +211,7 @@ describe("memory_about refuses anyone but the person asking", () => {
   test("userId other than the speaker", async () => {
     const b = fakeBrain();
     await seed(b);
-    const s = setup(b);
+    const s = (await setup(b));
     const r = await brainHandlers.memory_about({ userId: "U0BOB" }, s.deps);
     expect(r.isError).toBe(true);
     expect(text(r)).toBe(MEMORY_ABOUT_REFUSAL);
@@ -223,7 +223,7 @@ describe("memory_about refuses anyone but the person asking", () => {
     // the turn's senders are still only Alice.
     const b = fakeBrain();
     await seed(b);
-    const s = setup(b, { userId: "U0BOB", turnSenders: [ALICE] });
+    const s = (await setup(b, { userId: "U0BOB", turnSenders: [ALICE] }));
     const asBob = await brainHandlers.memory_about({ userId: "U0BOB" }, s.deps);
     expect(text(asBob)).toBe(MEMORY_ABOUT_REFUSAL);
     expect(s.reads).toEqual([]);
@@ -244,7 +244,7 @@ describe("memory_about refuses anyone but the person asking", () => {
       { turnSenders: [] },
       { interactive: false, origin: "cron" as const },
     ] satisfies Partial<GateInput>[]) {
-      const s = setup(b, over);
+      const s = (await setup(b, over));
       const r = await brainHandlers.memory_about({ userId: "U0ALICE" }, s.deps);
       expect(text(r)).toBe(MEMORY_ABOUT_REFUSAL);
       expect(s.reads).toEqual([]);
@@ -254,7 +254,7 @@ describe("memory_about refuses anyone but the person asking", () => {
 
 describe("memory_about reads gbrain's page record", () => {
   test("compiled_truth plus a parsed frontmatter object (as_of as a YAML date) and a superseded tag on the record", async () => {
-    const s = setup(fakeBrain());
+    const s = (await setup(fakeBrain()));
     const own = profileSourceId(TEAM, "U0ALICE");
     s.deps.call = async (name, params, scope) => {
       s.reads.push({ name, slug: params.slug, scope });
@@ -295,7 +295,7 @@ describe("kb_memoize per-page subject (one batch, notes about two people)", () =
   test("each page is stamped with its own subject, and memory_about for Bob leaves out the note about Alice", async () => {
     const { parseFrontmatter } = await import("../../src/knowledge/memory-pages");
     const b = fakeBrain();
-    const w = setup(b, { userId: "U0CAROL", turnSenders: [{ userId: "U0CAROL", teamId: TEAM, origin: "slack" }] });
+    const w = (await setup(b, { userId: "U0CAROL", turnSenders: [{ userId: "U0CAROL", teamId: TEAM, origin: "slack" }] }));
     const r = await brainHandlers.kb_memoize({
       subject: "U0BOB",
       pages: [
@@ -308,7 +308,7 @@ describe("kb_memoize per-page subject (one batch, notes about two people)", () =
     const subjectOf = (slug: string) => parseFrontmatter(b.contentOf(own, slug)!).meta.subject;
     expect(subjectOf("people/u0bob")).toBe("U0BOB");
     expect(subjectOf("people/u0alice")).toBe("U0ALICE");
-    const bob = setup(b, { userId: "U0BOB", turnSenders: [BOB] });
+    const bob = (await setup(b, { userId: "U0BOB", turnSenders: [BOB] }));
     const out = text(await brainHandlers.memory_about({ userId: "U0BOB" }, bob.deps));
     expect(out).toContain("Bob likes diffs.");
     expect(out).not.toContain("stretched thin");
@@ -316,7 +316,7 @@ describe("kb_memoize per-page subject (one batch, notes about two people)", () =
 
   test("with target profile, a page whose own subject is someone else is refused", async () => {
     const b = fakeBrain();
-    const s = setup(b);
+    const s = (await setup(b));
     const r = await brainHandlers.kb_memoize({
       target: "profile",
       pages: [{ slug: "profile", content: "Call me Al.", summary: "s", type: "profile", subject: "U0BOB" }],

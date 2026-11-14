@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import type { ConsoleGrantView, CreateGrantRequest, CreateGrantResponse, GrantRole, SubjectKind } from "../../../../gateway/panel/api-types";
+import type { ConsoleGrantView, CreateGrantByRefRequest, CreateGrantRequest, CreateGrantResponse, GrantRole, SubjectKind } from "../../../../gateway/panel/api-types";
 import { ApiError } from "../../../lib/api";
 import { Button, Dialog, Field, Input, Select } from "../../../ui";
 import { api } from "../../client";
-import { ROLE_LABEL, SUBJECT_KINDS, SUBJECT_LABEL, rolesFor, subjectIdError, subjectPlaceholder } from "../../lib/grants";
+import { ROLE_LABEL, SUBJECT_KINDS, SUBJECT_LABEL, isPersonRef, normaliseSubjectInput, rolesFor, subjectIdError, subjectPlaceholder } from "../../lib/grants";
 
 interface FormState {
   subjectKind: SubjectKind;
@@ -104,15 +104,16 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
       (idErr ? idRef : expiresRef).current?.focus();
       return;
     }
-    const body: CreateGrantRequest = {
-      subjectKind: f.subjectKind,
-      subjectId: f.subjectId.trim(),
+    const common = {
       role: f.role,
       deny: isUser ? f.deny : undefined,
       dmOnly: isUser ? f.dmOnly : undefined,
       expiresAt: f.expires ? new Date(f.expires).getTime() : null,
       note: f.note.trim() || null,
     };
+    // A person written as email:, user: or slack:user: goes by reference; a Slack id by kind and id, as before.
+    const body: CreateGrantRequest | CreateGrantByRefRequest =
+      isUser && isPersonRef(f.subjectId) ? { ...common, subject: f.subjectId.trim() } : { ...common, subjectKind: f.subjectKind, subjectId: f.subjectId.trim() };
     setBusy(true);
     setServerError(null);
     try {
@@ -164,7 +165,7 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
             )}
           </Field>
           <Field
-            label="Slack id"
+            label={isUser ? "Slack id or person reference" : "Slack id"}
             error={srvField === "subjectId" ? serverError : show("subjectId") ? idErr : null}
           >
             {({ id, describedBy, invalid }) => (
@@ -178,7 +179,7 @@ export function GrantDialog({ agent, open, onClose, onCreated }: GrantDialogProp
                 value={f.subjectId}
                 autoComplete="off"
                 spellCheck={false}
-                onChange={(e) => set("subjectId", e.target.value.toUpperCase())}
+                onChange={(e) => set("subjectId", normaliseSubjectInput(e.target.value))}
                 onBlur={(e) => touch("subjectId", e.relatedTarget)}
               />
             )}

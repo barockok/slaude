@@ -1,9 +1,16 @@
 /**
- * Call-site helpers for the shadow seam (slice C, tasks 13 to 18). A site calls
- * one of these instead of the legacy reader and uses the value it returns,
- * which IS the legacy value: the helper computes it synchronously from the same
- * grants and the same function the site called before, then hands the identical
- * inputs to the seam (`decide.ts`) in the background.
+ * Call-site helpers for the access seam (slice C, tasks 13 to 20). A site awaits
+ * one of these instead of the legacy reader and uses the value it returns.
+ *
+ * Under `SLAUDE_ACCESS_SOURCE=legacy|shadow` (the default is `shadow`) that
+ * value IS the legacy value: the helper computes it from the same grants and
+ * the same function the site called before and returns it without waiting for
+ * anything, then hands the identical inputs to the seam (`decide.ts`) in the
+ * background. Under `internal` (task 20) the helper awaits the seam and returns
+ * the internal-id answer; when the seam cannot answer, the fallback is the
+ * legacy result for ordinary questions and a refusal for privileged ones
+ * (`decide.ts`). The calls are async only so that the one `internal` path can
+ * wait on the database; they never throw.
  *
  * Why background: the seam's shadow path reads the database (acting user,
  * bindings). Nothing a site returns may wait for it, throw because of it, or
@@ -18,14 +25,17 @@
  *  - without a workspace (no team id on the event) the engine cannot name the
  *    acting identity, so the shadow is skipped and counted `no_team`.
  *
- * A site that decides with the internal answer is task 20, not this file.
+ * Under shadow, everything below applies. Under `internal`, a call with no
+ * workspace cannot name the acting identity: ordinary questions get the legacy
+ * answer and privileged ones a refusal (counted `source="fallback_legacy"` and
+ * `outcome="no_team"`).
  */
 import { env } from "../config/env";
 import { m } from "../metrics";
 import type { AdmitResult } from "./admission";
 import { admit } from "./admission";
-import { decideAdmit, decideApprovers, decideCheck, decideDenied, decideList, decideRole, decideSame, showAdmit, showRole } from "./decide";
-import type { EngineActor } from "./authority";
+import { logOncePerMinute, decideAdmit, decideApproverSplit, decideApprovers, decideCheck, decideDenied, decideList, decideRole, decideSame, showAdmit, showRole, type ApproverSplit } from "./decide";
+import type { EngineActor, EngineOpts } from "./authority";
 import type { Grant } from "./grants";
 import { isDenied, roleFromGrants, usersWithRole, type Role } from "./role";
 import type { SiteId } from "./sites";
@@ -75,8 +85,42 @@ function shadow(site: SiteId, result: string, teamId: string | null | undefined,
   }
 }
 
-/** Admission: `admit()` over the grants, shadowed. */
-export function admitAt(o: {
+/** Whether the answer comes from the internal path (read on every call). */
+export const isInternal = (): boolean => env.access.source() === "internal";
+
+/**
+ * Under `internal`: await the seam. A call with no workspace, or a seam that
+ * threw (it does not), answers `unanswered`: the legacy value for an ordinary
+ * question, a refusal for a privileged one. Under the other sources: record the
+ * decision, start the shadow, return `legacy` at once.
+ */
+async function route<T>(o: { site: SiteId; legacy: T; show: (v: T) => string; teamId: string | null | undefined; unanswered: T; run: () => Promise<T> }): Promise<T> {
+  if (!isInternal()) {
+    shadow(o.site, o.show(o.legacy), o.teamId, o.run);
+    return o.legacy;
+  }
+  try {
+    if (!o.teamId) {
+      m.accessShadowTotal.inc({ site: o.site, outcome: "no_team" });
+      logOncePerMinute(`${o.site}|no_team`, () => `[access] internal call without a workspace site=${o.site}: ordinary questions use legacy, privileged ones are refused`);
+      m.accessDecisionTotal.inc({ source: "fallback_legacy", site: o.site, result: o.show(o.unanswered) });
+      return o.unanswered;
+    }
+    return await o.run();
+  } catch {
+    try {
+      m.accessDecisionTotal.inc({ source: "fallback_legacy", site: o.site, result: o.show(o.unanswered) });
+    } catch {
+      /* counting must never fail a decision */
+    }
+    return o.unanswered;
+  }
+}
+
+const demote = (r: Role | null): Role | null => (r === "manager" || r === "approver" ? "member" : r);
+
+/** Admission: `admit()` over the grants. */
+export async function admitAt(o: {
   site: SiteId;
   persona: string | null | undefined;
   teamId: string | null | undefined;
@@ -84,87 +128,122 @@ export function admitAt(o: {
   channelId: string;
   isDM: boolean;
   grants: readonly Grant[];
-}): AdmitResult {
+}): Promise<AdmitResult> {
   const legacy = admit({ grants: o.grants, userId: o.userId, channelId: o.channelId, isDM: o.isDM });
-  shadow(o.site, showAdmit(legacy), o.teamId, () => decideAdmit({ ...o, teamId: o.teamId! }));
-  return legacy;
+  return route({
+    site: o.site,
+    legacy,
+    show: showAdmit,
+    teamId: o.teamId,
+    unanswered: legacy,
+    run: () => decideAdmit({ ...o, teamId: o.teamId! }),
+  });
 }
 
-/** A user's role over the grants, shadowed. */
-export function roleAt(o: {
+/** A user's role over the grants. */
+export async function roleAt(o: {
   site: SiteId;
   persona: string | null | undefined;
   teamId: string | null | undefined;
   userId: string;
   channelId?: string | null;
   grants: readonly Grant[];
-}): Role | null {
+}): Promise<Role | null> {
   const legacy = roleFromGrants(o.grants, o.userId, o.channelId);
-  shadow(o.site, showRole(legacy), o.teamId, () => decideRole({ ...o, teamId: o.teamId! }));
-  return legacy;
+  return route({ site: o.site, legacy, show: showRole, teamId: o.teamId, unanswered: demote(legacy), run: () => decideRole({ ...o, teamId: o.teamId! }) });
 }
 
-/** Who holds one of `roles` (Slack ids), shadowed. */
-export function approversAt(o: {
+/** Who holds one of `roles` (Slack ids). Under `internal` an outage, or no workspace, returns no one. */
+export async function approversAt(o: {
   site: SiteId;
   persona: string | null | undefined;
   teamId: string | null | undefined;
   grants: readonly Grant[];
   roles: readonly Role[];
   channelId?: string | null;
-}): string[] {
+}): Promise<string[]> {
   const legacy = usersWithRole(o.grants, o.roles, o.channelId);
-  shadow(o.site, `${legacy.length}`, o.teamId, () => decideApprovers({ ...o, teamId: o.teamId! }));
-  return legacy;
+  return route({ site: o.site, legacy, show: (ids) => `${ids.length}`, teamId: o.teamId, unanswered: [], run: () => decideApprovers({ ...o, teamId: o.teamId! }) });
 }
 
 /**
- * Whether two Slack ids are the same person at a lock or manager compare,
- * shadowed. The returned value is the string compare the site made before
- * (`a === b`). `otherTeamId` is the lock's workspace; a lock with none is read
- * as the speaker's own workspace for the shadow only.
+ * Who holds one of `roles`, split for a card's allowlist: direct Slack ids and
+ * the user ids that `email:` and `user:` entries name. Legacy and shadow:
+ * the legacy ids and no user ids.
  */
-export function sameAt(o: {
+export async function approverSplitAt(o: {
+  site: SiteId;
+  persona: string | null | undefined;
+  teamId: string | null | undefined;
+  grants: readonly Grant[];
+  roles: readonly Role[];
+  channelId?: string | null;
+  /** The ids the site would use without the seam, when they are not `usersWithRole` over `grants` (an agent.yaml file's managers). */
+  legacy?: string[];
+}): Promise<ApproverSplit> {
+  const legacy = { slackIds: o.legacy ?? usersWithRole(o.grants, o.roles, o.channelId), userIds: [] as string[] };
+  return route({
+    site: o.site,
+    legacy,
+    show: (r) => `${r.slackIds.length + r.userIds.length}`,
+    teamId: o.teamId,
+    unanswered: { slackIds: [], userIds: [] },
+    run: () => decideApproverSplit({ ...o, teamId: o.teamId! }),
+  });
+}
+
+/**
+ * Whether two Slack ids are the same person at a lock or manager compare. The
+ * legacy answer is the string compare (`a === b`); under `internal` it is Rule G
+ * (`sameUser`). `otherTeamId` is the lock's workspace; a lock with none is read
+ * as the speaker's own workspace.
+ */
+export async function sameAt(o: {
   site: SiteId;
   persona: string | null | undefined;
   teamId: string | null | undefined;
   userId: string | null | undefined;
   otherUserId: string | null | undefined;
   otherTeamId?: string | null;
-}): boolean {
+}): Promise<boolean> {
   const legacy = o.userId === o.otherUserId;
   const known = !!o.teamId && !!o.userId && !!o.otherUserId;
-  shadow(o.site, legacy ? "same" : "different", known ? o.teamId : null, () =>
-    decideSame({
-      site: o.site,
-      persona: o.persona,
-      a: { teamId: o.teamId!, slackUserId: o.userId! },
-      b: { teamId: o.otherTeamId || o.teamId!, slackUserId: o.otherUserId! },
-    }),
-  );
-  return legacy;
+  return route({
+    site: o.site,
+    legacy,
+    show: (v) => (v ? "same" : "different"),
+    teamId: known ? o.teamId : null,
+    unanswered: legacy,
+    run: () =>
+      decideSame({
+        site: o.site,
+        persona: o.persona,
+        a: { teamId: o.teamId!, slackUserId: o.userId! },
+        b: { teamId: o.otherTeamId || o.teamId!, slackUserId: o.otherUserId! },
+      }),
+  });
 }
 
-/** Whether a deny grant reaches the user (`isDenied`), shadowed. */
-export function deniedAt(o: {
+/** Whether a deny grant reaches the user (`isDenied`). A resolver outage never removes a Slack deny. */
+export async function deniedAt(o: {
   site: SiteId;
   persona: string | null | undefined;
   teamId: string | null | undefined;
   userId: string;
   grants: readonly Grant[];
-}): boolean {
+}): Promise<boolean> {
   const legacy = isDenied(o.grants, o.userId);
-  shadow(o.site, legacy ? "denied" : "clear", o.teamId, () => decideDenied({ ...o, teamId: o.teamId! }));
-  return legacy;
+  return route({ site: o.site, legacy, show: (v) => (v ? "denied" : "clear"), teamId: o.teamId, unanswered: legacy, run: () => decideDenied({ ...o, teamId: o.teamId! }) });
 }
 
 /**
  * A check the site already made with its own legacy reader (an allowlist, a
- * soul field), shadowed against `internal`, the engine's twin over `grants`.
- * `legacy` is returned as given. `grants` is read lazily, in the background, so
- * a site that has none loaded pays nothing in the foreground.
+ * soul field), against `internal`, the engine's twin over `grants`. `legacy` is
+ * what comes back unless the source is `internal`. `grants` is read lazily. Under
+ * `internal` an outage, or no workspace, answers `onFailure` (default false: a
+ * privileged refusal).
  */
-export function checkAt<T extends boolean | string>(o: {
+export async function checkAt<T extends boolean | string>(o: {
   site: SiteId;
   persona: string | null | undefined;
   teamId: string | null | undefined;
@@ -172,42 +251,80 @@ export function checkAt<T extends boolean | string>(o: {
   legacy: T;
   grants: () => Promise<readonly Grant[]> | readonly Grant[];
   fresh?: boolean;
-  internal: (i: { grants: Grant[]; actor: EngineActor }) => T;
-}): T {
+  internal: (i: { grants: Grant[]; actor: EngineActor; opts: EngineOpts }) => T;
+  /** The answer when the internal path cannot say who is acting. Default: false for a boolean, the legacy value otherwise. */
+  onFailure?: T;
+}): Promise<T> {
   const known = !!o.teamId && !!o.userId;
-  shadow(o.site, String(o.legacy), known ? o.teamId : null, async () =>
-    decideCheck<T>({
-      site: o.site,
-      persona: o.persona,
-      teamId: o.teamId!,
-      userId: o.userId!,
-      grants: await o.grants(),
-      fresh: o.fresh ?? true,
-      legacy: o.legacy,
-      show: String,
-      internal: o.internal,
-    }),
-  );
-  return o.legacy;
+  const unanswered = (o.onFailure ?? (typeof o.legacy === "boolean" ? false : o.legacy)) as T;
+  return route({
+    site: o.site,
+    legacy: o.legacy,
+    show: String,
+    teamId: known ? o.teamId : null,
+    unanswered,
+    run: async () =>
+      decideCheck<T>({
+        site: o.site,
+        persona: o.persona,
+        teamId: o.teamId!,
+        userId: o.userId!,
+        grants: await o.grants(),
+        fresh: o.fresh ?? true,
+        legacy: o.legacy,
+        show: String,
+        internal: o.internal,
+        onFailure: () => unanswered,
+      }),
+  });
 }
 
 /**
  * A list of Slack ids a site already built its own way (the soul's managers, a
- * digest recipient), shadowed against who the persona's grants name for
- * `roles`. `legacy` is returned as given. `grants` is read lazily, in the
- * background, and only when a workspace is known.
+ * digest recipient), against who the persona's grants name for `roles`. `legacy`
+ * is what comes back unless the source is `internal`; then it is the grants'
+ * people as Slack ids. `refuseOnFailure`: an outage returns no one instead of
+ * `legacy` (a privileged list). `grants` is read lazily, and only when a
+ * workspace is known.
  */
-export function listAt(o: {
+export async function listAt(o: {
   site: SiteId;
   persona: string | null | undefined;
   teamId: string | null | undefined;
   legacy: string[];
   roles: readonly Role[];
   channelId?: string | null;
+  refuseOnFailure?: boolean;
   grants: () => Promise<readonly Grant[]> | readonly Grant[];
-}): string[] {
-  shadow(o.site, `${o.legacy.length}`, o.teamId, async () =>
-    decideList({ site: o.site, persona: o.persona, teamId: o.teamId!, grants: await o.grants(), roles: o.roles, channelId: o.channelId, legacy: o.legacy }),
-  );
-  return o.legacy;
+}): Promise<string[]> {
+  return route({
+    site: o.site,
+    legacy: o.legacy,
+    show: (ids) => `${ids.length}`,
+    teamId: o.teamId,
+    unanswered: o.refuseOnFailure ? [] : o.legacy,
+    run: async () =>
+      decideList({ site: o.site, persona: o.persona, teamId: o.teamId!, grants: await o.grants(), roles: o.roles, channelId: o.channelId, legacy: o.legacy, refuseOnFailure: o.refuseOnFailure }),
+  });
+}
+
+/**
+ * True when the speaker is the same person as any of `others` (a list of
+ * managers, approvers). Compares one at a time and stops at the first match, as
+ * `Array.some` did over the string compare.
+ */
+export async function someSameAt(others: readonly string[], of: (other: string) => Parameters<typeof sameAt>[0]): Promise<boolean> {
+  for (const other of others) if (await sameAt(of(other))) return true;
+  return false;
+}
+
+/**
+ * {@link sameAt} for a site with no workspace on the call that cannot await
+ * (a sync function). With no workspace the engine cannot name either identity,
+ * so the answer is the string compare in every mode; the decision is counted
+ * (`no_team`) like any other. Not for a site that has a team.
+ */
+export function sameNoTeam(o: { site: SiteId; persona: string | null | undefined; userId: string | null | undefined; otherUserId: string | null | undefined }): boolean {
+  void sameAt({ ...o, teamId: null });
+  return o.userId === o.otherUserId;
 }

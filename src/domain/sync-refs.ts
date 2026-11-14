@@ -63,6 +63,8 @@ export function collectRefs(persona: string, soul: SoulData, soulText: string): 
   soul.trustedChannels?.forEach((c, i) => add(`access.channels.trusted[${i}]`, bareChannel(c)));
   soul.blockedUsers?.forEach((u, i) => add(`access.blocked[${i}]`, bareUser(u)));
   soul.dmAllowedUsers?.forEach((u, i) => add(`access.dm[${i}]`, bareUser(u)));
+  // `email:` and `user:` references (only compiled while the access source is `internal`): the same declared records, nothing granted by them.
+  soul.accessRefs?.forEach((r, i) => add(`access.${r.field} (reference ${i})`, r.ref.service === "email" ? { kind: "email", address: r.ref.address } : { kind: "internal", type: "user", id: r.ref.userId }));
   soul.channelOverrides?.forEach((o, i) => {
     add(`mandate.scoped / channels (channel ${i})`, bareChannel(o.channel));
     o.approvers?.forEach((a, j) => add(`access.approvers (channel ${i}, entry ${j})`, bareUser(a.userId)));
@@ -82,6 +84,32 @@ export function collectRefs(persona: string, soul: SoulData, soulText: string): 
 export async function tenantWorkspaces(tenant: string, c: DbClient = globalDb): Promise<string[]> {
   const rows = await c.query<{ team_id: string }>("SELECT DISTINCT team_id FROM slack_apps WHERE tenant_id = ? ORDER BY team_id", [tenant]);
   return rows.map((r) => r.team_id).filter(Boolean);
+}
+
+let singleCache: { until: number; v: string | undefined } | null = null;
+/** Forget the cached answer of {@link singleWorkspace} (tests). */
+export function __resetSingleWorkspace(): void {
+  singleCache = null;
+}
+/**
+ * The deployment's one connected workspace, or undefined when it has none or
+ * several (the same single-workspace rule as sync and the reconciler). Postgres
+ * reads the tenant's slack_apps; sqlite the workspace its Slack bindings are in.
+ * Cached for 30 s; a read error is undefined.
+ */
+export async function singleWorkspace(c: DbClient = globalDb): Promise<string | undefined> {
+  if (singleCache && Date.now() < singleCache.until) return singleCache.v;
+  let v: string | undefined;
+  try {
+    let ws = c.dialect === "pg" ? await tenantWorkspaces("default", c) : [];
+    // No connected-app rows (sqlite, or a deployment that has none): the workspace the Slack bindings are in.
+    if (ws.length === 0) ws = (await c.query<{ workspace: string }>("SELECT DISTINCT workspace FROM bindings WHERE service = 'slack' AND kind = 'user' AND workspace <> '' LIMIT 3")).map((r) => r.workspace);
+    v = ws.length === 1 ? ws[0] : undefined;
+  } catch {
+    v = undefined;
+  }
+  singleCache = { until: Date.now() + 30_000, v };
+  return v;
 }
 
 /** The workspace for each use, or a refusal naming persona and field. */

@@ -77,13 +77,6 @@ describe("SLAUDE_ACCESS_SOURCE", () => {
     await decideAdmit(admitArgs([slack(SELF, "member")]));
     expect(spy).toHaveBeenCalledTimes(1);
   });
-
-  test("internal is not live yet: it returns the legacy answer", async () => {
-    process.env.SLAUDE_ACCESS_SOURCE = "internal";
-    await verifiedUser();
-    const r = await decideAdmit(admitArgs([email("a@example.com", "member")]));
-    expect(r).toEqual({ ok: false, reason: "whitelist" });
-  });
 });
 
 describe("shadow", () => {
@@ -175,7 +168,8 @@ describe("decideRole, decideApprovers, decideSame", () => {
     const spy = spyOn(Actor, "actingUser");
     const role = await decideRole({ site: "test.role", persona: "scout", teamId: T1, userId: SELF, channelId: "C0ONE", grants: [slack(SELF, "manager", { source: "soul" })] });
     expect(role).toBe("manager");
-    expect(spy.mock.calls[0]![2]).toMatchObject({ fresh: true });
+    // Shadow keeps the cache (it must not raise the database load); only the live path reads fresh (failure-modes.test.ts).
+    expect(spy.mock.calls[0]![2]).toMatchObject({ fresh: false });
     expect(count("slaude_access_shadow_total", { site: "test.role", outcome: "match" })).toBe(1);
   });
 

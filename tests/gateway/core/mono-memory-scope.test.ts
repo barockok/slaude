@@ -198,7 +198,7 @@ describe("mono brain gate: the turn's team and whether a person started it", () 
     try {
       const g = (await h.__brainGate!(session.id))!;
       expect(g).toMatchObject({ interactive: false, teamId: "T", userId: "U0MEMBER" });
-      expect(resolveBrainScope({ ...g, kbSources: [] }).profileSource).toBe(profileSourceId("T", "U0MEMBER"));
+      expect((await resolveBrainScope({ ...g, kbSources: [] })).profileSource).toBe(profileSourceId("T", "U0MEMBER"));
     } finally {
       await h.stop();
     }
@@ -214,7 +214,7 @@ describe("mono brain gate: the turn's team and whether a person started it", () 
       expect(g.interactive).toBe(true);
       expect(g.teamId).toBe("T0SIM");
       const profile = profileSourceId("T0SIM", g.userId!);
-      expect(resolveBrainScope({ ...g, kbSources: [] }).allowedSources).toContain(profile);
+      expect((await resolveBrainScope({ ...g, kbSources: [] })).allowedSources).toContain(profile);
       await mem().syncTurn({ sessionId: sid, user: "hello", assistant: "a" });
       expect(fb.sourcesOf(sid)).toEqual([agentSourceId(PROCESS_ID)]);
     } finally {
@@ -234,8 +234,8 @@ describe("mono brain gate: the turn's team and whether a person started it", () 
       await s.handle.__panelChat!(row, "operator note", "U0OPERATOR");
       const g = (await s.handle.__brainGate!(sid))!;
       expect(g).toMatchObject({ userId: "U0OPERATOR", interactive: true, teamId: "T0SIM" });
-      expect(resolveBrainScope({ ...g, kbSources: [] }).profileSource).toBe(profileSourceId("T0SIM", "U0OPERATOR"));
-      expect(resolveBrainScope({ ...g, kbSources: [] }).allowedSources).not.toContain(profileSourceId("T0SIM", member));
+      expect((await resolveBrainScope({ ...g, kbSources: [] })).profileSource).toBe(profileSourceId("T0SIM", "U0OPERATOR"));
+      expect((await resolveBrainScope({ ...g, kbSources: [] })).allowedSources).not.toContain(profileSourceId("T0SIM", member));
 
       // The reused-route branch: the next Slack message resets speaker, team and origin.
       await s.send({ text: "back to me" });

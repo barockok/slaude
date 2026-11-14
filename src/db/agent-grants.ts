@@ -3,6 +3,7 @@ import { db, dbDialect } from "./schema";
 import { formatRef, parseRef } from "../refs/parse";
 import type { Ref } from "../refs/types";
 import * as Domain from "./domain";
+import { env } from "../config/env";
 
 /**
  * Stored agent grants (migration 0032): who may use or administer a persona,
@@ -47,7 +48,12 @@ export interface CreateGrantInput {
   /** With `subject`, may be left out; when given it must agree with the reference. */
   subjectKind?: SubjectKind;
   subjectId?: string;
-  /** A typed Slack reference naming the subject (`slack:user:T0EXAMPLE/U0EXAMPLE`, `slack:channel:C0EXAMPLE`). Any other scheme is refused until the access flip. */
+  /**
+   * A typed reference naming the subject (`slack:user:T0EXAMPLE/U0EXAMPLE`,
+   * `slack:channel:C0EXAMPLE`). `email:<address>` and `user:<id>` are accepted
+   * only while SLAUDE_ACCESS_SOURCE=internal; under any other source they are
+   * refused, so no grant exists that the legacy readers would have to ignore.
+   */
   subject?: string;
   role: GrantRole;
   deny?: boolean;
@@ -90,11 +96,19 @@ function changed(persona: string | null) {
 }
 
 /** The kind, id and typed reference a grant input names, or an Error naming the problem. */
-function subjectOf(input: CreateGrantInput): { kind: SubjectKind; id: string; ref: string | null; workspace?: string } {
+function subjectOf(input: CreateGrantInput): { kind: SubjectKind; id: string; ref: string | null; workspace?: string; person?: Ref } {
   if (input.subject !== undefined) {
     const parsed = parseRef(input.subject, ["user", "channel"]);
     if (!parsed.ok) throw new Error("agent grant: subject is not a valid reference");
     const r = parsed.ref;
+    if (r.kind === "email" || (r.kind === "internal" && r.type === "user")) {
+      // A person by email or by internal user: only when the access source is `internal`.
+      if (env.access.source() !== "internal") throw new Error("agent grant: a non-Slack subject is not supported until the access flip");
+      if (input.subjectKind && input.subjectKind !== "user") throw new Error("agent grant: subject does not match subject_kind and subject_id");
+      const text = formatRef(r);
+      if (input.subjectId && input.subjectId !== text) throw new Error("agent grant: subject does not match subject_kind and subject_id");
+      return { kind: "user", id: text, ref: text, person: r };
+    }
     if (r.kind !== "external" || r.service !== "slack" || (r.type !== "user" && r.type !== "channel")) {
       throw new Error("agent grant: a non-Slack subject is not supported until the access flip");
     }
@@ -129,11 +143,11 @@ export async function create(input: CreateGrantInput, now: number = Date.now()):
   // typed slack: reference) waits for the access flip: the legacy readers and
   // the approval allowlist only understand Slack ids. A typed Slack reference
   // goes in `subject`, not here.
-  if (/[:@]/.test(subjectId)) {
+  if (!subj.person && /[:@]/.test(subjectId)) {
     throw new Error("agent grant: a non-Slack subject is not supported until the access flip");
   }
   const idShape = SUBJECT_ID_RE[subjectKind];
-  if (!idShape.re.test(subjectId)) {
+  if (!subj.person && !idShape.re.test(subjectId)) {
     throw new Error(`agent grant: a ${subjectKind} subject_id must be ${idShape.shape}, got ${JSON.stringify(subjectId)}`);
   }
   // The typed reference to keep: given, or the short form of the bare id. A workspace subject has none.
@@ -144,7 +158,17 @@ export async function create(input: CreateGrantInput, now: number = Date.now()):
   }
   // The user, only when the binding already exists and the workspace is known; never creates a record.
   let subjectUserId: string | null = null;
-  if (subjectKind === "user" && subj.workspace) {
+  if (subj.person) {
+    // An email is a declared binding until someone proves it (a declared binding grants nothing); a `user:` reference must name a record that exists.
+    if (subj.person.kind === "email") {
+      const r = await Domain.ensureBinding({ service: "email", kind: "address", workspace: "", value: subj.person.address, state: "declared", source: "grant" });
+      subjectUserId = r.userId;
+    } else if (subj.person.kind === "internal") {
+      const live = await Domain.resolveUserId(subj.person.id);
+      if (!live) throw new Error("agent grant: that user reference names no record");
+      subjectUserId = live;
+    }
+  } else if (subjectKind === "user" && subj.workspace) {
     try {
       subjectUserId = (await Domain.findBinding({ service: "slack", kind: "user", workspace: subj.workspace, value: subjectId }))?.user_id ?? null;
     } catch {

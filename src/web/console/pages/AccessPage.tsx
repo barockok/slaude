@@ -3,6 +3,7 @@ import { Link, navigate } from "../../lib/router";
 import { Avatar, Badge, Card, EmptyState, PageHeader, Skeleton, Table, type Column } from "../../ui";
 import { ErrorState } from "../components/ErrorState";
 import { RoleBadge, Subject } from "../components/GrantParts";
+import { STATE_HINT, STATE_LABEL, STATE_TONE } from "../lib/grants";
 import { useApi } from "../hooks/useApi";
 import { useRole } from "../hooks/useRole";
 import { absoluteTime, expiryLabel, shortDate } from "../lib/format";
@@ -58,6 +59,7 @@ const COLUMNS: Column<PersonaConsoleGrantView>[] = [
     render: (g) => (
       <span className="sl-inline">
         <RoleBadge role={g.role} />
+        {g.state && <Badge tone={STATE_TONE[g.state]} title={STATE_HINT[g.state]}>{STATE_LABEL[g.state]}</Badge>}
         {g.deny && <Badge tone="danger">Deny</Badge>}
         {g.dmOnly && <Badge>DM only</Badge>}
       </span>

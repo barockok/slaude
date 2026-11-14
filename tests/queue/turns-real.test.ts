@@ -143,9 +143,9 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     const { classifyBrainOp } = await import("../../src/knowledge/gated-dispatch");
     const { profileSourceId, resolveBrainScope } = await import("../../src/knowledge/scope");
     /** Whether the brain gate lets U1's Slack turn write U1's profile with these senders. */
-    const profileWrite = (senders: unknown) => {
+    const profileWrite = async (senders: unknown) => {
       const g = { userId: "U1", teamId: "T1", interactive: true, origin: "slack" as const, lockedUser: null, channelTrust: "trusted" as const, isManager: false, agentId: "A1", turnSenders: senders as any };
-      return classifyBrainOp("put_page", { ...resolveBrainScope({ ...g, kbSources: [] }), sourceId: profileSourceId("T1", "U1") }, g);
+      return (await classifyBrainOp("put_page", { ...(await resolveBrainScope({ ...g, kbSources: [] })), sourceId: profileSourceId("T1", "U1") }, g));
     };
 
     // Same initiator: merges, still one sender, the profile write passes.
@@ -154,7 +154,7 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     const a2 = await queues.enqueueTurn(turn("s-snd-same", ["two"], jwt({ job: "snd-a2" })), { label: "default" }, "snd-a2");
     expect(a2).toEqual({ jobId: "snd-a", queue: "turns", coalesced: true });
     expect(await queues.turnSenders("snd-a")).toEqual([{ userId: "U1", teamId: "T1", origin: "slack" }]);
-    expect(profileWrite(await queues.turnSenders("snd-a"))).toBe("auto");
+    expect((await profileWrite(await queues.turnSenders("snd-a")))).toBe("auto");
 
     // Two initiators merged into one job: both recorded (data and record), the profile write is denied.
     const b = await queues.enqueueTurn(turn("s-snd-two", ["alice"], jwt({ job: "snd-b" })), { label: "default" }, "snd-b");
@@ -162,7 +162,7 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     const merged = [{ userId: "U1", teamId: "T1", origin: "slack" }, { userId: "U2", teamId: "T1", origin: "slack" }];
     expect(await queues.turnSenders("snd-b")).toEqual(merged);
     expect(((await queues.queue("turns").getJob(b.jobId))!.data as TurnJob).senders).toEqual(merged);
-    expect(profileWrite(await queues.turnSenders("snd-b"))).toBe("deny");
+    expect((await profileWrite(await queues.turnSenders("snd-b")))).toBe("deny");
 
     // Cron then Slack, same person: a different kind of turn, so no merge
     // (see the coalescing-kind test below); the cron job's own sender is
@@ -170,8 +170,8 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     await queues.enqueueTurn(turn("s-snd-cron", ["tick"], jwt({ job: "snd-c" }), "U1", "cron"), { label: "default" }, "snd-c");
     const c2 = await queues.enqueueTurn(turn("s-snd-cron", ["hi"], jwt({ job: "snd-c2" })), { label: "default" }, "snd-c2");
     expect(c2.coalesced).toBe(false);
-    expect(profileWrite(await queues.turnSenders("snd-c"))).toBe("deny");
-    expect(profileWrite(await queues.turnSenders("snd-c2"))).toBe("auto");
+    expect((await profileWrite(await queues.turnSenders("snd-c")))).toBe("deny");
+    expect((await profileWrite(await queues.turnSenders("snd-c2")))).toBe("auto");
 
     // A token with no job claim is keyed by the BullMQ id; a job without senders reads as unknown.
     const d = await queues.enqueueTurn(turn("s-snd-plain", ["x"]), { label: "default" });
@@ -182,7 +182,7 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     // (An older job of unknown origin is not merged with a Slack one: see the coalescing-kind test.)
     await queues.enqueueTurn(turn("s-snd-old", ["y"], jwt({ job: "snd-e2" })), { label: "default" }, "snd-e2");
     expect(await queues.turnSenders("snd-e")).toBeNull();
-    expect(profileWrite(await queues.turnSenders("snd-e"))).toBe("deny");
+    expect((await profileWrite(await queues.turnSenders("snd-e")))).toBe("deny");
 
     for (const id of [a.jobId, b.jobId, "snd-c", "snd-c2", d.jobId, "snd-e", "snd-e2"]) await (await queues.queue("turns").getJob(id))?.remove();
     for (const sid of ["s-snd-same", "s-snd-two", "s-snd-cron", "s-snd-plain", "s-snd-old"]) await redis.del(keys.coalesce(sid));

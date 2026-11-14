@@ -34,16 +34,16 @@ test("the connect card is posted when the shadow's grants read fails", async () 
   await h.stop();
 });
 
-test("an approval card for a named persona is created when the shadow's grants read fails", async () => {
+test("an approval card for a named persona reads the persona's grants once, in the foreground, and starts no second read", async () => {
   const posts: any[] = [];
   const app: any = { action: () => {}, client: { chat: { postMessage: async (x: any) => (posts.push(x), { ok: true, ts: "1.1" }), update: async () => ({ ok: true }) } } };
   const gate = new ApprovalGate(app, [], { gateBus: null, timeoutSeconds: () => 0 });
-  // The card's own read of the persona's grants succeeds; the shadow's later read of the same fails.
+  // The card reads the persona's grants itself (it needs them for the answer); the shadow works from the same read.
   const real = Role.loadGrants;
   let scoutReads = 0;
-  spyOn(Role, "loadGrants").mockImplementation((p) => (p === "scout" && ++scoutReads > 1 ? Promise.reject(new Error("grants down")) : real(p)));
+  spyOn(Role, "loadGrants").mockImplementation((p) => (p === "scout" && ++scoutReads, real(p)));
   const { pendingId } = await gate.open({ channel: "C0EXAMPLE", threadTs: "1.1", summary: "x", sessionId: "S-lazy", persona: "scout", app: { teamId: "T" } });
   await settleShadows();
   expect(pendingId).toBeTruthy();
-  expect(scoutReads).toBeGreaterThan(1);
+  expect(scoutReads).toBe(1);
 });

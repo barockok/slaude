@@ -539,7 +539,8 @@ export function personaManager(personaId: string): string | null {
   }
   // Slice C task 18: shadowed against the persona's grants. The call carries no
   // workspace, so the engine is not asked (counted no_team); the value is the soul's.
-  listAt({ site: "scheduler.persona_manager", persona: personaId || "default", teamId: null, legacy: legacy ? [legacy] : [], roles: ["manager"], grants: () => loadGrants(personaId || "default") });
+  // No workspace on the call: the answer is the soul's in every mode, so the call is not awaited.
+  void listAt({ site: "scheduler.persona_manager", persona: personaId || "default", teamId: null, legacy: legacy ? [legacy] : [], roles: ["manager"], grants: () => loadGrants(personaId || "default") });
   return legacy;
 }
 

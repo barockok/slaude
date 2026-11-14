@@ -30,42 +30,42 @@ describe("channelTrustFor", () => {
 
 describe("resolveBrainScope", () => {
   const kb = ["kb-runbook"];
-  test("agent turn (no user): writes own agent slice, reads own+legacy+shared+public+kb", () => {
-    const s = resolveBrainScope({ userId: null, lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: kb, agentId: AGENT, teamId: null });
+  test("agent turn (no user): writes own agent slice, reads own+legacy+shared+public+kb", async () => {
+    const s = (await resolveBrainScope({ userId: null, lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: kb, agentId: AGENT, teamId: null }));
     expect(s.sourceId).toBe(A);
     expect(s.allowedSources).toEqual([A, AGENT_SOURCE, SHARED_SOURCE, PUBLIC_SOURCE, "kb-runbook"]);
     expect(s.clientId).toBe(AGENT);
   });
-  test("locked 1on1: writes own user slice, also reads the agent's own mind", () => {
-    const s = resolveBrainScope({ userId: "U1", lockedUser: "U1", channelTrust: "trusted", isManager: false, kbSources: kb, agentId: AGENT, teamId: null });
+  test("locked 1on1: writes own user slice, also reads the agent's own mind", async () => {
+    const s = (await resolveBrainScope({ userId: "U1", lockedUser: "U1", channelTrust: "trusted", isManager: false, kbSources: kb, agentId: AGENT, teamId: null }));
     expect(s.sourceId).toBe("user-u1");
     expect(s.allowedSources).toEqual(["user-u1", A, AGENT_SOURCE, SHARED_SOURCE, PUBLIC_SOURCE, "kb-runbook"]);
   });
-  test("trusted channel (unlocked): default write is the agent's OWN private slice, not shared", () => {
-    const s = resolveBrainScope({ userId: "U2", lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: kb, agentId: AGENT, teamId: null });
+  test("trusted channel (unlocked): default write is the agent's OWN private slice, not shared", async () => {
+    const s = (await resolveBrainScope({ userId: "U2", lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: kb, agentId: AGENT, teamId: null }));
     expect(s.sourceId).toBe(A);
     // shared is READABLE but not the default write target — escalation is explicit.
     expect(s.allowedSources).toEqual([A, AGENT_SOURCE, SHARED_SOURCE, PUBLIC_SOURCE, "kb-runbook"]);
   });
-  test("manager in unknown channel: default write is the agent slice, shared readable", () => {
-    const s = resolveBrainScope({ userId: "UMGR", lockedUser: null, channelTrust: "unknown", isManager: true, kbSources: [], agentId: AGENT, teamId: null });
+  test("manager in unknown channel: default write is the agent slice, shared readable", async () => {
+    const s = (await resolveBrainScope({ userId: "UMGR", lockedUser: null, channelTrust: "unknown", isManager: true, kbSources: [], agentId: AGENT, teamId: null }));
     expect(s.sourceId).toBe(A);
     expect(s.allowedSources).toContain(SHARED_SOURCE);
   });
-  test("public/unknown channel: public reads only", () => {
+  test("public/unknown channel: public reads only", async () => {
     for (const trust of ["public", "unknown"] as const) {
-      const s = resolveBrainScope({ userId: "U3", lockedUser: null, channelTrust: trust, isManager: false, kbSources: kb, agentId: AGENT, teamId: null });
+      const s = (await resolveBrainScope({ userId: "U3", lockedUser: null, channelTrust: trust, isManager: false, kbSources: kb, agentId: AGENT, teamId: null }));
       expect(s.sourceId).toBe(PUBLIC_SOURCE);
       expect(s.allowedSources).toEqual([PUBLIC_SOURCE]);
     }
   });
-  test("other user in someone else's locked thread gets public scope", () => {
-    const s = resolveBrainScope({ userId: "U9", lockedUser: "U1", channelTrust: "trusted", isManager: false, kbSources: [], agentId: AGENT, teamId: null });
+  test("other user in someone else's locked thread gets public scope", async () => {
+    const s = (await resolveBrainScope({ userId: "U9", lockedUser: "U1", channelTrust: "trusted", isManager: false, kbSources: [], agentId: AGENT, teamId: null }));
     expect(s.sourceId).toBe(PUBLIC_SOURCE);
     expect(s.allowedSources).toEqual([PUBLIC_SOURCE]);
   });
-  test("cross-agent isolation: an agent never reads or writes another agent's slice", () => {
-    const a = resolveBrainScope({ userId: "U2", lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: [], agentId: "AGENT_A", teamId: null });
+  test("cross-agent isolation: an agent never reads or writes another agent's slice", async () => {
+    const a = (await resolveBrainScope({ userId: "U2", lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: [], agentId: "AGENT_A", teamId: null }));
     const bSlice = agentSourceId("AGENT_B");
     expect(a.sourceId).toBe(agentSourceId("AGENT_A"));
     expect(a.allowedSources).not.toContain(bSlice);
@@ -124,7 +124,7 @@ describe("resolveBrainScope profile rows", () => {
     userId: "U0ALICE", teamId: TEAM, lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: kb, agentId: AGENT, ...o,
   });
   /** Same input without a team: the row as it was before profiles. */
-  const withoutProfile = (o: Partial<ScopeInput>) => resolveBrainScope(base({ ...o, teamId: null }));
+  const withoutProfile = async (o: Partial<ScopeInput>) => (await resolveBrainScope(base({ ...o, teamId: null })));
 
   const rows: Array<[string, Partial<ScopeInput>]> = [
     ["trusted channel", {}],
@@ -135,9 +135,9 @@ describe("resolveBrainScope profile rows", () => {
     ["public channel", { channelTrust: "public" }],
   ];
   for (const [name, o] of rows) {
-    test(`${name}: reads the speaker's profile after the row's own sources; write target unchanged`, () => {
-      const s = resolveBrainScope(base(o));
-      const before = withoutProfile(o);
+    test(`${name}: reads the speaker's profile after the row's own sources; write target unchanged`, async () => {
+      const s = (await resolveBrainScope(base(o)));
+      const before = (await withoutProfile(o));
       const speakerProfile = profileSourceId(TEAM, o.userId ?? "U0ALICE");
       expect(s.allowedSources).toEqual([...before.allowedSources, speakerProfile]);
       expect(s.profileSource).toBe(speakerProfile);
@@ -146,37 +146,37 @@ describe("resolveBrainScope profile rows", () => {
       expect(before.profileSource).toBeUndefined();
     });
   }
-  test("someone else's /1on1, non-manager: public + the speaker's profile, never the lock owner's", () => {
-    const s = resolveBrainScope(base({ userId: "U0BOB", lockedUser: "U0ALICE" }));
+  test("someone else's /1on1, non-manager: public + the speaker's profile, never the lock owner's", async () => {
+    const s = (await resolveBrainScope(base({ userId: "U0BOB", lockedUser: "U0ALICE" })));
     expect(s.allowedSources).toEqual([PUBLIC_SOURCE, profileSourceId(TEAM, "U0BOB")]);
     expect(s.allowedSources).not.toContain(profileSourceId(TEAM, "U0ALICE"));
     expect(s.allowedSources).not.toContain(userSourceId("U0ALICE"));
     expect(s.sourceId).toBe(PUBLIC_SOURCE);
   });
-  test("someone else's /1on1, manager: never the lock owner's profile", () => {
-    const s = resolveBrainScope(base({ userId: MGR, lockedUser: "U0ALICE", isManager: true }));
+  test("someone else's /1on1, manager: never the lock owner's profile", async () => {
+    const s = (await resolveBrainScope(base({ userId: MGR, lockedUser: "U0ALICE", isManager: true })));
     expect(s.allowedSources).not.toContain(profileSourceId(TEAM, "U0ALICE"));
     expect(s.allowedSources).toContain(profileSourceId(TEAM, MGR));
   });
-  test("userId null (background turn): no profile", () => {
-    const s = resolveBrainScope(base({ userId: null }));
+  test("userId null (background turn): no profile", async () => {
+    const s = (await resolveBrainScope(base({ userId: null })));
     expect(s.allowedSources.some((x) => x.startsWith(PROFILE_PREFIX))).toBe(false);
     expect(s.profileSource).toBeUndefined();
     expect(s.sourceId).toBe(A);
   });
-  test("teamId null: no profile", () => {
+  test("teamId null: no profile", async () => {
     for (const [, o] of rows) {
-      const s = resolveBrainScope(base({ ...o, teamId: null }));
+      const s = (await resolveBrainScope(base({ ...o, teamId: null })));
       expect(s.allowedSources.some((x) => x.startsWith(PROFILE_PREFIX))).toBe(false);
       expect(s.profileSource).toBeUndefined();
     }
   });
-  test("an empty team or user id reads as unknown: no profile", () => {
-    expect(resolveBrainScope(base({ teamId: "" })).profileSource).toBeUndefined();
-    expect(resolveBrainScope(base({ userId: "" })).profileSource).toBeUndefined();
+  test("an empty team or user id reads as unknown: no profile", async () => {
+    expect((await resolveBrainScope(base({ teamId: "" }))).profileSource).toBeUndefined();
+    expect((await resolveBrainScope(base({ userId: "" }))).profileSource).toBeUndefined();
     // Non-empty but sanitising to nothing: no `profile--u0alice`, no profile at all.
     for (const o of [{ teamId: "__" }, { userId: "--" }]) {
-      const s = resolveBrainScope(base(o));
+      const s = (await resolveBrainScope(base(o)));
       expect(s.profileSource).toBeUndefined();
       expect(s.allowedSources.some((x) => x.startsWith(PROFILE_PREFIX))).toBe(false);
     }

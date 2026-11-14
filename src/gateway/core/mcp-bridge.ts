@@ -542,19 +542,19 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
    *  handler wants the runAs user still holding the thread's /1on1 lock
    *  (initiator), or no lock at all (global, the manager). A cron turn with a
    *  captured initiator and no live lock gets no card: nobody could use it. */
-  function cardScope(claims: JobClaims): "initiator" | "global" | null {
+  async function cardScope(claims: JobClaims): Promise<"initiator" | "global" | null> {
     const runAs = parseRunAs(claims.runAs);
     if (runAs?.kind === "user") {
       if (claims.lock === undefined) return "initiator"; // an older gateway's token: unknown, try
-      return sameAt({ site: "bridge.card_scope_lock_same", persona: claims.persona, teamId: claims.team, userId: claims.lock?.user, otherUserId: runAs.slackUserId }) ? "initiator" : null;
+      return (await sameAt({ site: "bridge.card_scope_lock_same", persona: claims.persona, teamId: claims.team, userId: claims.lock?.user, otherUserId: runAs.slackUserId })) ? "initiator" : null;
     }
     return claims.lock ? null : "global";
   }
 
   const MAX_CARD_KEYS = 1000;
-  function maybeCard(claims: JobClaims, server: string, reason: "connect" | "reauth"): void {
+  async function maybeCard(claims: JobClaims, server: string, reason: "connect" | "reauth"): Promise<void> {
     if (!deps.onNeedsAuth) return;
-    const scope = cardScope(claims);
+    const scope = await cardScope(claims);
     if (!scope) return;
     const k = `${claims.session}\u0000${server}`;
     const t = now();
@@ -782,7 +782,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
               continue;
             }
           }
-          maybeCard(claims, server, "reauth");
+          await maybeCard(claims, server, "reauth");
           return { ok: false, text: reauthText(server) };
         }
         if (e instanceof UpstreamSessionExpired) retire(key, p);
@@ -910,7 +910,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       const { cfg, isPrivate } = resolveServer(claims, server);
       const cred = await chooseCredential(claims, server, cfg, isPrivate, credDeps);
       if (cred.kind === "connect") {
-        maybeCard(claims, server, "connect");
+        await maybeCard(claims, server, "connect");
         return { tools: [], instructions: connectText(server), unavailable: true };
       }
       if (await pinRefused(claims, server, cred)) return { tools: [], instructions: pinnedElsewhereText(server), unavailable: true };
@@ -961,7 +961,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       const { cfg, isPrivate } = resolveServer(claims, server);
       const cred = await chooseCredential(claims, server, cfg, isPrivate, credDeps);
       if (cred.kind === "connect") {
-        maybeCard(claims, server, "connect");
+        await maybeCard(claims, server, "connect");
         return errResult(connectText(server));
       }
       if (await pinRefused(claims, server, cred)) return errResult(pinnedElsewhereText(server));

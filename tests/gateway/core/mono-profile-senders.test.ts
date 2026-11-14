@@ -179,7 +179,7 @@ describe("mono: kb_memoize target:\"profile\" decides on the manager's senders, 
 
     current = [BOB]; // Bob's input is running although the ctx shows Alice
     const g = (await h.__brainGate!(sid))!;
-    expect(classifyBrainOp("put_page", { ...resolveBrainScope({ ...g, kbSources: [] }), sourceId: profileSourceId("T", "U0ALICE") }, g)).toBe("deny");
+    expect((await classifyBrainOp("put_page", { ...(await resolveBrainScope({ ...g, kbSources: [] })), sourceId: profileSourceId("T", "U0ALICE") }, g))).toBe("deny");
     expect(await memoize(sid)).not.toContain("refused");
     expect(puts).toEqual([{ slug: "profile", source: profileSourceId("T", "U0BOB") }]);
   });

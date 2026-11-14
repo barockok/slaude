@@ -3,7 +3,7 @@ import type {
   CanUseTool,
   PermissionUpdate,
 } from "@anthropic-ai/claude-agent-sdk";
-import { sameAt } from "../../access/wired";
+import { sameNoTeam } from "../../access/wired";
 import { env } from "../../config/env";
 import * as PendingGates from "../../db/pending-gates";
 import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
@@ -68,7 +68,7 @@ export function stampFromSenders(
   const sole = !opts.synthetic && senders?.length === 1 ? senders[0]! : null;
   const soleOrigin = sole?.origin && TURN_ORIGIN_SET.has(sole.origin) ? (sole.origin as TurnOrigin) : undefined;
   const origin = soleOrigin ?? opts.origin;
-  const ok = !!sole && sole.origin === "slack" && !!sole.userId && (opts.expect === undefined || sameAt({ site: "permission.stamp_expect_same", persona: null, teamId: null, userId: opts.expect, otherUserId: sole.userId }));
+  const ok = !!sole && sole.origin === "slack" && !!sole.userId && (opts.expect === undefined || sameNoTeam({ site: "permission.stamp_expect_same", persona: null, userId: opts.expect, otherUserId: sole.userId }));
   return { initiator: ok ? sole!.userId : null, ...(origin ? { origin } : {}) };
 }
 

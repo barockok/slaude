@@ -110,7 +110,7 @@ export function makeMemoryPlane(deps: {
     if (!gate) return null;
     // runAs is signed at dispatch: a cron created inside a /1on1 runs as its
     // owner although its synthetic thread holds no lock.
-    return { ...memoryScopeForClaims(gate, claims), agentId: gate.agentId, interactive: gate.interactive };
+    return { ...(await memoryScopeForClaims(gate, claims)), agentId: gate.agentId, interactive: gate.interactive };
   }
 
   return {
@@ -140,12 +140,12 @@ export function makeMemoryPlane(deps: {
  * signed /1on1 lock, and the signed `runAs`. The one derivation the memory
  * routes and memory_thread_history share, so both read what the turn writes.
  */
-export function memoryScopeForClaims(gate: GateInput, claims: JobClaims): MemoryScope {
+export async function memoryScopeForClaims(gate: GateInput, claims: JobClaims): Promise<MemoryScope> {
   // runAs is signed at dispatch: a cron created inside a /1on1 runs as its
   // owner although its synthetic thread holds no lock.
   const runAs = parseRunAs(claims.runAs);
   const runAsUser = runAs?.kind === "user" ? runAs.slackUserId : null;
-  return memoryScopeFor(withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser });
+  return memoryScopeFor(await withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser });
 }
 
 /** The default plane: the process's provider, gated like the KB tools (the

@@ -1,7 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { sameAt } from "../access/wired";
+import { isInternal, sameAt } from "../access/wired";
 import { loadKbs, type KbEntry } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient, synthesizeFromHits } from "./brain-think";
@@ -216,18 +216,18 @@ function ownTurnSender(g: GateInput): TurnSender | null {
  * - mine: the turn's own slice as resolved.
  * The gate (classifyBrainOp) enforces the same rules again.
  */
-function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined, base: BrainScope, g: GateInput): { scope: BrainScope; speaker?: string } | { error: string } {
+async function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined, base: BrainScope, g: GateInput): Promise<{ scope: BrainScope; speaker?: string } | { error: string }> {
   if (target === "profile") {
     const sender = ownTurnSender(g);
     const own = sender ? speakerProfileSource(sender.teamId, sender.userId) : null;
-    if (!sender || own === null || (subject !== undefined && !sameAt({ site: "kb_tools.profile_subject", persona: g.agentId, teamId: sender.teamId, userId: subject, otherUserId: sender.userId }))) {
+    if (!sender || own === null || (subject !== undefined && !(await sameAt({ site: "kb_tools.profile_subject", persona: g.agentId, teamId: sender.teamId, userId: subject, otherUserId: sender.userId })))) {
       return { error: PROFILE_REFUSAL };
     }
     return { scope: { ...base, sourceId: own }, speaker: sender.userId };
   }
   const scope = target === "shared" ? { ...base, sourceId: SHARED_SOURCE } : base;
   if (g.lockedUser !== null) {
-    if (!sameAt({ site: "kb_tools.lock_owner", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }) || scope.sourceId !== userSourceId(g.lockedUser)) return { error: LOCK_REFUSAL };
+    if (!(await sameAt({ site: "kb_tools.lock_owner", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) || scope.sourceId !== userSourceId(g.lockedUser)) return { error: LOCK_REFUSAL };
   }
   return { scope };
 }
@@ -364,8 +364,8 @@ const rowSlugs = (rows: unknown): string[] =>
  */
 async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scope: BrainScope, sender: TurnSender): Promise<MemoryEntry[]> {
   const entries: MemoryEntry[] = [];
-  // At most this many subject compares per listing go to the shadow; the rest compare as strings only.
-  let shadowBudget = 3;
+  // At most this many subject compares per listing resolve people (a few under shadow, more when the answer is used); the rest compare as strings only.
+  let shadowBudget = isInternal() ? 50 : 3;
   for (const m of memorySources(scope, sender)) {
     const only: BrainScope = { ...scope, sourceId: m.source, allowedSources: [m.source] };
     const listed = new Set<string>();
@@ -379,7 +379,7 @@ async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scop
       const pg = readPageRecord(await getPageOrNull(call, slug, only));
       if (!pg || pg.superseded) continue;
       const subject = pg.meta.subject;
-      if (subject !== undefined ? !(shadowBudget-- > 0 ? sameAt({ site: "kb_tools.memory_about_subject", persona: null, teamId: sender.teamId, userId: subject, otherUserId: sender.userId }) : subject === sender.userId) : !(m.fixed.includes(slug) || m.where === "profile")) continue;
+      if (subject !== undefined ? !(shadowBudget-- > 0 ? (await sameAt({ site: "kb_tools.memory_about_subject", persona: null, teamId: sender.teamId, userId: subject, otherUserId: sender.userId })) : subject === sender.userId) : !(m.fixed.includes(slug) || m.where === "profile")) continue;
       entries.push({
         where: m.where,
         slug,
@@ -490,7 +490,7 @@ export const brainHandlers = {
     await agentIdReady();
     const target = p.target ?? "mine";
     const gate = await d.gate();
-    const resolved = resolveMemoizeScope(target, p.subject, await d.scope(), gate);
+    const resolved = await resolveMemoizeScope(target, p.subject, await d.scope(), gate);
     if ("error" in resolved) return err(resolved.error);
     const { scope, speaker } = resolved;
     // A profile rewrite keeps the fields it does not set. Ping preferences
@@ -608,7 +608,7 @@ export const brainHandlers = {
     // person's memory never shows inside another person's turn.
     const gate = await d.gate();
     const sender = ownTurnSender(gate);
-    if (!sender || !sameAt({ site: "kb_tools.memory_about", persona: gate.agentId, teamId: sender.teamId, userId: sender.userId, otherUserId: p.userId })) return err(MEMORY_ABOUT_REFUSAL);
+    if (!sender || !(await sameAt({ site: "kb_tools.memory_about", persona: gate.agentId, teamId: sender.teamId, userId: sender.userId, otherUserId: p.userId }))) return err(MEMORY_ABOUT_REFUSAL);
     try {
       const entries = await collectMemoryAbout(d.call ?? brainCall, await d.scope(), sender);
       return ok(entries.length > 0 ? formatMemoryAbout(entries) : `Nothing is recorded about ${p.userId} in what this turn can read.`);

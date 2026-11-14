@@ -11,7 +11,8 @@
  */
 import { parse as parseYaml, YAMLParseError } from "yaml";
 import { MANDATE_LINE_MAX, subMandatesOf, type SubMandate } from "../soul/mandate-scope";
-import { SoulDataSchema, type AccessEntry, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
+import { env } from "../config/env";
+import { SoulDataSchema, type AccessEntry, type AccessRef, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
 import { channelOf, endsInOpenFence, isCodeFence, parseProactive, parseWindow } from "../soul/proactive";
 import { AgentSchema, BOUNDARY_RE, CHANNEL_ID_RE, DESCRIPTION_MAX, USER_ID_RE, type AgentFile } from "./agent-schema";
 import { anchored, parseRef, refScheme, SRC } from "../refs/parse";
@@ -211,11 +212,28 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const access = file.access ?? {};
   const accessEntries: AccessEntry[] = [];
   /** Read one access reference and keep its typed form beside the bare id the legacy arrays carry. */
+  const accessRefs: AccessRef[] = [];
   const entryId = (
     path: string,
     value: string | number,
     e: Pick<AccessEntry, "field" | "kind" | "role"> & Partial<Pick<AccessEntry, "deny" | "dmOnly" | "channel">>,
-  ): string => {
+  ): string | undefined => {
+    // An `email:` or `user:` reference is a person, not a Slack id: only while the access source is `internal` (task 22) is it accepted,
+    // and then it is kept in `accessRefs` and never in the legacy arrays. Under any other source it is refused as before.
+    if (e.kind === "user" && typeof value === "string" && value.includes(":") && env.access.source() === "internal") {
+      const p = parseRef(value, ["user"]);
+      if (p.ok && (p.ref.kind === "email" || (p.ref.kind === "internal" && p.ref.type === "user"))) {
+        accessRefs.push({
+          field: e.field as AccessRef["field"],
+          ref: p.ref.kind === "email" ? { service: "email", address: p.ref.address } : { service: "user", userId: p.ref.id },
+          role: e.role,
+          deny: e.deny ?? false,
+          dmOnly: e.dmOnly ?? false,
+          ...(e.channel ? { channel: e.channel } : {}),
+        });
+        return undefined;
+      }
+    }
     const r = slackRef(path, value, e.kind);
     accessEntries.push({ deny: false, dmOnly: false, ...e, id: r.id, ...(r.workspace ? { workspace: r.workspace } : {}) });
     return r.id;
@@ -224,8 +242,10 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const approvers: ApproverEntry[] = [];
   (access.approvers ?? []).forEach((e, i) => {
     const channel = e.channel ? slackId(`access.approvers[${i}].channel`, e.channel, "channel") : undefined;
+    const userId = entryId(`access.approvers[${i}].user`, e.user, { field: "approvers", kind: "user", role: "approver", ...(channel ? { channel } : {}) });
+    if (userId === undefined) return; // an email or user reference: in accessRefs, not in the Slack-id list
     const entryOut: ApproverEntry = {
-      userId: entryId(`access.approvers[${i}].user`, e.user, { field: "approvers", kind: "user", role: "approver", ...(channel ? { channel } : {}) }),
+      userId,
       scope: e.scope ?? "anything",
       catchall: typeof e.catchall === "boolean" ? e.catchall : e.scope == null,
     };
@@ -243,7 +263,7 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const manager = access.manager ? entryId("access.manager", access.manager, { field: "manager", kind: "user", role: "manager" }) : undefined;
   const backupManager = access.backupManager ? entryId("access.backupManager", access.backupManager, { field: "backupManager", kind: "user", role: "manager" }) : undefined;
   const idList = (path: string, list: string[] | null | undefined, e: Pick<AccessEntry, "field" | "kind" | "role"> & Partial<Pick<AccessEntry, "deny" | "dmOnly">>) =>
-    (list ?? []).map((v, i) => entryId(`${path}[${i}]`, v, e));
+    (list ?? []).map((v, i) => entryId(`${path}[${i}]`, v, e)).filter((id): id is string => id !== undefined);
 
   const soulData = SoulDataSchema.parse({
     identity: { name, ...(description ? { role: description } : {}) },
@@ -260,6 +280,7 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
     channelOverrides: [...channels.values()],
     scopeMandates: scopes,
     accessEntries,
+    accessRefs,
   });
 
   // Per-channel session and proactive settings compile to the `## Channel` block

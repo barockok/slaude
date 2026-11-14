@@ -111,7 +111,7 @@ import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
 import { pluginsView } from "./plugins-view";
 import type { InventorySources } from "../core/plugin-inventory";
-import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantView, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
+import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantViewWithState, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
 import { agentIdsByName, buildSkills, readSkillVersion, restoreSkill, retireSkill, skillDetail, skillVersions, skillVersionTarget, summaryOf } from "./skills-view";
 import { agentSettings, SETTINGS_GROUPS, type SettingsDeps } from "./settings-view";
@@ -276,7 +276,7 @@ const createGrantSchema = z
   .object({
     subjectKind: z.enum(AgentGrants.SUBJECT_KINDS).optional(),
     subjectId: z.string().trim().min(1).max(64).optional(),
-    /** A typed Slack reference naming the subject, instead of a kind and id (email and user references wait for the access flip). */
+    /** A typed reference naming the subject, instead of a kind and id. `email:` and `user:` references are accepted only while the gateway runs SLAUDE_ACCESS_SOURCE=internal. */
     subject: z.string().trim().min(1).max(300).optional(),
     role: z.enum(AgentGrants.GRANT_ROLES),
     deny: z.boolean().optional(),
@@ -805,7 +805,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
             throw e;
           }
           invalidateGrants(name);
-          const grant = consoleGrantView(row);
+          const grant = await consoleGrantViewWithState(row);
           emitAudit({
             tenantId: "default",
             persona: name,

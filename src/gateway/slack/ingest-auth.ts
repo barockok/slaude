@@ -16,7 +16,7 @@ import type { SeamCtx } from "./model-auth";
  * All fields are optional in the SoulData schema (`.partial().default({})`),
  * so the function is defensive against missing data.
  */
-export function canTriggerIngest(userId: string, soul: SoulData, seam: SeamCtx = {}): boolean {
+export async function canTriggerIngest(userId: string, soul: SoulData, seam: SeamCtx = {}): Promise<boolean> {
   const legacy =
     soul.manager?.userId === userId || soul.backupManager?.userId === userId || !!soul.approvers?.some((a) => a.userId === userId);
   // Slice C task 15: shadowed against the engine over the soul's grants; the answer is the one above.
@@ -27,8 +27,8 @@ export function canTriggerIngest(userId: string, soul: SoulData, seam: SeamCtx =
     userId,
     legacy,
     grants: () => deriveSoulGrants(soul, channelApproversOf(soul)),
-    internal: ({ grants, actor }) => {
-      const r = roleInternal(grants, actor);
+    internal: ({ grants, actor, opts }) => {
+      const r = roleInternal(grants, actor, undefined, opts);
       return r === "manager" || r === "approver";
     },
   });

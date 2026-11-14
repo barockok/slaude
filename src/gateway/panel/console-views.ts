@@ -4,7 +4,8 @@
  * mandate read model and the grant store; nothing here writes.
  */
 import * as AgentGrants from "../../db/agent-grants";
-import { effectiveGrants } from "../../access/grants";
+import { effectiveGrants, grantFromRow } from "../../access/grants";
+import { grantState } from "../../access/grant-state";
 import { listMandates } from "../../mandate";
 import { getPersonaRegistry, labelsInUse, managedPersonaModel, runsOnFor, type PersonaRegistry } from "../../persona/registry";
 import { listAllEnvSummaries } from "../../db/environments";
@@ -49,25 +50,36 @@ export function consoleGrantView(g: AgentGrants.AgentGrantRow): ConsoleGrantView
   };
 }
 
+/** A stored grant's view with what it does now, for a grant that names a person by email or user reference. */
+export async function consoleGrantViewWithState(g: AgentGrants.AgentGrantRow): Promise<ConsoleGrantView> {
+  const state = await grantState(grantFromRow(g));
+  return { ...consoleGrantView(g), ...(state ? { state } : {}) };
+}
+
 /** Every unexpired console grant across agents (tenant `default`), with its persona. */
 export async function allConsoleGrants(now: number = Date.now()): Promise<PersonaConsoleGrantView[]> {
-  return (await AgentGrants.listAll("default"))
-    .filter((g) => g.expiresAt === null || g.expiresAt > now)
-    .map((g) => ({ ...consoleGrantView(g), persona: g.persona }));
+  const rows = (await AgentGrants.listAll("default")).filter((g) => g.expiresAt === null || g.expiresAt > now);
+  return Promise.all(rows.map(async (g) => ({ ...(await consoleGrantViewWithState(g)), persona: g.persona })));
 }
 
 /** Effective grants: soul-derived, then the stored unexpired console grants. */
 export async function grantViews(name: string, now: number = Date.now()): Promise<GrantView[]> {
-  const soul: SoulGrantView[] = effectiveGrants(name, []).map((g) => ({
-    source: "soul",
-    subjectKind: g.subjectKind,
-    subjectId: g.subjectId,
-    role: g.role,
-    deny: g.deny,
-    dmOnly: g.dmOnly,
-    channelId: g.channelId ?? null,
-  }));
-  const stored = (await AgentGrants.listForPersona(name, now)).map(consoleGrantView);
+  const soul: SoulGrantView[] = await Promise.all(
+    effectiveGrants(name, []).map(async (g) => {
+      const state = await grantState(g);
+      return {
+        source: "soul" as const,
+        subjectKind: g.subjectKind,
+        subjectId: g.subjectId,
+        role: g.role,
+        deny: g.deny,
+        dmOnly: g.dmOnly,
+        channelId: g.channelId ?? null,
+        ...(state ? { state } : {}),
+      };
+    }),
+  );
+  const stored = await Promise.all((await AgentGrants.listForPersona(name, now)).map(consoleGrantViewWithState));
   return [...soul, ...stored];
 }
 

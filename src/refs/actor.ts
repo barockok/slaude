@@ -132,11 +132,11 @@ export async function actingUser(teamId: string, slackUserId: string, ctx: Actor
  * verified bindings, verified first. A declared binding is a name in a
  * definition and is not used to reach anyone.
  */
-export async function slackIdsFor(userId: string, teamId: string, ctx: { tx?: DbClient } = {}): Promise<string[]> {
+export async function slackIdsFor(userId: string, teamId: string, ctx: { tx?: DbClient; verifiedOnly?: boolean } = {}): Promise<string[]> {
   try {
     const live = await Domain.resolveUserId(userId, ctx.tx);
     if (!live) return [];
-    const rows = await Domain.bindingsOf(live, { service: "slack", kind: "user", workspace: teamId, states: ["observed", "verified"] }, ctx.tx);
+    const rows = await Domain.bindingsOf(live, { service: "slack", kind: "user", workspace: teamId, states: ctx.verifiedOnly ? ["verified"] : ["observed", "verified"] }, ctx.tx);
     const rank = (s: State) => (s === "verified" ? 0 : 1);
     return rows.map((r, i) => ({ r, i })).sort((a, b) => rank(a.r.state) - rank(b.r.state) || a.i - b.i).map((x) => x.r.value);
   } catch (e) {
@@ -159,4 +159,20 @@ export async function sameUser(a: ActorKey, b: ActorKey, ctx: { tx?: DbClient } 
     actingUser(b.teamId, b.slackUserId, { fresh: true, tx: ctx.tx }),
   ]);
   return !!x && !!y && x.verified && y.verified && x.userId === y.userId;
+}
+
+/**
+ * The live user holding a VERIFIED email binding for `address` (already
+ * normalised), or null. An observed or declared email never names anyone for
+ * access (Rule B). Reads the database every time.
+ */
+export async function userOfVerifiedEmail(address: string, ctx: { tx?: DbClient } = {}): Promise<string | null> {
+  try {
+    const b = await Domain.findBinding({ service: "email", kind: "address", workspace: "", value: address }, ctx.tx);
+    if (!b || b.state !== "verified") return null;
+    return (await Domain.resolveUserId(b.user_id, ctx.tx)) ?? b.user_id;
+  } catch (e) {
+    m.actorResolveFailuresTotal.inc();
+    throw new ActorResolveError(e);
+  }
 }

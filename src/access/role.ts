@@ -1,4 +1,5 @@
 import * as AgentGrants from "../db/agent-grants";
+import { env } from "../config/env";
 import { m } from "../metrics";
 import { managedPersonaDefinition } from "../persona/registry";
 import { effectiveGrants, grantFromRow, type Grant, type GrantRole } from "./grants";
@@ -17,8 +18,12 @@ export type Role = GrantRole;
  *  - a user member grant (dm-only included), a grant on `channelId`, or a
  *    workspace grant -> "member";
  *  - else null.
+ *
+ * `teamId` (D12, slice C): when given, a workspace grant counts only for the
+ * workspace it names. Only the `internal` access source passes it; without it a
+ * workspace grant reaches everyone, as before.
  */
-export function roleFromGrants(grants: readonly Grant[], userId: string, channelId?: string | null): Role | null {
+export function roleFromGrants(grants: readonly Grant[], userId: string, channelId?: string | null, teamId?: string): Role | null {
   if (!userId) return null;
   const mine = grants.filter((g) => g.subjectKind === "user" && g.subjectId === userId);
   if (mine.some((g) => g.deny)) return null;
@@ -30,7 +35,7 @@ export function roleFromGrants(grants: readonly Grant[], userId: string, channel
   if (approver) return "approver";
   if (mine.some((g) => g.role === "member")) return "member";
   const viaChannel = !!channelId && grants.some((g) => !g.deny && g.subjectKind === "channel" && g.subjectId === channelId);
-  const viaWorkspace = grants.some((g) => !g.deny && g.subjectKind === "workspace");
+  const viaWorkspace = grants.some((g) => !g.deny && g.subjectKind === "workspace" && (teamId === undefined || g.subjectId === teamId));
   return viaChannel || viaWorkspace ? "member" : null;
 }
 
@@ -166,14 +171,14 @@ export async function approversFor(personaName: string, channelId?: string | nul
 
 /**
  * `roleFromGrants` over {@link loadGrants}; `personaName` is the persona NAME.
- * `teamId` is the workspace the user spoke in, when the caller knows it. The
- * answer never depends on it (a Slack id is compared as a string until the
- * access flip, slice C task 20); it is accepted so every caller can pass the
- * team now and the seam wiring (`src/access/wired.ts`) can read it.
+ * `teamId` is the workspace the user spoke in, when the caller knows it. It
+ * changes the answer only while `SLAUDE_ACCESS_SOURCE=internal` (a workspace
+ * grant then counts for its own workspace only, D12); under every other source
+ * the answer is the string one.
  */
 export async function roleOf(personaName: string | null | undefined, userId: string, channelId?: string | null, teamId?: string | null): Promise<Role | null> {
-  void teamId;
-  return roleFromGrants(await loadGrants(personaName), userId, channelId);
+  // The team is compared (D12) only when the access source is `internal`.
+  return roleFromGrants(await loadGrants(personaName), userId, channelId, env.access.source() === "internal" && teamId ? teamId : undefined);
 }
 
 /** Test seam: replace the stored-grant read (null restores). Clears the cache. */

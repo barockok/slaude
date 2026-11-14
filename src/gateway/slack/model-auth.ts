@@ -19,14 +19,14 @@ export interface SeamCtx {
  * the DM allowlist — per-thread model choice is low-risk and self-scoped.
  * Defensive against missing soul fields (all optional in the schema).
  */
-export function canChangeModel(userId: string, soul: SoulData, seam: SeamCtx = {}): boolean {
+export async function canChangeModel(userId: string, soul: SoulData, seam: SeamCtx = {}): Promise<boolean> {
   const legacy =
     soul.manager?.userId === userId ||
     soul.backupManager?.userId === userId ||
     !!soul.approvers?.some((a) => a.userId === userId) ||
     !!soul.dmAllowedUsers?.includes(userId);
   // Slice C task 15: the same question over the soul's grants and the resolved
-  // person, in the background. The answer returned is the one above.
+  // person. Under shadow the answer returned is the one above; under `internal` it is the engine's.
   return checkAt({
     site: "model_auth.can_change",
     persona: seam.persona,
@@ -34,9 +34,9 @@ export function canChangeModel(userId: string, soul: SoulData, seam: SeamCtx = {
     userId,
     legacy,
     grants: () => deriveSoulGrants(soul, channelApproversOf(soul)),
-    internal: ({ grants, actor }) => {
-      const r = roleInternal(grants, actor);
-      return r === "manager" || r === "approver" || admitInternal({ grants, actor, channelId: "", isDM: true }).ok;
+    internal: ({ grants, actor, opts }) => {
+      const r = roleInternal(grants, actor, undefined, opts);
+      return r === "manager" || r === "approver" || admitInternal({ grants, actor, channelId: "", isDM: true, opts }).ok;
     },
   });
 }

@@ -126,14 +126,14 @@ export function channelTrustFor(channel: string, soul: SoulData): ChannelTrust {
  * source: a person's profile follows that person, never the lock owner, and
  * never the rest of their `user-` slice. The write target is unchanged.
  */
-export function resolveBrainScope(i: ScopeInput): BrainScope {
-  const base = baseScope(i);
+export async function resolveBrainScope(i: ScopeInput): Promise<BrainScope> {
+  const base = await baseScope(i);
   const profile = speakerProfileSource(i.teamId, i.userId);
   if (profile === null) return base;
   return { ...base, allowedSources: [...base.allowedSources, profile], profileSource: profile };
 }
 
-function baseScope(i: ScopeInput): BrainScope {
+async function baseScope(i: ScopeInput): Promise<BrainScope> {
   const agentSrc = agentSourceId(i.agentId);
   // The agent's own mind is readable on EVERY turn it runs, regardless of who is
   // talking (it holds its identity across turns). Legacy `agent` rides along for
@@ -149,7 +149,7 @@ function baseScope(i: ScopeInput): BrainScope {
     };
   }
   if (i.lockedUser !== null) {
-    if (sameAt({ site: "kb_scope.lock_owner", persona: i.agentId, teamId: i.teamId, userId: i.userId, otherUserId: i.lockedUser, otherTeamId: i.lockedTeamId })) {
+    if ((await sameAt({ site: "kb_scope.lock_owner", persona: i.agentId, teamId: i.teamId, userId: i.userId, otherUserId: i.lockedUser, otherTeamId: i.lockedTeamId }))) {
       const own = userSourceId(i.userId);
       return {
         clientId: i.userId,

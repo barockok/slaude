@@ -10,6 +10,16 @@
 export type GrantRole = "manager" | "approver" | "member";
 export type SubjectKind = "user" | "channel" | "workspace";
 
+/**
+ * What a grant naming a person by `email:` or `user:` does right now (see
+ * src/access/grant-state.ts). Slack subjects have none.
+ */
+export type GrantState =
+  | "active"
+  | "pending: no verified email binding"
+  | "pending: Slack binding not verified"
+  | "inactive: access source is not internal";
+
 /** Error body of every non-2xx JSON response. */
 export interface ApiError {
   error: string;
@@ -81,6 +91,8 @@ export interface SoulGrantView {
   dmOnly: boolean;
   /** Set for an approver scoped to one channel by a soul channel block. */
   channelId: string | null;
+  /** For a grant that names a person by email or user reference: what it does now. Absent for Slack subjects. */
+  state?: GrantState;
   /** Display name of the subject (`#team`, `Jane Doe`, a workspace name) and of `channelId`, when resolvable. */
   subjectLabel?: string;
   channelLabel?: string;
@@ -101,6 +113,8 @@ export interface ConsoleGrantView {
   note: string | null;
   /** Display name of the subject (`#team`, `Jane Doe`, a workspace name), when resolvable. */
   subjectLabel?: string;
+  /** For a grant that names a person by email or user reference: what it does now. Absent for Slack subjects. */
+  state?: GrantState;
 }
 
 export type GrantView = SoulGrantView | ConsoleGrantView;
@@ -144,6 +158,16 @@ export interface CreateGrantRequest {
   /** Epoch ms in the future, or null/absent for never. */
   expiresAt?: number | null;
   note?: string | null;
+}
+
+/**
+ * Body of POST /panel/api/agents/:name/grants naming the subject by a typed
+ * reference instead of a kind and id: `slack:user:T0EXAMPLE/U0EXAMPLE`, or
+ * `email:<address>` and `user:<id>` (the last two only while the gateway runs
+ * SLAUDE_ACCESS_SOURCE=internal; otherwise the answer is a 400 saying so).
+ */
+export interface CreateGrantByRefRequest extends Omit<CreateGrantRequest, "subjectKind" | "subjectId"> {
+  subject: string;
 }
 
 export interface CreateGrantResponse {
