@@ -274,15 +274,21 @@ const chatSchema = z.object({ text: z.string().min(1) }).strict();
 
 const createGrantSchema = z
   .object({
-    subjectKind: z.enum(AgentGrants.SUBJECT_KINDS),
-    subjectId: z.string().trim().min(1).max(64),
+    subjectKind: z.enum(AgentGrants.SUBJECT_KINDS).optional(),
+    subjectId: z.string().trim().min(1).max(64).optional(),
+    /** A typed Slack reference naming the subject, instead of a kind and id (email and user references wait for the access flip). */
+    subject: z.string().trim().min(1).max(300).optional(),
     role: z.enum(AgentGrants.GRANT_ROLES),
     deny: z.boolean().optional(),
     dmOnly: z.boolean().optional(),
     expiresAt: z.number().int().positive().nullable().optional(),
     note: z.string().max(500).nullable().optional(),
   })
-  .strict();
+  .strict()
+  .refine((b) => b.subject !== undefined || (b.subjectKind !== undefined && b.subjectId !== undefined), {
+    message: "give a subject reference, or both subjectKind and subjectId",
+    path: ["subject"],
+  });
 
 /** zod issues as one line: `path: message; ...`. */
 const issuesLine = (e: z.ZodError) => e.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ");
@@ -782,6 +788,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
               persona: name,
               subjectKind: b.subjectKind,
               subjectId: b.subjectId,
+              subject: b.subject,
               role: b.role,
               deny: b.deny,
               dmOnly: b.dmOnly,

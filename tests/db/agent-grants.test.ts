@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { db, dbDialect } from "../../src/db/schema";
 import * as AgentGrants from "../../src/db/agent-grants";
+import * as Domain from "../../src/db/domain";
 
 beforeEach(async () => {
   await db.run("DELETE FROM agent_grants");
@@ -110,5 +111,56 @@ describe("agent_grants repo", () => {
       expect(dflt.length).toBe(2);
     }
     expect((await AgentGrants.listAll()).length).toBe(2);
+  });
+});
+
+describe("grants carry a subject reference (Slack only)", () => {
+  const stored = async (id: string) => db.one<{ subject_ref: string | null; subject_user_id: string | null; subject_kind: string; subject_id: string }>(
+    "SELECT subject_ref, subject_user_id, subject_kind, subject_id FROM agent_grants WHERE id = ?", [id]);
+
+  test("a bare subject id stores the short typed form and no user", async () => {
+    const g = await AgentGrants.create({ ...base, subjectId: "UALICE" });
+    expect(await stored(g.id)).toMatchObject({ subject_ref: "slack:user:UALICE", subject_user_id: null, subject_kind: "user", subject_id: "UALICE" });
+    expect(g.subjectRef).toBe("slack:user:UALICE");
+  });
+
+  test("a typed reference sets kind, id and ref, and the user when the binding exists", async () => {
+    await Domain._wipeForTests();
+    const b = await Domain.ensureBinding({ service: "slack", kind: "user", workspace: "T0EXAMPLE", value: "U0EXAMPLE", state: "observed", source: "test" });
+    const g = await AgentGrants.create({ persona: "scout", role: "member", createdBy: "UMGR", subject: "slack:user:T0EXAMPLE/U0EXAMPLE" });
+    expect(g).toMatchObject({ subjectKind: "user", subjectId: "U0EXAMPLE", subjectRef: "slack:user:T0EXAMPLE/U0EXAMPLE", subjectUserId: b.userId });
+    expect(await stored(g.id)).toMatchObject({ subject_user_id: b.userId });
+    expect((await AgentGrants.listForPersona("scout"))[0]).toMatchObject({ subjectRef: "slack:user:T0EXAMPLE/U0EXAMPLE", subjectUserId: b.userId });
+    await Domain._wipeForTests();
+  });
+
+  test("an unseen binding leaves the user empty (the reconciler fills it)", async () => {
+    await Domain._wipeForTests();
+    const g = await AgentGrants.create({ persona: "scout", role: "member", createdBy: "UMGR", subject: "slack:user:T0EXAMPLE/U0NOBODY" });
+    expect(g.subjectUserId).toBeNull();
+    expect(g.subjectRef).toBe("slack:user:T0EXAMPLE/U0NOBODY");
+  });
+
+  test("a channel reference works for member grants", async () => {
+    const g = await AgentGrants.create({ persona: "scout", role: "member", createdBy: "UMGR", subject: "slack:channel:C0TEAM" });
+    expect(g).toMatchObject({ subjectKind: "channel", subjectId: "C0TEAM", subjectRef: "slack:channel:C0TEAM", subjectUserId: null });
+  });
+
+  test("a workspace subject has no reference", async () => {
+    const g = await AgentGrants.create({ ...base, subjectKind: "workspace", subjectId: "T0EXAMPLE" });
+    expect(g.subjectRef).toBeNull();
+  });
+
+  test("a subject that disagrees with the kind or id is refused", async () => {
+    await expect(AgentGrants.create({ ...base, subject: "slack:user:U0EXAMPLE", subjectId: "U0OTHER" })).rejects.toThrow(/does not match/);
+    await expect(AgentGrants.create({ ...base, subjectKind: "channel", subject: "slack:user:U0EXAMPLE" })).rejects.toThrow(/does not match/);
+  });
+
+  test("email, user, phone and malformed references are refused until the access flip", async () => {
+    for (const subject of ["email:a@example.com", "user:abc123", "whatsapp:phone:+628123456789", "telegram:user:12345"]) {
+      await expect(AgentGrants.create({ persona: "scout", role: "member", createdBy: "UMGR", subject })).rejects.toThrow(/not supported until the access flip/);
+    }
+    await expect(AgentGrants.create({ persona: "scout", role: "member", createdBy: "UMGR", subject: "slack:user:not valid" })).rejects.toThrow(/not a valid reference/);
+    await expect(AgentGrants.create({ persona: "scout", role: "member", createdBy: "UMGR" })).rejects.toThrow(/subject/);
   });
 });

@@ -216,6 +216,29 @@ describe("POST /panel/api/agents/:name/grants", () => {
     expect(await AgentGrants.listAll()).toEqual([]);
   });
 
+  test("a Slack subject reference is accepted instead of a kind and id, and stored with its reference", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "slack:user:T0EXAMPLE/U0EXAMPLE", role: "member" });
+    expect(r.status).toBe(201);
+    expect((r.body as CreateGrantResponse).grant).toMatchObject({ subjectKind: "user", subjectId: "U0EXAMPLE" });
+    const [row] = await AgentGrants.listAll();
+    expect(row).toMatchObject({ subjectRef: "slack:user:T0EXAMPLE/U0EXAMPLE" });
+  });
+
+  test("an email or user reference is refused with the access flip message", async () => {
+    for (const subject of ["email:a@example.com", "user:abc123"]) {
+      const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject, role: "member" });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toContain("not supported until the access flip");
+    }
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
+  test("neither a subject nor a kind and id is a request error", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { role: "member" });
+    expect(r.status).toBe(400);
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
   test("zod validation: missing and unknown fields, bad enums, bad types", async () => {
     const bad = async (b: unknown) => {
       const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, b);

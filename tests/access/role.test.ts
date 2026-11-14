@@ -249,3 +249,33 @@ describe("non-Slack subjects never reach the legacy readers", () => {
     expect(await roleOf("default", "UALICE")).toBeNull();
   });
 });
+
+describe("grants carry a subject (task 8)", () => {
+  test("soul grants take their workspace from accessEntries and stay otherwise unchanged", () => {
+    const withEntries = soul({
+      manager: { userId: "UMGR" },
+      dmAllowedUsers: ["UDM"],
+      trustedChannels: ["CTEAM"],
+      accessEntries: [
+        { field: "manager", kind: "user", id: "UMGR", workspace: "T0EXAMPLE", role: "manager" },
+        { field: "channels.trusted", kind: "channel", id: "CTEAM", workspace: "T0EXAMPLE", role: "member" },
+      ],
+    });
+    const bare = soul({ manager: { userId: "UMGR" }, dmAllowedUsers: ["UDM"], trustedChannels: ["CTEAM"] });
+    const a = deriveSoulGrants(withEntries, new Map());
+    const b = deriveSoulGrants(bare, new Map());
+    const strip = (gs: Grant[]) => gs.map(({ subject: _s, ...g }) => g);
+    expect(strip(a)).toEqual(strip(b));
+    expect(a.find((g) => g.subjectId === "UMGR")?.subject).toEqual({ service: "slack", workspace: "T0EXAMPLE" });
+    expect(a.find((g) => g.subjectId === "CTEAM")?.subject).toEqual({ service: "slack", workspace: "T0EXAMPLE" });
+    expect(a.find((g) => g.subjectId === "UDM")?.subject).toEqual({ service: "slack" });
+  });
+
+  test("stored grants carry the workspace and user of their reference", async () => {
+    const { grantFromRow } = await import("../../src/access/grants");
+    const row = { id: "g1", tenantId: "default", persona: "p", subjectKind: "user", subjectId: "U0EXAMPLE", role: "member", deny: false, dmOnly: false, createdBy: "x", createdAt: 1, expiresAt: null, note: null } as const;
+    expect(grantFromRow({ ...row, subjectRef: "slack:user:T0EXAMPLE/U0EXAMPLE", subjectUserId: "usr-1" }).subject).toEqual({ service: "slack", workspace: "T0EXAMPLE", userId: "usr-1" });
+    expect(grantFromRow({ ...row, subjectRef: null, subjectUserId: null }).subject).toEqual({ service: "slack" });
+    expect(grantFromRow({ ...row, subjectKind: "workspace", subjectId: "T0EXAMPLE", subjectRef: null, subjectUserId: null }).subject).toBeUndefined();
+  });
+});
