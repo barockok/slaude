@@ -29,6 +29,15 @@ export const SITES = [
   { id: "gateway.cron.role", group: 13, kind: "role", where: "/cron commands: manager or approver role" },
   { id: "gateway.proposal_managers", group: 13, kind: "approvers", where: "proposal card clicks: the persona's managers" },
   { id: "gateway.brain_managers", group: 13, kind: "approvers", where: "brain tools: the persona's managers" },
+  // Task 14: approval and permission cards.
+  { id: "permission.initiator_same", group: 14, kind: "same", where: "permission card click: the clicker started the turn" },
+  { id: "permission.lock_owner_same", group: 14, kind: "same", where: "permission card click: the clicker owns the thread's 1on1 lock" },
+  { id: "permission.role", group: 14, kind: "role", where: "permission card click: approver or manager role of the persona" },
+  { id: "approval.resolve_approvers", group: 14, kind: "approvers", where: "approval card: who may approve for a named persona" },
+  { id: "approval.resolve_denied", group: 14, kind: "denied", where: "approval card: default chain members removed by a deny grant" },
+  { id: "approval.click_allowlist", group: 14, kind: "check", where: "approval click: the clicker is on the card's allowlist (live waiter)" },
+  { id: "approval.click_allowlist_poll", group: 14, kind: "check", where: "approval click: the clicker is on the card's allowlist (node poll or foreign row)" },
+  { id: "approval.click_denied", group: 14, kind: "denied", where: "approval click: a deny grant refuses the clicker" },
 ] as const;
 
 export type SiteId = (typeof SITES)[number]["id"];

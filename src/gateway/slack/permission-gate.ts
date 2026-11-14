@@ -526,6 +526,7 @@ export class PermissionGate {
           return;
         }
         const userId: string = clicker;
+        const clickTeam: string | undefined = (body as any).team?.id ?? (body as any).user?.team_id;
         const status = decision === "deny" ? ("denied" as const) : ("approved" as const);
         const stale = async (status?: string) => {
           // Duplicate click, expiry, abort, or another replica won. Answer
@@ -560,7 +561,7 @@ export class PermissionGate {
           let ok = false;
           let failure: string | undefined;
           try {
-            ok = await mayDecide(row, userId);
+            ok = await mayDecide(row, userId, clickTeam);
           } catch (e) {
             failure = e instanceof Error ? e.message : String(e);
             console.error(`[permission-gate] authorisation check failed for ${toolUseId}, refusing: ${failure}`);
@@ -904,13 +905,21 @@ const strOf = (v: unknown): string | null => (typeof v === "string" && v ? v : n
 async function mayDecide(
   row: Pick<PendingGates.PendingGate, "payload">,
   clicker: string,
+  teamId?: string | null,
 ): Promise<boolean> {
   const p = row.payload ?? {};
   const channel = strOf(p.channel);
   const threadTs = strOf(p.threadTs);
   let lockOwner: string | null = null;
-  if (channel && threadTs) lockOwner = (await OneOnOne.find(channel, threadTs))?.locked_user ?? null;
+  let lockTeamId: string | null = null;
+  if (channel && threadTs) {
+    const lock = await OneOnOne.find(channel, threadTs);
+    lockOwner = lock?.locked_user ?? null;
+    lockTeamId = lock?.team_id ?? null;
+  }
   return canDecidePermission({
+    teamId,
+    lockTeamId,
     clicker,
     initiator: strOf(p.initiator),
     lockOwner,
