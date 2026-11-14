@@ -11,7 +11,8 @@ const nap = () => new Promise((r) => setTimeout(r, 20));
 describe("first sight seams (global db)", () => {
   afterAll(() => setLiveWorkspaces(() => []));
   beforeEach(async () => {
-    for (const t of ["bindings", "boundaries", "users", "audit_events", "sessions"]) await db.run(`DELETE FROM ${t}`);
+    await Domain._wipeForTests();
+    for (const t of ["audit_events", "sessions"]) await db.run(`DELETE FROM ${t}`);
     resetFirstSight();
     setLiveWorkspaces(() => [WS]);
   });

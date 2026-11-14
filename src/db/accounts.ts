@@ -5,7 +5,7 @@
  * mutable at the provider and subject is not. Email is carried for display and
  * refreshed on each login.
  */
-import { flushFirstSightWork } from "../domain/first-sight-flush";
+import * as Domain from "./domain";
 import { randomUUID } from "node:crypto";
 import { db } from "./schema";
 import { emitDomainEvents } from "../audit/domain";
@@ -171,11 +171,8 @@ export async function slackIdentitiesForAccount(accountId: string): Promise<Slac
 }
 
 export async function _wipeForTests(): Promise<void> {
-  // Settle fire-and-forget first-sight writes first, so none lands after the wipe.
-  await flushFirstSightWork();
   for (const a of await db.query<{ id: string }>("SELECT id FROM accounts")) await deleteAccount(a.id);
   await db.run("DELETE FROM slack_identities");
   await db.run("DELETE FROM accounts");
-  // Domain records (projection and first sight): children before parents.
-  for (const t of ["user_aliases", "bindings", "boundaries", "users"]) await db.run(`DELETE FROM ${t}`);
+  await Domain._wipeForTests();
 }

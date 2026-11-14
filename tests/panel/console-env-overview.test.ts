@@ -13,6 +13,7 @@ import * as Sessions from "../../src/db/sessions";
 import * as PendingGates from "../../src/db/pending-gates";
 import * as AuditEvents from "../../src/db/audit-events";
 import { flushAudits } from "../../src/audit/emit";
+import { flushFirstSightWork } from "../../src/domain/first-sight-flush";
 import { __resetPersonaRegistry, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
 import type { ConsoleRolesResponse, EnvironmentsResponse, OverviewResponse } from "../../src/gateway/panel/api-types";
 
@@ -157,6 +158,10 @@ describe("GET /panel/api/overview", () => {
     const s1 = await Sessions.createForThread({ thread: { team_id: "TTEAM", channel_id: "CCHAN", thread_ts: "100.1" }, model: "m", working_dir: "/tmp" });
     const s2 = await Sessions.createForThread({ thread: { team_id: "TTEAM", channel_id: "CCHAN", thread_ts: "100.2" }, model: "m", working_dir: "/tmp" });
     created.push(s1.id, s2.id);
+    // Session creation records its channel fire-and-forget (first sight writes audit rows): settle and drop those, the test counts its own rows.
+    await flushFirstSightWork();
+    await flushAudits();
+    await db.run("DELETE FROM audit_events WHERE actor_id = 'first-sight'");
     await Sessions.setStatus(s1.id, "running");
     await PendingGates.create({ kind: "approval", sessionId: s1.id, expiresAt: Date.now() + 60_000 });
     await PendingGates.create({ kind: "perm", sessionId: s1.id });

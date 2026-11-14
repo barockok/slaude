@@ -15,6 +15,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { db as globalDb, type DbClient } from "./schema";
+import { flushFirstSightWork } from "../domain/first-sight-flush";
 
 export type State = "declared" | "observed" | "verified";
 export type UserKind = "person" | "bot" | "agent";
@@ -331,4 +332,10 @@ export async function adoptBinding(i: AdoptInput, tx?: DbClient): Promise<AdoptR
       events: [{ action: "user.adopted", userId: toUserId, fromUserId: held.user_id, bindingIds: moved }],
     };
   });
+}
+
+/** Tests: settle fire-and-forget first-sight writes, then clear every domain table (children first). */
+export async function _wipeForTests(): Promise<void> {
+  await flushFirstSightWork();
+  for (const t of ["user_aliases", "bindings", "boundaries", "users"]) await globalDb.run(`DELETE FROM ${t}`);
 }
