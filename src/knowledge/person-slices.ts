@@ -176,8 +176,8 @@ export async function personSlicesDetailed(teamId: string | null | undefined, sl
   };
   if (!teamId || !slackUserId) return finish(legacy, "no_user");
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let done: Promise<void> | undefined;
-  const fin = (slices: PersonSlices, status: PersonStatus): PersonSlicesResult => ({ ...finish(slices, status), ...(done ? { done } : {}) });
+  let done: Promise<void> = Promise.resolve();
+  const fin = (slices: PersonSlices, status: PersonStatus): PersonSlicesResult => ({ ...finish(slices, status), done });
   try {
     const bound = opts.timeoutMs ?? RESOLVER_TIMEOUT_MS;
     const work = resolve(teamId, slackUserId);

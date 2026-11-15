@@ -107,6 +107,7 @@ describe("credentials dual write", () => {
       await Creds.putCredential({ kind: "account", accountId }, "k", entry("t1"));
       expect(await Creds.putCredentialIfNewer({ kind: "account", accountId }, "k2", entry("t2"))).toBe(true);
       expect(await Creds.putCredentialIfAbsent({ kind: "account", accountId }, "k3", entry("t3"))).toBe(true);
+      await settlePointerWrites(); // the background writes run (and fail) while the resolver is still broken
     } finally {
       bad.mockRestore();
     }

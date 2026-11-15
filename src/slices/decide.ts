@@ -45,12 +45,13 @@ function coalesced(teamId: string, slackUserId: string): Promise<PersonSlicesRes
   if (hit && now - hit.at < COALESCE_MS) return hit.run;
   if (recent.size > 500) recent.clear();
   const run = personSlicesDetailed(teamId, slackUserId);
-  recent.set(key, { at: now, run });
+  const entry = { at: now, run };
+  recent.set(key, entry);
   // A failure is never shared: the next call tries again.
   void run.then((r) => {
-    if (r.status === "error" && recent.get(key)?.run === run) recent.delete(key);
+    if (r.status === "error" && recent.get(key) === entry) recent.delete(key);
   });
-  return run;
+  return entry.run;
 }
 
 /** Forget which lines were logged (tests). */
