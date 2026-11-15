@@ -18,6 +18,7 @@ import * as Domain from "./domain";
 import type { BindingKey, DomainEvent } from "./domain";
 import type { DbClient } from "./schema";
 import { parseRef } from "../refs/parse";
+import { recordPointerInTx } from "./credential-pointers";
 
 const SAVEPOINT = "domain_projection";
 
@@ -83,6 +84,7 @@ export async function projectLogin(
   return guardedProjection(tx, "login", [] as DomainEvent[], async () => {
     const events: DomainEvent[] = [];
     const { userId, oidcBindingId } = await ensureAccountUser(a, tx, events);
+    await recordPointerInTx(a, userId, tx);
 
     const next = normaliseEmail(a.email);
     const prev = a.previousEmail ? normaliseEmail(a.previousEmail) : null;
@@ -124,6 +126,7 @@ export async function projectLink(
   return guardedProjection(tx, "link", [] as DomainEvent[], async () => {
     const events: DomainEvent[] = [];
     const { userId, oidcBindingId } = await ensureAccountUser(a, tx, events);
+    await recordPointerInTx(a, userId, tx);
     const r = await Domain.adoptBinding(
       { service: "slack", kind: "user", workspace: a.teamId, value: a.slackUserId, toUserId: userId, state: "verified", oidcBindingId },
       tx,
