@@ -25,6 +25,7 @@ const IMPORTERS = new Set([
   "src/db/mcp-credentials.ts",
   "src/db/account-projection.ts",
   "src/domain/merge.ts",
+  "src/domain/merge-undo.ts",
   "src/domain/reconcile.ts",
 ]);
 
@@ -66,7 +67,7 @@ describe("credential pointer is bookkeeping only", () => {
   });
 
   test("the pointer module's exports are not named in decision code", () => {
-    const names = ["setCredentialPointer", "userForAccountId", "recordPointerForAccount", "recordPointerInTx", "repointForMerge"];
+    const names = ["setCredentialPointer", "userForAccountId", "recordPointerForAccount", "recordPointerInTx", "repointForMerge", "scheduleRecordPointer", "restorePointersForUndo"];
     const bad = sourceFiles("src")
       .filter((f) => f !== POINTER_MODULE && !IMPORTERS.has(f))
       .filter((f) => names.some((n) => readFileSync(f, "utf8").includes(n)));
