@@ -183,7 +183,7 @@ export interface SliceReport {
 export const emptySliceReport = (): SliceReport => ({
   verifiedWithoutLink: { total: 0, byTeam: {} },
   linkWithoutVerified: { total: 0, byTeam: {} },
-  pointers: { total: 0, nullPointer: 0, drift: 0, unresolved: 0, filled: 0 },
+  pointers: { total: 0, nullPointer: 0, drift: 0, unresolved: 0, filled: 0, repaired: 0 },
   claimedNames: { total: 0, names: [] },
 });
 
@@ -212,6 +212,8 @@ export interface ReconcileOptions {
    * Off by default and never set by the boot hook; ignored in a dry run.
    */
   fillPointers?: boolean;
+  /** Skip the slice report (it pages every Slack binding and credential row): the boot hook passes it, the CLI does not. */
+  skipSliceReport?: boolean;
   /** Skip the lock and the in-process queue (tests of the insert-or-ignore path). */
   unlocked?: boolean;
   log?: (msg: string) => void;
@@ -610,7 +612,7 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
   }
 
   // 7. Slice F report: link and pointer consistency, doubly claimed slice names.
-  report.slices = await sliceReport(c, { fill: !!opts.fillPointers && !dry, pageSize: opts.pageSize ?? PAGE_SIZE });
+  report.slices = opts.skipSliceReport ? emptySliceReport() : await sliceReport(c, { fill: !!opts.fillPointers && !dry, pageSize: opts.pageSize ?? PAGE_SIZE });
 
   report.finishedAt = Date.now();
   // A no-op run (nothing created, no conflict) stays silent: boot would otherwise add one audit row per start.
@@ -992,11 +994,11 @@ export function formatReconcileReport(r: ReconcileReport): string {
   }
   const sl = r.slices;
   const teams = (b: Record<string, number>) => Object.entries(b).map(([k, n]) => `${k} ${n}`).join(", ");
-  lines.push(sl.verifiedWithoutLink.total === 0 ? "  verified slack bindings without a link: none" : `  verified slack bindings without a link: ${sl.verifiedWithoutLink.total} (${teams(sl.verifiedWithoutLink.byTeam)}); nothing repaired`);
-  lines.push(sl.linkWithoutVerified.total === 0 ? "  slack links without a verified binding: none" : `  slack links without a verified binding: ${sl.linkWithoutVerified.total} (${teams(sl.linkWithoutVerified.byTeam)}); nothing repaired`);
+  lines.push(sl.verifiedWithoutLink.total === 0 ? "  verified slack bindings without a link: none" : `  verified slack bindings without a link: ${sl.verifiedWithoutLink.total} (${teams(sl.verifiedWithoutLink.byTeam)}); report only, not repaired here: the person-slice union ignores a verified binding that has no link`);
+  lines.push(sl.linkWithoutVerified.total === 0 ? "  slack links without a verified binding: none" : `  slack links without a verified binding: ${sl.linkWithoutVerified.total} (${teams(sl.linkWithoutVerified.byTeam)}); report only, not repaired here: the union ignores a link whose binding is not verified`);
   const p = sl.pointers;
-  lines.push(`  credential pointers: ${p.total} row(s), ${p.nullPointer} empty (${p.unresolved} with no user yet), ${p.drift} differ from the account's user; ${p.filled > 0 ? `${p.filled} filled` : "none filled"}`);
-  if (p.filled === 0 && p.nullPointer > p.unresolved && !r.dryRun) lines.push("    to fill the empty pointers (never changes a pointer that is set): slaude domain reconcile --apply");
+  lines.push(`  credential pointers: ${p.total} row(s), ${p.nullPointer} empty (${p.unresolved} with no user yet), ${p.drift} differ from the account's user; ${p.filled > 0 || p.repaired > 0 ? `${p.filled} filled, ${p.repaired} repaired` : "none filled"}`);
+  if (p.filled === 0 && p.nullPointer > p.unresolved && !r.dryRun) lines.push("    to fill the empty pointers (a pointer that is set is only repaired with SLAUDE_CREDENTIAL_POINTERS=on): slaude domain reconcile --fill-pointers");
   if (sl.claimedNames.total === 0) lines.push("  slice names claimed by two users: none");
   else {
     lines.push(`  slice names claimed by two users: ${sl.claimedNames.total} (excluded from a union; review each, no repair)`);
@@ -1021,7 +1023,7 @@ export async function reconcileAtBoot(o: {
   try {
     // A notice still pending long after its merge was never sent (the process that made it died): say so.
     await sweepPendingNotices().then((n) => n > 0 && log(`${n} merge notice(s) were never sent (marked failed)`)).catch(() => {});
-    const r = await (o.run ?? reconcile)({ liveTeamIds: o.liveTeamIds, log });
+    const r = await (o.run ?? reconcile)({ liveTeamIds: o.liveTeamIds, log, skipSliceReport: true });
     if (totalCreated(r) === 0 && r.conflicts.length === 0 && boundaryFilled(r) === 0) log("reconcile: nothing to do");
     else log(`reconcile done: ${totalCreated(r)} created, ${r.conflicts.length} conflict(s)\n${formatReconcileReport(r)}`);
     // Report only: demotion is an operator's explicit CLI run, never the boot hook's.
@@ -1029,10 +1031,8 @@ export async function reconcileAtBoot(o: {
     if (r.unprovenEmails.total > 0) {
       log(`${r.unprovenEmails.total} verified email binding(s) have no proof of the address (before rc.19); nothing reads them for access yet. Report and fix: slaude domain reconcile --demote-unproven-emails --apply`);
     }
-    const sl = r.slices;
-    if (sl.verifiedWithoutLink.total > 0 || sl.claimedNames.total > 0) {
-      log(`${sl.verifiedWithoutLink.total} verified Slack binding(s) have no link and ${sl.claimedNames.total} slice name(s) are claimed by two users; report only, nothing reads them yet (see slaude domain reconcile --dry-run)`);
-    }
+    // The slice report (every Slack binding, every credential row) is a CLI report, not a boot cost.
+    log("the slice report (links without a verified binding, credential pointers, slice names claimed twice) is not run at boot: slaude domain reconcile --dry-run prints it");
     return r;
   } catch (e) {
     console.error(`[domain] reconcile failed (boot continues): ${e instanceof Error ? e.message : String(e)}`);

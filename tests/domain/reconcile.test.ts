@@ -658,12 +658,13 @@ for (const dialect of ["sqlite", "pg"] as const) {
 }
 
 describe("reconcileAtBoot", () => {
-  test("a no-op run logs one line", async () => {
+  test("a no-op run logs one line (plus the pointer to the CLI slice report)", async () => {
     const lines: string[] = [];
     const empty = { created: 0, existing: 0, skipped: {} };
     const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, grantSubjects: empty, lockTeams: empty, workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 }, unprovenEmails: { total: 0, byIssuer: {}, demoted: 0, unaccounted: 0 }, typedGrantSubjects: 0, boundaryColumns: {}, slices: emptySliceReport(), startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
     await reconcileAtBoot({ role: "mono", liveTeamIds: () => [], run: async () => report, log: (m) => lines.push(m) });
-    expect(lines).toEqual(["reconcile: nothing to do"]);
+    expect(lines.filter((l) => !l.includes("slice report"))).toEqual(["reconcile: nothing to do"]);
+    expect(lines.filter((l) => l.includes("slice report"))).toHaveLength(1);
   });
   test("unproven email bindings are reported at boot, never acted on", async () => {
     const lines: string[] = [];

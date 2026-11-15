@@ -154,9 +154,40 @@ describe("merge repoints credential pointers", () => {
     expect(dj((await db.one<{ moved: unknown }>("SELECT moved FROM user_merges"))!.moved).credentials ?? []).toEqual([]);
   });
 
-  test("the undo limits text says memory is read through verified bindings and credentials never moved", () => {
+  test("the undo limits text is accurate with the union flag off: it says what undo does only when the union is on", () => {
     const text = UNDO_LIMITS.join(" ");
-    expect(text).toContain("Memory slices are read through verified Slack bindings, so undo cuts that access at once; memory pages are never moved.");
-    expect(text).toContain("Credential records were never moved.");
+    expect(text).toContain("Memory pages and credential records are never moved.");
+    expect(text).toContain("If the person-slice union is enabled");
+    expect(text).toContain("with it off, undo changes nothing about memory");
+    expect(text).not.toContain("so undo cuts that access at once");
+  });
+
+  test("undo restores the credential pointers from the ledger (only those still at the survivor), and a failure cannot fail the undo", async () => {
+    const survivor = await observed("U0EXAMPLE");
+    const loser = await observed("U1EXAMPLE");
+    const a = await accountWithCredential("sub-a", loser);
+    const b = await accountWithCredential("sub-b", loser);
+    const out = await mergeUsers({ survivorId: survivor, loserId: loser, kind: "console", actor: "UOPERATOR" });
+    if (out.status !== "merged") throw new Error(out.status);
+    expect(await pointerOf(a)).toBe(survivor);
+    // One pointer changed since the merge: it is left alone.
+    const third = await observed("U2EXAMPLE");
+    await db.run("UPDATE mcp_credentials SET user_id = ? WHERE account_id = ?", [third, b]);
+    const u = await undoMerge({ mergeId: out.merge.id, actor: "op@example.com", reason: "test" });
+    expect(u.status).toBe("undone");
+    expect(await pointerOf(a)).toBe(loser);
+    expect(await pointerOf(b)).toBe(third);
+    // A failing restore is logged and the undo still happens.
+    const c2 = await observed("U3EXAMPLE");
+    const d2 = await observed("U4EXAMPLE");
+    await accountWithCredential("sub-c", d2);
+    const out2 = await mergeUsers({ survivorId: c2, loserId: d2, kind: "console", actor: "UOPERATOR" });
+    if (out2.status !== "merged") throw new Error(out2.status);
+    const bad = spyOn(Pointers, "restorePointersForUndo").mockRejectedValue(new Error("boom"));
+    try {
+      expect((await undoMerge({ mergeId: out2.merge.id, actor: "op@example.com", reason: "test" })).status).toBe("undone");
+    } finally {
+      bad.mockRestore();
+    }
   });
 });

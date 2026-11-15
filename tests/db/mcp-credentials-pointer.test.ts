@@ -9,18 +9,22 @@ import * as Accounts from "../../src/db/accounts";
 import * as Creds from "../../src/db/mcp-credentials";
 import * as Domain from "../../src/db/domain";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
+import { settlePointerWrites } from "../../src/db/credential-pointers";
 import { db } from "../../src/db/schema";
 import type { CredentialOwner } from "../../src/agent/credential-owner";
 
 const ISS = "https://idp.example.com";
 const entry = (token: string) => ({ serverName: "workbench", serverUrl: "https://mcp.example.com", accessToken: token, refreshToken: "r-1", expiresAt: Date.now() + 3600_000 });
 const AGENT: CredentialOwner = { kind: "agent", tenant: "t1", persona: "default" };
-const pointer = async (accountId: string, serverKey = "k") =>
-  (await db.one<{ user_id: string | null }>("SELECT user_id FROM mcp_credentials WHERE account_id = ? AND server_key = ?", [accountId, serverKey]))?.user_id ?? null;
+const pointer = async (accountId: string, serverKey = "k") => {
+  await settlePointerWrites();
+  return (await db.one<{ user_id: string | null }>("SELECT user_id FROM mcp_credentials WHERE account_id = ? AND server_key = ?", [accountId, serverKey]))?.user_id ?? null;
+};
 let accountId: string;
 let userId: string;
 
 beforeEach(async () => {
+  process.env.SLAUDE_CREDENTIAL_POINTERS = "on";
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
   __resetMasterKeyCache();
   await db.run("DELETE FROM mcp_credentials");
@@ -28,11 +32,46 @@ beforeEach(async () => {
   accountId = (await Accounts.upsertAccount({ issuer: ISS, subject: "sub-1", email: "a@example.com" })).id;
   userId = (await Domain.findBinding({ service: "oidc", kind: "subject", workspace: ISS, value: "sub-1" }))!.user_id;
 });
-afterEach(() => {
+afterEach(async () => {
+  await settlePointerWrites();
+  delete process.env.SLAUDE_CREDENTIAL_POINTERS;
   spyOn(console, "warn").mockRestore();
 });
 
 describe("credentials dual write", () => {
+  test("off by default: no pointer, no extra work, nothing scheduled", async () => {
+    delete process.env.SLAUDE_CREDENTIAL_POINTERS;
+    const owner: CredentialOwner = { kind: "account", accountId };
+    const find = spyOn(Domain, "findBinding");
+    await Creds.putCredential(owner, "k", entry("t1"));
+    await Creds.putCredentialIfNewer(owner, "k2", entry("t2"));
+    await Creds.putCredentialIfAbsent(owner, "k3", entry("t3"));
+    await settlePointerWrites();
+    expect(find).not.toHaveBeenCalled();
+    find.mockRestore();
+    expect(await pointer(accountId, "k")).toBeNull();
+    expect(Object.keys(await Creds.credentialsFor(owner)).sort()).toEqual(["k", "k2", "k3"]);
+  });
+
+  test("the write never waits for the pointer: a stalled resolver does not delay the credential write", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const slow = spyOn(Domain, "findBinding").mockImplementation(async () => {
+      await gate;
+      return null;
+    });
+    try {
+      const t0 = Date.now();
+      await Creds.putCredential({ kind: "account", accountId }, "k", entry("t1"));
+      expect(Date.now() - t0).toBeLessThan(500);
+      expect((await Creds.credentialsFor({ kind: "account", accountId })).k!.accessToken).toBe("t1");
+    } finally {
+      release();
+      await settlePointerWrites();
+      slow.mockRestore();
+    }
+  });
+
   test("putCredential, putCredentialIfNewer and putCredentialIfAbsent store the pointer", async () => {
     const owner: CredentialOwner = { kind: "account", accountId };
     await Creds.putCredential(owner, "k", entry("t1"));
@@ -89,6 +128,7 @@ describe("credentials dual write", () => {
   test("putCredentialIfNewer that loses the race leaves an existing pointer alone", async () => {
     const owner: CredentialOwner = { kind: "account", accountId };
     await Creds.putCredential(owner, "k", entry("new"));
+    await settlePointerWrites();
     const other = await Domain.ensureUser({});
     await db.run("UPDATE mcp_credentials SET user_id = ? WHERE account_id = ?", [other.id, accountId]);
     const older = { ...entry("old"), expiresAt: 1 };

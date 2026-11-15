@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import * as Domain from "../../src/db/domain";
 import { type DbClient, openDb } from "../../src/db/client";
 import { runMigrations } from "../../src/db/migrate";
-import { emptySliceReport, formatReconcileReport, reconcile, reconcileAtBoot, sliceReport, type ReconcileOptions } from "../../src/domain/reconcile";
+import { formatReconcileReport, reconcile, reconcileAtBoot, sliceReport, type ReconcileOptions } from "../../src/domain/reconcile";
 
 const ISS = "https://idp.example.com";
 const WS = "T0EXAMPLE";
@@ -86,7 +86,7 @@ for (const dialect of ["sqlite", "pg"] as const) {
       await db.run("INSERT INTO mcp_credentials (id, account_id, server_key, payload, expires_at, updated_at, user_id) VALUES ('c4', 'acc-c', 'k4', 'x', 1, 1, NULL)");
       await db.run("INSERT INTO mcp_credentials (id, agent_tenant, agent_persona, server_key, payload, expires_at, updated_at) VALUES ('c5', 't', 'p', 'k', 'x', 1, 1)");
       const r = await sliceReport(db, { fill: false, pageSize: 2 });
-      expect(r.pointers).toEqual({ total: 4, nullPointer: 2, drift: 1, unresolved: 1, filled: 0 });
+      expect(r.pointers).toEqual({ total: 4, nullPointer: 2, drift: 1, unresolved: 1, filled: 0, repaired: 0 });
     });
 
     test("fill sets EMPTY pointers only, never a set one, and is idempotent; a report-only run writes nothing", async () => {
@@ -101,6 +101,23 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(await ptr("c1")).toBe(a.userId);
       expect(await ptr("c3")).toBe(a.userId); // the drifted pointer was not touched
       expect((await sliceReport(db, { fill: true, pageSize: 500 })).pointers).toMatchObject({ filled: 0, nullPointer: 0, drift: 1 });
+    });
+
+    test("drift is repaired only with SLAUDE_CREDENTIAL_POINTERS=on and fill, by compare-and-set", async () => {
+      const a = await account("a");
+      const b = await account("b");
+      await db.run("INSERT INTO mcp_credentials (id, account_id, server_key, payload, expires_at, updated_at, user_id) VALUES ('c3', ?, 'k3', 'x', 1, 1, ?)", [b.accountId, a.userId]);
+      expect((await sliceReport(db, { fill: true, pageSize: 500 })).pointers).toMatchObject({ drift: 1, repaired: 0 });
+      expect(await ptr("c3")).toBe(a.userId);
+      process.env.SLAUDE_CREDENTIAL_POINTERS = "on";
+      try {
+        expect((await sliceReport(db, { fill: false, pageSize: 500 })).pointers.repaired).toBe(0);
+        expect((await sliceReport(db, { fill: true, pageSize: 500 })).pointers).toMatchObject({ drift: 1, repaired: 1 });
+        expect(await ptr("c3")).toBe(b.userId);
+        expect((await sliceReport(db, { fill: true, pageSize: 500 })).pointers).toMatchObject({ drift: 0, repaired: 0 });
+      } finally {
+        delete process.env.SLAUDE_CREDENTIAL_POINTERS;
+      }
     });
 
     test("through reconcile: a dry run never fills; a plain run reports; fillPointers fills; payloads and links are untouched", async () => {
@@ -152,12 +169,21 @@ for (const dialect of ["sqlite", "pg"] as const) {
 }
 
 describe("boot hook", () => {
-  test("logs counts only when a verified binding has no link or a name is claimed twice", async () => {
+  test("skips the slice report and says where to read it", async () => {
     const lines: string[] = [];
-    const report = { ...(await reconcile({ db: await openDb({ dialect: "sqlite", path: ":memory:" }), liveTeamIds: () => [WS], audit: async () => {} })), slices: { ...emptySliceReport(), verifiedWithoutLink: { total: 2, byTeam: { [WS]: 2 } }, claimedNames: { total: 1, names: [{ name: "user-*** (9) #abc123", users: 2 }] } } };
-    await reconcileAtBoot({ role: "mono", liveTeamIds: () => [WS], run: async () => report, log: (m) => lines.push(m) });
-    const line = lines.find((l) => l.includes("have no link"));
-    expect(line).toContain("2 verified Slack binding(s)");
-    expect(line).toContain("1 slice name(s)");
+    let seen: { skipSliceReport?: boolean } = {};
+    const base = await reconcile({ db: await openDb({ dialect: "sqlite", path: ":memory:" }), liveTeamIds: () => [WS], audit: async () => {} });
+    await reconcileAtBoot({ role: "mono", liveTeamIds: () => [WS], run: async (o) => ((seen = o), base), log: (m) => lines.push(m) });
+    expect(seen.skipSliceReport).toBe(true);
+    expect(lines.join("\n")).toContain("slaude domain reconcile --dry-run prints it");
+  });
+
+  test("a run that skips the report does not read bindings or credentials for it", async () => {
+    const mem = await openDb({ dialect: "sqlite", path: ":memory:" });
+    const spy = (await import("bun:test")).spyOn(mem, "query");
+    await reconcile({ db: mem, liveTeamIds: () => [WS], audit: async () => {}, skipSliceReport: true });
+    expect(spy.mock.calls.some((c) => String(c[0]).includes("FROM mcp_credentials"))).toBe(false);
+    expect(spy.mock.calls.some((c) => String(c[0]).includes("service = 'slack' AND kind = 'user' AND id >"))).toBe(false);
+    await mem.close();
   });
 });
