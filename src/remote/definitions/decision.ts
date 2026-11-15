@@ -88,7 +88,8 @@ export async function remoteDecision(i: DecisionInput, explicit: DecisionDeps = 
     if (!i.persona || row.tenantId !== i.tenant) return refuse();
     if (row.config.shared !== "true" || row.config.trust !== "unlocked") return refuse();
     const allowed = await (deps.allowed ?? allowedEnvironments)(i.tenant, i.persona);
-    if (!allowed.includes(row.userId)) return refuse();
+    // A definition row's name is its definition name (the owner column holds the same text).
+    if (!allowed.includes(row.name)) return refuse();
     const t = await lookup(i.channel, i.thread);
     // A bound shared row that yields no target is a refusal, never the server.
     return t ? { target: t } : refuse();

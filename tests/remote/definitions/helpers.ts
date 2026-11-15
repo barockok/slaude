@@ -18,6 +18,7 @@ export async function reset(): Promise<void> {
   await db.run("DELETE FROM environments");
   await db.run("DELETE FROM remote_keys");
   await db.run("DELETE FROM one_on_one_locks");
+  await db.run("DELETE FROM sessions");
 }
 
 /** A definition row as definition sync writes it, with its key pair. */

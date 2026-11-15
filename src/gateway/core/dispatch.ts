@@ -497,8 +497,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       const cap = needsShared ? SHARED_ENV_CAPABILITY : meta.channelSession ? CHANNEL_SESSION_CAPABILITY : needsDefinition ? AGENT_DEFINITION_CAPABILITY : GUARDRAILS_CAPABILITY;
       // Every capability this turn needs, for the reaper (a re-pinned job goes only to a node that has all of them).
       const requiredCaps = [...new Set([...(needsShared ? [SHARED_ENV_CAPABILITY] : []), ...(meta.channelSession ? [CHANNEL_SESSION_CAPABILITY] : []), cap])];
-      const warmCaps = needs ? await registry.nodeCaps(loc?.node ?? "") : null;
-      const warmOk = !!loc && loc.fresh && (await registry.nodeCarries(loc.node, label)) && (!needs || requiredCaps.every((c) => warmCaps!.has(c)));
+      const warmOk = !!loc && loc.fresh && (await registry.nodeCarries(loc.node, label)) && (!needs || ((caps) => requiredCaps.every((c) => caps.has(c)))(await registry.nodeCaps(loc.node)));
       let target: TurnTarget = warmOk ? { node: loc!.node } : { label };
       if (needs && !warmOk) {
         const capable = await waitForCapableNodes(label, cap);
