@@ -993,7 +993,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // The skill version log: reconcile now, then on a timer. Best effort, never blocks boot.
   const stopSkillVersionReconciler = startSkillVersionReconciler();
   // Domain sessions, slice D: the periodic boundary fill, started once Slack auth knows the workspaces.
-  let stopBoundaryFill: () => void = () => {};
+  let boundaryFillStopped = false;
+  let stopBoundaryFill: () => Promise<void> = async () => {
+    boundaryFillStopped = true; // a shutdown before Slack auth finished: start nothing afterwards
+  };
   // Clean up expired ignores + abandoned paste-back OAuth flows every 5 minutes.
   // Each parked flow holds the registered client secret and the PKCE verifier
   // (encrypted), so an abandoned one must not linger until the initiator happens
@@ -1351,7 +1354,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       void reconcileAtBoot({ role: env.role(), liveTeamIds: () => [...authTeams] });
       // Completes boundary_id and locator on rows the writers could not (bounded per tick, never on a node).
       const { startBoundaryFill } = await import("../../domain/boundary-backfill");
-      stopBoundaryFill = startBoundaryFill({ liveTeamIds: () => [...authTeams] });
+      if (!boundaryFillStopped) {
+        const stop = startBoundaryFill({ liveTeamIds: () => [...authTeams] });
+        stopBoundaryFill = async () => {
+          boundaryFillStopped = true;
+          await stop();
+        };
+      }
     }
   })().catch((e) => console.error("[slack-auth] app listing failed:", e?.message ?? e));
 
@@ -5059,7 +5068,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await backgroundScheduler?.stop().catch(() => {});
       cronScheduler.stop();
       stopSkillVersionReconciler();
-      stopBoundaryFill();
+      await stopBoundaryFill().catch(() => {});
       stopOwnerGuardrails();
       pluginInventory?.stop();
       unsetMergeNoticeSender();
