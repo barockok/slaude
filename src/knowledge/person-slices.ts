@@ -10,6 +10,11 @@
  *    adds only slices of OTHER Slack bindings of the same user that are
  *    themselves `verified`. An observed or declared binding, on either side,
  *    contributes and receives nothing.
+ *  - P2: both the acting binding and each added one need a row in `slack_identities`
+ *    (the authoritative link) for an account of the same user, so a missed unlink
+ *    projection cannot keep a union alive. The ADDED binding must also be older than
+ *    SLAUDE_PERSON_SLICES_HOLD_HOURS (default 24, by its own `verified_at`): the
+ *    mitigation for a mistaken link.
  *  - Q: a name is dropped when a binding of a DIFFERENT live user (any state,
  *    any workspace) produces the same slice name.
  *  - R: only `user-<alnum>` names. The result is validated against the verified
@@ -24,6 +29,7 @@
  * only gateway code may import it (a guard test keeps nodes away).
  */
 import * as Domain from "../db/domain";
+import { env } from "../config/env";
 import { tombstonesFor } from "../db/slice-tombstones";
 import { db } from "../db/schema";
 import { m } from "../metrics";
@@ -38,6 +44,8 @@ export interface PersonSlicesResult {
   slices: PersonSlices;
   status: PersonStatus;
   ms: number;
+  /** Settles when the underlying queries have finished, even after the bound cut the wait (so an in-flight cap can track real load). */
+  done?: Promise<void>;
 }
 
 /** The resolver's bound (Rule T). */
@@ -58,6 +66,23 @@ class ResolverTimeout extends Error {
   }
 }
 
+/**
+ * Rule P2: the authoritative link table. The (team, Slack id) pairs linked, in `slack_identities`,
+ * to an account whose user (oidc binding) is `userId`. A verified binding the projection failed
+ * to remove after an unlink has no row here, so a missed `projectUnlink` cannot keep a union alive.
+ */
+async function linkedPairs(userId: string): Promise<Set<string>> {
+  const rows = await db.query<{ team: string; value: string }>(
+    `SELECT s.team_id AS team, s.slack_user_id AS value
+     FROM slack_identities s
+     JOIN accounts a ON a.id = s.account_id
+     JOIN bindings o ON o.service = 'oidc' AND o.kind = 'subject' AND o.workspace = a.issuer AND o.value = a.subject
+     WHERE o.user_id = ?`,
+    [userId],
+  );
+  return new Set(rows.map((r) => `${r.team}\u0000${r.value}`));
+}
+
 async function resolve(teamId: string, slackUserId: string): Promise<{ slices: PersonSlices; status: PersonStatus }> {
   const legacy = legacyPersonSlices(slackUserId);
   const actor = await actingUser(teamId, slackUserId, { fresh: true });
@@ -66,49 +91,67 @@ async function resolve(teamId: string, slackUserId: string): Promise<{ slices: P
   if (!actor.verified) return { slices: legacy, status: "ok" };
 
   const bindings = await Domain.bindingsOf(actor.userId, { service: "slack", kind: "user", states: ["verified"] });
+  const others = bindings.filter((b) => b.id !== actor.slackBinding.id);
+  if (others.length === 0) return { slices: legacy, status: "ok" };
+
+  // Rule P2, both sides: the acting binding and each added one must hold a link to an account of this user.
+  const links = await linkedPairs(actor.userId);
+  const key = (team: string, value: string) => `${team}\u0000${value}`;
+  const acting = await Domain.findBinding({ service: "slack", kind: "user", workspace: teamId, value: slackUserId });
+  if (!acting || !links.has(key(acting.workspace, acting.value))) return { slices: legacy, status: "ok" };
+
+  // The hold on the ADDED binding, read from the binding row itself.
+  const holdMs = env.slices.holdHours() * 3_600_000;
+  const now = Date.now();
+  let held = 0;
   const produced = new Map<string, string>(); // slice name -> a slack value that produces it
-  for (const b of bindings) {
-    if (b.id === actor.slackBinding.id) continue;
+  const verifiedNames = new Set<string>();
+  for (const b of others) {
+    if (!links.has(key(b.workspace, b.value))) continue;
     const name = userSourceId(b.value);
     if (name === legacy.own || !PERSON_NAME.test(name)) continue;
+    verifiedNames.add(name);
+    if (holdMs > 0 && (b.verified_at === null || now - Number(b.verified_at) < holdMs)) {
+      held++;
+      continue;
+    }
     if (!produced.has(name)) produced.set(name, b.value);
   }
-  if (produced.size === 0) return { slices: legacy, status: "ok" };
+  const dropped: PersonSlices["dropped"] = { conflict: 0, tombstoned: 0, ...(held > 0 ? { held } : {}) };
+  if (produced.size === 0) return { slices: { ...legacy, dropped }, status: "ok" };
 
-  // Rule Q: names a different live user's binding (any state, any workspace) also produces.
-  let conflict = 0;
-  const values = [...new Set([...produced.values()].map((v) => v.toLowerCase()))];
+  // Rule Q: names a different live user's binding (any state, any workspace) also produces. Compared
+  // on the normalised slice name; the lookup uses exact stored values (Slack ids are stored as given,
+  // upper-case) so it can use the index prefix instead of scanning with LOWER().
+  const variants = [...new Set([...produced.values()].flatMap((v) => [v, v.toUpperCase(), v.toLowerCase()]))];
   const claimed = await db.query<{ value: string }>(
-    `SELECT DISTINCT value FROM bindings WHERE service = 'slack' AND LOWER(value) IN (${values.map(() => "?").join(", ")}) AND user_id <> ?`,
-    [...values, actor.userId],
+    `SELECT DISTINCT value FROM bindings WHERE service = 'slack' AND kind = 'user' AND value IN (${variants.map(() => "?").join(", ")}) AND user_id <> ?`,
+    [...variants, actor.userId],
   );
   const claimedNames = new Set(claimed.map((r) => userSourceId(r.value)));
   for (const name of [...produced.keys()]) {
     if (claimedNames.has(name)) {
       produced.delete(name);
-      conflict++;
+      dropped.conflict++;
     }
   }
 
-  // Operator tombstones.
-  let tombstoned = 0;
+  // Operator tombstones: the user's own rows and the source-level rows.
   const t = await tombstonesFor(actor.userId);
   if (t.all) {
-    tombstoned = produced.size;
+    dropped.tombstoned = produced.size;
     produced.clear();
   } else {
     for (const name of [...produced.keys()]) {
       if (t.names.has(name)) {
         produced.delete(name);
-        tombstoned++;
+        dropped.tombstoned++;
       }
     }
   }
 
-  // Rule R, validated on the way out: every added name is a person name produced by a verified binding of this user.
-  const verifiedNames = new Set(bindings.map((b) => userSourceId(b.value)));
+  // Rule R, validated on the way out: every added name is a person name produced by a verified, linked binding of this user.
   const added = [...produced.keys()].filter((n) => PERSON_NAME.test(n) && verifiedNames.has(n) && n !== legacy.own).sort();
-  const dropped = { conflict, tombstoned };
   if (added.length === 0) return { slices: { ...legacy, dropped }, status: "ok" };
   return { slices: { own: legacy.own, reads: [legacy.own, ...added], via: "union", dropped }, status: "ok" };
 }
@@ -133,17 +176,24 @@ export async function personSlicesDetailed(teamId: string | null | undefined, sl
   };
   if (!teamId || !slackUserId) return finish(legacy, "no_user");
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let done: Promise<void> | undefined;
+  const fin = (slices: PersonSlices, status: PersonStatus): PersonSlicesResult => ({ ...finish(slices, status), ...(done ? { done } : {}) });
   try {
     const bound = opts.timeoutMs ?? RESOLVER_TIMEOUT_MS;
+    const work = resolve(teamId, slackUserId);
+    done = work.then(
+      () => {},
+      () => {},
+    );
     const r = await Promise.race([
-      resolve(teamId, slackUserId),
+      work,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new ResolverTimeout()), bound);
       }),
     ]);
-    return finish(r.slices, r.status);
+    return fin(r.slices, r.status);
   } catch {
-    return finish(legacy, "error");
+    return fin(legacy, "error");
   } finally {
     if (timer) clearTimeout(timer);
   }

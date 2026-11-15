@@ -56,21 +56,26 @@ describe("slaude domain reconcile", () => {
     await main(["reconcile"], { out: () => {}, reconcile: async (o) => ((seen = o), report(false)) });
     expect(seen?.demoteUnprovenEmails).toBeFalsy();
   });
-  test("--apply with --dry-run is a usage error", async () => {
+  test("--apply without --demote-unproven-emails, or with --dry-run, is a usage error and writes nothing", async () => {
     const err = spyOn(console, "error").mockImplementation(() => {});
-    expect(await main(["reconcile", "--apply", "--dry-run"])).toBe(2);
-    expect(await main(["reconcile", "--demote-unproven-emails", "--apply", "--dry-run"])).toBe(2);
+    let ran = false;
+    const deps = { out: () => {}, reconcile: async () => ((ran = true), report(false)) };
+    expect(await main(["reconcile", "--apply"], deps)).toBe(2);
+    expect(await main(["reconcile", "--demote-unproven-emails", "--apply", "--dry-run"], deps)).toBe(2);
+    expect(await main(["reconcile", "--fill-pointers", "--dry-run"], deps)).toBe(2);
+    expect(ran).toBe(false);
     err.mockRestore();
   });
-  test("--apply alone fills credential pointers and demotes nothing; with the demote flag it does both", async () => {
+  test("only --fill-pointers writes credential pointers; --demote-unproven-emails --apply never does", async () => {
     let seen: ReconcileOptions | undefined;
-    await main(["reconcile", "--apply"], { out: () => {}, reconcile: async (o) => ((seen = o), report(false)) });
+    const run = (args: string[]) => main(args, { out: () => {}, reconcile: async (o) => ((seen = o), report(false)) });
+    await run(["reconcile", "--fill-pointers"]);
     expect(seen?.fillPointers).toBe(true);
     expect(seen?.demoteUnprovenEmails).toBeFalsy();
-    await main(["reconcile", "--demote-unproven-emails", "--apply"], { out: () => {}, reconcile: async (o) => ((seen = o), report(false)) });
-    expect(seen?.fillPointers).toBe(true);
+    await run(["reconcile", "--demote-unproven-emails", "--apply"]);
+    expect(seen?.fillPointers).toBeFalsy();
     expect(seen?.demoteUnprovenEmails).toBe(true);
-    await main(["reconcile"], { out: () => {}, reconcile: async (o) => ((seen = o), report(false)) });
+    await run(["reconcile"]);
     expect(seen?.fillPointers).toBeFalsy();
   });
   test("bad usage exits 2", async () => {

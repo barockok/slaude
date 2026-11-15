@@ -7,11 +7,12 @@
  * has no foreign key on purpose: it must survive a merge deleting the user row.
  * A read matches the live user id plus every `user_aliases.old_id` that points
  * at it, so a tombstone keyed on a merged-away id still applies to the survivor.
+ * A source-level row (`user_id = '*'`, a source name) applies to EVERY reader: it
+ * survives a person relinking their ids to another account, which makes a new user.
  *
  * Slack ids are never shown: `maskSource` prints a source name as its prefix,
  * its length and a short hash the operator can compare with what they typed.
  */
-import { createHash } from "node:crypto";
 import { db, type DbClient } from "./schema";
 import * as Domain from "./domain";
 
@@ -28,13 +29,18 @@ const SOURCE_RE = /^user-[a-z0-9]+$/;
 
 export const isTombstoneSource = (s: string): boolean => s === ALL_SOURCES || (s.length <= 32 && SOURCE_RE.test(s));
 
-/** A source name without the Slack id inside it. */
+/** The `user_id` of a source-level row: no union of ANY reader may include `source_id`. */
+export const ALL_READERS = "*";
+
+/**
+ * A source name without the Slack id inside it: the prefix and the length only. (A short hash of
+ * an enumerable id would let anyone with the output confirm a guess, so there is none.)
+ */
 export function maskSource(source: string): string {
   if (source === ALL_SOURCES) return ALL_SOURCES;
-  const hash = createHash("sha256").update(source).digest("hex").slice(0, 6);
   const dash = source.indexOf("-");
   const head = dash >= 0 ? source.slice(0, dash + 1) : "";
-  return `${head}${"*".repeat(3)} (${source.length - head.length}) #${hash}`;
+  return `${head}${"*".repeat(3)} (${source.length - head.length})`;
 }
 
 export type AddResult = { ok: true; created: boolean } | { ok: false; error: string };
@@ -45,8 +51,13 @@ export async function addTombstone(i: { userId: string; sourceId: string; create
   if (!reason) return { ok: false, error: "a reason is required" };
   if (!isTombstoneSource(i.sourceId)) return { ok: false, error: "the source must be a user- slice name or *" };
   if (!i.userId.trim()) return { ok: false, error: "a user id is required" };
-  const known = (await Domain.getUser(i.userId, c)) ?? (await c.one("SELECT old_id FROM user_aliases WHERE old_id = ?", [i.userId]));
-  if (!known) return { ok: false, error: "no such user" };
+  if (i.userId === ALL_READERS) {
+    // A source-level row: one name for every reader. Needs a name, never `*` for both.
+    if (i.sourceId === ALL_SOURCES) return { ok: false, error: "an all-readers tombstone needs a source name" };
+  } else {
+    const known = (await Domain.getUser(i.userId, c)) ?? (await c.one("SELECT old_id FROM user_aliases WHERE old_id = ?", [i.userId]));
+    if (!known) return { ok: false, error: "no such user" };
+  }
   const r = await c.run(
     `INSERT INTO slice_tombstones (user_id, source_id, created_by, reason, created_at) VALUES (?, ?, ?, ?, ?)
      ON CONFLICT (user_id, source_id) DO NOTHING`,
@@ -75,13 +86,15 @@ export interface TombstoneSet {
 
 /**
  * The tombstones that apply to a live user: rows keyed on its id or on any id
- * merged into it. Throws on a database error: the resolver treats that as a
+ * merged into it, plus the source-level rows (`user_id = '*'`) that name a slice
+ * no reader may include. Throws on a database error: the resolver treats that as a
  * failure and falls back to the legacy own slice (Rule T).
  */
 export async function tombstonesFor(liveUserId: string, c: DbClient = db): Promise<TombstoneSet> {
   const rows = await c.query<{ source_id: string }>(
     `SELECT source_id FROM slice_tombstones
-     WHERE user_id = ? OR user_id IN (SELECT old_id FROM user_aliases WHERE user_id = ?)`,
+     WHERE user_id = ? OR user_id IN (SELECT old_id FROM user_aliases WHERE user_id = ?)
+        OR (user_id = '*' AND source_id <> '*')`,
     [liveUserId, liveUserId],
   );
   const names = new Set<string>();

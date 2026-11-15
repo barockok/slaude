@@ -7,7 +7,9 @@ import { invalidateActors } from "../../src/refs/actor";
 export const TEAM = "T0EXAMPLE";
 export const TEAM2 = "T1EXAMPLE";
 
+/** Tests of the resolver run with the hold off unless they set it themselves after this. */
 export async function resetWorld(): Promise<void> {
+  process.env.SLAUDE_PERSON_SLICES_HOLD_HOURS = "0";
   await Accounts._wipeForTests();
   await db.run("DELETE FROM slice_tombstones");
   invalidateActors();
@@ -17,10 +19,28 @@ export async function newUser(): Promise<string> {
   return (await Domain.ensureUser({})).id;
 }
 
-export async function slack(userId: string, value: string, state: Domain.State = "verified", team: string = TEAM): Promise<string> {
+/**
+ * A Slack binding on a user. A VERIFIED one also gets the authoritative link (a row in
+ * `slack_identities` for an account whose oidc binding is on this user), as a real portal link
+ * does; pass `{ link: false }` for the verified-binding-with-no-link case.
+ */
+export async function slack(userId: string, value: string, state: Domain.State = "verified", team: string = TEAM, opts: { link?: boolean } = {}): Promise<string> {
   const r = await Domain.ensureBinding({ service: "slack", kind: "user", workspace: team, value, userId, state, source: "test" });
+  if (state === "verified" && opts.link !== false) await linkFor(userId, value, team);
   invalidateActors();
   return r.binding.id;
+}
+
+/** The authoritative link of one Slack id to a (helper-made) account of this user. */
+export async function linkFor(userId: string, value: string, team: string = TEAM): Promise<void> {
+  const accountId = `acc-${userId}`;
+  const exists = await db.one("SELECT id FROM accounts WHERE id = ?", [accountId]);
+  if (!exists) {
+    const flag = db.dialect === "pg" ? false : 0;
+    await db.run("INSERT INTO accounts (id, issuer, subject, email, email_proven, created_at, updated_at) VALUES (?, 'https://idp.example.com', ?, ?, ?, 1, 1)", [accountId, `sub-${userId}`, `${userId}@example.com`, flag]);
+    await Domain.ensureBinding({ service: "oidc", kind: "subject", workspace: "https://idp.example.com", value: `sub-${userId}`, userId, state: "verified", source: "test" });
+  }
+  await db.run("INSERT INTO slack_identities (team_id, slack_user_id, account_id, linked_at, linked_via) VALUES (?, ?, ?, 1, 'test') ON CONFLICT DO NOTHING", [team, value, accountId]);
 }
 
 /** Slice name a Slack id maps to (mirror of userSourceId for plain alphanumeric ids). */

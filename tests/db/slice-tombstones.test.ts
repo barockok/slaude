@@ -84,8 +84,8 @@ describe("slice tombstones", () => {
     expect(maskSource("*")).toBe("*");
     const m = maskSource("user-u0example");
     expect(m).not.toContain("u0example");
-    expect(m).toMatch(/^user-\*+ \(\d+\) #[0-9a-f]{6}$/);
+    // Prefix and length only: no hash of an enumerable id.
+    expect(m).toMatch(/^user-\*+ \(\d+\)$/);
     expect(maskSource("user-u0example")).toBe(m);
-    expect(maskSource("user-u1example")).not.toBe(m);
   });
 });

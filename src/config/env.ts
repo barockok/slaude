@@ -822,6 +822,28 @@ export const env = {
       const raw = opt("SLAUDE_PERSON_SLICES", "off").trim().toLowerCase();
       return raw === "shadow" || raw === "union" ? raw : "off";
     },
+    /**
+     * `SLAUDE_PERSON_SLICES_HOLD_HOURS` (default 24, `0` disables): a Slack binding joins a
+     * union as an ADDED slice only once its own `verified_at` is older than this. The link
+     * token is a 15 minute bearer token, so a mistaken link (the wrong person redeeming it)
+     * must not give the account's other ids the linked id's whole slice at once: the hold is
+     * the window to notice and revoke (unlink, undo, tombstone). Read from the binding row
+     * itself; a binding with no `verified_at` is held. Read on every call.
+     */
+    holdHours: (): number => {
+      const n = Number(opt("SLAUDE_PERSON_SLICES_HOLD_HOURS", "24"));
+      return Number.isFinite(n) && n >= 0 ? n : 24;
+    },
+    /**
+     * `SLAUDE_CREDENTIAL_POINTERS` (default `off`, slice F): record the bookkeeping pointer
+     * `mcp_credentials.user_id` after a person's credential write and on login or link.
+     * Off, no credential write does any extra work; `slaude domain reconcile --fill-pointers`
+     * fills the pointers meanwhile. Nothing reads the pointer for a decision either way.
+     */
+    credentialPointers: (): boolean => {
+      const raw = opt("SLAUDE_CREDENTIAL_POINTERS", "off").trim().toLowerCase();
+      return raw === "on" || raw === "1" || raw === "true" || raw === "yes";
+    },
   },
   remote: {
     /** `/remote` — run a thread's shell and file tools on the initiator's own

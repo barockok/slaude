@@ -31,17 +31,19 @@ describe("slaude domain slice-tombstone", () => {
     const a = await run(["add", user, "user-u0example", "--reason", "left the team", "--by", "op@example.com"]);
     expect(a.code).toBe(0);
     expect(a.lines[0]).toContain("tombstone added");
-    expect((await listTombstones())[0]).toMatchObject({ user_id: user, source_id: "user-u0example", created_by: "op@example.com" });
+    expect((await listTombstones())[0]).toMatchObject({ user_id: user, source_id: "user-u0example", created_by: expect.stringContaining("op@example.com [os:") });
     const l = await run(["list"]);
     expect(l.code).toBe(0);
     expect(l.lines[0]).toContain(`user=${user}`);
     expect(l.lines[0]).toContain("reason=left the team");
-    const r = await run(["remove", user, "user-u0example"]);
+    const r = await run(["remove", user, "user-u0example", "--reason", "restored", "--by", "op@example.com"]);
     expect(r.code).toBe(0);
     expect(await listTombstones()).toEqual([]);
     const audits = await db.query<{ action: string; actor_kind: string; actor_id: string; target_id: string; details: unknown }>("SELECT action, actor_kind, actor_id, target_id, details FROM audit_events ORDER BY at, id");
     expect(audits.map((x) => x.action)).toEqual(["slice.tombstone_added", "slice.tombstone_removed"]);
-    expect(audits.every((x) => x.actor_kind === "operator" && x.actor_id === "op@example.com" || x.actor_id.startsWith("cli:"))).toBe(true);
+    // --by is self-asserted, so the OS user is recorded beside it.
+    expect(audits.every((x) => x.actor_kind === "operator" && x.actor_id.startsWith("op@example.com [os:"))).toBe(true);
+    expect(JSON.stringify(audits[1]!.details)).toContain("restored");
     expect(audits[0]!.target_id).toBe(user);
   });
 
@@ -72,8 +74,27 @@ describe("slaude domain slice-tombstone", () => {
     for (const text of [...l.lines, ...j.lines, audits]) expect(text.toLowerCase()).not.toContain("u0example");
   });
 
+  test("remove requires a reason", async () => {
+    await run(["add", user, "user-u0example", "--reason", "x"]);
+    expect((await run(["remove", user, "user-u0example"])).code).toBe(2);
+    expect(await listTombstones()).toHaveLength(1);
+  });
+
+  test("--source --all-readers adds and removes a source-level row for every reader, with no user id", async () => {
+    const a = await run(["add", "--source", "user-u0example", "--all-readers", "--reason", "mistaken link"]);
+    expect(a.code).toBe(0);
+    expect(a.lines[0]).toContain("all-readers");
+    expect((await tombstonesFor(user)).names).toEqual(new Set(["user-u0example"]));
+    expect((await run(["list"])).lines[0]).toContain("all-readers");
+    expect((await run(["add", "--source", "*", "--all-readers", "--reason", "x"])).code).toBe(2);
+    expect((await run(["add", user, "--source", "user-u0example", "--all-readers", "--reason", "x"])).code).toBe(2);
+    expect((await run(["remove", "--source", "user-u0example", "--all-readers"])).code).toBe(2);
+    expect((await run(["remove", "--source", "user-u0example", "--all-readers", "--reason", "fixed"])).code).toBe(0);
+    expect(await listTombstones()).toEqual([]);
+  });
+
   test("removing what does not exist exits 1; bad usage exits 2", async () => {
-    expect((await run(["remove", user, "user-u0example"])).code).toBe(1);
+    expect((await run(["remove", user, "user-u0example", "--reason", "x"])).code).toBe(1);
     expect((await run([])).code).toBe(2);
     expect((await run(["add", user])).code).toBe(2);
     expect((await run(["frobnicate"])).code).toBe(2);

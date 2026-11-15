@@ -154,8 +154,7 @@
     "lines": [
       "const own = userSourceId(slackUserId);",
       "const name = userSourceId(b.value);",
-      "const claimedNames = new Set(claimed.map((r) => userSourceId(r.value)));",
-      "const verifiedNames = new Set(bindings.map((b) => userSourceId(b.value)));"
+      "const claimedNames = new Set(claimed.map((r) => userSourceId(r.value)));"
     ],
     "reason": "the resolver itself: the one place that maps verified Slack bindings to slice names"
   },

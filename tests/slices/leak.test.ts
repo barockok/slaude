@@ -13,7 +13,15 @@
  *     user the (verified) acting binding belongs to, read from the tables, and
  *     that binding belongs, in the model's ground truth, to the same human;
  *  5. no other live user holds any binding that produces the name;
- *  6. no tombstone (the user's, its merged-away ids', or `*`) covers the name;
+ *  6. no tombstone covers the name, judged with an independent reading of the table
+ *     (the user's rows, its merged-away ids' rows, `*` for the user, and source-level
+ *     rows with user `*`), not the repo function;
+ *  5b. each of the acting binding and the producing binding has a row in
+ *      `slack_identities` for an account of that user (the authoritative link: a
+ *      swallowed unlink projection cannot keep a union alive);
+ *  5c. in hold seeds, a producing binding is older than the hold, and a link to
+ *      the WRONG human (ground truth differs) is therefore never readable during
+ *      the hold window;
  *  7. a thread locked by another person gives exactly the public-only scope even
  *     when the speaker holds a union, and in the speaker's own lock the extra
  *     names are only the checked ones, with the write target still the own slice.
@@ -25,7 +33,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "
 import * as Accounts from "../../src/db/accounts";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
-import { addTombstone, removeTombstone, tombstonesFor } from "../../src/db/slice-tombstones";
+import { addTombstone, removeTombstone } from "../../src/db/slice-tombstones";
 import { mergeUsers } from "../../src/domain/merge";
 import { undoMerge } from "../../src/domain/merge-undo";
 import { personSlices } from "../../src/knowledge/person-slices";
@@ -57,11 +65,35 @@ function rng(seed: number): () => number {
 }
 const pick = <T>(r: () => number, xs: readonly T[]): T => xs[Math.floor(r() * xs.length)]!;
 
-interface SlackRow { id: string; user_id: string; workspace: string; value: string; state: string }
-const slackRows = () => db.query<SlackRow>("SELECT id, user_id, workspace, value, state FROM bindings WHERE service = 'slack' AND kind = 'user' ORDER BY id");
+interface SlackRow { id: string; user_id: string; workspace: string; value: string; state: string; verified_at: number | string | null }
+const slackRows = () => db.query<SlackRow>("SELECT id, user_id, workspace, value, state, verified_at FROM bindings WHERE service = 'slack' AND kind = 'user' ORDER BY id");
 
 /** All checks, after one step. Returns the number of identities checked. */
+/** Independent tombstone semantics, straight from the table (not `tombstonesFor`). */
+async function tombstoned(userId: string, name: string): Promise<boolean> {
+  const rows = await db.query<{ user_id: string; source_id: string }>("SELECT user_id, source_id FROM slice_tombstones");
+  const olds = new Set((await db.query<{ old_id: string }>("SELECT old_id FROM user_aliases WHERE user_id = ?", [userId])).map((r) => r.old_id));
+  return rows.some((r) => {
+    const forReader = r.user_id === userId || olds.has(r.user_id);
+    if (forReader && (r.source_id === "*" || r.source_id === name)) return true;
+    return r.user_id === "*" && r.source_id === name; // source-level: every reader
+  });
+}
+
+/** Independent link table read: the (team, id) pairs linked to an account of this user. */
+async function linked(userId: string): Promise<Set<string>> {
+  const rows = await db.query<{ t: string; v: string }>(
+    `SELECT s.team_id AS t, s.slack_user_id AS v FROM slack_identities s
+     JOIN accounts a ON a.id = s.account_id
+     JOIN bindings o ON o.service = 'oidc' AND o.workspace = a.issuer AND o.value = a.subject
+     WHERE o.user_id = ?`,
+    [userId],
+  );
+  return new Set(rows.map((r) => `${r.t}|${r.v}`));
+}
+
 let unionsSeen = 0;
+let wrongHumanReadable = 0;
 async function assertNoLeak(): Promise<number> {
   const rows = await slackRows();
   const liveUsers = new Set((await db.query<{ id: string }>("SELECT id FROM users")).map((u) => u.id));
@@ -77,20 +109,33 @@ async function assertNoLeak(): Promise<number> {
     expect({ where, dup: new Set(person.reads).size }).toEqual({ where, dup: person.reads.length });
     // 3
     if (a.state !== "verified") expect({ where, extras }).toEqual({ where, extras: [] });
-    const tomb = await tombstonesFor(a.user_id);
+    const holdMs = Number(process.env.SLAUDE_PERSON_SLICES_HOLD_HOURS ?? "0") * 3_600_000;
+    const links = await linked(a.user_id);
+    const now = Date.now();
+    const aged = (b: SlackRow) => holdMs === 0 || (b.verified_at !== null && now - Number(b.verified_at) >= holdMs);
     for (const name of extras) {
       // 2
       expect({ where, name, ok: NAME_OK.test(name) }).toEqual({ where, name, ok: true });
       // 4: verified acting binding, verified producing binding on the SAME user, same human in the ground truth
       expect({ where, acting: a.state }).toEqual({ where, acting: "verified" });
       const producers = rows.filter((b) => userSourceId(b.value) === name);
-      const mine = producers.filter((b) => b.user_id === a.user_id && b.state === "verified");
+      const mine = producers.filter((b) => b.user_id === a.user_id && b.state === "verified" && links.has(`${b.workspace}|${b.value}`));
       expect({ where, name, mine: mine.length > 0 }).toEqual({ where, name, mine: true });
-      for (const b of mine) expect({ where, name, human: humanOf(b.workspace, b.value) }).toEqual({ where, name, human: humanOf(a.workspace, a.value) });
+      // 5b, 5c
+      expect({ where, actingLinked: links.has(`${a.workspace}|${a.value}`) }).toEqual({ where, actingLinked: true });
+      expect({ where, name, aged: mine.some(aged) }).toEqual({ where, name, aged: true });
+      for (const b of mine.filter(aged)) {
+        const same = humanOf(b.workspace, b.value) === humanOf(a.workspace, a.value);
+        if (!same) {
+          // A wrong-human link may be read only after the hold, and never with the hold off by accident.
+          wrongHumanReadable++;
+          expect({ where, name, heldLongEnough: holdMs > 0 && aged(b) }).toEqual({ where, name, heldLongEnough: true });
+        }
+      }
       // 5
       expect({ where, name, others: producers.filter((b) => b.user_id !== a.user_id).length }).toEqual({ where, name, others: 0 });
       // 6
-      expect({ where, name, tomb: tomb.all || tomb.names.has(name) }).toEqual({ where, name, tomb: false });
+      expect({ where, name, tomb: await tombstoned(a.user_id, name) }).toEqual({ where, name, tomb: false });
     }
     expect(liveUsers.has(a.user_id)).toBe(true);
     // 7: the scopes built from this person
@@ -110,12 +155,14 @@ async function assertNoLeak(): Promise<number> {
 describe.each(["union"])("cross-person leak property (%s)", () => {
   const accountIds = new Map<string, string>(); // subject -> account id
   let log: string[];
+  let holdSeed = false;
   beforeAll(() => {
     process.env.SLAUDE_PERSON_SLICES = "union";
     process.env.SLAUDE_MERGE_NOTICE = "off";
   });
   afterAll(() => {
     delete process.env.SLAUDE_PERSON_SLICES;
+    delete process.env.SLAUDE_PERSON_SLICES_HOLD_HOURS;
     delete process.env.SLAUDE_MERGE_NOTICE;
   });
   beforeEach(async () => {
@@ -142,7 +189,7 @@ describe.each(["union"])("cross-person leak property (%s)", () => {
     const hi = Math.floor(r() * HUMANS.length);
     const h = HUMANS[hi]!;
     const idn = pick(r, h.ids);
-    const op = Math.floor(r() * 14);
+    const op = Math.floor(r() * 18);
     const tag = `${op}:h${hi}:${idn.team}/${idn.value}`;
     switch (op) {
       case 0:
@@ -233,6 +280,46 @@ describe.each(["union"])("cross-person leak property (%s)", () => {
         }
         break;
       }
+      case 14: { // time passes: a verified binding gets older than the hold
+        const rows = await slackRows();
+        if (rows.length) {
+          const b = pick(r, rows);
+          log.push(`age ${b.workspace}/${b.value}`);
+          await db.run("UPDATE bindings SET verified_at = verified_at - ? WHERE id = ? AND verified_at IS NOT NULL", [2 * 3_600_000, b.id]);
+        }
+        break;
+      }
+      case 15: { if (!holdSeed) break; // a mistaken link: a bearer token redeemed by the WRONG human, into their account
+        const other = HUMANS[(hi + 1 + Math.floor(r() * (HUMANS.length - 1))) % HUMANS.length]!;
+        const victimId = pick(r, other.ids);
+        const acct = await account(pick(r, h.accounts));
+        log.push(`WRONG link ${victimId.team}/${victimId.value} (human ${humanOf(victimId.team, victimId.value)}) -> h${hi}`);
+        await Accounts.linkSlackIdentity({ teamId: victimId.team, slackUserId: victimId.value, accountId: acct, via: "test" });
+        break;
+      }
+      case 16: { // an unlink whose projection fails (swallowed): the binding outlives the link row
+        const rows = await db.query<{ team_id: string; slack_user_id: string; account_id: string }>("SELECT team_id, slack_user_id, account_id FROM slack_identities");
+        if (rows.length) {
+          const l = pick(r, rows);
+          log.push(`unlink with failing projection ${l.team_id}/${l.slack_user_id}`);
+          const bad = spyOn(Domain, "findBinding").mockRejectedValue(new Error("projection down"));
+          try {
+            await Accounts.unlinkSlackIdentity(l.team_id, l.slack_user_id, l.account_id);
+          } finally {
+            bad.mockRestore();
+          }
+        }
+        break;
+      }
+      case 17: { // a source-level tombstone, for every reader
+        const names = [...new Set((await slackRows()).map((b) => userSourceId(b.value)))];
+        if (names.length) {
+          const n = pick(r, names);
+          log.push("tombstone all-readers");
+          await addTombstone({ userId: "*", sourceId: n, createdBy: "op", reason: "test" });
+        }
+        break;
+      }
       default: { // purge a user record outright (operator), when nothing references it
         const users = await db.query<{ id: string }>("SELECT id FROM users ORDER BY id");
         if (users.length) {
@@ -257,6 +344,9 @@ describe.each(["union"])("cross-person leak property (%s)", () => {
     let checked = 0;
     for (let seed = 1; seed <= seeds; seed++) {
       await resetWorld();
+      // Even seeds run with the hold off (unions form at once); odd seeds with a one hour hold, ageing and wrong links.
+      holdSeed = seed % 2 === 1;
+      process.env.SLAUDE_PERSON_SLICES_HOLD_HOURS = holdSeed ? "1" : "0";
       await db.run("DELETE FROM link_token_uses");
       accountIds.clear();
       log = [];
@@ -273,6 +363,8 @@ describe.each(["union"])("cross-person leak property (%s)", () => {
     expect(checked).toBeGreaterThan(seeds * 10);
     // Not vacuous: unions really formed (a person with two verified ids), and some were cut by a rule.
     expect(unionsSeen).toBeGreaterThan(seeds);
+    // The hold seeds do see a wrong-human slice become readable, and only after the hold (asserted above).
+    if (seeds >= 200) expect(wrongHumanReadable).toBeGreaterThan(0);
   }, 1_800_000);
 });
 
@@ -318,6 +410,31 @@ describe("the leak checker catches a leak (it is not vacuous)", () => {
   test("a tombstoned name still in the union is reported", async () => {
     const u = await seedPair("verified");
     await addTombstone({ userId: u, sourceId: "user-u1aexample", createdBy: "op", reason: "x" });
+    const real = await import("../../src/knowledge/person-slices");
+    const spy = spyOn(real, "personSlices").mockImplementation(async (_t, id) => ({ own: userSourceId(id), reads: [userSourceId(id), id === "U0AEXAMPLE" ? "user-u1aexample" : "user-u0aexample"], via: "union", dropped: { conflict: 0, tombstoned: 0 } }));
+    try {
+      await expect(assertNoLeak()).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("a fresh binding inside the hold, or one with no link, in a union is reported", async () => {
+    await seedPair("verified");
+    process.env.SLAUDE_PERSON_SLICES_HOLD_HOURS = "1";
+    const real = await import("../../src/knowledge/person-slices");
+    const spy = spyOn(real, "personSlices").mockImplementation(async (_t, id) => ({ own: userSourceId(id), reads: [userSourceId(id), id === "U0AEXAMPLE" ? "user-u1aexample" : "user-u0aexample"], via: "union", dropped: { conflict: 0, tombstoned: 0 } }));
+    try {
+      await expect(assertNoLeak()).rejects.toThrow(); // no link rows, and both verified just now
+    } finally {
+      spy.mockRestore();
+      process.env.SLAUDE_PERSON_SLICES_HOLD_HOURS = "0";
+    }
+  });
+
+  test("a source-level tombstone still in a union is reported", async () => {
+    await seedPair("verified");
+    await addTombstone({ userId: "*", sourceId: "user-u1aexample", createdBy: "op", reason: "x" });
     const real = await import("../../src/knowledge/person-slices");
     const spy = spyOn(real, "personSlices").mockImplementation(async (_t, id) => ({ own: userSourceId(id), reads: [userSourceId(id), id === "U0AEXAMPLE" ? "user-u1aexample" : "user-u0aexample"], via: "union", dropped: { conflict: 0, tombstoned: 0 } }));
     try {

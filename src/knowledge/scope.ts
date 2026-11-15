@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { sameAt } from "../access/wired";
+import { env } from "../config/env";
 import type { SoulData } from "../soul/data";
 
 export type ChannelTrust = "trusted" | "public" | "unknown";
@@ -30,7 +31,8 @@ export interface PersonSlices {
   own: string;
   reads: string[];
   via: "legacy" | "union";
-  dropped: { conflict: number; tombstoned: number };
+  /** Names left out of the union: claimed by another user, tombstoned, or still inside the hold (omitted when 0). */
+  dropped: { conflict: number; tombstoned: number; held?: number };
 }
 
 const PERSON_NAME = /^user-[a-z0-9]+$/;
@@ -42,6 +44,8 @@ const PERSON_NAME = /^user-[a-z0-9]+$/;
  * never enter through `person`, whatever it holds.
  */
 export function extraPersonReads(person: PersonSlices | undefined, own: string): string[] {
+  // Re-checked at the site: with the flag not `union`, a stray `person` adds nothing.
+  if (env.slices.mode() !== "union") return [];
   if (!person || person.via !== "union" || person.own !== own || person.reads[0] !== own) return [];
   return [...new Set(person.reads.slice(1))].filter((n) => n !== own && PERSON_NAME.test(n));
 }
