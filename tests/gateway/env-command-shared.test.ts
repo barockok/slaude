@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { __setSshResolverForTests } from "../../src/remote/kinds/ssh";
 import * as Envs from "../../src/db/environments";
 import * as OneOnOne from "../../src/db/one-on-one";
+import { handleRemoteCommand } from "../../src/gateway/core/remote-command";
+import { sessionModeBlock } from "../../src/agent/session-mode";
+import { threadIdentity } from "../../src/gateway/core/thread-identity";
 import { handleEnvCommand, removeEnvironment, useEnvironment, type EnvCommandDeps } from "../../src/gateway/core/env-command";
 import { __setDecisionDepsForTests } from "../../src/remote/definitions/decision";
 import { definitionRowId } from "../../src/remote/definitions/resolve";
@@ -234,5 +237,31 @@ describe("personal environments are unaffected", () => {
     replies = [];
     await handleEnvCommand({ kind: "env", action: "use", name: "team-sandbox" }, ctx(), deps());
     expect(replies.join("\n")).toContain("You have no environment named");
+  });
+});
+
+describe("wording for a shared machine", () => {
+  it("the claim marks it shared, a personal one carries no such key, and the prompt does not call it a disposable sandbox", async () => {
+    await bindShared(await insertShared());
+    const id = await threadIdentity("C0EXAMPLE", "1.1", () => "U0EXAMPLE", { tenant: "default", persona: "agent-a", turnKind: "interactive" });
+    expect(id.remote?.env?.shared).toBe(true);
+    const block = sessionModeBlock(null, { userId: "", dir: "/srv/work", env: { name: "team-sandbox", kind: "ssh", trust: "provisioned", shared: true } });
+    expect(block).toContain("SHARED machine");
+    expect(block).toContain("other people use it");
+    expect(block).not.toContain("disposable sandbox");
+    const sandbox = sessionModeBlock(null, { userId: "", dir: "/w", env: { name: "sb", kind: "x", trust: "provisioned" } });
+    expect(sandbox).toContain("disposable sandbox");
+  });
+
+  it("/remote status says a shared machine for the allowing agent and refused for another", async () => {
+    await bindShared(await insertShared());
+    await handleRemoteCommand({ kind: "remote", action: "status" }, ctx(), deps());
+    expect(replies.join("\n")).toContain("a shared machine");
+    expect(replies.join("\n")).not.toContain("a sandbox");
+    replies = [];
+    await handleRemoteCommand({ kind: "remote", action: "status" }, ctx({ personaId: "agent-b" }), deps());
+    expect(replies.join("\n")).toContain("refused");
+    expect(replies.join("\n")).not.toContain("*on*");
+    noLeak();
   });
 });

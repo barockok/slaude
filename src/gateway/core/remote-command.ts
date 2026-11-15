@@ -8,7 +8,8 @@
 import { sameAt } from "../../access/wired";
 import { env } from "../../config/env";
 import * as Envs from "../../db/environments";
-import { activeRemoteTarget, boundEnv } from "../../remote/active";
+import { boundEnv } from "../../remote/active";
+import { remoteDecision } from "../../remote/definitions/decision";
 import { connectInfoForBinding } from "../../remote/env-runtime";
 import { isTailcatAddr } from "../../remote/shell";
 import * as OneOnOne from "../../db/one-on-one";
@@ -39,7 +40,13 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
   const { channelId, threadTs, teamId, userId } = ctx;
 
   if (hit.action === "status") {
-    const t = await activeRemoteTarget(channelId, threadTs);
+    // Asked as the agent in this thread, so a shared machine this agent may not use reads as refused, not as "on".
+    const d = await remoteDecision({ tenant: ctx.tenantId ?? "default", persona: ctx.personaId, channel: channelId, thread: threadTs, turnKind: "interactive" });
+    if ("refused" in d) {
+      await ctx.reply("Remote mode: *refused*: this thread is set to a shared environment this agent may not use, so nothing runs for it. `/env off` returns to the server.");
+      return;
+    }
+    const t = "target" in d ? d.target : null;
     const b = t ? await boundEnv(channelId, threadTs) : null;
     if (!t || !b) {
       await ctx.reply("Remote mode: *off* — tools run on the server.");
@@ -51,7 +58,7 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
     let info = null;
     try { info = await connectInfoForBinding(b.binding, b.env); } catch {}
     const path = await deps.status(b.env, info);
-    const whose = t.env?.trust === "provisioned" ? "a sandbox" : `<@${t.userId}>'s machine`;
+    const whose = t.env?.shared ? "a shared machine" : t.env?.trust === "provisioned" ? "a sandbox" : `<@${t.userId}>'s machine`;
     await ctx.reply(`Remote mode: *on* — ${whose}, environment *${b.env.name}*, \`${t.dir}\`, path: *${path}*.`);
     return;
   }

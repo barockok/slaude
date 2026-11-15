@@ -1992,7 +1992,7 @@ export class AgentManager extends EventEmitter {
       channelId: row.slack_channel_id,
       lock,
       remote: remoteTarget
-        ? { userId: remoteTarget.userId, dir: remoteTarget.dir, ...(remoteTarget.env ? { env: { name: remoteTarget.env.name, kind: remoteTarget.env.kind, trust: remoteTarget.env.trust } } : {}) }
+        ? { userId: remoteTarget.userId, dir: remoteTarget.dir, ...(remoteTarget.env ? { env: { name: remoteTarget.env.name, kind: remoteTarget.env.kind, trust: remoteTarget.env.trust, ...(remoteTarget.env.shared ? { shared: true } : {}) } } : {}) }
         : null,
       mcpServers: strictNames ? (Object.keys(strictNames).length > 0 ? strictNames : undefined) : mcpServers,
       strictMcp: !!localMcp,
