@@ -814,10 +814,14 @@ export const env = {
      * `SLAUDE_PERSON_SLICES` (default `off`, slice F). `off`: no resolver call, every
      * scope decision is rc.21's. `shadow`: the legacy scope is returned and the
      * verified-only union is computed beside it and compared (counts and a
-     * redacted log only). Read on every call. Anything else, including `union`
-     * (reserved for rc.23: not honoured yet), reads as `off`.
+     * redacted log only). `union` (rc.23): READS also include the `user-` slices of the
+     * speaker's other Slack ids that are verified (Rules P, Q, R, S, T of the slice F plan);
+     * writes never change. Read on every call. Anything else reads as `off`.
      */
-    mode: (): "off" | "shadow" => (opt("SLAUDE_PERSON_SLICES", "off").trim().toLowerCase() === "shadow" ? "shadow" : "off"),
+    mode: (): "off" | "shadow" | "union" => {
+      const raw = opt("SLAUDE_PERSON_SLICES", "off").trim().toLowerCase();
+      return raw === "shadow" || raw === "union" ? raw : "off";
+    },
   },
   remote: {
     /** `/remote` — run a thread's shell and file tools on the initiator's own

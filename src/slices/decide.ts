@@ -1,5 +1,5 @@
 /**
- * The person-slices seam (slice F, rc.22). `SLAUDE_PERSON_SLICES`, read on every
+ * The person-slices seam (slice F). `SLAUDE_PERSON_SLICES`, read on every
  * call:
  *  - `off` (default): nothing runs, no counter moves, no database call.
  *  - `shadow`: the caller keeps its legacy scope. In the background (never
@@ -9,10 +9,9 @@
  *    logged once per (site, reason) per minute with COUNTS ONLY: no Slack id,
  *    no slice name.
  *
- * `decidePersonSlices` never throws and never waits for the resolver. At most
- * MAX_INFLIGHT shadows run per process; the rest count `dropped`. It returns
- * nothing in rc.22 (legacy is authoritative): the union value is only handed to
- * a caller when rc.23 honours `union`.
+ * Under shadow `decidePersonSlices` never waits for the resolver; at most
+ * MAX_INFLIGHT shadows run per process, the rest count `dropped`. Under `union` it
+ * awaits the bounded resolver and hands the person's slices to the caller.
  *
  * Outcomes: `match` (own slice only), `would_widen` (a verified second id adds
  * a slice: expected for a person who linked two ids, tagged
@@ -22,6 +21,7 @@
 import { env } from "../config/env";
 import { personSlicesDetailed, type PersonSlicesResult } from "../knowledge/person-slices";
 import { m } from "../metrics";
+import type { PersonSlices } from "../knowledge/scope";
 import type { SliceSiteId } from "./sites";
 
 export const MAX_INFLIGHT = 16;
@@ -74,19 +74,30 @@ function record(site: SliceSiteId, r: PersonSlicesResult): void {
 }
 
 /**
- * Record the decision and start the shadow. Never throws and never waits: the
- * caller already holds its legacy scope. Nothing is returned in rc.22.
+ * The seam. Never throws.
+ *  - `off`: returns undefined, nothing runs.
+ *  - `shadow`: starts the background comparison, returns undefined at once (legacy scope).
+ *  - `union` (rc.23): awaits the bounded resolver and returns the person's slices for the
+ *    caller to attach to its gate input (READS only). A resolver error, the 250 ms bound or
+ *    an unreadable tombstone table returns undefined (the caller keeps the legacy own
+ *    slice, never a wider set) and counts `error`. The outcome is counted like in shadow.
  */
-export function decidePersonSlices(o: { site: SliceSiteId; teamId: string | null | undefined; slackUserId: string | null | undefined }): void {
+export async function decidePersonSlices(o: { site: SliceSiteId; teamId: string | null | undefined; slackUserId: string | null | undefined }): Promise<PersonSlices | undefined> {
   try {
-    if (env.slices.mode() !== "shadow") return;
+    const mode = env.slices.mode();
+    if (mode === "off") return undefined;
     if (!o.slackUserId || !o.teamId) {
       m.personSlicesShadowTotal.inc({ site: o.site, outcome: "no_user" });
-      return;
+      return undefined;
+    }
+    if (mode === "union") {
+      const r = await personSlicesDetailed(o.teamId, o.slackUserId);
+      record(o.site, r);
+      return r.status === "ok" && r.slices.via === "union" ? r.slices : undefined;
     }
     if (pending.size >= MAX_INFLIGHT) {
       m.personSlicesShadowTotal.inc({ site: o.site, outcome: "dropped" });
-      return;
+      return undefined;
     }
     const p: Promise<void> = Promise.resolve()
       .then(async () => record(o.site, await personSlicesDetailed(o.teamId, o.slackUserId!)))
@@ -98,7 +109,9 @@ export function decidePersonSlices(o: { site: SliceSiteId; teamId: string | null
         pending.delete(p);
       });
     pending.add(p);
+    return undefined;
   } catch {
-    /* a shadow must never fail a decision */
+    /* the seam must never fail a decision: legacy */
+    return undefined;
   }
 }

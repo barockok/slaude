@@ -1603,8 +1603,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     };
     // Slice F shadow: compare the speaker's verified-only union with the legacy own slice, in the
     // background and counts only. A no-op unless SLAUDE_PERSON_SLICES=shadow; the gate is unchanged.
-    if (gate.userId) decidePersonSlices({ site: "brain.gate_speaker", teamId: gate.teamId, slackUserId: gate.userId });
-    return gate;
+    // Under union the speaker's verified-only slices ride on the gate (reads only, Rule S: never the lock owner's).
+    const person = gate.userId ? await decidePersonSlices({ site: "brain.gate_speaker", teamId: gate.teamId, slackUserId: gate.userId }) : undefined;
+    return person ? { ...gate, person } : gate;
   };
 
   // Episodic memory for turns that run in THIS process (mono): scoped by the
@@ -1621,8 +1622,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const { ctx } = route;
         const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
         const gate = await brainGateFor(ctx);
-        if (runAsUser) decidePersonSlices({ site: "memory.claims_run_as", teamId: ctx.teamId, slackUserId: runAsUser });
-        const scope = await memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null });
+        const runAsPerson = runAsUser ? await decidePersonSlices({ site: "memory.claims_run_as", teamId: ctx.teamId, slackUserId: runAsUser }) : undefined;
+        const scope = await memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null, ...(runAsPerson ? { runAsPerson } : {}) });
         // Only an interactive turn counts toward the quiet-moment pass's thread activity.
         return gate.interactive ? { ...scope, activityAgentId: gate.agentId } : scope;
       },

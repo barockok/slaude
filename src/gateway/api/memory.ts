@@ -146,9 +146,9 @@ export async function memoryScopeForClaims(gate: GateInput, claims: JobClaims): 
   // owner although its synthetic thread holds no lock.
   const runAs = parseRunAs(claims.runAs);
   const runAsUser = runAs?.kind === "user" ? runAs.slackUserId : null;
-  // Slice F shadow (no-op unless SLAUDE_PERSON_SLICES=shadow): counts only, the scope below is legacy.
-  if (runAsUser) decidePersonSlices({ site: "memory.claims_run_as", teamId: gate.teamId, slackUserId: runAsUser });
-  return memoryScopeFor(await withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser });
+  // Slice F shadow (`shadow`: counts only; `union`: the runAs person's verified slices, reads only).
+  const runAsPerson = runAsUser ? await decidePersonSlices({ site: "memory.claims_run_as", teamId: gate.teamId, slackUserId: runAsUser }) : undefined;
+  return memoryScopeFor(await withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser, ...(runAsPerson ? { runAsPerson } : {}) });
 }
 
 /** The default plane: the process's provider, gated like the KB tools (the

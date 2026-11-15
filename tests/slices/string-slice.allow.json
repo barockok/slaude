@@ -180,8 +180,8 @@
     "file": "src/memory/scope.ts",
     "pattern": "user-source-id",
     "lines": [
-      "return both(runAs, userSourceId(runAs));",
-      "if (g.userId !== null && isDmChannel(opts.channel)) return both(g.userId, userSourceId(g.userId));"
+      "const own = userSourceId(runAs);",
+      "const own = userSourceId(g.userId);"
     ],
     "reason": "memory scope site (runAs and DM branches): legacy own slice in rc.22; honoured in rc.23 behind SLAUDE_PERSON_SLICES (task 8)"
   },

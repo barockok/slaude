@@ -7,7 +7,6 @@
  * the released files); the oracle for credentials is the same reads with every
  * pointer NULL. Seeded, so a failure reproduces.
  */
-import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Accounts from "../../src/db/accounts";
 import * as Creds from "../../src/db/mcp-credentials";
@@ -97,18 +96,10 @@ describe("scope parity with rc.21", () => {
     }
   });
 
-  test("the scope files are the rc.21 files (nothing in rc.22 edits a scope site; task 8 retires this test)", () => {
-    const unfreeze = (t: string) =>
-      t
-        .split("\n")
-        .slice(2)
-        .join("\n")
-        .replaceAll("../../../src/access/wired", "../access/wired")
-        .replaceAll("../../../src/soul/data", "../soul/data")
-        .replaceAll("../../../src/knowledge/gated-dispatch", "../knowledge/gated-dispatch")
-        .replaceAll("./knowledge-scope", "../knowledge/scope");
-    expect(readFileSync("src/knowledge/scope.ts", "utf8")).toBe(unfreeze(readFileSync("tests/slices/rc21/knowledge-scope.ts", "utf8")));
-    expect(readFileSync("src/memory/scope.ts", "utf8")).toBe(unfreeze(readFileSync("tests/slices/rc21/memory-scope.ts", "utf8")));
+  test("union mode with no person attached is still byte-identical to rc.21 (the attach is the only difference)", async () => {
+    process.env.SLAUDE_PERSON_SLICES = "union";
+    const input: ScopeInput = { userId: "U0AEXAMPLE", teamId: TEAM, lockedUser: "U0AEXAMPLE", channelTrust: "public", isManager: false, kbSources: [], agentId: "agent-one" };
+    expect(await resolveBrainScope(input)).toEqual(await resolveRc21(input));
   });
 });
 

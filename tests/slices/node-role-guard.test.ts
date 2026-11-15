@@ -68,7 +68,7 @@ describe("node role never reaches the database seams of slice F", () => {
         process.env.SLAUDE_PERSON_SLICES = "shadow";
         const D = await import(${JSON.stringify(join(import.meta.dir, "../../src/slices/decide.ts"))});
         const P = await import(${JSON.stringify(join(import.meta.dir, "../../src/knowledge/person-slices.ts"))});
-        D.decidePersonSlices({ site: "brain.gate_speaker", teamId: "T0EXAMPLE", slackUserId: "U0EXAMPLE" });
+        await D.decidePersonSlices({ site: "brain.gate_speaker", teamId: "T0EXAMPLE", slackUserId: "U0EXAMPLE" });
         await D.settlePersonSliceShadows();
         const r = await P.personSlicesDetailed("T0EXAMPLE", "U0EXAMPLE");
         console.log("RESULT:" + r.status + ":" + r.slices.reads.join(","));

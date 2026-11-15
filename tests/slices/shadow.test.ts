@@ -36,14 +36,14 @@ afterEach(() => {
 });
 
 describe("off", () => {
-  for (const v of [undefined, "off", "OFF", "union", "garbage", ""]) {
+  for (const v of [undefined, "off", "OFF", "garbage", ""]) {
     test(`SLAUDE_PERSON_SLICES=${JSON.stringify(v)} runs no resolver and counts nothing`, async () => {
       if (v !== undefined) process.env.SLAUDE_PERSON_SLICES = v;
       const spy = spyOn(PersonSlices, "personSlicesDetailed");
       const find = spyOn(Domain, "findBinding");
       const before = counter("slaude_person_slices_shadow_total", {});
       try {
-        expect(decidePersonSlices({ site: SITE, teamId: TEAM, slackUserId: "U0EXAMPLE" })).toBeUndefined();
+        expect(await decidePersonSlices({ site: SITE, teamId: TEAM, slackUserId: "U0EXAMPLE" })).toBeUndefined();
         await settlePersonSliceShadows();
         expect(spy).not.toHaveBeenCalled();
         expect(find).not.toHaveBeenCalled();
@@ -123,7 +123,7 @@ describe("shadow", () => {
     const e0 = outcome(SITE, "error");
     const f0 = counter("slaude_person_slices_failures_total", {});
     try {
-      expect(() => decidePersonSlices({ site: SITE, teamId: TEAM, slackUserId: "U0EXAMPLE" })).not.toThrow();
+      await expect(decidePersonSlices({ site: SITE, teamId: TEAM, slackUserId: "U0EXAMPLE" })).resolves.toBeUndefined();
       await settlePersonSliceShadows();
     } finally {
       bad.mockRestore();
@@ -137,7 +137,7 @@ describe("shadow", () => {
       throw new Error("sync boom");
     });
     try {
-      expect(() => decidePersonSlices({ site: SITE, teamId: TEAM, slackUserId: "U0EXAMPLE" })).not.toThrow();
+      await expect(decidePersonSlices({ site: SITE, teamId: TEAM, slackUserId: "U0EXAMPLE" })).resolves.toBeUndefined();
       await settlePersonSliceShadows();
     } finally {
       spy.mockRestore();

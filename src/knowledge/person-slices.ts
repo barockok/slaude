@@ -28,15 +28,9 @@ import { tombstonesFor } from "../db/slice-tombstones";
 import { db } from "../db/schema";
 import { m } from "../metrics";
 import { actingUser } from "../refs/actor";
-import { userSourceId } from "./scope";
+import { userSourceId, type PersonSlices } from "./scope";
 
-export interface PersonSlices {
-  /** The acting id's own legacy slice. Always first in `reads`. */
-  own: string;
-  reads: string[];
-  via: "legacy" | "union";
-  dropped: { conflict: number; tombstoned: number };
-}
+export type { PersonSlices };
 
 export type PersonStatus = "ok" | "no_user" | "error";
 

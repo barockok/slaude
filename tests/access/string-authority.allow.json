@@ -839,7 +839,7 @@
     "lines": [
       "if (g.userId !== null && g.lockedUser !== null && !(await sameAt({ ...seam, site: \"memory_scope.lock_owner\", userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }))) return NONE;",
       "if (g.userId !== null && !(await sameAt({ ...seam, site: \"memory_scope.run_as_speaker\", userId: g.userId, otherUserId: runAs }))) return NONE;",
-      "if (g.userId !== null && isDmChannel(opts.channel)) return both(g.userId, userSourceId(g.userId));"
+      "if (g.userId !== null && isDmChannel(opts.channel)) {"
     ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
