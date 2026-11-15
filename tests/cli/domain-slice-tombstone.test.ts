@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { main } from "../../src/cli/domain";
 import * as Accounts from "../../src/db/accounts";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
+import { cleanWorld } from "../helpers/person-world";
 import { listTombstones, tombstonesFor } from "../../src/db/slice-tombstones";
 
 let user: string;
@@ -116,4 +117,8 @@ describe("slaude domain slice-tombstone", () => {
       delete process.env.SLAUDE_ROLE;
     }
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

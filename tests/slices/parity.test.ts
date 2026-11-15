@@ -10,7 +10,7 @@
  *  - Credential reads are unchanged by the pointer: the oracle is the same reads with every
  *    pointer NULL. Seeded, so a failure reproduces.
  */
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Accounts from "../../src/db/accounts";
 import * as Creds from "../../src/db/mcp-credentials";
 import * as Domain from "../../src/db/domain";
@@ -22,7 +22,7 @@ import { memoryScopeFor } from "../../src/memory/scope";
 import { decidePersonSlices } from "../../src/slices/decide";
 import { resolveBrainScope as resolveRc21 } from "./rc21/knowledge-scope";
 import { memoryScopeFor as memoryRc21 } from "./rc21/memory-scope";
-import { TEAM, newUser, resetWorld, slack } from "../helpers/person-world";
+import { TEAM, newUser, resetWorld, slack, cleanWorld } from "../helpers/person-world";
 
 const MODES: Array<string | undefined> = [undefined, "off", "shadow", "union", "garbage"];
 
@@ -240,4 +240,8 @@ describe("credential decisions are unchanged by the pointer", () => {
       expect(await reads()).toEqual(baseline);
     }
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

@@ -45,3 +45,10 @@ export async function linkFor(userId: string, value: string, team: string = TEAM
 
 /** Slice name a Slack id maps to (mirror of userSourceId for plain alphanumeric ids). */
 export const nameOf = (value: string): string => ("user-" + value.toLowerCase().replace(/[^a-z0-9]/g, "")).slice(0, 32);
+
+/** For afterAll in a file that writes through the global database (real Postgres keeps rows across files): every table these tests touch. */
+export async function cleanWorld(): Promise<void> {
+  await resetWorld();
+  for (const t of ["mcp_credentials", "link_token_uses", "audit_events", "slice_tombstones", "merge_vetoes", "merge_proposals", "user_merges"]) await db.run(`DELETE FROM ${t}`);
+  delete process.env.SLAUDE_PERSON_SLICES_HOLD_HOURS;
+}

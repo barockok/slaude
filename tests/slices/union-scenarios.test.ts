@@ -4,7 +4,7 @@
  * Rules S and T, the failure modes, and an end-to-end run through the fake brain.
  * Placeholders only.
  */
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Accounts from "../../src/db/accounts";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
@@ -17,7 +17,7 @@ import { resolveBrainScope, userSourceId } from "../../src/knowledge/scope";
 import { memoryScopeFor } from "../../src/memory/scope";
 import { decidePersonSlices } from "../../src/slices/decide";
 import { fakeBrain } from "../memory/fake-brain";
-import { TEAM, TEAM2, newUser, resetWorld, slack } from "../helpers/person-world";
+import { TEAM, TEAM2, newUser, resetWorld, slack, cleanWorld } from "../helpers/person-world";
 
 const ISS = "https://idp.example.com";
 const U = (id: string) => userSourceId(id);
@@ -319,4 +319,8 @@ describe("end to end with the fake brain", () => {
     await brain.call("put_page", { slug: "conversations/s1", content: "fact from L" }, (await dm("U0LEXAMPLE")).write!);
     expect(await brain.call("get_page", { slug: "conversations/s1" }, (await dm("U0SEXAMPLE")).read!)).toBeNull();
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

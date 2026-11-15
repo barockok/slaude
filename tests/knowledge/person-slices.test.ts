@@ -1,13 +1,13 @@
 /**
  * Person slices (slice F, task 5): every row is a rule of the plan. Placeholders only.
  */
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
 import { addTombstone } from "../../src/db/slice-tombstones";
 import { legacyPersonSlices, personSlices, personSlicesDetailed } from "../../src/knowledge/person-slices";
 import { userSourceId } from "../../src/knowledge/scope";
-import { TEAM, TEAM2, nameOf, newUser, resetWorld, slack } from "../helpers/person-world";
+import { TEAM, TEAM2, nameOf, newUser, resetWorld, slack, cleanWorld } from "../helpers/person-world";
 
 beforeEach(async () => {
   await resetWorld();
@@ -216,4 +216,8 @@ describe("person slices resolver", () => {
       }
     }
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

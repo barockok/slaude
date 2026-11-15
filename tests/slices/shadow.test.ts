@@ -4,13 +4,13 @@
  * and compared in the background, counted, and logged redacted. It never
  * throws into a caller.
  */
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Domain from "../../src/db/domain";
 import * as PersonSlices from "../../src/knowledge/person-slices";
 import { metrics } from "../../src/metrics";
 import { MAX_INFLIGHT, __resetSliceDecide, decidePersonSlices, outcomeOf, settlePersonSliceShadows } from "../../src/slices/decide";
 import { SLICE_SITES } from "../../src/slices/sites";
-import { TEAM, TEAM2, newUser, resetWorld, slack } from "../helpers/person-world";
+import { TEAM, TEAM2, newUser, resetWorld, slack, cleanWorld } from "../helpers/person-world";
 
 function counter(name: string, labels: Record<string, string>): number {
   const want = Object.entries(labels).map(([k, v]) => `${k}="${v}"`);
@@ -202,4 +202,8 @@ describe("outcomeOf and the registry", () => {
     expect(new Set(ids).size).toBe(ids.length);
     for (const id of ids) expect(id).toMatch(/^[a-z_]+(\.[a-z_]+)+$/);
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

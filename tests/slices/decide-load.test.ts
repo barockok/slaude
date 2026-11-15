@@ -3,11 +3,11 @@
  * its scope and its gate separately), the shadow's in-flight slot lasts until the
  * queries finish, and the runAs person is resolved in the lock's workspace.
  */
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as PersonSlices from "../../src/knowledge/person-slices";
 import { invalidateActors } from "../../src/refs/actor";
 import { MAX_INFLIGHT, __resetSliceDecide, decidePersonSlices, runAsPersonFor, settlePersonSliceShadows } from "../../src/slices/decide";
-import { TEAM, TEAM2, newUser, resetWorld, slack } from "../helpers/person-world";
+import { TEAM, TEAM2, newUser, resetWorld, slack, cleanWorld } from "../helpers/person-world";
 
 beforeEach(async () => {
   await resetWorld();
@@ -103,4 +103,8 @@ describe("the runAs person is resolved in the lock's workspace", () => {
     expect((await runAsPersonFor({ teamId: TEAM2, lockedUser: "U0AEXAMPLE", lockedTeamId: null }, "U0AEXAMPLE"))?.reads).toHaveLength(2);
     expect(await runAsPersonFor({ teamId: TEAM2, lockedUser: null }, null)).toBeUndefined();
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

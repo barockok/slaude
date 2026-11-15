@@ -6,7 +6,7 @@
  * what a gateway with no resolver at all produces (so a mode can never leak a union by
  * accident); under `union` the gate carries the speaker's slices and only the reads grow.
  */
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { AgentManager } from "../../../src/agent/manager";
 import { db } from "../../../src/db/schema";
 import { createGateway, type GatewayHandle } from "../../../src/gateway/core/gateway";
@@ -15,6 +15,7 @@ import { mintJobToken, verifyJobToken, type JobClaims } from "../../../src/gatew
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import * as PersonSlices from "../../../src/knowledge/person-slices";
 import { settlePersonSliceShadows } from "../../../src/slices/decide";
+import { cleanWorld } from "../../helpers/person-world";
 import { userSourceId } from "../../../src/knowledge/scope";
 
 const SECRET_ENV = process.env.SLAUDE_JOB_SECRET;
@@ -126,4 +127,8 @@ describe("brainGateFor and memoryScopeForClaims, end to end", () => {
       spy.mockRestore();
     }
   }, 60_000);
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

@@ -3,10 +3,11 @@
  * that outlives the merge undo window. Keyed by user id with no foreign key; a
  * read matches the live id plus the user_aliases.old_id values of that user.
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import * as Accounts from "../../src/db/accounts";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
+import { cleanWorld } from "../helpers/person-world";
 import { addTombstone, listTombstones, maskSource, removeTombstone, tombstonesFor } from "../../src/db/slice-tombstones";
 
 beforeEach(async () => {
@@ -88,4 +89,8 @@ describe("slice tombstones", () => {
     expect(m).toMatch(/^user-\*+ \(\d+\)$/);
     expect(maskSource("user-u0example")).toBe(m);
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

@@ -4,13 +4,14 @@
  * when the pointer cannot be resolved, payload bytes are exactly what they were,
  * and an agent row never gets one.
  */
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Accounts from "../../src/db/accounts";
 import * as Creds from "../../src/db/mcp-credentials";
 import * as Domain from "../../src/db/domain";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import { settlePointerWrites } from "../../src/db/credential-pointers";
 import { db } from "../../src/db/schema";
+import { cleanWorld } from "../helpers/person-world";
 import type { CredentialOwner } from "../../src/agent/credential-owner";
 
 const ISS = "https://idp.example.com";
@@ -153,4 +154,8 @@ describe("credentials dual write", () => {
     expect(r.ok).toBe(true);
     expect(await pointer(accountId)).not.toBeNull();
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

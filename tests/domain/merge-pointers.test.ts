@@ -4,7 +4,7 @@
  * never fail a link merge. Pointers are bookkeeping: merge and undo leave the
  * credential rows, payloads and slack_identities exactly as they were.
  */
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Accounts from "../../src/db/accounts";
 import * as Creds from "../../src/db/mcp-credentials";
 import * as Domain from "../../src/db/domain";
@@ -13,6 +13,7 @@ import { __resetMasterKeyCache } from "../../src/db/crypto";
 import { db } from "../../src/db/schema";
 import { mergeUsers } from "../../src/domain/merge";
 import { undoMerge } from "../../src/domain/merge-undo";
+import { cleanWorld } from "../helpers/person-world";
 import { UNDO_LIMITS } from "../../src/domain/merge-limits";
 
 const TEAM = "T0EXAMPLE";
@@ -190,4 +191,8 @@ describe("merge repoints credential pointers", () => {
       bad.mockRestore();
     }
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

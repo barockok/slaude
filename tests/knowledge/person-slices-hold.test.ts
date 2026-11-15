@@ -3,13 +3,13 @@
  * authoritative link table (Rule P2: a missed unlink projection cannot keep a union
  * alive), and source-level tombstones that survive a relink to another account.
  */
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Accounts from "../../src/db/accounts";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
 import { addTombstone, tombstonesFor } from "../../src/db/slice-tombstones";
 import { personSlices } from "../../src/knowledge/person-slices";
-import { TEAM, nameOf, newUser, resetWorld, slack } from "../helpers/person-world";
+import { TEAM, nameOf, newUser, resetWorld, slack, cleanWorld } from "../helpers/person-world";
 
 const HOUR = 3_600_000;
 const age = (value: string, ms: number) => db.run("UPDATE bindings SET verified_at = ? WHERE service = 'slack' AND value = ?", [Date.now() - ms, value]);
@@ -167,4 +167,8 @@ describe("the link audit under the union", () => {
     expect(JSON.stringify(rows[0]).toUpperCase()).not.toContain("U1AEXAMPLE");
     expect(rows[0]!.summary).toContain("hour hold");
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

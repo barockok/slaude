@@ -40,7 +40,7 @@ import { personSlices } from "../../src/knowledge/person-slices";
 import { resolveBrainScope, userSourceId, type ScopeInput } from "../../src/knowledge/scope";
 import { memoryScopeFor } from "../../src/memory/scope";
 import { invalidateActors } from "../../src/refs/actor";
-import { TEAM, TEAM2, resetWorld } from "../helpers/person-world";
+import { TEAM, TEAM2, resetWorld, cleanWorld } from "../helpers/person-world";
 
 const ISS = "https://idp.example.com";
 const NAME_OK = /^user-[a-z0-9]+$/;
@@ -451,4 +451,8 @@ describe("the leak checker catches a leak (it is not vacuous)", () => {
     await seedPair("observed");
     await assertNoLeak();
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });

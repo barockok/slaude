@@ -5,7 +5,7 @@
  * person's own legacy slice, never a wider set, with the write target unchanged
  * and the call never throwing.
  */
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Accounts from "../../src/db/accounts";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
@@ -16,7 +16,7 @@ import { memoryScopeFor } from "../../src/memory/scope";
 import { m } from "../../src/metrics";
 import * as Actor from "../../src/refs/actor";
 import { decidePersonSlices } from "../../src/slices/decide";
-import { TEAM, newUser, resetWorld, slack } from "../helpers/person-world";
+import { TEAM, newUser, resetWorld, slack, cleanWorld } from "../helpers/person-world";
 
 const OWN = userSourceId("U0AEXAMPLE");
 const BREAKS: Record<string, () => Array<{ mockRestore: () => void }>> = {
@@ -92,4 +92,8 @@ describe("union failure modes", () => {
     await Accounts.deleteAccount(a.id);
     expect((await decidePersonSlices({ site: "brain.gate_speaker", teamId: TEAM, slackUserId: "U0AEXAMPLE" }))?.reads[0]).toBe(OWN);
   });
+});
+
+afterAll(async () => {
+  await cleanWorld();
 });
