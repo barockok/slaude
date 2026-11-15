@@ -11,6 +11,11 @@
 // leaks to which is decided by the run's file order, so the failure came and
 // went between CI runs. See the 2026-11-16 field note.
 //
+// A cached backend (src/knowledge/backend.ts) is process-wide too: a file that
+// stubbed it with setBackendForTest and did not reset it, or that resolved it
+// under SLAUDE_BRAIN_MODE=remote, would answer every brain call of a later file
+// (an empty search). It is reset around the file as well.
+//
 // Call once at the top of the file. The keys are cleared before the file's tests
 // and put back after them.
 import { afterAll, beforeAll } from "bun:test";
@@ -21,8 +26,10 @@ export function brainOn(): void {
   const saved: Record<string, string | undefined> = {};
   // Now, not only in beforeAll: a file with top-level awaits reads the env while loading.
   for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
-  beforeAll(() => { for (const k of KEYS) delete process.env[k]; });
-  afterAll(() => {
+  const resetBackend = async () => (await import("../../src/knowledge/backend")).resetBackend();
+  beforeAll(async () => { for (const k of KEYS) delete process.env[k]; await resetBackend(); });
+  afterAll(async () => {
+    await resetBackend();
     for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
   });
 }

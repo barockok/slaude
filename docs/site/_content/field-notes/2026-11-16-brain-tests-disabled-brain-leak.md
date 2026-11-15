@@ -62,3 +62,24 @@ proven.
 A test file that sets an env var at its top level leaks it when all its
 tests are skipped, because no hook runs for it. Set it in `beforeAll` (or only
 when the suite is armed) and restore it in `afterAll`.
+
+## Second leak: the cached brain backend (mono scenario 1 to 9)
+
+After the fix above the 9 mono scenario tests still failed in the CI job.
+`getBackend()` (`src/knowledge/backend.ts`) caches one backend per process.
+A file that stubs it with `setBackendForTest`, or resolves it under
+`SLAUDE_BRAIN_MODE=remote`, and does not reset it, makes every later brain call
+come back from that backend: the seed writes straight to the engine, then
+`search` returns nothing (test 1 at the search, the rest cascade). A file with
+a stubbed backend left in place reproduces all 9 failures with the CI
+signature (`bun test <stub file> tests/brain-migrate/scenario-mono-to-gateway.test.ts`:
+1 pass, 9 fail). I could not name the one CI file that leaves it: no single
+file that touches the backend or `SLAUDE_BRAIN_MODE` fails when run just before
+the scenario.
+
+- `brainOn()` now also resets the backend before and after the file, and
+  `useBrain` (scenario-steps) resets it before every brain switch.
+- `tests/env-leak-guard.test.ts` fails, naming the file, for a gated test file
+  that assigns a brain env var at its top level, and for a file that stubs the
+  backend without resetting it. Bun cannot run a preload hook per file, so a
+  runtime per-file check is not possible; this is a static check.
