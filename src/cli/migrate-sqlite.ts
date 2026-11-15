@@ -12,6 +12,10 @@
  * (tenant_id) take their defaults. skill_usage is intentionally not copied:
  * its rows restart, and the skill review measures idle time from a row's
  * first sighting, so a lost count never reads as "unused".
+ * The slice D columns (`boundary_id`, `locator`) are copied as plain text like any
+ * shared column: a boundary id is only meaningful on a target that holds the
+ * same `boundaries` records, so a copied value is meaningless until the target
+ * has run its own boundary fill (the fill only ever writes NULLs).
  */
 import { openDb, resolveDbConfig, type DbClient, type DbConfig } from "../db/client";
 import { runMigrations } from "../db/migrate";

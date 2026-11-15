@@ -748,6 +748,26 @@ export function bootstrapSqliteSchema(db: Database): void {
   if (!grantCols.some((c) => c.name === "subject_user_id")) db.run(`ALTER TABLE agent_grants ADD COLUMN subject_user_id TEXT`);
   db.run(`CREATE INDEX IF NOT EXISTS idx_agent_grants_subject_user ON agent_grants (subject_user_id)`);
 
+  // Migration: domain sessions, slice D (pg 0042 to 0050). The boundary a row
+  // belongs to (soft reference, no foreign key) and the opaque thread locator.
+  // Additive and nullable. Placed after the persona_id rebuild above, which
+  // recreates `sessions` from a fixed column list.
+  for (const [table, withLocator] of [
+    ["one_on_one_locks", true],
+    ["mention_only_threads", true],
+    ["ignores", true],
+    ["cron_jobs", true],
+    ["commitments", true],
+    ["env_bindings", true],
+    ["proactive_posts", false],
+    ["channel_wake_state", false],
+    ["sessions", true],
+  ] as const) {
+    const have = (db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
+    if (!have.includes("boundary_id")) db.run(`ALTER TABLE ${table} ADD COLUMN boundary_id TEXT`);
+    if (withLocator && !have.includes("locator")) db.run(`ALTER TABLE ${table} ADD COLUMN locator TEXT`);
+  }
+
   // Migration: record the /1on1 lock owner active when the job was created. Cron
   // runs for DM/channel-target jobs key on a synthetic `cron:<id>` thread that
   // carries no 1on1 lock, so #startSession's thread-lock lookup can't find the
