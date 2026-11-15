@@ -92,3 +92,55 @@ export async function repointForMerge(c: DbClient, loserId: string, survivorId: 
   await c.run("UPDATE mcp_credentials SET user_id = ? WHERE user_id = ? AND account_id IS NOT NULL", [survivorId, loserId]);
   return rows.map((r) => ({ id: r.id, from: loserId, to: survivorId }));
 }
+
+export interface PointerReport {
+  /** Person credential rows seen. */
+  total: number;
+  /** NULL pointer (a row from before the column, or a failed dual write). */
+  nullPointer: number;
+  /** A pointer that is not the account's current user (after a merge undo, an unlinked or deleted record). Reported, never repaired. */
+  drift: number;
+  /** Rows whose account maps to no user yet: nothing can be filled. */
+  unresolved: number;
+  /** NULL pointers filled by this run (0 in a report-only run). */
+  filled: number;
+}
+
+/**
+ * The reconciler's view of the pointer: per person credential row, compare the
+ * pointer with the user the account maps to (oidc binding, alias resolved).
+ * `fill` sets NULL pointers only, compare-and-set on the old NULL, so a pointer
+ * written meanwhile is never overwritten and a differing pointer is never
+ * touched. Read in keyset pages by row id. Reads no credential payload.
+ */
+export async function pointerReport(c: DbClient, o: { fill: boolean; pageSize: number }): Promise<PointerReport> {
+  const out: PointerReport = { total: 0, nullPointer: 0, drift: 0, unresolved: 0, filled: 0 };
+  let after = "";
+  for (;;) {
+    const rows = await c.query<{ id: string; ptr: string | null; acct_user: string | null }>(
+      `SELECT c.id AS id, c.user_id AS ptr, b.user_id AS acct_user
+       FROM mcp_credentials c
+       JOIN accounts a ON a.id = c.account_id
+       LEFT JOIN bindings b ON b.service = 'oidc' AND b.kind = 'subject' AND b.workspace = a.issuer AND b.value = a.subject
+       WHERE c.account_id IS NOT NULL AND c.id > ?
+       ORDER BY c.id LIMIT ?`,
+      [after, o.pageSize],
+    );
+    if (rows.length === 0) break;
+    for (const r of rows) {
+      out.total++;
+      const live = r.acct_user ? await Domain.resolveUserId(r.acct_user, c) : null;
+      if (r.ptr === null) {
+        out.nullPointer++;
+        if (!live) out.unresolved++;
+        else if (o.fill) {
+          const w = await c.run("UPDATE mcp_credentials SET user_id = ? WHERE id = ? AND user_id IS NULL AND account_id IS NOT NULL", [live, r.id]);
+          out.filled += w.changes ?? 0;
+        }
+      } else if (live && live !== r.ptr) out.drift++;
+    }
+    after = rows[rows.length - 1]!.id;
+    if (rows.length < o.pageSize) break;
+  }
+  return out;
+}

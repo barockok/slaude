@@ -1,7 +1,7 @@
 // Domain records from the command line. Runs where the deployment's database
 // is reachable (the gateway or mono host), never on a node.
 //
-//   slaude domain reconcile [--dry-run] [--json] [--demote-unproven-emails [--apply]]
+//   slaude domain reconcile [--dry-run] [--json] [--apply] [--demote-unproven-emails]
 //   slaude domain boundary-check [--table <name>] [--json]
 //
 // boundary-check is read only: it recomputes the boundary of every row that
@@ -25,6 +25,13 @@
 // sets those bindings back to observed (a login with proof raises them again).
 // The gateway's boot reconcile never does this.
 //
+// Slice F: every run also reports verified Slack bindings with no link (and the
+// reverse), credential pointers that are empty or differ from the account's
+// user, and slice names two users both produce (counts and masked names).
+// --apply fills EMPTY credential pointers (never changes one that is set); with
+// --demote-unproven-emails it also does the demotion above. --apply never goes
+// with --dry-run.
+//
 // slice-tombstone (slice F): an operator revoke for the read-time memory union,
 // a user-slice name or `*` (no union at all) for one user id. Reason required,
 // audited as the operator; the output never shows a Slack id (names are masked).
@@ -39,7 +46,7 @@ import { loadWorkspaces } from "../domain/boundary-backfill";
 import { db as globalDb } from "../db/schema";
 
 const USAGE =
-  "usage: slaude domain reconcile [--dry-run] [--json] [--demote-unproven-emails [--apply]]\n" +
+  "usage: slaude domain reconcile [--dry-run] [--json] [--apply] [--demote-unproven-emails]\n" +
   "       slaude domain slice-tombstone add <user-id> <source|*> --reason <text> [--by <operator>]\n" +
   "       slaude domain slice-tombstone remove <user-id> <source|*>\n" +
   "       slaude domain slice-tombstone list [--json]\n" +
@@ -123,8 +130,8 @@ export async function main(argv: string[], deps: { reconcile?: typeof reconcile;
   }
   const demote = !!parsed.values["demote-unproven-emails"];
   const apply = !!parsed.values.apply;
-  if ((apply && !demote) || (apply && parsed.values["dry-run"])) {
-    console.error(`--apply goes with --demote-unproven-emails and not with --dry-run\n${USAGE}`);
+  if (apply && parsed.values["dry-run"]) {
+    console.error(`--apply does not go with --dry-run\n${USAGE}`);
     return 2;
   }
   if ((process.env.SLAUDE_ROLE ?? "").trim().toLowerCase() === "node") {
@@ -138,6 +145,7 @@ export async function main(argv: string[], deps: { reconcile?: typeof reconcile;
       dryRun: !!parsed.values["dry-run"],
       liveTeamIds: () => teams,
       ...(demote && apply ? { demoteUnprovenEmails: true } : {}),
+      ...(apply ? { fillPointers: true } : {}),
     });
     out(parsed.values.json ? JSON.stringify(r, null, 2) : formatReconcileReport(r));
   } catch (e) {

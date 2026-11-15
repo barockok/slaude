@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { main } from "../../src/cli/domain";
-import type { ReconcileOptions, ReconcileReport } from "../../src/domain/reconcile";
+import { emptySliceReport, type ReconcileOptions, type ReconcileReport } from "../../src/domain/reconcile";
 
 const src = () => ({ created: 1, existing: 2, skipped: { grid: 1 } });
 const report = (dryRun: boolean): ReconcileReport => ({
@@ -14,6 +14,7 @@ const report = (dryRun: boolean): ReconcileReport => ({
   unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0, unaccounted: 0 },
   typedGrantSubjects: 0,
   boundaryColumns: {},
+  slices: emptySliceReport(),
   startedAt: 1,
   finishedAt: 2,
 });
@@ -55,11 +56,22 @@ describe("slaude domain reconcile", () => {
     await main(["reconcile"], { out: () => {}, reconcile: async (o) => ((seen = o), report(false)) });
     expect(seen?.demoteUnprovenEmails).toBeFalsy();
   });
-  test("--apply without the flag, or with --dry-run, is a usage error", async () => {
+  test("--apply with --dry-run is a usage error", async () => {
     const err = spyOn(console, "error").mockImplementation(() => {});
-    expect(await main(["reconcile", "--apply"])).toBe(2);
+    expect(await main(["reconcile", "--apply", "--dry-run"])).toBe(2);
     expect(await main(["reconcile", "--demote-unproven-emails", "--apply", "--dry-run"])).toBe(2);
     err.mockRestore();
+  });
+  test("--apply alone fills credential pointers and demotes nothing; with the demote flag it does both", async () => {
+    let seen: ReconcileOptions | undefined;
+    await main(["reconcile", "--apply"], { out: () => {}, reconcile: async (o) => ((seen = o), report(false)) });
+    expect(seen?.fillPointers).toBe(true);
+    expect(seen?.demoteUnprovenEmails).toBeFalsy();
+    await main(["reconcile", "--demote-unproven-emails", "--apply"], { out: () => {}, reconcile: async (o) => ((seen = o), report(false)) });
+    expect(seen?.fillPointers).toBe(true);
+    expect(seen?.demoteUnprovenEmails).toBe(true);
+    await main(["reconcile"], { out: () => {}, reconcile: async (o) => ((seen = o), report(false)) });
+    expect(seen?.fillPointers).toBeFalsy();
   });
   test("bad usage exits 2", async () => {
     const err = spyOn(console, "error").mockImplementation(() => {});
