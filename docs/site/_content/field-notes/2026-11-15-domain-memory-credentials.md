@@ -178,13 +178,67 @@ change and is reversed by setting it back; there is no code change to make.
   rc.21; with a union only the verified extras are added, to reads only, and the
   per-agent, shared, public and kb sources never differ.
 
+### Review fixes before the union ships
+
+An independent adversarial review of the whole branch found no leak for a correctly
+proven link, and these problems, all fixed:
+
+- **A link changes meaning, retroactively.** The link token is a 15 minute bearer
+  token redeemable in any portal session, so a link redeemed by the WRONG person
+  would give the account's other verified ids the linked id's whole slice at once.
+  Mitigation: a **hold** on the ADDED binding. An extra slice joins a union only when
+  that binding's own `verified_at` is older than `SLAUDE_PERSON_SLICES_HOLD_HOURS`
+  (default 24, `0` disables), read from the binding row (a binding with no
+  `verified_at` is held). A new link under shadow or union writes an audit event
+  (`slice.union_link`, account ids only). During the window the owner can notice, and
+  the operator can unlink, undo a merge, or tombstone the name. The leak test has a
+  wrong-human link (ground truth: the humans differ) and asserts the slice is
+  unreadable during the hold and readable only after it, and that a tombstone then
+  revokes it.
+- **Unlink revocation was fail-open.** `projectUnlink` is swallowed on failure, so a
+  verified binding could outlive its `slack_identities` row, and the resolver read
+  bindings only. Rule P2: both the acting binding and each added one must have a row
+  in the authoritative link table for an account of the same user. A test unlinks with
+  a failing projection and the union is cut on the next read.
+- **Tombstones were keyed on the reader's user record**, so relinking the ids to
+  another account (a new user) ended the revoke. Added source-level rows
+  (`slice-tombstone add --source user-x --all-readers`): no reader's union may include
+  that slice. The leak test judges tombstones with an independent reading of the table.
+- **Credential bookkeeping cost.** The dual write added three reads and an update to
+  every person credential write, including token refresh. It is now behind
+  `SLAUDE_CREDENTIAL_POINTERS` (default off), runs after the write has committed in the
+  background and is never awaited; the in-transaction update on login and link uses a
+  short lock timeout on Postgres. `reconcile --apply` alone writes nothing again; the
+  explicit flag is `--fill-pointers` (with the credential flag on it also repairs drift).
+  A merge undo restores the pointers from the ledger, guarded.
+- **Costs.** The slice report is a CLI report (the boot reconcile skips it and prints
+  a pointer); the per-row alias walk is gone. In union mode one resolver run is shared
+  by the scope and the gate of one call (a 300 ms window, dropped on any link, unlink,
+  merge, undo or tombstone change, failures never shared). The shadow's in-flight slot
+  is held until its queries finish, so `MAX_INFLIGHT` bounds database load. The claim
+  check compares exact stored values (no `LOWER()`), on the normalised slice name.
+- **The runAs site** resolves in the lock's workspace when a lock exists (else the
+  turn's), and the mono `memory_thread_history` path now passes the runAs person like
+  the others. Rule S for runAs, exactly: `runAs` is the speaker (or there is no
+  speaker) and, when a lock exists, the lock owner's; `memoryScopeFor` returns nothing
+  for any other runAs, so a union is only ever read in those cases. The union is never
+  resolved for the lock owner when the speaker is someone else.
+- **Smaller:** the parity proof now runs the real gate construction end to end under
+  every mode; `extraPersonReads` re-checks the flag; `memory_about` says in its
+  description that it lists the asking id's own, the agent's and the shared stores
+  (union members are reached by search and recall); masked source names show prefix and
+  length only (no hash of an enumerable id); `--by` is self-asserted so the OS user is
+  recorded too; `slice-tombstone remove` needs a `--reason`; the reconciler wording no
+  longer says "nothing reads them" (the union ignores a verified binding that has no
+  link, and says so).
+
 ### Enabling it
 
 1. Deploy rc.23 with the flag unset. Behaviour is rc.21's.
 2. Set `SLAUDE_PERSON_SLICES=shadow`. Read `slaude_person_slices_shadow_total`
    and `slaude_person_slices_ms` for at least three days, or 200 turns per active
    agent, against the gate below.
-3. Review the masked `would_widen` count (each one should be a person who really
+3. Decide `SLAUDE_PERSON_SLICES_HOLD_HOURS` (the default 24 is the recommendation: it is the window to catch a mistaken link) and review the masked `would_widen` count (each one should be a person who really
    linked two ids), the reconciler report, and record the owner decisions below.
 4. Set `SLAUDE_PERSON_SLICES=union`. Roll back by setting it back to `shadow` or
    `off`; the next read is the legacy one. A turn that started before an unlink or
@@ -194,8 +248,10 @@ change and is reversed by setting it back; there is no code change to make.
 
 - The property test models people, ids and accounts; it cannot prove that a
   person's claim to a Slack id is true. A wrong link (a person proving control of
-  an id that is not theirs) is the one way left to widen memory, and the link
-  token, the verified-only rule, tombstones and undo are the mitigations.
+  an id that is not theirs) is the one way left to widen memory. The link token, the
+  verified-only rule, the 24 hour hold, the audit event, tombstones (per reader and
+  source-level) and undo are the mitigations; after the hold the slice IS readable
+  until someone revokes it.
 - Nothing here exercises a real brain, real Slack or a live model. The fake brain
   enforces `allowedSources` the way the real engine does, but that is a model.
 - Resolver cost is measured only in shadow on a live deployment (the p95 gate).
