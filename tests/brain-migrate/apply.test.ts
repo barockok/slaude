@@ -11,11 +11,14 @@ import { applyLinks, applyPage } from "../../src/brain-migrate/apply";
 import type { MigrateEngine } from "../../src/brain-migrate/engine-types";
 import type { BundlePage } from "../../src/brain-migrate/bundle";
 import { freshBrainHome } from "../helpers/brain-template";
+import { brainOn } from "../helpers/brain-on";
 
 let engine: MigrateEngine;
 beforeAll(async () => { engine = (await getBrain()) as unknown as MigrateEngine; }, 60_000);
 // Unset the home too: a gateway in a later file would boot a fresh brain into the deleted dir.
 afterAll(async () => { await closeBrain(); delete process.env.SLAUDE_BRAIN_HOME; rmSync(home, { recursive: true, force: true }); });
+
+brainOn();
 
 const mk = (slug: string, truth: string, over: Partial<BundlePage> = {}): BundlePage => ({
   source: "agent-default", slug, type: "note", title: slug, compiledTruth: truth, timeline: "", frontmatter: {}, contentHash: null,
