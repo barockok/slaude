@@ -21,6 +21,43 @@ export function redactPgUrl(url: string): string {
 
 type Executor = Pick<SQL, "unsafe">;
 
+/**
+ * Admission gate in front of the Bun.sql pool: at most `size` statements (or reserved
+ * connections: a transaction, an advisory lock) are handed to the pool at once, the rest
+ * wait here in order. Bun.sql queues work beyond its pool size internally, and on real
+ * Postgres a burst of identical statements beyond the pool size has been seen to wedge
+ * the whole pool (every backend idle, a connection stuck "idle in transaction" between a
+ * Parse and its Sync, no promise ever settling, CI hung for 20 minutes). Never letting
+ * the pool queue removes that state; waiting here costs nothing a pool queue did not.
+ */
+export class PoolGate {
+  #free: number;
+  #waiters: Array<() => void> = [];
+  constructor(readonly size: number) {
+    this.#free = size;
+  }
+  acquire(): Promise<void> {
+    if (this.#free > 0) {
+      this.#free--;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => this.#waiters.push(resolve));
+  }
+  release(): void {
+    const next = this.#waiters.shift();
+    if (next) next();
+    else this.#free++;
+  }
+  async run<T>(fn: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.release();
+    }
+  }
+}
+
 export class BunSqlClient implements DbClient {
   readonly dialect = "pg" as const;
   readonly driver = "bun-sql";
@@ -28,10 +65,16 @@ export class BunSqlClient implements DbClient {
     private readonly ex: Executor,
     private readonly root: SQL,
     private readonly inTx: boolean,
+    private readonly gate?: PoolGate,
   ) {}
 
+  /** Statements on the shared pool pass the gate; statements inside a transaction already hold their connection. */
+  private gated<T>(fn: () => Promise<T>): Promise<T> {
+    return this.gate && !this.inTx ? this.gate.run(fn) : fn();
+  }
+
   async query<T = Row>(sql: string, params: unknown[] = []): Promise<T[]> {
-    const rows = (await this.ex.unsafe(toPositional(sql), params as any[])) as Row[];
+    const rows = (await this.gated(() => this.ex.unsafe(toPositional(sql), params as any[]) as Promise<Row[]>)) as Row[];
     return rows.map((row) => normalizeRow<T>(row));
   }
 
@@ -41,18 +84,18 @@ export class BunSqlClient implements DbClient {
   }
 
   async run(sql: string, params: unknown[] = []): Promise<RunResult> {
-    const r = (await this.ex.unsafe(toPositional(sql), params as any[])) as Row[] & { count?: number };
+    const r = (await this.gated(() => this.ex.unsafe(toPositional(sql), params as any[]) as Promise<Row[] & { count?: number }>)) as Row[] & { count?: number };
     return { changes: r.count ?? 0 };
   }
 
   async exec(sql: string): Promise<void> {
     // `.simple()` allows multiple semicolon-separated statements (DDL).
-    await this.ex.unsafe(sql).simple();
+    await this.gated(async () => void (await this.ex.unsafe(sql).simple()));
   }
 
   async transaction<T>(fn: (tx: DbClient) => Promise<T>): Promise<T> {
     if (this.inTx) return fn(this); // join the outer transaction
-    return this.root.begin(async (tx) => fn(new BunSqlClient(tx, this.root, true))) as Promise<T>;
+    return this.gated(() => this.root.begin(async (tx) => fn(new BunSqlClient(tx, this.root, true))) as Promise<T>);
   }
 
   async advisoryLock(
@@ -62,7 +105,15 @@ export class BunSqlClient implements DbClient {
   ): Promise<() => Promise<void>> {
     // Session-level advisory locks are tied to one connection, so reserve one
     // from the pool and keep it out of rotation until unlock.
-    const reserved = await this.root.reserve();
+    // The reserved connection holds a gate permit until unlock.
+    await this.gate?.acquire();
+    let reserved: Awaited<ReturnType<SQL["reserve"]>>;
+    try {
+      reserved = await this.root.reserve();
+    } catch (e) {
+      this.gate?.release();
+      throw e;
+    }
     try {
       const fast = (await reserved.unsafe(`SELECT pg_try_advisory_lock($1, $2) AS ok`, [key1, key2])) as Array<{ ok: boolean }>;
       if (!fast[0]?.ok) {
@@ -88,6 +139,7 @@ export class BunSqlClient implements DbClient {
       }
     } catch (e) {
       reserved.release();
+      this.gate?.release();
       throw e;
     }
     let released = false;
@@ -98,6 +150,7 @@ export class BunSqlClient implements DbClient {
         await reserved.unsafe(`SELECT pg_advisory_unlock($1, $2)`, [key1, key2]);
       } finally {
         reserved.release();
+        this.gate?.release();
       }
     };
   }
@@ -119,5 +172,5 @@ export async function openBunSql(url: string): Promise<DbClient> {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`cannot connect to Postgres at SLAUDE_PG_URL=${redactPgUrl(url)}: ${msg}`);
   }
-  return new BunSqlClient(sql, sql, false);
+  return new BunSqlClient(sql, sql, false, new PoolGate(env.db.pgPool()));
 }
