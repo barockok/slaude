@@ -10,6 +10,9 @@
  */
 import { env } from "../../config/env";
 import { db } from "../../db/schema";
+import * as Envs from "../../db/environments";
+import type { StoredEnv } from "../kinds/types";
+import { definitionRowId } from "./resolve";
 import { activeRemoteTarget, boundEnv } from "../active";
 import type { RemoteTarget } from "../types";
 import { allowedEnvironments, type AllowLookup } from "./policy";
@@ -95,5 +98,37 @@ export async function remoteDecision(i: DecisionInput, explicit: DecisionDeps = 
     return t ? { target: t } : refuse();
   } catch {
     return refuse();
+  }
+}
+
+/**
+ * The shared environment `name` as this persona may use it right now, or null.
+ * Null for every reason alike (unknown, retired, another tenant, not allowed, a
+ * lookup that threw), so a reply built from it cannot tell the caller which.
+ */
+export async function usableSharedByName(tenant: string, persona: string | undefined, name: string, explicit: DecisionDeps = {}): Promise<StoredEnv | null> {
+  const deps = { ...testDeps, ...explicit };
+  try {
+    if (!persona || !(deps.remoteEnabled ?? env.remote.enabled)()) return null;
+    const row = await Envs.getEnv(definitionRowId(tenant, name));
+    if (!row || row.source !== "definition" || row.retired || row.tenantId !== tenant || row.name !== name) return null;
+    if (row.config.shared !== "true" || row.config.trust !== "unlocked") return null;
+    const allowed = await (deps.allowed ?? allowedEnvironments)(tenant, persona);
+    return allowed.includes(name) ? row : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Every shared environment this persona may use now (for `/env list`). */
+export async function usableShared(tenant: string, persona: string | undefined, explicit: DecisionDeps = {}): Promise<StoredEnv[]> {
+  const deps = { ...testDeps, ...explicit };
+  try {
+    if (!persona) return [];
+    const names = await (deps.allowed ?? allowedEnvironments)(tenant, persona);
+    const rows = await Promise.all(names.map((n) => usableSharedByName(tenant, persona, n, explicit)));
+    return rows.filter((r): r is StoredEnv => r !== null);
+  } catch {
+    return [];
   }
 }

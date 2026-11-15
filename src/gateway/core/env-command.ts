@@ -19,6 +19,8 @@ import { preflight, remoteCleanup } from "../../remote/preflight";
 import { isRemoteDir } from "../../remote/shell";
 import type { ConnectInfo } from "../../remote/transport";
 import { RemoteError } from "../../remote/types";
+import { ENV_DEF_NAME_RE } from "../../remote/definitions/name";
+import { remoteDecision, usableShared, usableSharedByName } from "../../remote/definitions/decision";
 import type { SlashHit } from "../slack/commands";
 
 export type EnvHit = Extract<SlashHit, { kind: "env" }>;
@@ -31,6 +33,10 @@ export interface RemoteCommandCtx {
   /** The thread's session id — the key of its remote background-job directory. */
   sessionId: string;
   isManager: boolean;
+  /** The agent answering in this thread. Shared environments are checked against ITS allow list; absent means none is usable. */
+  personaId?: string;
+  /** The tenant of this conversation (the agent's tenant). Absent reads as "default". */
+  tenantId?: string;
   reply(text: string): Promise<void>;
   sayPrivately(text: string): Promise<void>;
   /** Privately offer the user a Connect button that opens the tailcat
@@ -158,6 +164,8 @@ export async function useEnvironment(
   ctx: EnvCommandCtx,
   deps: EnvCommandDeps,
 ): Promise<boolean> {
+  // A shared environment has its own rules (the agent's allow list, no owner, no lock): every route here, the picker's stale Use button included, takes them.
+  if (env.source === "definition") return useSharedEnvironment(env, dirArg, ctx, deps);
   const { channelId, threadTs, teamId, userId } = ctx;
   const kind = getKind(env.kind);
   if (!kind) {
@@ -275,6 +283,77 @@ export async function useEnvironment(
   }
 }
 
+/** What a thread is told when a shared environment is chosen. Never a host, address, key or hash. */
+export const SHARED_WARNING = (name: string) =>
+  `:warning: \`${name}\` is a SHARED machine: anyone in this thread can steer it through me, and what runs there is visible to the team.`;
+const NOT_AVAILABLE = (name: string) => `:x: This agent has no shared environment named \`${name}\`. \`/env list\` shows what it may use.`;
+const DEFINED_IN_REPO = (name: string) => `:x: \`${name}\` is defined in the repository; change it there.`;
+
+/**
+ * `/env use env:<name>`: the agent in this thread must allow the environment,
+ * the row must belong to its tenant and be live. The reply names no host,
+ * address, key or hash. The checks are the same ones every turn re-runs
+ * (remoteDecision), asked first here so a refused use never binds.
+ */
+export async function useSharedEnvironment(row: StoredEnv, dirArg: string | undefined, ctx: EnvCommandCtx, deps: EnvCommandDeps): Promise<boolean> {
+  const { channelId, threadTs, teamId, userId } = ctx;
+  const tenant = ctx.tenantId ?? "default";
+  const name = row.userId;
+  const usable = await usableSharedByName(tenant, ctx.personaId, name);
+  if (!usable || usable.id !== row.id) {
+    await ctx.reply(NOT_AVAILABLE(name));
+    return false;
+  }
+  const kind = getKind(usable.kind);
+  if (!kind) {
+    await ctx.reply(NOT_AVAILABLE(name));
+    return false;
+  }
+  const lock = await OneOnOne.find(channelId, threadTs);
+  if (lock && !(await sameAt({ site: "env.use_lock_owner", persona: null, teamId, userId, otherUserId: lock.locked_user, otherTeamId: lock.team_id }))) {
+    await ctx.reply(":lock: This thread is a 1on1; only its owner can choose its environment.");
+    return false;
+  }
+  const existing = await boundEnv(channelId, threadTs);
+  const dir = dirArg ?? (existing?.env.id === usable.id ? existing.binding.dir : undefined) ?? usable.defaultDir ?? undefined;
+  if (!dir) {
+    await ctx.reply(`:x: Which directory? Use \`/env use env:${name} <directory>\`.`);
+    return false;
+  }
+  if (!isRemoteDir(dir)) {
+    await ctx.reply(":x: The directory must be an absolute path or start with `~/`.");
+    return false;
+  }
+  const same = existing?.env.id === usable.id;
+  if (existing && !same) await endRemoteForThread(channelId, threadTs, { sessionId: ctx.sessionId, cleanup: deps.cleanup });
+  if (!same) await Envs.bind({ channelId, threadTs, envId: usable.id, dir, lockByEnv: false });
+  const undo = async (why: string) => {
+    const gone = same ? null : await Envs.clearBinding(channelId, threadTs);
+    if (gone) await releaseBinding(gone);
+    await ctx.reply(`:x: Couldn't use \`${name}\`: ${why}`);
+    return false;
+  };
+  try {
+    const b = await boundEnv(channelId, threadTs);
+    if (!b || b.env.id !== usable.id) return await undo("the thread's environment changed meanwhile");
+    const pf = await deps.preflight({ info: await connectInfoForBinding(b.binding, b.env), dir });
+    if (!pf.ok) return await undo(pf.error);
+    await Envs.setBindingDir(channelId, threadTs, usable.id, pf.dir);
+    forgetRemoteStatus(ctx.sessionId);
+    ctx.reload();
+    await ctx.reply(`${SHARED_WARNING(name)} Shell and file tools now run there, in \`${pf.dir}\`. \`/env off\` to switch back.`);
+    return true;
+  } catch (e) {
+    return undo(e instanceof RemoteError ? e.message : (e as Error).message);
+  }
+}
+
+/** The shared environments this agent may use, as list lines (names and descriptions only). */
+async function sharedLines(ctx: EnvCommandCtx, current?: string): Promise<string[]> {
+  const rows = await usableShared(ctx.tenantId ?? "default", ctx.personaId);
+  return rows.map((r) => `• *env:${r.userId}* — shared machine${r.defaultDir ? `, default dir \`${r.defaultDir}\`` : ""}${current === r.id ? " _(this thread)_" : ""}`);
+}
+
 // ── /env ─────────────────────────────────────────────────────────────────
 
 const listLine = (e: StoredEnv, current?: string) =>
@@ -301,8 +380,20 @@ export async function handleEnvCommand(hit: EnvHit, ctx: EnvCommandCtx, deps: En
   const { channelId, threadTs, teamId, userId } = ctx;
 
   if (hit.action === "status") {
-    const t = await activeRemoteTarget(channelId, threadTs);
     const b = await boundEnv(channelId, threadTs);
+    if (b?.env.source === "definition") {
+      // A shared machine: what this agent may do with it now, never where it is.
+      const d = await remoteDecision({ tenant: ctx.tenantId ?? "default", persona: ctx.personaId, channel: channelId, thread: threadTs, turnKind: "interactive" });
+      await ctx.reply(
+        "target" in d
+          ? `Environment: *env:${b.env.userId}* (shared machine), \`${b.binding.dir}\`.`
+          : `Environment: *env:${b.env.userId}* (shared machine) — this agent may not use it, so it will not run anything for this thread. \`/env off\` returns to the server.`,
+      );
+      const mineShared = await Envs.listEnvs(teamId, userId);
+      if (!ctx.offerPicker && mineShared.length) await ctx.sayPrivately(`*Your environments:*\n${mineShared.map((e) => listLine(e, b.env.id)).join("\n")}\n\`/env use <name> [dir]\` to switch.`);
+      return;
+    }
+    const t = await activeRemoteTarget(channelId, threadTs);
     if (!t || !b) {
       await ctx.reply("Environment: *server* — tools run on the server.");
     } else {
@@ -313,18 +404,22 @@ export async function handleEnvCommand(hit: EnvHit, ctx: EnvCommandCtx, deps: En
       await ctx.reply(`Environment: *${b.env.name}* (${getKind(b.env.kind)?.label ?? b.env.kind}) — ${whose}, \`${b.binding.dir}\`, ${health}.`);
     }
     const mine = await Envs.listEnvs(teamId, userId);
+    const shared = await sharedLines(ctx, b?.env.id);
     if (ctx.offerPicker) await ctx.offerPicker(mine);
     else if (mine.length) await ctx.sayPrivately(`*Your environments:*\n${mine.map((e) => listLine(e, b?.env.id)).join("\n")}\n\`/env use <name> [dir]\` to switch.`);
+    if (shared.length) await ctx.sayPrivately(`*Shared environments this agent may use:*\n${shared.join("\n")}\n\`/env use env:<name>\` to switch.`);
     return;
   }
 
   if (hit.action === "list") {
     const b = await boundEnv(channelId, threadTs);
     const mine = await Envs.listEnvs(teamId, userId);
+    const shared = await sharedLines(ctx, b?.env.id);
     await ctx.sayPrivately(
-      mine.length
+      (mine.length
         ? `*Your environments:*\n${mine.map((e) => listLine(e, b?.env.id)).join("\n")}\n\`/env use <name> [dir]\` to switch, \`/env add\` to add one.`
-        : `You have no environments yet. \`/env add\` to add one. Kinds:\n${kindsHelp()}`,
+        : `You have no environments yet. \`/env add\` to add one. Kinds:\n${kindsHelp()}`) +
+        (shared.length ? `\n\n*Shared environments this agent may use:*\n${shared.join("\n")}\n\`/env use env:<name>\` to switch.` : ""),
     );
     return;
   }
@@ -371,6 +466,17 @@ export async function handleEnvCommand(hit: EnvHit, ctx: EnvCommandCtx, deps: En
     return;
   }
 
+  if (hit.action === "use" && hit.name.startsWith("env:")) {
+    const name = hit.name.slice("env:".length);
+    const row = ENV_DEF_NAME_RE.test(name) ? await usableSharedByName(ctx.tenantId ?? "default", ctx.personaId, name) : null;
+    if (!row) {
+      await ctx.reply(NOT_AVAILABLE(ENV_DEF_NAME_RE.test(name) ? name : "that name"));
+      return;
+    }
+    await useSharedEnvironment(row, hit.dir, ctx, deps);
+    return;
+  }
+
   if (hit.action === "use") {
     const e = await Envs.findEnvByName(teamId, userId, hit.name);
     if (!e) {
@@ -387,7 +493,16 @@ export async function handleEnvCommand(hit: EnvHit, ctx: EnvCommandCtx, deps: En
       else await ctx.reply(`Usage: \`/env add <kind> <name> key=value… [dir=<directory>]\` (values are not echoed). Kinds:\n${kindsHelp()}`);
       return;
     }
+    if ((hit.name ?? "").toLowerCase().startsWith("env:")) {
+      await ctx.reply(DEFINED_IN_REPO((hit.name ?? "").slice(0, 60).replace(/[^A-Za-z0-9:._-]/g, "")));
+      return;
+    }
     await addEnvironment({ kindName: hit.kindName, name: hit.name ?? "", fields: hit.fields ?? {}, dir: hit.dir, use: true }, ctx, deps);
+    return;
+  }
+
+  if ((hit.action === "edit" || hit.action === "rm") && (await isSharedName(ctx, hit.name))) {
+    await ctx.reply(DEFINED_IN_REPO(hit.name.replace(/[^A-Za-z0-9:._-]/g, "").slice(0, 60)));
     return;
   }
 
@@ -409,6 +524,13 @@ export async function handleEnvCommand(hit: EnvHit, ctx: EnvCommandCtx, deps: En
     }
     await removeEnvironment(e, ctx, deps);
   }
+}
+
+/** `env:<name>`, or a bare name that is one of this agent's shared environments and none of the user's own. */
+async function isSharedName(ctx: EnvCommandCtx, name: string): Promise<boolean> {
+  if (name.startsWith("env:")) return true;
+  if (await Envs.findEnvByName(ctx.teamId, ctx.userId, name)) return false;
+  return !!(await usableSharedByName(ctx.tenantId ?? "default", ctx.personaId, name));
 }
 
 /** Create an environment from form or argument values and (when `use`) bind
@@ -467,6 +589,10 @@ export async function editEnvironment(
   p: { fields: Record<string, string>; newName?: string; dir?: string },
   ctx: EnvCommandCtx,
 ): Promise<StoredEnv | null> {
+  if (e.source === "definition") {
+    await ctx.reply(DEFINED_IN_REPO(`env:${e.userId}`));
+    return null;
+  }
   const kind = getKind(e.kind);
   if (!kind) {
     await ctx.reply(`:x: Environment kind \`${e.kind}\` is not available on this deployment.`);
@@ -526,6 +652,11 @@ export async function editEnvironment(
 
 /** Delete an environment; every thread bound to it goes back to the server. */
 export async function removeEnvironment(e: StoredEnv, ctx: EnvCommandCtx, deps: EnvCommandDeps = defaultEnvDeps): Promise<void> {
+  // Before any thread is unbound: a shared environment is changed in the repository only.
+  if (e.source === "definition") {
+    await ctx.reply(DEFINED_IN_REPO(`env:${e.userId}`));
+    return;
+  }
   const bindings = await Envs.bindingsForEnv(e.id);
   for (const b of bindings) {
     const here = b.channel_id === ctx.channelId && b.thread_ts === ctx.threadTs;

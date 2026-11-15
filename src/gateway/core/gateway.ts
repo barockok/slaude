@@ -2199,9 +2199,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await outClientForPersona(i.personaId, i.app).chat.postMessage({ channel: channelId, thread_ts: threadTs, text, mrkdwn: true }); // runtime-ui: gateway notice, card or command reply
     };
     const isManager = await managerAt("gateway.remote_ctx.role", i.personaId, userId, teamId);
+    // The conversation's tenant, as dispatch reads it (the session's own column; sqlite has none).
+    const tenantId = ((await Sessions.findById(sessionId).catch(() => null)) as { tenant_id?: string } | null)?.tenant_id ?? "default";
     return {
       teamId, channelId, threadTs, userId, sessionId,
       isManager,
+      personaId: i.personaId ?? "default",
+      tenantId,
       reply,
       sayPrivately: async (text) => {
         if (canEphemeral) {
