@@ -56,7 +56,7 @@ export type BoundaryColumnsReport = Record<string, BoundaryTableReport>;
 
 const emptyTable = (): BoundaryTableReport => ({ filled: 0, existing: 0, ineligible: 0, ambiguous: 0, no_workspace: 0, no_boundary: 0, handed_to_first_sight: 0, no_locator: 0 });
 
-interface Spec {
+export interface Spec {
   table: string;
   /** Primary key columns, in order (keyset order). */
   pk: string[];
