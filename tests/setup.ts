@@ -102,3 +102,47 @@ if (pgTest && process.env.SLAUDE_DB === "pg" && process.env.SLAUDE_PG_URL === pg
   }
   await sql.end();
 }
+
+// CI diagnostics, real Postgres only (SLAUDE_PG_TEST_URL set): a hook that waits on the database for
+// longer than a second is almost always a lock wait or an idle-in-transaction connection left by an
+// earlier test in this process. A watchdog on its own small connection prints who waits for whom
+// (at most 6 dumps per process), so a failing job explains itself.
+if (pgTest && process.env.SLAUDE_DB === "pg") {
+  const { SQL } = await import("bun");
+  const watch = new SQL({ url: pgTest, max: 1 });
+  let dumps = 0;
+  let last = 0;
+  let busy = false;
+  const timer = setInterval(async () => {
+    if (busy || dumps >= 6) return;
+    busy = true;
+    try {
+      const sus = (await watch.unsafe(
+        `SELECT pid FROM pg_stat_activity
+          WHERE datname = current_database() AND pid <> pg_backend_pid()
+            AND ((wait_event_type = 'Lock' AND now() - query_start > interval '1 second')
+              OR (state LIKE 'idle in transaction%' AND now() - state_change > interval '2 seconds'))`,
+      )) as Array<{ pid: number }>;
+      if (sus.length && Date.now() - last > 4000) {
+        last = Date.now();
+        dumps++;
+        const act = await watch.unsafe(
+          `SELECT pid, state, wait_event_type, wait_event, now() - xact_start AS xact_age, now() - query_start AS q_age,
+                  pg_blocking_pids(pid) AS blocked_by, left(query, 200) AS query
+             FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() ORDER BY query_start`,
+        );
+        const locks = await watch.unsafe(
+          `SELECT l.pid, l.locktype, l.mode, l.granted, c.relname
+             FROM pg_locks l LEFT JOIN pg_class c ON c.oid = l.relation
+            WHERE l.pid <> pg_backend_pid() AND (NOT l.granted OR l.pid IN (SELECT unnest(pg_blocking_pids(pid)) FROM pg_stat_activity WHERE datname = current_database()))`,
+        );
+        console.log(`[pg-diag] waiting backends (dump ${dumps}): ${JSON.stringify(act)}\n[pg-diag] locks: ${JSON.stringify(locks)}`);
+      }
+    } catch (e) {
+      console.log(`[pg-diag] watchdog error: ${(e as Error).message}`);
+    } finally {
+      busy = false;
+    }
+  }, 1000);
+  (timer as { unref?: () => void }).unref?.();
+}
