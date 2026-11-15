@@ -44,7 +44,7 @@ it in four places, and what is shipped is what survived.
    passes by user, would copy one id's material into the other id's slice where
    undo cannot reach it.
 
-## What ships in rc.22
+## What ships in rc.25 (part one: bookkeeping, shadow, report)
 
 Behaviour is identical to rc.21. Everything new is bookkeeping, a report, or a
 flag that defaults off.
@@ -105,7 +105,7 @@ flag that defaults off.
   linked two ids), `would_narrow` (the own slice is missing from the union: a bug),
   `no_user`, `error`, `dropped`. A disagreement is logged once per site and
   reason per minute with counts only. With the flag unset or `off` nothing runs.
-  The value `union` reads as `off` in rc.22 and is honoured in rc.23 (below).
+  The value `union` is honoured too (below).
 - **The guard** (`tests/slices/no-string-slice.test.ts` and
   `tests/slices/string-slice.allow.json`) scans all of `src` for `userSourceId(`,
   `startsWith("user-")`, `slice("user-".length)`, and the credential-account
@@ -120,7 +120,7 @@ flag that defaults off.
   fills empty pointers only, with a compare on the old NULL. The reconciler's own
   projection passes `recordPointer: false` so the report is honest.
 
-## What ships in rc.23: `SLAUDE_PERSON_SLICES=union`, reads only
+## What ships in rc.25 (part two): `SLAUDE_PERSON_SLICES=union`, reads only
 
 Nothing is enabled by default: the flag stays `off`. Enabling is a configuration
 change and is reversed by setting it back; there is no code change to make.
@@ -234,7 +234,7 @@ proven link, and these problems, all fixed:
 
 ### Enabling it
 
-1. Deploy rc.23 with the flag unset. Behaviour is rc.21's.
+1. Deploy rc.25 with the flag unset. Behaviour is rc.21's.
 2. Set `SLAUDE_PERSON_SLICES=shadow`. Read `slaude_person_slices_shadow_total`
    and `slaude_person_slices_ms` for at least three days, or 200 turns per active
    agent, against the gate below.
@@ -338,7 +338,7 @@ Writes always stay on the writer's own slice. An alias table is dropped and a
 slice rename is deferred indefinitely (the spec's "alias table first" is
 superseded by this note). A profile union, nightly grouping by user, console pages
 and any credential read flip are deferred. Open for the owner: when to set
-`SLAUDE_PERSON_SLICES=shadow` (recommended: on the rc.22 deploy day), whether
+`SLAUDE_PERSON_SLICES=shadow` (recommended: on the rc.25 deploy day), whether
 tombstones need a console control sooner than a later slice (recommended: CLI
 first), when a credential read flip may be revisited (only after the
 verified-without-link report has been clean for a stable release and per-server

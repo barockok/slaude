@@ -1,5 +1,7 @@
 # Domain memory and credentials, slice F (minimal safe version)
 
+> Release labelling (updated): slice F ships as ONE release, rc.25 (slice D is rc.23, slice E rc.24). The rc.22 and rc.23 headings below are the task order (bookkeeping, shadow and report first, the union second); both are in rc.25, with `SLAUDE_PERSON_SLICES` defaulting to `off`.
+
 > For Claude: use superpowers:executing-plans, task by task. One task per commit. A release boundary is a hard stop: soak, check the gate, then continue.
 
 Goal: let a person who has proven control of two Slack ids read the private memory slice of both, and record which user each MCP credential belongs to, without any new way for one person to read another person's slice or use another person's tokens. This replaces an earlier draft that an adversarial review broke (a registry that unioned unproven slices, a credential read flip driven by a best-effort projection, a registry nothing maintained). What survives is the smallest part that is safe: a read-time union of verified Slack bindings for memory reads, and a bookkeeping pointer on credentials.
