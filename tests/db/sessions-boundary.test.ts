@@ -1,10 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
 import * as Sessions from "../../src/db/sessions";
 import { __setBoundaryResolver, createBoundaryResolver, primeBoundary, resetBoundaryResolver } from "../../src/domain/boundary-for";
+import { resetBoundaryState } from "../helpers/boundary-state";
 import { flushFirstSightWork } from "../../src/domain/first-sight-flush";
 import { resetFirstSight } from "../../src/domain/first-sight";
 
@@ -27,13 +28,15 @@ async function seedBoundary(channel = CH): Promise<string> {
   return id;
 }
 
+// The first statement opens the database and applies the migrations (seconds on a cold PGLite): do it once, with room.
+beforeAll(async () => {
+  await db.query("SELECT 1");
+}, 60_000);
+
 async function clean(): Promise<void> {
-  await flushFirstSightWork();
+  await resetBoundaryState(); // settles background work first, then resets every piece of boundary state
   await db.run("DELETE FROM sessions");
   await Domain._wipeForTests();
-  resetFirstSight();
-  __setBoundaryResolver(undefined);
-  delete process.env.SLAUDE_BOUNDARY_WRITE;
 }
 beforeEach(clean);
 afterEach(clean);
@@ -137,6 +140,9 @@ describe("late fill after first sight", () => {
   test("compare-and-set: a filled row is never overwritten, other channels and teams are untouched", async () => {
     const b = await seedBoundary();
     const filled = await mk("1.1");
+    // The create started first sight in the background, and its late fill would complete any NULL row
+    // inserted below before the explicit call. Let it finish first, so the call under test does the work.
+    await flushFirstSightWork();
     await db.run("UPDATE sessions SET boundary_id = 'b-other', locator = 'x' WHERE id = ?", [filled.id]);
     await db.run(
       "INSERT INTO sessions (id, created_at, updated_at, model, working_dir, slack_team_id, slack_channel_id, slack_thread_ts) VALUES ('n1', 1, 1, 'm', '/w', ?, ?, '2.2')",
