@@ -64,6 +64,13 @@ unknown. First sight primes the cache after its transaction commits, and an
 
 ### Dual write
 
+Upserts keep the pair that belongs to the row's own key: a commitment re-saved
+into another channel, thread or known workspace takes the new pair (NULL if the
+writer could not resolve it), never the old one; under the same key a filled
+pair is kept and a NULL one is completed. The `migrate-sqlite` command copies
+the pair as NULL because it does not copy `boundaries`.
+
+
 `createForThread` and the other writers store the pair in the same INSERT when
 the cache knows the boundary, and NULL otherwise. The locator is only ever set
 together with its boundary, and it is the thread column verbatim, including
@@ -91,10 +98,23 @@ zero rows:
   2000 rows across tables, under a Postgres advisory lock distinct from the
   reconciler's; sqlite uses an in-process flag).
 
+Each row is its own statement-level compare-and-set (no page transaction, so no
+long lock hold), and the statement computes the locator from the thread column
+itself instead of writing a value read in the page scan: a `/new` between the
+scan and the write would otherwise have re-created the duplicate the archive fix
+prevents. The statement also pins the channel and team the boundary was
+resolved from. A second step repairs a stale locator on a filled row (an rc.21
+replica or a rollback rewrote only the thread column); it never touches the
+boundary. The periodic tick keeps a cursor per table so a capped tick resumes
+where it stopped, looks at a bounded number of rows, and runs no COUNT scans.
+
 The fill never creates a boundary. An eligible channel with no boundary is
 handed to first sight, which creates it under its own caps and bursts, and the
 next run fills the rows. A row with no team column is placed only when the
-tenant has one workspace; with several it is `ambiguous`, with none
+tenant has one workspace, and such a row is filled only when its boundary
+already exists (`team_unknown` otherwise): the workspace it really belongs to
+may be one that was connected earlier, and first sight must not fabricate a
+boundary for a guess; with several it is `ambiguous`, with none
 `no_workspace`, and is never written. Channel ids first sight rejects are
 `ineligible` and excluded from the gate. A row with no thread key is
 `no_locator`.
