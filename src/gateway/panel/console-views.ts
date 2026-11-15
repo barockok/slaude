@@ -7,8 +7,10 @@ import * as AgentGrants from "../../db/agent-grants";
 import { effectiveGrants, grantFromRow } from "../../access/grants";
 import { grantState } from "../../access/grant-state";
 import { listMandates } from "../../mandate";
-import { getPersonaRegistry, labelsInUse, managedPersonaModel, runsOnFor, type PersonaRegistry } from "../../persona/registry";
-import { listAllEnvSummaries } from "../../db/environments";
+import { getPersonaRegistry, labelsInUse, managedPersonaDefinition, managedPersonaModel, runsOnFor, type PersonaRegistry } from "../../persona/registry";
+import { listAllEnvSummaries, listDefinitionSummaries } from "../../db/environments";
+import { getKey } from "../../db/remote";
+import { definitionTeam } from "../../remote/definitions/resolve";
 import type { Registry } from "../../queue/registry";
 import { agentDefinitionView } from "./definition-view";
 import { channelLabels, MAX_PER_ANSWER, plainChannelRefs, type SlackNames } from "./slack-names";
@@ -17,6 +19,7 @@ import type {
   AgentSummary,
   ConsoleGrantView,
   EnvironmentsResponse,
+  SharedEnvironmentView,
   GrantView,
   MandateView,
   NodePoolView,
@@ -237,9 +240,24 @@ export async function nodePools(
 export async function environmentsView(deps: {
   role: "gateway" | "mono";
   registry: Pick<Registry, "liveNodeDetails"> | null;
+  /** Shared environments are listed for a superadmin only. */
+  canSeeShared?: boolean;
 }): Promise<EnvironmentsResponse> {
   const r = getPersonaRegistry();
+  const shared: SharedEnvironmentView[] = [];
+  if (deps.canSeeShared) {
+    for (const d of await listDefinitionSummaries()) {
+      const key = await getKey(definitionTeam(d.tenant), d.name).catch(() => null);
+      shared.push({
+        tenant: d.tenant, ref: `env:${d.name}`, description: d.description, retired: d.retired, revision: d.revision,
+        publicKey: key?.publicKey ?? null,
+        allowedBy: agentNames(r).filter((a) => managedPersonaDefinition(a, r)?.environment?.allow.includes(d.name)),
+        updatedAt: d.updatedAt,
+      });
+    }
+  }
   return {
+    shared,
     nodePools: await nodePools(deps, r),
     personas: agentNames(r).map((name) => ({ name, runsOn: runsOnFor(name, r) })),
     personal: (await listAllEnvSummaries()).map((e) => ({

@@ -166,11 +166,33 @@ export interface EnvSummary {
 
 export async function listAllEnvSummaries(): Promise<EnvSummary[]> {
   const rows = await db.query<Pick<EnvRowShape, "id" | "team_id" | "user_id" | "name" | "kind" | "default_dir" | "created_at">>(
-    "SELECT id, team_id, user_id, name, kind, default_dir, created_at FROM environments ORDER BY team_id, user_id, name",
+    "SELECT id, team_id, user_id, name, kind, default_dir, created_at FROM environments WHERE source <> 'definition' ORDER BY team_id, user_id, name",
   );
   return rows.map((r) => ({
     id: r.id, teamId: r.team_id, userId: r.user_id, name: r.name, kind: r.kind,
     defaultDir: r.default_dir, createdAt: Number(r.created_at),
+  }));
+}
+
+/** A shared environment (definition row) as the console lists it: name and state only, never config, host or secrets. */
+export interface DefinitionSummary {
+  tenant: string;
+  name: string;
+  description: string | null;
+  retired: boolean;
+  revision: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export async function listDefinitionSummaries(): Promise<DefinitionSummary[]> {
+  const rows = await db.query<Pick<EnvRowShape, "tenant_id" | "name" | "description" | "retired_at" | "definition_revision" | "created_at" | "updated_at">>(
+    `SELECT ${db.dialect === "pg" ? "tenant_id" : "'default' AS tenant_id"}, name, description, retired_at, definition_revision, created_at, updated_at
+     FROM environments WHERE source = 'definition' ORDER BY ${db.dialect === "pg" ? "tenant_id, " : ""}name`,
+  );
+  return rows.map((r) => ({
+    tenant: r.tenant_id, name: r.name, description: r.description, retired: r.retired_at != null, revision: r.definition_revision,
+    createdAt: Number(r.created_at), updatedAt: Number(r.updated_at),
   }));
 }
 

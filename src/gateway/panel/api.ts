@@ -1112,7 +1112,7 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
       // GET /panel/api/environments: where agents run. Read-only, any operator.
       if (seg.length === 3 && seg[2] === "environments") {
         if (req.method !== "GET") return json(405, { error: "method not allowed" });
-        return json(200, (await environmentsView({ role: panelRole, registry: deps.registry })) satisfies EnvironmentsResponse);
+        return json(200, (await environmentsView({ role: panelRole, registry: deps.registry, canSeeShared: role === "superadmin" })) satisfies EnvironmentsResponse);
       }
 
       // GET /panel/api/console-roles: the allowlist file (or env lists), for

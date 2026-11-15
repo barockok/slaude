@@ -96,7 +96,7 @@ export function installStub(): void {
     fx.sessions = [];
     fx.locks = {};
     fx.memory = { stores: [], pages: {} };
-    fx.environments = { nodePools: [], personas: [], personal: [] };
+    fx.environments = { nodePools: [], personas: [], personal: [], shared: [] };
     skills = [];
   }
   if (mono) {
