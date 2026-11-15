@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://barockok.github.io/slaude/schemas/environment.schema.json",
+  "title": "slaude environment definition",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,40}$",
+      "description": "The environment's name. Must equal the file name (environments/<name>.yaml) and is the reference env:<name> an agent allows. Required. Example: team-sandbox"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "What the machine is for, shown to operators. At most 500 characters. Never put a secret here. Example: Shared build box for the platform team."
+    },
+    "kind": {
+      "type": "string",
+      "const": "ssh",
+      "description": "The kind of machine. Only ssh is supported for a shared environment. Required."
+    },
+    "shared": {
+      "type": "boolean",
+      "const": true,
+      "description": "Must be true. A definition is a shared machine: anyone in a thread can steer it through the agent. Required."
+    },
+    "trust": {
+      "type": "string",
+      "const": "unlocked",
+      "description": "Must be \"unlocked\". Threads using a shared machine need no /1on1 lock. Required."
+    },
+    "defaultDir": {
+      "type": "string",
+      "maxLength": 1024,
+      "description": "The directory a thread starts in. An absolute path or one starting with ~/. Required. Example: /srv/work"
+    },
+    "ssh": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "description": "Host name of the machine, or an IP address. It is stored on the gateway and never shown in a thread. Required. Example: build-box.example.com"
+        },
+        "user": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.-]{0,31}$",
+          "description": "The account slaude logs in as. Required. Example: dev"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "The ssh port. Leave out for 22. Example: 22"
+        },
+        "hostKey": {
+          "type": "string",
+          "pattern": "^SHA256:[A-Za-z0-9+/]{43}$",
+          "description": "The machine's host key fingerprint, from `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. Required: there is no trust on first use for a shared machine. Example: SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        },
+        "allowPrivateAddress": {
+          "type": "boolean",
+          "description": "true lets host be a private, loopback or link-local address literal (a LAN box). The gateway's own outbound rules still apply when it connects. Leave out for false."
+        }
+      },
+      "required": [
+        "host",
+        "user",
+        "hostKey"
+      ],
+      "additionalProperties": false,
+      "description": "How to reach the machine. slaude generates the key pair; only the public key is ever shown. There is no key for a private key, password or token."
+    }
+  },
+  "required": [
+    "name",
+    "kind",
+    "shared",
+    "trust",
+    "defaultDir",
+    "ssh"
+  ],
+  "additionalProperties": false,
+  "description": "A shared environment: one ssh machine, declared once at environments/<name>.yaml and referred to by agents as env:<name>. Unknown keys are refused at every level."
+}

@@ -1,12 +1,14 @@
 /**
  * Writes docs/site/schemas/agent.schema.json from the Zod schema in
- * src/persona/agent-schema.ts: `bun run schema:agent`. A test regenerates it in
+ * src/persona/agent-schema.ts, and environment.schema.json from the one in
+ * src/remote/definitions/schema.ts: `bun run schema:agent`. A test regenerates it in
  * memory and fails when the committed file differs, so the two cannot drift.
  */
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { AGENT_SCHEMA_URL, AgentSchema } from "../src/persona/agent-schema";
+import { ENVIRONMENT_SCHEMA_URL, EnvironmentDefinitionSchema } from "../src/remote/definitions/schema";
 
 export { AGENT_SCHEMA_URL };
 export const AGENT_SCHEMA_FILE = join(import.meta.dir, "..", "docs", "site", "schemas", "agent.schema.json");
@@ -45,7 +47,23 @@ export function agentSchemaText(): string {
   return JSON.stringify(buildAgentJsonSchema(), null, 2) + "\n";
 }
 
+export const ENVIRONMENT_SCHEMA_FILE = join(import.meta.dir, "..", "docs", "site", "schemas", "environment.schema.json");
+
+export function buildEnvironmentJsonSchema(): Record<string, unknown> {
+  const generated = zodToJsonSchema(EnvironmentDefinitionSchema, { target: "jsonSchema7", $refStrategy: "none" }) as Record<string, unknown>;
+  const { $schema, ...rest } = generated;
+  const schema = { $schema, $id: ENVIRONMENT_SCHEMA_URL, title: "slaude environment definition", ...rest } as Record<string, unknown>;
+  dedupeDescriptions(schema);
+  return schema;
+}
+
+export function environmentSchemaText(): string {
+  return JSON.stringify(buildEnvironmentJsonSchema(), null, 2) + "\n";
+}
+
 if (import.meta.main) {
   writeFileSync(AGENT_SCHEMA_FILE, agentSchemaText());
   console.log(`wrote ${AGENT_SCHEMA_FILE}`);
+  writeFileSync(ENVIRONMENT_SCHEMA_FILE, environmentSchemaText());
+  console.log(`wrote ${ENVIRONMENT_SCHEMA_FILE}`);
 }

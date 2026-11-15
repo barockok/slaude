@@ -29,6 +29,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p src/web/tsconfig.json",
     "docs": "bun docs/site/build.mjs",
     "schema:agent": "bun scripts/gen-agent-schema.ts",
+    "schema:environment": "bun scripts/gen-agent-schema.ts",
     "panel:dev": "vite --config src/web/vite.console.config.ts",
     "panel:build": "vite build --config src/web/vite.console.config.ts",
     "portal:dev": "vite --config src/web/vite.portal.config.ts",
