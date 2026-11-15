@@ -105,7 +105,7 @@ flag that defaults off.
   linked two ids), `would_narrow` (the own slice is missing from the union: a bug),
   `no_user`, `error`, `dropped`. A disagreement is logged once per site and
   reason per minute with counts only. With the flag unset or `off` nothing runs.
-  The value `union` is reserved: it reads as `off` in this release.
+  The value `union` reads as `off` in rc.22 and is honoured in rc.23 (below).
 - **The guard** (`tests/slices/no-string-slice.test.ts` and
   `tests/slices/string-slice.allow.json`) scans all of `src` for `userSourceId(`,
   `startsWith("user-")`, `slice("user-".length)`, and the credential-account
@@ -119,6 +119,94 @@ flag that defaults off.
   account's user; slice names two live users both produce, masked. `--apply`
   fills empty pointers only, with a compare on the old NULL. The reconciler's own
   projection passes `recordPointer: false` so the report is honest.
+
+## What ships in rc.23: `SLAUDE_PERSON_SLICES=union`, reads only
+
+Nothing is enabled by default: the flag stays `off`. Enabling is a configuration
+change and is reversed by setting it back; there is no code change to make.
+
+- **Where the union is honoured.** The gateway attaches the speaker's
+  `person` (own slice first, then the verified extras) to the gate input
+  (`brainGateFor`), and the job token's `runAs` person to the memory scope
+  (`memoryScopeForClaims` and the mono memory provider). Three places read it, all
+  for READS only: the KB scope's lock-owner branch (`src/knowledge/scope.ts`), and
+  the memory scope's `runAs` and direct-message branches (`src/memory/scope.ts`).
+  `gated-dispatch.ts` is unchanged apart from the field on `GateInput`: a write is
+  classified against the writer's own slice and never looks at `person`. The write
+  target (`sourceId`, the memory `write` scope) is the own slice in every case.
+- **Defence in depth.** The scope sites re-check what they are handed
+  (`extraPersonReads`): the union must be for that very own slice, and only
+  `user-<alnum>` names pass, so a wrong or hostile `person` can add nothing but a
+  person slice.
+- **Rule S.** A thread locked by someone else still gets the public-only scope
+  with no union, and the resolver is never called for the lock owner's id (a test
+  spies on it).
+- **Rule T.** Any resolver error, the 250 ms bound, a failing acting-user lookup,
+  a synchronous throw or an unreadable tombstone table returns nothing, and the
+  scope is the legacy own slice. `tests/slices/failure-modes.test.ts` runs each,
+  at every site, and checks the write target.
+- **The release gate: the cross-person leak property test**
+  (`tests/slices/leak.test.ts`, both dialects). Random sequences of real
+  operations against the real tables (observe, link, unlink, relink to another
+  account of the same person, console merge, undo, tombstone add and remove,
+  deleting an account, purging a user, a second Slack id for one person, the same
+  Slack id string in two workspaces) with a ground truth of which human owns
+  which id. After every step, for every Slack identity, it asserts the own slice
+  is first; every other name is a plain `user-` name; an unverified acting binding
+  reads only its own slice; every extra name is produced by a verified Slack
+  binding of the same user as the (verified) acting binding and by the same
+  human; no other live user holds a binding that produces the name; no tombstone
+  covers it; a thread locked by another person gives exactly the public-only scope;
+  and a write target is never a union member. A second set of tests proves the
+  checker is not vacuous (a planted leak of an observed id, a non-person name and
+  a tombstoned name each fail it). Seeds are fixed and the failing prefix of the
+  sequence is printed; the seed count is `SLAUDE_LEAK_SEEDS` (default 400 on
+  sqlite, 150 on Postgres; the gate run used 1500 and 600).
+- **Scripted scenarios** (`tests/slices/union-scenarios.test.ts`) for each leak
+  the review found: an observed id console-merged into a verified one is not
+  readable by the survivor; the observed id proves itself and the union appears
+  only then; unlink cuts access on the next read; unlink then relink to another
+  account moves the id and gives the first person nothing; a merge of verified
+  into verified is refused; undo of a proof merge cuts the survivor's access, the
+  loser keeps its own slice and the replay is vetoed; the same id string held by
+  two users is excluded; tombstones (a name, and `*`) are honoured. An end-to-end
+  run with the fake brain writes as one id, links both, recalls as the other, then
+  unlinks and no longer recalls, with writes only ever in the writer's own slice.
+- **Parity.** With the flag unset, `off`, or `shadow`, every scope decision is the
+  rc.21 one (frozen copies, 3000 random inputs). With `union`, over 5000 random
+  worlds: a person with one verified id, or none verified, is byte-identical to
+  rc.21; with a union only the verified extras are added, to reads only, and the
+  per-agent, shared, public and kb sources never differ.
+
+### Enabling it
+
+1. Deploy rc.23 with the flag unset. Behaviour is rc.21's.
+2. Set `SLAUDE_PERSON_SLICES=shadow`. Read `slaude_person_slices_shadow_total`
+   and `slaude_person_slices_ms` for at least three days, or 200 turns per active
+   agent, against the gate below.
+3. Review the masked `would_widen` count (each one should be a person who really
+   linked two ids), the reconciler report, and record the owner decisions below.
+4. Set `SLAUDE_PERSON_SLICES=union`. Roll back by setting it back to `shadow` or
+   `off`; the next read is the legacy one. A turn that started before an unlink or
+   an undo can finish one read with the old union (one gate construction).
+
+### What is not proven
+
+- The property test models people, ids and accounts; it cannot prove that a
+  person's claim to a Slack id is true. A wrong link (a person proving control of
+  an id that is not theirs) is the one way left to widen memory, and the link
+  token, the verified-only rule, tombstones and undo are the mitigations.
+- Nothing here exercises a real brain, real Slack or a live model. The fake brain
+  enforces `allowedSources` the way the real engine does, but that is a model.
+- Resolver cost is measured only in shadow on a live deployment (the p95 gate).
+  The property test says nothing about latency.
+- The same Slack id string in two workspaces already shares one slice today; this
+  work reports it and never widens it, but does not fix it.
+- Tools that list or browse memory (`memory_about`, the memory browser) still
+  read their old sets: an added slice is readable through search and recall, not
+  yet through every listing.
+- Nightly passes, proactive feedback and thread activity stay on the own slice
+  by design (one pass per Slack id).
 
 ## Safety proofs
 

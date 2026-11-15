@@ -629,8 +629,9 @@ Bot ids are skipped (reason `bot`), never given a user.
 `add` needs a user id, a `user-` slice name or `*` (no union at all) and a
 `--reason`; the change is audited as the operator (`--by`, default the shell
 user) and the output masks the slice name, so it shows no Slack id. A tombstone
-keyed on a merged-away user id still applies to the survivor. Nothing reads
-tombstones until the union is honoured.
+keyed on a merged-away user id still applies to the survivor. Under
+`SLAUDE_PERSON_SLICES=union` a tombstone removes the name (or, with `*`, every
+added name) from that user's read set on the next read.
 
 The command is safe to run again: a second run creates nothing. It exits `0` on
 success, `1` if the run fails and `2` for a usage error. A run that created
@@ -648,7 +649,7 @@ something or found a conflict (two accounts with one email) writes one
 | `SLAUDE_BOUNDARY_FILL_MAX_ROWS` | No | `2000` | Most rows one fill tick updates across tables (the boot reconciler stage allows this many per table). A tick that hits the cap continues next tick. |
 | `SLAUDE_MERGE_NOTICE` | No | `on` | Whether a merge sends its Slack notice (one DM to the person and, when a manager or approver grant activates, one to the persona's manager). `off`, `0`, `false` or `no` sends nothing and marks the ledger row `skipped`. The merge itself is unchanged. Read on every call. |
 | `SLAUDE_MERGE_POINTERS` | No | `on` | Whether a user merge repoints credential bookkeeping pointers (`mcp_credentials.user_id`) from the merged-away record to the survivor before the old record is deleted. The pointer is never read for a decision, so this changes no credential behaviour. `off`, `0`, `false` or `no` skips the step and `slaude domain reconcile --apply` fills empty pointers later. A failure in the step never fails the merge. Read on every call. |
-| `SLAUDE_PERSON_SLICES` | No | `off` | Person-slice shadow (rc.22). `off` (also unset, empty or any unknown value, and `union`, which is reserved for the next release): nothing runs and every memory scope is exactly rc.21's. `shadow`: the legacy scope is still used; in the background the gateway computes which `user-` memory slices a person who proved several Slack ids could read, compares with the legacy own slice, and counts it (`slaude_person_slices_shadow_total{site,outcome}`, `slaude_person_slices_failures_total`, `slaude_person_slices_ms`). A disagreement is logged once per site and reason per minute with counts only. Read on every call. Rollback: set it back to `off`. |
+| `SLAUDE_PERSON_SLICES` | No | `off` | Person-slice union for memory READS (slice F). `off` (also unset, empty or any unknown value): nothing runs and every memory and knowledge scope is exactly rc.21's. `shadow`: the legacy scope is still used; in the background the gateway computes which `user-` slices a person who proved several Slack ids could read, compares with the legacy own slice and counts it (`slaude_person_slices_shadow_total{site,outcome}`, `slaude_person_slices_failures_total`, `slaude_person_slices_ms`); a disagreement is logged once per site and reason per minute with counts only. `union` (rc.23): the speaker's, or the job token's `runAs` person's, other Slack ids whose bindings are verified (the acting one too) add their `user-` slices to the read set; an observed or declared id contributes nothing, a name another user also produces is excluded, a thread locked by someone else stays public-only, and a failure or the 250 ms bound falls back to the own slice. Writes never change. Operator tombstones (`slaude domain slice-tombstone`) are honoured. Read on every call. Rollback: set it to `shadow` or `off`. |
 
 ### External MCP env references
 
