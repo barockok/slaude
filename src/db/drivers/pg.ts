@@ -6,6 +6,7 @@
  */
 import { SQL } from "bun";
 import { env } from "../../config/env";
+import { m } from "../../metrics";
 import { normalizeRow, toPositional, type DbClient, type Row, type RunResult } from "../client";
 
 /** URL with any password replaced, safe for error messages and logs. */
@@ -24,29 +25,95 @@ type Executor = Pick<SQL, "unsafe">;
 /**
  * Admission gate in front of the Bun.sql pool: at most `size` statements (or reserved
  * connections: a transaction, an advisory lock) are handed to the pool at once, the rest
- * wait here in order. Bun.sql queues work beyond its pool size internally, and on real
- * Postgres a burst of identical statements beyond the pool size has been seen to wedge
- * the whole pool (every backend idle, a connection stuck "idle in transaction" between a
- * Parse and its Sync, no promise ever settling, CI hung for 20 minutes). Never letting
- * the pool queue removes that state; waiting here costs nothing a pool queue did not.
+ * wait here in order.
+ *
+ * Why: this is a WORKAROUND for a likely Bun.sql bug. Past the pool size Bun does not queue
+ * a statement, its PostgresAdapter (flushConcurrentQueries) auto-pipelines the excess onto
+ * connections that are already busy. On real Postgres a burst of identical statements beyond
+ * the pool size wedged the whole pool: every backend idle, one backend stuck "idle in
+ * transaction" between a Parse and its Sync, no promise ever settling, CI hung for 20
+ * minutes (watchdog dump in PR 213). That fits auto-pipelining of a statement that is still
+ * being prepared, but the Bun internals were not read to the end. The gate keeps the work in
+ * flight at or below the connection count, so Bun never has anything to pipeline.
+ *
+ * Untested alternatives, for a follow-up: set BUN_FEATURE_FLAG_DISABLE_SQL_AUTO_PIPELINING=1
+ * in the environment, or open the pool with `prepare: false`. Either would need the same
+ * real-Postgres soak before replacing the gate (`prepare: false` also changes how parameter
+ * types are inferred, so it can break queries).
+ *
+ * Observability: `slaude_pg_gate_waiting` (gauge), a warning and `slaude_pg_gate_slow_total`
+ * when a statement waits more than 3 s for a permit, and an optional acquire timeout
+ * (SLAUDE_PG_ACQUIRE_TIMEOUT_MS, default off).
  */
+export const GATE_SLOW_MS = 3000;
+const GATE_WARN_EVERY_MS = 5000;
+
+type Waiter = { grant: () => void; fail: (e: Error) => void; slow?: ReturnType<typeof setTimeout>; limit?: ReturnType<typeof setTimeout> };
+
+export interface PoolGateOptions {
+  /** Fail a wait after this many ms (default 0: never). */
+  acquireTimeoutMs?: number;
+  /** A wait longer than this counts and warns (default GATE_SLOW_MS). */
+  slowMs?: number;
+  warn?: (msg: string) => void;
+  onWaiting?: (n: number) => void;
+  onEvent?: (outcome: "slow" | "timeout") => void;
+}
+
 export class PoolGate {
   #free: number;
-  #waiters: Array<() => void> = [];
-  constructor(readonly size: number) {
+  #waiters: Waiter[] = [];
+  #lastWarn = 0;
+  constructor(
+    readonly size: number,
+    private readonly opts: PoolGateOptions = {},
+  ) {
     this.#free = size;
+  }
+  /** Callers waiting for a permit right now. */
+  get waiting(): number {
+    return this.#waiters.length;
   }
   acquire(): Promise<void> {
     if (this.#free > 0) {
       this.#free--;
       return Promise.resolve();
     }
-    return new Promise((resolve) => this.#waiters.push(resolve));
+    return new Promise<void>((resolve, reject) => {
+      const w: Waiter = { grant: resolve, fail: reject };
+      const slowMs = this.opts.slowMs ?? GATE_SLOW_MS;
+      w.slow = setTimeout(() => {
+        this.opts.onEvent?.("slow");
+        const now = Date.now();
+        if (now - this.#lastWarn >= GATE_WARN_EVERY_MS) {
+          this.#lastWarn = now;
+          (this.opts.warn ?? console.warn)(`[db] statements are waiting more than ${slowMs}ms for a Postgres pool permit (pool ${this.size}, waiting ${this.#waiters.length}): the pool is saturated or wedged`);
+        }
+      }, slowMs);
+      const limit = this.opts.acquireTimeoutMs ?? 0;
+      if (limit > 0) {
+        w.limit = setTimeout(() => {
+          const at = this.#waiters.indexOf(w);
+          if (at < 0) return;
+          this.#waiters.splice(at, 1);
+          clearTimeout(w.slow);
+          this.opts.onEvent?.("timeout");
+          this.opts.onWaiting?.(this.#waiters.length);
+          reject(new Error(`postgres pool gate: waited ${limit}ms for a connection permit (pool ${this.size}, waiting ${this.#waiters.length})`));
+        }, limit);
+      }
+      this.#waiters.push(w);
+      this.opts.onWaiting?.(this.#waiters.length);
+    });
   }
   release(): void {
     const next = this.#waiters.shift();
-    if (next) next();
-    else this.#free++;
+    if (next) {
+      clearTimeout(next.slow);
+      clearTimeout(next.limit);
+      this.opts.onWaiting?.(this.#waiters.length);
+      next.grant();
+    } else this.#free++;
   }
   async run<T>(fn: () => Promise<T>): Promise<T> {
     await this.acquire();
@@ -138,8 +205,11 @@ export class BunSqlClient implements DbClient {
         }
       }
     } catch (e) {
-      reserved.release();
-      this.gate?.release();
+      try {
+        reserved.release();
+      } finally {
+        this.gate?.release();
+      }
       throw e;
     }
     let released = false;
@@ -149,8 +219,11 @@ export class BunSqlClient implements DbClient {
       try {
         await reserved.unsafe(`SELECT pg_advisory_unlock($1, $2)`, [key1, key2]);
       } finally {
-        reserved.release();
-        this.gate?.release();
+        try {
+          reserved.release();
+        } finally {
+          this.gate?.release();
+        }
       }
     };
   }
@@ -172,5 +245,14 @@ export async function openBunSql(url: string): Promise<DbClient> {
     const msg = e instanceof Error ? e.message : String(e);
     throw new Error(`cannot connect to Postgres at SLAUDE_PG_URL=${redactPgUrl(url)}: ${msg}`);
   }
-  return new BunSqlClient(sql, sql, false, new PoolGate(env.db.pgPool()));
+  return new BunSqlClient(
+    sql,
+    sql,
+    false,
+    new PoolGate(env.db.pgPool(), {
+      acquireTimeoutMs: env.db.pgAcquireTimeoutMs(),
+      onWaiting: (n) => m.pgGateWaiting.set(n),
+      onEvent: (outcome) => m.pgGateSlowTotal.inc({ outcome }),
+    }),
+  );
 }

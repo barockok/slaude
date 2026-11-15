@@ -1,4 +1,4 @@
-import { afterEach } from "bun:test";
+import { afterAll, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -107,7 +107,7 @@ if (pgTest && process.env.SLAUDE_DB === "pg" && process.env.SLAUDE_PG_URL === pg
 // longer than a second is almost always a lock wait or an idle-in-transaction connection left by an
 // earlier test in this process. A watchdog on its own small connection prints who waits for whom
 // (at most 6 dumps per process), so a failing job explains itself.
-if (pgTest && process.env.SLAUDE_DB === "pg") {
+if (pgTest && process.env.SLAUDE_DB === "pg" && process.env.SLAUDE_PG_URL === pgTest) {
   const { SQL } = await import("bun");
   const watch = new SQL({ url: pgTest, max: 1 });
   let dumps = 0;
@@ -145,4 +145,9 @@ if (pgTest && process.env.SLAUDE_DB === "pg") {
     }
   }, 1000);
   (timer as { unref?: () => void }).unref?.();
+  // End of the run: stop the timer and give the connection back.
+  afterAll(async () => {
+    clearInterval(timer);
+    await watch.close().catch(() => {});
+  });
 }
