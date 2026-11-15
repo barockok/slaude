@@ -1,5 +1,6 @@
 import { db } from "./schema";
 import { randomUUID } from "node:crypto";
+import { cronLocator, pairFor } from "./boundary-columns";
 
 export type CronJob = {
   id: string;
@@ -50,9 +51,10 @@ export async function create(args: {
   personaId?: string;
 }): Promise<CronJob> {
   const id = randomUUID();
+  const pair = pairFor(args.slackTeamId, args.slackChannelId, cronLocator({ id, target: args.target ?? "thread", slackThreadTs: args.slackThreadTs }));
   await db.run(
-    `INSERT INTO cron_jobs (id, slack_team_id, slack_app_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, oauth_user, persona_id, active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    `INSERT INTO cron_jobs (id, slack_team_id, slack_app_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, oauth_user, persona_id, active, boundary_id, locator)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
     [
       id,
       args.slackTeamId ?? null,
@@ -69,6 +71,8 @@ export async function create(args: {
       args.whenActive ?? "fire",
       args.oauthUser ?? null,
       args.personaId && args.personaId !== "default" ? args.personaId : "default",
+      pair.boundaryId,
+      pair.locator,
     ],
   );
   return (await findById(id))!;

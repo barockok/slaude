@@ -2141,7 +2141,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   async function agentMentionOnly(ctx: SlackContext, active: boolean): Promise<string> {
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
     if (active) {
-      await MentionOnly.set({ channelId: ctx.channel, threadTs, createdBy: ctx.userId ?? "" });
+      await MentionOnly.set({ channelId: ctx.channel, threadTs, createdBy: ctx.userId ?? "", teamId: ctx.teamId || null });
       return "Mention-only on — I'll reply in this thread only when @-mentioned.";
     }
     if (!await MentionOnly.find(ctx.channel, threadTs)) return "This thread isn't in mention-only mode — nothing to change.";
@@ -3087,7 +3087,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       if (slash.kind === "mention-only") {
         if (slash.action === "on") {
-          await MentionOnly.set({ channelId, threadTs, createdBy: userId });
+          await MentionOnly.set({ channelId, threadTs, createdBy: userId, teamId });
           await reply(":speech_balloon: *mention-only* — I'll reply in this thread only when @-mentioned. `/mention-only off` to restore.");
           return;
         }
@@ -3328,7 +3328,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               expiresAt = parsed.permanent ? undefined : Date.now() + parsed.minutes * 60 * 1000;
             }
             await Ignores.remove({ targetType: "thread", channelId, threadTs });
-            await Ignores.create({ targetType: "thread", channelId, threadTs, createdBy: userId, expiresAt, reason: "manual" });
+            await Ignores.create({ targetType: "thread", channelId, threadTs, teamId, createdBy: userId, expiresAt, reason: "manual" });
             auditIgnore("ignore.set", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "thread", expiresAt, via: "slash" });
             const durText = duration ? `for ${duration}` : "permanently";
             await reply(`:mute: ignoring this thread ${durText}`);

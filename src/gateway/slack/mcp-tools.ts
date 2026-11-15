@@ -751,6 +751,7 @@ export const adminHandlers = {
       targetType: "thread",
       channelId: ctx.channel,
       threadTs: ctx.threadTs,
+      teamId: ctx.teamId,
       createdBy: ctx.userId ?? "agent",
       expiresAt,
       reason,

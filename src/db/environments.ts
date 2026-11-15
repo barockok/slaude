@@ -5,6 +5,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { db } from "./schema";
+import { pairFor } from "./boundary-columns";
 import { decrypt, encrypt } from "./crypto";
 import type { ProvisionedEndpoint, StoredEnv } from "../remote/kinds/types";
 
@@ -175,15 +176,19 @@ export async function deleteEnv(id: string): Promise<BindingRow[]> {
 
 // ── bindings ──────────────────────────────────────────────────────────────
 
-export async function bind(i: { channelId: string; threadTs: string; envId: string; dir: string; lockByEnv: boolean }): Promise<void> {
+export async function bind(i: { channelId: string; threadTs: string; envId: string; dir: string; lockByEnv: boolean; teamId?: string | null }): Promise<void> {
   const now = Date.now();
+  // The table has no team column: the caller passes the one it holds, else the pair stays NULL for the fill.
+  const pair = pairFor(i.teamId, i.channelId, i.threadTs);
   await db.run(
-    `INSERT INTO env_bindings (channel_id, thread_ts, env_id, dir, lock_by_env, endpoint, generation, last_used_at, created_at)
-     VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?)
+    `INSERT INTO env_bindings (channel_id, thread_ts, env_id, dir, lock_by_env, endpoint, generation, last_used_at, created_at, boundary_id, locator)
+     VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?)
      ON CONFLICT(channel_id, thread_ts)
      DO UPDATE SET env_id = excluded.env_id, dir = excluded.dir, lock_by_env = excluded.lock_by_env,
-                   endpoint = NULL, generation = 0, last_used_at = excluded.last_used_at, created_at = excluded.created_at`,
-    [i.channelId, i.threadTs, i.envId, i.dir, i.lockByEnv ? 1 : 0, now, now],
+                   endpoint = NULL, generation = 0, last_used_at = excluded.last_used_at, created_at = excluded.created_at,
+                   boundary_id = COALESCE(excluded.boundary_id, env_bindings.boundary_id),
+                   locator = COALESCE(excluded.locator, env_bindings.locator)`,
+    [i.channelId, i.threadTs, i.envId, i.dir, i.lockByEnv ? 1 : 0, now, now, pair.boundaryId, pair.locator],
   );
   await db.run("DELETE FROM remote_targets WHERE channel_id = ? AND thread_ts = ?", [i.channelId, i.threadTs]);
 }
@@ -224,11 +229,14 @@ async function convertLegacy(channelId: string, threadTs: string): Promise<Bindi
     }
   }
   if (!env) return null;
+  const legacyPair = pairFor(old.team_id, channelId, threadTs);
   await db.run(
-    `INSERT INTO env_bindings (channel_id, thread_ts, env_id, dir, lock_by_env, endpoint, generation, last_used_at, created_at)
-     VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?)
-     ON CONFLICT(channel_id, thread_ts) DO NOTHING`,
-    [channelId, threadTs, env.id, old.dir, old.lock_by_remote, Date.now(), Number(old.created_at)],
+    `INSERT INTO env_bindings (channel_id, thread_ts, env_id, dir, lock_by_env, endpoint, generation, last_used_at, created_at, boundary_id, locator)
+     VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?)
+     ON CONFLICT(channel_id, thread_ts) DO UPDATE SET
+       boundary_id = COALESCE(env_bindings.boundary_id, excluded.boundary_id),
+       locator = COALESCE(env_bindings.locator, excluded.locator)`,
+    [channelId, threadTs, env.id, old.dir, old.lock_by_remote, Date.now(), Number(old.created_at), legacyPair.boundaryId, legacyPair.locator],
   );
   await db.run("DELETE FROM remote_targets WHERE channel_id = ? AND thread_ts = ?", [channelId, threadTs]);
   return db.one<BindingRow>("SELECT * FROM env_bindings WHERE channel_id = ? AND thread_ts = ?", [channelId, threadTs]);

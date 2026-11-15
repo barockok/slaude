@@ -1,4 +1,5 @@
 import { db } from "./schema";
+import { pairFor } from "./boundary-columns";
 
 /**
  * Open commitments indexed for the promise scheduler (spec §10.1; migration
@@ -82,13 +83,16 @@ const toRow = (r: Row): CommitmentRow => ({
  * re-saving a promise never postpones its expiry or repeats its checks.
  */
 export async function upsertOpen(c: Omit<CommitmentRow, "status" | "checks" | "lastCheckedAt">): Promise<void> {
+  const pair = pairFor(c.teamId, c.channelId, c.threadTs);
   await db.run(
     `INSERT INTO commitments (agent_id, source, slug, persona_id, team_id, channel_id, thread_ts, beneficiary, run_as,
-                              due_text, due_kind, check_text, on_no_change, next_check_at, expires_at, status, checks, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, ?)
+                              due_text, due_kind, check_text, on_no_change, next_check_at, expires_at, status, checks, created_at, boundary_id, locator)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, ?, ?, ?)
      ON CONFLICT (agent_id, source, slug) DO UPDATE SET
        persona_id = excluded.persona_id,
        team_id = COALESCE(excluded.team_id, commitments.team_id),
+       boundary_id = COALESCE(excluded.boundary_id, commitments.boundary_id),
+       locator = COALESCE(excluded.locator, commitments.locator),
        channel_id = excluded.channel_id,
        thread_ts = excluded.thread_ts,
        beneficiary = excluded.beneficiary,
@@ -103,7 +107,7 @@ export async function upsertOpen(c: Omit<CommitmentRow, "status" | "checks" | "l
      WHERE commitments.status = 'open'`,
     [
       c.agentId, c.source, c.slug, c.personaId, c.teamId, c.channelId, c.threadTs, c.beneficiary, c.runAs,
-      c.dueText, c.dueKind, c.checkText, c.onNoChange, c.nextCheckAt, c.expiresAt, c.createdAt,
+      c.dueText, c.dueKind, c.checkText, c.onNoChange, c.nextCheckAt, c.expiresAt, c.createdAt, pair.boundaryId, pair.locator,
     ],
   );
 }

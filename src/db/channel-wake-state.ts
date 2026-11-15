@@ -1,4 +1,5 @@
 import { db } from "./schema";
+import { boundaryOnly } from "./boundary-columns";
 
 /**
  * Per agent and channel, when it next needs to look and how its last wake went
@@ -55,18 +56,19 @@ export async function get(agentId: string, channelId: string): Promise<ChannelWa
  * open-run check, and only one may own the row. A run that has ended, or is
  * unknown, can be replaced.
  */
-export async function noteStart(agentId: string, channelId: string, checklistHash: string, runId: string, now: number): Promise<boolean> {
+export async function noteStart(agentId: string, channelId: string, checklistHash: string, runId: string, now: number, teamId?: string | null): Promise<boolean> {
   const res = await db.run(
-    `INSERT INTO channel_wake_state (agent_id, channel_id, last_wake_at, checklist_hash, open_run_id, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
+    `INSERT INTO channel_wake_state (agent_id, channel_id, last_wake_at, checklist_hash, open_run_id, updated_at, boundary_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (agent_id, channel_id) DO UPDATE SET
+       boundary_id = COALESCE(excluded.boundary_id, channel_wake_state.boundary_id),
        last_wake_at = excluded.last_wake_at,
        checklist_hash = excluded.checklist_hash,
        open_run_id = excluded.open_run_id,
        updated_at = excluded.updated_at
      WHERE channel_wake_state.open_run_id IS NULL
         OR NOT EXISTS (SELECT 1 FROM background_runs r WHERE r.id = channel_wake_state.open_run_id AND r.outcome IS NULL)`,
-    [agentId, channelId, now, checklistHash, runId, now],
+    [agentId, channelId, now, checklistHash, runId, now, boundaryOnly(teamId, channelId)],
   );
   return res.changes > 0;
 }
@@ -85,30 +87,32 @@ export async function undoStart(agentId: string, channelId: string, runId: strin
 }
 
 /** The agent called finish_round. `nextCheckAt` is already clamped. */
-export async function noteFinished(agentId: string, channelId: string, nextCheckAt: number, now: number): Promise<void> {
+export async function noteFinished(agentId: string, channelId: string, nextCheckAt: number, now: number, teamId?: string | null): Promise<void> {
   await db.run(
-    `INSERT INTO channel_wake_state (agent_id, channel_id, next_check_at, finished_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO channel_wake_state (agent_id, channel_id, next_check_at, finished_at, updated_at, boundary_id)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT (agent_id, channel_id) DO UPDATE SET
+       boundary_id = COALESCE(excluded.boundary_id, channel_wake_state.boundary_id),
        next_check_at = excluded.next_check_at,
        finished_at = excluded.finished_at,
        updated_at = excluded.updated_at`,
-    [agentId, channelId, nextCheckAt, now, now],
+    [agentId, channelId, nextCheckAt, now, now, boundaryOnly(teamId, channelId)],
   );
 }
 
 /** The wake's run ended: its outcome, the failure count, and possibly a new next check. Closes the open run. */
-export async function noteSettled(agentId: string, channelId: string, s: { outcome: string; failures: number; nextCheckAt: number | null }, now: number): Promise<void> {
+export async function noteSettled(agentId: string, channelId: string, s: { outcome: string; failures: number; nextCheckAt: number | null }, now: number, teamId?: string | null): Promise<void> {
   await db.run(
-    `INSERT INTO channel_wake_state (agent_id, channel_id, last_outcome, failures, next_check_at, open_run_id, updated_at)
-     VALUES (?, ?, ?, ?, ?, NULL, ?)
+    `INSERT INTO channel_wake_state (agent_id, channel_id, last_outcome, failures, next_check_at, open_run_id, updated_at, boundary_id)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
      ON CONFLICT (agent_id, channel_id) DO UPDATE SET
+       boundary_id = COALESCE(excluded.boundary_id, channel_wake_state.boundary_id),
        last_outcome = excluded.last_outcome,
        failures = excluded.failures,
        next_check_at = COALESCE(excluded.next_check_at, channel_wake_state.next_check_at),
        open_run_id = NULL,
        updated_at = excluded.updated_at`,
-    [agentId, channelId, s.outcome, s.failures, s.nextCheckAt, now],
+    [agentId, channelId, s.outcome, s.failures, s.nextCheckAt, now, boundaryOnly(teamId, channelId)],
   );
 }
 
