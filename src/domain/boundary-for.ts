@@ -30,6 +30,8 @@ import { trackFirstSight } from "./first-sight-flush";
 export const LRU_CAP = 5000;
 export const RECHECK_MS = 10 * 60 * 1000;
 export const NEG_TTL_MS = 30 * 1000;
+/** After a timeout or an error the key is not asked again for this long (it stays unknown, not absent). */
+export const FAIL_BACKOFF_MS = 30 * 1000;
 
 /** Channel ids first sight records (and so the only ones a boundary can exist for). */
 export const CHANNEL_RE = /^[CGD][A-Z0-9]+$/;
@@ -71,6 +73,8 @@ export function createBoundaryResolver(deps: BoundaryResolverDeps = {}): Boundar
   /** key -> answer and when it was learned. Map order is recency. */
   const cache = new Map<string, { id: string | null; at: number }>();
   const inflight = new Map<string, Promise<BoundaryRef | null>>();
+  /** key -> when its last read failed. */
+  const failedAt = new Map<string, number>();
 
   const peek = (key: string): { id: string | null } | undefined => {
     const e = cache.get(key);
@@ -103,6 +107,11 @@ export function createBoundaryResolver(deps: BoundaryResolverDeps = {}): Boundar
     if (hit) return Promise.resolve(hit.id ? { id: hit.id } : null);
     const running = inflight.get(key);
     if (running) return running;
+    const failed = failedAt.get(key);
+    if (failed !== undefined) {
+      if (now() - failed < FAIL_BACKOFF_MS) return Promise.resolve(null); // a stalled database gets no new SELECT per write
+      failedAt.delete(key);
+    }
     const p = (async (): Promise<BoundaryRef | null> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -120,6 +129,7 @@ export function createBoundaryResolver(deps: BoundaryResolverDeps = {}): Boundar
             ])
           : read);
         if (row?.id) {
+          failedAt.delete(key);
           put(key, row.id);
           count("found");
           return { id: row.id };
@@ -130,6 +140,8 @@ export function createBoundaryResolver(deps: BoundaryResolverDeps = {}): Boundar
         return null;
       } catch (e) {
         // Unknown, not absent: the next write asks again.
+        if (failedAt.size >= LRU_CAP) failedAt.clear();
+        failedAt.set(key, now());
         count(e instanceof Error && e.message === "timeout" ? "timeout" : "error");
         return null;
       } finally {
@@ -176,6 +188,7 @@ export function createBoundaryResolver(deps: BoundaryResolverDeps = {}): Boundar
     reset() {
       cache.clear();
       inflight.clear();
+      failedAt.clear();
     },
   };
 }

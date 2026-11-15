@@ -3,7 +3,7 @@ import { type DbClient, openDb } from "../../src/db/client";
 import { runMigrations } from "../../src/db/migrate";
 import * as Domain from "../../src/db/domain";
 import { db as globalDb } from "../../src/db/schema";
-import { createBoundaryResolver, locatorOf, NEG_TTL_MS, RECHECK_MS, LRU_CAP, boundaryForCached, resetBoundaryResolver } from "../../src/domain/boundary-for";
+import { createBoundaryResolver, FAIL_BACKOFF_MS, locatorOf, NEG_TTL_MS, RECHECK_MS, LRU_CAP, boundaryForCached, resetBoundaryResolver } from "../../src/domain/boundary-for";
 import { createFirstSight } from "../../src/domain/first-sight";
 import { metrics } from "../../src/metrics";
 
@@ -101,21 +101,26 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(s.reads).toBe(1);
     });
 
-    test("a read that outlasts the timeout resolves null, leaves the key unknown, and counts", async () => {
+    test("a read that outlasts the timeout resolves null, leaves the key unknown, counts, and is not retried during the backoff", async () => {
+      let t = 1_000_000;
       const { db, s } = spy(base);
       s.mode = "hang";
-      const r = createBoundaryResolver({ db: () => db, role: () => "gateway", timeoutMs: () => 20 });
+      const r = createBoundaryResolver({ db: () => db, role: () => "gateway", timeoutMs: () => 20, now: () => t });
       const before = outcome("timeout");
       const t0 = Date.now();
       expect(await r.resolve(WS, CH)).toBeNull();
       expect(Date.now() - t0).toBeLessThan(500);
-      expect(r.cached(WS, CH)).toBeUndefined(); // unknown, not absent
+      expect(r.cached(WS, CH)).toBeUndefined(); // unknown, not absent, and no new read started
       expect(outcome("timeout")).toBeGreaterThan(before);
-      // not wedged: the key is asked again
-      expect(await r.resolve(WS, CH)).toBeNull(); // the warm read the miss started also times out
+      expect(s.reads).toBe(1);
+      for (let i = 0; i < 20; i++) await r.resolve(WS, CH);
+      expect(s.reads).toBe(1); // backed off: a stalled database gets no SELECT per write
+      // after the backoff the key is asked again
+      t += FAIL_BACKOFF_MS + 1;
       s.mode = "ok";
       const id = await seed();
       expect((await r.resolve(WS, CH))?.id).toBe(id);
+      expect(s.reads).toBe(2);
     });
 
     test("an error resolves null and is not cached as absent", async () => {
@@ -126,6 +131,9 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(await r.resolve(WS, CH)).toBeNull();
       expect(r.cached(WS, CH)).toBeUndefined();
       expect(outcome("error")).toBeGreaterThan(before);
+      expect(s.reads).toBe(1);
+      await r.resolve(WS, CH);
+      expect(s.reads).toBe(1);
     });
 
     test("a node never touches a database", async () => {
