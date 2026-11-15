@@ -13,14 +13,23 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { REAL_URL, realEnabled, testPrefix, cleanupPrefix, sweepTag, obliterateQueues, until, sleep } from "../queue/real";
 
-process.env.SLAUDE_BRAIN_DISABLED = "1";
+// Everything below touches process.env only when the suite is armed (a real
+// Redis). Bun loads a test file's top level even when every test in it is
+// skipped, and runs no afterAll then, so an unconditional assignment here leaked
+// SLAUDE_BRAIN_DISABLED=1 (and the two below) into every later file of the
+// redis-less CI leg: the brain-import and mono scenario tests then saw a
+// disabled brain. See the 2026-11-16 field note.
+//
 // No post-turn auto-evolve check (its synthetic turn keeps a session busy) and
 // no idle close: the tests retire sessions themselves. The file used to get
 // both only because an earlier file in the same process leaked them.
-const ENV_KEYS = ["SLAUDE_AUTO_EVOLVE", "SLAUDE_IDLE_MINUTES"] as const;
+const ENV_KEYS = ["SLAUDE_BRAIN_DISABLED", "SLAUDE_AUTO_EVOLVE", "SLAUDE_IDLE_MINUTES"] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
-process.env.SLAUDE_AUTO_EVOLVE = "0";
-process.env.SLAUDE_IDLE_MINUTES = "0";
+if (realEnabled) {
+  process.env.SLAUDE_BRAIN_DISABLED = "1";
+  process.env.SLAUDE_AUTO_EVOLVE = "0";
+  process.env.SLAUDE_IDLE_MINUTES = "0";
+}
 
 const NODE_TOKEN = "e2e-node-token";
 const JOB_SECRET = "e2e-job-secret";
@@ -343,7 +352,6 @@ afterAll(async () => {
   } catch {}
   delete process.env.SLAUDE_NODE_TOKEN;
   delete process.env.SLAUDE_JOB_SECRET;
-  delete process.env.SLAUDE_BRAIN_DISABLED;
   require("node:fs").rmSync(nodeConfigRoot, { recursive: true, force: true });
 });
 

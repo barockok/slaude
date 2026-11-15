@@ -7,7 +7,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedMonoBrain } from "./seed";
+import { brainOn } from "../helpers/brain-on";
 import { dryRunStep, identity, importStep, recallStep, rerunStep } from "./scenario-steps";
+
+brainOn();
 
 const url = process.env.SLAUDE_BRAIN_PG_TEST_URL;
 const root = mkdtempSync(join(tmpdir(), "bm-scenario-pg-"));
