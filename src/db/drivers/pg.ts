@@ -21,7 +21,7 @@ export function redactPgUrl(url: string): string {
 
 type Executor = Pick<SQL, "unsafe">;
 
-class BunSqlClient implements DbClient {
+export class BunSqlClient implements DbClient {
   readonly dialect = "pg" as const;
   readonly driver = "bun-sql";
   constructor(
@@ -76,6 +76,8 @@ class BunSqlClient implements DbClient {
           try {
             await reserved.unsafe(`SELECT pg_advisory_lock($1, $2)`, [key1, key2]);
           } catch (e) {
+            // The connection goes back to the pool: it must not carry this timeout into someone else's statement.
+            await reserved.unsafe(`SET lock_timeout = 0`).catch(() => {});
             const msg = e instanceof Error ? e.message : String(e);
             throw new Error(`advisory lock (${key1}, ${key2}) not acquired within ${timeoutMs}ms: ${msg}`);
           }
