@@ -20,6 +20,8 @@ interface EnvRow {
   default_dir: string | null;
   created_at: number;
   updated_at: number;
+  source: string;
+  retired_at: number | null;
 }
 
 export interface BindingRow {
@@ -51,7 +53,19 @@ function toEnv(r: EnvRow): StoredEnv {
     secrets: r.secrets ? (JSON.parse(decrypt(r.secrets)) as Record<string, string>) : {},
     defaultDir: r.default_dir,
     updatedAt: Number(r.updated_at),
+    source: r.source === "definition" ? "definition" : "user",
+    retired: r.retired_at != null,
   };
+}
+
+/** The team id every definition row carries: `def~<tenant>`. No Slack team id contains `~`. */
+export const DEFINITION_TEAM_PREFIX = "def~";
+
+/** A definition row (a shared environment synced from the deploy repository) is changed by sync only. */
+export class DefinitionManagedError extends Error {
+  constructor() {
+    super("this environment is defined in the repository; change it there");
+  }
 }
 
 const sealSecrets = (s: Record<string, string> | undefined): string | null =>
@@ -72,6 +86,7 @@ export async function createEnv(i: {
   secrets?: Record<string, string>;
   defaultDir?: string | null;
 }): Promise<StoredEnv> {
+  if (i.teamId.startsWith(DEFINITION_TEAM_PREFIX)) throw new DefinitionManagedError();
   if (!ENV_NAME_RE.test(i.name)) throw new Error("invalid environment name");
   if (await findEnvByName(i.teamId, i.userId, i.name)) throw new EnvNameTakenError(i.name);
   const now = Date.now();
@@ -96,6 +111,7 @@ export async function updateEnv(
 ): Promise<StoredEnv | null> {
   const cur = await getEnv(id);
   if (!cur) return null;
+  if (cur.source === "definition") throw new DefinitionManagedError();
   if (p.name !== undefined && p.name !== cur.name) {
     if (!ENV_NAME_RE.test(p.name)) throw new Error("invalid environment name");
     if (await findEnvByName(cur.teamId, cur.userId, p.name)) throw new EnvNameTakenError(p.name);
@@ -168,6 +184,8 @@ export async function freeName(teamId: string, userId: string, prefix: string): 
 /** Delete an environment and every binding to it. Returns the removed bindings
  *  so the caller can end remote mode in those threads. */
 export async function deleteEnv(id: string): Promise<BindingRow[]> {
+  const cur = await getEnv(id);
+  if (cur?.source === "definition") throw new DefinitionManagedError();
   const bindings = await bindingsForEnv(id);
   await db.run("DELETE FROM env_bindings WHERE env_id = ?", [id]);
   await db.run("DELETE FROM environments WHERE id = ?", [id]);

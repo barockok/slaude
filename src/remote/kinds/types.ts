@@ -23,6 +23,10 @@ export interface StoredEnv {
   secrets: Record<string, string>;
   defaultDir: string | null;
   updatedAt: number;
+  /** `definition`: a shared environment synced from the deploy repository (changed by sync only). */
+  source: "user" | "definition";
+  /** A definition row whose file was removed: refused everywhere. Always false for a user row. */
+  retired: boolean;
 }
 
 /** What a provisioned kind hands back for one binding's sandbox. Stored
