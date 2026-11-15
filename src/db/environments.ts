@@ -58,6 +58,7 @@ function toEnv(r: EnvRowShape): StoredEnv {
     secrets: r.secrets ? (JSON.parse(decrypt(r.secrets)) as Record<string, string>) : {},
     defaultDir: r.default_dir,
     updatedAt: Number(r.updated_at),
+    tenantId: r.tenant_id ?? "default",
     source: r.source === "definition" ? "definition" : "user",
     retired: r.retired_at != null,
   };

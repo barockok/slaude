@@ -77,7 +77,8 @@ import {
 } from "./remote-command";
 import { activeRemoteTarget } from "../../remote/active";
 import { sweepIdleSandboxes } from "../../remote/env-runtime";
-import { makeMonoRemoteFactory, monoRemoteResolver } from "../../remote/mono";
+import { makeMonoRemoteFactory, monoRemoteResolver, monoSharedBindingGuard } from "../../remote/mono";
+import { turnKindOf } from "../../remote/definitions/decision";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { surfaceOfSession } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
@@ -1321,7 +1322,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   if (env.remote.enabled() && env.role() !== "gateway") {
     // Mono: the query runs in this process, so resolve the target from the DB
     // and open the helper here. In split deploys the node does this from claims.
-    agent.setRemote(monoRemoteResolver, makeMonoRemoteFactory());
+    // A shared environment is checked per persona, and only for an interactive turn.
+    const kindOf = (sessionId: string) => {
+      const c = routes.get(sessionId)?.ctx;
+      return c && !c.wake && !c.unattended ? turnKindOf({ origin: c.origin }) : turnKindOf({ origin: c?.origin, wake: c?.wake, backgroundRunId: c?.unattended ? "unattended" : undefined });
+    };
+    agent.setRemote((sid) => monoRemoteResolver(sid, kindOf), makeMonoRemoteFactory(undefined, kindOf));
+  } else if (env.role() !== "gateway") {
+    // Remote mode is off: nothing is resolved, except that a thread still bound to a shared machine refuses rather than running on the server.
+    agent.setRemote(monoSharedBindingGuard, makeMonoRemoteFactory());
   }
 
 

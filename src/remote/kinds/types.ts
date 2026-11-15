@@ -23,6 +23,8 @@ export interface StoredEnv {
   secrets: Record<string, string>;
   defaultDir: string | null;
   updatedAt: number;
+  /** The tenant a definition row belongs to; "default" for a user row (a user row is scoped by team and owner instead). */
+  tenantId: string;
   /** `definition`: a shared environment synced from the deploy repository (changed by sync only). */
   source: "user" | "definition";
   /** A definition row whose file was removed: refused everywhere. Always false for a user row. */

@@ -4,6 +4,8 @@ export const GUARDRAILS_CAPABILITY = "guardrails/1";
 export const AGENT_DEFINITION_CAPABILITY = "agent-definition/1";
 /** The node capability that says a node can run a channel session (one session per channel, wake and normal turns on it). */
 export const CHANNEL_SESSION_CAPABILITY = "channel-session/1";
+/** The node capability that says a node runs a turn on a shared environment (the claim, the key fetch and the per-persona rules of environment definitions). Newer than the three above. */
+export const SHARED_ENV_CAPABILITY = "shared-env/1";
 /** The request header a node lists its capabilities in. */
 export const CAPABILITIES_HEADER = "x-slaude-capabilities";
 
@@ -17,4 +19,9 @@ export function hasCapability(header: string | null | undefined, cap = GUARDRAIL
  *  guardrails, and leave the compiled global mandate out of the prompt. */
 export function definitionNeedsNode(d: { skills?: string[]; guardrails?: string[] } | null | undefined): boolean {
   return !!d;
+}
+
+/** Whether an agent's stored definition declares shared environments (so only a node with {@link SHARED_ENV_CAPABILITY} may take its turns). */
+export function definitionNeedsSharedEnv(d: { environment?: unknown } | null | undefined): boolean {
+  return !!d && d.environment !== undefined && d.environment !== null;
 }
