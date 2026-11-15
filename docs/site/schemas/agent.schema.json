@@ -406,6 +406,46 @@
       ],
       "description": "Knowledge bases and background learning."
     },
+    "environment": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "allow": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^env:[a-z0-9][a-z0-9-]{0,40}$"
+              },
+              "minItems": 1,
+              "maxItems": 16,
+              "description": "Shared environments this agent may use, as env:<name> references to files under environments/. A thread runs on one only after /env use env:<name>, and only for turns of an agent that allows it. 1 to 16 entries, no repeats. Required. Example: [env:team-sandbox]",
+              "uniqueItems": true
+            },
+            "default": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^env:[a-z0-9][a-z0-9-]{0,40}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One of the allowed environments to use by default. It is read and checked to be in allow, and is not applied yet: a thread still needs /env use. Example: env:team-sandbox"
+            }
+          },
+          "required": [
+            "allow"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Which shared environments (environments/<name>.yaml) this agent may run threads on. Leave the key out for none. Only references go here: the machine itself is defined in its own file."
+    },
     "proactive": {
       "anyOf": [
         {

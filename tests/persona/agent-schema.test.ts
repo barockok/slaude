@@ -35,8 +35,8 @@ describe("docs/site/schemas/agent.schema.json", () => {
 
   test("unknown keys fail at every level", () => {
     const json = JSON.stringify(buildAgentJsonSchema());
-    // One additionalProperties:false per object: top, mandate, scoped entry, access, approver, access.channels, memory, proactive, channel entry.
-    expect(json.match(/"additionalProperties":false/g)?.length).toBe(9);
+    // One additionalProperties:false per object: top, mandate, scoped entry, access, approver, access.channels, memory, environment, proactive, channel entry.
+    expect(json.match(/"additionalProperties":false/g)?.length).toBe(10);
   });
 });
 
@@ -69,5 +69,6 @@ describe("JSON Schema parity with the validator (ajv)", () => {
   test("repeated skills and guardrails are flagged in the editor too", () => {
     expect(validate({ name: "a", soul: "x", skills: ["a", "a"] })).toBe(false);
     expect(validate({ name: "a", soul: "x", guardrails: ["a", "a"] })).toBe(false);
+    expect(validate({ name: "a", soul: "x", environment: { allow: ["env:a", "env:a"] } })).toBe(false);
   });
 });

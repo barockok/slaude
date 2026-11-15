@@ -13,14 +13,14 @@
 import { z } from "zod";
 import { FP_RE, USER_RE } from "../kinds/ssh";
 import { isRemoteDir } from "../shell";
+import { ENV_DEF_NAME_RE } from "./name";
 
 /** Where the docs site serves the generated JSON Schema. */
 export const ENVIRONMENT_SCHEMA_URL = "https://barockok.github.io/slaude/schemas/environment.schema.json";
 /** First line of an environment definition: editors running yaml-language-server read the schema from it. */
 export const ENVIRONMENT_YAML_MODELINE = `# yaml-language-server: $schema=${ENVIRONMENT_SCHEMA_URL}`;
 
-/** A definition name, and the `env:<name>` reference to it. Stricter than the reference grammar's id. */
-export const ENV_DEF_NAME_RE = /^[a-z0-9][a-z0-9-]{0,40}$/;
+export { ENV_DEF_NAME_RE };
 export const ENV_DEF_DESCRIPTION_MAX = 500;
 export const ENV_DEF_DIR_MAX = 1024;
 export const ENV_DEF_HOST_MAX = 253;

@@ -34,6 +34,10 @@ export function buildAgentJsonSchema(): Record<string, unknown> {
     const list = (Array.isArray(p.anyOf) ? p.anyOf.find((x: Record<string, unknown>) => x.type === "array") : p) as Record<string, unknown>;
     list.uniqueItems = true;
   }
+  // A repeated environment is refused by the validator too.
+  const envProps = ((props.environment as { anyOf: Record<string, any>[] }).anyOf.find((m) => m.properties)!).properties;
+  const allowList = (Array.isArray(envProps.allow.anyOf) ? envProps.allow.anyOf.find((x: Record<string, unknown>) => x.type === "array") : envProps.allow) as Record<string, unknown>;
+  allowList.uniqueItems = true;
   // `mode` accepts any value (an unknown one is a warning, read as extend), so it
   // gets examples for the editor and no type constraint.
   const scoped = ((props.mandate as { anyOf: Record<string, any>[] }).anyOf.find((m) => m.properties)!).properties.scoped;

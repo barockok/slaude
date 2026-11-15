@@ -14,7 +14,7 @@ import { MANDATE_LINE_MAX, subMandatesOf, type SubMandate } from "../soul/mandat
 import { env } from "../config/env";
 import { SoulDataSchema, type AccessEntry, type AccessRef, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
 import { channelOf, endsInOpenFence, isCodeFence, parseProactive, parseWindow } from "../soul/proactive";
-import { AgentSchema, BOUNDARY_RE, CHANNEL_ID_RE, DESCRIPTION_MAX, USER_ID_RE, type AgentFile } from "./agent-schema";
+import { AgentSchema, BOUNDARY_RE, CHANNEL_ID_RE, DESCRIPTION_MAX, ENVIRONMENT_INLINE_MSG, USER_ID_RE, type AgentFile } from "./agent-schema";
 import { anchored, parseRef, refScheme, SRC } from "../refs/parse";
 import type { Ref } from "../refs/types";
 import type { ZodIssue } from "zod";
@@ -45,6 +45,9 @@ function firstIssue(issues: ZodIssue[]): { path: string; message: string } {
     .sort((a, b) => a.path.length - b.path.length)[0];
   const issue = unknown ?? issues[0]!;
   const base = issue.path.map((seg, i) => pathSegment(seg, i, issue.path)).reduce((acc, s) => (s.startsWith("[") || !acc ? acc + s : `${acc}.${s}`), "");
+  if (issue.code === "unrecognized_keys" && issue.path.length === 1 && issue.path[0] === "environment") {
+    return { path: "environment", message: ENVIRONMENT_INLINE_MSG };
+  }
   if (issue.code === "unrecognized_keys") {
     const k = String(issue.keys[0] ?? "");
     return { path: `${base ? `${base}.` : ""}${safeKey(k)}`, message: "is not a known key" };
@@ -79,7 +82,7 @@ export interface CompiledAgent {
     mcp?: unknown;
     kbSources?: unknown;
     background?: unknown;
-    definition: { description?: string; skills?: string[]; guardrails?: string[]; soulData: SoulData };
+    definition: { description?: string; skills?: string[]; guardrails?: string[]; environment?: { allow: string[]; default?: string }; soulData: SoulData };
   };
   warnings: string[];
 }
@@ -156,6 +159,15 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const guardrails = noRepeats("guardrails", file.guardrails ?? undefined);
 
   const memory = file.memory ?? {};
+
+  // Shared environments, by name without the `env:` prefix. `default` is stored and not applied yet.
+  let environment: { allow: string[]; default?: string } | undefined;
+  if (file.environment) {
+    const allow = noRepeats("environment.allow", file.environment.allow.map((r) => r.slice("env:".length)))!;
+    const def = file.environment.default ? file.environment.default.slice("env:".length) : undefined;
+    if (def !== undefined && !allow.includes(def)) fail("environment.default", "must be one of the references in environment.allow");
+    environment = { allow, ...(def !== undefined ? { default: def } : {}) };
+  }
 
   const mandate = file.mandate ?? {};
   const global = mandate.global ?? undefined;
@@ -342,6 +354,7 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
         ...(description !== undefined ? { description } : {}),
         ...(skills !== undefined ? { skills } : {}),
         ...(guardrails !== undefined ? { guardrails } : {}),
+        ...(environment ? { environment } : {}),
         soulData,
       },
     },
