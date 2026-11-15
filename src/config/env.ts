@@ -759,6 +759,24 @@ export const env = {
       return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
     },
   },
+  boundary: {
+    /**
+     * `SLAUDE_BOUNDARY_WRITE` (default on): writers store `boundary_id` and
+     * `locator` next to the Slack columns when the boundary is already cached.
+     * `off` stores NULL pairs and turns the fill and the check into no-ops.
+     * Read on every call.
+     */
+    write: (): boolean => {
+      const raw = opt("SLAUDE_BOUNDARY_WRITE", "on").trim().toLowerCase();
+      return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
+    },
+    /** Most milliseconds the resolver's async read may take (default 300). */
+    timeoutMs: (): number => numberAtLeastZero("SLAUDE_BOUNDARY_TIMEOUT_MS", 300),
+    /** Periodic fill cadence in ms (default 10 minutes); 0 disables it. */
+    fillIntervalMs: (): number => numberAtLeastZero("SLAUDE_BOUNDARY_FILL_INTERVAL_MS", 600_000),
+    /** Most rows one fill tick updates across tables (default 2000). */
+    fillMaxRows: (): number => intAtLeastOne("SLAUDE_BOUNDARY_FILL_MAX_ROWS", 2000),
+  },
   remote: {
     /** `/remote` — run a thread's shell and file tools on the initiator's own
      *  machine over tailcat SSH. Default off; ships behind this flag. */

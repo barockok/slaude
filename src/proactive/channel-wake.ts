@@ -108,7 +108,7 @@ async function startChannelWake(r: Run, d: Job, managerId: string, app: AppRef, 
     return "no-model";
   }
   try {
-    if (!(await ChannelWake.noteStart(r.agentId, d.channel, d.hash, run.runId, now))) {
+    if (!(await ChannelWake.noteStart(r.agentId, d.channel, d.hash, run.runId, now, app.teamId))) {
       // Another start claimed this channel first: its run owns the row.
       await finishSkillCheck({ runId: run.runId, agentId: run.agentId, usage: {}, outcome: "ok", pass: "heartbeat-wake" }).catch(() => {});
       count("busy");

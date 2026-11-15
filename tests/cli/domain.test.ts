@@ -13,6 +13,7 @@ const report = (dryRun: boolean): ReconcileReport => ({
   workspaceGrants: { total: 1, mismatched: 1, rows: [{ grantId: "grant-1", teamId: "T0EXAMPLE" }], unjudged: 0 },
   unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0, unaccounted: 0 },
   typedGrantSubjects: 0,
+  boundaryColumns: {},
   startedAt: 1,
   finishedAt: 2,
 });

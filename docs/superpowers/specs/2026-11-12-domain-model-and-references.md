@@ -219,6 +219,10 @@ Records are created the first time they are referenced.
       are only `conflict` and `two-emails`.
 - **D, sessions and thread-scoped tables** gain a boundary column read through a
   resolver, and the unique indexes move after one release.
+  Status: rc.22 adds the nullable `boundary_id` and `locator` columns, writes
+  them beside the Slack columns and fills old rows (nothing reads them, no key
+  changes); the in-row check and the gate for the index move are rc.23. See
+  `docs/plans/2026-11-15-domain-sessions-slice-d.md`.
 - **E, environments as definitions** and the `environment:` key.
 - **F, memory slices and MCP credentials** fold into users. Last, because it
   touches the brain.

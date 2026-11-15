@@ -237,7 +237,7 @@ export async function useEnvironment(
       auditOneOnOne("one_on_one.locked", { userId, sessionId: ctx.sessionId, channelId, threadTs, lockedUser: userId, via: "env" });
       lockByEnv = true;
     }
-    await Envs.bind({ channelId, threadTs, envId: env.id, dir: pf.dir, lockByEnv });
+    await Envs.bind({ channelId, threadTs, teamId, envId: env.id, dir: pf.dir, lockByEnv });
     forgetRemoteStatus(ctx.sessionId);
     ctx.reload();
     await ctx.reply(
@@ -251,7 +251,7 @@ export async function useEnvironment(
   // Already on this sandbox: keep it (re-binding would orphan the running one).
   const same = existing?.env.id === env.id;
   if (existing && !same) await endRemoteForThread(channelId, threadTs, { sessionId: ctx.sessionId, cleanup: deps.cleanup });
-  if (!same) await Envs.bind({ channelId, threadTs, envId: env.id, dir, lockByEnv: false });
+  if (!same) await Envs.bind({ channelId, threadTs, teamId, envId: env.id, dir, lockByEnv: false });
   const fail = async (why: string) => {
     // A sandbox that was already running here stays; a new binding is undone.
     const gone = same ? null : await Envs.clearBinding(channelId, threadTs);

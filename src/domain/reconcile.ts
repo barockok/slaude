@@ -72,6 +72,7 @@ import * as Domain from "../db/domain";
 import { normaliseEmail, projectLink, projectLogin, userForAccount } from "../db/account-projection";
 import { purgeExpiredLinkTokens } from "../db/link-token-uses";
 import { db as globalDb, type DbClient } from "../db/schema";
+import { fillBoundaryColumns, type BoundaryColumnsReport, type FillOptions } from "./boundary-backfill";
 
 export const RECONCILE_LOCK_KEY: [number, number] = [0x534c4155, 2];
 export const PAGE_SIZE = 500;
@@ -156,6 +157,8 @@ export interface ReconcileReport {
   unprovenEmails: UnprovenEmails;
   /** Stored user grants whose subject is typed (a colon or an at sign). The legacy readers drop them until the access flip; report only. */
   typedGrantSubjects: number;
+  /** Slice D: `boundary_id` and `locator` filled on rows that lack them (would be, in a dry run), per table. At most one capped batch per table; the periodic fill takes the rest. Empty when SLAUDE_BOUNDARY_WRITE is off. */
+  boundaryColumns: BoundaryColumnsReport;
   startedAt: number;
   finishedAt: number;
 }
@@ -175,6 +178,10 @@ export interface ReconcileOptions {
    * Off by default and never set by the boot hook; ignored in a dry run.
    */
   demoteUnprovenEmails?: boolean;
+  /** The boundary stage (tests). */
+  boundaryFill?: typeof fillBoundaryColumns;
+  /** Where the boundary stage hands channels that have no boundary yet (default: first sight). Tests. */
+  boundaryHandOff?: FillOptions["handOff"];
   /** Skip the lock and the in-process queue (tests of the insert-or-ignore path). */
   unlocked?: boolean;
   log?: (msg: string) => void;
@@ -250,6 +257,7 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 },
     unprovenEmails: { total: 0, byIssuer: {}, demoted: 0, unaccounted: 0 },
     typedGrantSubjects: 0,
+    boundaryColumns: {},
     startedAt,
     finishedAt: startedAt,
   };
@@ -540,6 +548,18 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
   await fillLockTeams(c, { dry, pageSize, pg, place, report: report.lockTeams });
   report.workspaceGrants = await workspaceGrantReport(c, { pageSize, pg, workspaces });
 
+  // 7. Slice D: boundary_id and locator on rows written before the columns or before the boundary.
+  // One capped batch per table; the periodic fill (gateway background loop) takes the rest.
+  if (env.boundary.write()) {
+    // Isolated: a failure here must not abort the stages after it or lose the report.
+    try {
+      report.boundaryColumns = await (opts.boundaryFill ?? fillBoundaryColumns)(c, { dryRun: dry, pageSize, maxRows: env.boundary.fillMaxRows(), perTable: true, place, handOff: opts.boundaryHandOff });
+    } catch (e) {
+      opts.log?.(`domain reconcile: boundary columns stage failed (skipped): ${e instanceof Error ? e.message : String(e)}`);
+      console.warn(`[domain] reconcile boundary stage failed (skipped): ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   report.typedGrantSubjects = Number(
     (await c.one<{ n: number }>("SELECT COUNT(*) AS n FROM agent_grants WHERE subject_kind = 'user' AND (subject_id LIKE '%:%' OR subject_id LIKE '%@%')"))?.n ?? 0,
   );
@@ -560,14 +580,14 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
 
   report.finishedAt = Date.now();
   // A no-op run (nothing created, no conflict) stays silent: boot would otherwise add one audit row per start.
-  if (!dry && (totalCreated(report) > 0 || report.conflicts.length > 0 || report.grantSubjects.created > 0 || report.lockTeams.created > 0)) {
+  if (!dry && (totalCreated(report) > 0 || report.conflicts.length > 0 || report.grantSubjects.created > 0 || report.lockTeams.created > 0 || boundaryFilled(report) > 0)) {
     const write = opts.audit ?? ((i: AuditInput) => audit(i));
     await write({
       actorKind: "system",
       actorId: "system",
       action: SUMMARY_ACTION,
       targetKind: "domain",
-      summary: `domain reconcile: ${totalCreated(report)} record(s) created, ${report.conflicts.length} conflict(s), ${report.grantSubjects.created} grant(s) and ${report.lockTeams.created} lock(s) filled`,
+      summary: `domain reconcile: ${totalCreated(report)} record(s) created, ${report.conflicts.length} conflict(s), ${report.grantSubjects.created} grant(s), ${report.lockTeams.created} lock(s) and ${boundaryFilled(report)} boundary column row(s) filled`,
       details: { ...report },
     }).catch((e) => console.warn(`[domain] reconcile summary audit failed: ${(e as Error).message}`));
   }
@@ -831,6 +851,10 @@ async function hasVerified(c: DbClient, userId: string): Promise<boolean> {
   return Number(r?.n ?? 0) > 0;
 }
 
+export function boundaryFilled(r: ReconcileReport): number {
+  return Object.values(r.boundaryColumns).reduce((n, t) => n + t.filled + t.repaired, 0);
+}
+
 export function totalCreated(r: ReconcileReport): number {
   return Object.values(r.sources).reduce((n, s) => n + s.created, 0);
 }
@@ -863,6 +887,10 @@ export function formatReconcileReport(r: ReconcileReport): string {
   for (const [label, s] of [["grant subjects", r.grantSubjects], ["lock teams", r.lockTeams]] as const) {
     const skipped = Object.entries(s.skipped).map(([k, n]) => `${k} ${n}`).join(", ");
     lines.push(`  ${label.padEnd(17)} ${verb} ${s.created} filled, complete ${s.existing}${skipped ? `, skipped (${skipped})` : ""}`);
+  }
+  for (const [table, t] of Object.entries(r.boundaryColumns)) {
+    const other = (["ineligible", "ambiguous", "no_workspace", "no_boundary", "team_unknown", "no_locator"] as const).filter((k) => t[k] > 0).map((k) => `${k} ${t[k]}`).join(", ");
+    lines.push(`  boundary ${table.padEnd(20)} ${verb} ${t.filled} filled, complete ${t.existing}${t.handed_to_first_sight ? `, handed to first sight ${t.handed_to_first_sight}` : ""}${t.repaired ? `, locators repaired ${t.repaired}` : ""}${other ? `, left (${other})` : ""}`);
   }
   const w = r.workspaceGrants;
   if (w.mismatched === 0) lines.push(`  workspace grants: ${w.total} checked, none name an unconnected team${w.unjudged ? ` (${w.unjudged} not judged: no known workspace)` : ""}`);
@@ -900,7 +928,7 @@ export async function reconcileAtBoot(o: {
     // A notice still pending long after its merge was never sent (the process that made it died): say so.
     await sweepPendingNotices().then((n) => n > 0 && log(`${n} merge notice(s) were never sent (marked failed)`)).catch(() => {});
     const r = await (o.run ?? reconcile)({ liveTeamIds: o.liveTeamIds, log });
-    if (totalCreated(r) === 0 && r.conflicts.length === 0) log("reconcile: nothing to do");
+    if (totalCreated(r) === 0 && r.conflicts.length === 0 && boundaryFilled(r) === 0) log("reconcile: nothing to do");
     else log(`reconcile done: ${totalCreated(r)} created, ${r.conflicts.length} conflict(s)\n${formatReconcileReport(r)}`);
     // Report only: demotion is an operator's explicit CLI run, never the boot hook's.
     await warnInactiveRefs();

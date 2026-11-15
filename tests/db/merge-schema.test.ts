@@ -89,11 +89,11 @@ describe("upgrade from 0040", () => {
       const all = loadMigrations();
       await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version < "0041") });
       await db.run(`INSERT INTO users (id, created_at, updated_at) VALUES ('u1', 1, 1)`);
-      const r = await runMigrations(db, { log: () => {}, migrations: all });
+      const r = await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version <= "0041") });
       expect(r.applied).toEqual(["0041"]);
       expect(await db.one("SELECT 1 AS x FROM users WHERE id = 'u1'")).not.toBeNull();
       expect(Number((await db.one<{ n: number }>("SELECT COUNT(*) AS n FROM user_merges"))!.n)).toBe(0);
-      expect((await runMigrations(db, { log: () => {}, migrations: all })).applied).toEqual([]);
+      expect((await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version <= "0041") })).applied).toEqual([]);
     } finally {
       await db.close();
     }

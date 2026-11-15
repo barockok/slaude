@@ -65,3 +65,30 @@ describe("the db facade in the node role", () => {
     });
   }
 });
+
+// Slice D: the boundary resolver answers "unknown" on a node and never reaches
+// the database facade (which would throw NodeDbAccessError).
+describe("the boundary resolver in the node role", () => {
+  test("cached is undefined, async is null, and no database is touched", async () => {
+    const home = mkdtempSync(join(tmpdir(), "slaude-node-boundary-"));
+    try {
+      const script = `
+        const B = await import(${JSON.stringify(join(import.meta.dir, "../../src/domain/boundary-for.ts"))});
+        B.primeBoundary("T0EXAMPLE", "C0EXAMPLE", "b-example");
+        const cached = B.boundaryForCached("T0EXAMPLE", "C0EXAMPLE");
+        const async = await B.boundaryFor("T0EXAMPLE", "C0EXAMPLE");
+        console.log("RESULT:" + JSON.stringify({ cached: cached === undefined ? "undefined" : cached, async }));
+      `;
+      const proc = Bun.spawn(["bun", "-e", script], {
+        env: { PATH: process.env.PATH ?? "", HOME: home, SLAUDE_HOME: home, SLAUDE_ROLE: "node", SLAUDE_DB: "pg" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      await proc.exited;
+      const out = await new Response(proc.stdout).text();
+      expect(out).toContain('RESULT:{"cached":"undefined","async":null}');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});

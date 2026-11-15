@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { boundaryOnly } from "./boundary-columns";
 import type { Level } from "../proactive/levels";
 import { db } from "./schema";
 
@@ -93,9 +94,9 @@ export async function recordPost(
 ): Promise<string> {
   const id = p.id ?? randomUUID();
   await db.run(
-    `INSERT INTO proactive_posts (id, agent_id, audience, recipient, topic, text_hash, evidence_hash, channel_id, message_ts, team_id, posted_at, text, context, app_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, p.agentId, p.audience, p.recipient, p.topic, p.textHash, p.evidenceHash, p.channelId, p.messageTs, p.teamId, p.postedAt, p.text ?? null, p.context ? JSON.stringify(p.context) : null, p.appId ?? null],
+    `INSERT INTO proactive_posts (id, agent_id, audience, recipient, topic, text_hash, evidence_hash, channel_id, message_ts, team_id, posted_at, text, context, app_id, boundary_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, p.agentId, p.audience, p.recipient, p.topic, p.textHash, p.evidenceHash, p.channelId, p.messageTs, p.teamId, p.postedAt, p.text ?? null, p.context ? JSON.stringify(p.context) : null, p.appId ?? null, boundaryOnly(p.teamId, p.channelId)],
   );
   return id;
 }

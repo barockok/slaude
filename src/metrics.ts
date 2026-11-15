@@ -286,5 +286,8 @@ export const m = {
   accessDecisionTotal: metrics.counter("slaude_access_decision_total", "Access decisions made through the seam, labeled by source of the returned answer (legacy|internal|fallback_legacy), site and result. fallback_legacy: the internal path could not answer; ordinary questions got the legacy result, privileged ones a refusal."),
   grantsReadFailuresTotal: metrics.counter("slaude_grants_read_failures_total", "Stored agent grant reads that failed; access fell back to the soul-derived grants alone."),
   auditWriteFailuresTotal: metrics.counter("slaude_audit_write_failures_total", "Audit events that could not be written (database row or stdout line). The decision they record still stands."),
+  boundaryResolveTotal: metrics.counter("slaude_boundary_resolve_total", "Boundary resolver lookups for session and thread rows, labeled by outcome (hit|miss|found|absent|timeout|error|no_team)."),
+  boundaryFillTotal: metrics.counter("slaude_boundary_fill_total", "Rows the boundary fill examined, labeled by table and outcome (filled|existing|ineligible|ambiguous|no_workspace|no_boundary|handed_to_first_sight|error)."),
+  boundaryCheckTotal: metrics.counter("slaude_boundary_check_total", "In-row boundary parity checks, labeled by site and outcome (match|both_none|null_row|unresolved|mismatch|locator_mismatch|unverified)."),
   backgroundRunsTotal: metrics.counter("slaude_background_runs_total", "Background learning pass runs, labeled by agent, pass and outcome (ok|skipped-budget|stopped-budget|error)."),
 };

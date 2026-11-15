@@ -992,6 +992,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     .catch((e) => console.error("[gates] boot sweep failed:", e));
   // The skill version log: reconcile now, then on a timer. Best effort, never blocks boot.
   const stopSkillVersionReconciler = startSkillVersionReconciler();
+  // Domain sessions, slice D: the periodic boundary fill, started once Slack auth knows the workspaces.
+  let boundaryFillStopped = false;
+  let stopBoundaryFill: () => Promise<void> = async () => {
+    boundaryFillStopped = true; // a shutdown before Slack auth finished: start nothing afterwards
+  };
   // Clean up expired ignores + abandoned paste-back OAuth flows every 5 minutes.
   // Each parked flow holds the registered client secret and the PKCE verifier
   // (encrypted), so an abandoned one must not linger until the initiator happens
@@ -1347,6 +1352,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (opts.domainReconcile === true) {
       const { reconcileAtBoot } = await import("../../domain/reconcile");
       void reconcileAtBoot({ role: env.role(), liveTeamIds: () => [...authTeams] });
+      // Completes boundary_id and locator on rows the writers could not (bounded per tick, never on a node).
+      const { startBoundaryFill } = await import("../../domain/boundary-backfill");
+      if (!boundaryFillStopped) {
+        const stop = startBoundaryFill({ liveTeamIds: () => [...authTeams] });
+        stopBoundaryFill = async () => {
+          boundaryFillStopped = true;
+          await stop();
+        };
+      }
     }
   })().catch((e) => console.error("[slack-auth] app listing failed:", e?.message ?? e));
 
@@ -2141,7 +2155,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   async function agentMentionOnly(ctx: SlackContext, active: boolean): Promise<string> {
     const threadTs = ctx.threadTs ?? ctx.inboundTs ?? "";
     if (active) {
-      await MentionOnly.set({ channelId: ctx.channel, threadTs, createdBy: ctx.userId ?? "" });
+      await MentionOnly.set({ channelId: ctx.channel, threadTs, createdBy: ctx.userId ?? "", teamId: ctx.teamId || null });
       return "Mention-only on — I'll reply in this thread only when @-mentioned.";
     }
     if (!await MentionOnly.find(ctx.channel, threadTs)) return "This thread isn't in mention-only mode — nothing to change.";
@@ -3087,7 +3101,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       if (slash.kind === "mention-only") {
         if (slash.action === "on") {
-          await MentionOnly.set({ channelId, threadTs, createdBy: userId });
+          await MentionOnly.set({ channelId, threadTs, createdBy: userId, teamId });
           await reply(":speech_balloon: *mention-only* — I'll reply in this thread only when @-mentioned. `/mention-only off` to restore.");
           return;
         }
@@ -3328,7 +3342,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
               expiresAt = parsed.permanent ? undefined : Date.now() + parsed.minutes * 60 * 1000;
             }
             await Ignores.remove({ targetType: "thread", channelId, threadTs });
-            await Ignores.create({ targetType: "thread", channelId, threadTs, createdBy: userId, expiresAt, reason: "manual" });
+            await Ignores.create({ targetType: "thread", channelId, threadTs, teamId, createdBy: userId, expiresAt, reason: "manual" });
             auditIgnore("ignore.set", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "thread", expiresAt, via: "slash" });
             const durText = duration ? `for ${duration}` : "permanently";
             await reply(`:mute: ignoring this thread ${durText}`);
@@ -5054,6 +5068,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await backgroundScheduler?.stop().catch(() => {});
       cronScheduler.stop();
       stopSkillVersionReconciler();
+      await stopBoundaryFill().catch(() => {});
       stopOwnerGuardrails();
       pluginInventory?.stop();
       unsetMergeNoticeSender();

@@ -1,4 +1,5 @@
 import { db } from "./schema";
+import { pairFor } from "./boundary-columns";
 
 export interface OneOnOneLockRow {
   channel_id: string;
@@ -18,13 +19,18 @@ export interface OneOnOneLockRow {
  * (stored NULL, read as unknown by {@link lockOwnership}).
  */
 export async function lock(input: { channelId: string; threadTs: string; lockedUser: string; createdBy: string; teamId?: string | null }): Promise<void> {
+  const pair = pairFor(input.teamId, input.channelId, input.threadTs);
   await db.run(
-    `INSERT INTO one_on_one_locks (channel_id, thread_ts, locked_user, created_by, created_at, open_scope, team_id)
-     VALUES (?, ?, ?, ?, ?, NULL, ?)
+    `INSERT INTO one_on_one_locks (channel_id, thread_ts, locked_user, created_by, created_at, open_scope, team_id, boundary_id, locator)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
      ON CONFLICT(channel_id, thread_ts)
      DO UPDATE SET locked_user = excluded.locked_user, created_by = excluded.created_by,
-                   created_at = excluded.created_at, open_scope = NULL, team_id = excluded.team_id`,
-    [input.channelId, input.threadTs, input.lockedUser, input.createdBy, Date.now(), input.teamId || null],
+                   created_at = excluded.created_at, open_scope = NULL, team_id = excluded.team_id,
+                   boundary_id = CASE WHEN one_on_one_locks.team_id IS NOT NULL AND excluded.team_id IS NOT NULL AND one_on_one_locks.team_id <> excluded.team_id
+                                      THEN excluded.boundary_id ELSE COALESCE(one_on_one_locks.boundary_id, excluded.boundary_id) END,
+                   locator = CASE WHEN one_on_one_locks.team_id IS NOT NULL AND excluded.team_id IS NOT NULL AND one_on_one_locks.team_id <> excluded.team_id
+                                  THEN excluded.locator ELSE COALESCE(one_on_one_locks.locator, excluded.locator) END`,
+    [input.channelId, input.threadTs, input.lockedUser, input.createdBy, Date.now(), input.teamId || null, pair.boundaryId, pair.locator],
   );
 }
 

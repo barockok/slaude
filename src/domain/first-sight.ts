@@ -14,6 +14,10 @@
  *  - Grid ids (W...), bot ids (B...), USLACKBOT and anything that is not a
  *    Slack id are skipped. A Slack record is never written with workspace ''.
  *  - A node has no database: nothing happens when SLAUDE_ROLE=node.
+ *  - After a boundary is created or found (and committed), the boundary
+ *    resolver's cache is primed (`primeBoundary`), so session writers can store
+ *    its id without a query, and the session rows of that channel written
+ *    before it existed are completed (bounded, compare-and-set).
  *  - New records emit `user.created`, `binding.created`, `boundary.created`
  *    through `emitDomainEvents`. That audit write is made with actor kind
  *    `system` and inside an async-local guard, so the audit seam that calls
@@ -32,6 +36,7 @@ import { db as globalDb, type DbClient } from "../db/schema";
 import * as Domain from "../db/domain";
 import type { DomainEvent } from "../db/domain";
 import { trackFirstSight } from "./first-sight-flush";
+import { CHANNEL_RE, primeBoundary } from "./boundary-for";
 
 export const LRU_CAP = 5000;
 export const RECHECK_MS = 10 * 60 * 1000;
@@ -44,7 +49,6 @@ export const SUMMARY_ACTION = "domain.first_sight.burst";
 const LOG_CAP = 5000;
 
 const USER_RE = /^U[A-Z0-9]+$/;
-const CHANNEL_RE = /^[CGD][A-Z0-9]+$/;
 const SYSTEM_USERS = new Set(["USLACKBOT"]);
 
 export interface ObserveUser {
@@ -71,6 +75,14 @@ export interface FirstSightDeps {
   rowCap?: number;
   now?: () => number;
   log?: (msg: string) => void;
+  /** Prime the boundary resolver's cache. Default: the shared resolver, but only
+   *  when no `db` was injected (an injected database is a test's own, and its ids
+   *  must not reach the shared cache). */
+  prime?: (team: string, channel: string, id: string) => void;
+  /** Complete session rows written before the boundary was known. Default: the
+   *  sessions late fill, but only when no `db` was injected (it targets the
+   *  global database). */
+  lateFill?: (team: string, channel: string, id: string) => Promise<unknown>;
 }
 
 /**
@@ -99,6 +111,16 @@ export function createFirstSight(deps: FirstSightDeps = {}): FirstSight {
   const queueCap = deps.queueCap ?? QUEUE_CAP;
   const rowCap = deps.rowCap ?? ROW_CAP;
   const log = deps.log ?? ((m: string) => console.warn(`[domain] ${m}`));
+  const prime = deps.prime ?? (deps.db ? () => {} : primeBoundary);
+  const lateFill =
+    deps.lateFill ??
+    (deps.db
+      ? undefined
+      : async (team: string, channel: string, id: string) => {
+          // Imported late: sessions.ts imports this module.
+          const { fillBoundaryForChannel } = await import("../db/sessions");
+          return fillBoundaryForChannel(team, channel, id);
+        });
   const emit =
     deps.emit ??
     (async (events, o) => {
@@ -202,7 +224,7 @@ export function createFirstSight(deps: FirstSightDeps = {}): FirstSight {
     return rowCount >= rowCap;
   }
 
-  function start(key: string, tenantId: string | undefined, write: (c: DbClient) => Promise<DomainEvent[]>): void {
+  function start(key: string, tenantId: string | undefined, write: (c: DbClient) => Promise<DomainEvent[]>, after?: () => void): void {
     if (role() === "node" || insideFirstSight()) return;
     if (cached(key) || inflight.has(key)) return;
     const job = { key, dropped: false };
@@ -233,6 +255,11 @@ export function createFirstSight(deps: FirstSightDeps = {}): FirstSight {
         const c = getDb();
         const events = await c.transaction((tx) => write(tx));
         remember(key);
+        try {
+          after?.();
+        } catch {
+          /* a cache prime never fails first sight */
+        }
         if (events.length) rowCount += 1;
         await record(events, tenantId);
       } catch (e) {
@@ -266,13 +293,25 @@ export function createFirstSight(deps: FirstSightDeps = {}): FirstSight {
     observeSlackChannel(i) {
       try {
         if (!i || !i.teamId || !CHANNEL_RE.test(i.channelId ?? "")) return;
-        start(`slack/${i.teamId}/channel/${i.channelId}`, i.tenantId, async (c) => {
-          const r = await Domain.ensureBoundary(
-            { service: "slack", workspace: i.teamId, value: i.channelId, kind: i.channelId.startsWith("D") ? "dm" : "channel", state: "observed" },
-            c,
-          );
-          return r.events;
-        });
+        let boundaryId: string | undefined;
+        start(
+          `slack/${i.teamId}/channel/${i.channelId}`,
+          i.tenantId,
+          async (c) => {
+            const r = await Domain.ensureBoundary(
+              { service: "slack", workspace: i.teamId, value: i.channelId, kind: i.channelId.startsWith("D") ? "dm" : "channel", state: "observed" },
+              c,
+            );
+            boundaryId = r.boundary.id;
+            return r.events;
+          },
+          // After the commit, so a writer never sees an id a rollback removed.
+          () => {
+            if (!boundaryId) return;
+            prime(i.teamId, i.channelId, boundaryId);
+            if (lateFill) void trackFirstSight(lateFill(i.teamId, i.channelId, boundaryId)).catch(() => {});
+          },
+        );
       } catch (e) {
         logOnce("observeSlackChannel", e);
       }

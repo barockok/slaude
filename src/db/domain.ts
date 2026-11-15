@@ -16,6 +16,7 @@
 import { randomUUID } from "node:crypto";
 import { db as globalDb, type DbClient } from "./schema";
 import { flushFirstSightWork } from "../domain/first-sight-flush";
+import { resetBoundaryResolver } from "../domain/boundary-for";
 
 export type State = "declared" | "observed" | "verified";
 export type UserKind = "person" | "bot" | "agent";
@@ -378,5 +379,6 @@ export async function adoptBinding(i: AdoptInput, tx?: DbClient): Promise<AdoptR
 /** Tests: settle fire-and-forget first-sight writes, then clear every domain table (children first). */
 export async function _wipeForTests(): Promise<void> {
   await flushFirstSightWork();
+  resetBoundaryResolver(); // its cached ids point at rows this wipe deletes
   for (const t of ["merge_vetoes", "merge_proposals", "user_merges", "user_aliases", "bindings", "boundaries", "users"]) await globalDb.run(`DELETE FROM ${t}`);
 }
