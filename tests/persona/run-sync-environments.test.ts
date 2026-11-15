@@ -55,7 +55,7 @@ describe.skipIf(!isPg)("environment definition sync", () => {
   test("create: a tenant-qualified row, the def~tenant team, a key pair, names only in the report", async () => {
     const r = await run(payload({ environments: [{ name: "team-sandbox", yaml: envYaml("team-sandbox") }] }));
     expect(r.environments).toEqual({ created: ["team-sandbox"], updated: [], revived: [], unchanged: [], retired: [] });
-    const [row] = await defs();
+    const row = (await defs())[0]!;
     expect(row).toMatchObject({
       id: definitionRowId(T, "team-sandbox"), tenant_id: T, team_id: `def~${T}`, user_id: "team-sandbox", name: "team-sandbox", kind: "ssh",
       source: "definition", definition_name: "team-sandbox", default_dir: "/srv/work", secrets: null, retired_at: null,
@@ -86,11 +86,11 @@ describe.skipIf(!isPg)("environment definition sync", () => {
 
   test("a change updates the row and moves updated_at, keeping the key", async () => {
     await run(payload({ environments: [{ name: "team-sandbox", yaml: envYaml("team-sandbox") }] }));
-    const [a] = await defs();
+    const a = (await defs())[0]!;
     const keyA = await getKey(`def~${T}`, "team-sandbox");
     const r = await run(payload({ environments: [{ name: "team-sandbox", yaml: envYaml("team-sandbox", { dir: "/srv/other" }) }] }));
     expect(r.environments?.updated).toEqual(["team-sandbox"]);
-    const [b] = await defs();
+    const b = (await defs())[0]!;
     expect(b.default_dir).toBe("/srv/other");
     expect(Number(b.updated_at)).toBeGreaterThan(Number(a.updated_at));
     expect(b.definition_hash).not.toBe(a.definition_hash);
@@ -190,8 +190,8 @@ describe.skipIf(!isPg)("environment definition sync", () => {
     const envs = [{ name: "team-sandbox", yaml: envYaml("team-sandbox") }];
     await run(payload({ environments: envs }), { tenant: "tenant-a" });
     await run(payload({ environments: envs }), { tenant: "tenant-b" });
-    const [a] = await defs("tenant-a");
-    const [b] = await defs("tenant-b");
+    const a = (await defs("tenant-a"))[0]!;
+    const b = (await defs("tenant-b"))[0]!;
     expect(a.id).not.toBe(b.id);
     expect(a.team_id).toBe("def~tenant-a");
     expect(b.team_id).toBe("def~tenant-b");
