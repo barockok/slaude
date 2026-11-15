@@ -380,5 +380,5 @@ export async function adoptBinding(i: AdoptInput, tx?: DbClient): Promise<AdoptR
 export async function _wipeForTests(): Promise<void> {
   await flushFirstSightWork();
   resetBoundaryResolver(); // its cached ids point at rows this wipe deletes
-  for (const t of ["merge_vetoes", "merge_proposals", "user_merges", "user_aliases", "bindings", "boundaries", "users"]) await globalDb.run(`DELETE FROM ${t}`);
+  for (const t of ["slice_tombstones", "merge_vetoes", "merge_proposals", "user_merges", "user_aliases", "bindings", "boundaries", "users"]) await globalDb.run(`DELETE FROM ${t}`);
 }
