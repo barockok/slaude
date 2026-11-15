@@ -595,7 +595,10 @@ It fills them at boot, after Slack auth, and you can run the same repair by hand
 on the gateway or mono host (a node has no database and refuses it):
 
 ```sh
-slaude domain reconcile [--dry-run] [--json] [--demote-unproven-emails [--apply]]
+slaude domain reconcile [--dry-run] [--json] [--apply] [--demote-unproven-emails]
+slaude domain slice-tombstone add <user-id> <source|*> --reason <text> [--by <operator>]
+slaude domain slice-tombstone remove <user-id> <source|*>
+slaude domain slice-tombstone list [--json]
 ```
 
 | Flag | Meaning |
@@ -603,7 +606,7 @@ slaude domain reconcile [--dry-run] [--json] [--demote-unproven-emails [--apply]
 | `--dry-run` | Report what would be created and write nothing. |
 | `--json` | Print the report as JSON instead of text. |
 | `--demote-unproven-emails` | Names the unproven email section. On its own it changes nothing; the report is printed on every run. |
-| `--apply` | With `--demote-unproven-emails`, set verified email bindings that no login proved back to `observed`. A login with proof raises them again. Not allowed with `--dry-run`, and the gateway's boot reconcile never does it. |
+| `--apply` | Fill EMPTY credential pointers (`mcp_credentials.user_id`) from each account's user; a pointer that is set is never changed. With `--demote-unproven-emails` it also sets verified email bindings that no login proved back to `observed` (a login with proof raises them again). Not allowed with `--dry-run`, and the gateway's boot reconcile never applies either. |
 
 The report has these sections besides the created and existing counts:
 
@@ -614,8 +617,20 @@ The report has these sections besides the created and existing counts:
 | `workspace grants` | Workspace grants whose subject is not a team this tenant is connected to. Fix or delete these before the access flip. |
 | `unproven email bindings` | Verified email bindings with no proving login, counted per issuer, never an address. |
 | `link tokens` | Expired rows purged from the single-use link ledger. |
+| `verified slack bindings without a link` | Verified Slack bindings with no `slack_identities` row, counted per team. Report only; nothing is repaired. |
+| `slack links without a verified binding` | `slack_identities` rows whose Slack id has no verified binding, counted per team. Report only. |
+| `credential pointers` | Person credential rows: how many have an empty pointer, how many differ from the account's user, how many belong to an account with no user yet, and how many `--apply` filled. |
+| `slice names claimed by two users` | Memory slice names (`user-...`) that bindings of two live users both produce, shown masked with a user count. Review each; no repair. A person-slice union excludes them. |
 
 Bot ids are skipped (reason `bot`), never given a user.
+
+`slaude domain slice-tombstone` is the operator revoke for the person-slice union
+(see the [domain memory and credentials field note](../field-notes/2026-11-15-domain-memory-credentials.md)).
+`add` needs a user id, a `user-` slice name or `*` (no union at all) and a
+`--reason`; the change is audited as the operator (`--by`, default the shell
+user) and the output masks the slice name, so it shows no Slack id. A tombstone
+keyed on a merged-away user id still applies to the survivor. Nothing reads
+tombstones until the union is honoured.
 
 The command is safe to run again: a second run creates nothing. It exits `0` on
 success, `1` if the run fails and `2` for a usage error. A run that created
@@ -632,6 +647,8 @@ something or found a conflict (two accounts with one email) writes one
 | `SLAUDE_BOUNDARY_FILL_INTERVAL_MS` | No | `600000` | How often the gateway's periodic fill completes `boundary_id` and `locator` on rows written without them. `0` disables it. Never runs on a node. |
 | `SLAUDE_BOUNDARY_FILL_MAX_ROWS` | No | `2000` | Most rows one fill tick updates across tables (the boot reconciler stage allows this many per table). A tick that hits the cap continues next tick. |
 | `SLAUDE_MERGE_NOTICE` | No | `on` | Whether a merge sends its Slack notice (one DM to the person and, when a manager or approver grant activates, one to the persona's manager). `off`, `0`, `false` or `no` sends nothing and marks the ledger row `skipped`. The merge itself is unchanged. Read on every call. |
+| `SLAUDE_MERGE_POINTERS` | No | `on` | Whether a user merge repoints credential bookkeeping pointers (`mcp_credentials.user_id`) from the merged-away record to the survivor before the old record is deleted. The pointer is never read for a decision, so this changes no credential behaviour. `off`, `0`, `false` or `no` skips the step and `slaude domain reconcile --apply` fills empty pointers later. A failure in the step never fails the merge. Read on every call. |
+| `SLAUDE_PERSON_SLICES` | No | `off` | Person-slice shadow (rc.22). `off` (also unset, empty or any unknown value, and `union`, which is reserved for the next release): nothing runs and every memory scope is exactly rc.21's. `shadow`: the legacy scope is still used; in the background the gateway computes which `user-` memory slices a person who proved several Slack ids could read, compares with the legacy own slice, and counts it (`slaude_person_slices_shadow_total{site,outcome}`, `slaude_person_slices_failures_total`, `slaude_person_slices_ms`). A disagreement is logged once per site and reason per minute with counts only. Read on every call. Rollback: set it back to `off`. |
 
 ### External MCP env references
 

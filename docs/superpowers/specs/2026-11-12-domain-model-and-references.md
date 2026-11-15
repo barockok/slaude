@@ -234,5 +234,6 @@ release.
 
 - Whether memory slices are renamed on merge or kept behind an alias table.
   Alias table first; revisit in slice F.
+  Amended 2026-11-15 (slice F plan, `docs/plans/2026-11-15-domain-memory-credentials-slice-f.md`): the alias table is dropped and a rename is deferred indefinitely. Memory slices are never renamed or moved; the read set of a person with several verified Slack ids is computed at read time from their current verified bindings (rc.23, behind `SLAUDE_PERSON_SLICES`), and writes stay on the writer's own slice.
 - Slack Enterprise Grid, where user ids span workspaces. The workspace qualifier
   is written so this can be added without changing existing references.
