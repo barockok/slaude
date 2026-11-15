@@ -2,291 +2,231 @@
 
 > For Claude: use superpowers:executing-plans, task by task. One task per commit. A release boundary is a hard stop: soak, check the gate, then continue.
 
-Goal: every session and every thread-scoped or channel-scoped row also records WHICH boundary it belongs to (`boundary_id`, a reference to the slice B `boundaries` record) and WHICH conversation inside it (`locator`, the opaque thread key), written next to the existing Slack columns. The legacy columns stay authoritative and every unique index stays exactly as it is. This slice only proves, with data, that `(boundary_id, locator)` identifies the same rows as `(slack_team_id, slack_channel_id, slack_thread_ts)`. Moving the unique indexes is a LATER release with its own gate (see Follow-up). Nothing in this slice changes which session a message reaches.
+Goal: every session and every thread-scoped or channel-scoped row also records WHICH boundary it belongs to (`boundary_id`, a soft reference to the slice B `boundaries` record) and WHICH conversation inside it (`locator`, the opaque thread key), written next to the existing Slack columns. The legacy columns stay authoritative and every unique index and primary key stays exactly as it is. This slice proves, with data, that `(boundary_id, locator)` identifies the same rows as `(slack_team_id, slack_channel_id, slack_thread_ts)`. Moving the unique indexes is a LATER release with its own gate (Follow-up). Nothing here changes which session a message reaches.
 
-Architecture: one resolver `boundaryFor(team, channel)` (`src/domain/boundary-for.ts`, cached, read-only, never creates a record); dual write at every writer; a new reconciler stage fills old rows in pages under the existing advisory lock; a shadow helper computes the lookup the second way after the legacy answer and counts disagreement, like the slice C access seam (`src/access/decide.ts`). Two release candidates so the release that first writes the columns is not the release that first reads them: rc.22 writes and backfills, rc.23 adds shadow reads.
+Architecture: a cache-only resolver on the write path (`boundaryForCached`, no await before an insert), first sight primes it; dual write at every writer; a periodic bounded fill in the gateway background loop (plus the existing reconciler stage) that fills old and missed rows; a parity check done IN-ROW on rows the legacy query already fetched (no second query, no sampling). Two release candidates: rc.22 writes, migrates and fills; rc.23 adds the in-row check and `slaude domain boundary-check`.
 
-Spec: `docs/superpowers/specs/2026-11-12-domain-model-and-references.md` (slice D: "sessions and thread-scoped tables gain a boundary column read through a resolver, and the unique indexes move after one release"; "A thread is not a boundary. It is an opaque conversation locator inside one. A session identity becomes (agent, boundary, locator)"). Builds on slice B (`docs/plans/2026-11-14-domain-records-slice-b.md`: `src/db/domain.ts` `ensureBoundary`, `src/domain/first-sight.ts`, `src/domain/reconcile.ts`) and slice C (`docs/plans/2026-11-14-domain-access-slice-c.md`: the `SLAUDE_ACCESS_SOURCE` seam and its metrics).
+Spec: `docs/superpowers/specs/2026-11-12-domain-model-and-references.md` (slice D: "sessions and thread-scoped tables gain a boundary column read through a resolver, and the unique indexes move after one release"; "A thread is not a boundary. It is an opaque conversation locator inside one. A session identity becomes (agent, boundary, locator)"). Builds on slice B (`docs/plans/2026-11-14-domain-records-slice-b.md`) and slice C (`docs/plans/2026-11-14-domain-access-slice-c.md`, the `SLAUDE_ACCESS_SOURCE` seam).
 
 ## Scope
 
-In: additive nullable columns and dual write; resolver; backfill; shadow parity; read-only console fields; the gate for the follow-up.
-Out (explicit): any unique index or primary key change; any lookup that returns the new answer; changing job token claims or what a node receives as authority; boundary merge; non-Slack services; Grid shared channels; DDL on `audit_events`.
+In: additive nullable columns, dual write, resolver, periodic fill, in-row parity, gate for the follow-up.
+Out (explicit): any unique index or primary key change; any lookup that returns the new answer; changing job token claims or what a node receives; REST `SessionView` and console additions; boundary merge or delete; non-Slack services; Grid shared channels; DDL on `audit_events`; creating boundaries anywhere except first sight.
 
 ## What exists (verified in the tree at rc.21)
 
-- `boundaries (id, kind, display_name, service, workspace, value, state, ...)`, `UNIQUE (service, workspace, value)`, `CHECK (service <> 'slack' OR workspace <> '')` (migration 0038). `ensureBoundary` is insert-or-ignore then re-read, never downgrades state (`src/db/domain.ts:246`).
-- First sight (`src/domain/first-sight.ts`): `observeSlackChannel` is called from `Sessions.createForThread` (`src/db/sessions.ts:80`) and from the audit writer via `observeFromAudit`. It uses a per-process LRU (`LRU_CAP` 5000, `RECHECK_MS` 10 min, `NEG_TTL_MS` 30 s), a bounded queue and burst summaries, is skipped when `env.role() === "node"`, and never throws into the caller. Creation is asynchronous: a session row can be written BEFORE its boundary exists.
-- `workspaceForAudit`/`liveOnly` pick the workspace when a row carries no team: the session's team, else the single live workspace, else nothing.
-- Reconciler (`src/domain/reconcile.ts`): keyset pages of `PAGE_SIZE` 500, one transaction per page, `RECONCILE_LOCK_KEY` Postgres advisory lock plus an in-process queue, dry run, a report with `skipped` reasons (`ambiguous`, `no_workspace`), a capped mismatch list, one summary audit event, never writes workspace `''`. Stage 5 already places `subject_ref`, `subject_user_id` and `one_on_one_locks.team_id` the same way.
-- Shadow seam pattern: `env.access.source()` read per call, `m.accessShadowTotal` counter, `logOncePerMinute`, a timeout, fall back to legacy.
-- Migrations run one file per transaction under an advisory lock (`src/db/migrate.ts`), so `CREATE INDEX CONCURRENTLY` cannot appear in a numbered migration. Next free number: 0042. Sqlite is mirrored by hand in `src/db/drivers/sqlite.ts` (PRAGMA table_info then ALTER), with a drift test (`tests/db/schema-drift.test.ts`).
+- `boundaries (id, kind, service, workspace, value, state, ...)`, `UNIQUE (service, workspace, value)`, `CHECK (service <> 'slack' OR workspace <> '')` (0038). `ensureBoundary` is insert-or-ignore then re-read (`src/db/domain.ts:246`). No code path deletes a boundary; the only delete is `_wipeForTests` (`src/db/domain.ts:381`), which runs with sqlite `PRAGMA foreign_keys = ON` (`src/db/drivers/sqlite.ts:873`).
+- First sight (`src/domain/first-sight.ts`): called from `Sessions.createForThread` (`src/db/sessions.ts:80`) and the audit writer. Per-process LRU, queue, `BURST_LIMIT`, drops under caps, `CHANNEL_RE = /^[CGD][A-Z0-9]+$/` (line 47), skipped on a node. Creation is asynchronous and can be dropped, so a session row can exist with no boundary.
+- `ensureSession` does find then create (`src/agent/manager.ts:1007-1035`), with a retry-on-unique-violation read. A brand new thread is therefore always "not found" first, then inserted.
+- Reconciler (`src/domain/reconcile.ts`): keyset pages of 500, one transaction per page, `RECONCILE_LOCK_KEY` advisory lock plus in-process queue, dry run, capped report lists, one summary audit event. It runs only at gateway boot (`reconcileAtBoot`, `reconcile.ts:891`, called with `void` at `src/gateway/core/gateway.ts:1349`, runs to completion under the lock, no time budget) and from `slaude domain reconcile`.
+- Gateway background timers exist (`gateway.ts:731`, `:999`); the periodic fill hangs off that loop.
+- Migrations run one file per transaction under one advisory lock (`src/db/migrate.ts:107-117`); the gateway does not start until they finish. `CREATE INDEX CONCURRENTLY` cannot appear in a numbered migration. Latest is 0041, so the next free numbers start at 0042. Sqlite is mirrored by hand in `src/db/drivers/sqlite.ts`, with `tests/db/schema-drift.test.ts`.
+- `src/cli/migrate-sqlite.ts:20` states there are no FKs between the copied tables and does not copy `boundaries`.
 
 ## Map: every table and path keyed by a Slack thread or channel string
 
-Key forms: T = (slack_team_id, slack_channel_id, slack_thread_ts); CT = (channel_id, thread_ts) with no team; C = channel only.
+T = (slack_team_id, slack_channel_id, slack_thread_ts); CT = (channel_id, thread_ts); C = channel only.
 
-| Table (migration) | Key today | Team column | Class | Change in D |
+| Table (migration) | Key today | Team | Class | Change in D |
 |---|---|---|---|---|
-| sessions (0002, 0013) | UNIQUE (slack_team_id, slack_channel_id, slack_thread_ts, persona_id); idx_sessions_thread | slack_team_id, nullable | T | `boundary_id`, `locator`; readers: findByThread, findAnyByThread, teamForThread, setEngagedForThread, archiveChannelSession, listSessions, updatedSince, latestAppOf |
-| one_on_one_locks (0003) | PK (channel_id, thread_ts) | team_id (0040), nullable, backfilled | CT | `boundary_id`, `locator` |
-| mention_only_threads (0003) | PK (channel_id, thread_ts) | none | CT | `boundary_id`, `locator` |
-| ignores (0003) | target_type 'thread': (channel_id, thread_ts); 'user' rows untouched | none | CT | `boundary_id`, `locator` (thread targets only) |
-| cron_jobs (0003, 0013) | two pairs: slack_* (session key) and channel_id/thread_ts (delivery target) | slack_team_id | T and CT | `boundary_id`, `locator` derived from the slack_* pair when present, else channel_id/thread_ts (task 5 confirms which pair is the thread the job belongs to and tests both) |
-| commitments (0028) | PK (agent_id, source, slug); channel_id, thread_ts NOT NULL | team_id, nullable | CT | `boundary_id`, `locator` |
-| env_bindings (0018) | PK (channel_id, thread_ts) | none | CT | `boundary_id`, `locator` |
-| remote_targets (0012) | PK (channel_id, thread_ts); team_id is the OWNER's team | team_id | CT | `boundary_id`, `locator` |
-| proactive_posts (0029, 0030) | id; idx (channel_id, message_ts) | team_id, nullable | C | `boundary_id` only (message_ts is a message, not a locator) |
-| channel_wake_state (0037) | PK (agent_id, channel_id) | none | C | `boundary_id` only |
-| audit_events (0032, 0039) | channel_id, thread_ts, no team | none | CT | NO DDL (see Decisions D1); read side resolves through session_id |
-| proposals (0021, 0026) | agent, scope; slack_team_id only | slack_team_id | none | none (no channel or thread) |
-| thread_activity (0023), pending_gates (0004), background_runs (0019), skill_usage | session_id or agent scope | none | derived | none: they reach a thread through `sessions.id`, so they inherit the session's boundary |
-| node_plugins, heartbeat_*, mcp_credentials, accounts | not conversation keyed | | | none |
+| sessions (0002, 0013) | UNIQUE (slack_team_id, slack_channel_id, slack_thread_ts, persona_id), idx_sessions_thread | slack_team_id, nullable | T | `boundary_id`, `locator` |
+| one_on_one_locks (0003) | PK (channel_id, thread_ts) | team_id (0040), nullable | CT | pair |
+| mention_only_threads (0003) | PK (channel_id, thread_ts) | none | CT, team-less | pair, team passed by caller |
+| ignores (0003) | thread targets: (channel_id, thread_ts); user rows untouched | none | CT, team-less | pair (thread targets only) |
+| cron_jobs (0003, 0013) | slack_* pair and channel_id/thread_ts pair | slack_team_id | T | pair, rule below |
+| commitments (0028) | PK (agent_id, source, slug); channel_id, thread_ts | team_id, nullable | CT | pair |
+| env_bindings (0018) | PK (channel_id, thread_ts) | none | CT, team-less | pair |
+| proactive_posts (0029, 0030) | id; idx (channel_id, message_ts) | team_id, nullable | C | `boundary_id` only |
+| channel_wake_state (0037) | PK (agent_id, channel_id) | none | C, team-less | `boundary_id` only |
+| audit_events (0032, 0039) | channel_id, thread_ts | none | CT, team-less | NO DDL (D1) |
+| remote_targets (0012) | PK (channel_id, thread_ts) | owner's team_id | CT | NONE: legacy table, `setTarget` has no caller outside `src/db/remote.ts`, rows are only read and deleted by `convertLegacy` (`environments.ts:228`) |
+| proposals, thread_activity, pending_gates, background_runs | no channel or thread key, or reach a thread through `session_id` | | | none; they inherit the session's boundary |
 
-Non-table code that carries the strings (all stay as they are; each is listed so a reviewer can see it was considered):
-- Slack adapter and gateway (`src/gateway/core/gateway.ts`): `Sessions.findByThread` at 1218, 1235, 2886, 4007, 4018, 4327, 4382, 4683, 4693; `findAnyByThread` at 2210, 4632, 4653, 4704; `setEngagedForThread` at 4625; `teamForThread` at 1232 and `src/background/scheduler.ts:577`; the session manager (`src/agent/manager.ts:1007-1035`) calls `findByThread` then `createForThread`. Engagement restore and mention-only recording use `findAnyByThread`.
-- Synthetic locators: channel sessions use `channel:<channelId>` (`src/gateway/core/channel-session.ts`), wake runs use `wake:...`, cron runs `cron:...` (`src/gateway/panel/enumerator.ts:181`), DMs use a synthetic thread key. The locator is stored verbatim and treated as opaque; nothing parses it.
-- Job payloads and tokens: `JobClaims` (`src/gateway/api/auth.ts`) carries `team`, `channel`, `thread`; the node reads them through `decodeClaims`/`lockFromClaims` (`src/node/session-lock.ts`) and gets `SessionView` with `slack_*` fields over REST (`src/node/client.ts`). Unchanged in this slice (see Node role).
-- Panel and console: `src/gateway/api/sessions.ts` (row to API), `src/gateway/panel/enumerator.ts`, `src/gateway/panel/api.ts` (1on1 end, channel labels), `src/web/console/pages/SessionsPage.tsx`, `session/SessionDetailPage.tsx`, `src/web/console/dev/{fixtures,stub}.ts`. Read-only additions only.
-- Other copies of the row shape: `src/db/schema.ts` `SessionRow`, `src/cli/migrate-sqlite.ts` (sqlite to Postgres table copy), the sqlite `sessions` rebuild at `src/db/drivers/sqlite.ts` ~667-691.
+The team-less tables are mention_only_threads, ignores, env_bindings, channel_wake_state and audit_events. They are safe today only because Slack channel ids are unique per workspace; the follow-up index move removes that dependency.
 
-Findings that shape the plan:
-1. Five tables key by (channel_id, thread_ts) with no team. They are safe today only because Slack channel ids are unique per workspace. With two workspaces the team must come from the writer's context; the resolver never guesses it on the hot path (see Multi-workspace).
-2. Sessions are created BEFORE first sight creates the boundary, so the dual write will often see "no boundary yet". The plan closes that gap with a bounded late fill after first sight, plus the reconciler, and never creates the boundary from the writer.
-3. `audit_events` is the large, append-only table. Its `channel_id`, `thread_ts` have no team and rows are written on every action. It gets no DDL in this slice.
+Cron rule (settled here): the cron session key is `cron:<id>` for channel-target jobs, else `slackThreadTs`, else `cron:<id>` (`src/gateway/slack/cron-scheduler.ts:129`). So for a cron job: channel is `slack_channel_id`, team is `slack_team_id`, `locator = target === 'channel' ? 'cron:' + id : (slack_thread_ts ?? 'cron:' + id)`. The legacy `channel_id`/`thread_ts` pair is the delivery target, not the session key, and is not used for the locator. The sqlite backfill that copies `channel_id`/`thread_ts` into `slack_*` (`drivers/sqlite.ts:718-722`) runs before our columns exist and is left alone; the fill derives from the resulting `slack_*` values.
 
-## Schema (migration 0042, DDL only, nullable, no defaults, no indexes)
+Code that carries the strings (all unchanged, each considered):
+- Gateway lookups: `findByThread` at `gateway.ts:1218, 1235, 2886, 4007, 4018, 4327, 4382, 4683, 4693`; `findAnyByThread` at `2210, 4632, 4653, 4704`; `setEngagedForThread` at `4625`; `teamForThread` (team-less, `sessions.ts:36`) at `gateway.ts:1232` and `src/background/scheduler.ts:577`; the manager's find then create above.
+- Writers that already hold the team and must pass it to the team-less tables: `MentionOnly.set` at `gateway.ts:2144` and `:3090`, `Ignores.create` at `:3331`. `teamForThread` is never used by a writer.
+- Synthetic locators, stored verbatim and opaque: `channel:<channelId>` (`src/gateway/core/channel-session.ts:8`), `wake:...`, `cron:...` (`src/gateway/panel/enumerator.ts:181`), the DM key, and the archived key `channel-archived:<channelId>:<ms>` below.
+- Job payloads and tokens: `JobClaims` carries `team`, `channel`, `thread` (`src/gateway/api/auth.ts`); nodes read `slack_*` via `SessionView` (`src/node/client.ts:50`). Unchanged. Panel and console (`gateway/api/sessions.ts`, `panel/enumerator.ts`, `panel/api.ts`, `SessionsPage.tsx`) unchanged.
+- Row-shape copies to update: `SessionRow` in `src/db/schema.ts`, the sqlite `sessions` rebuild at `src/db/drivers/sqlite.ts` ~667-691 (must not drop the new columns), `src/cli/migrate-sqlite.ts` (copy the new columns as plain text, `boundary_id` copied as is, meaningless until the target has run the fill).
 
-```
-SET LOCAL lock_timeout = '5s';   -- fail fast and retry at next boot rather than queue behind a long transaction
+## Defects the plan must handle
 
-ALTER TABLE sessions             ADD COLUMN IF NOT EXISTS boundary_id TEXT REFERENCES boundaries (id);
-ALTER TABLE sessions             ADD COLUMN IF NOT EXISTS locator     TEXT;
--- same pair on: one_on_one_locks, mention_only_threads, ignores, cron_jobs,
---               commitments, env_bindings, remote_targets
-ALTER TABLE proactive_posts      ADD COLUMN IF NOT EXISTS boundary_id TEXT REFERENCES boundaries (id);
-ALTER TABLE channel_wake_state   ADD COLUMN IF NOT EXISTS boundary_id TEXT REFERENCES boundaries (id);
-```
+1. Key rewrite: `archiveChannelSession` rewrites `slack_thread_ts` to `channel-archived:<channel>:<ms>` (`src/db/sessions.ts:238`, called at `gateway.ts:2891` for `/new`) so the next message starts a fresh `channel:<id>` session. If `locator` is not rewritten in the same statement, the archived row and the new row share `(boundary_id, locator, persona_id)` and the follow-up index would fail. Fix: one statement, `UPDATE sessions SET slack_thread_ts = ?, locator = CASE WHEN boundary_id IS NULL THEN locator ELSE ? END, updated_at = ? WHERE id = ?` (a NULL-boundary row gets its locator from the fill, which reads the already-rewritten `slack_thread_ts`).
+2. `deleteWakeSessionsBefore` (`sessions.ts:248`) deletes whole rows selected by `slack_thread_ts LIKE 'wake:%'`; it needs no column change but gets a test that rows carrying the pair delete cleanly and nothing resurrects them.
+3. Writers that replace columns on conflict: `env_bindings` `bind` overwrites every column on conflict (`environments.ts:181-189`); `convertLegacy` inserts bindings (`environments.ts:228-250`); `channel_wake_state` `noteFinished` and `noteSettled` upsert (`channel-wake-state.ts:90, 103`); `commitments.upsertOpen` uses `COALESCE` on `team_id`. Every one gets the pair on insert and `COALESCE(excluded.x, table.x)` on conflict, so a later write never nulls a filled pair.
 
-- No column default (a default rewrites nothing on Postgres 11+, but "NULL means not yet resolved" must stay unambiguous). No `NOT NULL`. No index on the new columns in this slice: the shadow query uses them only on sampled lookups, and an index built in a numbered migration would lock. The follow-up builds its indexes concurrently (see Follow-up).
-- `audit_events`: untouched. `ALTER ... ADD COLUMN` takes an ACCESS EXCLUSIVE lock even when it is metadata only, and on a table written by every action it would queue writers behind any long reader.
-- Foreign key to `boundaries(id)`: all values start NULL so validation is trivial, and it makes a console "delete boundary" fail while sessions still point at it (a wanted guard; task 2 tests it). Test wipe helpers (`_wipeForTests` in `src/db/domain.ts` and the table modules) must delete referencing rows first.
-- Sqlite mirror: `PRAGMA table_info` then `ALTER TABLE ... ADD COLUMN ... REFERENCES boundaries (id)` for each table, placed AFTER the persona_id table rebuild (`drivers/sqlite.ts` ~667) so a rebuild cannot drop them. `tests/db/schema-drift.test.ts` compares columns only; nothing to allowlist because both dialects carry the same names.
-- Mixed-version safety: rc.21 replicas run `SELECT *` and explicit-column INSERTs; extra nullable columns are ignored by them, and rows they write get NULL, which the reconciler fills.
+## Schema (one migration file per table, DDL only, nullable)
 
-## Resolver API (`src/domain/boundary-for.ts`)
+Nine files, each its own transaction, each starting with `SET LOCAL lock_timeout = '2s';` so it fails fast instead of queuing writers behind a long transaction. Never ten ACCESS EXCLUSIVE locks in one transaction. Order, sessions LAST:
 
 ```
-boundaryFor(team: string | null, channel: string, o?: { tx? }): Promise<{ id: string; state: State; kind: string } | null>
-boundaryForCached(team: string | null, channel: string): { id: string } | null | undefined   // sync, cache only
-locatorOf(threadTs: string | null | undefined): string | null                                // verbatim, '' becomes null
-workspaceForChannel(channel: string): string | null    // single live workspace, else null; never ''
+0042_boundary_one_on_one_locks.sql    ALTER TABLE one_on_one_locks ADD COLUMN IF NOT EXISTS boundary_id TEXT; ... locator TEXT;
+0043_boundary_mention_only.sql        mention_only_threads (pair)
+0044_boundary_ignores.sql             ignores (pair)
+0045_boundary_cron_jobs.sql           cron_jobs (pair)
+0046_boundary_commitments.sql         commitments (pair)
+0047_boundary_env_bindings.sql        env_bindings (pair)
+0048_boundary_proactive_posts.sql     proactive_posts (boundary_id only)
+0049_boundary_channel_wake.sql         channel_wake_state (boundary_id only)
+0050_boundary_sessions.sql            sessions (pair)
 ```
 
-Rules:
-- Read only. A miss returns null and the caller writes NULL. Creation stays in first sight (`observeSlackChannel`), which `createForThread` already calls. The resolver never inserts, so it cannot cause the burst or the race that first sight already bounds.
-- Cache: positive entries kept `RECHECK_MS` (boundaries have no merge and ids never change; the TTL only covers console deletion), negative entries `NEG_TTL_MS`, cap `LRU_CAP`. Concurrent misses for one key share one in-flight promise (single flight). Cache key `slack|<team>|<channel>`.
-- `team` null or `''` returns null without a query (Slack boundaries require a workspace, and the lookup `workspace = ''` must never run). When a writer has no team, it may pass `workspaceForChannel`, which answers only while exactly one workspace is live.
-- Timeout `SLAUDE_BOUNDARY_TIMEOUT_MS` (default 300). A timeout or error returns null, counts `slaude_boundary_resolve_total{outcome=error|timeout}`, logs once per minute, and never throws. The caller's write proceeds with NULL columns.
-- On `env.role() === "node"` it returns null and never touches a database.
-- Metric: `slaude_boundary_resolve_total{outcome=hit|miss|negative|error|timeout|no_team}`.
+- Soft reference: `boundary_id TEXT NULL`, NO foreign key, no default, no `NOT NULL`, no index. Reasons: `migrate-sqlite.ts` copies tables without FKs and without `boundaries`; `_wipeForTests` deletes boundaries with sqlite `foreign_keys` ON; there is no boundary delete path to protect. A future boundary delete path must check references itself (listed in the follow-up).
+- No index in this slice: parity is in-row (no lookup by the new columns), and the fill reads by primary key and `boundary_id IS NULL` pages.
+- `audit_events`: untouched. Adding a column takes an ACCESS EXCLUSIVE lock on a table every action writes.
+- Failure behaviour (runbook): a lock timeout aborts that one migration, earlier files stay applied, and the gateway does not start (migrations run before serve) until a retry at next boot succeeds. The deploy takes `sudo /usr/local/sbin/slaude-backup` first and watches the migration log lines (`migration 004N_... applied`). The old binary keeps running on the old image until the new one boots, so a failed rollout is a failed start, not a half-migrated serve. Rolling replicas of rc.21 ignore the extra columns (`SELECT *`, explicit-column INSERTs) and write NULL.
+- Sqlite: `PRAGMA table_info` then `ALTER TABLE ... ADD COLUMN` per table in `drivers/sqlite.ts`, placed AFTER the persona_id rebuild. The drift test compares columns only; both dialects carry the same names.
+
+## Resolver (`src/domain/boundary-for.ts`)
+
+```
+boundaryForCached(team, channel): { id: string } | null | undefined   // sync; undefined = unknown, null = known absent
+boundaryFor(team, channel): Promise<{ id: string } | null>            // async read, fills the cache, never inserts
+primeBoundary(team, channel, id): void                                // first sight calls this after ensureBoundary
+locatorOf(threadTs): string | null                                    // verbatim; '' becomes null
+```
+
+- Hot path: writers call only `boundaryForCached`. A cache miss writes NULL and starts a deduped, non-awaited `boundaryFor` to warm the cache. No await of the resolver ever precedes a legacy insert.
+- Cache: positive entries `RECHECK_MS`, negative `NEG_TTL_MS`, cap `LRU_CAP`, single flight per key, key `slack|<team>|<channel>`. First sight primes it after it creates or finds a boundary.
+- `team` null or `''` returns null without a query (never workspace `''`). `workspaceForChannel` (single live workspace, else null) is allowed only for the fill, never for a hot writer.
+- `SLAUDE_BOUNDARY_TIMEOUT_MS` (300) on the async read; error or timeout counts `slaude_boundary_resolve_total{outcome}` and leaves the key unknown. On a node it returns undefined and never touches a database.
+- Kill switch `SLAUDE_BOUNDARY_WRITE` (default on). Off: writers store NULL pairs, the fill and the check do nothing.
 
 ## Data flow
 
-Write (rc.22): message arrives, the existing path computes (team, channel, thread). The writer calls `boundaryFor(team, channel)`; hit: it inserts the legacy columns plus `boundary_id` and `locator = locatorOf(thread)`; miss: legacy columns only. After first sight creates the boundary it runs `lateFill(team, channel, boundaryId)`: `UPDATE sessions SET boundary_id = ?, locator = slack_thread_ts WHERE slack_team_id = ? AND slack_channel_id = ? AND boundary_id IS NULL` (bounded to one channel by the existing `idx_sessions_thread` prefix; a failure is logged and left to the reconciler).
+Write: the writer computes (team, channel, thread), reads `boundaryForCached`, and includes `boundary_id` and `locator = locatorOf(thread)` in the same INSERT (NULL when unknown). After first sight ensures a boundary it primes the cache and runs a bounded late fill, `UPDATE <t> SET boundary_id = ?, locator = <thread col> WHERE <channel col> = ? AND boundary_id IS NULL` (team-equal or team NULL where the table has a team), for the tables whose key starts with the channel or team and channel: sessions (`idx_sessions_thread`), one_on_one_locks, mention_only_threads, env_bindings (primary key prefix) and ignores (`idx_ignores_thread`). The other tables (cron_jobs, commitments, proactive_posts, channel_wake_state) have no usable channel index and are covered by the periodic fill within one tick.
 
-Read (rc.23): the legacy query runs and its row is returned. Then, sampled and not awaited, the shadow helper resolves the boundary and runs the same lookup by `(boundary_id, locator, persona_id)`, compares row ids, and counts the outcome. The caller never waits on it and never sees its row.
+Periodic fill (the guarantee): see next section.
 
-Backfill: the reconciler stage fills old rows page by page (see Backfill).
+Read (rc.23): see Parity.
 
-## Dual write sites (rc.22)
+## Fill: boot reconciler stage plus periodic
 
-| Writer | File | Team source | Notes |
-|---|---|---|---|
-| createForThread | `src/db/sessions.ts` | `thread.team_id` | resolver, then INSERT with extra columns; first-sight call unchanged; schedule lateFill after first sight |
-| one-on-one lock | `src/db/one-on-one.ts` `lock` | `teamId` input, else team of the session, else live single | `setOpen`, `setLocked` update only legacy fields |
-| mention-only set | `src/db/mention-only.ts` | session team, else live single | |
-| ignore create (thread) | `src/db/ignores.ts` | same | skip for user targets |
-| cron create | `src/db/cron-jobs.ts` | `slack_team_id` | CAS paths (`claimDue`) untouched |
-| commitment upsert | `src/db/commitments.ts` | `team_id` | `COALESCE(excluded.boundary_id, commitments.boundary_id)` like `team_id` |
-| env bind | `src/db/environments.ts` `bind` | session team | conflict path keeps existing columns |
-| remote target | `src/db/remote.ts` `setTarget` | thread's team, not the owner's `team_id` unless equal | |
-| proactive post | `src/db/proactive-posts.ts` `recordPost` | `team_id` | |
-| channel wake | `src/db/channel-wake-state.ts` `noteStart` insert path | session team or live single | updates never rewrite it |
+- One page function per table in `src/domain/boundary-backfill.ts`, used by (a) reconciler stage 7 (boot and `slaude domain reconcile [--dry-run]`) and (b) the periodic fill. Keyset pages of 500 by primary key, `WHERE boundary_id IS NULL`, one transaction per page, a compare-and-set that never overwrites: `UPDATE ... SET boundary_id = b.id, locator = <thread> FROM boundaries b WHERE b.service = 'slack' AND b.workspace = <team> AND b.value = <channel> AND t.pk IN (page) AND t.boundary_id IS NULL`.
+- Periodic fill: every 10 minutes (`SLAUDE_BOUNDARY_FILL_INTERVAL_MS`, 0 disables) in the gateway background loop, at most `SLAUDE_BOUNDARY_FILL_MAX_ROWS` (default 2000) rows per tick across tables, oldest first, under a Postgres advisory lock `BOUNDARY_FILL_LOCK_KEY` (distinct from `RECONCILE_LOCK_KEY`; sqlite uses the in-process queue). A tick that hits the cap continues next tick. Never runs on a node. It never scans or touches `audit_events`.
+- Team per row: the row's own team column, else the tenant's single workspace (Postgres from `slack_apps`, sqlite from `liveTeamIds`), else skipped and counted. Never workspace `''`.
+- Row classes in the report (`boundaryColumns[table]`): `filled`, `existing`, `ineligible` (channel id fails first sight's `CHANNEL_RE`, so no boundary will ever exist; excluded from the gate), `ambiguous`, `no_workspace`, `no_boundary`, and `handed_to_first_sight`.
+- Missing boundary (D6, report only): the fill never creates a boundary. For an eligible `(team, channel)` with no boundary it calls `observeSlackChannel`, so creation goes through first sight's caps and bursts, and counts `handed_to_first_sight`; the next tick fills it. Channel ids present in more than one workspace are listed as `shared_candidates` (informational).
+- The existing boot reconcile has no time budget and runs to completion under its lock (`reconcile.ts:891`); this plan does not add one. If a table is large, the periodic fill's per-tick cap is the throttle, and the boot stage fills at most one capped batch per table before leaving the rest to the periodic fill.
 
-Rule for every site: a failure to resolve is never an error; the legacy write is the only thing that can fail the call. Dual write is behind `SLAUDE_BOUNDARY_WRITE` (default on; `off` skips the resolver and writes NULLs, the kill switch).
+## Parity (rc.23, in-row, no second query)
 
-## Backfill (reconciler stage 7, `src/domain/reconcile.ts`)
+After the legacy row is fetched (`findByThread`, `findAnyByThread`) and after `createForThread` returns, `checkRow(site, row)` compares the row it already holds with `boundaryForCached(team, channel)`. No sampling, no shadow query, no new index, never awaited for anything, never changes the returned row. Outcomes in `slaude_boundary_check_total{site,outcome}`:
+- `match`: row has `boundary_id` equal to the cached boundary and `locator = slack_thread_ts`.
+- `both_none`: row NULL and the cache says the boundary is known absent.
+- `null_row`: row NULL but the cache has a boundary (the fill has not reached it).
+- `unresolved`: row NULL and the cache is unknown.
+- `mismatch`: row has a `boundary_id` different from the cached boundary. Gate-failing.
+- `locator_mismatch`: row has the pair but `locator` differs from `slack_thread_ts`. Gate-failing.
+- `unverified`: row has a pair, cache unknown (counted, not failing).
+Because the check runs on a row that exists, a brand-new thread (find returns none, then create) produces no outcome from the find, and the post-create check sees the row it just wrote.
 
-- Runs inside `reconcile()` after stage 3 has created session-channel boundaries, under the same advisory lock and queue, in `slaude domain reconcile [--dry-run]` and at gateway boot (never blocking readiness; the boot call keeps its existing time budget and resumes on the next run).
-- Per table, keyset pages of `PAGE_SIZE` by primary key (`sessions.id`; composite key tables by `(channel_id, thread_ts)`), `WHERE boundary_id IS NULL`, one transaction per page. The write is a compare-and-set: `UPDATE ... SET boundary_id = b.id, locator = <thread> FROM boundaries b WHERE b.service = 'slack' AND b.workspace = <team> AND b.value = <channel> AND t.pk IN (page) AND t.boundary_id IS NULL`. It never overwrites a non-NULL value, so it is idempotent and safe to race with a live writer or a second runner. A fully filled table costs one read per page and no transaction.
-- Team per row: the row's own team column; else the tenant's single workspace (Postgres from that tenant's `slack_apps`, sqlite from `liveTeamIds`); else skipped and counted. A Slack boundary is never written or looked up with workspace `''`.
-- Rows whose boundary does not exist: for channel ids found only in these tables, the stage creates the boundary through `ensureBoundary` as `observed` (kind `dm` for `D` ids), like stage 3; counted `boundary_created`.
-- Report (`ReconcileReport.boundaryColumns[table]`): `filled`, `existing`, `skipped: { ambiguous, no_workspace, no_boundary, no_channel }`, plus a capped list (`MISMATCH_LIST_CAP`) of ambiguous rows and of channel ids that exist in more than one workspace (`shared_candidates`, informational for the follow-up). `formatReconcileReport` prints one line per table. One summary audit event only when something was filled; no per-row events.
-- Huge tables: only `sessions` (and, in time, `commitments`/`proactive_posts`) can be large. Page size stays 500, an optional `SLAUDE_BACKFILL_PAGE_PAUSE_MS` (default 0) sleeps between pages, and the boot run stops after its budget and logs the remainder. `audit_events` is NOT backfilled and NOT scanned by this stage.
-
-## Shadow parity (rc.23)
-
-`SLAUDE_BOUNDARY_SOURCE`: `legacy` (no resolver call) or `shadow` (default). `boundary` is refused at config parse in this slice: unknown values read as `legacy`, `boundary` logs a warning and also reads as `legacy`. `SLAUDE_BOUNDARY_SHADOW_SAMPLE` (default 0.25, soak at 1) and `SLAUDE_BOUNDARY_SHADOW_MAX_INFLIGHT` (default 16, excess is dropped and counted).
-
-`src/domain/boundary-shadow.ts`: `shadowLookup({ site, legacy, boundary, locator, run })`, called after the legacy row exists. Outcomes in `slaude_boundary_shadow_total{site,outcome}`:
-- `match`: same row id (or both none).
-- `mismatch`: both found a row, different ids. Gate-failing.
-- `new_only`: new path found a row, legacy found none. Gate-failing (the cross-wire sign).
-- `legacy_only_null`: legacy found a row whose `boundary_id` is NULL (expected until backfill completes; has its own threshold).
-- `legacy_only`: legacy found a row with a non-NULL boundary, new path found none. Gate-failing.
-- `no_boundary`, `no_team`, `new_error`, `dropped`: informational.
-Logging uses `logOncePerMinute` per (site, outcome) and only internal ids (boundary id, row id), never message text.
-
-Shadow sites, one id per call site: `sessions.findByThread`, `sessions.findAnyByThread`, `sessions.teamForThread` (compares the team of the boundary the channel resolves to), `one_on_one.find`, `mention_only.find`, `environments.findBinding`, `remote.findTarget`, `ignores.findActiveForThread`, `cron.countForeignThreadJobs`, `commitments.get`.
+`slaude domain boundary-check [--table T] [--json]` (`src/domain/boundary-parity.ts`, read-only, paged by primary key, no `audit_events`): per table, rows with NULL `boundary_id` older than 10 minutes with an eligible channel and a resolvable team (the gate number); rows whose `boundary_id` differs from the boundary resolved from the row's own team and channel; rows whose `locator` differs from the thread column; duplicate `(boundary_id, locator, persona_id)` groups in sessions and duplicate `(boundary_id, locator)` in the CT tables.
 
 ## Failure modes
 
 | Failure | Behaviour |
 |---|---|
-| boundaries table slow or down | resolver times out, returns null, writer stores NULL, reader returns legacy; no turn blocked; counters rise |
-| first sight queue full or dropped | boundary absent, NULL columns, reconciler fills later |
-| writer race (two replicas, same thread) | legacy unique key decides; columns are written in the same INSERT, so they cannot disagree with the row they sit on |
-| reconciler races a live writer | CAS `boundary_id IS NULL`, loser changes zero rows |
-| two runners | advisory lock plus queue; `unlocked` test path proves the CAS alone is safe |
-| migration lock timeout | migration aborts and retries at next boot (5 s lock_timeout); the old code runs meanwhile; page an operator if it repeats |
-| rolling deploy, rc.21 replica writes NULL | filled by next reconcile |
-| boundary deleted in console | FK refuses while referenced; if no row references it, nothing to repair |
-| row team NULL, two workspaces | skipped as `ambiguous`, listed, never guessed |
-| workspace removed | boundary remains (never deleted by sync); rows keep pointing at it |
+| boundaries read slow or down | cache miss writes NULL, no turn waits; async warm times out, counted |
+| first sight drops or queues a channel | NULL until the periodic fill hands it back to first sight and fills it |
+| two replicas create the same thread | legacy unique key decides; the pair rides in the same INSERT |
+| fill races a live writer or a second runner | compare-and-set on `boundary_id IS NULL`; the loser changes zero rows; advisory lock on Postgres |
+| `/new` archives a channel session | pair rewritten in the same statement (defect 1) |
+| migration lock timeout | that file aborts, earlier files stay, gateway start fails and retries at next boot; backup and log watch in the runbook |
+| rc.21 replica writes NULL during a rolling deploy | the periodic fill fixes it within a tick |
+| two workspaces, team-less row | `ambiguous`, listed, never guessed |
 
-## Node role (no database on nodes)
+## Node role
 
-`boundaryFor`, the shadow helper and the reconciler stage return immediately on `env.role() === "node"` (same guard as first sight) and `tests/db/node-role-guard.test.ts` gains the new modules. Job tokens (`JobClaims`) and the queue payload are NOT changed: they keep `team`, `channel`, `thread`, and are not authority for boundary identity. The REST `SessionView` served to nodes may carry optional `boundary_id` and `locator` (absent from an older gateway, ignored by an older node), so a node never needs a lookup; the node never writes the columns.
+No database on a node. `boundaryForCached`, the check, the fill and the stage return immediately on `env.role() === "node"`; `tests/db/node-role-guard.test.ts` gains the new modules. Job tokens, `JobClaims` and `SessionView` are not changed; the node never writes the columns.
 
 ## Merge and alias interaction
 
-Boundaries have no merge today and no alias table (spec: boundary merge is not needed until two services share a room). `boundary_id` is therefore stable and `boundaryFor` is a plain lookup with no alias hop. If boundary merge ships later it needs `boundary_aliases` and a repoint of these columns in one transaction, exactly the shape of `resolveUserId` plus the user merge ledger; a test in this slice asserts that no code path updates `boundary_id` except the CAS fill (guarding against a later silent repoint). User merges (slice C) do not touch these columns: they hold boundaries, not users.
+Boundaries have no merge and no alias table (spec: not needed until two services share a room), so `boundary_id` is stable and the resolver is a plain lookup with no alias hop. A guard test asserts that the only code that sets `boundary_id` on an existing row is the compare-and-set fill and the archive statement's locator rewrite. A future boundary merge needs `boundary_aliases` and a transactional repoint, the shape of the user merge ledger. User merges do not touch these columns.
 
 ## Multi-workspace future
 
-- The key is `(service, workspace, value)` already; the resolver takes the team explicitly. With one connected workspace the `workspaceForChannel` fallback covers writers that lack a team; the moment a second workspace connects it returns null, so tables without a team column stop being filled on the hot path and the reconciler marks them `ambiguous` unless the row's channel id exists in exactly one workspace's boundaries (a unique-value lookup, not a guess).
-- Today's CT tables are only safe while channel ids are unique across workspaces. The follow-up index move is what removes that dependency; this slice only adds the evidence (`shared_candidates`).
-- Grid shared channels (one C id in several workspaces) and `W` ids are out of scope and reported, never merged.
+The resolver always takes the team explicitly. While one workspace is live, `workspaceForChannel` lets the fill place team-less rows; with a second workspace it returns null, so team-less tables are filled only where the writer passed the team (mention-only and ignore writers at `gateway.ts:2144, 3090, 3331` now do) or the channel id exists in exactly one workspace's boundaries; the rest are `ambiguous`. Grid shared channels and `W` ids are out of scope and reported as `shared_candidates`.
 
 ## Rollback
 
-1. Flip `SLAUDE_BOUNDARY_SOURCE=legacy` (reads) and `SLAUDE_BOUNDARY_WRITE=off` (writes): no deploy needed, effective on the next call.
-2. Downgrade the binary to rc.21: safe, the columns are nullable and unread. No down migration is run; the columns stay.
-3. Undo a bad backfill: `UPDATE <table> SET boundary_id = NULL, locator = NULL` per table (documented in the field note; the CAS refills it later). Legacy columns were never touched, so no data is lost.
+1. `SLAUDE_BOUNDARY_WRITE=off` and `SLAUDE_BOUNDARY_FILL_INTERVAL_MS=0`: effective immediately, writers store NULL, nothing reads the columns.
+2. Downgrade the binary to rc.21: safe, columns are nullable, unread and unconstrained. No down migrations.
+3. Undo a bad fill: `UPDATE <table> SET boundary_id = NULL, locator = NULL` per table (field note). Legacy columns are never written by the new code except the archive statement, which writes the same `slack_thread_ts` it always did.
 
 ## Test strategy
 
-Tests first in each task. Postgres and sqlite both (`bun test`, `bun run test:pg`).
-- Schema: migration applies fresh and on an rc.21 database with rows; new columns NULL; unique indexes unchanged (assert index definitions are identical to before); FK refuses deleting a referenced boundary; drift test green; sqlite persona rebuild keeps the columns; sqlite to Postgres copy (`migrate-sqlite`) carries them.
-- Resolver: hit, miss, negative TTL, TTL expiry, single flight (50 concurrent calls, one query), timeout returns null, workspace `''` and null team never queried, node role never opens the database, never inserts.
-- Dual write: each writer stores the pair when the boundary exists, NULLs when it does not, and the legacy columns are byte identical to the pre-change output (golden row snapshots per table). Failure of the resolver does not fail the write.
-- Late fill: session created before its boundary, then first sight, then lateFill sets exactly that channel's sessions; a different channel is untouched; no overwrite.
-- Backfill: idempotent (second run `filled: 0`), paged (page size 2 over 7 rows), dry run writes nothing, `ambiguous` and `no_workspace` reported and never written, never workspace `''`, two concurrent runners and a concurrent live writer produce one consistent state, DM `D` ids make kind `dm`, a row with a stale non-NULL value is not overwritten.
-- Golden parity: a fixture of 200 threads (DM, channel root, thread, channel session key, wake and cron synthetic locators, two personas on one thread, a thread with NULL team) loaded through the real writers; for each, `findByThread` and the boundary lookup return the same session id; run again after backfill of a copy with columns cleared.
-- Shadow: injected mismatch (a row with the wrong `boundary_id`) is counted `mismatch` and the legacy row is still returned; `new_only` and `legacy_only` likewise; the caller never awaits the shadow (a hanging shadow does not delay the return); inflight cap drops and counts; sample 0 never queries.
-- Concurrency: 20 parallel `createForThread` for one thread (legacy unique key yields one row, columns set once); resolver plus first sight for a new channel under burst.
-- Large tables: a test that `audit_events` has no new column and that the reconciler stage issues no statement mentioning `audit_events` (spy on the db client); a 50k-row `sessions` fixture backfills in pages with each page transaction under a row cap.
-- Drift: a repo test fails if any writer file in the dual write table inserts a thread key without the pair (grep guard), so a new writer cannot forget it.
+Tests first in each task, sqlite and Postgres (`bun test`, `bun run test:pg`).
+- Schema: each file applies fresh and on a database holding rc.21 rows; columns NULL; unique and primary key definitions identical to before; no FK on the new columns; no `audit_events` column; a held lock on one table fails only that file within 2 s and the earlier files stay applied; drift test; sqlite rebuild keeps the columns; `migrate-sqlite` carries them.
+- Resolver: cache hit, miss then warm, negative TTL, single flight (50 concurrent, one query), timeout, node role, null team and `''` never queried, never inserts, first sight primes.
+- Dual write: each writer stores the pair when cached and NULL otherwise, legacy columns byte identical to before (golden rows), an `await` is never issued for the resolver before the insert (spy), conflict paths (`bind`, `convertLegacy`, `noteFinished`, `noteSettled`, `upsertOpen`) keep a filled pair and fill a NULL one.
+- Archive: create a channel session, archive it, create the new channel session: no duplicate `(boundary_id, locator, persona_id)` (checked with the boundary-check query), archived row carries the archived locator; archive a NULL-boundary row then fill: locator equals the archived key. `deleteWakeSessionsBefore` removes pair-carrying wake rows.
+- Fill: idempotent (second run fills 0), paged (page size 2 over 7 rows), per-tick cap respected, dry run writes nothing, `ineligible` excluded from the gate number, `ambiguous` and `no_workspace` never written, never workspace `''`, `handed_to_first_sight` leads to a fill next tick, two concurrent runners and a live writer end consistent, a non-NULL value is never overwritten, `audit_events` never queried (client spy), cron rule (channel target, thread target, NULL thread).
+- Parity: every outcome, a wrong `boundary_id` counts `mismatch` and the legacy row is returned unchanged, a new thread produces no false `new_only`-like outcome (find then create path), check never awaits a query (spy), a golden fixture of 200 threads (DM, channel root, thread, channel session key, wake and cron locators, two personas on one thread, NULL team) agrees between `boundary-check` and the row-level outcomes.
+- Concurrency: 20 parallel `createForThread` for one thread yields one row with the pair set once; burst of new channels under first sight caps ends with every eligible row filled after ticks.
 
 ## Tasks
 
-### rc.22: schema, resolver, dual write, backfill (no new reads)
+### rc.22: schema, dual write, fill (no new reads)
 
-1. Config and metrics.
-   - Files: `src/config/env.ts` (`env.boundary.{write,source,shadowSample,shadowMaxInflight,timeoutMs}`), `src/metrics.ts` (`boundaryResolveTotal`, `boundaryShadowTotal`, `boundaryFillTotal`), `tests/config/boundary-env.test.ts`.
-   - Tests first: defaults, unknown source reads `legacy`, `boundary` reads `legacy` with a warning, sample clamped to 0..1.
-   - Run: `bun test tests/config/boundary-env.test.ts`.
-2. Migration 0042 and sqlite mirror.
-   - Files: `src/db/migrations/0042_boundary_columns.sql`, `src/db/drivers/sqlite.ts`, `src/db/schema.ts` (`SessionRow` gains optional `boundary_id`, `locator`), `src/cli/migrate-sqlite.ts`, `tests/db/boundary-columns-schema.test.ts`.
-   - Tests first: fresh and upgrade, index definitions unchanged, FK refusal, no `audit_events` column, sqlite rebuild, sqlite to Postgres copy.
-   - Run: `bun test tests/db/boundary-columns-schema.test.ts tests/db/schema-drift.test.ts && bun run test:pg tests/db/boundary-columns-schema.test.ts`.
-3. Resolver.
-   - Files: `src/domain/boundary-for.ts`, `tests/domain/boundary-for.test.ts`; add to `tests/db/node-role-guard.test.ts`.
-   - Tests first: the Resolver rules above.
-   - Run: `bun test tests/domain/boundary-for.test.ts tests/db/node-role-guard.test.ts`.
-4. Sessions dual write and late fill.
-   - Files: `src/db/sessions.ts` (`createForThread`, new `lateFillSessions`), `src/domain/first-sight.ts` (call `lateFill` after a boundary is ensured, inside its existing never-throws guard), `tests/db/sessions-boundary.test.ts`, extend `tests/domain/first-sight-isolation.test.ts`.
-   - Tests first: golden row, NULL when absent, 20-way create race, late fill scope, resolver failure does not fail the insert.
-   - Run: `bun test tests/db/sessions-boundary.test.ts tests/db/sessions-channel.test.ts tests/domain`.
-5. Dual write for the thread tables.
-   - Files: `src/db/{one-on-one,mention-only,ignores,cron-jobs,commitments,environments,remote}.ts`, `src/db/boundary-columns.ts` (one helper `pairFor(team, channel, thread)` returning `{ boundary_id, locator }`), matching tests under `tests/db/`.
-   - First read `src/db/cron-jobs.ts` and `src/gateway/slack/mcp-tools.ts` cron creation to settle which pair names the thread; record the answer in the test names.
-   - Tests first: per table golden row and NULL case; `bind`/`setTarget` conflict path keeps the first values.
-   - Run: `bun test tests/db`.
-6. Dual write for channel tables.
-   - Files: `src/db/proactive-posts.ts`, `src/db/channel-wake-state.ts`, tests.
-   - Run: `bun test tests/db/channel-wake-state.test.ts tests/db/boundary-channel-tables.test.ts`.
-7. Reconciler stage 7.
-   - Files: `src/domain/reconcile.ts` (stage, report type, formatter), `src/domain/boundary-backfill.ts` (per-table page functions, so `reconcile.ts` does not grow past reading size), `src/cli/domain.ts` (`--json` includes the new section), `tests/domain/boundary-backfill.test.ts`.
-   - Tests first: the Backfill list above, including the `audit_events` spy.
-   - Run: `bun test tests/domain/boundary-backfill.test.ts tests/domain` then `bun run test:pg tests/domain/boundary-backfill.test.ts`.
-8. Read-only exposure.
-   - Files: `src/gateway/api/sessions.ts` (optional `boundary_id`, `locator`), `src/node/client.ts` (optional fields on `SessionView`), console Sessions list and detail show the boundary link when set, Boundaries page shows a session count by `boundary_id`; `src/web/console/dev/{fixtures,stub}.ts`.
-   - Tests first: API shape with and without the fields; an old node ignores them.
-   - Run: `bun test tests/gateway tests/node && bun run typecheck`.
-9. rc.22 release prep.
-   - Files: `docs/site/_content/releases/v0.46.0-rc.22.md`, field note `docs/site/_content/field-notes/2026-11-15-domain-sessions-boundary-columns.md` and its CLAUDE.md Findings Log line, spec slice D status line.
-   - Run: pre-commit hygiene from CLAUDE.md, `bun run typecheck && bun test`, `bun run test:pg`.
+1. Config and metrics: `src/config/env.ts` (`env.boundary.{write,timeoutMs,fillIntervalMs,fillMaxRows}`), `src/metrics.ts` (`boundaryResolveTotal`, `boundaryFillTotal`, `boundaryCheckTotal`), `tests/config/boundary-env.test.ts`. Run `bun test tests/config`.
+2. Migrations 0042 to 0050 (one per table, sessions last) and sqlite mirror: `src/db/migrations/00{42..50}_*.sql`, `src/db/drivers/sqlite.ts`, `src/db/schema.ts`, `src/cli/migrate-sqlite.ts`, `tests/db/boundary-columns-schema.test.ts` (including the lock-timeout test). Run `bun test tests/db/boundary-columns-schema.test.ts tests/db/schema-drift.test.ts && bun run test:pg tests/db/boundary-columns-schema.test.ts`.
+3. Cache-only resolver and first-sight priming: `src/domain/boundary-for.ts`, `src/domain/first-sight.ts` (prime after ensure), `tests/domain/boundary-for.test.ts`, `tests/db/node-role-guard.test.ts`.
+4. Sessions dual write, late fill, and the archive fix: `src/db/sessions.ts` (`createForThread`, `archiveChannelSession`, late fill), `tests/db/sessions-boundary.test.ts`, extend `tests/domain/first-sight-isolation.test.ts`. Tests first: archive and `/new` duplicate test, 20-way race.
+5. Dual write for the other tables (cached resolver, `COALESCE` on conflict): `src/db/{one-on-one,mention-only,ignores,cron-jobs,commitments,environments,proactive-posts,channel-wake-state}.ts` including `bind`, `convertLegacy`, `noteFinished`, `noteSettled`; callers `gateway.ts:2144, 3090, 3331` pass the team; helper `src/db/boundary-columns.ts` (`pairFor`); a grep-guard test that fails when a listed writer inserts a thread key without the pair; tests under `tests/db/`. Run `bun test tests/db`.
+6. Fill: `src/domain/boundary-backfill.ts`, reconciler stage 7 in `src/domain/reconcile.ts` (report type and formatter), `src/cli/domain.ts` (`--json`), periodic tick in the gateway background loop (`src/gateway/core/gateway.ts`), `tests/domain/boundary-backfill.test.ts`. Run `bun test tests/domain` then `bun run test:pg tests/domain/boundary-backfill.test.ts`.
+7. rc.22 release prep: `docs/site/_content/releases/v0.46.0-rc.22.md`, field note `docs/site/_content/field-notes/2026-11-15-domain-sessions-boundary-columns.md` and its CLAUDE.md Findings Log line, spec slice D status line, runbook for the migration lock timeout. Run the CLAUDE.md leak scan, `bun run typecheck && bun test && bun run test:pg`.
 
-### rc.23: shadow reads (legacy still authoritative)
+### rc.23: in-row check and the gate command
 
-10. Shadow helper.
-    - Files: `src/domain/boundary-shadow.ts`, `tests/domain/boundary-shadow.test.ts`.
-    - Tests first: every outcome, never awaited, inflight cap, sample 0 and 1, log rate limit, errors swallowed.
-11. Wire sessions lookups.
-    - Files: `src/db/sessions.ts` (`findByThread`, `findAnyByThread`, `teamForThread`), `tests/db/sessions-shadow.test.ts`, `tests/domain/boundary-golden-parity.test.ts`.
-    - Tests first: golden parity fixture, injected `mismatch` returns the legacy row.
-12. Wire the thread-table lookups.
-    - Files: the finders of the tables in the Shadow sites list, tests.
-13. Parity check for the gate.
-    - Files: `src/domain/boundary-parity.ts`, `src/cli/domain.ts` (`slaude domain boundary-check [--table T] [--json]`), tests.
-    - Read-only SQL per table: rows with NULL `boundary_id` (count and oldest `updated_at`), rows whose `boundary_id` does not equal the boundary resolved from the row's own team and channel, duplicate `(boundary_id, locator, persona_id)` groups in sessions and duplicate `(boundary_id, locator)` in the CT tables (must be 0 for the follow-up). Paged by primary key, no `audit_events`.
-    - Run: `bun test tests/domain/boundary-parity.test.ts`.
-14. rc.23 release prep, gate checklist file for the follow-up, field note update, soak notes.
+8. In-row check: `src/domain/boundary-check.ts`, wired at `findByThread`, `findAnyByThread` results and after `createForThread` in `src/db/sessions.ts`, `tests/domain/boundary-check.test.ts`, `tests/domain/boundary-golden-parity.test.ts`.
+9. `slaude domain boundary-check`: `src/domain/boundary-parity.ts`, `src/cli/domain.ts`, `tests/domain/boundary-parity.test.ts`.
+10. rc.23 release prep: release notes, gate checklist file for the follow-up, field note update, Grafana alert text for any non-zero `mismatch` or `locator_mismatch`.
 
 ## Rollout
 
-- rc.22: take `sudo /usr/local/sbin/slaude-backup` before the version bump, deploy through vps-hardening, `verify` 0 FAIL. Check the migration applied, run `slaude domain reconcile --dry-run` and read the `boundaryColumns` section, then the real run; expect `ambiguous` and `no_workspace` to be 0 on a single-workspace deployment. Soak 3 days with `SLAUDE_BOUNDARY_WRITE=on`. Gate to rc.23: `slaude domain boundary-check` shows NULL `boundary_id` only on rows younger than 10 minutes, zero `skipped.no_boundary`, resolver `error`/`timeout` under 0.1 percent of calls, no growth in turn latency p95.
-- rc.23: first run with `SLAUDE_BOUNDARY_SHADOW_SAMPLE=1` for the smoke test, then the default 0.25. Soak at least 14 days (two weekly cycles, including cron, wake and a deploy). Gate to the follow-up: `mismatch`, `new_only`, `legacy_only` all 0 for the whole window; `legacy_only_null` under 0.01 percent and 0 for rows older than 10 minutes; `boundary-check` duplicate groups 0; no `ambiguous` rows; Grafana alert on any non-zero `mismatch`/`new_only`/`legacy_only` (panel text in the release note).
+- rc.22: backup before the version bump, deploy through vps-hardening, watch the nine `migration 00NN applied` lines, `verify` 0 FAIL, run `slaude domain reconcile --dry-run` then the real run, read `boundaryColumns`. Soak 3 days. Gate to rc.23: `boundary-check` NULL-older-than-10-minutes (eligible channel, resolvable team) is 0 on every table, `ineligible` and `ambiguous` listed and understood, resolver `error`/`timeout` under 0.1 percent, no change in turn latency p95.
+- rc.23: soak 14 days counted from the day the periodic fill first reaches zero on every table (D7), covering cron, wake and a deploy. Gate to the follow-up: `mismatch`, `locator_mismatch` 0 for the whole window; duplicate groups 0; the NULL gate 0; no `ambiguous`.
 
-## Live smoke test (real Slack, sam agent, rc.22 then rc.23 with sample 1)
+## Live smoke test (real Slack, sam agent; rc.22, then rc.23)
 
-Use placeholders in notes only: workspace T0EXAMPLE, channel C0EXAMPLE, DM D0EXAMPLE, user U0EXAMPLE. After each step run `slaude domain boundary-check --json` and the SQL `SELECT id, slack_channel_id, slack_thread_ts, boundary_id, locator FROM sessions ORDER BY updated_at DESC LIMIT 5`.
-1. DM: send a DM to the agent; session row has a `boundary_id` of kind `dm` (after late fill if the first message created it), locator equals the DM thread key.
-2. Channel root: mention the agent in a channel never seen before; the row exists immediately, `boundary_id` appears within seconds (late fill), a second message in the same thread reuses the session.
-3. Thread: reply in the thread of step 2; same session id, same `(boundary_id, locator)`; reply as a second persona if configured, one session per persona.
-4. 1on1: `/1on1` in the thread; `one_on_one_locks` row carries the pair; end it; node-run turn (job token unchanged) works; console session detail shows the boundary link.
-5. Cron: create a thread cron job; row carries the pair; wait one fire (or trigger it); the run posts and the cron session locator is the `cron:` form.
-6. Proactive wake: enable proactive for the channel, wait one wake; `channel_wake_state.boundary_id` is set, `proactive_posts.boundary_id` set on a post, the channel-session locator is `channel:<id>`.
-7. Failure drill (rc.23): stop only the resolver by setting `SLAUDE_BOUNDARY_TIMEOUT_MS=1` on one replica; messages still land in the right sessions; `timeout` counter rises; restore.
-8. Shadow outcomes: `slaude_boundary_shadow_total` shows only `match` (and `legacy_only_null` for pre-backfill rows, then none).
+Placeholders in notes only (T0EXAMPLE, C0EXAMPLE, D0EXAMPLE, U0EXAMPLE). After each step run `slaude domain boundary-check --json` and `SELECT id, slack_channel_id, slack_thread_ts, boundary_id, locator FROM sessions ORDER BY updated_at DESC LIMIT 5`.
+1. DM: session carries a `boundary_id` (kind dm) within one fill tick, locator equals the DM thread key.
+2. Channel root: mention the agent in a never-seen channel; the row exists at once, the pair appears after first sight (late fill), a second message reuses the session.
+3. Thread: reply in that thread; same session, same pair; second persona gets its own row.
+4. 1on1: `/1on1` in the thread; the lock row carries the pair; end it; a node-run turn works unchanged.
+5. Cron: create a thread cron job and a channel-target job; locators are the thread key and `cron:<id>`; one fire each.
+6. Proactive wake: enable proactive for the channel, wait one wake; `channel_wake_state.boundary_id` and a post's `proactive_posts.boundary_id` set; channel session locator is `channel:<id>`.
+7. Start over (`/new`) in a channel session: the old row's locator is the archived key, the new session has `channel:<id>`; `boundary-check` shows zero duplicate groups.
+8. New-thread burst: post 30 fresh threads in a never-seen channel within a minute; after one fill tick no NULL rows older than 10 minutes, no `mismatch`.
+9. Migration lock-timeout drill on a restored backup copy (never production): hold an ACCESS EXCLUSIVE lock on `sessions` in a psql session, start the new binary, expect a clean start failure naming `0050` within about 2 s with 0042 to 0049 applied, release the lock, restart and see it apply. Resolver outage drill (rc.23): `SLAUDE_BOUNDARY_TIMEOUT_MS=1` on one replica; messages still land in the right sessions.
 
 ## Follow-up (NOT in this slice): move the unique indexes
 
-A separate plan after the rc.23 gate passes. Shape only: (a) a pre-flight that proves zero duplicate `(boundary_id, locator, persona_id)` in sessions and zero NULL `boundary_id` on rows older than the cutoff; (b) the migrator learns a no-transaction migration so `CREATE UNIQUE INDEX CONCURRENTLY` can run, or the index is built by a boot task under the advisory lock; (c) new unique index added next to the old one for one full release; (d) readers switch to `(boundary_id, locator)` behind `SLAUDE_BOUNDARY_SOURCE=boundary` with legacy as the reverse shadow (the slice C flip pattern); (e) only a further release drops the old index and makes columns NOT NULL where the data allows; (f) `audit_events` gets its boundary through the read side or a later nullable column added in a window with a lock budget. Gate for starting it: every threshold in Rollout met, an owner decision on D1 and D7, and a restore rehearsal on a scratch copy.
+Separate plan after the rc.23 gate. Shape: pre-flight (zero duplicates, zero eligible NULLs past the cutoff); the migrator learns a no-transaction migration or a boot task builds `CREATE UNIQUE INDEX CONCURRENTLY` under the advisory lock; the new index sits beside the old one for one full release; readers switch to `(boundary_id, locator)` behind `SLAUDE_BOUNDARY_SOURCE=boundary` with legacy as reverse shadow (the slice C flip pattern); a later release drops the old index; `audit_events` gets its boundary through the read side or a lock-budgeted nullable column; any future boundary delete path must refuse while rows reference it. Gate to start: every Rollout threshold met, owner decisions on D1 and D7, a restore rehearsal on a scratch copy.
 
-## Decisions needed from the owner (recommended default first)
+## Decisions
 
-- D1 audit_events: no DDL in D; readers resolve `(session_id -> sessions.boundary_id)` or `(team, channel_id)` through the resolver. Alternative: a nullable `boundary_id` added in the follow-up inside a lock-budgeted window. Default: no DDL.
-- D2 Foreign key on the new columns: yes, nullable FK (a console delete of a referenced boundary is refused). Alternative: soft reference with no constraint.
-- D3 Column name `locator` (matches the spec wording). Alternative `thread_locator`.
-- D4 Two release candidates (writes, then shadow reads). Alternative: one rc with `SLAUDE_BOUNDARY_SOURCE=legacy` first. Default: two.
-- D5 Shadow sample default 0.25 (1 during smoke). Alternative: 1.0 always.
-- D6 Reconciler may create `observed` boundaries for channel ids found only in non-session tables. Default yes. Alternative: report only.
-- D7 Soak length before the index move: 14 days and two RCs. Alternative: 7 days.
-- D8 Locator form: store the existing thread key verbatim and opaque (including `channel:`, `wake:`, `cron:`). Alternative: normalise synthetic keys to a typed prefix now (not recommended: it changes the key before the index move).
-- D9 `lock_timeout` 5 s in 0042 and accept a boot retry. Alternative: no timeout (risk of queueing writers behind a long transaction).
-- D10 Expose `boundary_id` and `locator` on the node REST `SessionView` (optional). Default yes. Alternative: console only.
+Settled by review (defaults applied above): D2 soft reference, no FK; D4 two RCs, rc.23 only the in-row check and the CLI; D5 moot (no sampling); D6 report only, creation stays in first sight; D7 14 days counted from the fill first reaching zero; D8 verbatim locator plus the archive fix; D9 `lock_timeout` 2 s per table file; D10 cut (no REST or console fields).
+
+Still for the owner (recommended default first):
+- D1 audit_events: no DDL in D (readers resolve through `session_id` or the resolver); alternative is a lock-budgeted nullable column in the follow-up.
+- D3 Column name `locator`; alternative `thread_locator`.
+- D11 Periodic fill cadence and size: every 10 minutes, 2000 rows per tick, oldest first; alternative every 5 minutes or a smaller cap on very large tables.
+- D12 Gate definition: NULL `boundary_id` older than 10 minutes with an eligible channel and a resolvable team is 0, with `ineligible` rows excluded; alternative a small tolerated percentage.
+- D13 Cut `remote_targets` from D entirely (no writer exists). Default yes; alternative add the pair in case `/remote` returns.
 
 ## Risks
 
-- Cross-wire: a wrong `boundary_id` on a row would be harmless now (unread) but fatal after the flip. Mitigation: CAS-only fill, the `boundary-check` recomputation, `mismatch`/`new_only` gates, golden parity, and no repoint code path.
-- Hidden writers: a raw `INSERT INTO sessions` or `cron_jobs` somewhere other than the listed modules (gateway tools, `src/gateway/slack/mcp-tools.ts`, sim, tests). Mitigation: the grep guard test and `boundary-check` NULL counts by table.
-- Late fill cost on a very busy channel: bounded by one channel's NULL rows and the existing index prefix; a failure falls back to the reconciler.
-- Cache staleness after a console boundary delete: positive TTL 10 minutes; FK refuses deletes that matter.
-- First sight burst caps (`BURST_LIMIT`) mean boundaries for a flood of new channels arrive late: NULLs rise for a while; the gate is time-bounded (rows older than 10 minutes), not absolute.
-- Sqlite single process: the in-process queue replaces the advisory lock; tested with `unlocked` plus concurrent writers.
-- Shadow load: at most 1 extra indexed query per sampled lookup, not awaited, capped in flight.
-- Scope creep into the index move: this plan changes no unique index and refuses `SLAUDE_BOUNDARY_SOURCE=boundary`.
-- Public repo: tests and notes use T0EXAMPLE, C0EXAMPLE, D0EXAMPLE, U0EXAMPLE and example.com only; run the CLAUDE.md leak scan on the staged diff before every commit.
+- A wrong `boundary_id` is harmless now but fatal after the index move: compare-and-set only, in-row `mismatch` and `locator_mismatch`, `boundary-check` recomputation, no repoint path except the archive locator rewrite.
+- Hidden writers (a raw insert outside the listed modules, tools, sim): the grep-guard test and per-table NULL counts in `boundary-check`.
+- Late fill and the periodic fill on a busy channel or a large table: bounded by one channel's NULL rows and the per-tick cap; failures are retried next tick.
+- First sight caps mean new channels are boundaried late; the fill hands them back and the gate is time-bounded.
+- Nine migration files mean nine retry points; sessions is last so a stuck lock there leaves the small tables done.
+- Sqlite single process relies on the in-process queue instead of an advisory lock; tested with the `unlocked` path plus concurrent writers.
+- Scope creep into the index move: nothing here changes a unique index; `SLAUDE_BOUNDARY_SOURCE=boundary` is refused.
+- Public repo: tests and notes use T0EXAMPLE, C0EXAMPLE, D0EXAMPLE, U0EXAMPLE and example.com only; run the CLAUDE.md leak scan on every staged diff.
