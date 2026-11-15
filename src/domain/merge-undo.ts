@@ -18,6 +18,8 @@
  *    and inserts a veto on the hashed (Slack or email, sign-in) key pair that
  *    `linkSlackIdentity` and the merge engine refuse until an operator lifts it.
  *
+ * Credential pointers (bookkeeping) are restored from `moved.credentials`, guarded.
+ *
  * Limits (shown in the console and the release note): records and grants only
  * (credentials and memory slices never moved); items changed after the merge
  * are not reverted; past the window undo is refused; a merge that a later merge
@@ -32,6 +34,7 @@ import { db as globalDb, type DbClient } from "../db/schema";
 import { emitDomainEvents } from "../audit/domain";
 import { m } from "../metrics";
 import { getMerge, lockUsers, type MergeRow } from "./merge";
+import { restorePointersForUndo } from "../db/credential-pointers";
 
 export type UndoRefusal = "not-found" | "already-undone" | "past-window" | "chained" | "survivor-gone" | "loser-exists";
 
@@ -266,6 +269,18 @@ async function run(i: UndoInput, c: DbClient): Promise<UndoOutcome> {
     const r = await c.run("DELETE FROM slack_identities WHERE team_id = ? AND slack_user_id = ? AND account_id = ?", [p.unlink.teamId, p.unlink.slackUserId, p.unlink.accountId]);
     if ((r.changes ?? 0) === 1) moved.unlinked = true;
     else skipped.push({ kind: "link", id: mv.proof_binding_ids.slack ?? "", reason: "already unlinked after the merge: it stays unlinked" });
+  }
+  // Credential pointers go back to the loser from the ledger, under a savepoint: bookkeeping never fails an undo.
+  if (mv.credentials?.length) {
+    await c.exec("SAVEPOINT undo_pointers");
+    try {
+      await restorePointersForUndo(c, mv.credentials);
+      await c.exec("RELEASE SAVEPOINT undo_pointers");
+    } catch (e) {
+      await c.exec("ROLLBACK TO SAVEPOINT undo_pointers");
+      await c.exec("RELEASE SAVEPOINT undo_pointers");
+      console.warn(`[domain] undo credential pointers not restored (${e instanceof Error ? e.name : "error"}), left for the reconciler`);
+    }
   }
   if (p.veto) {
     await c.run(

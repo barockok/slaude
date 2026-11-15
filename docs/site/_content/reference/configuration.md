@@ -595,7 +595,12 @@ It fills them at boot, after Slack auth, and you can run the same repair by hand
 on the gateway or mono host (a node has no database and refuses it):
 
 ```sh
-slaude domain reconcile [--dry-run] [--json] [--demote-unproven-emails [--apply]]
+slaude domain reconcile [--dry-run] [--json] [--demote-unproven-emails [--apply]] [--fill-pointers]
+slaude domain slice-tombstone add <user-id> <source|*> --reason <text> [--by <operator>]
+slaude domain slice-tombstone add --source <name> --all-readers --reason <text> [--by <operator>]
+slaude domain slice-tombstone remove <user-id> <source|*> --reason <text>
+slaude domain slice-tombstone remove --source <name> --all-readers --reason <text>
+slaude domain slice-tombstone list [--json]
 ```
 
 | Flag | Meaning |
@@ -603,7 +608,8 @@ slaude domain reconcile [--dry-run] [--json] [--demote-unproven-emails [--apply]
 | `--dry-run` | Report what would be created and write nothing. |
 | `--json` | Print the report as JSON instead of text. |
 | `--demote-unproven-emails` | Names the unproven email section. On its own it changes nothing; the report is printed on every run. |
-| `--apply` | With `--demote-unproven-emails`, set verified email bindings that no login proved back to `observed`. A login with proof raises them again. Not allowed with `--dry-run`, and the gateway's boot reconcile never does it. |
+| `--apply` | With `--demote-unproven-emails`, set verified email bindings that no login proved back to `observed` (a login with proof raises them again). On its own it is a usage error and writes nothing. Not allowed with `--dry-run`, and the gateway's boot reconcile never applies it. |
+| `--fill-pointers` | The one flag that writes credential pointers (`mcp_credentials.user_id`): fills EMPTY pointers from each account's user; with `SLAUDE_CREDENTIAL_POINTERS=on` it also repairs pointers that drifted. Not allowed with `--dry-run`. |
 
 The report has these sections besides the created and existing counts:
 
@@ -614,8 +620,26 @@ The report has these sections besides the created and existing counts:
 | `workspace grants` | Workspace grants whose subject is not a team this tenant is connected to. Fix or delete these before the access flip. |
 | `unproven email bindings` | Verified email bindings with no proving login, counted per issuer, never an address. |
 | `link tokens` | Expired rows purged from the single-use link ledger. |
+| `verified slack bindings without a link` | Verified Slack bindings with no `slack_identities` row, counted per team. Report only; nothing is repaired. |
+| `slack links without a verified binding` | `slack_identities` rows whose Slack id has no verified binding, counted per team. Report only. |
+| `credential pointers` | Person credential rows: how many have an empty pointer, how many differ from the account's user, how many belong to an account with no user yet, and how many `--fill-pointers` filled or repaired. The slice report is printed by the CLI only; the boot reconcile skips it. |
+| `slice names claimed by two users` | Memory slice names (`user-...`) that bindings of two live users both produce, shown masked with a user count. Review each; no repair. A person-slice union excludes them. |
 
 Bot ids are skipped (reason `bot`), never given a user.
+
+`slaude domain slice-tombstone` is the operator revoke for the person-slice union
+(see the [domain memory and credentials field note](../field-notes/2026-11-15-domain-memory-credentials.md)).
+`add <user-id> <source|*>` revokes one `user-` slice name (or every added name, with
+`*`) from ONE reader's union; it is keyed on the user record, so it stops applying
+if that person relinks their ids to another account (a new user).
+`add --source <name> --all-readers` is the source-level revoke: no reader's union
+may include that slice, whoever they are and however they are linked; use it for a
+mistaken link. Both need a `--reason`, and so does `remove`. The change is audited
+as the operator: `--by` is self-asserted, so the OS user that ran the command is
+recorded beside it. Output masks the slice name (prefix and length only), so it
+shows no Slack id. A row keyed on a merged-away user id still applies to the
+survivor. Under `SLAUDE_PERSON_SLICES=union` a tombstone takes effect on the next
+read in the process that wrote it, and within a fraction of a second elsewhere.
 
 The command is safe to run again: a second run creates nothing. It exits `0` on
 success, `1` if the run fails and `2` for a usage error. A run that created
@@ -632,6 +656,10 @@ something or found a conflict (two accounts with one email) writes one
 | `SLAUDE_BOUNDARY_FILL_INTERVAL_MS` | No | `600000` | How often the gateway's periodic fill completes `boundary_id` and `locator` on rows written without them. `0` disables it. Never runs on a node. |
 | `SLAUDE_BOUNDARY_FILL_MAX_ROWS` | No | `2000` | Most rows one fill tick updates across tables (the boot reconciler stage allows this many per table). A tick that hits the cap continues next tick. |
 | `SLAUDE_MERGE_NOTICE` | No | `on` | Whether a merge sends its Slack notice (one DM to the person and, when a manager or approver grant activates, one to the persona's manager). `off`, `0`, `false` or `no` sends nothing and marks the ledger row `skipped`. The merge itself is unchanged. Read on every call. |
+| `SLAUDE_MERGE_POINTERS` | No | `on` | Whether a user merge repoints credential bookkeeping pointers (`mcp_credentials.user_id`) from the merged-away record to the survivor before the old record is deleted. The pointer is never read for a decision, so this changes no credential behaviour. `off`, `0`, `false` or `no` skips the step; `slaude domain reconcile --fill-pointers` fills pointers later. A failure in the step never fails the merge. Read on every call. |
+| `SLAUDE_PERSON_SLICES` | No | `off` | Person-slice union for memory READS (slice F). `off` (also unset, empty or any unknown value): nothing runs and every memory and knowledge scope is exactly rc.21's. `shadow`: the legacy scope is still used; in the background the gateway computes which `user-` slices a person who proved several Slack ids could read, compares with the legacy own slice and counts it (`slaude_person_slices_shadow_total{site,outcome}`, `slaude_person_slices_failures_total`, `slaude_person_slices_ms`); a disagreement is logged once per site and reason per minute with counts only. `union` (rc.25): the speaker's, or the job token's `runAs` person's, other Slack ids whose bindings are verified (the acting one too) add their `user-` slices to the read set; an observed or declared id contributes nothing, a name another user also produces is excluded, a thread locked by someone else stays public-only, and a failure or the 250 ms bound falls back to the own slice. Writes never change. Operator tombstones (`slaude domain slice-tombstone`) are honoured. An added slice needs a row in the link table (`slack_identities`) for an account of the same user, so an unlink whose binding cleanup failed still cuts it, and is held for `SLAUDE_PERSON_SLICES_HOLD_HOURS`. Read on every call. Rollback: set it to `shadow` or `off`. |
+| `SLAUDE_PERSON_SLICES_HOLD_HOURS` | No | `24` | The hold on an ADDED Slack id under `SLAUDE_PERSON_SLICES=union`: its slice joins a union only once the binding's own `verified_at` is older than this many hours. The link token is a 15 minute bearer token, so a link redeemed by the wrong person must not open the linked id's whole private slice to the account's other ids at once; the hold is the window to unlink, undo a merge, or tombstone it. `0` disables the hold. An unknown value reads as 24. The new link is audited (`slice.union_link`) when the union or its shadow is on. Read on every call. |
+| `SLAUDE_CREDENTIAL_POINTERS` | No | `off` | Whether a person's credential write and a login or link record the bookkeeping pointer `mcp_credentials.user_id`. Off: no credential write does any extra work (`slaude domain reconcile --fill-pointers` fills pointers on demand). On: the pointer is recorded after the write has committed, in the background, never awaited (a token refresh does not wait for it), and a login or link updates it under a short lock timeout. Nothing reads the pointer for a decision either way. Read on every call. |
 
 ### External MCP env references
 

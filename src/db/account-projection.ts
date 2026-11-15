@@ -11,6 +11,11 @@
  * account's verified oidc binding (service 'oidc', kind 'subject',
  * workspace = issuer, value = subject).
  *
+ * A login or link also records the account's user on its credential rows
+ * (`mcp_credentials.user_id`, bookkeeping, src/db/credential-pointers.ts); the
+ * reconciler passes `recordPointer: false` so its pointer report stays honest
+ * and only `--apply` fills pointers.
+ *
  * Functions return the events they caused. The caller emits them with
  * `emitDomainEvents` after the transaction commits.
  */
@@ -18,6 +23,7 @@ import * as Domain from "./domain";
 import type { BindingKey, DomainEvent } from "./domain";
 import type { DbClient } from "./schema";
 import { parseRef } from "../refs/parse";
+import { recordPointerInTx } from "./credential-pointers";
 
 const SAVEPOINT = "domain_projection";
 
@@ -77,12 +83,13 @@ function logConflict(what: string): void {
  * address makes no email binding.
  */
 export async function projectLogin(
-  a: { issuer: string; subject: string; email: string; emailProven?: boolean; previousEmail: string | null },
+  a: { issuer: string; subject: string; email: string; emailProven?: boolean; previousEmail: string | null; recordPointer?: boolean },
   tx: DbClient,
 ): Promise<DomainEvent[]> {
   return guardedProjection(tx, "login", [] as DomainEvent[], async () => {
     const events: DomainEvent[] = [];
     const { userId, oidcBindingId } = await ensureAccountUser(a, tx, events);
+    if (a.recordPointer !== false) await recordPointerInTx(a, userId, tx);
 
     const next = normaliseEmail(a.email);
     const prev = a.previousEmail ? normaliseEmail(a.previousEmail) : null;
@@ -118,12 +125,13 @@ export async function projectLogin(
 
 /** Link: adopt the verified slack binding onto the account's user. */
 export async function projectLink(
-  a: { issuer: string; subject: string; teamId: string; slackUserId: string },
+  a: { issuer: string; subject: string; teamId: string; slackUserId: string; recordPointer?: boolean },
   tx: DbClient,
 ): Promise<DomainEvent[]> {
   return guardedProjection(tx, "link", [] as DomainEvent[], async () => {
     const events: DomainEvent[] = [];
     const { userId, oidcBindingId } = await ensureAccountUser(a, tx, events);
+    if (a.recordPointer !== false) await recordPointerInTx(a, userId, tx);
     const r = await Domain.adoptBinding(
       { service: "slack", kind: "user", workspace: a.teamId, value: a.slackUserId, toUserId: userId, state: "verified", oidcBindingId },
       tx,

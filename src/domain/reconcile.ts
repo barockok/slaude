@@ -71,6 +71,9 @@ import { formatRef, parseRef } from "../refs/parse";
 import * as Domain from "../db/domain";
 import { normaliseEmail, projectLink, projectLogin, userForAccount } from "../db/account-projection";
 import { purgeExpiredLinkTokens } from "../db/link-token-uses";
+import { pointerReport, type PointerReport } from "../db/credential-pointers";
+import { maskSource } from "../db/slice-tombstones";
+import { userSourceId } from "../knowledge/scope";
 import { db as globalDb, type DbClient } from "../db/schema";
 import { fillBoundaryColumns, type BoundaryColumnsReport, type FillOptions } from "./boundary-backfill";
 
@@ -155,6 +158,8 @@ export interface ReconcileReport {
   workspaceGrants: WorkspaceGrantReport;
   /** Verified email bindings no proving login backs, per issuer of the user's oidc binding; counts only, never an address. */
   unprovenEmails: UnprovenEmails;
+  /** Slice F: link and pointer consistency and doubly claimed slice names. Counts and masked names only. Nothing is repaired but NULL pointers, and only with `fillPointers`. */
+  slices: SliceReport;
   /** Stored user grants whose subject is typed (a colon or an at sign). The legacy readers drop them until the access flip; report only. */
   typedGrantSubjects: number;
   /** Slice D: `boundary_id` and `locator` filled on rows that lack them (would be, in a dry run), per table. At most one capped batch per table; the periodic fill takes the rest. Empty when SLAUDE_BOUNDARY_WRITE is off. */
@@ -162,6 +167,25 @@ export interface ReconcileReport {
   startedAt: number;
   finishedAt: number;
 }
+
+/** Slice F (task 6): what the person-slice union and the credential pointer depend on. Counts per team, masked names, never an id. */
+export interface SliceReport {
+  /** Verified Slack bindings with no `slack_identities` row (the direction the link-to-binding pass never checked), per team. */
+  verifiedWithoutLink: { total: number; byTeam: Record<string, number> };
+  /** `slack_identities` rows with no verified binding of that Slack id, per team. */
+  linkWithoutVerified: { total: number; byTeam: Record<string, number> };
+  /** Credential pointers: NULL, drifted, unresolvable, filled. */
+  pointers: PointerReport;
+  /** Slice names that bindings of two or more live users produce (Rule Q excludes them from a union). */
+  claimedNames: { total: number; names: Array<{ name: string; users: number }> };
+}
+
+export const emptySliceReport = (): SliceReport => ({
+  verifiedWithoutLink: { total: 0, byTeam: {} },
+  linkWithoutVerified: { total: 0, byTeam: {} },
+  pointers: { total: 0, nullPointer: 0, drift: 0, unresolved: 0, filled: 0, repaired: 0 },
+  claimedNames: { total: 0, names: [] },
+});
 
 export interface ReconcileOptions {
   dryRun?: boolean;
@@ -182,6 +206,14 @@ export interface ReconcileOptions {
   boundaryFill?: typeof fillBoundaryColumns;
   /** Where the boundary stage hands channels that have no boundary yet (default: first sight). Tests. */
   boundaryHandOff?: FillOptions["handOff"];
+  /**
+   * Fill NULL credential pointers (`mcp_credentials.user_id`) from each account's
+   * user. NULL pointers only; a differing pointer is reported, never changed.
+   * Off by default and never set by the boot hook; ignored in a dry run.
+   */
+  fillPointers?: boolean;
+  /** Skip the slice report (it pages every Slack binding and credential row): the boot hook passes it, the CLI does not. */
+  skipSliceReport?: boolean;
   /** Skip the lock and the in-process queue (tests of the insert-or-ignore path). */
   unlocked?: boolean;
   log?: (msg: string) => void;
@@ -256,6 +288,7 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     lockTeams: empty(),
     workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 },
     unprovenEmails: { total: 0, byIssuer: {}, demoted: 0, unaccounted: 0 },
+    slices: emptySliceReport(),
     typedGrantSubjects: 0,
     boundaryColumns: {},
     startedAt,
@@ -325,7 +358,7 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
       accUser.set(a.id, userId);
       continue;
     }
-    const events = await inTx((tx) => projectLogin({ issuer: a.issuer, subject: a.subject, email: a.email, emailProven: proven, previousEmail: null }, tx));
+    const events = await inTx((tx) => projectLogin({ issuer: a.issuer, subject: a.subject, email: a.email, emailProven: proven, previousEmail: null, recordPointer: false }, tx));
     await emitMerges(events);
     const u = await userForAccount(a, c);
     accUser.set(a.id, u);
@@ -376,7 +409,7 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
       skip(rS, "no_user");
       continue;
     }
-    await emitMerges(await inTx((tx) => projectLink({ issuer: a.issuer, subject: a.subject, teamId: s.team_id, slackUserId: s.slack_user_id }, tx)));
+    await emitMerges(await inTx((tx) => projectLink({ issuer: a.issuer, subject: a.subject, teamId: s.team_id, slackUserId: s.slack_user_id, recordPointer: false }, tx)));
     const after = await Domain.findBinding(key, c);
     if (after && after.user_id === userId && after.state === "verified") rS.created++;
     else {
@@ -578,6 +611,9 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     }).catch((e) => console.warn(`[domain] email demotion audit failed: ${(e as Error).message}`));
   }
 
+  // 7. Slice F report: link and pointer consistency, doubly claimed slice names.
+  report.slices = opts.skipSliceReport ? emptySliceReport() : await sliceReport(c, { fill: !!opts.fillPointers && !dry, pageSize: opts.pageSize ?? PAGE_SIZE });
+
   report.finishedAt = Date.now();
   // A no-op run (nothing created, no conflict) stays silent: boot would otherwise add one audit row per start.
   if (!dry && (totalCreated(report) > 0 || report.conflicts.length > 0 || report.grantSubjects.created > 0 || report.lockTeams.created > 0 || boundaryFilled(report) > 0)) {
@@ -592,6 +628,54 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
     }).catch((e) => console.warn(`[domain] reconcile summary audit failed: ${(e as Error).message}`));
   }
   return report;
+}
+
+/**
+ * Slice F report. Read only except the pointer fill (`fill`, NULL pointers
+ * only). Reads no Slack id out: counts per team and masked slice names.
+ */
+export async function sliceReport(c: DbClient, o: { fill: boolean; pageSize: number }): Promise<SliceReport> {
+  const perTeam = async (sql: string): Promise<{ total: number; byTeam: Record<string, number> }> => {
+    const out = { total: 0, byTeam: {} as Record<string, number> };
+    for (const r of await c.query<{ team: string; n: number | string }>(sql)) {
+      out.byTeam[r.team] = Number(r.n);
+      out.total += Number(r.n);
+    }
+    return out;
+  };
+  const verifiedWithoutLink = await perTeam(
+    `SELECT b.workspace AS team, COUNT(*) AS n FROM bindings b
+     WHERE b.service = 'slack' AND b.kind = 'user' AND b.state = 'verified'
+       AND NOT EXISTS (SELECT 1 FROM slack_identities s WHERE s.team_id = b.workspace AND s.slack_user_id = b.value)
+     GROUP BY b.workspace ORDER BY b.workspace`,
+  );
+  const linkWithoutVerified = await perTeam(
+    `SELECT s.team_id AS team, COUNT(*) AS n FROM slack_identities s
+     WHERE NOT EXISTS (SELECT 1 FROM bindings b WHERE b.service = 'slack' AND b.kind = 'user' AND b.workspace = s.team_id AND b.value = s.slack_user_id AND b.state = 'verified')
+     GROUP BY s.team_id ORDER BY s.team_id`,
+  );
+  const pointers = await pointerReport(c, o);
+
+  // Slice names two live users both produce. Paged by binding id; only the name and a user set are kept.
+  const byName = new Map<string, Set<string>>();
+  let after = "";
+  for (;;) {
+    const rows = await c.query<{ id: string; user_id: string; value: string }>(
+      "SELECT id, user_id, value FROM bindings WHERE service = 'slack' AND kind = 'user' AND id > ? ORDER BY id LIMIT ?",
+      [after, o.pageSize],
+    );
+    if (rows.length === 0) break;
+    for (const r of rows) {
+      const name = userSourceId(r.value);
+      let set = byName.get(name);
+      if (!set) byName.set(name, (set = new Set()));
+      set.add(r.user_id);
+    }
+    after = rows[rows.length - 1]!.id;
+    if (rows.length < o.pageSize) break;
+  }
+  const claimed = [...byName].filter(([, users]) => users.size > 1).map(([name, users]) => ({ name: maskSource(name), users: users.size })).sort((a, b) => a.name.localeCompare(b.name));
+  return { verifiedWithoutLink, linkWithoutVerified, pointers, claimedNames: { total: claimed.length, names: claimed } };
 }
 
 /** The audit, cache drop and notice hook of merges a projection made (the batch itself writes one summary). */
@@ -908,6 +992,18 @@ export function formatReconcileReport(r: ReconcileReport): string {
     lines.push(`  unproven email bindings: ${u.total} (${per}); ${u.demoted > 0 ? `${u.demoted} set back to observed` : "none changed"}`);
     if (u.demoted === 0 && !r.dryRun) lines.push("    to set them back to observed (a login with proof raises them again): slaude domain reconcile --demote-unproven-emails --apply");
   }
+  const sl = r.slices;
+  const teams = (b: Record<string, number>) => Object.entries(b).map(([k, n]) => `${k} ${n}`).join(", ");
+  lines.push(sl.verifiedWithoutLink.total === 0 ? "  verified slack bindings without a link: none" : `  verified slack bindings without a link: ${sl.verifiedWithoutLink.total} (${teams(sl.verifiedWithoutLink.byTeam)}); report only, not repaired here: the person-slice union ignores a verified binding that has no link`);
+  lines.push(sl.linkWithoutVerified.total === 0 ? "  slack links without a verified binding: none" : `  slack links without a verified binding: ${sl.linkWithoutVerified.total} (${teams(sl.linkWithoutVerified.byTeam)}); report only, not repaired here: the union ignores a link whose binding is not verified`);
+  const p = sl.pointers;
+  lines.push(`  credential pointers: ${p.total} row(s), ${p.nullPointer} empty (${p.unresolved} with no user yet), ${p.drift} differ from the account's user; ${p.filled > 0 || p.repaired > 0 ? `${p.filled} filled, ${p.repaired} repaired` : "none filled"}`);
+  if (p.filled === 0 && p.nullPointer > p.unresolved && !r.dryRun) lines.push("    to fill the empty pointers (a pointer that is set is only repaired with SLAUDE_CREDENTIAL_POINTERS=on): slaude domain reconcile --fill-pointers");
+  if (sl.claimedNames.total === 0) lines.push("  slice names claimed by two users: none");
+  else {
+    lines.push(`  slice names claimed by two users: ${sl.claimedNames.total} (excluded from a union; review each, no repair)`);
+    for (const n of sl.claimedNames.names) lines.push(`    ${n.name} users=${n.users}`);
+  }
   if (r.linkTokensPurged > 0) lines.push(`  link tokens: ${r.linkTokensPurged} expired ledger row(s) ${r.dryRun ? "would be purged" : "purged"}`);
   return lines.join("\n");
 }
@@ -927,7 +1023,7 @@ export async function reconcileAtBoot(o: {
   try {
     // A notice still pending long after its merge was never sent (the process that made it died): say so.
     await sweepPendingNotices().then((n) => n > 0 && log(`${n} merge notice(s) were never sent (marked failed)`)).catch(() => {});
-    const r = await (o.run ?? reconcile)({ liveTeamIds: o.liveTeamIds, log });
+    const r = await (o.run ?? reconcile)({ liveTeamIds: o.liveTeamIds, log, skipSliceReport: true });
     if (totalCreated(r) === 0 && r.conflicts.length === 0 && boundaryFilled(r) === 0) log("reconcile: nothing to do");
     else log(`reconcile done: ${totalCreated(r)} created, ${r.conflicts.length} conflict(s)\n${formatReconcileReport(r)}`);
     // Report only: demotion is an operator's explicit CLI run, never the boot hook's.
@@ -935,6 +1031,8 @@ export async function reconcileAtBoot(o: {
     if (r.unprovenEmails.total > 0) {
       log(`${r.unprovenEmails.total} verified email binding(s) have no proof of the address (before rc.19); nothing reads them for access yet. Report and fix: slaude domain reconcile --demote-unproven-emails --apply`);
     }
+    // The slice report (every Slack binding, every credential row) is a CLI report, not a boot cost.
+    log("the slice report (links without a verified binding, credential pointers, slice names claimed twice) is not run at boot: slaude domain reconcile --dry-run prints it");
     return r;
   } catch (e) {
     console.error(`[domain] reconcile failed (boot continues): ${e instanceof Error ? e.message : String(e)}`);

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { sameAt } from "../access/wired";
+import { env } from "../config/env";
 import type { SoulData } from "../soul/data";
 
 export type ChannelTrust = "trusted" | "public" | "unknown";
@@ -20,6 +21,35 @@ export interface BrainScope {
   profileSource?: string;
 }
 
+/**
+ * Which `user-` slices one acting Slack id may READ (slice F, `SLAUDE_PERSON_SLICES=union`).
+ * Resolved at read time by `src/knowledge/person-slices.ts` and attached to the gate input by
+ * the gateway; absent means the legacy own slice only. Writes never use it.
+ */
+export interface PersonSlices {
+  /** The acting id's own legacy slice. Always first in `reads`. */
+  own: string;
+  reads: string[];
+  via: "legacy" | "union";
+  /** Names left out of the union: claimed by another user, tombstoned, or still inside the hold (omitted when 0). */
+  dropped: { conflict: number; tombstoned: number; held?: number };
+}
+
+const PERSON_NAME = /^user-[a-z0-9]+$/;
+
+/**
+ * The extra `user-` slices a person's read set may add to `own`, or none. Re-checked here on
+ * purpose (Rule R, defence in depth): the union must be for this very own slice, and only
+ * `user-<alnum>` names pass, so `agent`, `shared`, `public`, `kb-` and `profile-` names can
+ * never enter through `person`, whatever it holds.
+ */
+export function extraPersonReads(person: PersonSlices | undefined, own: string): string[] {
+  // Re-checked at the site: with the flag not `union`, a stray `person` adds nothing.
+  if (env.slices.mode() !== "union") return [];
+  if (!person || person.via !== "union" || person.own !== own || person.reads[0] !== own) return [];
+  return [...new Set(person.reads.slice(1))].filter((n) => n !== own && PERSON_NAME.test(n));
+}
+
 export interface ScopeInput {
   /** null = agent-initiated turn (cron, internal maintenance). */
   userId: string | null;
@@ -36,6 +66,8 @@ export interface ScopeInput {
   /** This agent's stable identity — anchors its private `agent-<id>` slice.
    *  Resolved once at boot (SLAUDE_AGENT_ID or auth.test); see agent-identity.ts. */
   agentId: string;
+  /** The speaker's verified-only person slices (`union` mode, reads only); absent = legacy. */
+  person?: PersonSlices;
 }
 
 /** Legacy single-agent source. Kept in the agent read union for continuity with
@@ -154,7 +186,8 @@ async function baseScope(i: ScopeInput): Promise<BrainScope> {
       return {
         clientId: i.userId,
         sourceId: own,
-        allowedSources: [own, ...agentReads, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
+        // Reads only: the speaker's other verified ids' slices (union mode); the write target stays `own`.
+        allowedSources: [own, ...extraPersonReads(i.person, own), ...agentReads, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
       };
     }
     if (!i.isManager) {

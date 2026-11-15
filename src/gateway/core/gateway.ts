@@ -1,3 +1,4 @@
+import { decidePersonSlices, runAsPersonFor } from "../../slices/decide";
 import type { AgentManager, AgentEvent } from "../../agent/manager";
 import { env } from "../../config/env";
 import { m as metric } from "../../metrics";
@@ -1580,7 +1581,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // not live: it throws, so the gate refuses rather than reading or writing
     // the default agent's private brain slice.
     const personaAgentId = personaAgentIdFor(ctx.personaId);
-    return {
+    const gate: GateInput = {
       // A wake's initiator is the agent itself, and the agent is not a person
       // talking: it writes to its own mind like any background turn.
       userId: ctx.userId && ctx.userId !== personaAgentId ? ctx.userId : null,
@@ -1600,6 +1601,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       agentId: personaAgentId,
       threadKey: `${ctx.channel}:${ctx.threadTs}`,
     };
+    // Slice F shadow: compare the speaker's verified-only union with the legacy own slice, in the
+    // background and counts only. A no-op unless SLAUDE_PERSON_SLICES=shadow; the gate is unchanged.
+    // Under union the speaker's verified-only slices ride on the gate (reads only, Rule S: never the lock owner's).
+    const person = gate.userId ? await decidePersonSlices({ site: "brain.gate_speaker", teamId: gate.teamId, slackUserId: gate.userId }) : undefined;
+    return person ? { ...gate, person } : gate;
   };
 
   // Episodic memory for turns that run in THIS process (mono): scoped by the
@@ -1616,7 +1622,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const { ctx } = route;
         const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
         const gate = await brainGateFor(ctx);
-        const scope = await memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null });
+        const runAsPerson = await runAsPersonFor(gate, runAsUser);
+        const scope = await memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null, ...(runAsPerson ? { runAsPerson } : {}) });
         // Only an interactive turn counts toward the quiet-moment pass's thread activity.
         return gate.interactive ? { ...scope, activityAgentId: gate.agentId } : scope;
       },
@@ -1671,7 +1678,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             if (!sessionId) return { sessionId: undefined, read: null };
             if (claims) return { sessionId, read: (await memoryScopeForClaims(await brainGateFor(ctx), claims)).read };
             const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
-            return { sessionId, read: (await memoryScopeFor(await brainGateFor(ctx), { channel: ctx.channel, runAsUser: runAsUser ?? null })).read };
+            const gate = await brainGateFor(ctx);
+            const runAsPerson = await runAsPersonFor(gate, runAsUser);
+            return { sessionId, read: (await memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null, ...(runAsPerson ? { runAsPerson } : {}) })).read };
           },
           // The persona's managers (roleOf "manager": its soul's manager and
           // backup plus stored manager grants, no deny).

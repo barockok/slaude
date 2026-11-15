@@ -10,6 +10,8 @@ import * as Domain from "./domain";
 import { randomUUID } from "node:crypto";
 import { db, type DbClient } from "./schema";
 import { emitDomainEvents } from "../audit/domain";
+import { audit } from "../audit";
+import { env } from "../config/env";
 import type { DomainEvent } from "./domain";
 import { claimLinkToken } from "./link-token-uses";
 import { guardedProjection, projectAccountDeletion, projectLink, projectLogin, projectUnlink } from "./account-projection";
@@ -36,6 +38,29 @@ async function emitAfterCommit(events: DomainEvent[]): Promise<void> {
     await emitDomainEvents(events, { actorId: "system" });
   } catch (e) {
     console.warn(`[domain] audit of projection events failed: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * Under SLAUDE_PERSON_SLICES=shadow or union a new link changes what the account's other
+ * Slack ids may read, once the hold has passed. Record that, after the commit, with ids of
+ * the account only (no Slack id). Never throws.
+ */
+async function auditUnionLink(accountId: string, teamId: string): Promise<void> {
+  try {
+    const mode = env.slices.mode();
+    if (mode === "off") return;
+    await audit({
+      actorKind: "system",
+      actorId: "system",
+      action: "slice.union_link",
+      targetKind: "account",
+      targetId: accountId,
+      summary: `a Slack id was linked: under the person-slice union its memory becomes readable by the account's other verified Slack ids after the ${env.slices.holdHours()} hour hold`,
+      details: { account_id: accountId, team_id: teamId, mode, hold_hours: env.slices.holdHours() },
+    });
+  } catch (e) {
+    console.warn(`[domain] audit of a union link failed: ${(e as Error).message}`);
   }
 }
 
@@ -178,6 +203,7 @@ export async function linkSlackIdentity(
   });
   await emitAfterCommit(out.events);
   invalidateActors();
+  if (out.result.ok && out.result.created) await auditUnionLink(i.accountId, i.teamId);
   return out.result;
 }
 

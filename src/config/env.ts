@@ -780,6 +780,16 @@ export const env = {
       const raw = opt("SLAUDE_MERGE_NOTICE", "on").trim().toLowerCase();
       return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
     },
+    /**
+     * `SLAUDE_MERGE_POINTERS` (default on, slice F): a merge repoints the credential
+     * bookkeeping pointers (`mcp_credentials.user_id`) from the loser to the survivor
+     * before the loser row is deleted. Inert: no decision reads the pointer. `off`
+     * skips the step and the reconciler repairs. Read on every call.
+     */
+    pointers: (): boolean => {
+      const raw = opt("SLAUDE_MERGE_POINTERS", "on").trim().toLowerCase();
+      return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
+    },
   },
   boundary: {
     /**
@@ -798,6 +808,42 @@ export const env = {
     fillIntervalMs: (): number => numberAtLeastZero("SLAUDE_BOUNDARY_FILL_INTERVAL_MS", 600_000),
     /** Most rows one fill tick updates across tables (default 2000). */
     fillMaxRows: (): number => intAtLeastOne("SLAUDE_BOUNDARY_FILL_MAX_ROWS", 2000),
+  },
+  slices: {
+    /**
+     * `SLAUDE_PERSON_SLICES` (default `off`, slice F). `off`: no resolver call, every
+     * scope decision is rc.21's. `shadow`: the legacy scope is returned and the
+     * verified-only union is computed beside it and compared (counts and a
+     * redacted log only). `union` (rc.23): READS also include the `user-` slices of the
+     * speaker's other Slack ids that are verified (Rules P, Q, R, S, T of the slice F plan);
+     * writes never change. Read on every call. Anything else reads as `off`.
+     */
+    mode: (): "off" | "shadow" | "union" => {
+      const raw = opt("SLAUDE_PERSON_SLICES", "off").trim().toLowerCase();
+      return raw === "shadow" || raw === "union" ? raw : "off";
+    },
+    /**
+     * `SLAUDE_PERSON_SLICES_HOLD_HOURS` (default 24, `0` disables): a Slack binding joins a
+     * union as an ADDED slice only once its own `verified_at` is older than this. The link
+     * token is a 15 minute bearer token, so a mistaken link (the wrong person redeeming it)
+     * must not give the account's other ids the linked id's whole slice at once: the hold is
+     * the window to notice and revoke (unlink, undo, tombstone). Read from the binding row
+     * itself; a binding with no `verified_at` is held. Read on every call.
+     */
+    holdHours: (): number => {
+      const n = Number(opt("SLAUDE_PERSON_SLICES_HOLD_HOURS", "24"));
+      return Number.isFinite(n) && n >= 0 ? n : 24;
+    },
+    /**
+     * `SLAUDE_CREDENTIAL_POINTERS` (default `off`, slice F): record the bookkeeping pointer
+     * `mcp_credentials.user_id` after a person's credential write and on login or link.
+     * Off, no credential write does any extra work; `slaude domain reconcile --fill-pointers`
+     * fills the pointers meanwhile. Nothing reads the pointer for a decision either way.
+     */
+    credentialPointers: (): boolean => {
+      const raw = opt("SLAUDE_CREDENTIAL_POINTERS", "off").trim().toLowerCase();
+      return raw === "on" || raw === "1" || raw === "true" || raw === "yes";
+    },
   },
   remote: {
     /** `/remote` — run a thread's shell and file tools on the initiator's own

@@ -1,5 +1,6 @@
 import { sameAt, someSameAt } from "../access/wired";
 import type { BrainScope, ChannelTrust } from "./scope";
+import type { PersonSlices } from "./scope";
 import { agentSourceId, isProfileSourceId, resolveBrainScope, speakerProfileSource, userSourceId } from "./scope";
 
 export type GateTier = "auto" | "approval" | "manager" | "deny";
@@ -54,6 +55,8 @@ export interface GateInput {
   /** Stable per-thread key (`channel:threadTs`). Scopes the standing grant —
    *  one approval in a thread auto-passes later non-destructive writes there. */
   threadKey?: string | null;
+  /** The speaker's verified-only person slices, set by the gateway under SLAUDE_PERSON_SLICES=union. Reads only: a write is classified against the writer's own slice and never uses this. */
+  person?: PersonSlices;
 }
 
 const READ_OPS = new Set([

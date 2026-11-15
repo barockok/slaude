@@ -23,6 +23,7 @@
  * thread_activity (the quiet-moment pass's selection), a database write only,
  * never a brain call; its failure is logged and never fails the sync.
  */
+import { runAsPersonFor } from "../../slices/decide";
 import { z } from "zod";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { agentIdReady } from "../../knowledge/agent-identity";
@@ -145,7 +146,9 @@ export async function memoryScopeForClaims(gate: GateInput, claims: JobClaims): 
   // owner although its synthetic thread holds no lock.
   const runAs = parseRunAs(claims.runAs);
   const runAsUser = runAs?.kind === "user" ? runAs.slackUserId : null;
-  return memoryScopeFor(await withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser });
+  // Slice F shadow (`shadow`: counts only; `union`: the runAs person's verified slices, reads only).
+  const runAsPerson = await runAsPersonFor(gate, runAsUser);
+  return memoryScopeFor(await withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser, ...(runAsPerson ? { runAsPerson } : {}) });
 }
 
 /** The default plane: the process's provider, gated like the KB tools (the

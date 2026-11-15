@@ -201,7 +201,7 @@ export const kbContract = {
     memory_about: {
       name: "memory_about",
       description:
-        "What you hold about the person asking (\"what do you know about me?\"): their profile and every note about them this turn can read, each labelled told or inferred with its date; superseded pages are left out. Answers only for the person whose own turn this is.",
+        "What you hold about the person asking (\"what do you know about me?\"): their profile and every note about them this turn can read, each labelled told or inferred with its date; superseded pages are left out. Answers only for the person whose own turn this is. It lists the asking id's own slice, the agent's and the shared stores; notes held only in another of the person's linked Slack ids' private slices (the person-slice union) are reached by search and recall, not listed here.",
       schema: { userId: z.string().describe("Slack user id of the person asking; must be the current speaker.") },
     },
     memory_thread_history: memoryThreadHistory,

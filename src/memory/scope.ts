@@ -1,6 +1,6 @@
 import { sameAt } from "../access/wired";
 import type { GateInput } from "../knowledge/gated-dispatch";
-import { AGENT_SOURCE, PUBLIC_SOURCE, agentSourceId, resolveBrainScope, userSourceId, type BrainScope } from "../knowledge/scope";
+import { AGENT_SOURCE, PUBLIC_SOURCE, agentSourceId, extraPersonReads, resolveBrainScope, userSourceId, type BrainScope, type PersonSlices } from "../knowledge/scope";
 
 /**
  * Where one turn's episodic memory is read from and written to, derived from
@@ -49,7 +49,7 @@ const both = (clientId: string, source: string, reads: string[] = [source]): Mem
 
 const NONE: MemoryScope = { read: null, write: null };
 
-export async function memoryScopeFor(g: GateInput, opts: { channel?: string; runAsUser?: string | null } = {}): Promise<MemoryScope> {
+export async function memoryScopeFor(g: GateInput, opts: { channel?: string; runAsUser?: string | null; runAsPerson?: PersonSlices } = {}): Promise<MemoryScope> {
   // Someone else's locked thread: nothing, whoever speaks (manager included).
   const seam = { persona: g.agentId, teamId: g.teamId };
   if (g.userId !== null && g.lockedUser !== null && !(await sameAt({ ...seam, site: "memory_scope.lock_owner", userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }))) return NONE;
@@ -57,14 +57,18 @@ export async function memoryScopeFor(g: GateInput, opts: { channel?: string; run
   if (runAs !== null) {
     if (g.userId !== null && !(await sameAt({ ...seam, site: "memory_scope.run_as_speaker", userId: g.userId, otherUserId: runAs }))) return NONE;
     if (g.lockedUser !== null && !(await sameAt({ ...seam, site: "memory_scope.run_as_lock", userId: g.lockedUser, otherUserId: runAs, otherTeamId: g.lockedTeamId }))) return NONE;
-    return both(runAs, userSourceId(runAs));
+    const own = userSourceId(runAs);
+    return both(runAs, own, [own, ...extraPersonReads(opts.runAsPerson, own)]);
   }
   const r = await resolveBrainScope({ ...g, kbSources: [] });
   const agentSrc = agentSourceId(g.agentId);
   if (r.sourceId !== PUBLIC_SOURCE) {
     return both(r.clientId, r.sourceId, r.sourceId === agentSrc ? [agentSrc, AGENT_SOURCE] : [r.sourceId]);
   }
-  if (g.userId !== null && isDmChannel(opts.channel)) return both(g.userId, userSourceId(g.userId));
+  if (g.userId !== null && isDmChannel(opts.channel)) {
+    const own = userSourceId(g.userId);
+    return both(g.userId, own, [own, ...extraPersonReads(g.person, own)]);
+  }
   return both(g.agentId, agentSrc);
 }
 

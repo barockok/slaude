@@ -13,6 +13,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { db } from "./schema";
+import { scheduleRecordPointer } from "./credential-pointers";
 import { encrypt, decrypt } from "./crypto";
 import type { StoredEntry } from "../agent/mcp-oauth/store";
 import type { CredentialOwner } from "../agent/credential-owner";
@@ -41,6 +42,17 @@ export function isEntry(v: unknown): v is StoredEntry {
   );
 }
 
+/**
+ * Bookkeeping after a person's credential write has committed: schedule the
+ * pointer (`mcp_credentials.user_id`, src/db/credential-pointers.ts). Off unless
+ * SLAUDE_CREDENTIAL_POINTERS=on, never awaited (a token refresh must not wait
+ * for it), never throws, never for an agent's row. Nothing reads the pointer.
+ */
+function recordPointer(owner: CredentialOwner): void {
+  if (owner.kind !== "account") return;
+  scheduleRecordPointer(owner.accountId);
+}
+
 /** Create or replace one owner's credential for one server. */
 export async function putCredential(owner: CredentialOwner, serverKey: string, entry: StoredEntry): Promise<void> {
   const now = Date.now();
@@ -55,6 +67,7 @@ export async function putCredential(owner: CredentialOwner, serverKey: string, e
        DO UPDATE SET payload = excluded.payload, expires_at = excluded.expires_at, updated_at = excluded.updated_at`,
       [randomUUID(), owner.accountId, serverKey, payload, entry.expiresAt, now],
     );
+    recordPointer(owner);
     return;
   }
   await db.run(
@@ -99,6 +112,7 @@ export async function putCredentialIfNewer(owner: CredentialOwner, serverKey: st
            ${guard}`,
           [randomUUID(), owner.tenant, owner.persona, serverKey, payload, entry.expiresAt, now],
         );
+  if ((r.changes ?? 0) > 0) recordPointer(owner);
   return (r.changes ?? 0) > 0;
 }
 
@@ -125,6 +139,7 @@ export async function putCredentialIfAbsent(owner: CredentialOwner, serverKey: s
            ON CONFLICT (agent_tenant, agent_persona, server_key) DO NOTHING`,
           [randomUUID(), owner.tenant, owner.persona, serverKey, payload, entry.expiresAt, now],
         );
+  if ((r.changes ?? 0) > 0) recordPointer(owner);
   return (r.changes ?? 0) > 0;
 }
 

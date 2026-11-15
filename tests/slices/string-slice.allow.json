@@ -1,0 +1,211 @@
+[
+  {
+    "file": "src/agent/mcp-oauth/persist.ts",
+    "pattern": "account-for-slack",
+    "lines": [
+      "const account = await accountForSlackUser(t.teamId, t.slackUserId);"
+    ],
+    "reason": "credential site: slack_identities -> account stays authoritative (Rule U); the pointer is bookkeeping"
+  },
+  {
+    "file": "src/background/pass-tools.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "if (!scope.userId || userSourceId(scope.userId) === \"user-\") return null;",
+      "return { own: userSourceId(scope.userId), profile: speakerProfileSource(scope.teamId, scope.userId) };"
+    ],
+    "reason": "own slice by design, not unioned: background passes write the person's own slice"
+  },
+  {
+    "file": "src/background/passes/nightly-review.ts",
+    "pattern": "user-prefix",
+    "lines": [
+      "const userSources = (await deps.listSources()).filter((s) => s.startsWith(\"user-\")).sort();",
+      "const id = fromTurn ?? source.slice(\"user-\".length).toUpperCase();"
+    ],
+    "reason": "own slice by design, not unioned: one nightly pass per Slack id (F7)"
+  },
+  {
+    "file": "src/background/passes/nightly-review.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "const fromTurn = turns.find((t) => t.author !== AGENT_AUTHOR && t.author !== SYSTEM_AUTHOR && userSourceId(t.author) === source)?.author;",
+      "return userSourceId(id) === source ? id : null;"
+    ],
+    "reason": "own slice by design, not unioned: one nightly pass per Slack id (F7)"
+  },
+  {
+    "file": "src/db/accounts.ts",
+    "pattern": "account-any-team",
+    "lines": [
+      "export async function accountIdsForSlackUserAnyTeam(slackUserId: string): Promise<string[]> {"
+    ],
+    "reason": "the credential account lookups themselves (slack_identities -> account), unchanged"
+  },
+  {
+    "file": "src/db/accounts.ts",
+    "pattern": "account-for-slack",
+    "lines": [
+      "export async function accountForSlackUser(teamId: string, slackUserId: string): Promise<AccountRow | null> {"
+    ],
+    "reason": "the credential account lookups themselves (slack_identities -> account), unchanged"
+  },
+  {
+    "file": "src/db/thread-activity.ts",
+    "pattern": "user-prefix",
+    "lines": [
+      "if (write.clientId && write.sourceId.startsWith(\"user-\") && userSourceId(write.clientId) === write.sourceId) return `user:${write.clientId}`;"
+    ],
+    "reason": "own slice by design, not unioned: thread activity keys on the writer's own slice"
+  },
+  {
+    "file": "src/db/thread-activity.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "if (write.clientId && write.sourceId.startsWith(\"user-\") && userSourceId(write.clientId) === write.sourceId) return `user:${write.clientId}`;"
+    ],
+    "reason": "own slice by design, not unioned: thread activity keys on the writer's own slice"
+  },
+  {
+    "file": "src/domain/reconcile.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "const name = userSourceId(r.value);"
+    ],
+    "reason": "reconciler report (Rule Q): names two live users both produce, counted and masked, report only, nothing is repaired"
+  },
+  {
+    "file": "src/gateway/api/mcp-credentials.ts",
+    "pattern": "account-for-slack",
+    "lines": [
+      "const account = await accountForSlackUser(claims.team, runAs.slackUserId);"
+    ],
+    "reason": "credential site: runAs Slack id -> account through the authoritative link, unchanged (Rule U)"
+  },
+  {
+    "file": "src/gateway/core/credential-import.ts",
+    "pattern": "account-any-team",
+    "lines": [
+      "const accounts = await accountIdsForSlackUserAnyTeam(slackUserId);"
+    ],
+    "reason": "bare Slack id across teams for the on-disk import: left alone, never switched to users"
+  },
+  {
+    "file": "src/gateway/core/gateway.ts",
+    "pattern": "account-for-slack",
+    "lines": [
+      "const existing = await accountForSlackUser(teamId, userId);"
+    ],
+    "reason": "credential site (connect card account lookup): authoritative link, unchanged (Rule U)"
+  },
+  {
+    "file": "src/gateway/core/mcp-bridge.ts",
+    "pattern": "account-for-slack",
+    "lines": [
+      "accountFor: deps.accountFor ?? accountForSlackUser,"
+    ],
+    "reason": "credential site: the bridge resolves slack_identities -> account, unchanged (Rule U)"
+  },
+  {
+    "file": "src/gateway/core/mcp-cred-epoch.ts",
+    "pattern": "epoch-owners",
+    "lines": [
+      "export async function epochOwnersFor(owner: CredentialOwner): Promise<EpochOwner[]> {",
+      "const list = Array.isArray(owners) ? owners : await epochOwnersFor(owners);"
+    ],
+    "reason": "epoch owners list the account's slack_identities; fails closed after a proof undo and no credential read changes, so no new bump (Rule U)"
+  },
+  {
+    "file": "src/gateway/portal/onboarding-nudge.ts",
+    "pattern": "account-for-slack",
+    "lines": [
+      "const accountFor = deps.accountFor ?? accountForSlackUser;"
+    ],
+    "reason": "credential site (onboarding): authoritative link, unchanged (Rule U)"
+  },
+  {
+    "file": "src/knowledge/gated-dispatch.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "return g.userId !== null && (await sameAt({ site: \"brain_gate.lock_owner\", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) && scope.sourceId === userSourceId(g.userId) ? \"auto\" : \"deny\";"
+    ],
+    "reason": "write classification: writes always stay on the writer's own slice, never unioned (F1); not edited by this slice"
+  },
+  {
+    "file": "src/knowledge/mcp-tools.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "if (!(await sameAt({ site: \"kb_tools.lock_owner\", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) || scope.sourceId !== userSourceId(g.lockedUser)) return { error: LOCK_REFUSAL };",
+      "else if (source === userSourceId(sender.userId)) out.push({ where: \"user\", source, fixed: [note] });"
+    ],
+    "reason": "write and lock checks compare scope.sourceId with the user's own slice; writes stay own, so it stays exactly as strict as today"
+  },
+  {
+    "file": "src/knowledge/memory-browse.ts",
+    "pattern": "user-prefix",
+    "lines": [
+      "return `Personal: ${id.slice(\"user-\".length)}`;"
+    ],
+    "reason": "display label of a personal source name; classifies names only, no new names exist"
+  },
+  {
+    "file": "src/knowledge/person-slices.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "const own = userSourceId(slackUserId);",
+      "const name = userSourceId(b.value);",
+      "const claimedNames = new Set(claimed.map((r) => userSourceId(r.value)));"
+    ],
+    "reason": "the resolver itself: the one place that maps verified Slack bindings to slice names"
+  },
+  {
+    "file": "src/knowledge/scope.ts",
+    "pattern": "user-prefix",
+    "lines": [
+      "if (sourceId.startsWith(\"user-\")) return \"personal\";"
+    ],
+    "reason": "scope site and the name function itself: rc.22 reads the legacy own slice here; the verified-only union is honoured here in rc.23 behind SLAUDE_PERSON_SLICES (task 8)"
+  },
+  {
+    "file": "src/knowledge/scope.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "export function userSourceId(userId: string): string {",
+      "const own = userSourceId(i.userId);"
+    ],
+    "reason": "scope site and the name function itself: rc.22 reads the legacy own slice here; the verified-only union is honoured here in rc.23 behind SLAUDE_PERSON_SLICES (task 8)"
+  },
+  {
+    "file": "src/memory/scope.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "const own = userSourceId(runAs);",
+      "const own = userSourceId(g.userId);"
+    ],
+    "reason": "memory scope site (runAs and DM branches): legacy own slice in rc.22; honoured in rc.23 behind SLAUDE_PERSON_SLICES (task 8)"
+  },
+  {
+    "file": "src/proactive/commitment-index.ts",
+    "pattern": "user-prefix",
+    "lines": [
+      "return s.startsWith(\"user-\") && scope.clientId && userSourceId(scope.clientId) === s ? scope.clientId : null;"
+    ],
+    "reason": "own slice by design, not unioned: commitments are indexed per own slice"
+  },
+  {
+    "file": "src/proactive/commitment-index.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "return s.startsWith(\"user-\") && scope.clientId && userSourceId(scope.clientId) === s ? scope.clientId : null;"
+    ],
+    "reason": "own slice by design, not unioned: commitments are indexed per own slice"
+  },
+  {
+    "file": "src/proactive/feedback.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "const source = post.audience === \"channel\" ? agentSourceId(post.agentId) : userSourceId(userId);"
+    ],
+    "reason": "own slice by design, not unioned: proactive feedback is the person's own slice"
+  }
+]

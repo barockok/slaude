@@ -454,6 +454,16 @@ CREATE TABLE IF NOT EXISTS mcp_credentials (
   UNIQUE (agent_tenant, agent_persona, server_key)
 );
 
+-- Operator tombstones for the read-time memory union (see 0052_domain_memory_credentials.sql).
+CREATE TABLE IF NOT EXISTS slice_tombstones (
+  user_id    TEXT    NOT NULL,
+  source_id  TEXT    NOT NULL,
+  created_by TEXT    NOT NULL,
+  reason     TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, source_id)
+);
+
 -- A parked paste-back /mcp connect (see 0010_slack_oauth_flows.sql).
 CREATE TABLE IF NOT EXISTS slack_oauth_flows (
   flow_key   TEXT    PRIMARY KEY,
@@ -773,6 +783,15 @@ export function bootstrapSqliteSchema(db: Database): void {
     if (!have.includes("boundary_id")) db.run(`ALTER TABLE ${table} ADD COLUMN boundary_id TEXT`);
     if (withLocator && !have.includes("locator")) db.run(`ALTER TABLE ${table} ADD COLUMN locator TEXT`);
   }
+
+  // Migration: the credential bookkeeping pointer (pg 0052). Nullable and never read for a
+  // decision. SQLite cannot add the pg CHECK (user_id IS NULL OR account_id IS NOT NULL)
+  // without a rebuild; src/db/credential-pointers.ts enforces it here.
+  const credCols = db.query(`PRAGMA table_info(mcp_credentials)`).all() as Array<{ name: string }>;
+  if (!credCols.some((c) => c.name === "user_id")) {
+    db.run(`ALTER TABLE mcp_credentials ADD COLUMN user_id TEXT REFERENCES users (id) ON DELETE SET NULL`);
+  }
+  db.run(`CREATE INDEX IF NOT EXISTS idx_mcp_credentials_user ON mcp_credentials (user_id)`);
 
   // Migration: record the /1on1 lock owner active when the job was created. Cron
   // runs for DM/channel-target jobs key on a synthetic `cron:<id>` thread that

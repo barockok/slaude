@@ -839,7 +839,7 @@
     "lines": [
       "if (g.userId !== null && g.lockedUser !== null && !(await sameAt({ ...seam, site: \"memory_scope.lock_owner\", userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }))) return NONE;",
       "if (g.userId !== null && !(await sameAt({ ...seam, site: \"memory_scope.run_as_speaker\", userId: g.userId, otherUserId: runAs }))) return NONE;",
-      "if (g.userId !== null && isDmChannel(opts.channel)) return both(g.userId, userSourceId(g.userId));"
+      "if (g.userId !== null && isDmChannel(opts.channel)) {"
     ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
@@ -1159,5 +1159,21 @@
       "if (u && !users.includes(u)) users.push(u);"
     ],
     "reason": "the legacy string reader or the engine twin itself: the seam compares these two answers"
+  },
+  {
+    "file": "src/db/slice-tombstones.ts",
+    "pattern": "user-id-dot-eq",
+    "lines": [
+      "if (i.userId === ALL_READERS) {"
+    ],
+    "reason": "compares a user record id with the all-readers marker of a tombstone row, a revoke key and not an access decision between two people"
+  },
+  {
+    "file": "src/db/slice-tombstones.ts",
+    "pattern": "id-compare",
+    "lines": [
+      "if (i.userId === ALL_READERS) {"
+    ],
+    "reason": "compares a user record id with the all-readers marker of a tombstone row, a revoke key and not an access decision between two people"
   }
 ]
