@@ -61,7 +61,7 @@ export async function noteStart(agentId: string, channelId: string, checklistHas
     `INSERT INTO channel_wake_state (agent_id, channel_id, last_wake_at, checklist_hash, open_run_id, updated_at, boundary_id)
      VALUES (?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (agent_id, channel_id) DO UPDATE SET
-       boundary_id = COALESCE(excluded.boundary_id, channel_wake_state.boundary_id),
+       boundary_id = COALESCE(channel_wake_state.boundary_id, excluded.boundary_id),
        last_wake_at = excluded.last_wake_at,
        checklist_hash = excluded.checklist_hash,
        open_run_id = excluded.open_run_id,
@@ -92,7 +92,7 @@ export async function noteFinished(agentId: string, channelId: string, nextCheck
     `INSERT INTO channel_wake_state (agent_id, channel_id, next_check_at, finished_at, updated_at, boundary_id)
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT (agent_id, channel_id) DO UPDATE SET
-       boundary_id = COALESCE(excluded.boundary_id, channel_wake_state.boundary_id),
+       boundary_id = COALESCE(channel_wake_state.boundary_id, excluded.boundary_id),
        next_check_at = excluded.next_check_at,
        finished_at = excluded.finished_at,
        updated_at = excluded.updated_at`,
@@ -106,7 +106,7 @@ export async function noteSettled(agentId: string, channelId: string, s: { outco
     `INSERT INTO channel_wake_state (agent_id, channel_id, last_outcome, failures, next_check_at, open_run_id, updated_at, boundary_id)
      VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
      ON CONFLICT (agent_id, channel_id) DO UPDATE SET
-       boundary_id = COALESCE(excluded.boundary_id, channel_wake_state.boundary_id),
+       boundary_id = COALESCE(channel_wake_state.boundary_id, excluded.boundary_id),
        last_outcome = excluded.last_outcome,
        failures = excluded.failures,
        next_check_at = COALESCE(excluded.next_check_at, channel_wake_state.next_check_at),

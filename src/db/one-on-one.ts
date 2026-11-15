@@ -26,8 +26,10 @@ export async function lock(input: { channelId: string; threadTs: string; lockedU
      ON CONFLICT(channel_id, thread_ts)
      DO UPDATE SET locked_user = excluded.locked_user, created_by = excluded.created_by,
                    created_at = excluded.created_at, open_scope = NULL, team_id = excluded.team_id,
-                   boundary_id = COALESCE(excluded.boundary_id, one_on_one_locks.boundary_id),
-                   locator = COALESCE(excluded.locator, one_on_one_locks.locator)`,
+                   boundary_id = CASE WHEN one_on_one_locks.team_id IS NOT NULL AND excluded.team_id IS NOT NULL AND one_on_one_locks.team_id <> excluded.team_id
+                                      THEN excluded.boundary_id ELSE COALESCE(one_on_one_locks.boundary_id, excluded.boundary_id) END,
+                   locator = CASE WHEN one_on_one_locks.team_id IS NOT NULL AND excluded.team_id IS NOT NULL AND one_on_one_locks.team_id <> excluded.team_id
+                                  THEN excluded.locator ELSE COALESCE(one_on_one_locks.locator, excluded.locator) END`,
     [input.channelId, input.threadTs, input.lockedUser, input.createdBy, Date.now(), input.teamId || null, pair.boundaryId, pair.locator],
   );
 }

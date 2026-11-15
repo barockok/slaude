@@ -162,6 +162,62 @@ describe("proactive_posts and channel_wake_state (boundary only)", () => {
   });
 });
 
+describe("an upsert keeps the pair that belongs to the row's own key", () => {
+  const cm = (over: Record<string, unknown> = {}) => ({
+    agentId: "a", source: "s", slug: "x", personaId: "default", teamId: WS as string | null, channelId: CH, threadTs: TS, beneficiary: "U0EXAMPLE", runAs: null,
+    dueText: "d", dueKind: "time" as const, checkText: "", onNoChange: "silent" as const, nextCheckAt: 1, expiresAt: 2, createdAt: 1, ...over,
+  });
+
+  test("a commitment saved again into another channel or thread takes the new pair, even NULL, never the old one", async () => {
+    const b = await warm();
+    await Commitments.upsertOpen(cm());
+    expect(await pair("commitments")).toEqual({ boundary_id: b, locator: TS });
+    // another channel, boundary not known: the old pair must not stay
+    await Commitments.upsertOpen(cm({ channelId: "C0ELSEWHERE" }));
+    expect(await pair("commitments")).toEqual({ boundary_id: null, locator: null });
+    // back, then another thread of the same channel: the locator follows the thread
+    await Commitments.upsertOpen(cm());
+    expect(await pair("commitments")).toEqual({ boundary_id: b, locator: TS });
+    await Commitments.upsertOpen(cm({ threadTs: "9.9" }));
+    expect(await pair("commitments")).toEqual({ boundary_id: b, locator: "9.9" });
+  });
+
+  test("a commitment writer with a different team replaces the pair; the same team or no team keeps it", async () => {
+    const b = await warm();
+    await Commitments.upsertOpen(cm());
+    await Commitments.upsertOpen(cm({ teamId: null }));
+    await Commitments.upsertOpen(cm({ teamId: WS }));
+    expect(await pair("commitments")).toEqual({ boundary_id: b, locator: TS });
+    await Commitments.upsertOpen(cm({ teamId: "T0OTHER" }));
+    expect(await pair("commitments")).toEqual({ boundary_id: null, locator: null });
+  });
+
+  test("a lock taken by another team replaces the pair; the same team or no team keeps it", async () => {
+    const b = await warm();
+    const lock = (teamId?: string) => OneOnOne.lock({ channelId: CH, threadTs: TS, lockedUser: "U0EXAMPLE", createdBy: "U0EXAMPLE", teamId });
+    await lock(WS);
+    await lock();
+    await lock(WS);
+    expect(await pair("one_on_one_locks")).toEqual({ boundary_id: b, locator: TS });
+    await lock("T0OTHER");
+    expect(await pair("one_on_one_locks")).toEqual({ boundary_id: null, locator: null });
+  });
+
+  test("a primary-key table never swaps a filled pair for another one", async () => {
+    const b = await warm();
+    await MentionOnly.set({ channelId: CH, threadTs: TS, createdBy: "U0EXAMPLE", teamId: WS });
+    primeBoundary("T0OTHER", CH, "b-other-team");
+    await MentionOnly.set({ channelId: CH, threadTs: TS, createdBy: "U0EXAMPLE", teamId: "T0OTHER" });
+    expect(await pair("mention_only_threads")).toEqual({ boundary_id: b, locator: TS });
+    await Envs.bind({ channelId: CH, threadTs: TS, envId: "e", dir: "/d", lockByEnv: false, teamId: WS });
+    await Envs.bind({ channelId: CH, threadTs: TS, envId: "e", dir: "/d", lockByEnv: false, teamId: "T0OTHER" });
+    expect(await pair("env_bindings")).toEqual({ boundary_id: b, locator: TS });
+    await Wake.noteFinished("A1", CH, 500, 150, WS);
+    await Wake.noteFinished("A1", CH, 500, 150, "T0OTHER");
+    expect((await db.one<{ boundary_id: string | null }>("SELECT boundary_id FROM channel_wake_state"))!.boundary_id).toBe(b);
+  });
+});
+
 describe("kill switch", () => {
   test("SLAUDE_BOUNDARY_WRITE=off stores NULL pairs everywhere", async () => {
     await warm();

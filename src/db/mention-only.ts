@@ -18,8 +18,8 @@ export async function set(input: { channelId: string; threadTs: string; createdB
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(channel_id, thread_ts)
      DO UPDATE SET created_by = excluded.created_by, created_at = excluded.created_at,
-                   boundary_id = COALESCE(excluded.boundary_id, mention_only_threads.boundary_id),
-                   locator = COALESCE(excluded.locator, mention_only_threads.locator)`,
+                   boundary_id = COALESCE(mention_only_threads.boundary_id, excluded.boundary_id),
+                   locator = COALESCE(mention_only_threads.locator, excluded.locator)`,
     [input.channelId, input.threadTs, input.createdBy, Date.now(), pair.boundaryId, pair.locator],
   );
 }

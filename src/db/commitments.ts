@@ -77,6 +77,15 @@ const toRow = (r: Row): CommitmentRow => ({
 });
 
 /**
+ * The row is re-saved under another key: another channel, another thread, or
+ * another (known) workspace. The pair then belongs to the new key, even when
+ * the writer could not resolve it (NULL, to be filled), never to the old one.
+ * Under the same key a filled pair is kept and a NULL one is completed.
+ */
+const KEY_CHANGED = `(commitments.channel_id <> excluded.channel_id OR commitments.thread_ts <> excluded.thread_ts
+  OR (commitments.team_id IS NOT NULL AND excluded.team_id IS NOT NULL AND commitments.team_id <> excluded.team_id))`;
+
+/**
  * Insert an open commitment, or refresh one that is still open. A rewrite of
  * the page never reopens a done, dropped or expired row, and keeps the row's
  * schedule (next check, expiry, checks so far) unless its `due` changed, so
@@ -91,8 +100,8 @@ export async function upsertOpen(c: Omit<CommitmentRow, "status" | "checks" | "l
      ON CONFLICT (agent_id, source, slug) DO UPDATE SET
        persona_id = excluded.persona_id,
        team_id = COALESCE(excluded.team_id, commitments.team_id),
-       boundary_id = COALESCE(excluded.boundary_id, commitments.boundary_id),
-       locator = COALESCE(excluded.locator, commitments.locator),
+       boundary_id = CASE WHEN ${KEY_CHANGED} THEN excluded.boundary_id ELSE COALESCE(commitments.boundary_id, excluded.boundary_id) END,
+       locator = CASE WHEN ${KEY_CHANGED} THEN excluded.locator ELSE COALESCE(commitments.locator, excluded.locator) END,
        channel_id = excluded.channel_id,
        thread_ts = excluded.thread_ts,
        beneficiary = excluded.beneficiary,

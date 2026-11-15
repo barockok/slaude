@@ -186,8 +186,8 @@ export async function bind(i: { channelId: string; threadTs: string; envId: stri
      ON CONFLICT(channel_id, thread_ts)
      DO UPDATE SET env_id = excluded.env_id, dir = excluded.dir, lock_by_env = excluded.lock_by_env,
                    endpoint = NULL, generation = 0, last_used_at = excluded.last_used_at, created_at = excluded.created_at,
-                   boundary_id = COALESCE(excluded.boundary_id, env_bindings.boundary_id),
-                   locator = COALESCE(excluded.locator, env_bindings.locator)`,
+                   boundary_id = COALESCE(env_bindings.boundary_id, excluded.boundary_id),
+                   locator = COALESCE(env_bindings.locator, excluded.locator)`,
     [i.channelId, i.threadTs, i.envId, i.dir, i.lockByEnv ? 1 : 0, now, now, pair.boundaryId, pair.locator],
   );
   await db.run("DELETE FROM remote_targets WHERE channel_id = ? AND thread_ts = ?", [i.channelId, i.threadTs]);
