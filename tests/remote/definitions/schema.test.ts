@@ -99,6 +99,26 @@ describe("environment definition parser", () => {
     expect(refusal(base().replace("/srv/work", "xo" + "xb-123-abc"))).toContain("looks like a token");
   });
 
+  test("honest long text is not mistaken for a credential, real token shapes still are", () => {
+    const longLabel = "build-" + "x".repeat(40) + "-node.example.com";
+    const ok = parseEnvironmentYaml("team-sandbox", base({ host: longLabel }).replace("/srv/work", "/srv/9f1c2b7e-3d4a-4e5f-8a6b-7c8d9e0f1a2b/work").replace("Shared build box.", "Uses bearer authentication, set by the platform team."));
+    expect(ok.config.host).toBe(longLabel);
+    expect(ok.defaultDir).toContain("9f1c2b7e-3d4a");
+    const secrets = [
+      "gh" + "p_" + "a1".repeat(18),
+      "sk" + "-" + "Ab3".repeat(10),
+      "AK" + "IA" + "ABCDEFGHIJKLMNOP",
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig",
+      "Bearer " + "abcdef0123456789abcdef",
+      "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8",
+    ];
+    for (const v of secrets) {
+      const m = refusal(base().replace("Shared build box.", v));
+      expect(m).toContain("looks like a token or private key");
+      expect(m).not.toContain(v);
+    }
+  });
+
   test("hostKey is required and must be a fingerprint", () => {
     const m = refusal(base().replace(`  hostKey: "${FP}"\n`, ""));
     expect(m).toContain("ssh.hostKey is required");

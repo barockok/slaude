@@ -11,7 +11,7 @@ import { parse as parseYaml, YAMLParseError } from "yaml";
 import type { ZodIssue } from "zod";
 import { classifyAddress } from "../../net/outbound-policy";
 import { PayloadError, safeKey } from "../../persona/sync/payload";
-import { looksLikeToken } from "../../secrets/token-shape";
+import { looksLikeCredential } from "../../secrets/token-shape";
 import { sshKind } from "../kinds/ssh";
 import { ENV_DEF_NAME_RE, EnvironmentDefinitionSchema } from "./schema";
 
@@ -100,10 +100,10 @@ export function parseEnvironmentYaml(file: string, text: string): ParsedEnvironm
   const valueRefusal = (path: string) => fail(path, "has a value that looks like a token or private key. Environment files never carry secrets: slaude generates the key pair, and only the public key is shown");
   for (const [k, v] of Object.entries(raw)) {
     // `name` is vetted by its own pattern (a 41 character name is a long run by nature).
-    if (k !== "name" && typeof v === "string" && looksLikeToken(v)) valueRefusal(safeKey(k));
+    if (k !== "name" && typeof v === "string" && looksLikeCredential(v)) valueRefusal(safeKey(k));
     if (k === "ssh" && isMap(v)) {
       // The host key fingerprint is long base64 by nature; its own pattern vets it.
-      for (const [sk, sv] of Object.entries(v)) if (sk !== "hostKey" && typeof sv === "string" && looksLikeToken(sv)) valueRefusal(`ssh.${safeKey(sk)}`);
+      for (const [sk, sv] of Object.entries(v)) if (sk !== "hostKey" && typeof sv === "string" && looksLikeCredential(sv)) valueRefusal(`ssh.${safeKey(sk)}`);
     }
   }
 

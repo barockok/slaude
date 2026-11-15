@@ -37,6 +37,17 @@ function registry(defs: Record<string, unknown>): PersonaRegistry {
   };
 }
 
+async function seedAgents(tenant: string, agents: Record<string, string[] | null>): Promise<void> {
+  const { applySync } = await import("../../src/db/personas");
+  const persona = (name: string, allow: string[] | null) => ({
+    name, slackUserId: name === "default" ? null : `U${name.toUpperCase()}`, userToken: null, model: null, soulMd: "x", soulJson: {}, mcp: null, provider: null,
+    runsOn: null, kbSources: null, background: null,
+    definition: allow ? { environment: { allow }, soulData: undefined } : null, origin: "git" as const, tombstonedAt: null,
+  });
+  await db.run("DELETE FROM personas WHERE tenant_id = ?", [tenant]);
+  await applySync(tenant, [persona("default", null), ...Object.entries(agents).map(([n, a]) => persona(n, a))] as never, { revision: "r1", committedAt: 1, by: "ci" });
+}
+
 const saved: Record<string, string | undefined> = {};
 beforeEach(async () => {
   for (const k of ["SLAUDE_PANEL_SECRET", "SLAUDE_PANEL_SUPERADMIN", "SLAUDE_PANEL_OPERATORS"]) saved[k] = process.env[k];
@@ -47,7 +58,11 @@ beforeEach(async () => {
   await reset();
   setPersonaRegistry(registry({ scout: { environment: { allow: ["team-sandbox"] } }, ledger: { skills: ["x"] } }));
 });
-afterEach(() => {
+afterEach(async () => {
+  if (db.dialect === "pg") {
+    await db.run("DELETE FROM personas");
+    await db.run("DELETE FROM persona_sync_state");
+  }
   __resetPersonaRegistry();
   for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   __resetRoleCache();
@@ -57,6 +72,7 @@ describe("GET /panel/api/environments: shared", () => {
   test("a superadmin sees name, state, revision, public key and the agents that allow it", async () => {
     await insertShared();
     await insertShared({ name: "old-box", retired: true });
+    if (db.dialect === "pg") await seedAgents("default", { scout: ["team-sandbox"], ledger: null });
     const r = await call("GET", "/panel/api/environments");
     expect(r.status).toBe(200);
     const body = JSON.parse(r.text) as EnvironmentsResponse;
@@ -86,6 +102,17 @@ describe("GET /panel/api/environments: shared", () => {
     await insertPersonal("U0EXAMPLE", "mine");
     const body = JSON.parse((await call("GET", "/panel/api/environments")).text) as EnvironmentsResponse;
     expect(body.personal.map((p) => p.name)).toEqual(["mine"]);
+  });
+});
+
+describe.skipIf(process.env.SLAUDE_DB !== "pg")("allowedBy is resolved per row tenant", () => {
+  test("a definition of tenant-b lists tenant-b's agents, not the process registry's", async () => {
+    await seedAgents("tenant-b", { beta: ["team-sandbox"], gamma: ["other"] });
+    await insertShared({ tenant: "tenant-b" });
+    const body = JSON.parse((await call("GET", "/panel/api/environments")).text) as EnvironmentsResponse;
+    expect(body.shared.find((x) => x.tenant === "tenant-b")?.allowedBy).toEqual(["beta"]);
+    await db.run("DELETE FROM personas");
+    await db.run("DELETE FROM persona_sync_state");
   });
 });
 

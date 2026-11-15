@@ -6,6 +6,7 @@
  * applySync. Any failure in phase one applies nothing. Messages name a variable, persona or revision, never a value.
  */
 import { flag } from "../../config/security-switches";
+import { remoteFlagValue } from "../../config/env";
 import {
   parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, providerWarnings, kbSourceWarnings, definitionGuardrailWarnings, MAX_REPORTED_FIELDS,
   PROVIDER_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError, type GuardrailSpec, type SyncPayload,
@@ -43,12 +44,6 @@ function masterKeySet(): boolean {
     if (e instanceof MasterKeyError) return false;
     throw e;
   }
-}
-
-/** The SLAUDE_REMOTE switch as read from the sync's environment (same rule as env.remote.enabled). */
-function remoteFlagOn(env: Record<string, string | undefined>): boolean {
-  const raw = (env.SLAUDE_REMOTE ?? "0").toLowerCase();
-  return raw === "1" || raw === "true" || raw === "yes";
 }
 
 export class SyncFailure extends Error {
@@ -216,7 +211,7 @@ export async function runSync(
     // Environment definitions: each file is parsed here, by the one parser, whatever the pipeline claims to have checked.
     definitions = (payload.environments ?? []).map((e) => parseEnvironmentYaml(e.name, e.yaml));
     // An agent may allow environments only where /env can run at all (SLAUDE_REMOTE).
-    if (!remoteFlagOn(opts.env)) {
+    if (!remoteFlagValue(opts.env.SLAUDE_REMOTE)) {
       const declaring = payload.personas.filter((p) => p.definition?.environment).map((p) => p.name);
       if (declaring.length) {
         throw new PayloadError(`persona '${declaring[0]}': environment is declared, but SLAUDE_REMOTE is off on this gateway; turn it on before syncing an agent that allows environments${declaring.length > 1 ? ` (${declaring.length} agents declare it)` : ""}`);
@@ -273,8 +268,12 @@ export async function runSync(
     }
   }
   const envPlan = payload.environments !== undefined ? await planDefinitions(db, tenant, definitions) : undefined;
-  if (envPlan && envPlan.create.length > 0 && !masterKeySet()) {
+  // A new, changed or revived definition may need its key pair stored (encrypted): refuse up front, never a 500 mid-sync.
+  if (envPlan && envPlan.create.length + envPlan.update.length > 0 && !masterKeySet()) {
     throw new SyncFailure(422, "environment definitions need SLAUDE_MASTER_KEY (the generated key pair is stored encrypted)");
+  }
+  for (const [name, n] of Object.entries(envPlan?.report.revivedBound ?? {})) {
+    warnings.push(`environment '${name}' is revived and ${n} thread${n === 1 ? " is" : "s are"} still bound to it: ${n === 1 ? "it uses" : "they use"} the machine again at once, for agents that allow it`);
   }
 
   // Fail a stale payload before spending any model call. applySync's
@@ -552,6 +551,6 @@ export function auditEnvironmentSync(tenant: string, by: string, revision: strin
     targetKind: "tenant",
     targetId: tenant,
     summary: `environment sync ${revision}: ${r.created.length} created, ${r.updated.length} updated, ${r.revived.length} revived, ${r.retired.length} retired`,
-    details: { revision, created: r.created, updated: r.updated, revived: r.revived, retired: r.retired },
+    details: { revision, created: r.created, updated: r.updated, revived: r.revived, retired: r.retired, ...(r.revivedBound ? { revivedBound: r.revivedBound } : {}) },
   });
 }

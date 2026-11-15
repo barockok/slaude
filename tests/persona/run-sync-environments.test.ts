@@ -110,6 +110,44 @@ describe.skipIf(!isPg)("environment definition sync", () => {
     expect(await getKey(`def~${T}`, "team-sandbox")).toEqual(key);
   });
 
+  test("a revive or change with no master key is a 422 (not a 500); a retire needs none", async () => {
+    const team = { name: "team-sandbox", yaml: envYaml("team-sandbox") };
+    await run(payload({ environments: [team] }));
+    await run(payload({ environments: [] }));
+    const key = process.env.SLAUDE_MASTER_KEY;
+    delete process.env.SLAUDE_MASTER_KEY;
+    __resetMasterKeyCache();
+    try {
+      const revive = (await run(payload({ environments: [team] })).catch((x) => x)) as Error & { status: number };
+      expect(revive.status).toBe(422);
+      expect(revive.message).toContain("SLAUDE_MASTER_KEY");
+      expect((await defs())[0]!.retired_at).not.toBeNull();
+    } finally {
+      process.env.SLAUDE_MASTER_KEY = key;
+      __resetMasterKeyCache();
+    }
+  });
+
+  test("reviving a definition that threads are still bound to is reported, logged and audited", async () => {
+    const team = { name: "team-sandbox", yaml: envYaml("team-sandbox") };
+    await run(payload({ environments: [team] }));
+    const id = (await defs())[0]!.id;
+    await db.run("INSERT INTO env_bindings (channel_id, thread_ts, env_id, dir, lock_by_env, generation, last_used_at, created_at) VALUES ('C0EXAMPLE', '1.1', ?, '/srv/work', 0, 0, 1, 1)", [id]);
+    await run(payload({ environments: [] }));
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const r = await run(payload({ environments: [team] }));
+      expect(r.environments?.revivedBound).toEqual({ "team-sandbox": 1 });
+      expect(r.warnings.join(" ")).toContain("1 thread is still bound");
+      expect(warn.mock.calls.map((c) => c.join(" ")).join("\n")).toContain("still bound");
+    } finally {
+      warn.mockRestore();
+    }
+    await flushAudits();
+    const rows = await db.query<{ details: unknown }>("SELECT details FROM audit_events WHERE action = 'environment.definition_synced'");
+    expect(JSON.stringify(rows)).toContain("revivedBound");
+  });
+
   test("an absent list leaves stored rows alone; a version 6 payload still deploys", async () => {
     await run(payload({ environments: [{ name: "team-sandbox", yaml: envYaml("team-sandbox") }] }));
     const before = await defs();

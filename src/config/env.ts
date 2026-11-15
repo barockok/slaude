@@ -10,6 +10,12 @@ import { flag } from "./security-switches";
 const DOTENV_REFUSED = new Set(["SLAUDE_PLUGIN_ROOT"]);
 
 // Load a .env file if present (does not override existing process.env)
+/** The SLAUDE_REMOTE switch's value rule, shared by `env.remote.enabled()` and the sync (which reads the deployment's variables from a record). */
+export function remoteFlagValue(raw: string | undefined): boolean {
+  const v = (raw ?? "0").toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
 export function loadDotenv(path: string) {
   if (!existsSync(path)) return;
   const raw = readFileSync(path, "utf8");
@@ -781,8 +787,7 @@ export const env = {
     /** `/remote` — run a thread's shell and file tools on the initiator's own
      *  machine over tailcat SSH. Default off; ships behind this flag. */
     enabled: () => {
-      const raw = opt("SLAUDE_REMOTE", "0").toLowerCase();
-      return raw === "1" || raw === "true" || raw === "yes";
+      return remoteFlagValue(opt("SLAUDE_REMOTE", "0"));
     },
   },
   /** Static Prometheus labels applied to every metric, e.g.

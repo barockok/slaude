@@ -22,6 +22,8 @@ export interface EnvironmentsReport {
   revived: string[];
   unchanged: string[];
   retired: string[];
+  /** Revived definitions that threads are still bound to, with how many: those threads use the machine again at once. Only when any. */
+  revivedBound?: Record<string, number>;
 }
 
 export const emptyEnvironmentsReport = (): EnvironmentsReport => ({ created: [], updated: [], revived: [], unchanged: [], retired: [] });
@@ -34,7 +36,7 @@ export interface DefinitionPlan {
 }
 
 /** What a sync of this set would do. Reads only. */
-export async function planDefinitions(c: Pick<DbClient, "query">, tenant: string, defs: ParsedEnvironmentDefinition[]): Promise<DefinitionPlan> {
+export async function planDefinitions(c: Pick<DbClient, "query" | "one">, tenant: string, defs: ParsedEnvironmentDefinition[]): Promise<DefinitionPlan> {
   const rows = new Map((await definitionRows(c, tenant)).map((r) => [r.definition_name!, r]));
   const plan: DefinitionPlan = { report: emptyEnvironmentsReport(), create: [], update: [], retire: [] };
   const listed = new Set<string>();
@@ -47,6 +49,9 @@ export async function planDefinitions(c: Pick<DbClient, "query">, tenant: string
     } else if (row.retired_at != null) {
       plan.update.push({ def, row, revive: true });
       plan.report.revived.push(def.name);
+      // Bindings kept while it was retired come back to life with it: say so.
+      const bound = Number((await c.one<{ n: number | string }>("SELECT COUNT(*) AS n FROM env_bindings WHERE env_id = ?", [row.id]))?.n ?? 0);
+      if (bound > 0) (plan.report.revivedBound ??= {})[def.name] = bound;
     } else if (row.definition_hash !== def.hash) {
       plan.update.push({ def, row, revive: false });
       plan.report.updated.push(def.name);
@@ -92,8 +97,9 @@ export async function applyDefinitions(
        WHERE id = ?`,
       [def.kind, JSON.stringify(def.config), def.defaultDir, def.description, def.hash, meta.revision, Math.max(now, Number(row.updated_at) + 1), row.id],
     );
-    // A definition whose key went missing gets a fresh one; an existing key is never replaced.
-    await putKeyIfAbsentTx(tx, team, def.name, generateKey(def.name));
+    // A definition whose key went missing gets a fresh one; an existing key is never replaced (and needs no master key to leave alone).
+    const haveKey = await tx.one("SELECT 1 AS x FROM remote_keys WHERE team_id = ? AND user_id = ?", [team, def.name]);
+    if (!haveKey) await putKeyIfAbsentTx(tx, team, def.name, generateKey(def.name));
   }
   for (const row of plan.retire) {
     await tx.run(`UPDATE environments SET retired_at = ?, definition_revision = ?, updated_at = ? WHERE id = ?`,
