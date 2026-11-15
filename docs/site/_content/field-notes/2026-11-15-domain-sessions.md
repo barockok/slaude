@@ -109,6 +109,26 @@ one. The statement now rewrites both columns together, and leaves a NULL
 locator alone when the boundary is NULL, because the fill derives the locator
 from the already rewritten thread column.
 
+### Measuring it: the in-row check and `boundary-check` (rc.23)
+
+The proof is built so it cannot add load. `checkRow` runs on a session row the
+legacy lookup already fetched and compares its pair with the process's boundary
+cache: no shadow query, no sampling, nothing awaited, never an exception into
+the caller, and the legacy row is returned untouched. Seven outcomes land in
+`slaude_boundary_check_total{site,outcome}`; only `mismatch` and
+`locator_mismatch` fail the gate, while `null_row`, `unresolved` and
+`unverified` just say the fill or the cache has not caught up. A new thread has
+no row to check at the find, so it counts once, on the row the create wrote.
+
+`slaude domain boundary-check` is the batch version: it pages every table by
+primary key and recomputes the boundary from the row's own team and channel, so
+it catches what the cache could not (a stale id, a boundary that no longer
+exists, a locator that drifted from the thread column, a duplicate
+`(boundary_id, locator, persona_id)` group). Its gate number is NULL boundaries
+older than ten minutes on an eligible channel with a resolvable workspace;
+channels first sight never records, workspaces it cannot decide and young rows
+are reported separately so a stuck row is visible without failing the gate.
+
 ## Mistakes and decisions worth keeping
 
 - The first thought was to resolve the boundary before the insert and await it.
@@ -130,9 +150,9 @@ from the already rewritten thread column.
 
 ## Follow-ups
 
-rc.23 adds the in-row check (`slaude_boundary_check_total`, match and mismatch
-counted on rows the legacy query already fetched) and `slaude domain
-boundary-check`. After a soak with zero mismatches, zero duplicate groups and
-zero eligible NULL rows, a separate plan moves the unique indexes. Not in this
+After the rc.23 soak (14 days counted from the day the periodic fill first
+reaches zero on every table, covering cron, wake and a deploy) with zero
+mismatches, zero duplicate groups and zero eligible NULL rows, a separate plan
+moves the unique indexes. That move is not part of this slice. Not in this
 slice: any index or key change, REST or console fields, boundary merge or delete,
 non-Slack services.

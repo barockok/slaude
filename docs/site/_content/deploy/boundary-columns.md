@@ -56,6 +56,42 @@ Each file is its own transaction and begins with `SET LOCAL lock_timeout = '2s'`
 4. Soak for three days. Rows with a NULL `boundary_id` older than 10 minutes,
    on an eligible channel with a resolvable workspace, should reach zero.
 
+## Moving to rc.23: the in-row check and `boundary-check`
+
+Gate from rc.22 to rc.23, after the three day soak:
+
+- [ ] `slaude domain boundary-check` shows `NULL older than 10 min` as 0 on every
+      table (ineligible channels and unresolvable workspaces are listed apart
+      and excluded; read them and be sure you understand each).
+- [ ] The resolver's `error` and `timeout` outcomes are under 0.1 percent of
+      `slaude_boundary_resolve_total`.
+- [ ] No change in turn latency p95.
+
+rc.23 adds no migration and changes no behaviour. Add an alert on any increase
+of `slaude_boundary_check_total{outcome="mismatch"}` and `{outcome="locator_mismatch"}`.
+`slaude domain boundary-check [--table <name>] [--json]` exits 0 when clean, 1
+when a gate number is not 0, 2 on a usage error or a node, 3 when the database
+could not be read; it only reads and prints masked keys.
+
+## Gate for the later unique-index move (NOT done in this release)
+
+Nothing in rc.22 or rc.23 changes a unique index or primary key. The index move
+is a separate plan with its own release. Before it may start, all of these must
+hold:
+
+- [ ] 14 days of rc.23, counted from the day the periodic fill first reached
+      zero NULL boundaries on every table, covering at least one cron fire, one
+      proactive wake and one deploy.
+- [ ] `slaude_boundary_check_total` `mismatch` and `locator_mismatch` are 0 for
+      the whole window.
+- [ ] `slaude domain boundary-check` reports 0 duplicate groups, 0 NULL
+      boundaries older than 10 minutes (eligible channel, resolvable workspace),
+      and no `ambiguous` rows (a single workspace, or every team-less row placed).
+- [ ] Owner decisions recorded on `audit_events` (no DDL in slice D) and on the
+      fill cadence.
+- [ ] A restore rehearsal of a production backup on a scratch copy, including
+      the new index build.
+
 ## Rollback
 
 1. `SLAUDE_BOUNDARY_WRITE=off` and `SLAUDE_BOUNDARY_FILL_INTERVAL_MS=0`:
