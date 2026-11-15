@@ -108,3 +108,22 @@ a non-default `runsOn` served by its own labelled node Deployment, one with
 Record the result (what was run, on which versions, what differed from this
 page) with the release's soak notes. The local cluster can host the rehearsal;
 its runbook is `deploy/k8s-local/README.md` in the repository.
+
+## Rolling back from rc.22 (shared environments)
+
+rc.22 adds shared environments (migration `0051`, additive). rc.21 does not know
+them and would read a thread bound to a shared machine as a personal ssh
+environment owned by a name. So the first step of a rollback to rc.21 is to
+remove those bindings:
+
+1. `slaude env unbind-shared --dry-run` lists how many threads are bound to each
+   shared environment (names and counts only).
+2. `slaude env unbind-shared --apply` removes the bindings. The definition rows
+   stay. A warm session keeps its tools until it reboots, so run this before the
+   redeploy, not after.
+3. Redeploy rc.21. Do not drop the `0051` columns; rc.21 ignores them.
+4. To go forward again, sync once more: the definitions are still there and
+   threads have to `/env use env:<name>` again.
+
+If `SLAUDE_REMOTE` is off on the gateway, a thread still bound to a shared machine
+is refused rather than run on the server; unbinding clears that too.
