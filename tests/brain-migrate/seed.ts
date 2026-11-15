@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { seedBrainHome } from "../helpers/brain-template";
+import { resetBrainWorld } from "../helpers/brain-on";
 
 /** Dimension the test brains use (set from the Step 1 spike; gbrain's default pgvector column is vector(1280)). */
 export const TEST_DIMS = 1280;
@@ -19,8 +20,10 @@ export async function seedMonoBrain(home: string, o: { empty?: boolean } = {}): 
   // A new home starts as a copy of the per-process template brain, not a
   // fresh initdb (tests/helpers/brain-template.ts).
   if (!existsSync(join(home, "db"))) await seedBrainHome(home);
+  // A brain an earlier file left open would be returned by getBrain() whatever
+  // the home says: the seed would land there and this home stay empty.
+  await resetBrainWorld();
   process.env.SLAUDE_BRAIN_HOME = home;
-  delete process.env.SLAUDE_AGENT_ID;
   const { closeBrain, getBrain, brainAdminCall } = await import("../../src/knowledge/brain");
   const { resetAgentId } = await import("../../src/knowledge/agent-identity");
   resetAgentId();

@@ -16,11 +16,37 @@
 // under SLAUDE_BRAIN_MODE=remote, would answer every brain call of a later file
 // (an empty search). It is reset around the file as well.
 //
+// A brain left OPEN by an earlier file is the third one (the flake of rc.24's
+// release job): getBrain() returns the open engine whatever SLAUDE_BRAIN_HOME
+// now says, so a seed writes into that other brain and the next boot of the
+// real home finds it empty (export: no sources, search: no hits). A gateway or
+// voice test that boots a brain and never closes it does this.
+// resetBrainWorld() closes it and verifies the rest.
+//
 // Call once at the top of the file. The keys are cleared before the file's tests
 // and put back after them.
 import { afterAll, beforeAll } from "bun:test";
 
 const KEYS = ["SLAUDE_BRAIN_DISABLED", "SLAUDE_BRAIN_MODE"] as const;
+
+/**
+ * Put every process-wide brain singleton in a known state and verify it:
+ * the open engine is closed, the cached backend is dropped, the agent identity
+ * is forgotten, and the env that turns the brain off or remote is cleared.
+ * Throws, naming what is wrong, if the brain still is not local and on.
+ */
+export async function resetBrainWorld(): Promise<void> {
+  const brain = await import("../../src/knowledge/brain");
+  const backend = await import("../../src/knowledge/backend");
+  const { resetAgentId } = await import("../../src/knowledge/agent-identity");
+  await brain.closeBrain();
+  backend.resetBackend();
+  resetAgentId();
+  for (const k of [...KEYS, "SLAUDE_AGENT_ID"]) delete process.env[k];
+  if (!brain.brainEnabled()) throw new Error("resetBrainWorld: the brain is still disabled");
+  if (brain.brainOpen()) throw new Error("resetBrainWorld: a brain is still open after closeBrain()");
+  if (!(backend.getBackend() instanceof backend.LocalBackend)) throw new Error("resetBrainWorld: the backend is not the local one");
+}
 
 export function brainOn(): void {
   const saved: Record<string, string | undefined> = {};

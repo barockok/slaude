@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { vec } from "./seed";
 import { seedBrainHome } from "../helpers/brain-template";
+import { resetBrainWorld } from "../helpers/brain-on";
 import type { BrainScope } from "../../src/knowledge/scope";
 
 export const TOKEN = "s".repeat(40);
