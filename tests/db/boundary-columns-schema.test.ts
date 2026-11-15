@@ -247,8 +247,8 @@ describe("upgrade from rc.21 (0041) keeps existing rows", () => {
   });
 });
 
-describe("migrate-sqlite carries the new columns", () => {
-  test("a sessions row with a pair copies as plain text", async () => {
+describe("migrate-sqlite does not carry the new columns", () => {
+  test("a pair is copied as NULL, since the boundaries it points at are not copied", async () => {
     const { exportSqliteToPg } = await import("../../src/cli/migrate-sqlite");
     const src = await openDb({ dialect: "sqlite", path: ":memory:" });
     const dst = await openDb({ dialect: "pg", driver: "pglite" });
@@ -260,8 +260,8 @@ describe("migrate-sqlite carries the new columns", () => {
         `INSERT INTO ignores (id, target_type, channel_id, thread_ts, created_by, created_at, boundary_id, locator) VALUES ('i1', 'thread', 'C0EXAMPLE', '1.1', 'U0EXAMPLE', 1, 'b-example', '1.1')`,
       );
       await exportSqliteToPg(src, dst, { log: () => {} });
-      expect(await dst.one(`SELECT 1 AS x FROM sessions WHERE id = 's1' AND boundary_id = 'b-example' AND locator = '1.1'`)).not.toBeNull();
-      expect(await dst.one(`SELECT 1 AS x FROM ignores WHERE id = 'i1' AND boundary_id = 'b-example' AND locator = '1.1'`)).not.toBeNull();
+      expect(await dst.one(`SELECT 1 AS x FROM sessions WHERE id = 's1' AND slack_thread_ts = '1.1' AND boundary_id IS NULL AND locator IS NULL`)).not.toBeNull();
+      expect(await dst.one(`SELECT 1 AS x FROM ignores WHERE id = 'i1' AND thread_ts = '1.1' AND boundary_id IS NULL AND locator IS NULL`)).not.toBeNull();
     } finally {
       await src.close();
       await dst.close();
