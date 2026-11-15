@@ -1,6 +1,8 @@
 import { db, type SessionRow } from "./schema";
 import { randomUUID } from "node:crypto";
 import { observeSlackChannel } from "../domain/first-sight";
+import { boundaryForCached, locatorOf } from "../domain/boundary-for";
+import { env } from "../config/env";
 
 export type ThreadKey = {
   team_id: string;
@@ -56,12 +58,19 @@ export async function createForThread(args: {
   const id = randomUUID();
   const now = Date.now();
   const personaId = args.thread.persona_id ?? "default";
+  // Domain sessions, slice D: the boundary and the opaque thread key ride in the
+  // same INSERT when the boundary is already cached; NULL otherwise (the late
+  // fill after first sight, or the periodic fill, completes the row). Cache only:
+  // nothing is awaited and nothing can fail here, so a slow boundaries table
+  // never delays or breaks a session create. The Slack columns stay the key.
+  const boundary = boundaryForCached(args.thread.team_id, args.thread.channel_id);
+  const locator = boundary ? locatorOf(args.thread.thread_ts) : null;
   await db.run(
     `INSERT INTO sessions
      (id, created_at, updated_at, title, model, working_dir, status,
       claude_started, slack_team_id, slack_channel_id, slack_thread_ts,
-      permission_mode, persona_id)
-     VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?, ?, ?)`,
+      permission_mode, persona_id, boundary_id, locator)
+     VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       now,
@@ -74,6 +83,8 @@ export async function createForThread(args: {
       args.thread.thread_ts,
       args.permission_mode ?? "default",
       personaId,
+      boundary ? boundary.id : null,
+      locator,
     ],
   );
   // First sight: this is the one place a session row is created (the node has no store that creates rows).
@@ -233,9 +244,49 @@ export async function latestAppOf(personaId: string): Promise<{ apiAppId: string
   return row ? { apiAppId: row.slack_app_id ?? null, teamId: row.slack_team_id ?? null } : null;
 }
 
-/** Retire a channel session: its key is freed so the next message starts a new one; the row and history stay. */
+/**
+ * Retire a channel session: its key is freed so the next message starts a new one; the row and history stay.
+ * One statement rewrites the Slack thread column and the locator together, so the retired row can never
+ * share `(boundary_id, locator, persona_id)` with the new `channel:<id>` session. A row that has no
+ * boundary yet keeps a NULL locator: the fill derives it from the already rewritten thread column.
+ */
 export async function archiveChannelSession(id: string, channelId: string, now: number): Promise<void> {
-  await db.run(`UPDATE sessions SET slack_thread_ts = ?, updated_at = ? WHERE id = ?`, [`channel-archived:${channelId}:${now}`, now, id]);
+  const key = `channel-archived:${channelId}:${now}`;
+  await db.run(`UPDATE sessions SET slack_thread_ts = ?, locator = CASE WHEN boundary_id IS NULL THEN locator ELSE ? END, updated_at = ? WHERE id = ?`, [
+    key,
+    key,
+    now,
+    id,
+  ]);
+}
+
+/** The most rows one late fill updates; the periodic fill takes the rest. */
+export const LATE_FILL_LIMIT = 500;
+
+/**
+ * After first sight created or found the boundary of a channel: complete the
+ * sessions of that channel (and workspace) that were written before the
+ * boundary was known. Compare-and-set on `boundary_id IS NULL`, so a filled row
+ * is never overwritten, bounded, and never throws (a failure is left to the
+ * periodic fill). Rows with no workspace are left to the periodic fill, which
+ * decides which workspace they belong to. Returns how many rows it filled.
+ */
+export async function fillBoundaryForChannel(teamId: string, channelId: string, boundaryId: string): Promise<number> {
+  try {
+    if (!env.boundary.write() || env.role() === "node" || !teamId || !channelId || !boundaryId) return 0;
+    const r = await db.run(
+      `UPDATE sessions SET boundary_id = ?, locator = slack_thread_ts
+       WHERE boundary_id IS NULL AND slack_thread_ts IS NOT NULL AND slack_thread_ts <> ''
+         AND id IN (SELECT id FROM sessions
+                    WHERE slack_team_id = ? AND slack_channel_id = ? AND boundary_id IS NULL
+                      AND slack_thread_ts IS NOT NULL AND slack_thread_ts <> ''
+                    LIMIT ${LATE_FILL_LIMIT})`,
+      [boundaryId, teamId, channelId],
+    );
+    return r.changes;
+  } catch {
+    return 0;
+  }
 }
 
 /**

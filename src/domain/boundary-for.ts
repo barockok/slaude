@@ -124,7 +124,8 @@ export function createBoundaryResolver(deps: BoundaryResolverDeps = {}): Boundar
           count("found");
           return { id: row.id };
         }
-        put(key, null);
+        // A boundary first sight primed while this read ran is newer than "absent".
+        if (!peek(key)?.id) put(key, null);
         count("absent");
         return null;
       } catch (e) {
@@ -194,6 +195,11 @@ export const boundaryFor = (team: string | null | undefined, channel: string | n
 export const primeBoundary = (team: string, channel: string, id: string): void => resolver().prime(team, channel, id);
 
 export const resetBoundaryResolver = (): void => resolver().reset();
+
+/** Tests: replace the shared resolver (undefined restores a fresh default). */
+export const __setBoundaryResolver = (r: BoundaryResolver | undefined): void => {
+  shared = r;
+};
 
 /** The opaque conversation key inside a boundary: the thread column verbatim; empty is none. */
 export function locatorOf(threadTs: string | null | undefined): string | null {

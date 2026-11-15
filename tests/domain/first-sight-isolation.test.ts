@@ -31,4 +31,17 @@ describe("first sight isolation in tests", () => {
     expect(await count("boundaries")).toBe(0);
     await db.run("DELETE FROM sessions");
   });
+
+  test("the late fill that follows a session's first sight is flushed too, so no write lands after a wipe", async () => {
+    resetFirstSight();
+    await Sessions.createForThread({ thread: { team_id: WS, channel_id: "C0LATEFILL", thread_ts: "9.8" }, model: "m", working_dir: "/w" });
+    await flushFirstSightWork();
+    const row = await db.one<{ boundary_id: string | null; locator: string | null }>("SELECT boundary_id, locator FROM sessions WHERE slack_channel_id = 'C0LATEFILL'");
+    expect(row!.boundary_id).not.toBeNull();
+    expect(row!.locator).toBe("9.8");
+    await Accounts._wipeForTests();
+    await flushFirstSightWork();
+    expect(await count("boundaries")).toBe(0);
+    await db.run("DELETE FROM sessions");
+  });
 });
