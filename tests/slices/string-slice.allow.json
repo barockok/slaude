@@ -67,6 +67,14 @@
     "reason": "own slice by design, not unioned: thread activity keys on the writer's own slice"
   },
   {
+    "file": "src/domain/reconcile.ts",
+    "pattern": "user-source-id",
+    "lines": [
+      "const name = userSourceId(r.value);"
+    ],
+    "reason": "reconciler report (Rule Q): names two live users both produce, counted and masked, report only, nothing is repaired"
+  },
+  {
     "file": "src/gateway/api/mcp-credentials.ts",
     "pattern": "account-for-slack",
     "lines": [
