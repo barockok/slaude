@@ -311,7 +311,7 @@
     "pattern": "locked_user",
     "lines": [
       "locked_user: string;",
-      "`INSERT INTO one_on_one_locks (channel_id, thread_ts, locked_user, created_by, created_at, open_scope, team_id)",
+      "`INSERT INTO one_on_one_locks (channel_id, thread_ts, locked_user, created_by, created_at, open_scope, team_id, boundary_id, locator)",
       "DO UPDATE SET locked_user = excluded.locked_user, created_by = excluded.created_by,",
       "lock: Pick<OneOnOneLockRow, \"locked_user\" | \"team_id\">,",
       "if (lock.locked_user !== who.userId) return \"other\";"

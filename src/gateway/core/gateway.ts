@@ -992,6 +992,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     .catch((e) => console.error("[gates] boot sweep failed:", e));
   // The skill version log: reconcile now, then on a timer. Best effort, never blocks boot.
   const stopSkillVersionReconciler = startSkillVersionReconciler();
+  // Domain sessions, slice D: the periodic boundary fill, started once Slack auth knows the workspaces.
+  let stopBoundaryFill: () => void = () => {};
   // Clean up expired ignores + abandoned paste-back OAuth flows every 5 minutes.
   // Each parked flow holds the registered client secret and the PKCE verifier
   // (encrypted), so an abandoned one must not linger until the initiator happens
@@ -1347,6 +1349,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (opts.domainReconcile === true) {
       const { reconcileAtBoot } = await import("../../domain/reconcile");
       void reconcileAtBoot({ role: env.role(), liveTeamIds: () => [...authTeams] });
+      // Completes boundary_id and locator on rows the writers could not (bounded per tick, never on a node).
+      const { startBoundaryFill } = await import("../../domain/boundary-backfill");
+      stopBoundaryFill = startBoundaryFill({ liveTeamIds: () => [...authTeams] });
     }
   })().catch((e) => console.error("[slack-auth] app listing failed:", e?.message ?? e));
 
@@ -5054,6 +5059,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await backgroundScheduler?.stop().catch(() => {});
       cronScheduler.stop();
       stopSkillVersionReconciler();
+      stopBoundaryFill();
       stopOwnerGuardrails();
       pluginInventory?.stop();
       unsetMergeNoticeSender();

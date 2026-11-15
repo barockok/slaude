@@ -235,7 +235,7 @@ describe("concurrency", () => {
 
 describe("guard: only the compare-and-set fill sets boundary_id on an existing row", () => {
   test("no UPDATE in src assigns boundary_id outside the allowed files", () => {
-    const allowed = new Set(["src/db/sessions.ts"]);
+    const allowed = new Set(["src/db/sessions.ts", "src/domain/boundary-backfill.ts"]);
     const hits: string[] = [];
     const walk = (dir: string): void => {
       for (const f of readdirSync(dir)) {
@@ -243,12 +243,14 @@ describe("guard: only the compare-and-set fill sets boundary_id on an existing r
         if (statSync(p).isDirectory()) walk(p);
         else if (/\.tsx?$/.test(f)) {
           const text = readFileSync(p, "utf8");
-          if (/UPDATE\s+\w+\s+SET[^`"';]*\bboundary_id\s*=/i.test(text)) hits.push(p.slice(join(import.meta.dir, "../..").length + 1));
+          if (/UPDATE\s+[\w${}.]+\s+SET[^`"';]*\bboundary_id\s*=/i.test(text)) hits.push(p.slice(join(import.meta.dir, "../..").length + 1));
         }
       }
     };
     walk(join(import.meta.dir, "../../src"));
     expect(hits.filter((h) => !allowed.has(h))).toEqual([]);
     expect(hits).toContain("src/db/sessions.ts");
+    // the fill's statement is compare-and-set
+    expect(readFileSync(join(import.meta.dir, "../../src/domain/boundary-backfill.ts"), "utf8")).toContain("AND boundary_id IS NULL");
   });
 });

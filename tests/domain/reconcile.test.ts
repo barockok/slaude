@@ -430,7 +430,8 @@ for (const dialect of ["sqlite", "pg"] as const) {
       const again = await reconcile(opts({ db: wrap(db), pageSize: 50 }));
       expect(totalCreated(again)).toBe(0);
       expect(txs).toBe(0);
-      expect(stmts).toBeLessThanOrEqual(40);
+      // 40 for the id sources and plumbing; the boundary stage adds a fixed 19 (a scan and a count per table, one tenant lookup), never per row.
+      expect(stmts).toBeLessThanOrEqual(59);
     }, 60_000);
 
     test("rolling-deploy repair: an identity and an account with no binding are fixed", async () => {
@@ -660,14 +661,14 @@ describe("reconcileAtBoot", () => {
   test("a no-op run logs one line", async () => {
     const lines: string[] = [];
     const empty = { created: 0, existing: 0, skipped: {} };
-    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, grantSubjects: empty, lockTeams: empty, workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 }, unprovenEmails: { total: 0, byIssuer: {}, demoted: 0, unaccounted: 0 }, typedGrantSubjects: 0, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
+    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, grantSubjects: empty, lockTeams: empty, workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 }, unprovenEmails: { total: 0, byIssuer: {}, demoted: 0, unaccounted: 0 }, typedGrantSubjects: 0, boundaryColumns: {}, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
     await reconcileAtBoot({ role: "mono", liveTeamIds: () => [], run: async () => report, log: (m) => lines.push(m) });
     expect(lines).toEqual(["reconcile: nothing to do"]);
   });
   test("unproven email bindings are reported at boot, never acted on", async () => {
     const lines: string[] = [];
     const empty = { created: 0, existing: 0, skipped: {} };
-    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, grantSubjects: empty, lockTeams: empty, workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 }, unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0, unaccounted: 0 }, typedGrantSubjects: 0, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
+    const report = { dryRun: false, conflicts: [], linkTokensPurged: 0, grantSubjects: empty, lockTeams: empty, workspaceGrants: { total: 0, mismatched: 0, rows: [], unjudged: 0 }, unprovenEmails: { total: 2, byIssuer: { "https://idp.example.com": 2 }, demoted: 0, unaccounted: 0 }, typedGrantSubjects: 0, boundaryColumns: {}, startedAt: 0, finishedAt: 0, sources: { accounts: empty, slackIdentities: empty, grantUsers: empty, grantChannels: empty, sessionChannels: empty, auditActors: empty } };
     await reconcileAtBoot({ role: "mono", liveTeamIds: () => [], run: async () => report, log: (m) => lines.push(m) });
     expect(lines.join("\n")).toContain("2 verified email binding(s) have no proof");
     expect(lines.join("\n")).toContain("--demote-unproven-emails --apply");
