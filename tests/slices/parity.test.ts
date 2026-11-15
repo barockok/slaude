@@ -14,7 +14,7 @@ import * as Domain from "../../src/db/domain";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import { db } from "../../src/db/schema";
 import type { GateInput } from "../../src/knowledge/gated-dispatch";
-import { resolveBrainScope, type ScopeInput } from "../../src/knowledge/scope";
+import { resolveBrainScope, userSourceId, type ScopeInput } from "../../src/knowledge/scope";
 import { memoryScopeFor } from "../../src/memory/scope";
 import { decidePersonSlices, settlePersonSliceShadows } from "../../src/slices/decide";
 import { resolveBrainScope as resolveRc21 } from "./rc21/knowledge-scope";
@@ -101,6 +101,86 @@ describe("scope parity with rc.21", () => {
     const input: ScopeInput = { userId: "U0AEXAMPLE", teamId: TEAM, lockedUser: "U0AEXAMPLE", channelTrust: "public", isManager: false, kbSources: [], agentId: "agent-one" };
     expect(await resolveBrainScope(input)).toEqual(await resolveRc21(input));
   });
+});
+
+describe("union mode against rc.21", () => {
+  test("5000 random worlds: one verified id (or none) is byte-identical to rc.21; with a union only the verified extras are added, to reads only", async () => {
+    process.env.SLAUDE_PERSON_SLICES = "union";
+    await resetWorld();
+    // A: two verified ids and an observed third. B: one verified id. C: observed only. D: three verified ids, one name claimed by E.
+    const a = await newUser();
+    await slack(a, "U0AEXAMPLE");
+    await slack(a, "U1AEXAMPLE");
+    await slack(a, "U2AEXAMPLE", "observed");
+    const b = await newUser();
+    await slack(b, "U0BEXAMPLE");
+    const c = await newUser();
+    await slack(c, "U0CEXAMPLE", "observed");
+    const d = await newUser();
+    for (const v of ["U0DEXAMPLE", "U1DEXAMPLE", "U2DEXAMPLE"]) await slack(d, v);
+    const e = await newUser();
+    await slack(e, "U2DEXAMPLE", "observed", "T9EXAMPLE");
+    const expected: Record<string, string[]> = {
+      U0AEXAMPLE: ["user-u1aexample"],
+      U1AEXAMPLE: ["user-u0aexample"],
+      U0DEXAMPLE: ["user-u1dexample"],
+      U1DEXAMPLE: ["user-u0dexample"],
+      U2DEXAMPLE: ["user-u0dexample", "user-u1dexample"],
+    };
+    const people = [null, "U0AEXAMPLE", "U1AEXAMPLE", "U2AEXAMPLE", "U0BEXAMPLE", "U0CEXAMPLE", "U0DEXAMPLE", "U1DEXAMPLE", "U2DEXAMPLE", "U0ZEXAMPLE"] as const;
+    const personOf = new Map<string, Awaited<ReturnType<typeof decidePersonSlices>>>();
+    for (const p of people) if (p) personOf.set(p, await decidePersonSlices({ site: "brain.gate_speaker", teamId: TEAM, slackUserId: p }));
+    const r = rng(5150);
+    for (let i = 0; i < 5000; i++) {
+      const userId = pick(r, people);
+      const person = userId ? personOf.get(userId) : undefined;
+      const g: GateInput = {
+        userId,
+        teamId: TEAM,
+        interactive: true,
+        lockedUser: pick(r, [null, null, ...people.filter((p) => p !== null)]),
+        lockedTeamId: null,
+        channelTrust: pick(r, ["trusted", "public", "unknown"] as const),
+        isManager: r() < 0.3,
+        agentId: pick(r, ["agent-one", "agent-two"]),
+        ...(person ? { person } : {}),
+      };
+      const kb = r() < 0.5 ? ["kb-a"] : [];
+      const input: ScopeInput = { ...g, kbSources: kb };
+      const legacyKb = await resolveRc21(input);
+      const gotKb = await resolveBrainScope(input);
+      const opts = { channel: pick(r, ["D0EXAMPLE", "C0EXAMPLE", undefined]), runAsUser: pick(r, [null, null, ...people.filter((p) => p !== null)]) };
+      const runAsPerson = opts.runAsUser ? personOf.get(opts.runAsUser) : undefined;
+      const legacyMem = await memoryRc21(g, opts);
+      const gotMem = await memoryScopeFor(g, { ...opts, ...(runAsPerson ? { runAsPerson } : {}) });
+      const extra = (u: string | null) => (u ? (expected[u] ?? []) : []);
+      // KB scope: identical except reads gain the speaker's verified extras, and only in the speaker's own lock.
+      expect({ ...gotKb, allowedSources: undefined }).toEqual({ ...legacyKb, allowedSources: undefined });
+      const added = gotKb.allowedSources.filter((x) => !legacyKb.allowedSources.includes(x));
+      expect(gotKb.allowedSources.filter((x) => legacyKb.allowedSources.includes(x))).toEqual(legacyKb.allowedSources);
+      expect(added.length === 0 || added.every((n) => extra(userId).includes(n))).toBe(true);
+      if (added.length > 0) expect(gotKb.sourceId).toBe(userSourceId(userId!));
+      // Memory scope: the write side is always identical; the read side differs only by verified extras.
+      expect(gotMem.write).toEqual(legacyMem.write);
+      expect(gotMem.read === null).toBe(legacyMem.read === null);
+      if (gotMem.read && legacyMem.read) {
+        expect({ ...gotMem.read, allowedSources: undefined }).toEqual({ ...legacyMem.read, allowedSources: undefined });
+        const addedM = gotMem.read.allowedSources.filter((x) => !legacyMem.read!.allowedSources.includes(x));
+        expect(gotMem.read.allowedSources.filter((x) => legacyMem.read!.allowedSources.includes(x))).toEqual(legacyMem.read.allowedSources);
+        const who = opts.runAsUser ?? userId;
+        expect(addedM.every((n) => extra(who).includes(n))).toBe(true);
+      }
+      // Per-agent, shared, public and kb sources never differ.
+      const nonPerson = (xs: string[]) => xs.filter((x) => !x.startsWith("user-"));
+      expect(nonPerson(gotKb.allowedSources)).toEqual(nonPerson(legacyKb.allowedSources));
+    }
+    // A person with a single verified id (B) or none verified (C, the unclaimed-name case D2) never gets extras.
+    expect(personOf.get("U0BEXAMPLE")).toBeUndefined();
+    expect(personOf.get("U0CEXAMPLE")).toBeUndefined();
+    expect(personOf.get("U2AEXAMPLE")).toBeUndefined();
+    expect(personOf.get("U0ZEXAMPLE")).toBeUndefined();
+    expect(personOf.get("U0DEXAMPLE")!.reads).toEqual(["user-u0dexample", "user-u1dexample"]);
+  }, 600_000);
 });
 
 describe("credential decisions are unchanged by the pointer", () => {

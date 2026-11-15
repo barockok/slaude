@@ -19,7 +19,7 @@
  *     names are only the checked ones, with the write target still the own slice.
  *
  * Fixed seeds, so a failure reproduces; the failing prefix of the sequence is
- * printed. Seeds: SLAUDE_LEAK_SEEDS (default 120 on sqlite, 24 on Postgres).
+ * printed. Seeds: SLAUDE_LEAK_SEEDS (default 400 on sqlite, 150 on Postgres).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Accounts from "../../src/db/accounts";
@@ -252,7 +252,7 @@ describe.each(["union"])("cross-person leak property (%s)", () => {
     invalidateActors();
   }
 
-  const seeds = Number(process.env.SLAUDE_LEAK_SEEDS ?? (process.env.SLAUDE_DB === "pg" ? 24 : 120));
+  const seeds = Number(process.env.SLAUDE_LEAK_SEEDS ?? (process.env.SLAUDE_DB === "pg" ? 150 : 400));
   test(`${seeds} seeded sequences, every identity checked after every step`, async () => {
     let checked = 0;
     for (let seed = 1; seed <= seeds; seed++) {
