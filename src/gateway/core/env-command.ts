@@ -327,31 +327,33 @@ export async function useSharedEnvironment(row: StoredEnv, dirArg: string | unde
   const same = existing?.env.id === usable.id;
   if (existing && !same) await endRemoteForThread(channelId, threadTs, { sessionId: ctx.sessionId, cleanup: deps.cleanup });
   if (!same) await Envs.bind({ channelId, threadTs, envId: usable.id, dir, lockByEnv: false });
-  const undo = async (why: string) => {
+  // A connection error names the host, address or port, and this reply goes to a shared thread: the detail stays in the server log (a code, never the host or key).
+  const undo = async (detail: string) => {
+    console.warn(`[env] shared use failed env=${name}: ${detail}`);
     const gone = same ? null : await Envs.clearBinding(channelId, threadTs);
     if (gone) await releaseBinding(gone);
-    await ctx.reply(`:x: Couldn't use \`${name}\`: ${why}`);
+    await ctx.reply(`:x: Couldn't reach the shared machine \`${name}\`. An operator can check the server logs.`);
     return false;
   };
   try {
     const b = await boundEnv(channelId, threadTs);
     if (!b || b.env.id !== usable.id) return await undo("the thread's environment changed meanwhile");
     const pf = await deps.preflight({ info: await connectInfoForBinding(b.binding, b.env), dir });
-    if (!pf.ok) return await undo(pf.error);
+    if (!pf.ok) return await undo("preflight failed");
     await Envs.setBindingDir(channelId, threadTs, usable.id, pf.dir);
     forgetRemoteStatus(ctx.sessionId);
     ctx.reload();
     await ctx.reply(`${SHARED_WARNING(name)} Shell and file tools now run there, in \`${pf.dir}\`. \`/env off\` to switch back.`);
     return true;
   } catch (e) {
-    return undo(e instanceof RemoteError ? e.message : (e as Error).message);
+    return undo(e instanceof RemoteError ? e.code : "error");
   }
 }
 
 /** The shared environments this agent may use, as list lines (names and descriptions only). */
 async function sharedLines(ctx: EnvCommandCtx, current?: string): Promise<string[]> {
   const rows = await usableShared(ctx.tenantId ?? "default", ctx.personaId);
-  return rows.map((r) => `• *env:${r.userId}* — shared machine${r.defaultDir ? `, default dir \`${r.defaultDir}\`` : ""}${current === r.id ? " _(this thread)_" : ""}`);
+  return rows.map((r) => `• *env:${r.userId}*: shared machine${r.defaultDir ? `, default dir \`${r.defaultDir}\`` : ""}${current === r.id ? " _(this thread)_" : ""}`);
 }
 
 // ── /env ─────────────────────────────────────────────────────────────────
@@ -366,6 +368,13 @@ function kindsHelp(): string {
 /** Who may end the thread's environment: its owner or the manager; for a
  *  sandbox in a thread that is not locked, anyone the thread admits. */
 async function mayTurnOff(ctx: EnvCommandCtx, b: { env: StoredEnv }): Promise<boolean> {
+  if (b.env.source === "definition") {
+    // A shared machine has no owner: the manager, whoever holds the thread's 1on1 lock (they may have bound it there), or anyone the thread admits when it is not locked.
+    if (ctx.isManager) return true;
+    const held = await OneOnOne.find(ctx.channelId, ctx.threadTs);
+    if (!held || held.open_scope !== null) return true;
+    return sameAt({ site: "env.use_lock_owner", persona: null, teamId: ctx.teamId, userId: ctx.userId, otherUserId: held.locked_user, otherTeamId: held.team_id });
+  }
   if ((await sameAt({ site: "env.turn_off_owner", persona: null, teamId: ctx.teamId, userId: ctx.userId, otherUserId: b.env.userId, otherTeamId: b.env.teamId })) || ctx.isManager) return true;
   if (trustOf(b.env) !== "provisioned") return false;
   const lock = await OneOnOne.find(ctx.channelId, ctx.threadTs);
@@ -387,7 +396,7 @@ export async function handleEnvCommand(hit: EnvHit, ctx: EnvCommandCtx, deps: En
       await ctx.reply(
         "target" in d
           ? `Environment: *env:${b.env.userId}* (shared machine), \`${b.binding.dir}\`.`
-          : `Environment: *env:${b.env.userId}* (shared machine) — this agent may not use it, so it will not run anything for this thread. \`/env off\` returns to the server.`,
+          : `Environment: *env:${b.env.userId}* (shared machine): this agent may not use it, so it will not run anything for this thread. \`/env off\` returns to the server.`,
       );
       const mineShared = await Envs.listEnvs(teamId, userId);
       if (!ctx.offerPicker && mineShared.length) await ctx.sayPrivately(`*Your environments:*\n${mineShared.map((e) => listLine(e, b.env.id)).join("\n")}\n\`/env use <name> [dir]\` to switch.`);
@@ -450,7 +459,9 @@ export async function handleEnvCommand(hit: EnvHit, ctx: EnvCommandCtx, deps: En
       return;
     }
     if (!(await mayTurnOff(ctx, b))) {
-      await ctx.reply(`Only <@${b.env.userId}> or the manager can switch this thread's environment off.`);
+      await ctx.reply(b.env.source === "definition"
+        ? "Only the thread's 1on1 owner or the manager can switch this thread's environment off."
+        : `Only <@${b.env.userId}> or the manager can switch this thread's environment off.`);
       return;
     }
     const { lockByRemote } = await endRemoteForThread(channelId, threadTs, { sessionId: ctx.sessionId, cleanup: deps.cleanup });

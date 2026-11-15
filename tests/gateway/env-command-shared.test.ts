@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { __setSshResolverForTests } from "../../src/remote/kinds/ssh";
 import * as Envs from "../../src/db/environments";
 import * as OneOnOne from "../../src/db/one-on-one";
 import { handleEnvCommand, removeEnvironment, useEnvironment, type EnvCommandDeps } from "../../src/gateway/core/env-command";
@@ -100,7 +101,7 @@ describe("/env use env:<name>", () => {
     d.preflight = async () => ({ ok: false, error: "connection refused" } as never);
     await handleEnvCommand({ kind: "env", action: "use", name: "env:team-sandbox" }, ctx(), d);
     expect(await Envs.findBinding("C0EXAMPLE", "1.1")).toBeNull();
-    expect(out()).toContain("Couldn't use");
+    expect(out()).toContain("Couldn't reach the shared machine");
     noLeak();
   });
 
@@ -162,6 +163,61 @@ describe("/env list and status", () => {
     await bindShared(await insertShared());
     await handleEnvCommand({ kind: "env", action: "off" }, ctx({ userId: "U0OTHER" }), deps());
     expect(await Envs.findBinding("C0EXAMPLE", "1.1")).toBeNull();
+  });
+});
+
+describe("failures never name the machine", () => {
+  const leaks = ["203.0.113.7", "2222", HOST, "ECONNREFUSED"];
+  it("a preflight error carrying a host, address and port gets a fixed reply", async () => {
+    await insertShared();
+    const d = deps();
+    d.preflight = async () => ({ ok: false, error: `connect ECONNREFUSED 203.0.113.7:2222 (${HOST})` } as never);
+    await handleEnvCommand({ kind: "env", action: "use", name: "env:team-sandbox" }, ctx(), d);
+    expect(replies).toEqual([":x: Couldn't reach the shared machine `team-sandbox`. An operator can check the server logs."]);
+    for (const l of leaks) expect(out()).not.toContain(l);
+    expect(await Envs.findBinding("C0EXAMPLE", "1.1")).toBeNull();
+  });
+
+  it("a thrown connection error (a resolved address refused at connect) gets the same reply and a log line without the host", async () => {
+    await insertShared();
+    __setSshResolverForTests(async () => ["10.0.0.9"]);
+    const logs: string[] = [];
+    const warn = spyOn(console, "warn").mockImplementation((...a: unknown[]) => void logs.push(a.join(" ")));
+    try {
+      await handleEnvCommand({ kind: "env", action: "use", name: "env:team-sandbox" }, ctx(), deps());
+    } finally {
+      warn.mockRestore();
+    }
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("Couldn't reach the shared machine");
+    for (const l of [...leaks, "10.0.0.9"]) {
+      expect(out()).not.toContain(l);
+      expect(logs.join("\n")).not.toContain(l);
+    }
+    expect(logs.join("\n")).toContain("shared use failed env=team-sandbox");
+  });
+});
+
+describe("turning a shared environment off in a locked thread", () => {
+  it("the lock owner (who could bind it) and the manager may; another person may not, and the refusal has no mention built from the name", async () => {
+    await insertShared();
+    await OneOnOne.lock({ channelId: "C0EXAMPLE", threadTs: "1.1", lockedUser: "U0EXAMPLE", createdBy: "U0EXAMPLE", teamId: "T0EXAMPLE" });
+    await handleEnvCommand({ kind: "env", action: "use", name: "env:team-sandbox" }, ctx(), deps());
+    expect(await Envs.findBinding("C0EXAMPLE", "1.1")).not.toBeNull();
+    // Someone else: refused.
+    replies = [];
+    await handleEnvCommand({ kind: "env", action: "off" }, ctx({ userId: "U0OTHER" }), deps());
+    expect(await Envs.findBinding("C0EXAMPLE", "1.1")).not.toBeNull();
+    expect(replies.join("\n")).toContain("1on1 owner or the manager");
+    expect(replies.join("\n")).not.toContain("<@team-sandbox>");
+    // The manager.
+    await handleEnvCommand({ kind: "env", action: "off" }, { ...ctx({ userId: "U0MANAGER" }), isManager: true }, deps());
+    expect(await Envs.findBinding("C0EXAMPLE", "1.1")).toBeNull();
+    // The lock owner.
+    await handleEnvCommand({ kind: "env", action: "use", name: "env:team-sandbox" }, ctx(), deps());
+    await handleEnvCommand({ kind: "env", action: "off" }, ctx(), deps());
+    expect(await Envs.findBinding("C0EXAMPLE", "1.1")).toBeNull();
+    expect(await OneOnOne.find("C0EXAMPLE", "1.1")).not.toBeNull();
   });
 });
 
