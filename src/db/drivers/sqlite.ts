@@ -150,6 +150,12 @@ CREATE TABLE IF NOT EXISTS environments (
   default_dir TEXT,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
+  source              TEXT    NOT NULL DEFAULT 'user',
+  definition_name     TEXT,
+  definition_hash     TEXT,
+  definition_revision TEXT,
+  description         TEXT,
+  retired_at          INTEGER,
   UNIQUE (team_id, user_id, name)
 );
 CREATE TABLE IF NOT EXISTS env_bindings (
@@ -795,6 +801,17 @@ export function bootstrapSqliteSchema(db: Database): void {
   if (!sessionAppCols.some((c) => c.name === "slack_app_id")) {
     db.run(`ALTER TABLE sessions ADD COLUMN slack_app_id TEXT`);
   }
+
+  // Migration: environment definitions (pg 0051). All additive. sqlite has no
+  // tenant column, so the definition index is on the name alone (definition
+  // sync is a database-tenant feature and runs on pg only).
+  const envCols = db.query(`PRAGMA table_info(environments)`).all() as Array<{ name: string }>;
+  if (!envCols.some((c) => c.name === "source")) db.run(`ALTER TABLE environments ADD COLUMN source TEXT NOT NULL DEFAULT 'user'`);
+  for (const c of ["definition_name", "definition_hash", "definition_revision", "description"]) {
+    if (!envCols.some((x) => x.name === c)) db.run(`ALTER TABLE environments ADD COLUMN ${c} TEXT`);
+  }
+  if (!envCols.some((c) => c.name === "retired_at")) db.run(`ALTER TABLE environments ADD COLUMN retired_at INTEGER`);
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_environments_definition ON environments (definition_name) WHERE definition_name IS NOT NULL`);
 
   // Migration: add pause lifecycle state. `active` remains the soft-delete bit;
   // paused jobs stay listed but don't fire on schedule.
