@@ -116,7 +116,7 @@ flag that defaults off.
 - **The reconciler report** (every run, read only): verified Slack bindings with
   no `slack_identities` row and the reverse (the direction the old pass never
   checked), per team; credential rows whose pointer is empty or differs from the
-  account's user; slice names two live users both produce, masked. `--apply`
+  account's user; slice names two live users both produce, masked. `--fill-pointers`
   fills empty pointers only, with a compare on the old NULL. The reconciler's own
   projection passes `recordPointer: false` so the report is honest.
 
@@ -323,7 +323,7 @@ fixed; the guard test green.
 
 Rollout per release candidate: back up before the version bump
 (`sudo /usr/local/sbin/slaude-backup`), deploy, `verify` with 0 FAIL, run
-`slaude domain reconcile` (report first, then `--apply` for the pointer fill), read
+`slaude domain reconcile` (report first, then `--fill-pointers` for the pointer fill), read
 the shadow metrics, then the smoke above.
 
 ## Rollback
