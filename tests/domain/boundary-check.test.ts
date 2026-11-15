@@ -56,7 +56,7 @@ describe("checkRow on the sessions paths", () => {
     await db.run("UPDATE sessions SET boundary_id = 'b-wrong'");
     const m0 = count("find_any_by_thread", "mismatch");
     const again = await Sessions.findAnyByThread(k);
-    expect(again!.boundary_id).toBe("b-wrong"); // legacy row returned as it is
+    expect(again!.id).toBe(made.id); // the legacy row comes back as it is (without the internal pair)
     expect(count("find_any_by_thread", "mismatch")).toBe(m0 + 1);
     await db.run("UPDATE sessions SET boundary_id = ?, locator = 'x'", [b]);
     const l0 = count("find_by_thread", "locator_mismatch");

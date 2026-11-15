@@ -11,7 +11,12 @@ import { resetFirstSight } from "../../src/domain/first-sight";
 const WS = "T0EXAMPLE";
 const CH = "C0EXAMPLE";
 const thread = (ts: string, persona?: string) => ({ team_id: WS, channel_id: CH, thread_ts: ts, ...(persona ? { persona_id: persona } : {}) });
-const mk = (ts: string, persona?: string) => Sessions.createForThread({ thread: thread(ts, persona), model: "m", working_dir: "/w" });
+/** Creates through the public API and adds the stored pair (read from the table: the public row never carries it). */
+const mk = async (ts: string, persona?: string) => {
+  const r = await Sessions.createForThread({ thread: thread(ts, persona), model: "m", working_dir: "/w" });
+  const p = (await db.one<{ boundary_id: string | null; locator: string | null }>("SELECT boundary_id, locator FROM sessions WHERE id = ?", [r.id]))!;
+  return { ...r, ...p };
+};
 
 type Row = { id: string; boundary_id: string | null; locator: string | null; slack_thread_ts: string | null };
 const rows = (where = "1 = 1") => db.query<Row>(`SELECT id, boundary_id, locator, slack_thread_ts FROM sessions WHERE ${where} ORDER BY created_at, id`);
@@ -32,6 +37,22 @@ async function clean(): Promise<void> {
 }
 beforeEach(clean);
 afterEach(clean);
+
+describe("the public row is the rc.21 shape", () => {
+  test("no store method returns boundary_id or locator", async () => {
+    await seedBoundary();
+    const made = await Sessions.createForThread({ thread: thread("1.1"), model: "m", working_dir: "/w" });
+    const k = { team_id: WS, channel_id: CH, thread_ts: "1.1" };
+    const all = [made, await Sessions.findById(made.id), await Sessions.findByThread(k), await Sessions.findAnyByThread(k), ...(await Sessions.listSessions()), ...(await Sessions.updatedSince(["default"], 0))];
+    expect(all.length).toBeGreaterThanOrEqual(6);
+    for (const r of all) {
+      expect(Object.keys(r!)).not.toContain("boundary_id");
+      expect(Object.keys(r!)).not.toContain("locator");
+    }
+    // and the table does carry them
+    expect((await db.one<{ boundary_id: string | null }>("SELECT boundary_id FROM sessions WHERE id = ?", [made.id]))!.boundary_id).not.toBeNull();
+  });
+});
 
 describe("createForThread dual write", () => {
   test("cold cache: the pair is NULL and the legacy columns are what they always were", async () => {
@@ -72,7 +93,7 @@ describe("createForThread dual write", () => {
   test("a missing team stores NULL and never fails", async () => {
     await seedBoundary();
     const r = await Sessions.createForThread({ thread: { team_id: "", channel_id: CH, thread_ts: "7.7" }, model: "m", working_dir: "/w" });
-    expect(r.boundary_id).toBeNull();
+    expect((await db.one<{ boundary_id: string | null }>("SELECT boundary_id FROM sessions WHERE id = ?", [r.id]))!.boundary_id).toBeNull();
   });
 
   test("the resolver is never awaited before the insert: a hung boundaries read does not delay a create", async () => {

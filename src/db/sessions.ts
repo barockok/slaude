@@ -13,30 +13,43 @@ export type ThreadKey = {
   persona_id?: string;
 };
 
+/**
+ * `boundary_id` and `locator` (slice D) are internal: they are read inside this
+ * module (the in-row parity check) and by the fill and the check command through
+ * their own queries, and never leave it. Every row this module returns to a caller
+ * is the shape rc.21 returned, so REST, the console and the node store are unchanged.
+ */
+type RawRow = SessionRow & { boundary_id?: string | null; locator?: string | null };
+function publicRow<T extends RawRow | null>(row: T): T {
+  if (!row) return row;
+  const { boundary_id: _b, locator: _l, ...rest } = row as RawRow;
+  return rest as unknown as T;
+}
+
 export async function findByThread(k: ThreadKey): Promise<SessionRow | null> {
   const personaId = k.persona_id ?? "default";
-  const row = await db.one<SessionRow>(
+  const row = await db.one<RawRow>(
     `SELECT * FROM sessions
      WHERE slack_team_id = ? AND slack_channel_id = ? AND slack_thread_ts = ?
        AND persona_id = ?`,
     [k.team_id, k.channel_id, k.thread_ts, personaId],
   );
   checkRow("find_by_thread", row);
-  return row;
+  return publicRow(row);
 }
 
 /** Find the most-recently-updated session for a thread regardless of persona.
  *  Used for "is there any session to populate?" checks (engagement restore,
  *  mention-only recording) where the caller doesn't know which persona to ask for. */
 export async function findAnyByThread(k: Omit<ThreadKey, "persona_id">): Promise<SessionRow | null> {
-  const row = await db.one<SessionRow>(
+  const row = await db.one<RawRow>(
     `SELECT * FROM sessions
      WHERE slack_team_id = ? AND slack_channel_id = ? AND slack_thread_ts = ?
      ORDER BY updated_at DESC LIMIT 1`,
     [k.team_id, k.channel_id, k.thread_ts],
   );
   checkRow("find_any_by_thread", row);
-  return row;
+  return publicRow(row);
 }
 
 /** The Slack team of the most recent session in a thread, by channel and thread only (channel ids are workspace-unique). */
@@ -94,13 +107,13 @@ export async function createForThread(args: {
   );
   // First sight: this is the one place a session row is created (the node has no store that creates rows).
   observeSlackChannel({ teamId: args.thread.team_id, channelId: args.thread.channel_id });
-  const created = (await findById(id))!;
+  const created = (await db.one<RawRow>(`SELECT * FROM sessions WHERE id = ?`, [id]))!;
   checkRow("create", created);
-  return created;
+  return publicRow(created);
 }
 
 export async function findById(id: string): Promise<SessionRow | null> {
-  return db.one<SessionRow>(`SELECT * FROM sessions WHERE id = ?`, [id]);
+  return publicRow(await db.one<RawRow>(`SELECT * FROM sessions WHERE id = ?`, [id]));
 }
 
 export interface ListSessionsOpts {
@@ -142,10 +155,11 @@ export async function listSessions(o: ListSessionsOpts = {}): Promise<SessionRow
   const offset = Number.isInteger(o.offset) && o.offset! >= 0 ? o.offset! : 0;
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   params.push(limit, offset);
-  return db.query<SessionRow>(
+  const rows = await db.query<RawRow>(
     `SELECT * FROM sessions ${clause} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?`,
     params,
   );
+  return rows.map((r) => publicRow(r));
 }
 
 /** How many sessions have this status (e.g. "running": a turn in flight). */
@@ -231,10 +245,11 @@ export async function setModel(id: string, model: string): Promise<void> {
 export async function updatedSince(personaIds: readonly string[], sinceMs: number, limit = 2000): Promise<SessionRow[]> {
   if (personaIds.length === 0) return [];
   const marks = personaIds.map(() => "?").join(", ");
-  return db.query<SessionRow>(
+  const rows = await db.query<RawRow>(
     `SELECT * FROM sessions WHERE persona_id IN (${marks}) AND updated_at >= ? ORDER BY updated_at DESC LIMIT ?`,
     [...personaIds, sinceMs, limit],
   );
+  return rows.map((r) => publicRow(r));
 }
 
 /**

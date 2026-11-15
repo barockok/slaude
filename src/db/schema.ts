@@ -28,10 +28,4 @@ export type SessionRow = {
    *  inbound event recorded it (D1.2). Optional so row literals predating it
    *  still type-check. */
   slack_app_id?: string | null;
-  /** Domain sessions, slice D: the boundary this thread belongs to (soft
-   *  reference to boundaries.id) and the opaque conversation locator inside it.
-   *  NULL until a writer that knew the boundary, or the fill, sets them. The
-   *  Slack columns stay authoritative. Optional so row literals still type-check. */
-  boundary_id?: string | null;
-  locator?: string | null;
 };
