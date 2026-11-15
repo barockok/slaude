@@ -1,11 +1,14 @@
 /**
- * Slice F safety proof (rc.22 behaves like rc.21): with SLAUDE_PERSON_SLICES
- * unset, `off`, `shadow` (the legacy answer is still the one returned), `union`
- * (not honoured yet, so it reads as off) or garbage, every scope decision equals
- * rc.21's, and every credential decision is unchanged by the pointer. The oracle
- * for scope is the frozen rc.21 source in tests/slices/rc21 (byte-identical to
- * the released files); the oracle for credentials is the same reads with every
- * pointer NULL. Seeded, so a failure reproduces.
+ * Slice F safety proof: the SCOPE functions against rc.21. The oracle is the frozen
+ * rc.21 source in tests/slices/rc21 (byte-identical to the released files).
+ *  - The matrix hands the scope functions a gate input and compares with rc.21's. In every mode
+ *    but `union` the gate input ALSO carries a stray union `person`, which the sites must ignore
+ *    (they re-check the flag): unset, off, shadow and garbage are byte-identical to rc.21. In
+ *    `union` the gate carries none, so it is identical too.
+ *  - The gate construction itself (`brainGateFor`, `memoryScopeForClaims`) is proven end to end in
+ *    tests/gateway/core/person-slices-parity.test.ts; this file does not claim it.
+ *  - Credential reads are unchanged by the pointer: the oracle is the same reads with every
+ *    pointer NULL. Seeded, so a failure reproduces.
  */
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as Accounts from "../../src/db/accounts";
@@ -16,7 +19,7 @@ import { db } from "../../src/db/schema";
 import type { GateInput } from "../../src/knowledge/gated-dispatch";
 import { resolveBrainScope, userSourceId, type ScopeInput } from "../../src/knowledge/scope";
 import { memoryScopeFor } from "../../src/memory/scope";
-import { decidePersonSlices, settlePersonSliceShadows } from "../../src/slices/decide";
+import { decidePersonSlices } from "../../src/slices/decide";
 import { resolveBrainScope as resolveRc21 } from "./rc21/knowledge-scope";
 import { memoryScopeFor as memoryRc21 } from "./rc21/memory-scope";
 import { TEAM, newUser, resetWorld, slack } from "../helpers/person-world";
@@ -66,15 +69,17 @@ describe("scope parity with rc.21", () => {
         isManager: r() < 0.3,
         agentId: pick(r, ["agent-one", "agent-two"]),
       };
+      // A stray union person (for the speaker, plus a runAs person): ignored unless the flag is `union`.
+      const stray = (id: string | null) => (id && mode !== "union" ? { own: userSourceId(id), reads: [userSourceId(id), "user-u9strayexample"], via: "union" as const, dropped: { conflict: 0, tombstoned: 0 } } : undefined);
+      const sp = stray(userId);
+      if (sp) g.person = sp;
       const kb = r() < 0.5 ? ["kb-a", "kb-b"] : [];
       const input: ScopeInput = { ...g, kbSources: kb };
-      if (userId) decidePersonSlices({ site: "brain.gate_speaker", teamId: g.teamId, slackUserId: userId });
       expect(await resolveBrainScope(input)).toEqual(await resolveRc21(input));
       const opts = { channel: pick(r, ["D0EXAMPLE", "C0EXAMPLE", undefined]), runAsUser: pick(r, [null, null, ...people.filter((p) => p !== null)]) };
-      if (opts.runAsUser) decidePersonSlices({ site: "memory.claims_run_as", teamId: g.teamId, slackUserId: opts.runAsUser });
-      expect(await memoryScopeFor(g, opts)).toEqual(await memoryRc21(g, opts));
+      const rp = stray(opts.runAsUser);
+      expect(await memoryScopeFor(g, { ...opts, ...(rp ? { runAsPerson: rp } : {}) })).toEqual(await memoryRc21(g, opts));
     }
-    await settlePersonSliceShadows();
   });
 
   test("a verified person with two ids still reads only own plus the lock rules, and a lock held by someone else is public-only (Rule S)", async () => {
