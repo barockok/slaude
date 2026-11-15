@@ -7,7 +7,7 @@
 // `list` is read only: definition names and how many threads are bound to each
 // (never a host, address, key or hash).
 //
-// `unbind-shared` is step zero of a rollback to rc.21: rc.21 reads a thread
+// `unbind-shared` is step zero of a rollback to rc.23: rc.23 reads a thread
 // bound to a shared environment as a personal ssh row, so every such binding
 // is removed first (a gateway that runs a bound thread without shared-environment
 // support runs it on the SERVER, so this is done on purpose, one tenant at a time:

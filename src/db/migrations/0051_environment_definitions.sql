@@ -1,4 +1,4 @@
--- Environment definitions (slice E, rc.22): a shared ssh machine declared in
+-- Environment definitions (slice E, rc.24): a shared ssh machine declared in
 -- the deploy repository and synced into the gateway. Additive only: a personal
 -- row keeps source 'user' and NULL in every other new column, and the old
 -- INSERT shape keeps working. Do not drop these columns on a rollback.

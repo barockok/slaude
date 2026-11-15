@@ -109,15 +109,15 @@ Record the result (what was run, on which versions, what differed from this
 page) with the release's soak notes. The local cluster can host the rehearsal;
 its runbook is `deploy/k8s-local/README.md` in the repository.
 
-## Rolling back from rc.22 (shared environments)
+## Rolling back from rc.24 (shared environments)
 
-rc.22 adds shared environments (migration `0051`, additive). rc.21 does not know
+rc.24 adds shared environments (migration `0051`, additive). rc.23 does not know
 them and would read a thread bound to a shared machine as a personal ssh
-environment owned by a name. So the first step of a rollback to rc.21 is to
+environment owned by a name. So the first step of a rollback to rc.23 is to
 remove those bindings:
 
-**Do this before redeploying rc.21. If you do not, every thread still bound to a
-shared machine runs its tools on the server** (rc.21 reads the binding as a
+**Do this before redeploying rc.23. If you do not, every thread still bound to a
+shared machine runs its tools on the server** (rc.23 reads the binding as a
 personal environment of nobody, so it falls back to local).
 
 1. `slaude env unbind-shared --tenant <id> --dry-run` lists how many threads are
@@ -128,7 +128,7 @@ personal environment of nobody, so it falls back to local).
    Threads are not told (the command has no Slack connection). The definition rows
    stay. A warm session keeps its tools until it reboots, so run this before the
    redeploy, not after.
-3. Redeploy rc.21. Do not drop the `0051` columns; rc.21 ignores them.
+3. Redeploy rc.23. Do not drop the `0051` columns; rc.23 ignores them.
 4. To go forward again, sync once more: the definitions are still there and
    threads have to `/env use env:<name>` again.
 

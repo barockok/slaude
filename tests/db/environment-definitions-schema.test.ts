@@ -7,7 +7,7 @@ import { type DbClient, openDb } from "../../src/db/client";
 import { loadMigrations, runMigrations } from "../../src/db/migrate";
 
 /**
- * Migration 0051 (slice E, rc.22): additive columns on `environments` for
+ * Migration 0051 (slice E, rc.24): additive columns on `environments` for
  * definition rows. A personal row keeps working with the old insert shape.
  */
 const NEW_COLS = ["source", "definition_name", "definition_hash", "definition_revision", "description", "retired_at"];
@@ -72,7 +72,7 @@ describe("environment definitions schema (pg)", () => {
   test("migrating from 0041 keeps personal rows with defaults and NULLs", async () => {
     const db = await openDb({ dialect: "pg", driver: "pglite" });
     try {
-      const all = loadMigrations();
+      const all = loadMigrations().filter((m) => m.version <= "0051"); // this file owns 0051; later migrations have their own tests
       expect(all.some((m) => m.version === "0051")).toBe(true);
       await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version < "0051") });
       await db.run(OLD_INSERT, ["e1", "mine"]);

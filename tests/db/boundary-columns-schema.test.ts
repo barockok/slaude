@@ -157,7 +157,7 @@ describe("upgrade from rc.21 (0041) keeps existing rows", () => {
   test("pg: 0042 to 0050 apply in order on top of rc.21 data, rows untouched, rerun is a no-op", async () => {
     const db = await openDb({ dialect: "pg", driver: "pglite" });
     try {
-      const all = loadMigrations();
+      const all = loadMigrations().filter((m) => m.version <= "0050"); // this file owns 0042 to 0050; later migrations have their own tests
       const lines: string[] = [];
       await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version <= "0041") });
       for (const t of ALL) {
@@ -195,7 +195,7 @@ describe("upgrade from rc.21 (0041) keeps existing rows", () => {
     // that one transaction rolls back, earlier files stay.
     const db = await openDb({ dialect: "pg", driver: "pglite" });
     try {
-      const all = loadMigrations();
+      const all = loadMigrations().filter((m) => m.version <= "0050"); // this file owns 0042 to 0050; later migrations have their own tests
       const broken = all.map((m) => (m.version === "0050" ? { ...m, sql: `SET LOCAL lock_timeout = '2s';\nDO $$ BEGIN RAISE EXCEPTION 'canceling statement due to lock timeout'; END $$;` } : m));
       await expect(runMigrations(db, { log: () => {}, migrations: broken })).rejects.toThrow(/lock timeout/);
       const applied = (await db.query<{ version: string }>(`SELECT version FROM schema_migrations WHERE version >= '0042' ORDER BY version`)).map((r) => r.version);

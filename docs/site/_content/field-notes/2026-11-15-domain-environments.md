@@ -5,7 +5,7 @@ date: 2026-11-15
 
 # Domain environments: a shared ssh machine as a definition, checked per agent at every claim point
 
-**Date:** 2026-11-15
+**Date:** 2026-11-15 (ships in rc.24)
 
 ## Problem
 
@@ -82,7 +82,7 @@ review of the first draft found why.
 
 ## Rollback hazard
 
-rc.21 reads a bound shared row as a personal ssh row owned by a name, and for a
+rc.23 reads a bound shared row as a personal ssh row owned by a name, and for a
 stale `provisioned` claim would run it unlocked. Step zero of a rollback is
 `slaude env unbind-shared --tenant <id> --apply` (after `--dry-run`; the tenant is
 required, `--all-tenants` is explicit), then redeploy. Without it a bound thread runs

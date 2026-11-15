@@ -1,9 +1,9 @@
 /**
- * The rollback step for rc.21: a thread bound to a shared environment is read by
- * rc.21 as a personal ssh row (owner = the definition's name), and a gateway that
+ * The rollback step for rc.23: a thread bound to a shared environment is read by
+ * rc.23 as a personal ssh row (owner = the definition's name), and a gateway that
  * runs a bound thread with no shared-environment support runs it on the SERVER.
- * So before redeploying rc.21 every binding to a definition row must go, on
- * purpose, tenant by tenant. Definition rows themselves stay (the rc.22 columns
+ * So before redeploying rc.23 every binding to a definition row must go, on
+ * purpose, tenant by tenant. Definition rows themselves stay (the rc.24 columns
  * are never dropped). Counts and names only, never a host or key.
  */
 import { db } from "../../db/schema";

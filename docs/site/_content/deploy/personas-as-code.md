@@ -484,7 +484,7 @@ validated. The payload is version 7 when it carries an `environments` list or an
 agent's `environment:` key, and version 6 otherwise.
 
 The file format, the agent key, what is checked per agent, and how to roll back
-are in the [Environments guide](../guides/environments.md#6-shared-environments-rc22).
+are in the [Environments guide](../guides/environments.md#6-shared-environments-rc24).
 In short: ssh only, `hostKey` required, `shared: true` and `trust: unlocked`
 written, no secrets (slaude generates the key pair), and an agent allows one with
 `environment: { allow: [env:<name>] }`. `render --check` parses every file and

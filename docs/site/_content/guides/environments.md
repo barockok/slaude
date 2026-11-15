@@ -67,7 +67,7 @@ There is never a fallback to the server: the agent stops and tells you.
 - A sandbox kind is registered only once its provisioner exists, and only after every node runs a version that knows environments: an older node reads only the pre-environment claim and would run an unlocked sandbox thread's tools on the node itself.
 - Voice calls stay agent-only: a thread in any environment refuses a call, as a `/remote` thread did.
 
-## 6. Shared environments (rc.22)
+## 6. Shared environments (rc.24)
 
 A shared environment is one ssh machine many people drive through an agent. It
 is declared once in the deploy repository, not added from Slack, and it has no
@@ -109,7 +109,7 @@ connecting.
 ```yaml
 environment:
   allow: [env:team-sandbox]     # required, 1 to 16, no repeats
-  default: env:team-sandbox     # optional; stored, not applied in rc.22
+  default: env:team-sandbox     # optional; stored, not applied in rc.24
 ```
 
 An agent with no `environment:` key can use no shared environment. Only `env:`
@@ -140,8 +140,8 @@ definition: bound threads are refused until `/env off`.
   to replace it, unbind the threads and define the machine under a new name.
 - Validate on pull requests with `bun run personas render ./ --check`: it parses
   every file under `environments/` and resolves each agent reference offline.
-- Rolling back to rc.21: `slaude env unbind-shared --tenant <id> --dry-run`, then
-  `--apply`, then redeploy. Without it, rc.21 runs a thread still bound to a shared
+- Rolling back to rc.23: `slaude env unbind-shared --tenant <id> --dry-run`, then
+  `--apply`, then redeploy. Without it, rc.23 runs a thread still bound to a shared
   machine on the server (see the [rollback runbook](../deploy/rollback.md)).
 - Retiring a definition or removing an agent's allow entry does not rotate the
   machine's key: the key pair stays stored, and a copy may be held by nodes that
