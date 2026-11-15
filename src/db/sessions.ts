@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { observeSlackChannel } from "../domain/first-sight";
 import { boundaryForCached, locatorOf } from "../domain/boundary-for";
 import { env } from "../config/env";
+import { checkRow } from "../domain/boundary-check";
 
 export type ThreadKey = {
   team_id: string;
@@ -14,24 +15,28 @@ export type ThreadKey = {
 
 export async function findByThread(k: ThreadKey): Promise<SessionRow | null> {
   const personaId = k.persona_id ?? "default";
-  return db.one<SessionRow>(
+  const row = await db.one<SessionRow>(
     `SELECT * FROM sessions
      WHERE slack_team_id = ? AND slack_channel_id = ? AND slack_thread_ts = ?
        AND persona_id = ?`,
     [k.team_id, k.channel_id, k.thread_ts, personaId],
   );
+  checkRow("find_by_thread", row);
+  return row;
 }
 
 /** Find the most-recently-updated session for a thread regardless of persona.
  *  Used for "is there any session to populate?" checks (engagement restore,
  *  mention-only recording) where the caller doesn't know which persona to ask for. */
 export async function findAnyByThread(k: Omit<ThreadKey, "persona_id">): Promise<SessionRow | null> {
-  return db.one<SessionRow>(
+  const row = await db.one<SessionRow>(
     `SELECT * FROM sessions
      WHERE slack_team_id = ? AND slack_channel_id = ? AND slack_thread_ts = ?
      ORDER BY updated_at DESC LIMIT 1`,
     [k.team_id, k.channel_id, k.thread_ts],
   );
+  checkRow("find_any_by_thread", row);
+  return row;
 }
 
 /** The Slack team of the most recent session in a thread, by channel and thread only (channel ids are workspace-unique). */
@@ -89,7 +94,9 @@ export async function createForThread(args: {
   );
   // First sight: this is the one place a session row is created (the node has no store that creates rows).
   observeSlackChannel({ teamId: args.thread.team_id, channelId: args.thread.channel_id });
-  return (await findById(id))!;
+  const created = (await findById(id))!;
+  checkRow("create", created);
+  return created;
 }
 
 export async function findById(id: string): Promise<SessionRow | null> {
