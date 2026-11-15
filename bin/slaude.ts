@@ -92,7 +92,7 @@ switch (sub) {
         "  slaude brain reembed --model-mismatch|--adopt [--apply]  repair embedding labels or the brain record (dry run by default)",
         "  slaude guardrails import <dir> [--prune] [--dry-run] [--repair]  store GUARDRAIL.md folders as owner guardrails",
         "  slaude domain reconcile [--dry-run] [--json]  backfill and repair users, bindings and boundaries",
-        "  slaude env list | unbind-shared (--dry-run | --apply)  shared environments: bound threads, and the rollback step to rc.21",
+        "  slaude env list [--tenant <id>] | unbind-shared (--tenant <id> | --all-tenants) (--dry-run | --apply)  shared environments: bound threads, and the rollback step to rc.21",
         "",
         "SLAUDE_HOME resolves to $SLAUDE_HOME, else the cwd if it has SOUL.md, else ~/.slaude.",
       ].join("\n"),

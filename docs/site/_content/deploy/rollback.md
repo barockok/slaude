@@ -116,9 +116,16 @@ them and would read a thread bound to a shared machine as a personal ssh
 environment owned by a name. So the first step of a rollback to rc.21 is to
 remove those bindings:
 
-1. `slaude env unbind-shared --dry-run` lists how many threads are bound to each
-   shared environment (names and counts only).
-2. `slaude env unbind-shared --apply` removes the bindings. The definition rows
+**Do this before redeploying rc.21. If you do not, every thread still bound to a
+shared machine runs its tools on the server** (rc.21 reads the binding as a
+personal environment of nobody, so it falls back to local).
+
+1. `slaude env unbind-shared --tenant <id> --dry-run` lists how many threads are
+   bound to each shared environment of that tenant (names and counts only). The
+   tenant is required; `--all-tenants` is the explicit way to mean every one.
+2. `slaude env unbind-shared --tenant <id> --apply` removes the bindings, cleans
+   up each thread's remote jobs on the machine, and audits it under that tenant.
+   Threads are not told (the command has no Slack connection). The definition rows
    stay. A warm session keeps its tools until it reboots, so run this before the
    redeploy, not after.
 3. Redeploy rc.21. Do not drop the `0051` columns; rc.21 ignores them.

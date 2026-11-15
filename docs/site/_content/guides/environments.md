@@ -140,8 +140,17 @@ definition: bound threads are refused until `/env off`.
   to replace it, unbind the threads and define the machine under a new name.
 - Validate on pull requests with `bun run personas render ./ --check`: it parses
   every file under `environments/` and resolves each agent reference offline.
-- Rolling back to rc.21: `slaude env unbind-shared --dry-run`, then `--apply`,
-  then redeploy (see the [rollback runbook](../deploy/rollback.md)).
+- Rolling back to rc.21: `slaude env unbind-shared --tenant <id> --dry-run`, then
+  `--apply`, then redeploy. Without it, rc.21 runs a thread still bound to a shared
+  machine on the server (see the [rollback runbook](../deploy/rollback.md)).
+- Retiring a definition or removing an agent's allow entry does not rotate the
+  machine's key: the key pair stays stored, and a copy may be held by nodes that
+  already opened a handle. Handles to a shared machine ask the gateway again every
+  couple of minutes and stop at the next command once the agent no longer allows it,
+  but the key itself is only replaced by a later release (rotation is a follow-up).
+  To retire a machine for good, remove the key from its `authorized_keys`.
+- If `SLAUDE_REMOTE` is turned off while threads are still bound to a shared machine,
+  those threads are refused (`/env` is off too): run `slaude env unbind-shared`.
 
 ## 7. Trying the full scenario on a staging mono
 

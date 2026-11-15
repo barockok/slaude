@@ -84,7 +84,9 @@ review of the first draft found why.
 
 rc.21 reads a bound shared row as a personal ssh row owned by a name, and for a
 stale `provisioned` claim would run it unlocked. Step zero of a rollback is
-`slaude env unbind-shared --apply` (after `--dry-run`), then redeploy. The
+`slaude env unbind-shared --tenant <id> --apply` (after `--dry-run`; the tenant is
+required, `--all-tenants` is explicit), then redeploy. Without it a bound thread runs
+on the server. The
 0051 columns are never dropped.
 
 ## Known gaps
