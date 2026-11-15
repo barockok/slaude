@@ -1,224 +1,181 @@
-# Domain environments, slice E: shared environments as definitions and the `environment:` key
+# Domain environments, slice E: shared environments as definitions and the `environment:` key (narrow, safe)
 
 > For Claude: use superpowers:executing-plans, task by task. One task per commit. A release boundary is a hard stop: soak, check the gate, then continue.
 
-Goal: a shared environment (a build box, a team sandbox) is declared once in its own definition file in the deploy repository (or on disk for a filesystem tenant), synced into the gateway, and an agent refers to it with `environment: { default: env:team-sandbox, allow: [env:team-sandbox] }`. A thread may use a shared environment only through an agent that allows it. Per-person environments stay runtime records and behave exactly as today. An agent with no `environment:` key behaves exactly as today, so nothing changes until an agent declares one. Delivered as two releases (rc.22, rc.23): rc.22 ships the format, the sync, the key and the `/env use` check; rc.23 turns on the two behaviours that have a legacy answer (the dispatch-time check and the default environment).
+Goal: a shared ssh machine is declared once in a definition file in the deploy repository, synced into the gateway, and an agent names it in `environment: { allow: [env:team-sandbox] }`. A thread runs on it only after `/env use env:team-sandbox`, and only for turns of an agent that allows it. Everything is checked per persona at the point where the claim is built and served, and fails closed. Per-person environments, and agents with no `environment:` key, behave exactly as today.
 
-Spec: `docs/superpowers/specs/2026-11-12-domain-model-and-references.md` (sections "Node and environment binding" and slice E). Builds on slice A (`src/refs/parse.ts`, `env:<id>` is already an internal kind) and slice C's flag-and-shadow pattern (`src/access/decide.ts`). Field notes: `docs/site/_content/field-notes/2026-10-19-remote-environments.md`, `2026-10-01-remote-exec.md`.
+Spec: `docs/superpowers/specs/2026-11-12-domain-model-and-references.md` ("Node and environment binding", slice E). Field notes: `docs/site/_content/field-notes/2026-10-19-remote-environments.md`, `2026-10-01-remote-exec.md`. `runsOn` stays one node label.
 
-Not in this slice: provisioners (none is registered; a `provisioned` definition is accepted and refused at use until one registers), slice D, slice F, per-environment node labels (`runsOn` stays one label on the agent), editing shared environments from Slack or the console.
+## What this slice cuts (and why)
 
-## Findings in the current code (verified, shape the design)
+- Database tenants only. A filesystem tenant is out: an agent can write under `$SLAUDE_HOME`, and the file guard covers only guardrails (`src/agent/guardrails.ts:200`), so an agent could write its own environment definition.
+- Kinds: `ssh` only. `tailcat` (an address, which is sensitive and must not sit in git) and `provisioned` (no provisioner exists, `src/remote/kinds/index.ts:1-7`) are refused at sync with a clear message.
+- No default binding. The `default:` key parses and is stored, and is not applied until a later gate (a bound-by-default shared machine in an unlocked thread is the riskiest part and needs its own soak).
+- No console work beyond a read-only list. No `slaude env` CLI.
+- Rotation of the generated key is a follow-up gate, not built here.
 
-1. `environments` rows are keyed by (team_id, user_id, name) and every use path assumes an owner: `useEnvironment` (`src/gateway/core/env-command.ts`) refuses a row whose `userId`/`teamId` differ from the actor (`env.own_environment`), `handleRemoteEnv` (`src/gateway/api/remote-env.ts`) 409s when `b.env.teamId !== claims.team`, and `userMachineConnectInfo` (`src/remote/env-runtime.ts`) reads the owner's key with `Remote.getKey(env.teamId, env.userId)`. A definition row with a sentinel owner is therefore refused by every existing path until a task changes that path on purpose. That is the safe default this plan builds on.
-2. `trustOf` (`src/remote/kinds/index.ts`) returns the kind's class: ssh and tailcat are `user-machine`, which needs a LOCKED 1on1 owned by the env owner (`activeRemoteTarget`, `src/remote/active.ts`). A shared box has no owner, so a definition row needs its own answer (task 9).
-3. `/env` commands never see the agent: `RemoteCommandCtx` has no persona, although `remoteCommandCtx` in `src/gateway/core/gateway.ts` (around line 2153) receives `personaId`. The Use button path (`envCtxForOffer`) already carries `session.persona_id`.
-4. A binding whose environment row is missing or whose kind is unknown makes `activeRemoteTarget` return null, which means "run locally" (`boundEnv`). Fine for a deleted personal environment, wrong for a shared one that was retired or is no longer allowed: the field note rule is "never a fallback to the server".
-5. `definitionSpec` in `src/persona/sync/payload.ts` is `.strict()`, so an older gateway refuses a `definition.environment` key. That is fail safe but the message is poor; `payloadVersionFor` must name it (version 7).
-6. Agents on disk (`src/persona/file-agent.ts`) refuse `model`, `mcp`, `runsOn`, `provider`, `kbSources`, `background`, `userToken` ("cannot be set in a file on disk yet"). `environment:` is NOT added to that list: a filesystem tenant defines environments on disk too (task 6).
-7. The console page named "Environments" (`src/web/console/pages/EnvironmentsPage.tsx`, `environmentsView` in `src/gateway/panel/console-views.ts`) is about node pools and `runsOn`, plus a read-only list of personal environments (`listAllEnvSummaries`). It has no write route today, so "read only in the console" is a test, not a new guard.
-8. Payload sync is Postgres only (`/deploy` returns 409 on sqlite); sqlite and unmanaged Postgres tenants read `$SLAUDE_HOME`. The `environments` table exists in both dialects (0018 and its mirror in `src/db/drivers/sqlite.ts`).
+## Findings, verified in code
+
+1. `env_bindings` is keyed by thread, not agent: `PRIMARY KEY (channel_id, thread_ts)` (`src/db/migrations/0018_environments.sql:38`). Agent A can bind a thread and agent B, answering in the same thread, would get the claim: `activeRemoteTarget(channelId, threadTs)` takes no persona (`src/remote/active.ts:28`), `threadIdentity` takes none (`src/gateway/core/thread-identity.ts:25`) and `handleRemoteEnv` hands the key to any token whose claim names the bound environment (`src/gateway/api/remote-env.ts`). So the allow check cannot live only in `/env use`; it must be in the claim path, for every persona, from the first release. There is no legacy behaviour for a new shared row, so there is nothing to shadow.
+2. `environments` has `UNIQUE (team_id, user_id, name)` and no tenant in it (`0018:19`); `remote_keys` is `PRIMARY KEY (team_id, user_id)` (`src/db/migrations/0012*`, `src/db/remote.ts:86` `ON CONFLICT(team_id, user_id)`). A fixed sentinel owner would collide across tenants and share one private key. The `environments.tenant_id` column exists (0018) but nothing reads it.
+3. "No target" means "run locally": `activeRemoteTarget` returns null for a missing binding, an unknown kind (`active.ts:18,20`) and a failed lock rule (`active.ts:33`); `threadIdentity` then sends no `remote` claim (`thread-identity.ts:34-40`); the mono path resolves with the same function and never passes through dispatch (`src/remote/mono.ts:20`, `monoRemoteResolver`). A retired or disallowed shared row must not look like that: it needs an explicit refusal.
+4. `SLAUDE_REMOTE` defaults off (`src/config/env.ts:762-768`) and gates `/env` (`gateway.ts:2229,2246,2264,2286,2298`), `threadIdentity` (`thread-identity.ts:34`) and `ensureProvisioned` (`dispatch.ts:408`).
+5. A node that predates environments runs an unlocked environment turn locally (`src/remote/kinds/index.ts:5-7`; the node's resolver `src/node/remote.ts:34-36` builds a target only from the token's `provisioned` claim). The gateway already routes by capability: `requiresCaps` in `src/queue/turns.ts:93-96`, set at `dispatch.ts:501`, honoured by the reaper (`src/queue/reaper.ts:99`); capability strings live in `src/guardrails/capability.ts:2-4`.
+6. `updateEnv` and `deleteEnv` act on the id alone (`src/db/environments.ts:92,169`); ownership is enforced only by callers. A data-layer guard for definition rows is therefore required, not defense in depth.
+7. `refRole` returns `other` for agent, env and node (`src/refs/parse.ts:83-93`) and `INTERNAL_ID` is `[A-Za-z0-9._-]{1,64}` (`parse.ts:33`): a schema that takes `env:` must check `type === "env"` and apply its own stricter name pattern.
+8. `putKeyIfAbsent` writes through the global `db` (`src/db/remote.ts:86-96`), not a transaction. `checkSshHost` classifies addresses only when connecting (`src/remote/kinds/ssh.ts:28-40`).
+9. The preview token may run `?dryRun=1` (`src/gateway/deploy/api.ts:9,47-54`); its 422 messages must not list stored names.
 
 ## Definition file format
 
-Location: `environments/<name>.yaml` in the deploy repository, beside `personas/` and `guardrails/`; for a filesystem tenant `$SLAUDE_HOME/environments/<name>.yaml`. `<name>` matches `^[a-z0-9][a-z0-9-]{0,31}$` (no dot or underscore, so ids stay unambiguous) and must equal the `name:` key. The file's name is the reference: `env:<name>`.
+`environments/<name>.yaml` in the deploy repository, beside `personas/` and `guardrails/`. `<name>` matches `^[a-z0-9][a-z0-9-]{0,40}$`, equals the `name:` key, and is the reference `env:<name>`.
 
 ```yaml
 # yaml-language-server: $schema=https://barockok.github.io/slaude/schemas/environment.schema.json
 name: team-sandbox
 description: Shared build box for the platform team.
-kind: ssh                    # ssh | tailcat | provisioned
-defaultDir: /srv/work        # absolute path, or ~/..., same rule as /env use
-ssh:                         # present exactly when kind is ssh
+kind: ssh
+shared: true                 # required, literal true: this is a machine many people drive
+trust: unlocked              # required, literal "unlocked": threads need no /1on1 lock
+defaultDir: /srv/work        # absolute path or ~/..., the /env use rule
+ssh:
   host: build-box.example.com
   user: dev
   port: 22                   # optional
   hostKey: "SHA256:<43 chars>"   # required: no trust on first use for a shared box
+  allowPrivateAddress: false # optional; see below
 ```
-- `kind: tailcat` takes `tailcat: { addr: <tailcat address> }`. `kind: provisioned` takes `provisioned: { provisioner: <registered kind name>, options: { <key>: <string> }, secretRefs: { <NAME>: env://VAR | vault://path#field } }`.
-- Strict keys at every level (Zod `.strict()`); exactly one kind block, matching `kind`. Unknown keys are refused, naming the key and never the value.
-- Secrets by reference only. There is no key for a private key, password or token. A key named like one (`key`, `privateKey`, `password`, `token`, `secret`, `apiKey`) gets a dedicated message ("secrets are never written in a definition; slaude generates the ssh key itself, other secrets go in secretRefs"). Every string value is scanned with the same token and PEM shapes `personas export` refuses (`src/cli/personas.ts`, "Token shapes refused"). `secretRefs` values go through `parseRef` (`src/secrets`) and the same allowed-prefix check as `provider` (`checkVaultRefs`); they are stored as references and resolved only when a sandbox is provisioned.
-- The ssh or tailcat key pair is generated by the gateway at first sync (`generateSshKeyPair`), stored in `remote_keys` under (team `definition`, user `<name>`), and only the public key is ever shown (console page, `slaude env pubkey <name>`). The operator installs it on the box once, as `/env key` does for a person.
-- Per-kind field values are validated by the registered kind's own `parse()` (`sshKind.parse`, `tailcatKind.parse`), so the rules cannot drift from `/env add`. The ssh host's outbound-policy check (`checkSshHost`) runs at connect, as today, not at sync.
+- Strict keys at every level; the message names the key, never the value. A file with `kind: tailcat` or `kind: provisioned` is refused: "kind X is not supported for shared environments yet". A file without `shared: true` and `trust: unlocked` is refused with a message saying a definition is a shared machine that needs no lock, and both must be written to say so.
+- Secrets: there is no key for a private key, password or token; a key named like one, or a value with a token or PEM shape (the shapes `personas export` refuses, `src/cli/personas.ts`), gets a dedicated refusal. slaude generates the key pair (`generateSshKeyPair`) at first sync; only the public key is ever shown.
+- Field values are checked by `sshKind.parse` so they cannot drift from `/env add`. A `host` that is an IP literal is classified at sync with `classifyAddress` (`src/net/outbound-policy.ts:168`); loopback, private, link-local, metadata and reserved addresses are refused unless `allowPrivateAddress: true`, and even then the gateway's own rules at connect still apply (`SLAUDE_ENV_SSH_ALLOW_PRIVATE`, `ssh.ts:36-43`). A host name is resolved only at connect (the existing single-resolution rule).
 
-Agent key (`agent.yaml`):
+Agent key:
 ```yaml
 environment:
-  default: env:team-sandbox        # optional; must also be in allow
-  allow: [env:team-sandbox]        # required, 1 to 16 entries, no repeats
+  allow: [env:team-sandbox]    # required, 1 to 16, no repeats
+  default: env:team-sandbox    # optional; parsed, checked to be in allow, stored, NOT applied in this slice
 ```
-- Strict object; only typed `env:<name>` references (a bare name is refused, this key is new so it starts typed). Any other key, in particular `kind`, `host`, `addr`, `ssh`, `config`, `secrets`, gets the inline-config refusal: "environment configuration cannot be written in agent.yaml: define it in environments/<name>.yaml and refer to it as env:<name>". Key order in the error: first offending key only.
-- `default` without `defaultDir` on the target definition is refused at sync (a default must be usable without asking).
+Strict object. Only `env:<name>` references, checked with `parseRef(v, ["other"])` AND `type === "env"` AND `^[a-z0-9][a-z0-9-]{0,40}$` (finding 7). Any other key (`kind`, `host`, `ssh`, `config`, `secrets`, ...) gets: "environment configuration cannot be written in agent.yaml: define it in environments/<name>.yaml and refer to it as env:<name>". Sync refuses (422) an agent that declares `environment:` while `SLAUDE_REMOTE` is off on the gateway (finding 4), with a message naming the persona and the flag.
 
 ## Data model
 
-Migration `0042_environment_definitions.sql` (rc.22, both dialects, mirror in `src/db/drivers/sqlite.ts`, additive):
+Migration `0042_environment_definitions.sql` (both dialects, mirror in `src/db/drivers/sqlite.ts`, additive):
 ```
-environments  ADD source TEXT NOT NULL DEFAULT 'user'          -- 'user' | 'definition'
-              ADD definition_name TEXT NULL
-              ADD definition_hash TEXT NULL                    -- sha256 of the canonical definition JSON
-              ADD definition_revision TEXT NULL                -- the sync revision that last changed it
-              ADD description TEXT NULL
-              ADD retired_at BIGINT NULL
+environments ADD source TEXT NOT NULL DEFAULT 'user', ADD definition_name TEXT NULL,
+             ADD definition_hash TEXT NULL, ADD definition_revision TEXT NULL,
+             ADD description TEXT NULL, ADD retired_at BIGINT NULL
 UNIQUE INDEX idx_environments_definition ON environments (tenant_id, definition_name) WHERE definition_name IS NOT NULL
 ```
-A definition row: `id = d_<tenant>_<name>` (tenants and names have no underscore, so it is unambiguous and cannot collide with a UUID), `team_id = 'definition'`, `user_id = <name>`, `name = <name>`, `config` the canonical non-secret config, `secrets` NULL (references live in `config.secretRefs`), `default_dir` from the file. Old binaries ignore the new columns and still read the row; they then treat it as a personal environment of nobody, which every existing path refuses (finding 1). No `env_bindings` change: a binding names `env_id`.
+A definition row (finding 2): `tenant_id = <tenant>`; `id = 'd' || first 24 hex of sha256(tenant || 0x00 || name)` (25 chars, bounded, tenant qualified); `team_id = 'def~<tenant>'` (at most 67 chars; no Slack team id contains `~`); `user_id = <name>`; `name = <name>`. The key pair is stored in `remote_keys` as (`def~<tenant>`, `<name>`), so two tenants never share a key. `config` holds the canonical non-secret config; `secrets` is NULL. `env:<name>` resolves with `(tenant, name)` in `src/remote/definitions/resolve.ts`; `src/refs/resolve.ts` is unchanged.
 
-Where the agent's key is stored: inside the persona's existing `definition` JSON (`PersonaDefinition.environment = { default?: string; allow: string[] }`, names without the `env:` prefix). No persona column, no persona migration. Payload version 7 (below).
+The agent's key lives in the persona's `definition` JSON (`environment: { allow, default? }`, names without the prefix). Payload version 7: `PERSONA_FIELD_VERSION.environment = 7`, a top-level `environments` list (absent: leave stored rows alone; present: the whole set, an unlisted row is retired), `SUPPORTED_PAYLOAD_VERSION = 7` (`src/persona/sync/payload.ts:53-54`). A payload that sets neither stays at its old version, so a version 6 payload still deploys.
 
-`env:<name>` resolves with `resolveEnvRef(tenant, name)` in `src/remote/definitions/resolve.ts`: the row with that `definition_name`, not retired. `src/refs/resolve.ts` keeps returning `record: null` for `env` kinds (slice A contract); only sync and runtime use the new resolver.
+## Enforcement (all per persona, fail closed, from rc.22)
 
-## Ownership rules
+One function, `remoteDecision({ tenant, persona, channel, thread, turnKind })` in `src/remote/definitions/decision.ts`, wraps `activeRemoteTarget` and returns `{ target } | { none } | { refused: { code, message } }`. `activeRemoteTarget` itself keeps its signature and personal behaviour (its existing tests stay green). Callers:
 
-- A definition-managed row is written only by the definition sync (`src/remote/definitions/sync.ts`). `updateEnv`, `deleteEnv`, `createEnv` in `src/db/environments.ts` throw `DefinitionManagedError` for `source = 'definition'` (defense in depth under the command checks).
-- `/env edit|rm|add` on a shared name answers "`team-sandbox` is defined in the repository; change it there". The Slack add form and `findEnvByName` stay personal-only; a personal name equal to a shared name is allowed (existing rows may already collide) and the bare name resolves to the person's own first. `/env use env:team-sandbox` always means the shared one.
-- Removing a file from the repository RETIRES the row (`retired_at` set); it is never deleted. Bindings keep their `env_id`; a retired environment fails closed (task 11). Re-adding the file revives it (clears `retired_at`).
-- Per-person environments, keys, bindings, `/remote`, the picker for personal rows, the host-key TOFU pin: unchanged.
-- The console shows definition rows read only with a "defined in repository" badge; there is no write route to guard, and a test asserts none is added.
+1. `threadIdentity` (`thread-identity.ts:25`) gains `persona` and `turnKind` parameters; callers: `dispatch.ts:416` (has `personaId`) and `src/gateway/api/jobs.ts:65` (has `claims.persona`). A refusal is carried in `ThreadIdentity.refused`; dispatch does not run the turn, posts one notice per thread per hour ("This thread is set to an environment this agent may not use. `/env off` returns to the server.") and runs nothing locally.
+2. Mono: `monoRemoteResolver` (`src/remote/mono.ts:19-22`) receives the session's persona (`Sessions.findById(...).persona_id`) and THROWS `RemoteError("REMOTE_UNREACHABLE", ...)` on a refusal so the session fails closed; it must not return null.
+3. `handleRemoteEnv` (`src/gateway/api/remote-env.ts`): for a definition row, require `row.tenant_id === claims.tenant` (the current `env.teamId !== claims.team` test cannot apply to a `def~` team), `remoteDecision` for `claims.persona`, and the hash match. Any failure is 403 or 409 with no key.
+4. `/env use` (`useEnvironment`, `src/gateway/core/env-command.ts:155`): the same decision, first, with the agent's id from `RemoteCommandCtx.personaId` (new; `remoteCommandCtx`, `gateway.ts:2153`, already has it). The reply says plainly: "`team-sandbox` is a SHARED machine: anyone in this thread can steer it through me, and what runs there is visible to the team."
+5. `turnKind`: `interactive` only. A cron turn, a wake turn and a background turn (`meta.wake`, `meta.backgroundRunId`, `dispatch.ts:82-84,498-499`; cron needs an explicit `origin` flag added to the dispatch meta in task 9) NEVER run on a shared environment: refused, with the notice above reworded ("scheduled and background turns do not run on shared environments"). This also closes the foreign-cron concern, since the lock rule that guarded it is not applied to shared rows.
+6. Rule: a definition row is usable iff not retired, the persona's `environment.allow` names it, `SLAUDE_REMOTE` is on, and the turn is interactive. A persona with no `environment:` key is refused for every shared row. A policy lookup or row read that throws is a refusal.
 
-## Enforcement design
+Trust class: a shared row is a new explicit class, not "provisioned by default". `StoredEnv.source = "definition"` makes `trustOf` return `provisioned` only for a row that carries `shared` and `trust: unlocked` in its canonical config (sync guarantees both). On the wire it rides the existing `provisioned` claim so the node path needs no change (`src/node/remote.ts:34-36`), but the gateway-side decision above is what authorises it. The key path is by kind (`connectInfoForBinding`, `src/remote/env-runtime.ts`): the ssh row uses the generated key from `remote_keys` (`env-runtime.ts:20` with the row's `def~tenant` team).
 
-Pure function `envAllowed(policy, env)` in `src/remote/definitions/policy.ts`: no policy (agent has no `environment:`) means shared environments are NOT usable by that agent (a shared environment is opt-in per agent) and personal ones are unaffected; with a policy, a shared environment is allowed iff its name is in `allow` and it is not retired. `policyFor(personaId)` reads `definition.environment` from the persona registry (`getPersonaRegistry().lookupByName`, `default` through `defaultPersona`).
+Node capability (finding 5): new `SHARED_ENV_CAPABILITY = "shared-env/1"` in `src/guardrails/capability.ts`, advertised by nodes where they advertise the others. At `dispatch.ts:501` `requiresCaps` becomes a list, and a turn of a persona that declares `environment:` requires it, so an older node is never handed such a turn. Sync warns when no live node advertises it.
 
-Trust class of a definition row: `trustOf` returns `provisioned` (the existing "no lock needed" class) for `source = 'definition'`, whatever the kind's own class. Reasoning: the box is shared infrastructure with no personal data, the agent's allow list is the gate, and the agent's existing approvals still show every Bash, Write and Edit to the approver. It reuses the sandbox path end to end (`activeRemoteTarget` skips the lock rule, `thread-identity.ts` skips run-as, `EnvRef.trust` on the wire is already `provisioned`). `connectInfoForBinding` still picks the key path by the KIND's class, so a shared ssh row connects with the generated key (finding 1) and a real provisioned kind goes through `provision`.
+Rollback hazard (to be documented and scripted): redeploying rc.21 reads a bound shared row as a personal `ssh` row with owner `<name>` and no lock requirement path, which it treats as user-machine and then refuses (owner never matches) or, for a stale `provisioned` claim, runs unlocked. Therefore rollback step zero is `slaude env unbind-shared` (task 12) or `DELETE FROM env_bindings WHERE env_id IN (SELECT id FROM environments WHERE source = 'definition')`, then redeploy.
 
-Enforcement points:
-1. Bind time (`useEnvironment`): enforced from rc.22, no shadow, because there is no legacy behaviour to protect (shared environments did not exist). Order: kind known, row not retired, agent policy allows it, then directory and pre-flight. Refusals are plain and name the environment, never the host: "This agent is not set up to use `team-sandbox`", "`team-sandbox` has been retired", "`team-sandbox` needs a directory: set defaultDir in its definition".
-2. Dispatch time (gateway side, where the remote claim is built, `src/gateway/core/dispatch.ts` near the `sessionConfigFp` call): a bound definition environment that is retired or no longer allowed by the agent (the agent was redefined) is checked on every turn. rc.22 shadow: counted, turn proceeds. rc.23 enforce: the turn is not run; the thread gets one notice ("This thread's environment is no longer available to this agent. `/env off` returns to the default.") and nothing runs locally. The check is on the gateway, before the job token is signed, so no node change.
-3. Remote-env API (`handleRemoteEnv`): a definition row passes the `teamId` check by `source`, and is served only while the thread is bound to it with the claimed hash (existing rule) and the dispatch check above would pass.
-4. Default: when a thread has no binding and the agent has `environment.default`, the first dispatch binds it with `bindIfAbsent` (insert-only, `ON CONFLICT DO NOTHING`, so it never overwrites a user's `/env use`). rc.22 shadow: counted (`default_would_bind`), nothing bound. rc.23 enforce: bound, dir from `defaultDir`, provisioned kinds start through the existing `ensureProvisioned`.
-5. `/env off` on a thread of an agent with a default clears the binding and the next turn binds the default again; the status line says so. Server-side execution is expressed by an agent that has no `environment:` key.
-6. `/env use env:other` where `other` is allowed but not the default: allowed. `/env use <personal>` with a policy: allowed (see decision D3).
+Ownership: `updateEnv`, `deleteEnv`, `createEnv` throw `DefinitionManagedError` for a definition row (REQUIRED, finding 6); `/env edit|rm` on a shared name answers "defined in the repository; change it there". Removing a file retires the row (`retired_at`); a retired row refuses (item 6); re-adding revives it.
 
-Failure modes (tests first, task 12): policy lookup throws (registry error): `/env use` of a shared env is refused, an already-bound turn is counted `error` and proceeds in shadow, is refused in enforce; definition row read throws: same; key missing for a shared ssh row: `REMOTE_AUTH_FAILED` with "ask an operator to install the environment's key" and the public key is shown only on the console; unknown provisioner: "environment kind not available on this deployment" (existing text).
-
-Flag `SLAUDE_ENV_POLICY=off|shadow|enforce` (`src/config/env.ts`, read per call, unknown value refuses boot like the other security switches via `securitySwitchViolations`). Default `shadow`. It governs enforcement points 2 and 4 only; point 1 and the format are always on, but inert until a file or an agent key exists. `off` also skips the shadow counters.
-
-Metrics: `slaude_env_policy_total{site,outcome}` (site: `use`, `dispatch`, `default`, `api`; outcome: `allowed`, `refused`, `would_refuse`, `retired`, `error`); `slaude_env_definitions_synced_total{result}`.
-
-## Node and runsOn
-
-`runsOn` is untouched: one label on the agent, a pool. A definition carries no node label; the node that runs the agent's turn opens the connection (split deployment: it fetches the transport and key from the gateway as today). Consequences, documented and not engineered around in this slice: the box must be reachable from every node carrying the agent's label; the ssh host check runs on the gateway and the connection is made from the node. A sync warning is added only for a cheap, certain case: an agent allows a shared environment whose kind is `provisioned` while its provisioner is not registered ("not usable until a provisioner registers"). Nodes older than the environments release (0.45.x) would run an unlocked environment turn locally (field note, "The gap that remains"); the rollout checks every node's version before the first agent declares `environment:`.
-
-## Sync path
-
-Payload version 7 adds a top-level `environments` list (like `guardrails`): absent leaves stored definitions alone; present (even empty) is the whole set, and a definition no longer listed is retired. `PERSONA_FIELD_VERSION` gains `environment: 7` read from `definition.environment`, and `payloadVersionFor` also returns 7 for a non-empty `environments`; `SUPPORTED_PAYLOAD_VERSION = 7`. A payload that sets neither stays at its old version and deploys to any gateway, so rc.22 adds no risk to existing repositories.
-
-In `runSync` (`src/persona/sync/run.ts`), phase one (no transaction): parse and validate the definitions, canonicalise, hash; resolve every agent `environment` reference against payload definitions, else stored non-retired definitions when the payload omits the list; refuse (422) on: unknown environment, default not in allow, default target without `defaultDir`, a definition with unknown kind block, a name that is not the file name, duplicate names. Messages name persona, field and environment, never a value. Phase two: `applySync` writes the definition rows in the SAME transaction as the personas (so an agent and the environment it names land together or not at all): insert, update when the hash changed (`updated_at` moves, so every warm session's fingerprint changes and reboots, exactly like an edit today; an unchanged hash writes nothing and reboots nothing), retire, generate a key pair for a new ssh or tailcat row. Report: `environments: { created, updated, unchanged, retired }` plus `wouldCreate` in a dry run; names only. Audit: `environment.definition_synced` once per changed row (name, kind, revision), through `emitAudit` after commit.
-
-Filesystem tenants: `src/remote/definitions/files.ts` reads `$SLAUDE_HOME/environments/*.yaml` with the same parser and runs the same upsert at boot and on the registry reload signal; a bad file is refused with the file named and the previous rows stay. An agent on disk with `environment:` is resolved against those files when its registry snapshot loads (`readFileAgent`), with the same refusals.
+Sync: phase one validates everything (definitions, agent refs, `SLAUDE_REMOTE`), then `applySync` (`src/db/personas.ts:191`) writes definitions in the same transaction as personas. A new row's key pair is stored through a new transaction-aware `putKeyIfAbsentTx` (finding 8), so a failed sync leaves no orphan key. A no-op resync (same canonical hash) writes nothing and moves no `updated_at`, so no warm session reboots. Refusals name the persona, field and environment from the submitted payload; they never list stored names (finding 9), and the report never contains host, address or key.
 
 ## Tasks
 
-### rc.22: format, sync, key, bind-time check (dispatch check and default in shadow)
+### rc.22
 
-1. Migration 0042.
-   - Files: `src/db/migrations/0042_environment_definitions.sql`, `src/db/drivers/sqlite.ts`, `tests/db/environment-definitions-schema.test.ts`, `tests/db/schema-drift.test.ts` (no new table; confirm columns).
-   - Tests first: upgrade from 0041 with existing personal rows (`source` defaults to `user`, new columns NULL); old insert shape still works; the partial unique index refuses a second `(tenant, name)`; `SLAUDE_DB=pg` too.
-2. Definition schema and parser.
-   - Files: `src/remote/definitions/schema.ts` (Zod, strict, discriminated by `kind`), `src/remote/definitions/parse.ts` (`parseEnvironmentYaml(name, text)` returning the canonical spec, reusing the kinds' `parse()`), `tests/remote/definitions/schema.test.ts`.
-   - Tests first: every kind valid; each unknown key refused with its path and no value; name must equal the file name; a secret-looking key and a token or PEM value refused with the dedicated message and the value absent from the error; `secretRefs` accept `env://` and `vault://`, refuse a plain value; ssh without `hostKey` refused; duplicate YAML keys refused (the `yaml` package already does).
-3. JSON Schema for definitions.
-   - Files: `scripts/gen-agent-schema.ts` (also emit `docs/site/schemas/environment.schema.json`), `package.json` script `schema:agent` runs both, `docs/site/schemas/environment.schema.json`, `tests/remote/definitions/json-schema.test.ts` (committed file equals generated, like `tests/persona/agent-schema.test.ts`).
-4. `environment:` key on agent.yaml.
-   - Files: `src/persona/agent-schema.ts` (strict `environment` object, typed refs only, `.describe()` text for hover help, the inline-config refusal through an `errorMap` on `unrecognized_keys`), `src/persona/agent-def.ts` (compile to `spec.definition.environment`, refuse default outside allow and repeats, `AgentDocumentInput.environment` and `agentDocument` emit it), `src/persona/sync/payload.ts` (`definitionSpec` gains `environment`, `PERSONA_FIELD_VERSION.environment = 7`, `SUPPORTED_PAYLOAD_VERSION = 7`, `payloadVersionFor`), `src/persona/types.ts` and `src/persona/registry.ts` (carry it on the persona), `docs/site/schemas/agent.schema.json` regenerated with `bun run schema:agent`, tests in `tests/persona/agent-def-environment.test.ts`, `agent-schema.test.ts`, `payload.test.ts`.
-   - Tests first: valid default plus allow; allow only; `environment: env:x` (a bare string) refused; a bare name refused; each of `kind`, `host`, `addr`, `ssh`, `config`, `secrets` under `environment:` gets the inline-config message; `agent:x` or `user:x` references refused as "takes env"; default not in allow; repeat; 17 entries; version stays 6 when no agent sets it, 7 when one does; a gateway at 6 refuses a 7 payload with the upgrade message; every existing agent fixture compiles byte-for-byte as before (golden against `tests/persona/agent-corpus`).
-5. Definition sync (database tenants).
-   - Files: `src/remote/definitions/sync.ts` (`planDefinitions`, `applyDefinitions(tx, ...)`), `src/remote/definitions/resolve.ts`, `src/persona/sync/payload.ts` (`environments` list, `payloadSchema`), `src/persona/sync/run.ts` (phase one validation and refusals, report), `src/db/personas.ts` (`applySync` takes `environments`, same transaction), `src/audit` event, `tests/persona/run-sync-environments.test.ts`.
-   - Tests first: create, no-op resync (nothing written, `updated_at` unchanged), change (`updated_at` moves, hash changes), retire on omission, revive, absent list leaves rows alone, empty list retires all; a failure in the persona half rolls back the definition half and the reverse; an agent naming an unknown, retired or undefined default is a 422 and applies nothing; a dry run writes nothing and reports `wouldCreate`; concurrent syncs serialise on the sync-state row; key pair generated once and kept across updates; the report and every log line contain no host, address or key.
-6. Filesystem tenants.
-   - Files: `src/remote/definitions/files.ts`, `src/persona/registry.ts` (load definitions with the registry, resolve disk agents' `environment:`), `src/persona/file-agent.ts` (accepts `environment`), `src/persona/boot.ts` and `disk-check.ts` (a bad definition is a boot warning naming the file, previous rows stay), `tests/remote/definitions/files.test.ts`, `tests/persona/registry-file-agent.test.ts`.
-   - Tests first: sqlite and pg; a file added, edited, removed (retired); a disk agent referencing a missing file is refused with the key named; a file agent can still not set `runsOn` or `model`.
-7. Ownership guard in the data layer.
-   - Files: `src/db/environments.ts` (`DefinitionManagedError`; `StoredEnv` gains `source`, `retired`; `toEnv` reads the new columns), `src/remote/kinds/types.ts`, `tests/db/environments-definition-guard.test.ts`.
-   - Tests first: `updateEnv`, `deleteEnv` and a name-changing update refuse a definition row; `listEnvs(team, user)` and `listAllEnvSummaries` behaviour for personal rows is byte-identical; `convertLegacy` unaffected.
-8. Policy module.
-   - Files: `src/remote/definitions/policy.ts` (`policyFor`, `envAllowed`), `tests/remote/definitions/policy.test.ts`.
-   - Tests first: no policy means a shared env is not allowed and a personal one is not affected; allow hit and miss; retired; default persona; unknown persona; registry throw returns an error result, never `allowed`.
-9. Trust and connect path for definition rows.
-   - Files: `src/remote/kinds/index.ts` (`trustOf` returns `provisioned` for `source = 'definition'`), `src/remote/active.ts` (no lock rule for it; a retired row yields no target), `src/remote/env-runtime.ts` (key from `Remote.getKey('definition', name)`), `src/gateway/api/remote-env.ts` (team check by `source`), `tests/remote/environments.test.ts`, `tests/remote/definitions/connect.test.ts`.
-   - Tests first: a shared ssh row yields a `provisioned` `EnvRef`, no lock needed, the generated key reaches the helper; a personal row is unchanged (existing tests untouched and green); `handleRemoteEnv` serves a shared row for the bound thread only, 409 after retire, 409 for a hash mismatch; the personal owner check still applies to personal rows; fingerprint (`src/remote/fingerprint.ts`) of every personal and tailcat row is byte-identical to before.
-10. `/env use` check, listing, read-only commands.
-    - Files: `src/gateway/core/env-command.ts` (`RemoteCommandCtx.personaId`; `useEnvironment` branch for `source = 'definition'`: allow check, no own-environment, no foreign-cron rule, no lock rule, `lockByEnv` false; `list`, `status` and `edit|rm` messages; `env:<name>` parsing of `/env use`), `src/gateway/slack/commands.ts` (parse `env:<name>` as a name form, usage text), `src/gateway/core/gateway.ts` (`remoteCommandCtx` passes `personaId`; picker offers allowed shared rows), the picker blocks file, `tests/gateway/env-command-shared.test.ts`, `tests/commands.test.ts`.
-    - Tests first: use of an allowed shared env binds and says which; an agent with no policy refuses with the exact text; a non-allowed one refuses; retired refuses; a missing `defaultDir` with no argument refuses and names the fix; personal flows byte-identical (the existing `tests/remote` and env command tests run unchanged); `edit`, `rm` and `add` over a shared name refuse; the reply never contains host, address, key or hash; the Use button path for a shared row re-checks the allow list (the button can outlive an edit).
-11. Dispatch-time check and default binding, shadow only.
-    - Files: `src/config/env.ts` (`env.envPolicy.mode()` and boot validation), `src/remote/definitions/gate.ts` (`checkBound`, `defaultFor`), `src/gateway/core/dispatch.ts`, `src/db/environments.ts` (`bindIfAbsent`), `src/metrics.ts`, `tests/gateway/env-policy-shadow.test.ts`.
-    - Tests first: shadow counts `would_refuse` and `default_would_bind`, changes no turn and writes no binding; `off` counts nothing; `bindIfAbsent` never overwrites a binding and two racing callers produce one row; an unknown flag value refuses boot.
-12. Failure-mode tests (the matrix above) in `tests/gateway/env-policy-failure.test.ts`, written before the enforce code of rc.23 so they pin the shadow answers now.
-13. Render, export, migrate.
-    - Files: `src/cli/personas.ts` (`renderDir` reads `environments/*.yaml` into the payload, `--check` validates them and reports unresolved agent references offline; `exportHome` and `exportAgentYaml` copy `environments/` after re-validating and refusing unknown keys, and write `environment:` from the stored definition), `src/persona/migrate.ts` (untouched in behaviour: a SOUL.md persona has no environment; add a test that migrate neither adds nor drops the key and that an `environments/` folder beside the home is left alone), `tests/cli/personas-agent-yaml.test.ts`, `tests/cli/personas.test.ts`, `tests/persona/migrate.test.ts`.
-    - Tests first: render of a repository with and without `environments/` (payload version 6 without, 7 with); `--check` fails on an agent naming a missing file; export round trip (export, render, equal payload); an `environments/` file holding a token-shaped value stops the export; migrate golden unchanged.
-14. Console, read only.
-    - Files: `src/gateway/panel/console-views.ts` (`environmentsView` adds `shared: [{ name, kind, description, defaultDir, retired, revision, publicKey, agents: [persona names that allow it], bindings }]`; no config, no host), `src/gateway/panel/api-types.ts`, `src/web/console/pages/EnvironmentsPage.tsx` (a "Shared environments" table with a "defined in repository" badge and the copy-public-key action), `src/web/console/dev/fixtures.ts` and `stub.ts`, `tests/gateway/panel-environments.test.ts`, web tests.
-    - Tests first: payload has no host or address; superadmin and operator see the key, viewer does not; a test enumerates the panel routes and fails if one accepts a definition id for a write.
-15. CLI helper `slaude env pubkey <name>` and `slaude env list --definitions` (read only, prints names, kind, retired, revision). Files: `src/cli/env.ts` (new), `tests/cli/env.test.ts`.
-16. Docs and release rc.22.
-    - Files: `docs/site/_content/guides/environments.md` (new section "Shared environments": definition file, trust class, what an agent must declare, node reachability, the gap with pre-0.45 nodes), `docs/site/_content/deploy/personas-as-code.md` (layout, `environment:` key, payload version 7, render and export), `docs/site/_content/field-notes/2026-11-15-domain-environments.md`, `docs/site/_content/releases/v0.46.0-rc.22.md`, `CLAUDE.md` index line, `docs/site/nav.json`, spec slice E marked "implemented in rc.22 and rc.23, what differs".
-    - Gate before rc.23 (3 days on a deployment that declares at least one shared environment, or the live smoke below passing twice): `slaude_env_policy_total{outcome="error"}` zero; `would_refuse` explained one by one (each is an agent edited under a live thread); `default_would_bind` volume matches the count of new threads of agents with a default; no `REMOTE_AUTH_FAILED` for a shared row after the public key was installed; every node on a release that knows environments.
+1. Migration 0042 and sqlite mirror. Files: `src/db/migrations/0042_environment_definitions.sql`, `src/db/drivers/sqlite.ts`, `tests/db/environment-definitions-schema.test.ts`. Tests first: upgrade from 0041 with personal rows (defaults, NULLs); old insert shape works; partial unique index; pg too.
+2. Definition schema and parser. Files: `src/remote/definitions/schema.ts`, `parse.ts`, `tests/remote/definitions/schema.test.ts`. Tests first: valid ssh; each unknown key refused without its value; name equals file and matches the regex; `shared` and `trust` required; tailcat and provisioned refused with the stated message; secret-like key and token or PEM value refused; no `hostKey` refused; IP literals (loopback, private, link-local, metadata) refused unless `allowPrivateAddress`.
+3. JSON Schema. Files: `scripts/gen-agent-schema.ts` also emits `docs/site/schemas/environment.schema.json`, `package.json` script, `tests/remote/definitions/json-schema.test.ts` (committed equals generated).
+4. `environment:` key on agent.yaml. Files: `src/persona/agent-schema.ts`, `agent-def.ts`, `src/persona/sync/payload.ts`, `types.ts`, `registry.ts`, regenerated `docs/site/schemas/agent.schema.json`, tests in `tests/persona/`. Tests first: allow only; with default (stored, flagged unapplied); a bare name, `agent:x`, `user:x`, upper case, 42-character names refused; inline keys get the inline-config message; default outside allow; repeats; 17 entries; version stays 6 when unused and is 7 when used; every existing agent fixture compiles identically (`tests/persona/agent-corpus.test.ts`).
+5. Data-layer guard. Files: `src/db/environments.ts` (`DefinitionManagedError`, `StoredEnv.source`, `retired`), `tests/db/environments-definition-guard.test.ts`. Tests first: update, delete, rename and create refuse a definition row; personal behaviour byte-identical.
+6. Definition sync (database tenants). Files: `src/remote/definitions/sync.ts`, `resolve.ts`, `src/persona/sync/payload.ts`, `run.ts`, `src/db/personas.ts`, `src/db/remote.ts` (`putKeyIfAbsentTx`), audit event `environment.definition_synced`, `tests/persona/run-sync-environments.test.ts`. Tests first: create, no-op (nothing written, no reboot), change, retire, revive, absent list leaves rows alone; rollback in either half; unknown, retired or disallowed refs are 422 naming only submitted names; `SLAUDE_REMOTE` off with an agent key is refused; two tenants with the same name get distinct ids, teams and keys; a dry run writes nothing; no host or key in report, logs or audit.
+7. Policy and decision. Files: `src/remote/definitions/policy.ts`, `decision.ts`, `src/remote/active.ts` (no change in signature; trust for definition rows), `src/remote/kinds/index.ts`, `tests/remote/definitions/decision.test.ts`. Tests first: the finding 1 scenario (agent B, same thread, bound by A): refused; no key policy refused; retired refused; cron, wake, background refused; flag off refused; throw refuses; personal rows untouched.
+8. Wire the claim points. Files: `thread-identity.ts`, `dispatch.ts`, `src/gateway/api/jobs.ts`, `src/remote/mono.ts`, `src/gateway/api/remote-env.ts`, tests `tests/remote/definitions/claims.test.ts`, existing `tests/remote/*.test.ts` unchanged and green. Tests first: dispatch refuses and posts one notice; mono throws and does not run locally; `handleRemoteEnv` returns no key for another persona, another tenant, a stale hash, a retired row; the claim and fingerprint for every personal and tailcat environment are byte-identical to before.
+9. Turn kind and node capability. Files: `src/gateway/core/dispatch.ts` (`origin` on meta, set by the cron scheduler), `src/guardrails/capability.ts`, node capability advertisement, `requiresCaps` list at `dispatch.ts:501`, `tests/queue/`. Tests first: an agent with `environment:` is pinned only to a capable node; an agent without it is unaffected.
+10. `/env` surface. Files: `src/gateway/core/env-command.ts`, `slack/commands.ts` (`env:<name>`), `gateway.ts` (`personaId` in ctx), tests `tests/gateway/env-command-shared.test.ts`. Tests first: allowed use binds and prints the shared-machine warning; an agent without the key refuses; edit, rm, add over a shared name refuse; a stale Use button re-checks; with `SLAUDE_REMOTE` off `/env` answers as today ("not enabled"); no host, address, key or hash in any reply.
+11. Console list, read only. Files: `console-views.ts` (`environmentsView.shared`: name, description, retired, revision, public key, allowing agents), `api-types.ts`, `EnvironmentsPage.tsx`, fixtures, `tests/gateway/panel-environments.test.ts`. Tests first: no host or config in the payload; operators see the public key; a test enumerates panel routes and fails if any accepts a definition id for a write.
+12. Render, export, unbind. Files: `src/cli/personas.ts` (`renderDir` reads `environments/`, `--check` validates and resolves agent refs offline; export refuses unknown keys and never invents definitions; migrate unchanged), `src/cli/env.ts` (`slaude env unbind-shared`, read only `list`), tests. Tests first: payload version 6 without `environments/`, 7 with; render then export round trip.
+13. Docs and release rc.22. Files: `docs/site/_content/guides/environments.md` (shared environments, the shared-machine warning, key distribution to nodes, no rotation yet, reachability from nodes), `docs/site/_content/deploy/personas-as-code.md`, field note `2026-11-15-domain-environments.md`, `docs/site/_content/releases/v0.46.0-rc.22.md`, `CLAUDE.md` index line, spec update.
 
-### rc.23: enforce the dispatch check, apply the default
+### rc.23 (a hard stop after rc.22 soaks; only if the gate passes)
 
-17. Enforce.
-    - Files: `src/remote/definitions/gate.ts`, `src/gateway/core/dispatch.ts`, `src/gateway/core/env-command.ts` (`/env off` text and behaviour for agents with a default), `src/config/env.ts` (default flips to `enforce`), tests extending `env-policy-shadow.test.ts` into `env-policy-enforce.test.ts`.
-    - Tests first: a bound environment the agent no longer allows stops the turn with one notice per thread per hour and nothing runs locally; a retired one same; `/env off` then next turn binds the default; an agent with no default and a disallowed binding gets the notice and `/env off` returns to the server; default bound with `defaultDir` for a ssh row and starts a sandbox for a fake provisioned kind (`tests/remote/mono-env.test.ts` style); a user's own `/env use` in the same instant is never overwritten; reverse shadow counts `legacy_would_run` for what the old behaviour would have done.
-18. Console additions: per environment, the threads currently bound (counts only), agents that default to it; the agent detail page shows `environment` (default and allow, with a link to the definition row). Files: `console-views.ts`, `AgentDetailPage.tsx`, `definition-view.ts` (`fields.environment`), tests.
-19. rc.23 release: release note, field note update, spec update, docs; the flag default `enforce` documented with `SLAUDE_ENV_POLICY=shadow` as the rollback.
+14. Key rotation: `slaude env rotate-key <name>` (new pair, old stays until the next sync confirms, public key shown), with a test that warm sessions reboot.
+15. Apply `default:` (bind once with insert-only `bindIfAbsent`, interactive turns only), behind `SLAUDE_ENV_DEFAULT=off|shadow|enforce`, default `off`, with its own gate and tests.
+16. Console binding counts and agent detail view.
+
+Gate before rc.23: three days on a staging or split deployment with `SLAUDE_REMOTE=1` and one shared environment; zero refusals unexplained; every node advertises `shared-env/1`; the rollback script rehearsed.
 
 ## Test strategy
 
-- Unit: schema, parser, policy, resolver, canonical hash (key order and whitespace do not change the hash).
-- Golden: every existing agent and environment fixture produces the identical compiled output, fingerprint and job claim as before; a test builds the claim for a personal environment before and after and compares.
-- Integration: sync (pg), filesystem load (sqlite and pg), `/env` flows through the existing command test harness, remote-env API, dispatch with a fake kind (`tests/remote/mono-env.test.ts`), render and export round trip.
-- Security: no secret, host, address or key in any error, report, log, audit event, console payload or thread reply (a shared helper greps outputs for a planted host and token); a shared row cannot be edited or deleted through any path; an agent without the key cannot use a shared environment through the picker, `/env use`, a stale Use button or a `/remote` alias; a definition cannot smuggle a secret through any key or value.
-- Failure injection: registry throws, database throws mid sync, key generation fails (sync fails whole), provisioner missing.
+- Unit: schema, canonical hash (key order does not change it), policy, decision, refs.
+- The central regression: the finding 1 scenario across `/env use`, dispatch, mono and `handleRemoteEnv`, and the same for another tenant.
+- Golden: existing agent and environment fixtures produce identical compiled output, claims and fingerprints (personal, tailcat).
+- Security: no secret, host, address or key in any error, report, log, audit event, console payload or reply (a helper greps outputs for a planted host and token); a shared row cannot be changed through any path; the preview token's 422s list no stored names.
+- Failure injection: registry throws, row read throws, key insert fails mid sync.
 - Commands: `bun test`, `SLAUDE_DB=pg bun test`, `bun run typecheck`, `bun run test:web`, `bun run schema:agent` then `git diff --exit-code docs/site/schemas`.
 
 ## Rollout
 
-Per RC: backup before the version bump (`sudo /usr/local/sbin/slaude-backup`), deploy through the usual path, `verify` 0 FAIL, then the smoke below.
+Per RC: backup before the version bump, deploy, `verify` 0 FAIL, smoke.
 
-| RC | Changes | Behaviour change | Rollback |
-|---|---|---|---|
-| rc.22 | 0042, definition format, sync, `environment:` key, `/env use` check, console view, shadow dispatch check and default | none until a repository adds `environments/` and an agent declares `environment:`; then `/env use env:<name>` works for that agent only | remove the agent key and resync (agent loses the environment, bindings fail closed once enforcing, in shadow they keep running); or redeploy rc.21 (the new columns are ignored, shared rows are unusable there, personal rows untouched) |
-| rc.23 | enforce dispatch check, default environment | a thread bound to a no-longer-allowed shared environment stops with a notice; new threads of an agent with a default start in it | `SLAUDE_ENV_POLICY=shadow` (or `off`), or rc.22 |
+| RC | Behaviour change | Rollback |
+|---|---|---|
+| rc.22 | none until a repository adds `environments/` and an agent declares `environment:`; then `/env use env:<name>` works for that agent only | remove the agent key and resync; to go back to rc.21 first run `slaude env unbind-shared` (hazard above) |
+| rc.23 | key rotation; `default:` only when its flag is moved off `off` | flag back to `off`, or rc.22 |
 
-Rollback of data: nothing to undo. Definition rows are inert without an agent key; retiring is the only removal and a revive is one resync. Do not drop the 0042 columns.
+Do not drop the 0042 columns.
 
-Stable promotion waits 7 days on rc.23 with no unexplained `would_refuse` or `error` (`scripts/promote-rc.sh`). The shadow flag stays one stable release, then the `shadow` value is removed.
+## Smoke test
 
-## Live smoke test (placeholders only; run after rc.22, repeat after rc.23)
+The live deployment has `SLAUDE_REMOTE` off, so `/env` is not enabled there. Live (rc.22, no environment declared anywhere):
+1. Migration 0042 applied; `verify` 0 FAIL.
+2. A version 6 payload (the current repository, no `environments/`) still deploys; dry run (`?dryRun=1`) reports no environments; a no-op resync causes no session reboot.
+3. The console Environments page loads, the Shared list is empty, and a personal row (if any) is unchanged.
+4. `/env` answers that it is not enabled; an agent with no `environment:` key behaves exactly as before (a normal turn, an approval card).
+5. A scratch repository with `environments/` and an agent key is refused at sync (`SLAUDE_REMOTE` off) with the named message, and applies nothing.
 
-1. On a test box `<box>` create a user and install nothing yet. In a scratch deploy repo add `environments/team-sandbox.yaml` (ssh, `host: <box-host>`, pinned `hostKey`, `defaultDir: ~/work`) and give a test agent `agent-a` `environment: { default: env:team-sandbox, allow: [env:team-sandbox] }`.
-2. `slaude personas render <repo> --check` passes; remove the `hostKey` and see it fail naming the key; put a fake token in `description` and see the refusal without the value; put `host:` under `environment:` and see the inline-config message. Restore.
-3. Dry-run, then sync (`/deploy?dryRun=1`, then real). Report lists one environment created and no host. Resync: `unchanged`, no session reboot. Console Environments page shows `team-sandbox` read only with its public key.
-4. Install the public key on `<box>`. In a thread with `agent-a`: `/env` lists `team-sandbox` under Shared; `/env use env:team-sandbox`; ask the agent to run `hostname`; the answer is the box's, the thread is not locked, the approval card appears as usual. `/env edit team-sandbox` refuses. `/env off` returns to the server (rc.22).
-5. In a thread with an agent with no `environment:` key: `/env use env:team-sandbox` refuses with the exact text; personal `/env use <mine>` still works and still locks the thread (regression check).
-6. Edit `agent-a` to drop the allow, resync, send a message in the still-bound thread: rc.22 runs (shadow counter `would_refuse` rises); rc.23 stops with the notice and nothing runs on the server. Restore.
-7. rc.23: start a new thread with `agent-a`; the first turn runs on the box with no `/env use`; `/env off` then another message binds the default again.
-8. Remove the file, resync: the row is retired, the bound thread stops (rc.23), `/env list` no longer offers it; re-add and resync revives it.
-9. Check `/metrics` for `slaude_env_policy_total` and the audit page for `environment.definition_synced`; grep gateway logs for `<box-host>` and the key: zero hits.
+Full scenario, on a staging mono or a split deployment with `SLAUDE_REMOTE=1` (locally: `bun run sim` from `src/gateway/sim/cli.ts` for a mono gateway, a test ssh server from the in-process test server used by `tests/remote/environments.test.ts`, and for split a gateway plus a node with `SLAUDE_ROLE=node`):
+1. Add `environments/team-sandbox.yaml` (placeholders for host and `hostKey`) and give `agent-a` `environment: { allow: [env:team-sandbox] }`; `slaude personas render <repo> --check` passes; each cut or bad input (tailcat, no `shared`, private IP, token-like value, inline `host:` under `environment:`) fails with the stated message and no value.
+2. Dry run, apply, resync (unchanged). Install the public key from the console on the test box.
+3. In an `agent-a` thread: `/env use env:team-sandbox` prints the shared-machine warning; ask for `hostname`; the answer is the box's; the thread is not locked; the approval card appears.
+4. In an `agent-b` thread (no key), and in `agent-b` replying inside the thread `agent-a` bound: no key reaches the node, the turn is refused with the notice, nothing runs on the server. A cron job and a wake turn of `agent-a` in the bound thread are refused.
+5. Retire the file and resync: the bound thread's next turn is refused (mono and split), `/env list` no longer offers it.
+6. Personal `/env use <mine>` still locks the thread and works.
+7. Grep gateway and node logs for the host and the key: zero hits.
 
 ## Decisions needed from the owner (recommended default first)
 
-- D1 Trust class of a shared ssh or tailcat box: unlocked threads, gated by the agent's allow list and the normal approvals (recommended; reuses the sandbox path). Alternative: require a locked 1on1 owned by the person who bound it (needs a `bound_by` column and a change to `RemoteTarget.userId`; strictly safer, much less useful for a team box).
-- D2 Who holds the ssh key: slaude generates one per definition, the operator installs the public key (recommended, no secret ever in git). Alternative: an optional `keyRef: env://... | vault://...` to a key the operator manages.
-- D3 Per-person environments for an agent that declares `environment:`: unaffected (recommended; the agent still cannot reach anything the person cannot). Alternative: an optional `personal: deny` key so an agent can forbid them.
-- D4 `/env off` for an agent with a default: returns to the default (recommended); server execution is expressed by omitting the key. Alternative: allow `env:local` in `allow`.
-- D5 Agent with no `environment:` key and a shared environment: not usable (recommended, opt-in per agent). Alternative: usable by every agent (not recommended).
-- D6 Removing a file retires the row and fails bound threads closed (recommended). Alternative: delete the row and let bound threads run on the server (violates the "never fall back" rule).
-- D7 `provisioned` definitions are accepted now but unusable until a provisioner registers (recommended, keeps the format stable). Alternative: refuse the kind until one exists.
-- D8 ssh `hostKey` required in a definition (recommended; no trust on first use for shared infrastructure). Alternative: allow empty and pin on first pre-flight.
-- D9 Name in the reference is the file name (`env:team-sandbox`), not the hidden internal id (recommended, because operators write it). The internal id `d_<tenant>_<name>` appears only in audit and the console.
-- D10 Two RCs with the dispatch check and default in shadow first (recommended). Alternative: one RC enforcing everything.
+- D1 Shared environments are an explicit opt-in per definition (`shared: true` and `trust: unlocked` both written), per agent through `allow`, interactive turns only (recommended). Alternative: also allow scheduled turns (not recommended).
+- D2 slaude generates the ssh key per definition and the operator installs the public key (recommended); rotation is task 14. Alternative: an operator-supplied `keyRef`, later.
+- D3 `default:` is parsed and stored but not applied in rc.22 (recommended); applied in rc.23 behind a flag. Alternative: never apply it.
+- D4 Per-person environments are unaffected by an agent's `environment:` key (recommended). Alternative: an optional `personal: deny`.
+- D5 An agent with no `environment:` key cannot use shared environments (recommended).
+- D6 Removing a definition retires it and bound threads are refused (recommended); no fallback to the server.
+- D7 `tailcat` and `provisioned` definitions are refused in rc.22 (recommended); tailcat needs an address-by-reference design first.
+- D8 ssh `hostKey` required (recommended).
+- D9 The reference is the file name `env:<name>`; the internal id is a hash and appears only in audit.
+- D10 Shared-row checks are enforced from rc.22, no shadow period (recommended: nothing legacy to compare).
+- D11 Sync refuses an agent key while `SLAUDE_REMOTE` is off (recommended).
+- D12 Filesystem tenants stay out until an agent cannot write its own definitions (recommended).
 
 ## Risks
 
-- A shared box used by many threads: one noisy or hostile thread affects the others. Mitigation: it is the operator's explicit choice per agent; approvals still apply; the console shows binding counts; D1 alternative exists.
-- Pre-0.45 nodes run an unlocked environment turn locally. Mitigation: node version check before the first agent declares the key, noted in docs; no new exposure for nodes already on environments.
-- Connection is made from the node, the host check from the gateway (existing split). A box reachable from the gateway but not from a node fails with `REMOTE_UNREACHABLE`; documented, `runsOn` unchanged by decision.
-- A redefinition reboots warm sessions of every thread bound to the row (fingerprint). Mitigation: no-op syncs write nothing (hash compare).
-- Name overload: the console page "Environments" is nodes and runsOn, the object here is an execution environment. Mitigation: the new table is titled "Shared environments"; docs say so.
-- A personal environment may already have the same name as a shared one. Mitigation: bare name means personal first, `env:<name>` always shared, listing marks both.
-- Retire without delete leaves rows behind. Mitigation: they are tiny, counted in the console, and a later explicit purge can be added.
-- Sync and agent edits land together only through `/deploy`; a filesystem tenant edits two places. Mitigation: boot and reload validate both and keep the previous rows on error.
-- Key pair generation inside the sync transaction: a failure fails the sync whole, by design (tested).
+- A shared machine in an unlocked thread: any participant steers it through the agent. Mitigations: explicit opt-in per definition and per agent, the warning on use, normal approvals, interactive turns only, console shows who allows it.
+- The generated private key goes to every node that opens a handle, and there is no rotation until rc.23. Mitigation: documented; the key grants only the shared box; unbind plus a new definition name is the interim remedy.
+- Nodes without `shared-env/1` never receive such turns; if none is capable the turn waits (the existing capability behaviour), and sync warns.
+- The connection is made from the node while the host check runs on the gateway; a box reachable from one only fails with `REMOTE_UNREACHABLE`.
+- A redefinition reboots warm sessions of bound threads; no-op syncs do not.
+- Rollback to rc.21 with live shared bindings: handled by the unbind step; the plan makes that step part of the rollback procedure.
+- A name collision between a personal and a shared environment: the bare name means personal, `env:<name>` means shared.
