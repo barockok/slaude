@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { EnvironmentsResponse, NodePoolView, PersonalEnvironmentView } from "../../../gateway/panel/api-types";
+import type { EnvironmentsResponse, NodePoolView, PersonalEnvironmentView, SharedEnvironmentView } from "../../../gateway/panel/api-types";
 import { Link } from "../../lib/router";
 import { Avatar, Badge, Card, EmptyState, PageHeader, Skeleton, Table, type Column } from "../../ui";
 import { ErrorState } from "../components/ErrorState";
@@ -108,6 +108,31 @@ const PERSONAL_COLUMNS: Column<PersonalEnvironmentView>[] = [
   { key: "created", header: "Created", width: "9rem", skeleton: 0.5, render: (e) => <TimeAgo at={e.createdAt} /> },
 ];
 
+const SHARED_COLUMNS: Column<SharedEnvironmentView>[] = [
+  { key: "ref", header: "Reference", width: "20%", skeleton: 0.5, render: (e) => <span className="sl-mono">{e.ref}</span> },
+  {
+    key: "state",
+    header: "State",
+    width: "10%",
+    skeleton: 0.4,
+    render: (e) => (e.retired ? <Badge tone="warning">Retired</Badge> : <Badge tone="success">Live</Badge>),
+  },
+  {
+    key: "allowedBy",
+    header: "Allowed by",
+    width: "20%",
+    skeleton: 0.5,
+    render: (e) => (e.allowedBy.length ? e.allowedBy.join(", ") : <span className="sl-faint">No agent</span>),
+  },
+  {
+    key: "key",
+    header: "Public key to install",
+    skeleton: 0.7,
+    render: (e) => (e.publicKey ? <span className="sl-mono sl-truncate">{e.publicKey}</span> : <span className="sl-faint">None</span>),
+  },
+  { key: "updated", header: "Changed", width: "9rem", skeleton: 0.5, render: (e) => <TimeAgo at={e.updatedAt} /> },
+];
+
 export function EnvironmentsPage() {
   const { data, loading, error, reload } = useApi<EnvironmentsResponse>("/api/environments");
 
@@ -173,6 +198,26 @@ export function EnvironmentsPage() {
           loading={loading && !data}
           skeletonRows={3}
           empty={<EmptyState title="No agents" description="Agents appear here once they are defined." />}
+        />
+      </Section>
+
+      <Section
+        title="Shared environments"
+        caption="Machines declared in the deploy repository (environments/<name>.yaml). Read only: change them there. The host and connection details are never shown here."
+      >
+        <Table
+          label="Shared environments"
+          columns={SHARED_COLUMNS}
+          rows={data?.shared ?? []}
+          rowKey={(e) => `${e.tenant}/${e.ref}`}
+          loading={loading && !data}
+          skeletonRows={2}
+          empty={
+            <EmptyState
+              title="No shared environments"
+              description="Add environments/<name>.yaml to the deploy repository and let an agent allow it with environment: { allow: [env:<name>] }. Only superadmins see this list."
+            />
+          }
         />
       </Section>
 

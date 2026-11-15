@@ -9,7 +9,7 @@ import { pairFor } from "./boundary-columns";
 import { decrypt, encrypt } from "./crypto";
 import type { ProvisionedEndpoint, StoredEnv } from "../remote/kinds/types";
 
-interface EnvRow {
+export interface EnvRowShape {
   id: string;
   team_id: string;
   user_id: string;
@@ -20,6 +20,13 @@ interface EnvRow {
   default_dir: string | null;
   created_at: number;
   updated_at: number;
+  source: string;
+  tenant_id: string;
+  definition_name: string | null;
+  definition_hash: string | null;
+  definition_revision: string | null;
+  description: string | null;
+  retired_at: number | null;
 }
 
 export interface BindingRow {
@@ -40,7 +47,7 @@ export interface BindingRow {
 /** Environment names: short, no spaces, safe to show in a thread and a prompt. */
 export const ENV_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 
-function toEnv(r: EnvRow): StoredEnv {
+function toEnv(r: EnvRowShape): StoredEnv {
   return {
     id: r.id,
     teamId: r.team_id,
@@ -51,7 +58,20 @@ function toEnv(r: EnvRow): StoredEnv {
     secrets: r.secrets ? (JSON.parse(decrypt(r.secrets)) as Record<string, string>) : {},
     defaultDir: r.default_dir,
     updatedAt: Number(r.updated_at),
+    tenantId: r.tenant_id ?? "default",
+    source: r.source === "definition" ? "definition" : "user",
+    retired: r.retired_at != null,
   };
+}
+
+/** The team id every definition row carries: `def~<tenant>`. No Slack team id contains `~`. */
+export const DEFINITION_TEAM_PREFIX = "def~";
+
+/** A definition row (a shared environment synced from the deploy repository) is changed by sync only. */
+export class DefinitionManagedError extends Error {
+  constructor() {
+    super("this environment is defined in the repository; change it there");
+  }
 }
 
 const sealSecrets = (s: Record<string, string> | undefined): string | null =>
@@ -72,6 +92,7 @@ export async function createEnv(i: {
   secrets?: Record<string, string>;
   defaultDir?: string | null;
 }): Promise<StoredEnv> {
+  if (i.teamId.startsWith(DEFINITION_TEAM_PREFIX)) throw new DefinitionManagedError();
   if (!ENV_NAME_RE.test(i.name)) throw new Error("invalid environment name");
   if (await findEnvByName(i.teamId, i.userId, i.name)) throw new EnvNameTakenError(i.name);
   const now = Date.now();
@@ -96,6 +117,7 @@ export async function updateEnv(
 ): Promise<StoredEnv | null> {
   const cur = await getEnv(id);
   if (!cur) return null;
+  if (cur.source === "definition") throw new DefinitionManagedError();
   if (p.name !== undefined && p.name !== cur.name) {
     if (!ENV_NAME_RE.test(p.name)) throw new Error("invalid environment name");
     if (await findEnvByName(cur.teamId, cur.userId, p.name)) throw new EnvNameTakenError(p.name);
@@ -115,17 +137,17 @@ export async function updateEnv(
 }
 
 export async function getEnv(id: string): Promise<StoredEnv | null> {
-  const r = await db.one<EnvRow>("SELECT * FROM environments WHERE id = ?", [id]);
+  const r = await db.one<EnvRowShape>("SELECT * FROM environments WHERE id = ?", [id]);
   return r ? toEnv(r) : null;
 }
 
 export async function findEnvByName(teamId: string, userId: string, name: string): Promise<StoredEnv | null> {
-  const r = await db.one<EnvRow>("SELECT * FROM environments WHERE team_id = ? AND user_id = ? AND name = ?", [teamId, userId, name]);
+  const r = await db.one<EnvRowShape>("SELECT * FROM environments WHERE team_id = ? AND user_id = ? AND name = ?", [teamId, userId, name]);
   return r ? toEnv(r) : null;
 }
 
 export async function listEnvs(teamId: string, userId: string): Promise<StoredEnv[]> {
-  const rows = await db.query<EnvRow>("SELECT * FROM environments WHERE team_id = ? AND user_id = ? ORDER BY name", [teamId, userId]);
+  const rows = await db.query<EnvRowShape>("SELECT * FROM environments WHERE team_id = ? AND user_id = ? ORDER BY name", [teamId, userId]);
   return rows.map(toEnv);
 }
 
@@ -143,12 +165,34 @@ export interface EnvSummary {
 }
 
 export async function listAllEnvSummaries(): Promise<EnvSummary[]> {
-  const rows = await db.query<Pick<EnvRow, "id" | "team_id" | "user_id" | "name" | "kind" | "default_dir" | "created_at">>(
-    "SELECT id, team_id, user_id, name, kind, default_dir, created_at FROM environments ORDER BY team_id, user_id, name",
+  const rows = await db.query<Pick<EnvRowShape, "id" | "team_id" | "user_id" | "name" | "kind" | "default_dir" | "created_at">>(
+    "SELECT id, team_id, user_id, name, kind, default_dir, created_at FROM environments WHERE source <> 'definition' ORDER BY team_id, user_id, name",
   );
   return rows.map((r) => ({
     id: r.id, teamId: r.team_id, userId: r.user_id, name: r.name, kind: r.kind,
     defaultDir: r.default_dir, createdAt: Number(r.created_at),
+  }));
+}
+
+/** A shared environment (definition row) as the console lists it: name and state only, never config, host or secrets. */
+export interface DefinitionSummary {
+  tenant: string;
+  name: string;
+  description: string | null;
+  retired: boolean;
+  revision: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export async function listDefinitionSummaries(): Promise<DefinitionSummary[]> {
+  const rows = await db.query<Pick<EnvRowShape, "tenant_id" | "name" | "description" | "retired_at" | "definition_revision" | "created_at" | "updated_at">>(
+    `SELECT ${db.dialect === "pg" ? "tenant_id" : "'default' AS tenant_id"}, name, description, retired_at, definition_revision, created_at, updated_at
+     FROM environments WHERE source = 'definition' ORDER BY ${db.dialect === "pg" ? "tenant_id, " : ""}name`,
+  );
+  return rows.map((r) => ({
+    tenant: r.tenant_id, name: r.name, description: r.description, retired: r.retired_at != null, revision: r.definition_revision,
+    createdAt: Number(r.created_at), updatedAt: Number(r.updated_at),
   }));
 }
 
@@ -168,6 +212,8 @@ export async function freeName(teamId: string, userId: string, prefix: string): 
 /** Delete an environment and every binding to it. Returns the removed bindings
  *  so the caller can end remote mode in those threads. */
 export async function deleteEnv(id: string): Promise<BindingRow[]> {
+  const cur = await getEnv(id);
+  if (cur?.source === "definition") throw new DefinitionManagedError();
   const bindings = await bindingsForEnv(id);
   await db.run("DELETE FROM env_bindings WHERE env_id = ?", [id]);
   await db.run("DELETE FROM environments WHERE id = ?", [id]);

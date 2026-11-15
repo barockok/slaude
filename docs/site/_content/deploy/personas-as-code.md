@@ -472,6 +472,33 @@ Behaviour to know:
   extracted: the structure is compiled from the file.
 - Every sync wipes all runtime overrides for the tenant.
 
+## Shared environments: `environments/` and the `environment:` key
+
+A repository may carry `environments/<name>.yaml`, one file per shared ssh
+machine, beside `personas/` and `guardrails/`. The folder, when it exists (even
+empty), is the deploy's whole set: a definition it no longer lists is retired,
+and a retired one listed again is revived. With no folder the stored definitions
+are left alone. `render` sends each file as `{ name, yaml }` (the text as
+written), and the gateway parses it again, so what it applies is what it
+validated. The payload is version 7 when it carries an `environments` list or an
+agent's `environment:` key, and version 6 otherwise.
+
+The file format, the agent key, what is checked per agent, and how to roll back
+are in the [Environments guide](../guides/environments.md#6-shared-environments-rc24).
+In short: ssh only, `hostKey` required, `shared: true` and `trust: unlocked`
+written, no secrets (slaude generates the key pair), and an agent allows one with
+`environment: { allow: [env:<name>] }`. `render --check` parses every file and
+fails when an agent references a name the folder does not hold; without the
+folder it only warns, because the reference is then checked against the deployed
+definitions at sync.
+
+A sync that carries `environment:` is refused (a 422 naming the agent) while
+`SLAUDE_REMOTE` is off on the gateway, and refusals name only what was submitted,
+never a stored definition. `personas export` does not carry environments: a
+persona that has an `environment` key is refused rather than exported without it.
+The JSON Schema for a definition file is
+`https://barockok.github.io/slaude/schemas/environment.schema.json`.
+
 ## Validate on pull requests
 
 ```sh

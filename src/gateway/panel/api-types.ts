@@ -527,12 +527,30 @@ export interface PersonalEnvironmentView {
   createdAt: number;
 }
 
+/** A shared environment from environments/<name>.yaml. Name and state only: never the host, port, user, host key or any secret. */
+export interface SharedEnvironmentView {
+  tenant: string;
+  /** The reference agents allow: env:<name>. */
+  ref: string;
+  description: string | null;
+  retired: boolean;
+  /** The deploy revision that last changed it. */
+  revision: string | null;
+  /** slaude's public key for this machine, to install on it (public by nature). Null when none is stored. */
+  publicKey: string | null;
+  /** Agents whose `environment.allow` names it. */
+  allowedBy: string[];
+  updatedAt: number;
+}
+
 /** GET /panel/api/environments */
 export interface EnvironmentsResponse {
   /** Empty in a single-process deployment or without Redis. */
   nodePools: NodePoolView[];
   personas: Array<{ name: string; runsOn: string }>;
   personal: PersonalEnvironmentView[];
+  /** Shared environments. Filled for a superadmin only; empty for an operator. */
+  shared: SharedEnvironmentView[];
 }
 
 /** GET /panel/api/console-roles: the console's email allowlist (read-only). */

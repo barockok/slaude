@@ -33,7 +33,8 @@ import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { TurnQueues, type TurnJob, type TurnTarget } from "../../queue/turns";
 import { isFailureCode } from "./failure-codes";
 import { personaNeedsGuardrails } from "../../guardrails/node";
-import { AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, GUARDRAILS_CAPABILITY } from "../../guardrails/capability";
+import { AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, definitionNeedsSharedEnv, GUARDRAILS_CAPABILITY, SHARED_ENV_CAPABILITY } from "../../guardrails/capability";
+import { turnKindOf } from "../../remote/definitions/decision";
 import { managedPersonaDefinition } from "../../persona/registry";
 import { emitAudit } from "../../audit/emit";
 import { resolve } from "node:path";
@@ -349,6 +350,27 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
     }
   }
 
+  /** The thread is bound to a shared environment this turn may not use: not queued, not run locally, told once per thread per hour. */
+  const sharedNoticeAt = new Map<string, number>();
+  function refuseSharedEnv(sessionId: string, persona: string, tenantId: string, meta: DispatchMeta, refusal: { code: string; message: string }): void {
+    emitAudit({
+      tenantId, persona, actorKind: "system", actorId: "dispatch", action: "environment.refused", targetKind: "thread",
+      targetId: meta.threadTs, decision: "refused", sessionId, channelId: meta.channelId, threadTs: meta.threadTs,
+      summary: "the thread is bound to a shared environment this turn may not use; the turn was not dispatched",
+      details: { agent: persona, code: refusal.code },
+    });
+    console.warn(`[dispatch] session=${sessionId} persona=${persona}: shared environment refused (${refusal.code}); not dispatched`);
+    const key = `${meta.channelId}:${meta.threadTs}`;
+    const now = Date.now();
+    // The event is always emitted, so the message's reaction and status line settle; only the text is limited to once per thread per hour.
+    const quiet = now - (sharedNoticeAt.get(key) ?? 0) < 60 * 60_000;
+    if (!quiet) {
+      sharedNoticeAt.set(key, now);
+      if (sharedNoticeAt.size > 2000) sharedNoticeAt.delete(sharedNoticeAt.keys().next().value as string);
+    }
+    agent.emit("event", { type: "error", sessionId, error: refusal.message, code: refusal.code, ...(quiet ? { quiet: true } : {}) } as AgentEvent);
+  }
+
   /** No capable node in time: audited, and the thread is told (the turn is not queued). */
   async function refuseUnsupported(sessionId: string, persona: string, tenantId: string, meta: DispatchMeta, label: string, cap: string): Promise<void> {
     const channelSession = cap === CHANNEL_SESSION_CAPABILITY;
@@ -364,13 +386,15 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       sessionId,
       channelId: meta.channelId,
       threadTs: meta.threadTs,
-      summary: `no node on label ${label} ${channelSession ? "runs channel sessions" : "applies owner guardrails"}; the turn was not dispatched`,
+      summary: `no node on label ${label} ${cap === SHARED_ENV_CAPABILITY ? "runs shared environments" : channelSession ? "runs channel sessions" : "applies owner guardrails"}; the turn was not dispatched`,
       details: { agent: persona, label, capability: cap, waitedMs: guardrailWaitMs },
     });
     console.warn(`[dispatch] session=${sessionId} persona=${persona}: no ${cap} node on label ${label}; not dispatched`);
-    agent.emit("event", (channelSession
-      ? { type: "error", sessionId, error: "no channel-session-capable node", code: "CHANNEL_SESSION_UNSUPPORTED" }
-      : { type: "error", sessionId, error: "no guardrails-capable node", code: "GUARDRAILS_UNSUPPORTED" }) as AgentEvent);
+    agent.emit("event", (cap === SHARED_ENV_CAPABILITY
+      ? { type: "error", sessionId, error: "no shared-env-capable node", code: "SHARED_ENV_UNSUPPORTED" }
+      : channelSession
+        ? { type: "error", sessionId, error: "no channel-session-capable node", code: "CHANNEL_SESSION_UNSUPPORTED" }
+        : { type: "error", sessionId, error: "no guardrails-capable node", code: "GUARDRAILS_UNSUPPORTED" }) as AgentEvent);
   }
 
   return {
@@ -413,11 +437,18 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // A channel session's turn has the trigger's ts as its thread, a message
       // at root: a /1on1 under that message does not touch the session.
       const identityThread = meta.channelSession ? channelSessionKey(meta.channelId) : meta.threadTs;
-      const { runAsUser, lock: lockClaim, remote: remoteClaim } = await threadIdentity(
+      const { runAsUser, lock: lockClaim, remote: remoteClaim, refused } = await threadIdentity(
         meta.channelId,
         identityThread,
         async () => meta.oauthUser ?? (await agent.resolveEffectiveIdentity(session.id, meta.channelId, identityThread)),
+        { tenant: tenantId, persona: personaId, turnKind: turnKindOf(meta) },
       );
+      // The thread is bound to a shared environment this turn may not use. Nothing runs, and nothing
+      // runs on the server in its place: the thread is told once an hour.
+      if (refused) {
+        refuseSharedEnv(session.id, personaId, tenantId, meta, refused);
+        return;
+      }
       // The node label the persona runs on, signed into the token (the /v1
       // gate checks it against the node's credential) and carried in the payload.
       const label = runsOnFor(personaId);
@@ -464,10 +495,14 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // be read is not decided here: the node's bundle fetch fails closed.
       // An agent.yaml persona needs a node that understands its definition.
       const needsDefinition = definitionNeedsNode(managedPersonaDefinition(personaId));
-      const needs = !!meta.channelSession || needsDefinition || (await (opts.needsGuardrails ?? personaNeedsGuardrails)(tenantId, personaId).catch(() => false));
-      // A node with this capability is newer than the other two.
-      const cap = meta.channelSession ? CHANNEL_SESSION_CAPABILITY : needsDefinition ? AGENT_DEFINITION_CAPABILITY : GUARDRAILS_CAPABILITY;
-      const warmOk = !!loc && loc.fresh && (await registry.nodeCarries(loc.node, label)) && (!needs || (await registry.nodeCaps(loc.node)).has(cap));
+      // An agent that allows shared environments needs a node that applies the shared-environment rules.
+      const needsShared = definitionNeedsSharedEnv(managedPersonaDefinition(personaId));
+      const needs = !!meta.channelSession || needsDefinition || needsShared || (await (opts.needsGuardrails ?? personaNeedsGuardrails)(tenantId, personaId).catch(() => false));
+      // A node with this capability is newer than the others, so it is the one waited for.
+      const cap = needsShared ? SHARED_ENV_CAPABILITY : meta.channelSession ? CHANNEL_SESSION_CAPABILITY : needsDefinition ? AGENT_DEFINITION_CAPABILITY : GUARDRAILS_CAPABILITY;
+      // Every capability this turn needs, for the reaper (a re-pinned job goes only to a node that has all of them).
+      const requiredCaps = [...new Set([...(needsShared ? [SHARED_ENV_CAPABILITY] : []), ...(meta.channelSession ? [CHANNEL_SESSION_CAPABILITY] : []), cap])];
+      const warmOk = !!loc && loc.fresh && (await registry.nodeCarries(loc.node, label)) && (!needs || ((caps) => requiredCaps.every((c) => caps.has(c)))(await registry.nodeCaps(loc.node)));
       let target: TurnTarget = warmOk ? { node: loc!.node } : { label };
       if (needs && !warmOk) {
         const capable = await waitForCapableNodes(label, cap);
@@ -498,7 +533,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           ...(meta.backgroundRunId ? { bgRun: meta.backgroundRunId } : {}),
           ...(meta.wake ? { wake: meta.wake } : {}),
           // The reaper re-pins this job only to a capable node.
-          ...(needs ? { requiresCaps: [cap] } : {}),
+          ...(needs ? { requiresCaps: requiredCaps } : {}),
           // The agent's proactive folder is shared by heartbeat channel-post
           // threads: the node serialises turns there across nodes by this field.
           ...(isProactiveWorkspace(session.working_dir) ? { workspace: resolve(session.working_dir!) } : {}),

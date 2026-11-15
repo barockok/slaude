@@ -36,7 +36,7 @@ import { skillRootsFor } from "../../skills/loader";
 import { json, notFound } from "./http";
 import { bridgedServerNames } from "../core/external-mcp";
 import { voiceBundleFromEnv, type VoiceBundle } from "../../voice/config";
-import { AGENT_DEFINITION_CAPABILITY, bundleGuardrailsFor, CAPABILITIES_HEADER, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, GUARDRAILS_CAPABILITY, hasCapability, type BundleGuardrails } from "../../guardrails/node";
+import { AGENT_DEFINITION_CAPABILITY, bundleGuardrailsFor, CAPABILITIES_HEADER, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, definitionNeedsSharedEnv, GUARDRAILS_CAPABILITY, hasCapability, SHARED_ENV_CAPABILITY, type BundleGuardrails } from "../../guardrails/node";
 import { emitAudit } from "../../audit/emit";
 
 export interface RuntimeBundle {
@@ -87,7 +87,7 @@ export interface RuntimeBundle {
    *  and `soulJson` is compiled. `skills` limits the skills a session may
    *  load (absent: every skill). A node without the agent-definition/1
    *  capability is refused such a bundle. */
-  definition?: { skills?: string[]; guardrails?: string[] };
+  definition?: { skills?: string[]; guardrails?: string[]; environment?: { allow: string[]; default?: string } };
 }
 
 type PersonaRow = {
@@ -311,7 +311,7 @@ async function buildManagedBundle(tenantId: string, personaId: string, label?: s
 }
 
 function bundleDefinition(d: NonNullable<EffectivePersona["definition"]>): NonNullable<RuntimeBundle["definition"]> {
-  return { ...(d.skills ? { skills: d.skills } : {}), ...(d.guardrails ? { guardrails: d.guardrails } : {}) };
+  return { ...(d.skills ? { skills: d.skills } : {}), ...(d.guardrails ? { guardrails: d.guardrails } : {}), ...(d.environment ? { environment: d.environment } : {}) };
 }
 
 /**
@@ -598,6 +598,26 @@ export async function handleTenantRuntime(
       details: { agent: bundle.personaId, capability: AGENT_DEFINITION_CAPABILITY },
     });
     return new Response(JSON.stringify({ error: "this node does not apply agent definitions", code: "GUARDRAILS_UNSUPPORTED", transient: false }), {
+      status: 409,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  // An agent that allows shared environments is served only to a node that applies the per-turn rules for them.
+  if (definitionNeedsSharedEnv(bundle.definition) && !hasCapability(req.headers.get(CAPABILITIES_HEADER), SHARED_ENV_CAPABILITY)) {
+    emitAudit({
+      tenantId,
+      persona: bundle.personaId,
+      actorKind: "system",
+      actorId: ctx.nodeId ?? "node",
+      action: "guardrail.node.unsupported",
+      targetKind: "node",
+      targetId: ctx.nodeId ?? "unknown",
+      decision: "refused",
+      sessionId: ctx.sessionId ?? null,
+      summary: `a node without the ${SHARED_ENV_CAPABILITY} capability asked for an agent that allows shared environments; refused`,
+      details: { agent: bundle.personaId, capability: SHARED_ENV_CAPABILITY },
+    });
+    return new Response(JSON.stringify({ error: "this node does not run shared environments", code: "SHARED_ENV_UNSUPPORTED", transient: false }), {
       status: 409,
       headers: { "content-type": "application/json" },
     });

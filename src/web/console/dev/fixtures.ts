@@ -488,5 +488,9 @@ function environmentFixtures(now: number): EnvironmentsResponse {
       { id: "env_02", owner: { teamId: "TWORKSPACE", userId: "UBOB" }, name: "build-box", kind: "ssh", defaultDir: "/srv/build", createdAt: now - 3 * DAY },
       { id: "env_03", owner: { teamId: "TWORKSPACE", userId: "UCAROL" }, name: "sandbox", kind: "ssh", defaultDir: null, createdAt: now - 6 * HOUR },
     ],
+    shared: [
+      { tenant: "default", ref: "env:team-sandbox", description: "Shared build box for the platform team.", retired: false, revision: "r42", publicKey: "ssh-ed25519 AAAAexample slaude:env:team-sandbox", allowedBy: ["scout"], updatedAt: now - 2 * DAY },
+      { tenant: "default", ref: "env:old-box", description: null, retired: true, revision: "r30", publicKey: null, allowedBy: [], updatedAt: now - 20 * DAY },
+    ],
   };
 }

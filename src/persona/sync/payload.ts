@@ -21,6 +21,7 @@ import { GUARDRAIL_SLUG_RE, MAX_GUARDRAIL_BYTES } from "../../guardrails/format"
 import { MAX_GUARDRAILS } from "../../guardrails/files";
 import { SKILL_SLUG_RE } from "../../skills/loader";
 import { SoulDataSchema } from "../../soul/data";
+import { ENV_ALLOW_MAX, ENV_DEF_NAME_RE } from "../../remote/definitions/name";
 
 export { PayloadError };
 
@@ -43,6 +44,9 @@ export class UnresolvedVarError extends PayloadError {
  *   5  adds a top-level `guardrails` list (owner guardrails, GUARDRAIL.md text)
  *   6  adds `definition` (a persona defined by one agent.yaml: its compiled soul
  *      structure and skill and guardrail lists)
+ *   7  adds `definition.environment` (the shared environments an agent allows,
+ *      by name) and a top-level `environments` list. Used only when a payload
+ *      carries one of them, so a payload without stays at its old version.
  *
  * Each persona field newer than version 1 is one entry in PERSONA_FIELD_VERSION.
  * `render` writes the highest version any field a persona sets needs, so a
@@ -51,7 +55,9 @@ export class UnresolvedVarError extends PayloadError {
  * to every KB); a payload that sets none stays 1 and deploys to any gateway.
  */
 export const PERSONA_FIELD_VERSION = { provider: 2, runsOn: 2, kbSources: 3, background: 4, definition: 6 } as const;
-export const SUPPORTED_PAYLOAD_VERSION = 6;
+export const SUPPORTED_PAYLOAD_VERSION = 7;
+/** The payload version `definition.environment` (and a top-level `environments` list) needs. */
+export const ENVIRONMENT_PAYLOAD_VERSION = 7;
 /** The payload version a non-empty top-level `guardrails` list needs. */
 export const GUARDRAILS_PAYLOAD_VERSION = 5;
 
@@ -60,9 +66,12 @@ export const GUARDRAILS_PAYLOAD_VERSION = 5;
  * when it carries any guardrail; 1 when none. An empty `guardrails` list
  * needs no newer gateway (an older one has no guardrails to remove).
  */
-export function payloadVersionFor(personas: ReadonlyArray<object>, guardrails: ReadonlyArray<unknown> = []): number {
+export function payloadVersionFor(personas: ReadonlyArray<object>, guardrails: ReadonlyArray<unknown> = [], environments?: ReadonlyArray<unknown>): number {
   let v = guardrails.length > 0 ? GUARDRAILS_PAYLOAD_VERSION : 1;
+  // Present, even empty: an empty list retires every definition, which an older gateway would silently ignore.
+  if (environments !== undefined) v = Math.max(v, ENVIRONMENT_PAYLOAD_VERSION);
   for (const p of personas) {
+    if ((p as { definition?: { environment?: unknown } }).definition?.environment !== undefined) v = Math.max(v, ENVIRONMENT_PAYLOAD_VERSION);
     for (const [field, need] of Object.entries(PERSONA_FIELD_VERSION)) {
       if ((p as Record<string, unknown>)[field] !== undefined) v = Math.max(v, need);
     }
@@ -108,6 +117,14 @@ const definitionSpec = z
     skills: z.array(z.string().regex(SKILL_SLUG_RE, "skill slugs must match the skill slug pattern")).max(DEFINITION_LIST_MAX).optional(),
     // Guardrails that also apply to this agent; never removes one.
     guardrails: z.array(z.string().regex(GUARDRAIL_SLUG_RE, "guardrail slugs must match the guardrail slug pattern")).max(DEFINITION_LIST_MAX).optional(),
+    // Shared environments by name (no `env:` prefix). `default` is stored and not applied yet.
+    environment: z
+      .object({
+        allow: z.array(z.string().regex(ENV_DEF_NAME_RE, "environment names must match the environment name pattern")).min(1).max(ENV_ALLOW_MAX),
+        default: z.string().regex(ENV_DEF_NAME_RE, "environment names must match the environment name pattern").optional(),
+      })
+      .strict()
+      .optional(),
     soulData: SoulDataSchema,
   })
   .strict();
@@ -208,6 +225,17 @@ const guardrailSpec = z
   .strict();
 export type GuardrailSpec = z.infer<typeof guardrailSpec>;
 
+/** One environment definition as the deploy repo carries it: `environments/<name>.yaml`. The text is parsed by the gateway (one authority), never trusted as parsed. */
+export const ENVIRONMENTS_MAX = 64;
+export const ENVIRONMENT_YAML_MAX = 16 * 1024;
+const environmentSpec = z
+  .object({
+    name: z.string().regex(ENV_DEF_NAME_RE, "environment name must match the environment name pattern"),
+    yaml: z.string().max(ENVIRONMENT_YAML_MAX, `an environment file is at most ${ENVIRONMENT_YAML_MAX} characters`),
+  })
+  .strict();
+export type EnvironmentSpec = z.infer<typeof environmentSpec>;
+
 const payloadSchema = z.object({
   version: z.number().int().min(1).default(1),
   revision: z.string().min(1),
@@ -217,6 +245,9 @@ const payloadSchema = z.object({
   // Absent: the stored git guardrails are left as they are. Present (even
   // empty): the deploy repo's whole set; a git guardrail it no longer lists is removed.
   guardrails: z.array(guardrailSpec).max(MAX_GUARDRAILS, `at most ${MAX_GUARDRAILS} guardrails`).optional(),
+  // Absent: the stored environment definitions are left as they are. Present
+  // (even empty): the deploy repo's whole set; a definition it no longer lists is retired.
+  environments: z.array(environmentSpec).max(ENVIRONMENTS_MAX, `at most ${ENVIRONMENTS_MAX} environments`).optional(),
 });
 export type SyncPayload = Omit<z.infer<typeof payloadSchema>, "personas"> & { personas: PersonaSpec[] };
 
@@ -352,6 +383,17 @@ export function parsePayload(
     for (const g of p.guardrails) {
       if (slugs.has(g.slug)) throw new PayloadError(`duplicate guardrail '${g.slug}'`);
       slugs.add(g.slug);
+    }
+  }
+  const needsEnv = p.environments !== undefined || p.personas.some((x) => x.definition?.environment !== undefined);
+  if (needsEnv && (p.version ?? 1) < ENVIRONMENT_PAYLOAD_VERSION) {
+    throw new PayloadError(`environments need payload version ${ENVIRONMENT_PAYLOAD_VERSION} (this payload says ${p.version})`);
+  }
+  if (p.environments) {
+    const seen = new Set<string>();
+    for (const e of p.environments) {
+      if (seen.has(e.name)) throw new PayloadError(`duplicate environment '${e.name}'`);
+      seen.add(e.name);
     }
   }
   const names = new Set<string>();

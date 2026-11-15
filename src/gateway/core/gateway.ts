@@ -77,7 +77,8 @@ import {
 } from "./remote-command";
 import { activeRemoteTarget } from "../../remote/active";
 import { sweepIdleSandboxes } from "../../remote/env-runtime";
-import { makeMonoRemoteFactory, monoRemoteResolver } from "../../remote/mono";
+import { makeMonoRemoteFactory, monoRemoteResolver, monoSharedBindingGuard } from "../../remote/mono";
+import { turnKindOf } from "../../remote/definitions/decision";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { surfaceOfSession } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
@@ -1321,7 +1322,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   if (env.remote.enabled() && env.role() !== "gateway") {
     // Mono: the query runs in this process, so resolve the target from the DB
     // and open the helper here. In split deploys the node does this from claims.
-    agent.setRemote(monoRemoteResolver, makeMonoRemoteFactory());
+    // A shared environment is checked per persona, and only for an interactive turn.
+    const kindOf = (sessionId: string) => {
+      const c = routes.get(sessionId)?.ctx;
+      return c && !c.wake && !c.unattended ? turnKindOf({ origin: c.origin }) : turnKindOf({ origin: c?.origin, wake: c?.wake, backgroundRunId: c?.unattended ? "unattended" : undefined });
+    };
+    agent.setRemote((sid) => monoRemoteResolver(sid, kindOf), makeMonoRemoteFactory(undefined, kindOf));
+  } else if (env.role() !== "gateway") {
+    // Remote mode is off: nothing is resolved, except that a thread still bound to a shared machine refuses rather than running on the server.
+    agent.setRemote(monoSharedBindingGuard, makeMonoRemoteFactory());
   }
 
 
@@ -2190,9 +2199,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await outClientForPersona(i.personaId, i.app).chat.postMessage({ channel: channelId, thread_ts: threadTs, text, mrkdwn: true }); // runtime-ui: gateway notice, card or command reply
     };
     const isManager = await managerAt("gateway.remote_ctx.role", i.personaId, userId, teamId);
+    // The conversation's tenant, as dispatch reads it (the session's own column; sqlite has none).
+    const tenantId = ((await Sessions.findById(sessionId).catch(() => null)) as { tenant_id?: string } | null)?.tenant_id ?? "default";
     return {
       teamId, channelId, threadTs, userId, sessionId,
       isManager,
+      personaId: i.personaId ?? "default",
+      tenantId,
       reply,
       sayPrivately: async (text) => {
         if (canEphemeral) {
@@ -2643,7 +2656,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // posts once. Without one (mono/local) it is the session's current inbound
           // message, so the MCP-circuit error and the result error of one turn post
           // once. The guard is an in-process Set: it does NOT span replicas.
-          if (firstFailurePost(e.jobId ? `${e.sessionId}:job:${e.jobId}` : `${e.sessionId}:ts:${route.ctx.inboundTs}`)) {
+          if (!e.quiet && firstFailurePost(e.jobId ? `${e.sessionId}:job:${e.jobId}` : `${e.sessionId}:ts:${route.ctx.inboundTs}`)) {
             try {
               await botClientFor(appOf(route.ctx)).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
                 channel: route.ctx.channel,

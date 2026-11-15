@@ -195,7 +195,7 @@ export type AgentEvent =
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
   // `error` is the RAW detail for logs only; Slack gets the fixed text for `code`
   // (gateway/core/failure-codes.ts). `jobId` lets the gateway post once per job.
-  | { type: "error"; sessionId: string; error: string; code?: FailureCode; jobId?: string }
+  | { type: "error"; sessionId: string; error: string; code?: FailureCode; jobId?: string; /** Settle the turn (reaction, status line) but post no failure text: its notice was already posted. */ quiet?: boolean }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
   | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
 
@@ -1992,7 +1992,7 @@ export class AgentManager extends EventEmitter {
       channelId: row.slack_channel_id,
       lock,
       remote: remoteTarget
-        ? { userId: remoteTarget.userId, dir: remoteTarget.dir, ...(remoteTarget.env ? { env: { name: remoteTarget.env.name, kind: remoteTarget.env.kind, trust: remoteTarget.env.trust } } : {}) }
+        ? { userId: remoteTarget.userId, dir: remoteTarget.dir, ...(remoteTarget.env ? { env: { name: remoteTarget.env.name, kind: remoteTarget.env.kind, trust: remoteTarget.env.trust, ...(remoteTarget.env.shared ? { shared: true } : {}) } } : {}) }
         : null,
       mcpServers: strictNames ? (Object.keys(strictNames).length > 0 ? strictNames : undefined) : mcpServers,
       strictMcp: !!localMcp,

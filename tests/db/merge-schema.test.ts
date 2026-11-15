@@ -86,7 +86,7 @@ describe("upgrade from 0040", () => {
   test("pg: 0041 applies on top of 0040 data, touches nothing else, and reruns as a no-op", async () => {
     const db = await openDb({ dialect: "pg", driver: "pglite" });
     try {
-      const all = loadMigrations();
+      const all = loadMigrations().filter((m) => m.version <= "0041");
       await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version < "0041") });
       await db.run(`INSERT INTO users (id, created_at, updated_at) VALUES ('u1', 1, 1)`);
       const r = await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version <= "0041") });

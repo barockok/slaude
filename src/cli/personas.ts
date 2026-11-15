@@ -31,6 +31,7 @@
  *       sets Wake, Highest or Cooldown under ## Proactive is refused (the file
  *       has no key for them and would be looser) unless --allow-loss.
  */
+import { looksLikeToken } from "../secrets/token-shape";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify as yamlStringify } from "yaml";
@@ -42,12 +43,29 @@ import { definitionGuardrailWarnings, parsePayload, PayloadError, PERSONA_NAME_R
 import { AGENT_YAML_MODELINE } from "../persona/agent-schema";
 import { AGENT_YAML, agentDocument, documentPartsFromSoul, exportedChannelSettings, LEGACY_FILES, parseAgentYaml, proseOnlySoul } from "../persona/agent-def";
 import { extractSoulData } from "./legacy-soul-extract";
+import { parseEnvironmentYaml } from "../remote/definitions/parse";
+import { ENV_DEF_NAME_RE } from "../remote/definitions/name";
 import { migratePersona } from "../persona/migrate";
 import type { SoulData } from "../soul/data";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
 // The gateway only resolves ${PERSONA_UPPER_CASE_NAME}; persona names are lower-case with hyphens.
 const varFor = (name: string) => `${PERSONA_VAR_PREFIX}${name.replace(/-/g, "_").toUpperCase()}_XOXP`;
+
+/** Every environments/<name>.yaml of a deploy repository, parsed (and so vetted) and kept as written. */
+export function readEnvironmentDir(dir: string): Array<{ name: string; yaml: string }> {
+  const out: Array<{ name: string; yaml: string }> = [];
+  for (const f of readdirSync(dir).sort()) {
+    const m = f.match(/^(.+)\.yaml$/);
+    if (!m || !statSync(join(dir, f)).isFile()) throw new PayloadError(`environments/ holds only <name>.yaml files; '${ENV_DEF_NAME_RE.test(f.replace(/\.[^.]*$/, "")) ? f : "an entry"}' is not one`);
+    const name = m[1]!;
+    if (!ENV_DEF_NAME_RE.test(name)) throw new PayloadError(`environments/: '${name.slice(0, 48).replace(/[^A-Za-z0-9._-]/g, "?")}.yaml' is not a valid environment name (${ENV_DEF_NAME_RE.source})`);
+    const yaml = readFileSync(join(dir, f), "utf8");
+    parseEnvironmentYaml(name, yaml);
+    out.push({ name, yaml });
+  }
+  return out;
+}
 
 const YAML_KEYS = new Set(["slackUserId", "userToken", "model", "provider", "runsOn", "kbSources", "background"]);
 
@@ -140,7 +158,21 @@ export function renderDir(
       if (bad.length) onWarnings(bad);
     }
   }
-  const payload = parsePayload({ version: payloadVersionFor(personas, guardrails), ...meta, personas, ...(guardrails ? { guardrails } : {}) });
+  // environments/<name>.yaml: shared machines. A folder that exists (even empty) is the whole set;
+  // no folder leaves the stored definitions as they are. The raw text is what the gateway parses;
+  // it is parsed here too, so a bad file fails the pull request.
+  let environments: Array<{ name: string; yaml: string }> | undefined;
+  if (existsSync(join(dir, "environments"))) {
+    environments = readEnvironmentDir(join(dir, "environments"));
+  }
+  const refs = personas.flatMap((p) => ((p as { definition?: { environment?: { allow: string[] } } }).definition?.environment?.allow ?? []).map((n) => ({ persona: p.name, name: n })));
+  if (environments) {
+    const have = new Set(environments.map((e) => e.name));
+    for (const r of refs) if (!have.has(r.name)) throw new PayloadError(`persona '${r.persona}': environment.allow names env:${r.name}, but this repository has no environments/${r.name}.yaml`);
+  } else if (refs.length) {
+    definitionWarnings.push(`persona '${refs[0]!.persona}' allows environments, but this repository has no environments/ folder: the references are checked against the deployed definitions at sync, not here`);
+  }
+  const payload = parsePayload({ version: payloadVersionFor(personas, guardrails, environments), ...meta, personas, ...(guardrails ? { guardrails } : {}), ...(environments ? { environments } : {}) });
   if (unknown.length) onUnknown?.(capPaths(unknown));
   const warnings = [
     ...providerWarnings(payload),
@@ -164,23 +196,6 @@ const PLACEHOLDER_ONLY = /^\$\{PERSONA_[A-Z0-9_]+\}$/;
 
 const SECRET_ARG_RE = /(key=|token=|secret=|password=|passwd=|bearer )/i;
 const SECRET_FLAG_RE = /^--?[a-z0-9_-]*(key|token|secret|password)$/i;
-/**
- * Token shapes refused anywhere export cannot placeholder: a url path, a
- * command string, an arg. Slack, GitHub, OpenAI-style, AWS access keys, a
- * Bearer prefix, a JWT, and any run of 32+ token characters (most hosted
- * secrets). False positives fail safe: the operator edits the config first.
- */
-const TOKEN_SHAPES: RegExp[] = [
-  /xox[a-z]-/i,
-  /\bgh[opusr]_[A-Za-z0-9]/,
-  /github_pat_/i,
-  /\bsk-[A-Za-z0-9_-]{8,}/,
-  /AKIA[0-9A-Z]{16}/,
-  /\bbearer\b/i,
-  /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\./,
-  /[A-Za-z0-9_-]{32,}/,
-];
-const looksLikeToken = (s: string) => TOKEN_SHAPES.some((re) => re.test(s));
 
 /** The only keys export knows how to make safe. Anything else could hold a
  *  credential export has no way to recognise, so it is refused, not copied. */
@@ -278,6 +293,14 @@ function scrubMcp(persona: string, file: string, raw: string, reg: Map<string, s
   return JSON.stringify(cfg, null, 2) + "\n";
 }
 
+/** Export never carries an `environment` key and never invents a definition: a persona that has one is refused, not exported without it. */
+function refuseEnvironmentKey(name: string, dir: string, cfg: object): void {
+  const inAgentYaml = /^environment\s*:/m.test(read(join(dir, AGENT_YAML)) ?? "");
+  if ("environment" in cfg || inAgentYaml) {
+    throw new PayloadError(`persona '${name}': has an environment key, which export cannot carry (shared machines are defined in environments/<name>.yaml in the deploy repository); copy its agent.yaml as it is instead`);
+  }
+}
+
 export function exportHome(home: string, out: string): { variables: string[] } {
   const reg = new Map<string, string>();
   const argsServers: string[] = [];
@@ -304,6 +327,7 @@ export function exportHome(home: string, out: string): { variables: string[] } {
       } catch {
         throw new PayloadError(`persona '${name}': config.json is malformed`);
       }
+      refuseEnvironmentKey(name, d, cfg);
       const lines = [`slackUserId: ${JSON.stringify(cfg.slackUserId ?? "")}`];
       // Carried only when the persona already names a node label; render
       // validates it against the label pattern like any other field.
@@ -390,6 +414,7 @@ export async function exportAgentYaml(
       } catch {
         throw new PayloadError(`persona '${name}': config.json is malformed`);
       }
+      refuseEnvironmentKey(name, d, cfg);
       if (cfg.runsOn !== undefined && (typeof cfg.runsOn !== "string" || !LABEL_RE.test(cfg.runsOn))) {
         throw new PayloadError(`persona '${name}': config.json runsOn is not a valid node label`);
       }

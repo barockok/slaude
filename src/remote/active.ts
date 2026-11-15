@@ -37,6 +37,6 @@ export async function activeRemoteTarget(channelId: string, threadTs: string): P
     userId: env.userId,
     addr: kind.legacyAddr?.(env) ?? "",
     dir: binding.dir,
-    env: { id: env.id, kind: env.kind, trust, name: env.name, hash: envHash(env, Number(binding.generation)) },
+    env: { id: env.id, kind: env.kind, trust, name: env.name, hash: envHash(env, Number(binding.generation)), ...(env.source === "definition" ? { shared: true as const } : {}) },
   };
 }

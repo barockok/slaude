@@ -21,6 +21,7 @@ import { SKILL_SLUG_RE } from "../skills/loader";
 import { CHANNEL_ID_RE, USER_ID_RE } from "../refs/ids";
 import { anchored, CHANNEL_REF_SRC, parseRef, SRC, USER_REF_SRC } from "../refs/parse";
 import type { RefRole } from "../refs/types";
+import { ENV_ALLOW_MAX, ENV_DEF_NAME_RE } from "../remote/definitions/name";
 
 export { CHANNEL_ID_RE, USER_ID_RE };
 
@@ -255,6 +256,37 @@ const proactiveSchema = z
   )
   .strict();
 
+const ENV_REF_MSG = "must be an environment reference such as env:team-sandbox (lower case letters, digits and hyphens, at most 41 characters after env:)";
+const ENV_REF_RE = new RegExp(ENV_DEF_NAME_RE.source.replace(/^\^/, "^env:"));
+/** `env:<name>` and nothing else: an internal env reference whose name is also a valid definition name. */
+const envRef = z
+  .string(typeMessage({ other: ENV_REF_MSG }))
+  .regex(ENV_REF_RE, ENV_REF_MSG)
+  .superRefine((v, ctx) => {
+    const r = parseRef(v, ["other"]);
+    if (!r.ok || r.ref.kind !== "internal" || r.ref.type !== "env" || !ENV_DEF_NAME_RE.test(r.ref.id)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: ENV_REF_MSG });
+    }
+  });
+
+/** What an agent.yaml `environment:` key may hold. Configuration is never written here: it lives in environments/<name>.yaml. */
+export const ENVIRONMENT_INLINE_MSG = "environment configuration cannot be written in agent.yaml: define it in environments/<name>.yaml and refer to it as env:<name>";
+const environmentSchema = z
+  .object(
+    {
+      allow: z
+        .array(envRef, typeMessage({ other: "must be a list of environment references", missing: "is required", null: "is required" }))
+        .min(1, "must list at least one environment")
+        .max(ENV_ALLOW_MAX, `lists more than ${ENV_ALLOW_MAX} environments`)
+        .describe("Shared environments this agent may use, as env:<name> references to files under environments/. A thread runs on one only after /env use env:<name>, and only for turns of an agent that allows it. 1 to 16 entries, no repeats. Required. Example: [env:team-sandbox]"),
+      default: optional(
+        envRef.describe("One of the allowed environments to use by default. It is read and checked to be in allow, and is not applied yet: a thread still needs /env use. Example: env:team-sandbox"),
+      ),
+    },
+    typeMessage({ other: "must be a mapping with allow and default" }),
+  )
+  .strict();
+
 export const AgentSchema = z
   .object(
     {
@@ -336,6 +368,7 @@ export const AgentSchema = z
           .strict()
           .describe("Knowledge bases and background learning."),
       ),
+      environment: optional(environmentSchema.describe("Which shared environments (environments/<name>.yaml) this agent may run threads on. Leave the key out for none. Only references go here: the machine itself is defined in its own file.")),
       proactive: optional(proactiveSchema.describe("What is not about one channel: further channels to read, sources to watch, quiet hours and the post cap. Waking is set per channel under channels.")),
       channels: optional(
         z

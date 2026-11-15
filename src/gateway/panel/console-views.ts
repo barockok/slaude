@@ -7,8 +7,12 @@ import * as AgentGrants from "../../db/agent-grants";
 import { effectiveGrants, grantFromRow } from "../../access/grants";
 import { grantState } from "../../access/grant-state";
 import { listMandates } from "../../mandate";
-import { getPersonaRegistry, labelsInUse, managedPersonaModel, runsOnFor, type PersonaRegistry } from "../../persona/registry";
-import { listAllEnvSummaries } from "../../db/environments";
+import { getPersonaRegistry, labelsInUse, managedPersonaDefinition, managedPersonaModel, runsOnFor, type PersonaRegistry } from "../../persona/registry";
+import { listAllEnvSummaries, listDefinitionSummaries } from "../../db/environments";
+import { getKey } from "../../db/remote";
+import { desiredPersonas } from "../../db/personas";
+import { dbDialect } from "../../db/client";
+import { definitionTeam } from "../../remote/definitions/resolve";
 import type { Registry } from "../../queue/registry";
 import { agentDefinitionView } from "./definition-view";
 import { channelLabels, MAX_PER_ANSWER, plainChannelRefs, type SlackNames } from "./slack-names";
@@ -17,6 +21,7 @@ import type {
   AgentSummary,
   ConsoleGrantView,
   EnvironmentsResponse,
+  SharedEnvironmentView,
   GrantView,
   MandateView,
   NodePoolView,
@@ -237,9 +242,34 @@ export async function nodePools(
 export async function environmentsView(deps: {
   role: "gateway" | "mono";
   registry: Pick<Registry, "liveNodeDetails"> | null;
+  /** Shared environments are listed for a superadmin only. */
+  canSeeShared?: boolean;
 }): Promise<EnvironmentsResponse> {
   const r = getPersonaRegistry();
+  const shared: SharedEnvironmentView[] = [];
+  if (deps.canSeeShared) {
+    // The agents that allow a definition are those of ITS tenant, read from the stored personas; the process registry is one tenant's view (and the only one on sqlite).
+    const byTenant = new Map<string, Array<{ name: string; allow: string[] }>>();
+    const agentsOf = async (tenant: string) => {
+      if (!byTenant.has(tenant)) {
+        byTenant.set(tenant, dbDialect() === "pg"
+          ? (await desiredPersonas(tenant)).map((p) => ({ name: p.name, allow: p.definition?.environment?.allow ?? [] }))
+          : agentNames(r).map((a) => ({ name: a, allow: managedPersonaDefinition(a, r)?.environment?.allow ?? [] })));
+      }
+      return byTenant.get(tenant)!;
+    };
+    for (const d of await listDefinitionSummaries()) {
+      const key = await getKey(definitionTeam(d.tenant), d.name).catch(() => null);
+      shared.push({
+        tenant: d.tenant, ref: `env:${d.name}`, description: d.description, retired: d.retired, revision: d.revision,
+        publicKey: key?.publicKey ?? null,
+        allowedBy: (await agentsOf(d.tenant)).filter((a) => a.allow.includes(d.name)).map((a) => a.name),
+        updatedAt: d.updatedAt,
+      });
+    }
+  }
   return {
+    shared,
     nodePools: await nodePools(deps, r),
     personas: agentNames(r).map((name) => ({ name, runsOn: runsOnFor(name, r) })),
     personal: (await listAllEnvSummaries()).map((e) => ({
