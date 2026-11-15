@@ -45,6 +45,7 @@ async function seedAgents(tenant: string, agents: Record<string, string[] | null
     definition: allow ? { environment: { allow }, soulData: undefined } : null, origin: "git" as const, tombstonedAt: null,
   });
   await db.run("DELETE FROM personas WHERE tenant_id = ?", [tenant]);
+  await db.run("DELETE FROM persona_sync_state WHERE tenant_id = ?", [tenant]);
   await applySync(tenant, [persona("default", null), ...Object.entries(agents).map(([n, a]) => persona(n, a))] as never, { revision: "r1", committedAt: 1, by: "ci" });
 }
 
