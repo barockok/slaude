@@ -233,24 +233,47 @@ describe("concurrency", () => {
   });
 });
 
-describe("guard: only the compare-and-set fill sets boundary_id on an existing row", () => {
-  test("no UPDATE in src assigns boundary_id outside the allowed files", () => {
-    const allowed = new Set(["src/db/sessions.ts", "src/domain/boundary-backfill.ts"]);
-    const hits: string[] = [];
-    const walk = (dir: string): void => {
-      for (const f of readdirSync(dir)) {
-        const p = join(dir, f);
+describe("guard: who may assign boundary_id and locator on an existing row", () => {
+  // Line counts of SQL assignments (`boundary_id = ?`, `locator = CASE ...`) per file. A new assignment anywhere,
+  // or a new statement in one of these files, changes a count and fails here until it is reviewed: every one must be
+  // a compare-and-set on NULL, a COALESCE or key-following upsert, or the archive's locator rewrite.
+  const ALLOWED: Record<string, number> = {
+    "src/db/sessions.ts": 2, // the late fill (CAS on NULL) and the archive's locator rewrite
+    "src/domain/boundary-backfill.ts": 2, // the fill (CAS on NULL) and the locator repair (CAS on the old locator)
+    "src/db/one-on-one.ts": 2,
+    "src/db/mention-only.ts": 2,
+    "src/db/commitments.ts": 2,
+    "src/db/environments.ts": 4,
+    "src/db/channel-wake-state.ts": 3,
+  };
+  const root = join(import.meta.dir, "../..");
+  const files = (): string[] => {
+    const out: string[] = [];
+    const walk = (d: string): void => {
+      for (const f of readdirSync(d)) {
+        const p = join(d, f);
         if (statSync(p).isDirectory()) walk(p);
-        else if (/\.tsx?$/.test(f)) {
-          const text = readFileSync(p, "utf8");
-          if (/UPDATE\s+[\w${}.]+\s+SET[^`"';]*\bboundary_id\s*=/i.test(text)) hits.push(p.slice(join(import.meta.dir, "../..").length + 1));
-        }
+        else if (/\.tsx?$/.test(f)) out.push(p.slice(root.length + 1));
       }
     };
-    walk(join(import.meta.dir, "../../src"));
-    expect(hits.filter((h) => !allowed.has(h))).toEqual([]);
-    expect(hits).toContain("src/db/sessions.ts");
-    // the fill's statement is compare-and-set
-    expect(readFileSync(join(import.meta.dir, "../../src/domain/boundary-backfill.ts"), "utf8")).toContain("AND boundary_id IS NULL");
+    walk(join(root, "src"));
+    return out;
+  };
+
+  test("assignment lines per file are exactly the reviewed ones", () => {
+    const found: Record<string, number> = {};
+    for (const f of files()) {
+      const n = readFileSync(join(root, f), "utf8").split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l) && /\b(boundary_id|locator) = (\?|COALESCE|CASE|excluded|slack_|\$\{)/.test(l)).length;
+      if (n) found[f] = n;
+    }
+    expect(found).toEqual(ALLOWED);
+  });
+
+  test("every assignment outside an upsert is guarded by IS NULL or the old value", () => {
+    const sessions = readFileSync(join(root, "src/db/sessions.ts"), "utf8");
+    expect(sessions).toMatch(/SET boundary_id = \?, locator = slack_thread_ts[\s\S]{0,200}boundary_id IS NULL/);
+    const fill = readFileSync(join(root, "src/domain/boundary-backfill.ts"), "utf8");
+    expect(fill).toContain("AND boundary_id IS NULL AND");
+    expect(fill).toMatch(/locator IS NULL" : "locator = \?"/);
   });
 });

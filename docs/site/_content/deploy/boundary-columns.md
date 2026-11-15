@@ -12,7 +12,10 @@ is in the [domain sessions field note](../field-notes/2026-11-15-domain-sessions
 
 ## Before the deploy
 
-1. Take a backup: `sudo /usr/local/sbin/slaude-backup`.
+1. Take a backup: `sudo /usr/local/sbin/slaude-backup`, and **wait for it to
+   finish before you deploy**. A running `pg_dump` holds share locks on every
+   table; an `ALTER TABLE` needs an exclusive lock, so with a dump running each
+   migration file would wait its two seconds and fail.
 2. Deploy as usual. The gateway runs the migrations before it serves.
 
 ## Watch the migration
@@ -31,7 +34,9 @@ Each file is its own transaction and begins with `SET LOCAL lock_timeout = '2s'`
 |---|---|---|
 | All nine lines, gateway serving | Done. | Continue below. |
 | A start failure naming one of `0042` to `0050` and `lock timeout` | A long query held a lock on that table. That file rolled back, earlier files stay applied, the gateway did not start. | Find and end the long transaction, then restart. The retry applies the rest. The previous release keeps serving until the new one boots. |
-| An rc.21 replica still running | It ignores the columns and writes NULL. | Nothing; the periodic fill completes those rows within a tick. |
+| An rc.21 replica still running | It ignores the columns and writes NULL. | Nothing; the periodic fill completes those rows within a tick. If it rewrites a thread key (`/new`) on a row rc.22 already filled, the fill repairs the stale locator (report field `repaired`). |
+| A start that keeps failing on the same file | Each boot attempt queues traffic on that table for up to two seconds before it gives up, so a crash loop repeats the stall. | Do not leave it crash-looping: stop the new binary, end the long transaction, then start it once. |
+| `SLAUDE_MIGRATE_ON_BOOT=0` with the migrations not applied | The writers name the new columns in their INSERT lists and fail until the columns exist. | Apply the migrations first. `SLAUDE_BOUNDARY_WRITE=off` stores NULL but does not remove the columns from the statements, so it is not a rollback of the schema. |
 
 ## After the deploy
 
@@ -97,10 +102,16 @@ hold:
 1. `SLAUDE_BOUNDARY_WRITE=off` and `SLAUDE_BOUNDARY_FILL_INTERVAL_MS=0`:
    effective at once, writers store NULL and nothing fills.
 2. Downgrading to rc.21 is safe: the columns are nullable, unread and
-   unconstrained. There are no down migrations.
-3. To undo a bad fill: `UPDATE <table> SET boundary_id = NULL, locator = NULL`
-   per table. The Slack columns are never written by the new code except by the
-   `/new` archive statement, which writes the same thread key it always did.
+   unconstrained. There are no down migrations. rc.21 does not know the
+   locator: a `/new` it handles rewrites only the thread column, so **after a
+   rollback and a return to rc.22 or later, let the fill run once** (the next
+   periodic tick, or `slaude domain reconcile`) and check
+   `slaude domain boundary-check` before relying on the pair.
+3. To undo a bad fill, null the pair per table **in batches** so no statement
+   holds a long lock, for example repeat until it reports 0 rows:
+   `UPDATE sessions SET boundary_id = NULL, locator = NULL WHERE id IN (SELECT id FROM sessions WHERE boundary_id IS NOT NULL LIMIT 500)`.
+   The Slack columns are never written by the new code except by the `/new`
+   archive statement, which writes the same thread key it always did.
 
 ## Live smoke test (real Slack)
 

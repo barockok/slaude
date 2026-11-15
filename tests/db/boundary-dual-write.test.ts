@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as Domain from "../../src/db/domain";
 import * as Commitments from "../../src/db/commitments";
@@ -230,44 +230,56 @@ describe("kill switch", () => {
   });
 });
 
-describe("guard: every writer that inserts a thread or channel key names the pair", () => {
+describe("guard: every INSERT into a thread or channel table names the pair", () => {
   const root = join(import.meta.dir, "../..");
-  const writers: Array<[string, RegExp, string]> = [
-    ["src/db/sessions.ts", /INSERT INTO sessions/, "boundary_id"],
-    ["src/db/one-on-one.ts", /INSERT INTO one_on_one_locks/, "boundary_id"],
-    ["src/db/mention-only.ts", /INSERT INTO mention_only_threads/, "boundary_id"],
-    ["src/db/ignores.ts", /INSERT INTO ignores/, "boundary_id"],
-    ["src/db/cron-jobs.ts", /INSERT INTO cron_jobs/, "boundary_id"],
-    ["src/db/commitments.ts", /INSERT INTO commitments/, "boundary_id"],
-    ["src/db/environments.ts", /INSERT INTO env_bindings/, "boundary_id"],
-    ["src/db/proactive-posts.ts", /INSERT INTO proactive_posts/, "boundary_id"],
-    ["src/db/channel-wake-state.ts", /INSERT INTO channel_wake_state/, "boundary_id"],
-  ];
-  test("each INSERT statement lists boundary_id", () => {
-    for (const [file, re, col] of writers) {
-      const src = readFileSync(join(root, file), "utf8");
-      const stmts = src.split(/(?=`INSERT INTO)/).filter((p) => p.startsWith("`INSERT INTO") && re.test(p)).map((p) => p.slice(0, p.indexOf("VALUES")));
-      expect(stmts.length).toBeGreaterThan(0);
-      for (const s of stmts) expect(s, `${file}: ${s.slice(0, 80)}`).toContain(col);
-    }
-  });
-
-  test("no other module inserts into these tables", () => {
-    const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
-    const names = writers.map(([f]) => f);
-    const hits: string[] = [];
+  const TABLES = ["sessions", "one_on_one_locks", "mention_only_threads", "ignores", "cron_jobs", "commitments", "env_bindings", "proactive_posts", "channel_wake_state"];
+  // Statement counts per file: a new INSERT shows up here and has to be reviewed.
+  const EXPECTED: Record<string, number> = {
+    "src/db/sessions.ts": 1,
+    "src/db/one-on-one.ts": 1,
+    "src/db/mention-only.ts": 1,
+    "src/db/ignores.ts": 1,
+    "src/db/cron-jobs.ts": 1,
+    "src/db/commitments.ts": 1,
+    "src/db/environments.ts": 2, // bind and convertLegacy
+    "src/db/proactive-posts.ts": 1,
+    "src/db/channel-wake-state.ts": 3, // noteStart, noteFinished, noteSettled
+  };
+  const SKIP = new Set(["src/db/drivers/sqlite.ts"]); // the sqlite rebuild copies old rows before the columns exist
+  const all = (): string[] => {
+    const out: string[] = [];
     const walk = (d: string): void => {
       for (const f of readdirSync(d)) {
         const p = join(d, f);
         if (statSync(p).isDirectory()) walk(p);
-        else if (/\.tsx?$/.test(f)) {
-          const rel = p.slice(root.length + 1);
-          if (names.includes(rel) || rel === "src/db/drivers/sqlite.ts" || rel === "src/cli/migrate-sqlite.ts") continue;
-          if (/INSERT\s+(OR\s+\w+\s+)?INTO\s+(sessions|one_on_one_locks|mention_only_threads|ignores|cron_jobs|commitments|env_bindings|proactive_posts|channel_wake_state)\b/i.test(readFileSync(p, "utf8"))) hits.push(rel);
-        }
+        else if (/\.tsx?$/.test(f)) out.push(p.slice(root.length + 1));
       }
     };
     walk(join(root, "src"));
+    return out;
+  };
+
+  test("each statement's column list names boundary_id, and the statements are exactly the reviewed ones", () => {
+    const found: Record<string, number> = {};
+    const re = new RegExp(`INSERT\\s+(?:OR\\s+\\w+\\s+)?INTO\\s+(${TABLES.join("|")})\\b([\\s\\S]*?)(?:VALUES|SELECT)`, "gi");
+    for (const f of all()) {
+      if (SKIP.has(f)) continue;
+      const text = readFileSync(join(root, f), "utf8");
+      for (const m of text.matchAll(re)) {
+        found[f] = (found[f] ?? 0) + 1;
+        expect(m[2], `${f}: INSERT INTO ${m[1]}`).toContain("boundary_id");
+        if (TABLES.slice(0, 7).includes(m[1]!) && !["proactive_posts", "channel_wake_state"].includes(m[1]!)) expect(m[2], `${f}: INSERT INTO ${m[1]}`).toContain("locator");
+      }
+    }
+    expect(found).toEqual(EXPECTED);
+  });
+
+  test("no INSERT into a dynamic table name in src (it could bypass the list above)", () => {
+    const hits: string[] = [];
+    for (const f of all()) {
+      if (f === "src/cli/migrate-sqlite.ts" || f === "src/domain/boundary-backfill.ts") continue;
+      if (/INSERT\s+(OR\s+\w+\s+)?INTO\s+\$\{/i.test(readFileSync(join(root, f), "utf8"))) hits.push(f);
+    }
     expect(hits).toEqual([]);
   });
 });
