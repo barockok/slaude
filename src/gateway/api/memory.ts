@@ -23,6 +23,7 @@
  * thread_activity (the quiet-moment pass's selection), a database write only,
  * never a brain call; its failure is logged and never fails the sync.
  */
+import { decidePersonSlices } from "../../slices/decide";
 import { z } from "zod";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { agentIdReady } from "../../knowledge/agent-identity";
@@ -145,6 +146,8 @@ export async function memoryScopeForClaims(gate: GateInput, claims: JobClaims): 
   // owner although its synthetic thread holds no lock.
   const runAs = parseRunAs(claims.runAs);
   const runAsUser = runAs?.kind === "user" ? runAs.slackUserId : null;
+  // Slice F shadow (no-op unless SLAUDE_PERSON_SLICES=shadow): counts only, the scope below is legacy.
+  if (runAsUser) decidePersonSlices({ site: "memory.claims_run_as", teamId: gate.teamId, slackUserId: runAsUser });
   return memoryScopeFor(await withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser });
 }
 

@@ -1,3 +1,4 @@
+import { decidePersonSlices } from "../../slices/decide";
 import type { AgentManager, AgentEvent } from "../../agent/manager";
 import { env } from "../../config/env";
 import { m as metric } from "../../metrics";
@@ -1580,7 +1581,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // not live: it throws, so the gate refuses rather than reading or writing
     // the default agent's private brain slice.
     const personaAgentId = personaAgentIdFor(ctx.personaId);
-    return {
+    const gate: GateInput = {
       // A wake's initiator is the agent itself, and the agent is not a person
       // talking: it writes to its own mind like any background turn.
       userId: ctx.userId && ctx.userId !== personaAgentId ? ctx.userId : null,
@@ -1600,6 +1601,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       agentId: personaAgentId,
       threadKey: `${ctx.channel}:${ctx.threadTs}`,
     };
+    // Slice F shadow: compare the speaker's verified-only union with the legacy own slice, in the
+    // background and counts only. A no-op unless SLAUDE_PERSON_SLICES=shadow; the gate is unchanged.
+    if (gate.userId) decidePersonSlices({ site: "brain.gate_speaker", teamId: gate.teamId, slackUserId: gate.userId });
+    return gate;
   };
 
   // Episodic memory for turns that run in THIS process (mono): scoped by the
@@ -1616,6 +1621,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const { ctx } = route;
         const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
         const gate = await brainGateFor(ctx);
+        if (runAsUser) decidePersonSlices({ site: "memory.claims_run_as", teamId: ctx.teamId, slackUserId: runAsUser });
         const scope = await memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null });
         // Only an interactive turn counts toward the quiet-moment pass's thread activity.
         return gate.interactive ? { ...scope, activityAgentId: gate.agentId } : scope;

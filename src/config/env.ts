@@ -809,6 +809,16 @@ export const env = {
     /** Most rows one fill tick updates across tables (default 2000). */
     fillMaxRows: (): number => intAtLeastOne("SLAUDE_BOUNDARY_FILL_MAX_ROWS", 2000),
   },
+  slices: {
+    /**
+     * `SLAUDE_PERSON_SLICES` (default `off`, slice F). `off`: no resolver call, every
+     * scope decision is rc.21's. `shadow`: the legacy scope is returned and the
+     * verified-only union is computed beside it and compared (counts and a
+     * redacted log only). Read on every call. Anything else, including `union`
+     * (reserved for rc.23: not honoured yet), reads as `off`.
+     */
+    mode: (): "off" | "shadow" => (opt("SLAUDE_PERSON_SLICES", "off").trim().toLowerCase() === "shadow" ? "shadow" : "off"),
+  },
   remote: {
     /** `/remote` — run a thread's shell and file tools on the initiator's own
      *  machine over tailcat SSH. Default off; ships behind this flag. */

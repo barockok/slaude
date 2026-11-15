@@ -71,10 +71,10 @@ describe("merge repoints credential pointers", () => {
     const survivor = await observed("U0EXAMPLE");
     const loser = await observed("U1EXAMPLE");
     await accountWithCredential("sub-a", loser);
-    let loserRowExisted: boolean | null = null;
+    const seen: boolean[] = [];
     const real = Pointers.repointForMerge;
     const spy = spyOn(Pointers, "repointForMerge").mockImplementation(async (c, l, s) => {
-      loserRowExisted = (await c.one("SELECT id FROM users WHERE id = ?", [l])) !== null;
+      seen.push((await c.one("SELECT id FROM users WHERE id = ?", [l])) !== null);
       return real(c, l, s);
     });
     try {
@@ -82,7 +82,7 @@ describe("merge repoints credential pointers", () => {
     } finally {
       spy.mockRestore();
     }
-    expect(loserRowExisted).toBe(true);
+    expect(seen).toEqual([true]);
     expect((await db.one("SELECT 1 AS x FROM users WHERE id = ?", [loser]))).toBeNull();
     expect(await db.one("SELECT 1 AS x FROM mcp_credentials WHERE user_id = ?", [survivor])).not.toBeNull();
   });

@@ -99,7 +99,7 @@ describe("upgrade from 0041", () => {
     const db = await openDb({ dialect: "sqlite", path });
     try {
       expect(await cols(db, "mcp_credentials")).toContain("user_id");
-      expect(await db.one("SELECT * FROM mcp_credentials")).toEqual({ id: "c1", account_id: "a1", agent_tenant: null, agent_persona: null, server_key: "k", payload: "ciphertext-bytes", expires_at: 9, updated_at: 8, user_id: null });
+      expect(await db.one<Record<string, unknown>>("SELECT * FROM mcp_credentials")).toEqual({ id: "c1", account_id: "a1", agent_tenant: null, agent_persona: null, server_key: "k", payload: "ciphertext-bytes", expires_at: 9, updated_at: 8, user_id: null });
     } finally {
       await db.close();
     }
@@ -114,7 +114,7 @@ describe("upgrade from 0041", () => {
       await db.run(`INSERT INTO mcp_credentials (id, account_id, server_key, payload, expires_at, updated_at) VALUES ('c1', 'a1', 'k', 'ciphertext-bytes', 9, 8)`);
       const r = await runMigrations(db, { log: () => {}, migrations: all });
       expect(r.applied).toEqual(["0052"]);
-      expect(await db.one("SELECT payload, expires_at, user_id FROM mcp_credentials WHERE id = 'c1'")).toEqual({ payload: "ciphertext-bytes", expires_at: 9, user_id: null });
+      expect(await db.one<Record<string, unknown>>("SELECT payload, expires_at, user_id FROM mcp_credentials WHERE id = 'c1'")).toEqual({ payload: "ciphertext-bytes", expires_at: 9, user_id: null });
       expect((await runMigrations(db, { log: () => {}, migrations: all })).applied).toEqual([]);
     } finally {
       await db.close();
