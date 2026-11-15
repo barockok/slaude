@@ -31,6 +31,7 @@
  *       sets Wake, Highest or Cooldown under ## Proactive is refused (the file
  *       has no key for them and would be looser) unless --allow-loss.
  */
+import { looksLikeToken } from "../secrets/token-shape";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify as yamlStringify } from "yaml";
@@ -164,23 +165,6 @@ const PLACEHOLDER_ONLY = /^\$\{PERSONA_[A-Z0-9_]+\}$/;
 
 const SECRET_ARG_RE = /(key=|token=|secret=|password=|passwd=|bearer )/i;
 const SECRET_FLAG_RE = /^--?[a-z0-9_-]*(key|token|secret|password)$/i;
-/**
- * Token shapes refused anywhere export cannot placeholder: a url path, a
- * command string, an arg. Slack, GitHub, OpenAI-style, AWS access keys, a
- * Bearer prefix, a JWT, and any run of 32+ token characters (most hosted
- * secrets). False positives fail safe: the operator edits the config first.
- */
-const TOKEN_SHAPES: RegExp[] = [
-  /xox[a-z]-/i,
-  /\bgh[opusr]_[A-Za-z0-9]/,
-  /github_pat_/i,
-  /\bsk-[A-Za-z0-9_-]{8,}/,
-  /AKIA[0-9A-Z]{16}/,
-  /\bbearer\b/i,
-  /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\./,
-  /[A-Za-z0-9_-]{32,}/,
-];
-const looksLikeToken = (s: string) => TOKEN_SHAPES.some((re) => re.test(s));
 
 /** The only keys export knows how to make safe. Anything else could hold a
  *  credential export has no way to recognise, so it is refused, not copied. */
