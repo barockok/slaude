@@ -182,6 +182,19 @@ describe("rules S and T, reads only", () => {
     expect(userNames(s)).toEqual([U("U0AEXAMPLE"), "user-u1aexample"]);
   });
 
+  test("the scope sites re-check the flag: a person attached while the flag is not union adds nothing", async () => {
+    await accountWithLinks("sub-1", [{ id: "U0AEXAMPLE" }, { id: "U1AEXAMPLE" }]);
+    const g = await gateFor("U0AEXAMPLE", { lockedUser: "U0AEXAMPLE" });
+    expect(g.person?.reads).toHaveLength(2);
+    for (const mode of ["off", "shadow", "garbage"]) {
+      process.env.SLAUDE_PERSON_SLICES = mode;
+      expect(userNames(await kbScope(g))).toEqual([U("U0AEXAMPLE")]);
+      const dm = await memoryScopeFor({ ...g, lockedUser: null, channelTrust: "unknown" }, { channel: "D0EXAMPLE" });
+      expect(dm.read!.allowedSources).toEqual([U("U0AEXAMPLE")]);
+      expect((await memoryScopeFor(g, { runAsUser: "U0AEXAMPLE", runAsPerson: g.person })).read!.allowedSources).toEqual([U("U0AEXAMPLE")]);
+    }
+  });
+
   test("tombstones are honoured: a name, and the '*' row", async () => {
     const a = await accountWithLinks("sub-1", [{ id: "U0AEXAMPLE" }, { id: "U1AEXAMPLE" }, { id: "U2AEXAMPLE" }]);
     void a;

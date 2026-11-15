@@ -21,6 +21,7 @@
 import { env } from "../config/env";
 import { personSlicesDetailed, type PersonSlicesResult } from "../knowledge/person-slices";
 import { m } from "../metrics";
+import { onActorsInvalidated } from "../refs/actor";
 import type { PersonSlices } from "../knowledge/scope";
 import type { SliceSiteId } from "./sites";
 
@@ -29,9 +30,33 @@ const LOG_EVERY_MS = 60_000;
 const lastLogged = new Map<string, number>();
 const pending = new Set<Promise<void>>();
 
+/**
+ * One resolver run per (team, id) per short window: a KB tool call builds its scope and its gate
+ * separately (two gate constructions), and a turn builds several. Concurrent and back-to-back calls
+ * share one answer for COALESCE_MS; any link, unlink, merge or undo (`invalidateActors`) drops it.
+ */
+export const COALESCE_MS = 300;
+const recent = new Map<string, { at: number; run: Promise<PersonSlicesResult> }>();
+onActorsInvalidated(() => recent.clear());
+function coalesced(teamId: string, slackUserId: string): Promise<PersonSlicesResult> {
+  const key = `${teamId}\u0000${slackUserId}`;
+  const now = Date.now();
+  const hit = recent.get(key);
+  if (hit && now - hit.at < COALESCE_MS) return hit.run;
+  if (recent.size > 500) recent.clear();
+  const run = personSlicesDetailed(teamId, slackUserId);
+  recent.set(key, { at: now, run });
+  // A failure is never shared: the next call tries again.
+  void run.then((r) => {
+    if (r.status === "error" && recent.get(key)?.run === run) recent.delete(key);
+  });
+  return run;
+}
+
 /** Forget which lines were logged (tests). */
 export function __resetSliceDecide(): void {
   lastLogged.clear();
+  recent.clear();
 }
 
 /** Resolve when every shadow started so far has finished (tests; never on a hot path). */
@@ -91,7 +116,7 @@ export async function decidePersonSlices(o: { site: SliceSiteId; teamId: string 
       return undefined;
     }
     if (mode === "union") {
-      const r = await personSlicesDetailed(o.teamId, o.slackUserId);
+      const r = await coalesced(o.teamId, o.slackUserId);
       record(o.site, r);
       return r.status === "ok" && r.slices.via === "union" ? r.slices : undefined;
     }
@@ -100,7 +125,13 @@ export async function decidePersonSlices(o: { site: SliceSiteId; teamId: string 
       return undefined;
     }
     const p: Promise<void> = Promise.resolve()
-      .then(async () => record(o.site, await personSlicesDetailed(o.teamId, o.slackUserId!)))
+      .then(async () => {
+        const r = await personSlicesDetailed(o.teamId, o.slackUserId!);
+        record(o.site, r);
+        // The in-flight slot stays taken until the queries themselves finish, even when the bound cut the wait,
+        // so MAX_INFLIGHT bounds database load and not just the number of waiters.
+        await r.done;
+      })
       .then(
         () => {},
         () => {},
@@ -114,4 +145,17 @@ export async function decidePersonSlices(o: { site: SliceSiteId; teamId: string 
     /* the seam must never fail a decision: legacy */
     return undefined;
   }
+}
+
+/**
+ * The person slices of a turn's `runAs` identity, for the memory scope. Rule S for runAs: `runAs` is
+ * the speaker (or there is no speaker), and when a lock exists it is the lock owner's, so the team is
+ * the lock's workspace when the lock names one, else the turn's. `memoryScopeFor` itself returns
+ * nothing for a runAs that is not the speaker or the lock owner, so a person attached here is only
+ * ever read in those two cases. Never throws.
+ */
+export async function runAsPersonFor(g: { teamId: string | null; lockedUser: string | null; lockedTeamId?: string | null }, runAsUser: string | null | undefined): Promise<PersonSlices | undefined> {
+  if (!runAsUser) return undefined;
+  const teamId = g.lockedUser ? (g.lockedTeamId ?? g.teamId) : g.teamId;
+  return decidePersonSlices({ site: "memory.claims_run_as", teamId, slackUserId: runAsUser });
 }

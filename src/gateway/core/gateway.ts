@@ -1,4 +1,4 @@
-import { decidePersonSlices } from "../../slices/decide";
+import { decidePersonSlices, runAsPersonFor } from "../../slices/decide";
 import type { AgentManager, AgentEvent } from "../../agent/manager";
 import { env } from "../../config/env";
 import { m as metric } from "../../metrics";
@@ -1622,7 +1622,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const { ctx } = route;
         const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
         const gate = await brainGateFor(ctx);
-        const runAsPerson = runAsUser ? await decidePersonSlices({ site: "memory.claims_run_as", teamId: ctx.teamId, slackUserId: runAsUser }) : undefined;
+        const runAsPerson = await runAsPersonFor(gate, runAsUser);
         const scope = await memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null, ...(runAsPerson ? { runAsPerson } : {}) });
         // Only an interactive turn counts toward the quiet-moment pass's thread activity.
         return gate.interactive ? { ...scope, activityAgentId: gate.agentId } : scope;
@@ -1678,7 +1678,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             if (!sessionId) return { sessionId: undefined, read: null };
             if (claims) return { sessionId, read: (await memoryScopeForClaims(await brainGateFor(ctx), claims)).read };
             const runAsUser = await agent.resolveEffectiveIdentity(sessionId, ctx.channel, ctx.threadTs);
-            return { sessionId, read: (await memoryScopeFor(await brainGateFor(ctx), { channel: ctx.channel, runAsUser: runAsUser ?? null })).read };
+            const gate = await brainGateFor(ctx);
+            const runAsPerson = await runAsPersonFor(gate, runAsUser);
+            return { sessionId, read: (await memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null, ...(runAsPerson ? { runAsPerson } : {}) })).read };
           },
           // The persona's managers (roleOf "manager": its soul's manager and
           // backup plus stored manager grants, no deny).

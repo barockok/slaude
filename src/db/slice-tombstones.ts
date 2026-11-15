@@ -15,6 +15,7 @@
  */
 import { db, type DbClient } from "./schema";
 import * as Domain from "./domain";
+import { invalidateActors } from "../refs/actor";
 
 export interface TombstoneRow {
   user_id: string;
@@ -63,12 +64,14 @@ export async function addTombstone(i: { userId: string; sourceId: string; create
      ON CONFLICT (user_id, source_id) DO NOTHING`,
     [i.userId, i.sourceId, i.createdBy, reason, Date.now()],
   );
+  invalidateActors(); // drops the short resolver window in this process
   return { ok: true, created: (r.changes ?? 0) > 0 };
 }
 
 /** Remove one tombstone. True when a row was removed. */
 export async function removeTombstone(userId: string, sourceId: string, c: DbClient = db): Promise<boolean> {
   const r = await c.run("DELETE FROM slice_tombstones WHERE user_id = ? AND source_id = ?", [userId, sourceId]);
+  invalidateActors();
   return (r.changes ?? 0) > 0;
 }
 
