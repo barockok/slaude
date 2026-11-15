@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { type DbClient, openDb } from "../../src/db/client";
 import { runMigrations } from "../../src/db/migrate";
 import * as Domain from "../../src/db/domain";
-import { BOUNDARY_FILL_LOCK_KEY, boundaryFillTick, fillBoundaryColumns, loadWorkspaces, totalFilled, type Place } from "../../src/domain/boundary-backfill";
+import { BOUNDARY_FILL_LOCK_KEY, boundaryFillTick, fillBoundaryColumns, loadWorkspaces, resetBoundaryFillCursors, startBoundaryFill, totalFilled, type Place } from "../../src/domain/boundary-backfill";
 import { reconcile } from "../../src/domain/reconcile";
 
 const WS = "T0EXAMPLE";
@@ -22,6 +22,7 @@ for (const dialect of ["sqlite", "pg"] as const) {
     const TABLES = ["sessions", "one_on_one_locks", "mention_only_threads", "ignores", "cron_jobs", "commitments", "env_bindings", "proactive_posts", "channel_wake_state", "boundaries"];
     beforeEach(async () => {
       for (const t of TABLES) await db.run(`DELETE FROM ${t}`);
+      resetBoundaryFillCursors();
     });
 
     const hasTenant = async (t: string) =>
@@ -79,12 +80,168 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect((await sess())[0]!.boundary_id).toBeNull();
     });
 
-    test("never overwrites a filled row", async () => {
+    test("never repoints a filled row's boundary (only a stale locator is repaired)", async () => {
       await boundary();
       await session("s1", WS, CH, "1.1");
-      await db.run("UPDATE sessions SET boundary_id = 'b-other', locator = 'x'");
+      await db.run("UPDATE sessions SET boundary_id = 'b-other', locator = '1.1'");
+      const r = await fillBoundaryColumns(db, { maxRows: 100, place: ONE, handOff: none });
+      expect(r.sessions).toMatchObject({ filled: 0, repaired: 0 });
+      expect((await sess())[0]).toEqual({ id: "s1", boundary_id: "b-other", locator: "1.1" });
+    });
+
+    test("repair: a thread key rewritten by an rc.21 writer or a rollback gets its locator recomputed, the boundary untouched", async () => {
+      const b = await boundary();
+      await session("s1", WS, CH, `channel:${CH}`, );
+      await fillBoundaryColumns(db, { maxRows: 100, place: ONE, handOff: none });
+      // an rc.21 /new writes only the thread column
+      await db.run("UPDATE sessions SET slack_thread_ts = 'channel-archived:C0EXAMPLE:5'");
+      await session("s2", WS, CH, `channel:${CH}`);
+      const r = await fillBoundaryColumns(db, { maxRows: 100, place: ONE, handOff: none });
+      expect(r.sessions).toMatchObject({ repaired: 1, filled: 1 });
+      expect(await sess()).toEqual([
+        { id: "s1", boundary_id: b, locator: "channel-archived:C0EXAMPLE:5" },
+        { id: "s2", boundary_id: b, locator: `channel:${CH}` },
+      ]);
       expect(totalFilled(await fillBoundaryColumns(db, { maxRows: 100, place: ONE, handOff: none }))).toBe(0);
-      expect((await sess())[0]).toEqual({ id: "s1", boundary_id: "b-other", locator: "x" });
+      expect((await fillBoundaryColumns(db, { maxRows: 100, place: ONE, handOff: none })).sessions!.repaired).toBe(0);
+      // a dry run reports without writing
+      await db.run("UPDATE sessions SET slack_thread_ts = 'x.1' WHERE id = 's2'");
+      expect((await fillBoundaryColumns(db, { dryRun: true, maxRows: 100, place: ONE, handOff: none })).sessions!.repaired).toBe(1);
+      expect((await sess())[1]!.locator).toBe(`channel:${CH}`);
+    });
+
+    test("a /new between the scan and the write cannot leave a stale locator (the statement reads the thread column itself)", async () => {
+      const b = await boundary();
+      await session("s1", WS, CH, `channel:${CH}`);
+      let armed = true;
+      const racing = new Proxy(db, {
+        get(t, k, r) {
+          const v = Reflect.get(t, k, r);
+          if (k === "query") {
+            return async (sql: string, ...a: unknown[]) => {
+              const rows = await (v as (...x: unknown[]) => Promise<unknown>).call(t, sql, ...a);
+              if (armed && /FROM sessions/.test(sql) && /boundary_id IS NULL/.test(sql)) {
+                armed = false;
+                await db.run("UPDATE sessions SET slack_thread_ts = 'channel-archived:C0EXAMPLE:9' WHERE id = 's1'");
+              }
+              return rows;
+            };
+          }
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }) as DbClient;
+      await fillBoundaryColumns(racing, { maxRows: 100, place: ONE, handOff: none, tables: ["sessions"] });
+      expect((await sess())[0]).toEqual({ id: "s1", boundary_id: b, locator: "channel-archived:C0EXAMPLE:9" });
+    });
+
+    test("a row whose channel changes between the scan and the write is not filled with the old channel's boundary", async () => {
+      await boundary();
+      await session("s1", WS, CH, "1.1");
+      let armed = true;
+      const racing = new Proxy(db, {
+        get(t, k, r) {
+          const v = Reflect.get(t, k, r);
+          if (k === "query") {
+            return async (sql: string, ...a: unknown[]) => {
+              const rows = await (v as (...x: unknown[]) => Promise<unknown>).call(t, sql, ...a);
+              if (armed && /FROM sessions/.test(sql) && /boundary_id IS NULL/.test(sql)) {
+                armed = false;
+                await db.run("UPDATE sessions SET slack_channel_id = 'C0MOVED' WHERE id = 's1'");
+              }
+              return rows;
+            };
+          }
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }) as DbClient;
+      await fillBoundaryColumns(racing, { maxRows: 100, place: ONE, handOff: none, tables: ["sessions"] });
+      expect((await sess())[0]!.boundary_id).toBeNull();
+    });
+
+    test("no page transaction and no multi-row statement: each row is its own statement", async () => {
+      await boundary();
+      for (let i = 0; i < 5; i++) await session(`s${i}`, WS, CH, `${i}.1`);
+      let txs = 0;
+      const updates: string[] = [];
+      const spy = new Proxy(db, {
+        get(t, k, r) {
+          const v = Reflect.get(t, k, r);
+          if (k === "transaction") return (...a: unknown[]) => (txs++, (v as (...x: unknown[]) => unknown).apply(t, a));
+          if (k === "run") return (sql: string, ...a: unknown[]) => (updates.push(sql), (v as (...x: unknown[]) => unknown).call(t, sql, ...a));
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }) as DbClient;
+      await fillBoundaryColumns(spy, { maxRows: 100, place: ONE, handOff: none, tables: ["sessions"] });
+      expect(txs).toBe(0);
+      expect(updates.filter((u) => /^UPDATE/.test(u.trim()))).toHaveLength(5);
+      expect(updates.every((u) => /WHERE id = \?/.test(u))).toBe(true);
+    });
+
+    test("a team-less row is never handed to first sight and never fabricates a boundary; with the boundary present it is filled", async () => {
+      await session("n1", null, CH, "1.1");
+      const handed: string[] = [];
+      const r = await fillBoundaryColumns(db, { maxRows: 100, place: ONE, handOff: (t, c) => handed.push(`${t}/${c}`), tables: ["sessions"] });
+      expect(r.sessions).toMatchObject({ filled: 0, team_unknown: 1, no_boundary: 0, handed_to_first_sight: 0 });
+      expect(handed).toEqual([]);
+      const b = await boundary();
+      await fillBoundaryColumns(db, { maxRows: 100, place: ONE, handOff: none, tables: ["sessions"] });
+      expect((await sess())[0]!.boundary_id).toBe(b);
+    });
+
+    test("the scan budget and the cursor: a capped tick resumes where it stopped and wraps after a full pass", async () => {
+      for (let i = 0; i < 6; i++) await session(`s${i}`, WS, `C0STUCK${i}`, "1.1"); // channels with no boundary: never fillable
+      await boundary();
+      await session("zz", WS, CH, "1.1"); // sorts last
+      const cursors = new Map<string, unknown[]>();
+      const seen: number[] = [];
+      const cursor: unknown[] = [];
+      for (let tick = 0; tick < 4; tick++) {
+        await fillBoundaryColumns(db, { maxRows: 100, maxExamine: 3, pageSize: 3, cursors, place: ONE, handOff: none, tables: ["sessions"], counts: false });
+        seen.push((await sess()).filter((x) => x.boundary_id).length);
+        cursor.push(cursors.get("sessions:fill")?.[0]);
+      }
+      expect(seen[0]).toBe(0); // the first tick did not look at everything
+      expect(cursor[0]).toBe("s2"); // and remembers where it stopped
+      expect(seen[2]).toBe(1); // the third reached the last row
+      expect(cursor[2]).toBeUndefined(); // a full pass: wrapped
+      expect(cursor[3]).toBe("s2"); // the next pass starts over
+    });
+
+    test("the tick runs no COUNT scan", async () => {
+      await boundary();
+      await session("s1", WS, CH, "1.1");
+      const seen: string[] = [];
+      const spy = new Proxy(db, {
+        get(t, k, r) {
+          const v = Reflect.get(t, k, r);
+          if (k === "query" || k === "one") return (sql: string, ...a: unknown[]) => (seen.push(sql), (v as (...x: unknown[]) => unknown).call(t, sql, ...a));
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }) as DbClient;
+      await boundaryFillTick({ db: spy, role: () => "gateway", liveTeamIds: () => [WS], handOff: none });
+      expect(seen.filter((q) => /COUNT\(\*\)/i.test(q) && !/information_schema/.test(q))).toEqual([]);
+    });
+
+    test("stop waits for the tick in flight and starts nothing after it", async () => {
+      await boundary();
+      await session("s1", WS, CH, "1.1");
+      const stop = startBoundaryFill({ db, role: () => "gateway", liveTeamIds: () => [WS], intervalMs: 5, handOff: none });
+      await new Promise((r) => setTimeout(r, 40));
+      await stop();
+      expect((await sess())[0]!.boundary_id).not.toBeNull();
+      await db.run("UPDATE sessions SET boundary_id = NULL, locator = NULL");
+      await new Promise((r) => setTimeout(r, 40));
+      expect((await sess())[0]!.boundary_id).toBeNull(); // no tick after stop
+      const never = startBoundaryFill({ db, role: () => "node", intervalMs: 5 });
+      await never();
+    });
+
+    test("a failing boundary stage cannot abort the reconcile or lose its report", async () => {
+      await session("s1", WS, CH, "1.1");
+      const r = await reconcile({ db, liveTeamIds: () => [WS], audit: async () => {}, log: () => {}, boundaryFill: async () => { throw new Error("boom"); } });
+      expect(r.sources.sessionChannels).toBeDefined();
+      expect(r.boundaryColumns).toEqual({});
+      expect(r.finishedAt).toBeGreaterThanOrEqual(r.startedAt);
     });
 
     test("ineligible channels, ambiguous and unplaced rows are classed and never written; workspace '' is never used", async () => {

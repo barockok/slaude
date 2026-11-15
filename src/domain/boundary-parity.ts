@@ -99,7 +99,7 @@ export async function boundaryParity(c: DbClient, o: ParityOptions): Promise<Par
   const tenantTables = new Set<string>();
   if (pg) {
     for (const r of await c.query<{ table_name: string }>(
-      `SELECT table_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'tenant_id' AND table_name IN (${SPECS.map(() => "?").join(", ")})`,
+      `SELECT table_name FROM information_schema.columns WHERE table_schema = current_schema() AND column_name = 'tenant_id' AND table_name IN (${SPECS.map(() => "?").join(", ")})`,
       SPECS.map((x) => x.table),
     ))
       tenantTables.add(r.table_name);

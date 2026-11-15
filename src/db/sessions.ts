@@ -281,16 +281,26 @@ export const LATE_FILL_LIMIT = 500;
 export async function fillBoundaryForChannel(teamId: string, channelId: string, boundaryId: string): Promise<number> {
   try {
     if (!env.boundary.write() || env.role() === "node" || !teamId || !channelId || !boundaryId) return 0;
-    const r = await db.run(
-      `UPDATE sessions SET boundary_id = ?, locator = slack_thread_ts
-       WHERE boundary_id IS NULL AND slack_thread_ts IS NOT NULL AND slack_thread_ts <> ''
-         AND id IN (SELECT id FROM sessions
-                    WHERE slack_team_id = ? AND slack_channel_id = ? AND boundary_id IS NULL
-                      AND slack_thread_ts IS NOT NULL AND slack_thread_ts <> ''
-                    LIMIT ${LATE_FILL_LIMIT})`,
-      [boundaryId, teamId, channelId],
+    // Ids in a fixed order, then one statement-level compare-and-set per row: no multi-row lock hold, and two
+    // fills (or a fill and a writer) can never wait on each other in opposite orders.
+    const ids = await db.query<{ id: string }>(
+      `SELECT id FROM sessions
+        WHERE slack_team_id = ? AND slack_channel_id = ? AND boundary_id IS NULL
+          AND slack_thread_ts IS NOT NULL AND slack_thread_ts <> ''
+        ORDER BY id LIMIT ${LATE_FILL_LIMIT}`,
+      [teamId, channelId],
     );
-    return r.changes;
+    let filled = 0;
+    for (const { id } of ids) {
+      const r = await db.run(
+        `UPDATE sessions SET boundary_id = ?, locator = slack_thread_ts
+          WHERE id = ? AND boundary_id IS NULL AND slack_team_id = ? AND slack_channel_id = ?
+            AND slack_thread_ts IS NOT NULL AND slack_thread_ts <> ''`,
+        [boundaryId, id, teamId, channelId],
+      );
+      filled += r.changes;
+    }
+    return filled;
   } catch {
     return 0;
   }

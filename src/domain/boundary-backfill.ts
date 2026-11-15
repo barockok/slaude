@@ -50,11 +50,15 @@ export interface BoundaryTableReport {
   handed_to_first_sight: number;
   /** A row with no thread key to use as a locator. */
   no_locator: number;
+  /** A filled row whose locator no longer matched its thread key (an rc.21 writer or a rollback rewrote the key); the locator was recomputed. */
+  repaired: number;
+  /** A row with no team of its own, placed in the single workspace, whose boundary does not exist: reported, never handed to first sight. */
+  team_unknown: number;
 }
 
 export type BoundaryColumnsReport = Record<string, BoundaryTableReport>;
 
-const emptyTable = (): BoundaryTableReport => ({ filled: 0, existing: 0, ineligible: 0, ambiguous: 0, no_workspace: 0, no_boundary: 0, handed_to_first_sight: 0, no_locator: 0 });
+const emptyTable = (): BoundaryTableReport => ({ filled: 0, existing: 0, ineligible: 0, ambiguous: 0, no_workspace: 0, no_boundary: 0, handed_to_first_sight: 0, no_locator: 0, repaired: 0, team_unknown: 0 });
 
 export interface Spec {
   table: string;
@@ -121,15 +125,12 @@ export interface FillOptions {
   handOff?: (team: string, channel: string) => void;
   /** Stop between pages when true. */
   stop?: () => boolean;
-}
-
-interface ScanRow {
-  tenant: string;
-  team: string | null;
-  channel: string | null;
-  thread: string | null;
-  target: string | null;
-  pk: unknown[];
+  /** Rows examined at most across the call (the scan budget). Default unlimited. */
+  maxExamine?: number;
+  /** Per table and phase, the last primary key examined: survives across calls so a capped scan resumes where it stopped and wraps after a full pass. */
+  cursors?: Map<string, unknown[]>;
+  /** Count complete rows per table for the report (default true; the periodic tick turns it off). */
+  counts?: boolean;
 }
 
 const count = (table: string, outcome: string, n = 1): void => {
@@ -145,24 +146,39 @@ const count = (table: string, outcome: string, n = 1): void => {
 async function tenantTables(c: DbClient): Promise<Set<string>> {
   if (c.dialect !== "pg") return new Set();
   const rows = await c.query<{ table_name: string }>(
-    `SELECT table_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name = 'tenant_id' AND table_name IN (${SPECS.map(() => "?").join(", ")})`,
+    `SELECT table_name FROM information_schema.columns WHERE table_schema = current_schema() AND column_name = 'tenant_id' AND table_name IN (${SPECS.map(() => "?").join(", ")})`,
     SPECS.map((x) => x.table),
   );
   return new Set(rows.map((r) => r.table_name));
 }
 
+/** The session key a cron job runs under, in SQL (mirrors `cronLocator`). */
+const CRON_LOCATOR_SQL = `CASE WHEN target = 'channel' THEN 'cron:' || id WHEN slack_thread_ts IS NOT NULL AND slack_thread_ts <> '' THEN slack_thread_ts ELSE 'cron:' || id END`;
+
+/** The locator of a row, computed by the statement that writes it so a /new between the scan and the write cannot leave a stale one. */
+const locatorSql = (spec: Spec): string | null => (spec.table === "cron_jobs" ? CRON_LOCATOR_SQL : spec.thread);
+
+/** True when the row has a thread key to derive a locator from (cron jobs always do). */
+const hasKeySql = (spec: Spec): string => (spec.table === "cron_jobs" || !spec.thread ? "1 = 1" : `${spec.thread} IS NOT NULL AND ${spec.thread} <> ''`);
+
 /**
- * Fill the NULL rows of the given tables. Idempotent: a second run over the same
- * data fills nothing. Returns the per-table report.
+ * Fill the NULL rows of the given tables, then repair stale locators. Idempotent:
+ * a second run over the same data changes nothing. Each row is its own
+ * statement-level compare-and-set (no page transaction, no long lock hold), the
+ * locator is computed by that statement from the thread column, and the statement
+ * also pins the channel (and the team when the row has one) the boundary was
+ * resolved from. Returns the per-table report.
  */
 export async function fillBoundaryColumns(c: DbClient, o: FillOptions): Promise<BoundaryColumnsReport> {
   const pageSize = o.pageSize ?? FILL_PAGE_SIZE;
   const handOff = o.handOff ?? ((team, channel) => observeSlackChannel({ teamId: team, channelId: channel }));
   const report: BoundaryColumnsReport = {};
   let budget = o.maxRows;
+  let examineLeft = o.maxExamine ?? Number.POSITIVE_INFINITY;
   const boundaryCache = new Map<string, string | null>();
   const handed = new Set<string>();
   const withTenant = await tenantTables(c);
+  const counts = o.counts !== false;
 
   const boundaryOf = async (team: string, channel: string): Promise<string | null> => {
     const key = `${team}|${channel}`;
@@ -171,108 +187,154 @@ export async function fillBoundaryColumns(c: DbClient, o: FillOptions): Promise<
     boundaryCache.set(key, r?.id ?? null);
     return r?.id ?? null;
   };
+  const live = (): boolean => budget > 0 && examineLeft > 0 && !(o.stop?.() ?? false);
 
   for (const spec of SPECS) {
     if (o.tables && !o.tables.includes(spec.table)) continue;
     const rep = (report[spec.table] = emptyTable());
     if (o.perTable) budget = o.maxRows;
     const T = withTenant.has(spec.table) ? "tenant_id" : `'${DEFAULT_TENANT}'`;
+    const locExpr = locatorSql(spec);
     const cols = [
       `${T} AS tenant`,
       spec.team ? `${spec.team} AS team` : `NULL AS team`,
       `${spec.channel} AS channel`,
       spec.thread ? `${spec.thread} AS thread` : `NULL AS thread`,
       spec.extra?.includes("target") ? `target AS target` : `NULL AS target`,
+      "locator AS locator",
       ...spec.pk.map((k, i) => `${k} AS pk${i}`),
-    ].join(", ");
+    ].join(", ").replace("locator AS locator", spec.thread ? "locator AS locator" : "NULL AS locator");
     const tuple = spec.pk.length > 1 ? `(${spec.pk.join(", ")})` : spec.pk[0]!;
     const marks = spec.pk.length > 1 ? `(${spec.pk.map(() => "?").join(", ")})` : "?";
-    let after: unknown[] | null = null;
+    const pkWhere = spec.pk.map((k) => `${k} = ?`).join(" AND ");
 
-    while (budget > 0 && !(o.stop?.() ?? false)) {
-      const page: Array<Record<string, unknown>> = await c.query(
-        `SELECT ${cols} FROM ${spec.table}
-          WHERE boundary_id IS NULL ${spec.where ? `AND ${spec.where}` : ""} ${after ? `AND ${tuple} > ${marks}` : ""}
-          ORDER BY ${spec.pk.join(", ")} LIMIT ?`,
-        [...(after ?? []), pageSize],
-      );
-      if (page.length === 0) break;
-      after = spec.pk.map((_, i) => page[page.length - 1]![`pk${i}`]);
-      const work: Array<{ row: ScanRow; boundaryId: string; locator: string | null }> = [];
-      for (const raw of page) {
-        const row: ScanRow = {
-          tenant: String(raw.tenant),
-          team: (raw.team as string | null) || null,
-          channel: (raw.channel as string | null) || null,
-          thread: (raw.thread as string | null) || null,
-          target: (raw.target as string | null) || null,
-          pk: spec.pk.map((_, i) => raw[`pk${i}`]),
-        };
-        if (!row.channel || !CHANNEL_RE.test(row.channel)) {
-          rep.ineligible++;
-          continue;
+    /** One keyset pass over `filter`; `each` handles a row. The cursor lives across ticks when given. */
+    const pass = async (phase: "fill" | "repair", filter: string, each: (raw: Record<string, unknown>) => Promise<void>): Promise<void> => {
+      const ck = `${spec.table}:${phase}`;
+      let after: unknown[] | null = o.cursors?.get(ck) ?? null;
+      while (live()) {
+        const page: Array<Record<string, unknown>> = await c.query(
+          `SELECT ${cols} FROM ${spec.table}
+            WHERE ${filter} ${spec.where ? `AND ${spec.where}` : ""} ${after ? `AND ${tuple} > ${marks}` : ""}
+            ORDER BY ${spec.pk.join(", ")} LIMIT ?`,
+          [...(after ?? []), pageSize],
+        );
+        if (page.length === 0) {
+          o.cursors?.delete(ck); // a full pass: wrap around
+          return;
         }
-        let team = row.team;
-        if (!team) {
-          const p = o.place(row.tenant);
-          if ("reason" in p) {
-            rep[p.reason]++;
-            continue;
-          }
-          team = p.ws;
+        after = spec.pk.map((_, i) => page[page.length - 1]![`pk${i}`]);
+        examineLeft -= page.length;
+        for (const raw of page) {
+          if (budget <= 0) break;
+          await each(raw);
         }
-        const locator = spec.thread ? (spec.table === "cron_jobs" ? cronLocator({ id: String(row.pk[0]), target: row.target, slackThreadTs: row.thread }) : row.thread) : null;
-        if (spec.thread && !locator) {
-          rep.no_locator++;
-          continue;
+        if (page.length < pageSize) {
+          o.cursors?.delete(ck);
+          return;
         }
-        const boundaryId = await boundaryOf(team, row.channel);
-        if (!boundaryId) {
-          rep.no_boundary++;
-          const key = `${team}|${row.channel}`;
-          if (!handed.has(key)) {
-            handed.add(key);
-            rep.handed_to_first_sight++;
-            if (!o.dryRun) {
-              try {
-                handOff(team, row.channel);
-              } catch {
-                /* first sight never throws, but a fill must not either */
-              }
+        o.cursors?.set(ck, after);
+      }
+    };
+
+    // 1. Fill the NULL rows.
+    await pass("fill", "boundary_id IS NULL", async (raw) => {
+      const tenant = String(raw.tenant);
+      const ownTeam = (raw.team as string | null) || null;
+      const channel = (raw.channel as string | null) || null;
+      const thread = (raw.thread as string | null) || null;
+      const pk = spec.pk.map((_, i) => raw[`pk${i}`]);
+      if (!channel || !CHANNEL_RE.test(channel)) {
+        rep.ineligible++;
+        return;
+      }
+      let team = ownTeam;
+      if (!team) {
+        const p = o.place(tenant);
+        if ("reason" in p) {
+          rep[p.reason]++;
+          return;
+        }
+        team = p.ws;
+      }
+      if (spec.thread && spec.table !== "cron_jobs" && !thread) {
+        rep.no_locator++;
+        return;
+      }
+      const boundaryId = await boundaryOf(team, channel);
+      if (!boundaryId) {
+        // Only a row that names its own workspace may make first sight create a boundary: a placed one could
+        // belong to a workspace that was connected before (a fabricated boundary would outlive the doubt).
+        if (!ownTeam) {
+          rep.team_unknown++;
+          return;
+        }
+        rep.no_boundary++;
+        const key = `${team}|${channel}`;
+        if (!handed.has(key)) {
+          handed.add(key);
+          rep.handed_to_first_sight++;
+          if (!o.dryRun) {
+            try {
+              handOff(team, channel);
+            } catch {
+              /* first sight never throws, but a fill must not either */
             }
           }
-          continue;
         }
-        if (work.length < budget) work.push({ row, boundaryId, locator });
+        return;
       }
       if (o.dryRun) {
-        rep.filled += work.length;
-        budget -= work.length;
-      } else if (work.length) {
-        const where = spec.pk.map((k) => `${k} = ?`).join(" AND ");
-        const set = spec.thread ? "boundary_id = ?, locator = ?" : "boundary_id = ?";
-        await c.transaction(async (tx) => {
-          for (const w of work) {
-            const r = await tx.run(`UPDATE ${spec.table} SET ${set} WHERE ${where} AND boundary_id IS NULL`, [w.boundaryId, ...(spec.thread ? [w.locator] : []), ...w.row.pk] as never);
-            const n = r.changes ?? 0;
-            rep.filled += n;
-            budget -= n;
-          }
-        });
+        rep.filled++;
+        budget--;
+        return;
       }
-      if (page.length < pageSize) break;
+      const set = locExpr ? `boundary_id = ?, locator = ${locExpr}` : "boundary_id = ?";
+      const teamGuard = spec.team ? (ownTeam ? ` AND ${spec.team} = ?` : ` AND ${spec.team} IS NULL`) : "";
+      const r = await c.run(
+        `UPDATE ${spec.table} SET ${set} WHERE ${pkWhere} AND boundary_id IS NULL AND ${spec.channel} = ?${teamGuard} AND ${hasKeySql(spec)}`,
+        [boundaryId, ...pk, channel, ...(spec.team && ownTeam ? [ownTeam] : [])] as never,
+      );
+      const n = r.changes ?? 0;
+      rep.filled += n;
+      budget -= n;
+    });
+
+    // 2. Repair a locator an rc.21 replica (or a rollback) left stale by rewriting the thread column alone.
+    if (locExpr && live()) {
+      await pass("repair", `boundary_id IS NOT NULL AND ${hasKeySql(spec)} AND (locator IS NULL OR locator <> ${locExpr})`, async (raw) => {
+        const old = (raw.locator as string | null) ?? null;
+        const pk = spec.pk.map((_, i) => raw[`pk${i}`]);
+        if (o.dryRun) {
+          rep.repaired++;
+          budget--;
+          return;
+        }
+        const r = await c.run(
+          `UPDATE ${spec.table} SET locator = ${locExpr} WHERE ${pkWhere} AND boundary_id IS NOT NULL AND ${hasKeySql(spec)} AND ${old === null ? "locator IS NULL" : "locator = ?"}`,
+          [...pk, ...(old === null ? [] : [old])] as never,
+        );
+        const n = r.changes ?? 0;
+        rep.repaired += n;
+        budget -= n;
+      });
     }
-    // Rows already complete, for the report: counted without reading them.
-    const done = await c.one<{ n: number | string }>(`SELECT COUNT(*) AS n FROM ${spec.table} WHERE boundary_id IS NOT NULL`);
-    rep.existing = Number(done?.n ?? 0);
+
+    if (counts) {
+      // Rows already complete, for the report: counted without reading them.
+      const done = await c.one<{ n: number | string }>(`SELECT COUNT(*) AS n FROM ${spec.table} WHERE boundary_id IS NOT NULL`);
+      rep.existing = Number(done?.n ?? 0);
+    }
     for (const [k, v] of Object.entries(rep)) if (k !== "existing") count(spec.table, k, v as number);
-    if (!o.perTable && budget <= 0) {
-      // Out of rows for this run: the remaining tables are reported as they stand.
+    if (!o.perTable && !live()) {
+      // Out of rows or scan budget for this run: the remaining tables wait for the next tick.
       for (const rest of SPECS.slice(SPECS.indexOf(spec) + 1)) {
         if (o.tables && !o.tables.includes(rest.table)) continue;
         const r2 = (report[rest.table] = emptyTable());
-        const n = await c.one<{ n: number | string }>(`SELECT COUNT(*) AS n FROM ${rest.table} WHERE boundary_id IS NOT NULL`);
-        r2.existing = Number(n?.n ?? 0);
+        if (counts) {
+          const n = await c.one<{ n: number | string }>(`SELECT COUNT(*) AS n FROM ${rest.table} WHERE boundary_id IS NOT NULL`);
+          r2.existing = Number(n?.n ?? 0);
+        }
       }
       break;
     }
@@ -288,6 +350,8 @@ export const totalFilled = (r: BoundaryColumnsReport): number => Object.values(r
 
 /** Postgres uses an advisory lock; sqlite (one process) uses this in-process flag. */
 let running = false;
+/** Resume points of the periodic fill (this process). */
+const cursors = new Map<string, unknown[]>();
 
 export interface TickOptions {
   db?: DbClient;
@@ -297,7 +361,12 @@ export interface TickOptions {
   log?: (msg: string) => void;
   /** Passed to the fill (tests). */
   handOff?: FillOptions["handOff"];
+  /** Resume points (default: this process's). */
+  cursors?: Map<string, unknown[]>;
 }
+
+/** Forget the periodic fill's resume points (tests). */
+export const resetBoundaryFillCursors = (): void => cursors.clear();
 
 /**
  * One periodic fill tick. Does nothing on a node, when SLAUDE_BOUNDARY_WRITE is
@@ -320,7 +389,9 @@ export async function boundaryFillTick(o: TickOptions = {}): Promise<BoundaryCol
       }
     }
     const place = await loadWorkspaces(c, o.liveTeamIds);
-    const report = await fillBoundaryColumns(c, { maxRows: o.maxRows ?? env.boundary.fillMaxRows(), place, handOff: o.handOff });
+    const maxRows = o.maxRows ?? env.boundary.fillMaxRows();
+    // A bounded look at the table each tick (five times the write cap), resumed where it stopped; no COUNT scans.
+    const report = await fillBoundaryColumns(c, { maxRows, maxExamine: maxRows * 5, cursors: o.cursors ?? cursors, counts: false, place, handOff: o.handOff });
     const n = totalFilled(report);
     if (n > 0) log(`boundary fill: ${n} row(s) completed`);
     return report;
@@ -334,13 +405,25 @@ export async function boundaryFillTick(o: TickOptions = {}): Promise<BoundaryCol
 }
 
 /**
- * Start the periodic fill. Returns the stop function. A node, a zero interval
- * and a switched-off write do nothing. The timer never keeps the process alive.
+ * Start the periodic fill. Returns an async stop: it ends the timer, starts no
+ * further tick, and waits for the tick in flight. A node, a zero interval and a
+ * switched-off write do nothing. The timer never keeps the process alive.
  */
-export function startBoundaryFill(o: TickOptions & { intervalMs?: number } = {}): () => void {
+export function startBoundaryFill(o: TickOptions & { intervalMs?: number } = {}): () => Promise<void> {
   const interval = o.intervalMs ?? env.boundary.fillIntervalMs();
-  if ((o.role ?? (() => env.role()))() === "node" || interval <= 0) return () => {};
-  const t = setInterval(() => void boundaryFillTick(o), interval);
+  if ((o.role ?? (() => env.role()))() === "node" || interval <= 0) return async () => {};
+  let stopped = false;
+  let inflight: Promise<unknown> | null = null;
+  const t = setInterval(() => {
+    if (stopped || inflight) return;
+    inflight = boundaryFillTick(o).finally(() => {
+      inflight = null;
+    });
+  }, interval);
   (t as { unref?: () => void }).unref?.();
-  return () => clearInterval(t);
+  return async () => {
+    stopped = true;
+    clearInterval(t);
+    await inflight?.catch(() => {});
+  };
 }

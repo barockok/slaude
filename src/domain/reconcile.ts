@@ -178,6 +178,8 @@ export interface ReconcileOptions {
    * Off by default and never set by the boot hook; ignored in a dry run.
    */
   demoteUnprovenEmails?: boolean;
+  /** The boundary stage (tests). */
+  boundaryFill?: typeof fillBoundaryColumns;
   /** Where the boundary stage hands channels that have no boundary yet (default: first sight). Tests. */
   boundaryHandOff?: FillOptions["handOff"];
   /** Skip the lock and the in-process queue (tests of the insert-or-ignore path). */
@@ -549,7 +551,13 @@ async function run(opts: ReconcileOptions): Promise<ReconcileReport> {
   // 7. Slice D: boundary_id and locator on rows written before the columns or before the boundary.
   // One capped batch per table; the periodic fill (gateway background loop) takes the rest.
   if (env.boundary.write()) {
-    report.boundaryColumns = await fillBoundaryColumns(c, { dryRun: dry, pageSize, maxRows: env.boundary.fillMaxRows(), perTable: true, place, handOff: opts.boundaryHandOff });
+    // Isolated: a failure here must not abort the stages after it or lose the report.
+    try {
+      report.boundaryColumns = await (opts.boundaryFill ?? fillBoundaryColumns)(c, { dryRun: dry, pageSize, maxRows: env.boundary.fillMaxRows(), perTable: true, place, handOff: opts.boundaryHandOff });
+    } catch (e) {
+      opts.log?.(`domain reconcile: boundary columns stage failed (skipped): ${e instanceof Error ? e.message : String(e)}`);
+      console.warn(`[domain] reconcile boundary stage failed (skipped): ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   report.typedGrantSubjects = Number(
@@ -844,7 +852,7 @@ async function hasVerified(c: DbClient, userId: string): Promise<boolean> {
 }
 
 export function boundaryFilled(r: ReconcileReport): number {
-  return Object.values(r.boundaryColumns).reduce((n, t) => n + t.filled, 0);
+  return Object.values(r.boundaryColumns).reduce((n, t) => n + t.filled + t.repaired, 0);
 }
 
 export function totalCreated(r: ReconcileReport): number {
@@ -881,8 +889,8 @@ export function formatReconcileReport(r: ReconcileReport): string {
     lines.push(`  ${label.padEnd(17)} ${verb} ${s.created} filled, complete ${s.existing}${skipped ? `, skipped (${skipped})` : ""}`);
   }
   for (const [table, t] of Object.entries(r.boundaryColumns)) {
-    const other = (["ineligible", "ambiguous", "no_workspace", "no_boundary", "no_locator"] as const).filter((k) => t[k] > 0).map((k) => `${k} ${t[k]}`).join(", ");
-    lines.push(`  boundary ${table.padEnd(20)} ${verb} ${t.filled} filled, complete ${t.existing}${t.handed_to_first_sight ? `, handed to first sight ${t.handed_to_first_sight}` : ""}${other ? `, left (${other})` : ""}`);
+    const other = (["ineligible", "ambiguous", "no_workspace", "no_boundary", "team_unknown", "no_locator"] as const).filter((k) => t[k] > 0).map((k) => `${k} ${t[k]}`).join(", ");
+    lines.push(`  boundary ${table.padEnd(20)} ${verb} ${t.filled} filled, complete ${t.existing}${t.handed_to_first_sight ? `, handed to first sight ${t.handed_to_first_sight}` : ""}${t.repaired ? `, locators repaired ${t.repaired}` : ""}${other ? `, left (${other})` : ""}`);
   }
   const w = r.workspaceGrants;
   if (w.mismatched === 0) lines.push(`  workspace grants: ${w.total} checked, none name an unconnected team${w.unjudged ? ` (${w.unjudged} not judged: no known workspace)` : ""}`);
