@@ -54,6 +54,8 @@ function req(name: string): string {
   return v;
 }
 
+let poolWarned = false;
+
 function opt(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
@@ -310,15 +312,29 @@ export const env = {
    *                            SDK child inherits the token for subscription auth.
    */
   db: {
-    /** Bun.sql connection pool size for SLAUDE_DB=pg (default 10). */
+    /**
+     * Bun.sql connection pool size for SLAUDE_DB=pg (default 10), which is also the most statements,
+     * transactions and advisory-lock reservations this process hands to Postgres at once (the pool gate).
+     * At least 2: a migration, reconcile or fill holds one connection for its advisory lock and needs a
+     * second for its statements, so 1 would hang boot. A smaller value is raised to 2 with a warning.
+     */
     pgPool: () => {
       const raw = opt("SLAUDE_PG_POOL", "10");
       const n = Number(raw);
       if (!Number.isInteger(n) || n < 1) {
         throw new Error(`SLAUDE_PG_POOL must be a positive integer (got '${raw}')`);
       }
+      if (n < 2) {
+        if (!poolWarned) {
+          poolWarned = true;
+          console.warn(`[db] SLAUDE_PG_POOL=${n} raised to 2 (an advisory lock holds one connection and its statements need another)`);
+        }
+        return 2;
+      }
       return n;
     },
+    /** Most ms a statement may wait for a pool permit before it fails (default 0: wait, a wedge is visible in slaude_pg_gate_waiting). */
+    pgAcquireTimeoutMs: () => numberAtLeastZero("SLAUDE_PG_ACQUIRE_TIMEOUT_MS", 0),
     /** Seconds a booting replica waits for the migration advisory lock.
      *  0 (default) = wait forever; > 0 fails the boot loudly on expiry. */
     migrateLockTimeoutSec: () => {

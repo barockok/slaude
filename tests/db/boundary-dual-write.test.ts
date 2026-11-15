@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import * as Domain from "../../src/db/domain";
@@ -13,6 +13,7 @@ import * as Wake from "../../src/db/channel-wake-state";
 import { cronLocator } from "../../src/db/boundary-columns";
 import { db } from "../../src/db/schema";
 import { __setBoundaryResolver, primeBoundary } from "../../src/domain/boundary-for";
+import { resetBoundaryState } from "../helpers/boundary-state";
 import { flushFirstSightWork } from "../../src/domain/first-sight-flush";
 
 const WS = "T0EXAMPLE";
@@ -20,12 +21,15 @@ const CH = "C0EXAMPLE";
 const TS = "1700000000.000100";
 const TABLES = ["one_on_one_locks", "mention_only_threads", "ignores", "cron_jobs", "commitments", "env_bindings", "proactive_posts", "channel_wake_state", "remote_targets", "environments"];
 
+// The first statement opens the database and applies the migrations (seconds on a cold PGLite): do it once, with room.
+beforeAll(async () => {
+  await db.query("SELECT 1");
+}, 60_000);
+
 async function clean(): Promise<void> {
-  await flushFirstSightWork();
+  await resetBoundaryState();
   for (const t of TABLES) await db.run(`DELETE FROM ${t}`);
   await Domain._wipeForTests();
-  __setBoundaryResolver(undefined);
-  delete process.env.SLAUDE_BOUNDARY_WRITE;
 }
 beforeEach(clean);
 afterEach(clean);

@@ -289,5 +289,7 @@ export const m = {
   boundaryResolveTotal: metrics.counter("slaude_boundary_resolve_total", "Boundary resolver lookups for session and thread rows, labeled by outcome (hit|miss|found|absent|timeout|error|no_team)."),
   boundaryFillTotal: metrics.counter("slaude_boundary_fill_total", "Rows the boundary fill examined, labeled by table and outcome (filled|existing|ineligible|ambiguous|no_workspace|no_boundary|handed_to_first_sight|error)."),
   boundaryCheckTotal: metrics.counter("slaude_boundary_check_total", "In-row boundary parity checks, labeled by site and outcome (match|both_none|null_row|unresolved|mismatch|locator_mismatch|unverified)."),
+  pgGateWaiting: metrics.gauge("slaude_pg_gate_waiting", "Statements, transactions and advisory-lock reservations waiting in this process for a Postgres pool permit (sustained non-zero means the pool is saturated or wedged)."),
+  pgGateSlowTotal: metrics.counter("slaude_pg_gate_slow_total", "Times a statement waited more than the slow threshold for a Postgres pool permit, and acquire timeouts (label outcome: slow|timeout)."),
   backgroundRunsTotal: metrics.counter("slaude_background_runs_total", "Background learning pass runs, labeled by agent, pass and outcome (ok|skipped-budget|stopped-budget|error)."),
 };

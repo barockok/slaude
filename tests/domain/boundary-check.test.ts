@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import * as Domain from "../../src/db/domain";
 import { db } from "../../src/db/schema";
 import * as Sessions from "../../src/db/sessions";
 import { __setBoundaryResolver, createBoundaryResolver, primeBoundary, resetBoundaryResolver } from "../../src/domain/boundary-for";
 import { checkRow, classifyRow } from "../../src/domain/boundary-check";
+import { resetBoundaryState } from "../helpers/boundary-state";
 import { flushFirstSightWork } from "../../src/domain/first-sight-flush";
 import { metrics } from "../../src/metrics";
 
@@ -31,18 +32,16 @@ describe("classifyRow (pure)", () => {
 });
 
 describe("checkRow on the sessions paths", () => {
-  beforeEach(async () => {
+  beforeAll(async () => {
+    await db.query("SELECT 1"); // opens the database and applies the migrations once, with room
+  }, 60_000);
+  const clean = async () => {
+    await resetBoundaryState();
     await db.run("DELETE FROM sessions");
     await Domain._wipeForTests();
-    __setBoundaryResolver(undefined);
-  });
-  afterEach(async () => {
-    await flushFirstSightWork();
-    await db.run("DELETE FROM sessions");
-    await Domain._wipeForTests();
-    __setBoundaryResolver(undefined);
-    delete process.env.SLAUDE_BOUNDARY_WRITE;
-  });
+  };
+  beforeEach(clean);
+  afterEach(clean);
 
   test("a find counts one outcome, returns the legacy row unchanged, and a wrong boundary counts mismatch", async () => {
     const b = (await Domain.ensureBoundary({ service: "slack", workspace: WS, value: CH, kind: "channel", state: "observed" })).boundary.id;
