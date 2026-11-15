@@ -120,7 +120,7 @@ describe("upgrade from 0039 keeps existing rows", () => {
   test("pg: migrating from 0039 to 0040 keeps existing rows with NULL or default values", async () => {
     const db = await openDb({ dialect: "pg", driver: "pglite" });
     try {
-      const all = loadMigrations();
+      const all = loadMigrations().filter((m) => m.version <= "0041");
       await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version < "0040") });
       await db.run(`INSERT INTO agent_grants (id, persona, subject_kind, subject_id, role, created_by, created_at) VALUES ('g1', 'scout', 'user', 'U0EXAMPLE', 'manager', 'U0ADMIN', 1)`);
       await db.run(`INSERT INTO one_on_one_locks (channel_id, thread_ts, locked_user, created_by, created_at) VALUES ('C0EXAMPLE', '1.1', 'U0EXAMPLE', 'U0EXAMPLE', 1)`);

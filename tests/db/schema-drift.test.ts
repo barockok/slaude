@@ -55,6 +55,7 @@ const NO_TENANT_TABLES = new Set([
   "boundaries",
   "user_aliases",
   "link_token_uses", // single-use ledger of portal link tokens (0040), keyed by the token id, like accounts
+  "slice_tombstones", // operator tombstones for the memory union (0052), keyed by user id with no foreign key so they survive a merge
   "user_merges", // merge ledger (0041), deployment-global like users; survivor and loser ids are deliberately not foreign keys
   "merge_proposals", // a pair of users a human settles (0041)
   "merge_vetoes", // pairs an undo forbids from linking again (0041)
