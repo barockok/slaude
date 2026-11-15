@@ -1,4 +1,5 @@
 import { db } from "./schema";
+import type { DbClient } from "./client";
 import { encrypt, decrypt } from "./crypto";
 import * as Envs from "./environments";
 
@@ -93,6 +94,23 @@ export async function putKeyIfAbsent(teamId: string, userId: string, pair: Remot
   const stored = await getKey(teamId, userId);
   if (!stored) throw new Error("remote key insert did not persist");
   return stored;
+}
+
+/** `putKeyIfAbsent` inside the caller's transaction: the pair is stored with the rest of the
+ *  transaction or not at all, so a failed sync leaves no orphan key. */
+export async function putKeyIfAbsentTx(tx: DbClient, teamId: string, userId: string, pair: RemoteKeyPair): Promise<RemoteKeyPair> {
+  await tx.run(
+    `INSERT INTO remote_keys (team_id, user_id, public_key, private_key, created_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(team_id, user_id) DO NOTHING`,
+    [teamId, userId, pair.publicKey, encrypt(pair.privateKey), Date.now()],
+  );
+  const row = await tx.one<{ public_key: string; private_key: string }>(
+    "SELECT public_key, private_key FROM remote_keys WHERE team_id = ? AND user_id = ?",
+    [teamId, userId],
+  );
+  if (!row) throw new Error("remote key insert did not persist");
+  return { publicKey: row.public_key, privateKey: decrypt(row.private_key) };
 }
 
 /** Store a pair, overwriting any existing one (replaces an unusable key). */

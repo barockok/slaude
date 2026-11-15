@@ -9,7 +9,7 @@ import { pairFor } from "./boundary-columns";
 import { decrypt, encrypt } from "./crypto";
 import type { ProvisionedEndpoint, StoredEnv } from "../remote/kinds/types";
 
-interface EnvRow {
+export interface EnvRowShape {
   id: string;
   team_id: string;
   user_id: string;
@@ -21,6 +21,11 @@ interface EnvRow {
   created_at: number;
   updated_at: number;
   source: string;
+  tenant_id: string;
+  definition_name: string | null;
+  definition_hash: string | null;
+  definition_revision: string | null;
+  description: string | null;
   retired_at: number | null;
 }
 
@@ -42,7 +47,7 @@ export interface BindingRow {
 /** Environment names: short, no spaces, safe to show in a thread and a prompt. */
 export const ENV_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,31}$/;
 
-function toEnv(r: EnvRow): StoredEnv {
+function toEnv(r: EnvRowShape): StoredEnv {
   return {
     id: r.id,
     teamId: r.team_id,
@@ -131,17 +136,17 @@ export async function updateEnv(
 }
 
 export async function getEnv(id: string): Promise<StoredEnv | null> {
-  const r = await db.one<EnvRow>("SELECT * FROM environments WHERE id = ?", [id]);
+  const r = await db.one<EnvRowShape>("SELECT * FROM environments WHERE id = ?", [id]);
   return r ? toEnv(r) : null;
 }
 
 export async function findEnvByName(teamId: string, userId: string, name: string): Promise<StoredEnv | null> {
-  const r = await db.one<EnvRow>("SELECT * FROM environments WHERE team_id = ? AND user_id = ? AND name = ?", [teamId, userId, name]);
+  const r = await db.one<EnvRowShape>("SELECT * FROM environments WHERE team_id = ? AND user_id = ? AND name = ?", [teamId, userId, name]);
   return r ? toEnv(r) : null;
 }
 
 export async function listEnvs(teamId: string, userId: string): Promise<StoredEnv[]> {
-  const rows = await db.query<EnvRow>("SELECT * FROM environments WHERE team_id = ? AND user_id = ? ORDER BY name", [teamId, userId]);
+  const rows = await db.query<EnvRowShape>("SELECT * FROM environments WHERE team_id = ? AND user_id = ? ORDER BY name", [teamId, userId]);
   return rows.map(toEnv);
 }
 
@@ -159,7 +164,7 @@ export interface EnvSummary {
 }
 
 export async function listAllEnvSummaries(): Promise<EnvSummary[]> {
-  const rows = await db.query<Pick<EnvRow, "id" | "team_id" | "user_id" | "name" | "kind" | "default_dir" | "created_at">>(
+  const rows = await db.query<Pick<EnvRowShape, "id" | "team_id" | "user_id" | "name" | "kind" | "default_dir" | "created_at">>(
     "SELECT id, team_id, user_id, name, kind, default_dir, created_at FROM environments ORDER BY team_id, user_id, name",
   );
   return rows.map((r) => ({

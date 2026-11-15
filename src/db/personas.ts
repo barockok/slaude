@@ -11,6 +11,8 @@ import { randomUUID } from "node:crypto";
 import { guardedProjection } from "./account-projection";
 import { ensureRefs, type RecordEntry, type RefUse } from "../domain/sync-refs";
 import type { DomainEvent } from "./domain";
+import type { EnvironmentsReport } from "../remote/definitions/sync";
+import type { DbClient } from "./client";
 import { db, dbDialect } from "./schema";
 import { GLOBAL_SCOPE, versionScope } from "./skill-versions";
 import { encrypt, decrypt, isEncrypted } from "./crypto";
@@ -48,6 +50,8 @@ export interface ApplyResult {
   domainEvents?: DomainEvent[];
   /** The record writes failed and were rolled back to a savepoint; the persona sync still committed. */
   recordsFailed?: boolean;
+  /** Environment definitions this sync wrote (names only); absent when the payload carried no `environments` list. */
+  environments?: EnvironmentsReport;
 }
 
 type Row = {
@@ -194,6 +198,8 @@ export async function applySync(
   meta: { revision: string; committedAt: number; by: string },
   /** References the personas carry; missing records are created in this transaction, in state declared. */
   refs?: { uses: RefUse[]; workspaces: string[] },
+  /** Written in the same transaction (environment definitions); a throw rolls the personas back too. */
+  alsoApply?: (tx: DbClient) => Promise<EnvironmentsReport>,
 ): Promise<ApplyResult> {
   return db.transaction(async (tx) => {
     const now = Date.now();
@@ -256,6 +262,7 @@ export async function applySync(
     }
     const wiped = await tx.run(`DELETE FROM persona_overrides WHERE tenant_id = ?`, [tenant]);
     result.overridesWiped = wiped.changes ?? 0;
+    if (alsoApply) result.environments = await alsoApply(tx);
     if (refs) {
       // Savepoint: a CHECK, FK, unique or deadlock failure here must not roll back the persona sync.
       const made = await guardedProjection(tx, "sync records", null, () => ensureRefs(refs.uses, refs.workspaces, tx));

@@ -225,6 +225,17 @@ const guardrailSpec = z
   .strict();
 export type GuardrailSpec = z.infer<typeof guardrailSpec>;
 
+/** One environment definition as the deploy repo carries it: `environments/<name>.yaml`. The text is parsed by the gateway (one authority), never trusted as parsed. */
+export const ENVIRONMENTS_MAX = 64;
+export const ENVIRONMENT_YAML_MAX = 16 * 1024;
+const environmentSpec = z
+  .object({
+    name: z.string().regex(ENV_DEF_NAME_RE, "environment name must match the environment name pattern"),
+    yaml: z.string().max(ENVIRONMENT_YAML_MAX, `an environment file is at most ${ENVIRONMENT_YAML_MAX} characters`),
+  })
+  .strict();
+export type EnvironmentSpec = z.infer<typeof environmentSpec>;
+
 const payloadSchema = z.object({
   version: z.number().int().min(1).default(1),
   revision: z.string().min(1),
@@ -234,6 +245,9 @@ const payloadSchema = z.object({
   // Absent: the stored git guardrails are left as they are. Present (even
   // empty): the deploy repo's whole set; a git guardrail it no longer lists is removed.
   guardrails: z.array(guardrailSpec).max(MAX_GUARDRAILS, `at most ${MAX_GUARDRAILS} guardrails`).optional(),
+  // Absent: the stored environment definitions are left as they are. Present
+  // (even empty): the deploy repo's whole set; a definition it no longer lists is retired.
+  environments: z.array(environmentSpec).max(ENVIRONMENTS_MAX, `at most ${ENVIRONMENTS_MAX} environments`).optional(),
 });
 export type SyncPayload = Omit<z.infer<typeof payloadSchema>, "personas"> & { personas: PersonaSpec[] };
 
@@ -369,6 +383,17 @@ export function parsePayload(
     for (const g of p.guardrails) {
       if (slugs.has(g.slug)) throw new PayloadError(`duplicate guardrail '${g.slug}'`);
       slugs.add(g.slug);
+    }
+  }
+  const needsEnv = p.environments !== undefined || p.personas.some((x) => x.definition?.environment !== undefined);
+  if (needsEnv && (p.version ?? 1) < ENVIRONMENT_PAYLOAD_VERSION) {
+    throw new PayloadError(`environments need payload version ${ENVIRONMENT_PAYLOAD_VERSION} (this payload says ${p.version})`);
+  }
+  if (p.environments) {
+    const seen = new Set<string>();
+    for (const e of p.environments) {
+      if (seen.has(e.name)) throw new PayloadError(`duplicate environment '${e.name}'`);
+      seen.add(e.name);
     }
   }
   const names = new Set<string>();

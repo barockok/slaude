@@ -29,6 +29,11 @@ import { masterKey, MasterKeyError } from "../../db/crypto";
 import { collectRefs, planRefs, RefRefusal, tenantWorkspaces, type RecordEntry, type RefUse } from "../../domain/sync-refs";
 import { emitDomainEvents } from "../../audit/domain";
 import { audit } from "../../audit/index";
+import { parseEnvironmentYaml, type ParsedEnvironmentDefinition } from "../../remote/definitions/parse";
+import { applyDefinitions, changed as environmentsChanged, planDefinitions } from "../../remote/definitions/sync";
+import { definitionRows } from "../../remote/definitions/resolve";
+import type { RemoteKeyPair } from "../../db/remote";
+import { db } from "../../db/schema";
 
 function masterKeySet(): boolean {
   try {
@@ -38,6 +43,12 @@ function masterKeySet(): boolean {
     if (e instanceof MasterKeyError) return false;
     throw e;
   }
+}
+
+/** The SLAUDE_REMOTE switch as read from the sync's environment (same rule as env.remote.enabled). */
+function remoteFlagOn(env: Record<string, string | undefined>): boolean {
+  const raw = (env.SLAUDE_REMOTE ?? "0").toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
 }
 
 export class SyncFailure extends Error {
@@ -161,9 +172,12 @@ export async function runSync(
     installedKbSources?: () => string[];
     /** Refuse a sync whose references would create a record (listing them). Default off. */
     strict?: boolean;
+    /** Test seam: the key pair a new environment definition gets. */
+    generateKey?: (name: string) => RemoteKeyPair;
   },
 ): Promise<SyncReport> {
   let payload;
+  let definitions: ParsedEnvironmentDefinition[] = [];
   const allIgnored = unknownFieldPaths(raw);
   const ignoredFields = allIgnored.slice(0, MAX_REPORTED_FIELDS);
   const ignoredFieldsTotal = allIgnored.length;
@@ -199,6 +213,15 @@ export async function runSync(
       throw new PayloadError((e as Error).message);
     }
     checkEnvRefs(payload, opts.env);
+    // Environment definitions: each file is parsed here, by the one parser, whatever the pipeline claims to have checked.
+    definitions = (payload.environments ?? []).map((e) => parseEnvironmentYaml(e.name, e.yaml));
+    // An agent may allow environments only where /env can run at all (SLAUDE_REMOTE).
+    if (!remoteFlagOn(opts.env)) {
+      const declaring = payload.personas.filter((p) => p.definition?.environment).map((p) => p.name);
+      if (declaring.length) {
+        throw new PayloadError(`persona '${declaring[0]}': environment is declared, but SLAUDE_REMOTE is off on this gateway; turn it on before syncing an agent that allows environments${declaring.length > 1 ? ` (${declaring.length} agents declare it)` : ""}`);
+      }
+    }
   } catch (e) {
     if (e instanceof PayloadError) throw new SyncFailure(422, e.message);
     throw e;
@@ -227,6 +250,32 @@ export async function runSync(
     // the sync land independently (WS-C §4.1.5).
     ...kbSourceWarnings(payload, (opts.installedKbSources ?? installedKbSourceIds)()),
   ];
+
+  if (payload.environments !== undefined || payload.personas.some((p) => p.definition?.environment)) {
+    try {
+      await db.query("SELECT definition_name, retired_at FROM environments LIMIT 0");
+    } catch {
+      throw new SyncFailure(503, "the database schema predates this gateway (environments.definition_name is missing): apply migration 0051 before syncing environments");
+    }
+  }
+  // Agent references to environments resolve against what this deploy will have:
+  // the submitted list, or (list absent) the live stored definitions. A message
+  // names only the persona and the reference it submitted, never a stored name.
+  const wantsEnv = payload.personas.filter((p) => p.definition?.environment);
+  if (wantsEnv.length) {
+    const known = payload.environments !== undefined
+      ? new Set(definitions.map((d) => d.name))
+      : new Set((await definitionRows(db, tenant)).filter((r) => r.retired_at == null).map((r) => r.definition_name!));
+    for (const p of wantsEnv) {
+      for (const name of p.definition!.environment!.allow) {
+        if (!known.has(name)) throw new SyncFailure(422, `persona '${p.name}': environment.allow names env:${name}, which this deploy does not define`);
+      }
+    }
+  }
+  const envPlan = payload.environments !== undefined ? await planDefinitions(db, tenant, definitions) : undefined;
+  if (envPlan && envPlan.create.length > 0 && !masterKeySet()) {
+    throw new SyncFailure(422, "environment definitions need SLAUDE_MASTER_KEY (the generated key pair is stored encrypted)");
+  }
 
   // Fail a stale payload before spending any model call. applySync's
   // transactional compare-and-set remains the authority; this is a fast path.
@@ -350,13 +399,18 @@ export async function runSync(
     // and this equals the count applySync's DELETE reports.
     report.overridesWiped = [...effective.values()].reduce((n, p) => n + p.overridden.length, 0);
     if (guardrailPlan) report.guardrails = guardrailPlan.report;
+    if (envPlan) report.environments = envPlan.report;
     return report;
   }
 
   try {
-    const { records: createdRecords = [], domainEvents = [], recordsFailed = false, ...applied } = await applySync(tenant, rows, meta, { uses: refUses, workspaces });
+    const { records: createdRecords = [], domainEvents = [], recordsFailed = false, ...applied } = await applySync(
+      tenant, rows, meta, { uses: refUses, workspaces },
+      payload.environments !== undefined ? (tx) => applyDefinitions(tx, tenant, definitions, { revision: meta.revision }, opts.generateKey) : undefined,
+    );
     if (recordsFailed) warnings.push("records could not be created for this sync (the persona sync was applied); run `slaude domain reconcile` or sync again");
     auditPersonaSync(tenant, opts.by, meta.revision, applied);
+    if (applied.environments && environmentsChanged(applied.environments)) auditEnvironmentSync(tenant, opts.by, meta.revision, applied.environments);
     await auditRecords(tenant, opts.by, meta.revision, createdRecords, domainEvents);
     let guardrails: GuardrailSyncReport | undefined;
     if (guardrailPlan) {
@@ -484,5 +538,20 @@ export function auditPersonaSync(tenant: string, by: string, revision: string, r
         overridesWiped: r.overridesWiped,
       },
     },
+  });
+}
+
+/** environment.definition_synced: one row per sync that changed a definition. Names and counts only, never a host, address or key. */
+export function auditEnvironmentSync(tenant: string, by: string, revision: string, r: NonNullable<ApplyResult["environments"]>): void {
+  emitAudit({
+    tenantId: tenant,
+    persona: "default",
+    actorKind: "system",
+    actorId: by,
+    action: "environment.definition_synced",
+    targetKind: "tenant",
+    targetId: tenant,
+    summary: `environment sync ${revision}: ${r.created.length} created, ${r.updated.length} updated, ${r.revived.length} revived, ${r.retired.length} retired`,
+    details: { revision, created: r.created, updated: r.updated, revived: r.revived, retired: r.retired },
   });
 }
