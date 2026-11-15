@@ -38,7 +38,7 @@ const run = (p: ReturnType<typeof payload>, o: { dryRun?: boolean; env?: Record<
   runSync(o.tenant ?? T, p, { dryRun: o.dryRun ?? false, env: o.env ?? on, by: "ci" });
 const defs = (tenant = T) => db.query<Record<string, any>>("SELECT * FROM environments WHERE tenant_id = ? AND source = 'definition' ORDER BY name", [tenant]);
 const wipe = async () => {
-  for (const t of ["persona_overrides", "persona_sync_state", "personas", "audit_events", "environments", "remote_keys"]) await db.run(`DELETE FROM ${t}`);
+  for (const t of ["env_bindings", "persona_overrides", "persona_sync_state", "personas", "audit_events", "environments", "remote_keys"]) await db.run(`DELETE FROM ${t}`);
   __resetPersonaRegistry();
 };
 
