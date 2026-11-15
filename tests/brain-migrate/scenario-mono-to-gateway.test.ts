@@ -6,7 +6,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedMonoBrain } from "./seed";
+import { brainOn } from "../helpers/brain-on";
 import { SESSION, dryRunStep, identity, importStep, importer, recallStep, rerunStep, scopeOf, search, useBrain } from "./scenario-steps";
+
+brainOn(); // the brain must be on whatever an earlier file left in SLAUDE_BRAIN_DISABLED / _MODE
 
 const root = mkdtempSync(join(tmpdir(), "bm-scenario-"));
 const monoHome = join(root, "mono");
