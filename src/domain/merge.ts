@@ -38,6 +38,7 @@ import { env } from "../config/env";
 import { m } from "../metrics";
 import { diffReach, grantsReaching, type GrantDiff } from "./merge-reach";
 import { bindingKey, orderedPair } from "./merge-keys";
+import { repointForMerge, type PointerMove } from "../db/credential-pointers";
 
 import { UNDO_WINDOW_MS } from "./merge-limits";
 /** D1: how long a merge can be undone. */
@@ -78,6 +79,8 @@ export interface MovedShape {
   would_inactive_privileged?: Array<{ persona: string; role: string; entry: string }>;
   /** SLAUDE_ACCESS_SOURCE when the merge ran. */
   access_source?: string;
+  /** Credential pointers repointed from the loser to the survivor (slice F, audit only; absent on older rows). */
+  credentials?: PointerMove[];
   /** Hashed keys (src/domain/merge-keys.ts) of the pair an undo vetoes; null when the merge rested on no link. */
   veto_pair?: [string, string] | null;
 }
@@ -150,6 +153,29 @@ export async function lockUsers(c: DbClient, ids: string[]): Promise<void> {
 }
 
 const sameKey = (x: string, y: string) => x === y;
+
+/**
+ * Slice F: repoint credential bookkeeping pointers loser -> survivor, under its
+ * own savepoint. A failure rolls back this step only, is logged by error class
+ * and the merge goes on (the loser delete nulls the pointer; the reconciler
+ * fills it). A link merge never fails because of a pointer. Skipped when
+ * SLAUDE_MERGE_POINTERS=off.
+ */
+async function repointCredentialPointers(c: DbClient, loserId: string, survivorId: string): Promise<PointerMove[]> {
+  if (!env.merge.pointers()) return [];
+  await c.exec("SAVEPOINT merge_pointers");
+  try {
+    const moves = await repointForMerge(c, loserId, survivorId);
+    await c.exec("RELEASE SAVEPOINT merge_pointers");
+    return moves;
+  } catch (e) {
+    // If the rollback itself fails the transaction is unusable: let that throw.
+    await c.exec("ROLLBACK TO SAVEPOINT merge_pointers");
+    await c.exec("RELEASE SAVEPOINT merge_pointers");
+    console.warn(`[domain] merge credential pointers not repointed (${e instanceof Error ? e.name : "error"}), left for the reconciler`);
+    return [];
+  }
+}
 
 /**
  * Merge `loserId` into `survivorId` (or the other way round when
@@ -282,6 +308,8 @@ async function run(i: MergeInput, c: DbClient): Promise<MergeOutcome> {
       return { status: "refused", reason: "stale", survivorId: S, loserId: L };
     }
     const added = await c.run("INSERT INTO user_aliases (old_id, user_id, merged_at) VALUES (?, ?, ?) ON CONFLICT (old_id) DO NOTHING", [L, S, now]);
+    // Credential pointers move BEFORE the loser row goes: the delete fires ON DELETE SET NULL.
+    const credentials = await repointCredentialPointers(c, L, S);
     await c.run("DELETE FROM users WHERE id = ?", [L]);
 
     const raised: MovedShape["raised"] = [];
@@ -311,6 +339,7 @@ async function run(i: MergeInput, c: DbClient): Promise<MergeOutcome> {
       grants: grantRows.map((g) => ({ id: g.id, persona: g.persona, from: L, to: S })),
       aliases_added: (added.changes ?? 0) > 0 ? [L] : [],
       aliases_repointed: repointed.map((a) => ({ old_id: a.old_id, from: L, to: S })),
+      credentials,
       proof_binding_ids: { slack: i.proof?.slackBindingId ?? null, oidc: i.proof?.oidcBindingId ?? null },
       activated: internal ? diff.activated : [],
       inactive_privileged: internal ? diff.inactivePrivileged : [],

@@ -10,6 +10,7 @@ const days = Math.round(UNDO_WINDOW_MS / 86_400_000);
 /** Stated in the console beside every merge and in the release note. */
 export const UNDO_LIMITS: readonly string[] = [
   "Undo moves records and grants back. Credentials and memory slices were never moved, so undo does not touch them.",
+  "Memory slices are read through verified Slack bindings, so undo cuts that access at once; memory pages are never moved. Credential records were never moved.",
   "Items changed after the merge (a binding unlinked, a grant revoked or edited) are not reverted: they are left as they are and listed as skipped.",
   `Past the window (${days} days) undo is refused.`,
   "A merge that a later merge chained onto must be undone later-first.",

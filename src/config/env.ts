@@ -780,6 +780,16 @@ export const env = {
       const raw = opt("SLAUDE_MERGE_NOTICE", "on").trim().toLowerCase();
       return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
     },
+    /**
+     * `SLAUDE_MERGE_POINTERS` (default on, slice F): a merge repoints the credential
+     * bookkeeping pointers (`mcp_credentials.user_id`) from the loser to the survivor
+     * before the loser row is deleted. Inert: no decision reads the pointer. `off`
+     * skips the step and the reconciler repairs. Read on every call.
+     */
+    pointers: (): boolean => {
+      const raw = opt("SLAUDE_MERGE_POINTERS", "on").trim().toLowerCase();
+      return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
+    },
   },
   boundary: {
     /**
