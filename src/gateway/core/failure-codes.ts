@@ -21,6 +21,10 @@ export const FAILURE_TEXT = {
     ":no_entry: This thread is set to an environment this agent may not use, so this message was not handled. `/env off` returns to the server.",
   SHARED_ENV_NOT_INTERACTIVE:
     ":no_entry: This thread is set to a shared environment, and scheduled and background turns do not run on shared environments, so this was not handled. `/env off` returns to the server.",
+  SHARED_ENV_REMOTE_OFF:
+    ":no_entry: This thread is bound to a shared environment, but environments are switched off on this deployment, so this message was not handled. An operator can run `slaude env unbind-shared`.",
+  SHARED_ENV_UNSUPPORTED:
+    ":warning: No worker that can run shared environments is available right now, so this message was not handled. Try again later; the details are in the server log.",
   TURN_FAILED: ":warning: Something went wrong while handling that message. Try again; details are in the server log.",
   UNKNOWN: ":warning: Something went wrong. Details are in the server log.",
 } as const;

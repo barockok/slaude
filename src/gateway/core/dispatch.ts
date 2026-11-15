@@ -362,10 +362,13 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
     console.warn(`[dispatch] session=${sessionId} persona=${persona}: shared environment refused (${refusal.code}); not dispatched`);
     const key = `${meta.channelId}:${meta.threadTs}`;
     const now = Date.now();
-    if (now - (sharedNoticeAt.get(key) ?? 0) < 60 * 60_000) return;
-    sharedNoticeAt.set(key, now);
-    if (sharedNoticeAt.size > 2000) sharedNoticeAt.delete(sharedNoticeAt.keys().next().value as string);
-    agent.emit("event", { type: "error", sessionId, error: refusal.message, code: refusal.code } as AgentEvent);
+    // The event is always emitted, so the message's reaction and status line settle; only the text is limited to once per thread per hour.
+    const quiet = now - (sharedNoticeAt.get(key) ?? 0) < 60 * 60_000;
+    if (!quiet) {
+      sharedNoticeAt.set(key, now);
+      if (sharedNoticeAt.size > 2000) sharedNoticeAt.delete(sharedNoticeAt.keys().next().value as string);
+    }
+    agent.emit("event", { type: "error", sessionId, error: refusal.message, code: refusal.code, ...(quiet ? { quiet: true } : {}) } as AgentEvent);
   }
 
   /** No capable node in time: audited, and the thread is told (the turn is not queued). */
@@ -383,13 +386,15 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       sessionId,
       channelId: meta.channelId,
       threadTs: meta.threadTs,
-      summary: `no node on label ${label} ${channelSession ? "runs channel sessions" : "applies owner guardrails"}; the turn was not dispatched`,
+      summary: `no node on label ${label} ${cap === SHARED_ENV_CAPABILITY ? "runs shared environments" : channelSession ? "runs channel sessions" : "applies owner guardrails"}; the turn was not dispatched`,
       details: { agent: persona, label, capability: cap, waitedMs: guardrailWaitMs },
     });
     console.warn(`[dispatch] session=${sessionId} persona=${persona}: no ${cap} node on label ${label}; not dispatched`);
-    agent.emit("event", (channelSession
-      ? { type: "error", sessionId, error: "no channel-session-capable node", code: "CHANNEL_SESSION_UNSUPPORTED" }
-      : { type: "error", sessionId, error: "no guardrails-capable node", code: "GUARDRAILS_UNSUPPORTED" }) as AgentEvent);
+    agent.emit("event", (cap === SHARED_ENV_CAPABILITY
+      ? { type: "error", sessionId, error: "no shared-env-capable node", code: "SHARED_ENV_UNSUPPORTED" }
+      : channelSession
+        ? { type: "error", sessionId, error: "no channel-session-capable node", code: "CHANNEL_SESSION_UNSUPPORTED" }
+        : { type: "error", sessionId, error: "no guardrails-capable node", code: "GUARDRAILS_UNSUPPORTED" }) as AgentEvent);
   }
 
   return {

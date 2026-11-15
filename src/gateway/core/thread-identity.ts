@@ -7,7 +7,7 @@
  * the agent.
  */
 import * as OneOnOne from "../../db/one-on-one";
-import { remoteDecision, sharedBindingPresent, REFUSED_NOTICE, type Refusal, type TurnKind } from "../../remote/definitions/decision";
+import { remoteDecision, sharedBindingPresent, REFUSED_REMOTE_OFF_NOTICE, type Refusal, type TurnKind } from "../../remote/definitions/decision";
 import { sameAt } from "../../access/wired";
 import { env } from "../../config/env";
 import type { RemoteClaim } from "../../remote/fingerprint";
@@ -50,7 +50,7 @@ export async function threadIdentity(
     else if ("target" in d) target = d.target;
   } else if (await sharedBindingPresent(channel, thread)) {
     // Remote mode is off but the thread is still bound to a shared machine: never fall through to the server.
-    refused = { code: "SHARED_ENV_REFUSED", message: REFUSED_NOTICE };
+    refused = { code: "SHARED_ENV_REMOTE_OFF", message: REFUSED_REMOTE_OFF_NOTICE };
   }
   const applies = !refused && !!target && (target.env?.trust === "provisioned" || (await sameAt({ site: "remote.thread_identity_run_as", persona: null, teamId: target.teamId, userId: target.userId, otherUserId: runAsUser })));
   return {

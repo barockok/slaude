@@ -91,11 +91,13 @@ describe("threadIdentity", () => {
     expect(r.remote).toBeUndefined();
   });
 
-  test("remote mode off with the thread still bound to a shared machine is a refusal, not the server", async () => {
+  test("remote mode off with the thread still bound to a shared machine is a refusal, not the server, and tells the operator what to run", async () => {
     await bindShared(await insertShared());
     delete process.env.SLAUDE_REMOTE;
     const id = await identity("agent-a");
-    expect(id.refused).toBeDefined();
+    expect(id.refused?.code).toBe("SHARED_ENV_REMOTE_OFF");
+    expect(id.refused?.message).toContain("slaude env unbind-shared");
+    expect(id.refused?.message).not.toContain("/env off");
     expect(id.remote).toBeUndefined();
   });
 
@@ -126,6 +128,17 @@ describe("threadIdentity", () => {
     };
     expect((await refresh("agent-a")).identity?.remote).toBe(true);
     expect((await refresh("agent-b")).identity).toBeUndefined();
+  });
+});
+
+describe("a bound shared row of a kind this process does not know", () => {
+  test("is a refusal at every point, never none (the server)", async () => {
+    const id = await insertShared();
+    await bindShared(id);
+    await db.run("UPDATE environments SET kind = 'weird' WHERE id = ?", [id]);
+    const d = await remoteDecision({ tenant: TENANT, persona: "agent-a", channel: CH, thread: TH, turnKind: "interactive" });
+    expect("refused" in d).toBe(true);
+    expect((await identity("agent-a")).refused).toBeDefined();
   });
 });
 
@@ -280,7 +293,10 @@ describe("dispatch", () => {
     await b.dispatch.dispatch(S, "again", { ...META, personaId: "agent-b" });
     await flushAudits();
     expect(b.enqueued).toHaveLength(0);
-    expect(b.events.filter((e) => e.code === "SHARED_ENV_REFUSED")).toHaveLength(1);
+    // Every refused message settles (its reaction and status line clear); the text posts once.
+    const refusedEvents = b.events.filter((e) => e.code === "SHARED_ENV_REFUSED");
+    expect(refusedEvents).toHaveLength(2);
+    expect(refusedEvents.filter((e) => !e.quiet)).toHaveLength(1);
     const audits = await db.query<{ action: string }>("SELECT action FROM audit_events WHERE action = 'environment.refused'");
     expect(audits.length).toBeGreaterThan(0);
   });
@@ -306,6 +322,23 @@ describe("dispatch", () => {
     const r = harness();
     await r.dispatch.dispatch(S, "hi", { ...META, personaId: "agent-a" });
     expect(r.enqueued).toHaveLength(0);
+  });
+
+  test("no shared-env node at all is reported as its own failure, not as guardrails", async () => {
+    const reg = (): PersonaRegistry => ({
+      lookupByUserId: () => null,
+      lookupByName: (n) => ({ name: n, slackUserId: "U1", config: { slackUserId: "U1", name: n }, outClient: null, mcp: null, runsOn: null, model: null, definition: { environment: { allow: ["team-sandbox"] } } } as never),
+      list: () => [], isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null,
+      defaultPersona: () => ({ model: null, mcp: null, runsOn: null }) as never,
+    });
+    setPersonaRegistry(reg());
+    const h = harness();
+    // Replace the fleet: nobody has the capability.
+    (h as any).dispatch.registry.liveNodesWithCap = async () => [{ node: "old", has: false }];
+    await h.dispatch.dispatch(S, "hi", { ...META, personaId: "agent-a" });
+    expect(h.enqueued).toHaveLength(0);
+    expect(h.events[0]).toMatchObject({ code: "SHARED_ENV_UNSUPPORTED" });
+    expect(h.events.some((e) => e.code === "GUARDRAILS_UNSUPPORTED")).toBe(false);
   });
 
   test("an agent that declares environment: needs a shared-env/1 node; one that does not is unaffected", async () => {

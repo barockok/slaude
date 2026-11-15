@@ -2656,7 +2656,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // posts once. Without one (mono/local) it is the session's current inbound
           // message, so the MCP-circuit error and the result error of one turn post
           // once. The guard is an in-process Set: it does NOT span replicas.
-          if (firstFailurePost(e.jobId ? `${e.sessionId}:job:${e.jobId}` : `${e.sessionId}:ts:${route.ctx.inboundTs}`)) {
+          if (!e.quiet && firstFailurePost(e.jobId ? `${e.sessionId}:job:${e.jobId}` : `${e.sessionId}:ts:${route.ctx.inboundTs}`)) {
             try {
               await botClientFor(appOf(route.ctx)).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
                 channel: route.ctx.channel,

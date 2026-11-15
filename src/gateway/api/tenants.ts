@@ -617,7 +617,7 @@ export async function handleTenantRuntime(
       summary: `a node without the ${SHARED_ENV_CAPABILITY} capability asked for an agent that allows shared environments; refused`,
       details: { agent: bundle.personaId, capability: SHARED_ENV_CAPABILITY },
     });
-    return new Response(JSON.stringify({ error: "this node does not run shared environments", code: "GUARDRAILS_UNSUPPORTED", transient: false }), {
+    return new Response(JSON.stringify({ error: "this node does not run shared environments", code: "SHARED_ENV_UNSUPPORTED", transient: false }), {
       status: 409,
       headers: { "content-type": "application/json" },
     });

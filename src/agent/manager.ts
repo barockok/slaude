@@ -195,7 +195,7 @@ export type AgentEvent =
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
   // `error` is the RAW detail for logs only; Slack gets the fixed text for `code`
   // (gateway/core/failure-codes.ts). `jobId` lets the gateway post once per job.
-  | { type: "error"; sessionId: string; error: string; code?: FailureCode; jobId?: string }
+  | { type: "error"; sessionId: string; error: string; code?: FailureCode; jobId?: string; /** Settle the turn (reaction, status line) but post no failure text: its notice was already posted. */ quiet?: boolean }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
   | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
 

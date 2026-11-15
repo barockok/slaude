@@ -13,7 +13,8 @@ import { db } from "../../db/schema";
 import * as Envs from "../../db/environments";
 import type { StoredEnv } from "../kinds/types";
 import { definitionRowId } from "./resolve";
-import { activeRemoteTarget, boundEnv } from "../active";
+import { activeRemoteTarget } from "../active";
+import { getKind } from "../kinds";
 import type { RemoteTarget } from "../types";
 import { allowedEnvironments, type AllowLookup } from "./policy";
 
@@ -21,7 +22,7 @@ import { allowedEnvironments, type AllowLookup } from "./policy";
 export type TurnKind = "interactive" | "scheduled" | "background" | "other";
 
 export interface Refusal {
-  code: "SHARED_ENV_REFUSED" | "SHARED_ENV_NOT_INTERACTIVE";
+  code: "SHARED_ENV_REFUSED" | "SHARED_ENV_NOT_INTERACTIVE" | "SHARED_ENV_REMOTE_OFF";
   message: string;
 }
 
@@ -30,8 +31,14 @@ export type RemoteDecision = { target: RemoteTarget } | { none: true } | { refus
 export const REFUSED_NOTICE = "This thread is set to an environment this agent may not use. `/env off` returns to the server.";
 export const REFUSED_NOT_INTERACTIVE_NOTICE = "This thread is set to a shared environment, and scheduled and background turns do not run on shared environments. `/env off` returns to the server.";
 
+/** Remote mode was switched off while the thread was still bound to a shared machine: /env is off too, so the operator unbinds. */
+export const REFUSED_REMOTE_OFF_NOTICE = "This thread is bound to a shared environment, but environments are switched off on this deployment. An operator can run `slaude env unbind-shared`.";
+
 const refuse = (message = REFUSED_NOTICE): { refused: Refusal } => ({
-  refused: { code: message === REFUSED_NOT_INTERACTIVE_NOTICE ? "SHARED_ENV_NOT_INTERACTIVE" : "SHARED_ENV_REFUSED", message },
+  refused: {
+    code: message === REFUSED_NOT_INTERACTIVE_NOTICE ? "SHARED_ENV_NOT_INTERACTIVE" : message === REFUSED_REMOTE_OFF_NOTICE ? "SHARED_ENV_REMOTE_OFF" : "SHARED_ENV_REFUSED",
+    message,
+  },
 });
 
 /** The turn kind a dispatch (or a job token) stands for. Anything not provably interactive is not. */
@@ -76,17 +83,18 @@ export async function remoteDecision(i: DecisionInput, explicit: DecisionDeps = 
   const deps = { ...testDeps, ...explicit };
   const lookup = deps.lookup ?? activeRemoteTarget;
   // A lookup that fails here throws, as it always did: callers must not default to running on the server.
-  const b = await boundEnv(i.channel, i.thread);
-  // Personal rows (and no binding, and an unknown kind): exactly the old answer.
-  if (!b || b.env.source !== "definition") {
+  const binding = await Envs.findBinding(i.channel, i.thread);
+  const row = binding ? await Envs.getEnv(binding.env_id) : null;
+  // Personal rows (and no binding, and a missing row): exactly the old answer.
+  if (!row || row.source !== "definition") {
     const t = await lookup(i.channel, i.thread);
     return t ? { target: t } : { none: true };
   }
-  // A shared row: every doubt is a refusal.
+  // A shared row, of a kind this process does not know too: every doubt is a refusal, never "none".
   try {
-    const row = b.env;
+    if (!getKind(row.kind)) return refuse();
     if (row.retired) return refuse();
-    if (!(deps.remoteEnabled ?? env.remote.enabled)()) return refuse();
+    if (!(deps.remoteEnabled ?? env.remote.enabled)()) return refuse(REFUSED_REMOTE_OFF_NOTICE);
     if (i.turnKind !== "interactive") return refuse(REFUSED_NOT_INTERACTIVE_NOTICE);
     if (!i.persona || row.tenantId !== i.tenant) return refuse();
     if (row.config.shared !== "true" || row.config.trust !== "unlocked") return refuse();
