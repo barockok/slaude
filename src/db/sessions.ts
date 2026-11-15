@@ -83,12 +83,16 @@ export async function createForThread(args: {
   // never delays or breaks a session create. The Slack columns stay the key.
   const boundary = boundaryForCached(args.thread.team_id, args.thread.channel_id);
   const locator = boundary ? locatorOf(args.thread.thread_ts) : null;
-  await db.run(
+  // A concurrent creator of the same thread (another replica, the cron scheduler beside an inbound event) is
+  // not an error: ON CONFLICT DO NOTHING lets the loser read the winner's row instead of raising a unique
+  // violation, so a burst of creates never churns errors through the connection pool.
+  const inserted = await db.run(
     `INSERT INTO sessions
      (id, created_at, updated_at, title, model, working_dir, status,
       claude_started, slack_team_id, slack_channel_id, slack_thread_ts,
       permission_mode, persona_id, boundary_id, locator)
-     VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, 'idle', 0, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (slack_team_id, slack_channel_id, slack_thread_ts, persona_id) DO NOTHING`,
     [
       id,
       now,
@@ -107,9 +111,40 @@ export async function createForThread(args: {
   );
   // First sight: this is the one place a session row is created (the node has no store that creates rows).
   observeSlackChannel({ teamId: args.thread.team_id, channelId: args.thread.channel_id });
-  const created = (await db.one<RawRow>(`SELECT * FROM sessions WHERE id = ?`, [id]))!;
+  // The row exists (we wrote it, or the winner did): read it with a short bounded retry and, failing that,
+  // raise a typed error. A create never hands its caller null.
+  const created =
+    inserted.changes > 0
+      ? await readBounded(() => db.one<RawRow>(`SELECT * FROM sessions WHERE id = ?`, [id]))
+      : await readBounded(() =>
+          db.one<RawRow>(`SELECT * FROM sessions WHERE slack_team_id = ? AND slack_channel_id = ? AND slack_thread_ts = ? AND persona_id = ?`, [
+            args.thread.team_id,
+            args.thread.channel_id,
+            args.thread.thread_ts,
+            personaId,
+          ]),
+        );
+  if (!created) throw new SessionCreateError(args.thread.channel_id, args.thread.thread_ts);
   checkRow("create", created);
   return publicRow(created);
+}
+
+/** Raised when a session row that was just written (or lost a create race to) cannot be read back. */
+export class SessionCreateError extends Error {
+  constructor(channel: string, thread: string) {
+    super(`session create: the row for ${channel}/${thread} could not be read back`);
+    this.name = "SessionCreateError";
+  }
+}
+
+/** Up to three reads (now, then after 25 ms and 75 ms): a row that was just committed may not be visible to the next pooled connection at once. */
+async function readBounded<T>(read: () => Promise<T | null>): Promise<T | null> {
+  for (const wait of [0, 25, 75]) {
+    if (wait) await new Promise((r) => setTimeout(r, wait));
+    const row = await read();
+    if (row) return row;
+  }
+  return null;
 }
 
 export async function findById(id: string): Promise<SessionRow | null> {

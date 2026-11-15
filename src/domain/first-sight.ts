@@ -47,6 +47,7 @@ export const ROW_CAP = 500;
 export const NEG_TTL_MS = 30 * 1000;
 export const SUMMARY_ACTION = "domain.first_sight.burst";
 const LOG_CAP = 5000;
+const LATE_FILL_TIMEOUT_MS = 10_000;
 
 const USER_RE = /^U[A-Z0-9]+$/;
 const SYSTEM_USERS = new Set(["USLACKBOT"]);
@@ -119,7 +120,13 @@ export function createFirstSight(deps: FirstSightDeps = {}): FirstSight {
       : async (team: string, channel: string, id: string) => {
           // Imported late: sessions.ts imports this module.
           const { fillBoundaryForChannel } = await import("../db/sessions");
-          return fillBoundaryForChannel(team, channel, id);
+          // Bounded: a stuck database must not pin this (tracked) work forever; the periodic fill finishes the rest.
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            return await Promise.race([fillBoundaryForChannel(team, channel, id), new Promise<number>((r) => (timer = setTimeout(() => r(0), LATE_FILL_TIMEOUT_MS)))]);
+          } finally {
+            if (timer) clearTimeout(timer);
+          }
         });
   const emit =
     deps.emit ??

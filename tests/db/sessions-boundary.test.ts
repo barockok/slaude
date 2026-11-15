@@ -224,19 +224,58 @@ describe("deleteWakeSessionsBefore", () => {
   });
 });
 
+describe("a create never hands its caller null", () => {
+  const key = { team_id: WS, channel_id: CH, thread_ts: "5.5" };
+  const create = () => Sessions.createForThread({ thread: key, model: "m", working_dir: "/w" });
+
+  test("a second create of an existing thread returns the first row (no unique violation)", async () => {
+    const a = await create();
+    const b = await create();
+    expect(b.id).toBe(a.id);
+    expect(await rows()).toHaveLength(1);
+  });
+
+  test("a row that is not visible to the first read-back is found by the retry", async () => {
+    const orig = db.one.bind(db);
+    let hidden = 1;
+    (db as { one: typeof db.one }).one = (async (sql: string, params?: unknown[]) => {
+      if (/FROM sessions WHERE id = \?/.test(sql) && hidden-- > 0) return null; // the first re-read misses the just-committed row
+      return orig(sql, params);
+    }) as typeof db.one;
+    try {
+      const r = await create();
+      expect(r.slack_thread_ts).toBe("5.5");
+    } finally {
+      (db as { one: typeof db.one }).one = orig;
+    }
+  });
+
+  test("a row that never becomes readable raises a typed error, not null", async () => {
+    const orig = db.one.bind(db);
+    (db as { one: typeof db.one }).one = (async (sql: string, params?: unknown[]) => (/FROM sessions WHERE id = \?/.test(sql) ? null : orig(sql, params))) as typeof db.one;
+    try {
+      await expect(create()).rejects.toThrow(Sessions.SessionCreateError);
+    } finally {
+      (db as { one: typeof db.one }).one = orig;
+    }
+  });
+});
+
 describe("concurrency", () => {
-  test("20 parallel creates of one thread (warm): one row, pair set once", async () => {
+  test("20 parallel creates of one thread (warm): one row, every caller gets it, pair set once", async () => {
     const b = await seedBoundary();
-    const out = await Promise.allSettled(Array.from({ length: 20 }, () => mk("9.9")));
-    expect(out.filter((o) => o.status === "fulfilled")).toHaveLength(1);
+    const out = await Promise.allSettled(Array.from({ length: 20 }, () => Sessions.createForThread({ thread: thread("9.9"), model: "m", working_dir: "/w" })));
+    expect(out.every((o) => o.status === "fulfilled")).toBe(true);
+    const ids = new Set(out.map((o) => (o as PromiseFulfilledResult<{ id: string }>).value.id));
+    expect(ids.size).toBe(1);
     const all = await rows();
     expect(all).toHaveLength(1);
     expect(all[0]).toMatchObject({ boundary_id: b, locator: "9.9" });
   });
 
   test("20 parallel creates of one thread (cold): one row, completed once first sight finishes", async () => {
-    const out = await Promise.allSettled(Array.from({ length: 20 }, () => mk("9.9")));
-    expect(out.filter((o) => o.status === "fulfilled")).toHaveLength(1);
+    const out = await Promise.allSettled(Array.from({ length: 20 }, () => Sessions.createForThread({ thread: thread("9.9"), model: "m", working_dir: "/w" })));
+    expect(out.every((o) => o.status === "fulfilled")).toBe(true);
     await flushFirstSightWork();
     const all = await rows();
     expect(all).toHaveLength(1);
