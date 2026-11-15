@@ -18,6 +18,7 @@
   "src/db/client.ts [not] activePromise",
   "src/db/drivers/pg.ts [member] this.ex.unsafe(sql)",
   "src/decision/registry.ts [floating] aborted.catch(() => {})",
+  "src/domain/boundary-backfill.ts [binop] inflight",
   "src/domain/boundary-for.ts [binop] inflight.get(key)",
   "src/domain/boundary-for.ts [binop] p",
   "src/domain/boundary-for.ts [cond] running",
