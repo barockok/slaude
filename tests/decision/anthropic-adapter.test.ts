@@ -229,6 +229,14 @@ describe("the registered anthropic adapter", () => {
     expect(out).not.toContain("sk-literal-secret-value");
     expect(out).not.toContain("leaky-value");
   });
+  test("a reference that resolves empty disables the adapter and never falls back to the provider key", async () => {
+    clear();
+    process.env.ANTHROPIC_API_KEY = "env-key-value";
+    process.env.ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    expect(await adapterFromConfig({ type: "anthropic", apiKey: "env://PERSONA_DECISION_API_KEY" }, { resolveSecret: async () => "" })).toBeNull();
+    warn.mockRestore();
+  });
   test("without apiKey the adapter behaves as before (the API key variable)", async () => {
     clear();
     process.env.ANTHROPIC_API_KEY = "env-key-value";

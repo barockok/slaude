@@ -162,21 +162,23 @@ const blockSchema = z
 registerAdapter("anthropic", async (block, deps) => {
   const b = blockSchema.parse(block);
   const headers: Record<string, string> = {};
-  let ref = "";
   if (b.apiKey !== undefined) {
+    // A configured reference is the only credential: an empty value disables the adapter, it never falls back to the provider variables.
     parseRef(b.apiKey, "decision.adapter.apiKey"); // throws on a literal or malformed reference
-    ref = await deps.resolveSecret(b.apiKey);
+    const ref = await deps.resolveSecret(b.apiKey);
+    if (!ref) throw new Error("apiKey resolved empty");
+    headers["x-api-key"] = ref;
+  } else {
+    const key = env.provider.apiKey();
+    const token = env.provider.authToken();
+    const oauth = env.provider.oauthToken();
+    if (key) headers["x-api-key"] = key;
+    else if (token) headers.authorization = `Bearer ${token}`;
+    else if (oauth) {
+      headers.authorization = `Bearer ${oauth}`;
+      headers["anthropic-beta"] = "oauth-2025-04-20";
+    } else throw new Error("no model provider credentials in the environment");
   }
-  // A configured reference wins over every provider variable; without one nothing changes.
-  const key = ref || env.provider.apiKey();
-  const token = env.provider.authToken();
-  const oauth = env.provider.oauthToken();
-  if (key) headers["x-api-key"] = key;
-  else if (token) headers.authorization = `Bearer ${token}`;
-  else if (oauth) {
-    headers.authorization = `Bearer ${oauth}`;
-    headers["anthropic-beta"] = "oauth-2025-04-20";
-  } else throw new Error("no model provider credentials in the environment");
   const baseUrl = env.provider.baseUrl() || DEFAULT_BASE;
   if (!b.model && !isDefaultHost(baseUrl)) {
     // A provider other than the public API may not serve the default model id: name the model rather than guess.
