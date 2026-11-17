@@ -41,17 +41,34 @@ export function localUploadLimiter(now: () => number = Date.now, limit = UPLOAD_
   };
 }
 
-export function redisUploadLimiter(redis: Redis, prefix: string, fallback: UploadLimiter, now: () => number = Date.now, limit = UPLOAD_BEGINS_PER_MINUTE): UploadLimiter {
+/** Reject when `p` has not settled within `ms`: ioredis queues a command forever while Redis is down. */
+function within<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const t = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error("redis timeout")), ms); });
+  p.catch(() => {}); // the loser must not surface as unhandled
+  return Promise.race([p, t]).finally(() => clearTimeout(timer));
+}
+
+export function redisUploadLimiter(
+  redis: Redis,
+  prefix: string,
+  fallback: UploadLimiter,
+  now: () => number = Date.now,
+  limit = UPLOAD_BEGINS_PER_MINUTE,
+  timeoutMs = 500,
+): UploadLimiter {
   return {
     async take(session) {
       const key = `${prefix}:upload-begin:${session}:${Math.floor(now() / WINDOW_MS)}`;
+      let n: number;
       try {
-        const n = await redis.incr(key);
-        if (n === 1) await redis.expire(key, 120);
-        return n <= limit;
+        n = await within(redis.incr(key), timeoutMs);
       } catch {
         return fallback.take(session);
       }
+      // The key is per minute, so a missed EXPIRE only leaves one small stale key.
+      if (n === 1) void within(redis.expire(key, 120), timeoutMs).catch(() => {});
+      return n <= limit;
     },
   };
 }
