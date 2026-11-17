@@ -46,6 +46,7 @@ export type SlashHit =
   | { kind: "sandbox"; action: "on" | "off" | "status" }
   | { kind: "workflow"; action: "start"; pipeline: string; ticketRef?: string; request: string }
   | { kind: "workflow"; action: "status" | "cancel" | "usage" }
+  | { kind: "workflow"; action: "answer" | "reject"; text: string }
   | { kind: "participant"; action: "add" | "remove"; userIds: string[] }
   | { kind: "participant"; action: "list" }
   | { kind: "mention-only"; action: "on" | "off" }
@@ -67,7 +68,7 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/abort", summary: "cancel the current turn" },
   { usage: "/1on1 [lock | off]", summary: "start a private 1on1 (locked to you); `lock` re-restricts after open; `off` releases — to open to guests, ask the agent directly" },
   { usage: "/remote [<addr> [dir] | off | key]", summary: "run this thread's shell + file tools on your own machine over tailcat (locks the thread to you); no arg shows status" },
-  { usage: "/workflow start <pipeline> [TICKET-123 | text]", summary: "start a ticket workflow in this thread (you become the starter); `status`, `cancel`" },
+  { usage: "/workflow start <pipeline> [TICKET-123 | text]", summary: "start a ticket workflow in this thread (you become the starter); `status`, `cancel`, `answer <a> || <b>`, `reject <reason>`" },
   { usage: "/participant add|remove @user… | list", summary: "who may approve this thread's workflow stages (starter + participants); add/remove: starter or manager" },
   { usage: "/sandbox [on | off]", summary: "run this thread's shell + file tools in its own sandbox (for code work; allowlisted users); `off` destroys it; no arg shows status" },
   { usage: "/mention-only [off]", summary: "reply only when @-mentioned in this thread; `off` restores normal" },
@@ -227,6 +228,10 @@ export function parseSlashCommand(text: string): SlashHit | null {
     const sub = (rest[0] ?? "").toLowerCase();
     if (sub === "status" || !rest[0]) return { kind: "workflow", action: "status" };
     if (sub === "cancel") return { kind: "workflow", action: "cancel" };
+    if (sub === "answer" || sub === "reject") {
+      const text = rest.slice(1).join(" ").trim();
+      return text ? { kind: "workflow", action: sub, text } : { kind: "workflow", action: "usage" };
+    }
     if (sub !== "start") return { kind: "workflow", action: "usage" };
     const pipeline = rest[1] ?? "";
     if (!pipeline) return { kind: "workflow", action: "usage" };

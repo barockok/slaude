@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as PendingGates from "../../../src/db/pending-gates";
 import * as Workflow from "../../../src/db/workflow";
 import { db } from "../../../src/db/schema";
-import { StageGate } from "../../../src/gateway/slack/stage-gate";
+import { StageGate, chunkText } from "../../../src/gateway/slack/stage-gate";
 import type { FactoryClient } from "../../../src/workflow/client";
 
 let handler: (args: any) => Promise<void>;
@@ -99,5 +99,64 @@ describe("stage approval cards", () => {
     const res = await click(gateId, "approve", "U_A");
     expect(res[0].text).toContain("disabled");
     expect((await PendingGates.get(gateId))?.status).toBe("pending");
+  });
+});
+
+describe("artifact cards", () => {
+  const artifact = (over: any = {}) => ({ name: "prd", content: "# PRD\nshort", outcome: "ok", checklist: [{ item: "Every FR has an ID", pass: true }, { item: "No tech named", pass: false, note: "mentions Postgres" }], ...over });
+  const card = (over: any = {}) => gate.postArtifactCard({ channel: "C1", threadTs: "1.0", sessionId: "S1", stage: "triage", artifact: artifact(), result: { hash: "h", questions: [], approvable: true }, ...over });
+
+  it("shows the document, the checklist and Approve, and stores the outcome for the approval", async () => {
+    const r = await card();
+    const gateId = (r as any).gateId;
+    const text = JSON.stringify(posted[0].blocks);
+    expect(text).toContain("# PRD");
+    expect(text).toContain(":white_check_mark: Every FR has an ID");
+    expect(text).toContain(":x: No tech named (mentions Postgres)");
+    expect(text).toContain(`slaude_stage:approve:${gateId}`);
+    expect(text).toContain("/workflow reject <reason>");
+    expect(text).not.toContain("slaude_stage:reject");
+    expect((await PendingGates.get(gateId))?.payload).toMatchObject({ type: "stage", runId: "run-C1-1.0", stage: "triage", attempt: 2, outcome: "ok", questions: [] });
+  });
+
+  it("open questions replace Approve with the answer command", async () => {
+    await card({ result: { hash: "h", questions: ["Who owns it?", "By when?"], approvable: false } });
+    const text = JSON.stringify(posted[0].blocks);
+    expect(text).toContain("2 open questions");
+    expect(text).toContain("1. Who owns it?");
+    expect(text).toContain("/workflow answer <answer 1> || <answer 2>");
+    expect(text).not.toContain("slaude_stage:approve");
+  });
+
+  it("a long artifact is posted in the thread first and the card points to it", async () => {
+    await card({ artifact: artifact({ content: "line\n".repeat(2000) }) });
+    expect(posted.length).toBeGreaterThan(2);
+    expect(posted.slice(0, -1).every((m) => typeof m.text === "string" && m.text.length <= 3500 && m.thread_ts === "1.0")).toBe(true);
+    expect(JSON.stringify(posted[posted.length - 1].blocks)).toContain("The full text is in the messages above.");
+  });
+
+  it("refuses a card for another stage, no run, or the flag off, and a failed post leaves no open gate", async () => {
+    expect(await card({ stage: "planning" })).toEqual({ error: 'The workflow is at stage "triage", not "planning".' });
+    const failing: any = { client: { chat: { postMessage: async () => { throw new Error("slack down"); } } }, action: () => {} };
+    const g = new StageGate(failing, { client });
+    const r = await g.postArtifactCard({ channel: "C1", threadTs: "1.0", sessionId: "S1", stage: "triage", artifact: artifact(), result: { hash: "h", questions: [], approvable: true } });
+    expect((r as any).error).toContain("slack down");
+    expect(await PendingGates.pendingForSession("S1")).toEqual([]);
+  });
+
+  it("approving a card sends the submitted outcome", async () => {
+    const r = await card();
+    await click((r as any).gateId, "approve", "U_A");
+    expect(approvals[0][1]).toMatchObject({ decision: "approve", stage: "triage", attempt: 2, outcome: "ok" });
+  });
+});
+
+describe("chunkText", () => {
+  it("splits at line breaks, keeps every character, and never exceeds the size", () => {
+    const text = Array.from({ length: 900 }, (_, i) => `row ${i}`).join("\n");
+    const parts = chunkText(text, 1000);
+    expect(parts.every((p) => p.length <= 1000)).toBe(true);
+    expect(parts.join("\n")).toBe(text);
+    expect(chunkText("short")).toEqual(["short"]);
   });
 });

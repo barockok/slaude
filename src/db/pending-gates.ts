@@ -106,6 +106,12 @@ export async function resolve(
   return rows.length ? mapRow(rows[0]) : null;
 }
 
+/** Every still-pending gate of a session, oldest first. */
+export async function pendingForSession(sessionId: string): Promise<PendingGate[]> {
+  const rows = await db.query<any>(`SELECT * FROM pending_gates WHERE session_id = ? AND status = 'pending' ORDER BY created_at`, [sessionId]);
+  return rows.map(mapRow);
+}
+
 /** Expire every pending gate whose deadline passed. Returns the expired rows
  *  (boot sweep logs them; the recurring sweep ignores the result). */
 export async function sweepExpired(now: number = Date.now()): Promise<PendingGate[]> {
