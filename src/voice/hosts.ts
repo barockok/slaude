@@ -3,16 +3,19 @@
  * and child process come from, per runtime (the mono process or a node worker).
  * Calls run as the agent identity only (voice mode spec §3, §10).
  */
+import { SoulDataSchema } from "../soul/data";
+import { resolveSoulMandate } from "../soul/mandate-scope";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentManager } from "../agent/manager";
 import { buildInstructions, createVoiceMcp, VOICE_MCP_NAME, type VoiceHost } from "../agent/voice-mcp";
+import { isChannelSessionKey } from "../gateway/core/channel-session";
 import type { HELD_BY_OTHER } from "../queue/locks";
 import type { VoiceCalls } from "./call";
 import { voiceConfigFromBundle, type VoiceBundle, type VoiceConfig } from "./config";
 import { makeTokenKeeper, monoRunner, nodeRunner, VoiceAuthLost, type TurnAgent } from "./runners";
 import { spawnVoiceLoop } from "./spawn";
 
-type JobClaimsExcerpt = { lock?: unknown; remote?: unknown; runAs?: string };
+type JobClaimsExcerpt = { lock?: unknown; remote?: unknown; runAs?: string; channel?: unknown };
 
 /** A job token's claims (or the gateway's fresh thread identity) → the
  *  agent-only refusal: a /1on1 lock, a /remote target, or a turn that runs as
@@ -38,6 +41,15 @@ export function instructionsFrom(soul: unknown, brief: string): string {
   };
   const values = Array.isArray(s.values) ? s.values.filter((v): v is string => typeof v === "string") : [];
   return buildInstructions({ ...(s.identity ?? {}), values, mandate: s.mandate }, brief);
+}
+
+/** A node's soul as its voice call speaks it in one channel: the resolver's mandate when the bundle's soul parses. */
+function bundleSoulForChannel(soulJson: unknown, channel: unknown): unknown {
+  if (typeof channel !== "string" || soulJson == null) return soulJson;
+  const parsed = SoulDataSchema.safeParse(soulJson);
+  if (!parsed.success) return soulJson;
+  const resolved = resolveSoulMandate(parsed.data, channel, parsed.data);
+  return resolved.applied ? { ...(soulJson as object), mandate: resolved.text } : soulJson;
 }
 
 type MonoAgent = Parameters<typeof monoRunner>[0] & Pick<AgentManager, "holdIdle" | "resolveEffectiveIdentity">;
@@ -72,6 +84,8 @@ export function makeMonoVoiceHost(o: {
 }): VoiceHost {
   const refusal: VoiceHost["refusal"] = async (sid) => {
     const t = await o.findThread(sid);
+    // A channel session's wakes restart it, and a restart ends a call.
+    if (t && isChannelSessionKey(t.threadTs)) return "VOICE_CHANNEL_SESSION";
     // A live /1on1 lock or a cron job's captured initiator: runs as a person.
     if (await o.agent.resolveEffectiveIdentity(sid, t?.channel, t?.threadTs)) return "VOICE_AGENT_ONLY";
     // Without the thread the lock and remote target cannot be checked: fail closed.
@@ -117,6 +131,9 @@ export function makeNodeVoiceHost(o: {
   bundle(id: string): Promise<{ voice?: VoiceBundle | null; soulJson: unknown } | null>;
   workingDir(id: string): Promise<string>;
   draining(): boolean;
+  /** The session row's thread key. Not in the job token: a channel session's
+   *  root turn carries its real message ts there. */
+  sessionThread?(id: string): Promise<string | null>;
 }): VoiceHost {
   /** The exact token whose claims passed voice_start's check, per session.
    *  Data only: the chain (keeper) is started from it in runner(). */
@@ -135,6 +152,11 @@ export function makeNodeVoiceHost(o: {
     refusal: async (sid) => {
       checked.delete(sid);
       if (o.draining()) return "VOICE_UNAVAILABLE";
+      try {
+        if (o.sessionThread && isChannelSessionKey(await o.sessionThread(sid))) return "VOICE_CHANNEL_SESSION";
+      } catch {
+        return "VOICE_UNAVAILABLE"; // the row cannot be read: fail closed
+      }
       const token = o.tokenFor(sid);
       const c = token ? o.claims(token) : null;
       const r = voiceRefusalFromClaims(c);
@@ -194,7 +216,11 @@ export function makeNodeVoiceHost(o: {
       }
       return o.agent.holdIdle(sid, h);
     },
-    instructions: async (sid, brief) => instructionsFrom((await o.bundle(sid))?.soulJson, brief),
+    instructions: async (sid, brief) => {
+      const token = o.tokenFor(sid);
+      const channel = token ? o.claims(token)?.channel : undefined;
+      return instructionsFrom(bundleSoulForChannel((await o.bundle(sid))?.soulJson, channel), brief);
+    },
   };
 }
 

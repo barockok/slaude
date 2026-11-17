@@ -127,7 +127,7 @@ describe("built-in skills", () => {
     expect(renderSkillIndex()).toBe(
       "## Built-in skills (read-only, shipped with slaude)\n" +
         "Load the named skill with the Skill tool before the matching action; the runtime blocks the action until you do.\n" +
-        "- Before kb_memoize → load `slaude:memory`\n" +
+        "- Before memory_save → load `slaude:memory`\n" +
         "- Before write_skill or delete_skill → load `slaude:skill-authoring`",
     );
   });

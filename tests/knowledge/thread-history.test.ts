@@ -37,7 +37,7 @@ function setup(over: { gate?: Partial<GateInput>; sessionId?: string | undefined
     requestApproval: async () => ({ approved: true, by: "U0MGR" }),
     thread: async () => ({
       sessionId: "sessionId" in over ? over.sessionId : SESSION,
-      read: memoryScopeFor(g, { channel: "C0CHAN" }).read,
+      read: (await memoryScopeFor(g, { channel: "C0CHAN" })).read,
     }),
     call: async (name, params, scope) => {
       calls.push({ name, slug: params.slug, scope });
@@ -90,7 +90,7 @@ describe("kb_thread_history", () => {
     expect(s.calls).toHaveLength(2);
     expect(s.calls[0]!.name).toBe("get_timeline");
     expect(s.calls[0]!.slug).toBe("conversations/sess-abc");
-    const read = memoryScopeFor(gate(), { channel: "C0CHAN" }).read!;
+    const read = (await memoryScopeFor(gate(), { channel: "C0CHAN" })).read!;
     expect(s.calls[0]!.scope).toEqual(read);
     // The summary beside it, from the conversation page's own source alone.
     expect(s.calls[1]).toEqual({ name: "get_page", slug: "conversations/sess-abc/summary", scope: { ...read, allowedSources: [read.sourceId] } });

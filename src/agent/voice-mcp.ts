@@ -11,16 +11,19 @@ import type { VoiceConfig } from "../voice/config";
 import { VoiceCall, VoiceCalls, type LoopChild, type TurnRunner } from "../voice/call";
 import type { VoiceInit } from "../voice/ipc";
 import { redactCapabilityUrls } from "../voice/audio-link";
+import { VOICE_MCP_NAME } from "../voice/turn-flags";
 import { FORBIDDEN_HEADERS, audioHeadersProblem, matchAudioOrigin, type AudioPolicy } from "../voice/audio-acl";
 
-export const VOICE_MCP_NAME = "slaude_voice";
+export { VOICE_MCP_NAME };
+/** Why a session cannot start a call. */
+export type VoiceRefusal = "VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE" | "VOICE_CHANNEL_SESSION";
 /** Schema caps on voice_start's free text; the approval card shows both whole. */
 export const BRIEF_MAX = 500;
 export const VOICE_NAME_MAX = 64;
 
 export interface VoiceHost {
   config(sessionId: string): Promise<VoiceConfig | null>;
-  refusal(sessionId: string): Promise<"VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE" | null>;
+  refusal(sessionId: string): Promise<VoiceRefusal | null>;
   /** Whether the thread still runs as the agent. Required: the host's runner
    *  re-checks it before every injected turn (delegate, flush, summary) and
    *  refuses the turn with VoiceAuthLost, which ends the call `auth_lost`. */
@@ -28,7 +31,7 @@ export interface VoiceHost {
   /** Required last check before the child is spawned, after runner(): the
    *  thread's identity as of now (a node does one fresh token refresh through
    *  the call's chain). Non-null refuses the start and nothing is spawned. */
-  confirmStart(sessionId: string): Promise<"VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE" | null>;
+  confirmStart(sessionId: string): Promise<VoiceRefusal | null>;
   runner(sessionId: string): TurnRunner;
   transcriptDir(sessionId: string): Promise<string>;
   spawn(o: { apiKey: string }): LoopChild;
@@ -197,10 +200,12 @@ export const voiceHandlers = {
       return err("VOICE_START_FAILED", redactCapabilityUrls(msg, { streamUrl: args.audio.stream_url, clearUrl: args.audio.clear_url }));
     };
     try {
-      const refuse = (code: "VOICE_AGENT_ONLY" | "VOICE_UNAVAILABLE") =>
+      const refuse = (code: VoiceRefusal) =>
         code === "VOICE_AGENT_ONLY"
           ? err(code, "voice calls run as the agent only; not available in a /1on1-locked or /remote thread")
-          : err(code, "voice is unavailable on this node right now");
+          : code === "VOICE_CHANNEL_SESSION"
+            ? err(code, "voice calls are not available in a channel session; start a thread for this")
+            : err(code, "voice is unavailable on this node right now");
       const refusal = await host.refusal(sessionId);
       if (refusal) return refuse(refusal);
       const cfg = await host.config(sessionId);

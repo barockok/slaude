@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
 // Sync the local persona set through the gateway's own /deploy endpoint. Runs
 // INSIDE a gateway pod (personas.sh and verify-ha.sh copy it there), so the
-// soul-extraction cache it seeds is that pod's own (pod-local) cache, signed
-// with that pod's master key, and the sync it posts lands on the same pod. No
-// model is called.
+// sync it posts lands on that pod. Each persona carries a compiled definition
+// (what an agent.yaml compiles to), so no model is called and nothing is cached.
 //
 //   bun personas.ts [--revision <r>] [--token-var <NAME>] [--no-seed]   < payload.json
+//
+// `--no-seed` is accepted and ignored: there is no extraction cache to seed.
 //
 // stdin: { "personas": [{ name, soul, slackUserId?, runsOn?, kbSources?, mcp? }],
 //          "manager"?: "U..." }
@@ -21,7 +22,6 @@
 // line: { status, error?, warnings, souls: { <name>: <sha256 prefix> } }. The
 // soul prefixes are what a node logs at session boot (soul=<12 hex>).
 import { createHash } from "node:crypto";
-import { writeSoulCacheEntry } from "/app/src/soul/extract.ts";
 
 const args = process.argv.slice(2);
 const flag = (n: string) => {
@@ -30,7 +30,6 @@ const flag = (n: string) => {
 };
 const revision = flag("--revision") ?? `local-${Date.now()}`;
 const tokenVar = flag("--token-var") ?? "SLAUDE_DEPLOY_TOKEN";
-const seed = !args.includes("--no-seed");
 if (!/^[A-Z][A-Z0-9_]*$/.test(tokenVar)) {
   console.error("--token-var needs a variable name");
   process.exit(2);
@@ -57,32 +56,25 @@ function provider(name: string): Record<string, string> {
 const souls: Record<string, string> = {};
 const personas = input.personas.map((p) => {
   souls[p.name] = createHash("sha256").update(p.soul).digest("hex").slice(0, 12);
+  // What an agent.yaml compiles to: the structure the gateway stores, with the manager only
+  // where the soul text names one (the same condition the old cache seed used).
+  const manager = input.manager && p.soul.includes(input.manager) ? { userId: input.manager } : {};
   return {
     ...p,
+    definition: { soulData: { identity: { name: p.name }, manager } },
     provider: provider(p.name),
     ...(process.env.SLAUDE_MODEL ? { model: process.env.SLAUDE_MODEL } : {}),
   };
 });
-
-if (seed) {
-  for (const p of personas) {
-    const manager = input.manager && p.soul.includes(input.manager) ? { userId: input.manager } : {};
-    if (!writeSoulCacheEntry(p.soul, { approvers: [], manager } as never)) {
-      console.log(JSON.stringify({ status: 0, error: `soul cache entry for '${p.name}' not written (master key unusable)` }));
-      process.exit(1);
-    }
-  }
-}
 
 const token = process.env[tokenVar];
 if (!token) {
   console.log(JSON.stringify({ status: "unset", warnings: [], souls }));
   process.exit(0);
 }
-const kb = personas.some((p) => p.kbSources !== undefined);
 const body = {
-  // 3 when any persona sets kbSources (WS-C), else 2 (provider, runsOn).
-  version: kb ? 3 : 2,
+  // 6 carries a persona's definition (agent.yaml).
+  version: 6,
   revision,
   committedAt: new Date().toISOString(),
   personas,

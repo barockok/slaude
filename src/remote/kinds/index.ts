@@ -37,7 +37,11 @@ export function listKinds(): EnvironmentKind[] {
 /** The trust class an environment is treated with. A provisioned environment
  *  that carries secrets is treated as user-machine (spec §4): once bound to an
  *  unlocked thread anyone there could steer it, so it needs the owner's lock. */
-export function trustOf(env: Pick<StoredEnv, "kind" | "secrets">): EnvTrust {
+export function trustOf(env: Pick<StoredEnv, "kind" | "secrets"> & Partial<Pick<StoredEnv, "source" | "config">>): EnvTrust {
+  // A definition row is a shared machine: "provisioned" (no owner lock) only when sync wrote both
+  // explicit opt-ins into its canonical config; any other definition row is treated as a user machine,
+  // which no thread can satisfy (its owner is a name, not a person), so it fails closed.
+  if (env.source === "definition") return env.config?.shared === "true" && env.config?.trust === "unlocked" ? "provisioned" : "user-machine";
   const k = kinds.get(env.kind);
   if (!k) return "user-machine";
   if (k.trust === "provisioned" && Object.keys(env.secrets ?? {}).length > 0) return "user-machine";

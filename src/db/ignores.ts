@@ -1,5 +1,6 @@
 import { db } from "./schema";
 import { randomUUID } from "node:crypto";
+import { pairFor } from "./boundary-columns";
 
 export type IgnoreRecord = {
   id: string;
@@ -18,15 +19,19 @@ export async function create(args: {
   userId?: string;
   channelId?: string;
   threadTs?: string;
+  /** The workspace, when the caller holds it (the table has no team column). */
+  teamId?: string | null;
   createdBy: string;
   expiresAt?: number;
   reason?: string;
 }): Promise<IgnoreRecord> {
   const id = randomUUID();
   const now = Date.now();
+  // Thread targets only; a user target has no conversation key.
+  const pair = args.targetType === "thread" ? pairFor(args.teamId, args.channelId, args.threadTs) : { boundaryId: null, locator: null };
   await db.run(
-    `INSERT INTO ignores (id, target_type, user_id, channel_id, thread_ts, created_by, created_at, expires_at, reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO ignores (id, target_type, user_id, channel_id, thread_ts, created_by, created_at, expires_at, reason, boundary_id, locator)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       args.targetType,
@@ -37,6 +42,8 @@ export async function create(args: {
       now,
       args.expiresAt ?? null,
       args.reason ?? null,
+      pair.boundaryId,
+      pair.locator,
     ],
   );
   return (await findById(id))!;

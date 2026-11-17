@@ -39,6 +39,10 @@ export interface TurnMessage {
    *  the transcript via the suppress hook without running the model. A turn
    *  runs suppressed only when EVERY coalesced message is suppressed. */
   suppress?: boolean;
+  /** On-match owner Guidance this message's text triggered. The gateway
+   *  matches the trigger; the node hands it to the session, which takes each
+   *  guardrail at most once per boot. */
+  guidance?: Array<{ slug: string; name: string; body: string }>;
 }
 
 /** Who sent one of a turn's messages, as the gateway saw it at dispatch. */
@@ -73,9 +77,23 @@ export interface TurnJob {
    *  turn's usage only when the job holds that one message: a job a human
    *  message was merged into leaves it open for the stale-run sweep. */
   bgRun?: string;
+  /** Set when this job is a heartbeat wake: its caps. The same fact is signed
+   *  into jobToken as `wake`; these only tell the node how to run it. */
+  wake?: { maxBudgetUsd?: number; maxTurns?: number; maxMinutes?: number };
+  /** The session's working directory, set only when it is the agent's
+   *  proactive folder (shared by every heartbeat thread). The node then takes
+   *  that folder's lock inside the session lock, so one turn at a time runs
+   *  there across nodes. Not a signed claim: it only adds serialisation.
+   *  Absent = no folder lock. */
+  workspace?: string;
   /** Short-lived JWT minted by the gateway; nodes present it on tool calls. */
   jobToken: string;
   enqueuedAt: number;
+  /** Capabilities the node running this turn must advertise (an agent with
+   *  enforced owner guardrails: `guardrails/1`). The reaper moves such a job
+   *  only to a live node that has them, never to the label queue an older
+   *  node also consumes. Absent = none. */
+  requiresCaps?: string[];
   /** How many times the gateway re-dispatched this turn after a
    *  LABEL_MISMATCH failure (node labels spec §4.6). Bounded at one: a second
    *  mismatch is shown to the user instead. Absent = 0. */
@@ -185,6 +203,8 @@ export interface MoveOpts {
   claimed?: boolean;
   /** Also move an ACTIVE job whose lock is gone (a dead node's own queue). */
   rescueActive?: boolean;
+  /** Move to this queue instead of the label's (a capable node's own queue). */
+  queue?: string;
 }
 
 /** The larger relabelAttempts of two jobs being merged (absent = 0). */
@@ -223,6 +243,44 @@ function tokenJobId(token: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** A job token's payload, read without verifying (the gateway minted it). */
+function tokenPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const p = JSON.parse(Buffer.from(parts[1]!, "base64url").toString("utf8"));
+    return p && typeof p === "object" ? (p as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What kind of turn a job is, for coalescing: its origin (the token's signed
+ * `origin`, else its first sender's), its background run, whether it is a
+ * wake and where it posts. A merged job runs under ONE token, whose origin,
+ * bgRun, wake and post decide how the node runs every message in it (the
+ * must-reply Stop guard, the wake refusal, the ledger run, root or thread
+ * replies), so two jobs merge only when these all agree.
+ */
+function turnKind(job: TurnJob): string {
+  const c = tokenPayload(job.jobToken);
+  const origin = (typeof c?.origin === "string" ? c.origin : undefined) ?? job.senders?.[0]?.origin ?? null;
+  const bgRun = job.bgRun ?? (typeof c?.bgRun === "string" ? c.bgRun : null);
+  const wake = !!job.wake || c?.wake === true;
+  // On a root job a recording never shares a token with a mention: the pending
+  // job's token is the one that runs, so its cards and initiator would be the
+  // bystander's. Classic jobs merge as they always have.
+  const root = c?.post === "channel";
+  const suppressed = root && job.messages.length > 0 && job.messages.every((m) => (m as { suppress?: boolean }).suppress === true);
+  return JSON.stringify([origin, bgRun, wake, root, suppressed]);
+}
+
+/** Two jobs may share one token and turn (see turnKind). */
+export function sameTurnKind(a: TurnJob, b: TurnJob): boolean {
+  return turnKind(a) === turnKind(b);
 }
 
 /** One message's identity for de-duplication: a re-delivered message is the
@@ -470,6 +528,12 @@ export class TurnQueues {
     if (!PENDING_STATES.has(await pending.getState())) return null; // already claimed
     if (await this.#turnRan(pending)) return null; // finished, then stalled back
     const prev = pending.data as TurnJob;
+    // A different kind of turn (a person's message behind a queued wake or
+    // promise check, or the reverse) never merges: the merged job would run
+    // under one of the two tokens, forcing a background run's reply or running
+    // a person's message under a wake's refusal. Null adds it as its own job;
+    // the session lock still runs the two in order.
+    if (!sameTurnKind(prev, job)) return null;
     // Only a LABEL change relocates (node labels spec §4.6). A warmth change
     // under the same label (the warm node came or went between messages)
     // appends in place exactly as before labels: same job id, same token.
@@ -530,6 +594,9 @@ export class TurnQueues {
     opts: { first?: boolean } = {},
   ): Promise<EnqueueResult | null> {
     const prev = pending.data as TurnJob;
+    // The same rule as #tryAppend: the merged job takes this call's token, so
+    // a different kind of turn is added on its own instead.
+    if (!sameTurnKind(prev, job)) return null;
     const id = want.jobId ?? randomUUID();
     const attempts = maxAttempts(prev, job);
     const merged: TurnJob = {
@@ -713,6 +780,8 @@ export class TurnQueues {
     const other = await this.queue(ref.queue).getJob(ref.jobId);
     if (!other || !PENDING_STATES.has(await other.getState())) return null;
     const data = job.data as TurnJob;
+    // A different kind of turn is moved on its own (see turnKind).
+    if (!sameTurnKind(other.data as TurnJob, data)) return null;
     const holdId = randomUUID();
     const hold = await this.queue(ref.queue).add("turn", data, { ...this.defaultJobOpts(), jobId: holdId, delay: SWAP_HOLD_MS });
     await this.#markMoved(id, { queue: ref.queue, jobId: holdId });
@@ -763,7 +832,7 @@ export class TurnQueues {
    * moved too; one whose lock is live is left alone.
    */
   async moveTo(job: Job, label: string, opts: MoveOpts = {}): Promise<EnqueueResult> {
-    const target = labelTurnsQueue(label);
+    const target = opts.queue ?? labelTurnsQueue(label);
     const from = job.queueName;
     const id = String(job.id);
     if (from === target) return { jobId: id, queue: target, coalesced: false };

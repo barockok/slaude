@@ -19,8 +19,9 @@
  * `propose` row instead (in user scope only kind `promote`, to that person).
  *
  * Tool results pass through redactSecrets, and a page or proposal carrying a
- * credential-like value is refused (CREDENTIAL_REFUSAL), as kb_memoize does.
+ * credential-like value is refused (CREDENTIAL_REFUSAL), as memory_save does.
  */
+import { sameNoTeam } from "../access/wired";
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance, type SdkMcpToolDefinition } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { redactSecrets } from "../gateway/core/status-text";
@@ -49,6 +50,9 @@ export type PassTool = SdkMcpToolDefinition<any>;
 
 export const PASS_MCP_NAME = "slaude_pass";
 export const PASS_TOOL_NAMES = ["read_pages", "list_pages", "search", "memoize", "propose"] as const;
+export type PassToolName = (typeof PASS_TOOL_NAMES)[number];
+/** The base tools of a pass that must not write or propose. */
+export const READ_ONLY_PASS_TOOLS: readonly PassToolName[] = ["read_pages", "list_pages", "search"];
 
 /** The name the model calls a slaude_pass tool by. */
 export const passToolId = (name: string): string => `mcp__${PASS_MCP_NAME}__${name}`;
@@ -189,7 +193,7 @@ function composeOne(pg: PassPage, ctx: PassToolContext, now: Date): Composed | {
   if (pg.type !== "profile" && pg.type !== "correction") return { error: 'refused: the profile takes pages of type profile or correction' };
   if (pg.type === "profile" && pg.slug !== "profile") return { error: 'refused: a profile page uses slug "profile"' };
   const userId = ctx.scope.userId;
-  if (pg.subject !== undefined && pg.subject !== userId) return { error: QUOTE_REFUSAL };
+  if (pg.subject !== undefined && !sameNoTeam({ site: "pass_tools.profile_subject", persona: ctx.agentId, userId: pg.subject, otherUserId: userId })) return { error: QUOTE_REFUSAL };
   if (!quotedFromOwnTurn(pg.quote, userId, ctx.transcripts)) return { error: QUOTE_REFUSAL };
   const { quote, target: _t, ...page } = pg;
   const c = composePage(
@@ -267,7 +271,7 @@ export const passHandlers = {
     }
     // gbrain stores slugs lowercased and chunks and reads them as given, so a
     // mixed-case slug (a person-note at people/<SlackId>) fails after its page
-    // row is written; the same normalisation as kb_memoize.
+    // row is written; the same normalisation as memory_save.
     const lower = (s: string | undefined) => (typeof s === "string" ? s.toLowerCase() : s);
     const pages = p.pages.map((pg) => ({ ...pg, slug: lower(pg.slug)!, supersedes: lower(pg.supersedes) }));
     // Compose every page before anything is written: one refusal stops the batch.
@@ -383,9 +387,13 @@ export function passTools(ctx: PassToolContext): PassTool[] {
   return tools as unknown as PassTool[];
 }
 
-/** The `slaude_pass` server: the pass's tools plus `extra`. A name collision throws. */
-export function createPassMcpServer(ctx: PassToolContext, extra: readonly PassTool[] = []): { server: McpSdkServerConfigWithInstance; toolIds: string[] } {
-  const tools = [...passTools(ctx), ...extra];
+/** The `slaude_pass` server: the pass's `base` tools (default all five) plus `extra`. A name collision throws. */
+export function createPassMcpServer(
+  ctx: PassToolContext,
+  extra: readonly PassTool[] = [],
+  base: readonly PassToolName[] = PASS_TOOL_NAMES,
+): { server: McpSdkServerConfigWithInstance; toolIds: string[] } {
+  const tools = [...passTools(ctx).filter((t) => (base as readonly string[]).includes(t.name)), ...extra];
   const names = tools.map((t) => t.name);
   if (new Set(names).size !== names.length) throw new Error(`slaude_pass: duplicate tool name in ${names.join(", ")}`);
   return { server: createSdkMcpServer({ name: PASS_MCP_NAME, version: "0.1.0", tools }), toolIds: names.map(passToolId) };

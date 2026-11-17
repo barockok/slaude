@@ -32,6 +32,7 @@
           "items": [
             { "path": "guides/index", "label": "Guides overview" },
             { "path": "guides/engagement", "label": "Engagement and approvals" },
+            { "path": "guides/channel-sessions", "label": "Channel sessions" },
             { "path": "guides/environments", "label": "Environments" },
             { "path": "guides/remote", "label": "Remote mode" },
             { "path": "guides/voice-mode", "label": "Voice mode" },
@@ -49,7 +50,7 @@
           "items": [
             { "path": "reference/configuration", "label": "Configuration" },
             { "path": "reference/api", "label": "API reference" },
-            { "path": "reference/guardrails", "label": "Guardrails design" }
+            { "path": "reference/guardrails", "label": "Guardrails" }
           ]
         }
       ]
@@ -63,15 +64,18 @@
           "items": [
             { "path": "deploy/index", "label": "Deployment overview" },
             { "path": "deploy/webhook-mode", "label": "Webhook (Events API) mode" },
-            { "path": "deploy/panel", "label": "Control panel" },
+            { "path": "deploy/panel", "label": "Console and portal" },
             { "path": "deploy/multi-node", "label": "Multi-node scale-out" },
             { "path": "deploy/node-manifest", "label": "Node MCP manifest" },
+            { "path": "deploy/plugins", "label": "Plugins on nodes" },
             { "path": "deploy/scale-operations", "label": "Scale operations" },
             { "path": "deploy/personas-as-code", "label": "Personas as code" },
             { "path": "deploy/provider-credentials", "label": "Provider credentials" },
             { "path": "deploy/mcp-bridge", "label": "MCP bridge" },
             { "path": "deploy/knowledge-scope", "label": "Knowledge scope" },
             { "path": "deploy/alerts", "label": "Alerts runbook" },
+            { "path": "deploy/access-shadow", "label": "Access shadow metrics" },
+            { "path": "deploy/boundary-columns", "label": "Boundary columns rollout" },
             { "path": "deploy/rollback", "label": "Rollback runbook" },
             { "path": "deploy/brain-migration", "label": "Brain migration" }
           ]

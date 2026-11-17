@@ -1,6 +1,8 @@
 // tests/brain-migrate/seed.ts
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { seedBrainHome } from "../helpers/brain-template";
+import { resetBrainWorld } from "../helpers/brain-on";
 
 /** Dimension the test brains use (set from the Step 1 spike; gbrain's default pgvector column is vector(1280)). */
 export const TEST_DIMS = 1280;
@@ -15,9 +17,13 @@ export const vec = (seed: number): number[] => Array.from({ length: TEST_DIMS },
  * Runs in the current process against SLAUDE_BRAIN_HOME=home, then closes the brain.
  */
 export async function seedMonoBrain(home: string, o: { empty?: boolean } = {}): Promise<void> {
-  mkdirSync(home, { recursive: true });
+  // A new home starts as a copy of the per-process template brain, not a
+  // fresh initdb (tests/helpers/brain-template.ts).
+  if (!existsSync(join(home, "db"))) await seedBrainHome(home);
+  // A brain an earlier file left open would be returned by getBrain() whatever
+  // the home says: the seed would land there and this home stay empty.
+  await resetBrainWorld();
   process.env.SLAUDE_BRAIN_HOME = home;
-  delete process.env.SLAUDE_AGENT_ID;
   const { closeBrain, getBrain, brainAdminCall } = await import("../../src/knowledge/brain");
   const { resetAgentId } = await import("../../src/knowledge/agent-identity");
   resetAgentId();
@@ -35,7 +41,7 @@ export async function seedMonoBrain(home: string, o: { empty?: boolean } = {}): 
     await mem.syncTurn({ sessionId: session, user: "and the oncall?", assistant: "rotates monday" });
     const put = async (source: string, slug: string, truth: string, extra: Partial<{ tags: string[]; seed: number }> = {}) => {
       await engine.putPage(slug, { type: "note", title: slug, compiled_truth: truth }, { sourceId: source });
-      await engine.upsertChunks(slug, [{ chunk_index: 0, chunk_text: truth, chunk_source: "compiled_truth", embedding: Float32Array.from(vec(extra.seed ?? 1)), model: "test-embed", token_count: 4 }], { sourceId: source });
+      await engine.upsertChunks(slug, [{ chunk_index: 0, chunk_text: truth, chunk_source: "compiled_truth", embedding: Float32Array.from(vec(extra.seed ?? 1)), model: "test-embed", token_count: 4 }], { sourceId: source, slaudeCarriedIn: true });
       for (const t of extra.tags ?? []) await engine.addTag(slug, t, { sourceId: source });
     };
     await put("agent-default", "learned/runbook", "Restart the worker with the zebra procedure.", { tags: ["ops"], seed: 2 });

@@ -14,6 +14,8 @@ import { GATE_DENIED_CODE, JOB_HEADER, LABEL_MISMATCH_CODE, NODE_UNAUTHORIZED_CO
 import type { RuntimeBundle } from "../gateway/api/tenants";
 import type { ConnectInfo } from "../remote/transport";
 import { BootFailure } from "../gateway/core/failure-codes";
+import { AGENT_DEFINITION_CAPABILITY, CAPABILITIES_HEADER, CHANNEL_SESSION_CAPABILITY, GUARDRAILS_CAPABILITY } from "../guardrails/capability";
+import type { PluginReport } from "../config/plugin-inventory";
 
 export interface NodeClientOpts {
   /** Gateway base URL (SLAUDE_GATEWAY_URL), e.g. http://gateway:8080 */
@@ -98,6 +100,16 @@ export function bundleFetchFailure(e: unknown): BootFailure {
   if (e instanceof GateDenied) return labelMismatchBoot(e);
   let transient = true;
   if (e instanceof NodeApiError) {
+    const code = (() => {
+      try {
+        return (JSON.parse(e.body) as { code?: unknown }).code;
+      } catch {
+        return undefined;
+      }
+    })();
+    if (code === "GUARDRAILS_UNAVAILABLE" || code === "GUARDRAILS_UNSUPPORTED" || code === "SHARED_ENV_UNSUPPORTED") {
+      return new BootFailure(code, `the gateway refused the runtime bundle: ${code}`, { cause: e, transient: false });
+    }
     if (e.status === 503) {
       try {
         transient = (JSON.parse(e.body) as { transient?: unknown }).transient === true;
@@ -224,7 +236,7 @@ export class NodeClient {
   /** Low-level request with bearer + optional job token + retry policy. */
   async request(
     path: string,
-    o: { method?: string; body?: unknown; jobToken?: string; headers?: Record<string, string>; retry?: boolean; signal?: AbortSignal } = {},
+    o: { method?: string; body?: unknown; jobToken?: string; headers?: Record<string, string>; retry?: boolean; signal?: AbortSignal; noTimeout?: boolean } = {},
   ): Promise<Response> {
     const headers: Record<string, string> = {
       authorization: `Bearer ${this.#token}`,
@@ -242,6 +254,8 @@ export class NodeClient {
           headers,
           ...(o.body !== undefined ? { body: JSON.stringify(o.body) } : {}),
           ...(o.signal ? { signal: o.signal } : {}),
+          // Bun's own fetch limit (300 s), not part of RequestInit's type.
+          ...(o.noTimeout ? ({ timeout: false } as RequestInit) : {}),
         });
         // 5xx: transient server trouble — retry. Everything else returns.
         if (res.status >= 500 && retry && attempt < this.#attempts - 1) {
@@ -277,6 +291,24 @@ export class NodeClient {
     return this.#json<NodeWhoami>(res);
   }
 
+  /**
+   * Send this process's plugin report (design: plugin inventory). "unsupported":
+   * a gateway that predates the route (404); "too-large": the gateway's 413;
+   * "duplicate": it already holds a report for this process (409, first wins);
+   * "too-many": this credential is at its row cap (429).
+   * Node-authenticated: the gateway takes the node id and labels from the
+   * credential. Transient failures throw after the usual retries.
+   */
+  async putPlugins(report: PluginReport): Promise<"ok" | "unsupported" | "too-large" | "duplicate" | "too-many"> {
+    const res = await this.request("/v1/node/plugins", { method: "PUT", body: report, signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS) });
+    if (res.status === 404) return "unsupported";
+    if (res.status === 413) return "too-large";
+    if (res.status === 409) return "duplicate";
+    if (res.status === 429) return "too-many";
+    await this.#json<unknown>(res);
+    return "ok";
+  }
+
   async getSession(id: string, jobToken: string): Promise<SessionView | null> {
     const res = await this.request(`/v1/sessions/${id}`, { jobToken });
     if (res.status === 404) return null;
@@ -302,7 +334,9 @@ export class NodeClient {
     const cached = this.#runtimeCache.get(key);
     const res = await this.request(
       `/v1/tenants/${encodeURIComponent(tenantId)}/personas/${encodeURIComponent(personaId)}/runtime`,
-      { jobToken, headers: cached ? { "if-none-match": cached.etag } : {} },
+      // The capability header: the gateway refuses an agent with enforced
+      // owner guardrails to a node that does not send it.
+      { jobToken, headers: { [CAPABILITIES_HEADER]: `${GUARDRAILS_CAPABILITY},${AGENT_DEFINITION_CAPABILITY},${CHANNEL_SESSION_CAPABILITY}`, ...(cached ? { "if-none-match": cached.etag } : {}) } },
     );
     if (res.status === 304 && cached) return cached.bundle;
     const bundle = await this.#json<RuntimeBundle>(res);
@@ -383,6 +417,15 @@ export class NodeClient {
    * long-poll IS the retry loop, and a network error should surface to the
    * caller's loop rather than double-wait.
    */
+  /** Cancel a poll row this session opened (an owner card the node stopped waiting on). Best effort: never throws. */
+  async cancelPending(id: string, jobToken: string): Promise<void> {
+    try {
+      await this.request(`/v1/pending/${id}`, { method: "DELETE", jobToken, retry: false });
+    } catch {
+      /* the row expires at its own deadline anyway */
+    }
+  }
+
   async getPending(id: string, jobToken?: string): Promise<PendingView | "timeout" | "notfound"> {
     // The job token binds the poll to this turn's session (node labels spec
     // §4.4); only a legacy node may poll without one, and only for a while.
@@ -397,9 +440,21 @@ export class NodeClient {
    * (unknown tool / not mounted on this deployment) is folded into an
    * MCP-shaped isError result so shim handlers can hand it to the model
    * as-is; other non-200s throw.
+   *
+   * Sent once, with no time limit but the turn's own abort: a call can wait
+   * minutes behind an approval card, whose expiry answers it. A resend would
+   * post a second card and lose the answer to the first, and the gateway may
+   * already have acted on the call.
    */
-  async postTool(server: string, tool: string, body: unknown, jobToken: string): Promise<ToolResult> {
-    const res = await this.request(`/v1/tools/${server}/${tool}`, { method: "POST", body, jobToken });
+  async postTool(server: string, tool: string, body: unknown, jobToken: string, signal?: AbortSignal): Promise<ToolResult> {
+    const res = await this.request(`/v1/tools/${server}/${tool}`, {
+      method: "POST",
+      body,
+      jobToken,
+      retry: false,
+      noTimeout: true,
+      ...(signal ? { signal } : {}),
+    });
     if (res.status === 404) {
       const text = await res.text().catch(() => "");
       return { content: [{ type: "text", text: `tool unavailable: ${text.slice(0, 200)}` }], isError: true };
@@ -510,14 +565,14 @@ export class NodeClient {
 
   /** Finish the job's own background-turn run (POST /v1/background/turn/finish), retried as skillCheckFinish. */
   turnFinish(
-    body: { runId: string; outcome: "ok" | "error"; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> },
+    body: { runId: string; outcome: "ok" | "error" | "stopped-budget"; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }>; stats?: { turns?: number; durationMs?: number; cap?: "usd" | "turns" | "minutes" } },
     jobToken: string,
   ): Promise<void> {
     return this.skillCheckFinish(body, jobToken, "/v1/background/turn/finish");
   }
 
   async skillCheckFinish(
-    body: { runId: string; outcome: "ok" | "error"; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> },
+    body: { runId: string; outcome: "ok" | "error" | "stopped-budget"; stats?: { turns?: number; durationMs?: number; cap?: "usd" | "turns" | "minutes" }; usage: Record<string, { input: number; output: number; cache_read: number; cache_write: number }> },
     jobToken: string,
     path = "/v1/background/skill-check/finish",
   ): Promise<void> {

@@ -167,16 +167,24 @@ describe("ingest", () => {
 
   test("defaultRunSubQuery with passthrough query covers inner generator", async () => {
     const { mock: bunMock } = await import("bun:test");
+    // A snapshot: mock.module patches the namespace in place and is process-wide,
+    // so the real exports must go back or every later file gets this fake query.
+    const realSdk = { ...(await import("@anthropic-ai/claude-agent-sdk")) };
     bunMock.module("@anthropic-ai/claude-agent-sdk", () => ({
+      ...realSdk,
       query: ({ prompt }: any) => prompt,
     }));
-    const { defaultRunSubQuery } = await import("../src/knowledge/ingest");
-    const kbDir = join(paths.knowledge, "wiki");
-    mkdirSync(kbDir, { recursive: true });
-    writeFileSync(join(kbDir, "README.md"), "# schema\n");
-    const result = await defaultRunSubQuery({ kbDir, readme: "# schema", rawFiles: ["a.md"] });
-    expect(result.turns).toBe(0);
-    expect(result.pages_changed).toBe(0);
+    try {
+      const { defaultRunSubQuery } = await import("../src/knowledge/ingest");
+      const kbDir = join(paths.knowledge, "wiki");
+      mkdirSync(kbDir, { recursive: true });
+      writeFileSync(join(kbDir, "README.md"), "# schema\n");
+      const result = await defaultRunSubQuery({ kbDir, readme: "# schema", rawFiles: ["a.md"] });
+      expect(result.turns).toBe(0);
+      expect(result.pages_changed).toBe(0);
+    } finally {
+      bunMock.module("@anthropic-ai/claude-agent-sdk", () => realSdk);
+    }
   });
 });
 

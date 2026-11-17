@@ -41,6 +41,7 @@
  * Not bridged (§4.2.9): server notifications (the standalone SSE stream is
  * never opened), sampling, prompts and resources.
  */
+import { sameAt } from "../../access/wired";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -474,7 +475,18 @@ export interface McpBridge {
   __poolKeys(): string[];
 }
 
-const errResult = (text: string): CallToolResult => ({ content: [{ type: "text", text }], isError: true });
+/** The bridge's own failure results (a transport, policy or budget failure,
+ *  never an upstream tool's error), told apart in process by identity. */
+const bridgeFailures = new WeakSet<CallToolResult>();
+const errResult = (text: string): CallToolResult => {
+  const r: CallToolResult = { content: [{ type: "text", text }], isError: true };
+  bridgeFailures.add(r);
+  return r;
+};
+/** Whether `r` is a failure the bridge produced itself, not an upstream tool's own error result. */
+export const isBridgeFailure = (r: CallToolResult): boolean => bridgeFailures.has(r);
+/** TEST SEAM: a result the bridge reports as its own failure. */
+export const bridgeFailureResult = errResult;
 
 export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
   const credDeps: CredentialDeps = {
@@ -530,19 +542,19 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
    *  handler wants the runAs user still holding the thread's /1on1 lock
    *  (initiator), or no lock at all (global, the manager). A cron turn with a
    *  captured initiator and no live lock gets no card: nobody could use it. */
-  function cardScope(claims: JobClaims): "initiator" | "global" | null {
+  async function cardScope(claims: JobClaims): Promise<"initiator" | "global" | null> {
     const runAs = parseRunAs(claims.runAs);
     if (runAs?.kind === "user") {
       if (claims.lock === undefined) return "initiator"; // an older gateway's token: unknown, try
-      return claims.lock?.user === runAs.slackUserId ? "initiator" : null;
+      return (await sameAt({ site: "bridge.card_scope_lock_same", persona: claims.persona, teamId: claims.team, userId: claims.lock?.user, otherUserId: runAs.slackUserId })) ? "initiator" : null;
     }
     return claims.lock ? null : "global";
   }
 
   const MAX_CARD_KEYS = 1000;
-  function maybeCard(claims: JobClaims, server: string, reason: "connect" | "reauth"): void {
+  async function maybeCard(claims: JobClaims, server: string, reason: "connect" | "reauth"): Promise<void> {
     if (!deps.onNeedsAuth) return;
-    const scope = cardScope(claims);
+    const scope = await cardScope(claims);
     if (!scope) return;
     const k = `${claims.session}\u0000${server}`;
     const t = now();
@@ -770,7 +782,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
               continue;
             }
           }
-          maybeCard(claims, server, "reauth");
+          await maybeCard(claims, server, "reauth");
           return { ok: false, text: reauthText(server) };
         }
         if (e instanceof UpstreamSessionExpired) retire(key, p);
@@ -898,7 +910,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       const { cfg, isPrivate } = resolveServer(claims, server);
       const cred = await chooseCredential(claims, server, cfg, isPrivate, credDeps);
       if (cred.kind === "connect") {
-        maybeCard(claims, server, "connect");
+        await maybeCard(claims, server, "connect");
         return { tools: [], instructions: connectText(server), unavailable: true };
       }
       if (await pinRefused(claims, server, cred)) return { tools: [], instructions: pinnedElsewhereText(server), unavailable: true };
@@ -949,7 +961,7 @@ export function createMcpBridge(deps: McpBridgeDeps): McpBridge {
       const { cfg, isPrivate } = resolveServer(claims, server);
       const cred = await chooseCredential(claims, server, cfg, isPrivate, credDeps);
       if (cred.kind === "connect") {
-        maybeCard(claims, server, "connect");
+        await maybeCard(claims, server, "connect");
         return errResult(connectText(server));
       }
       if (await pinRefused(claims, server, cred)) return errResult(pinnedElsewhereText(server));

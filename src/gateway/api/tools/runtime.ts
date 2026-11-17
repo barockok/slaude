@@ -6,10 +6,14 @@
  * handler's parameter type — no casts.
  */
 import { adminHandlers } from "../../slack/mcp-tools";
+import { proactiveRule } from "../../../proactive/rule-tool";
+import { finishRoundTool, proactivePostTool, readChannelTool } from "../../../proactive/wake-tools";
+import { wakeRefusal } from "../../../proactive/wake-guard";
 import { runtimeContract } from "../../../tools/contracts/runtime";
 import { parseToolArgs } from "../../../tools/contracts/types";
 import type { JobClaims } from "../auth";
 import type { ToolPlaneDeps, ToolResult } from "./deps";
+import { recordNodeGuardrailEvent, verifyForcedCard } from "../../core/owner-guardrails";
 
 const c = runtimeContract.tools;
 
@@ -57,6 +61,16 @@ export async function executeRuntimeTool(
       const a = parseToolArgs(c.remove_cron_job, body);
       return adminHandlers.removeCronJob(ctx, { jobId: a.job_id });
     }
+    case c.proactive_rule.name:
+      // ctx.userId is claims.initiator (the signed sender), so taughtBy and
+      // the approver check never come from the request body.
+      return proactiveRule(ctx, parseToolArgs(c.proactive_rule, body));
+    case c.read_channel.name:
+      return readChannelTool(ctx, parseToolArgs(c.read_channel, body));
+    case c.proactive_post.name:
+      return proactivePostTool(ctx, parseToolArgs(c.proactive_post, body));
+    case c.finish_round.name:
+      return finishRoundTool(ctx, parseToolArgs(c.finish_round, body));
     case c.trigger_ingest.name:
       parseToolArgs(c.trigger_ingest, body);
       return adminHandlers.triggerIngest(ctx);
@@ -66,14 +80,40 @@ export async function executeRuntimeTool(
       // REST-only (never MCP-mounted): the node worker's permissionResolver
       // opens a gate here and long-polls /v1/pending/:id for the click.
       const a = parseToolArgs(c.can_use_tool, body);
+      // Nobody is in a wake's turn to click a card: refused at once, not left waiting.
+      if (claims.wake) {
+        return { content: [{ type: "text", text: JSON.stringify({ decision: { behavior: "deny", message: wakeRefusal(a.tool_name) } }) }] };
+      }
+      const input = (a.input ?? {}) as Record<string, unknown>;
+      let forced: { ruleId: string; message: string; ttlMs: number } | undefined;
+      if (a.force_card) {
+        // An owner approve card: re-evaluated from this gateway's own set.
+        const v = await verifyForcedCard(claims, { toolName: a.tool_name, input, ruleId: a.rule_id, ttlMs: a.ttl_ms });
+        if (!v.ok) return { content: [{ type: "text", text: JSON.stringify({ decision: { behavior: "deny", message: v.message } }) }] };
+        forced = { ruleId: v.ruleId, message: v.message, ttlMs: v.ttlMs };
+      }
       const res = await deps.openPermission(claims, {
         toolName: a.tool_name,
-        input: (a.input ?? {}) as Record<string, unknown>,
+        input,
         toolUseId: a.tool_use_id,
         decisionReason: a.decision_reason,
         suggestions: a.suggestions,
+        ...(forced ? { forced } : {}),
       });
       return { content: [{ type: "text", text: JSON.stringify(res) }] };
+    }
+    case c.guardrail_event.name: {
+      // REST-only: the node's guardrail sink. Recorded only for guardrails
+      // and rules that apply to the token's agent in the gateway's own set.
+      const a = parseToolArgs(c.guardrail_event, body);
+      return recordNodeGuardrailEvent(claims, {
+        kind: a.kind,
+        sessionKind: a.session_kind,
+        events: (a.events ?? []).map((e) => ({ on: e.on, slug: e.slug, ruleId: e.rule_id, action: e.action, applied: e.applied, deciding: e.deciding, ...(e.tool_name ? { toolName: e.tool_name } : {}) })),
+        slugs: a.slugs ?? [],
+        via: a.via,
+        toolName: a.tool_name,
+      });
     }
     default:
       return null;

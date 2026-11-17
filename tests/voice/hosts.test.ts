@@ -132,6 +132,10 @@ describe("mono voice host", () => {
     agent.identity = "U1";
     expect(await host.refusal("s1")).toBe("VOICE_AGENT_ONLY");
   });
+  it("refuses a channel session: the wakes that share it would end the call", async () => {
+    const { host } = mono({ thread: { channel: "C1", threadTs: "channel:C1", personaId: null } });
+    expect(await host.refusal("s1")).toBe("VOICE_CHANNEL_SESSION");
+  });
   it("refuses a thread with an active remote target", async () => {
     const { host, remoteCalls } = mono({ remote: { userId: "U1", addr: "a", dir: "/d" } });
     expect(await host.refusal("s1")).toBe("VOICE_AGENT_ONLY");
@@ -252,6 +256,12 @@ describe("node voice host", () => {
     for (const [token, want] of cases) {
       expect(await makeNodeVoiceHost({ ...base, tokenFor: () => token }).refusal("s1")).toBe(want as any);
     }
+  });
+  it("refuses a channel session, which the token cannot show, and fails closed when its row cannot be read", async () => {
+    const thread = (v: () => Promise<string | null>) => makeNodeVoiceHost({ ...base, sessionThread: v }).refusal("s1");
+    expect(await thread(async () => "channel:C1")).toBe("VOICE_CHANNEL_SESSION");
+    expect(await thread(async () => "1.1")).toBeNull();
+    expect(await thread(async () => { throw new Error("gateway down"); })).toBe("VOICE_UNAVAILABLE");
   });
   it("reads voice config (incl. limits) from the bundle, never node env", async () => {
     process.env.SLAUDE_VOICE_MAX_MINUTES = "7";

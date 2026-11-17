@@ -1,4 +1,6 @@
 import type { SoulData } from "./data";
+import { MANDATE_LINE_MAX, subMandatesOf } from "./mandate-scope";
+import { parseScopedMandates } from "./proactive";
 
 export type ValidationResult = {
   ok: boolean;
@@ -18,9 +20,10 @@ export type ValidationResult = {
  *
  * Everything else is optional but may emit a warning when the absence is
  * operationally suspicious (e.g. zero approvers means no one can approve
- * `request_approval` blocks).
+ * `request_approval` blocks). `soulText`, when given, is the SOUL.md itself,
+ * for what only the source shows (an unknown `Mode:` value).
  */
-export function validateSoul(data: SoulData): ValidationResult {
+export function validateSoul(data: SoulData, soulText?: string): ValidationResult {
   const missing: string[] = [];
   const warnings: string[] = [];
 
@@ -47,6 +50,16 @@ export function validateSoul(data: SoulData): ValidationResult {
     } catch (e: any) {
       warnings.push(`redactPatterns entry rejected as invalid regex: ${p}`);
     }
+  }
+
+  for (const sub of subMandatesOf(data)) {
+    if (sub.mode !== "override" && sub.text.length > MANDATE_LINE_MAX) {
+      warnings.push(`${sub.mode} sub-mandate for ${sub.boundary} is ${sub.text.length} characters (over ${MANDATE_LINE_MAX}); it is always carried whole, so it lengthens every bounded prompt`);
+    }
+  }
+
+  for (const bad of soulText ? parseScopedMandates(soulText).unknownModes : []) {
+    warnings.push(`unknown Mode value (${bad}): read as extend, which keeps the global mandate. Use override, extend or reduce`);
   }
 
   return { ok: missing.length === 0, missing, warnings };

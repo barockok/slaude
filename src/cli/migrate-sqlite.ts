@@ -12,6 +12,10 @@
  * (tenant_id) take their defaults. skill_usage is intentionally not copied:
  * its rows restart, and the skill review measures idle time from a row's
  * first sighting, so a lost count never reads as "unused".
+ * The slice D columns (`boundary_id`, `locator`) are copied as NULL: a boundary
+ * id points into the source's `boundaries` table, which this command does not
+ * copy, so a copied id would dangle on the target. The target's own boundary
+ * fill (periodic, or `slaude domain reconcile`) completes them.
  */
 import { openDb, resolveDbConfig, type DbClient, type DbConfig } from "../db/client";
 import { runMigrations } from "../db/migrate";
@@ -28,7 +32,11 @@ export const EXPORT_TABLES = [
   "kb_ingest_jobs",
   "memory_turns",
   "memory_facts",
+  "skill_versions",
 ] as const;
+
+/** Point into the source's `boundaries`, which is not copied: always NULL on the target. */
+const BOUNDARY_COLUMNS = new Set(["boundary_id", "locator"]);
 
 export type TableReport = { table: string; source: number; inserted: number; skipped: number };
 export type ExportReport = { tables: TableReport[]; dryRun: boolean };
@@ -87,7 +95,7 @@ export async function exportSqliteToPg(
       );
       await dst.transaction(async (tx) => {
         for (const row of rows) {
-          const r = await tx.run(insertSql, cols.map((c) => row[c] ?? null));
+          const r = await tx.run(insertSql, cols.map((c) => (BOUNDARY_COLUMNS.has(c) ? null : row[c] ?? null)));
           if (r.changes > 0) rep.inserted += 1;
           else rep.skipped += 1;
         }

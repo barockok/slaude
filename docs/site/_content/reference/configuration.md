@@ -11,7 +11,7 @@ On this page:
 - [Runtime environment variables](#runtime-env)
 - [Filesystem layout — SLAUDE_HOME](#filesystem)
 - [Connect broker](#connect-broker)
-- [SOUL.md — persona schema](#soul)
+- [Persona definition — agent.yaml](#soul)
 - [Dependency manifests — slaude.json & slaude.lock](#manifests)
 - [External MCP — .mcp.json](#external-mcp)
 - [Validation — bun run validate-soul](#validation)
@@ -289,7 +289,7 @@ A managed persona's `provider` references are resolved by the gateway at runtime
 |------|----------|---------|-------------|
 | `SLACK_USER_TOKEN` | No | `""` | `xoxp-…` user token. Used for `users.profile.set` presence; also the post-as-user token when `SLACK_POST_AS_USER=true`. |
 | `SLACK_POST_AS_USER` | No | `false` | `true` (case-insensitive) enables posting as the real Slack user. Requires `SLACK_USER_TOKEN`. |
-| `SLAUDE_APPROVERS` | No | `""` | Comma-separated Slack user ids allowed to click **Approve / Deny** on `request_approval` plans. **Fallback only** — used when `SOUL.md` has no `## Approvers` section. Empty means any clicker is accepted (only safe for solo / DM workspaces). Trimmed, comma-split, empty entries dropped. |
+| `SLAUDE_APPROVERS` | No | `""` | Comma-separated Slack user ids allowed to click **Approve / Deny** on `request_approval` plans. **Fallback only** — used when `SOUL.md` has no `## Approvers` section. Empty means any clicker is accepted (only safe for solo / DM workspaces). A user with a deny grant on the default persona is never accepted, from this list or as "any clicker". Trimmed, comma-split, empty entries dropped. |
 | `SLAUDE_SLACK_MODE` | No | `socket` | Slack ingress: `socket` (Bolt Socket Mode, single app from `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN`) or `http` (Events API receiver — Slack POSTs signed requests to `/slack/events` and `/slack/interactions`). `http` requires `SLAUDE_DB=pg` and `SLAUDE_MASTER_KEY`: apps are resolved per-request from the `slack_apps` registry (`bun run slack-app add`), and `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN` are not read. Emit the matching app manifest with `bun run manifest --mode http --url https://<host>`. Setup walkthrough: [Webhook (Events API) mode](../deploy/webhook-mode.md). |
 | `SLAUDE_HTTP_PORT` | No | `8080` | Listen port for `SLAUDE_SLACK_MODE=http`. This single port serves `/slack/*` **and** `/healthz` `/readyz` `/metrics`; the standalone `SLAUDE_HEALTH_PORT` server is not started in http mode. |
 | `SLAUDE_HTTP_MAX_BODY_BYTES` | No | `1000000` | Max accepted request-body size on `/slack/*` (bytes). Oversize requests get `413` before any buffering completes or signature work runs. Positive integer. |
@@ -305,7 +305,8 @@ A managed persona's `provider` references are resolved by the gateway at runtime
 | `SLAUDE_WORKSPACES` | No | `$SLAUDE_HOME/workspaces` | Per-session cwd root. Same absolute/relative semantics as `SLAUDE_DB_PATH`. The sim redirects both under `$SLAUDE_HOME/sim/` so it shares config without mutating prod state. |
 | `SLAUDE_DB` | No | `sqlite` | State store dialect: `sqlite` (file at `SLAUDE_DB_PATH`) or `pg` (Postgres). With `pg` and no `SLAUDE_PG_URL`, an in-process PGLite is used (sim and tests; `SLAUDE_PGLITE_DIR` persists it to disk). Schema for `pg` is applied from `src/db/migrations/*.sql` at boot. |
 | `SLAUDE_PG_URL` | With `SLAUDE_DB=pg` | none | Postgres connection URL (`postgres://user:pass@host:5432/db`). Driver is `Bun.sql`. |
-| `SLAUDE_PG_POOL` | No | `10` | Bun.sql connection pool size for `SLAUDE_DB=pg`. Positive integer. |
+| `SLAUDE_PG_POOL` | No | `10` | Bun.sql connection pool size for `SLAUDE_DB=pg`, and also the most statements, transactions and advisory-lock reservations this process hands to Postgres at once (the pool gate: a workaround for a likely Bun.sql auto-pipelining wedge; further work waits in order inside slaude). Positive integer, at least 2 (1 is raised to 2 with a warning, because an advisory lock holds one connection and its statements need another). Watch `slaude_pg_gate_waiting`; `slaude_pg_gate_slow_total` counts waits over 3 s. |
+| `SLAUDE_PG_ACQUIRE_TIMEOUT_MS` | No | `0` | Most milliseconds a statement waits for a pool permit before it fails with an error. `0` (default) waits without limit. |
 | `SLAUDE_MIGRATE_ON_BOOT` | No | `1` | `0`/`false`/`no` skips applying `src/db/migrations/*.sql` on boot for `SLAUDE_DB=pg`. On by default — this is what makes a fresh Postgres usable with no separate migrate step. Turn it off only where migrations run out-of-band (a dedicated migrate job ahead of the rollout); every gateway replica then boots without the advisory-lock wait below, at the cost of nothing enforcing the schema is actually current. |
 | `SLAUDE_MIGRATE_LOCK_TIMEOUT_SEC` | No | `0` | Seconds a booting replica waits for the Postgres advisory lock that serializes concurrent migration runs (multiple gateway replicas starting at once). `0` waits forever; a positive value fails the boot loudly on expiry rather than hanging, naming the timeout in the error. No effect when `SLAUDE_MIGRATE_ON_BOOT=0`. |
 | `SLAUDE_MASTER_KEY` | For encrypted columns | none | 32 random bytes, base64 (`openssl rand -base64 32`). Keys AES-256-GCM for the `(enc)` Postgres columns (`slack_apps.bot_token`, `signing_secret`, `provider_creds.value`). Not needed while the monolith runs a single Socket Mode app. Gateway only: a node must not hold it ([the Secret split](../deploy/multi-node.md#the-secret-split)). |
@@ -355,7 +356,7 @@ on `ioredis-mock`) and are gated on `SLAUDE_REDIS_TEST_URL`, mirroring the
 
 ### Control panel — operator web console <a id="panel"></a>
 
-What it does and how to enable it: [Control panel](../deploy/panel.md).
+What it does and how to enable it: [Console and portal](../deploy/panel.md).
 
 The panel mounts at `/panel` on the gateway's HTTP server for the `mono` and
 `gateway` roles (never `node`). It is its own OIDC relying party: it
@@ -375,6 +376,11 @@ and roles come from a file or the env lists below.
 | `SLAUDE_PANEL_ROLES_FILE` | No | `""` | Path to a YAML role list (`superadmin:` / `operator:`), matched case-insensitively, superadmin winning when an identity is in both. Read at boot and re-read per request, so edits apply without a redeploy. |
 | `SLAUDE_PANEL_SUPERADMIN` | No | `""` | Comma-separated superadmin identities — the fallback when no role file is mounted. Superadmin gates the destructive controls (reset, mode, force-release). |
 | `SLAUDE_PANEL_OPERATORS` | No | `""` | Comma-separated operator identities. An identity in neither list authenticates but is not authorized (`403`). |
+| `SLAUDE_GUARDRAIL_PROSE_MAX` | No | `4000` | Most characters of always-loaded owner guardrail Guidance per agent. A guardrail that would tip the total over is left out of that agent's prompt (its rules still apply) and the console names it. See [Guardrails](guardrails.md). |
+| `SLAUDE_GUARDRAIL_REPLY_QUIET_SECS` | No | `600` | How long an inbound guardrail's reply stays quiet for the same person in the same thread; later drops are silent and audited. |
+| `SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC` | No | `600` | How long an owner guardrail's approval card waits (a tool `approve` and a held reply), at most 3600. A timeout is a deny. On nodes a tool card also ends 30 s before the turn deadline. |
+| `SLAUDE_AUDIT_RETENTION_DAYS` | No | `365` | Days an audit event (`audit_events`: gate decisions, grant changes, console actions) is kept before the periodic sweep deletes it. Applies whether or not the panel is mounted. |
+| `SLAUDE_SKILL_VERSION_RECONCILE_MINUTES` | No | `5` | Minutes between passes that compare each skill on disk with its latest row in the skill version log and record what changed. The gateway or mono process also reconciles at start and right after `write_skill`, retire and restore. |
 | `SLAUDE_PORTAL` | No | `0` | `1`/`true`/`yes` mounts the end-user portal at `/portal` (onboarding, identity binding, MCP connections) on `mono` and `gateway`. It reuses the panel's OIDC client, public URL and `SLAUDE_PANEL_SECRET`, so those are required when it is on. See [The user portal](../deploy/panel.md#the-user-portal). |
 
 ¹ Required when `SLAUDE_PANEL=1`; ignored otherwise.
@@ -404,7 +410,7 @@ Deployment walkthrough, role-file example and cross-replica behaviour:
 | `SLAUDE_HEALTH_PORT` | No | `8080` | Health server port (socket mode only — `SLAUDE_SLACK_MODE=http` serves these on `SLAUDE_HTTP_PORT` instead). `GET /healthz` → liveness `{status:"ok", uptime_ms, sessions_live}`, `GET /readyz` → DB ping (503 if unreachable), `GET /metrics` → Prometheus exposition. Set to `0` or non-finite to disable. See `src/health.ts`. |
 | `SLAUDE_TOKEN_WARN_PCT` | No | `0.8` | Fraction of the model's context window at which slaude posts a one-shot warning in the active thread. Edge-triggered — fires once per session. Source window comes from live `modelUsage.contextWindow`. |
 | `SLAUDE_TOKEN_CRITICAL_PCT` | No | `0.92` | Critical threshold sibling of `SLAUDE_TOKEN_WARN_PCT`. Set to `0` to disable the critical tier. |
-| `SLAUDE_REMOTE` | No | `0` | `1`/`true`/`yes` enables `/env` and `/remote` (a thread's shell and file tools run in a saved environment: the user's own machine over tailcat or ssh, or a sandbox). Off by default. See the [Environments guide](../guides/environments.md) and the [Remote mode guide](../guides/remote.md). |
+| `SLAUDE_REMOTE` | No | `0` | `1`/`true`/`yes` enables `/env` and `/remote` (a thread's shell and file tools run in a saved environment: the user's own machine over tailcat or ssh, or a sandbox). Off by default. Also required for shared environments: sync refuses an agent that declares `environment:` while it is off. See the [Environments guide](../guides/environments.md) and the [Remote mode guide](../guides/remote.md). |
 | `SLAUDE_ENV_SSH_ALLOW_PRIVATE` | No | `0` | `1` lets `ssh` [environments](../guides/environments.md) reach private (LAN) address ranges. Metadata, link-local and reserved ranges are always refused; loopback only with `SLAUDE_OUTBOUND_DEV_LOOPBACK=1`. Hosts in `SLAUDE_OUTBOUND_INTERNAL_HOSTS` may reach private ranges without it. |
 | `SLAUDE_TAILCAT_BIN` | No | `tailcat` | Operator override of the tailcat binary path used by `/remote`. Read at call time; the stock image installs `/usr/local/bin/tailcat`. |
 
@@ -499,11 +505,12 @@ Gateway-side limits of the [MCP bridge](../deploy/mcp-bridge.md) (gateway role o
 
 ### Brain (knowledge base and memory) <a id="brain"></a>
 
-The brain is the gbrain engine behind the `kb_*` tools and episodic memory (`src/knowledge/`). In the gateway topology it runs on gateways only; nodes reach it through `/v1/tools/kb/*` and `/v1/tools/memory/*`.
+The brain is the gbrain engine behind the memory tools (`memory_*`, with `kb_*` aliases) and episodic memory (`src/knowledge/`). In the gateway topology it runs on gateways only; nodes reach it through `/v1/tools/kb/*` and `/v1/tools/memory/*`.
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `SLAUDE_BRAIN_DISABLED` | No | unset | `1` turns the brain off: no `kb_*` tools and the flat sqlite memory store. |
+| `SLAUDE_BRAIN_DISABLED` | No | unset | `1` turns the brain off: no memory page tools (only `memory_stores` / `memory_search_stores`) and the flat sqlite memory store. |
+| `SLAUDE_MEMORY_TOOL_ALIASES` | No | `1` | `0` stops mounting the deprecated `kb_*` aliases of the memory tools (`kb_memoize`, `kb_search`, `list_kbs`, ...) on the `slaude_kb` MCP server, in-process and on nodes, so the model sees only the `memory_*` names (set it on gateways and nodes alike). Leave it on while sessions started before the rename may resume: they call the old names. The REST tool plane (`/v1/tools/kb/<name>`) accepts the old names either way. |
 | `SLAUDE_BRAIN_ENGINE` | Gateway topology | `pglite` | `pglite` (embedded, single writer, in `SLAUDE_BRAIN_HOME`) or `postgres`. A gateway refuses to boot on `pglite`: it is single-writer and clears locks it finds at boot, so replicas on the shared volume would corrupt it. |
 | `SLAUDE_BRAIN_DATABASE_URL` | With `postgres` | none | **Gateway only.** The brain's own database (the `vector`, `pg_trgm` and `pgcrypto` extensions; see `deploy/postgres-init/10-brain-database.sql`). Kept separate from slaude's schema. |
 | `SLAUDE_BRAIN_HOME` | No | `$SLAUDE_HOME/brain` | The brain's home: gbrain's `config.json` and, on `pglite`, its database. |
@@ -576,9 +583,83 @@ Metrics: `slaude_decision_requests_total{adapter,outcome}` (outcome `ok`, `timeo
 | `SLAUDE_BACKGROUND_TIMEZONE` | No | `UTC` | IANA timezone whose midnight-to-midnight day bounds the budget. A persona's `background.timezone` overrides it; an invalid value falls back to `UTC` with a warning. |
 | `SLAUDE_PRICE_TABLE` | No | built-in list prices | Per-model token prices (USD per million tokens: `input`, `output`, `cache_read`, `cache_write`), as inline JSON or a file path when the value does not start with `{`. A custom table replaces the built-in one. Lookup is exact after stripping an `anthropic/` prefix and then a trailing `-YYYYMMDD` snapshot date, so `claude-haiku-4-5-20251001` prices as `claude-haiku-4-5`. The built-in table has no prices for retired or legacy models (Sonnet 4, Opus 4/4.1/4.5, Sonnet 4.5, the 3.x line); add them here. Background runs are priced by the model the CLI reports, so an unset or unpriced `SLAUDE_MODEL` still runs; a reported model with no price ends that run as `error` after one turn. Boot logs one warning naming each configured model the table lacks. |
 | `SLAUDE_AUTO_EVOLVE` | No | `1` | Auto-evolve after each substantial user turn. When `1`, the manager injects an internal `<auto-evolve>` prompt so the agent decides whether to save or refine a skill. Set to `0` to disable. |
-| `SLAUDE_SOUL_PARSE_MAX_TOKENS` | No | `8192` | `max_tokens` budget for the soul extractor LLM call. Raise when a slower model needs more headroom (thinking-mode providers emit thinking + text blocks that both count). Non-positive or non-finite values fall back to `8192`. |
-| `SLAUDE_SOUL_PARSE_MODEL` | No | `SLAUDE_MODEL` or `claude-haiku-4-5-20251001` | Model used for the SOUL.md → JSON extraction pass. Defaults to `SLAUDE_MODEL` when set, otherwise `claude-haiku-4-5-20251001`. |
-| `SLAUDE_SOUL_CACHE_DIR` | No | `$SLAUDE_HOME/cache` | Directory for the extracted-`SoulData` cache. In the gateway topology `$SLAUDE_HOME` is a volume nodes and agent turns can write, so a planted cache file could install forged approvers; point this at pod-local storage on gateways (`deploy/k8s-scale` mounts an `emptyDir`, `docker-compose.scale.yaml` a `tmpfs`). Every cache hit is also re-checked: each Slack id in it must appear verbatim in the soul text, and when `SLAUDE_MASTER_KEY` is set the entry must carry a MAC from a key derived from it (only a key holder can write a trusted entry). A hit failing either check is discarded and the soul re-extracted. |
+| `SLAUDE_SOUL_PARSE_MAX_TOKENS` | No | `8192` | `max_tokens` budget for the SOUL.md reader used by `personas migrate` and `personas export`. Raise when a slower model needs more headroom (thinking-mode providers emit thinking + text blocks that both count). Non-positive or non-finite values fall back to `8192`. |
+| `SLAUDE_SOUL_PARSE_MODEL` | No | `SLAUDE_MODEL` or `claude-haiku-4-5-20251001` | Model `personas migrate` uses to read an old SOUL.md. Defaults to `SLAUDE_MODEL` when set, otherwise `claude-haiku-4-5-20251001`. |
+| `SLAUDE_SOUL_CACHE_DIR` | No | `$SLAUDE_HOME/cache` | Where `personas migrate` and `personas export` keep their cache of a model's reading of an old SOUL.md. Nothing at runtime reads it, so a gateway needs no pod-local cache. |
+
+### Domain records <a id="domain-records"></a>
+
+The gateway keeps records for users, the identities bound to them and
+channels (see the [domain records field note](../field-notes/2026-11-14-domain-records.md)).
+It fills them at boot, after Slack auth, and you can run the same repair by hand
+on the gateway or mono host (a node has no database and refuses it):
+
+```sh
+slaude domain reconcile [--dry-run] [--json] [--demote-unproven-emails [--apply]] [--fill-pointers]
+slaude domain slice-tombstone add <user-id> <source|*> --reason <text> [--by <operator>]
+slaude domain slice-tombstone add --source <name> --all-readers --reason <text> [--by <operator>]
+slaude domain slice-tombstone remove <user-id> <source|*> --reason <text>
+slaude domain slice-tombstone remove --source <name> --all-readers --reason <text>
+slaude domain slice-tombstone list [--json]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--dry-run` | Report what would be created and write nothing. |
+| `--json` | Print the report as JSON instead of text. |
+| `--demote-unproven-emails` | Names the unproven email section. On its own it changes nothing; the report is printed on every run. |
+| `--apply` | With `--demote-unproven-emails`, set verified email bindings that no login proved back to `observed` (a login with proof raises them again). On its own it is a usage error and writes nothing. Not allowed with `--dry-run`, and the gateway's boot reconcile never applies it. |
+| `--fill-pointers` | The one flag that writes credential pointers (`mcp_credentials.user_id`): fills EMPTY pointers from each account's user; with `SLAUDE_CREDENTIAL_POINTERS=on` it also repairs pointers that drifted. Not allowed with `--dry-run`. |
+
+The report has these sections besides the created and existing counts:
+
+| Section | Meaning |
+|---------|---------|
+| `grant subjects` | Stored Slack grants given a subject reference and user. Rows with no single workspace are skipped and counted. |
+| `lock teams` | One-on-one locks given the workspace they were taken in, when the tenant has one workspace. |
+| `workspace grants` | Workspace grants whose subject is not a team this tenant is connected to. Fix or delete these before the access flip. |
+| `unproven email bindings` | Verified email bindings with no proving login, counted per issuer, never an address. |
+| `link tokens` | Expired rows purged from the single-use link ledger. |
+| `verified slack bindings without a link` | Verified Slack bindings with no `slack_identities` row, counted per team. Report only; nothing is repaired. |
+| `slack links without a verified binding` | `slack_identities` rows whose Slack id has no verified binding, counted per team. Report only. |
+| `credential pointers` | Person credential rows: how many have an empty pointer, how many differ from the account's user, how many belong to an account with no user yet, and how many `--fill-pointers` filled or repaired. The slice report is printed by the CLI only; the boot reconcile skips it. |
+| `slice names claimed by two users` | Memory slice names (`user-...`) that bindings of two live users both produce, shown masked with a user count. Review each; no repair. A person-slice union excludes them. |
+
+Bot ids are skipped (reason `bot`), never given a user.
+
+`slaude domain slice-tombstone` is the operator revoke for the person-slice union
+(see the [domain memory and credentials field note](../field-notes/2026-11-15-domain-memory-credentials.md)).
+`add <user-id> <source|*>` revokes one `user-` slice name (or every added name, with
+`*`) from ONE reader's union; it is keyed on the user record, so it stops applying
+if that person relinks their ids to another account (a new user).
+`add --source <name> --all-readers` is the source-level revoke: no reader's union
+may include that slice, whoever they are and however they are linked; use it for a
+mistaken link. Both need a `--reason`, and so does `remove`. The change is audited
+as the operator: `--by` is self-asserted, so the OS user that ran the command is
+recorded beside it. Output masks the slice name (prefix and length only), so it
+shows no Slack id. A row keyed on a merged-away user id still applies to the
+survivor. Under `SLAUDE_PERSON_SLICES=union` a tombstone takes effect on the next
+read in the process that wrote it, and within a fraction of a second elsewhere.
+
+The command is safe to run again: a second run creates nothing. It exits `0` on
+success, `1` if the run fails and `2` for a usage error. A run that created
+something or found a conflict (two accounts with one email) writes one
+`domain.reconciled` audit event.
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_SLACK_TEAM_ID` | No | `""` | Read only by `slaude domain reconcile`, and only on sqlite. Comma-separated Slack workspace ids (for example `T0EXAMPLE`) the command attributes Slack ids to. Postgres reads each tenant's installed Slack apps instead and ignores it. With none set on sqlite, rows that carry no workspace of their own are skipped and counted, not guessed. |
+| `SLAUDE_ACCESS_SOURCE` | No | `shadow` | Which answer the access decision seam returns, read on every call. `legacy`: the string path only, no resolver. `shadow`: return the legacy answer, also compute the internal-id answer and count and log any disagreement (`slaude_access_shadow_total`). `internal`: reserved for the access flip; behaves as `shadow` in rc.19. An unknown value reads as `legacy`. See [Reading the access shadow metrics](../deploy/access-shadow.md). |
+| `SLAUDE_AUTO_MERGE` | No | `on` | Whether a proof (the portal link, or a login with a proven email) merges two user records automatically. `off`, `0`, `false` or `no` turns every automatic merge into a proposal on the console Proposals page and moves nothing. Read on every call. Console approvals are not affected. |
+| `SLAUDE_BOUNDARY_WRITE` | No | `on` | Whether writers store `boundary_id` and `locator` beside the Slack columns, and whether the boundary fill runs. `off`, `0`, `false` or `no` stores NULL pairs and makes the fill and the reconciler's boundary stage do nothing. Read on every call. Nothing reads the columns in rc.22, so this only stops new values being written. |
+| `SLAUDE_BOUNDARY_TIMEOUT_MS` | No | `300` | Most milliseconds the boundary resolver's background read may take. A slower read counts `slaude_boundary_resolve_total{outcome="timeout"}` and leaves the channel unknown; no turn waits for it. `0` means no timeout. |
+| `SLAUDE_BOUNDARY_FILL_INTERVAL_MS` | No | `600000` | How often the gateway's periodic fill completes `boundary_id` and `locator` on rows written without them. `0` disables it. Never runs on a node. |
+| `SLAUDE_BOUNDARY_FILL_MAX_ROWS` | No | `2000` | Most rows one fill tick updates across tables (the boot reconciler stage allows this many per table). A tick that hits the cap continues next tick. |
+| `SLAUDE_MERGE_NOTICE` | No | `on` | Whether a merge sends its Slack notice (one DM to the person and, when a manager or approver grant activates, one to the persona's manager). `off`, `0`, `false` or `no` sends nothing and marks the ledger row `skipped`. The merge itself is unchanged. Read on every call. |
+| `SLAUDE_MERGE_POINTERS` | No | `on` | Whether a user merge repoints credential bookkeeping pointers (`mcp_credentials.user_id`) from the merged-away record to the survivor before the old record is deleted. The pointer is never read for a decision, so this changes no credential behaviour. `off`, `0`, `false` or `no` skips the step; `slaude domain reconcile --fill-pointers` fills pointers later. A failure in the step never fails the merge. Read on every call. |
+| `SLAUDE_PERSON_SLICES` | No | `off` | Person-slice union for memory READS (slice F). `off` (also unset, empty or any unknown value): nothing runs and every memory and knowledge scope is exactly rc.21's. `shadow`: the legacy scope is still used; in the background the gateway computes which `user-` slices a person who proved several Slack ids could read, compares with the legacy own slice and counts it (`slaude_person_slices_shadow_total{site,outcome}`, `slaude_person_slices_failures_total`, `slaude_person_slices_ms`); a disagreement is logged once per site and reason per minute with counts only. `union` (rc.25): the speaker's, or the job token's `runAs` person's, other Slack ids whose bindings are verified (the acting one too) add their `user-` slices to the read set; an observed or declared id contributes nothing, a name another user also produces is excluded, a thread locked by someone else stays public-only, and a failure or the 250 ms bound falls back to the own slice. Writes never change. Operator tombstones (`slaude domain slice-tombstone`) are honoured. An added slice needs a row in the link table (`slack_identities`) for an account of the same user, so an unlink whose binding cleanup failed still cuts it, and is held for `SLAUDE_PERSON_SLICES_HOLD_HOURS`. Read on every call. Rollback: set it to `shadow` or `off`. |
+| `SLAUDE_PERSON_SLICES_HOLD_HOURS` | No | `24` | The hold on an ADDED Slack id under `SLAUDE_PERSON_SLICES=union`: its slice joins a union only once the binding's own `verified_at` is older than this many hours. The link token is a 15 minute bearer token, so a link redeemed by the wrong person must not open the linked id's whole private slice to the account's other ids at once; the hold is the window to unlink, undo a merge, or tombstone it. `0` disables the hold. An unknown value reads as 24. The new link is audited (`slice.union_link`) when the union or its shadow is on. Read on every call. |
+| `SLAUDE_CREDENTIAL_POINTERS` | No | `off` | Whether a person's credential write and a login or link record the bookkeeping pointer `mcp_credentials.user_id`. Off: no credential write does any extra work (`slaude domain reconcile --fill-pointers` fills pointers on demand). On: the pointer is recorded after the write has committed, in the background, never awaited (a token refresh does not wait for it), and a login or link updates it under a short lock timeout. Nothing reads the pointer for a decision either way. Read on every call. |
 
 ### External MCP env references
 
@@ -664,17 +745,17 @@ GRAFANA_API_KEY=
 
 | Path | What it holds |
 |------|---------------|
-| `~/.slaude/SOUL.md` | Persona — the operator-authored identity file. Auto-seeded with the starter scaffold on first boot if missing. See [SOUL.md](#soul). |
+| `~/.slaude/agent.yaml` | The default persona: one file for its identity, access and mandates. Seeded with a starter on first boot of an empty home. See [Persona definition](#soul). |
 | `~/.slaude/.env` | Env file auto-loaded by `src/config/env.ts` (`loadDotenv(paths.env)`) without overriding existing `process.env`. Docker compose also reads `./.env` from the repo root. |
 | `~/.slaude/.mcp.json` | External MCP servers. Mounted into the container at `/data/.mcp.json` (discovered via session cwd parent chain). See [External MCP](#external-mcp). |
 | `~/.slaude/slaude.json` | Dependency manifest — plugins, skills, knowledge bases. See [Manifests](#manifests). |
 | `~/.slaude/slaude.lock` | Pinned shas for every manifest entry. See [Manifests](#manifests). |
 | `~/.slaude/skills/` | Installed skills — one dir per slug containing `SKILL.md`. Hot-reloaded each turn; mounted as a local plugin (`paths.home` with `skipMcpDiscovery: true`). |
 | `~/.slaude/knowledge/` | Installed KB wikis — one dir per label. Indexed into the brain at boot and nightly maintenance. |
-| `~/.slaude/cache/` | Extracted `SoulData` JSON keyed by `sha256(SOUL.md)`, policy embeddings. Safe to delete — re-extracted on next boot. |
+| `~/.slaude/cache/` | Policy embeddings, and the cache `personas migrate` keeps of its reading of an old SOUL.md. Safe to delete. |
 | `~/.slaude/workspaces/` | Per-session cwd — `workspaces/<team>-<channel>-<thread>[__persona]/`. Each thread gets its own git worktree-like dir. |
 | `~/.slaude/.claude/` | Claude Code config dir (`CLAUDE_CONFIG_DIR`). Holds `installed_plugins.json`, plugin cache, project transcripts (`projects/`). In `/1on1` mode the child is pointed at `$SLAUDE_HOME/oauth/<userId>` for OAuth isolation. |
-| `~/.slaude/personas/` | Multi-persona operator-created directory. Presence means multi-bot mode; each named persona has its own `SOUL.md` and `mcp.json` overlay. |
+| `~/.slaude/personas/` | Multi-persona operator-created directory. Presence means multi-bot mode; each named persona has its own `agent.yaml` and `mcp.json` overlay. |
 | `~/.slaude/db.sqlite` | `bun:sqlite` — `sessions`, `brain`, `soul_overrides`, `kb_ingest_jobs` tables. Override via `SLAUDE_DB_PATH` for PVC `subPath` mounts. Absent when `SLAUDE_DB=pg`; move an existing file with `bun run migrate-sqlite` (idempotent, `--dry-run` to preview). |
 
 ```bash
@@ -740,40 +821,43 @@ SLAUDE_ENCRYPTION_KEY=$(openssl rand -base64 32)   # 32 random bytes, base64
 
 ---
 
-## SOUL.md — persona schema <a id="soul"></a>
+## Persona definition: agent.yaml <a id="soul"></a>
 
-`SOUL.md` is the operator-authored file at `~/.slaude/SOUL.md` (or `~/.slaude/personas/<name>/SOUL.md` in multi-persona mode). On first boot if the file is missing, slaude seeds the **starter scaffold** from `src/soul/loader.ts` — fill it in before going live.
+A persona is defined by one `agent.yaml`: `$SLAUDE_HOME/agent.yaml` for the default persona and `$SLAUDE_HOME/personas/<name>/agent.yaml` for a named one. Everything that decides who may do what (manager, approvers, channel lists, mandates, redaction, proactive settings) is read from it as written, by a parser and a schema, with no model call. The prose that shapes the agent's voice sits in its `soul:` key. Editors get completion and checking from the [published JSON Schema](../deploy/personas-as-code.md#editor-help-and-the-json-schema).
+
+On first boot of an empty home, slaude seeds a starter `agent.yaml` with no manager: fill it in before going live. A persona with a `SOUL.md` and no `agent.yaml` stops the process at boot and names the command that converts it: `bun run personas migrate <name|default>` (see [An agent.yaml on disk](../deploy/personas-as-code.md#an-agentyaml-on-disk)).
 
 The runtime enforces two layers:
 
-- **Runtime baseline** (in code, `RUNTIME_BASELINE` in `loader.ts`) — non-negotiable rules about Slack output discipline, formatting, approval, engagement, channel trust, KB-first, skill evolution, and harness overrides. You never author this; a new release can tighten it without touching your persona.
-- **Persona** (your `SOUL.md`) — who the agent is: name, role, voice, manager, mandate, values, channels, approvers, redaction. This is what the agent's system prompt renders inside `<persona>…</persona>`.
+- **Runtime baseline** (in code, `RUNTIME_BASELINE` in `loader.ts`): non-negotiable rules about Slack output discipline, formatting, approval, engagement, channel trust, KB-first, skill evolution, and harness overrides. You never author this; a new release can tighten it without touching your persona.
+- **Persona** (your `agent.yaml`): who the agent is and what it may do. The `soul:` prose renders inside `<persona>...</persona>` in the system prompt.
 
-Structured extraction (`src/soul/extract.ts`) calls the configured provider with `EXTRACTION_PROMPT` (`src/soul/data.ts`), validates the JSON with `SoulDataSchema` (zod), checks that every extracted Slack id appears verbatim in the raw persona (hallucinated ids are rejected), and caches the result at `~/.slaude/cache/soul.<sha>.json` (or `$SLAUDE_SOUL_CACHE_DIR`) keyed by `sha256(SOUL.md)`. A cache hit gets the same grounding check before use, so a forged cache file is treated as a miss. On any extraction failure it falls back to a regex parser that only fills `approvers`.
+Reading an old `SOUL.md` into an `agent.yaml` is the one place a model is still used, and only inside `personas migrate` and `personas export --format agent-yaml`, where a person reviews the result before it is written (provider settings: `SLAUDE_SOUL_PARSE_MODEL`, `SLAUDE_SOUL_PARSE_MAX_TOKENS`, `SLAUDE_SOUL_CACHE_DIR`).
 
-### Validated schema — what extraction looks for
+### Fields: what the runtime reads, and where each one lived in SOUL.md
 
-Every field below is optional in the markdown (the extractor omits what it cannot find), but three are **required** for `bun run validate-soul` to pass: `identity.name`, `manager.userId`, `mandate`.
+Every field below is optional in the file, but three are **required** for `bun run validate-soul` to pass: `identity.name` (the `name` key), `manager.userId` (`access.manager`) and `mandate` (`mandate.global`). The last column names the SOUL.md section the same thing used to be written in, for reading old files.
 
-| Field | Source section in SOUL.md | Type | Required | What to write |
+| Field | agent.yaml key (was SOUL.md section) | Type | Required | What to write |
 |-------|---------------------------|------|----------|---------------|
-| `identity.name` | `## Identity` | string | **Yes** | Agent display name |
-| `identity.role` | `## Identity` | string | No | One line — e.g. `engineering teammate in #platform` |
-| `identity.voice` | `## Identity` | string | No | e.g. `terse, direct, no filler. fragments OK.` |
-| `manager.userId` | `## Reporting` | `U…` / `W…` | **Yes** | Slack user id of the person the agent reports to |
-| `manager.handle` | `## Reporting` | string | No | e.g. `@barock` |
-| `backupManager.userId` | `## Reporting` (Backup manager) | `U…` / `W…` | No | Fallback manager — same engagement authority as primary |
-| `backupManager.handle` | `## Reporting` | string | No | e.g. `@deputy` |
-| `allowedChannels` | `## Allowed channels` / `## Public channels` | `C…` / `G…` / `D…` ids | No | Public-interaction zones — anyone in the channel can address slaude (public eyes, avoid unsolicited internal dumps) |
-| `trustedChannels` | `## Trusted channels` / `## Team channel` / `## Home channel` | `C…` / `G…` / `D…` ids | No | Internal team channels where slaude operates as a member — engagement identical to allowed, but agent gets `trust="trusted"` and may show MCP servers, skill names, internals |
-| `blockedUsers` | `## Blocked` / `## Blacklist` / `## Ignore` | `U…` / `W…` ids | No | Inbound messages from these users are dropped at the adapter gate — no logs leaked to the agent, no token spend |
-| `dmAllowedUsers` | `## DM allowlist` / `## Allowed DMs` | `U…` / `W…` ids | No | Users allowed to DM slaude besides manager/backup. Grants DM chat only — not admin authority |
-| `approvers` | `## Approvers` | `{userId, scope, catchall}` entries | No | Who may approve `request_approval` — see [Approvers](#approvers) |
-| `redactPatterns` | `## Redaction` | regex strings | No | JS regex sources (without `/…/` wrappers, without flags) matched global + case-insensitive; substrings replaced with `[REDACTED]` in outbound `reply`/`edit`/upload comments |
-| `approvalTimeoutSeconds` | `## Approval timeout` | integer ≥ 0 | No | Auto-deny `request_approval` blocks after N seconds with no click. `0` or omitted = wait forever |
-| `mandate` | `## Mandate` | string | **Yes** | What the agent is meant to accomplish — drives every turn |
-| `values` | `## Values` | string[] | No | 1–2 lines of operating principles unique to the persona |
-| `channelOverrides` | `## Channel <#Cxxx\|name>` blocks | `{channel, mandate?, approvers}` per block | No | Per-channel replacement of `mandate` and `approvers` — see [Channel overrides](#channel-overrides) |
+| `identity.name` | `name` (was `## Identity`) | string | **Yes** | Agent display name |
+| `identity.role` | `description` (was `## Identity`) | string | No | One line — e.g. `engineering teammate in #platform` |
+| `identity.voice` | `soul` (prose) (was `## Identity`) | string | No | e.g. `terse, direct, no filler. fragments OK.` |
+| `manager.userId` | `access.manager` (was `## Reporting`) | `U…` / `W…` | **Yes** | Slack user id of the person the agent reports to |
+| `manager.handle` | (none; write it in the soul prose) (was `## Reporting`) | string | No | e.g. `@barock` |
+| `backupManager.userId` | `access.backupManager` (was `## Reporting` (Backup manager)) | `U…` / `W…` | No | Fallback manager — same engagement authority as primary |
+| `backupManager.handle` | (none) (was `## Reporting`) | string | No | e.g. `@deputy` |
+| `allowedChannels` | `access.channels.public` (was `## Allowed channels` / `## Public channels`) | `C…` / `G…` / `D…` ids | No | Public-interaction zones — anyone in the channel can address slaude (public eyes, avoid unsolicited internal dumps) |
+| `trustedChannels` | `access.channels.trusted` (was `## Trusted channels` / `## Team channel` / `## Home channel`) | `C…` / `G…` / `D…` ids | No | Internal team channels where slaude operates as a member — engagement identical to allowed, but agent gets `trust="trusted"` and may show MCP servers, skill names, internals |
+| `blockedUsers` | `access.blocked` (was `## Blocked` / `## Blacklist` / `## Ignore`) | `U…` / `W…` ids | No | Inbound messages from these users are dropped at the adapter gate — no logs leaked to the agent, no token spend |
+| `dmAllowedUsers` | `access.dm` (was `## DM allowlist` / `## Allowed DMs`) | `U…` / `W…` ids | No | Users allowed to DM slaude besides manager/backup. Grants DM chat only — not admin authority |
+| `approvers` | `access.approvers` (was `## Approvers`) | `{userId, scope, catchall}` entries | No | Who may approve `request_approval` — see [Approvers](#approvers) |
+| `redactPatterns` | `access.redact` (was `## Redaction`) | regex strings | No | JS regex sources (without `/…/` wrappers, without flags) matched global + case-insensitive; substrings replaced with `[REDACTED]` in outbound `reply`/`edit`/upload comments |
+| `approvalTimeoutSeconds` | `access.approvalTimeoutSeconds` (was `## Approval timeout`) | integer ≥ 0 | No | Auto-deny `request_approval` blocks after N seconds with no click. `0` or omitted = wait forever |
+| `mandate` | `mandate.global` (was `## Mandate`) | string | **Yes** | What the agent is meant to accomplish — drives every turn |
+| `values` | `soul` (prose) (was `## Values`) | string[] | No | 1–2 lines of operating principles unique to the persona |
+| `channelOverrides` | `mandate.scoped` (boundary `slack:channel:<id>`) and `access.approvers[].channel` (was `## Channel <#Cxxx\|name>` blocks) | `{channel, mandate?, mandateMode?, approvers}` per block | No | Per-channel sub-mandate and approvers, see [Channel overrides](#channel-overrides) |
+| `scopeMandates` | `mandate.scoped` (boundary `trust:public`, `trust:trusted` or `dm`) (was `## Scope dm\|public\|trusted` blocks) | `{scope, mandate, mode?}` per block | No | Sub-mandate for direct messages or a channel class, see [Scoped mandates](#scoped-mandates) |
 
 ### Required vs warnings — what `validate-soul` checks
 
@@ -786,9 +870,9 @@ Every field below is optional in the markdown (the extractor omits what it canno
   - `backupManager.userId === manager.userId` → backup is redundant.
   - Any `redactPatterns` entry that fails `new RegExp(p, "gi")` → rejected as invalid regex.
 
-### Writing SOUL.md — section cookbook
+### Legacy: the SOUL.md section syntax
 
-Every list below is **one id per line**, in any of these forms: `<@U0XXXXXXXXX>`, `<#C0123456789|name>`, raw `U0XXXXXXXXX` / `C0123456789`. Trailing `;` starts an inline comment.
+The sections below are the old SOUL.md syntax. Nothing reads them as structure any more; they are kept so an old file can be read, and `personas migrate` turns them into the keys above. Every list below is **one id per line**, in any of these forms: `<@U0XXXXXXXXX>`, `<#C0123456789|name>`, raw `U0XXXXXXXXX` / `C0123456789`. Trailing `;` starts an inline comment.
 
 ```markdown
 # Persona
@@ -860,6 +944,8 @@ Fallback chain:
 2. No `## Approvers` → `SLAUDE_APPROVERS` env (comma-separated ids, no scopes — all treated as catchalls).
 3. Neither → any clicker accepted (only safe for solo / DM workspaces).
 
+This chain is the **default persona's**. A named persona's approvers are its users with the approver or manager role (from its own soul, or the default's approvers when its soul names none, plus console grants), channel-aware and without keyword matching; with none, the default persona's managers. A named persona never falls back to `SLAUDE_APPROVERS` or to any clicker, so with no manager anywhere its card times out denied.
+
 > **Grounding guard.** The extractor verifies every id it returns appears verbatim in the raw `SOUL.md` text (`assertIdsGroundedInPersona` in `extract.ts`). A hallucinated id is thrown rather than widening the allowlist.
 
 ### Channel overrides <a id="channel-overrides"></a>
@@ -879,13 +965,81 @@ The manager and backup manager are always retained as catchall approvers in ever
 - <@U0DBA123>:       migrations, SQL, schema changes
 ```
 
-Resolution at runtime: `effectiveSoulForChannel(channelId)` in `extract.ts` starts from the global `soulData()` (runtime overlays preserved), looks up the matching `channelOverrides` entry, and applies: `mandate` replaced when the override sets one (non-empty after trim), `approvers` replaced when the override lists ≥ 1. The channel mandate is injected as `<channel-mandate>` directive that supersedes the global Mandate for that channel.
+Resolution at runtime: `effectiveSoulForChannel(channelId)` in `extract.ts` starts from the global `soulData()` (runtime overlays preserved), resolves the mandate (see [Scoped mandates](#scoped-mandates)) and replaces `approvers` when the override lists at least one. The effective mandate is injected as a `<channel-mandate>` directive that supersedes the global Mandate for that channel.
 
-> **Template stub block.** The seeded `SOUL.md` contains a `## Channel <#C0123456789|example-channel>` stub with a placeholder id — the extractor skips it (placeholder ids like `C0123456789` and `<@manager-id>` are ignored). Delete the stub or fill it with a real channel id.
+### Scoped mandates <a id="scoped-mandates"></a>
 
-### Minimal valid SOUL.md
+The agent has one global `## Mandate`. A **sub-mandate** changes it inside one boundary. Each has a boundary and a mode.
 
-This is the smallest file that passes `bun run validate-soul`:
+| Boundary | Written as | Applies to |
+|---|---|---|
+| One channel | `## Channel <#Cxxx\|name>` with `### Mandate` | That channel |
+| Public channels | `## Scope public` with `### Mandate` | Channels in *Allowed channels* |
+| Trusted channels | `## Scope trusted` with `### Mandate` | Channels in *Trusted channels* (including runtime `/soul` additions) |
+| Direct messages | `## Scope dm` with `### Mandate` | DM channels |
+
+| Mode | Effect |
+|---|---|
+| `override` | Replaces the global mandate. The default when no `Mode:` line is written, so a soul with no `Mode:` line works as it always did. |
+| `extend` | The global mandate, plus this addition. |
+| `reduce` | The global mandate, plus this narrowing, rendered as a limit that wins over the global text inside the boundary. |
+
+The mode is a `Mode: extend` line first inside `### Mandate`. It is not part of the mandate text. A `Mode:` line that is not first stays mandate text. A first `Mode:` line with any other single word is read as `extend`, so a typo keeps the global mandate instead of replacing it, and `bun run validate-soul` warns about it.
+
+```markdown
+## Mandate
+- Help the team ship. Draft first, ask before changing shared infrastructure.
+
+## Channel <#C0999999999|incidents>
+### Mandate
+Mode: extend
+- Also own the incident timeline here.
+
+## Scope public
+### Mandate
+Mode: reduce
+- No internal roadmap or infrastructure details.
+
+## Scope dm
+### Mandate
+- Answer the person's own questions. Do not start work on other channels from a DM.
+```
+
+**Precedence.** Only the single most specific match applies, in this order: channel block, then trust class, then dm. Sub-mandates never stack: a channel with `Mode: extend` in *Allowed channels* ignores `## Scope public`. A channel block with no `### Mandate` of its own is not a match, so the next boundary applies.
+
+**Rendered text** is stable and labelled, one label per boundary (`this channel`, `public channels`, `trusted channels`, `direct messages`):
+
+```
+<global mandate>
+
+Limit for public channels (this narrows the mandate above and wins over it wherever they conflict):
+<narrowing>
+
+```
+
+`extend` reads `Additional mandate for this channel (in addition to the mandate above):` in the same place.
+
+`## Scope` blocks are removed from the raw `<persona>` text of the system prompt, so a turn only reads the scope that applies to it, through the resolved `<channel-mandate>` directive.
+
+A named persona reads its own mandates and blocks (the default persona's are never inherited), and its channel classes are the same lists that admit it (`withAclFallback`). Every reader of a mandate goes through `resolveMandate` in `src/soul/mandate-scope.ts`: the turn's system prompt, the heartbeat and wake prompts, voice calls and the console's Mandates tab.
+
+
+### Minimal valid agent.yaml
+
+The smallest file that passes `bun run validate-soul`:
+
+```yaml
+name: slaude
+soul: |
+  # Persona
+  Own the #engineering Slack surface: triage, ship, keep context warm.
+access:
+  manager: slack:user:U0MANAGER123
+mandate:
+  global: Own the #engineering Slack surface: triage, ship, keep context warm.
+```
+
+The same persona in the old SOUL.md syntax, which `personas migrate` converts:
 
 ```markdown
 # Persona
@@ -902,8 +1056,8 @@ This is the smallest file that passes `bun run validate-soul`:
 
 ```bash
 bun run validate-soul
-# [validate] ok                        → exit 0
-# [validate] missing required fields:  → exit 1
+# [validate] default: ok               → exit 0
+# [validate] default: missing required fields:  → exit 1
 #   - identity.name
 #   - manager.userId
 #   - mandate
@@ -912,11 +1066,11 @@ bun run validate-soul
 #   - allowedChannels + trustedChannels both empty — only manager/backup can chat outside DMs
 ```
 
-Add the optional sections above as your workspace grows. Update `SOUL.md` without a restart — `soulData()` re-reads overrides on every call, and the extractor cache is keyed by `sha256(SOUL.md)` so an edit triggers a fresh extraction on next boot.
+Add the optional sections above as your workspace grows. Edit `agent.yaml` and restart the gateway to apply it. Runtime overrides (below) apply without one: `soulData()` re-reads them on every call.
 
 ### Runtime overrides without redeploy <a id="runtime-overrides"></a>
 
-Managers can mutate ACLs at runtime without editing `SOUL.md` or restarting. The `soul_overrides` sqlite table (effective view = `(base ∪ adds) − removes` per field) backs two surfaces:
+Managers can mutate ACLs at runtime without editing `agent.yaml` or restarting. The `soul_overrides` sqlite table (effective view = `(base ∪ adds) − removes` per field) backs two surfaces:
 
 - Slash: `/soul trust <#Cxxx>` / `/soul allow <#Cxxx>` / `/soul block <@Uxxx>` / `/soul dm <@Uxxx>` and their remove counterparts.
 - MCP: `slaude_soul_override` with the same `FIELD_ALIASES` (`trust`→`trustedChannels`, `allow`→`allowedChannels`, `dm`→`dmAllowedUsers`, `block`→`blockedUsers`).
@@ -1091,15 +1245,15 @@ bun run validate-soul
 
 # Exit codes
 #   0 — ok (all required fields present; warnings may still print)
-#   1 — missing required fields (identity.name, manager.userId, or mandate)
-#   2 — extraction failure (missing auth: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN, or provider unreachable)
+#   1 — missing required fields (name, access.manager, or mandate.global), or a SOUL.md with no agent.yaml
+#   2 — an agent.yaml that does not compile (the message names the persona and the key)
 ```
 
 **What it does (`src/cli/validate.ts` + `src/soul/validate.ts`):**
 
-1. `loadSoulData()` — cache hit (`~/.slaude/cache/soul.<sha>.json`) → return; otherwise call the provider's `/v1/messages` with `EXTRACTION_PROMPT`, validate with `SoulDataSchema`, assert every extracted Slack id appears verbatim in `SOUL.md`, cache, return. On any failure → regex fallback (`approvers` only).
+1. `readFileAgent()` compiles each `agent.yaml` under `$SLAUDE_HOME` (the default persona's and each named persona's) with the same parser a synced file uses: no model call. A persona with a `SOUL.md` and no `agent.yaml` is reported with the command that converts it.
 2. `validateSoul(data)` — check the three required fields; emit warnings for empty `approvers`, empty channels, redundant backup manager, invalid `redactPatterns` regexes.
-3. Print `missing` to stderr, `warnings` to stderr, and `ok` to stdout; exit with the code above.
+3. Print each persona's `missing` to stderr, its `warnings` to stderr, and `ok` to stdout; exit with the code above.
 
 ```bash
 # Success

@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sdkThinkClient, brainThink, scopedThinkEngine } from "../src/knowledge/brain-think";
 import { closeBrain, ensureSources, brainCall } from "../src/knowledge/brain";
+import { freshBrainHome } from "./helpers/brain-template";
 
-const brainDir = mkdtempSync(join(tmpdir(), "slaude-brainthink-"));
+// A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+const brainDir = await freshBrainHome("slaude-brainthink-");
 process.env.SLAUDE_BRAIN_HOME = brainDir;
 
 afterAll(async () => {

@@ -4,6 +4,7 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { seedBrainHome } from "./helpers/brain-template";
 
 const root = mkdtempSync(join(tmpdir(), "brain-ensure-reset-"));
 const saved = process.env.SLAUDE_BRAIN_HOME;
@@ -16,6 +17,9 @@ afterAll(async () => {
 });
 
 test("closeBrain clears the ensured-source cache so a second brain home gets its source", async () => {
+  // Copies of the per-process template brain, not fresh initdbs (tests/helpers/brain-template.ts).
+  await seedBrainHome(join(root, "a"));
+  await seedBrainHome(join(root, "b"));
   process.env.SLAUDE_BRAIN_HOME = join(root, "a");
   await ensureSource("user-ureset");
   await closeBrain();
@@ -38,6 +42,8 @@ test("an ensureSource whose sources_add straddles closeBrain does not cache for 
     adminCall: async () => { entered(); await gate; return {}; },
   } as typeof real);
   try {
+    await seedBrainHome(join(root, "c"));
+    await seedBrainHome(join(root, "d"));
     process.env.SLAUDE_BRAIN_HOME = join(root, "c");
     const inflight = ensureSource("user-urace");
     await started;

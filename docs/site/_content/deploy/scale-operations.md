@@ -24,7 +24,7 @@ least `role=gateway|node` per Deployment so the series below are separable.
 | `slaude_nodes_alive` | gauge | — | Live node heartbeat keys † |
 | `slaude_sessions_warm` | gauge | — | Sessions registered warm on some node † |
 | `slaude_reaper_last_run_timestamp_seconds` | gauge | — | Unix time of the last completed reaper pass † |
-| `slaude_v1_tool_calls_total` | counter | `server`, `tool` | REST tool-plane invocations from nodes |
+| `slaude_v1_tool_calls_total` | counter | `server`, `tool`, `alias` | REST tool-plane invocations from nodes. A memory tool counts under its `memory_*` name; `alias="true"` when the node called it by its deprecated `kb_*` name |
 | `slaude_memory_gateway_failures_total` | counter | `kind` | Node memory calls to the gateway that failed (`prefetch:timeout`, `sync:409`, `prefetch:network`, `unsupported`, ...). Each kind is also logged once per node; the turn runs without memory. A steady rise means node turns have no `<memory-context>` |
 | `slaude_v1_job_events_total` | counter | `event` | Node job telemetry (`ack`\|`fail`) |
 | `slaude_label_unserved` | gauge | `label` | 1 while a node label in use has waiting jobs and no live node for longer than `SLAUDE_LABEL_UNSERVED_SECS` † |

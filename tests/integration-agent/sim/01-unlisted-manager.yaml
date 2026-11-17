@@ -1,0 +1,6 @@
+# The manager is admitted in an unlisted channel.
+layer: restricted
+as: manager
+steps:
+  - send: { text: "manager in an unlisted channel" }
+  - expect_reply: { contains: "ack: done" }

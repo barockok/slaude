@@ -34,6 +34,8 @@
  * claimed and is not re-run.
  */
 import type { Redis } from "ioredis";
+import { loadGrants } from "../access/role";
+import { listAt } from "../access/wired";
 import * as Runs from "../db/background-runs";
 import * as Sessions from "../db/sessions";
 import { claimSlot } from "../db/background-slots";
@@ -58,14 +60,24 @@ import type { ThreadActivity } from "../db/thread-activity";
 import { defaultRunnerDeps } from "./runner";
 import { backgroundAgentId, finishSkillCheck, startSkillCheck } from "./skill-check";
 import { runDueCommitments, type PromiseTransport } from "../proactive/promises";
+import type { ProactiveTransport } from "../proactive/dispatch";
 import { readPingPrefs } from "../proactive/prefs";
 import { runHeartbeat } from "../proactive/heartbeat";
+import type { WakeDeps, WakeResult, WakeTransport } from "../proactive/wake";
+import { runChannelWakeNow, runChannelWakes } from "../proactive/channel-wake";
+import { parseManager } from "../soul/proactive";
+import type { BrainOpCall } from "../knowledge/memory-trail";
+import { bridgeExternalMcp } from "../gateway/core/external-mcp";
 import { anyProactiveEnabled } from "../soul/proactive";
 import { env } from "../config/env";
 import { personaApp } from "./digest";
-import { soulData, cachedSoulData } from "../soul/extract";
+import { soulData } from "../soul/extract";
+import { compiledSoulFor, ownStoredSoul } from "../soul/per-persona";
 import { personaSoulText } from "../persona/soul-source";
+import type { MandateParts } from "../soul/mandate-scope";
+import { effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
 import { sweepStaleRuns } from "./stale-runs";
+import type { SourceReader } from "../proactive/source-reader";
 
 export { isoWeekSlot, previousDay };
 
@@ -174,7 +186,12 @@ async function recordError(agentId: string, pass: PassName, day: string, at: Dat
 
 export function createBackgroundScheduler(deps: SchedulerDeps): { tick(signal?: AbortSignal): Promise<void> } {
   const last = new Map<string, LastSlots>();
-  const sweep = deps.sweep ?? ((now: Date) => sweepStaleRuns(now));
+  const sweep =
+    deps.sweep ??
+    (async (now: Date) => {
+      await sweepStaleRuns(now);
+      await Sessions.deleteWakeSessionsBefore(now.getTime() - env.wakeKeepDays() * 86_400_000);
+    });
   const expire = deps.expire ?? ((now: Date) => Proposals.expireDue(now.getTime()));
   const quietDue = deps.quietDue ?? ((g: AgentGroup, now: Date) => dueQuietThreads(g, now));
 
@@ -441,6 +458,14 @@ export interface SchedulerSlack {
   post: CardPost;
   /** How promise checks reach their threads (phase E). Absent: promises are not checked. */
   promises?: PromiseTransport;
+  /** How the heartbeat round's ask/act turns reach their post's thread. Absent: such items are only posted. */
+  proactive?: ProactiveTransport;
+  /** The agent's own MCP sources, read as the agent (heartbeat round). Absent: no source is read. */
+  sources?: SourceReader;
+  /** How a channel's wake reaches its session. Absent: nobody wakes; personas stay on the round. */
+  wake?: WakeTransport;
+  /** Mono: the agent's OAuth credentials live in the CLI's own store, which the heartbeat cannot read (HeartbeatDeps.agentOAuthInCli). */
+  agentOAuthInCli?: boolean;
   /** The manager and the backup manager (who may decide manager proposals). */
   managers: () => string[];
   /** Whom the weekly digest goes to: the manager, else the backup manager. */
@@ -457,19 +482,89 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
     digest: (r) => runDigest(r, { call: deps.call, recipient: slack?.digestRecipient ?? (() => null), ...(slack ? { post: slack.post } : {}) }),
     // The heartbeat needs Slack to speak: without it there is nothing to run.
     ...(slack
-      ? { heartbeat: (r: SlotRun) => runHeartbeat(r, { runner: deps.runner, call: deps.call, post: slack.post, managerId: personaManager, app: personaApp }) }
+      ? {
+          heartbeat: async (r: SlotRun) => {
+            await runHeartbeat(r, {
+              runner: deps.runner,
+              call: deps.call,
+              post: slack.post,
+              managerId: personaManager,
+              mandates: personaMandates,
+              app: personaApp,
+              ...(slack.sources ? { sources: slack.sources } : {}),
+              ...(slack.proactive ? { proactive: slack.proactive } : {}),
+              ...(slack.agentOAuthInCli ? { agentOAuthInCli: true } : {}),
+              mcp: bridgeExternalMcp,
+            });
+            // Read at run time: the gateway sets this after building the scheduler deps.
+            // The heartbeat slot is the tick; each proactive channel wakes when it is due.
+            if (slack.wake) await runChannelWakes(r, wakeDepsFor(deps.call, slack, slack.wake));
+          },
+        }
       : {}),
   };
 }
 
+const wakeDepsFor = (call: BrainOpCall, slack: SchedulerSlack, transport: WakeTransport): WakeDeps => ({
+  call,
+  post: slack.post,
+  transport,
+  managerId: personaManager,
+  mandates: personaMandates,
+  app: personaApp,
+});
+
+/** `/heartbeat now` at a proactive channel's root: that channel's wake now, outside the slot. Budget and caps are unchanged. */
+export async function wakeNow(
+  r: AgentGroup & { slot: string; now: Date },
+  channelId: string,
+  deps: { call: BrainOpCall; slack: SchedulerSlack },
+): Promise<WakeResult | "not-proactive" | "no-transport"> {
+  if (!deps.slack.wake) return "no-transport";
+  return runChannelWakeNow(r, channelId, wakeDepsFor(deps.call, deps.slack, deps.slack.wake));
+}
+
 /** A persona's manager: the default persona's effective soul, a named persona's own structured soul. */
 export function personaManager(personaId: string): string | null {
+  let legacy: string | null = null;
   try {
-    if (!personaId || personaId === "default") return soulData().manager.userId ?? null;
-    return cachedSoulData(personaSoulText(personaId))?.manager.userId ?? null;
+    if (!personaId || personaId === "default") legacy = soulData().manager.userId ?? null;
+    else {
+      const compiled = compiledSoulFor(personaId);
+      // A persona synced before agent.yaml: its stored structure, else the soul text's Reporting section.
+      legacy = compiled ? (compiled.manager.userId ?? null) : (ownStoredSoul(personaId)?.manager.userId ?? parseManager(personaSoulText(personaId)));
+    }
   } catch {
     return null;
   }
+  // Slice C task 18: shadowed against the persona's grants. The call carries no
+  // workspace, so the engine is not asked (counted no_team); the value is the soul's.
+  // No workspace on the call: the answer is the soul's in every mode, so the call is not awaited.
+  void listAt({ site: "scheduler.persona_manager", persona: personaId || "default", teamId: null, legacy: legacy ? [legacy] : [], roles: ["manager"], grants: () => loadGrants(personaId || "default") });
+  return legacy;
+}
+
+export interface PersonaMandates {
+  global: string;
+  /** The persona's `## Identity` voice, when it has one. */
+  voice?: string;
+  channels: Record<string, string | null>;
+  /** Channel id -> the two parts of its extend or reduce, for prompts that bound a mandate's length. */
+  parts?: Record<string, MandateParts>;
+}
+
+/** A persona's global mandate and each listed channel's effective one (null: no sub-mandate applies, the global one stands). Never throws. */
+export function personaMandates(personaId: string, channelIds: readonly string[]): PersonaMandates {
+  const m = personaMandateText(personaId);
+  const channels: Record<string, string | null> = {};
+  const parts: Record<string, MandateParts> = {};
+  for (const c of channelIds) {
+    const r = effectiveMandateIn(m, c);
+    // A block with an empty mandate stays "" as it always read here; only an absent one is null.
+    channels[c] = r.applied ? r.text : (m.channels[c] ?? null);
+    if (r.parts) parts[c] = r.parts;
+  }
+  return { global: m.global, ...(m.voice ? { voice: m.voice } : {}), channels, ...(Object.keys(parts).length ? { parts } : {}) };
 }
 
 /** Production promise checks for a group: budgeted on the ledger, prefs from the beneficiary's profile. */

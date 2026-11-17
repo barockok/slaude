@@ -10,10 +10,26 @@
  * queue; cold resume via the shared queue; /abort mid-turn; held-by-other
  * delay+requeue; lost-lock abort; SIGTERM drain (last — it stops the node).
  */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { REAL_URL, realEnabled, testPrefix, cleanupPrefix, sweepTag, obliterateQueues, until, sleep } from "../queue/real";
 
-process.env.SLAUDE_BRAIN_DISABLED = "1";
+// Everything below touches process.env only when the suite is armed (a real
+// Redis). Bun loads a test file's top level even when every test in it is
+// skipped, and runs no afterAll then, so an unconditional assignment here leaked
+// SLAUDE_BRAIN_DISABLED=1 (and the two below) into every later file of the
+// redis-less CI leg: the brain-import and mono scenario tests then saw a
+// disabled brain. See the 2026-11-16 field note.
+//
+// No post-turn auto-evolve check (its synthetic turn keeps a session busy) and
+// no idle close: the tests retire sessions themselves. The file used to get
+// both only because an earlier file in the same process leaked them.
+const ENV_KEYS = ["SLAUDE_BRAIN_DISABLED", "SLAUDE_AUTO_EVOLVE", "SLAUDE_IDLE_MINUTES"] as const;
+const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+if (realEnabled) {
+  process.env.SLAUDE_BRAIN_DISABLED = "1";
+  process.env.SLAUDE_AUTO_EVOLVE = "0";
+  process.env.SLAUDE_IDLE_MINUTES = "0";
+}
 
 const NODE_TOKEN = "e2e-node-token";
 const JOB_SECRET = "e2e-job-secret";
@@ -46,8 +62,17 @@ const memoryHits: string[] = [];
 let bootFailure: Error | null = null;
 let busts: Array<[string, string | undefined]> = [];
 
+/** When set, the stub runs the manager's Stop hook rule (block once per turn
+ *  with the installed guard's reason, then let the stop through). */
+let emulateStopHook = false;
+/** The reasons the emulated Stop hook blocked with, in order. */
+const stopBlocks: string[] = [];
+
 /** Current stub behavior; tests swap it. */
 let behavior: (a: { sessionId: string; text: string; servers: any; signal: AbortSignal }) => Promise<void>;
+const defaultBehavior: typeof behavior = async ({ servers, text }) => {
+  await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
+};
 
 async function callShim(cfg: any, toolName: string, args: Record<string, unknown>): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -158,9 +183,7 @@ beforeAll(async () => {
     (await Sessions.findByThread({ team_id: "T", channel_id: "C0TEAM", thread_ts: thread }))!.id;
 
   // ---- node side ----
-  behavior = async ({ servers, text }) => {
-    await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
-  };
+  behavior = defaultBehavior;
 
   class NodeStubAgent extends AgentManager {
     mcp?: any;
@@ -206,10 +229,37 @@ beforeAll(async () => {
       this.abortedSessions.push(id);
       this.aborts.get(id)?.abort();
     }
-    override suppressNextTurn(_id: string) {}
+    /** Whether anything else ran between each suppressNextTurn and the send it was for. */
+    bitGap = false;
+    bitPending = false;
+    bitChecks: boolean[] = [];
+    override suppressNextTurn(_id: string) {
+      this.bitPending = true;
+      this.bitGap = false;
+      queueMicrotask(() => {
+        this.bitGap = true;
+      });
+    }
+    permissionResolver?: (sessionId: string, toolName: string, input: any, ctx: any) => Promise<any>;
+    override setPermissionResolver(r: any) {
+      super.setPermissionResolver(r);
+      this.permissionResolver = r;
+    }
+    stopGuard?: (sessionId: string) => string | null;
+    override setStopGuard(g: any) {
+      super.setStopGuard(g);
+      this.stopGuard = g;
+    }
     /** The background run each sendMessage carried (phase E promise checks), by session. */
     bgRuns = new Map<string, { runId: string; finish: (usage: any, outcome: "ok" | "error") => Promise<void> }>();
+    /** How many turns were sent, by session. */
+    sends = new Map<string, number>();
     override async sendMessage(sessionId: string, text: string, opts: { backgroundRun?: any } = {}): Promise<void> {
+      this.sends.set(sessionId, (this.sends.get(sessionId) ?? 0) + 1);
+      if (this.bitPending) {
+        this.bitPending = false;
+        this.bitChecks.push(this.bitGap);
+      }
       if (opts.backgroundRun) this.bgRuns.set(sessionId, opts.backgroundRun);
       this.emit("event", { type: "turnStart", sessionId } as any);
       // The real manager's boot fails this way when the child-env resolver throws.
@@ -220,6 +270,13 @@ beforeAll(async () => {
       void (async () => {
         try {
           await behavior({ sessionId, text, servers, signal: ac.signal });
+          // AgentManager's stopHook: the first stop of a turn the guard
+          // objects to goes back to the model with the reason as its input.
+          const reason = emulateStopHook ? this.stopGuard?.(sessionId) : null;
+          if (reason) {
+            stopBlocks.push(reason);
+            await behavior({ sessionId, text: reason, servers, signal: ac.signal });
+          }
           this.liveSet.add(sessionId); // Query stays warm after the turn
           this.emit("event", { type: "done", sessionId } as any);
         } catch (e) {
@@ -242,6 +299,10 @@ beforeAll(async () => {
   // agent never calls its child-env resolver, so no other case depends on it).
   const savedFallback = process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
   process.env.SLAUDE_PROVIDER_ENV_FALLBACK = "0";
+  // The node's own auto-allow list, read once when its resolver is built (the
+  // gateway above was created without it).
+  const savedAutoAllow = process.env.SLAUDE_AUTO_ALLOW_TOOLS;
+  process.env.SLAUDE_AUTO_ALLOW_TOOLS = "Bash";
   workerHandle = await startNodeWorker({
     nodeId: NODE_ID,
     client,
@@ -269,9 +330,15 @@ beforeAll(async () => {
   });
   if (savedFallback === undefined) delete process.env.SLAUDE_PROVIDER_ENV_FALLBACK;
   else process.env.SLAUDE_PROVIDER_ENV_FALLBACK = savedFallback;
+  if (savedAutoAllow === undefined) delete process.env.SLAUDE_AUTO_ALLOW_TOOLS;
+  else process.env.SLAUDE_AUTO_ALLOW_TOOLS = savedAutoAllow;
 });
 
 afterAll(async () => {
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
   if (!realEnabled) return;
   await workerHandle?.stop({ drainSec: 1 }).catch(() => {});
   await qd?.close().catch(() => {});
@@ -285,9 +352,53 @@ afterAll(async () => {
   } catch {}
   delete process.env.SLAUDE_NODE_TOKEN;
   delete process.env.SLAUDE_JOB_SECRET;
-  delete process.env.SLAUDE_BRAIN_DISABLED;
   require("node:fs").rmSync(nodeConfigRoot, { recursive: true, force: true });
 });
+
+/**
+ * Wait until the node has nothing left in flight, so the next test starts on a
+ * quiet worker. A test that returns on the first observable effect (a reaction,
+ * a reply, an applied identity) leaves its turn running; that turn then reads
+ * the NEXT test's globals (`behavior`, `bootFailure`), holds a worker slot and
+ * a session lock, and makes the next test's "turn started" / "aborts drained"
+ * waits pass or fail for the wrong turn. Under CI load the stragglers are slow
+ * enough to be hit nearly every run.
+ *
+ * Quiet means: no turn running in the stub, no job active / waiting / delayed
+ * on either queue, no session / folder lock held, no durable abort flag left to
+ * skip the next job. A turn still hung after `abortAfterMs` (a test failed
+ * before releasing its gate) is aborted so one failure does not cascade; the
+ * generous overall bound exists only so a genuine leak reports itself instead of
+ * hanging the file, and only a leak ever waits on it.
+ */
+async function settleNode(abortAfterMs = 8_000, timeoutMs = 45_000): Promise<void> {
+  const started = Date.now();
+  let aborted = false;
+  const queueNames = ["turns", nodeTurnsQueueFn(NODE_ID)];
+  const busy = async (): Promise<string | null> => {
+    if (stub.aborts.size > 0) return `${stub.aborts.size} turn(s) running in the agent`;
+    for (const name of queueNames) {
+      const c = await turnsQ.queue(name).getJobCounts("active", "waiting", "delayed", "prioritized", "waiting-children", "paused");
+      const n = Object.values(c).reduce((a: number, b) => a + (b as number), 0);
+      if (n > 0) return `${n} job(s) in flight on ${name}: ${JSON.stringify(c)}`;
+    }
+    for (const pat of [keys.sessionLock("*"), keys.workspaceLock("*"), keys.abortFlag("*")]) {
+      const held = await redis.keys(pat);
+      if (held.length > 0) return `held: ${held.join(",")}`;
+    }
+    return null;
+  };
+  let why: string | null;
+  while ((why = await busy())) {
+    const waited = Date.now() - started;
+    if (waited > timeoutMs) throw new Error(`node did not go idle within ${timeoutMs}ms: ${why}`);
+    if (!aborted && waited > abortAfterMs) {
+      aborted = true;
+      for (const ac of stub.aborts.values()) ac.abort();
+    }
+    await sleep(25);
+  }
+}
 
 const msg = (thread: string, ts: string, text: string) => ({
   event: {
@@ -306,6 +417,17 @@ const msg = (thread: string, ts: string, text: string) => ({
 d("gateway↔node E2E (real Redis)", () => {
   const THREAD = "9000.0";
 
+  // Every test leaves the node quiet and the stub's globals at their defaults,
+  // whatever it did or how it ended (see settleNode).
+  afterEach(async () => {
+    behavior = defaultBehavior;
+    bootFailure = null;
+    emulateStopHook = false;
+    await settleNode();
+    // bun's default hook timeout is 5s; settleNode bounds itself (aborts a hung
+    // turn at 8s, reports a leak at 45s), so the hook must outlast it.
+  }, 60_000);
+
   test("message → enqueue → node claims → shim reply lands via the REST tool plane", async () => {
     posts.length = 0;
     reacts.length = 0;
@@ -316,6 +438,102 @@ d("gateway↔node E2E (real Redis)", () => {
     // Follower re-emitted the node's done → gateway stamped ✅ on the inbound.
     await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9000.1"), 10_000);
   }, 30_000);
+
+  // The must-reply Stop guard on a node (v0.46.0-rc.8): a person's turn that
+  // ends with nothing user-visible is sent back once with mono's instruction;
+  // the model's answer to it lands in Slack, and a turn that replied is not
+  // sent back at all.
+  test("a node turn that ends without a reply is sent back once, then its reply lands", async () => {
+    const { MUST_REPLY_INSTRUCTION } = await import("../../src/agent/must-reply");
+    const prev = behavior;
+    const inputs: string[] = [];
+    // The stub emits the toolCall the real manager emits from the SDK stream.
+    behavior = async ({ sessionId, text, servers }) => {
+      inputs.push(text);
+      if (text !== MUST_REPLY_INSTRUCTION) return; // the first pass says nothing
+      stub.emit("event", { type: "toolCall", sessionId, tool: "mcp__slaude_surface__reply", input: {} });
+      await callShim(servers["slaude_surface"], "reply", { text: "node-reply: after the stop guard" });
+    };
+    emulateStopHook = true;
+    stopBlocks.length = 0;
+    try {
+      posts.length = 0;
+      reacts.length = 0;
+      await emitSlack("message", msg("9005.0", "9005.1", "<@USLAUDE> say something"));
+      await until(() => posts.some((p) => String(p.text).includes("after the stop guard")), 15_000);
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9005.1"), 10_000);
+      expect(stopBlocks).toEqual([MUST_REPLY_INSTRUCTION]);
+      expect(inputs).toHaveLength(2);
+
+      // A turn that replies first is not sent back.
+      behavior = async ({ sessionId, text, servers }) => {
+        inputs.push(text);
+        stub.emit("event", { type: "toolCall", sessionId, tool: "mcp__slaude_surface__reply", input: {} });
+        await callShim(servers["slaude_surface"], "reply", { text: "node-reply: straight away" });
+      };
+      inputs.length = 0;
+      await emitSlack("message", msg("9005.0", "9005.2", "<@USLAUDE> again"));
+      await until(() => posts.some((p) => String(p.text).includes("straight away")), 15_000);
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9005.2"), 10_000);
+      expect(stopBlocks).toHaveLength(1);
+      expect(inputs).toHaveLength(1);
+    } finally {
+      emulateStopHook = false;
+      behavior = prev;
+    }
+  }, 30_000);
+
+  // The wake refusal on a node (v0.46.0-rc.8), through the worker's own wiring
+  // (the job's wake flag, the bound token's signed claim, per-job reset): a
+  // tool the node auto-allows is refused in a wake's turn and allowed again in
+  // the next normal turn on the same session.
+  test("a wake job refuses a node-auto-allowed tool; the next normal job on the session allows it", async () => {
+    const { wakeRefusal } = await import("../../src/proactive/wake-guard");
+    const WAKE_THREAD = "9007.0";
+    const prev = behavior;
+    const decisions: Array<{ text: string; decision: any }> = [];
+    behavior = async ({ sessionId, text, servers }) => {
+      const decision = await stub.permissionResolver!(sessionId, "Bash", { command: "ls" }, { signal: new AbortController().signal, toolUseID: "tu-1" });
+      decisions.push({ text, decision });
+      if (!text.startsWith("[wake]")) await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
+    };
+    try {
+      posts.length = 0;
+      reacts.length = 0;
+      await emitSlack("message", msg(WAKE_THREAD, "9007.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9007.1"), 15_000);
+      const Sessions = await import("../../src/db/sessions");
+      const session = (await Sessions.findById(await sessionIdOf(WAKE_THREAD)))!;
+      // A heartbeat wake on the thread, dispatched as the gateway dispatches one.
+      await qd.dispatch(session, "[wake] look around", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WAKE_THREAD,
+        eventTs: "9007.2",
+        userId: "USLAUDE",
+        origin: "cron",
+        backgroundRunId: "run-e2e-wake",
+        wake: { maxTurns: 3 },
+      });
+      await until(() => decisions.some((d) => d.text.startsWith("[wake]")), 15_000);
+      await until(async () => !(await turnsQ.hasPending(session.id)), 10_000);
+      // The wake's turn has ended (its lock is free) before the next message.
+      await until(async () => (await redis.exists(keys.sessionLock(session.id))) === 0, 10_000);
+      await emitSlack("message", msg(WAKE_THREAD, "9007.3", "<@USLAUDE> after the wake"));
+      await until(() => decisions.some((d) => d.text.includes("after the wake")), 15_000);
+
+      const [first, wake, after] = [
+        decisions.find((d) => d.text.includes("first"))!,
+        decisions.find((d) => d.text.startsWith("[wake]"))!,
+        decisions.find((d) => d.text.includes("after the wake"))!,
+      ];
+      expect(first.decision.behavior).toBe("allow");
+      expect(wake.decision).toEqual({ behavior: "deny", message: wakeRefusal("Bash") });
+      expect(after.decision.behavior).toBe("allow");
+    } finally {
+      behavior = prev;
+    }
+  }, 45_000);
 
   test("an acked job's turn-senders record is deleted, not left to its TTL", async () => {
     posts.length = 0;
@@ -355,6 +573,139 @@ d("gateway↔node E2E (real Redis)", () => {
       expect(busts.some(([t]) => t === "default")).toBe(true);
     } finally {
       bootFailure = null;
+    }
+  }, 30_000);
+
+  // The manager refuses a wake while a voice call owns its session, having
+  // closed the wake's run: the job is settled, so it is neither retried (the
+  // run is closed) nor failed, and the worker does not finish the run again.
+  test("a wake refused as busy completes without a retry and does not touch its run again", async () => {
+    const { WakeBusyError } = await import("../../src/agent/manager");
+    const WAKE_THREAD = "9011.0";
+    const prev = behavior;
+    behavior = async ({ servers, text }) => {
+      await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
+    };
+    try {
+      reacts.length = 0;
+      await emitSlack("message", msg(WAKE_THREAD, "9011.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9011.1"), 15_000);
+      const Sessions = await import("../../src/db/sessions");
+      const sid = await sessionIdOf(WAKE_THREAD);
+      const session = (await Sessions.findById(sid))!;
+      bootFailure = new WakeBusyError(sid);
+      const before = stub.sends.get(sid) ?? 0;
+      await qd.dispatch(session, "[wake] look around", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WAKE_THREAD,
+        eventTs: "9011.2",
+        userId: "USLAUDE",
+        origin: "cron",
+        backgroundRunId: "run-e2e-busy",
+        wake: { maxTurns: 3 },
+      });
+      const queues = () => [turnsQ.queue("turns"), turnsQ.queue(nodeTurnsQueueFn(NODE_ID))];
+      const inState = async (states: string[]) => {
+        const lists = await Promise.all(queues().map((q: any) => q.getJobs(states, 0, 200)));
+        return lists.flat().filter((j: any) => j?.data?.sessionId === sid && j.data.wake);
+      };
+      await until(async () => (await inState(["completed"])).length === 1, 10_000);
+      const [job] = await inState(["completed"]);
+      expect(job.attemptsMade).toBe(1);
+      expect(job.returnvalue).toEqual({ result: "skipped" });
+      // Past the retry backoff: it ran once, and nothing is left to run it again.
+      await sleep(1200);
+      expect(await inState(["failed", "delayed", "waiting", "active"])).toEqual([]);
+      expect((stub.sends.get(sid) ?? 0) - before).toBe(1);
+    } finally {
+      bootFailure = null;
+      behavior = prev;
+    }
+  }, 30_000);
+
+  // An /abort sets a durable flag that skips the next job claimed for the
+  // session. A wake skipped that way must still close its ledger run: left
+  // open, it reads as busy for two hours and blocks the agent's wakes.
+  test("a wake skipped by the abort flag closes its run and never starts", async () => {
+    const WAKE_THREAD = "9012.0";
+    const prev = behavior;
+    behavior = async ({ servers, text }) => {
+      await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
+    };
+    try {
+      reacts.length = 0;
+      await emitSlack("message", msg(WAKE_THREAD, "9012.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9012.1"), 15_000);
+      const Sessions = await import("../../src/db/sessions");
+      const Runs = await import("../../src/db/background-runs");
+      const { startSkillCheck } = await import("../../src/background/skill-check");
+      const sid = await sessionIdOf(WAKE_THREAD);
+      const session = (await Sessions.findById(sid))!;
+      const opened = await startSkillCheck(
+        { personaId: "default", model: "claude-opus-5-5", scope: "agent", pass: "heartbeat-wake" },
+        { budget: () => ({ limitUsd: 5, timeZone: "UTC" }) },
+      );
+      if (!opened.ok) throw new Error("run did not open");
+      const before = stub.sends.get(sid) ?? 0;
+      // Paused so the flag is set between enqueue and claim: dispatch itself
+      // clears a stale flag, so setting it before would not skip this job.
+      const queues = [turnsQ.queue("turns"), turnsQ.queue(nodeTurnsQueueFn(NODE_ID))];
+      await Promise.all(queues.map((q: any) => q.pause()));
+      try {
+        await qd.dispatch(session, "[wake] look around", {
+          teamId: "T",
+          channelId: "C0TEAM",
+          threadTs: WAKE_THREAD,
+          eventTs: "9012.2",
+          userId: "USLAUDE",
+          origin: "cron",
+          backgroundRunId: opened.runId,
+          wake: { maxTurns: 3 },
+        });
+        await redis.set(keys.abortFlag(sid), "1", "PX", 60_000);
+      } finally {
+        await Promise.all(queues.map((q: any) => q.resume()));
+      }
+      await until(async () => (await Runs.get(opened.runId))?.outcome != null, 15_000);
+      expect((await Runs.get(opened.runId))!.outcome).toBe("ok");
+      expect(stub.sends.get(sid) ?? 0).toBe(before);
+    } finally {
+      behavior = prev;
+    }
+  }, 30_000);
+
+  // A suppressed job's bit is bound by sendMessage. Set any earlier, an await
+  // that fails (the warm session's credential seed) would leave it standing.
+  test("a suppressed job sets its bit with nothing between it and the send", async () => {
+    const WARM_THREAD = "9013.0";
+    const prev = behavior;
+    behavior = async () => {};
+    try {
+      reacts.length = 0;
+      await emitSlack("message", msg(WARM_THREAD, "9013.1", "<@USLAUDE> first"));
+      await until(() => reacts.some((r) => r.name === "white_check_mark" && r.timestamp === "9013.1"), 15_000);
+      const sid = await sessionIdOf(WARM_THREAD);
+      // A config dir makes this a warm session: the worker awaits its seed.
+      const { sessionConfigDir } = await import("../../src/agent/config-root");
+      require("node:fs").mkdirSync(sessionConfigDir(sid, undefined, nodeConfigRoot), { recursive: true });
+      const Sessions = await import("../../src/db/sessions");
+      const session = (await Sessions.findById(sid))!;
+      const before = stub.sends.get(sid) ?? 0;
+      stub.bitChecks.length = 0;
+      await qd.dispatch(session, "recorded only", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WARM_THREAD,
+        eventTs: "9013.2",
+        userId: "U1",
+        origin: "slack",
+        suppress: true,
+      });
+      await until(() => (stub.sends.get(sid) ?? 0) > before, 15_000);
+      expect(stub.bitChecks).toEqual([false]);
+    } finally {
+      behavior = prev;
     }
   }, 30_000);
 
@@ -531,21 +882,29 @@ d("gateway↔node E2E (real Redis)", () => {
     expect(Object.keys(await stub.localMcp!(sid))).toEqual(["gh"]);
   }, 40_000);
 
+  // This thread's replies and this session's completed jobs on a queue. The
+  // routing tests must wait for their OWN turn: a cumulative reply count or a
+  // queue-wide completed count is already met by earlier tests (another
+  // session's job can ride the per-node queue too), so the test returned while
+  // its turn was still running, and that turn ending later re-registered the
+  // session warm under the next test.
+  const threadReplies = () => posts.filter((p) => p.thread_ts === THREAD && String(p.text).includes("node-reply:")).length;
+  const completedFor = async (queue: string, sessionId: string) =>
+    (await turnsQ.queue(queue).getCompleted()).filter((j: any) => j.data?.sessionId === sessionId).length;
+
   test("warm routing: second message rides the per-node queue", async () => {
     const sessionId = await sessionIdOf(THREAD);
     // The worker registered the session warm after the first turn.
     await until(async () => (await registryG.lookup(sessionId))?.node === NODE_ID, 10_000);
+    const replies = threadReplies();
+    const onNode = await completedFor(nodeTurnsQueueFn(NODE_ID), sessionId);
     await emitSlack("message", msg(THREAD, "9000.2", "warm follow-up"));
-    await until(() => posts.filter((p) => String(p.text).includes("node-reply:")).length >= 2, 15_000);
+    await until(() => threadReplies() > replies, 15_000);
     // The reply lands from inside the turn; BullMQ marks the job "completed" a
-    // beat later. Poll for the per-node queue's completed count instead of a
-    // one-shot read that races the completion transition under load. Intact
-    // assertion: a job that (wrongly) rode the SHARED queue never bumps the
-    // per-node count, so this still times out and fails on a routing regression.
-    await until(
-      async () => ((await turnsQ.queue(nodeTurnsQueueFn(NODE_ID)).getJobCounts("completed")).completed ?? 0) >= 1,
-      10_000,
-    );
+    // beat later, after the worker has re-registered the session. A job that
+    // (wrongly) rode the SHARED queue never shows up here, so a routing
+    // regression still times out.
+    await until(async () => (await completedFor(nodeTurnsQueueFn(NODE_ID), sessionId)) > onNode, 10_000);
   }, 30_000);
 
   test("reload:<tenant> subscription is live before/after the first turn (cache bustable)", async () => {
@@ -564,16 +923,13 @@ d("gateway↔node E2E (real Redis)", () => {
     // session live: finding the entry gone, it registered it again, and the
     // message rode the per-node queue.
     await until(async () => !(await registryG.lookup(sessionId)), 10_000);
-    const before = (await turnsQ.queue("turns").getJobCounts("completed")).completed ?? 0;
+    const replies = threadReplies();
+    const shared = await completedFor("turns", sessionId);
     await emitSlack("message", msg(THREAD, "9000.3", "cold resume"));
-    await until(() => posts.filter((p) => String(p.text).includes("node-reply:")).length >= 3, 15_000);
-    // Same settle race as warm-routing: wait for the shared-queue completion to
-    // register rather than reading the count the instant the reply posts. A
-    // turn that never ran on the shared queue leaves the count flat → times out.
-    await until(
-      async () => ((await turnsQ.queue("turns").getJobCounts("completed")).completed ?? 0) > before,
-      10_000,
-    );
+    await until(() => threadReplies() > replies, 15_000);
+    // Same settle race as warm-routing: wait for this session's shared-queue
+    // completion. A turn that never ran on the shared queue → times out.
+    await until(async () => (await completedFor("turns", sessionId)) > shared, 10_000);
   }, 30_000);
 
   test("/abort mid-turn reaches the node over pub/sub", async () => {
@@ -634,6 +990,106 @@ d("gateway↔node E2E (real Redis)", () => {
       await callShim(servers["slaude_surface"], "reply", { text: `node-reply: ${text.slice(0, 40)}` });
     };
   }, 30_000);
+
+  // Heartbeat mandates spec Part 2: one turn at a time in the agent's
+  // proactive folder across nodes. A job carrying `workspace` waits (delayed,
+  // never failed) while another owner holds the folder's lock; a job without
+  // it is not held up by that lock.
+  test("a job in a held proactive folder is requeued until the folder frees; other jobs run at once", async () => {
+    const { proactiveWorkspaceDir } = await import("../../src/agent/workspace-claim");
+    const WS_THREAD = "9700.0";
+    const OTHER_THREAD = "9710.0";
+    const repliesIn = (thread: string) =>
+      posts.filter((p) => p.thread_ts === thread && String(p.text).includes("node-reply:")).length;
+    const requeued = () => Number(/slaude_node_turns_total\{result="requeued"\} (\d+)/.exec(metricsRender())?.[1] ?? 0);
+
+    // Seed the thread's session with an ordinary turn.
+    const seeded = repliesIn(WS_THREAD);
+    await emitSlack("message", msg(WS_THREAD, "9700.1", "<@USLAUDE> seed the folder session"));
+    await until(() => repliesIn(WS_THREAD) > seeded, 15_000);
+    const sid = await sessionIdOf(WS_THREAD);
+
+    const dir = proactiveWorkspaceDir("U0AGENT");
+    const folderKey = keys.workspaceLock(dir);
+    expect(await acquireLockFn(redis, folderKey, "foreign-node:other-session", 60_000)).toBe(true);
+    const calls: string[] = [];
+    const prev = behavior;
+    behavior = async (a) => {
+      calls.push(a.sessionId);
+      await prev(a);
+    };
+    try {
+      const wsBefore = repliesIn(WS_THREAD);
+      const requeuedBefore = requeued();
+      await qd.dispatch({ id: sid, working_dir: dir } as any, "proactive folder work", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WS_THREAD,
+        eventTs: String(Date.now() / 1000),
+        userId: "U0MGR",
+      });
+      // The node claims it, finds the folder held, and delays it — more than once.
+      await until(() => requeued() >= requeuedBefore + 2, 10_000);
+      expect(calls.filter((c) => c === sid)).toHaveLength(0);
+
+      // A job without `workspace` runs while the folder is still held.
+      const otherBefore = repliesIn(OTHER_THREAD);
+      await emitSlack("message", msg(OTHER_THREAD, "9710.1", "<@USLAUDE> not in the folder"));
+      await until(() => repliesIn(OTHER_THREAD) > otherBefore, 15_000);
+      expect(await redis.get(folderKey)).toBe("foreign-node:other-session");
+      expect(calls.filter((c) => c === sid)).toHaveLength(0);
+      expect(repliesIn(WS_THREAD)).toBe(wsBefore);
+
+      // The foreign holder lets go: the delayed job runs and replies.
+      await redis.del(folderKey);
+      await until(() => repliesIn(WS_THREAD) > wsBefore, 15_000);
+      expect(calls.filter((c) => c === sid)).toHaveLength(1);
+      // The turn's own folder lock is released after the turn.
+      await until(async () => (await redis.get(folderKey)) === null, 5_000);
+    } finally {
+      behavior = prev;
+      await redis.del(folderKey);
+    }
+  }, 60_000);
+
+  test("losing the proactive folder's lock mid-turn aborts the agent", async () => {
+    const { proactiveWorkspaceDir } = await import("../../src/agent/workspace-claim");
+    const WS_THREAD = "9720.0";
+    const repliesIn = (thread: string) =>
+      posts.filter((p) => p.thread_ts === thread && String(p.text).includes("node-reply:")).length;
+    const seeded = repliesIn(WS_THREAD);
+    await emitSlack("message", msg(WS_THREAD, "9720.1", "<@USLAUDE> seed the folder session"));
+    await until(() => repliesIn(WS_THREAD) > seeded, 15_000);
+    const sid = await sessionIdOf(WS_THREAD);
+    const dir = proactiveWorkspaceDir("U0AGENT-LOST");
+    const folderKey = keys.workspaceLock(dir);
+
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const prev = behavior;
+    behavior = async ({ signal }) => {
+      signal.addEventListener("abort", () => release(), { once: true });
+      await gate;
+    };
+    try {
+      const abortedBefore = stub.abortedSessions.filter((s: string) => s === sid).length;
+      await qd.dispatch({ id: sid, working_dir: dir } as any, "long proactive task", {
+        teamId: "T",
+        channelId: "C0TEAM",
+        threadTs: WS_THREAD,
+        eventTs: String(Date.now() / 1000),
+        userId: "U0MGR",
+      });
+      await until(() => stub.aborts.has(sid), 10_000);
+      expect(await redis.get(folderKey)).toBe(`${NODE_ID}:${sid}`);
+      // Yank only the folder lock: the session lock is still held.
+      await redis.del(folderKey);
+      await until(() => stub.abortedSessions.filter((s: string) => s === sid).length > abortedBefore, 10_000);
+      await until(() => !stub.aborts.has(sid), 10_000);
+    } finally {
+      behavior = prev;
+    }
+  }, 40_000);
 
   // Phase 3: the node's session config home is pod-local and seeded from the
   // gateway's credential store with the access tokens for the turn's runAs

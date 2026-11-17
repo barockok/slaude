@@ -19,21 +19,26 @@
  * abort publish aborts the agent. SIGTERM drains: stop claiming, finish
  * in-flight turns within the grace, deregister everything, exit.
  */
+import type { WakeStats } from "../proactive/wake-settle";
 import { hostname, tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Worker, DelayedError, UnrecoverableError, type Job } from "bullmq";
 import type { Redis } from "ioredis";
-import { AgentManager, type AgentEvent } from "../agent/manager";
+import { AgentManager, WakeBusyError, type AgentEvent, type GuardrailSink, type PersonaSoul } from "../agent/manager";
 import { createSessionMcp, SESSION_MCP_NAME } from "../agent/session-mcp";
 import { env } from "../config/env";
 import { m as metric, metrics } from "../metrics";
+import { bundleSessionGuardrails } from "../guardrails/node";
+import { AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, GUARDRAILS_CAPABILITY, SHARED_ENV_CAPABILITY } from "../guardrails/capability";
+import type { SessionGuardrails } from "../guardrails/resolve";
+import type { FiringEvent } from "../guardrails/audit";
 import { assertNodeIdUsable, DEFAULT_LABEL, LABEL_RE, labelTurnsQueue, makeKeys, nodeTurnsQueue, type Keys } from "../queue/keys";
 import { createRedis, heartbeatSec as envHeartbeatSec, nodeDrainSec, redisUrl } from "../queue/redis";
 import { makeRegistry, type Registry } from "../queue/registry";
 import { makePubSub, type PubSub } from "../queue/pubsub";
-import { withSessionLock, HELD_BY_OTHER } from "../queue/locks";
+import { withKeyLock, withSessionLock, HELD_BY_OTHER } from "../queue/locks";
 import { jobLabel, TurnQueues, type TurnJob } from "../queue/turns";
 import { GateDenied, isLabelMismatch, labelMismatchBoot, NodeApiError, NodeClient, bundleFetchFailure } from "./client";
 import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
@@ -45,7 +50,8 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { makeNodeSkillCheckBudget, makeNodeSkillUsageRecorder } from "./background";
 import type { ModelTokens } from "../background/prices";
 import { makeNodeMemoryProvider } from "./memory";
-import { makeNodePermissionResolver } from "./shims/permission";
+import { isWakeTurn, makeNodePermissionResolver } from "./shims/permission";
+import { makeNodeStopGuard } from "./stop-guard";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
 import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
@@ -77,12 +83,16 @@ export function keepOffEventStream(e: AgentEvent): boolean {
 export const STALE_CONFIG = Symbol("stale-config");
 
 /**
- * The part of a claim that runs under lock:session:<id>: bind this job's token,
- * reboot a warm session whose config it no longer matches, then run the turn.
- * The token is bound only by the lock holder: a boot resolves its remote target,
- * child env and credentials from the bound token, so a job that is about to lose
- * the lock race must not swap the token under the holder's boot (it would boot
- * one config labelled with another's fingerprint).
+ * The part of a claim that runs under lock:session:<id>: reboot a warm session
+ * whose config this job no longer matches, bind this job's token, then run the
+ * turn. The token is bound only by the lock holder: a boot resolves its remote
+ * target, child env and credentials from the bound token, so a job that is
+ * about to lose the lock race must not swap the token under the holder's boot
+ * (it would boot one config labelled with another's fingerprint). It is bound
+ * only once the config is current, too: a job requeued as STALE_CONFIG leaves
+ * the token alone, so a turn still running on the session (a skill check after
+ * the last job) keeps its own token and claims, a wake's refusal included.
+ * The session boots, if it must, in `run`, after the bind.
  */
 export async function runLockedTurn<T>(deps: {
   lock: (fn: (lostLock: AbortSignal) => Promise<T | typeof STALE_CONFIG>) => Promise<T | typeof STALE_CONFIG | typeof HELD_BY_OTHER>;
@@ -92,7 +102,6 @@ export async function runLockedTurn<T>(deps: {
   run: (lostLock: AbortSignal) => Promise<T>;
 }): Promise<T | typeof STALE_CONFIG | typeof HELD_BY_OTHER> {
   return deps.lock(async (lostLock) => {
-    deps.bindToken(deps.jobToken);
     // A changed lock/remote config reboots the warm session before this turn
     // is sent; an older gateway mints no fingerprint and the manager ignores
     // it. Checked under the lock so no other job's turn, reboot or token lands
@@ -100,6 +109,7 @@ export async function runLockedTurn<T>(deps: {
     // in flight) → never send into the stale session, whose tools may be local
     // while the thread is remote: the caller requeues like a held lock.
     if (!(await deps.ensureConfigFp(decodeClaims(deps.jobToken)?.sessionConfigFp))) return STALE_CONFIG;
+    deps.bindToken(deps.jobToken);
     return deps.run(lostLock);
   });
 }
@@ -344,10 +354,50 @@ export function makeBridgedNamesResolver(deps: BundleResolverDeps): (sessionId: 
   };
 }
 
-export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined) => Promise<{ soulMd: string; soulJson: unknown }> {
+export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined) => Promise<PersonaSoul> {
   return async (sessionId, persona) => {
     const bundle = await sessionBundle(deps, sessionId, persona);
-    return { soulMd: bundle.soulMd, soulJson: bundle.soulJson };
+    return { soulMd: bundle.soulMd, soulJson: bundle.soulJson, tenantId: bundle.tenantId, ...(bundle.definition ? { definition: bundle.definition } : {}) };
+  };
+}
+
+/** What this node advertises on its heartbeat (and on every bundle fetch). */
+export const NODE_CAPS: readonly string[] = [GUARDRAILS_CAPABILITY, AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, SHARED_ENV_CAPABILITY];
+
+/** The session's owner guardrails from its runtime bundle (none when the
+ *  gateway sends none). A refused bundle (GUARDRAILS_UNAVAILABLE) fails the boot. */
+export function makeBundleGuardrailResolver(deps: BundleResolverDeps): (sessionId: string, persona: string | undefined, channel: string | null) => Promise<SessionGuardrails | null> {
+  return async (sessionId, persona, channel) => {
+    let bundle: RuntimeBundle;
+    try {
+      bundle = await sessionBundle(deps, sessionId, persona);
+    } catch (e) {
+      throw e instanceof BootFailure ? e : bundleFetchFailure(e);
+    }
+    return bundleSessionGuardrails(bundle.guardrails, persona ?? "default", channel);
+  };
+}
+
+/** Where a node sends guardrail firings: the gateway records them (runtime/guardrail_event). Best effort, never awaited by a decision. */
+export function makeNodeGuardrailSink(deps: { client: Pick<NodeClient, "request">; tokenFor: (sessionId: string) => string | undefined }): GuardrailSink {
+  const post = (sessionId: string, body: Record<string, unknown>) => {
+    const jobToken = deps.tokenFor(sessionId);
+    if (!jobToken) return;
+    void deps.client
+      .request("/v1/tools/runtime/guardrail_event", { method: "POST", body, jobToken, retry: false })
+      .catch((e) => console.warn(`[node] guardrail event not recorded session=${sessionId}: ${(e as Error)?.message ?? String(e)}`));
+  };
+  return {
+    firing: (sessionId, events, ctx) => {
+      // An approve card's outcome (approved, refused) is new in rc.10; an rc.9
+      // gateway's strict schema would reject a whole batch carrying one, so
+      // those go in their own batch and the rest is recorded either way.
+      const wire = (e: FiringEvent) => ({ on: e.on, slug: e.slug, rule_id: e.ruleId, action: e.action, applied: e.applied, deciding: e.deciding, ...(e.toolName ? { tool_name: e.toolName } : {}) });
+      const newer = events.filter((e) => e.applied === "approved" || e.applied === "refused");
+      const older = events.filter((e) => !newer.includes(e));
+      for (const batch of [older, newer]) if (batch.length) post(sessionId, { kind: "firing", session_kind: ctx.kind, events: batch.map(wire) });
+    },
+    delivered: (sessionId, slugs, ctx) => post(sessionId, { kind: "delivery", session_kind: ctx.kind, slugs, via: ctx.via, ...(ctx.toolName ? { tool_name: ctx.toolName } : {}) }),
   };
 }
 
@@ -503,7 +553,26 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // Episodic memory runs on the gateway, scoped by the job token (a node has
   // no database or brain); a failure only costs the turn its memory.
   agent.setMemoryProvider(makeNodeMemoryProvider({ client, tokenFor: (id) => store.tokenFor(id) }));
-  agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id) }));
+  // The must-reply Stop guard, as mono installs it (src/node/stop-guard.ts):
+  // spoke/passed come from this manager's toolCall events, reset per job.
+  // The console's guardrail registry describes it (NODE_RUNTIME in
+  // src/agent/guardrails.ts, checked by tests/panel/console-guardrails.test.ts):
+  // removing it here means updating both.
+  const stopGuard = makeNodeStopGuard({ voiceActive: (id) => voiceTurns.active(id) });
+  agent.setStopGuard(stopGuard.guard);
+  /** Sessions whose current job is a wake, from the job payload. Either this
+   *  or the bound token's signed `wake` claim makes the turn a wake. */
+  const wakeJobs = new Set<string>();
+  // A wake's turn refuses every permission request before the node's local
+  // policy, as mono does: the signed `wake` claim of the session's bound token
+  // or the job's own `wake`. The next job binds its own token and resets the
+  // flag, so a later normal turn on the same session is not a wake.
+  const wakeFor = (sessionId: string): boolean => isWakeTurn(store.tokenFor(sessionId), wakeJobs.has(sessionId));
+  agent.setPermissionResolver(makeNodePermissionResolver({ client, tokenFor: (id) => store.tokenFor(id), wakeFor }));
+  // Each turn's hard deadline (the turn timeout below, which is the job
+  // token's lifetime): an owner tool approval card ends before it.
+  const turnDeadlines = new Map<string, number>();
+  agent.setTurnDeadline((sessionId) => turnDeadlines.get(sessionId) ?? null);
   // The post-turn skill check is budgeted on the gateway's ledger (spec §9.3);
   // a refused or failed start skips it.
   agent.setBackgroundBudget(makeNodeSkillCheckBudget({ client, withToken: (id, call) => store.withToken(id, call) }));
@@ -577,6 +646,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       const tok = store.tokenFor(id);
       return tenant && tok ? client.getRuntime(tenant, personas.get(id) ?? "default", tok) : null;
     },
+    sessionThread: async (id) => (await store.findById(id))?.slack_thread_ts ?? null,
     workingDir: async (id) => {
       const r = await store.findById(id);
       if (!r) throw new Error(`unknown session ${id}`);
@@ -618,6 +688,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     personaFor: (id) => personas.get(id),
   };
   agent.setPersonaSoulResolver(makeBundleSoulResolver(bundleDeps));
+  // Owner guardrails come from the same bundle; a refused or unreadable set
+  // fails the boot. Firings and deliveries are recorded by the gateway.
+  agent.setGuardrailResolver(makeBundleGuardrailResolver(bundleDeps));
+  agent.setGuardrailSink(makeNodeGuardrailSink({ client, tokenFor: (id) => store.tokenFor(id) }));
   // The persona's model (git or override) also comes from the bundle; a
   // per-thread /model on the session row still wins (see AgentManager).
   agent.setPersonaModelResolver(makeBundleModelResolver(bundleDeps));
@@ -676,7 +750,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         }
       }
       if (stopped) return;
-      await registry.nodeUp(nodeId, labels).catch(() => {});
+      await registry.nodeUp(nodeId, labels, NODE_CAPS).catch(() => {});
       for (const w of claimWorkers) w.resume();
       authPaused = false;
       metric.nodeAuthPaused.set(0);
@@ -695,6 +769,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // Turn-end wait: resolved by the first done/error for the session.
   const turnWaiters = new Map<string, (outcome: "done" | "error") => void>();
   agent.on("event", (e: AgentEvent) => {
+    stopGuard.onEvent(e);
     // Every AgentEvent also lands on the events:<session> stream (spec §4) so
     // the gateway can drive Slack reactions/status and surface errors.
     // Exact trim: at MAXLEN 1000 the cost is negligible and it removes the
@@ -750,7 +825,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       // One prompt per job: coalesced messages arrive as one turn (spec §2).
       const text = data.messages.map((m) => m.text).join("\n\n");
       const suppress = data.messages.length > 0 && data.messages.every((m) => (m as any).suppress === true);
-      if (suppress) agent.suppressNextTurn(sessionId);
+      // Inbound-triggered owner Guidance, matched on the gateway.
+      agent.offerGuidance(sessionId, data.messages.flatMap((m) => m.guidance ?? []));
 
       // A warm session picks up tokens the gateway refreshed since it booted:
       // the agent reads the file on every call. A session that is not booted
@@ -758,8 +834,16 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       const warmDir = existingSessionConfigDir(sessionId, configRoot);
       if (warmDir) await seeder.atTurn(sessionId, warmDir);
       recovery.resetTurn(sessionId);
+      // This job's turn: a wake or not, and whether the Stop guard may send it
+      // back. Read from the token bound for this job (runLockedTurn binds it
+      // before this runs), so nothing carries over from the session's last job.
+      if (data.wake) wakeJobs.add(sessionId);
+      else wakeJobs.delete(sessionId);
+      const bound = store.tokenFor(sessionId) ?? data.jobToken;
+      stopGuard.beginTurn(sessionId, { claims: decodeClaims(bound), bgRun: data.bgRun, wake: data.wake });
 
-      const outcome = await new Promise<"done" | "error">((resolve, reject) => {
+      turnDeadlines.set(sessionId, Date.now() + turnTimeoutMs);
+      const outcome = await new Promise<"done" | "error" | "skipped">((resolve, reject) => {
         const timer = setTimeout(() => {
           console.error(`[node] turn timeout session=${sessionId} — aborting`);
           abortAgent();
@@ -776,13 +860,29 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           data.bgRun && data.messages.length === 1
             ? {
                 runId: data.bgRun,
-                finish: (usage: ModelTokens, outcome: "ok" | "error") =>
-                  store.withToken(sessionId, (t) => client.turnFinish({ runId: data.bgRun!, outcome, usage }, t)),
+                finish: (usage: ModelTokens, outcome: "ok" | "error" | "stopped-budget", stats?: WakeStats) =>
+                  store.withToken(sessionId, (t) => client.turnFinish({ runId: data.bgRun!, outcome, usage, ...(stats ? { stats } : {}) }, t)),
               }
             : undefined;
-        agent.sendMessage(sessionId, text, backgroundRun ? { backgroundRun } : {}).catch((e) => {
+        // A wake's wall clock ends just inside this turn's own timeout, so the
+        // wake always closes its run itself; off, the timeout is the limit.
+        const wakeLimit = Math.max(1, Math.floor(turnTimeoutMs / 60_000) - 1);
+        const wake = data.wake ? { ...data.wake, maxMinutes: Math.min(data.wake.maxMinutes || wakeLimit, wakeLimit) } : undefined;
+        // Set here, in the send's own tick: sendMessage binds the bit to this
+        // message, so no failed await above can leave it for the next one.
+        if (suppress) agent.suppressNextTurn(sessionId);
+        agent.sendMessage(sessionId, text, { ...(backgroundRun ? { backgroundRun } : {}), ...(wake ? { wake } : {}) }).catch((e) => {
           clearTimeout(timer);
           turnWaiters.delete(sessionId);
+          if (e instanceof WakeBusyError) {
+            // Settled, not failed: the manager closed the run, so a retry has
+            // nothing to run under. The call on this session keeps running,
+            // and its turns must not be taken for this wake's.
+            console.log(`[node] wake job=${job.id} session=${sessionId} refused: a voice call owns the session`);
+            wakeJobs.delete(sessionId);
+            resolve("skipped");
+            return;
+          }
           reject(e);
         });
       });
@@ -797,10 +897,11 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       } catch (e) {
         console.error(`[node] turn-done marker write failed job=${job.id}:`, e);
       }
-      if (opts.hooks?.afterTurn) await opts.hooks.afterTurn(String(job.id), outcome);
+      if (outcome !== "skipped" && opts.hooks?.afterTurn) await opts.hooks.afterTurn(String(job.id), outcome);
       return outcome;
     } finally {
       turnAborts.delete(sessionId);
+      turnDeadlines.delete(sessionId);
       await unsubAbort().catch(() => {});
       // Warm registry: the Query outlives the turn under the idle TTL.
       try {
@@ -811,6 +912,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           // No live child (the turn ended it, or its boot failed): its
           // credentials must not outlive it in this node's memory.
           evictBundle(sessionId);
+          stopGuard.forget(sessionId);
+          wakeJobs.delete(sessionId);
           if (warm.delete(sessionId)) await registry.unregister(sessionId);
         }
       } catch (e) {
@@ -861,6 +964,13 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     // Durable abort flag: /abort published before any node claimed the job.
     if (await pubsub.consumeAbortFlag(data.sessionId)) {
       metric.nodeTurnsTotal.inc({ result: "skipped" });
+      // A wake that never starts must not keep its ledger run open: the agent's
+      // wakes would all read as busy until the stale sweep. It spent nothing.
+      if (data.wake && data.bgRun) {
+        await client.turnFinish({ runId: data.bgRun, outcome: "ok", usage: {} }, data.jobToken).catch((e) => {
+          console.error(`[node] wake job=${job.id} session=${data.sessionId}: could not close its run ${data.bgRun}: ${e instanceof Error ? e.message : String(e)}`);
+        });
+      }
       return { skipped: "abort-flag" };
     }
     /** Fail the job with a typed code: the code is the job's failure reason
@@ -900,17 +1010,34 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
 
     const started = Date.now();
     let res: "done" | "error" | "skipped" | typeof STALE_CONFIG | typeof HELD_BY_OTHER;
+    // Which lock a lost-lock abort came from, for its log line.
+    const lockSignals: { session?: AbortSignal; folder?: AbortSignal } = {};
     try {
       res = await runLockedTurn<"done" | "error" | "skipped">({
-        lock: (fn) =>
-          withSessionLock(
+        lock: (fn) => {
+          // The TTL is also the takeover delay when this node dies: it never gets to
+          // release the lock, so the re-delivered turn waits the lock out.
+          const lockOpts = { redis: cmd, keys, ...sessionLockOpts, ...opts.lock };
+          const workspace = data.workspace;
+          return withSessionLock(
             data.sessionId,
             nodeId,
-            fn,
-            // The TTL is also the takeover delay when this node dies: it never gets to
-            // release the lock, so the re-delivered turn waits the lock out.
-            { redis: cmd, keys, ...sessionLockOpts, ...opts.lock },
-          ),
+            !workspace
+              ? fn
+              : (sessionLost) =>
+                  // The agent's proactive folder: one turn at a time there across
+                  // nodes, taken inside the session lock. Held by another owner →
+                  // HELD_BY_OTHER, which requeues like a held session. Losing
+                  // either lock aborts the turn through the signal fn receives.
+                  withKeyLock(keys.workspaceLock(workspace), `${nodeId}:${data.sessionId}`, (folderLost) => {
+                    lockSignals.session = sessionLost;
+                    lockSignals.folder = folderLost;
+                    const lost = AbortSignal.any([sessionLost, folderLost]);
+                    return fn(lost);
+                  }, lockOpts),
+            lockOpts,
+          );
+        },
         bindToken: (t) => store.bindToken(data.sessionId, t),
         ensureConfigFp: (fp) => agent.ensureConfigFp(data.sessionId, fp),
         jobToken,
@@ -918,7 +1045,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           // Lost the lock (TTL lapsed / another holder): stop touching the
           // session immediately — another node may already be running it.
           const onLost = () => {
-            console.error(`[node] session lock lost session=${data.sessionId} — aborting turn`);
+            const which = lockSignals.folder?.aborted && !lockSignals.session?.aborted ? "proactive folder lock" : "session lock";
+            console.error(`[node] ${which} lost session=${data.sessionId} — aborting turn`);
             turnAborts.get(data.sessionId)?.abort();
             agent.abort(data.sessionId);
           };
@@ -977,7 +1105,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   };
 
   // Announce liveness (and the labels, same transaction) BEFORE claiming anything.
-  await registry.nodeUp(nodeId, labels);
+  await registry.nodeUp(nodeId, labels, NODE_CAPS);
 
   // One BullMQ worker per label plus this node's own queue, each on its own
   // connection (blocking claims must never share) with its own concurrency.
@@ -1017,7 +1145,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       // Paused on a 401: not serving, so not announced (pauseForAuth).
       if (authPaused) return;
       try {
-        await registry.beatNode(nodeId, labels);
+        await registry.beatNode(nodeId, labels, NODE_CAPS);
         metric.nodeSessionsLive.set(agent.liveCount());
         for (const sessionId of [...warm]) {
           if (agent.isLive(sessionId)) {
@@ -1126,13 +1254,20 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     await turnQueues.close().catch(() => {});
     http?.stop(true);
     // The workers are closed: their own connections (one per label plus one)
-    // go too, or each stop would leak labels + 1 connections.
+    // go too, or each stop would leak labels + 1 connections. quit() resolves
+    // before the socket is gone (a connection still opening reports "connect"
+    // for a moment after), so wait for "end", bounded, then force it.
     for (const c of [...bullConns, cmd, sub]) {
+      const ended = c.status === "end" ? Promise.resolve() : new Promise<void>((r) => c.once("end", () => r()));
       try {
         await c.quit();
       } catch {
         c.disconnect();
       }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<false>((r) => (timer = setTimeout(() => r(false), 1000)));
+      if (!(await Promise.race([ended.then(() => true), late]))) c.disconnect();
+      clearTimeout(timer);
     }
     state = "stopped";
     console.log(`[node] ${nodeId} stopped`);

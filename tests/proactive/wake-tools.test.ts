@@ -1,0 +1,247 @@
+import { beforeEach, afterEach, describe, expect, test } from "bun:test";
+import { db } from "../../src/db/schema";
+import * as Posts from "../../src/db/proactive-posts";
+import * as ChannelWake from "../../src/db/channel-wake-state";
+import { __setProactiveSoulSource } from "../../src/soul/proactive";
+import { finishRoundTool, proactivePostTool, readChannelTool, wakeThreadRefusal, type WakeToolContext, type WakeToolDeps } from "../../src/proactive/wake-tools";
+import { composeRulePage } from "../../src/proactive/rules";
+import { fakeBrain } from "../memory/fake-brain";
+
+const AGENT = "U0AGENT";
+const MGR = "U0MANAGER";
+const NOW = new Date("2026-10-26T12:00:00Z");
+const H = 3_600_000;
+const SOUL = "## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n- Max per person per day: 20\n- Cooldown: 0\n- Read: C0READABLE\n\n## Channel C0ONCHANNE\n### Proactive\n- Enabled: yes\n- Highest: act\n- Max per day: 20\n- Cooldown: 0\n\n## Channel C0ASKCHANN\n### Proactive\n- Enabled: yes\n- Highest: inform\n- Max per day: 20\n- Cooldown: 0\n";
+
+function harness(over: Partial<WakeToolDeps> = {}, history: unknown = { messages: [] }) {
+  const brain = fakeBrain();
+  const posted: { channel: string; text: string }[] = [];
+  const bound: string[] = [];
+  const deps: WakeToolDeps = {
+    post: async (m) => {
+      posted.push({ channel: m.channel, text: m.text });
+      return { channel: m.channel.startsWith("U") ? "D0DM" : m.channel, ts: `17000000${posted.length}.000100` };
+    },
+    call: brain.call,
+    managerId: () => MGR,
+    agentId: async () => AGENT,
+    timeZone: () => "UTC",
+    bindThread: async (p) => void bound.push(p.id),
+    gate: () => ({ slotMs: 30 * 60_000, maxSleepMs: 24 * H }),
+    now: () => NOW,
+    ...over,
+  };
+  const client = {
+    conversations: {
+      history: async (a: unknown) => {
+        if (history instanceof Error) throw history;
+        return { ...(history as object), __args: a };
+      },
+    },
+  };
+  const ctx: WakeToolContext = { client: client as never, channel: MGR, wake: { runId: "run-1", deps, channelSession: "C0ONCHANNE" }, apiAppId: "A0APP", teamId: "T0TEAM" };
+  return { ctx, deps, brain, posted, bound };
+}
+const post = (over: Record<string, unknown> = {}) => ({ destination: "C0ONCHANNE", kind: "daily brief", text: "Today's numbers are up.", evidence: "projects/numbers", item_id: "brief-1", ...over });
+const parsed = (r: { content: { text: string }[] }) => JSON.parse(r.content[0]!.text);
+
+beforeEach(async () => {
+  __setProactiveSoulSource(() => SOUL);
+  await db.run("DELETE FROM proactive_posts");
+  await db.run("DELETE FROM channel_wake_state");
+});
+afterEach(() => __setProactiveSoulSource(null));
+
+describe("proactive_post", () => {
+  test("posts, records the run, and binds the thread for a reply", async () => {
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    expect(r.posted).toBe(true);
+    expect(r.channel).toBe("C0ONCHANNE");
+    expect(h.posted).toHaveLength(1);
+    expect(h.bound).toHaveLength(1);
+    const row = await Posts.findByMessage("C0ONCHANNE", r.ts);
+    expect(row?.context?.wakeRun).toBe("run-1");
+    expect(row?.context?.source).toBe("wake");
+  });
+  test("outside a wake it refuses", async () => {
+    const h = harness();
+    const { wake: _w, ...normal } = h.ctx;
+    const r = await proactivePostTool(normal, post());
+    expect(r.isError).toBe(true);
+    expect(h.posted).toEqual([]);
+  });
+  test("any channel but its own is refused", async () => {
+    const h = harness();
+    const r = await proactivePostTool(h.ctx, post({ destination: "C0UNLISTED" }));
+    expect(r.isError).toBe(true);
+    expect(h.posted).toEqual([]);
+  });
+  test("the checklist or notes count as no evidence, and do not make later posts look repeated", async () => {
+    const h = harness();
+    expect(parsed(await proactivePostTool(h.ctx, post({ evidence: "self/heartbeat/c0onchanne", item_id: "a", text: "First." }))).posted).toBe(true);
+    await db.run("UPDATE proactive_posts SET posted_at = posted_at - 7200000");
+    expect(parsed(await proactivePostTool(h.ctx, post({ evidence: "self/wake-journal", item_id: "b", text: "Second." }))).posted).toBe(true);
+  });
+  test("text alone is enough: it goes to the one place, as a plain update", async () => {
+    const h = harness();
+    __setProactiveSoulSource(() => "## Reporting\n- Manager: U0MANAGER\n\n## Channel C0ONCHANNE\n### Proactive\n- Enabled: yes\n");
+    const r = parsed(await proactivePostTool(h.ctx, { text: "**Rendered** the reel: out.mp4" }));
+    expect(r.channel).toBe("C0ONCHANNE");
+    expect(h.posted[0]!.text).toBe("*Rendered* the reel: out.mp4");
+    const row = await Posts.findByMessage("C0ONCHANNE", r.ts);
+    expect(row?.topic).toBe("update");
+    expect(row?.context?.level).toBe("inform");
+  });
+  test("the same item goes out once", async () => {
+    const h = harness();
+    await proactivePostTool(h.ctx, post());
+    const again = parsed(await proactivePostTool(h.ctx, post({ text: "Reworded." })));
+    expect(again).toEqual({ refused: true, rule: "already-posted", retryable: false });
+    expect(h.posted).toHaveLength(1);
+  });
+  test("no rule keeps the asked level", async () => {
+    const h = harness();
+    const a = parsed(await proactivePostTool(h.ctx, post({ needs_reply: true })));
+    expect((await Posts.findByMessage("C0ONCHANNE", a.ts))?.context?.level).toBe("ask");
+  });
+  test("a taught ignore rule refuses", async () => {
+    const h = harness();
+    const page = composeRulePage({ kind: "daily brief", scope: "C0ONCHANNE", level: "ignore", how: null, taughtBy: MGR, taughtAt: "2026-10-01", thread: "t", quote: "stop" }, NOW);
+    if ("error" in page) throw new Error(page.error);
+    await h.brain.call("put_page", { slug: page.slug, content: page.content }, { clientId: AGENT, sourceId: `agent-${AGENT.toLowerCase()}`, allowedSources: [`agent-${AGENT.toLowerCase()}`] });
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    expect(r).toEqual({ refused: true, rule: "ignored", retryable: false });
+    expect(h.posted).toEqual([]);
+  });
+  test("a channel's Cooldown has no effect: a channel session has no limits", async () => {
+    __setProactiveSoulSource(() => "## Proactive\n- Max per person per day: 20\n\n## Channel C0ONCHANNE\n### Proactive\n- Enabled: yes\n- Cooldown: 2\n- Max per day: 20\n");
+    const h = harness();
+    await proactivePostTool(h.ctx, post());
+    const r = parsed(await proactivePostTool(h.ctx, post({ item_id: "brief-2", text: "Later batch.", evidence: "projects/later" })));
+    expect(r.posted).toBe(true);
+  });
+  test("quiet hours say when to retry", async () => {
+    __setProactiveSoulSource(() => "## Proactive\n- Quiet hours: 09:00-17:00\n\n## Channel C0ONCHANNE\n### Proactive\n- Enabled: yes\n");
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    expect(r.refused).toBe(true);
+    expect(r.rule).toBe("quiet-hours");
+    expect(r.retryable).toBe(true);
+    expect(r.retryAfter).toBe(new Date("2026-10-26T17:00:00Z").toISOString());
+  });
+  test("at most the run's post cap", async () => {
+    const h = harness();
+    for (let i = 0; i < 3; i++) expect(parsed(await proactivePostTool(h.ctx, post({ item_id: `i-${i}`, text: `T ${i}`, evidence: `e/${i}` }))).posted).toBe(true);
+    expect((await proactivePostTool(h.ctx, post({ item_id: "i-9", text: "T 9", evidence: "e/9" }))).isError).toBe(true);
+  });
+});
+
+describe("post_message in a wake", () => {
+  const thread = (...users: string[]) => ({
+    conversations: { replies: async () => ({ messages: users.map((user, i) => ({ user, ts: `1.${i}` })) }) },
+  }) as never;
+
+  test("only under a post this agent made", async () => {
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    const quiet = thread(AGENT);
+    expect(await wakeThreadRefusal(h.ctx.wake!, quiet, "C0ONCHANNE", r.ts)).toBeNull();
+    expect(await wakeThreadRefusal(h.ctx.wake!, quiet, "C0ONCHANNE", undefined)).toContain("refused");
+    expect(await wakeThreadRefusal(h.ctx.wake!, quiet, "C0ONCHANNE", "9.9")).toContain("refused");
+    // A later wake may follow up in the thread of an earlier post of this agent's.
+    expect(await wakeThreadRefusal({ ...h.ctx.wake!, runId: "other" }, quiet, "C0ONCHANNE", r.ts)).toBeNull();
+    const other = { ...h.ctx.wake!, deps: { ...h.ctx.wake!.deps, agentId: async () => "U0SOMEONEELSE" } };
+    expect(await wakeThreadRefusal(other, quiet, "C0ONCHANNE", r.ts)).toContain("refused");
+  });
+
+  test("a channel session's wake stays in its channel", async () => {
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    const w = { ...h.ctx.wake!, channelSession: "C0ONCHANNE" };
+    // A follow-up in a thread of its own post, in its channel, is still allowed.
+    expect(await wakeThreadRefusal(w, thread(AGENT), "C0ONCHANNE", r.ts)).toBeNull();
+    // Another channel is refused, even with that same thread ts.
+    const refused = await wakeThreadRefusal(w, thread(AGENT), "C0OTHER", r.ts);
+    expect(refused).toContain("refused");
+    expect(refused).toContain("this channel");
+  });
+
+  test("one follow-up until someone answers", async () => {
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    const w = h.ctx.wake!;
+    // The post and one follow-up with no answer: the third message is refused, at any later time.
+    expect(await wakeThreadRefusal(w, thread(AGENT, AGENT), "C0ONCHANNE", r.ts)).toContain("nobody has answered");
+    // An answer opens it again, so approved work can be delivered in its thread.
+    expect(await wakeThreadRefusal(w, thread(AGENT, AGENT, MGR), "C0ONCHANNE", r.ts)).toBeNull();
+    expect(await wakeThreadRefusal(w, thread(AGENT, AGENT, MGR, AGENT), "C0ONCHANNE", r.ts)).toBeNull();
+    expect(await wakeThreadRefusal(w, thread(AGENT, AGENT, MGR, AGENT, AGENT), "C0ONCHANNE", r.ts)).toContain("nobody has answered");
+  });
+
+  test("reads every page of a long thread", async () => {
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    const pages: Record<string, unknown> = {
+      first: { messages: [{ user: AGENT }, { user: MGR }], response_metadata: { next_cursor: "next" } },
+      next: { messages: [{ user: AGENT }, { user: AGENT }], response_metadata: { next_cursor: "" } },
+    };
+    const client = { conversations: { replies: async (a: { cursor?: string }) => pages[a.cursor ?? "first"] } } as never;
+    expect(await wakeThreadRefusal(h.ctx.wake!, client, "C0ONCHANNE", r.ts)).toContain("nobody has answered");
+  });
+
+  test("a thread it cannot read is refused, and says why", async () => {
+    const h = harness();
+    const r = parsed(await proactivePostTool(h.ctx, post()));
+    const client = { conversations: { replies: async () => { throw new Error("ratelimited"); } } } as never;
+    const refused = await wakeThreadRefusal(h.ctx.wake!, client, "C0ONCHANNE", r.ts);
+    expect(refused).toContain("refused");
+    expect(refused).toContain("ratelimited");
+  });
+});
+
+describe("read_channel", () => {
+  test("a listed channel reads, in any turn; secrets are redacted", async () => {
+    const secret = `xoxb-${"1".repeat(20)}`;
+    const h = harness({}, { messages: [{ ts: "1.0", user: "U1", text: `token ${secret}` }], has_more: false });
+    const { wake: _w, ...normal } = h.ctx;
+    const r = parsed(await readChannelTool(normal, { channel: "C0READABLE" }));
+    expect(r.messages[0].ts).toBe("1.0");
+    expect(r.messages[0].text).not.toContain(secret);
+    expect(r.note).toContain("data");
+  });
+  test("an unlisted channel is refused, in a wake and out of one", async () => {
+    const h = harness();
+    const { wake: _w, ...normal } = h.ctx;
+    expect((await readChannelTool(h.ctx, { channel: "C0OTHERCHA" })).isError).toBe(true);
+    expect((await readChannelTool(normal, { channel: "C0OTHERCHA" })).isError).toBe(true);
+  });
+  test("a missing scope says the operator must fix it", async () => {
+    const e = Object.assign(new Error("x"), { data: { error: "missing_scope" } });
+    const h = harness({}, e);
+    const r = await readChannelTool(h.ctx, { channel: "C0READABLE" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toContain("operator");
+  });
+});
+
+describe("finish_round", () => {
+  test("stores the clamped time: a year away becomes the longest sleep", async () => {
+    const h = harness();
+    const r = parsed(await finishRoundTool(h.ctx, { journal: "Open: batch 2.", next_check_at: "2027-10-26T12:00:00Z" }));
+    expect(r.nextCheckAt).toBe(new Date(NOW.getTime() + 24 * H).toISOString());
+    const s = await ChannelWake.get(AGENT, "C0ONCHANNE");
+    expect(s?.nextCheckAt).toBe(NOW.getTime() + 24 * H);
+    expect(s?.finishedAt).toBe(NOW.getTime());
+  });
+  test("no time, or a bad one: a few hours on", async () => {
+    const h = harness();
+    expect(parsed(await finishRoundTool(h.ctx, { journal: "x" })).nextCheckAt).toBe(new Date(NOW.getTime() + 4 * H).toISOString());
+    expect(parsed(await finishRoundTool(h.ctx, { journal: "x", next_check_at: "soon" })).nextCheckAt).toBe(new Date(NOW.getTime() + 4 * H).toISOString());
+  });
+  test("outside a wake it refuses", async () => {
+    const h = harness();
+    const { wake: _w, ...normal } = h.ctx;
+    expect((await finishRoundTool(normal, { journal: "x" })).isError).toBe(true);
+  });
+});

@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import pkg from "../../../package.json";
+import { memoryToolIdTwin } from "../../tools/contracts/kb";
 
 /**
  * The built-in `slaude` plugin: skills shipped with slaude itself, mounted into
@@ -81,9 +82,11 @@ export function listBuiltinSkills(): BuiltinSkill[] {
   return out;
 }
 
-/** The built-in skill that must be loaded before `tool`, or null. */
+/** The built-in skill that must be loaded before `tool`, or null. A memory
+ *  tool's deprecated alias (kb_memoize for memory_save) is governed the same. */
 export function builtinGoverning(tool: string): BuiltinSkill | null {
-  return listBuiltinSkills().find((s) => s.governs.includes(tool)) ?? null;
+  const twin = memoryToolIdTwin(tool);
+  return listBuiltinSkills().find((s) => s.governs.includes(tool) || (twin !== null && s.governs.includes(twin))) ?? null;
 }
 
 /** True when `slug` is a built-in skill's bare name. */

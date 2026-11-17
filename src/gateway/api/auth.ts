@@ -74,6 +74,13 @@ export interface JobClaims {
    *  promise check, phase E), signed at dispatch. Only this run id may be
    *  finished with the token (POST /v1/background/turn/finish). */
   bgRun?: string;
+  /** This job is a heartbeat wake (bgRun is its run), signed at dispatch: the
+   *  tool plane applies the wake's allow-list. Absent = a normal turn. */
+  wake?: boolean;
+  /** Where this turn's replies go, signed at dispatch: "channel" is the channel
+   *  root (a root turn on a channel session), the `thread` claim stays the
+   *  turn's real Slack ts. Absent = in the thread. */
+  post?: "channel";
   /** First issue time (unix seconds), carried across token-refresh so the
    *  token's total life is capped. Absent = this token's own `iat`. */
   iat0?: number;
@@ -169,6 +176,10 @@ export function verifyJobToken(
   if (claims.bgRun !== undefined && (typeof claims.bgRun !== "string" || claims.bgRun === "")) {
     return { ok: false, reason: "bad_claims" };
   }
+  // A wake is always a budgeted run; a claim without one is not a real wake.
+  if (claims.wake !== undefined && (claims.wake !== true || !claims.bgRun)) {
+    return { ok: false, reason: "bad_claims" };
+  }
   // An unknown origin is refused rather than read as some default.
   if (claims.origin !== undefined && !TURN_ORIGINS.includes(claims.origin)) {
     return { ok: false, reason: "bad_claims" };
@@ -179,7 +190,13 @@ export function verifyJobToken(
 const json = (status: number, body: unknown): Response =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-export type NodeIdentity = { id: string; labels: ReadonlySet<string>; legacy: boolean };
+export type NodeIdentity = {
+  id: string;
+  labels: ReadonlySet<string>;
+  legacy: boolean;
+  /** Unix seconds a signed credential was issued; absent for the legacy token. */
+  iat?: number;
+};
 
 export type NodeAuthResult =
   | { ok: true; node: NodeIdentity; expiresAt?: number }
@@ -306,7 +323,7 @@ export async function authenticateNode(req: Request): Promise<NodeAuthResult> {
     if (r.ok) {
       return {
         ok: true,
-        node: { id: r.claims.id, labels: new Set(r.claims.labels), legacy: false },
+        node: { id: r.claims.id, labels: new Set(r.claims.labels), legacy: false, iat: r.claims.iat },
         expiresAt: r.claims.exp,
       };
     }

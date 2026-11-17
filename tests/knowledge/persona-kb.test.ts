@@ -60,10 +60,10 @@ describe("kb_think with a persona's scope", () => {
     let thinkScope: BrainScope | null = null;
     const searched: string[] = [];
     const deps: BrainToolDeps = {
-      scope: () => resolveBrainScope({
+      scope: async () => (await resolveBrainScope({
         userId: null, teamId: null, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "U0FIN",
         kbSources: personaKbSourceIds("finance", reg),
-      }),
+      })),
       gate: () => ({ userId: null, teamId: null, interactive: false, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "U0FIN" }),
       managers: () => [],
       requestApproval: async () => ({ approved: false }) as any,

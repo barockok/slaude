@@ -6,7 +6,16 @@ import { join } from "node:path";
 import { seedMonoBrain, TEST_DIMS } from "./seed";
 
 const root = mkdtempSync(join(tmpdir(), "bm-export-"));
-afterAll(() => rmSync(root, { recursive: true, force: true }));
+// seedMonoBrain points SLAUDE_BRAIN_HOME at the homes under root: restore it,
+// or a gateway in a later file boots a fresh brain into a deleted dir.
+const savedBrainHome = process.env.SLAUDE_BRAIN_HOME;
+afterAll(async () => {
+  const { closeBrain } = await import("../../src/knowledge/brain");
+  await closeBrain();
+  if (savedBrainHome === undefined) delete process.env.SLAUDE_BRAIN_HOME;
+  else process.env.SLAUDE_BRAIN_HOME = savedBrainHome;
+  rmSync(root, { recursive: true, force: true });
+});
 
 import { exportBrain, orderSources, selectSources } from "../../src/brain-migrate/export";
 import { readManifest, readPages, verifyBundle, type BundlePage } from "../../src/brain-migrate/bundle";

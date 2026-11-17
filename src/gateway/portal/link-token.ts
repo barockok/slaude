@@ -11,9 +11,12 @@
  * and carrying its own `typ` so no other token this deployment signs with the
  * same secret can be presented in its place.
  *
- * Single use is enforced by the binding rather than by a redemption ledger:
- * slack_identities has (team_id, slack_user_id) as its primary key and refuses
- * to rebind, so a replay is a no-op or a rejection. See src/db/accounts.ts.
+ * Single use: the redeem route records the token's `jti` in the
+ * link_token_uses ledger inside the link transaction (src/db/link-token-uses.ts),
+ * so a replay after an unlink is refused for the rest of the token's life. The
+ * slack_identities primary key alone could not do this, because unlinking
+ * deletes that row. While a link stands, a replay is still a no-op (same
+ * account) or a rejection (another account). See src/db/accounts.ts.
  */
 import { randomBytes } from "node:crypto";
 import { env } from "../../config/env";
@@ -58,5 +61,8 @@ export function verifyLinkToken(
   if (c.typ !== "link") return { ok: false, reason: "wrong_type" };
   if (typeof c.team !== "string" || !c.team) return { ok: false, reason: "malformed" };
   if (typeof c.slackUser !== "string" || !c.slackUser) return { ok: false, reason: "malformed" };
+  // The single-use ledger needs both: a token without them would reach a NOT NULL insert.
+  if (typeof c.jti !== "string" || !c.jti) return { ok: false, reason: "malformed" };
+  if (typeof c.exp !== "number" || !Number.isFinite(c.exp)) return { ok: false, reason: "malformed" };
   return { ok: true, claims: c };
 }

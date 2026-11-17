@@ -10,7 +10,10 @@
 // enabled on the gateway) it also emits oauth_config.redirect_urls pointing
 // at /slack/oauth/callback. No slash_commands section in either mode:
 // slaude parses slash-style commands from plain message text, so there are
-// no Slack-registered slash commands to route.
+// no Slack-registered slash commands to route. Registering /link and the rest
+// would make Slack send slash-command payloads that no gateway route handles,
+// so they stay unregistered: people put a space before the command or mention
+// the agent, since Slack rejects a message that starts with an unregistered /.
 
 export type ManifestMode = "socket" | "http";
 

@@ -1,0 +1,571 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://barockok.github.io/slaude/schemas/agent.schema.json",
+  "title": "slaude agent.yaml",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "The agent's name. Must equal the name of the directory the file sits in (personas/<name>/agent.yaml). Required. Example: ana"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 2000
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "One or two lines on what the agent is for; it becomes the agent's role. At most 2000 characters. Example: Handles support questions for the platform team."
+    },
+    "model": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Model the agent runs on, provider-qualified. Leave out for the deployment default. Example: provider/model-name"
+    },
+    "slackUserId": {
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64})$"
+            },
+            {
+              "type": "string",
+              "pattern": "^[^:]*$"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The agent's own Slack user, as a user reference. Write slack:user:U0EXAMPLE; a bare Slack user id is accepted for one more release with a warning. Example: slack:user:U0EXAMPLE"
+    },
+    "userToken": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Slack user token to post as the agent's own user, as a placeholder that CI fills in, never the token itself. Example: ${PERSONA_ANA_XOXP}"
+    },
+    "provider": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Provider credentials and endpoint for this agent (apiKey, baseUrl, and so on). Give credentials as references such as env://PERSONA_ANA_KEY, never as values."
+    },
+    "runsOn": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Label of the machines this agent runs on. Leave out to run anywhere. Example: finance"
+    },
+    "soul": {
+      "type": "string",
+      "pattern": "\\S",
+      "description": "Who the agent is and how it sounds: identity, voice, values. Plain prose in a block (soul: |). Required. Mandates and access go in their own keys, not here."
+    },
+    "mandate": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "global": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "What the agent is responsible for everywhere. Example: Answer support questions and keep the runbook current."
+            },
+            "scoped": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "boundary": {
+                        "type": "string",
+                        "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|trust:(?:public|trusted)|dm|channel:[CGD][A-Z0-9]+)$",
+                        "description": "Where this sub-mandate applies: a channel reference such as slack:channel:C0EXAMPLE for one channel, trust:public or trust:trusted for every channel of that class, or dm for direct messages. Each boundary may appear once. The older channel:<id> is accepted for one more release with a warning; write slack:channel:<id>. Example: slack:channel:C0EXAMPLE"
+                      },
+                      "mode": {
+                        "description": "How the text combines with the global mandate: override (replace it, the default), extend (add to it) or reduce (restrict it). Matching ignores case and surrounding spaces. A value that is none of these is accepted with a warning and read as extend, so a typo keeps the global mandate instead of replacing it. Example: extend",
+                        "examples": [
+                          "override",
+                          "extend",
+                          "reduce"
+                        ]
+                      },
+                      "text": {
+                        "type": "string",
+                        "pattern": "\\S",
+                        "description": "The sub-mandate itself, in the agent's own voice of duty. An extend or reduce is carried whole, so keep it under 600 characters. Example: Also watch the deploy queue."
+                      }
+                    },
+                    "required": [
+                      "boundary",
+                      "text"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Different duties for one channel, a trust class or direct messages. The most specific match applies."
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "What the agent is asked to do, globally and per place."
+    },
+    "access": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "manager": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The person who manages this agent and can approve for it, as a user reference. Write slack:user:U0EXAMPLE; a bare Slack user id is accepted for one more release with a warning. Example: slack:user:U0EXAMPLE"
+            },
+            "backupManager": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Who covers when the manager is away, as a user reference. Write slack:user:U0EXAMPLE; a bare Slack user id is accepted for one more release with a warning. Example: slack:user:U0EXAMPLE"
+            },
+            "approvers": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "user": {
+                        "type": "string",
+                        "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$",
+                        "description": "The approver, as a user reference such as slack:user:U0EXAMPLE. A bare Slack user id is accepted for one more release with a warning. Required. Example: slack:user:U0EXAMPLE"
+                      },
+                      "scope": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "\\S"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "What this person may approve, in plain words. Leave it out for an approver of anything (a catch-all). Example: budget changes"
+                      },
+                      "catchall": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ],
+                        "description": "true if this person is asked when no other approver's scope fits. Defaults to true when scope is left out, false otherwise."
+                      },
+                      "channel": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Make this person an approver for one channel only, as a channel reference such as slack:channel:C0EXAMPLE (a bare Slack channel id is accepted for one more release with a warning). Leave it out for an approver everywhere. Example: slack:channel:C0EXAMPLE"
+                      }
+                    },
+                    "required": [
+                      "user"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "People who may approve what the agent asks to do, each for a scope of work and optionally one channel."
+            },
+            "channels": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "public": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Channels where the agent may speak with anyone present, as channel references. Write slack:channel:C0EXAMPLE; bare Slack channel ids are accepted for one more release with a warning. Example: [slack:channel:C0EXAMPLE]"
+                    },
+                    "trusted": {
+                      "anyOf": [
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
+                          }
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "Channels whose members the agent trusts with more, such as the team's own channel, as channel references. Write slack:channel:C0EXAMPLE; bare Slack channel ids are accepted for one more release with a warning. Example: [slack:channel:C0EXAMPLE]"
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Which channels the agent works in, by trust class."
+            },
+            "dm": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Users the agent answers in direct messages, as user references. Write slack:user:U0EXAMPLE; bare Slack user ids are accepted for one more release with a warning. Example: [slack:user:U0EXAMPLE]"
+            },
+            "blocked": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:user:(?:T[A-Z0-9]+\\/)?[UW][A-Z0-9]+|whatsapp:phone:\\+[1-9][0-9]{6,14}|telegram:user:[1-9][0-9]{0,19}|email:[^\\s@<>]+@[^\\s@<>]+\\.[^\\s@<>]+|user:[A-Za-z0-9._-]{1,64}|[UW][A-Z0-9]+)$"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Users the agent ignores everywhere, as user references. Write slack:user:U0EXAMPLE; bare Slack user ids are accepted for one more release with a warning. Example: [slack:user:U0EXAMPLE]"
+            },
+            "redact": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Patterns (JavaScript regular expressions, matched case-insensitively) whose matches are masked before the agent's text reaches Slack. Example: [\"project-[a-z]+\"]"
+            },
+            "approvalTimeoutSeconds": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Seconds to wait for an approval before denying. 0 or unset uses the default. Example: 120"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Who manages the agent, who approves for it, and where and with whom it works."
+    },
+    "mcp": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "External tool servers, in the same shape as a .mcp.json file: mcpServers: { <name>: { type, url, headers } }. Give secrets as ${PERSONA_*} placeholders."
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9-]{0,63}$"
+      },
+      "description": "Skills this agent may use, by name. Leave the key out for every installed skill; write [] for none. A bare `skills:` is refused. Example: [release-notes, triage]",
+      "uniqueItems": true
+    },
+    "guardrails": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+          },
+          "uniqueItems": true
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Owner guardrails that apply to this agent, by name, in addition to the shared ones. Example: [no-outbound-email]"
+    },
+    "memory": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kbSources": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Knowledge bases the agent reads. Leave the key out for the default; write [] for none. A bare `kbSources:` is refused. Example: [kb-handbook]"
+            },
+            "background": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": {}
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Settings for background learning passes, such as budgetUsd and timezone. Example: { budgetUsd: 2, timezone: UTC }"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Knowledge bases and background learning."
+    },
+    "environment": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "allow": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^env:[a-z0-9][a-z0-9-]{0,40}$"
+              },
+              "minItems": 1,
+              "maxItems": 16,
+              "description": "Shared environments this agent may use, as env:<name> references to files under environments/. A thread runs on one only after /env use env:<name>, and only for turns of an agent that allows it. 1 to 16 entries, no repeats. Required. Example: [env:team-sandbox]",
+              "uniqueItems": true
+            },
+            "default": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^env:[a-z0-9][a-z0-9-]{0,40}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One of the allowed environments to use by default. It is read and checked to be in allow, and is not applied yet: a thread still needs /env use. Example: env:team-sandbox"
+            }
+          },
+          "required": [
+            "allow"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Which shared environments (environments/<name>.yaml) this agent may run threads on. Leave the key out for none. Only references go here: the machine itself is defined in its own file."
+    },
+    "proactive": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "true turns on the summarising round and lets its posts reach the manager and people who opted in. It starts no wake: waking is per channel (channels.<ref>.proactive). Leave the key out for off."
+            },
+            "read": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Further channels the agent may read with read_channel, in any turn. Example: [slack:channel:C0EXAMPLE]"
+            },
+            "watch": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^[^,#\\r\\n\\u2028\\u2029]+$"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "External sources the summarising round reads, by name. Example: [mail, tracker]"
+            },
+            "quietHours": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d{1,2}:\\d{2}\\s*[-\\u2013]\\s*\\d{1,2}:\\d{2}$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Hours when the round does not post, local time, as HH:MM-HH:MM. A window that ends before it starts wraps midnight. Example: 21:00-08:00"
+            },
+            "maxPerDay": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Most proactive posts to one person per day. Example: 6"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "What is not about one channel: further channels to read, sources to watch, quiet hours and the post cap. Waking is set per channel under channels."
+    },
+    "channels": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "not": {}
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "session": {
+                        "type": "string",
+                        "const": "channel",
+                        "description": "Set to \"channel\" to keep one long-lived session for this channel instead of one per thread. The only value there is; leave the key out for the default. Example: channel"
+                      },
+                      "proactive": {
+                        "type": "boolean",
+                        "description": "true lets the agent wake in this channel on its own and speak up; false keeps it silent here. Setting it implies a channel session. Leave the key out to change nothing."
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            ]
+          },
+          "propertyNames": {
+            "pattern": "^(?=[\\s\\S]{1,260}$)(?:slack:channel:(?:T[A-Z0-9]+\\/)?[CGD][A-Z0-9]+|whatsapp:group:[A-Za-z0-9._@:-]{1,128}|boundary:[A-Za-z0-9._-]{1,64}|[CGD][A-Z0-9]+)$"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Per-channel behaviour, keyed by channel reference. Write slack:channel:C0EXAMPLE; a bare Slack channel id key is accepted for one more release with a warning. Example: { \"slack:channel:C0EXAMPLE\": { session: channel, proactive: true } }"
+    }
+  },
+  "required": [
+    "name",
+    "soul"
+  ],
+  "additionalProperties": false,
+  "description": "A slaude agent: one file per persona, at personas/<name>/agent.yaml. Unknown keys are refused at every level."
+}

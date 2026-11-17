@@ -161,6 +161,33 @@ describe("identity extraction", () => {
     expect(identityFromIdToken(idToken(baseClaims()), CFG, { nonce: "N1" }).ok).toBe(true);
   });
 
+  // The address is proven only by an email claim the issuer marked verified.
+  describe("emailProven", () => {
+    const proven = (claims: Record<string, unknown>, cfg: OidcConfig = CFG) => {
+      const r = identityFromIdToken(idToken(claims), cfg, { nonce: "N1" });
+      expect(r.ok).toBe(true);
+      return r.ok && r.emailProven;
+    };
+    it("is true only when email_verified is exactly true", () => {
+      expect(proven(baseClaims({ email_verified: true }))).toBe(true);
+    });
+    it("is false when email_verified is absent", () => {
+      expect(proven(baseClaims())).toBe(false);
+    });
+    it("is false for a string or other truthy email_verified", () => {
+      expect(proven(baseClaims({ email_verified: "true" }))).toBe(false);
+      expect(proven(baseClaims({ email_verified: 1 }))).toBe(false);
+    });
+    it("is false when the email claim is not an address, even if verified", () => {
+      expect(proven(baseClaims({ email: "not an email", email_verified: true }))).toBe(false);
+    });
+    it("is false when the identity claim is not the email claim", () => {
+      const cfg = { ...CFG, userClaim: "preferred_username" };
+      expect(proven(baseClaims({ preferred_username: "Alice", email_verified: true }), cfg)).toBe(false);
+      expect(proven(baseClaims({ preferred_username: "alice@example.com", email_verified: true }), cfg)).toBe(false);
+    });
+  });
+
   it("honours a custom user claim", () => {
     const cfg = { ...CFG, userClaim: "preferred_username" };
     const r = identityFromIdToken(idToken(baseClaims({ preferred_username: "Alice" })), cfg, { nonce: "N1" });

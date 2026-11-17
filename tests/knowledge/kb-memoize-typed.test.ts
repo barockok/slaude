@@ -36,7 +36,7 @@ function setup(over: Partial<GateInput> = {}) {
     turnSenders: [{ userId: "U0ALICE", teamId: TEAM, origin: "slack" }], ...over,
   };
   const deps: BrainToolDeps = {
-    scope: () => resolveBrainScope({ ...g, kbSources: [] }),
+    scope: async () => (await resolveBrainScope({ ...g, kbSources: [] })),
     gate: () => g,
     managers: () => ["U0MGR"],
     requestApproval: async () => { cards++; return { approved: true, by: "U0MGR" }; },
@@ -67,7 +67,7 @@ describe("kb_memoize target:\"profile\"", () => {
 
   test("only the write scope's sourceId changes: the read union and client are the turn's own", async () => {
     const s = setup();
-    const base = resolveBrainScope({ ...s.gate, kbSources: [] });
+    const base = (await resolveBrainScope({ ...s.gate, kbSources: [] }));
     await brainHandlers.kb_memoize({ pages: [profilePage], target: "profile" }, s.deps);
     expect(s.writes[0]!.scope).toEqual({ ...base, sourceId: profileSourceId(TEAM, "U0ALICE") });
   });
@@ -209,7 +209,7 @@ describe("kb_memoize supersedes", () => {
     const s = setup();
     await brainHandlers.kb_memoize({ pages: [{ slug: "notes/old", content: "Old", summary: "s", type: "outcome" }] }, s.deps);
     await brainHandlers.kb_memoize({ pages: [{ slug: "notes/new", content: "New", summary: "s", type: "outcome", supersedes: "notes/old" }] }, s.deps);
-    const scope = resolveBrainScope({ ...s.gate, kbSources: [] });
+    const scope = (await resolveBrainScope({ ...s.gate, kbSources: [] }));
     expect([...(await supersededSlugs(s.brain.call, scope, [mine]))]).toEqual(["notes/old"]);
     expect([...(await supersededSlugs(s.brain.call, scope, [SHARED_SOURCE]))]).toEqual([]);
   });
@@ -238,7 +238,7 @@ describe("kb_memoize supersedes", () => {
     expect(r.isError).toBeUndefined();
     expect(s.writes.map((w) => [w.name, w.slug])).toEqual([["put_page", "notes/old"], ["remove_tag", "notes/old"]]);
     expect(s.brain.tagsOf(mine, "notes/old")).toEqual([]);
-    const scope = resolveBrainScope({ ...s.gate, kbSources: [] });
+    const scope = (await resolveBrainScope({ ...s.gate, kbSources: [] }));
     expect([...(await supersededSlugs(s.brain.call, scope, [mine]))]).toEqual([]);
     // A page that was never tagged gets no remove_tag call.
     s.writes.length = 0;
@@ -260,7 +260,7 @@ describe("kb_memoize supersedes", () => {
     const s = setup();
     // In the shared KB, which this turn reads, but not in its write source.
     await s.brain.call("put_page", { slug: "team/fact", content: "---\ntype: team-fact\n---\nx" }, { clientId: "x", sourceId: SHARED_SOURCE, allowedSources: [SHARED_SOURCE] });
-    expect(resolveBrainScope({ ...s.gate, kbSources: [] }).allowedSources).toContain(SHARED_SOURCE);
+    expect((await resolveBrainScope({ ...s.gate, kbSources: [] })).allowedSources).toContain(SHARED_SOURCE);
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/new", content: "New", summary: "s", type: "outcome", supersedes: "team/fact" }] }, s.deps);
     expect(text(r)).toBe(SUPERSEDE_REFUSAL);
     expect(s.writes).toEqual([]);
@@ -274,7 +274,7 @@ describe("kb_memoize supersedes", () => {
     s.deps.requestApproval = async (r) => { asked.push(r.summary); return { approved: false, by: "U0MGR" }; };
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "team/new", content: "new", summary: "newer fact", type: "team-fact", supersedes: "team/old" }], target: "shared" }, s.deps);
     expect(r.isError).toBe(true);
-    expect(asked).toEqual([`KB write → shared: team/new — newer fact (and tags team/old as ${SUPERSEDED_TAG})`]);
+    expect(asked).toEqual([`Memory write → shared: team/new — newer fact (and tags team/old as ${SUPERSEDED_TAG})`]);
     expect(s.writes).toEqual([]);
     expect(s.brain.tagsOf(SHARED_SOURCE, "team/old")).toEqual([]);
   });
@@ -289,7 +289,7 @@ describe("kb_memoize supersedes", () => {
     };
     const r = await brainHandlers.kb_memoize({ pages: [{ slug: "notes/new", content: "New", summary: "s", type: "outcome", supersedes: "notes/old" }] }, s.deps);
     expect(r.isError).toBe(true);
-    expect(text(r)).toContain("kb_memoize wrote notes/new, but tagging notes/old as superseded failed (engine went away)");
+    expect(text(r)).toContain("memory_save wrote notes/new, but tagging notes/old as superseded failed (engine went away)");
     expect(s.brain.contentOf(mine, "notes/new")).toBeDefined();
   });
 });

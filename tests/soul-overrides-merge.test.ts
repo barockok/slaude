@@ -1,8 +1,12 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll } from "bun:test";
 import { SoulDataSchema } from "../src/soul/data";
 import { applyOverrides, mutateOverride, FIELD_ALIASES } from "../src/soul/overrides";
 import * as SO from "../src/db/soul-overrides";
-import { soulData, soulDataBase, setSoulData } from "../src/soul/extract";
+import { soulData, soulDataBase, setSoulData, __resetSoulDataMemo } from "../src/soul/extract";
+
+// Overrides live in the shared per-process DB and the soul memo is module state:
+// leave both clean so later files in the same process do not see C0LIVE.
+afterAll(async () => { await SO.clear(); __resetSoulDataMemo(); });
 
 const base = SoulDataSchema.parse({
   manager: { userId: "U0MGR" },

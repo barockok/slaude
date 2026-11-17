@@ -7,6 +7,7 @@ import {
   passHandlers,
   passReadSources,
   passToolId,
+  READ_ONLY_PASS_TOOLS,
   PROFILE_SCOPE_REFUSAL,
   QUOTE_REFUSAL,
   NO_PROFILE_REFUSAL,
@@ -335,5 +336,10 @@ describe("slaude_pass server", () => {
     expect(server.name).toBe("slaude_pass");
     expect(toolIds).toEqual(["read_pages", "list_pages", "search", "memoize", "propose"].map(passToolId));
     expect(passToolId("memoize")).toBe("mcp__slaude_pass__memoize");
+  });
+
+  test("a pass can mount only the read tools", () => {
+    const { ctx } = agent();
+    expect(createPassMcpServer(ctx, [], READ_ONLY_PASS_TOOLS).toolIds).toEqual(["read_pages", "list_pages", "search"].map(passToolId));
   });
 });

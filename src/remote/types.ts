@@ -38,6 +38,8 @@ export interface EnvRef {
   trust: EnvTrust;
   /** Environment name, shown to the model and in status lines. */
   name: string;
+  /** A shared machine from a definition file: other people use it and it is not disposable. Absent for every other environment, so their claims are unchanged. */
+  shared?: true;
   /** Changes when the environment's config (or a sandbox's generation) changes. */
   hash: string;
 }

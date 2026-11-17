@@ -30,6 +30,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", () => ({
 // when an earlier test file already imported AgentManager. Keeping the canonical
 // specifier means coverage is attributed to src/agent/manager.ts.
 const { AgentManager, SCHEDULER_TOOLS } = await import("../../src/agent/manager");
+const { WAKE_ONLY_TOOL_IDS } = await import("../../src/proactive/wake-guard");
 const Sessions = await import("../../src/db/sessions");
 
 // ---------------------------------------------------------------------------
@@ -189,6 +190,11 @@ beforeEach(() => {
   process.env.SLAUDE_IDLE_MINUTES = "0";
 });
 
+// The mock outlives this file: without this, later files get the dispatcher.
+afterAll(() => {
+  currentQuery = passthrough;
+});
+
 const noopExec = async () => ({ stdout: "", stderr: "", code: 0, truncated: false, timedOut: false });
 
 describe("remote wiring", () => {
@@ -204,8 +210,8 @@ describe("remote wiring", () => {
     await until(() => fs.options !== null, 3000, "boot");
     expect(fs.options.mcpServers.remote).toBeDefined();
     expect(fs.options.toolAliases.Bash).toBe("mcp__remote__bash");
-    // remote deny guard + skill gate + synthetic-turn profile-write guard
-    expect(fs.options.hooks.PreToolUse.flatMap((m: any) => m.hooks)).toHaveLength(3);
+    // remote deny guard + guardrail files + owner guardrails + skill gate + synthetic-turn profile-write guard
+    expect(fs.options.hooks.PreToolUse.flatMap((m: any) => m.hooks)).toHaveLength(5);
     expect(fs.options.systemPrompt.append).toContain("<remote-mode>");
     for (const b of ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]) {
       expect(fs.options.disallowedTools ?? []).not.toContain(b); // enabled + alias (spike §8)
@@ -282,12 +288,12 @@ describe("remote wiring", () => {
     await until(() => fs.options !== null, 3000, "boot");
     expect(fs.options.mcpServers?.remote).toBeUndefined();
     expect(fs.options.toolAliases).toBeUndefined();
-    // the skill gate and the profile-write guard: no remote deny guard
+    // guardrail files, owner guardrails, the skill gate and the profile-write guard: no remote deny guard
     const pre = fs.options.hooks.PreToolUse.flatMap((m: any) => m.hooks);
-    expect(pre).toHaveLength(2);
+    expect(pre).toHaveLength(4);
     for (const h of pre) expect(await h({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {} }, "tu", { signal: new AbortController().signal })).toEqual({});
     // only the CLI scheduling built-ins (slaude has its own cron); no remote deny list
-    expect(fs.options.disallowedTools).toEqual([...SCHEDULER_TOOLS]);
+    expect(fs.options.disallowedTools).toEqual([...SCHEDULER_TOOLS, ...WAKE_ONLY_TOOL_IDS]);
     await shutdown(mgr, row.id);
   });
 

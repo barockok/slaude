@@ -308,6 +308,26 @@ describe("http slack transport — events", () => {
     const res = await postEvents(base, SECRET_A, { ...eventEnvelope(), team_id: "T0BBB" });
     expect(res.status).toBe(401);
   });
+
+  it("puts the persona the receiving app is registered for in the event context", async () => {
+    const rowB = appRow({
+      api_app_id: "A0HTTP",
+      team_id: "T0BBB",
+      persona_id: "alpha",
+      bot_token: encrypt("fake-token-alpha"),
+      signing_secret: encrypt(SECRET_B),
+      created_at: 2,
+    });
+    const seen: any[] = [];
+    const { t, base } = await boot([appRow(), rowB]);
+    t.event("message", async (a) => {
+      seen.push(a);
+    });
+    await postEvents(base, SECRET_A, eventEnvelope());
+    await postEvents(base, SECRET_B, { ...eventEnvelope({ team: "T0BBB" }), team_id: "T0BBB" });
+    await settle();
+    expect(seen.map((a) => a.context.personaId)).toEqual(["default", "alpha"]);
+  });
 });
 
 describe("http slack transport — interactions", () => {

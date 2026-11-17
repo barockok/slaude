@@ -1,5 +1,6 @@
 import { SURFACE_MCP_NAME } from "./surface-mcp";
 import { SLACK_MCP_NAME } from "../slack/mcp-tools";
+import { redactSecrets } from "../../redact";
 import { REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, programOf } from "../../remote/mcp";
 
 /**
@@ -34,26 +35,9 @@ export function shortPath(p: string | undefined): string {
   return parts[parts.length - 1] ?? "";
 }
 
-// Secret-shaped substrings to mask. Deterministic; order does not matter.
-const SECRET_PATTERNS: RegExp[] = [
-  /(authorization|x-api-key)\s*[:=]\s*\S+/gi, // headers: Authorization: …, x-api-key=…
-  /bearer\s+[A-Za-z0-9._-]+/gi, // bearer <token>
-  /(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|secret|password|passwd|pwd)\s*[:=]\s*\S+/gi,
-  /\b(?:sk|pk|rk)-[A-Za-z0-9]{8,}/g, // sk-… style provider keys
-  /\bgh[oprsu]_[A-Za-z0-9]{20,}/g, // github tokens
-  /\bxox[baprs]-[A-Za-z0-9-]{10,}/g, // slack tokens
-  /\bglpat-[A-Za-z0-9_-]{10,}/g, // gitlab PAT
-  /\bAKIA[0-9A-Z]{12,}/g, // aws access key id
-  /\bAIza[0-9A-Za-z._-]{20,}/g, // google api key
-  /\beyJ[A-Za-z0-9._-]{10,}/g, // JWT
-];
-
-/** Deterministic regex backstop: mask anything secret-shaped. */
-export function redactSecrets(s: string): string {
-  let out = s;
-  for (const re of SECRET_PATTERNS) out = out.replace(re, "••••");
-  return out;
-}
+// The secret net lives in src/redact (shared with approval cards and the audit
+// trail); re-exported here for the existing importers.
+export { redactSecrets, SECRET_KEY } from "../../redact";
 
 /** Host-only render of a URL; empty string if unparseable. */
 function urlHost(u: string): string {

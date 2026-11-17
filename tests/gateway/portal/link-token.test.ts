@@ -43,6 +43,14 @@ describe("onboarding link token", () => {
     expect(verifyLinkToken(partial, opts)).toEqual({ ok: false, reason: "malformed" });
   });
 
+  test("a token without a jti or without an exp is malformed", () => {
+    const noJti = encodeJwt({ typ: "link", team: "TTESTTEAM1", slackUser: "UTESTUSER1", exp: Math.floor(NOW / 1000) + 600 }, SECRET);
+    expect(verifyLinkToken(noJti, opts)).toEqual({ ok: false, reason: "malformed" });
+    const noExp = encodeJwt({ typ: "link", team: "TTESTTEAM1", slackUser: "UTESTUSER1", jti: "abc" }, SECRET);
+    const r = verifyLinkToken(noExp, opts);
+    expect(r.ok).toBe(false);
+  });
+
   test("two mints for the same identity differ", () => {
     const a = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" }, opts);
     const b = mintLinkToken({ teamId: "TTESTTEAM1", slackUserId: "UTESTUSER1" }, opts);

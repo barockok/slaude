@@ -94,24 +94,27 @@ async function muteTopic(post: ProactivePost, userId: string, teamId: string | n
  * A reply in some thread. "ignored" when the thread is not a proactive post
  * (or the replier's feedback does not count): normal handling continues.
  * "muted": the topic is muted and the agent said so; normal handling stops.
+ * `post` is the thread's post whenever the replier's feedback counts, also
+ * for a second copy of a reply already handled ("ignored", nothing written),
+ * so every copy is routed alike; null otherwise.
  */
 export async function onProactiveReply(
   i: { channel: string; threadTs: string; ts: string; userId: string; teamId: string | null; text: string },
   deps: FeedbackDeps,
-): Promise<"muted" | "outcome" | "ignored"> {
+): Promise<{ result: "muted" | "outcome" | "ignored"; post: ProactivePost | null }> {
   const post = await Posts.findByMessage(i.channel, i.threadTs);
-  if (!post || !counts(post, i.userId)) return "ignored";
+  if (!post || !counts(post, i.userId)) return { result: "ignored", post: null };
   // A second copy of the same reply (a retry, another app's delivery): already handled.
-  if (deps.once && !(await deps.once(`proactive-fb:${i.channel}:${i.ts}`))) return stopPhrase(i.text) ? "muted" : "ignored";
+  if (deps.once && !(await deps.once(`proactive-fb:${i.channel}:${i.ts}`))) return { result: stopPhrase(i.text) ? "muted" : "ignored", post };
   if (stopPhrase(i.text)) {
     if (await muteTopic(post, i.userId, i.teamId, i.text, deps)) {
       await writeOutcome(post, i.userId, "asked to stop", deps);
       await deps.reply(i.channel, i.threadTs, `Got it, I'll stop pinging you about ${post.topic}.`);
-      return "muted";
+      return { result: "muted", post };
     }
   }
   await writeOutcome(post, i.userId, "replied", deps);
-  return "outcome";
+  return { result: "outcome", post };
 }
 
 /** A reaction to some message: an outcome when it is a proactive post. Never a mute. */

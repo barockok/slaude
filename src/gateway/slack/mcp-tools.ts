@@ -1,4 +1,6 @@
+import { finishRoundTool, proactivePostTool, readChannelTool, wakeThreadRefusal, type WakeTurn } from "../../proactive/wake-tools";
 import { z } from "zod";
+import { auditIgnore } from "../../audit/events";
 import { voiceTurns, VOICE_SUPPRESSED_RESULT } from "../../voice/turn-flags";
 import {
   createSdkMcpServer,
@@ -7,13 +9,12 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { WebClient } from "@slack/web-api";
 import type { TurnOrigin, TurnSender } from "../../knowledge/gated-dispatch";
-import { createReadStream, statSync } from "node:fs";
-import { basename } from "node:path";
-import { mdToMrkdwn } from "./format";
-import { redactSlack } from "./redact";
+import { deliver, type Delivered, type OutboundKind, type OutboundOptions } from "./outbound";
+import { effectiveSoulForChannel } from "../../soul/extract";
 import { messageBot, messageToText } from "./message-text";
-import { soulData, effectiveSoulForChannel } from "../../soul/extract";
 import * as Ignores from "../../db/ignores";
+import { loadGrants } from "../../access/role";
+import { roleAt } from "../../access/wired";
 import * as CronJobs from "../../db/cron-jobs";
 import * as OneOnOne from "../../db/one-on-one";
 import { getNextRun } from "./cron-parser";
@@ -21,9 +22,32 @@ import { run as runIngest } from "../../knowledge/ingest";
 import { slackContract } from "../../tools/contracts/slack";
 import { runtimeContract } from "../../tools/contracts/runtime";
 import { connectContract } from "../../tools/contracts/connect";
+import { proactiveRule } from "../../proactive/rule-tool";
 
-function format(text: string): string {
-  return redactSlack(mdToMrkdwn(text), soulData().redactPatterns);
+/**
+ * The outbound choke point's options for a legacy slack tool: the target
+ * channel decides which guardrails apply; a held text's card goes to the
+ * session's own thread. A wake has nobody to approve it.
+ */
+function outOpts(ctx: SlackContext, kind: OutboundKind, channel?: string): OutboundOptions {
+  return {
+    kind,
+    persona: ctx.personaId ?? null,
+    channel: channel ?? ctx.channel,
+    thread: { channel: ctx.channel, threadTs: ctx.postTarget === "channel" ? null : ctx.threadTs },
+    ...(ctx.apiAppId || ctx.teamId ? { app: { apiAppId: ctx.apiAppId, teamId: ctx.teamId } } : {}),
+    sessionId: ctx.sessionId ?? ctx.turnSessionId ?? null,
+    unattended: !!ctx.wake || ctx.unattended === true,
+    ...(ctx.turnSignal?.() ? { signal: ctx.turnSignal()! } : {}),
+    ...(ctx.turnDeadline !== undefined ? { deadline: ctx.turnDeadline } : {}),
+  };
+}
+
+/** A delivered post as a tool result: `done(ref)` names it; a refusal is the rule's message, for the agent. */
+function result(r: Delivered, done: (ref: string | undefined) => string): ToolResult {
+  if (!r.ok) return err(r.error);
+  const text = done(r.ref);
+  return ok(r.note ? `${text} (${r.note})` : text);
 }
 
 type ToolResult = {
@@ -62,6 +86,16 @@ export type SlackContext = {
   userId?: string;
   /** Slack team id of the current workspace. */
   teamId?: string;
+  /** Set on a heartbeat wake's turn (the route, or the signed `wake` claim). */
+  wake?: WakeTurn;
+  /** Nobody is in this turn (a signed wake claim): an owner approve rule on a post is a deny. */
+  unattended?: boolean;
+  /** The session a route's turns belong to (mono routes; outbound audit and held replies). */
+  turnSessionId?: string;
+  /** The running turn's abort (mono): a held reply is not posted after it. */
+  turnSignal?: () => AbortSignal | undefined;
+  /** Epoch ms the turn must be over by (the tool plane: the job token's expiry less 30 s). */
+  turnDeadline?: number;
   /** What started the route's current job (a person's Slack message, the
    *  panel, or cron). Drives GateInput.interactive; absent = not interactive.
    *  A synthetic turn the runtime injects afterwards (auto-evolve, a
@@ -71,6 +105,10 @@ export type SlackContext = {
    *  turn began; a node: the job's recorded senders). Null or absent =
    *  unknown, which refuses a profile write. */
   turnSenders?: () => Promise<readonly TurnSender[] | null> | readonly TurnSender[] | null;
+  /** The Slack text of each message the running turn holds, as its sender
+   *  typed it (never the envelope, which carries injected context). Mono
+   *  only (AgentManager.turnTexts); null or absent = unknown. */
+  turnTexts?: () => Promise<readonly string[] | null> | readonly string[] | null;
   /** Optional approval gate — set by the adapter so request_approval works. */
   requestApproval?: (req: {
     summary: string;
@@ -93,36 +131,46 @@ export const SLACK_MCP_NAME = slackContract.server;
 export const slackHandlers = {
   async reply(ctx: SlackContext, { text }: { text: string }): Promise<ToolResult> {
     try {
-      const r = await ctx.client.chat.postMessage({
-        channel: ctx.channel,
-        thread_ts: ctx.postTarget === "channel" ? undefined : ctx.threadTs,
-        text: format(text),
-        mrkdwn: true,
+      const update = async (ts: string, t: string) => void (await ctx.client.chat.update({ channel: ctx.channel, ts, text: t })); // outbound: legacy slack tool, through deliver()
+      const r = await deliver(text, outOpts(ctx, "reply"), {
+        post: async (t) => {
+          const p = await ctx.client.chat.postMessage({ // outbound: legacy slack tool, through deliver()
+            channel: ctx.channel,
+            thread_ts: ctx.postTarget === "channel" ? undefined : ctx.threadTs,
+            text: t,
+            mrkdwn: true,
+          });
+          return String(p.ts);
+        },
+        edit: update,
       });
-      return ok(`posted ts=${r.ts}`);
+      return result(r, (ts) => `posted ts=${ts}`);
     } catch (e: any) {
       return err(`slack reply failed: ${e?.message ?? String(e)}`);
     }
   },
 
+  /** An edit is judged on the whole new text (a streamed message re-checked in full at every edit). */
   async edit(ctx: SlackContext, { ts, text }: { ts: string; text: string }): Promise<ToolResult> {
     try {
-      await ctx.client.chat.update({
-        channel: ctx.channel,
-        ts,
-        text: format(text),
-      });
-      return ok("edited");
+      const write = async (t: string) => {
+        await ctx.client.chat.update({ channel: ctx.channel, ts, text: t }); // outbound: legacy slack tool, through deliver()
+        return ts;
+      };
+      const r = await deliver(text, { ...outOpts(ctx, "edit"), ref: ts }, { post: write, edit: async (_ref, t) => void (await write(t)) });
+      return result(r, () => "edited");
     } catch (e: any) {
       return err(`slack edit failed: ${e?.message ?? String(e)}`);
     }
   },
 
   async react(ctx: SlackContext, { name, ts }: { name: string; ts?: string }): Promise<ToolResult> {
+    const timestamp = ts ?? ctx.inboundTs;
+    if (!timestamp) return ok("nothing to react to");
     try {
       await ctx.client.reactions.add({
         channel: ctx.channel,
-        timestamp: ts ?? ctx.inboundTs,
+        timestamp,
         name,
       });
       return ok(`reacted :${name}:`);
@@ -134,10 +182,12 @@ export const slackHandlers = {
   },
 
   async unreact(ctx: SlackContext, { name, ts }: { name: string; ts?: string }): Promise<ToolResult> {
+    const timestamp = ts ?? ctx.inboundTs;
+    if (!timestamp) return ok("nothing to react to");
     try {
       await ctx.client.reactions.remove({
         channel: ctx.channel,
-        timestamp: ts ?? ctx.inboundTs,
+        timestamp,
         name,
       });
       return ok(`unreacted :${name}:`);
@@ -173,42 +223,6 @@ export const slackHandlers = {
       return ok(`denied by <@${r.by}>${r.note ? ` (${r.note})` : ""}`);
     } catch (e: any) {
       return err(`approval request failed: ${e?.message ?? String(e)}`);
-    }
-  },
-
-  async upload(
-    ctx: SlackContext,
-    {
-      path,
-      title,
-      initial_comment,
-      alt_text,
-    }: {
-      path: string;
-      title?: string;
-      initial_comment?: string;
-      alt_text?: string;
-    },
-  ): Promise<ToolResult> {
-    try {
-      statSync(path); // throws if missing
-      const filename = basename(path);
-      const r = await ctx.client.files.uploadV2({
-        channel_id: ctx.channel,
-        thread_ts: ctx.threadTs,
-        file: createReadStream(path),
-        filename,
-        title: title ?? filename,
-        ...(initial_comment ? { initial_comment: format(initial_comment) } : {}),
-        ...(alt_text ? { alt_text } : {}),
-      } as any);
-      const ids = ((r as any).files ?? [])
-        .map((f: any) => f?.files?.[0]?.id ?? f?.id)
-        .filter(Boolean);
-      return ok(`uploaded${ids.length ? ` file_id=${ids.join(",")}` : ""}`);
-    } catch (e: any) {
-      const msg = e?.data?.error ?? e?.message ?? String(e);
-      return err(`slack upload failed: ${msg}`);
     }
   },
 
@@ -357,14 +371,21 @@ export const slackHandlers = {
     { channel, text, thread_ts, broadcast }: { channel: string; text: string; thread_ts?: string; broadcast?: boolean },
   ): Promise<ToolResult> {
     try {
+      if (ctx.wake) {
+        const refused = await wakeThreadRefusal(ctx.wake, ctx.client, channel, thread_ts, ctx.personaId ?? "default");
+        if (refused) return err(refused);
+      }
       const replyOpts = thread_ts ? (broadcast ? { thread_ts, reply_broadcast: true as const } : { thread_ts }) : {};
-      const r = await ctx.client.chat.postMessage({
-        channel,
-        text: format(text),
-        mrkdwn: true,
-        ...replyOpts,
+      let where = channel;
+      const r = await deliver(text, outOpts(ctx, "post_message", channel), {
+        post: async (t) => {
+          const p = await ctx.client.chat.postMessage({ channel, text: t, mrkdwn: true, ...replyOpts }); // outbound: legacy slack tool, through deliver()
+          where = String(p.channel ?? channel);
+          return String(p.ts);
+        },
+        edit: async (ts, t) => void (await ctx.client.chat.update({ channel: where, ts, text: t })), // outbound: legacy slack tool, through deliver()
       });
-      return ok(`posted channel=${r.channel} ts=${r.ts}`);
+      return result(r, (ts) => `posted channel=${where} ts=${ts}`);
     } catch (e: any) {
       return err(`slack chat.postMessage failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
     }
@@ -372,7 +393,7 @@ export const slackHandlers = {
 
   async delete(ctx: SlackContext, { ts, channel }: { ts: string; channel?: string }): Promise<ToolResult> {
     try {
-      await ctx.client.chat.delete({ channel: channel ?? ctx.channel, ts });
+      await ctx.client.chat.delete({ channel: channel ?? ctx.channel, ts }); // outbound: the delete tool removes a message and carries no text to judge
       return ok("deleted");
     } catch (e: any) {
       return err(`slack chat.delete failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
@@ -384,13 +405,14 @@ export const slackHandlers = {
     { user, text, channel, thread_ts }: { user: string; text: string; channel?: string; thread_ts?: string },
   ): Promise<ToolResult> {
     try {
-      const r = await ctx.client.chat.postEphemeral({
-        channel: channel ?? ctx.channel,
-        user,
-        thread_ts,
-        text: format(text),
+      // An ephemeral cannot be edited: a held one waits for the card.
+      const r = await deliver(text, outOpts(ctx, "ephemeral", channel), {
+        post: async (t) => {
+          const p = await ctx.client.chat.postEphemeral({ channel: channel ?? ctx.channel, user, thread_ts, text: t }); // outbound: legacy slack tool, through deliver()
+          return String(p.message_ts ?? "");
+        },
       });
-      return ok(`posted ephemeral ts=${r.message_ts ?? ""}`);
+      return result(r, (ts) => `posted ephemeral ts=${ts ?? ""}`);
     } catch (e: any) {
       return err(`slack chat.postEphemeral failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
     }
@@ -418,8 +440,10 @@ export const slackHandlers = {
 
   async set_topic(ctx: SlackContext, { topic, channel }: { topic: string; channel?: string }): Promise<ToolResult> {
     try {
-      await ctx.client.conversations.setTopic({ channel: channel ?? ctx.channel, topic });
-      return ok("topic set");
+      const r = await deliver(topic, outOpts(ctx, "topic", channel), {
+        post: async (t) => void (await ctx.client.conversations.setTopic({ channel: channel ?? ctx.channel, topic: t })), // outbound: legacy slack tool, through deliver()
+      });
+      return result(r, () => "topic set");
     } catch (e: any) {
       return err(`slack conversations.setTopic failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
     }
@@ -427,8 +451,10 @@ export const slackHandlers = {
 
   async set_purpose(ctx: SlackContext, { purpose, channel }: { purpose: string; channel?: string }): Promise<ToolResult> {
     try {
-      await ctx.client.conversations.setPurpose({ channel: channel ?? ctx.channel, purpose });
-      return ok("purpose set");
+      const r = await deliver(purpose, outOpts(ctx, "topic", channel), {
+        post: async (t) => void (await ctx.client.conversations.setPurpose({ channel: channel ?? ctx.channel, purpose: t })), // outbound: legacy slack tool, through deliver()
+      });
+      return result(r, () => "purpose set");
     } catch (e: any) {
       return err(`slack conversations.setPurpose failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
     }
@@ -439,12 +465,15 @@ export const slackHandlers = {
     { markdown, title, channel }: { markdown: string; title?: string; channel?: string },
   ): Promise<ToolResult> {
     try {
-      const r = await ctx.client.conversations.canvases.create({
-        channel_id: channel ?? ctx.channel,
-        title,
-        document_content: { type: "markdown", markdown },
+      let id: unknown;
+      const r = await deliver(markdown, outOpts(ctx, "canvas", channel), {
+        post: async (t) => {
+          const c = await ctx.client.conversations.canvases.create({ channel_id: channel ?? ctx.channel, title, document_content: { type: "markdown", markdown: t } }); // outbound: legacy slack tool, through deliver()
+          id = c.canvas_id;
+          return undefined;
+        },
       });
-      return ok(`canvas created canvas_id=${r.canvas_id}`);
+      return result(r, () => `canvas created canvas_id=${id}`);
     } catch (e: any) {
       return err(`slack conversations.canvases.create failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
     }
@@ -495,27 +524,23 @@ async function editCanvasEnd(
   try {
     const canvasId = await getCanvasId(ctx, channel);
     if (typeof canvasId !== "string") return canvasId;
-    await ctx.client.canvases.edit({
-      canvas_id: canvasId,
-      changes: [{ operation, document_content: { type: "markdown", markdown } }],
+    const r = await deliver(markdown, outOpts(ctx, "canvas", channel), {
+      post: async (t) => void (await ctx.client.canvases.edit({ canvas_id: canvasId, changes: [{ operation, document_content: { type: "markdown", markdown: t } }] })), // outbound: legacy slack tool, through deliver()
     });
-    return ok(`canvas ${operation === "insert_at_end" ? "appended" : "prepended"}`);
+    return result(r, () => `canvas ${operation === "insert_at_end" ? "appended" : "prepended"}`);
   } catch (e: any) {
     return err(`slack canvases.edit failed: ${e?.data?.error ?? e?.message ?? String(e)}`);
   }
 }
 
-/** Check whether the current turn's user is manager or approver. When a
- *  channel id is given, approvers are resolved per-channel (a `## Channel`
- *  override replaces the global approver set there); manager/backup are
- *  always honored regardless of channel. */
-function isManagerOrApprover(userId?: string, channelId?: string): boolean {
+/** Whether the user is a manager or an approver of the persona (roleOf, the
+ *  same check as the slash commands). With a channel, approvers are the
+ *  channel's (a `## Channel` block replaces the global approvers there);
+ *  managers count everywhere. `personaName` absent means the default. */
+export async function isManagerOrApprover(personaName: string | null | undefined, userId?: string | null, channelId?: string | null, teamId?: string | null): Promise<boolean> {
   if (!userId) return false;
-  const soul = channelId ? effectiveSoulForChannel(channelId) : soulData();
-  if (soul.manager?.userId === userId) return true;
-  if (soul.backupManager?.userId === userId) return true;
-  if (soul.approvers?.some((a) => a.userId === userId)) return true;
-  return false;
+  const r = (await roleAt({ site: "mcp_tools.manager_or_approver", persona: personaName, teamId, userId, channelId, grants: await loadGrants(personaName) }));
+  return r === "manager" || r === "approver";
 }
 
 /** Parse a duration string like '5m', '1h', or 'permanent'.
@@ -555,7 +580,7 @@ async function findCronJob(jobId: string): Promise<CronJobs.CronJob | ToolResult
  *  scheduled work and knowledge base directly. */
 export const adminHandlers = {
   async listCronJobs(ctx: SlackContext): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
+    if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can list cron jobs.");
     }
     const jobs = await CronJobs.listActive();
@@ -568,7 +593,7 @@ export const adminHandlers = {
     ctx: SlackContext,
     { cronExpr, prompt, target, whenActive }: { cronExpr: string; prompt: string; target?: "thread" | "channel"; whenActive?: "fire" | "skip" },
   ): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
+    if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can add cron jobs.");
     }
     let nextRun: number;
@@ -604,7 +629,7 @@ export const adminHandlers = {
     ctx: SlackContext,
     { jobId, cronExpr, prompt, target, whenActive }: { jobId: string; cronExpr?: string; prompt?: string; target?: "thread" | "channel"; whenActive?: "fire" | "skip" },
   ): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId)) {
+    if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can edit cron jobs.");
     }
     const job = await findCronJob(jobId);
@@ -626,7 +651,7 @@ export const adminHandlers = {
   },
 
   async pauseCronJob(ctx: SlackContext, { jobId }: { jobId: string }): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId)) {
+    if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can pause cron jobs.");
     }
     const job = await findCronJob(jobId);
@@ -636,7 +661,7 @@ export const adminHandlers = {
   },
 
   async resumeCronJob(ctx: SlackContext, { jobId }: { jobId: string }): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId)) {
+    if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can resume cron jobs.");
     }
     const job = await findCronJob(jobId);
@@ -652,7 +677,7 @@ export const adminHandlers = {
   },
 
   async removeCronJob(_ctx: SlackContext, { jobId }: { jobId: string }): Promise<ToolResult> {
-    if (!isManagerOrApprover(_ctx.userId, _ctx.channel)) {
+    if (!(await isManagerOrApprover(_ctx.personaId, _ctx.userId, _ctx.channel, _ctx.teamId))) {
       return err("Only manager or approver can remove cron jobs.");
     }
     const job = await findCronJob(jobId);
@@ -662,7 +687,7 @@ export const adminHandlers = {
   },
 
   async triggerIngest(ctx: SlackContext): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
+    if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can trigger ingest.");
     }
     const result = await runIngest({ triggeredBy: ctx.userId ?? "agent" });
@@ -676,7 +701,7 @@ export const adminHandlers = {
     ctx: SlackContext,
     { duration, reason }: { duration: string; reason: string },
   ): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
+    if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can ignore threads.");
     }
     const parsed = parseDuration(duration);
@@ -687,19 +712,22 @@ export const adminHandlers = {
       targetType: "thread",
       channelId: ctx.channel,
       threadTs: ctx.threadTs,
+      teamId: ctx.teamId,
       createdBy: ctx.userId ?? "agent",
       expiresAt,
       reason,
     });
+    auditIgnore("ignore.set", { by: ctx.userId ?? "agent", persona: ctx.personaId, channelId: ctx.channel, threadTs: ctx.threadTs, targetType: "thread", expiresAt, reason, via: "agent_tool" });
     return ok(`thread ignored ${parsed.permanent ? "permanently" : `for ${duration}`}`);
   },
 
   async unignoreThread(ctx: SlackContext): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
+    if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can unignore threads.");
     }
     const removed = await Ignores.remove({ targetType: "thread", channelId: ctx.channel, threadTs: ctx.threadTs });
     if (removed === 0) return ok("no active ignore for this thread");
+    auditIgnore("ignore.cleared", { by: ctx.userId ?? "agent", persona: ctx.personaId, channelId: ctx.channel, threadTs: ctx.threadTs, targetType: "thread", via: "agent_tool" });
     return ok("Thread ignore removed. Normal processing resumed.");
   },
 
@@ -707,7 +735,7 @@ export const adminHandlers = {
     ctx: SlackContext,
     { userId, duration, reason }: { userId: string; duration: string; reason: string },
   ): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
+    if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can ignore users.");
     }
     const parsed = parseDuration(duration);
@@ -721,20 +749,22 @@ export const adminHandlers = {
       expiresAt,
       reason,
     });
+    auditIgnore("ignore.set", { by: ctx.userId ?? "agent", persona: ctx.personaId, channelId: ctx.channel, threadTs: ctx.threadTs, targetType: "user", targetUser: userId, expiresAt, reason, via: "agent_tool" });
     return ok(`user <@${userId}> ignored ${parsed.permanent ? "permanently" : `for ${duration}`}`);
   },
 
   async unignoreUser(ctx: SlackContext, { userId }: { userId: string }): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
+    if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can unignore users.");
     }
     const removed = await Ignores.remove({ targetType: "user", userId });
     if (removed === 0) return ok(`no active ignore for user <@${userId}>`);
+    auditIgnore("ignore.cleared", { by: ctx.userId ?? "agent", persona: ctx.personaId, channelId: ctx.channel, threadTs: ctx.threadTs, targetType: "user", targetUser: userId, via: "agent_tool" });
     return ok(`stopped ignoring <@${userId}>`);
   },
 
   async reloadSession(ctx: SlackContext, { prompt }: { prompt?: string }): Promise<ToolResult> {
-    if (!isManagerOrApprover(ctx.userId, ctx.channel)) {
+    if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can reload session.");
     }
     if (!ctx.reloadSession) {
@@ -816,6 +846,14 @@ export function createRuntimeMcp(ctx: SlackContext): McpSdkServerConfigWithInsta
         (args) => adminHandlers.resumeCronJob(ctx, { jobId: args.job_id })),
       tool(c.remove_cron_job.name, c.remove_cron_job.description, c.remove_cron_job.schema,
         (args) => adminHandlers.removeCronJob(ctx, { jobId: args.job_id })),
+      tool(c.proactive_rule.name, c.proactive_rule.description, c.proactive_rule.schema,
+        (args) => proactiveRule(ctx, args)),
+      tool(c.read_channel.name, c.read_channel.description, c.read_channel.schema,
+        (args) => readChannelTool(ctx, args)),
+      tool(c.proactive_post.name, c.proactive_post.description, c.proactive_post.schema,
+        (args) => proactivePostTool(ctx, args)),
+      tool(c.finish_round.name, c.finish_round.description, c.finish_round.schema,
+        (args) => finishRoundTool(ctx, args)),
       tool(c.trigger_ingest.name, c.trigger_ingest.description, c.trigger_ingest.schema,
         () => adminHandlers.triggerIngest(ctx)),
       tool(c.reload_session.name, c.reload_session.description, c.reload_session.schema,

@@ -1,4 +1,5 @@
 import { db } from "./schema";
+import { pairFor } from "./boundary-columns";
 
 /**
  * Open commitments indexed for the promise scheduler (spec §10.1; migration
@@ -76,19 +77,31 @@ const toRow = (r: Row): CommitmentRow => ({
 });
 
 /**
+ * The row is re-saved under another key: another channel, another thread, or
+ * another (known) workspace. The pair then belongs to the new key, even when
+ * the writer could not resolve it (NULL, to be filled), never to the old one.
+ * Under the same key a filled pair is kept and a NULL one is completed.
+ */
+const KEY_CHANGED = `(commitments.channel_id <> excluded.channel_id OR commitments.thread_ts <> excluded.thread_ts
+  OR (commitments.team_id IS NOT NULL AND excluded.team_id IS NOT NULL AND commitments.team_id <> excluded.team_id))`;
+
+/**
  * Insert an open commitment, or refresh one that is still open. A rewrite of
  * the page never reopens a done, dropped or expired row, and keeps the row's
  * schedule (next check, expiry, checks so far) unless its `due` changed, so
  * re-saving a promise never postpones its expiry or repeats its checks.
  */
 export async function upsertOpen(c: Omit<CommitmentRow, "status" | "checks" | "lastCheckedAt">): Promise<void> {
+  const pair = pairFor(c.teamId, c.channelId, c.threadTs);
   await db.run(
     `INSERT INTO commitments (agent_id, source, slug, persona_id, team_id, channel_id, thread_ts, beneficiary, run_as,
-                              due_text, due_kind, check_text, on_no_change, next_check_at, expires_at, status, checks, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, ?)
+                              due_text, due_kind, check_text, on_no_change, next_check_at, expires_at, status, checks, created_at, boundary_id, locator)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, ?, ?, ?)
      ON CONFLICT (agent_id, source, slug) DO UPDATE SET
        persona_id = excluded.persona_id,
        team_id = COALESCE(excluded.team_id, commitments.team_id),
+       boundary_id = CASE WHEN ${KEY_CHANGED} THEN excluded.boundary_id ELSE COALESCE(commitments.boundary_id, excluded.boundary_id) END,
+       locator = CASE WHEN ${KEY_CHANGED} THEN excluded.locator ELSE COALESCE(commitments.locator, excluded.locator) END,
        channel_id = excluded.channel_id,
        thread_ts = excluded.thread_ts,
        beneficiary = excluded.beneficiary,
@@ -103,7 +116,7 @@ export async function upsertOpen(c: Omit<CommitmentRow, "status" | "checks" | "l
      WHERE commitments.status = 'open'`,
     [
       c.agentId, c.source, c.slug, c.personaId, c.teamId, c.channelId, c.threadTs, c.beneficiary, c.runAs,
-      c.dueText, c.dueKind, c.checkText, c.onNoChange, c.nextCheckAt, c.expiresAt, c.createdAt,
+      c.dueText, c.dueKind, c.checkText, c.onNoChange, c.nextCheckAt, c.expiresAt, c.createdAt, pair.boundaryId, pair.locator,
     ],
   );
 }

@@ -3,9 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "../src/config/home";
-import { clearKbCache } from "../src/knowledge/loader";
+import { clearKbCache, loadKbs } from "../src/knowledge/loader";
 import { closeBrain } from "../src/knowledge/brain";
 import { syncKbWikis } from "../src/knowledge/brain-sync";
+import { seedBrainHome } from "./helpers/brain-template";
 import {
   brainClosing,
   pendingBrainWork,
@@ -54,6 +55,8 @@ describe("syncKbWikis while the brain is closing", () => {
   const saved = process.env.SLAUDE_BRAIN_HOME;
   beforeAll(async () => {
     await closeBrain();
+    // A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+    await seedBrainHome(brainDir);
     process.env.SLAUDE_BRAIN_HOME = brainDir;
     // Only this file's KBs: the test home is shared with every other file.
     rmSync(paths.knowledge, { recursive: true, force: true });
@@ -62,7 +65,7 @@ describe("syncKbWikis while the brain is closing", () => {
       writeFileSync(join(paths.knowledge, l, "README.md"), `---\ndescription: ${l}\n---\n# ${l}\n`);
     }
     clearKbCache();
-  });
+  }, 60_000); // builds the template brain when no earlier file in this process has
   afterAll(async () => {
     await closeBrain();
     if (saved === undefined) delete process.env.SLAUDE_BRAIN_HOME;
@@ -73,9 +76,20 @@ describe("syncKbWikis while the brain is closing", () => {
   });
 
   test("stops before the next KB once a close is waiting", async () => {
+    // Start from a quiet brain: brain work or a close another file left behind
+    // would make the run stop before its first KB (brainClosing() already true).
+    await settleBrainWork();
+    for (let i = 0; brainClosing() && i < 500; i++) await sleep(10);
+    expect(brainClosing()).toBe(false);
     const run = trackBrainWork(syncKbWikis());
     await closeBrain(); // waits for `run`, which must not start the second KB
     const results = await run;
-    expect(results.map((r) => r.label)).toEqual(["bw-one"]);
+    const labels = results.map((r) => r.label);
+    // Shown as a CI annotation too: a long job's log is cut before this file.
+    if (JSON.stringify(labels) !== '["bw-one"]') {
+      const kbs = loadKbs().map((k) => k.label);
+      console.log(`::error title=brain-work KB stop::results=${JSON.stringify(results)} kbs=${JSON.stringify(kbs)} knowledge=${paths.knowledge}`);
+    }
+    expect(labels).toEqual(["bw-one"]);
   }, 60_000);
 });

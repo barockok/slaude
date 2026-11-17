@@ -34,6 +34,13 @@ describe("loadKbs", () => {
     expect(loadKbs()).toEqual([]);
   });
 
+  // readdir order is the filesystem's (newest first on tmpfs, hash order on
+  // ext4); the KB list and import order must not depend on it.
+  test("KBs are listed by label, whatever order the directory returns", () => {
+    for (const l of ["kb-c", "kb-a", "kb-b"]) seedKb(l, (dir) => writeFileSync(join(dir, "README.md"), `# ${l}`));
+    expect(loadKbs().map((k) => k.label)).toEqual(["kb-a", "kb-b", "kb-c"]);
+  });
+
   test("README.md preferred over index.md", () => {
     seedKb("test-kb", (dir) => {
       writeFileSync(join(dir, "README.md"), "# Hello\nfirst line");

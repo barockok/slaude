@@ -13,6 +13,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { env } from "../../../config/env";
+import { parseRef } from "../../../refs/parse";
 import { panelRedirectUri } from "./config";
 
 export interface OidcConfig {
@@ -133,7 +134,7 @@ export function identityFromIdToken(
   idToken: string,
   cfg: OidcConfig,
   args: { nonce: string; now?: number },
-): { ok: true; sub: string; identity: string } | { ok: false; reason: string } {
+): { ok: true; sub: string; identity: string; emailProven: boolean } | { ok: false; reason: string } {
   const parts = idToken.split(".");
   if (parts.length !== 3) return { ok: false, reason: "malformed id_token" };
   let claims: Record<string, unknown>;
@@ -161,5 +162,13 @@ export function identityFromIdToken(
   if (cfg.userClaim === "email" && claims.email_verified === false) {
     return { ok: false, reason: "email not verified by the issuer" };
   }
-  return { ok: true, sub, identity: raw.trim().toLowerCase() };
+  // Proof of an address, as opposed to the identity string above (which only
+  // keys the roles file): the identity IS the `email` claim, the claim is a
+  // real address after the slice A rule, and the issuer said `email_verified`
+  // is exactly true. Absent, false, a string or a number prove nothing, and a
+  // custom claim that merely looks like an address is not the email claim.
+  const identity = raw.trim().toLowerCase();
+  const emailProven =
+    cfg.userClaim === "email" && claims.email_verified === true && parseRef(`email:${identity}`).ok;
+  return { ok: true, sub, identity, emailProven };
 }

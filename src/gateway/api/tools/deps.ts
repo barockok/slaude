@@ -43,6 +43,8 @@ export interface ToolPlaneDeps {
       toolUseId: string;
       decisionReason?: string;
       suggestions?: unknown[];
+      /** An owner guardrail's approve card, already re-evaluated by the route. */
+      forced?: { ruleId: string; message: string; ttlMs: number };
     },
   ): Promise<{ decision: PermissionDecision } | { pendingId: string }>;
   /** Non-blocking plan-approval open (surface/request_approval over REST):

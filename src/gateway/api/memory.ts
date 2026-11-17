@@ -23,6 +23,7 @@
  * thread_activity (the quiet-moment pass's selection), a database write only,
  * never a brain call; its failure is logged and never fails the sync.
  */
+import { runAsPersonFor } from "../../slices/decide";
 import { z } from "zod";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { agentIdReady } from "../../knowledge/agent-identity";
@@ -110,7 +111,7 @@ export function makeMemoryPlane(deps: {
     if (!gate) return null;
     // runAs is signed at dispatch: a cron created inside a /1on1 runs as its
     // owner although its synthetic thread holds no lock.
-    return { ...memoryScopeForClaims(gate, claims), agentId: gate.agentId, interactive: gate.interactive };
+    return { ...(await memoryScopeForClaims(gate, claims)), agentId: gate.agentId, interactive: gate.interactive };
   }
 
   return {
@@ -138,14 +139,16 @@ export function makeMemoryPlane(deps: {
 /**
  * The memory scope a turn's job token names: the more private of the live and
  * signed /1on1 lock, and the signed `runAs`. The one derivation the memory
- * routes and kb_thread_history share, so both read what the turn writes.
+ * routes and memory_thread_history share, so both read what the turn writes.
  */
-export function memoryScopeForClaims(gate: GateInput, claims: JobClaims): MemoryScope {
+export async function memoryScopeForClaims(gate: GateInput, claims: JobClaims): Promise<MemoryScope> {
   // runAs is signed at dispatch: a cron created inside a /1on1 runs as its
   // owner although its synthetic thread holds no lock.
   const runAs = parseRunAs(claims.runAs);
   const runAsUser = runAs?.kind === "user" ? runAs.slackUserId : null;
-  return memoryScopeFor(withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser });
+  // Slice F shadow (`shadow`: counts only; `union`: the runAs person's verified slices, reads only).
+  const runAsPerson = await runAsPersonFor(gate, runAsUser);
+  return memoryScopeFor(await withClaimLock(gate, claims.lock?.user), { channel: claims.channel, runAsUser, ...(runAsPerson ? { runAsPerson } : {}) });
 }
 
 /** The default plane: the process's provider, gated like the KB tools (the

@@ -117,7 +117,7 @@ const LIST = [
   "",
 ].join("\n");
 const SUMS = (soul: string) =>
-  [`${soul.repeat(64)}  /data/SOUL.md`, `${"b".repeat(64)}  /data/cache/soul.0123456789abcdef.json`, ""].join("\n");
+  [`${soul.repeat(64)}  /data/agent.yaml`, ""].join("\n");
 
 test("registered apps drop the update stamp and the npm-style command echo, sorted", () => {
   expect(registeredApps(LIST)).toEqual([
@@ -135,7 +135,7 @@ test("the boot fingerprint ignores order, paths and update stamps, and moves wit
   expect(bootFingerprint(SUMS("c"), LIST)).not.toBe(base);
   expect(bootFingerprint(SUMS("a"), LIST.replace("U0BALPHA", "U0B0004"))).not.toBe(base);
   expect(bootFingerprint(SUMS("a"), "")).not.toBe(base);
-  expect(() => bootFingerprint(`${"b".repeat(64)}  /data/cache/x.json`, LIST)).toThrow(/no SOUL.md/);
+  expect(() => bootFingerprint(`${"b".repeat(64)}  /data/other.json`, LIST)).toThrow(/no agent.yaml/);
 });
 
 test("the boot fingerprint moves with the env ConfigMap's data but not its metadata", () => {
@@ -191,14 +191,14 @@ test("boot annotations come back in the requested order, empty when absent", () 
   expect(bootAnnotations("{}", ["a"])).toEqual([""]);
 });
 
-test("a missing SOUL.md is a defined 'absent' state for the before-seed reading, and still an error after", () => {
-  const noSoul = `${"b".repeat(64)}  /data/cache/soul.0123456789abcdef.json\n`;
+test("a missing agent.yaml is a defined 'absent' state for the before-seed reading, and still an error after", () => {
+  const noSoul = `${"b".repeat(64)}  /data/other.json\n`;
   const absent = bootFingerprint(noSoul, LIST, "{}", { requireSoul: false });
   expect(absent).toMatch(/^[0-9a-f]{32}$/);
   expect(bootFingerprint("", LIST, "{}", { requireSoul: false })).not.toBe(absent);
   expect(absent).not.toBe(bootFingerprint(SUMS("a"), LIST, "{}", { requireSoul: false }));
   expect(bootFingerprint(SUMS("a"), LIST, "{}", { requireSoul: false })).toBe(bootFingerprint(SUMS("a"), LIST));
-  expect(() => bootFingerprint(noSoul, LIST, "{}", { requireSoul: true })).toThrow(/no SOUL.md/);
+  expect(() => bootFingerprint(noSoul, LIST, "{}", { requireSoul: true })).toThrow(/no agent.yaml/);
   // absent before, written by the seed after: the seed changed the boot state, so the pods restart
   expect(restartDecision({ before: absent, after: bootFingerprint(SUMS("a"), LIST), booted: [absent, absent] }).restart).toBe(true);
 });
@@ -211,10 +211,10 @@ test("restart when the seed changed something, or the pods booted with other sta
   expect(restartDecision({ before: "f1", after: "f1", booted: ["f1", "f1"] })).toEqual({ restart: false, reason: expect.stringContaining("nothing") });
 });
 
-describe("a gateway that booted without the seeded soul is named, with the cause", () => {
-  // The two lines src/soul/extract.ts logs, in the shape it logs them.
-  const invalid = "[soul] cache invalid at /data/cache/soul.0123456789abcdef.json, re-extracting: unsigned entry";
-  const fallback = "[soul] LLM extraction failed, falling back to regex parser: Error: extractor http 500";
+describe("a gateway that booted without the seeded agent.yaml is named, with the cause", () => {
+  // The two lines a gateway logs, in the shape it logs them (src/persona/boot.ts, disk-check.ts).
+  const starter = "[persona] seeded a starter agent.yaml at /data/agent.yaml: fill in who manages it before going live";
+  const both = "persona(s) 'default' have a SOUL.md and no agent.yaml. A persona's access and mandates are read from agent.yaml only.";
   const clean = "[db] pg (bun-sql) ready\n[persona] multi-persona mode: alpha\n";
 
   test("clean boots report nothing", () => {
@@ -222,36 +222,34 @@ describe("a gateway that booted without the seeded soul is named, with the cause
     expect(soulBootProblems({})).toEqual([]);
   });
 
-  test("a rejected entry and the fallback are each named, per pod, with the log line", () => {
-    const got = soulBootProblems({ "slaude-gateway-b": `${clean}${invalid}\n${fallback}\n`, "slaude-gateway-a": clean });
+  test("a starter and a stranded SOUL.md are each named, per pod, with the log line", () => {
+    const got = soulBootProblems({ "slaude-gateway-b": `${clean}${starter}\n${both}\n`, "slaude-gateway-a": clean });
     expect(got).toHaveLength(2);
-    expect(got[0]).toStartWith("slaude-gateway-b: the seeded soul cache entry was rejected");
-    expect(got[0]).toContain("unsigned entry");
-    expect(got[1]).toStartWith("slaude-gateway-b: the soul cache missed");
-    expect(got[1]).toContain("no manager");
+    expect(got[0]).toStartWith("slaude-gateway-b: the gateway booted without the seeded agent.yaml");
+    expect(got[0]).toContain("starter agent.yaml");
+    expect(got[1]).toStartWith("slaude-gateway-b: a SOUL.md was left");
   });
 
   test("pods come out in name order and long lines are cut", () => {
-    const got = soulBootProblems({ z: fallback, a: `${invalid}${"x".repeat(1000)}` });
+    const got = soulBootProblems({ z: both, a: `${starter}${"x".repeat(1000)}` });
     expect(got.map((l) => l.split(":")[0])).toEqual(["a", "z"]);
     expect(got[0]!.length).toBeLessThan(450);
   });
 
-  test("the markers are what src/soul/extract.ts logs", () => {
-    const src = readFileSync(join(import.meta.dir, "../../src/soul/extract.ts"), "utf8");
-    expect(src).toContain("[soul] cache invalid at ${cp}, re-extracting: ${hit.why}");
-    expect(src).toContain("[soul] LLM extraction failed, falling back to regex parser:");
+  test("the markers are what the gateway logs", () => {
+    const boot = readFileSync(join(import.meta.dir, "../../src/persona/boot.ts"), "utf8");
+    const check = readFileSync(join(import.meta.dir, "../../src/persona/disk-check.ts"), "utf8");
+    expect(boot).toContain("seeded a starter agent.yaml at ${seeded}");
+    expect(check).toContain("have a SOUL.md and no agent.yaml");
   });
 });
 
-describe("the startup-files command reads the soul cache where extraction does", () => {
+describe("the startup-files command reads the persona file where the gateway does", () => {
   let tmp = "";
   beforeAll(() => {
     tmp = mkdtempSync(join(tmpdir(), "startup-files-"));
-    for (const d of ["home/cache", "pod-cache"]) mkdirSync(join(tmp, d), { recursive: true });
-    writeFileSync(join(tmp, "home/SOUL.md"), "soul");
-    writeFileSync(join(tmp, "home/cache/soul.aaaaaaaaaaaaaaaa.json"), "in home");
-    writeFileSync(join(tmp, "pod-cache/soul.bbbbbbbbbbbbbbbb.json"), "in the override");
+    mkdirSync(join(tmp, "home"), { recursive: true });
+    writeFileSync(join(tmp, "home/agent.yaml"), "name: default\n");
   });
   afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
@@ -265,20 +263,15 @@ describe("the startup-files command reads the soul cache where extraction does",
   const names = (out: string) =>
     out.trim().split("\n").filter(Boolean).map((l) => l.slice(l.lastIndexOf("/") + 1)).sort();
 
-  test("SLAUDE_SOUL_CACHE_DIR set: that directory, not $SLAUDE_HOME/cache", () => {
-    expect(names(run({ SLAUDE_SOUL_CACHE_DIR: join(tmp, "pod-cache") }))).toEqual(["SOUL.md", "soul.bbbbbbbbbbbbbbbb.json"]);
+  test("it hashes agent.yaml under $SLAUDE_HOME", () => {
+    expect(names(run({}))).toEqual(["agent.yaml"]);
   });
 
-  test("unset or empty: $SLAUDE_HOME/cache", () => {
-    expect(names(run({}))).toEqual(["SOUL.md", "soul.aaaaaaaaaaaaaaaa.json"]);
-    expect(names(run({ SLAUDE_SOUL_CACHE_DIR: "" }))).toEqual(["SOUL.md", "soul.aaaaaaaaaaaaaaaa.json"]);
-  });
-
-  test("its output is what bootFingerprint takes, and a different cache entry moves the fingerprint", () => {
-    const home = bootFingerprint(run({}), LIST);
-    const pod = bootFingerprint(run({ SLAUDE_SOUL_CACHE_DIR: join(tmp, "pod-cache") }), LIST);
-    expect(home).toMatch(/^[0-9a-f]{32}$/);
-    expect(pod).not.toBe(home);
+  test("its output is what bootFingerprint takes, and a changed file moves the fingerprint", () => {
+    const before = bootFingerprint(run({}), LIST);
+    expect(before).toMatch(/^[0-9a-f]{32}$/);
+    writeFileSync(join(tmp, "home/agent.yaml"), "name: default\ndescription: changed\n");
+    expect(bootFingerprint(run({}), LIST)).not.toBe(before);
   });
 
   test("missing files are not an error", () => {

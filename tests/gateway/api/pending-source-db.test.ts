@@ -3,6 +3,8 @@ import { db } from "../../../src/db/schema";
 import * as PendingGates from "../../../src/db/pending-gates";
 import { DbPendingSource, defaultPendingSource } from "../../../src/gateway/api/pending-source";
 import { createV1Api } from "../../../src/gateway/api";
+import * as AuditEvents from "../../../src/db/audit-events";
+import { flushAudits } from "../../../src/audit/emit";
 
 const NODE_TOKEN = "pending-db-test-token";
 
@@ -58,6 +60,15 @@ describe("DbPendingSource (durable seam adapter)", () => {
     await s.create("perm", "S1", {}, Date.now() - 5);
     await s.create("perm", "S1", {}, Date.now() + 60_000);
     expect(await s.sweepExpired()).toBe(1);
+  });
+
+  test("sweepExpired records gate.<kind>.expired for each swept row", async () => {
+    const s = new DbPendingSource();
+    await s.create("perm", "S_SEAMSWEEP", { toolName: "Edit" }, Date.now() - 5);
+    await s.sweepExpired();
+    await flushAudits();
+    const items = (await AuditEvents.list({ sessionId: "S_SEAMSWEEP" })).items;
+    expect(items.map((e) => [e.action, e.targetId, e.actorKind])).toEqual([["gate.permission.expired", "Edit", "system"]]);
   });
 });
 

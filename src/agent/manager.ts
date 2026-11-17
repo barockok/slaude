@@ -15,7 +15,7 @@ import {
 // so the mock applies even when an earlier module already imported the SDK —
 // no query-string re-import (which would split coverage off the canonical file).
 import * as agentSdk from "@anthropic-ai/claude-agent-sdk";
-import { TokenBudget, type ResultUsage, type UsageSnapshot } from "./token-budget";
+import { TokenBudget, type PromptUsage, type ResultUsage, type UsageSnapshot } from "./token-budget";
 import { SkillGate } from "./skill-gate";
 import { denySyntheticProfileWrite } from "./profile-write-guard";
 import { m as metric } from "../metrics";
@@ -27,14 +27,18 @@ export type PermissionMode =
   | "plan"
   | "dontAsk";
 import { paths } from "../config/home";
+import { dbDialect } from "../db/client";
 import { env } from "../config/env";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
 import { soulSystemBlock } from "../soul/loader";
-import { BUILTIN_PLUGIN_DIR, pluginsNamedLikeBuiltin } from "../soul/builtin";
+import { BUILTIN_PLUGIN_DIR, cliPluginName, pluginsNamedLikeBuiltin } from "../soul/builtin";
 import { personaSoulText } from "../persona/soul-source";
-import { soulData, effectiveSoulForChannel } from "../soul/extract";
+import { effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
+import { compiledPromptSoul } from "../soul/per-persona";
+import { allowedSkillNames, sdkSkillsOption } from "./skill-allow";
+import { resolveSoulMandate } from "../soul/mandate-scope";
 import { SoulDataSchema } from "../soul/data";
-import { getPersonaRegistry, livePersona, managedPersonaModel, onPersonaRegistryInstalled, type PersonaRegistry } from "../persona/registry";
+import { getPersonaRegistry, livePersona, managedPersonaDefinition, managedPersonaModel, onPersonaRegistryInstalled, type PersonaRegistry } from "../persona/registry";
 import * as Sessions from "../db/sessions";
 import type { ThreadKey } from "../db/sessions";
 import { dbSessionStore, type SessionStore } from "./session-store";
@@ -49,12 +53,21 @@ import { sessionModeBlock, type RemoteModeInfo } from "./session-mode";
 import { formatSessionNotes } from "./session-notes";
 import { BootFailure, type FailureCode } from "../gateway/core/failure-codes";
 import { redactSecrets } from "../gateway/core/status-text";
+import { WAKE_ONLY_TOOL_IDS, wakeDeniedToolIds } from "../proactive/wake-guard";
+import type { WakeStats } from "../proactive/wake-settle";
+import { isChannelSessionKey } from "../gateway/core/channel-session";
 import { REMOTE_DENIED_LOCAL_TOOLS, REMOTE_MCP_NAME, REMOTE_TOOL_ALIASES, createRemoteMcp, denyLocalBuiltins, makeRemoteCanUseTool } from "../remote/mcp";
 import { injectedTurns, voiceCallActive } from "../voice/turn-flags";
 import { RemoteError, type RemoteHandle, type RemoteTarget } from "../remote/types";
 import { turnModelTokens, type SkillCheckBudget } from "../background/skill-check";
 import { skillUsageHook, type SkillUsageRecorder } from "./skill-usage-hook";
 import { passEndsTurnHook } from "./pass-stop-hook";
+import { HOOK_IDS, tagHook } from "./hook-tags";
+import { aliasNames, approveMatcherTimeoutSec, deliveryTurnAllowance, guardrailFilesHook, ownerGuardrailsHook, type ApproveOutcome, type ApproveRequest, type OwnerApproval } from "../guardrails/hooks";
+import { guidanceText, type SessionGuardrails } from "../guardrails/resolve";
+import type { FiringEvent } from "../guardrails/audit";
+import { GUARDRAILS_DIR } from "../guardrails/integrity";
+import { isProactiveWorkspace, WorkspaceClaims } from "./workspace-claim";
 import { addTokens, PROVISIONAL_OUTPUT_TOKENS, tokensFromUsage, type ModelTokens, type ModelUsageRow, type TokenCounts } from "../background/prices";
 
 /** Upper bound on waiting for a previous remote handle's job cleanup at boot. */
@@ -74,6 +87,8 @@ export interface InputSender {
   userId: string;
   teamId: string | null;
   origin: string | null;
+  /** The message's own text as its sender typed it (never the envelope). See turnTexts. */
+  text?: string;
 }
 
 type LiveSession = {
@@ -95,9 +110,20 @@ type LiveSession = {
   turn: { user: string; assistant: string[] };
   /** Tool names invoked during the current turn (cleared on result). */
   turnTools: string[];
+  /** Tool name per open tool_use id, so a tool result (which carries only the
+   *  id) can name its tool. Entries leave when their result arrives. */
+  toolNames: Map<string, string>;
+  /** Text of reply tool calls awaiting their result, by tool_use id: it joins
+   *  the turn record only once the result says it was delivered. */
+  pendingReplies: Map<string, string>;
   /** Set after we inject an auto-evolve synthetic prompt — the next result
    *  is the evolution turn itself; don't recurse into another auto-evolve. */
   inAutoEvolve: boolean;
+  /** Set while a check turn is in flight, settled by its result. The CLI folds an
+   *  input that arrives during a running turn into that turn, so one result would
+   *  answer both, flagged as the check's, and the input's own turn would never
+   *  end. Inputs wait on this, or on the session's exit, before going in. */
+  checkEnded?: { promise: Promise<void>; resolve: () => void };
   /** The budgeted skill-check run of the check turn in flight (set with
    *  inAutoEvolve when a budget is installed), ended exactly once: by the
    *  turn's result, or by the session's teardown when no result came. */
@@ -119,6 +145,10 @@ type LiveSession = {
   idleTimer?: ReturnType<typeof setTimeout>;
   /** Set when reload_session is called so expected exit errors are suppressed. */
   reloading?: boolean;
+  /** Set when the idle timer closed the input: the instance is on its way out
+   *  (still in #live until its loop unwinds), so a send treats it like a
+   *  reloading one and boots fresh after it exits. */
+  closing?: boolean;
   /** Inputs pushed so far (never decreases): a check whose budgeted start
    *  resolves after another input was pushed is stale and is not run. */
   inputSeq: number;
@@ -131,26 +161,41 @@ type LiveSession = {
   exited: Promise<void>;
   /** Slack channel of the session row, cached at start for metric labels. */
   channelId?: string | null;
+  /** The session row's working dir, cached at start (set once at creation, never changed). */
+  workingDir?: string;
   /** Current permission mode (kept in sync by setPermissionMode) — remote tool gating reads it. */
   mode?: PermissionMode;
   /** The named persona this session booted as (undefined = default). */
   personaName?: string;
   /** Session-config fingerprint this session booted under (undefined = none known). */
   bootFp?: string;
+  /** This query was booted for a wake: its caps and hidden tools are fixed
+   *  for its life, so a person's message restarts the session (see
+   *  #settleBootKind) and no skill check follows any of its turns. */
+  bootedAsWake: boolean;
+  /** Settled at each result. Made by #turnEnded for a waiter, which re-reads the count. */
+  turnEnded?: { promise: Promise<void>; resolve: () => void };
+  /** When the last result arrived (undefined: none yet). */
+  lastResultAt?: number;
+  /** Something of a further turn was seen since that result (its prompt hook,
+   *  an assistant message, a tool result), so what is counted is really running. */
+  activeSinceResult?: boolean;
 };
 
 // `autoEvolve` marks events of the internal skill-evolution turn that follows a
 // user-visible turn: the gateway shows no status or reaction for them (#131).
 export type AgentEvent =
   | { type: "assistantText"; sessionId: string; text: string; autoEvolve?: boolean }
-  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; autoEvolve?: boolean }
-  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; autoEvolve?: boolean }
+  // `toolUseId` (the SDK's tool_use block id) pairs a result with its call.
+  // A result's `tool` is the call's name when the id was seen, "" otherwise.
+  | { type: "toolCall"; sessionId: string; tool: string; input: unknown; toolUseId?: string; autoEvolve?: boolean }
+  | { type: "toolResult"; sessionId: string; tool: string; result: unknown; toolUseId?: string; autoEvolve?: boolean }
   | { type: "thinking"; sessionId: string; text: string; autoEvolve?: boolean }
   | { type: "turnStart"; sessionId: string }
   | { type: "done"; sessionId: string; autoEvolve?: boolean }
   // `error` is the RAW detail for logs only; Slack gets the fixed text for `code`
   // (gateway/core/failure-codes.ts). `jobId` lets the gateway post once per job.
-  | { type: "error"; sessionId: string; error: string; code?: FailureCode; jobId?: string }
+  | { type: "error"; sessionId: string; error: string; code?: FailureCode; jobId?: string; /** Settle the turn (reaction, status line) but post no failure text: its notice was already posted. */ quiet?: boolean }
   | { type: "tokenUsage"; sessionId: string; snapshot: UsageSnapshot }
   | { type: "compacting"; sessionId: string; trigger: "manual" | "auto" };
 
@@ -161,8 +206,38 @@ export type AgentEvent =
  */
 export interface BackgroundTurnRun {
   runId: string;
-  finish(usage: ModelTokens, outcome: "ok" | "error"): Promise<void>;
+  finish(usage: ModelTokens, outcome: "ok" | "error" | "stopped-budget", stats?: WakeStats): Promise<void>;
 }
+
+/** A heartbeat wake's caps (src/proactive/wake.ts). Absent or 0: off. */
+export type WakeOptions = { maxBudgetUsd?: number; maxTurns?: number; maxMinutes?: number };
+
+/** A wake refused because a voice call owns its session: a restart would end
+ *  the call. The session is busy, nothing went wrong: the wake's ledger run is
+ *  already closed and a later slot may retry. */
+export class WakeBusyError extends Error {
+  override readonly name = "WakeBusyError";
+  readonly code = "WAKE_BUSY";
+  constructor(sessionId: string) {
+    super(`wake refused: a voice call owns session ${sessionId}`);
+  }
+}
+
+/** One input awaiting its UserPromptSubmit (AgentManager.#inputSuppression). */
+type SuppressionEntry = { text: string; suppressed: boolean };
+
+/** A session marked as a wake (see #armWake). `inFlight` is the wake's own
+ *  turn: never read from `timer`, since a wake with no wall clock has none.
+ *  `done` resolves when that turn ends, however it ends. */
+type WakeState = {
+  options: WakeOptions;
+  /** The wake's ledger run, closed by whichever ending comes first. */
+  run?: BackgroundTurnRun;
+  timer?: ReturnType<typeof setTimeout>;
+  inFlight: boolean;
+  done: Promise<void>;
+  markDone: () => void;
+};
 
 /** An open skill-check run (see LiveSession.evolveRun). */
 type EvolveRun = {
@@ -186,13 +261,77 @@ export type PermissionResolver = (
   sessionId: string,
   toolName: string,
   input: Record<string, unknown>,
-  ctx: Parameters<CanUseTool>[2],
+  ctx: PermissionContext,
 ) => ReturnType<CanUseTool>;
+
+/** The SDK's canUseTool context, plus the owner-approval marker the owner
+ *  guardrails hook sets: the card is forced (no auto-allow policy), carries
+ *  the rule, offers no "always allow" and expires at the deadline. */
+export type PermissionContext = Parameters<CanUseTool>[2] & { ownerApproval?: OwnerApproval };
 
 /** Returns transport-supplied MCP servers for a fresh session. */
 export type McpResolver = (
   sessionId: string,
 ) => Record<string, McpServerConfig> | undefined | Promise<Record<string, McpServerConfig> | undefined>;
+
+/** Reply tools whose `text` the user reads in the thread (deprecated alias included). */
+const REPLY_TOOLS = new Set(["mcp__slaude_surface__reply", "mcp__slaude_slack__reply"]);
+
+/** The text of a reply tool call, or null for any other tool. */
+export function replyToolText(tool: string, input: unknown): string | null {
+  if (!REPLY_TOOLS.has(tool)) return null;
+  const text = (input as { text?: unknown } | null | undefined)?.text;
+  return typeof text === "string" && text.trim() ? text : null;
+}
+
+/** Add a line to the turn's answer unless the same text is already there (a
+ *  model that writes its reply as text AND sends it through the reply tool). */
+export function recordAnswer(answer: string[], text: string): void {
+  const t = text.trim();
+  if (!t || answer.some((a) => a.trim() === t)) return;
+  answer.push(text);
+}
+
+/** The text of a tool result (string, MCP content blocks, or `{content}`). */
+function toolResultText(r: unknown): string {
+  if (typeof r === "string") return r;
+  const blocks = Array.isArray(r) ? r : (r as { content?: unknown } | null)?.content;
+  if (typeof blocks === "string") return blocks;
+  if (!Array.isArray(blocks)) return "";
+  return blocks.map((b) => (typeof b === "string" ? b : typeof (b as { text?: unknown })?.text === "string" ? (b as { text: string }).text : "")).join("\n");
+}
+
+/**
+ * Whether a reply tool's result says the text reached someone: not an error
+ * (on the tool_result block or the result), not a refusal, not a failure.
+ * `posted ref=panel-suppressed` counts: the operator holding the session got it.
+ */
+export function replyDelivered(message: unknown, result: unknown): boolean {
+  const content = (message as { content?: unknown } | null | undefined)?.content;
+  if (Array.isArray(content) && content.some((b) => (b as { type?: unknown; is_error?: unknown })?.type === "tool_result" && (b as { is_error?: unknown }).is_error === true)) return false;
+  if (result && typeof result === "object" && !Array.isArray(result)) {
+    const o = result as { is_error?: unknown; isError?: unknown };
+    if (o.is_error === true || o.isError === true) return false;
+  }
+  const text = toolResultText(result);
+  if (/"refused"\s*:\s*true/.test(text)) return false;
+  if (/^\s*(refused|error|reply failed)\b/i.test(text)) return false;
+  return true;
+}
+
+/** The tool_use id a tool-result user message answers: the first
+ *  `tool_result` block's `tool_use_id` (the SDK sends one result per message). */
+export function toolResultId(message: unknown): string | undefined {
+  const content = (message as { content?: unknown } | null | undefined)?.content;
+  if (!Array.isArray(content)) return undefined;
+  for (const b of content) {
+    if (b && typeof b === "object" && (b as { type?: unknown }).type === "tool_result") {
+      const id = (b as { tool_use_id?: unknown }).tool_use_id;
+      if (typeof id === "string" && id) return id;
+    }
+  }
+  return undefined;
+}
 
 /** Plugin paths already reported by warnPluginsNamedLikeBuiltin (once per process). */
 const warnedSlaudeNamedPlugins = new Set<string>();
@@ -242,8 +381,27 @@ export type StopGuard = (sessionId: string) => string | null;
 /** A persona's soul as the node receives it in the runtime bundle: the text for
  *  the <persona> block and its structured projection (SoulData-shaped, or null
  *  when the gateway has none). */
-export type PersonaSoul = { soulMd: string; soulJson: unknown };
+export type PersonaSoul = {
+  soulMd: string;
+  soulJson: unknown;
+  /** Present for a persona from an agent.yaml: `soulMd` is prose plus the
+   *  `## Channel` sections its `channels` key compiles to, and `soulJson` is
+   *  compiled. `skills` limits the skills a session may load. */
+  definition?: { skills?: string[]; guardrails?: string[] };
+  /** The bundle's tenant. */
+  tenantId?: string;
+};
 export type PersonaSoulResolver = (sessionId: string, persona: string | undefined) => Promise<PersonaSoul>;
+/** The owner guardrails a booting session carries (src/guardrails/resolve.ts),
+ *  or null when none apply. A throw fails the boot with GUARDRAILS_UNAVAILABLE:
+ *  a session never runs with an empty set because the set could not be read. */
+export type GuardrailResolver = (sessionId: string, persona: string | undefined, channelId: string | null) => Promise<SessionGuardrails | null>;
+/** Where owner guardrail firings and Guidance deliveries are recorded (mono:
+ *  the audit writer; a node: its gateway). Never awaited by a decision. */
+export interface GuardrailSink {
+  firing(sessionId: string, events: FiringEvent[], ctx: { persona: string; channelId: string | null; kind: string }): void;
+  delivered(sessionId: string, slugs: string[], ctx: { persona: string; channelId: string | null; kind: string; via: "tool" | "inbound"; toolName?: string }): void;
+}
 /** A persona's default model as the node receives it in the runtime bundle, or
  *  undefined when the bundle is unmanaged (the row's model stands as is). */
 export type PersonaModelResolver = (sessionId: string, persona: string | undefined) => Promise<string | undefined>;
@@ -295,8 +453,10 @@ export function makeDisengageSuppressHook(
 export function makeUserPromptHook(
   sessionId: string,
   notes: Map<string, string[]>,
-  suppressCheck?: () => boolean,
+  suppressCheck?: (prompt: string) => boolean,
   findById: SessionStore["findById"] = Sessions.findById,
+  /** Inbound-triggered owner Guidance due this turn (drained once, like notes). */
+  takeGuidance?: () => Array<{ name: string; body: string }>,
 ): HookCallback {
   return async (input) => {
     if (input.hook_event_name !== "UserPromptSubmit") return { continue: true };
@@ -306,11 +466,11 @@ export function makeUserPromptHook(
       // message itself also passed suppress:true through handleMessage) — if
       // left unconsumed here it survives to the next turn and wrongly fires
       // "mention-only" on the message that re-engages the thread.
-      suppressCheck?.();
+      suppressCheck?.(input.prompt);
       metric.disengagedSuppressedTotal.inc();
       return dis; // leave queued notes for the next engaged turn
     }
-    if (suppressCheck?.()) {
+    if (suppressCheck?.(input.prompt)) {
       // mention-only thread: record the message in the transcript but don't run
       // the model. continue:false persists the prompt; decision:"block" would
       // discard it (see 2026-06-16 finding).
@@ -318,7 +478,8 @@ export function makeUserPromptHook(
     }
     const pending = notes.get(sessionId) ?? [];
     notes.set(sessionId, []);
-    const block = formatSessionNotes(pending);
+    const guidance = takeGuidance?.() ?? [];
+    const block = [formatSessionNotes(pending), guidance.length ? guidanceText(guidance) : null].filter(Boolean).join("\n");
     if (!block) return { continue: true };
     return {
       continue: true,
@@ -355,12 +516,21 @@ export class AgentManager extends EventEmitter {
     | ChildEnvResolver
     | undefined;
   #resolver: PermissionResolver | undefined;
+  #turnDeadline: ((sessionId: string) => number | null) | undefined;
   /** Optional per-session CLAUDE_CONFIG_DIR override. Node workers install one
    *  to give every session a pod-local home seeded from the gateway; unset =
    *  today's resolution (persona home / per-initiator home / inherited). */
   #configDirResolver: ((sessionId: string, persona: string | undefined) => Promise<string>) | undefined;
   #personaSoulResolver: PersonaSoulResolver | undefined;
   #personaModelResolver: PersonaModelResolver | undefined;
+  #guardrailResolver: GuardrailResolver | undefined;
+  #guardrailSink: GuardrailSink | undefined;
+  /** Per live session: the owner guardrails its boot resolved (fixed until the next boot). */
+  #sessionGuardrails = new Map<string, SessionGuardrails>();
+  /** Per session: the slugs whose on-match Guidance it has been given. Cleared on every boot. */
+  #guidanceDelivered = new Map<string, Set<string>>();
+  /** Inbound-triggered Guidance waiting for the session's next engaged turn (survives a reboot). */
+  #guidanceQueue = new Map<string, Array<{ slug: string; name: string; body: string }>>();
   #mcpResolver: McpResolver | undefined;
   #localMcpResolver: McpResolver | undefined;
   /** Episodic memory. The process provider in mono and on the gateway; the
@@ -404,6 +574,16 @@ export class AgentManager extends EventEmitter {
   /** How long sendMessage waits for a reloading session to exit. */
   #reloadExitTimeoutMs = RELOAD_EXIT_TIMEOUT_MS;
 
+  /** How long a query stays silent after a result before what it still counts is taken as folded. */
+  #foldedQuietMs = FOLDED_INPUT_QUIET_MS;
+  /** Bumped when queued inputs are dropped (dropQueuedInputs); each queued input remembers the value it saw. */
+  #queueEpoch = new Map<string, number>();
+
+  /** TEST SEAM: shrink the quiet period that bounds a wait on a folded input. */
+  __setFoldedQuietForTests(ms: number) {
+    this.#foldedQuietMs = ms;
+  }
+
   /** TEST SEAM: shrink the bounded wait for a reloading session's exit. */
   __setReloadExitTimeoutForTests(ms: number) {
     this.#reloadExitTimeoutMs = ms;
@@ -415,11 +595,27 @@ export class AgentManager extends EventEmitter {
   #suppressNextTurn = new Set<string>();
   /** Sessions whose idle TTL is suspended (an active voice call, spec §6). */
   #idleHeld = new Set<string>();
+  /** Sessions that are heartbeat wakes (see #armWake). */
+  #wakes = new Map<string, WakeState>();
+  /** Per session, the last delivery waiting to change the session's kind
+   *  (#sendInOrder): anything sent while one exists goes behind it. */
+  #kindQueue = new Map<string, Promise<void>>();
+  /** Per session, #send calls still running. A person's message that took the
+   *  direct path has no mark and no live session yet while it reads the store
+   *  or waits for the folder: a wake queues behind it, or that boot reads the
+   *  wake's mark and boots as a wake. */
+  #sendsInProgress = new Map<string, number>();
+  /** Per session, the inputs pushed and not yet seen by UserPromptSubmit, with
+   *  whether each was suppressed (#takeSuppressed matches them by text).
+   *  Emptied when no input is outstanding. */
+  #inputSuppression = new Map<string, SuppressionEntry[]>();
   #budget = new TokenBudget({
     fallbackContextWindow: env.tokenFallbackContextWindow(),
   });
   /** Built-in skills loaded per session; reset at every boot, dropped at teardown. */
   #skillGate = new SkillGate();
+  /** The agent's proactive folder holds one turn at a time in this process. */
+  #claims = new WorkspaceClaims();
 
   /** Current context-usage snapshot for a session, or null if no turn has completed. */
   getTokenSnapshot(sessionId: string): UsageSnapshot | null {
@@ -460,6 +656,53 @@ export class AgentManager extends EventEmitter {
    *  configured, or as the default soul, instead of failing loudly. */
   setPersonaSoulResolver(resolver: PersonaSoulResolver | undefined) {
     this.#personaSoulResolver = resolver;
+  }
+
+  /** Install the owner guardrail resolver, called at session boot with the
+   *  session's persona and channel (mono and gateway: the verified database
+   *  snapshot; a node: its runtime bundle). Unset = no owner guardrails. */
+  setGuardrailResolver(resolver: GuardrailResolver | undefined) {
+    this.#guardrailResolver = resolver;
+  }
+
+  /** Install where guardrail firings are recorded. Unset = not recorded. */
+  setGuardrailSink(sink: GuardrailSink | undefined) {
+    this.#guardrailSink = sink;
+  }
+
+  /** The owner guardrails a live session booted with, or null. */
+  guardrailsFor(sessionId: string): SessionGuardrails | null {
+    return this.#sessionGuardrails.get(sessionId) ?? null;
+  }
+
+  /**
+   * Inbound-triggered Guidance for a session's next turn (the gateway matched
+   * the trigger; on a node it arrives with the job). Each guardrail is handed
+   * over at most once per session boot: what the session already has is
+   * dropped when the turn drains the queue.
+   */
+  offerGuidance(sessionId: string, items: ReadonlyArray<{ slug: string; name: string; body: string }>) {
+    if (items.length === 0) return;
+    const q = this.#guidanceQueue.get(sessionId) ?? [];
+    for (const it of items) if (!q.some((x) => x.slug === it.slug)) q.push({ slug: it.slug, name: it.name, body: it.body });
+    this.#guidanceQueue.set(sessionId, q);
+  }
+
+  /** A live session ended: its boot snapshot and delivery marks go with it. */
+  #forgetGuardrails(sessionId: string) {
+    this.#sessionGuardrails.delete(sessionId);
+    this.#guidanceDelivered.delete(sessionId);
+  }
+
+  /** Drain the queued Guidance the session has not been given yet, marking it given. */
+  #takeGuidance(sessionId: string): Array<{ slug: string; name: string; body: string }> {
+    const q = this.#guidanceQueue.get(sessionId) ?? [];
+    this.#guidanceQueue.delete(sessionId);
+    const seen = this.#guidanceDelivered.get(sessionId) ?? new Set<string>();
+    this.#guidanceDelivered.set(sessionId, seen);
+    const due = q.filter((x) => !seen.has(x.slug));
+    for (const x of due) seen.add(x.slug);
+    return due;
   }
 
   /** Install a per-session persona model resolver (a node: the runtime
@@ -512,6 +755,37 @@ export class AgentManager extends EventEmitter {
     this.#resolver = resolver;
   }
 
+  /** The live session's abort signal (a stopped turn aborts it), or undefined when none is live. */
+  sessionSignal(sessionId: string): AbortSignal | undefined {
+    return this.#live.get(sessionId)?.abort.signal;
+  }
+
+  /** Node only: the epoch ms a session's current turn must end by (its hard
+   *  turn deadline). An owner tool card ends before it. */
+  setTurnDeadline(fn: ((sessionId: string) => number | null) | undefined) {
+    this.#turnDeadline = fn;
+  }
+
+  /**
+   * Hold one call on an owner approve rule's card through the permission
+   * resolver (the gateway's wrapper in mono, the node's resolver on a node).
+   * A wake has nobody to ask: refused before any card.
+   */
+  async #ownerApprove(sessionId: string, req: ApproveRequest): Promise<ApproveOutcome> {
+    if (this.#wakes.has(sessionId)) return { allow: false, reason: "nobody is in this turn to approve it (you woke on your own)" };
+    const resolver = this.#resolver;
+    if (!resolver) return { allow: false, reason: "no approval card can be shown in this session" };
+    const r = await resolver(sessionId, req.toolName, req.input, {
+      signal: req.signal,
+      suggestions: [],
+      toolUseID: req.toolUseId,
+      decisionReason: req.approval.message,
+      ownerApproval: req.approval,
+    } as PermissionContext);
+    if (r.behavior === "allow") return { allow: true, reason: "allowed on the approval card" };
+    return { allow: false, reason: r.message || "denied" };
+  }
+
   /** Install a transport-level MCP server resolver. Called once per session start. */
   setMcpResolver(resolver: McpResolver | undefined) {
     this.#mcpResolver = resolver;
@@ -548,6 +822,17 @@ export class AgentManager extends EventEmitter {
   /** Install a transport-level Stop hook guard (e.g. Slack "must reply" enforcement). */
   setStopGuard(guard: StopGuard | undefined) {
     this.#stopGuard = guard;
+  }
+
+  /** Whether a Stop guard is installed (the guardrails view: absent, the
+   *  must-reply hook is a no-op, so it reports "not wired"). */
+  hasStopGuard(): boolean {
+    return this.#stopGuard !== undefined;
+  }
+
+  /** Whether a permission resolver is installed (absent: no canUseTool). */
+  hasPermissionResolver(): boolean {
+    return this.#resolver !== undefined;
   }
 
   /** Remote mode (spec §4.1): resolver says whether a session's tools run remotely;
@@ -666,7 +951,9 @@ export class AgentManager extends EventEmitter {
     threadTs?: string | null,
   ): Promise<string | undefined> {
     return this.#cronOAuthUser.get(sessionId)
-      ?? (channel && threadTs ? (await this.#lockFor(sessionId, channel, threadTs))?.locked_user : undefined);
+      ?? (channel && threadTs && !isChannelSessionKey((await this.#store.findById(sessionId))?.slack_thread_ts)
+        ? (await this.#lockFor(sessionId, channel, threadTs))?.locked_user
+        : undefined);
   }
 
   #lockResolver: ((sessionId: string) => Promise<OneOnOneLockRow | null | undefined>) | null = null;
@@ -691,23 +978,43 @@ export class AgentManager extends EventEmitter {
     return this.#live.size;
   }
 
+  /**
+   * The owner guardrail set moved to `version`: every live session that booted
+   * with another version reloads after its turn (an idle one now), so its next
+   * turn boots with the new snapshot. Returns how many were asked to.
+   */
+  reloadForGuardrails(version: number): number {
+    let n = 0;
+    for (const id of [...this.#live.keys()]) {
+      if ((this.#sessionGuardrails.get(id)?.version ?? 0) === version) continue;
+      if (this.reloadAfterTurn(id)) n++;
+    }
+    return n;
+  }
+
   /** Whether a specific session has an active SDK Query loop right now. */
   isLive(sessionId: string): boolean {
     return this.#live.has(sessionId);
   }
 
+  /** Whether a live session has a turn in flight (an input is outstanding). */
+  turnInFlight(sessionId: string): boolean {
+    return (this.#live.get(sessionId)?.pendingInputs ?? 0) > 0;
+  }
+
   /** Get-or-create a session bound to a Slack thread. */
-  async ensureSession(thread: ThreadKey, opts: { title?: string } = {}) {
+  async ensureSession(thread: ThreadKey, opts: { title?: string; workingDir?: string } = {}) {
     let row = await this.#store.findByThread(thread);
     if (!row) {
       // Multi-persona: named personas sharing a thread must not share a cwd.
       // Suffix the workspace with the persona; default persona → path unchanged.
       const personaSuffix =
         thread.persona_id && thread.persona_id !== "default" ? `__${thread.persona_id}` : "";
-      const workingDir = join(
-        paths.workspaces,
-        `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}${personaSuffix}`,
-      );
+      // `opts.workingDir` (a heartbeat thread's shared folder) applies only here,
+      // at creation; an existing row keeps the folder it has.
+      const workingDir =
+        opts.workingDir ??
+        join(paths.workspaces, `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}${personaSuffix}`);
       mkdirSync(workingDir, { recursive: true });
       try {
         row = await this.#store.createForThread({
@@ -760,8 +1067,14 @@ export class AgentManager extends EventEmitter {
 
   /** Clear the hold and tell listeners (voice calls) the live session is gone.
    *  A throwing listener must not stall teardown. */
-  #signalSessionExit(sessionId: string) {
+  #signalSessionExit(sessionId: string, o: { keepWake?: boolean } = {}) {
     this.#idleHeld.delete(sessionId);
+    this.#inputSuppression.delete(sessionId);
+    if (!o.keepWake) {
+      this.#wakeEnded(sessionId);
+      this.#wakes.delete(sessionId);
+    }
+    this.#claims.releaseHolder(sessionId);
     try {
       this.emit("sessionExit", sessionId);
     } catch (e) {
@@ -775,9 +1088,179 @@ export class AgentManager extends EventEmitter {
     return (this.#live.get(sessionId)?.pendingInputs ?? 0) > 0;
   }
 
+  /** Whether a turn is running or about to on this session: an input the CLI has
+   *  not folded away, a boot or a send under way, or queued work. Unlike
+   *  isTurnInFlight, a count left high by a folded input does not read as busy. */
+  turnRunning(sessionId: string): boolean {
+    if (this.#booting.has(sessionId) || this.#sendsInProgress.has(sessionId) || this.#kindQueue.has(sessionId)) return true;
+    const live = this.#live.get(sessionId);
+    return !!live && live.pendingInputs > 0 && !this.#onlyFoldedLeft(live);
+  }
+
+  /** True when the session works in the agent's proactive folder and another
+   *  session holds that folder now, so a message sent to it would wait for
+   *  the folder. False for a session anywhere else, or one that holds it. */
+  async folderHeldByOther(sessionId: string): Promise<boolean> {
+    const cached = this.#live.get(sessionId);
+    const dir = cached ? cached.workingDir : (await this.#store.findById(sessionId))?.working_dir;
+    if (!isProactiveWorkspace(dir)) return false;
+    const holder = this.#claims.holderOf(dir!);
+    return holder !== null && holder !== sessionId;
+  }
+
   /** Send user input. Starts session loop if not already live. */
-  async sendMessage(sessionId: string, text: string, opts: { sender?: InputSender; backgroundRun?: BackgroundTurnRun } = {}) {
-    return this.#send(sessionId, text, false, opts.sender ?? null, opts.backgroundRun);
+  async sendMessage(sessionId: string, text: string, opts: { sender?: InputSender; backgroundRun?: BackgroundTurnRun; wake?: WakeOptions } = {}) {
+    return this.#sendInOrder(sessionId, text, { wake: opts.wake, sender: opts.sender ?? null, run: opts.backgroundRun });
+  }
+
+  /**
+   * Deliver an input, first putting the session in the kind of boot it needs.
+   * A session with no wake involved goes straight to #send, without even a
+   * tick. Otherwise it joins this session's queue: arrival order holds across
+   * the waits, and each delivery settles alone, so two callers cannot both
+   * restart the session.
+   */
+  #sendInOrder(sessionId: string, text: string, o: { wake?: WakeOptions; synthetic?: boolean; sender?: InputSender | null; run?: BackgroundTurnRun }): Promise<void> {
+    const wantWake = !!o.wake;
+    // Bound here, to this message: an earlier input must not consume it.
+    const suppressed = !wantWake && !o.synthetic && this.#suppressNextTurn.delete(sessionId);
+    const direct = !this.#kindQueue.has(sessionId) && !this.#needsSettling(sessionId, wantWake);
+    if (direct && !wantWake) return this.#send(sessionId, text, o.synthetic ?? false, o.sender ?? null, o.run, suppressed);
+    const queuedAt = this.#queueEpoch.get(sessionId) ?? 0;
+    const deliver = async () => {
+      if (o.wake) this.#refuseWakeDuringCall(sessionId, o.run);
+      const armed = o.wake ? this.#armWake(sessionId, o.wake, o.run) : undefined;
+      try {
+        await this.#send(sessionId, text, o.synthetic ?? false, o.sender ?? null, o.run, suppressed);
+      } catch (e) {
+        // Its input never went in: nothing behind it may wait for its turn.
+        if (armed && this.#wakes.get(sessionId) === armed) {
+          this.#wakeEnded(sessionId);
+          this.#wakes.delete(sessionId);
+        }
+        throw e;
+      }
+    };
+    if (direct) return deliver();
+    const run = (this.#kindQueue.get(sessionId) ?? Promise.resolve()).then(async () => {
+      if ((this.#queueEpoch.get(sessionId) ?? 0) !== queuedAt) return this.#dropQueued(sessionId, o.run);
+      await this.#settleBootKind(sessionId, wantWake, o.run);
+      // The wait above is where a drop lands (the wake it waited for is what /new aborts).
+      if ((this.#queueEpoch.get(sessionId) ?? 0) !== queuedAt) return this.#dropQueued(sessionId, o.run);
+      await deliver();
+    });
+    const tail = run.catch(() => {});
+    this.#kindQueue.set(sessionId, tail);
+    void tail.then(() => {
+      if (this.#kindQueue.get(sessionId) === tail) this.#kindQueue.delete(sessionId);
+    });
+    return run;
+  }
+
+  /** An input queued behind a session that was retired: it does not run, and a wake's run closes. */
+  #dropQueued(sessionId: string, run: BackgroundTurnRun | undefined): void {
+    console.log(`[mgr] session=${sessionId}: dropped a queued input, the session was retired`);
+    if (run) this.#finishWakeRun(sessionId, run);
+  }
+
+  /** Close a wake's ledger run when no result will: usage unknown, so it counts at its cap, as the wall clock's does. */
+  #finishWakeRun(sessionId: string, run: BackgroundTurnRun, stats?: WakeStats): void {
+    void run.finish({}, "stopped-budget", stats).catch((e) => {
+      console.error(`[mgr] background run ${run.runId} could not be recorded session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+    });
+  }
+
+  /**
+   * Drop every input now queued behind this session's wake or restart. For a
+   * session being retired (/new): what waits would otherwise boot on it once
+   * the wake ends, and spend a model call with nowhere to reply. Inputs that
+   * come later are not affected.
+   */
+  dropQueuedInputs(sessionId: string): void {
+    this.#queueEpoch.set(sessionId, (this.#queueEpoch.get(sessionId) ?? 0) + 1);
+  }
+
+  /** A wake never waits for a voice call and never restarts one's session: it
+   *  is refused at once (a restart's sessionExit would end the call), its run
+   *  closed as neither a failure nor a cap. Throws, so its queue link settles
+   *  and whatever is behind it goes on. */
+  #refuseWakeDuringCall(sessionId: string, run: BackgroundTurnRun | undefined): void {
+    if (!voiceCallActive(sessionId)) return;
+    console.log(`[mgr] wake session=${sessionId} refused: a voice call owns the session`);
+    if (run) this.#finishWakeRun(sessionId, run);
+    throw new WakeBusyError(sessionId);
+  }
+
+  /** Whether an input of this kind cannot go straight to #send. */
+  #needsSettling(sessionId: string, wantWake: boolean): boolean {
+    if (this.#wakes.has(sessionId)) return true;
+    if (wantWake) return this.#live.has(sessionId) || this.#booting.has(sessionId) || this.#sendsInProgress.has(sessionId);
+    return this.#live.get(sessionId)?.bootedAsWake === true;
+  }
+
+  /**
+   * A query's caps and tools are fixed at boot, so a session changes kind by
+   * restarting on its transcript. A wake always gets a query of its own: the
+   * CLI measures the budget cap against the whole process, so a warm wake
+   * query would run on what the last wake left. A person's message restarts a
+   * query booted as a wake. Runs only inside #sendInOrder. Re-reads the session
+   * after every wait, and restarts only with no input outstanding.
+   */
+  async #settleBootKind(sessionId: string, wantWake: boolean, run: BackgroundTurnRun | undefined): Promise<void> {
+    for (;;) {
+      if (wantWake) this.#refuseWakeDuringCall(sessionId, run);
+      const running = this.#wakes.get(sessionId);
+      // A wake's turn is never shared with anything delivered here.
+      if (running?.inFlight) {
+        await running.done;
+        continue;
+      }
+      if (this.#booting.has(sessionId) || (wantWake && this.#sendsInProgress.has(sessionId))) {
+        await new Promise((r) => setTimeout(r, 25));
+        continue;
+      }
+      const live = this.#live.get(sessionId);
+      if (!live || !(wantWake || live.bootedAsWake)) break;
+      if (live.pendingInputs > 0 && !this.#onlyFoldedLeft(live)) {
+        await this.#turnEnded(live);
+        continue;
+      }
+      // Nothing is running, so nothing may read as in flight while it exits.
+      live.pendingInputs = 0;
+      live.inputSynthetic = [];
+      live.inputSenders = [];
+      // No await since the check at the top: a call cannot have started.
+      if (!live.reloading && !live.closing) this.reload(sessionId);
+      // Here, not in #send: the old query's exit signal clears the wake mark,
+      // so it must have fired before the next wake is armed.
+      await this.#exitOfClosing(sessionId);
+    }
+    if (!wantWake) this.#wakes.delete(sessionId);
+  }
+
+  /** The CLI joins inputs queued during a turn, so one result can answer
+   *  several and the count never reaches zero. They are taken as folded only
+   *  when the query has been silent since its last result. Anything seen since
+   *  means a turn is running, however long it is quiet (a slow tool), and it is
+   *  waited for: its result re-arms this. */
+  #onlyFoldedLeft(live: LiveSession): boolean {
+    return live.lastResultAt !== undefined && !live.activeSinceResult && Date.now() - live.lastResultAt >= this.#foldedQuietMs;
+  }
+
+  /** Resolves at the query's next result (which covers the branches that emit
+   *  no "done"), when it is gone, or when its quiet period is up. The caller
+   *  re-reads the session. */
+  #turnEnded(live: LiveSession): Promise<void> {
+    if (!live.turnEnded) {
+      let resolve!: () => void;
+      const promise = new Promise<void>((r) => (resolve = r));
+      live.turnEnded = { promise, resolve };
+    }
+    const waits = [live.turnEnded.promise, live.exited];
+    if (live.lastResultAt === undefined || live.activeSinceResult) return Promise.race(waits);
+    const left = Math.max(0, live.lastResultAt + this.#foldedQuietMs - Date.now());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([...waits, new Promise<void>((r) => (timer = setTimeout(r, left)))]).finally(() => clearTimeout(timer));
   }
 
   /**
@@ -811,23 +1294,115 @@ export class AgentManager extends EventEmitter {
     const out: InputSender[] = [];
     for (const s of live.inputSenders) {
       if (!s) return null;
-      if (!out.some((o) => o.userId === s.userId && o.teamId === s.teamId && o.origin === s.origin)) out.push(s);
+      if (!out.some((o) => o.userId === s.userId && o.teamId === s.teamId && o.origin === s.origin)) out.push({ userId: s.userId, teamId: s.teamId, origin: s.origin });
     }
     return out;
   }
 
-  async #send(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null = null, run?: BackgroundTurnRun) {
+  /**
+   * The own text of every input outstanding now, as turnSenders counts them
+   * (a queued input may fold into the running turn). Null whenever turnSenders
+   * would be, or any input was delivered without its text.
+   */
+  turnTexts(sessionId: string): string[] | null {
+    if (!this.turnSenders(sessionId)) return null;
+    const texts = this.#live.get(sessionId)!.inputSenders.map((s) => s?.text);
+    return texts.every((t): t is string => typeof t === "string") ? texts : null;
+  }
+
+  async #send(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null = null, run?: BackgroundTurnRun, suppressed = false) {
+    // Counted in this frame, with no wrapper: a wrapper's await would add a tick to every send.
+    this.#sendsInProgress.set(sessionId, (this.#sendsInProgress.get(sessionId) ?? 0) + 1);
+    // A session in the agent's proactive folder waits for the folder before
+    // its turn starts: two threads there never run at once in this process.
+    // Re-entrant, so the holder's own next input never waits on itself. The
+    // working dir is set at creation and never changes: a live session's
+    // cached copy saves a store read (a /v1 call on a node) per input.
+    let claimed = false;
+    try {
+      const cached = this.#live.get(sessionId);
+      const dir = cached ? cached.workingDir : (await this.#store.findById(sessionId))?.working_dir;
+      claimed = isProactiveWorkspace(dir);
+      await this.#sendClaimed(sessionId, text, synthetic, sender, run, claimed ? dir! : null, suppressed);
+    } catch (e) {
+      // Failed before its input was in, and no other input of this session
+      // runs or boots: nothing of this session runs there.
+      if (claimed && !this.isTurnInFlight(sessionId) && !this.#booting.has(sessionId)) this.#claims.releaseHolder(sessionId);
+      throw e;
+    } finally {
+      const n = (this.#sendsInProgress.get(sessionId) ?? 1) - 1;
+      if (n > 0) this.#sendsInProgress.set(sessionId, n);
+      else this.#sendsInProgress.delete(sessionId);
+    }
+  }
+
+  async #sendClaimed(sessionId: string, text: string, synthetic: boolean, sender: InputSender | null, run: BackgroundTurnRun | undefined, claimDir: string | null, suppressed: boolean) {
     // Signal that a real user turn is starting for this session. Slash commands
     // and dropped messages never reach here, so a listener can distinguish
     // "agent will run" from "handled inline" without waiting for done/error.
-    this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
+    // A session in the proactive folder signals it once it holds the folder.
+    if (!claimDir) this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
+    let live: LiveSession | undefined;
+    // Repeats until the folder is held without waiting for it: anything read
+    // before a wait (the live instance, its reload state) may be stale after.
+    for (;;) {
+      live = this.#live.get(sessionId);
+      // A reloading (or idled-out) session has closed its input: anything pushed now would never
+      // reach the CLI. Wait for it to exit and boot a fresh one for this message.
+      if (live?.reloading || live?.closing) live = await this.#exitOfClosing(sessionId);
+      // Never into a running check turn (LiveSession.checkEnded). Unbounded here
+      // like the check itself: the node's turn timeout aborts a check that never
+      // ends, and its exit releases this wait. Read the session again after.
+      if (live?.checkEnded) {
+        await Promise.race([live.checkEnded.promise, live.exited]);
+        continue;
+      }
+      // Held already (re-entrant): go on with the instance just read. Otherwise
+      // wait for the folder (an old instance's exit may have freed it) and read
+      // the session again.
+      if (!claimDir || this.#claims.holderOf(claimDir) === sessionId) break;
+      await this.#claims.acquire(claimDir, sessionId);
+    }
+    if (claimDir) this.emit("event", { type: "turnStart", sessionId } satisfies AgentEvent);
+    if (live) {
+      // flush prior turn if any pending assistant content was buffered
+      this.#flushTurn(live);
+      live.turn.user = text;
+      live.turn.assistant = [];
+      this.#stopBlocked.delete(sessionId);
+      this.#noteInput(sessionId, text, suppressed);
+      live.pushUser(text, synthetic, synthetic ? null : sender);
+      if (run) (live.bgRuns ??= new Map()).set(live.inputSeq, run);
+      this.#armIdle(live);
+      return;
+    }
+    this.#stopBlocked.delete(sessionId);
+    const noted = this.#noteInput(sessionId, text, suppressed);
+    try {
+      await this.#startSession(sessionId, text, synthetic, synthetic ? null : sender);
+    } catch (e) {
+      // Its input never reached the CLI: no hook will consume this entry.
+      const q = this.#inputSuppression.get(sessionId);
+      if (q?.includes(noted)) q.splice(q.indexOf(noted), 1);
+      throw e;
+    }
+    if (run) {
+      // A fresh session's first input is inputSeq 1. Anything else (a boot
+      // that failed, another input already in) leaves the run open for the
+      // stale-run sweep rather than charging it a turn that is not its own.
+      const booted = this.#live.get(sessionId);
+      if (booted && booted.inputSeq === 1) (booted.bgRuns ??= new Map()).set(1, run);
+      else console.warn(`[mgr] background run ${run.runId} session=${sessionId}: its input could not be tagged; the run stays open`);
+    }
+  }
+
+  /** Wait out a session whose input has closed, and return what holds the id
+   *  after it. Bounded: a CLI that never exits after its stdin closes must not
+   *  hang this forever. Past the bound the old session is aborted and detached
+   *  (its eventual exit cannot touch the fresh one), and undefined is returned. */
+  async #exitOfClosing(sessionId: string): Promise<LiveSession | undefined> {
     let live = this.#live.get(sessionId);
-    // A reloading session has closed its input: anything pushed now would never
-    // reach the CLI. Wait for it to exit and boot a fresh one for this message.
-    // Bounded: a CLI that never exits after its stdin closes must not hang this
-    // forever. Past the bound the old session is aborted and detached (its
-    // eventual exit cannot touch the fresh one), and the message boots fresh.
-    while (live?.reloading) {
+    while (live?.reloading || live?.closing) {
       const old = live;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const exited = await Promise.race([
@@ -842,36 +1417,47 @@ export class AgentManager extends EventEmitter {
         if (this.#live.get(sessionId) === old) {
           this.#live.delete(sessionId);
           this.#skillGate.forget(sessionId);
+          this.#forgetGuardrails(sessionId);
           // The detached instance's own teardown no longer owns the id and
           // stays silent, so this is its one exit signal (a voice call must learn).
           this.#signalSessionExit(sessionId);
         }
-        live = undefined;
-        break;
+        return undefined;
       }
       live = this.#live.get(sessionId);
     }
-    if (live) {
-      // flush prior turn if any pending assistant content was buffered
-      this.#flushTurn(live);
-      live.turn.user = text;
-      live.turn.assistant = [];
-      this.#stopBlocked.delete(sessionId);
-      live.pushUser(text, synthetic, synthetic ? null : sender);
-      if (run) (live.bgRuns ??= new Map()).set(live.inputSeq, run);
-      this.#armIdle(live);
-      return;
+    return live;
+  }
+
+  /** Remember a pushed input until its UserPromptSubmit. */
+  #noteInput(sessionId: string, text: string, suppressed: boolean): SuppressionEntry {
+    const entry = { text, suppressed };
+    const q = this.#inputSuppression.get(sessionId);
+    if (q) q.push(entry);
+    else this.#inputSuppression.set(sessionId, [entry]);
+    return entry;
+  }
+
+  /**
+   * Whether the prompt the hook is running for was suppressed. Matched by text,
+   * not position: an input folded into a running turn never fires its hook, and
+   * inputs the CLI joins at dequeue arrive as one prompt (newline-joined), which
+   * is suppressed only if every one of them was. Older entries are discarded
+   * with the match. A prompt matching nothing (a check, a command) is not
+   * suppressed and disturbs nothing.
+   */
+  #takeSuppressed(sessionId: string, prompt: string): boolean {
+    const q = this.#inputSuppression.get(sessionId);
+    if (!q) return false;
+    for (let start = 0; start < q.length; start++) {
+      let joined = "";
+      for (let end = start; end < q.length; end++) {
+        joined = end === start ? q[end]!.text : `${joined}\n${q[end]!.text}`;
+        if (joined === prompt) return q.splice(0, end + 1).slice(start).every((e) => e.suppressed);
+        if (!prompt.startsWith(joined)) break;
+      }
     }
-    this.#stopBlocked.delete(sessionId);
-    await this.#startSession(sessionId, text, synthetic, synthetic ? null : sender);
-    if (run) {
-      // A fresh session's first input is inputSeq 1. Anything else (a boot
-      // that failed, another input already in) leaves the run open for the
-      // stale-run sweep rather than charging it a turn that is not its own.
-      const booted = this.#live.get(sessionId);
-      if (booted && booted.inputSeq === 1) (booted.bgRuns ??= new Map()).set(1, run);
-      else console.warn(`[mgr] background run ${run.runId} session=${sessionId}: its input could not be tagged; the run stays open`);
-    }
+    return false;
   }
 
   /** (Re)arm the idle timer for a session. On expiry, close the SDK loop
@@ -882,13 +1468,61 @@ export class AgentManager extends EventEmitter {
     if (this.#idleHeld.has(live.id)) return;
     if (ms <= 0) return;
     live.idleTimer = setTimeout(() => {
+      // Not idle while an input is outstanding (a turn longer than the idle
+      // timeout): closing now would make a later send wait out the exit and
+      // abort that turn. Re-armed here, and again at the turn's result.
+      if (live.pendingInputs > 0) return this.#armIdle(live);
       // Flush any buffered assistant content; close the prompt iterable so
       // the for-await loop in #startSession unwinds cleanly.
       this.#flushTurn(live);
+      live.closing = true;
       try {
         live.closeIterable();
       } catch {}
     }, ms);
+  }
+
+  /**
+   * Mark a session as a heartbeat wake before it boots. Its query gets the caps
+   * and refuses the tools a wake may not call. The wall clock closes the run itself
+   * and ends the turn, because an aborted query never reaches a result.
+   */
+  #armWake(sessionId: string, wake: WakeOptions, run: BackgroundTurnRun | undefined): WakeState {
+    let markDone!: () => void;
+    const done = new Promise<void>((r) => (markDone = r));
+    const state: WakeState = { options: wake, run, inFlight: true, done, markDone };
+    this.#wakes.set(sessionId, state);
+    if (!wake.maxMinutes || wake.maxMinutes <= 0) return state;
+    state.timer = setTimeout(() => {
+      console.log(`[mgr] wake session=${sessionId} reached its wall clock (${wake.maxMinutes} min)`);
+      this.#closeWake(sessionId, state, { cap: "minutes", durationMs: wake.maxMinutes! * 60_000 });
+      this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
+      this.abort(sessionId);
+    }, wake.maxMinutes * 60_000);
+    (state.timer as { unref?: () => void }).unref?.();
+    return state;
+  }
+
+  /** A wake that will reach no result: its run closes here (once: its tag goes), and the wake is over. */
+  #closeWake(sessionId: string, state: WakeState, stats?: WakeStats): void {
+    const live = this.#live.get(sessionId);
+    if (live?.bgRuns) for (const [seq, r] of live.bgRuns) if (r === state.run) live.bgRuns.delete(seq);
+    if (state.run) this.#finishWakeRun(sessionId, state.run, stats);
+    this.#wakeEnded(sessionId);
+    this.#wakes.delete(sessionId);
+  }
+
+  /** The wake's turn ended: no wall clock any more, and whatever waits for it
+   *  may go on (once). The mark stays until a person's message or the session
+   *  exit clears it: this is still the query it booted. */
+  #wakeEnded(sessionId: string) {
+    const w = this.#wakes.get(sessionId);
+    if (!w) return;
+    if (w.timer) clearTimeout(w.timer);
+    w.timer = undefined;
+    if (!w.inFlight) return;
+    w.inFlight = false;
+    w.markDone();
   }
 
   /** Cancel any in-flight turn for the session. */
@@ -897,7 +1531,14 @@ export class AgentManager extends EventEmitter {
     this.#reloadAfterTurn.delete(sessionId);
     this.#autoContinue.delete(sessionId);
     this.#reloadPrompt.delete(sessionId);
-    this.#live.get(sessionId)?.abort.abort();
+    const live = this.#live.get(sessionId);
+    // An aborted query reaches no result, so an in-flight wake closes its run
+    // here. Left open, the run reads as busy and blocks the agent's next wakes
+    // until the stale sweep. The aborted query's own exit emits the `done`.
+    // Only the wake's own query: before it is live the abort stops nothing.
+    const wake = this.#wakes.get(sessionId);
+    if (wake?.inFlight && live?.bootedAsWake) this.#closeWake(sessionId, wake);
+    live?.abort.abort();
   }
 
   /** Push a raw CLI command (e.g. "/compact") directly into the live session's
@@ -1044,6 +1685,38 @@ export class AgentManager extends EventEmitter {
     return { persona, name: persona?.name };
   }
 
+  /** A booting session's soul: its runtime bundle on a node, else the registry.
+   *  A persona from an agent.yaml carries its compiled structure (a mono
+   *  session has no bundle); any other soul keeps the process-global reading. */
+  async #resolveSoul(sessionId: string, personaName: string | undefined): Promise<PersonaSoul> {
+    let soul: PersonaSoul;
+    if (this.#personaSoulResolver) {
+      soul = await this.#personaSoulResolver(sessionId, personaName);
+    } else {
+      const definition = managedPersonaDefinition(personaName);
+      const compiled = definition ? compiledPromptSoul(personaName) : null;
+      soul = {
+        soulMd: personaSoulText(personaName),
+        soulJson: compiled ?? undefined,
+        ...(definition ? { definition } : {}),
+      };
+    }
+    // Booting anyway would run the agent without its skill list and access.
+    if (soul.definition && !SoulDataSchema.safeParse(soul.soulJson).success) {
+      throw new Error(`persona '${personaName ?? "default"}' is defined by agent.yaml but its stored structure does not parse; refusing to boot`);
+    }
+    return soul;
+  }
+
+  /** The persona's skill list as Skill tool names, read now so a sync reaches a
+   *  warm session (a node asks its gateway, through the ETag-cached bundle). */
+  async #currentSkillNames(sessionId: string, personaName: string | undefined): Promise<string[] | null> {
+    const list = this.#personaSoulResolver
+      ? (await this.#personaSoulResolver(sessionId, personaName)).definition?.skills
+      : managedPersonaDefinition(personaName)?.skills;
+    return list ? allowedSkillNames(list, personaName) : null;
+  }
+
   /** The `systemPrompt.append` text for a booting session. One function for
    *  session start and {@link __systemPromptForTests}, so the test exercises the
    *  production path. A soul resolver failure propagates and fails the boot. */
@@ -1059,6 +1732,10 @@ export class AgentManager extends EventEmitter {
        *  the whole list. */
       strictMcp?: boolean;
       memBlock?: string | null;
+      /** The owner guardrails the session boots with (their Guidance block). */
+      guardrails?: SessionGuardrails | null;
+      /** The soul already resolved for this boot (else resolved here). */
+      soul?: PersonaSoul;
     },
   ): Promise<string> {
     // Named personas use their own soul for the persona block (the database
@@ -1066,16 +1743,18 @@ export class AgentManager extends EventEmitter {
     // stays the same. Default persona = the managed `default` row when one
     // exists, else the global SOUL.md. On a node the resolver supplies both
     // from the runtime bundle.
-    const soul: PersonaSoul = this.#personaSoulResolver
-      ? await this.#personaSoulResolver(sessionId, personaName)
-      : { soulMd: personaSoulText(personaName), soulJson: undefined };
+    const soul: PersonaSoul = ctx.soul ?? await this.#resolveSoul(sessionId, personaName);
     // Observable soul source: a hash, never the text.
     const soulHash = createHash("sha256").update(soul.soulMd).digest("hex").slice(0, 12);
     console.log(`[agent] session=${sessionId} persona=${personaName ?? "default"} soul=${soulHash}`);
     const { mcpServers, memBlock } = ctx;
     return [
       soulSystemBlock(soul.soulMd),
-      channelMandateBlock(ctx.channelId, soul.soulJson, sessionId, personaName),
+      compiledMandateBlock(soul),
+      // Owner Guidance right after the soul, before the channel mandate.
+      // Enforced rules are never in the prompt: code checks them.
+      ctx.guardrails?.promptBlock ?? "",
+      channelMandateBlock(ctx.channelId, soul.soulJson, sessionId, personaName, !!this.#personaSoulResolver),
       sessionModeBlock(ctx.lock ?? null, ctx.remote),
       mcpServers
         ? `<mcp-servers>\nMCP server namespaces mounted this session. Call tools as \`mcp__<server>__<tool>\`.\n${Object.keys(mcpServers)
@@ -1099,7 +1778,21 @@ export class AgentManager extends EventEmitter {
     personaId: string | undefined,
     ctx: { channelId?: string | null } = {},
   ): Promise<string> {
-    return this.#buildSystemAppend(sessionId, this.#resolvePersona(personaId).name, ctx);
+    const name = this.#resolvePersona(personaId).name;
+    const guardrails = await this.#resolveGuardrails(sessionId, name, ctx.channelId ?? null);
+    return this.#buildSystemAppend(sessionId, name, { ...ctx, guardrails });
+  }
+
+  /** The session's owner guardrails, or a typed boot failure: never an empty
+   *  set because the set could not be read or verified. */
+  async #resolveGuardrails(sessionId: string, personaName: string | undefined, channelId: string | null): Promise<SessionGuardrails | null> {
+    if (!this.#guardrailResolver) return null;
+    try {
+      return await this.#guardrailResolver(sessionId, personaName, channelId);
+    } catch (e) {
+      console.error(`[mgr] guardrails unavailable session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+      throw e instanceof BootFailure ? e : new BootFailure("GUARDRAILS_UNAVAILABLE", "owner guardrails could not be read or verified", { cause: e });
+    }
   }
 
   /** Boot a session, marked as booting (see ensureConfigFp) from the first
@@ -1118,8 +1811,23 @@ export class AgentManager extends EventEmitter {
       error: "session reboot failed",
       code: e instanceof BootFailure ? e.code : "TURN_FAILED",
     } satisfies AgentEvent);
-    if (!this.#live.has(sessionId)) this.#skillGate.forget(sessionId);
+    if (!this.#live.has(sessionId)) {
+      this.#skillGate.forget(sessionId);
+      this.#forgetGuardrails(sessionId);
+    }
     if (o.signalExit && !this.#live.has(sessionId)) this.#signalSessionExit(sessionId);
+  }
+
+  /** Reboot a session whose first boot failed, with the same first input. A
+   *  wake's ledger run moves to the new query, which runs that same turn. */
+  #retryBoot(sessionId: string, live: LiveSession, firstText: string, firstSynthetic: boolean, firstSender: InputSender | null): void {
+    const run = live.bootedAsWake ? live.bgRuns?.get(1) : undefined;
+    void this.#startSession(sessionId, firstText, firstSynthetic, firstSender)
+      .then(() => {
+        const booted = this.#live.get(sessionId);
+        if (run && booted?.inputSeq === 1) (booted.bgRuns ??= new Map()).set(1, run);
+      })
+      .catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
   }
 
   async #startSession(sessionId: string, firstText: string, firstSynthetic = false, firstSender: InputSender | null = null) {
@@ -1274,11 +1982,17 @@ export class AgentManager extends EventEmitter {
     const model = await this.#sessionModel(sessionId, row.model, personaName);
     // Strict (node): the prompt lists exactly what the CLI will mount.
     const strictNames = localMcp ? { ...baseMcpServers, ...(remoteTarget ? { [REMOTE_MCP_NAME]: true } : {}) } : null;
+    // Owner guardrails: resolved once per boot (the same lifecycle as the
+    // soul); a failure fails the boot.
+    const guardrails = await this.#resolveGuardrails(sessionId, personaName, row.slack_channel_id ?? null);
+    const soul = await this.#resolveSoul(sessionId, personaName);
     const systemAppend = await this.#buildSystemAppend(sessionId, personaName, {
+      guardrails,
+      soul,
       channelId: row.slack_channel_id,
       lock,
       remote: remoteTarget
-        ? { userId: remoteTarget.userId, dir: remoteTarget.dir, ...(remoteTarget.env ? { env: { name: remoteTarget.env.name, kind: remoteTarget.env.kind, trust: remoteTarget.env.trust } } : {}) }
+        ? { userId: remoteTarget.userId, dir: remoteTarget.dir, ...(remoteTarget.env ? { env: { name: remoteTarget.env.name, kind: remoteTarget.env.kind, trust: remoteTarget.env.trust, ...(remoteTarget.env.shared ? { shared: true } : {}) } } : {}) }
         : null,
       mcpServers: strictNames ? (Object.keys(strictNames).length > 0 ? strictNames : undefined) : mcpServers,
       strictMcp: !!localMcp,
@@ -1320,11 +2034,47 @@ export class AgentManager extends EventEmitter {
     // history — no Slack re-fetch, no synthetic preamble. (decision:"block"
     // discards the prompt *before* it persists — verified against the pinned
     // SDK; see docs/site/_content/field-notes/2026-06-16-reengage-hook-suppress.md.)
+    const guardrailKind = () => (this.#wakes.has(sessionId) ? "wake" : this.#remoteHandles.has(sessionId) ? "remote" : "interactive");
+    const guardrailCtx = () => ({ persona: personaName ?? "default", channelId: row.slack_channel_id ?? null, kind: guardrailKind() });
     const userPromptHook = makeUserPromptHook(
       sessionId,
       this.#sessionNotes,
-      () => this.#suppressNextTurn.delete(sessionId),
+      (prompt) => {
+        // The next turn has started, so what is counted is not folded.
+        live.activeSinceResult = true;
+        return this.#takeSuppressed(sessionId, prompt);
+      },
       (id) => this.#store.findById(id),
+      () => {
+        const due = this.#takeGuidance(sessionId);
+        if (due.length) this.#guardrailSink?.delivered(sessionId, due.map((d) => d.slug), { ...guardrailCtx(), via: "inbound" });
+        return due;
+      },
+    );
+    const ownerGuardrails = ownerGuardrailsHook({
+      // This boot's own snapshot, held by the hook: a teardown race on the
+      // per-session map can never leave a running CLI without its rules.
+      guardrails: () => guardrails,
+      channel: () => row.slack_channel_id,
+      delivered: () => {
+        let d = this.#guidanceDelivered.get(sessionId);
+        if (!d) this.#guidanceDelivered.set(sessionId, (d = new Set()));
+        return d;
+      },
+      onFiring: (events) => this.#guardrailSink?.firing(sessionId, events, guardrailCtx()),
+      onDelivered: (items, toolName) => this.#guardrailSink?.delivered(sessionId, items.map((i) => i.slug), { ...guardrailCtx(), via: "tool", toolName }),
+      // Remote mode: the CLI reports the alias (mcp__remote__bash); a rule
+      // written for the builtin (Bash) must still match, and the other way round.
+      toolNames: (name) => (remoteHandle ? remoteToolNames(name) : [name]),
+      // approve: the card through the permission resolver, bounded by the
+      // approve cap and (on a node) the turn deadline; a wake is refused.
+      approve: (req) => this.#ownerApprove(sessionId, req),
+      approveCapMs: () => env.guardrailApproveTimeoutSec() * 1000,
+      turnDeadline: () => this.#turnDeadline?.(sessionId) ?? null,
+    });
+    const guardrailFiles = guardrailFilesHook(
+      () => row.working_dir,
+      () => ({ guardrailsDir: GUARDRAILS_DIR, dbFile: dbDialect() === "sqlite" ? paths.db : null }),
     );
     // CC plugins installed via `bun run install-deps`. Without this, the SDK
     // ignores the enabledPlugins entry in settings.json (it only reads
@@ -1349,6 +2099,9 @@ export class AgentManager extends EventEmitter {
     const builtinPlugin = { type: "local" as const, path: BUILTIN_PLUGIN_DIR, skipMcpDiscovery: true };
     const allPlugins = [slaudeHomePlugin, builtinPlugin, ...pluginPaths];
     warnPluginsNamedLikeBuiltin(allPlugins.map((p) => p.path));
+    // An agent.yaml `skills` list: the Skill tool's names for it, and the SDK
+    // option that hides the rest from the model's listing.
+    const allowedSkills = soul.definition?.skills ? allowedSkillNames(soul.definition.skills, personaName) : null;
 
     // Opened after the soul resolves, so a boot that fails there holds no connection.
     const remoteHandle = await this.#remoteHandleFor(sessionId, remoteTarget);
@@ -1365,6 +2118,7 @@ export class AgentManager extends EventEmitter {
       );
     }
     let options: Options;
+    let wake: WakeOptions | undefined;
     try {
       const mergedMcpServers = {
         ...(baseMcpServers ?? {}),
@@ -1374,6 +2128,7 @@ export class AgentManager extends EventEmitter {
           : {}),
       };
       const hasMcpServers = Object.keys(mergedMcpServers).length > 0;
+      wake = this.#wakes.get(sessionId)?.options;
       options = {
         cwd: row.working_dir,
         // Pass `model` only when explicitly set. Empty = let the SDK / CLI use
@@ -1387,20 +2142,44 @@ export class AgentManager extends EventEmitter {
         ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
         ...(localMcp ? { strictMcpConfig: true } : {}),
         plugins: allPlugins,
+        ...(allowedSkills ? { skills: sdkSkillsOption(allowedSkills, pluginPaths.map((p) => p.path)) } : {}),
         // The aliased built-ins stay enabled (an alias needs its source tool, spike §8);
         // local-only tools with no remote counterpart are removed outright.
         ...(remoteHandle ? { toolAliases: REMOTE_TOOL_ALIASES } : {}),
-        disallowedTools: [...SCHEDULER_TOOLS, ...(remoteHandle ? REMOTE_DENIED_LOCAL_TOOLS : [])],
+        disallowedTools: [...SCHEDULER_TOOLS, ...(remoteHandle ? REMOTE_DENIED_LOCAL_TOOLS : []), ...(wake ? wakeDeniedToolIds() : WAKE_ONLY_TOOL_IDS)],
+        ...(wake?.maxBudgetUsd && wake.maxBudgetUsd > 0 ? { maxBudgetUsd: wake.maxBudgetUsd } : {}),
+        // A Guidance delivery refusal costs a turn the wake did not choose:
+        // each on-match tool guardrail can refuse once, so the cap grows by that many.
+        ...(wake?.maxTurns && wake.maxTurns > 0 ? { maxTurns: wake.maxTurns + deliveryTurnAllowance(guardrails) } : {}),
         permissionMode: mode,
         ...(mode === "bypassPermissions"
           ? { allowDangerouslySkipPermissions: true }
           : {}),
+        // Each callback is marked with its guardrail registry id (tagHook
+        // returns it unchanged); the agreement test reads the marks back.
         hooks: {
-          PreCompact: [{ hooks: [preCompact] }],
-          Stop: [{ hooks: [stopHook] }],
-          UserPromptSubmit: [{ hooks: [userPromptHook] }],
-          PreToolUse: [{ hooks: [...(remoteHandle ? [denyLocalBuiltins] : []), this.#skillGate.pre(sessionId), denySyntheticProfileWrite(() => this.isSyntheticTurn(sessionId))] }],
-          PostToolUse: [{ hooks: [this.#skillGate.post(sessionId), skillUsageHook(sessionId, personaName, () => this.#skillUsage), passEndsTurnHook()] }],
+          PreCompact: [{ hooks: [tagHook(HOOK_IDS.preCompact, preCompact)] }],
+          Stop: [{ hooks: [tagHook(HOOK_IDS.stopMustReply, stopHook)] }],
+          UserPromptSubmit: [{ hooks: [tagHook(HOOK_IDS.userPromptSuppress, userPromptHook)] }],
+          // The timeout sits above the owner approve card's inner deadline
+          // (spike: a hook may wait as long as its matcher allows).
+          PreToolUse: [{
+            timeout: approveMatcherTimeoutSec(env.guardrailApproveTimeoutSec()),
+            hooks: [
+              ...(remoteHandle ? [tagHook(HOOK_IDS.remoteDenyLocal, denyLocalBuiltins)] : []),
+              tagHook(HOOK_IDS.guardrailFiles, guardrailFiles),
+              tagHook(HOOK_IDS.ownerGuardrails, ownerGuardrails),
+              tagHook(HOOK_IDS.skillGate, this.#skillGate.pre(sessionId)),
+              tagHook(HOOK_IDS.profileWriteGuard, denySyntheticProfileWrite(() => this.isSyntheticTurn(sessionId))),
+            ],
+          }],
+          PostToolUse: [{
+            hooks: [
+              tagHook(HOOK_IDS.skillGateMark, this.#skillGate.post(sessionId)),
+              tagHook(HOOK_IDS.skillUsage, skillUsageHook(sessionId, personaName, () => this.#skillUsage)),
+              tagHook(HOOK_IDS.passEndsTurn, passEndsTurnHook()),
+            ],
+          }],
         },
         systemPrompt: {
           type: "preset",
@@ -1436,11 +2215,15 @@ export class AgentManager extends EventEmitter {
       abort,
       turn: { user: firstText, assistant: [] },
       turnTools: [],
+      toolNames: new Map(),
+      pendingReplies: new Map(),
       inAutoEvolve: false,
       channelId: row.slack_channel_id,
+      workingDir: row.working_dir,
       mode,
       personaName,
       bootFp,
+      bootedAsWake: wake !== undefined,
       inputSeq: 1, // firstText
       pendingInputs: 1, // firstText is already queued
       exited: new Promise<void>((r) => (markExited = r)),
@@ -1450,11 +2233,41 @@ export class AgentManager extends EventEmitter {
     // fails before going live leaves no state behind.
     this.#skillGate.reset(sessionId);
     this.#skillGate.markMounted(sessionId, allPlugins.some((p) => p.path === BUILTIN_PLUGIN_DIR));
+    this.#skillGate.setSkillListSource(sessionId, {
+      read: () => this.#currentSkillNames(sessionId, personaName),
+      initial: allowedSkills,
+      mounted: new Set(pluginPaths.map((p) => cliPluginName(p.path))),
+    });
+    // A fresh CLI has been given no Guidance: deliveries start over.
+    if (guardrails) this.#sessionGuardrails.set(sessionId, guardrails);
+    else this.#sessionGuardrails.delete(sessionId);
+    this.#guidanceDelivered.set(sessionId, new Set());
     this.#live.set(sessionId, live);
     onLive();
     metric.sessionsLive.set(this.#live.size);
     this.#armIdle(live);
-    await this.#store.setStatus(sessionId, "running");
+    try {
+      await this.#store.setStatus(sessionId, "running");
+    } catch (e) {
+      // The query loop never starts, so nothing else would end this live
+      // session: without this, whoever waits for its turn or exit waits forever.
+      if (live.idleTimer) clearTimeout(live.idleTimer);
+      if (this.#live.get(sessionId) === live) {
+        this.#live.delete(sessionId);
+        metric.sessionsLive.set(this.#live.size);
+        this.#budget.forget(sessionId);
+        this.#skillGate.forget(sessionId);
+        this.#forgetGuardrails(sessionId);
+        this.#stopBlocked.delete(sessionId);
+        void this.#remoteHandles.get(sessionId)?.handle.release().catch((err) =>
+          console.error(`[mgr] remote release failed session=${sessionId}: ${err instanceof RemoteError ? err.code : "error"}`));
+        markExited();
+        this.#signalSessionExit(sessionId);
+      } else {
+        markExited();
+      }
+      throw e;
+    }
 
     let stderrBuf = "";
     (options as any).stderr = (chunk: string) => {
@@ -1492,7 +2305,7 @@ export class AgentManager extends EventEmitter {
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
           // Fire and forget — restart with the same first prompt.
-          void this.#startSession(sessionId, firstText, firstSynthetic, firstSender).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          this.#retryBoot(sessionId, live, firstText, firstSynthetic, firstSender);
           return;
         }
         // Mirror failure: we seeded --session-id but a transcript with that id
@@ -1504,7 +2317,7 @@ export class AgentManager extends EventEmitter {
           await this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
           if (live.idleTimer) clearTimeout(live.idleTimer);
           this.#live.delete(sessionId);
-          void this.#startSession(sessionId, firstText, firstSynthetic, firstSender).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          this.#retryBoot(sessionId, live, firstText, firstSynthetic, firstSender);
           return;
         }
         if (live?.reloading) {
@@ -1550,17 +2363,24 @@ export class AgentManager extends EventEmitter {
           console.error(`[mgr] remote release failed session=${sessionId}: ${e instanceof RemoteError ? e.code : "error"}`));
         this.#budget.forget(sessionId);
         this.#skillGate.forget(sessionId);
+        this.#forgetGuardrails(sessionId);
         this.#stopBlocked.delete(sessionId);
         metric.sessionsLive.set(this.#live.size);
         markExited();
         exitSignalled = true;
-        this.#signalSessionExit(sessionId);
+        // A wake cut by a closed stream is still that wake's turn: its mark,
+        // caps, wall clock and run go on to the query that continues it.
+        const wakeGoesOn = live.reloading && live.bootedAsWake && this.#autoContinue.has(sessionId) && this.#wakes.get(sessionId)?.inFlight === true;
+        this.#signalSessionExit(sessionId, { keepWake: wakeGoesOn });
         // After a stream_closed auto-reload, inject a synthetic "continue"
         // prompt so the resumed session picks up without human input.
         if (live.reloading && this.#autoContinue.has(sessionId)) {
           this.#autoContinue.delete(sessionId);
           console.log(`[mgr] auto-continuing after stream_closed reload session=${sessionId}`);
-          void this.#send(sessionId, "The MCP stream was restored. Please continue where you left off.", true).catch((e) => this.#rebootFailed(sessionId, e));
+          const text = "The MCP stream was restored. Please continue where you left off.";
+          // Not through the queue: what waits there is waiting for this turn.
+          if (wakeGoesOn) void this.#send(sessionId, text, true, null, live.bgRuns?.get(1)).catch((e) => this.#rebootFailed(sessionId, e, { signalExit: true }));
+          else void this.#sendInOrder(sessionId, text, { synthetic: true }).catch((e) => this.#rebootFailed(sessionId, e));
         }
         // After a manual reload_session with a prompt, inject it so the user
         // doesn't need to type anything to resume the flow.
@@ -1568,7 +2388,7 @@ export class AgentManager extends EventEmitter {
           const p = this.#reloadPrompt.get(sessionId)!;
           this.#reloadPrompt.delete(sessionId);
           console.log(`[mgr] injecting reload prompt session=${sessionId}`);
-          void this.#send(sessionId, p, true).catch((e) => this.#rebootFailed(sessionId, e));
+          void this.#sendInOrder(sessionId, p, { synthetic: true }).catch((e) => this.#rebootFailed(sessionId, e));
         }
       }
     })().catch((e) => {
@@ -1584,6 +2404,7 @@ export class AgentManager extends EventEmitter {
         if (live.idleTimer) clearTimeout(live.idleTimer);
         this.#live.delete(sessionId);
         this.#skillGate.forget(sessionId);
+        this.#forgetGuardrails(sessionId);
       }
       markExited();
       if (!exitSignalled && (owned || !this.#live.has(sessionId))) {
@@ -1619,7 +2440,13 @@ export class AgentManager extends EventEmitter {
     const live = owner;
     switch (msg.type) {
       case "assistant": {
+        live.activeSinceResult = true;
         void this.#bestEffortStore(sessionId, "markStarted", () => this.#store.markStarted(sessionId));
+        // The context fill is this call's prompt, not the result's per-turn sum.
+        // A subagent's messages (parent_tool_use_id set) run in their own context.
+        if (!(msg as { parent_tool_use_id?: string | null }).parent_tool_use_id) {
+          this.#budget.notePrompt(sessionId, (msg.message as { usage?: PromptUsage }).usage);
+        }
         // The SDK's BetaContentBlock union types only text + tool_use, but the
         // model also emits thinking blocks at runtime. Widen so the thinking
         // branch type-checks (both the discriminant and `.thinking`).
@@ -1635,7 +2462,7 @@ export class AgentManager extends EventEmitter {
         >;
         for (const block of blocks) {
           if (block.type === "text") {
-            live?.turn.assistant.push(block.text);
+            if (live) recordAnswer(live.turn.assistant, block.text);
             this.emit("event", {
               type: "assistantText",
               sessionId,
@@ -1651,12 +2478,19 @@ export class AgentManager extends EventEmitter {
             } satisfies AgentEvent);
           } else if (block.type === "tool_use") {
             if (live) live.turnTools.push(block.name);
+            const toolUseId = typeof block.id === "string" && block.id ? block.id : undefined;
+            if (live && toolUseId) live.toolNames.set(toolUseId, block.name);
+            // What the agent said through a reply tool is the turn's answer:
+            // held here until its result says it was delivered (see toolResult).
+            const replied = replyToolText(block.name, block.input);
+            if (live && replied && toolUseId && !live.inAutoEvolve) live.pendingReplies.set(toolUseId, replied);
             metric.toolCallsTotal.inc({ tool: block.name });
             this.emit("event", {
               type: "toolCall",
               sessionId,
               tool: block.name,
               input: block.input,
+              ...(toolUseId ? { toolUseId } : {}),
               ...evolve,
             } satisfies AgentEvent);
           }
@@ -1665,6 +2499,7 @@ export class AgentManager extends EventEmitter {
       }
       case "user": {
         if (msg.tool_use_result !== undefined) {
+          live.activeSinceResult = true;
           // Detect stream_closed cascade: an external MCP server disconnecting
           // can tear down the SDK's shared MCP transport pool, causing ALL
           // in-process slaude_* tool calls to fail with "Stream closed".
@@ -1684,10 +2519,22 @@ export class AgentManager extends EventEmitter {
               this.#streamClosedCount.set(sessionId, prev + 1);
             }
           }
+          const toolUseId = toolResultId(msg.message);
+          const tool = toolUseId ? (live?.toolNames.get(toolUseId) ?? "") : "";
+          if (toolUseId) live?.toolNames.delete(toolUseId);
+          // A reply joins the conversation record once delivered: posted, or
+          // held in the console (the operator got it). A refused or failed one
+          // reached nobody.
+          const pendingReply = toolUseId ? live?.pendingReplies.get(toolUseId) : undefined;
+          if (toolUseId && pendingReply !== undefined) {
+            live!.pendingReplies.delete(toolUseId);
+            if (replyDelivered(msg.message, msg.tool_use_result)) recordAnswer(live!.turn.assistant, pendingReply);
+          }
           this.emit("event", {
             type: "toolResult",
             sessionId,
-            tool: "",
+            tool,
+            ...(toolUseId ? { toolUseId } : {}),
             result: msg.tool_use_result,
             ...(live?.inAutoEvolve ? { autoEvolve: true } : {}),
           } satisfies AgentEvent);
@@ -1695,17 +2542,39 @@ export class AgentManager extends EventEmitter {
         break;
       }
       case "result": {
+        const resultError = msg.is_error ? ("errors" in msg && Array.isArray((msg as any).errors) ? (msg as any).errors.join("; ") : msg.subtype) : "";
+        const resumeMiss = RESUME_MISS_RE.test(resultError);
         if (live) {
+          // Settled first so no branch below can miss it; a waiting input resumes
+          // only after this handler returns, and reads the session again then.
+          live.checkEnded?.resolve();
+          live.checkEnded = undefined;
+          // A call still open when its turn ends never gets a result.
+          live.toolNames.clear();
+          live.pendingReplies.clear();
           // The input this result ends: the oldest outstanding one.
           const endedSeq = live.inputSeq - live.pendingInputs + 1;
-          const bgRun = live.bgRuns?.get(endedSeq);
+          // A wake's own input is always this query's first (it boots for it).
+          const wakesTurn = live.bootedAsWake && endedSeq === 1;
+          // Its turn is not over when the same wake is about to run again: a
+          // resume miss reboots it, and a closed stream continues it.
+          const wakeGoesOn = wakesTurn && (resumeMiss || (this.#pendingReload.has(sessionId) && (this.#streamClosedCount.get(sessionId) ?? 1) <= 2));
+          const bgRun = wakeGoesOn ? undefined : live.bgRuns?.get(endedSeq);
           if (bgRun) live.bgRuns!.delete(endedSeq);
           live.pendingInputs = Math.max(0, live.pendingInputs - 1);
           live.inputSynthetic.shift();
           live.inputSenders.shift();
+          live.lastResultAt = Date.now();
+          live.activeSinceResult = false;
+          live.turnEnded?.resolve();
+          live.turnEnded = undefined;
+          // Anything left never fired its hook (the CLI folded it into a turn).
+          // Not on a resume miss: the retried boot runs that same input.
+          if (live.pendingInputs === 0 && !resumeMiss) this.#inputSuppression.delete(sessionId);
+          if (wakesTurn && !wakeGoesOn) this.#wakeEnded(sessionId);
           // The check turn's result: its own usage (this result's running
           // modelUsage minus the qualifying turn's) ends its budgeted run.
-          const r = msg as { subtype?: string; is_error?: boolean; usage?: Partial<ResultUsage>; modelUsage?: Record<string, ModelUsageRow> };
+          const r = msg as { subtype?: string; is_error?: boolean; usage?: Partial<ResultUsage>; modelUsage?: Record<string, ModelUsageRow>; num_turns?: number; duration_ms?: number };
           if (live.inAutoEvolve && live.evolveRun) {
             const ok = r.subtype === "success" && !r.is_error;
             this.#endEvolveRun(sessionId, live, ok ? "ok" : "error", turnModelTokens(r.modelUsage, live.evolveRun.base, r.usage));
@@ -1713,7 +2582,10 @@ export class AgentManager extends EventEmitter {
           if (bgRun) {
             const ok = r.subtype === "success" && !r.is_error;
             const usage = turnModelTokens(r.modelUsage, live.lastModelUsage, r.usage);
-            void bgRun.finish(usage, ok ? "ok" : "error").catch((e) => {
+            const wake = this.#wakes.has(sessionId);
+            const cap = wake ? (r.subtype === "error_max_budget_usd" ? ("usd" as const) : r.subtype === "error_max_turns" ? ("turns" as const) : undefined) : undefined;
+            const stats = wake ? { ...(r.num_turns !== undefined ? { turns: r.num_turns } : {}), ...(r.duration_ms !== undefined ? { durationMs: r.duration_ms } : {}), ...(cap ? { cap } : {}) } : undefined;
+            void bgRun.finish(usage, ok ? "ok" : cap ? "stopped-budget" : "error", stats).catch((e) => {
               console.error(`[mgr] background run ${bgRun.runId} could not be recorded session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
             });
           }
@@ -1746,6 +2618,7 @@ export class AgentManager extends EventEmitter {
             // A config reload still applies: it is not an MCP recovery attempt.
             if (deferredReload) this.reload(sessionId);
           }
+          this.#releaseIfIdle(sessionId, live);
           break;
         }
         // Clean turn — reset the circuit breaker counter.
@@ -1782,18 +2655,23 @@ export class AgentManager extends EventEmitter {
           } satisfies AgentEvent);
         }
         if (msg.is_error) {
-          const errStr =
-            "errors" in msg && Array.isArray((msg as any).errors)
-              ? (msg as any).errors.join("; ")
-              : msg.subtype;
+          const errStr: string = resultError;
           // A resume miss also arrives here as a result(is_error), in parallel
           // with the stderr/throw that drives the silent reboot in #startSession.
           // Suppress the user-facing emit so the self-healing migration stays
           // invisible — the catch path recovers it; surfacing a :warning: here
           // just scares the user about an expected, already-handled condition.
-          if (RESUME_MISS_RE.test(errStr)) {
+          if (resumeMiss) {
             console.log(`[resume-attempt] suppressing resume-miss result error session=${sessionId} (reboot will reseed --session-id)`);
             if (live) live.turnTools = [];
+          } else if (this.#wakes.has(sessionId)) {
+            // Nobody is in a wake's turn: its ledger run and state record this,
+            // and the manager hears after repeated failures. A cap is not an
+            // incident, and a failed wake must not be retried at full cost.
+            metric.turnsTotal.inc({ result: "error" });
+            console.log(`[mgr] wake session=${sessionId} ended: ${redactSecrets(errStr)}`);
+            if (live) live.turnTools = [];
+            this.emit("event", { type: "done", sessionId } satisfies AgentEvent);
           } else {
             metric.turnsTotal.inc({ result: "error" });
             metric.errorsTotal.inc({ kind: "turn" });
@@ -1822,8 +2700,7 @@ export class AgentManager extends EventEmitter {
             live.turnTools = [];
             const budget = this.#backgroundBudget;
             if (!budget) {
-              live.inAutoEvolve = true;
-              live.pushUser(AUTO_EVOLVE_PROMPT, true);
+              this.#pushCheck(live);
             } else if (live.pendingInputs === 0) {
               void this.#startBudgetedCheck(sessionId, live, budget, live.inputSeq);
             } else {
@@ -1835,11 +2712,19 @@ export class AgentManager extends EventEmitter {
           }
         }
         if (deferredReload && live) this.reload(sessionId);
+        this.#releaseIfIdle(sessionId, live);
         break;
       }
       default:
         break;
     }
+  }
+
+  /** Free the proactive folder once no input of this session is outstanding
+   *  (checked after an unbudgeted skill check may have been pushed). */
+  #releaseIfIdle(sessionId: string, live: LiveSession | undefined): void {
+    if (live && live.pendingInputs > 0) return;
+    this.#claims.releaseHolder(sessionId);
   }
 
   /**
@@ -1878,7 +2763,27 @@ export class AgentManager extends EventEmitter {
       this.#finishEvolveRun(sessionId, run, "error", {});
       return;
     }
+    // Pushed after its turn freed the proactive folder: the check takes the
+    // folder only when it is free (at once), and is skipped, never queued,
+    // when another thread there holds it or waits for it.
+    if (isProactiveWorkspace(live.workingDir)) {
+      const holder = this.#claims.holderOf(live.workingDir!);
+      if (holder !== null && holder !== sessionId) {
+        console.log(`[mgr] skill check abandoned session=${sessionId}: another thread holds the proactive folder`);
+        this.#finishEvolveRun(sessionId, run, "error", {});
+        return;
+      }
+      void this.#claims.acquire(live.workingDir!, sessionId);
+    }
     live.evolveRun = run;
+    this.#pushCheck(live);
+  }
+
+  /** Start the check turn. Later inputs wait for its result (LiveSession.checkEnded). */
+  #pushCheck(live: LiveSession): void {
+    let resolve!: () => void;
+    const promise = new Promise<void>((r) => (resolve = r));
+    live.checkEnded = { promise, resolve };
     live.inAutoEvolve = true;
     live.pushUser(AUTO_EVOLVE_PROMPT, true);
   }
@@ -1919,6 +2824,9 @@ export class AgentManager extends EventEmitter {
    */
   #shouldAutoEvolve(live: LiveSession): boolean {
     if (!env.autoEvolve()) return false;
+    // A wake skips the check: the nightly skill review still sees its work.
+    // Read from the query, not the mark, which a person's message clears.
+    if (live.bootedAsWake) return false;
     const tools = live.turnTools;
     if (tools.some((t) =>
       t === "mcp__slaude_skills__write_skill" ||
@@ -1962,6 +2870,10 @@ function seenEvolveUsage(run: EvolveRun): ModelTokens {
 /** Bound on sendMessage's wait for a reloading session's CLI to exit. */
 const RELOAD_EXIT_TIMEOUT_MS = 30_000;
 
+/** Silence after a result that means the inputs still counted were folded into
+ *  a turn already answered (#onlyFoldedLeft): they will get no result. */
+const FOLDED_INPUT_QUIET_MS = 30_000;
+
 /** Tools that don't count toward the auto-evolve trigger threshold. */
 const AUTO_EVOLVE_IGNORE = new Set([
   "Read",
@@ -1972,6 +2884,8 @@ const AUTO_EVOLVE_IGNORE = new Set([
 ]);
 
 /** `/remote` alias (`mcp__remote__read`) → the built-in it stands for (`Read`). */
+/** A tool's names in a remote session: the alias and the builtin it stands for. */
+const remoteToolNames = aliasNames(REMOTE_TOOL_ALIASES);
 const REMOTE_ALIAS_BUILTIN = new Map(Object.entries(REMOTE_TOOL_ALIASES).map(([builtin, alias]) => [alias, builtin]));
 
 /** Built-in tools that mutate state; any external `mcp__` tool also counts. */
@@ -2003,24 +2917,40 @@ const AUTO_EVOLVE_PROMPT = [
   "</runtime-check>",
 ].join("\n");
 
+/** An agent.yaml's soul is prose: its global mandate reaches the prompt here. */
+function compiledMandateBlock(soul: PersonaSoul): string {
+  if (!soul.definition) return "";
+  const parsed = SoulDataSchema.safeParse(soul.soulJson);
+  const mandate = parsed.success ? parsed.data.mandate?.trim() : "";
+  return mandate ? `<mandate>\n${mandate}\n</mandate>` : "";
+}
+
 /**
- * Per-channel mandate override: when the soul defines a `## Channel` block with
- * its own `### Mandate` for this channel, an authoritative directive that
- * supersedes the global Mandate (which lives, unedited, inside the <persona>
- * text block).
+ * Scoped mandate: when a sub-mandate applies here (a `## Channel` block's
+ * `### Mandate`, or a `## Scope` block), the resolver's effective text as an
+ * authoritative directive that supersedes the global Mandate (which lives,
+ * unedited, inside the <persona> text block).
  *
  * With a structured soul from the persona soul resolver (a node's runtime
  * bundle), the mandate comes from that persona's own soul. Without one (mono,
- * the gateway, or a bundle carrying no structured soul), the process-global
- * soul via effectiveSoulForChannel, exactly as before. A structured soul that
+ * the gateway, or a bundle carrying no structured soul), from the persona's own
+ * text via personaMandateText, so a named persona never reads the default
+ * persona's sub-mandates. A structured soul that
  * is present but does not parse yields NO channel mandate: falling back to the
  * global soul would hand this persona another persona's mandate.
+ *
+ * A node never reads a database, the registry or its own disk, and reads no soul
+ * text: a bundle with no structured soul yields no channel mandate.
  */
+/** Personas already warned about a bundle with no structured soul, once each per process. */
+const warnedNoStructure = new Set<string>();
+
 function channelMandateBlock(
   channelId: string | null | undefined,
   soulJson: unknown,
   sessionId: string,
   persona: string | undefined,
+  onNode = false,
 ): string {
   if (!channelId) return "";
   let eff: string | undefined;
@@ -2032,11 +2962,21 @@ function channelMandateBlock(
   }
   if (parsed?.success) {
     base = parsed.data.mandate?.trim();
-    const ov = parsed.data.channelOverrides.find((c) => c.channel === channelId);
-    eff = ov?.mandate?.trim() || base;
+    eff = resolveSoulMandate(parsed.data, channelId, parsed.data).text.trim();
+  } else if (onNode) {
+    // A node never reads a database or the registry, and reads no soul text: a bundle
+    // with no structure has nothing to place a channel mandate by. Said once per persona,
+    // because an older gateway (or a persona never converted to agent.yaml) sends exactly this.
+    const key = persona ?? "default";
+    if (!warnedNoStructure.has(key)) {
+      warnedNoStructure.add(key);
+      console.warn(`[agent] persona=${key}: the runtime bundle has no structured soul, so no channel mandate applies on this node (define the persona as an agent.yaml, and run the gateway and nodes on the same release)`);
+    }
+    return "";
   } else {
-    eff = effectiveSoulForChannel(channelId).mandate?.trim();
-    base = soulData().mandate?.trim();
+    const own = personaMandateText(persona);
+    base = own.global;
+    eff = effectiveMandateIn(own, channelId).text.trim();
   }
   if (!eff || eff === base) return "";
   return `<channel-mandate>\nFor this channel your mandate is: ${eff}\nThis supersedes the Mandate section in your persona for this channel.\n</channel-mandate>`;

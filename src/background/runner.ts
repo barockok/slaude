@@ -33,6 +33,7 @@
  *      still writes an `error` row.
  */
 import { query as sdkQuery, type HookCallback, type McpSdkServerConfigWithInstance, type Options } from "@anthropic-ai/claude-agent-sdk";
+import { attachedResolved } from "../guardrails/attached";
 import { scrubChildEnv, TOOLS_SURVIVING_EMPTY_SET, withoutKeys } from "../agent/child-env";
 import { providerCredsEnv, providerSelectingNames } from "../agent/provider-env";
 import type { ResultUsage } from "../agent/token-budget";
@@ -45,10 +46,15 @@ import type { BrainOpCall } from "../knowledge/memory-trail";
 import { personaKbSourceIds } from "../knowledge/persona-kb";
 import { m as metric } from "../metrics";
 import { personaDefaultModel } from "../persona/registry";
-import { canStart, localDay, overAfterStart, PASS_MAX_TURNS, unpricedBlock, type BudgetConfig, type PassName } from "./budget";
+import { canStart, localDay, overAfterStart, overLimit, PASS_MAX_TURNS, unpricedBlock, type BudgetConfig, type PassName } from "./budget";
 import { budgetConfigFor } from "./config";
 import { indexWritten } from "../proactive/commitment-index";
-import { createPassMcpServer, PASS_MCP_NAME, passProfileSource, passReadSources, type PassScope, type PassTool, type TranscriptTurn } from "./pass-tools";
+import { createPassMcpServer, type PassToolName, PASS_MCP_NAME, passProfileSource, passReadSources, type PassScope, type PassTool, type TranscriptTurn } from "./pass-tools";
+import { HOOK_IDS, tagHook } from "../agent/hook-tags";
+import { deliveryTurnAllowance, ownerGuardrailsHook } from "../guardrails/hooks";
+import { sessionGuardrails, type SessionGuardrails } from "../guardrails/resolve";
+import { currentGuardrails, DEFAULT_TENANT } from "../guardrails/snapshot";
+import { auditDelivery, auditFiring, type FiringEvent } from "../guardrails/audit";
 import {
   addTokens as add,
   costUsd,
@@ -69,11 +75,15 @@ export type Outcome = RunOutcome;
 export interface PassSpec {
   pass: PassName;
   personaId: string;
+  /** The tenant the persona belongs to (its owner guardrails). Absent: the single-tenant default. */
+  tenantId?: string;
   agentId: string;
   scope: PassScope;
   prompt: string;
   transcripts?: TranscriptTurn[];
   extraTools?: PassTool[];
+  /** Which base pass tools to mount; absent: all five. */
+  baseTools?: readonly PassToolName[];
   /** The threads (`<channel>:<threadTs>`) this pass reviews: a commitment it
    *  writes is scheduled only for one of them. Absent: none is scheduled. */
   threads?: readonly string[];
@@ -92,6 +102,14 @@ export interface RunnerDeps {
   budget?: (personaId: string) => BudgetConfig;
   kbSources?: (personaId: string) => string[];
   provider?: (personaId: string) => Promise<ProviderCreds | null>;
+  /** The persona's owner guardrails (default: the verified database snapshot of the pass's tenant). A throw fails the pass. */
+  guardrails?: (personaId: string, tenantId: string) => Promise<SessionGuardrails | null>;
+}
+
+/** The persona's owner guardrails from the gateway's verified snapshot (no channel). */
+async function defaultGuardrails(personaId: string, tenantId: string): Promise<SessionGuardrails | null> {
+  const snap = await currentGuardrails(tenantId, { persona: personaId });
+  return sessionGuardrails(attachedResolved(snap.resolved), personaId, null, { version: snap.version, proseMax: env.guardrailProseMax() });
 }
 
 /** A resolved provider set (a runtime bundle's providerCreds). */
@@ -171,7 +189,19 @@ export function passQueryOptions(a: {
   toolIds: string[];
   abort: AbortController;
   provider?: ProviderCreds | null;
+  /** The agent's owner guardrails (no channel: only the unlimited ones), and where firings go. */
+  guardrails?: SessionGuardrails | null;
+  onFiring?: (events: FiringEvent[]) => void;
+  onDelivered?: (slugs: string[], toolName: string) => void;
 }): Options {
+  const delivered = new Set<string>();
+  const ownerGuardrails = ownerGuardrailsHook({
+    guardrails: () => a.guardrails ?? null,
+    channel: () => null,
+    delivered: () => delivered,
+    onFiring: (events) => a.onFiring?.(events),
+    onDelivered: (items, toolName) => a.onDelivered?.(items.map((i) => i.slug), toolName),
+  });
   return {
     systemPrompt: SYSTEM_PROMPT,
     // No model configured: the CLI's own default (what the reported usage names).
@@ -191,8 +221,10 @@ export function passQueryOptions(a: {
     strictMcpConfig: true,
     settingSources: [],
     mcpServers: { [PASS_MCP_NAME]: a.server },
-    hooks: { PreToolUse: [{ hooks: [onlyPassTools(a.toolIds)] }] },
-    maxTurns: a.maxTurns,
+    // Owner rules first: a pass tool an owner rule denies stays denied.
+    hooks: { PreToolUse: [{ hooks: [tagHook(HOOK_IDS.ownerGuardrails, ownerGuardrails), tagHook(HOOK_IDS.backgroundOnlyPassTools, onlyPassTools(a.toolIds))] }] },
+    // A Guidance delivery refusal does not count against the pass's turn cap.
+    maxTurns: a.maxTurns + deliveryTurnAllowance(a.guardrails ?? null),
     abortController: a.abort,
     persistSession: false,
     env: passChildEnv(a.provider ?? null),
@@ -246,6 +278,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
         }),
     },
     spec.extraTools,
+    spec.baseTools,
   );
   const tag = `[background] agent=${spec.agentId} pass=${spec.pass}`;
   if (spec.scope.kind === "user" && passProfileSource(spec.scope) === null) {
@@ -270,6 +303,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
   let model: string;
   let table: PriceTable;
   let provider: ProviderCreds | null;
+  let guardrails: SessionGuardrails | null = null;
   let estimate = 0;
   try {
     cfg = (deps.budget ?? budgetConfigFor)(spec.personaId);
@@ -299,6 +333,8 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
     }
     // The persona's own provider set, or null for this process's provider env. Never a mix.
     provider = await (deps.provider ?? defaultProvider)(spec.personaId);
+    // The owner's guardrails: a set that cannot be read or verified fails the pass.
+    guardrails = await (deps.guardrails ?? defaultGuardrails)(spec.personaId, spec.tenantId ?? DEFAULT_TENANT);
   } catch (e) {
     console.error(`${tag}: could not start: ${errMsg(e)}`);
     try {
@@ -359,7 +395,13 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
       prompt: (async function* () {
         yield { type: "user" as const, message: { role: "user" as const, content: passPrompt(spec) }, parent_tool_use_id: null };
       })() as never,
-      options: passQueryOptions({ model, maxTurns, server, toolIds, abort, provider }),
+      options: passQueryOptions({
+        model, maxTurns, server, toolIds, abort, provider, guardrails,
+        onFiring: (events) => {
+          for (const e of events) auditFiring(e, { persona: spec.personaId, kind: "background" });
+        },
+        onDelivered: (slugs, toolName) => auditDelivery(slugs, { persona: spec.personaId, kind: "background", via: "tool", toolName }),
+      }),
     });
     let sawResult = false;
     for await (const raw of it as AsyncIterable<{ type: string }>) {
@@ -381,7 +423,7 @@ export async function runPass(spec: PassSpec, deps: RunnerDeps): Promise<PassRes
           break;
         }
         if (shutdown) break;
-        if ((await Runs.spentOn(spec.agentId, day)) > cfg.limitUsd + 1e-9) {
+        if (await overLimit(cfg, spec.agentId, spec.pass, day)) {
           abort.abort();
           outcome = "stopped-budget";
           console.log(`${tag}: stopped, today's budget is spent`);

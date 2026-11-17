@@ -1,0 +1,6 @@
+# Anyone in an allowed channel is admitted.
+layer: allowed
+as: member
+steps:
+  - send: { text: "hello from an allowed channel" }
+  - expect_reply: { contains: "ack: done" }

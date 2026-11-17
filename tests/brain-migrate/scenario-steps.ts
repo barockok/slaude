@@ -1,6 +1,10 @@
 // Phase bodies shared by the PGLite scenario and the gated Postgres scenario.
 import { expect } from "bun:test";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { vec } from "./seed";
+import { seedBrainHome } from "../helpers/brain-template";
+import { resetBrainWorld } from "../helpers/brain-on";
 import type { BrainScope } from "../../src/knowledge/scope";
 
 export const TOKEN = "s".repeat(40);
@@ -9,6 +13,11 @@ export const SESSION = "11111111-2222-3333-4444-555555555555";
 export const useBrain = async (home: string) => {
   const { closeBrain } = await import("../../src/knowledge/brain");
   await closeBrain();
+  // A backend cached by an earlier file (a stub, or a remote one) would answer for this brain.
+  (await import("../../src/knowledge/backend")).resetBackend();
+  // A new home starts as a copy of the per-process template brain, not a
+  // fresh initdb (tests/helpers/brain-template.ts).
+  if (!existsSync(join(home, "db"))) await seedBrainHome(home);
   process.env.SLAUDE_BRAIN_HOME = home;
 };
 export const identity = async (id: string | null) => {

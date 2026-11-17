@@ -35,6 +35,9 @@ describe("parseSlashCommand", () => {
       expect(parseSlashCommand(v)).toEqual({ kind: "abort" });
     }
   });
+  test("/new", () => {
+    expect(parseSlashCommand("/new")).toEqual({ kind: "new" });
+  });
   test("help variants", () => {
     for (const v of ["/help", "/h", "/?"]) {
       expect(parseSlashCommand(v)).toEqual({ kind: "help" });
@@ -74,6 +77,16 @@ describe("helpText", () => {
     const t = helpText();
     expect(AGENT_COMMANDS.length).toBeGreaterThan(5);
     for (const c of AGENT_COMMANDS) expect(t).toContain(c.usage);
+  });
+
+  test("leaves /new out except at a channel session's root", () => {
+    expect(helpText({ channelSessionRoot: false })).not.toContain("/new");
+    expect(helpText({ channelSessionRoot: true })).toContain("/new");
+  });
+
+  test("names /new", () => {
+    expect(AGENT_COMMANDS.map((c) => c.usage)).toContain("/new");
+    expect(helpText()).toContain("/new");
   });
 
   test("AGENT_COMMANDS covers the thread/ignore gate commands", () => {

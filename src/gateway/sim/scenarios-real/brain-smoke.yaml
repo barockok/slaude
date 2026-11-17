@@ -1,9 +1,9 @@
 layer: trusted
 as: member
 steps:
-  - send: { text: "Call the kb_memoize tool with pages set to a single-element array containing { slug: \"notes/sim-smoke\", content: \"Deploys ship every Thursday. marker ZYXTEST\", summary: \"sim smoke write\" }. After the tool succeeds, reply with the single word WRITEDONE." }
+  - send: { text: "Call the memory_save tool with pages set to a single-element array containing { slug: \"notes/sim-smoke\", content: \"Deploys ship every Thursday. marker ZYXTEST\", summary: \"sim smoke write\" }. After the tool succeeds, reply with the single word WRITEDONE." }
   - expect_card: { kind: approval }
   - click: { as: U0APP, action: approve }
   - expect_reply: { contains: "WRITEDONE" }
-  - send: { text: "Call the kb_search tool with query \"ZYXTEST\" and reply with the slug of the page you found." }
+  - send: { text: "Call the memory_search tool with query \"ZYXTEST\" and reply with the slug of the page you found." }
   - expect_reply: { contains: "sim-smoke" }

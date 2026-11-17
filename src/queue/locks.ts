@@ -38,7 +38,7 @@ export async function extendLock(redis: Redis, key: string, owner: string, ttlMs
   return (await redis.eval(EXTEND_IF_OWNER, 1, key, owner, ttlMs)) === 1;
 }
 
-/** Sentinel: the session lock is held by another owner; fn did not run. */
+/** Sentinel: the lock (session or other key) is held by another owner; fn did not run. */
 export const HELD_BY_OTHER: unique symbol = Symbol("held-by-other");
 
 export interface SessionLockOpts {
@@ -71,7 +71,20 @@ export async function withSessionLock<T>(
   opts: SessionLockOpts,
 ): Promise<T | typeof HELD_BY_OTHER> {
   const keys = opts.keys ?? makeKeys();
-  const key = keys.sessionLock(sessionId);
+  return withKeyLock(keys.sessionLock(sessionId), ownerId, fn, opts);
+}
+
+/**
+ * `withSessionLock` for any key: the same NX acquire, TTL, extender and
+ * lost-lock abort, and the same owner-checked release. Used directly for the
+ * proactive folder's lock (`keys.workspaceLock(dir)`).
+ */
+export async function withKeyLock<T>(
+  key: string,
+  ownerId: string,
+  fn: (signal: AbortSignal) => Promise<T>,
+  opts: SessionLockOpts,
+): Promise<T | typeof HELD_BY_OTHER> {
   const ttlMs = opts.ttlMs ?? 600_000;
   if (!(await acquireLock(opts.redis, key, ownerId, ttlMs))) return HELD_BY_OTHER;
   const ac = new AbortController();

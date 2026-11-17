@@ -1,5 +1,6 @@
+import { sameAt } from "../access/wired";
 import type { GateInput } from "../knowledge/gated-dispatch";
-import { AGENT_SOURCE, PUBLIC_SOURCE, agentSourceId, resolveBrainScope, userSourceId, type BrainScope } from "../knowledge/scope";
+import { AGENT_SOURCE, PUBLIC_SOURCE, agentSourceId, extraPersonReads, resolveBrainScope, userSourceId, type BrainScope, type PersonSlices } from "../knowledge/scope";
 
 /**
  * Where one turn's episodic memory is read from and written to, derived from
@@ -48,21 +49,26 @@ const both = (clientId: string, source: string, reads: string[] = [source]): Mem
 
 const NONE: MemoryScope = { read: null, write: null };
 
-export function memoryScopeFor(g: GateInput, opts: { channel?: string; runAsUser?: string | null } = {}): MemoryScope {
+export async function memoryScopeFor(g: GateInput, opts: { channel?: string; runAsUser?: string | null; runAsPerson?: PersonSlices } = {}): Promise<MemoryScope> {
   // Someone else's locked thread: nothing, whoever speaks (manager included).
-  if (g.userId !== null && g.lockedUser !== null && g.lockedUser !== g.userId) return NONE;
+  const seam = { persona: g.agentId, teamId: g.teamId };
+  if (g.userId !== null && g.lockedUser !== null && !(await sameAt({ ...seam, site: "memory_scope.lock_owner", userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId }))) return NONE;
   const runAs = opts.runAsUser ?? null;
   if (runAs !== null) {
-    if (g.userId !== null && g.userId !== runAs) return NONE;
-    if (g.lockedUser !== null && g.lockedUser !== runAs) return NONE;
-    return both(runAs, userSourceId(runAs));
+    if (g.userId !== null && !(await sameAt({ ...seam, site: "memory_scope.run_as_speaker", userId: g.userId, otherUserId: runAs }))) return NONE;
+    if (g.lockedUser !== null && !(await sameAt({ ...seam, site: "memory_scope.run_as_lock", userId: g.lockedUser, otherUserId: runAs, otherTeamId: g.lockedTeamId }))) return NONE;
+    const own = userSourceId(runAs);
+    return both(runAs, own, [own, ...extraPersonReads(opts.runAsPerson, own)]);
   }
-  const r = resolveBrainScope({ ...g, kbSources: [] });
+  const r = await resolveBrainScope({ ...g, kbSources: [] });
   const agentSrc = agentSourceId(g.agentId);
   if (r.sourceId !== PUBLIC_SOURCE) {
     return both(r.clientId, r.sourceId, r.sourceId === agentSrc ? [agentSrc, AGENT_SOURCE] : [r.sourceId]);
   }
-  if (g.userId !== null && isDmChannel(opts.channel)) return both(g.userId, userSourceId(g.userId));
+  if (g.userId !== null && isDmChannel(opts.channel)) {
+    const own = userSourceId(g.userId);
+    return both(g.userId, own, [own, ...extraPersonReads(g.person, own)]);
+  }
   return both(g.agentId, agentSrc);
 }
 
@@ -74,10 +80,11 @@ export function memoryScopeFor(g: GateInput, opts: { channel?: string; runAsUser
  * speaker wins (someone else's thread is the most restrictive case). An absent
  * claim (older gateway) leaves the live lock alone.
  */
-export function withClaimLock(g: GateInput, claimLockUser: string | null | undefined): GateInput {
+export async function withClaimLock(g: GateInput, claimLockUser: string | null | undefined): Promise<GateInput> {
   const claim = claimLockUser ?? null;
   const live = g.lockedUser;
-  if (claim === null || claim === live) return g;
+  const seam = { persona: g.agentId, teamId: g.teamId };
+  if (claim === null || (await sameAt({ ...seam, site: "memory_scope.claim_live_same", userId: claim, otherUserId: live }))) return g;
   if (live === null) return { ...g, lockedUser: claim };
-  return { ...g, lockedUser: live !== g.userId ? live : claim };
+  return { ...g, lockedUser: !(await sameAt({ ...seam, site: "memory_scope.live_speaker_same", userId: live, otherUserId: g.userId })) ? live : claim };
 }

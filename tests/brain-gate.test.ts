@@ -5,129 +5,129 @@ import { agentSourceId, profileSourceId, resolveBrainScope, SHARED_SOURCE, userS
 const gate = (over: Partial<GateInput> = {}): GateInput => ({
   userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1", ...over,
 });
-const scopeFor = (g: GateInput, kb: string[] = []) => resolveBrainScope({ ...g, kbSources: kb });
+const scopeFor = async (g: GateInput, kb: string[] = []) => (await resolveBrainScope({ ...g, kbSources: kb }));
 // Explicit "shared" escalation — kb_memoize target:"shared" overrides sourceId.
-const sharedScope = (g: GateInput): BrainScope => ({ ...scopeFor(g), sourceId: SHARED_SOURCE });
+const sharedScope = async (g: GateInput): Promise<BrainScope> => ({ ...(await scopeFor(g)), sourceId: SHARED_SOURCE });
 
 describe("classifyBrainOp", () => {
-  test("reads are auto everywhere", () => {
+  test("reads are auto everywhere", async () => {
     for (const op of ["search", "think", "get_page", "list_pages", "get_links", "get_backlinks", "query"]) {
       const g = gate({ channelTrust: "unknown" });
-      expect(classifyBrainOp(op, scopeFor(g), g)).toBe("auto");
+      expect((await classifyBrainOp(op, (await scopeFor(g)), g))).toBe("auto");
     }
   });
-  test("agent turn writes are auto", () => {
+  test("agent turn writes are auto", async () => {
     const g = gate({ userId: null });
-    expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("auto");
+    expect((await classifyBrainOp("put_page", (await scopeFor(g)), g))).toBe("auto");
   });
-  test("default write to the agent's own slice is auto (trusted channel)", () => {
+  test("default write to the agent's own slice is auto (trusted channel)", async () => {
     const g = gate();
-    expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("auto");
+    expect((await classifyBrainOp("put_page", (await scopeFor(g)), g))).toBe("auto");
   });
-  test("own-slice write in locked 1on1 is auto", () => {
+  test("own-slice write in locked 1on1 is auto", async () => {
     const g = gate({ lockedUser: "U1" });
-    expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("auto");
+    expect((await classifyBrainOp("put_page", (await scopeFor(g)), g))).toBe("auto");
   });
-  test("explicit shared write from a non-manager trusted channel needs approval", () => {
+  test("explicit shared write from a non-manager trusted channel needs approval", async () => {
     const g = gate();
-    expect(classifyBrainOp("put_page", sharedScope(g), g)).toBe("approval");
+    expect((await classifyBrainOp("put_page", (await sharedScope(g)), g))).toBe("approval");
   });
-  test("explicit shared write from the manager still cards (common KB is approval-worthy)", () => {
+  test("explicit shared write from the manager still cards (common KB is approval-worthy)", async () => {
     const g = gate({ isManager: true });
-    expect(classifyBrainOp("put_page", sharedScope(g), g)).toBe("approval");
+    expect((await classifyBrainOp("put_page", (await sharedScope(g)), g))).toBe("approval");
   });
-  test("write from public channel is denied", () => {
+  test("write from public channel is denied", async () => {
     const g = gate({ channelTrust: "public" });
-    expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("deny");
+    expect((await classifyBrainOp("put_page", (await scopeFor(g)), g))).toBe("deny");
   });
-  test("explicit shared write from a public channel non-manager is denied", () => {
+  test("explicit shared write from a public channel non-manager is denied", async () => {
     const g = gate({ channelTrust: "public" });
-    expect(classifyBrainOp("put_page", sharedScope(g), g)).toBe("deny");
+    expect((await classifyBrainOp("put_page", (await sharedScope(g)), g))).toBe("deny");
   });
-  test("deletes always need approval, even own slice", () => {
+  test("deletes always need approval, even own slice", async () => {
     const g = gate({ lockedUser: "U1" });
-    expect(classifyBrainOp("delete_page", scopeFor(g), g)).toBe("approval");
+    expect((await classifyBrainOp("delete_page", (await scopeFor(g)), g))).toBe("approval");
   });
-  test("delete from public channel by non-manager is denied", () => {
+  test("delete from public channel by non-manager is denied", async () => {
     const g = gate({ channelTrust: "public" });
-    expect(classifyBrainOp("delete_page", scopeFor(g), g)).toBe("deny");
+    expect((await classifyBrainOp("delete_page", (await scopeFor(g)), g))).toBe("deny");
   });
-  test("admin ops are manager tier", () => {
+  test("admin ops are manager tier", async () => {
     for (const op of ["purge_deleted_pages", "sources_add", "sources_remove", "sync_brain"]) {
-      expect(classifyBrainOp(op, scopeFor(gate()), gate())).toBe("manager");
+      expect((await classifyBrainOp(op, (await scopeFor(gate())), gate()))).toBe("manager");
     }
   });
-  test("unknown ops fail closed to manager", () => {
-    expect(classifyBrainOp("run_skillopt", scopeFor(gate()), gate())).toBe("manager");
+  test("unknown ops fail closed to manager", async () => {
+    expect((await classifyBrainOp("run_skillopt", (await scopeFor(gate())), gate()))).toBe("manager");
   });
 });
 
 describe("classifyBrainOp — profile and /1on1 writes (phase C)", () => {
   const TEAM = "T0TEAM";
   const own = profileSourceId(TEAM, "U1");
-  const profileScope = (g: GateInput, source = own): BrainScope => ({ ...scopeFor(g), sourceId: source });
+  const profileScope = async (g: GateInput, source = own): Promise<BrainScope> => ({ ...(await scopeFor(g)), sourceId: source });
   const slackTurn = (over: Partial<GateInput> = {}) =>
     gate({ teamId: TEAM, interactive: true, origin: "slack", turnSenders: [{ userId: "U1", teamId: TEAM, origin: "slack" }], ...over });
 
-  test("put_page into the speaker's own profile on their Slack turn is auto", () => {
+  test("put_page into the speaker's own profile on their Slack turn is auto", async () => {
     const g = slackTurn();
-    expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("auto");
+    expect((await classifyBrainOp("put_page", (await profileScope(g)), g))).toBe("auto");
   });
-  test("... even in a public channel and in someone else's /1on1", () => {
+  test("... even in a public channel and in someone else's /1on1", async () => {
     for (const g of [slackTurn({ channelTrust: "public" }), slackTurn({ lockedUser: "U2" })]) {
-      expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("auto");
+      expect((await classifyBrainOp("put_page", (await profileScope(g)), g))).toBe("auto");
     }
   });
-  test("the same write is denied when the turn is not interactive", () => {
+  test("the same write is denied when the turn is not interactive", async () => {
     const g = slackTurn({ interactive: false, origin: "cron" });
-    expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
+    expect((await classifyBrainOp("put_page", (await profileScope(g)), g))).toBe("deny");
   });
-  test("denied for a panel turn (an operator id is not a Slack id) and for an unknown origin", () => {
+  test("denied for a panel turn (an operator id is not a Slack id) and for an unknown origin", async () => {
     for (const g of [slackTurn({ origin: "panel" }), slackTurn({ origin: undefined })]) {
-      expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
+      expect((await classifyBrainOp("put_page", (await profileScope(g)), g))).toBe("deny");
     }
   });
-  test("denied unless the turn holds exactly the speaker's own Slack messages", () => {
+  test("denied unless the turn holds exactly the speaker's own Slack messages", async () => {
     const u1 = { userId: "U1", teamId: TEAM, origin: "slack" };
     for (const turnSenders of [undefined, [], [u1, { userId: "U2", teamId: TEAM, origin: "slack" }], [{ ...u1, origin: "cron" }, u1], [{ ...u1, userId: "U2" }]]) {
       const g = slackTurn({ turnSenders });
-      expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
+      expect((await classifyBrainOp("put_page", (await profileScope(g)), g))).toBe("deny");
     }
   });
-  test("the profile is the sole sender's, not the live ctx speaker's (mono: the ctx is whoever spoke last)", () => {
+  test("the profile is the sole sender's, not the live ctx speaker's (mono: the ctx is whoever spoke last)", async () => {
     const g = slackTurn({ userId: "U1", turnSenders: [{ userId: "U2", teamId: TEAM, origin: "slack" }] });
-    expect(classifyBrainOp("put_page", profileScope(g, profileSourceId(TEAM, "U2")), g)).toBe("auto");
-    expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
+    expect((await classifyBrainOp("put_page", (await profileScope(g, profileSourceId(TEAM, "U2"))), g))).toBe("auto");
+    expect((await classifyBrainOp("put_page", (await profileScope(g)), g))).toBe("deny");
   });
-  test("a background turn in a locked thread is denied, even to the agent's own slice", () => {
+  test("a background turn in a locked thread is denied, even to the agent's own slice", async () => {
     const g = gate({ userId: null, lockedUser: "U1" });
-    expect(classifyBrainOp("put_page", { ...scopeFor(g), sourceId: agentSourceId("AGENT1") }, g)).toBe("deny");
+    expect((await classifyBrainOp("put_page", { ...(await scopeFor(g)), sourceId: agentSourceId("AGENT1") }, g))).toBe("deny");
   });
-  test("denied on a background turn (no speaker)", () => {
+  test("denied on a background turn (no speaker)", async () => {
     const g = slackTurn({ userId: null });
-    expect(classifyBrainOp("put_page", profileScope(g), g)).toBe("deny");
+    expect((await classifyBrainOp("put_page", (await profileScope(g)), g))).toBe("deny");
   });
-  test("writing into another person's profile is denied, manager or not", () => {
+  test("writing into another person's profile is denied, manager or not", async () => {
     for (const g of [slackTurn(), slackTurn({ isManager: true })]) {
-      expect(classifyBrainOp("put_page", profileScope(g, profileSourceId(TEAM, "U2")), g)).toBe("deny");
-      expect(classifyBrainOp("put_page", profileScope(g, profileSourceId("T0OTHER", "U1")), g)).toBe("deny");
+      expect((await classifyBrainOp("put_page", (await profileScope(g, profileSourceId(TEAM, "U2"))), g))).toBe("deny");
+      expect((await classifyBrainOp("put_page", (await profileScope(g, profileSourceId("T0OTHER", "U1"))), g))).toBe("deny");
     }
   });
-  test("every write op is covered, not just put_page", () => {
+  test("every write op is covered, not just put_page", async () => {
     const g = slackTurn({ interactive: false, origin: "cron" });
-    for (const op of ["add_tag", "add_link", "add_timeline_entry"]) expect(classifyBrainOp(op, profileScope(g), g)).toBe("deny");
+    for (const op of ["add_tag", "add_link", "add_timeline_entry"]) expect((await classifyBrainOp(op, (await profileScope(g)), g))).toBe("deny");
   });
-  test("in an own /1on1, a write to shared or the agent's slice is denied", () => {
+  test("in an own /1on1, a write to shared or the agent's slice is denied", async () => {
     const g = slackTurn({ lockedUser: "U1" });
-    expect(classifyBrainOp("put_page", sharedScope(g), g)).toBe("deny");
-    expect(classifyBrainOp("put_page", { ...scopeFor(g), sourceId: agentSourceId("AGENT1") }, g)).toBe("deny");
-    expect(classifyBrainOp("put_page", { ...scopeFor(g), sourceId: userSourceId("U1") }, g)).toBe("auto");
+    expect((await classifyBrainOp("put_page", (await sharedScope(g)), g))).toBe("deny");
+    expect((await classifyBrainOp("put_page", { ...(await scopeFor(g)), sourceId: agentSourceId("AGENT1") }, g))).toBe("deny");
+    expect((await classifyBrainOp("put_page", { ...(await scopeFor(g)), sourceId: userSourceId("U1") }, g))).toBe("auto");
   });
-  test("in someone else's /1on1, a manager's default write (the agent's slice) is denied", () => {
+  test("in someone else's /1on1, a manager's default write (the agent's slice) is denied", async () => {
     const g = slackTurn({ lockedUser: "U2", isManager: true });
-    expect(scopeFor(g).sourceId).toBe(agentSourceId("AGENT1"));
-    expect(classifyBrainOp("put_page", scopeFor(g), g)).toBe("deny");
-    expect(classifyBrainOp("put_page", sharedScope(g), g)).toBe("deny");
+    expect((await scopeFor(g)).sourceId).toBe(agentSourceId("AGENT1"));
+    expect((await classifyBrainOp("put_page", (await scopeFor(g)), g))).toBe("deny");
+    expect((await classifyBrainOp("put_page", (await sharedScope(g)), g))).toBe("deny");
   });
 });
 
@@ -136,13 +136,13 @@ describe("turnBrainScope: the speaker's profile only on their own one-sender Sla
   const alice = { userId: "U1", teamId: T, origin: "slack" };
   const profile = profileSourceId(T, "U1");
   const g = (over: Partial<GateInput>) => gate({ teamId: T, origin: "slack", ...over });
-  test("exactly the speaker, from Slack: the profile is read", () => {
-    const s = turnBrainScope(g({ turnSenders: [alice] }), ["kb-docs"]);
+  test("exactly the speaker, from Slack: the profile is read", async () => {
+    const s = (await turnBrainScope(g({ turnSenders: [alice] }), ["kb-docs"]));
     expect(s.allowedSources).toContain(profile);
     expect(s.profileSource).toBe(profile);
     expect(s.allowedSources).toContain("kb-docs");
   });
-  test("anyone else, two senders, a cron sender, another team or unknown senders: no profile; the rest of the scope is unchanged", () => {
+  test("anyone else, two senders, a cron sender, another team or unknown senders: no profile; the rest of the scope is unchanged", async () => {
     for (const turnSenders of [
       [{ ...alice, userId: "U2" }],
       [alice, { ...alice, userId: "U2" }],
@@ -151,10 +151,10 @@ describe("turnBrainScope: the speaker's profile only on their own one-sender Sla
       undefined,
     ]) {
       const gi = g(turnSenders ? { turnSenders } : {});
-      const s = turnBrainScope(gi, []);
+      const s = (await turnBrainScope(gi, []));
       expect(s.allowedSources.some((x) => x.startsWith("profile-"))).toBe(false);
       expect(s.profileSource).toBeUndefined();
-      const { profileSource: _p, ...rest } = resolveBrainScope({ ...gi, kbSources: [] });
+      const { profileSource: _p, ...rest } = (await resolveBrainScope({ ...gi, kbSources: [] }));
       expect(s).toEqual({ ...rest, allowedSources: rest.allowedSources.filter((x) => x !== profile) });
     }
   });
@@ -164,7 +164,7 @@ describe("gatedBrainCall", () => {
   test("auto tier calls through without approval", async () => {
     let approvals = 0;
     const r = await gatedBrainCall("search", {
-      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR"],
+      scope: (await scopeFor(gate())), gate: gate(), managers: ["UMGR"],
       requestApproval: async () => { approvals++; return { approved: true, by: "x" }; },
       call: async () => ["hit"], describe: "search",
     });
@@ -173,7 +173,7 @@ describe("gatedBrainCall", () => {
   });
   test("approval tier asks and respects denial", async () => {
     const r = await gatedBrainCall("put_page", {
-      scope: sharedScope(gate()), gate: gate(), managers: ["UMGR"],
+      scope: (await sharedScope(gate())), gate: gate(), managers: ["UMGR"],
       requestApproval: async () => ({ approved: false, by: "UMGR", note: "nope" }),
       call: async () => { throw new Error("must not run"); }, describe: "write page",
     });
@@ -182,7 +182,7 @@ describe("gatedBrainCall", () => {
   });
   test("approval tier runs call after approval", async () => {
     const r = await gatedBrainCall("put_page", {
-      scope: sharedScope(gate()), gate: gate(), managers: ["UMGR"],
+      scope: (await sharedScope(gate())), gate: gate(), managers: ["UMGR"],
       requestApproval: async () => ({ approved: true, by: "UMGR" }),
       call: async () => "written", describe: "write page",
     });
@@ -191,7 +191,7 @@ describe("gatedBrainCall", () => {
   test("manager tier routes approval with kb-admin category, manager click passes", async () => {
     let category: string | undefined;
     const r = await gatedBrainCall("sources_add", {
-      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR", "UBACKUP"],
+      scope: (await scopeFor(gate())), gate: gate(), managers: ["UMGR", "UBACKUP"],
       requestApproval: async (req) => { category = req.category; return { approved: true, by: "UMGR" }; },
       call: async () => "added", describe: "add source",
     });
@@ -202,7 +202,7 @@ describe("gatedBrainCall", () => {
   test("manager tier rejects approval clicked by non-manager", async () => {
     let called = 0;
     const r = await gatedBrainCall("sources_remove", {
-      scope: scopeFor(gate()), gate: gate(), managers: ["UMGR"],
+      scope: (await scopeFor(gate())), gate: gate(), managers: ["UMGR"],
       requestApproval: async () => ({ approved: true, by: "U0RANDO" }),
       call: async () => { called++; return null; }, describe: "remove source",
     });
@@ -213,7 +213,7 @@ describe("gatedBrainCall", () => {
 
   test("manager tier fails closed when no manager configured", async () => {
     const r = await gatedBrainCall("purge_deleted_pages", {
-      scope: scopeFor(gate()), gate: gate(), managers: [],
+      scope: (await scopeFor(gate())), gate: gate(), managers: [],
       requestApproval: async () => ({ approved: true, by: "UMGR" }),
       call: async () => null, describe: "purge",
     });
@@ -223,7 +223,7 @@ describe("gatedBrainCall", () => {
 
   test("plain approval tier does NOT require manager click", async () => {
     const r = await gatedBrainCall("put_page", {
-      scope: sharedScope(gate()), gate: gate(), managers: ["UMGR"],
+      scope: (await sharedScope(gate())), gate: gate(), managers: ["UMGR"],
       requestApproval: async () => ({ approved: true, by: "U0APP" }),
       call: async () => "written", describe: "write",
     });
@@ -233,7 +233,7 @@ describe("gatedBrainCall", () => {
     const g = gate({ channelTrust: "public" });
     let touched = 0;
     const r = await gatedBrainCall("put_page", {
-      scope: scopeFor(g), gate: g, managers: ["UMGR"],
+      scope: (await scopeFor(g)), gate: g, managers: ["UMGR"],
       requestApproval: async () => { touched++; return { approved: true, by: "x" }; },
       call: async () => { touched++; return null; }, describe: "write",
     });
@@ -246,9 +246,9 @@ describe("gatedBrainCall — standing grant (per-thread, implicit on first appro
   beforeEach(() => resetStandingGrants());
   const T = "C1:1781000000.000";
   // Shared-target writes are what card; the grant suppresses the repeat card.
-  const callWith = (gateOver: Partial<GateInput>, approve: () => void) =>
+  const callWith = async (gateOver: Partial<GateInput>, approve: () => void) =>
     gatedBrainCall("put_page", {
-      scope: sharedScope(gate(gateOver)), gate: gate(gateOver), managers: ["UMGR"],
+      scope: (await sharedScope(gate(gateOver))), gate: gate(gateOver), managers: ["UMGR"],
       requestApproval: async () => { approve(); return { approved: true, by: "UMGR" }; },
       call: async () => "written", describe: "write",
     });
@@ -290,9 +290,9 @@ describe("gatedBrainCall — standing grant (per-thread, implicit on first appro
 
   test("a denied first write opens no grant", async () => {
     let cards = 0;
-    const deny = () =>
+    const deny = async () =>
       gatedBrainCall("put_page", {
-        scope: sharedScope(gate({ threadKey: T })), gate: gate({ threadKey: T }), managers: ["UMGR"],
+        scope: (await sharedScope(gate({ threadKey: T }))), gate: gate({ threadKey: T }), managers: ["UMGR"],
         requestApproval: async () => { cards++; return { approved: false, by: "UMGR" }; },
         call: async () => "written", describe: "write",
       });
@@ -308,7 +308,7 @@ describe("gatedBrainCall — standing grant (per-thread, implicit on first appro
     await callWith({ threadKey: T }, () => {});
     let deleteCards = 0;
     const r = await gatedBrainCall("delete_page", {
-      scope: sharedScope(gate({ threadKey: T })), gate: gate({ threadKey: T }), managers: ["UMGR"],
+      scope: (await sharedScope(gate({ threadKey: T }))), gate: gate({ threadKey: T }), managers: ["UMGR"],
       requestApproval: async () => { deleteCards++; return { approved: true, by: "UMGR" }; },
       call: async () => "deleted", describe: "delete",
     });

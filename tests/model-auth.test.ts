@@ -10,9 +10,9 @@ const soul = {
 } as unknown as SoulData;
 
 describe("canChangeModel", () => {
-  test("manager allowed", () => expect(canChangeModel("MGR", soul)).toBe(true));
-  test("backup allowed", () => expect(canChangeModel("BAK", soul)).toBe(true));
-  test("approver allowed", () => expect(canChangeModel("APP", soul)).toBe(true));
-  test("dm-allowed user allowed", () => expect(canChangeModel("DM", soul)).toBe(true));
-  test("stranger denied", () => expect(canChangeModel("X", soul)).toBe(false));
+  test("manager allowed", async () => expect((await canChangeModel("MGR", soul))).toBe(true));
+  test("backup allowed", async () => expect((await canChangeModel("BAK", soul))).toBe(true));
+  test("approver allowed", async () => expect((await canChangeModel("APP", soul))).toBe(true));
+  test("dm-allowed user allowed", async () => expect((await canChangeModel("DM", soul))).toBe(true));
+  test("stranger denied", async () => expect((await canChangeModel("X", soul))).toBe(false));
 });

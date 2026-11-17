@@ -16,6 +16,15 @@ describe("SimTransport", () => {
     expect(card.actionIds).toEqual(["slaude_appr:approve:x1", "slaude_appr:deny:x1"]);
   });
 
+  it("records postEphemeral as a message card marked private to its recipient", async () => {
+    const t = new SimTransport({});
+    await t.client.chat.postMessage({ channel: "C1", text: "public" });
+    await t.client.chat.postEphemeral({ channel: "C1", user: "U9", text: "private" });
+    expect(t.outbound[0]!.ephemeralTo).toBeUndefined();
+    expect(t.outbound[1]).toMatchObject({ kind: "message", channel: "C1", text: "private", ephemeralTo: "U9" });
+    expect(t.outbound[1]!.threadTs).toBeUndefined();
+  });
+
   it("feedMessage invokes the message handler with a bolt-shaped arg", async () => {
     const t = new SimTransport({});
     const seen: any[] = [];

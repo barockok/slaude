@@ -10,6 +10,8 @@ import { join } from "node:path";
 import { ensureHome, paths } from "../../src/config/home";
 import { db } from "../../src/db/schema";
 import * as Proposals from "../../src/db/proposals";
+import * as AuditEvents from "../../src/db/audit-events";
+import { flushAudits } from "../../src/audit/emit";
 import * as Runs from "../../src/db/background-runs";
 import * as SkillUsage from "../../src/db/skill-usage";
 import { runPass, type PassSpec, type RunnerDeps } from "../../src/background/runner";
@@ -179,6 +181,11 @@ describe("the weekly review", () => {
     expect(runs).toEqual([]);
     const row = await db.one<{ pass: string; outcome: string }>("SELECT pass, outcome FROM background_runs");
     expect(row).toEqual({ pass: "skill-review", outcome: "ok" });
+
+    // The retirement is audited once, as the agent.
+    await flushAudits();
+    const audit = (await AuditEvents.list({ action: "skill.retired" })).items.filter((e) => e.targetId === "old-helper");
+    expect(audit.map((e) => [e.actorKind, e.actorId, e.persona, e.details.via, e.details.reason])).toEqual([["agent", AGENT, "default", "skill_review", "unused for 30 days"]]);
 
     // Restoring brings it back as it was.
     expect(skillOps.restore(res!.retired[0]!.retiredId).slug).toBe("old-helper");

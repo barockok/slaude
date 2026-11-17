@@ -18,6 +18,7 @@ import * as CronJobs from "../../../src/db/cron-jobs";
 import { mintJobToken, verifyJobToken, type JobClaims } from "../../../src/gateway/api/auth";
 import { isInteractiveOrigin } from "../../../src/knowledge/gated-dispatch";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
+import * as PendingGates from "../../../src/db/pending-gates";
 
 const SECRET_ENV = process.env.SLAUDE_JOB_SECRET;
 beforeEach(async () => {
@@ -193,5 +194,19 @@ describe("node turns: the brain gate reads team and origin from the signed claim
     expect("turnSenders" in (await h.__brainGateForClaims!(claimsWith({ origin: "slack", job: "J-OTHER" })))).toBe(false);
     expect("turnSenders" in (await h.__brainGateForClaims!(claimsWith({ origin: "slack" })))).toBe(false);
     expect(asked).toEqual(["J-MERGED", "J-OTHER"]);
+  });
+
+  test("a permission card opens with no initiator when the senders read fails", async () => {
+    const { qd } = recordingDispatch();
+    (qd as any).turns.turnSenders = async () => { throw new Error("redis down"); };
+    const { t } = transport();
+    h = createGateway(new AgentManager(), t, { queueDispatch: qd });
+    const opened = await h.__openPermissionForClaims!(claimsWith({ origin: "slack", job: "J-1" }), {
+      toolName: "Bash", input: { command: "ls" }, toolUseId: "tu-1",
+    });
+    if (!("pendingId" in opened)) throw new Error("the card did not open");
+    const row = (await PendingGates.get(opened.pendingId))!;
+    expect(row.status).toBe("pending");
+    expect(row.payload.initiator).toBeNull();
   });
 });

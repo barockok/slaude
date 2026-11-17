@@ -1,0 +1,14 @@
+{
+  // The browser apps (console and portal). Checked separately from the
+  // Bun-native server: these need DOM libs, the server must not see them.
+  // `bun run typecheck` runs both.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "types": ["react", "react-dom", "vite/client"],
+    "jsx": "react-jsx",
+    "noEmit": true
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["console/dist", "portal/dist"]
+}

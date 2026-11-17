@@ -105,6 +105,34 @@ describe.skipIf(!realEnabled)("queue/reaper against real Redis", () => {
     for (const s of ["s1", "s2", "s3", "s4"]) await redis.del(keys.coalesce(s));
   });
 
+  test("a job that needs the guardrails capability is re-pinned to a live capable node, never the label queue; none live: it waits", async () => {
+    await ready;
+    const needs = (sid: string, text: string): TurnJob => ({ ...turn(sid, text), requiresCaps: ["guardrails/1"] });
+    await registry.nodeUp("dead-g", ["default"], ["guardrails/1"]);
+    await queues.enqueueTurn(needs("sg1", "g1"), { node: "dead-g" });
+    // Only an older node is live: the job stays where it is.
+    const beatOld = setInterval(() => void registry.beatNode("old-g", ["default"]), 100);
+    await registry.nodeUp("old-g", ["default"]);
+    await until(async () => !(await registry.nodeAlive("dead-g")), 2000);
+    const r1 = await reaper.reapDeadNodes();
+    expect(r1.jobsMoved).toBe(0);
+    expect(await queues.queue(nodeQueueName("dead-g")).getWaitingCount()).toBe(1);
+    expect(await sharedTexts()).toEqual([]);
+    expect(await registry.knownNodes()).toContain("dead-g");
+    // A capable node comes up: the job is moved to its own queue.
+    const beatNew = setInterval(() => void registry.beatNode("new-g", ["default"], ["guardrails/1"]), 100);
+    await registry.nodeUp("new-g", ["default"], ["guardrails/1"]);
+    const r2 = await reaper.reapDeadNodes();
+    clearInterval(beatOld);
+    clearInterval(beatNew);
+    expect(r2.jobsMoved).toBe(1);
+    expect(await queues.queue(nodeQueueName("new-g")).getWaitingCount()).toBe(1);
+    expect(await sharedTexts()).toEqual([]);
+    for (const n of ["old-g", "new-g"]) await registry.nodeDown(n);
+    for (const j of await queues.queue(nodeQueueName("new-g")).getJobs(["waiting"])) await j.remove();
+    await redis.del(keys.coalesce("sg1"));
+  });
+
   test("a node referenced only by sess entries (nodeset lost) is still reaped", async () => {
     await ready;
     await registry.register("s-ghost", "ghost-1"); // never nodeUp → not in nodeset

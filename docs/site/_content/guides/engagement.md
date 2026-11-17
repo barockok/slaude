@@ -103,7 +103,7 @@ Restart recovery works the same way: on a plain, non-mention message the gateway
 
 ## 2. Channel controls and identity
 
-SOUL.md declares who may talk to the agent and who is never heard.
+The persona's `agent.yaml` declares who may talk to the agent and who is never heard. Section names below (`## Trusted channels`, `## Approvers` and so on) are the old SOUL.md headings; each is now a key under `access:` (`access.channels.trusted`, `access.approvers`, `access.blocked`, `access.dm`, `access.approvalTimeoutSeconds`, `mandate.scoped`), listed in the [reference](../reference/configuration.md#soul).
 
 ### 2.1 `allowedChannels` vs `trustedChannels`
 
@@ -136,7 +136,7 @@ No session is created, no suppressed turn is recorded.
 |---|---|
 | List team channels in `trustedChannels` so the agent can be candid | List a public support channel as `trusted` — internal dumps will leak |
 | Add a noisy bot user to `blockedUsers` | Rely on `blockedUsers` for managers — `manager`/`backup` bypass it by design |
-| Use `## Channel <#Cxxx>` overrides for per-channel mandate/approvers (see SOUL guide) | Duplicate `Cxxx` across both lists expecting a merge — a channel should live in one |
+| Use `## Channel <#Cxxx>` overrides for per-channel mandate/approvers, and `## Scope` blocks for a channel class or DMs (see SOUL guide) | Duplicate `Cxxx` across both lists expecting a merge — a channel should live in one |
 
 ---
 
@@ -207,7 +207,7 @@ Some actions should not happen without a human clicking yes. Slaude has two appr
 
 | Gate | When | Who clicks | Tool |
 |---|---|---|---|
-| **Permission gate** | Per SDK tool call (Bash, Write, Edit, WebFetch, etc.) | The user in the thread (Allow / Always / Deny buttons) | SDK `canUseTool` → Block Kit approval |
+| **Permission gate** | Per SDK tool call (Bash, Write, Edit, WebFetch, etc.) | The person whose message started the turn, the thread's `/1on1` lock owner, or an approver or manager of the persona (Allow / Always / Deny buttons). Anyone else gets an ephemeral refusal and the card stays pending. Turns with no single human sender (cron, heartbeat, console chat) need an approver or manager. | SDK `canUseTool` → Block Kit approval |
 | **Approval gate** | Per *task* — agent-initiated before a destructive batch | Approvers from SOUL.md (Allowlist-resolved) | `mcp__slaude_slack__request_approval` → Block Kit Approve / Deny |
 
 This section is about the second one.
@@ -266,11 +266,13 @@ The agent **never picks user IDs**. The gateway resolves who may click:
 4. **Env fallback**: `SLAUDE_APPROVERS` (comma-separated `Uxxx` or `<@Uxxx>`).
 5. **Empty set**: anyone may click (solo/DM workspaces).
 
+That chain is the default persona's. A named persona's approvers are its users with the approver or manager role (soul-derived or granted in the console), with no keyword matching; with none, the default persona's managers. It never falls back to anyone.
+
 Manager and backup are always retained as catchall approvers even when a `## Channel <#Cxxx>` override replaces the global approver list — there is no lockout.
 
 ### 4.3 Per-channel approver overrides
 
-A `## Channel <#C12345>` block in SOUL.md can declare its own `Approvers:` and `Mandate:` that **replace** the global values for messages in that channel. Inbound `effectiveSoulForChannel(channelId)` is used both for the agent's mandate and for approval-gate resolution, so a channel override can widen or narrow who may approve without redeploying the container. Edits take effect after `bun run validate-soul` re-extraction or on next boot.
+A `## Channel <#C12345>` block in SOUL.md can declare its own `Approvers:` and `Mandate:` that apply to messages in that channel. Approvers replace the global list; the mandate replaces, extends or reduces the global one by its `Mode:` line (see [Scoped mandates](../reference/configuration.md#scoped-mandates)). Inbound `effectiveSoulForChannel(channelId)` is used both for the agent's mandate and for approval-gate resolution, so a channel override can widen or narrow who may approve without redeploying the container. Edits take effect after `bun run validate-soul` re-extraction or on next boot.
 
 ### 4.4 Do / Don't
 

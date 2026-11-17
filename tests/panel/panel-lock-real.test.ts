@@ -36,6 +36,9 @@ describe.skipIf(!realEnabled)("panel active-surface lock against real Redis", ()
     // the same operator re-acquiring succeeds (TTL refresh)
     expect(await lock.acquire("s1", "op-a")).toBe(true);
     expect(await lock.owner("s1")).toBe("op-a");
+    // ownerMany: one MGET, in order.
+    expect(await lock.ownerMany(["s1", "s-none"])).toEqual(["op-a", null]);
+    expect(await lock.ownerMany([])).toEqual([]);
   });
 
   test("owner-checked heartbeat and release", async () => {

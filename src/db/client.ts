@@ -34,7 +34,12 @@ export interface DbClient {
   run(sql: string, params?: unknown[]): Promise<RunResult>;
   /** Execute one or more statements with no parameters (DDL / migrations). */
   exec(sql: string): Promise<void>;
-  transaction<T>(fn: (tx: DbClient) => Promise<T>): Promise<T>;
+  /**
+   * `immediate` asks sqlite for BEGIN IMMEDIATE (the write lock at once, so a
+   * read-then-write body cannot lose a snapshot race); Postgres ignores it
+   * (row locks are taken with FOR UPDATE).
+   */
+  transaction<T>(fn: (tx: DbClient) => Promise<T>, opts?: { immediate?: boolean }): Promise<T>;
   /**
    * Postgres only: acquire a session-level advisory lock (key1, key2) on a
    * dedicated connection; resolves to an unlock function. Undefined on sqlite.
@@ -209,6 +214,10 @@ export function assertNodeMayOpen(cfg: DbConfig, role: "mono" | "gateway" | "nod
 }
 
 let nodeRefusalLogged = false;
+/** Test seam: the refusal logs once per process; tests that watch for it re-arm it. */
+export function __resetNodeRefusalLogForTests(): void {
+  nodeRefusalLogged = false;
+}
 function guardNode(cfg: DbConfig): void {
   try {
     assertNodeMayOpen(cfg, env.role());
@@ -336,9 +345,9 @@ export const db: DbClient = {
     const s = sync();
     return s ? s.exec(sql) : getDb().then((d) => d.exec(sql));
   },
-  transaction(fn) {
+  transaction(fn, opts) {
     const s = sync();
-    return s ? s.transaction(fn) : getDb().then((d) => d.transaction(fn));
+    return s ? s.transaction(fn, opts) : getDb().then((d) => d.transaction(fn, opts));
   },
   async close() {
     const s = activeSync;

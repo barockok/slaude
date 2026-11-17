@@ -109,9 +109,31 @@ export function makeRegistry(opts: RegistryOpts) {
       };
     },
 
+    /** lookup() for many sessions in ONE pipeline (one round trip), in order. */
+    async lookupMany(sessionIds: readonly string[]): Promise<Array<SessionLocation | null>> {
+      if (sessionIds.length === 0) return [];
+      const p = redis.pipeline();
+      for (const id of sessionIds) p.hgetall(keys.sess(id));
+      const res = (await p.exec()) ?? [];
+      const now = Date.now();
+      return sessionIds.map((_, i) => {
+        const [err, h] = res[i] ?? [null, null];
+        const row = (err ? null : h) as Record<string, string> | null;
+        if (!row?.node) return null;
+        const lastBeat = Number(row.lastBeat);
+        return { node: row.node, since: Number(row.since), lastBeat, fresh: now - lastBeat <= sessTtlMs };
+      });
+    },
+
     /** Idle expiry / drain: the node dropped its warm Query. */
     async unregister(sessionId: string): Promise<void> {
       await redis.del(keys.sess(sessionId));
+    },
+
+    /** How many sessions are warm on some node (SCAN of `sess:*`; each key
+     *  expires with its heartbeat, so a key that exists is a warm session). */
+    async countWarm(): Promise<number> {
+      return (await scanKeys(redis, keys.sessPattern())).length;
     },
 
     /** Session ids currently registered to a node (SCAN — reaper cadence). */
@@ -126,24 +148,52 @@ export function makeRegistry(opts: RegistryOpts) {
     /** Node boot: announce liveness and join the reaper's work list. The
      *  node's labels (from its verified credential) ride in the same
      *  transaction; omitted = an unlabelled node, i.e. `{default}`. */
-    async nodeUp(node: string, labels?: readonly string[]): Promise<void> {
+    async nodeUp(node: string, labels?: readonly string[], caps?: readonly string[]): Promise<void> {
       const tx = redis.multi().set(keys.node(node), Date.now(), "PX", nodeTtlMs);
       if (labels) tx.set(keys.nodeLabels(node), encodeLabels(labels), "PX", nodeLabelsTtlMs);
+      if (caps) tx.set(keys.nodeCaps(node), [...new Set(caps)].sort().join(","), "PX", nodeLabelsTtlMs);
       await tx.sadd(keys.nodeSet(), node).exec();
     },
 
     /** Periodic node heartbeat — refreshes the 30s liveness key, and the
      *  labels key beside it in the same transaction. */
-    async beatNode(node: string, labels?: readonly string[]): Promise<void> {
-      if (!labels) {
+    async beatNode(node: string, labels?: readonly string[], caps?: readonly string[]): Promise<void> {
+      if (!labels && !caps) {
         await redis.set(keys.node(node), Date.now(), "PX", nodeTtlMs);
         return;
       }
-      await redis
-        .multi()
-        .set(keys.node(node), Date.now(), "PX", nodeTtlMs)
-        .set(keys.nodeLabels(node), encodeLabels(labels), "PX", nodeLabelsTtlMs)
-        .exec();
+      const tx = redis.multi().set(keys.node(node), Date.now(), "PX", nodeTtlMs);
+      if (labels) tx.set(keys.nodeLabels(node), encodeLabels(labels), "PX", nodeLabelsTtlMs);
+      if (caps) tx.set(keys.nodeCaps(node), [...new Set(caps)].sort().join(","), "PX", nodeLabelsTtlMs);
+      await tx.exec();
+    },
+
+    /** Of the given node process ids, those with a live heartbeat. */
+    async liveNodeIds(ids: readonly string[]): Promise<Set<string>> {
+      if (ids.length === 0) return new Set();
+      const vals = await redis.mget(...ids.map((id) => keys.node(id)));
+      return new Set(ids.filter((_, i) => vals[i] !== null));
+    },
+
+    /** The capabilities a node advertises (none for a node that predates them). */
+    async nodeCaps(node: string): Promise<ReadonlySet<string>> {
+      const v = await redis.get(keys.nodeCaps(node));
+      return new Set((v ?? "").split(",").filter(Boolean));
+    },
+
+    /** Live nodes carrying `label`, each with whether it advertises `cap`. Sorted by node. */
+    async liveNodesWithCap(label: string, cap: string): Promise<Array<{ node: string; has: boolean }>> {
+      const live = await listLive();
+      if (live.length === 0) return [];
+      const [labels, caps] = await Promise.all([
+        redis.mget(...live.map((n) => keys.nodeLabels(n))),
+        redis.mget(...live.map((n) => keys.nodeCaps(n))),
+      ]);
+      return live
+        .map((node, i) => ({ node, carries: decodeLabels(labels[i] ?? null).has(label), has: (caps[i] ?? "").split(",").includes(cap) }))
+        .filter((n) => n.carries)
+        .map((n) => ({ node: n.node, has: n.has }))
+        .sort((a, b) => a.node.localeCompare(b.node));
     },
 
     /**
@@ -193,6 +243,24 @@ export function makeRegistry(opts: RegistryOpts) {
       return out;
     },
 
+    /** Every live node with all its labels (sorted) and its last heartbeat
+     *  (ms; null when the key went between the listing and the read), sorted
+     *  by node. Two MGETs over one listing. */
+    async liveNodeDetails(): Promise<Array<{ node: string; labels: string[]; lastBeat: number | null }>> {
+      const live = await listLive();
+      if (live.length === 0) return [];
+      const [beats, labels] = await Promise.all([
+        redis.mget(...live.map((n) => keys.node(n))),
+        redis.mget(...live.map((n) => keys.nodeLabels(n))),
+      ]);
+      return live
+        .map((node, i) => {
+          const b = beats[i] == null ? NaN : Number(beats[i]);
+          return { node, labels: [...decodeLabels(labels[i] ?? null)].sort(), lastBeat: Number.isFinite(b) ? b : null };
+        })
+        .sort((a, b) => a.node.localeCompare(b.node));
+    },
+
     /** Every label at least one live node carries. */
     async liveLabels(): Promise<Set<string>> {
       const live = await listLive();
@@ -234,7 +302,7 @@ export function makeRegistry(opts: RegistryOpts) {
 
     /** Graceful shutdown: leave both liveness key and reaper work list. */
     async nodeDown(node: string): Promise<void> {
-      await redis.multi().del(keys.node(node), keys.nodeLabels(node)).srem(keys.nodeSet(), node).exec();
+      await redis.multi().del(keys.node(node), keys.nodeLabels(node), keys.nodeCaps(node)).srem(keys.nodeSet(), node).exec();
     },
 
     /** Reaper bookkeeping: forget a dead node after cleaning it up. */

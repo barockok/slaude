@@ -522,9 +522,11 @@ section "web apps built into the image"
 
 gw_pod="$(pods "$GW_SEL" | awk '{print $1}')"
 for app in panel portal; do
-  shell="$(k exec "$gw_pod" -- cat "src/gateway/$app/web/dist/index.html" 2>/dev/null || true)"
+  # /panel serves the console build, /portal the portal build (src/web).
+  if [[ "$app" == panel ]]; then dist="src/web/console/dist"; else dist="src/web/portal/dist"; fi
+  shell="$(k exec "$gw_pod" -- cat "$dist/index.html" 2>/dev/null || true)"
   expect "/$app has a built shell in the image" \
-    "src/gateway/$app/web/dist/index.html is missing — the image never built it" \
+    "$dist/index.html is missing: the image never built it" \
     [ -n "$shell" ]
   [[ -n "$shell" ]] || continue
   expect "/$app shell references hashed assets" \
@@ -545,12 +547,9 @@ done
 # sha256(soulMd)>`. The expected hash is computed here from the exact text synced,
 # a text distinctive to this run, and a node log must carry it.
 #
-# Sync extracts structured soul data with a model, and this check must not need
-# one, so each soul's extraction cache entry is seeded first, written inside the
-# gateway pod by writeSoulCacheEntry in src/soul/extract.ts: the same writer
-# extraction uses, so the entry lands in the pod-local SLAUDE_SOUL_CACHE_DIR and
-# carries the MAC derived from the pod's master key. The sync then finds it and
-# calls no model; production code is untouched. personas.sh does both, in one pod.
+# Sync takes each persona's structure from a compiled definition, which personas.sh attaches to
+# every persona it posts, so this check calls no model and seeds no cache. personas.sh does it in
+# one gateway pod.
 #
 # The section leaves the local persona set plus `verifier` synced. Every persona
 # carries a Vault provider reference (the nodes run with the fallback off), so

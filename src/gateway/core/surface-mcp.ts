@@ -2,10 +2,19 @@ import { z } from "zod";
 import { createSdkMcpServer, tool, type McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { surfaceContract } from "../../tools/contracts/surface";
 import type { Surface } from "./surface";
+import { sameAt } from "../../access/wired";
 import { mutateOverride, FIELD_ALIASES, type FieldAlias } from "../../soul/overrides";
+import { auditSoulOverride, type ThreadCtx } from "../../audit/events";
 import * as SoulOverrides from "../../db/soul-overrides";
 import { soulData } from "../../soul/extract";
 import { redactSecrets } from "./status-text";
+import { OutboundRefusal } from "../slack/outbound";
+import { UploadRefusal } from "./confined-file";
+
+/** A failed post: an owner rule's refusal is shown as is (it is for the agent); anything else is prefixed. */
+const postFailed = (what: string, e: any): ToolResult =>
+  e instanceof OutboundRefusal || e instanceof UploadRefusal ? fail(e.message) : fail(`${what} failed: ${e?.message ?? String(e)}`);
+const noted = (text: string, note?: string): ToolResult => ok(note ? `${text} (${note})` : text);
 
 export const SURFACE_MCP_NAME = surfaceContract.server;
 
@@ -26,6 +35,11 @@ export interface SurfaceMcpOpts {
   /** Resolves the CURRENT turn's inbound platform user id (live getter — the
    *  gateway mutates ctx per turn). Required to mount manager-gated tools. */
   initiator?: () => string | undefined;
+  /** The current turn's workspace, live like `initiator`. Used only by the shadow of the manager compare. */
+  teamId?: () => string | undefined;
+  /** The current turn's persona, session and thread, for the audit rows the
+   *  manager-gated tools write. Live getter, like `initiator`. */
+  auditContext?: () => ThreadCtx;
   /** Manage 1on1 state on the current thread (gateway injects the engine).
    *  action="lock" → private (initiator+manager only); "open" → admit guests with
    *  optional scope description; "off" → fully release. */
@@ -47,8 +61,8 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
     {
       ...c.reply,
       handler: async ({ text }) => {
-        try { const { ref } = await surface.reply({ text }); return ok(`posted ref=${ref}`); }
-        catch (e: any) { return fail(`reply failed: ${e?.message ?? String(e)}`); }
+        try { const { ref, note } = await surface.reply({ text }); return noted(`posted ref=${ref}`, note); }
+        catch (e: any) { return postFailed("reply", e); }
       },
     },
     {
@@ -88,8 +102,8 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
     defs.push({
       ...c.edit,
       handler: async ({ ref, text }) => {
-        try { await surface.edit!({ ref, text }); return ok("edited"); }
-        catch (e: any) { return fail(`edit failed: ${e?.message ?? String(e)}`); }
+        try { const r = await surface.edit!({ ref, text }); return noted("edited", r ? r.note : undefined); }
+        catch (e: any) { return postFailed("edit", e); }
       },
     });
   }
@@ -116,7 +130,7 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
       ...c.upload,
       handler: async ({ path, title, initial_comment, alt_text }) => {
         try { await surface.upload!({ path, title, comment: initial_comment, altText: alt_text }); return ok("uploaded"); }
-        catch (e: any) { return fail(`upload failed: ${e?.message ?? String(e)}`); }
+        catch (e: any) { return postFailed("upload", e); }
       },
     });
   }
@@ -162,7 +176,9 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
         const who = initiator();
         // Primary manager only (owner: "only Manager") — checked against the
         // signed inbound Slack user id, not the model's intent.
-        if (!soul.manager.userId || who !== soul.manager.userId) {
+        const persona = opts.auditContext?.().persona;
+        const teamId = opts.teamId?.();
+        if (!who || !soul.manager.userId || !(await sameAt({ site: "soul_override.tool_manager_same", persona, teamId, userId: who, otherUserId: soul.manager.userId }))) {
           return fail("soul_override is manager-only: this turn was not initiated by the manager.");
         }
         if (action === "list") {
@@ -170,10 +186,18 @@ export function surfaceTools(surface: Surface, opts: SurfaceMcpOpts = {}): Surfa
         }
         if (action === "clear") {
           await SoulOverrides.clear(FIELD_ALIASES[field as FieldAlias]);
+          auditSoulOverride("soul.override.cleared", {
+            ...opts.auditContext?.(), userId: who, field: FIELD_ALIASES[field as FieldAlias], via: "agent_tool",
+          });
           return ok(`cleared runtime overrides for ${field}`);
         }
         if (!value) return fail("value is required for add/remove");
-        const res = await mutateOverride({ field: field as FieldAlias, action, value, by: who }, { managerId: soul.manager.userId });
+        const res = await mutateOverride({ field: field as FieldAlias, action, value, by: who }, { managerId: soul.manager.userId, teamId, persona });
+        if (res.ok) {
+          auditSoulOverride("soul.override.set", {
+            ...opts.auditContext?.(), userId: who, field: res.field, op: action, value: res.value, via: "agent_tool",
+          });
+        }
         return res.ok
           ? ok(`soul override applied: ${res.field} ${action} ${res.value} — effective immediately`)
           : fail(res.reason);

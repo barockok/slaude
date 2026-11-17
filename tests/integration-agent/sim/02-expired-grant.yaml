@@ -1,0 +1,7 @@
+# Seed first: a stored member grant for U0BOB that expired in the past.
+# An expired grant is ignored: U0BOB drops in an unlisted channel.
+layer: restricted
+as: outsider
+steps:
+  - send: { text: "outsider with an expired grant" }
+  - expect_drop: { reason: whitelist }

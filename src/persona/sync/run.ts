@@ -1,18 +1,22 @@
 /**
  * One sync, in two phases. Phase one runs outside any transaction: parse,
- * resolve placeholders, and extract the structured soul for every soul whose
- * text changed. No model call ever runs while database locks are held. Phase
- * two is the single transaction in applySync. Any failure in phase one applies
- * nothing. Messages name a variable, persona or revision, never a value.
+ * resolve placeholders, and take each persona's structure from its agent.yaml
+ * (a persona that has none is refused, unless its soul is unchanged from what
+ * is stored). No model call runs. Phase two is the single transaction in
+ * applySync. Any failure in phase one applies nothing. Messages name a variable, persona or revision, never a value.
  */
 import { flag } from "../../config/security-switches";
+import { remoteFlagValue } from "../../config/env";
 import {
-  parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, providerWarnings, kbSourceWarnings, MAX_REPORTED_FIELDS,
-  PROVIDER_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError, type SyncPayload,
+  parsePayload, resolvePlaceholders, unknownFieldPaths, capPaths, providerWarnings, kbSourceWarnings, definitionGuardrailWarnings, MAX_REPORTED_FIELDS,
+  PROVIDER_FIELDS, SUPPORTED_PAYLOAD_VERSION, PayloadError, type GuardrailSpec, type SyncPayload,
 } from "./payload";
-import { extractSoulData } from "../../soul/extract";
+import { applyGuardrailChange, readGuardrails } from "../../db/guardrails";
+import { auditChange } from "../../guardrails/audit";
+import { parseGuardrail, reservedNameProblem } from "../../guardrails/format";
+import { emitAudit } from "../../audit/emit";
 import {
-  applySync, desiredPersonas, effectivePersonas, backgroundColumnPresent, kbSourcesColumnPresent, providerColumnPresent, syncState, StaleRevisionError,
+  applySync, desiredPersonas, effectivePersonas, backgroundColumnPresent, definitionColumnPresent, kbSourcesColumnPresent, providerColumnPresent, syncState, StaleRevisionError,
   type ApplyResult,
 } from "../../db/personas";
 import { installedKbSourceIds } from "../../knowledge/persona-kb";
@@ -21,12 +25,61 @@ import { loadVaultConfig, parseRef, SecretResolutionError, type VaultConfig } fr
 import { isAllowed, requestPathFor } from "../../secrets/allowlist";
 import { assertNoProviderRefsInMono } from "../../gateway/core/provider-secrets";
 import { internalHostsFrom } from "../provider-base-url";
+import { dbDialect } from "../../db/client";
+import { masterKey, MasterKeyError } from "../../db/crypto";
+import { collectRefs, planRefs, RefRefusal, tenantWorkspaces, type RecordEntry, type RefUse } from "../../domain/sync-refs";
+import { emitDomainEvents } from "../../audit/domain";
+import { audit } from "../../audit/index";
+import { parseEnvironmentYaml, type ParsedEnvironmentDefinition } from "../../remote/definitions/parse";
+import { applyDefinitions, changed as environmentsChanged, planDefinitions } from "../../remote/definitions/sync";
+import { definitionRows } from "../../remote/definitions/resolve";
+import type { RemoteKeyPair } from "../../db/remote";
+import { db } from "../../db/schema";
+
+function masterKeySet(): boolean {
+  try {
+    masterKey();
+    return true;
+  } catch (e) {
+    if (e instanceof MasterKeyError) return false;
+    throw e;
+  }
+}
 
 export class SyncFailure extends Error {
   constructor(readonly status: 409 | 422 | 502 | 503, message: string) { super(message); }
 }
-export type SyncReport = ApplyResult & {
+/** What a sync did to the deploy repo's guardrails (absent: the payload carried none). */
+export interface GuardrailSyncReport {
+  created: string[];
+  updated: string[];
+  unchanged: string[];
+  removed: string[];
+  /** Guardrails stored with validation problems that do not touch their rules (their rules and prose apply). */
+  invalid: Array<{ slug: string; errors: string[] }>;
+  /** Slugs held by the console, left alone. */
+  skipped: string[];
+  /** Slugs a host-file import held, now taken over by the deploy repo (reported as a warning). */
+  takenOver: string[];
+  /** Overrides kept although their source changed (shown behind source). */
+  behindSource: string[];
+}
+
+/** More records than this in one sync also write one summary audit event. */
+export const SYNC_SUMMARY_THRESHOLD = 20;
+/** Most references a strict refusal lists. */
+const STRICT_LIST_MAX = 20;
+
+/** Declared records a sync created (or would create, in a dry run). */
+export interface RecordsReport {
+  created: RecordEntry[];
+  wouldCreate: RecordEntry[];
+}
+
+export type SyncReport = Omit<ApplyResult, "records" | "domainEvents"> & {
+  records: RecordsReport;
   revision: string; dryRun: boolean; ignoredFields: string[]; ignoredFieldsTotal: number;
+  guardrails?: GuardrailSyncReport;
   /** Applied anyway, reported by persona name: provider/model pairing (WS-A
    *  §4) and a runsOn label no live node carries (node labels spec §4.5). */
   warnings: string[];
@@ -93,11 +146,18 @@ export function unservedLabelWarnings(rows: ReadonlyArray<{ name: string; runsOn
     .map((r) => `persona '${r.name}': no live node carries label '${r.runsOn}'; its turns wait until one does`);
 }
 
+/** What an agent.yaml stores beyond soul_json; null for the older layout. */
+function storedDefinition(p: SyncPayload["personas"][number]): DesiredPersona["definition"] {
+  if (!p.definition) return null;
+  const { soulData: _compiled, ...rest } = p.definition;
+  return rest;
+}
+
 export async function runSync(
   tenant: string,
   raw: unknown,
   opts: {
-    dryRun: boolean; env: Record<string, string | undefined>; by: string; extract?: (text: string) => Promise<unknown>;
+    dryRun: boolean; env: Record<string, string | undefined>; by: string;
     /** The labels live nodes carry (the registry's node-label view). Absent
      *  (no queue: a single process) = no label warnings. */
     liveLabels?: () => Promise<ReadonlySet<string>>;
@@ -105,10 +165,14 @@ export async function runSync(
     vault?: VaultConfig | null;
     /** The installed KB source ids, for the unknown-kbSources warning. Default: $SLAUDE_HOME/knowledge. */
     installedKbSources?: () => string[];
+    /** Refuse a sync whose references would create a record (listing them). Default off. */
+    strict?: boolean;
+    /** Test seam: the key pair a new environment definition gets. */
+    generateKey?: (name: string) => RemoteKeyPair;
   },
 ): Promise<SyncReport> {
-  const extract = opts.extract ?? ((t: string) => extractSoulData(t, { strict: true }));
   let payload;
+  let definitions: ParsedEnvironmentDefinition[] = [];
   const allIgnored = unknownFieldPaths(raw);
   const ignoredFields = allIgnored.slice(0, MAX_REPORTED_FIELDS);
   const ignoredFieldsTotal = allIgnored.length;
@@ -144,6 +208,15 @@ export async function runSync(
       throw new PayloadError((e as Error).message);
     }
     checkEnvRefs(payload, opts.env);
+    // Environment definitions: each file is parsed here, by the one parser, whatever the pipeline claims to have checked.
+    definitions = (payload.environments ?? []).map((e) => parseEnvironmentYaml(e.name, e.yaml));
+    // An agent may allow environments only where /env can run at all (SLAUDE_REMOTE).
+    if (!remoteFlagValue(opts.env.SLAUDE_REMOTE)) {
+      const declaring = payload.personas.filter((p) => p.definition?.environment).map((p) => p.name);
+      if (declaring.length) {
+        throw new PayloadError(`persona '${declaring[0]}': environment is declared, but SLAUDE_REMOTE is off on this gateway; turn it on before syncing an agent that allows environments${declaring.length > 1 ? ` (${declaring.length} agents declare it)` : ""}`);
+      }
+    }
   } catch (e) {
     if (e instanceof PayloadError) throw new SyncFailure(422, e.message);
     throw e;
@@ -162,12 +235,46 @@ export async function runSync(
     throw new SyncFailure(503,
       "the database schema predates this gateway (personas.background is missing): apply migration 0020 before syncing personas");
   }
+  if (!(await definitionColumnPresent())) {
+    throw new SyncFailure(503,
+      "the database schema predates this gateway (personas.definition is missing): apply migration 0036 before syncing personas");
+  }
   const warnings = [
     ...providerWarnings(payload),
     // An id that matches no installed KB is applied anyway: the installer and
     // the sync land independently (WS-C §4.1.5).
     ...kbSourceWarnings(payload, (opts.installedKbSources ?? installedKbSourceIds)()),
   ];
+
+  if (payload.environments !== undefined || payload.personas.some((p) => p.definition?.environment)) {
+    try {
+      await db.query("SELECT definition_name, retired_at FROM environments LIMIT 0");
+    } catch {
+      throw new SyncFailure(503, "the database schema predates this gateway (environments.definition_name is missing): apply migration 0051 before syncing environments");
+    }
+  }
+  // Agent references to environments resolve against what this deploy will have:
+  // the submitted list, or (list absent) the live stored definitions. A message
+  // names only the persona and the reference it submitted, never a stored name.
+  const wantsEnv = payload.personas.filter((p) => p.definition?.environment);
+  if (wantsEnv.length) {
+    const known = payload.environments !== undefined
+      ? new Set(definitions.map((d) => d.name))
+      : new Set((await definitionRows(db, tenant)).filter((r) => r.retired_at == null).map((r) => r.definition_name!));
+    for (const p of wantsEnv) {
+      for (const name of p.definition!.environment!.allow) {
+        if (!known.has(name)) throw new SyncFailure(422, `persona '${p.name}': environment.allow names env:${name}, which this deploy does not define`);
+      }
+    }
+  }
+  const envPlan = payload.environments !== undefined ? await planDefinitions(db, tenant, definitions) : undefined;
+  // A new, changed or revived definition may need its key pair stored (encrypted): refuse up front, never a 500 mid-sync.
+  if (envPlan && envPlan.create.length + envPlan.update.length > 0 && !masterKeySet()) {
+    throw new SyncFailure(422, "environment definitions need SLAUDE_MASTER_KEY (the generated key pair is stored encrypted)");
+  }
+  for (const [name, n] of Object.entries(envPlan?.report.revivedBound ?? {})) {
+    warnings.push(`environment '${name}' is revived and ${n} thread${n === 1 ? " is" : "s are"} still bound to it: ${n === 1 ? "it uses" : "they use"} the machine again at once, for agents that allow it`);
+  }
 
   // Fail a stale payload before spending any model call. applySync's
   // transactional compare-and-set remains the authority; this is a fast path.
@@ -185,27 +292,20 @@ export async function runSync(
   for (const p of payload.personas) {
     const prev = desired.get(p.name);
     let soulJson: unknown;
-    if (prev && prev.soulMd === p.soul && !effective.get(p.name)?.overridden.includes("soul")) {
+    if (p.definition) {
+      soulJson = p.definition.soulData; // an agent.yaml: compiled, no model call
+    } else if (prev && !prev.definition && prev.soulMd === p.soul && !effective.get(p.name)?.overridden.includes("soul")) {
       soulJson = prev.soulJson; // unchanged soul: no model call
-    } else if (opts.dryRun) {
-      // A dry run reports created/updated/unchanged, which never depends on the
-      // structured soul. Extracting here would let any caller with the preview
-      // token spend model calls (and write the extraction cache) per request.
-      soulJson = null;
     } else {
-      try {
-        soulJson = await extract(p.soul);
-      } catch (e) {
-        const cls = e instanceof Error ? e.constructor.name : typeof e;
-        const msg = (e instanceof Error ? e.message : String(e)).slice(0, 200);
-        console.error(`[persona-sync] soul extraction failed persona=${p.name}: ${cls}: ${msg}`);
-        throw new SyncFailure(502, `soul extraction failed for persona '${p.name}'`);
-      }
+      // A soul with no agent.yaml has no structure: nothing reads access out of prose any more.
+      throw new SyncFailure(422,
+        `persona '${p.name}' has no agent.yaml: a persona is defined by one. Convert it with \`personas export --format agent-yaml\` (or \`personas migrate\` on its home) and sync the result`);
     }
     rows.push({
       name: p.name, slackUserId: p.slackUserId ?? null, userToken: p.userToken ?? null, model: p.model ?? null,
       soulMd: p.soul, soulJson, mcp: p.mcp ?? null, provider: p.provider ?? null, runsOn: p.runsOn ?? null, kbSources: p.kbSources ?? null,
       background: p.background ?? null,
+      definition: storedDefinition(p),
       origin: "git", tombstonedAt: null,
     });
   }
@@ -226,6 +326,15 @@ export async function runSync(
       console.warn(`[persona-sync] could not read live node labels tenant=${tenant}: ${(e as Error).message}`);
     }
   }
+  if (payload.personas.some((p) => p.definition?.guardrails?.length)) {
+    // The slugs the deploy will have: the payload's set plus what it does not
+    // manage (console and host-file guardrails), else everything stored.
+    const stored = (await readGuardrails(tenant)).rows;
+    const known = payload.guardrails
+      ? [...payload.guardrails.map((g) => g.slug), ...stored.filter((r) => r.source !== "git").map((r) => r.slug)]
+      : stored.map((r) => r.slug);
+    warnings.push(...definitionGuardrailWarnings(payload, new Set(known)));
+  }
   for (const w of warnings) console.warn(`[persona-sync] warning tenant=${tenant}: ${w}`);
 
   if (allIgnored.length) {
@@ -233,9 +342,50 @@ export async function runSync(
   }
   const meta = { revision: payload.revision, committedAt: Date.parse(payload.committedAt), by: opts.by };
 
+  // References the personas carry: planned now (read only) so a refusal or a
+  // strict failure applies nothing, created in applySync's transaction later.
+  const refUses: RefUse[] = rows.flatMap((r, i) => {
+    const d = payload.personas[i]?.definition;
+    return d ? collectRefs(r.name, d.soulData as never, payload.personas[i]!.soul) : [];
+  });
+  let workspaces: string[] = [];
+  let wouldCreate: RecordEntry[] = [];
+  try {
+    workspaces = refUses.length ? await tenantWorkspaces(tenant) : [];
+    const bare = (u: RefUse) => u.ref.kind === "external" && u.ref.service === "slack" && !u.ref.workspace;
+    if (refUses.length && workspaces.length === 0) {
+      // No workspace to place a short Slack reference in: skip those records (non-Slack ones still create).
+      const keep = refUses.filter((u) => !bare(u));
+      if (keep.length < refUses.length) {
+        warnings.push("no Slack workspace is connected, records for Slack references were not created");
+        refUses.splice(0, refUses.length, ...keep);
+      }
+    } else if (workspaces.length > 1 && !opts.strict) {
+      // Several workspaces: a bare id is ambiguous. Skip it and say which field; strict refuses at planRefs.
+      const keep: RefUse[] = [];
+      for (const u of refUses) {
+        if (bare(u)) warnings.push(`persona '${u.persona}': workspace is ambiguous, no record created for ${u.field}`);
+        else keep.push(u);
+      }
+      refUses.splice(0, refUses.length, ...keep);
+    }
+    wouldCreate = await planRefs(refUses, workspaces);
+  } catch (e) {
+    if (e instanceof RefRefusal) throw new SyncFailure(422, e.message);
+    throw e;
+  }
+  if (opts.strict && wouldCreate.length) {
+    const shown = wouldCreate.slice(0, STRICT_LIST_MAX).map((r) => `${r.ref} (${r.personas.join(", ")})`).join("; ");
+    const more = wouldCreate.length > STRICT_LIST_MAX ? ` and ${wouldCreate.length - STRICT_LIST_MAX} more` : "";
+    throw new SyncFailure(422, `strict: ${wouldCreate.length} reference(s) would create a record: ${shown}${more}. Fix the reference, or sync without strict to create declared records`);
+  }
+  if (wouldCreate.length) warnings.push(`${wouldCreate.length} reference(s) will create declared records (see records); a mistyped id creates an empty record that matches nobody`);
+
+  const guardrailPlan = payload.guardrails ? await planGuardrails(tenant, payload.guardrails, rows.map((r) => r.name), warnings) : undefined;
+
   if (opts.dryRun) {
     const incoming = new Set(rows.map((r) => r.name));
-    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields, ignoredFieldsTotal, warnings };
+    const report: SyncReport = { created: [], updated: [], unchanged: [], tombstoned: [], overridesWiped: 0, revision: meta.revision, dryRun: true, ignoredFields, ignoredFieldsTotal, warnings, records: { created: [], wouldCreate } };
     // Same rule as applySync.
     for (const r of rows) {
       const prev = desired.get(r.name);
@@ -247,13 +397,160 @@ export async function runSync(
     // setOverride refuses names without a live persona, so no orphan rows exist
     // and this equals the count applySync's DELETE reports.
     report.overridesWiped = [...effective.values()].reduce((n, p) => n + p.overridden.length, 0);
+    if (guardrailPlan) report.guardrails = guardrailPlan.report;
+    if (envPlan) report.environments = envPlan.report;
     return report;
   }
 
   try {
-    return { ...(await applySync(tenant, rows, meta)), revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal, warnings };
+    const { records: createdRecords = [], domainEvents = [], recordsFailed = false, ...applied } = await applySync(
+      tenant, rows, meta, { uses: refUses, workspaces },
+      payload.environments !== undefined ? (tx) => applyDefinitions(tx, tenant, definitions, { revision: meta.revision }, opts.generateKey) : undefined,
+    );
+    if (recordsFailed) warnings.push("records could not be created for this sync (the persona sync was applied); run `slaude domain reconcile` or sync again");
+    auditPersonaSync(tenant, opts.by, meta.revision, applied);
+    if (applied.environments && environmentsChanged(applied.environments)) auditEnvironmentSync(tenant, opts.by, meta.revision, applied.environments);
+    await auditRecords(tenant, opts.by, meta.revision, createdRecords, domainEvents);
+    let guardrails: GuardrailSyncReport | undefined;
+    if (guardrailPlan) {
+      // Its own transaction, after the personas: the guardrail set carries its
+      // own signed manifest. A failure here leaves the personas applied and
+      // the previous guardrail set intact (the pipeline sees the 500 and retries).
+      const r = await applyGuardrailChange(tenant, { upsert: guardrailPlan.upsert, remove: guardrailPlan.remove, by: opts.by });
+      auditChange(r, { tenantId: tenant, actorKind: "system", actorId: opts.by, via: "deploy", revision: meta.revision });
+      guardrails = { ...guardrailPlan.report, created: r.created, updated: r.updated, unchanged: r.unchanged, removed: r.removed };
+    }
+    return { ...applied, records: { created: createdRecords, wouldCreate: [] }, revision: meta.revision, dryRun: false, ignoredFields, ignoredFieldsTotal, warnings, ...(guardrails ? { guardrails } : {}) };
   } catch (e) {
     if (e instanceof StaleRevisionError) throw new SyncFailure(409, e.message);
+    if (e instanceof RefRefusal) throw new SyncFailure(422, e.message);
     throw e;
   }
+}
+
+/** After commit: the domain events, and one summary event when a sync created many records. Never fails the sync. */
+async function auditRecords(tenant: string, by: string, revision: string, created: RecordEntry[], events: Parameters<typeof emitDomainEvents>[0]): Promise<void> {
+  try {
+    await emitDomainEvents(events, { tenantId: tenant, actorId: by });
+    if (created.length > SYNC_SUMMARY_THRESHOLD) {
+      await audit({
+        tenantId: tenant, persona: "default", actorKind: "system", actorId: by, action: "domain.sync_created",
+        targetKind: "tenant", targetId: tenant,
+        summary: `persona sync ${revision}: ${created.length} declared record(s) created`,
+        details: { revision, count: created.length, users: created.filter((r) => r.type === "user").length, boundaries: created.filter((r) => r.type === "boundary").length },
+      });
+    }
+  } catch (e) {
+    console.warn(`[persona-sync] domain audit failed tenant=${tenant}: ${(e as Error).message}`);
+  }
+}
+
+/**
+ * The guardrail half of a sync: the payload's list is the deploy repo's whole
+ * set (source `git`). A git guardrail it no longer lists is removed; a slug
+ * held by the console is left alone, and one held by a host-file import is
+ * taken over by the deploy repo; both are reported. A rule that fails to
+ * parse refuses the whole sync (422) before anything is applied. Overrides
+ * are kept (never wiped like soul overrides) and reported behind source when
+ * the text they were written against changes. Names in `agents:` that match
+ * no persona of the payload are warnings, not errors.
+ */
+async function planGuardrails(tenant: string, list: GuardrailSpec[], personaNames: string[], warnings: string[]) {
+  const stored = await readGuardrails(tenant);
+  const bySlug = new Map(stored.rows.map((r) => [r.slug, r]));
+  const overridden = new Map(stored.overrides.map((o) => [o.slug, o]));
+  const report: GuardrailSyncReport = { created: [], updated: [], unchanged: [], removed: [], invalid: [], skipped: [], takenOver: [], behindSource: [] };
+  const refused: string[] = [];
+  const upsert: Array<{ slug: string; md: string; source: "git" }> = [];
+  const names = new Set(personaNames);
+  for (const g of list) {
+    const prev = bySlug.get(g.slug);
+    if (prev && prev.source === "console") {
+      report.skipped.push(g.slug);
+      warnings.push(`guardrail '${g.slug}' exists in the console; the deploy repo's copy was not applied`);
+      continue;
+    }
+    const reserved = reservedNameProblem(g.slug, !!prev);
+    if (reserved) {
+      refused.push(`guardrail ${reserved}`);
+      continue;
+    }
+    const parsed = parseGuardrail(g.slug, g.md);
+    if (parsed.blocking.length) {
+      refused.push(`guardrail '${g.slug}': ${parsed.blocking.join("; ")}`);
+      continue;
+    }
+    if (parsed.errors.length) report.invalid.push({ slug: g.slug, errors: parsed.errors });
+    if (prev && prev.source === "file") {
+      report.takenOver.push(g.slug);
+      warnings.push(`guardrail '${g.slug}' was imported from host files; the deploy repo's copy now replaces it`);
+    }
+    for (const a of parsed.meta?.scope === "agents" ? parsed.meta.agents : []) {
+      if (!names.has(a)) warnings.push(`guardrail '${g.slug}' names agent '${a}', which this deploy does not have`);
+    }
+    if (!prev) report.created.push(g.slug);
+    else if (prev.md === g.md && prev.source === "git") report.unchanged.push(g.slug);
+    else {
+      report.updated.push(g.slug);
+      if (overridden.has(g.slug)) report.behindSource.push(g.slug);
+    }
+    upsert.push({ slug: g.slug, md: g.md, source: "git" });
+  }
+  // A rule the owner wrote and the parser cannot read is never stored silently dropped.
+  if (refused.length) throw new SyncFailure(422, `guardrails refused (fix the rules, then deploy again): ${refused.join(" | ")}`);
+  const listed = new Set(list.map((g) => g.slug));
+  const remove = stored.rows.filter((r) => r.source === "git" && !listed.has(r.slug)).map((r) => r.slug);
+  report.removed = remove;
+  // Postgres signs guardrails with the master key only. Refuse here, before
+  // the personas are applied: failing inside the guardrail write would leave
+  // the sync half applied and the pipeline retrying a 500.
+  const changes = report.created.length + report.updated.length + remove.length;
+  if (changes > 0 && dbDialect() === "pg" && !masterKeySet()) {
+    throw new SyncFailure(422, "guardrails on Postgres need SLAUDE_MASTER_KEY");
+  }
+  for (const w of report.behindSource) warnings.push(`guardrail '${w}' has a console override written against the previous text; it is kept and shown behind source`);
+  return { report, upsert, remove };
+}
+
+/** persona.sync: one row per applied (not dry-run) sync, with the revision and
+ *  counts, never a value. The actor is the deploy caller's identity (`by`). */
+export function auditPersonaSync(tenant: string, by: string, revision: string, r: ApplyResult): void {
+  emitAudit({
+    tenantId: tenant,
+    persona: "default",
+    actorKind: "system",
+    actorId: by,
+    action: "persona.sync",
+    targetKind: "tenant",
+    targetId: tenant,
+    summary: `persona sync ${revision}: ${r.created.length} created, ${r.updated.length} updated, ${r.tombstoned.length} tombstoned`,
+    details: {
+      revision,
+      created: r.created,
+      updated: r.updated,
+      tombstoned: r.tombstoned,
+      counts: {
+        created: r.created.length,
+        updated: r.updated.length,
+        unchanged: r.unchanged.length,
+        tombstoned: r.tombstoned.length,
+        overridesWiped: r.overridesWiped,
+      },
+    },
+  });
+}
+
+/** environment.definition_synced: one row per sync that changed a definition. Names and counts only, never a host, address or key. */
+export function auditEnvironmentSync(tenant: string, by: string, revision: string, r: NonNullable<ApplyResult["environments"]>): void {
+  emitAudit({
+    tenantId: tenant,
+    persona: "default",
+    actorKind: "system",
+    actorId: by,
+    action: "environment.definition_synced",
+    targetKind: "tenant",
+    targetId: tenant,
+    summary: `environment sync ${revision}: ${r.created.length} created, ${r.updated.length} updated, ${r.revived.length} revived, ${r.retired.length} retired`,
+    details: { revision, created: r.created, updated: r.updated, revived: r.revived, retired: r.retired, ...(r.revivedBound ? { revivedBound: r.revivedBound } : {}) },
+  });
 }

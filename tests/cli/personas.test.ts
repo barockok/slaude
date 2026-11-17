@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportHome, renderDir } from "../../src/cli/personas";
@@ -424,5 +424,38 @@ describe("personas CLI entry", () => {
   });
   test("an unknown command exits 2", () => {
     expect(run("bogus").exitCode).toBe(2);
+  });
+});
+
+describe("personas render: the guardrails folder", () => {
+  const repo = () => {
+    const out = tmp();
+    mkdirSync(join(out, "personas", "default"), { recursive: true });
+    writeFileSync(join(out, "personas", "default", "SOUL.md"), "soul");
+    return out;
+  };
+  test("no folder: no guardrails key, version unchanged", () => {
+    const p = renderDir(repo(), meta);
+    expect(p.guardrails).toBeUndefined();
+    expect(p.version).toBe(1);
+  });
+  test("an empty folder is the whole (empty) set; a guardrail makes it version 5; its errors are warnings", () => {
+    const out = repo();
+    mkdirSync(join(out, "guardrails"));
+    expect(renderDir(out, meta).guardrails).toEqual([]);
+    mkdirSync(join(out, "guardrails", "no-send"));
+    writeFileSync(join(out, "guardrails", "no-send", "GUARDRAIL.md"), "---\nname: no-send\nscope: agents\n---\nNever send.");
+    const warnings: string[] = [];
+    const p = renderDir(out, meta, undefined, (w) => warnings.push(...w));
+    expect(p.version).toBe(5);
+    expect(p.guardrails!.map((g) => g.slug)).toEqual(["no-send"]);
+    expect(warnings.join()).toContain("guardrail 'no-send': frontmatter: scope agents needs at least one name");
+    mkdirSync(join(out, "guardrails", "broken"));
+    writeFileSync(join(out, "guardrails", "broken", "GUARDRAIL.md"), "---\nname: broken\n---\n```rules\n- id: r\n  on: tool\n  action: deny\n```\n");
+    expect(() => renderDir(out, meta)).toThrow(/guardrail 'broken'/);
+    rmSync(join(out, "guardrails", "broken"), { recursive: true });
+    mkdirSync(join(out, "guardrails", "Bad Name"));
+    writeFileSync(join(out, "guardrails", "Bad Name", "GUARDRAIL.md"), "x");
+    expect(() => renderDir(out, meta)).toThrow(PayloadError);
   });
 });

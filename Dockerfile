@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile --production
 
-# Web stage: build the panel and portal React apps.
+# Web stage: build the console (served at /panel) and portal React apps (src/web).
 #
 # They need devDependencies (vite, @vitejs/plugin-react, react-dom), so this
 # stage installs the full tree rather than reusing the production one. Only the
@@ -67,7 +67,7 @@ RUN set -eux; \
       arm64) sha="$TAILCAT_SHA256_ARM64" ;; \
       *) echo "unsupported architecture for tailcat: $arch" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/tailcat.tgz "https://github.com/tailscale/tailcat/releases/download/v${TAILCAT_VERSION}/tailcat_${TAILCAT_VERSION}_linux_${arch}.tar.gz"; \
+    curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o /tmp/tailcat.tgz "https://github.com/tailscale/tailcat/releases/download/v${TAILCAT_VERSION}/tailcat_${TAILCAT_VERSION}_linux_${arch}.tar.gz"; \
     echo "${sha}  /tmp/tailcat.tgz" | sha256sum -c -; \
     tar -xzf /tmp/tailcat.tgz -C /usr/local/bin tailcat; \
     rm -f /tmp/tailcat.tgz; \
@@ -91,8 +91,8 @@ COPY --from=builder /app/.slaude/.claude   /data/.slaude/.claude
 
 # The built web apps. Without these the panel and portal serve an unrunnable
 # source shell (see the web stage above).
-COPY --from=web /app/src/gateway/panel/web/dist  ./src/gateway/panel/web/dist
-COPY --from=web /app/src/gateway/portal/web/dist ./src/gateway/portal/web/dist
+COPY --from=web /app/src/web/console/dist ./src/web/console/dist
+COPY --from=web /app/src/web/portal/dist  ./src/web/portal/dist
 
 ENV SLAUDE_HOME=/data
 VOLUME ["/data"]

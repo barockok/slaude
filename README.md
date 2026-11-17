@@ -22,7 +22,7 @@ cp .env.example .env && docker compose up -d --build
 | Section | What you will find | Time |
 |---|---|---|
 | [**Getting Started**](https://barockok.github.io/slaude/start/getting-started.html) | 5-min quickstart, prerequisites, first DM test | 5 min |
-| [**Configuration**](https://barockok.github.io/slaude/reference/configuration.html) | Env vars, Slack tokens, Anthropic auth, `SOUL.md` schema, `slaude.json` | 10 min |
+| [**Configuration**](https://barockok.github.io/slaude/reference/configuration.html) | Env vars, Slack tokens, Anthropic auth, the `agent.yaml` schema, `slaude.json` | 10 min |
 | [**Architecture**](https://barockok.github.io/slaude/start/architecture.html) | Session lifecycle, trust boundary, gateway ↔ agent ↔ MCP, persistence | 8 min |
 | [**Guides**](https://barockok.github.io/slaude/guides/engagement.html) | Engagement, approvals, `/1on1`, slash commands, cron, attachments | — |
 | [**API Reference**](https://barockok.github.io/slaude/reference/api.html) | `mcp__slaude_*` tools, Markdown→mrkdwn, external MCP, skills, KB | — |
@@ -40,14 +40,14 @@ Full site: **<https://barockok.github.io/slaude/>** — source in [`docs/site/_c
 | Feature | What it means |
 |---|---|
 | **Thread = Session** | SDK `resume:` keeps history across idle restarts (`SLAUDE_IDLE_MINUTES` default 15). |
-| **Two-layer persona** | Hardcoded baseline (output, engagement, approval discipline) + your `SOUL.md` (name, role, mandate, approvers). |
+| **Two-layer persona** | Hardcoded baseline (output, engagement, approval discipline) + your `agent.yaml` (name, role, mandate, approvers, channels). |
 | **MCP-only Slack I/O** | Every reply via `mcp__slaude_slack__reply` / `edit` / `upload` / `request_approval`. Markdown auto-converts to mrkdwn. |
-| **Approvals** | Agent runs YOLO, calls `request_approval()` for mutating work. Allowlist parsed from `SOUL.md` — agent never picks IDs. |
+| **Approvals** | Agent runs YOLO, calls `request_approval()` for mutating work. Allowlist read from `agent.yaml` — agent never picks IDs. |
 | **Engagement** | `@mention` engages thread, mentioning someone else disengages. DMs always engaged. `/1on1` locks thread. |
 | **Skills & KB** | `~/.slaude/skills/<slug>/SKILL.md` hot-reloads; `knowledge/` wikis compound via `raw/` → `wiki/` `/ingest`. |
 | **Simulation** | `bun run sim` verifies gates with no Slack — same `createGateway`, in-memory transport. |
 
-**Trust boundary:** LLM extracts `SOUL.md` → typed JSON → sha-cached; gateway verifies every Slack ID against raw text before any gate. Enforcement lives in gateway, never model. See [Architecture](https://barockok.github.io/slaude/start/architecture.html#trust-boundary).
+**Trust boundary:** access and mandates are read from `agent.yaml` by a typed schema, never by a model; enforcement lives in the gateway. See [Architecture](https://barockok.github.io/slaude/start/architecture.html#trust-boundary).
 
 ## Quickstart
 

@@ -5,7 +5,7 @@
 On this page:
 
 - [Prerequisites for all examples](#prerequisites)
-- [1. Minimal SOUL.md persona + verify + deploy via Docker Compose](#1-minimal-soulmd-persona--team-assistant-in-5-minutes)
+- [1. Minimal agent.yaml persona + verify + deploy via Docker Compose](#1-minimal-agentyaml-persona--team-assistant-in-5-minutes)
 - [2. Adding a skill via slaude.json — git skill, bunx shim, sync_manifest](#2-adding-a-skill-via-slaudejson)
 - [3. Private KB capture to wiki — raw to wiki via ingest](#3-private-kb-capture--ingest--wiki)
 - [4. Simulation gateway — test engagement and approvals without Slack](#4-simulation-gateway--test-without-slack)
@@ -36,9 +36,9 @@ bun install
 
 ---
 
-## 1. Minimal SOUL.md persona — team assistant in 5 minutes
+## 1. Minimal agent.yaml persona — team assistant in 5 minutes
 
-Deploy one persona that triages `#engineering` and ships with approvals. You will create `SOUL.md`, validate it, and boot the container. Slack DMs are restricted to your user; the public channel is open to anyone in it.
+Deploy one persona that triages `#engineering` and ships with approvals. You will create `agent.yaml`, validate it, and boot the container. Slack DMs are restricted to your user; the public channel is open to anyone in it.
 
 ### What you will build
 
@@ -88,34 +88,27 @@ ENV
 
 > **Bare metal without Docker.** Use `cp .env ~/.slaude/.env` and `bun run dev` in step 4. The rest of the example is identical; health probes move to `localhost:8080` on your host.
 
-**3. Write the minimal SOUL.md — the only file you author.**
+**3. Write the minimal agent.yaml: the only file you author.**
 
 ```bash
-cat > ./data/SOUL.md << 'MD'
-# Persona
-
-## Identity
-- Name: aria
-- Role: engineering teammate in #engineering
-- Voice: terse, direct, no filler. fragments OK.
-
-## Reporting
-- Manager: U0MANAGER123
-- Manager handle: @you
-
-## Trusted channels
-- <#C0711111111|squadron-team>
-
-## Approvers
-- <@U0MANAGER123>: anything                ; catchall — manager approves anything
-- <@U0REVIEWER123>: code changes, repo writes, refactors, dependency bumps
-
-## Redaction
-- xox[baprs]-[0-9A-Za-z-]{10,}             ; Slack tokens
-
-## Mandate
-- Own the #engineering Slack surface. Triage threads, keep context warm, ship fixes. Refuse destructive ops without explicit approval.
-MD
+cat > ./data/agent.yaml << 'YAML'
+name: default
+description: engineering teammate in #engineering
+soul: |
+  # Persona
+  Voice: terse, direct, no filler. Fragments are fine.
+mandate:
+  global: Own the #engineering Slack surface. Triage threads, keep context warm, ship fixes. Refuse destructive ops without explicit approval.
+access:
+  manager: slack:user:U0MANAGER123
+  approvers:
+    - { user: slack:user:U0MANAGER123, scope: anything }          # catchall: the manager approves anything
+    - { user: slack:user:U0REVIEWER123, scope: "code changes, repo writes, refactors, dependency bumps", catchall: false }
+  channels:
+    trusted: [slack:channel:C0711111111]
+  redact:
+    - xox[baprs]-[0-9A-Za-z-]{10,}                                 # Slack tokens
+YAML
 ```
 
 Replace the three ids with real ones:
@@ -124,9 +117,9 @@ Replace the three ids with real ones:
 |------------|--------------|
 | `U0MANAGER123` | your Slack user id |
 | `U0REVIEWER123` | a teammate who can approve code changes (or reuse your id for solo) |
-| `C0711111111` | your team channel id (`C…` or `G…`) — or delete the whole `Trusted channels` block for a DM-only bot |
+| `C0711111111` | your team channel id (`C…` or `G…`), or delete the whole `channels` block for a DM-only bot |
 
-This is the smallest file that passes validation — three required fields: `identity.name`, `manager.userId`, `mandate`. Everything else is optional. See [Configuration — SOUL.md schema](../reference/configuration.md#soul) for the full section cookbook (allowed channels, blocked users, `## Channel <#Cxxx>` overrides, `approvalTimeoutSeconds`).
+This is the smallest file that passes validation: three required keys, `name`, `access.manager` and `mandate.global`. Everything else is optional. See the [agent.yaml reference](../reference/configuration.md#soul) for every key (public channels, blocked users, per-channel mandates, `approvalTimeoutSeconds`).
 
 **4. Validate before you boot.**
 
@@ -138,21 +131,20 @@ SLAUDE_HOME=./data bun run validate-soul
 Expected output (exit 0):
 
 ```
-[validate] ok
+[validate] default: ok
 ```
 
 Other exits:
 
 ```
-[validate] missing required fields:        # exit 1 — SOUL.md is present but incomplete
+[validate] default: missing required fields:   # exit 1: agent.yaml is present but incomplete
   - identity.name
   - mandate
-[validate] warnings:                       # exit 0 — still ok, but review
-  - allowedChannels + trustedChannels both empty — only manager/backup can chat outside DMs
-[validate] failed to load SOUL.md: missing auth: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN  # exit 2 — provider not configured
+[validate] default: allowedChannels + trustedChannels both empty — only manager/backup can chat outside DMs   # warning, exit 0
+[validate] default: persona 'default': agent.yaml access.manager is not a valid reference   # exit 2: the file does not compile
 ```
 
-Treat exit 1 as a build failure, exit 2 as a config error (not a bad `SOUL.md`). Wire into CI if you keep `SOUL.md` in git:
+Treat exits 1 and 2 as build failures. Wire into CI if you keep `agent.yaml` in git:
 
 ```yaml
 # .github/workflows/validate.yml
@@ -166,10 +158,9 @@ docker compose up -d --build
 docker compose logs -f slaude
 ```
 
-Expected log (first boot seeds the extractor cache):
+Expected log:
 
 ```
-[slaude] soul cache miss — extracting SOUL.md via haiku
 [slaude] listening on :8080 (/healthz /readyz /metrics)
 [slaude] bolt connected — Socket Mode ready
 ```
@@ -203,10 +194,10 @@ curl -s http://localhost:8080/readyz
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | `Error: missing env SLACK_BOT_TOKEN` at boot | `.env` not loaded or empty | `cat .env` — ensure `SLACK_BOT_TOKEN=xoxb-…` has no quotes/spaces; `docker compose config` prints resolved env |
-| `social login unavailable` or 401 from extractor | No provider credential | Set `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; when using `ANTHROPIC_BASE_URL` on OpenRouter/Z.ai, `SLAUDE_MODEL` is required |
+| `social login unavailable` or 401 from the agent | No provider credential | Set `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; when using `ANTHROPIC_BASE_URL` on OpenRouter/Z.ai, `SLAUDE_MODEL` is required |
 | `/healthz` returns 503 | `db.sqlite` not writable | `ls -l ./data/db.sqlite` — volume must be writable; on k8s `subPath` use `SLAUDE_DB_PATH` override |
-| Bot never replies, logs show `blocked_user` or `whitelist` drops | Channel not in `trustedChannels`/`allowedChannels` and sender is not manager | Add the channel id to `## Trusted channels` (or `## Allowed channels` for public), `docker compose restart slaude` |
-| `bun run validate-soul` exit 2 | Auth missing in validator env | Same fix as provider 401 — export the key in the shell that runs `validate-soul` |
+| Bot never replies, logs show `blocked_user` or `whitelist` drops | Channel not in `trustedChannels`/`allowedChannels` and sender is not manager | Add the channel to `access.channels.trusted` (or `.public` for public), `docker compose restart slaude` |
+| `bun run validate-soul` exit 2 | `agent.yaml` does not compile | The message names the persona and the key; fix it and run again |
 
 Next: add a skill ([Example 2](#2-adding-a-skill-via-slaudejson)) or connect a wiki ([Example 3](#3-private-kb-capture--ingest--wiki)) without rebuilding your persona.
 

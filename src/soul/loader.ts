@@ -1,8 +1,9 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { paths } from "../config/home";
 import { brainEnabled } from "../knowledge/brain";
 import { renderRuntimeFile } from "./runtime/render";
 import { renderSkillIndex } from "./builtin";
+import { stripScopeBlocks } from "./mandate-scope";
 
 /**
  * Runtime baseline — non-negotiable rules every slaude process inherits.
@@ -12,140 +13,15 @@ import { renderSkillIndex } from "./builtin";
 // The text lives in runtime/core.md; runtimeBaseline() renders it.
 
 
+
 /**
- * Starter persona — written to ~/.slaude/SOUL.md the first time the process
- * runs, ONLY if the file is missing. Operators are expected to edit this in.
- * Unlike the baseline above, anything the operator writes here ends up in
- * the system prompt as the agent's identity.
+ * The default persona's SOUL.md text, or "" when there is none. Nothing seeds
+ * one: a new home gets a starter agent.yaml (see persona/disk-check.ts), and the
+ * default persona's text comes from there.
  */
-const STARTER_PERSONA = `# Persona
-
-> Required: fill in the fields below before going live. The runtime's
-> baseline rules (Slack output, formatting, approval) are already enforced
-> in code — this file is for *who* the agent is, not *how* it behaves
-> mechanically.
-
-## Identity
-- Name: <agent display name>
-- Role: <one line — e.g. "engineering teammate in #platform">
-- Voice: <e.g. "terse, direct, no filler. fragments OK.">
-
-## Reporting
-- Manager: <Slack user id of the person you report to, e.g. U0XXXXXXXXX>
-- Manager handle: <e.g. @barock>
-- Backup manager: <optional fallback user id, e.g. U0DEPUTY123 — leave blank for none>
-- Backup manager handle: <e.g. @deputy>
-
-## DM allowlist
-
-Users allowed to DM slaude directly (1:1), in addition to the manager and
-backup. Without this, a DM from anyone but manager/backup is dropped at the
-engagement gate. Grants DM chat only — admin commands (cron / ignore /
-ingest) still require manager/backup or an approver. One id per line,
-\`<@Uxxx>\` or raw \`Uxxx\`. Omit the section for manager-only DMs.
-
-- <@U0TEAMMATE1>
-- <@U0TEAMMATE2>
-
-## Redaction
-
-Outbound replies are scrubbed for substrings matching the regex patterns
-listed here before posting to Slack. Each line is a regex source (no
-\`/.../\` wrappers, no flags — patterns run global + case-insensitive).
-Use for credential / PII shapes you never want leaked. Omit the section
-to disable redaction.
-
-- AKIA[0-9A-Z]{16}                  ; AWS access keys
-- ghp_[0-9A-Za-z]{36}               ; GitHub personal tokens
-- xox[baprs]-[0-9A-Za-z-]{10,}      ; Slack tokens
-
-## Approval timeout
-
-Auto-deny \`request_approval\` blocks after this many seconds with no
-human click. 0 (or omit the section) = wait forever.
-
-- 600
-
-## Allowed channels
-
-Channels listed here are *public-interaction zones*: anyone in the
-channel can address slaude. In any channel NOT on this list (and in DMs)
-only the manager may engage; approvers can still click Approve / Deny on
-\`request_approval\` blocks but cannot chat. One id per line — either
-\`<#Cxxx|name>\` or raw \`Cxxx\`. Omit the section to disable public
-channels entirely (manager-only everywhere).
-
-- <#C0123456789|engineering>
-- <#G0123456789|private-ops>
-
-## Trusted channels
-
-Internal team channels where slaude operates as a member of the team, not
-a guest. Engagement is identical to *Allowed channels* (anyone in the
-channel can chat), but the agent receives a \`trust="trusted"\` hint per
-turn signaling it can be more open: show MCP server lists, skill names,
-internal config, in-progress thinking. Use for the BU / squad / team
-channel where slaude is one of the team, mostly meeting peers and the
-manager. One id per line — either \`<#Cxxx|name>\` or raw \`Cxxx\`. Omit
-the section if slaude has no team channel.
-
-- <#C0123456789|squadron-team>
-
-## Values
-- <one or two lines of operating principles unique to this persona>
-
-## Mandate
-- <what this agent is meant to accomplish in this workspace>
-
-## Approvers
-
-Who may click Approve / Deny on \`mcp__slaude_surface__request_approval\`.
-One \`<id-or-mention>: <scope description>\` line per person. The runtime
-tokenizes the scope words and keyword-matches them against the agent's
-plan summary; matching approvers are eligible for that request.
-
-- "anything" / "any" / "all" / "default" / "*" / "catchall" / "everything"
-  marks a catchall — always eligible regardless of summary content.
-- Use plain English. Comma, dash, "and" all work as separators in scope.
-- Trailing \`;\` starts an inline comment.
-
-When this section is absent, env \`SLAUDE_APPROVERS\` is used.
-
-- <@manager-id>:    anything                ; catchall, always eligible
-- <@reviewer-id>:   code changes, repo writes, refactors, dependency bumps
-- <@dba-id>:        database migrations, schema changes, prod data, SQL
-- <@sre-id>:        deploys, infra, kubernetes, rollbacks, ingress, CI/CD
-- <@security-id>:   secrets, credentials, IAM, env vars, OAuth scopes
-- <@comms-id>:      external comms, customer messages, emails, social
-
-## Channel <#C0123456789|example-channel>
-
-Optional, repeatable. Per-channel override of *Mandate* and *Approvers*. When
-slaude operates in this channel, the subsections below replace the global ones
-(absent subsection → global value). One \`## Channel <id>\` block per channel;
-\`<#Cxxx|name>\` or raw \`Cxxx\`/\`Gxxx\`/\`Dxxx\`. Delete this stub block (its id
-is a placeholder, ignored by the parser) or fill it with a real channel id.
-
-The manager (and backup) stay eligible approvers here automatically — a
-channel block can only *add* approvers, never lock the operator out.
-
-### Mandate
-- <what slaude is meant to accomplish specifically in this channel>
-
-### Approvers
-- <@channel-lead-id>: anything            ; catchall for this channel
-- <@channel-dba-id>:  migrations, SQL, schema changes
-`;
-
 export function loadSoul(soulPath?: string): string {
   const target = soulPath ?? paths.soul;
-  if (target === paths.soul && !existsSync(target)) {
-    writeFileSync(target, STARTER_PERSONA, "utf8");
-    console.warn(
-      `[soul] seeded starter persona at ${target} — fill it in before going live`,
-    );
-    return STARTER_PERSONA;
-  }
+  if (target === paths.soul && !existsSync(target)) return "";
   return readFileSync(target, "utf8");
 }
 
@@ -154,45 +30,48 @@ export function loadSoul(soulPath?: string): string {
  * defines how slaude interacts with Slack) with the operator's persona file
  * (which defines who slaude is in this deploy).
  */
-export function soulSystemBlock(overlay?: string): string {
-  const persona = (overlay ?? loadSoul()).trim();
+export function soulSystemBlock(overlay?: string, opts: { keepScopes?: boolean } = {}): string {
+  const text = overlay ?? loadSoul();
+  // `## Scope` blocks reach a turn only through the resolved mandate. Extraction alone reads them.
+  const persona = (opts.keepScopes ? text : stripScopeBlocks(text)).trim();
   return `${runtimeBaseline(brainEnabled())}\n\n<persona>\n${persona}\n</persona>`;
 }
 
 /**
- * The knowledge-base passages that differ by brain mode. \`list_kbs\` and
- * \`search_kbs\` return no disk path (WS-C §4.1.4), so with the brain disabled
- * the prompt itself names where a knowledge base's files are; with it enabled
- * the brain tools read them and no path is given.
+ * The memory passages that differ by brain mode. \`memory_stores\` and
+ * \`memory_search_stores\` return no disk path (WS-C §4.1.4), so with the brain
+ * disabled the prompt itself names where a knowledge base's files are; with it
+ * enabled the memory tools read them and no path is given. Only the memory_*
+ * names appear here; the deprecated kb_* aliases are never offered in text.
  */
 function knowledgeText(brain: boolean): Record<"KB_FALLBACK" | "KB_READ" | "KB_TOOLS", string> {
   if (brain) {
     return {
       KB_FALLBACK:
-        "\`list_kbs\` / \`search_kbs\` only name the knowledge bases you may read; the brain tools read them.",
+        "\`memory_stores\` / \`memory_search_stores\` only name the knowledge bases you may read; the memory tools read them.",
       KB_READ:
         "If tags match, read the relevant pages BEFORE calling external tools. Example: user asks\n" +
-        "  \"what do you know about service-a?\" → \`kb_think({question: \"...\"})\` or\n" +
-        "  \`kb_search({query: \"service-a\"})\` → read matching pages via\n" +
-        "  \`kb_get_page\` → only then decide whether Grafana or other tools are needed.",
+        "  \"what do you know about service-a?\" → \`memory_think({question: \"...\"})\` or\n" +
+        "  \`memory_search({query: \"service-a\"})\` → read matching pages via\n" +
+        "  \`memory_get\` → only then decide whether Grafana or other tools are needed.",
       KB_TOOLS:
-        "- Query the brain anytime via \`mcp__slaude_kb__{kb_think, kb_search,\n" +
-        "  kb_get_page, kb_list_pages, kb_graph, memory_about, kb_thread_history, list_kbs,\n" +
-        "  search_kbs}\` — all served\n" +
-        "  live from the brain DB. Reach for them whenever the answer plausibly\n" +
+        "- Query your memory anytime via \`mcp__slaude_kb__{memory_think, memory_search,\n" +
+        "  memory_get, memory_list, memory_graph, memory_about, memory_thread_history,\n" +
+        "  memory_stores, memory_search_stores}\`, all served\n" +
+        "  live from the memory database. Reach for them whenever the answer plausibly\n" +
         "  lives in operator-curated reference material or your own memory.",
     };
   }
   const dir = `${paths.knowledge}/<label>/`;
   return {
     KB_FALLBACK:
-      "The brain is disabled in this deployment, so the \`kb_*\` brain tools are absent: find the knowledge base with " +
-      `\`search_kbs\` (keyword/tag match) or \`list_kbs\`, then read its files with \`Grep\`/\`Read\` under \`${dir}\`, ` +
+      "Memory stores are disabled in this deployment, so the memory page tools are absent: find the knowledge base with " +
+      `\`memory_search_stores\` (keyword/tag match) or \`memory_stores\`, then read its files with \`Grep\`/\`Read\` under \`${dir}\`, ` +
       "where <label> is the \`label\` those tools return.",
     KB_READ:
       `If tags match, read its relevant files under \`${dir}\` with \`Grep\`/\`Read\` BEFORE calling external tools.`,
     KB_TOOLS:
-      "- The knowledge tools in this deployment are \`mcp__slaude_kb__{list_kbs, search_kbs}\`; they list only the\n" +
+      "- The knowledge tools in this deployment are \`mcp__slaude_kb__{memory_stores, memory_search_stores}\`; they list only the\n" +
       `  knowledge bases you may read, and their files are under \`${dir}\`.`,
   };
 }

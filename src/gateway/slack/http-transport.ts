@@ -157,6 +157,9 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
       apiAppId: body.api_app_id,
       botUserId: entry.row.bot_user_id ?? undefined,
       botToken: entry.botToken,
+      // The persona this app is registered for (`slack-app add --persona`); the gateway runs what is addressed to
+      // the app's own bot as that persona.
+      personaId: entry.row.persona_id,
     };
     for (const h of events.get(event.type) ?? []) {
       await h({ event, client: entry.client, context });
@@ -456,6 +459,7 @@ export function createHttpSlackTransport(opts: HttpTransportOptions = {}): HttpS
         teamId: e.row.team_id,
         botUserId: e.row.bot_user_id ?? undefined,
         client: e.client,
+        personaId: e.row.persona_id,
       }));
     },
     get port() {

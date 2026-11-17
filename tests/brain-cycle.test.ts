@@ -1,6 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { paths } from "../src/config/home";
@@ -8,8 +7,10 @@ import { clearKbCache } from "../src/knowledge/loader";
 import { closeBrain, ensureSources, brainCall } from "../src/knowledge/brain";
 import { runNightlyMaintenance, msUntilNext } from "../src/knowledge/brain-cycle";
 import { kbSourceId } from "../src/knowledge/scope";
+import { freshBrainHome } from "./helpers/brain-template";
 
-const brainDir = mkdtempSync(join(tmpdir(), "slaude-braincycle-"));
+// A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+const brainDir = await freshBrainHome("slaude-braincycle-");
 process.env.SLAUDE_BRAIN_HOME = brainDir;
 
 // KB fixture with a wikilink so extract has an edge to wire.

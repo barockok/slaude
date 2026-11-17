@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { isInternal, sameAt } from "../access/wired";
 import { loadKbs, type KbEntry } from "./loader";
 import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient, synthesizeFromHits } from "./brain-think";
@@ -11,7 +12,8 @@ import { carriedFields, composePage, readPageRecord, type TypedPageInput } from 
 import { SUPERSEDED_TAG, getPageOrNull, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
 import { conversationSlug, conversationSummarySlug, orderTimeline, type TimelineRow } from "../memory/brain-provider";
-import { kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
+import { isMemoryToolAlias, kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
+import { env } from "../config/env";
 
 export const KB_MCP_NAME = kbContract.server;
 // Re-export: the limit is defined in the shared contract (single source of truth)
@@ -80,8 +82,9 @@ export const kbHandlers = {
 export interface BrainToolDeps {
   scope: () => BrainScope | Promise<BrainScope>;
   gate: () => GateInput | Promise<GateInput>;
-  /** Manager + backup user ids — hard backstop for kb-admin approvals. */
-  managers: () => string[];
+  /** The persona's managers (manager, backup, stored manager grants): hard
+   *  backstop for kb-admin approvals. */
+  managers: () => string[] | Promise<string[]>;
   requestApproval: (r: ApprovalReq) => Promise<ApprovalRes>;
   /** This thread's session and the scope its turns may be read in (the memory
    *  read scope), per call. Absent: kb_thread_history is not offered. */
@@ -130,7 +133,7 @@ async function runGated(name: string, params: Record<string, unknown>, summary: 
     const r = await gatedBrainCall(name, {
       scope: await d.scope(),
       gate: await d.gate(),
-      managers: d.managers(),
+      managers: await d.managers(),
       requestApproval: d.requestApproval,
       call: async () => call(name, params, await d.scope()),
       describe: summary,
@@ -213,18 +216,18 @@ function ownTurnSender(g: GateInput): TurnSender | null {
  * - mine: the turn's own slice as resolved.
  * The gate (classifyBrainOp) enforces the same rules again.
  */
-function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined, base: BrainScope, g: GateInput): { scope: BrainScope; speaker?: string } | { error: string } {
+async function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined, base: BrainScope, g: GateInput): Promise<{ scope: BrainScope; speaker?: string } | { error: string }> {
   if (target === "profile") {
     const sender = ownTurnSender(g);
     const own = sender ? speakerProfileSource(sender.teamId, sender.userId) : null;
-    if (!sender || own === null || (subject !== undefined && subject !== sender.userId)) {
+    if (!sender || own === null || (subject !== undefined && !(await sameAt({ site: "kb_tools.profile_subject", persona: g.agentId, teamId: sender.teamId, userId: subject, otherUserId: sender.userId })))) {
       return { error: PROFILE_REFUSAL };
     }
     return { scope: { ...base, sourceId: own }, speaker: sender.userId };
   }
   const scope = target === "shared" ? { ...base, sourceId: SHARED_SOURCE } : base;
   if (g.lockedUser !== null) {
-    if (g.userId !== g.lockedUser || scope.sourceId !== userSourceId(g.lockedUser)) return { error: LOCK_REFUSAL };
+    if (!(await sameAt({ site: "kb_tools.lock_owner", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) || scope.sourceId !== userSourceId(g.lockedUser)) return { error: LOCK_REFUSAL };
   }
   return { scope };
 }
@@ -361,6 +364,8 @@ const rowSlugs = (rows: unknown): string[] =>
  */
 async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scope: BrainScope, sender: TurnSender): Promise<MemoryEntry[]> {
   const entries: MemoryEntry[] = [];
+  // At most this many subject compares per listing resolve people (a few under shadow, more when the answer is used); the rest compare as strings only.
+  let shadowBudget = isInternal() ? 50 : 3;
   for (const m of memorySources(scope, sender)) {
     const only: BrainScope = { ...scope, sourceId: m.source, allowedSources: [m.source] };
     const listed = new Set<string>();
@@ -374,7 +379,7 @@ async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scop
       const pg = readPageRecord(await getPageOrNull(call, slug, only));
       if (!pg || pg.superseded) continue;
       const subject = pg.meta.subject;
-      if (subject !== undefined ? subject !== sender.userId : !(m.fixed.includes(slug) || m.where === "profile")) continue;
+      if (subject !== undefined ? !(shadowBudget-- > 0 ? (await sameAt({ site: "kb_tools.memory_about_subject", persona: null, teamId: sender.teamId, userId: subject, otherUserId: sender.userId })) : subject === sender.userId) : !(m.fixed.includes(slug) || m.where === "profile")) continue;
       entries.push({
         where: m.where,
         slug,
@@ -468,7 +473,7 @@ export const brainHandlers = {
   },
   kb_memoize: async (p: KbMemoizeArgs, d: BrainToolDeps): Promise<ToolResult> => {
     if (!Array.isArray(p.pages) || p.pages.length === 0) {
-      return err("kb_memoize requires at least one page");
+      return err("memory_save requires at least one page");
     }
     // gbrain stores a page under its lowercased slug, then chunks it under the
     // slug as given, so a mixed-case slug fails with "Page not found" after the
@@ -477,7 +482,7 @@ export const brainHandlers = {
     const lower = (s: string | undefined) => (typeof s === "string" ? s.toLowerCase() : s);
     const pages = p.pages.map((pg) => ({ ...pg, slug: lower(pg.slug)!, supersedes: lower(pg.supersedes) }));
     if (pages.length > KB_MEMOIZE_MAX_PAGES) {
-      return err(`kb_memoize accepts at most ${KB_MEMOIZE_MAX_PAGES} pages per call (got ${pages.length})`);
+      return err(`memory_save accepts at most ${KB_MEMOIZE_MAX_PAGES} pages per call (got ${pages.length})`);
     }
     // C1: settle the agent identity before resolving the write scope, so a write
     // in the boot window (before auth.test lands) targets the real `agent-<id>`
@@ -485,7 +490,7 @@ export const brainHandlers = {
     await agentIdReady();
     const target = p.target ?? "mine";
     const gate = await d.gate();
-    const resolved = resolveMemoizeScope(target, p.subject, await d.scope(), gate);
+    const resolved = await resolveMemoizeScope(target, p.subject, await d.scope(), gate);
     if ("error" in resolved) return err(resolved.error);
     const { scope, speaker } = resolved;
     // A profile rewrite keeps the fields it does not set. Ping preferences
@@ -527,8 +532,8 @@ export const brainHandlers = {
     }
     const trail = retired.length > 0 ? ` (and tags ${retired.join(", ")} as ${SUPERSEDED_TAG})` : "";
     const describe = pages.length === 1
-      ? `KB write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}${trail}`
-      : `KB write ${label}: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}${trail}`;
+      ? `Memory write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}${trail}`
+      : `Memory write ${label}: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}${trail}`;
     try {
       const call = d.call ?? brainCall;
       // Supersede check, before any write: the older page must exist in the
@@ -548,7 +553,7 @@ export const brainHandlers = {
       const r = await gatedBrainCall("put_page", {
         scope,
         gate,
-        managers: d.managers(),
+        managers: await d.managers(),
         requestApproval: d.requestApproval,
         call: async () => {
           // A page written again is current: drop a superseded tag it carries
@@ -565,7 +570,7 @@ export const brainHandlers = {
               results.push(await call("remove_tag", { slug, tag: SUPERSEDED_TAG }, scope));
             } catch (e) {
               throw new TrailError(
-                `kb_memoize wrote ${slug}, but removing its ${SUPERSEDED_TAG} tag failed (${e instanceof Error ? e.message : String(e)}); readers still treat it as superseded. Retry the same kb_memoize call.`,
+                `memory_save wrote ${slug}, but removing its ${SUPERSEDED_TAG} tag failed (${e instanceof Error ? e.message : String(e)}); readers still treat it as superseded. Retry the same memory_save call.`,
               );
             }
           }
@@ -575,7 +580,7 @@ export const brainHandlers = {
               results.push(await call("add_tag", { slug: pg.supersedes, tag: SUPERSEDED_TAG }, scope));
             } catch (e) {
               throw new TrailError(
-                `kb_memoize wrote ${pg.slug}, but tagging ${pg.supersedes} as ${SUPERSEDED_TAG} failed (${e instanceof Error ? e.message : String(e)}). ${pg.slug} already says it supersedes ${pg.supersedes}; retry kb_memoize for ${pg.slug} with the same supersedes to finish the trail.`,
+                `memory_save wrote ${pg.slug}, but tagging ${pg.supersedes} as ${SUPERSEDED_TAG} failed (${e instanceof Error ? e.message : String(e)}). ${pg.slug} already says it supersedes ${pg.supersedes}; retry memory_save for ${pg.slug} with the same supersedes to finish the trail.`,
               );
             }
           }
@@ -601,8 +606,9 @@ export const brainHandlers = {
     // Only for the one person whose own turn this is (the turn's senders, not
     // the live ctx, which on mono flips to whoever posted mid-turn): one
     // person's memory never shows inside another person's turn.
-    const sender = ownTurnSender(await d.gate());
-    if (!sender || sender.userId !== p.userId) return err(MEMORY_ABOUT_REFUSAL);
+    const gate = await d.gate();
+    const sender = ownTurnSender(gate);
+    if (!sender || !(await sameAt({ site: "kb_tools.memory_about", persona: gate.agentId, teamId: sender.teamId, userId: sender.userId, otherUserId: p.userId }))) return err(MEMORY_ABOUT_REFUSAL);
     try {
       const entries = await collectMemoryAbout(d.call ?? brainCall, await d.scope(), sender);
       return ok(entries.length > 0 ? formatMemoryAbout(entries) : `Nothing is recorded about ${p.userId} in what this turn can read.`);
@@ -619,7 +625,7 @@ export const brainHandlers = {
       // A row without an id is keyed by its position, so paging stays consistent.
       let rows = orderTimeline(raw ?? []).map((r, i) => ({ r, id: r.id ?? i + 1 }));
       if (p.before !== undefined) {
-        if (!/^\d+$/.test(p.before)) return err("kb_thread_history: before must be an entry id from the footer of a previous call");
+        if (!/^\d+$/.test(p.before)) return err("memory_thread_history: before must be an entry id from the footer of a previous call");
         const before = Number(p.before);
         rows = rows.filter((x) => x.id < before);
       }
@@ -650,11 +656,11 @@ export const brainHandlers = {
       }
       return ok(out.join("\n"));
     } catch (e) {
-      return err(humanizeBrainError("kb_thread_history", e));
+      return err(humanizeBrainError("memory_thread_history", e));
     }
   },
   kb_delete_page: (p: { slug: string; reason: string }, d: BrainToolDeps) =>
-    runGated("delete_page", { slug: p.slug }, `KB delete: ${p.slug} — ${p.reason}`, d),
+    runGated("delete_page", { slug: p.slug }, `Memory delete: ${p.slug} — ${p.reason}`, d),
 };
 
 /** `kbs`: the session persona's readable KBs, resolved per call (personaKbs);
@@ -662,26 +668,31 @@ export const brainHandlers = {
 export function createKbMcp(deps?: BrainToolDeps, opts: { kbs?: () => KbEntry[] } = {}): McpSdkServerConfigWithInstance {
   const kbs = opts.kbs ?? loadKbs;
   const c = kbContract.tools;
+  // Each memory tool mounts under its memory_* name and its deprecated kb_*
+  // alias: one handler and one schema for both (contract MEMORY_TOOL_ALIASES).
+  // SLAUDE_MEMORY_TOOL_ALIASES=0 mounts only the memory_* names.
+  const aliases = env.memoryToolAliases();
+  const mounted = (t: { name: string }) => aliases || !isMemoryToolAlias(t.name);
   const brainTools = deps && brainEnabled()
     ? [
-        tool(c.kb_think.name, c.kb_think.description, c.kb_think.schema,
-          (a: { question: string }) => brainHandlers.kb_think(a, deps)),
-        tool(c.kb_search.name, c.kb_search.description, c.kb_search.schema,
-          (a: { query: string; limit?: number }) => brainHandlers.kb_search(a, deps)),
-        tool(c.kb_get_page.name, c.kb_get_page.description, c.kb_get_page.schema,
-          (a: { slug: string }) => brainHandlers.kb_get_page(a, deps)),
-        tool(c.kb_list_pages.name, c.kb_list_pages.description, c.kb_list_pages.schema,
-          (a: { type?: string; tag?: string; limit?: number }) => brainHandlers.kb_list_pages(a, deps)),
-        tool(c.kb_graph.name, c.kb_graph.description, c.kb_graph.schema,
-          (a: { slug: string }) => brainHandlers.kb_graph(a, deps)),
-        tool(c.kb_memoize.name, c.kb_memoize.description, c.kb_memoize.schema,
-          (a: KbMemoizeArgs) => brainHandlers.kb_memoize(a, deps)),
+        ...[c.memory_think, c.kb_think].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
+          (a: { question: string }) => brainHandlers.kb_think(a, deps))),
+        ...[c.memory_search, c.kb_search].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
+          (a: { query: string; limit?: number }) => brainHandlers.kb_search(a, deps))),
+        ...[c.memory_get, c.kb_get_page].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
+          (a: { slug: string }) => brainHandlers.kb_get_page(a, deps))),
+        ...[c.memory_list, c.kb_list_pages].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
+          (a: { type?: string; tag?: string; limit?: number }) => brainHandlers.kb_list_pages(a, deps))),
+        ...[c.memory_graph, c.kb_graph].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
+          (a: { slug: string }) => brainHandlers.kb_graph(a, deps))),
+        ...[c.memory_save, c.kb_memoize].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
+          (a: KbMemoizeArgs) => brainHandlers.kb_memoize(a, deps))),
         tool(c.memory_about.name, c.memory_about.description, c.memory_about.schema,
           (a: { userId: string }) => brainHandlers.memory_about(a, deps)),
-        tool(c.kb_thread_history.name, c.kb_thread_history.description, c.kb_thread_history.schema,
-          (a: { limit?: number; before?: string }) => brainHandlers.kb_thread_history(a, deps)),
-        tool(c.kb_delete_page.name, c.kb_delete_page.description, c.kb_delete_page.schema,
-          (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps)),
+        ...[c.memory_thread_history, c.kb_thread_history].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
+          (a: { limit?: number; before?: string }) => brainHandlers.kb_thread_history(a, deps))),
+        ...[c.memory_delete, c.kb_delete_page].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
+          (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps))),
       ]
     : [];
 
@@ -690,9 +701,9 @@ export function createKbMcp(deps?: BrainToolDeps, opts: { kbs?: () => KbEntry[] 
     version: "0.2.0",
     tools: [
       ...brainTools,
-      tool(c.list_kbs.name, c.list_kbs.description, c.list_kbs.schema, () => kbHandlers.list_kbs(kbs())),
-      tool(c.search_kbs.name, c.search_kbs.description, c.search_kbs.schema,
-        (a: { query: string; limit?: number }) => kbHandlers.search_kbs(a, kbs())),
+      ...[c.memory_stores, c.list_kbs].filter(mounted).map((t) => tool(t.name, t.description, t.schema, () => kbHandlers.list_kbs(kbs()))),
+      ...[c.memory_search_stores, c.search_kbs].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
+        (a: { query: string; limit?: number }) => kbHandlers.search_kbs(a, kbs()))),
     ],
   });
 }

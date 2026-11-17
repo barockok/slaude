@@ -4,10 +4,13 @@ import * as Runs from "../../src/db/background-runs";
 import { TOOLS_SURVIVING_EMPTY_SET } from "../../src/agent/child-env";
 import { metrics } from "../../src/metrics";
 import { passPrompt, PROVISIONAL_OUTPUT_TOKENS, runPass, type PassSpec, type RunnerDeps } from "../../src/background/runner";
-import { passToolId } from "../../src/background/pass-tools";
+import { passToolId, READ_ONLY_PASS_TOOLS } from "../../src/background/pass-tools";
 import type { PriceTable } from "../../src/background/prices";
 import { fakeBrain } from "./fake-brain";
 import { personaDefaultModel } from "../../src/persona/registry";
+import { runHeartbeat } from "../../src/proactive/heartbeat";
+import { parseProactive } from "../../src/soul/proactive";
+import type { ExternalMcp } from "../../src/gateway/core/external-mcp";
 
 const NOW = new Date("2026-10-26T03:00:00Z");
 const DAY = "2026-10-26";
@@ -412,6 +415,31 @@ describe("runPass", () => {
     expect((await runPass(spec(), deps(fakeQuery([assistant("m1")]).query, 5))).outcome).toBe("error");
   });
 
+  test("owner guardrails: a pass tool an owner rule denies stays denied; Guidance refusals do not eat the cap; an unreadable set fails the pass", async () => {
+    const { resolveDocs, sessionGuardrails } = await import("../../src/guardrails/resolve");
+    const set = resolveDocs([
+      { slug: "no-propose", md: "---\nname: no-propose\n---\n```rules\n- id: r\n  on: tool\n  match: { tool: 'mcp__slaude_pass__propose' }\n  action: deny\n  message: Not in background.\n```", source: "file", override: false, behindSource: false, enabled: true },
+      { slug: "care", md: "---\nname: care\nload: on-match\ntriggers: { tool: 'mcp__slaude_pass__memoize' }\n---\nWrite short pages.", source: "file", override: false, behindSource: false, enabled: true },
+    ]);
+    const { query, state } = fakeQuery([result()]);
+    await runPass(spec({ pass: "lessons-upkeep" }), { ...deps(query, 5), guardrails: async (p) => sessionGuardrails(set, p, null, { version: 1, proseMax: 4000 }) });
+    const o = state.calls[0]!.options;
+    expect(o.maxTurns).toBe(7);
+    const hooks = (o.hooks as { PreToolUse: Array<{ hooks: Array<(i: unknown) => Promise<any>> }> }).PreToolUse[0]!.hooks;
+    const owner = hooks[0]!;
+    expect((await owner({ hook_event_name: "PreToolUse", tool_name: passToolId("propose"), tool_input: {} })).hookSpecificOutput.permissionDecisionReason).toBe("Not in background.");
+    expect((await owner({ hook_event_name: "PreToolUse", tool_name: passToolId("memoize"), tool_input: {} })).hookSpecificOutput.permissionDecisionReason).toContain("Write short pages.");
+    expect(await owner({ hook_event_name: "PreToolUse", tool_name: passToolId("memoize"), tool_input: {} })).toEqual({});
+    const tenants: string[] = [];
+    await runPass({ ...spec(), tenantId: "t-two" }, { ...deps(fakeQuery([result()]).query, 5), guardrails: async (_p, t) => (tenants.push(t), null) });
+    await runPass(spec(), { ...deps(fakeQuery([result()]).query, 5), guardrails: async (_p, t) => (tenants.push(t), null) });
+    expect(tenants).toEqual(["t-two", "default"]);
+    const failing = fakeQuery([result()]);
+    const r = await runPass(spec(), { ...deps(failing.query, 5), guardrails: async () => { throw new Error("integrity"); } });
+    expect(r.outcome).toBe("error");
+    expect(failing.state.calls).toHaveLength(0);
+  });
+
   test("the lockdown options are passed", async () => {
     process.env.SLAUDE_REDIS_URL = "redis://example.invalid:6379";
     process.env.SLAUDE_NODE_TOKEN = "node-token-for-test";
@@ -438,7 +466,7 @@ describe("runPass", () => {
       expect(childEnv.SLAUDE_NODE_TOKEN).toBeUndefined();
       expect(childEnv.SLAUDE_HOME).toBe(process.env.SLAUDE_HOME);
       // The PreToolUse hook denies anything but the pass's own tools.
-      const hook = (o.hooks as { PreToolUse: Array<{ hooks: Array<(i: unknown) => Promise<Record<string, unknown>>> }> }).PreToolUse[0]!.hooks[0]!;
+      const hook = (o.hooks as { PreToolUse: Array<{ hooks: Array<(i: unknown) => Promise<Record<string, unknown>>> }> }).PreToolUse[0]!.hooks.at(-1)!;
       expect(await hook({ hook_event_name: "PreToolUse", tool_name: passToolId("memoize") })).toEqual({});
       for (const name of ["Bash", "mcp__slaude_kb__kb_memoize", "Monitor"]) {
         const out = (await hook({ hook_event_name: "PreToolUse", tool_name: name })) as { hookSpecificOutput?: { permissionDecision?: string } };
@@ -457,6 +485,12 @@ describe("runPass", () => {
     await runPass(spec({ pass: "skill-review", extraTools: [extra as never] }), deps(query, 5));
     expect(state.calls[0]!.options.allowedTools).toContain("mcp__slaude_pass__list_skills");
     expect(state.calls[0]!.options.maxTurns).toBe(12);
+  });
+
+  test("baseTools limits the mounted and allowed pass tools", async () => {
+    const { query, state } = fakeQuery([result()]);
+    await runPass(spec({ baseTools: READ_ONLY_PASS_TOOLS }), deps(query, 5));
+    expect(state.calls[0]!.options.allowedTools).toEqual(["read_pages", "list_pages", "search"].map(passToolId));
   });
 
   test("an extra tool clashing with a pass tool throws before any ledger row", async () => {
@@ -490,5 +524,40 @@ describe("runPass", () => {
       if (prev === undefined) delete process.env.SLAUDE_MODEL;
       else process.env.SLAUDE_MODEL = prev;
     }
+  });
+});
+
+describe("the heartbeat round's pass options", () => {
+  // Driven through the real runHeartbeat and runPass with a fake query. The
+  // real-CLI block does not cover option shape, so this is the shape check.
+  test("the triage pass offers exactly its own mcp__slaude_pass__ tools, with a watched server", async () => {
+    const MAIL = { servers: { mail: { type: "http", url: "https://mcp.example.com/mail", readTools: ["list_mail"] } }, privateServices: [] } as unknown as ExternalMcp;
+    const soul = parseProactive("## Proactive\n- Enabled: yes\n- Watch: mail\n");
+    const { query, state } = fakeQuery([assistant("m1"), result(TURN)]);
+    const agentId = `agent-hb${++seq}`;
+    const out = await runHeartbeat(
+      { agentId, personaId: "default", personaIds: ["default"], timeZone: "UTC", slot: "2026-10-26T12:00", now: NOW },
+      {
+        runner: deps(query),
+        call: fakeBrain().call,
+        post: async (m) => ({ channel: m.channel, ts: "1.1" }),
+        managerId: () => "U0MANAGER",
+        mandates: () => ({ global: "", channels: {} }),
+        app: async () => undefined,
+        config: () => ({ ...soul }) as never,
+        sources: { tools: async (_p, src) => ({ tools: src.readTools.map((name) => ({ name })) }), read: async () => ({ kind: "ok", text: "" }) },
+        mcp: () => MAIL,
+      },
+    );
+    expect(out).toEqual({ outcome: "ok" });
+    expect(state.calls).toHaveLength(1);
+    const o = state.calls[0]!.options;
+    expect(o.allowedTools).toEqual(
+      ["read_pages", "list_pages", "search", "read_mail", "route_item", "write_journal"].map(passToolId),
+    );
+    expect(o.tools).toEqual([]);
+    expect(o.strictMcpConfig).toBe(true);
+    expect(o.permissionMode).toBe("dontAsk");
+    expect(Object.keys(o.mcpServers as object)).toEqual(["slaude_pass"]);
   });
 });

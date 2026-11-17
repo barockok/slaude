@@ -90,10 +90,31 @@ export function makeReaper(opts: ReaperOpts) {
    * job only `held` by a live lock keeps its node on the work list.
    */
   const moveHome = async (job: Job, rescueActive: boolean): Promise<{ taken: boolean; left: boolean }> => {
-    const res = await turns.moveTo(job, jobLabel(job.data as TurnJob), { rescueActive });
+    const data = job.data as TurnJob;
+    const label = jobLabel(data);
+    let queue: string | undefined;
+    // A job that needs capabilities (owner guardrails) goes to a live node
+    // that advertises them, never back to the label queue an older node also
+    // consumes. None live: it stays put and the next pass looks again.
+    if (data.requiresCaps?.length) {
+      const pool = await capableNodes(label, data.requiresCaps, job.queueName);
+      if (pool.length === 0) return { taken: false, left: false };
+      queue = nodeTurnsQueue(pool[0]!);
+    }
+    const res = await turns.moveTo(job, label, { rescueActive, ...(queue ? { queue } : {}) });
     const left = !(res.queue === job.queueName && res.jobId === String(job.id));
     const taken = !(await turns.queue(job.queueName).getJob(String(job.id)));
     return { taken, left: left || taken };
+  };
+
+  /** Live nodes carrying `label` that advertise every one of `caps`, other than the queue's own node. */
+  const capableNodes = async (label: string, caps: readonly string[], fromQueue: string): Promise<string[]> => {
+    const per = await Promise.all(caps.map((c) => registry.liveNodesWithCap(label, c)));
+    const ok = per.reduce<string[] | null>((acc, list) => {
+      const has = list.filter((n) => n.has).map((n) => n.node);
+      return acc === null ? has : acc.filter((n) => has.includes(n));
+    }, null) ?? [];
+    return ok.filter((n) => nodeTurnsQueue(n) !== fromQueue);
   };
 
   /**
@@ -120,7 +141,11 @@ export function makeReaper(opts: ReaperOpts) {
       if (!r.left) held++;
     }
     for (const job of (await q.getJobs([...MOVABLE_STATES])) as Job[]) {
-      if ((await moveHome(job, false)).taken) moved++;
+      const r = await moveHome(job, false);
+      if (r.taken) moved++;
+      // Still here (a job that needs a capable node and none is live): the
+      // node stays on the work list so the next pass looks again.
+      else if (!r.left) held++;
     }
     return { moved, held };
   };

@@ -1,0 +1,6 @@
+# Approver is an approval right, not a chat right: dropped in an unlisted channel.
+layer: restricted
+as: approver
+steps:
+  - send: { text: "approver in an unlisted channel" }
+  - expect_drop: { reason: whitelist }

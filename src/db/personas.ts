@@ -8,7 +8,13 @@
  * here combines the layers itself.
  */
 import { randomUUID } from "node:crypto";
-import { db } from "./schema";
+import { guardedProjection } from "./account-projection";
+import { ensureRefs, type RecordEntry, type RefUse } from "../domain/sync-refs";
+import type { DomainEvent } from "./domain";
+import type { EnvironmentsReport } from "../remote/definitions/sync";
+import type { DbClient } from "./client";
+import { db, dbDialect } from "./schema";
+import { GLOBAL_SCOPE, versionScope } from "./skill-versions";
 import { encrypt, decrypt, isEncrypted } from "./crypto";
 import { mergeEffective, sameDesired, type DesiredPersona, type EffectivePersona, type Override, type OverrideField } from "../persona/effective";
 
@@ -38,16 +44,24 @@ export class StaleRevisionError extends Error {
 
 export interface ApplyResult {
   created: string[]; updated: string[]; unchanged: string[]; tombstoned: string[]; overridesWiped: number;
+  /** Declared domain records this sync created (ids and masked references). */
+  records?: RecordEntry[];
+  /** Audit events for those records; the caller emits them after commit. */
+  domainEvents?: DomainEvent[];
+  /** The record writes failed and were rolled back to a savepoint; the persona sync still committed. */
+  recordsFailed?: boolean;
+  /** Environment definitions this sync wrote (names only); absent when the payload carried no `environments` list. */
+  environments?: EnvironmentsReport;
 }
 
 type Row = {
   name: string; slack_user_id: string | null; user_token: string | null; model_default: string | null;
-  soul_md: string; soul_json: unknown; mcp_json: unknown; provider_json: unknown; runs_on: string | null; kb_sources: unknown; background: unknown;
+  soul_md: string; soul_json: unknown; mcp_json: unknown; provider_json: unknown; runs_on: string | null; kb_sources: unknown; background: unknown; definition: unknown;
   origin: "git" | "runtime"; tombstoned_at: number | null;
 };
 
 const ROW_COLUMNS =
-  "name, slack_user_id, user_token, model_default, soul_md, soul_json, mcp_json, provider_json, runs_on, kb_sources, background, origin, tombstoned_at";
+  "name, slack_user_id, user_token, model_default, soul_md, soul_json, mcp_json, provider_json, runs_on, kb_sources, background, definition, origin, tombstoned_at";
 
 // provider_json holds references only (WS-A §4), never a value, so it is
 // stored as plain JSONB: an operator can read which secret a persona names.
@@ -57,6 +71,8 @@ const providerJson = (p: DesiredPersona["provider"]) => (p ? JSON.stringify(p) :
 const kbSourcesJson = (k: DesiredPersona["kbSources"]) => (k == null ? null : JSON.stringify(k));
 // background: null = the defaults (environment budget, UTC).
 const backgroundJson = (b: DesiredPersona["background"]) => (b == null ? null : JSON.stringify(b));
+// definition: null = the older layout; an object (even empty) = an agent.yaml.
+const definitionJson = (d: DesiredPersona["definition"]) => (d == null ? null : JSON.stringify(d));
 
 // mcp is stored as an encrypted string inside the JSONB column, so the column
 // type stays as 0001 defined it while the value is never plaintext at rest.
@@ -84,6 +100,7 @@ function toDesired(r: Row): DesiredPersona {
     runsOn: r.runs_on ?? null,
     kbSources: (parseJson(r.kb_sources) as string[] | null) ?? null,
     background: (parseJson(r.background) as DesiredPersona["background"]) ?? null,
+    definition: (parseJson(r.definition) as DesiredPersona["definition"]) ?? null,
     origin: r.origin,
     tombstonedAt: r.tombstoned_at == null ? null : Number(r.tombstoned_at),
   };
@@ -112,6 +129,11 @@ export async function kbSourcesColumnPresent(): Promise<boolean> {
 /** Whether migration 0020 (personas.background) is applied; same reason. */
 export async function backgroundColumnPresent(): Promise<boolean> {
   return personasColumnPresent("background");
+}
+
+/** Whether migration 0036 (personas.definition) is applied; same reason. */
+export async function definitionColumnPresent(): Promise<boolean> {
+  return personasColumnPresent("definition");
 }
 
 async function personasColumnPresent(column: string): Promise<boolean> {
@@ -174,6 +196,10 @@ export async function applySync(
   tenant: string,
   rows: DesiredPersona[],
   meta: { revision: string; committedAt: number; by: string },
+  /** References the personas carry; missing records are created in this transaction, in state declared. */
+  refs?: { uses: RefUse[]; workspaces: string[] },
+  /** Written in the same transaction (environment definitions); a throw rolls the personas back too. */
+  alsoApply?: (tx: DbClient) => Promise<EnvironmentsReport>,
 ): Promise<ApplyResult> {
   return db.transaction(async (tx) => {
     const now = Date.now();
@@ -209,26 +235,60 @@ export async function applySync(
       else if (prev.origin === "git" && sameDesired(prev, r)) result.unchanged.push(r.name);
       else result.updated.push(r.name);
       await tx.run(
-        `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, soul_sha, model_default, mcp_json, provider_json, runs_on, kb_sources, background,
+        `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, soul_sha, model_default, mcp_json, provider_json, runs_on, kb_sources, background, definition,
                                slack_user_id, user_token, origin, source_revision, tombstoned_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'git', ?, NULL, ?, ?)
+         VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'git', ?, NULL, ?, ?)
          ON CONFLICT (tenant_id, name) DO UPDATE SET
            soul_md = excluded.soul_md, soul_json = excluded.soul_json, model_default = excluded.model_default,
-           mcp_json = excluded.mcp_json, provider_json = excluded.provider_json, runs_on = excluded.runs_on, kb_sources = excluded.kb_sources, background = excluded.background,
+           mcp_json = excluded.mcp_json, provider_json = excluded.provider_json, runs_on = excluded.runs_on, kb_sources = excluded.kb_sources, background = excluded.background, definition = excluded.definition,
            slack_user_id = excluded.slack_user_id, user_token = excluded.user_token,
            origin = 'git', source_revision = excluded.source_revision, tombstoned_at = NULL, updated_at = excluded.updated_at`,
         [randomUUID(), tenant, r.name, r.soulMd, JSON.stringify(r.soulJson ?? null), r.model, encJson(r.mcp),
-         providerJson(r.provider), r.runsOn ?? null, kbSourcesJson(r.kbSources), backgroundJson(r.background), r.slackUserId, r.userToken ? encrypt(r.userToken) : null, meta.revision, now, now]);
+         providerJson(r.provider), r.runsOn ?? null, kbSourcesJson(r.kbSources), backgroundJson(r.background), definitionJson(r.definition), r.slackUserId, r.userToken ? encrypt(r.userToken) : null, meta.revision, now, now]);
     }
     for (const [name, prev] of existing) {
       if (incoming.has(name) || prev.tombstonedAt !== null) continue;
       await tx.run(`UPDATE personas SET tombstoned_at = ? WHERE tenant_id = ? AND name = ?`, [now, tenant, name]);
+      // Its skill history is private to it: a later persona of this name must not
+      // read it. The log has no tenant, so a same-named live persona keeps it.
+      const scope = versionScope(name);
+      if (scope !== GLOBAL_SCOPE) {
+        await tx.run(
+          `DELETE FROM skill_versions WHERE scope = ? AND NOT EXISTS (SELECT 1 FROM personas WHERE name = ? AND tombstoned_at IS NULL)`,
+          [scope, name],
+        );
+      }
       result.tombstoned.push(name);
     }
     const wiped = await tx.run(`DELETE FROM persona_overrides WHERE tenant_id = ?`, [tenant]);
     result.overridesWiped = wiped.changes ?? 0;
+    if (alsoApply) result.environments = await alsoApply(tx);
+    if (refs) {
+      // Savepoint: a CHECK, FK, unique or deadlock failure here must not roll back the persona sync.
+      const made = await guardedProjection(tx, "sync records", null, () => ensureRefs(refs.uses, refs.workspaces, tx));
+      if (made) {
+        result.records = made.created;
+        result.domainEvents = made.events;
+      } else {
+        result.recordsFailed = true;
+      }
+    }
     return result;
   });
+}
+
+/**
+ * Persona names by state, across tenants: `live` has a row in use, `removed`
+ * has only tombstoned rows. Empty on sqlite, which has no personas table.
+ */
+export async function personaNameStates(): Promise<{ live: Set<string>; removed: Set<string> }> {
+  const live = new Set<string>();
+  const tombstoned = new Set<string>();
+  if (dbDialect() !== "pg") return { live, removed: tombstoned };
+  for (const r of await db.query<{ name: string; tombstoned_at: number | string | null }>("SELECT name, tombstoned_at FROM personas")) {
+    (r.tombstoned_at === null ? live : tombstoned).add(r.name);
+  }
+  return { live, removed: new Set([...tombstoned].filter((n) => !live.has(n))) };
 }
 
 async function requireManaged(tenant: string) {
@@ -289,6 +349,6 @@ export async function createRuntimePersona(tenant: string, row: DesiredPersona, 
        providerJson(row.provider), row.runsOn ?? null, kbSourcesJson(row.kbSources), backgroundJson(row.background), row.slackUserId, row.userToken ? encrypt(row.userToken) : null, now, now]);
     // A git row appeared after the read above: never overwrite it.
     if (!written.length) throw new NameTakenError(row.name);
-    void by; // recorded in the audit log by the caller (Task 7)
+    void by; // audited by the caller: the panel records panel.persona.onboard
   });
 }

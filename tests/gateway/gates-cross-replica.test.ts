@@ -21,6 +21,7 @@ import {
   permissionPolicy,
   autoAllowFromEnv,
   decisionFromPermRow,
+  turnStamp,
 } from "../../src/gateway/slack/permission-gate";
 import { ApprovalGate, decisionFromApprovalRow } from "../../src/gateway/slack/approval-gate";
 import { memoryGateBus } from "../../src/queue/gate-bus";
@@ -112,7 +113,7 @@ describe("perm gate: poll-waiter rows (node long-poll path)", () => {
     const opener = new PermissionGate(fakeApp().app, { gateBus: busA });
     await opener.open({
       sessionId: "S1", toolName: "Bash", input: { command: "ls" }, toolUseId: "puse_2",
-      channel: "C1", threadTs: "1.0",
+      channel: "C1", threadTs: "1.0", turn: turnStamp("U_APPROVER", "slack"),
     });
     await markForeign("puse_2"); // opened by another gateway replica
     let published = 0;
@@ -137,6 +138,7 @@ describe("perm gate: poll-waiter rows (node long-poll path)", () => {
     const opener = new PermissionGate(fakeApp().app, { gateBus: memoryGateBus() });
     await opener.open({
       sessionId: "S1", toolName: "Bash", input: {}, toolUseId: "puse_3", channel: "C1", threadTs: "1.0",
+      turn: turnStamp("U1", "slack"),
     });
     const clicker = fakeApp();
     new PermissionGate(clicker.app, { gateBus: memoryGateBus() });
@@ -151,7 +153,7 @@ describe("perm gate: cross-replica in-process waiter", () => {
   test("click on replica B resolves replica A's SDK promise via the bus", async () => {
     const bus = memoryGateBus();
     const a = fakeApp();
-    const gateA = new PermissionGate(a.app, { gateBus: bus });
+    const gateA = new PermissionGate(a.app, { gateBus: bus, turnOf: () => turnStamp("U_OK", "slack") });
     gateA.bindSession("S1", "C1", "1.0");
     const ac = new AbortController();
     const promise = gateA.resolver("S1", "Bash", { command: "rm x" }, {
@@ -172,7 +174,7 @@ describe("perm gate: cross-replica in-process waiter", () => {
 
   test("without a bus, a foreign in-process row keeps the conservative refusal", async () => {
     const a = fakeApp();
-    const gateA = new PermissionGate(a.app, { gateBus: null });
+    const gateA = new PermissionGate(a.app, { gateBus: null, turnOf: () => turnStamp("U_OK", "slack") });
     gateA.bindSession("S1", "C1", "1.0");
     const ac = new AbortController();
     void gateA.resolver("S1", "Bash", {}, {

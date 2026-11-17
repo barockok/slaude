@@ -149,7 +149,8 @@ describe("mono: each delivered message carries its sender to the manager", () =>
     expect(senders[0]).toBeUndefined();
     await mention("U0ALICE", "700.0", "700.1");
     await waitSent(2);
-    expect(senders[1]).toEqual(ALICE);
+    // With the message's own text (the mention stripped, never the envelope): the quote check reads it.
+    expect(senders[1]).toEqual({ ...ALICE, text: "call me Al" });
     await h.__panelChat!((await Sessions.findById(sent[1]!))!, "operator note", "U0OPERATOR");
     await waitSent(3);
     expect(senders[2]).toEqual({ userId: "U0OPERATOR", teamId: "T", origin: "panel" });
@@ -178,7 +179,7 @@ describe("mono: kb_memoize target:\"profile\" decides on the manager's senders, 
 
     current = [BOB]; // Bob's input is running although the ctx shows Alice
     const g = (await h.__brainGate!(sid))!;
-    expect(classifyBrainOp("put_page", { ...resolveBrainScope({ ...g, kbSources: [] }), sourceId: profileSourceId("T", "U0ALICE") }, g)).toBe("deny");
+    expect((await classifyBrainOp("put_page", { ...(await resolveBrainScope({ ...g, kbSources: [] })), sourceId: profileSourceId("T", "U0ALICE") }, g))).toBe("deny");
     expect(await memoize(sid)).not.toContain("refused");
     expect(puts).toEqual([{ slug: "profile", source: profileSourceId("T", "U0BOB") }]);
   });

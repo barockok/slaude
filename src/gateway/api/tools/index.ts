@@ -12,9 +12,10 @@ import { slackContract } from "../../../tools/contracts/slack";
 import { runtimeContract } from "../../../tools/contracts/runtime";
 import { connectContract } from "../../../tools/contracts/connect";
 import { skillsContract } from "../../../tools/contracts/skills";
-import { kbContract } from "../../../tools/contracts/kb";
+import { canonicalMemoryTool, isMemoryToolAlias, kbContract } from "../../../tools/contracts/kb";
 import { zodIssueLine, type ServerContract } from "../../../tools/contracts/types";
 import { m as metric } from "../../../metrics";
+import { wakeAllows, wakeRefusal } from "../../../proactive/wake-guard";
 import type { JobClaims } from "../auth";
 import { json, notFound } from "../http";
 import type { ToolPlaneDeps, ToolResult } from "./deps";
@@ -54,7 +55,16 @@ export async function executeToolCall(
   const entry = Object.hasOwn(SERVERS, server) ? SERVERS[server] : undefined;
   if (!entry) return notFound(`unknown tool server '${server}'`);
   if (!Object.hasOwn(entry.contract.tools, tool)) return notFound(`unknown tool '${server}/${tool}'`);
-  metric.v1ToolCallsTotal.inc({ server, tool });
+  // A memory tool counts under its memory_* name; `alias` says whether the
+  // caller used the deprecated kb_* name (a session resumed from before the rename).
+  const alias = server === "kb" && isMemoryToolAlias(tool);
+  metric.v1ToolCallsTotal.inc({ server, tool: server === "kb" ? canonicalMemoryTool(tool) : tool, alias: alias ? "true" : "false" });
+  // A wake's allow-list, from the signed claim. can_use_tool and
+  // guardrail_event are the node's plumbing, not a model's call: the first
+  // answers for itself (a refusal), the second only records.
+  if (claims.wake && tool !== "can_use_tool" && tool !== "guardrail_event" && !wakeAllows(server, tool)) {
+    return json(200, { content: [{ type: "text", text: wakeRefusal(tool) }], isError: true });
+  }
   let result: ToolResult | null;
   try {
     result = await entry.execute(tool, body, claims, deps);

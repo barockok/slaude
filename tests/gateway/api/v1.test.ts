@@ -16,6 +16,11 @@ import { adminHandlers, slackHandlers, type SlackContext } from "../../../src/ga
 import { skillHandlers, skillOps } from "../../../src/skills/mcp-tools";
 import { kbHandlers } from "../../../src/knowledge/mcp-tools";
 import { paths, ensureHome } from "../../../src/config/home";
+import { __setRuleBrainCall } from "../../../src/proactive/rule-tool";
+import { backgroundAgentId } from "../../../src/background/skill-check";
+import { agentSourceId } from "../../../src/knowledge/scope";
+import { readPageRecord } from "../../../src/knowledge/memory-pages";
+import { fakeBrain } from "../../memory/fake-brain";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 
 const NODE_TOKEN = "test-node-token";
@@ -354,6 +359,56 @@ describe("/v1/tools — REST tool plane", () => {
     const body = (await r.json()) as any;
     expect(body.isError).toBe(true);
     expect(body.content[0].text).toContain("Only manager or approver");
+  });
+
+  test("runtime/proactive_rule takes its teacher from the signed initiator, on the job's own sender only", async () => {
+    // The job's recorded senders (the queue's turn-senders record, by token job id).
+    const sendersByJob: Record<string, Array<{ userId: string; teamId: string | null; origin: string | null }>> = {
+      "J-own": [{ userId: "U0RELAY", teamId: "T1", origin: "slack" }],
+      "J-merged": [{ userId: "U0RELAY", teamId: "T1", origin: "slack" }, { userId: "U0OTHER", teamId: "T1", origin: "slack" }],
+    };
+    const qd = {
+      dispatch: async () => {},
+      abort: async () => {},
+      pubsub: { close: async () => {} },
+      turns: { close: async () => {}, turnSenders: async (job: string) => sendersByJob[job] ?? null },
+      registry: { close: async () => {}, liveLabels: async () => [] },
+      close: async () => {},
+    } as any;
+    const gw = createGateway(new AgentManager(), capturingTransport().t, { queueDispatch: qd });
+    const brain = fakeBrain();
+    __setRuleBrainCall(brain.call);
+    try {
+      const source = agentSourceId(await backgroundAgentId("default"));
+      const slug = "rules/proactive/build-failures-c0team";
+      const post = async (body: unknown, claims: Partial<JobClaims>) => {
+        const token = mintJobToken({ ...claimsFor(sessionId), initiator: "U0RELAY", origin: "slack", ...claims });
+        const res = (await gw.fetchV1(new Request("http://gw/v1/tools/runtime/proactive_rule", {
+          method: "POST",
+          headers: { authorization: `Bearer ${NODE_TOKEN}`, [JOB_HEADER]: token, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })))!;
+        return { status: res.status, json: res.status === 200 ? ((await res.json()) as any) : null };
+      };
+      const body = { kind: "build failures", scope: "here", level: "ignore", quote: "stop telling me" };
+      // A teacher named in the body is not an argument: the strict parse refuses it.
+      expect((await post({ ...body, taughtBy: "U0EVIL" }, { job: "J-own" })).status).toBe(400);
+      // A merged job, an unrecorded one, and a cron-origin token are not one person's own turn.
+      for (const claims of [{ job: "J-merged" }, { job: "J-unrecorded" }, { job: "J-own", origin: "cron" as const }]) {
+        const r = await post(body, claims);
+        expect(r.status).toBe(200);
+        expect(r.json.isError).toBe(true);
+      }
+      expect(brain.contentOf(source, slug)).toBeUndefined();
+      const r = await post(body, { job: "J-own" });
+      expect(r.json.isError).toBeUndefined();
+      const page = readPageRecord({ content: brain.contentOf(source, slug) })!;
+      expect(page.meta.taught_by).toBe("U0RELAY");
+      expect(page.meta.thread).toBe("C0TEAM/100.0");
+    } finally {
+      __setRuleBrainCall(null);
+      await gw.stop();
+    }
   });
 
   test("skills/list_skills matches the direct MCP handler result", async () => {

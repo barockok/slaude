@@ -1,0 +1,6 @@
+# The backup manager may DM the agent.
+layer: dm
+as: backup
+steps:
+  - send: { text: "backup DM" }
+  - expect_reply: { contains: "ack: done" }

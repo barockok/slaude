@@ -16,6 +16,7 @@ process.env.SLAUDE_AUTO_EVOLVE = "0";
 process.env.SLAUDE_IDLE_MINUTES = "0";
 
 const realSdk = await import("@anthropic-ai/claude-agent-sdk");
+const realQuery = realSdk.query;
 type QueryArgs = { prompt: AsyncIterable<any>; options: any };
 let captured: any[] = [];
 let currentQuery: (args: QueryArgs) => any = () => {
@@ -104,7 +105,11 @@ beforeEach(() => {
   rmSync(pluginsDir, { recursive: true, force: true });
   installPlugin();
 });
-afterAll(() => rmSync(pluginsDir, { recursive: true, force: true }));
+afterAll(() => {
+  // The mock outlives this file: without this, later files get the recording query.
+  currentQuery = (args) => realQuery(args as any);
+  rmSync(pluginsDir, { recursive: true, force: true });
+});
 
 describe("node MCP merge (local resolver installed)", () => {
   it("resolver output last wins a collision with a warning; strict; prompt block = merged map", async () => {

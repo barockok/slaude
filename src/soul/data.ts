@@ -14,10 +14,23 @@ export const ApproverEntrySchema = z.object({
   catchall: z.boolean(),
 });
 
+/** How a sub-mandate combines with the global mandate. See `mandate-scope.ts`. */
+export const MandateModeSchema = z.enum(["override", "extend", "reduce"]);
+export type MandateMode = z.infer<typeof MandateModeSchema>;
+
+/** Lower-cased. An unknown value reads as `extend`: it keeps the global mandate
+ *  rather than replacing it, and does not fail the extraction. Absent stays absent. */
+const lenientMode = z.preprocess((v) => {
+  if (v === undefined || v === null) return undefined;
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return MandateModeSchema.safeParse(s).success ? s : "extend";
+}, MandateModeSchema.optional());
+
 /**
  * Per-channel override of the global mandate / approvers. Sourced from a
  * `## Channel <#Cxxx|name>` block in SOUL.md. Both inner fields are optional:
- *   - mandate present → replaces the global mandate in that channel.
+ *   - mandate present → applies in that channel per its mode (`Mode:` line;
+ *     none means it replaces the global mandate).
  *   - approvers non-empty → replaces the global approver set in that channel.
  * An absent field falls back to the global value. See
  * {@link SoulDataSchema.channelOverrides} and `effectiveSoulForChannel`.
@@ -25,8 +38,57 @@ export const ApproverEntrySchema = z.object({
 export const ChannelOverrideSchema = z.object({
   channel: z.string().regex(/^[CGD][A-Z0-9]+$/),
   mandate: z.string().optional(),
+  /** How `mandate` combines with the global one; absent means `override`. */
+  mandateMode: lenientMode,
   approvers: z.array(ApproverEntrySchema).default([]),
 });
+
+/** A sub-mandate for a kind of place, from a `## Scope dm|public|trusted` block. */
+export const ScopeMandateSchema = z.object({
+  scope: z.enum(["dm", "public", "trusted"]),
+  mandate: z.string(),
+  mode: lenientMode,
+});
+
+/**
+ * One Slack reference from agent.yaml access, kept with what the legacy arrays
+ * drop: its workspace (absent for a bare id or a short `slack:` form) and how
+ * it grants. The arrays stay authoritative for legacy decisions; entries feed
+ * the internal-id path (slice C). Only Slack references exist in this release.
+ */
+export const AccessEntrySchema = z.object({
+  field: z.enum(["manager", "backupManager", "approvers", "blocked", "dm", "channels.public", "channels.trusted"]),
+  kind: z.enum(["user", "channel"]),
+  id: z.string().regex(/^[UWCGD][A-Z0-9]+$/),
+  workspace: z.string().regex(/^T[A-Z0-9]+$/).optional(),
+  role: z.enum(["manager", "approver", "member"]),
+  deny: z.boolean().default(false),
+  dmOnly: z.boolean().default(false),
+  /** An approver scoped to one channel. */
+  channel: z.string().regex(/^[CGD][A-Z0-9]+$/).optional(),
+});
+export type AccessEntry = z.infer<typeof AccessEntrySchema>;
+
+/**
+ * One `email:` or `user:` reference from agent.yaml access (slice C task 22,
+ * only compiled while `SLAUDE_ACCESS_SOURCE=internal`). Kept apart from the
+ * legacy arrays on purpose: those carry Slack ids that older readers compare as
+ * strings, and a name that is not a Slack id must never reach them. A binary
+ * that does not know this key drops it, so the entry is inert there.
+ */
+export const AccessRefSchema = z.object({
+  field: z.enum(["manager", "backupManager", "approvers", "blocked", "dm"]),
+  ref: z.discriminatedUnion("service", [
+    z.object({ service: z.literal("email"), address: z.string().min(3).max(254) }),
+    z.object({ service: z.literal("user"), userId: z.string().min(1).max(64) }),
+  ]),
+  role: z.enum(["manager", "approver", "member"]),
+  deny: z.boolean().default(false),
+  dmOnly: z.boolean().default(false),
+  /** An approver scoped to one channel. */
+  channel: z.string().regex(/^[CGD][A-Z0-9]+$/).optional(),
+});
+export type AccessRef = z.infer<typeof AccessRefSchema>;
 
 export const SoulDataSchema = z.object({
   identity: z
@@ -95,43 +157,15 @@ export const SoulDataSchema = z.object({
   /** Per-channel overrides of mandate / approvers. Empty = global only.
    *  Resolved at runtime by `effectiveSoulForChannel(channelId)`. */
   channelOverrides: z.array(ChannelOverrideSchema).default([]),
+  /** Sub-mandates for direct messages and the two channel classes. */
+  scopeMandates: z.array(ScopeMandateSchema).default([]),
+  /** Typed Slack references behind the access arrays above (agent.yaml only; a soul extracted from prose has none). */
+  accessEntries: z.array(AccessEntrySchema).default([]),
+  /** The `email:` and `user:` references of agent.yaml access (internal source only); never in the arrays above. */
+  accessRefs: z.array(AccessRefSchema).default([]),
 });
 
 export type ApproverEntry = z.infer<typeof ApproverEntrySchema>;
 export type ChannelOverride = z.infer<typeof ChannelOverrideSchema>;
+export type ScopeMandate = z.infer<typeof ScopeMandateSchema>;
 export type SoulData = z.infer<typeof SoulDataSchema>;
-
-export const EXTRACTION_PROMPT = `You are a structured-data extractor. Read the persona block above and return a single JSON object matching this TypeScript shape — no prose, no fences, just JSON:
-
-{
-  "identity":              { "name"?: string, "role"?: string, "voice"?: string },
-  "manager":               { "userId"?: string, "handle"?: string },
-  "backupManager":         { "userId"?: string, "handle"?: string },
-  "allowedChannels":       string[],
-  "trustedChannels":       string[],
-  "blockedUsers":          string[],
-  "dmAllowedUsers":        string[],
-  "approvers":             Array<{ "userId": string, "scope": string, "catchall": boolean }>,
-  "redactPatterns":        string[],
-  "approvalTimeoutSeconds": number,
-  "mandate"?:              string,
-  "values":                string[],
-  "channelOverrides":      Array<{ "channel": string, "mandate"?: string, "approvers": Array<{ "userId": string, "scope": string, "catchall": boolean }> }>
-}
-
-Rules:
-- userId is the raw Slack id (U… or W…), strip <@…> wrappers.
-- Channel ids start with C (public), G (private group), or D (DM). Strip <#…|name> wrappers — keep only the id.
-- scope is the free-text description after the colon, verbatim minus trailing comments.
-- catchall=true when scope is "anything" / "any" / "all" / "default" / "*" / "catchall" / "everything".
-- Skip placeholder rows (e.g. "<@manager-id>", "<agent display name>", "<C-channel-id>") — those are template stubs, not real values.
-- allowedChannels: public-zone channels where slaude may interact but must mind info exposure. Look for sections titled "Allowed channels", "Public channels".
-- trustedChannels: internal team channels where slaude operates as a member (can show MCP servers, skills, internals). Look for sections titled "Trusted channels", "Team channel", "Home channel", "BU channel".
-- blockedUsers: ids the persona explicitly marks as banned, blocked, ignored, blacklisted, or "do not respond". Look for sections titled "Blocked", "Blacklist", "Ignore", "Banned". Empty array if no such section.
-- dmAllowedUsers: ids allowed to DM slaude directly besides the manager. Look for sections titled "DM allowlist", "Allowed DMs", "Direct message allowlist", "Who can DM". Empty array if no such section.
-- backupManager: optional fallback manager. Look for sections titled "Backup manager", "Secondary manager", "Deputy". Same id-validation rules as manager.
-- redactPatterns: array of regex source strings (no /…/ wrappers, no flags) the persona declares for redacting outbound replies. Look for sections titled "Redaction", "Redact", "PII patterns". Empty array if no such section.
-- approvalTimeoutSeconds: integer seconds. Look for "Approval timeout" or "Auto-deny after". 0 means wait forever.
-- channelOverrides: one entry per "## Channel <#Cxxx|name>" (or raw Cxxx/Gxxx/Dxxx) section. For each: "channel" = the channel id (strip <#…|name> wrappers, keep only the id); "mandate" = the text under that block's "### Mandate" subsection (omit if absent); "approvers" = the entries under that block's "### Approvers" subsection (same userId/scope/catchall rules as the top-level approvers). Skip template-stub blocks whose channel id is a placeholder like "<#Cxxx|name>" or "C0123456789". Empty array if there are no channel sections.
-- Omit fields you cannot determine. Do not invent ids — every id you return MUST appear verbatim somewhere in the persona text.
-- Return ONLY the JSON object. No \`\`\` fence. No explanation.`;

@@ -39,7 +39,7 @@ export type Middleware = (args: { payload: any; next: () => Promise<void> }) => 
 export type AppRef = { apiAppId?: string; teamId?: string };
 
 /** One registered app, as listed for per-app boot diagnostics (D1.4). */
-export type RegisteredApp = { apiAppId: string; teamId: string; botUserId?: string; client: WebClientLike };
+export type RegisteredApp = { apiAppId: string; teamId: string; botUserId?: string; client: WebClientLike; personaId?: string };
 
 export interface Transport {
   /** App-level client. Socket Mode: the one bot. HTTP mode: the oldest

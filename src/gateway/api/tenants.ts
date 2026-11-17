@@ -17,7 +17,8 @@
  */
 import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { getPersonaRegistry, managedPersonaProvider } from "../../persona/registry";
+import { getPersonaRegistry, managedPersonaDefinition, managedPersonaProvider } from "../../persona/registry";
+import { personaSoulText } from "../../persona/soul-source";
 import { db } from "../../db/schema";
 import { resolveDbConfig } from "../../db/client";
 import { effectivePersonas, isManaged } from "../../db/personas";
@@ -29,12 +30,14 @@ import { baseUrlProblem, internalHostsFrom } from "../../persona/provider-base-u
 import { logResolveEvent } from "../core/provider-secrets";
 import { decrypt, masterKey, MasterKeyError } from "../../db/crypto";
 import { env } from "../../config/env";
-import { loadSoul } from "../../soul/loader";
 import { soulData } from "../../soul/extract";
+import { soulDataFor } from "../../soul/per-persona";
 import { skillRootsFor } from "../../skills/loader";
 import { json, notFound } from "./http";
 import { bridgedServerNames } from "../core/external-mcp";
 import { voiceBundleFromEnv, type VoiceBundle } from "../../voice/config";
+import { AGENT_DEFINITION_CAPABILITY, bundleGuardrailsFor, CAPABILITIES_HEADER, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, definitionNeedsSharedEnv, GUARDRAILS_CAPABILITY, hasCapability, SHARED_ENV_CAPABILITY, type BundleGuardrails } from "../../guardrails/node";
+import { emitAudit } from "../../audit/emit";
 
 export interface RuntimeBundle {
   tenantId: string;
@@ -74,6 +77,17 @@ export interface RuntimeBundle {
    *  node, only for authorized tenants (SLAUDE_VOICE_TENANTS gating). Holds a
    *  plaintext key; added after buildBundle, outside the bundle cache. */
   voice?: VoiceBundle | null;
+  /** Owner guardrails that apply to the persona (src/guardrails/node.ts).
+   *  Present only when the tenant has a guardrail set, so other bundles and
+   *  their ETags are exactly as before. An older node ignores it, which is
+   *  why a persona with enforced rules is refused to a node that does not
+   *  advertise the capability. */
+  guardrails?: BundleGuardrails;
+  /** Present when the persona comes from an agent.yaml, so `soulMd` is prose
+   *  and `soulJson` is compiled. `skills` limits the skills a session may
+   *  load (absent: every skill). A node without the agent-definition/1
+   *  capability is refused such a bundle. */
+  definition?: { skills?: string[]; guardrails?: string[]; environment?: { allow: string[]; default?: string } };
 }
 
 type PersonaRow = {
@@ -250,7 +264,21 @@ export async function providerRowsFingerprint(personaName: string, tenantId = "d
 
 /** A managed tenant: effective state only. Self-contained, so tiers 2 and 3
  *  (disk, env) are unreachable from it. Missing or tombstoned persona -> null. */
-async function buildManagedBundle(tenantId: string, personaId: string): Promise<RuntimeBundle | null> {
+/**
+ * A node resolves mandates from the bundle alone, and a named persona can
+ * inherit its channel lists from the default soul. A soul with scope mandates
+ * carries the lists it is admitted by, so `## Scope trusted` means the same on
+ * a node; any other soul ships as stored.
+ */
+export function withChannelClasses(persona: string, soulJson: unknown): unknown {
+  if (typeof soulJson !== "object" || soulJson === null) return soulJson;
+  const scopes = (soulJson as { scopeMandates?: unknown }).scopeMandates;
+  if (!Array.isArray(scopes) || scopes.length === 0) return soulJson;
+  const { trustedChannels, allowedChannels } = soulDataFor(persona);
+  return { ...soulJson, trustedChannels, allowedChannels };
+}
+
+async function buildManagedBundle(tenantId: string, personaId: string, label?: string): Promise<RuntimeBundle | null> {
   const effective = (await effectivePersonas(tenantId)).find((p) => p.name === personaId);
   if (!effective) return null;
   const own = declaresProvider(effective.provider);
@@ -269,16 +297,21 @@ async function buildManagedBundle(tenantId: string, personaId: string): Promise<
     providerCreds,
     ...(own ? { ownProvider: true as const } : {}),
     soulMd: effective.soulMd,
-    soulJson: effective.soulJson,
+    soulJson: withChannelClasses(effective.name, effective.soulJson),
     slackUserId: effective.slackUserId ?? null,
     // A persona's mcp holds resolved header and env secrets: a node gets the
     // bridged server names below, never the config.
     mcpJson: null,
-    mcpServers: bridgedServerNames(effective.name),
+    mcpServers: bridgedServerNames(effective.name, label ? { label } : {}),
     skillsPaths: skillRootsFor(effective.name),
     defaultModel: effective.model ?? env.model(),
     managed: true,
+    ...(effective.definition ? { definition: bundleDefinition(effective.definition) } : {}),
   };
+}
+
+function bundleDefinition(d: NonNullable<EffectivePersona["definition"]>): NonNullable<RuntimeBundle["definition"]> {
+  return { ...(d.skills ? { skills: d.skills } : {}), ...(d.guardrails ? { guardrails: d.guardrails } : {}), ...(d.environment ? { environment: d.environment } : {}) };
 }
 
 /**
@@ -293,7 +326,9 @@ async function buildManagedBundle(tenantId: string, personaId: string): Promise<
  * persona sorted first in the tenant, so a second persona could never get its
  * own bundle.
  */
-async function buildBundle(tenantId: string, personaId: string): Promise<RuntimeBundle | null> {
+async function buildBundle(tenantId: string, personaId: string, label?: string): Promise<RuntimeBundle | null> {
+  // The names a session mounts follow the same signed label the bridge serves by.
+  const scope = label ? { label } : {};
   // The tenancy tables exist only on Postgres (P1 migrations). sqlite is decided
   // from configuration, never from a caught error: it is unmanaged, and its
   // "no such table" failures read as an empty registry so the implicit
@@ -303,7 +338,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
   const sqlite = resolveDbConfig().dialect === "sqlite";
   // Managed is decided FIRST, so everything after reads one consistent answer.
   const managed = sqlite ? false : await isManaged(tenantId);
-  if (managed) return buildManagedBundle(tenantId, personaId);
+  if (managed) return buildManagedBundle(tenantId, personaId, label);
 
   // Unmanaged: today's raw-row tier 1, then tiers 2 and 3.
   let tenant: { id: string } | null = null;
@@ -332,10 +367,10 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
       personaId: persona.name,
       providerCreds,
       soulMd: persona.soul_md,
-      soulJson: typeof persona.soul_json === "string" ? JSON.parse(persona.soul_json) : persona.soul_json,
+      soulJson: withChannelClasses(persona.name, typeof persona.soul_json === "string" ? JSON.parse(persona.soul_json) : persona.soul_json),
       slackUserId: persona.slack_user_id ?? null,
       mcpJson: null,
-      mcpServers: bridgedServerNames(persona.name),
+      mcpServers: bridgedServerNames(persona.name, scope),
       skillsPaths: skillRootsFor(persona.name),
       defaultModel: persona.model_default ?? env.model(),
     };
@@ -355,6 +390,22 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
     const fsPersona = getPersonaRegistry().lookupByName(personaId);
     if (!fsPersona) return null;
     let personaSoul = "";
+    if (fsPersona.definition) {
+      // Defined by an agent.yaml on disk: its text and its compiled structure, as a managed persona's bundle carries them.
+      return {
+        tenantId,
+        personaId,
+        providerCreds: envProviderCreds(),
+        soulMd: fsPersona.soulMd ?? "",
+        soulJson: withChannelClasses(personaId, fsPersona.soulJson ?? null),
+        slackUserId: fsPersona.slackUserId ?? null,
+        mcpJson: null,
+        mcpServers: bridgedServerNames(personaId, scope),
+        skillsPaths: skillRootsFor(personaId),
+        defaultModel: env.model(),
+        definition: bundleDefinition(fsPersona.definition),
+      };
+    }
     // A database-backed persona has no soulPath: it ships the empty soul here
     // until this tier is rewritten to serve effective state.
     if (fsPersona.soulPath) {
@@ -372,7 +423,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
       soulJson: null,
       slackUserId: fsPersona.slackUserId ?? null,
       mcpJson: null,
-      mcpServers: bridgedServerNames(personaId),
+      mcpServers: bridgedServerNames(personaId, scope),
       skillsPaths: skillRootsFor(personaId),
       defaultModel: env.model(),
     };
@@ -384,7 +435,7 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
   Object.assign(providerCreds, envProviderCreds());
   let soulMd = "";
   try {
-    soulMd = loadSoul();
+    soulMd = personaSoulText();
   } catch {
     /* no SOUL.md on disk — bundle ships an empty soul */
   }
@@ -394,6 +445,8 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
   } catch {
     /* structured extraction unavailable */
   }
+  // A default defined by $SLAUDE_HOME/agent.yaml carries its skills and guardrails to the node.
+  const defaultDefinition = managedPersonaDefinition(undefined);
   return {
     tenantId,
     personaId: "default",
@@ -402,9 +455,10 @@ async function buildBundle(tenantId: string, personaId: string): Promise<Runtime
     soulJson,
     slackUserId: null,
     mcpJson: null,
-    mcpServers: bridgedServerNames(undefined),
+    mcpServers: bridgedServerNames(undefined, scope),
     skillsPaths: skillRootsFor(),
     defaultModel: env.model(),
+    ...(defaultDefinition ? { definition: bundleDefinition(defaultDefinition) } : {}),
   };
 }
 
@@ -449,10 +503,11 @@ export async function handleTenantRuntime(
   req: Request,
   tenantId: string,
   personaId: string,
+  ctx: { nodeId?: string; sessionId?: string | null; label?: string; post?: "channel" } = {},
 ): Promise<Response> {
   let bundle: RuntimeBundle | null;
   try {
-    bundle = await buildBundle(tenantId, personaId);
+    bundle = await buildBundle(tenantId, personaId, ctx.label);
   } catch (e) {
     // The resolver already logged persona, scheme and reason. The body is
     // fixed: the reason, path and value stay on the gateway (WS-A §7).
@@ -469,6 +524,104 @@ export async function handleTenantRuntime(
     throw e;
   }
   if (!bundle) return notFound("unknown tenant or persona");
+  // An older node would run a wake on a warm session with a person's tool set.
+  // Dispatch pins these jobs to capable nodes, but one can still be claimed from
+  // the label queue, so it is stopped here. The code is the one an older node
+  // already reads as not retryable; a code it does not know would be reported
+  // as a provider failure.
+  if (ctx.post === "channel" && !hasCapability(req.headers.get(CAPABILITIES_HEADER), CHANNEL_SESSION_CAPABILITY)) {
+    emitAudit({
+      tenantId,
+      persona: bundle.personaId,
+      actorKind: "system",
+      actorId: ctx.nodeId ?? "node",
+      action: "guardrail.node.unsupported",
+      targetKind: "node",
+      targetId: ctx.nodeId ?? "unknown",
+      decision: "refused",
+      sessionId: ctx.sessionId ?? null,
+      summary: `a node without the ${CHANNEL_SESSION_CAPABILITY} capability asked for a channel session job; refused`,
+      details: { agent: bundle.personaId, capability: CHANNEL_SESSION_CAPABILITY },
+    });
+    return new Response(JSON.stringify({ error: "this node does not run channel sessions", code: "GUARDRAILS_UNSUPPORTED", transient: false }), {
+      status: 409,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  // Owner guardrails: from the verified snapshot. A set that cannot be read or
+  // verified refuses the bundle (the node's boot fails closed), never ships
+  // an empty one.
+  let guardrails: BundleGuardrails | null;
+  try {
+    guardrails = await bundleGuardrailsFor(tenantId, bundle.personaId);
+  } catch {
+    return new Response(JSON.stringify({ error: "guardrails unavailable", code: "GUARDRAILS_UNAVAILABLE", transient: false }), {
+      status: 503,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (guardrails?.enforced && !hasCapability(req.headers.get(CAPABILITIES_HEADER))) {
+    emitAudit({
+      tenantId,
+      persona: bundle.personaId,
+      actorKind: "system",
+      actorId: ctx.nodeId ?? "node",
+      action: "guardrail.node.unsupported",
+      targetKind: "node",
+      targetId: ctx.nodeId ?? "unknown",
+      decision: "refused",
+      sessionId: ctx.sessionId ?? null,
+      summary: `a node without the ${GUARDRAILS_CAPABILITY} capability asked for an agent with enforced guardrails; refused`,
+      details: { agent: bundle.personaId, capability: GUARDRAILS_CAPABILITY },
+    });
+    return new Response(JSON.stringify({ error: "this node does not apply owner guardrails", code: "GUARDRAILS_UNSUPPORTED", transient: false }), {
+      status: 409,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (guardrails) bundle = { ...bundle, guardrails };
+  // An older node would ignore a skill list and attached guardrails, and leave
+  // the compiled mandate out of the prompt, so an agent.yaml persona is refused
+  // to one: the same version-skew rule as enforced guardrails.
+  if (bundle.definition && definitionNeedsNode(bundle.definition) && !hasCapability(req.headers.get(CAPABILITIES_HEADER), AGENT_DEFINITION_CAPABILITY)) {
+    emitAudit({
+      tenantId,
+      persona: bundle.personaId,
+      actorKind: "system",
+      actorId: ctx.nodeId ?? "node",
+      action: "guardrail.node.unsupported",
+      targetKind: "node",
+      targetId: ctx.nodeId ?? "unknown",
+      decision: "refused",
+      sessionId: ctx.sessionId ?? null,
+      summary: `a node without the ${AGENT_DEFINITION_CAPABILITY} capability asked for an agent defined by agent.yaml; refused`,
+      details: { agent: bundle.personaId, capability: AGENT_DEFINITION_CAPABILITY },
+    });
+    return new Response(JSON.stringify({ error: "this node does not apply agent definitions", code: "GUARDRAILS_UNSUPPORTED", transient: false }), {
+      status: 409,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  // An agent that allows shared environments is served only to a node that applies the per-turn rules for them.
+  if (definitionNeedsSharedEnv(bundle.definition) && !hasCapability(req.headers.get(CAPABILITIES_HEADER), SHARED_ENV_CAPABILITY)) {
+    emitAudit({
+      tenantId,
+      persona: bundle.personaId,
+      actorKind: "system",
+      actorId: ctx.nodeId ?? "node",
+      action: "guardrail.node.unsupported",
+      targetKind: "node",
+      targetId: ctx.nodeId ?? "unknown",
+      decision: "refused",
+      sessionId: ctx.sessionId ?? null,
+      summary: `a node without the ${SHARED_ENV_CAPABILITY} capability asked for an agent that allows shared environments; refused`,
+      details: { agent: bundle.personaId, capability: SHARED_ENV_CAPABILITY },
+    });
+    return new Response(JSON.stringify({ error: "this node does not run shared environments", code: "SHARED_ENV_UNSUPPORTED", transient: false }), {
+      status: 409,
+      headers: { "content-type": "application/json" },
+    });
+  }
   let voiceBundle: VoiceBundle | null = null;
   // Tenant isolation (PF49): only ship voice config to authorized tenants.
   const allowedTenants = env.voice.tenants();
@@ -482,7 +635,10 @@ export async function handleTenantRuntime(
     }
   }
   const body = JSON.stringify({ ...bundle, voice: voiceBundle });
-  const etag = `"${bundleEtag(body)}"`;
+  // The guardrail version is an explicit ETag input (beside the body that
+  // already carries it): any guardrail change, an override alone included,
+  // busts every node's cached bundle.
+  const etag = `"${bundleEtag(guardrails ? `${body}\nguardrails:${guardrails.version}` : body)}"`;
   const inm = req.headers.get("if-none-match");
   // RFC 7232 §3.2: "*" matches any current representation; otherwise compare
   // against each listed entity-tag.

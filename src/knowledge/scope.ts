@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { sameAt } from "../access/wired";
+import { env } from "../config/env";
 import type { SoulData } from "../soul/data";
 
 export type ChannelTrust = "trusted" | "public" | "unknown";
@@ -19,6 +21,35 @@ export interface BrainScope {
   profileSource?: string;
 }
 
+/**
+ * Which `user-` slices one acting Slack id may READ (slice F, `SLAUDE_PERSON_SLICES=union`).
+ * Resolved at read time by `src/knowledge/person-slices.ts` and attached to the gate input by
+ * the gateway; absent means the legacy own slice only. Writes never use it.
+ */
+export interface PersonSlices {
+  /** The acting id's own legacy slice. Always first in `reads`. */
+  own: string;
+  reads: string[];
+  via: "legacy" | "union";
+  /** Names left out of the union: claimed by another user, tombstoned, or still inside the hold (omitted when 0). */
+  dropped: { conflict: number; tombstoned: number; held?: number };
+}
+
+const PERSON_NAME = /^user-[a-z0-9]+$/;
+
+/**
+ * The extra `user-` slices a person's read set may add to `own`, or none. Re-checked here on
+ * purpose (Rule R, defence in depth): the union must be for this very own slice, and only
+ * `user-<alnum>` names pass, so `agent`, `shared`, `public`, `kb-` and `profile-` names can
+ * never enter through `person`, whatever it holds.
+ */
+export function extraPersonReads(person: PersonSlices | undefined, own: string): string[] {
+  // Re-checked at the site: with the flag not `union`, a stray `person` adds nothing.
+  if (env.slices.mode() !== "union") return [];
+  if (!person || person.via !== "union" || person.own !== own || person.reads[0] !== own) return [];
+  return [...new Set(person.reads.slice(1))].filter((n) => n !== own && PERSON_NAME.test(n));
+}
+
 export interface ScopeInput {
   /** null = agent-initiated turn (cron, internal maintenance). */
   userId: string | null;
@@ -27,12 +58,16 @@ export interface ScopeInput {
   teamId: string | null;
   /** /1on1 lock owner for this thread, if locked. */
   lockedUser: string | null;
+  /** The workspace the lock was taken in, when known (shadow only). */
+  lockedTeamId?: string | null;
   channelTrust: ChannelTrust;
   isManager: boolean;
   kbSources: string[];
   /** This agent's stable identity — anchors its private `agent-<id>` slice.
    *  Resolved once at boot (SLAUDE_AGENT_ID or auth.test); see agent-identity.ts. */
   agentId: string;
+  /** The speaker's verified-only person slices (`union` mode, reads only); absent = legacy. */
+  person?: PersonSlices;
 }
 
 /** Legacy single-agent source. Kept in the agent read union for continuity with
@@ -92,6 +127,24 @@ export function kbSourceId(label: string): string {
   return ("kb-" + label.toLowerCase().replace(/[^a-z0-9-]/g, "-")).slice(0, 32);
 }
 
+/**
+ * Memory store kinds (the user-facing name for brain sources), read off the
+ * source naming above: `agent` and `agent-<id>` private minds, `shared`,
+ * `public`, `user-<id>` personal slices, `profile-*` person profiles and
+ * `kb-<label>` libraries. Anything else (gbrain's own `default`) is `other`.
+ */
+export type StoreKind = "agent" | "shared" | "public" | "personal" | "profile" | "library" | "other";
+
+export function storeKind(sourceId: string): StoreKind {
+  if (sourceId === AGENT_SOURCE || sourceId.startsWith("agent-")) return "agent";
+  if (sourceId === SHARED_SOURCE) return "shared";
+  if (sourceId === PUBLIC_SOURCE) return "public";
+  if (sourceId.startsWith("user-")) return "personal";
+  if (sourceId.startsWith(PROFILE_PREFIX)) return "profile";
+  if (sourceId.startsWith("kb-")) return "library";
+  return "other";
+}
+
 export function channelTrustFor(channel: string, soul: SoulData): ChannelTrust {
   if (soul.trustedChannels.includes(channel)) return "trusted";
   if (soul.allowedChannels.includes(channel)) return "public";
@@ -105,14 +158,14 @@ export function channelTrustFor(channel: string, soul: SoulData): ChannelTrust {
  * source: a person's profile follows that person, never the lock owner, and
  * never the rest of their `user-` slice. The write target is unchanged.
  */
-export function resolveBrainScope(i: ScopeInput): BrainScope {
-  const base = baseScope(i);
+export async function resolveBrainScope(i: ScopeInput): Promise<BrainScope> {
+  const base = await baseScope(i);
   const profile = speakerProfileSource(i.teamId, i.userId);
   if (profile === null) return base;
   return { ...base, allowedSources: [...base.allowedSources, profile], profileSource: profile };
 }
 
-function baseScope(i: ScopeInput): BrainScope {
+async function baseScope(i: ScopeInput): Promise<BrainScope> {
   const agentSrc = agentSourceId(i.agentId);
   // The agent's own mind is readable on EVERY turn it runs, regardless of who is
   // talking (it holds its identity across turns). Legacy `agent` rides along for
@@ -128,12 +181,13 @@ function baseScope(i: ScopeInput): BrainScope {
     };
   }
   if (i.lockedUser !== null) {
-    if (i.lockedUser === i.userId) {
+    if ((await sameAt({ site: "kb_scope.lock_owner", persona: i.agentId, teamId: i.teamId, userId: i.userId, otherUserId: i.lockedUser, otherTeamId: i.lockedTeamId }))) {
       const own = userSourceId(i.userId);
       return {
         clientId: i.userId,
         sourceId: own,
-        allowedSources: [own, ...agentReads, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
+        // Reads only: the speaker's other verified ids' slices (union mode); the write target stays `own`.
+        allowedSources: [own, ...extraPersonReads(i.person, own), ...agentReads, SHARED_SOURCE, PUBLIC_SOURCE, ...i.kbSources],
       };
     }
     if (!i.isManager) {
@@ -144,7 +198,7 @@ function baseScope(i: ScopeInput): BrainScope {
   if (i.channelTrust === "trusted" || i.isManager) {
     // Default durable-write target is the agent's OWN private mind (auto-passes
     // the gate). Escalation to the shared team KB is explicit and deliberate —
-    // kb_memoize target:"shared" overrides sourceId to SHARED_SOURCE, which cards.
+    // memory_save target:"shared" overrides sourceId to SHARED_SOURCE, which cards.
     // clientId is the agent here (was the user pre-per-agent). gbrain uses
     // clientId only for takesHoldersAllowList (takes-visibility filtering), NOT
     // page authorship/created_by or access control — those key on sourceId — so

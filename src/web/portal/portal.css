@@ -1,0 +1,120 @@
+/*
+ * Portal page layouts. Components live in ui/components.css and the shared
+ * utilities in shared/shared.css; this file only arranges the portal's pages,
+ * with the same --sl-* tokens.
+ */
+
+.pt-profile__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sl-pad-md);
+  min-width: 0;
+}
+
+.pt-profile__email {
+  font-size: var(--sl-text-heading);
+  line-height: var(--sl-leading-heading);
+  font-weight: var(--sl-weight-semibold);
+}
+
+/* A short explanation between the page header and its content. */
+.pt-note {
+  max-width: 46rem;
+  margin: 0 0 var(--sl-gap-md);
+  color: var(--sl-text-secondary);
+  font-size: var(--sl-text-footnote);
+  line-height: var(--sl-leading-footnote);
+}
+
+.pt-status {
+  align-items: flex-start;
+}
+
+.pt-status .sl-badge {
+  align-self: flex-start;
+}
+
+/*
+ * On a phone a portal table restacks each row: the first cell and the last
+ * (the action or the badge) share the top line, and the cells between them
+ * follow as labelled lines, so nothing hides behind a sideways scroll.
+ */
+@media (max-width: 640px) {
+  .pt-stack .sl-table {
+    min-width: 0;
+  }
+
+  .pt-stack .sl-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .pt-stack .sl-table tbody tr:not(.is-empty) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: var(--sl-pad-md);
+    row-gap: 0.25rem;
+    padding: var(--sl-pad-md) 0;
+    border-bottom: 1px solid var(--sl-border);
+  }
+
+  .pt-stack .sl-table tbody tr:not(.is-empty) td {
+    display: block;
+    height: auto;
+    min-width: 0;
+    padding: 0;
+    border-bottom: 0;
+  }
+
+  .sl-content .pt-stack .sl-table tbody tr:not(.is-empty) td {
+    padding: 0;
+  }
+
+  .pt-stack .sl-table tbody tr:not(.is-empty) td:first-child {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .pt-stack .sl-table tbody tr:not(.is-empty) td:last-child {
+    grid-column: 2;
+    grid-row: 1;
+    text-align: right;
+  }
+
+  .pt-stack .sl-table tbody tr:not(.is-empty) td:not(:first-child):not(:last-child) {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: baseline;
+    gap: var(--sl-pad-sm);
+    color: var(--sl-text-secondary);
+    font-size: var(--sl-text-footnote);
+    line-height: var(--sl-leading-footnote);
+  }
+
+  .pt-stack .sl-table td[data-label]:not(:first-child):not(:last-child)::before {
+    content: attr(data-label);
+    flex: none;
+    width: 6.5rem;
+    color: var(--sl-text-muted);
+  }
+
+  .pt-stack .sl-table td:not(:first-child):not(:last-child) .sl-mono {
+    font-size: inherit;
+  }
+
+  .pt-stack .sl-table td:not(:first-child):not(:last-child) .sl-subject__icon {
+    display: none;
+  }
+
+  .pt-stack .pt-status {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sl-pad-xs) var(--sl-pad-sm);
+  }
+}

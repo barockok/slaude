@@ -1,0 +1,27 @@
+/** The node capability that says a node applies owner guardrails (src/guardrails/node.ts). */
+export const GUARDRAILS_CAPABILITY = "guardrails/1";
+/** The node capability that says a node applies an agent.yaml's skill list and attached guardrails. */
+export const AGENT_DEFINITION_CAPABILITY = "agent-definition/1";
+/** The node capability that says a node can run a channel session (one session per channel, wake and normal turns on it). */
+export const CHANNEL_SESSION_CAPABILITY = "channel-session/1";
+/** The node capability that says a node runs a turn on a shared environment (the claim, the key fetch and the per-persona rules of environment definitions). Newer than the three above. */
+export const SHARED_ENV_CAPABILITY = "shared-env/1";
+/** The request header a node lists its capabilities in. */
+export const CAPABILITIES_HEADER = "x-slaude-capabilities";
+
+/** Whether a capability list (comma separated) holds `cap`. */
+export function hasCapability(header: string | null | undefined, cap = GUARDRAILS_CAPABILITY): boolean {
+  return !!header && header.split(",").map((s) => s.trim()).includes(cap);
+}
+
+/** Whether a node must understand this agent's definition. Every agent.yaml
+ *  persona needs it: an older node would ignore a skill list or attached
+ *  guardrails, and leave the compiled global mandate out of the prompt. */
+export function definitionNeedsNode(d: { skills?: string[]; guardrails?: string[] } | null | undefined): boolean {
+  return !!d;
+}
+
+/** Whether an agent's stored definition declares shared environments (so only a node with {@link SHARED_ENV_CAPABILITY} may take its turns). */
+export function definitionNeedsSharedEnv(d: { environment?: unknown } | null | undefined): boolean {
+  return !!d && d.environment !== undefined && d.environment !== null;
+}

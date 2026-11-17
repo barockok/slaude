@@ -60,6 +60,8 @@ beforeAll(async () => {
     const sessionId = (job.data as any).sessionId;
     if (workerMode === "fail") throw new Error("scripted failure");
     if (workerMode === "stream-done") {
+      // A console display event from a gateway between the node's events.
+      await pubsub.appendEvent(sessionId, { type: "userMessage", sessionId, userId: "U1", text: "follow-up", at: 1 });
       await pubsub.appendEvent(sessionId, { type: "assistantText", sessionId, text: "hi" });
       await pubsub.appendEvent(sessionId, { type: "done", sessionId });
     }
@@ -112,6 +114,8 @@ d("dispatch follower: job completion is the authoritative outcome", () => {
     expect(doneCount()).toBe(1);
     // The stream's other events flowed through too.
     expect(events.some((e) => e.type === "assistantText" && e.sessionId === "s-stream")).toBe(true);
+    // The console's userMessage is display only: never replayed as an agent event.
+    expect(events.some((e) => e.type === "userMessage")).toBe(false);
   }, 20_000);
 
   test("failed job synthesizes an error", async () => {

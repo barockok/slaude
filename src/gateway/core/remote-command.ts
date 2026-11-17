@@ -5,9 +5,11 @@
  * environment to it, or saves a new one; `off`, `key` and status map to
  * `/env`. The Connect form below is the private way to give the address.
  */
+import { sameAt } from "../../access/wired";
 import { env } from "../../config/env";
 import * as Envs from "../../db/environments";
-import { activeRemoteTarget, boundEnv } from "../../remote/active";
+import { boundEnv } from "../../remote/active";
+import { remoteDecision } from "../../remote/definitions/decision";
 import { connectInfoForBinding } from "../../remote/env-runtime";
 import { isTailcatAddr } from "../../remote/shell";
 import * as OneOnOne from "../../db/one-on-one";
@@ -38,19 +40,25 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
   const { channelId, threadTs, teamId, userId } = ctx;
 
   if (hit.action === "status") {
-    const t = await activeRemoteTarget(channelId, threadTs);
+    // Asked as the agent in this thread, so a shared machine this agent may not use reads as refused, not as "on".
+    const d = await remoteDecision({ tenant: ctx.tenantId ?? "default", persona: ctx.personaId, channel: channelId, thread: threadTs, turnKind: "interactive" });
+    if ("refused" in d) {
+      await ctx.reply("Remote mode: *refused*: this thread is set to a shared environment this agent may not use, so nothing runs for it. `/env off` returns to the server.");
+      return;
+    }
+    const t = "target" in d ? d.target : null;
     const b = t ? await boundEnv(channelId, threadTs) : null;
     if (!t || !b) {
       await ctx.reply("Remote mode: *off* — tools run on the server.");
       // Offer the form only to someone who could turn it on here: no lock, or their own.
       const lock = await OneOnOne.find(channelId, threadTs);
-      if (ctx.offerConnect && (!lock || lock.locked_user === userId)) await ctx.offerConnect();
+      if (ctx.offerConnect && (!lock || (await sameAt({ site: "remote.offer_connect_lock_owner", persona: null, teamId, userId, otherUserId: lock.locked_user, otherTeamId: lock.team_id })))) await ctx.offerConnect();
       return;
     }
     let info = null;
     try { info = await connectInfoForBinding(b.binding, b.env); } catch {}
     const path = await deps.status(b.env, info);
-    const whose = t.env?.trust === "provisioned" ? "a sandbox" : `<@${t.userId}>'s machine`;
+    const whose = t.env?.shared ? "a shared machine" : t.env?.trust === "provisioned" ? "a sandbox" : `<@${t.userId}>'s machine`;
     await ctx.reply(`Remote mode: *on* — ${whose}, environment *${b.env.name}*, \`${t.dir}\`, path: *${path}*.`);
     return;
   }
@@ -70,7 +78,7 @@ export async function handleRemoteCommand(hit: RemoteHit, ctx: RemoteCommandCtx,
     return;
   }
   const current = await boundEnv(channelId, threadTs);
-  const ownCurrent = current && current.env.userId === userId && current.env.teamId === teamId ? current : null;
+  const ownCurrent = current && (await sameAt({ site: "remote.own_current", persona: null, teamId, userId, otherUserId: current.env.userId, otherTeamId: current.env.teamId })) && current.env.teamId === teamId ? current : null;
   const dir = hit.dir ?? ownCurrent?.binding.dir;
   if (!dir) {
     await ctx.reply("Send `/remote` and click *Connect your machine*, or use `/remote <tailcat-address> <directory>`.");
@@ -135,7 +143,7 @@ export type DecodedOffer =
 
 /** `invalid` for anything malformed or meant for another user (ignore it
  *  silently); `expired` past REMOTE_OFFER_TTL_MS (tell the user to resend). */
-export function decodeRemoteOffer(raw: string | undefined, clicker: string | undefined, now = Date.now()): DecodedOffer {
+export async function decodeRemoteOffer(raw: string | undefined, clicker: string | undefined, now = Date.now()): Promise<DecodedOffer> {
   if (!raw || !clicker) return { ok: false, reason: "invalid" };
   let v: any;
   try {
@@ -145,7 +153,7 @@ export function decodeRemoteOffer(raw: string | undefined, clicker: string | und
   }
   const str = (x: unknown): x is string => typeof x === "string" && x.length > 0;
   if (!v || !str(v.s) || !str(v.tm) || !str(v.c) || !str(v.t) || !str(v.u) || typeof v.i !== "number") return { ok: false, reason: "invalid" };
-  if (v.u !== clicker) return { ok: false, reason: "invalid" };
+  if (!(await sameAt({ site: "remote.offer_clicker_same", persona: null, teamId: v.tm, userId: v.u, otherUserId: clicker }))) return { ok: false, reason: "invalid" };
   const offer: RemoteOffer = { sessionId: v.s, teamId: v.tm, channelId: v.c, threadTs: v.t, userId: v.u, apiAppId: str(v.a) ? v.a : undefined, issuedAt: v.i };
   // A small allowance for clock skew between replicas; anything further ahead is not ours.
   if (v.i - now > 60_000) return { ok: false, reason: "invalid" };

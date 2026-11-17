@@ -16,6 +16,7 @@
  * same recipient within 7 days posts nothing. A refusal names its rule. What is "meaningfully new" and whether
  * content concerns a channel are the model's calls, not checked here.
  */
+import { sameNoTeam } from "../access/wired";
 import { createHash } from "node:crypto";
 import { localParts } from "../background/calendar";
 import type { Audience } from "../db/proactive-posts";
@@ -62,6 +63,22 @@ export interface RestraintContext {
 /** "Unchanged" looks back this far. */
 export const UNCHANGED_WINDOW_MS = 7 * 24 * 60 * 60_000;
 
+/**
+ * The agent's own checklist and notes. They never change meaningfully between
+ * two recurring posts, so as evidence they say nothing about whether a post
+ * repeats an earlier one: comparing them refused every later post of a
+ * recurring check as `unchanged` for the whole window.
+ */
+export const SELF_EVIDENCE: ReadonlySet<string> = new Set(["self/heartbeat", "self/heartbeat-journal", "self/wake-journal"]);
+/** The prefix of a channel's own checklist page (`self/heartbeat/<channel>`). */
+const SELF_EVIDENCE_PREFIX = "self/heartbeat/";
+
+/** Whether `evidence` names the agent's own checklist or notes (see SELF_EVIDENCE). */
+export const isSelfEvidence = (evidence: string): boolean => {
+  const e = evidence.trim().toLowerCase();
+  return SELF_EVIDENCE.has(e) || e.startsWith(SELF_EVIDENCE_PREFIX);
+};
+
 /** A hash of the text as a reader sees it: Slack markup, case and spacing ignored. */
 export function textHash(text: string): string {
   const norm = text
@@ -80,7 +97,7 @@ export function checkProactive(req: ProactiveRequest, ctx: RestraintContext): { 
 
   if (req.audience === "manager") {
     if (!cfg.enabled) return no("disabled");
-    if (!ctx.managerId || req.recipient !== ctx.managerId) return no("not-manager");
+    if (!ctx.managerId || !sameNoTeam({ site: "restraint.manager_recipient", persona: null, userId: req.recipient, otherUserId: ctx.managerId })) return no("not-manager");
   } else if (req.audience === "person") {
     if (!cfg.enabled) return no("disabled");
     if (!ctx.prefs.pings) return no("not-opted-in");
@@ -106,7 +123,8 @@ export function checkProactive(req: ProactiveRequest, ctx: RestraintContext): { 
   // Unchanged: the same text, or (found with a live model, which rewords a
   // repeat) the same evidence, to the same recipient within the window.
   const hash = textHash(req.text);
-  const ev = req.evidence?.trim() ? textHash(req.evidence) : null;
+  const evidence = req.evidence?.trim() ?? "";
+  const ev = evidence && !isSelfEvidence(evidence) ? textHash(evidence) : null;
   if (ctx.history.some((h) => t - h.postedAt < UNCHANGED_WINDOW_MS && (h.textHash === hash || (ev !== null && h.evidenceHash === ev)))) return no("unchanged");
   return { ok: true };
 }

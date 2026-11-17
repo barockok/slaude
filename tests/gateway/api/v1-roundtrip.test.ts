@@ -82,7 +82,7 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     edit: { input: { ref: "1.1", text: "edited" } },
     react: { input: { name: "eyes" } },
     unreact: { input: { name: "eyes" } },
-    upload: { input: () => ({ path: uploadPath }) },
+    upload: { input: () => ({ path: uploadPath }), isErrorOk: true }, // confined to the session folder; the fixture session has no row (tests/gateway/api/upload-confinement.test.ts covers both outcomes)
     typing: { input: { on: true }, expect: "not_mounted" }, // SlackSurface has no "typing" capability
     set_one_on_one: { input: { action: "off" } },
     set_mention_only: { input: { active: false } },
@@ -117,9 +117,14 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     pause_cron_job: { input: () => ({ job_id: cronJobId }) },
     resume_cron_job: { input: () => ({ job_id: cronJobId }) },
     remove_cron_job: { input: () => ({ job_id: cronJobId }) },
+    proactive_rule: { input: { kind: "roundtrip items", scope: "here", level: "ignore", quote: "roundtrip" }, isErrorOk: true }, // the test home's brain may not be open
+    read_channel: { input: { channel: "C0EXAMPLE" }, isErrorOk: true }, // not in this persona's Read list
+    proactive_post: { input: { destination: "manager", kind: "roundtrip items", needs_reply: false, text: "t", evidence: "e", item_id: "i" }, isErrorOk: true }, // not a wake
+    finish_round: { input: { journal: "j" }, isErrorOk: true }, // not a wake
     trigger_ingest: { input: {}, isErrorOk: true }, // no slaude.json in the test home
     reload_session: { input: {}, isErrorOk: true }, // session not live in this process
     can_use_tool: { input: { tool_name: "Bash", input: { command: "ls" }, tool_use_id: "rt_perm_fixture" } }, // REST-only: returns {pendingId}
+    guardrail_event: { input: { kind: "delivery", slugs: ["none"] } }, // REST-only: records nothing for an unknown guardrail
   },
   connect: {
     connect_mcp: { input: { server: "nonexistent" } }, // manager scope → "unknown MCP server" text
@@ -143,6 +148,17 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     memory_about: { input: { userId: "U0ALICE" }, expect: "not_mounted" },
     kb_thread_history: { input: {}, expect: "not_mounted" },
     kb_delete_page: { input: { slug: "s", reason: "r" }, expect: "not_mounted" },
+    // memory_* names: the same handlers as the kb_* aliases above.
+    memory_stores: { input: {} },
+    memory_search_stores: { input: { query: "roundtrip" } },
+    memory_think: { input: { question: "q" }, expect: "not_mounted" },
+    memory_search: { input: { query: "q" }, expect: "not_mounted" },
+    memory_get: { input: { slug: "s" }, expect: "not_mounted" },
+    memory_list: { input: {}, expect: "not_mounted" },
+    memory_graph: { input: { slug: "s" }, expect: "not_mounted" },
+    memory_save: { input: { pages: [{ slug: "s", content: "c", summary: "m" }] }, expect: "not_mounted" },
+    memory_thread_history: { input: {}, expect: "not_mounted" },
+    memory_delete: { input: { slug: "s", reason: "r" }, expect: "not_mounted" },
   },
 };
 

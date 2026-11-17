@@ -64,7 +64,7 @@ describe("runLockedTurn", () => {
     expect(bootRead).toEqual({ teamId: "T1", userId: "U_A", addr: "tcA", dir: "/r" });
   });
 
-  it("checks the job's own fingerprint after binding, and never runs the turn when it is not current", async () => {
+  it("checks the job's own fingerprint before binding, and never runs the turn (or binds) when it is not current", async () => {
     const order: string[] = [];
     const t = tok({ sessionConfigFp: "fp2" });
     let seen: string | undefined;
@@ -76,7 +76,33 @@ describe("runLockedTurn", () => {
       run: async () => { order.push("run"); return "done" as const; },
     });
     expect(res).toBe(STALE_CONFIG);
-    expect(order).toEqual(["bind", "check"]);
+    expect(order).toEqual(["check"]);
     expect(seen).toBe("fp2");
+  });
+
+  it("a requeued STALE_CONFIG job leaves the running turn's token (a wake's) bound", async () => {
+    const tokens = new Map<string, string>([["S", tok({ wake: true, bgRun: "run-1", sessionConfigFp: "fp1" })]]);
+    const wakeToken = tokens.get("S");
+    const order: string[] = [];
+    const stale = await runLockedTurn({
+      lock: memLock(),
+      bindToken: (t) => tokens.set("S", t),
+      ensureConfigFp: async () => false,
+      jobToken: tok({ origin: "slack", sessionConfigFp: "fp2" }),
+      run: async () => "done" as const,
+    });
+    expect(stale).toBe(STALE_CONFIG);
+    expect(tokens.get("S")).toBe(wakeToken);
+    // Once current, the bind comes before the run (the boot reads it).
+    const next = tok({ origin: "slack", sessionConfigFp: "fp2" });
+    const ok = await runLockedTurn({
+      lock: memLock(),
+      bindToken: (t) => { order.push("bind"); tokens.set("S", t); },
+      ensureConfigFp: async () => { order.push("check"); return true; },
+      jobToken: next,
+      run: async () => { order.push(`run:${tokens.get("S") === next}`); return "done" as const; },
+    });
+    expect(ok).toBe("done");
+    expect(order).toEqual(["check", "bind", "run:true"]);
   });
 });

@@ -1,6 +1,7 @@
 // src/brain-migrate/apply.ts
 import type { BundlePage } from "./bundle";
 import type { MigrateEngine } from "./engine-types";
+import { CARRIED_IN } from "../knowledge/embedding-guard";
 
 export type OnConflict = "skip" | "overwrite" | "fail";
 export type PageOutcome = "written" | "skipped" | "overwritten" | "failed";
@@ -41,7 +42,11 @@ export async function applyLinks(
 export async function applyPage(
   engine: MigrateEngine,
   a: ApplyPage,
-  o: { onConflict: OnConflict; dryRun: boolean; ensureSource: (id: string) => Promise<void>; deferLinks?: boolean },
+  o: {
+    onConflict: OnConflict; dryRun: boolean; ensureSource: (id: string) => Promise<void>; deferLinks?: boolean;
+    /** Label for carried vectors: the bundle's model when it equals the target brain's (the per-chunk labels gbrain wrote are its default, not the model). */
+    relabelModel?: string;
+  },
 ): Promise<ApplyResult> {
   const { page: p, target } = a;
   const so = { sourceId: target };
@@ -76,8 +81,9 @@ export async function applyPage(
         await tx.upsertChunks(p.slug, p.chunks.map((c) => ({
           chunk_index: c.index, chunk_text: c.text, chunk_source: c.source,
           ...(c.embedding ? { embedding: Float32Array.from(c.embedding) } : {}),
-          ...(c.model ? { model: c.model } : {}), ...(c.tokens !== null ? { token_count: c.tokens } : {}),
-        })), so);
+          ...(c.embedding && o.relabelModel ? { model: o.relabelModel } : c.model ? { model: c.model } : {}),
+          ...(c.tokens !== null ? { token_count: c.tokens } : {}),
+        })), { ...so, [CARRIED_IN]: true });
       }
       for (const t of p.tags) await tx.addTag(p.slug, t, so);
       for (const e of p.timelineEntries) await tx.addTimelineEntry(p.slug, { date: e.date, source: e.source, summary: e.summary, detail: e.detail }, { ...so, skipExistenceCheck: true });

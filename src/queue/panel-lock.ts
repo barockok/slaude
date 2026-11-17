@@ -59,6 +59,12 @@ export function makePanelLock(opts: PanelLockOpts) {
       return redis.get(keys.panelLock(sessionId));
     },
 
+    /** owner() for many sessions in one MGET (one round trip), in order. */
+    async ownerMany(sessionIds: readonly string[]): Promise<Array<string | null>> {
+      if (sessionIds.length === 0) return [];
+      return redis.mget(...sessionIds.map((id) => keys.panelLock(id)));
+    },
+
     /**
      * Force-transfer control to `newOperator` — the semantics of a
      * force-release: an operator STEALS the session from whoever holds it

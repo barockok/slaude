@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { seedWorkspace } from "../../helpers/workspace";
 import { db } from "../../../src/db/schema";
 import { __resetMasterKeyCache } from "../../../src/db/crypto";
 import { createDeployApi, DEPLOY_MAX_BODY_BYTES } from "../../../src/gateway/deploy/api";
@@ -10,7 +11,10 @@ const DEPLOY = "d".repeat(40);
 const NODE = "n".repeat(40);
 const url = "https://slaude.example.com/deploy/v1/tenants/default/personas";
 const body = { revision: "r1", committedAt: "2026-10-01T10:00:00Z",
-  personas: [{ name: "default", soul: "You are the default." }, { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}" }] };
+  personas: [
+    { name: "default", soul: "You are the default.", definition: { soulData: { identity: { name: "default" }, manager: { userId: "UTESTMGR1" } } } },
+    { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}", definition: { soulData: { identity: { name: "ana" }, manager: { userId: "UTESTMGR1" } } } },
+  ] };
 const post = (token: string | null, b: unknown = body, q = "") =>
   new Request(url + q, { method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(b) });
 
@@ -37,7 +41,7 @@ afterEach(async () => {
   __resetMasterKeyCache();
 });
 
-const api = (pubsub: any = null) => createDeployApi({ pubsub, env: () => ({ PERSONA_ANA_XOXP: "user-token-secret-value" }), extract: async () => ({ approvers: [] }) });
+const api = (pubsub: any = null) => createDeployApi({ pubsub, env: () => ({ PERSONA_ANA_XOXP: "user-token-secret-value" }) });
 
 pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
   test("the deploy token applies a sync and reports it", async () => {
@@ -46,11 +50,22 @@ pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
     expect((await res!.json() as any).created).toEqual(["default", "ana"]);
   });
 
+  test("strict=1 refuses a sync whose references would create a record; without it the report lists them", async () => {
+    for (const t of ["user_aliases", "bindings", "boundaries", "users", "slack_apps"]) await db.run(`DELETE FROM ${t}`);
+    await seedWorkspace();
+    const refused = await api().fetch(post(DEPLOY, body, "?dryRun=1&strict=1"));
+    expect(refused!.status).toBe(422);
+    expect(await refused!.text()).toContain("would create a record");
+    const plain = await api().fetch(post(DEPLOY, body, "?dryRun=1"));
+    expect((await plain!.json() as any).records.wouldCreate.length).toBeGreaterThan(0);
+    await db.run("DELETE FROM slack_apps");
+  });
+
   test("an unknown field is a 422 by default; with SLAUDE_DEPLOY_STRICT=0 the response carries ignoredFields; a newer version is a 422", async () => {
     const strict = await api().fetch(post(DEPLOY, { ...body, futureKnob: 1 }, "?dryRun=1"));
     expect(strict!.status).toBe(422);
     expect(await strict!.text()).toContain("futureKnob");
-    const lenient = createDeployApi({ pubsub: null, env: () => ({ PERSONA_ANA_XOXP: "user-token-secret-value", SLAUDE_DEPLOY_STRICT: "0" }), extract: async () => ({ approvers: [] }) });
+    const lenient = createDeployApi({ pubsub: null, env: () => ({ PERSONA_ANA_XOXP: "user-token-secret-value", SLAUDE_DEPLOY_STRICT: "0" }) });
     const res = await lenient.fetch(post(DEPLOY, { ...body, futureKnob: 1 }, "?dryRun=1"));
     expect((await res!.json() as any).ignoredFields).toEqual(["futureKnob"]);
     const clean = await api().fetch(post(DEPLOY, body, "?dryRun=1"));
@@ -61,7 +76,7 @@ pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
 
   test("an unreadable SLAUDE_DEPLOY_STRICT at runtime is strict, never off: an unknown field is a 422", async () => {
     for (const v of ["loose", "2", "enabled"]) {
-      const odd = createDeployApi({ pubsub: null, env: () => ({ PERSONA_ANA_XOXP: "user-token-secret-value", SLAUDE_DEPLOY_STRICT: v }), extract: async () => ({ approvers: [] }) });
+      const odd = createDeployApi({ pubsub: null, env: () => ({ PERSONA_ANA_XOXP: "user-token-secret-value", SLAUDE_DEPLOY_STRICT: v }) });
       const res = await odd.fetch(post(DEPLOY, { ...body, futureKnob: 1 }, "?dryRun=1"));
       expect({ v, status: res!.status }).toEqual({ v, status: 422 });
     }
@@ -105,7 +120,7 @@ pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
   });
 
   test("failures map to their statuses, and no secret value reaches the body", async () => {
-    const res = await createDeployApi({ pubsub: null, env: () => ({}), extract: async () => ({ approvers: [] }) }).fetch(post(DEPLOY));
+    const res = await createDeployApi({ pubsub: null, env: () => ({}) }).fetch(post(DEPLOY));
     expect(res!.status).toBe(422);
     const text = await res!.text();
     expect(text).toContain("PERSONA_ANA_XOXP");
@@ -113,7 +128,7 @@ pgOnly("POST /deploy/v1/tenants/:tenant/personas", () => {
 
   test("a placeholder outside PERSONA_* is a 422 naming the variable; the gateway secret is never stored", async () => {
     const leak = { ...body, personas: [body.personas[0], { ...body.personas[1], mcp: { mcpServers: { x: { type: "http", url: "https://x.test/mcp", headers: { a: "${SLAUDE_MASTER_KEY}" } } } } }] };
-    const res = await createDeployApi({ pubsub: null, env: () => ({ PERSONA_ANA_XOXP: "t", SLAUDE_MASTER_KEY: "master-key-secret-value" }), extract: async () => ({ approvers: [] }) })
+    const res = await createDeployApi({ pubsub: null, env: () => ({ PERSONA_ANA_XOXP: "t", SLAUDE_MASTER_KEY: "master-key-secret-value" }) })
       .fetch(post(DEPLOY, leak));
     expect(res!.status).toBe(422);
     const text = await res!.text();
@@ -228,13 +243,11 @@ pgOnly("the preview token (dry runs only)", () => {
     expect(env.deployPreviewToken()).toBe("");
   });
 
-  test("a dry run never calls the soul extractor", async () => {
-    let calls = 0;
-    const a = createDeployApi({ pubsub: null, env: () => ({ PERSONA_ANA_XOXP: "user-token-secret-value" }), extract: async () => { calls++; return { approvers: [] }; } });
-    const res = await a.fetch(post(DEPLOY, body, "?dryRun=1"));
-    expect(res!.status).toBe(200);
-    expect((await res!.json() as any).created).toEqual(["default", "ana"]);
-    expect(calls).toBe(0);
+  test("a persona with no agent.yaml is a 422 that names the export command", async () => {
+    const legacy = { ...body, personas: [body.personas[0], { name: "ana", slackUserId: "UTESTUSER1", soul: "You are Ana.", userToken: "${PERSONA_ANA_XOXP}" }] };
+    const res = await api().fetch(post(DEPLOY, legacy, "?dryRun=1"));
+    expect(res!.status).toBe(422);
+    expect(((await res!.json()) as { error: string }).error).toContain("personas export --format agent-yaml");
   });
 });
 

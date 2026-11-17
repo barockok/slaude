@@ -8,7 +8,7 @@
  * and the per-owner concurrency limit queues.
  */
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
-import { createMcpBridge, interruptedText, protocolErrorText, truncatedText, cancelledText, timeoutText, type BridgeLimits } from "../../../src/gateway/core/mcp-bridge";
+import { createMcpBridge, interruptedText, isBridgeFailure, protocolErrorText, truncatedText, cancelledText, timeoutText, type BridgeLimits } from "../../../src/gateway/core/mcp-bridge";
 import type { JobClaims } from "../../../src/gateway/api/auth";
 import { INSTRUCTIONS, PNG_1PX, TOOLS, startUpstream } from "./upstream";
 
@@ -239,10 +239,13 @@ describe("relay failures and limits", () => {
     gone.stop();
     const b = bridgeFor(url);
     try {
-      expect(await b.call(claims(), "example", "echo", { text: "x" })).toEqual({
+      const down = await b.call(claims(), "example", "echo", { text: "x" });
+      expect(down).toEqual({
         content: [{ type: "text", text: "example is unavailable right now; try again later" }],
         isError: true,
       });
+      // The bridge's own failure, told apart from an upstream tool's error result.
+      expect(isBridgeFailure(down)).toBe(true);
       const listed = await b.list(claims(), "example");
       expect(listed).toEqual({ tools: [], instructions: "example is unavailable right now; try again later", unavailable: true });
     } finally {

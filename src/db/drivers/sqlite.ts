@@ -7,6 +7,7 @@
  * durable gate state). A sqlite install moves forward via
  * `bun run migrate-sqlite`.
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Database } from "bun:sqlite";
 import { ensureHome } from "../../config/home";
 import type { DbClient, Row, RunResult } from "../client";
@@ -47,6 +48,20 @@ CREATE TABLE IF NOT EXISTS skill_usage (
   last_used_at  INTEGER,
   first_seen_at INTEGER NOT NULL,
   PRIMARY KEY (agent_id, skill)
+);
+
+CREATE TABLE IF NOT EXISTS skill_versions (
+  scope              TEXT    NOT NULL,
+  slug               TEXT    NOT NULL,
+  version            INTEGER NOT NULL,
+  content_hash       TEXT    NOT NULL,
+  skill_md           TEXT    NOT NULL,
+  skill_md_truncated INTEGER NOT NULL DEFAULT 0,
+  file_count         INTEGER NOT NULL,
+  total_bytes        INTEGER NOT NULL,
+  captured_at        INTEGER NOT NULL,
+  origin             TEXT    NOT NULL,
+  PRIMARY KEY (scope, slug, version)
 );
 
 CREATE TABLE IF NOT EXISTS kb_ingest_jobs (
@@ -109,6 +124,7 @@ CREATE TABLE IF NOT EXISTS one_on_one_locks (
   locked_user TEXT    NOT NULL,
   created_by  TEXT    NOT NULL,
   created_at  INTEGER NOT NULL,
+  team_id     TEXT,
   PRIMARY KEY (channel_id, thread_ts)
 );
 
@@ -134,6 +150,12 @@ CREATE TABLE IF NOT EXISTS environments (
   default_dir TEXT,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
+  source              TEXT    NOT NULL DEFAULT 'user',
+  definition_name     TEXT,
+  definition_hash     TEXT,
+  definition_revision TEXT,
+  description         TEXT,
+  retired_at          INTEGER,
   UNIQUE (team_id, user_id, name)
 );
 CREATE TABLE IF NOT EXISTS env_bindings (
@@ -235,7 +257,42 @@ CREATE TABLE IF NOT EXISTS proactive_posts (
   channel_id  TEXT    NOT NULL,
   message_ts  TEXT,
   team_id     TEXT,
-  posted_at   INTEGER NOT NULL
+  posted_at   INTEGER NOT NULL,
+  text        TEXT,
+  context     TEXT,
+  app_id      TEXT
+);
+CREATE TABLE IF NOT EXISTS heartbeat_wake_state (
+  agent_id       TEXT    NOT NULL PRIMARY KEY,
+  next_check_at  INTEGER,
+  last_wake_at   INTEGER,
+  finished_at    INTEGER,
+  last_outcome   TEXT,
+  failures       INTEGER NOT NULL DEFAULT 0,
+  checklist_hash TEXT,
+  updated_at     INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS channel_wake_state (
+  agent_id       TEXT    NOT NULL,
+  channel_id     TEXT    NOT NULL,
+  next_check_at  INTEGER,
+  last_wake_at   INTEGER,
+  finished_at    INTEGER,
+  last_outcome   TEXT,
+  failures       INTEGER NOT NULL DEFAULT 0,
+  checklist_hash TEXT,
+  open_run_id    TEXT,
+  updated_at     INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, channel_id)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_wake_open_run ON channel_wake_state (open_run_id);
+
+CREATE TABLE IF NOT EXISTS heartbeat_watermarks (
+  agent_id   TEXT    NOT NULL,
+  source     TEXT    NOT NULL,
+  since      INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (agent_id, source)
 );
 CREATE INDEX IF NOT EXISTS idx_proactive_posts_recipient ON proactive_posts (agent_id, recipient, posted_at);
 CREATE INDEX IF NOT EXISTS idx_proactive_posts_message ON proactive_posts (channel_id, message_ts);
@@ -255,8 +312,18 @@ CREATE TABLE IF NOT EXISTS accounts (
   email      TEXT    NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
+  email_proven INTEGER NOT NULL DEFAULT 0,
   UNIQUE (issuer, subject)
 );
+
+CREATE TABLE IF NOT EXISTS link_token_uses (
+  jti           TEXT    PRIMARY KEY,
+  team_id       TEXT    NOT NULL,
+  slack_user_id TEXT    NOT NULL,
+  used_at       INTEGER NOT NULL,
+  expires_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_link_token_uses_expires ON link_token_uses (expires_at);
 
 CREATE TABLE IF NOT EXISTS slack_identities (
   team_id       TEXT    NOT NULL,
@@ -269,6 +336,107 @@ CREATE TABLE IF NOT EXISTS slack_identities (
 
 CREATE INDEX IF NOT EXISTS idx_slack_identities_account
   ON slack_identities (account_id);
+
+CREATE TABLE IF NOT EXISTS users (
+  id           TEXT   PRIMARY KEY,
+  kind         TEXT   NOT NULL DEFAULT 'person',
+  display_name TEXT,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bindings (
+  id          TEXT   PRIMARY KEY,
+  user_id     TEXT   NOT NULL REFERENCES users (id),
+  service     TEXT   NOT NULL,
+  kind        TEXT   NOT NULL,
+  workspace   TEXT   NOT NULL DEFAULT '',
+  value       TEXT   NOT NULL,
+  state       TEXT   NOT NULL DEFAULT 'observed',
+  source      TEXT   NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  verified_at INTEGER,
+  UNIQUE (service, kind, workspace, value),
+  CHECK (state IN ('declared', 'observed', 'verified')),
+  CHECK (service <> 'slack' OR workspace <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_bindings_user ON bindings (user_id);
+
+CREATE TABLE IF NOT EXISTS boundaries (
+  id           TEXT   PRIMARY KEY,
+  kind         TEXT   NOT NULL DEFAULT 'channel',
+  display_name TEXT,
+  service      TEXT   NOT NULL,
+  workspace    TEXT   NOT NULL DEFAULT '',
+  value        TEXT   NOT NULL,
+  state        TEXT   NOT NULL DEFAULT 'observed',
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL,
+  UNIQUE (service, workspace, value),
+  CHECK (state IN ('declared', 'observed', 'verified')),
+  CHECK (service <> 'slack' OR workspace <> '')
+);
+
+CREATE TABLE IF NOT EXISTS user_aliases (
+  old_id         TEXT   PRIMARY KEY,
+  user_id        TEXT   NOT NULL REFERENCES users (id),
+  merged_at      INTEGER NOT NULL,
+  audit_event_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_user_aliases_user ON user_aliases (user_id);
+
+CREATE TABLE IF NOT EXISTS user_merges (
+  id             TEXT   PRIMARY KEY,
+  created_at     INTEGER NOT NULL,
+  kind           TEXT   NOT NULL,
+  survivor_id    TEXT   NOT NULL,
+  loser_id       TEXT   NOT NULL,
+  state          TEXT   NOT NULL DEFAULT 'applied',
+  actor          TEXT   NOT NULL DEFAULT '',
+  proof          TEXT   NOT NULL DEFAULT '{}',
+  moved          TEXT   NOT NULL DEFAULT '{}',
+  audit_event_id TEXT,
+  undo_until     INTEGER NOT NULL,
+  undone_at      INTEGER,
+  undone_by      TEXT,
+  notice_state   TEXT   NOT NULL DEFAULT 'pending',
+  CHECK (kind IN ('proof', 'console')),
+  CHECK (state IN ('applied', 'undone')),
+  CHECK (notice_state IN ('pending', 'sent', 'failed', 'skipped')),
+  CHECK (survivor_id <> loser_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_merges_loser_applied ON user_merges (loser_id) WHERE state = 'applied';
+CREATE INDEX IF NOT EXISTS idx_user_merges_survivor ON user_merges (survivor_id);
+
+CREATE TABLE IF NOT EXISTS merge_proposals (
+  id          TEXT   PRIMARY KEY,
+  created_at  INTEGER NOT NULL,
+  user_a      TEXT   NOT NULL,
+  user_b      TEXT   NOT NULL,
+  reason      TEXT   NOT NULL,
+  state       TEXT   NOT NULL DEFAULT 'open',
+  evidence    TEXT   NOT NULL DEFAULT '{}',
+  resolved_by TEXT,
+  resolved_at INTEGER,
+  UNIQUE (user_a, user_b, reason),
+  CHECK (reason IN ('conflict', 'two-emails')),
+  CHECK (state IN ('open', 'dismissed', 'merged')),
+  CHECK (user_a <> user_b)
+);
+CREATE INDEX IF NOT EXISTS idx_merge_proposals_state ON merge_proposals (state);
+
+CREATE TABLE IF NOT EXISTS merge_vetoes (
+  id         TEXT   PRIMARY KEY,
+  key_a      TEXT   NOT NULL,
+  key_b      TEXT   NOT NULL,
+  created_by TEXT   NOT NULL,
+  created_at INTEGER NOT NULL,
+  merge_id   TEXT,
+  UNIQUE (key_a, key_b),
+  CHECK (key_a <> key_b)
+);
+CREATE INDEX IF NOT EXISTS idx_merge_vetoes_b ON merge_vetoes (key_b);
 
 -- Gateway-owned MCP credentials, one owner per row (see 0008_mcp_credentials.sql).
 CREATE TABLE IF NOT EXISTS mcp_credentials (
@@ -284,6 +452,16 @@ CREATE TABLE IF NOT EXISTS mcp_credentials (
   CHECK ((agent_tenant IS NULL) = (agent_persona IS NULL)),
   UNIQUE (account_id, server_key),
   UNIQUE (agent_tenant, agent_persona, server_key)
+);
+
+-- Operator tombstones for the read-time memory union (see 0052_domain_memory_credentials.sql).
+CREATE TABLE IF NOT EXISTS slice_tombstones (
+  user_id    TEXT    NOT NULL,
+  source_id  TEXT    NOT NULL,
+  created_by TEXT    NOT NULL,
+  reason     TEXT    NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, source_id)
 );
 
 -- A parked paste-back /mcp connect (see 0010_slack_oauth_flows.sql).
@@ -368,6 +546,87 @@ CREATE TABLE IF NOT EXISTS seen_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_seen_events_ts ON seen_events (ts);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+  id          TEXT    PRIMARY KEY,
+  persona     TEXT,
+  at          INTEGER NOT NULL,
+  actor_kind  TEXT    NOT NULL,
+  actor_id    TEXT    NOT NULL,
+  action      TEXT    NOT NULL,
+  target_kind TEXT,
+  target_id   TEXT,
+  decision    TEXT,
+  session_id  TEXT,
+  channel_id  TEXT,
+  thread_ts   TEXT,
+  summary     TEXT    NOT NULL DEFAULT '',
+  details     TEXT    NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_scope ON audit_events (persona, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events (session_id, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events (actor_id, id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_action_target ON audit_events (action, target_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_actor_kind ON audit_events (actor_kind, actor_id);
+
+CREATE TABLE IF NOT EXISTS agent_grants (
+  id           TEXT    PRIMARY KEY,
+  persona      TEXT    NOT NULL,
+  subject_kind TEXT    NOT NULL,
+  subject_id   TEXT    NOT NULL,
+  role         TEXT    NOT NULL,
+  deny         INTEGER NOT NULL DEFAULT 0,
+  dm_only      INTEGER NOT NULL DEFAULT 0,
+  created_by   TEXT    NOT NULL,
+  created_at   INTEGER NOT NULL,
+  expires_at   INTEGER,
+  note         TEXT,
+  subject_ref     TEXT,
+  subject_user_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_grants_persona ON agent_grants (persona);
+
+CREATE TABLE IF NOT EXISTS guardrails (
+  slug       TEXT    PRIMARY KEY,
+  md         TEXT    NOT NULL,
+  sha        TEXT    NOT NULL,
+  source     TEXT    NOT NULL,
+  version    INTEGER NOT NULL,
+  enabled    INTEGER NOT NULL DEFAULT 1,
+  hmac       TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT    NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS guardrail_overrides (
+  slug       TEXT    PRIMARY KEY,
+  md         TEXT    NOT NULL,
+  base_sha   TEXT    NOT NULL,
+  version    INTEGER NOT NULL,
+  author     TEXT    NOT NULL,
+  hmac       TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS guardrails_manifest (
+  id         TEXT    PRIMARY KEY DEFAULT 'manifest',
+  version    INTEGER NOT NULL,
+  entries    TEXT    NOT NULL,
+  hmac       TEXT    NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS node_plugins (
+  node_id     TEXT    NOT NULL,
+  instance_id TEXT    NOT NULL,
+  labels      TEXT    NOT NULL,
+  reported_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  credential_iat INTEGER NOT NULL,
+  report      TEXT    NOT NULL,
+  PRIMARY KEY (node_id, instance_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_node_plugins_instance ON node_plugins (instance_id);
 `;
 
 /** Create tables + apply the incremental column migrations on an existing sqlite file. */
@@ -386,6 +645,12 @@ export function bootstrapSqliteSchema(db: Database): void {
       if (/CREATE TABLE IF NOT EXISTS skill_usage\b/.test(stmt)) db.run(stmt.trim());
     }
   }
+
+  // Migration: a proactive post keeps its text and context (pg 0030).
+  const postCols = db.query(`PRAGMA table_info(proactive_posts)`).all() as Array<{ name: string }>;
+  if (!postCols.some((c) => c.name === "text")) db.run(`ALTER TABLE proactive_posts ADD COLUMN text TEXT`);
+  if (!postCols.some((c) => c.name === "context")) db.run(`ALTER TABLE proactive_posts ADD COLUMN context TEXT`);
+  if (!postCols.some((c) => c.name === "app_id")) db.run(`ALTER TABLE proactive_posts ADD COLUMN app_id TEXT`);
 
   // Migration: a run records the reported model it could not price (pg 0027).
   const runCols = db.query(`PRAGMA table_info(background_runs)`).all() as Array<{ name: string }>;
@@ -488,6 +753,46 @@ export function bootstrapSqliteSchema(db: Database): void {
     db.run(`ALTER TABLE one_on_one_locks ADD COLUMN open_scope TEXT`);
   }
 
+  // Migration: access on internal ids (pg 0040). All additive and nullable.
+  if (!oooLockCols.some((c) => c.name === "team_id")) db.run(`ALTER TABLE one_on_one_locks ADD COLUMN team_id TEXT`);
+  const acctCols = db.query(`PRAGMA table_info(accounts)`).all() as Array<{ name: string }>;
+  if (!acctCols.some((c) => c.name === "email_proven")) {
+    db.run(`ALTER TABLE accounts ADD COLUMN email_proven INTEGER NOT NULL DEFAULT 0`);
+  }
+  const grantCols = db.query(`PRAGMA table_info(agent_grants)`).all() as Array<{ name: string }>;
+  if (!grantCols.some((c) => c.name === "subject_ref")) db.run(`ALTER TABLE agent_grants ADD COLUMN subject_ref TEXT`);
+  if (!grantCols.some((c) => c.name === "subject_user_id")) db.run(`ALTER TABLE agent_grants ADD COLUMN subject_user_id TEXT`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_agent_grants_subject_user ON agent_grants (subject_user_id)`);
+
+  // Migration: domain sessions, slice D (pg 0042 to 0050). The boundary a row
+  // belongs to (soft reference, no foreign key) and the opaque thread locator.
+  // Additive and nullable. Placed after the persona_id rebuild above, which
+  // recreates `sessions` from a fixed column list.
+  for (const [table, withLocator] of [
+    ["one_on_one_locks", true],
+    ["mention_only_threads", true],
+    ["ignores", true],
+    ["cron_jobs", true],
+    ["commitments", true],
+    ["env_bindings", true],
+    ["proactive_posts", false],
+    ["channel_wake_state", false],
+    ["sessions", true],
+  ] as const) {
+    const have = (db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
+    if (!have.includes("boundary_id")) db.run(`ALTER TABLE ${table} ADD COLUMN boundary_id TEXT`);
+    if (withLocator && !have.includes("locator")) db.run(`ALTER TABLE ${table} ADD COLUMN locator TEXT`);
+  }
+
+  // Migration: the credential bookkeeping pointer (pg 0052). Nullable and never read for a
+  // decision. SQLite cannot add the pg CHECK (user_id IS NULL OR account_id IS NOT NULL)
+  // without a rebuild; src/db/credential-pointers.ts enforces it here.
+  const credCols = db.query(`PRAGMA table_info(mcp_credentials)`).all() as Array<{ name: string }>;
+  if (!credCols.some((c) => c.name === "user_id")) {
+    db.run(`ALTER TABLE mcp_credentials ADD COLUMN user_id TEXT REFERENCES users (id) ON DELETE SET NULL`);
+  }
+  db.run(`CREATE INDEX IF NOT EXISTS idx_mcp_credentials_user ON mcp_credentials (user_id)`);
+
   // Migration: record the /1on1 lock owner active when the job was created. Cron
   // runs for DM/channel-target jobs key on a synthetic `cron:<id>` thread that
   // carries no 1on1 lock, so #startSession's thread-lock lookup can't find the
@@ -516,6 +821,17 @@ export function bootstrapSqliteSchema(db: Database): void {
     db.run(`ALTER TABLE sessions ADD COLUMN slack_app_id TEXT`);
   }
 
+  // Migration: environment definitions (pg 0051). All additive. sqlite has no
+  // tenant column, so the definition index is on the name alone (definition
+  // sync is a database-tenant feature and runs on pg only).
+  const envCols = db.query(`PRAGMA table_info(environments)`).all() as Array<{ name: string }>;
+  if (!envCols.some((c) => c.name === "source")) db.run(`ALTER TABLE environments ADD COLUMN source TEXT NOT NULL DEFAULT 'user'`);
+  for (const c of ["definition_name", "definition_hash", "definition_revision", "description"]) {
+    if (!envCols.some((x) => x.name === c)) db.run(`ALTER TABLE environments ADD COLUMN ${c} TEXT`);
+  }
+  if (!envCols.some((c) => c.name === "retired_at")) db.run(`ALTER TABLE environments ADD COLUMN retired_at INTEGER`);
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_environments_definition ON environments (definition_name) WHERE definition_name IS NOT NULL`);
+
   // Migration: add pause lifecycle state. `active` remains the soft-delete bit;
   // paused jobs stay listed but don't fire on schedule.
   ensureCronPauseColumn(db);
@@ -529,10 +845,15 @@ export function bootstrapSqliteSchema(db: Database): void {
   }
 }
 
+/** Set while a transaction body runs, so a nested `transaction` does not wait for its own lock. */
+const inTransaction = new AsyncLocalStorage<SqliteClient>();
+
 class SqliteClient implements DbClient {
   readonly dialect = "sqlite" as const;
   readonly driver = "bun-sqlite";
   constructor(readonly raw: Database) {}
+  /** One connection cannot interleave two transactions: later ones queue behind the running one. */
+  #txTail: Promise<unknown> = Promise.resolve();
 
   query<T = Row>(sql: string, params: unknown[] = []): Promise<T[]> {
     try {
@@ -568,8 +889,22 @@ class SqliteClient implements DbClient {
     }
   }
 
-  async transaction<T>(fn: (tx: DbClient) => Promise<T>): Promise<T> {
-    this.raw.exec("BEGIN");
+  async transaction<T>(fn: (tx: DbClient) => Promise<T>, opts?: { immediate?: boolean }): Promise<T> {
+    // Nested (same async context): no queueing, as before (a nested BEGIN fails loudly).
+    if (inTransaction.getStore() === this) return this.#run(fn, opts?.immediate);
+    const prev = this.#txTail;
+    let release!: () => void;
+    this.#txTail = new Promise<void>((r) => (release = r));
+    await prev.catch(() => {});
+    try {
+      return await inTransaction.run(this, () => this.#run(fn, opts?.immediate));
+    } finally {
+      release();
+    }
+  }
+
+  async #run<T>(fn: (tx: DbClient) => Promise<T>, immediate?: boolean): Promise<T> {
+    this.raw.exec(immediate ? "BEGIN IMMEDIATE" : "BEGIN");
     try {
       const out = await fn(this);
       this.raw.exec("COMMIT");

@@ -1,6 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 import { paths } from "../src/config/home";
@@ -8,11 +7,13 @@ import { clearKbCache } from "../src/knowledge/loader";
 import { closeBrain, ensureSources, brainCall } from "../src/knowledge/brain";
 import { syncKbWikis } from "../src/knowledge/brain-sync";
 import { kbSourceId } from "../src/knowledge/scope";
+import { freshBrainHome } from "./helpers/brain-template";
 
 // Brain in its own temp dir; KB fixture inside the preload-provided test home
 // (paths.home is frozen at first config/home import, so per-file env overrides
 // of SLAUDE_HOME don't work — write into the shared test home and clean up).
-const brainDir = mkdtempSync(join(tmpdir(), "slaude-brainsync-"));
+// A copy of the per-process template brain, not a fresh initdb (tests/helpers/brain-template.ts).
+const brainDir = await freshBrainHome("slaude-brainsync-");
 process.env.SLAUDE_BRAIN_HOME = brainDir;
 
 const kbDir = join(paths.knowledge, "runbook");

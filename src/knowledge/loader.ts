@@ -73,7 +73,9 @@ export function loadKbs(): KbEntry[] {
     return [];
   }
   const out: KbEntry[] = [];
-  for (const entry of readdirSync(root)) {
+  // Sorted: readdir order is the filesystem's (hash order on ext4, newest
+  // first on tmpfs), so the KB list and import order would differ per host.
+  for (const entry of readdirSync(root).sort()) {
     const dir = join(root, entry);
     if (!statSync(dir).isDirectory()) continue;
     const indexFile = resolveIndexFile(dir);

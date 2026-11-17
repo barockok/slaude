@@ -3,7 +3,19 @@ import { randomBytes } from "node:crypto";
 import { paths } from "./home";
 import { flag } from "./security-switches";
 
+/** Never taken from a .env file. `$SLAUDE_HOME/.env` sits on the volume agent
+ *  turns write, and this variable names the location trusted to say which plugin
+ *  servers get offered with no approval: only the real process environment may
+ *  set it. */
+const DOTENV_REFUSED = new Set(["SLAUDE_PLUGIN_ROOT"]);
+
 // Load a .env file if present (does not override existing process.env)
+/** The SLAUDE_REMOTE switch's value rule, shared by `env.remote.enabled()` and the sync (which reads the deployment's variables from a record). */
+export function remoteFlagValue(raw: string | undefined): boolean {
+  const v = (raw ?? "0").toLowerCase();
+  return v === "1" || v === "true" || v === "yes";
+}
+
 export function loadDotenv(path: string) {
   if (!existsSync(path)) return;
   const raw = readFileSync(path, "utf8");
@@ -11,6 +23,7 @@ export function loadDotenv(path: string) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
     if (!m || !m[1]) continue;
     const key: string = m[1];
+    if (DOTENV_REFUSED.has(key)) continue;
     let val: string = m[2] ?? "";
     if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
     if (val.startsWith("'") && val.endsWith("'")) val = val.slice(1, -1);
@@ -18,13 +31,30 @@ export function loadDotenv(path: string) {
   }
 }
 
-loadDotenv(paths.env);
+/**
+ * Whether this process reads $SLAUDE_HOME/.env. A node does not: agent turns can
+ * write that volume, so a file there could set SLAUDE_GATEWAY_URL,
+ * NODE_TLS_REJECT_UNAUTHORIZED and the like on the next start. A node's settings
+ * come from its real environment. The entry mark (src/node/first-import.ts) makes
+ * this hold even when SLAUDE_ROLE is not set in the real environment.
+ */
+export function readsHomeDotenv(
+  realEnv: Record<string, string | undefined> = process.env,
+  nodeEntry: boolean = !!(globalThis as Record<symbol, unknown>)[Symbol.for("slaude.nodeEntry")],
+): boolean {
+  return !nodeEntry && realEnv.SLAUDE_ROLE?.trim().toLowerCase() !== "node";
+}
+
+if (readsHomeDotenv()) loadDotenv(paths.env);
+else if (existsSync(paths.env)) console.warn("[node] ignoring $SLAUDE_HOME/.env: a node takes its settings from its real environment only");
 
 function req(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`missing env ${name}`);
   return v;
 }
+
+let poolWarned = false;
 
 function opt(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
@@ -40,6 +70,12 @@ function positiveInt(name: string, fallback: number): number {
 }
 
 /** A positive integer variable that falls back to the default (unset, empty or invalid) rather than throwing. */
+function numberAtLeastZero(name: string, fallback: number): number {
+  const raw = opt(name, "").trim();
+  const n = raw === "" ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 function intAtLeastOne(name: string, fallback: number): number {
   const raw = (process.env[name] ?? "").trim();
   const n = raw === "" ? NaN : Number(raw);
@@ -276,15 +312,29 @@ export const env = {
    *                            SDK child inherits the token for subscription auth.
    */
   db: {
-    /** Bun.sql connection pool size for SLAUDE_DB=pg (default 10). */
+    /**
+     * Bun.sql connection pool size for SLAUDE_DB=pg (default 10), which is also the most statements,
+     * transactions and advisory-lock reservations this process hands to Postgres at once (the pool gate).
+     * At least 2: a migration, reconcile or fill holds one connection for its advisory lock and needs a
+     * second for its statements, so 1 would hang boot. A smaller value is raised to 2 with a warning.
+     */
     pgPool: () => {
       const raw = opt("SLAUDE_PG_POOL", "10");
       const n = Number(raw);
       if (!Number.isInteger(n) || n < 1) {
         throw new Error(`SLAUDE_PG_POOL must be a positive integer (got '${raw}')`);
       }
+      if (n < 2) {
+        if (!poolWarned) {
+          poolWarned = true;
+          console.warn(`[db] SLAUDE_PG_POOL=${n} raised to 2 (an advisory lock holds one connection and its statements need another)`);
+        }
+        return 2;
+      }
       return n;
     },
+    /** Most ms a statement may wait for a pool permit before it fails (default 0: wait, a wedge is visible in slaude_pg_gate_waiting). */
+    pgAcquireTimeoutMs: () => numberAtLeastZero("SLAUDE_PG_ACQUIRE_TIMEOUT_MS", 0),
     /** Seconds a booting replica waits for the migration advisory lock.
      *  0 (default) = wait forever; > 0 fails the boot loudly on expiry. */
     migrateLockTimeoutSec: () => {
@@ -525,6 +575,13 @@ export const env = {
    */
   autoEvolve: () => opt("SLAUDE_AUTO_EVOLVE", "1") !== "0",
   /**
+   * Mount the deprecated kb_* aliases of the memory_* tools (kb_memoize,
+   * kb_search, list_kbs, ...) on the slaude_kb MCP server, in-process and on
+   * node shims. Set to "0" to offer only the memory_* names. The REST tool
+   * plane accepts the old names either way (a node on an older build).
+   */
+  memoryToolAliases: () => opt("SLAUDE_MEMORY_TOOL_ALIASES", "1") !== "0",
+  /**
    * Raw `SLAUDE_DECISION_CONFIG` JSON (decision gate, phase B); parsed and
    * validated by `parseDecisionConfig`. Gateway-only. Empty when unset.
    */
@@ -550,6 +607,17 @@ export const env = {
     return Number.isFinite(n) && n >= 0 ? n : 1;
   },
   /**
+   * Daily USD limit of the proactive pool (heartbeat, promise checks, wakes)
+   * per agent (`SLAUDE_PROACTIVE_BUDGET_USD`). Unset, empty or invalid: null,
+   * one pool shared with learning passes under `backgroundBudgetUsd`. 0 is
+   * allowed and stops proactive spend.
+   */
+  proactiveBudgetUsd: (): number | null => {
+    const raw = opt("SLAUDE_PROACTIVE_BUDGET_USD", "").trim();
+    const n = raw === "" ? NaN : Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  },
+  /**
    * Quiet-moment pass thresholds (spec §9.1): a thread with at least
    * `SLAUDE_QUIET_MIN_TURNS` turns (N, default 8) that has been quiet for
    * `SLAUDE_QUIET_MINUTES` minutes (M, default 30) is reviewed, at most
@@ -564,6 +632,26 @@ export const env = {
    */
   promisePollMinutes: () => intAtLeastOne("SLAUDE_PROMISE_POLL_MINUTES", 15),
   promiseExpireHours: () => intAtLeastOne("SLAUDE_PROMISE_EXPIRE_HOURS", 24),
+  /** Per-wake USD cap (`SLAUDE_WAKE_MAX_USD`, default 1). 0 turns it off; the day's pool still applies. */
+  wakeMaxUsd: () => numberAtLeastZero("SLAUDE_WAKE_MAX_USD", 1),
+  /** Per-wake turn cap (`SLAUDE_WAKE_MAX_TURNS`, default 40). 0 turns it off. */
+  wakeMaxTurns: () => numberAtLeastZero("SLAUDE_WAKE_MAX_TURNS", 40),
+  /** Per-wake wall clock in minutes (`SLAUDE_WAKE_MAX_MINUTES`, default 15). 0 turns it off; a node's turn timeout still applies. */
+  wakeMaxMinutes: () => numberAtLeastZero("SLAUDE_WAKE_MAX_MINUTES", 15),
+  /** How long a wake's session is kept (`SLAUDE_WAKE_KEEP_DAYS`, default 14). */
+  wakeKeepDays: () => intAtLeastOne("SLAUDE_WAKE_KEEP_DAYS", 14),
+  /** Most always-loaded owner guardrail prose per agent (`SLAUDE_GUARDRAIL_PROSE_MAX`, characters, default 4000). */
+  guardrailProseMax: () => intAtLeastOne("SLAUDE_GUARDRAIL_PROSE_MAX", 4000),
+  /** How long an inbound guardrail's reply stays quiet for the same person in the same thread (`SLAUDE_GUARDRAIL_REPLY_QUIET_SECS`, default 600). */
+  guardrailReplyQuietSec: () => intAtLeastOne("SLAUDE_GUARDRAIL_REPLY_QUIET_SECS", 600),
+  /** How long an owner guardrail's approval card waits, tool calls and held replies (`SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC`, default 600, at most 3600). */
+  guardrailApproveTimeoutSec: () => Math.min(3600, intAtLeastOne("SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC", 600)),
+  /** How long audit events are kept (`SLAUDE_AUDIT_RETENTION_DAYS`, default 365). */
+  auditRetentionDays: () => intAtLeastOne("SLAUDE_AUDIT_RETENTION_DAYS", 365),
+  /** How often the gateway re-reads the skill roots into the version log, in minutes (`SLAUDE_SKILL_VERSION_RECONCILE_MINUTES`, default 5). */
+  skillVersionReconcileMinutes: () => intAtLeastOne("SLAUDE_SKILL_VERSION_RECONCILE_MINUTES", 5),
+  /** The longest a waking agent may sleep, in hours (`SLAUDE_WAKE_MAX_SLEEP_HOURS`, default 24). */
+  wakeMaxSleepHours: () => intAtLeastOne("SLAUDE_WAKE_MAX_SLEEP_HOURS", 24),
   /** Heartbeat pass interval in minutes (`SLAUDE_HEARTBEAT_MINUTES`, default 30; spec §10.3). */
   heartbeatMinutes: () => intAtLeastOne("SLAUDE_HEARTBEAT_MINUTES", 30),
   quietMinTurns: () => intAtLeastOne("SLAUDE_QUIET_MIN_TURNS", 8),
@@ -636,12 +724,132 @@ export const env = {
       return raw === "1" || raw === "true" || raw === "yes";
     },
   },
+  access: {
+    /**
+     * Which answer the access seam (`src/access/decide.ts`) returns, read on every
+     * call: `legacy` runs the string path only (no resolver); `shadow` (default)
+     * returns the legacy answer and also computes the internal-id answer, counting
+     * and logging every disagreement; `internal` returns the internal-id answer
+     * and computes the legacy one in the background (reverse shadow). An unknown
+     * value reads as `legacy`. The default stays `shadow`: the flip is a
+     * deliberate configuration change, and `email:` and `user:` references are
+     * accepted only while this is `internal`.
+     */
+    source: (): "legacy" | "shadow" | "internal" => {
+      const raw = opt("SLAUDE_ACCESS_SOURCE", "shadow").trim().toLowerCase();
+      return raw === "shadow" || raw === "internal" || raw === "legacy" ? raw : "legacy";
+    },
+    /**
+     * D2: a direct `slack:user:` manager or approver entry also needs the acting
+     * Slack binding verified (the portal link). Default off, so today's behaviour
+     * holds for direct Slack entries; `email:` and `user:` entries always need it.
+     * Only read while the source is `internal`.
+     */
+    /**
+     * Most milliseconds one internal-source decision may wait for the records
+     * (default 1500). A decision that takes longer is a resolver failure: ordinary
+     * questions fall back to legacy, privileged ones are refused. 0 turns it off.
+     */
+    timeoutMs: (): number => {
+      const n = Number(opt("SLAUDE_ACCESS_TIMEOUT_MS", "1500"));
+      return Number.isFinite(n) && n >= 0 ? n : 1500;
+    },
+    privilegedNeedsVerified: (): boolean => {
+      const raw = opt("SLAUDE_PRIVILEGED_NEEDS_VERIFIED", "0").trim().toLowerCase();
+      return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+    },
+  },
+  merge: {
+    /**
+     * `SLAUDE_AUTO_MERGE` (default on): records merge automatically when a proof
+     * (the portal link, a login with a proven email) lands on a record that holds
+     * nothing verified. `off` turns every automatic merge into a proposal for the
+     * console; nothing is moved. Read on every call.
+     */
+    auto: (): boolean => {
+      const raw = opt("SLAUDE_AUTO_MERGE", "on").trim().toLowerCase();
+      return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
+    },
+    /**
+     * `SLAUDE_MERGE_NOTICE` (default on): the Slack notice a merge sends to the
+     * person (and to the manager of a persona whose privileged grant activates).
+     * `off` sends nothing and marks the ledger row `skipped`; the rollback switch
+     * for the notice alone. Read on every call.
+     */
+    notice: (): boolean => {
+      const raw = opt("SLAUDE_MERGE_NOTICE", "on").trim().toLowerCase();
+      return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
+    },
+    /**
+     * `SLAUDE_MERGE_POINTERS` (default on, slice F): a merge repoints the credential
+     * bookkeeping pointers (`mcp_credentials.user_id`) from the loser to the survivor
+     * before the loser row is deleted. Inert: no decision reads the pointer. `off`
+     * skips the step and the reconciler repairs. Read on every call.
+     */
+    pointers: (): boolean => {
+      const raw = opt("SLAUDE_MERGE_POINTERS", "on").trim().toLowerCase();
+      return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
+    },
+  },
+  boundary: {
+    /**
+     * `SLAUDE_BOUNDARY_WRITE` (default on): writers store `boundary_id` and
+     * `locator` next to the Slack columns when the boundary is already cached.
+     * `off` stores NULL pairs and turns the fill and the check into no-ops.
+     * Read on every call.
+     */
+    write: (): boolean => {
+      const raw = opt("SLAUDE_BOUNDARY_WRITE", "on").trim().toLowerCase();
+      return !(raw === "off" || raw === "0" || raw === "false" || raw === "no");
+    },
+    /** Most milliseconds the resolver's async read may take (default 300). */
+    timeoutMs: (): number => numberAtLeastZero("SLAUDE_BOUNDARY_TIMEOUT_MS", 300),
+    /** Periodic fill cadence in ms (default 10 minutes); 0 disables it. */
+    fillIntervalMs: (): number => numberAtLeastZero("SLAUDE_BOUNDARY_FILL_INTERVAL_MS", 600_000),
+    /** Most rows one fill tick updates across tables (default 2000). */
+    fillMaxRows: (): number => intAtLeastOne("SLAUDE_BOUNDARY_FILL_MAX_ROWS", 2000),
+  },
+  slices: {
+    /**
+     * `SLAUDE_PERSON_SLICES` (default `off`, slice F). `off`: no resolver call, every
+     * scope decision is rc.21's. `shadow`: the legacy scope is returned and the
+     * verified-only union is computed beside it and compared (counts and a
+     * redacted log only). `union` (rc.23): READS also include the `user-` slices of the
+     * speaker's other Slack ids that are verified (Rules P, Q, R, S, T of the slice F plan);
+     * writes never change. Read on every call. Anything else reads as `off`.
+     */
+    mode: (): "off" | "shadow" | "union" => {
+      const raw = opt("SLAUDE_PERSON_SLICES", "off").trim().toLowerCase();
+      return raw === "shadow" || raw === "union" ? raw : "off";
+    },
+    /**
+     * `SLAUDE_PERSON_SLICES_HOLD_HOURS` (default 24, `0` disables): a Slack binding joins a
+     * union as an ADDED slice only once its own `verified_at` is older than this. The link
+     * token is a 15 minute bearer token, so a mistaken link (the wrong person redeeming it)
+     * must not give the account's other ids the linked id's whole slice at once: the hold is
+     * the window to notice and revoke (unlink, undo, tombstone). Read from the binding row
+     * itself; a binding with no `verified_at` is held. Read on every call.
+     */
+    holdHours: (): number => {
+      const n = Number(opt("SLAUDE_PERSON_SLICES_HOLD_HOURS", "24"));
+      return Number.isFinite(n) && n >= 0 ? n : 24;
+    },
+    /**
+     * `SLAUDE_CREDENTIAL_POINTERS` (default `off`, slice F): record the bookkeeping pointer
+     * `mcp_credentials.user_id` after a person's credential write and on login or link.
+     * Off, no credential write does any extra work; `slaude domain reconcile --fill-pointers`
+     * fills the pointers meanwhile. Nothing reads the pointer for a decision either way.
+     */
+    credentialPointers: (): boolean => {
+      const raw = opt("SLAUDE_CREDENTIAL_POINTERS", "off").trim().toLowerCase();
+      return raw === "on" || raw === "1" || raw === "true" || raw === "yes";
+    },
+  },
   remote: {
     /** `/remote` — run a thread's shell and file tools on the initiator's own
      *  machine over tailcat SSH. Default off; ships behind this flag. */
     enabled: () => {
-      const raw = opt("SLAUDE_REMOTE", "0").toLowerCase();
-      return raw === "1" || raw === "true" || raw === "yes";
+      return remoteFlagValue(opt("SLAUDE_REMOTE", "0"));
     },
   },
   /** Static Prometheus labels applied to every metric, e.g.

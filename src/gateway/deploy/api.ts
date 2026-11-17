@@ -4,10 +4,12 @@
  * prefix or token would leave nodes one misrouted handler away from rewriting
  * identity.
  *
- *   POST /deploy/v1/tenants/:tenant/personas[?dryRun=1]
+ *   POST /deploy/v1/tenants/:tenant/personas[?dryRun=1][&strict=1]
  *
  * SLAUDE_DEPLOY_TOKEN applies or previews; SLAUDE_DEPLOY_PREVIEW_TOKEN previews
- * only (dryRun=1). A dry run makes no model call.
+ * only (dryRun=1). A dry run makes no model call. strict=1 refuses (422, listing
+ * them) a sync whose references would create a domain record; with dryRun=1 it
+ * is the pipeline's check. The report's `records` lists what was or would be created.
  */
 import { env } from "../../config/env";
 import { timingSafeStringEqual } from "../api/auth";
@@ -27,7 +29,6 @@ export const DEPLOY_MAX_BODY_BYTES = 4 * 1024 * 1024;
 export interface DeployApiOptions {
   pubsub: PubSub | null;
   env?: () => Record<string, string | undefined>;
-  extract?: (text: string) => Promise<unknown>;
   /** The labels live nodes carry; a persona on a label none carries is a
    *  warning in the report. Absent = no such check (mono). */
   liveLabels?: () => Promise<ReadonlySet<string>>;
@@ -81,9 +82,9 @@ export function createDeployApi(opts: DeployApiOptions) {
     try {
       const report = await runSync(tenant, raw, {
         dryRun,
+        strict: url.searchParams.get("strict") === "1",
         by: "pipeline",
         env: (opts.env ?? (() => process.env))(),
-        extract: opts.extract,
         ...(opts.liveLabels ? { liveLabels: opts.liveLabels } : {}),
       });
       if (!dryRun) await publishConfigReload(opts.pubsub, tenant);

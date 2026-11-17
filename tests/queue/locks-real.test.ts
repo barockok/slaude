@@ -69,6 +69,35 @@ describe.skipIf(!realEnabled)("queue/locks against real Redis", () => {
     expect(c).toBe("ran-c");
   });
 
+  test("withKeyLock: a key held by another owner returns HELD_BY_OTHER without running fn", async () => {
+    await ready;
+    const key = keys.workspaceLock("/w/agent-U0A/proactive");
+    expect(await locks.acquireLock(redis, key, "owner-a", 5000)).toBe(true);
+    let ran = false;
+    const r = await locks.withKeyLock(key, "owner-b", async () => {
+      ran = true;
+      return "ran-b";
+    }, { redis, keys, ttlMs: 5000 });
+    expect(r).toBe(locks.HELD_BY_OTHER);
+    expect(ran).toBe(false);
+    expect(await redis.get(key)).toBe("owner-a");
+    await locks.releaseLock(redis, key, "owner-a");
+    // free: runs, and releases the key afterwards
+    expect(await locks.withKeyLock(key, "owner-b", async () => "ran-b", { redis, keys, ttlMs: 5000 })).toBe("ran-b");
+    expect(await redis.get(key)).toBeNull();
+  });
+
+  test("withKeyLock: runs once the holder's TTL lapses", async () => {
+    await ready;
+    const key = keys.workspaceLock("/w/agent-U0B/proactive");
+    // Owner A takes it with a 200 ms TTL and never releases it (a dead node).
+    expect(await locks.acquireLock(redis, key, "owner-a", 200)).toBe(true);
+    const opts = { redis, keys, ttlMs: 5000 };
+    expect(await locks.withKeyLock(key, "owner-b", async () => "ran", opts)).toBe(locks.HELD_BY_OTHER);
+    await sleep(300);
+    expect(await locks.withKeyLock(key, "owner-b", async () => "ran", opts)).toBe("ran");
+  });
+
   test("extender keeps the lock alive through a long fn", async () => {
     await ready;
     const opts = { redis, keys, ttlMs: 300, extendEveryMs: 100 };

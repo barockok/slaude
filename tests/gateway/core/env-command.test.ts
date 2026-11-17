@@ -258,15 +258,15 @@ describe("/env form", () => {
     const blocks = envPickerBlocks(offer, [e]) as any[];
     const btn = blocks[1].accessory;
     expect(btn.action_id).toBe(ENV_USE_ACTION);
-    expect(decodeEnvOffer(btn.value, "U_A")).toMatchObject({ ok: true, offer: { envId: e.id } });
-    expect(decodeEnvOffer(btn.value, "U_B")).toEqual({ ok: false, reason: "invalid" });
+    expect((await decodeEnvOffer(btn.value, "U_A"))).toMatchObject({ ok: true, offer: { envId: e.id } });
+    expect((await decodeEnvOffer(btn.value, "U_B"))).toEqual({ ok: false, reason: "invalid" });
     expect(JSON.stringify(blocks)).not.toContain("tcSecret");
   });
 
-  it("the add modal shows the selected kind's fields and reads them back", () => {
+  it("the add modal shows the selected kind's fields and reads them back", async () => {
     const m = envAddModal({ ...offer, kindName: "ssh" }) as any;
     expect(m.callback_id).toBe(ENV_ADD_VIEW);
-    expect(decodeEnvOffer(m.private_metadata, "U_A")).toMatchObject({ ok: true, offer: { kindName: "ssh" } });
+    expect((await decodeEnvOffer(m.private_metadata, "U_A"))).toMatchObject({ ok: true, offer: { kindName: "ssh" } });
     const ids = m.blocks.map((b: any) => b.block_id);
     expect(ids).toContain("env_f_host");
     expect(ids).toContain("env_f_hostKey");

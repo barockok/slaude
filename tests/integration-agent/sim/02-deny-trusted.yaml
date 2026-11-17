@@ -1,0 +1,7 @@
+# Seed first: a stored deny for U0ALICE.
+# The deny beats the trusted channel grant (reason blocked_user).
+layer: trusted
+as: member
+steps:
+  - send: { text: "denied member in a trusted channel" }
+  - expect_drop: { reason: blocked_user }

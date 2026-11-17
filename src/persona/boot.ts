@@ -9,6 +9,9 @@
  * §5.2). The returned function stops the registry poll (Postgres only).
  */
 import { assertNoProviderRefsInMono } from "../gateway/core/provider-secrets";
+import { resolveDbConfig } from "../db/client";
+import { isManaged } from "../db/personas";
+import { checkDiskPersonas } from "./disk-check";
 import {
   loadPersonaRegistry,
   personasWithProvider,
@@ -22,6 +25,10 @@ export type PersonaBootDeps = {
   withProvider: () => string[];
   startRevalidation: (tenant: string) => () => void;
   loadFilesystem: () => void;
+  /** A tenant that reads the filesystem (sqlite, or Postgres never synced as code). */
+  isFilesystemTenant: (tenant: string) => Promise<boolean>;
+  /** Stops on a SOUL.md with no agent.yaml; seeds a starter agent.yaml into a bare home. */
+  checkDisk: () => { seeded?: string };
 };
 
 const defaultDeps: PersonaBootDeps = {
@@ -29,6 +36,8 @@ const defaultDeps: PersonaBootDeps = {
   withProvider: () => personasWithProvider(),
   startRevalidation: startRegistryRevalidation,
   loadFilesystem: () => setPersonaRegistry(loadPersonaRegistry()),
+  isFilesystemTenant: async (tenant) => resolveDbConfig().dialect === "sqlite" || !(await isManaged(tenant)),
+  checkDisk: () => checkDiskPersonas(),
 };
 
 export async function bootPersonaState(
@@ -39,6 +48,11 @@ export async function bootPersonaState(
   if (role === "node") {
     deps.loadFilesystem();
     return undefined;
+  }
+  // A filesystem tenant must define each persona by an agent.yaml; a managed one reads the database.
+  if (await deps.isFilesystemTenant("default")) {
+    const { seeded } = deps.checkDisk();
+    if (seeded) console.warn(`[persona] seeded a starter agent.yaml at ${seeded}: fill in who manages it before going live`);
   }
   await deps.refresh("default");
   assertNoProviderRefsInMono(role, deps.withProvider());

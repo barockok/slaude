@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeBrain, defaultDimensionsForModel, embeddingActive, getBrain, resolveEmbeddingApiKey, canonicalizeEmbeddingModel, applyEmbeddingEnv, EMBEDDING_PROVIDERS, normalizeEmbeddingProvider } from "../src/knowledge/brain";
 import { readFileSync } from "node:fs";
+import { SMALL_EMBEDDING_ENV, freshBrainHome } from "./helpers/brain-template";
 
 let home: string | null = null;
 
@@ -24,7 +25,19 @@ afterEach(async () => {
   home = null;
 });
 
-function freshHome(): void {
+/**
+ * A brain home for a boot under `env` (set here too): a copy of the
+ * per-process template brain for that embedding setup, not a fresh initdb
+ * (tests/helpers/brain-template.ts).
+ */
+async function freshHome(env: Record<string, string> = {}): Promise<void> {
+  home = await freshBrainHome("slaude-embedgw-", env);
+  Object.assign(process.env, env);
+  process.env.SLAUDE_BRAIN_HOME = home;
+}
+
+/** An empty brain home, for tests that never boot the brain. */
+function emptyHome(): void {
   home = mkdtempSync(join(tmpdir(), "slaude-embedgw-"));
   process.env.SLAUDE_BRAIN_HOME = home;
 }
@@ -78,22 +91,21 @@ describe("defaultDimensionsForModel", () => {
 
 describe("embedding gateway activation", () => {
   test("inactive when no embedding configured", async () => {
-    freshHome();
+    await freshHome();
     await getBrain();
     expect(embeddingActive()).toBe(false);
   }, 60_000);
 
   test("inactive when provider key env is missing — sync must not attempt embeds", async () => {
-    freshHome();
+    // Same brain shape as an unconfigured boot (gbrain's default model): the default template.
+    await freshHome();
     process.env.EMBEDDING_MODEL = "zeroentropyai:zembed-1";
     await getBrain();
     expect(embeddingActive()).toBe(false);
   }, 60_000);
 
   test("active once model + provider key present (keyless provider counts)", async () => {
-    freshHome();
-    process.env.EMBEDDING_MODEL = "litellm:test-embed"; // litellm key is optional
-    process.env.EMBEDDING_DIMENSIONS = "8";
+    await freshHome(SMALL_EMBEDDING_ENV); // litellm:test-embed at 8 dims; a litellm key is optional
     await getBrain();
     expect(embeddingActive()).toBe(true);
   }, 60_000);
@@ -146,7 +158,7 @@ describe("canonicalizeEmbeddingModel with provider enum", () => {
 
 describe("applyEmbeddingEnv", () => {
   test("writes deterministic provider and model configuration to config.json", () => {
-    freshHome();
+    emptyHome();
     process.env.EMBEDDING_PROVIDER = "google";
     applyEmbeddingEnv();
 
@@ -157,7 +169,7 @@ describe("applyEmbeddingEnv", () => {
   });
 
   test("resets dimensions to model default when switching provider without explicit dims", () => {
-    freshHome();
+    emptyHome();
     // Initially google (768)
     process.env.EMBEDDING_PROVIDER = "google";
     applyEmbeddingEnv();

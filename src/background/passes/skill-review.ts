@@ -21,6 +21,7 @@
  * of an installed or bundled skill, addressed to the manager. Each retirement
  * is recorded as a settled `skill-retired` row in `proposals` for the digest.
  */
+import { auditSkill } from "../../audit/events";
 import { tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import * as Proposals from "../../db/proposals";
@@ -179,6 +180,7 @@ async function retireReserved(slug: string, reason: string, ctx: ReviewToolConte
     console.error(`[background] agent=${ctx.agentId} pass=${SKILL_REVIEW}: retired ${slug} (${retiredId}) but could not record it: ${e instanceof Error ? e.message : String(e)}`);
   }
   console.log(`[background] agent=${ctx.agentId} pass=${SKILL_REVIEW}: retired ${slug} as ${retiredId}`);
+  auditSkill("skill.retired", { persona: ctx.personaId || "default", actorKind: "agent", actorId: ctx.agentId, slug, retiredId, reason, via: "skill_review" });
   return ok({ retired: slug, id: retiredId, restorable: true });
 }
 

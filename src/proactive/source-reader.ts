@@ -1,0 +1,164 @@
+/**
+ * The heartbeat round's reads of the agent's own MCP sources (heartbeat round
+ * spec §4, step 2). Every call goes through the gateway's MCP bridge with
+ * {@link backgroundClaims}: runAs the agent, no /1on1 lock, no thread and no
+ * person, so the bridge chooses the agent's shared credential for the persona
+ * and never a person's. Only the source's declared `readTools` are offered or
+ * called; anything else is refused before the bridge is touched.
+ *
+ * The bridge this reader is built on has no `onNeedsAuth`, so a source that
+ * needs connecting or re-authorising posts no card: the reader answers
+ * `needs-auth` and the round decides what to tell whom.
+ */
+import type { JobClaims } from "../gateway/api/auth";
+import { oauthHttpServers, type ExternalMcp } from "../gateway/core/external-mcp";
+import { ErrorCode } from "@modelcontextprotocol/sdk/types.js";
+import { connectText, isBridgeFailure, protocolErrorText, reauthText, type CallToolResult, type McpBridge } from "../gateway/core/mcp-bridge";
+import { redactSecrets } from "../gateway/core/status-text";
+import type { WatchedSource } from "./sources";
+
+/** `error`: the source could not be read (a bridge, transport or policy
+ *  failure). `tool-error`: the source answered, but the call failed (bad
+ *  arguments, an upstream tool's own error result): a failed call, not a failed source. */
+export type ReadOutcome =
+  | { kind: "ok"; text: string }
+  | { kind: "needs-auth" }
+  | { kind: "error"; text: string }
+  | { kind: "tool-error"; text: string };
+
+export type SourceTool = { name: string; description?: string; inputSchema?: unknown };
+
+/** A source's read tools; `needsAuth` when the listing was refused because the
+ *  agent's credential needs connecting or re-authorising (then `tools` is empty). */
+export type SourceTools = { tools: SourceTool[]; needsAuth?: true };
+
+export interface SourceReader {
+  tools(personaId: string, src: WatchedSource): Promise<SourceTools>;
+  read(personaId: string, server: string, tool: string, args: unknown, signal?: AbortSignal): Promise<ReadOutcome>;
+}
+
+/** Claims for a background read: the agent itself, outside any thread.
+ *  `lock: null` makes the bridge's card scope "global" (the manager's).
+ *  `tenant: "default"` is a known single-tenant limit: the agent credential
+ *  lookup keys on tenant, so a multi-tenant gateway reads the default one's. */
+export function backgroundClaims(personaId: string, agentId: string): JobClaims {
+  return {
+    tenant: "default",
+    persona: personaId,
+    session: "background:" + agentId,
+    team: "",
+    channel: "",
+    thread: "",
+    initiator: "",
+    scope: "",
+    runAs: "agent",
+    lock: null,
+    // Never signed into a token: the bridge does not read `exp`, and 0 reads
+    // as already expired anywhere that would.
+    exp: 0,
+  };
+}
+
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** The text parts of a tool result, joined; structured content when there is no text. */
+function resultText(r: CallToolResult): string {
+  const parts = (Array.isArray(r.content) ? r.content : [])
+    .filter((c): c is { type: "text"; text: string } => !!c && (c as any).type === "text" && typeof (c as any).text === "string")
+    .map((c) => c.text);
+  if (parts.length) return parts.join("\n");
+  return r.structuredContent !== undefined ? JSON.stringify(r.structuredContent) : "";
+}
+
+/** A reader over `bridge`. A tool is callable only once `tools()` offered the
+ *  source for that persona (the round lists before it reads), so `read()`
+ *  checks against that source's `readTools`. Background reads key their
+ *  pooled upstream session per persona (`background:<personaId>`). */
+export function createSourceReader(
+  bridge: Pick<McpBridge, "list" | "call">,
+  warn: (msg: string) => void = (m) => console.warn(m),
+): SourceReader {
+  const warned = new Set<string>();
+  /** The readTools of the last listing per (persona, server): what read() may call. */
+  const allowed = new Map<string, Set<string>>();
+  const key = (personaId: string, server: string) => `${personaId}\u0000${server}`;
+
+  return {
+    async tools(personaId, src) {
+      allowed.set(key(personaId, src.server), new Set(src.readTools));
+      let listed: Awaited<ReturnType<typeof bridge.list>>;
+      try {
+        listed = await bridge.list(backgroundClaims(personaId, personaId), src.server);
+      } catch (e) {
+        // Not served (BridgeRefused NOT_MOUNTED, e.g. a file config without the
+        // opt-in, or a config change), or a credential/database failure.
+        const w = `${key(personaId, src.server)}\u0000list`;
+        if (!warned.has(w)) {
+          warned.add(w);
+          warn(`[proactive] watch "${src.server}": could not list its tools: ${redactSecrets(errText(e))} — skipped`);
+        }
+        return { tools: [] };
+      }
+      if (listed.unavailable) {
+        const why = listed.instructions;
+        return why === reauthText(src.server) || why === connectText(src.server) ? { tools: [], needsAuth: true } : { tools: [] };
+      }
+      const byName = new Map<string, SourceTool>();
+      for (const t of listed.tools) {
+        const name = (t as { name?: unknown })?.name;
+        if (typeof name !== "string") continue;
+        const { description, inputSchema } = t as { description?: unknown; inputSchema?: unknown };
+        byName.set(name, { name, ...(typeof description === "string" ? { description } : {}), ...(inputSchema !== undefined ? { inputSchema } : {}) });
+      }
+      const out: SourceTool[] = [];
+      for (const name of src.readTools) {
+        const tool = byName.get(name);
+        if (tool) {
+          out.push(tool);
+          continue;
+        }
+        const w = `${key(personaId, src.server)}\u0000${name}`;
+        if (warned.has(w)) continue;
+        warned.add(w);
+        warn(`[proactive] watch "${src.server}": readTools names "${name}", which the server does not list — skipped`);
+      }
+      return { tools: out };
+    },
+
+    async read(personaId, server, tool, args, signal) {
+      if (!allowed.get(key(personaId, server))?.has(tool)) {
+        return { kind: "error", text: `${tool} is not a read tool of ${server}` };
+      }
+      let r: CallToolResult;
+      try {
+        r = await bridge.call(backgroundClaims(personaId, personaId), server, tool, args, signal);
+      } catch (e) {
+        return { kind: "error", text: redactSecrets(errText(e)) };
+      }
+      const text = resultText(r);
+      if (text === reauthText(server) || text === connectText(server)) return { kind: "needs-auth" };
+      if (r.isError) {
+        // The bridge's own failure is the source's; anything else (an upstream
+        // tool's error result, or the upstream rejecting the arguments) is this call's.
+        const ours = isBridgeFailure(r) && text !== protocolErrorText(server, ErrorCode.InvalidParams);
+        return { kind: ours ? "error" : "tool-error", text: redactSecrets(text) };
+      }
+      return { kind: "ok", text: redactSecrets(text) };
+    },
+  };
+}
+
+/** Watched names a session would mount but the bridge does not serve (in mono
+ *  a file-configured server is bridged only with the operator's opt-in). */
+export function unservedWatches(watch: readonly string[], session: ExternalMcp, bridged: ExternalMcp): string[] {
+  const served = oauthHttpServers(bridged.servers);
+  return [...new Set(watch)].filter((n) => Object.hasOwn(session.servers, n) && !Object.hasOwn(served, n));
+}
+
+/** Mono: watched servers the bridge serves with no config headers, so reading
+ *  them as the agent needs an OAuth connection, which on mono lives in the
+ *  agent CLI's own store and is never used by the heartbeat. */
+export function oauthOnlyWatches(watch: readonly string[], bridged: ExternalMcp): string[] {
+  const served = oauthHttpServers(bridged.servers);
+  return [...new Set(watch)].filter((n) => Object.hasOwn(served, n) && Object.keys(served[n]!.headers ?? {}).length === 0);
+}

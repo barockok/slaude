@@ -12,6 +12,7 @@
  */
 import * as Runs from "../db/background-runs";
 import { m as metric } from "../metrics";
+import { settleWakeRun } from "../proactive/wake-settle";
 import { SKILL_CHECK, SKILL_CHECK_STALE_MS } from "./skill-check";
 
 /** A non-skill-check run open longer than this lost its finish. */
@@ -29,6 +30,12 @@ export async function sweepStaleRuns(now: Date = new Date()): Promise<number> {
     const labels = { agent: r.agentId, pass: r.pass };
     metric.backgroundRunsTotal.inc({ ...labels, outcome: "error" });
     if (r.costUsd > 0) metric.backgroundCostUsdTotal.inc(labels, r.costUsd);
+    // A channel wake that lost its finish: its row's open run closes, and the channel counts a failure.
+    if (r.pass === "heartbeat-wake" && r.scope.startsWith("channel:")) {
+      await settleWakeRun({ agentId: r.agentId, runId: r.id, scope: r.scope, outcome: "error", costUsd: r.costUsd, now: t }).catch((e) =>
+        console.error(`[background] agent=${r.agentId} pass=${r.pass}: could not settle the lost wake: ${e instanceof Error ? e.message : String(e)}`),
+      );
+    }
     ended.set(r.pass, (ended.get(r.pass) ?? 0) + 1);
   }
   let n = 0;

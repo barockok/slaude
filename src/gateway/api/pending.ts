@@ -9,6 +9,9 @@
  * a missed publish only costs one interval, never the decision.
  */
 import type { PendingSource } from "./pending-source";
+import * as PendingGates from "../../db/pending-gates";
+import { auditGateRow } from "../../audit/emit";
+import { defaultGateBus } from "../../queue/gate-bus";
 import { json, notFound } from "./http";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -87,4 +90,27 @@ export async function handlePending(
   } finally {
     void unsub?.().catch(() => {});
   }
+}
+
+/**
+ * DELETE /v1/pending/:id: the node stopped waiting on a poll row of its own
+ * session (an owner guardrail's card past the hook's deadline, or the turn
+ * stopped). Only a pending `perm` row the node itself opened (`waiter:
+ * "poll"`) and only for the token's session; anything else answers like an
+ * unknown id. A late click then finds the row cancelled.
+ */
+export async function handlePendingCancel(id: string, session: string): Promise<Response> {
+  const row = await PendingGates.get(id);
+  if (!row || row.sessionId !== session || row.kind !== "perm" || (row.payload as { waiter?: unknown })?.waiter !== "poll") return notFound();
+  if (row.status !== "pending") return json(200, { status: row.status });
+  const settled = await PendingGates.resolve(id, "cancelled", "system");
+  if (settled) {
+    auditGateRow(settled, { verb: "cancelled", actorKind: "system", actorId: "system", decision: "cancelled", summary: `${String(settled.payload.toolName ?? "tool")}: cancelled (the node stopped waiting)` });
+    try {
+      await defaultGateBus()?.publish(id);
+    } catch {
+      /* the poll fallback covers a missed publish */
+    }
+  }
+  return json(200, { status: settled?.status ?? (await PendingGates.get(id))?.status ?? "cancelled" });
 }

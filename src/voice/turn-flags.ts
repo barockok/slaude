@@ -45,6 +45,11 @@ export function voiceCallActive(sessionId: string): boolean {
   return liveCalls.has(sessionId) || voiceTurns.active(sessionId);
 }
 
+/** The in-process voice server, and every tool it mounts (the contract a wake
+ *  session's denied list is built from; createVoiceMcp must mount no others). */
+export const VOICE_MCP_NAME = "slaude_voice";
+export const VOICE_SERVER_TOOLS: readonly string[] = ["voice_start", "voice_say", "voice_context", "voice_stop"];
+
 export const VOICE_QUIET_TOOLS: ReadonlySet<string> = new Set(["reply", "edit", "react", "unreact", "upload", "typing"]);
 
 /** Tools on the deprecated `slaude_slack` server that post into Slack. */

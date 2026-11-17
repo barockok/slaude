@@ -139,13 +139,16 @@ export interface SkillRetiredPayload {
   lastUsedAt: number | null;
 }
 
-/** Record that the skill review retired a skill (an already-settled row). */
-export async function recordSkillRetired(a: { agentId: string; payload: SkillRetiredPayload; at: number }): Promise<string> {
+/**
+ * Record a retired skill (an already-settled row). `decidedBy` is who retired
+ * it: the skill review (default) or the operator who did it from the console.
+ */
+export async function recordSkillRetired(a: { agentId: string; payload: SkillRetiredPayload; at: number; decidedBy?: string }): Promise<string> {
   const id = randomUUID();
   await db.run(
     `INSERT INTO proposals (id, agent_id, kind, to_kind, to_user, scope, payload, created_at, expires_at, status, decided_by, decided_at)
      VALUES (?, ?, ?, 'manager', NULL, 'agent', ?, ?, ?, 'approved', ?, ?)`,
-    [id, a.agentId, SKILL_RETIRED_KIND, JSON.stringify(a.payload), a.at, a.at, SKILL_REVIEW_ACTOR, a.at],
+    [id, a.agentId, SKILL_RETIRED_KIND, JSON.stringify(a.payload), a.at, a.at, a.decidedBy ?? SKILL_REVIEW_ACTOR, a.at],
   );
   return id;
 }
@@ -213,4 +216,13 @@ export async function stampApp(ids: readonly string[], app: { apiAppId?: string;
     `UPDATE proposals SET slack_app_id = ?, slack_team_id = ? WHERE id IN (${marks}) AND slack_app_id IS NULL AND slack_team_id IS NULL`,
     [app.apiAppId ?? null, app.teamId ?? null, ...ids],
   );
+}
+
+/** Skill removal proposals and skill retirements across agents, newest first (the console's skill pages). */
+export async function listSkillProposals(limit = 500): Promise<Proposal[]> {
+  const rows = await db.query<Row>(
+    "SELECT * FROM proposals WHERE kind IN ('skill-removal', ?) ORDER BY created_at DESC LIMIT ?",
+    [SKILL_RETIRED_KIND, limit],
+  );
+  return rows.map(toProposal);
 }

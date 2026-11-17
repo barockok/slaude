@@ -26,6 +26,9 @@ reads it.
 > mounts none. Servers resolved by the gateway (the reply and approval tools,
 > `slaude_session`, gateway-side MCP servers) are not affected.
 
+A plugin's HTTP MCP server does not need this file: see
+[Plugins on nodes](plugins.md).
+
 `mono` is unchanged: it reads no manifest and mounts installed plugin MCP
 servers as before. The manifest applies only to `SLAUDE_ROLE=node`.
 

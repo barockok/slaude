@@ -53,7 +53,7 @@ export async function handleMcpx(
   }
   if (!body || typeof body !== "object" || Array.isArray(body)) return json(400, { error: "body must be a JSON object" });
 
-  metric.v1ToolCallsTotal.inc({ server: "mcpx", tool: op });
+  metric.v1ToolCallsTotal.inc({ server: "mcpx", tool: op, alias: "false" });
   try {
     if (op === "list") return json(200, await bridge.list(claims, server, req.signal));
     const { name, arguments: args } = body as { name?: unknown; arguments?: unknown };

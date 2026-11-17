@@ -91,7 +91,7 @@ main() {
 
   say "installed. slaude -> $BIN_DIR/slaude"
   case ":$PATH:" in *":$BIN_DIR:"*) ;; *) say "add to PATH:  export PATH=\"$BIN_DIR:\$PATH\"";; esac
-  say "next: set ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL, create \$SLAUDE_HOME/SOUL.md, then \`slaude server\`"
+  say "next: set ANTHROPIC_API_KEY + ANTHROPIC_BASE_URL, a starter \$SLAUDE_HOME/agent.yaml is created on first run (set its access.manager), then \`slaude server\`"
 }
 
 main "$@"

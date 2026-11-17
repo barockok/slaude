@@ -15,7 +15,7 @@ export interface RemoteModeInfo {
   userId: string;
   dir: string;
   /** Absent for a pre-environment tailcat claim. */
-  env?: { name: string; kind: string; trust: "user-machine" | "provisioned" };
+  env?: { name: string; kind: string; trust: "user-machine" | "provisioned"; shared?: boolean };
 }
 
 export function sessionModeBlock(
@@ -39,7 +39,9 @@ function lockBlock(lock: OneOnOneLockRow | null): string {
 }
 
 function remoteBlock(r: RemoteModeInfo): string {
-  const where = r.env?.trust === "provisioned"
+  const where = r.env?.shared
+    ? `on a SHARED machine, environment \`${r.env.name}\` (${r.env.kind}), in \`${r.dir}\`. It is not disposable and other people use it, so change only what the task needs`
+    : r.env?.trust === "provisioned"
     ? `in a disposable sandbox environment \`${r.env.name}\` (${r.env.kind}), in \`${r.dir}\``
     : `on <@${r.userId}>'s own machine${r.env ? ` (environment \`${r.env.name}\`, ${r.env.kind})` : ""}, in \`${r.dir}\``;
   return renderRuntimeFile("modules/remote.md", { WHERE: where });

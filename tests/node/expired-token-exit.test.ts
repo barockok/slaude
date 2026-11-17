@@ -12,6 +12,10 @@
  */
 import { afterAll, beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 
+// Set at load (before the imports below read them) and restored in afterAll:
+// bun runs every test file in one process, so a leaked value reaches later files.
+const ENV_KEYS = ["SLAUDE_BRAIN_DISABLED", "SLAUDE_AUTO_EVOLVE", "SLAUDE_IDLE_MINUTES"] as const;
+const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 process.env.SLAUDE_BRAIN_DISABLED = "1";
 process.env.SLAUDE_AUTO_EVOLVE = "0";
 process.env.SLAUDE_IDLE_MINUTES = "0";
@@ -113,6 +117,10 @@ afterAll(() => {
   server?.stop(true);
   delete process.env.SLAUDE_NODE_TOKEN;
   delete process.env.SLAUDE_JOB_SECRET;
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
 });
 
 /** A node-side session: a gateway row, a manager on the REST store, one turn

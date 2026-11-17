@@ -5,9 +5,9 @@ import { preflight } from "../preflight";
 import type { HelperTransport } from "../transport";
 import type { EnvironmentKind, StoredEnv } from "./types";
 
-const HOST_RE = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))*\.?$/;
-const USER_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,31}$/;
-const FP_RE = /^SHA256:[A-Za-z0-9+/]{43}$/;
+export const HOST_RE = /^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))*\.?$/;
+export const USER_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,31}$/;
+export const FP_RE = /^SHA256:[A-Za-z0-9+/]{43}$/;
 
 type Resolver = (host: string) => Promise<string[]>;
 const systemResolver: Resolver = async (h) => (await dnsLookup(h, { all: true, verbatim: true })).map((a) => a.address);

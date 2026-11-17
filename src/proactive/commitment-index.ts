@@ -1,6 +1,6 @@
 /**
  * Keep the commitment index (src/db/commitments.ts) in step with commitment
- * pages (spec §10.1). Called after a page write has succeeded, by kb_memoize
+ * pages (spec §10.1). Called after a page write has succeeded, by memory_save
  * and by a background pass's memoize. The page is the truth: an index failure
  * is logged and never fails the write, and a later write of the same page
  * re-indexes it.

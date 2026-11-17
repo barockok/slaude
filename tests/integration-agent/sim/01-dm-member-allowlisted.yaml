@@ -1,0 +1,13 @@
+# The soul DM allowlist admits U0ALICE in a DM.
+soul:
+  manager: U0MGR
+  backup: U0BACKUP
+  approvers: [U0APP]
+  trusted: [C0TEAM]
+  allowed: [C0PUB]
+  dmAllowed: [U0ALICE]
+layer: dm
+as: member
+steps:
+  - send: { text: "allowlisted member DM" }
+  - expect_reply: { contains: "ack: done" }

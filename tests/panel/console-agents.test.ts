@@ -1,0 +1,405 @@
+/**
+ * Console API: agents and grants. Reads for any operator, grant changes for a
+ * superadmin only, each change audited and visible to roleOf at once.
+ */
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createPanelApi } from "../../src/gateway/panel/api";
+import { __resetRoleCache } from "../../src/gateway/panel/auth/roles";
+import { mintSession, AT_COOKIE } from "../../src/gateway/panel/auth/session";
+import { db } from "../../src/db/schema";
+import * as AgentGrants from "../../src/db/agent-grants";
+import * as AuditEvents from "../../src/db/audit-events";
+import { flushAudits } from "../../src/audit/emit";
+import { SoulDataSchema } from "../../src/soul/data";
+import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
+import { __resetPersonaRegistry, setManagedDefaultSoul, setPersonaRegistry, type Persona, type PersonaRegistry } from "../../src/persona/registry";
+import { __setGrantsReader, roleOf } from "../../src/access/role";
+import type { AgentDetailResponse, AgentsResponse, AllGrantsResponse, ConsoleGrantView, CreateGrantResponse } from "../../src/gateway/panel/api-types";
+
+const SECRET = "t".repeat(32);
+const cookie = (email: string) => `${AT_COOKIE}=${mintSession({ sub: "s", email }, "at", { secret: SECRET })}`;
+const superadmin = cookie("lead@example.com");
+const operator = cookie("alice@example.com");
+const unlisted = cookie("eve@example.com");
+
+function registryWith(personas: Array<{ name: string; soulJson?: unknown; soulMd?: string }>): PersonaRegistry {
+  const full = personas.map((p) => ({ slackUserId: `UP${p.name.toUpperCase()}`, config: { slackUserId: "UX", name: p.name }, outClient: null, ...p }) as Persona);
+  return {
+    lookupByUserId: () => null,
+    lookupByName: (n) => full.find((p) => p.name === n) ?? null,
+    list: () => full,
+    isMultiPersonaMode: () => full.length > 0,
+    isManaged: () => true,
+    tombstonedPersonaFor: () => null,
+    defaultPersona: () => ({ model: "m-default", mcp: null, runsOn: null }),
+  };
+}
+
+const mk = (o: { registry?: unknown; role?: "gateway" | "mono" } = {}) =>
+  createPanelApi({
+    registry: (o.registry === undefined ? { liveNodesPerLabel: async () => new Map([["default", 2]]) } : o.registry) as any,
+    role: o.role ?? "gateway",
+    pubsub: null, panelLock: null, chat: async () => {},
+  });
+
+const call = async (method: string, path: string, who?: string, body?: unknown, csrf = true) => {
+  const res = (await mk().fetch(
+    new Request(`https://panel.example.com${path}`, {
+      method,
+      headers: {
+        ...(who ? { cookie: who } : {}),
+        ...(csrf && method !== "GET" ? { "x-panel-csrf": "1" } : {}),
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
+    }),
+  ))!;
+  const text = await res.text();
+  return { status: res.status, text, body: text ? JSON.parse(text) : null };
+};
+
+const auditRows = async (action: string) => {
+  await flushAudits();
+  return (await AuditEvents.list({ action })).items;
+};
+
+const saved: Record<string, string | undefined> = {};
+const ENV = ["SLAUDE_PANEL_SECRET", "SLAUDE_PANEL_SUPERADMIN", "SLAUDE_PANEL_OPERATORS"];
+beforeEach(async () => {
+  for (const k of ENV) saved[k] = process.env[k];
+  process.env.SLAUDE_PANEL_SECRET = SECRET;
+  process.env.SLAUDE_PANEL_SUPERADMIN = "lead@example.com";
+  process.env.SLAUDE_PANEL_OPERATORS = "alice@example.com";
+  __resetRoleCache();
+  await flushAudits();
+  await db.run("DELETE FROM agent_grants");
+  await db.run("DELETE FROM audit_events");
+  // Shared databases (real Postgres in CI) keep cron rows from earlier test
+  // files; each would count as a mandate of the persona it names.
+  await db.run("DELETE FROM cron_jobs");
+  setSoulData(SoulDataSchema.parse({ manager: { userId: "UMGR" }, mandate: "Help the team." }));
+  setPersonaRegistry(registryWith([
+    // Mandates are read from the soul text (as the scheduler reads them); soul_json decides access.
+    { name: "scout", soulJson: { manager: { userId: "USCOUT" }, mandate: "Scout things.", trustedChannels: ["CSCOUT"] }, soulMd: "# Scout\n\n## Mandate\nScout things.\n" },
+  ]));
+  // The default soul text, never this machine's own SOUL.md.
+  setManagedDefaultSoul("# Default\n");
+  __setGrantsReader(null);
+});
+afterEach(async () => {
+  await flushAudits();
+  __setGrantsReader(null);
+  __resetPersonaRegistry();
+  __resetSoulDataMemo();
+  setManagedDefaultSoul(null);
+  for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  __resetRoleCache();
+  await db.run("DELETE FROM agent_grants");
+});
+
+describe("authentication", () => {
+  test("every agents route refuses a request without a session", async () => {
+    expect((await call("GET", "/panel/api/agents")).status).toBe(401);
+    expect((await call("GET", "/panel/api/agents/scout")).status).toBe(401);
+    expect((await call("POST", "/panel/api/agents/scout/grants", undefined, { subjectKind: "user", subjectId: "UNEW", role: "member" })).status).toBe(401);
+    expect((await call("DELETE", "/panel/api/agents/scout/grants/x")).status).toBe(401);
+    expect((await call("GET", "/panel/api/grants")).status).toBe(401);
+  });
+
+  test("a signed-in identity outside the allowlist is refused", async () => {
+    expect((await call("GET", "/panel/api/agents", unlisted)).status).toBe(403);
+  });
+});
+
+describe("GET /panel/api/agents", () => {
+  test("lists the default persona first, then the registry's, with counts", async () => {
+    await AgentGrants.create({ persona: "scout", subjectKind: "user", subjectId: "UONE", role: "member", createdBy: "lead@example.com" });
+    await AgentGrants.create({ persona: "scout", subjectKind: "user", subjectId: "UOLD", role: "member", createdBy: "lead@example.com", expiresAt: 1 }, 0);
+    const r = await call("GET", "/panel/api/agents", operator);
+    expect(r.status).toBe(200);
+    const { agents } = r.body as AgentsResponse;
+    expect(agents.map((a) => a.name)).toEqual(["default", "scout"]);
+    expect(agents[0]).toEqual({ name: "default", slackUserId: null, model: "m-default", runsOn: "default", live: true, mandateCount: 1, grantCount: 0 });
+    expect(agents[1]).toMatchObject({ name: "scout", slackUserId: "UPSCOUT", runsOn: "default", live: true, mandateCount: 1, grantCount: 1 });
+  });
+
+  test("live is null without a node registry and true in mono", async () => {
+    const none = await mk({ registry: null }).fetch(new Request("https://panel.example.com/panel/api/agents", { headers: { cookie: operator } }));
+    expect(((await none!.json()) as AgentsResponse).agents[0]!.live).toBeNull();
+    const mono = await mk({ registry: null, role: "mono" }).fetch(new Request("https://panel.example.com/panel/api/agents", { headers: { cookie: operator } }));
+    expect(((await mono!.json()) as AgentsResponse).agents[0]!.live).toBe(true);
+  });
+});
+
+describe("GET /panel/api/agents/:name", () => {
+  test("mandates and effective grants, each with its source", async () => {
+    const stored = await AgentGrants.create({ persona: "scout", subjectKind: "user", subjectId: "UONE", role: "approver", createdBy: "lead@example.com", note: "on call" });
+    const r = await call("GET", "/panel/api/agents/scout", operator);
+    expect(r.status).toBe(200);
+    const d = r.body as AgentDetailResponse;
+    expect(d.mandates.map((m) => m.id)).toEqual(["global"]);
+    expect(d.grants).toContainEqual({ source: "soul", subjectKind: "user", subjectId: "USCOUT", role: "manager", deny: false, dmOnly: false, channelId: null });
+    expect(d.grants).toContainEqual({ source: "soul", subjectKind: "channel", subjectId: "CSCOUT", role: "member", deny: false, dmOnly: false, channelId: null });
+    expect(d.grants.at(-1)).toEqual({
+      source: "console", id: stored.id, subjectKind: "user", subjectId: "UONE", role: "approver", deny: false, dmOnly: false,
+      createdBy: "lead@example.com", createdAt: stored.createdAt, expiresAt: null, note: "on call",
+    });
+    expect(d.grantCount).toBe(1);
+    const g = await call("GET", "/panel/api/agents/scout/grants", operator);
+    expect(g.body.grants).toEqual(d.grants);
+  });
+
+  test("grant subjects carry display names when they resolve; ids stay, unresolved ones keep only the id", async () => {
+    await AgentGrants.create({ persona: "scout", subjectKind: "user", subjectId: "UONE", role: "approver", createdBy: "lead@example.com" });
+    const asked: Array<{ id: string; persona?: string | null }> = [];
+    const names = {
+      userName: async (id: string, ctx?: { persona?: string | null }) => (asked.push({ id, persona: ctx?.persona }), id === "UONE" ? "Jane Doe" : null),
+      channelLabel: async (id: string) => (id === "CSCOUT" ? "#scouting" : null),
+      teamName: async () => null,
+    };
+    const api = createPanelApi({ registry: null, role: "mono", pubsub: null, panelLock: null, chat: async () => {}, names });
+    const res = await api.fetch(new Request("https://panel.example.com/panel/api/agents/scout", { headers: { cookie: operator } }));
+    const d = (await res!.json()) as AgentDetailResponse;
+    expect(d.grants.find((g) => g.subjectId === "UONE")?.subjectLabel).toBe("Jane Doe");
+    expect(d.grants.find((g) => g.subjectId === "CSCOUT")?.subjectLabel).toBe("#scouting");
+    expect(d.grants.find((g) => g.subjectId === "USCOUT")?.subjectLabel).toBeUndefined();
+    // Looked up through the agent's own app.
+    expect(asked.every((a) => a.persona === "scout")).toBe(true);
+    const all = await api.fetch(new Request("https://panel.example.com/panel/api/grants", { headers: { cookie: operator } }));
+    expect(((await all!.json()) as { grants: Array<{ subjectId: string; subjectLabel?: string }> }).grants.find((g) => g.subjectId === "UONE")?.subjectLabel).toBe("Jane Doe");
+  });
+
+  test("an unknown agent is a 404; a malformed name a 422", async () => {
+    expect((await call("GET", "/panel/api/agents/ghost", operator)).status).toBe(404);
+    expect((await call("GET", "/panel/api/agents/ghost/grants", operator)).status).toBe(404);
+    expect((await call("GET", "/panel/api/agents/Bad_Name", operator)).status).toBe(422);
+  });
+});
+
+describe("POST /panel/api/agents/:name/grants", () => {
+  const body = { subjectKind: "user", subjectId: "UNEW", role: "member", note: "pilot" };
+
+  test("an operator is refused and nothing is stored", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", operator, body);
+    expect(r.status).toBe(403);
+    expect(r.body.required).toBe("superadmin");
+    expect(await AgentGrants.listAll()).toEqual([]);
+    expect(await auditRows("grant.created")).toEqual([]);
+  });
+
+  test("the anti-CSRF header is required", async () => {
+    expect((await call("POST", "/panel/api/agents/scout/grants", superadmin, body, false)).status).toBe(403);
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
+  test("a superadmin stores it, it is audited, and roleOf sees it at once", async () => {
+    // Prime the in-process grant cache with the pre-grant answer.
+    expect(await roleOf("scout", "UNEW")).toBeNull();
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, body);
+    expect(r.status).toBe(201);
+    const grant = (r.body as CreateGrantResponse).grant;
+    expect(grant).toMatchObject({ source: "console", subjectKind: "user", subjectId: "UNEW", role: "member", createdBy: "lead@example.com", note: "pilot", expiresAt: null });
+    expect(await roleOf("scout", "UNEW")).toBe("member");
+    const [row] = await auditRows("grant.created");
+    expect(row).toMatchObject({
+      actorKind: "operator", actorId: "lead@example.com", persona: "scout", targetKind: "grant", targetId: grant.id,
+    });
+    expect(row!.details).toMatchObject({ grantId: grant.id, subjectKind: "user", subjectId: "UNEW", role: "member", deny: false, note: "pilot" });
+  });
+
+  test("a non-Slack subject is refused with the access flip message and stores nothing", async () => {
+    for (const subjectId of ["email:a@example.com", "user:abc123"]) {
+      const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { ...body, subjectId });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toContain("not supported until the access flip");
+    }
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
+  test("a Slack subject reference is accepted instead of a kind and id, and stored with its reference", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "slack:user:T0EXAMPLE/U0EXAMPLE", role: "member" });
+    expect(r.status).toBe(201);
+    expect((r.body as CreateGrantResponse).grant).toMatchObject({ subjectKind: "user", subjectId: "U0EXAMPLE" });
+    const [row] = await AgentGrants.listAll();
+    expect(row).toMatchObject({ subjectRef: "slack:user:T0EXAMPLE/U0EXAMPLE" });
+  });
+
+  test("an email or user reference is refused with the access flip message", async () => {
+    for (const subject of ["email:a@example.com", "user:abc123"]) {
+      const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject, role: "member" });
+      expect(r.status).toBe(400);
+      expect(r.body.error).toContain("not supported until the access flip");
+    }
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
+  test("neither a subject nor a kind and id is a request error", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { role: "member" });
+    expect(r.status).toBe(400);
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
+  test("zod validation: missing and unknown fields, bad enums, bad types", async () => {
+    const bad = async (b: unknown) => {
+      const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, b);
+      expect(r.status).toBe(400);
+      return r.body.error as string;
+    };
+    expect(await bad({ subjectKind: "user", subjectId: "UNEW" })).toContain("role");
+    expect(await bad({ ...body, role: "owner" })).toContain("role");
+    expect(await bad({ ...body, subjectKind: "group" })).toContain("subjectKind");
+    expect(await bad({ ...body, subjectId: "" })).toContain("subjectId");
+    expect(await bad({ ...body, deny: "yes" })).toContain("deny");
+    expect(await bad({ ...body, extra: 1 })).toContain("extra");
+    expect(await bad({ ...body, expiresAt: Date.now() - 1000 })).toContain("expiresAt");
+    expect(await bad("{not json")).toContain("malformed");
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
+  test("the repository's combination rules come back as a clear 400", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subjectKind: "channel", subjectId: "CNEW", role: "manager" });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe("a channel subject can only be granted member, not manager");
+    const d = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subjectKind: "workspace", subjectId: "TTEAM", role: "member", deny: true });
+    expect(d.status).toBe(400);
+    expect(d.body.error).toContain("deny applies to user subjects only");
+  });
+
+  test("a subject id of the wrong shape for its kind is a clear 400", async () => {
+    const user = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subjectKind: "user", subjectId: "alice", role: "member" });
+    expect(user.status).toBe(400);
+    expect(user.body.error).toContain("a user subject_id must be a Slack user id");
+    const chan = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subjectKind: "channel", subjectId: "UNEW", role: "member" });
+    expect(chan.status).toBe(400);
+    expect(chan.body.error).toContain("Slack channel id");
+    const dm = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subjectKind: "channel", subjectId: "DDIRECT", role: "member" });
+    expect(dm.status).toBe(400);
+    expect(dm.body.error).toContain("user member grant with dm_only");
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
+  test("an unknown persona is a 404", async () => {
+    expect((await call("POST", "/panel/api/agents/ghost/grants", superadmin, body)).status).toBe(404);
+  });
+});
+
+describe("DELETE /panel/api/agents/:name/grants/:id", () => {
+  const seed = () => AgentGrants.create({ persona: "scout", subjectKind: "user", subjectId: "UNEW", role: "manager", createdBy: "lead@example.com" });
+
+  test("an operator is refused and the grant stays", async () => {
+    const g = await seed();
+    expect((await call("DELETE", `/panel/api/agents/scout/grants/${g.id}`, operator)).status).toBe(403);
+    expect((await AgentGrants.listAll()).map((x) => x.id)).toEqual([g.id]);
+    expect(await auditRows("grant.revoked")).toEqual([]);
+  });
+
+  test("a superadmin revokes it, it is audited, and roleOf drops it at once", async () => {
+    const g = await seed();
+    expect(await roleOf("scout", "UNEW")).toBe("manager");
+    const r = await call("DELETE", `/panel/api/agents/scout/grants/${g.id}`, superadmin);
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ ok: true });
+    expect(await roleOf("scout", "UNEW")).toBeNull();
+    const [row] = await auditRows("grant.revoked");
+    expect(row).toMatchObject({ actorKind: "operator", actorId: "lead@example.com", persona: "scout", targetKind: "grant", targetId: g.id });
+    expect(row!.details).toMatchObject({ grantId: g.id, subjectId: "UNEW", role: "manager" });
+  });
+
+  test("an unknown id, or another agent's grant, is a 404 and changes nothing", async () => {
+    const other = await AgentGrants.create({ persona: "default", subjectKind: "user", subjectId: "UNEW", role: "member", createdBy: "lead@example.com" });
+    expect((await call("DELETE", "/panel/api/agents/scout/grants/nope", superadmin)).status).toBe(404);
+    expect((await call("DELETE", `/panel/api/agents/scout/grants/${other.id}`, superadmin)).status).toBe(404);
+    expect((await AgentGrants.listAll()).map((x: ConsoleGrantView | AgentGrants.AgentGrantRow) => x.id)).toEqual([other.id]);
+  });
+});
+
+describe("GET /panel/api/grants", () => {
+  test("an operator gets every unexpired console grant across agents, with its persona", async () => {
+    const now = Date.now();
+    const a = await AgentGrants.create({ persona: "scout", subjectKind: "user", subjectId: "UNEW", role: "approver", createdBy: "lead@example.com", note: "cover" });
+    const b = await AgentGrants.create({ persona: "default", subjectKind: "channel", subjectId: "CTEAM", role: "member", createdBy: "lead@example.com", expiresAt: now + 60_000 });
+    // Expired: stored, but not listed.
+    await AgentGrants.create({ persona: "scout", subjectKind: "user", subjectId: "UOLD", role: "member", createdBy: "lead@example.com", expiresAt: now - 1_000 }, now - 60_000);
+    const r = await call("GET", "/panel/api/grants", operator);
+    expect(r.status).toBe(200);
+    const grants = (r.body as AllGrantsResponse).grants;
+    expect(grants.map((g) => g.id).sort()).toEqual([a.id, b.id].sort());
+    expect(grants.find((g) => g.id === a.id)).toEqual({
+      source: "console", id: a.id, persona: "scout", subjectKind: "user", subjectId: "UNEW", role: "approver",
+      deny: false, dmOnly: false, createdBy: "lead@example.com", createdAt: a.createdAt, expiresAt: null, note: "cover",
+    });
+    expect(grants.find((g) => g.id === b.id)).toMatchObject({ persona: "default", subjectKind: "channel", expiresAt: now + 60_000 });
+  });
+
+  test("an empty store is an empty list; only GET is allowed", async () => {
+    expect((await call("GET", "/panel/api/grants", operator)).body).toEqual({ grants: [] });
+    expect((await call("POST", "/panel/api/grants", superadmin, {})).status).toBe(405);
+  });
+});
+
+describe("email and user subjects, only under SLAUDE_ACCESS_SOURCE=internal (slice C task 22)", () => {
+  let savedSource: string | undefined;
+  beforeEach(() => {
+    savedSource = process.env.SLAUDE_ACCESS_SOURCE;
+    process.env.SLAUDE_ACCESS_SOURCE = "internal";
+  });
+  afterEach(() => {
+    if (savedSource === undefined) delete process.env.SLAUDE_ACCESS_SOURCE;
+    else process.env.SLAUDE_ACCESS_SOURCE = savedSource;
+  });
+
+  test("a superadmin stores an email grant by reference; it is audited and shows its state", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "email:Pending@Example.com", role: "manager", note: "on call" });
+    expect(r.status).toBe(201);
+    const grant = (r.body as CreateGrantResponse).grant;
+    expect(grant).toMatchObject({ source: "console", subjectKind: "user", subjectId: "email:pending@example.com", role: "manager", state: "pending: no verified email binding" });
+    const [row] = await AgentGrants.listAll();
+    expect(row).toMatchObject({ subjectRef: "email:pending@example.com" });
+    expect(row!.subjectUserId).toBeTruthy();
+    const [audit] = await auditRows("grant.created");
+    expect(audit).toMatchObject({ actorKind: "operator", actorId: "lead@example.com", persona: "scout", targetKind: "grant", targetId: grant.id });
+    expect(audit!.details).toMatchObject({ subjectKind: "user", subjectId: "email:pending@example.com", role: "manager" });
+  });
+
+  test("the same superadmin guard: an operator is refused and nothing is stored", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", operator, { subject: "email:a@example.com", role: "member" });
+    expect(r.status).toBe(403);
+    expect(await AgentGrants.listAll()).toEqual([]);
+    expect(await auditRows("grant.created")).toEqual([]);
+  });
+
+  test("the state follows the person: no verified email, Slack not verified, active", async () => {
+    const Domain = await import("../../src/db/domain");
+    const list = async () => ((await call("GET", "/panel/api/agents/scout/grants", operator)).body as { grants: ConsoleGrantView[] }).grants.find((g) => g.source === "console")!;
+    await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "email:boss@example.com", role: "manager" });
+    expect((await list()).state).toBe("pending: no verified email binding");
+    const b = await Domain.findBinding({ service: "email", kind: "address", workspace: "", value: "boss@example.com" });
+    await Domain.adoptBinding({ service: "email", kind: "address", workspace: "", value: "boss@example.com", toUserId: b!.user_id, state: "verified" });
+    expect((await list()).state).toBe("pending: Slack binding not verified");
+    await Domain.ensureBinding({ service: "slack", kind: "user", workspace: "T0EXAMPLE", value: "U0BOSS", state: "verified", source: "test", userId: b!.user_id });
+    expect((await list()).state).toBe("active");
+    // The cross-agent list carries it too.
+    expect(((await call("GET", "/panel/api/grants", operator)).body as AllGrantsResponse).grants[0]!.state).toBe("active");
+  });
+
+  test("a Slack grant has no state", async () => {
+    await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "slack:user:T0EXAMPLE/U0EXAMPLE", role: "member" });
+    const g = ((await call("GET", "/panel/api/agents/scout/grants", operator)).body as { grants: ConsoleGrantView[] }).grants.find((x) => x.source === "console")!;
+    expect(g.state).toBeUndefined();
+  });
+
+  test("a user reference to no record is a clear 400", async () => {
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "user:no-such", role: "member" });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toContain("names no record");
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+
+  test("under shadow the same request is refused with the access flip message", async () => {
+    process.env.SLAUDE_ACCESS_SOURCE = "shadow";
+    const r = await call("POST", "/panel/api/agents/scout/grants", superadmin, { subject: "email:a@example.com", role: "member" });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toContain("not supported until the access flip");
+    expect(await AgentGrants.listAll()).toEqual([]);
+  });
+});

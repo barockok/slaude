@@ -3,6 +3,11 @@ import { db } from "../../src/db/schema";
 import { __resetMasterKeyCache } from "../../src/db/crypto";
 import * as P from "../../src/db/personas";
 import type { DesiredPersona } from "../../src/persona/effective";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { paths } from "../../src/config/home";
+import * as SkillVersions from "../../src/db/skill-versions";
+import { reconcileSkillVersions } from "../../src/skills/versions";
 
 // Postgres-only tables: run this file with SLAUDE_DB=pg (PGLite).
 const T = "default";
@@ -16,17 +21,71 @@ beforeEach(async () => {
   process.env.SLAUDE_MASTER_KEY = Buffer.alloc(32, 7).toString("base64");
   __resetMasterKeyCache();
   if (process.env.SLAUDE_DB !== "pg") return;
-  for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
+  for (const t of ["persona_overrides", "persona_sync_state", "personas", "skill_versions"]) await db.run(`DELETE FROM ${t}`);
 });
 
 // The persona tables are shared state: leftover rows make every later file in
 // the run see a populated personas table (and fail closed on a missing default).
 afterAll(async () => {
   if (process.env.SLAUDE_DB !== "pg") return;
-  for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
+  for (const t of ["persona_overrides", "persona_sync_state", "personas", "skill_versions"]) await db.run(`DELETE FROM ${t}`);
 });
 
 describe.skipIf(process.env.SLAUDE_DB !== "pg")("persona repository", () => {
+  describe("skill versions of a removed persona", () => {
+    const version = (scope: string) =>
+      SkillVersions.insert({ scope, slug: "x", version: 1, contentHash: "h", skillMd: "private", skillMdTruncated: false, fileCount: 1, totalBytes: 1, capturedAt: 1, origin: "agent" });
+    const count = async (scope: string) => (await SkillVersions.list(scope, "x", 10)).length;
+
+    test("a tombstone deletes them; other personas and the shared base keep theirs; a revival starts empty", async () => {
+      await P.applySync(T, [row("ana"), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
+      for (const s of ["ana", "bea", "global"]) await version(s);
+      await P.applySync(T, [row("bea")], meta("r2", "2026-10-01T11:00:00Z"));
+      expect(await count("ana")).toBe(0);
+      expect(await count("bea")).toBe(1);
+      expect(await count("global")).toBe(1);
+      await P.applySync(T, [row("ana"), row("bea")], meta("r3", "2026-10-01T12:00:00Z"));
+      expect(await count("ana")).toBe(0);
+    });
+
+    test("a same-named live persona in another tenant keeps the log", async () => {
+      await P.applySync(T, [row("ana")], meta("r1", "2026-10-01T10:00:00Z"));
+      await db.run(`INSERT INTO tenants (id, name, created_at) VALUES ('other', 'Other', 1) ON CONFLICT DO NOTHING`);
+      try {
+        await db.run(
+          `INSERT INTO personas (id, tenant_id, name, soul_md, soul_json, slack_user_id, origin, created_at, updated_at)
+           VALUES ('p-other', 'other', 'ana', 's', '{}', 'UOTHER', 'git', 1, 1)`,
+        );
+        await version("ana");
+        await P.applySync(T, [], meta("r2", "2026-10-01T11:00:00Z"));
+        expect(await count("ana")).toBe(1);
+      } finally {
+        await db.run("DELETE FROM personas WHERE tenant_id = 'other'");
+        await db.run("DELETE FROM tenants WHERE id = 'other'");
+      }
+    });
+
+    test("the sweep does not recapture a tombstoned persona's overlay left on disk", async () => {
+      const dir = join(paths.personas, "ana", "skills", "x");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "SKILL.md"), "private\n");
+      try {
+        await P.applySync(T, [row("ana"), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
+        await reconcileSkillVersions(1);
+        expect(await count("ana")).toBe(1);
+        await P.applySync(T, [row("bea")], meta("r2", "2026-10-01T11:00:00Z"));
+        await reconcileSkillVersions(2);
+        expect(await count("ana")).toBe(0);
+        // A row a replica inserted while the tombstone landed goes on the next sweep.
+        await version("ana");
+        await reconcileSkillVersions(3);
+        expect(await count("ana")).toBe(0);
+      } finally {
+        rmSync(join(paths.personas, "ana"), { recursive: true, force: true });
+      }
+    });
+  });
+
   test("an override on an unknown or tombstoned persona is refused", async () => {
     await P.applySync(T, [row("ana"), row("bea")], meta("r1", "2026-10-01T10:00:00Z"));
     await P.applySync(T, [row("ana")], meta("r2", "2026-10-01T11:00:00Z"));

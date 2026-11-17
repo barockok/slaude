@@ -45,6 +45,7 @@ import { json, readJson } from "./http";
 import { TURNS_QUEUE } from "../../queue/keys";
 import { encodeRunAs, parseRunAs } from "../../agent/credential-owner";
 import { threadIdentity } from "../core/thread-identity";
+import { turnKindOf } from "../../remote/definitions/decision";
 
 /** The thread's identity as of now, as the token-refresh response carries it
  *  (voice mode: a call re-checks it before every injected turn). */
@@ -64,7 +65,10 @@ async function freshIdentity(claims: JobClaims): Promise<FreshIdentity | null> {
   try {
     const id = await threadIdentity(claims.channel, claims.thread, (lock) =>
       carried.kind === "user" ? carried.slackUserId : lock?.locked_user,
+      { tenant: claims.tenant, persona: claims.persona, turnKind: turnKindOf({ origin: claims.origin, wake: claims.wake, backgroundRunId: claims.bgRun }) },
     );
+    // A thread bound to a shared environment this token may not use: no fresh identity (a voice call fails closed).
+    if (id.refused) return null;
     return { runAs: encodeRunAs(id.runAsUser), lock: id.lock, remote: !!id.remote };
   } catch (e) {
     console.warn(`[v1-jobs] token refresh: thread identity unavailable: ${e instanceof Error ? e.message : String(e)}`);

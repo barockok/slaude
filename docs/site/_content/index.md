@@ -25,7 +25,7 @@ bun run dev                        # or: docker compose up -d --build
 :::cards 3
 - [Getting started](start/getting-started.md) — Quickstart, prerequisites, and a first DM test.
 - [Architecture](start/architecture.md) — Session lifecycle, the trust boundary, persistence.
-- [Configuration](reference/configuration.md) — Every environment variable, the SOUL.md schema, the manifest.
+- [Configuration](reference/configuration.md) — Every environment variable, the agent.yaml schema, the manifest.
 - [Engagement and approvals](guides/engagement.md) — Mentions, the approval gate, `/1on1`, slash commands.
 - [API reference](reference/api.md) — The `mcp__slaude_*` tools, the CLI, and the metric surface.
 - [Deployment](deploy/index.md) — Docker, Kubernetes, multi-node scale-out, health probes.
@@ -36,9 +36,9 @@ bun run dev                        # or: docker compose up -d --build
 | Feature | What it means |
 |---|---|
 | **One thread, one session** | Each Slack thread maps to a persistent Claude session. `resume:` keeps the history across idle restarts, controlled by `SLAUDE_IDLE_MINUTES` (15 by default). |
-| **Two-layer persona** | A hardcoded runtime baseline covers Slack output, approval discipline, and engagement. Your `~/.slaude/SOUL.md` covers name, role, voice, manager, mandate, and approvers. You author only the second layer. |
+| **Two-layer persona** | A hardcoded runtime baseline covers Slack output, approval discipline, and engagement. Your `~/.slaude/agent.yaml` covers name, role, voice, manager, mandate, and approvers. You author only the second layer. |
 | **Slack output through MCP** | The agent never streams raw text to Slack. Every reply goes through `mcp__slaude_slack__reply`, `edit`, `upload`, or `request_approval`. Markdown converts to Slack mrkdwn, and a table becomes a monospace block or a definition list. |
-| **Manager-style approvals** | The agent calls `request_approval(summary)` before it mutates anything. The approver allowlist comes from `SOUL.md`, and keyword matching decides who may approve what. The agent never chooses a user id. |
+| **Manager-style approvals** | The agent calls `request_approval(summary)` before it mutates anything. The approver allowlist comes from `agent.yaml`, and keyword matching decides who may approve what. The agent never chooses a user id. |
 | **Engagement model** | An `@mention` engages a thread. An `@mention` of somebody else disengages it. Plain replies in an engaged thread are handled, and DMs are always engaged. `/1on1` locks a thread to you and the manager. |
 | **Skills that evolve** | `~/.slaude/skills/<slug>/SKILL.md` reloads every turn. The agent writes its own skills with `mcp__slaude_skills__write_skill`, and `sync_manifest` pushes them to git, so they survive a redeploy. |
 | **Knowledge bases** | Plain markdown wikis, in the style of Karpathy's LLM wiki. The agent navigates with `Read`, `Grep`, and `Glob`. There are no embeddings and no chunking. A writable KB turns `raw/` into `wiki/` through `/ingest`. |
@@ -59,8 +59,8 @@ and its header explains how to regenerate the PNG with headless Chrome.
 
 ## Trust boundary
 
-The model extracts `SOUL.md` into typed JSON. Every Slack id it returns is
-checked against the raw `SOUL.md` text before any gate uses it. Channel mode,
+A persona's access and mandates are read from its `agent.yaml` by a typed
+schema. No model reads them out of prose. Channel mode,
 blocked users, engagement, approver authorization, and per-tool permission all
 run deterministically in the gateway, never in the model.
 

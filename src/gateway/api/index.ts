@@ -16,6 +16,7 @@
  * labels, before the handler runs.
  *
  *   GET   /v1/node/whoami             the caller's verified identity      (node)
+ *   PUT   /v1/node/plugins            the node's plugin report, once per process (node)
  *   GET   /v1/sessions/:id            session row                         (node+job, label)
  *   PATCH /v1/sessions/:id            update started/model/mode           (same)
  *   GET   /v1/tenants/:id/runtime     runtime bundle (legacy route)       (node+job, label)
@@ -39,6 +40,7 @@
 import {
   authenticateNode,
   gateLabel,
+  jobLabel,
   JOB_HEADER,
   requireJobToken,
   type JobClaims,
@@ -51,10 +53,11 @@ import { handleMcpCredentials, handleMcpCredentialRefresh, type CredentialRefres
 import { handleRemoteKey } from "./remote-key";
 import { handleRemoteEnv } from "./remote-env";
 import { defaultCredentialRefresher } from "../core/credential-refresh";
-import { handlePending, type PendingOptions } from "./pending";
+import { handlePending, handlePendingCancel, type PendingOptions } from "./pending";
 import { handleJobEvent, handleTokenRefresh, handleTokenReissue, REFRESH_GRACE_SEC, type JobLookup, type JobMovedTo } from "./jobs";
 import { executeToolCall } from "./tools";
 import { handleMcpx } from "./tools/mcpx";
+import { handleNodePlugins, type NodePluginsDeps } from "./node-plugins";
 import type { ToolPlaneDeps } from "./tools/deps";
 import { defaultPendingSource, type PendingSource } from "./pending-source";
 import { json, methodNotAllowed, notFound, readBodyCapped, readJson } from "./http";
@@ -84,6 +87,8 @@ export interface V1Options {
   jobLookup?: JobLookup;
   /** The job-moved marker, for a held copy's token (refresh and reissue). */
   jobMovedTo?: JobMovedTo;
+  /** The plugin report route's seams (tests). */
+  nodePlugins?: NodePluginsDeps;
 }
 
 export type RouteAuth = "node" | "node+job";
@@ -143,6 +148,15 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
         }),
     },
     {
+      name: "node.plugins",
+      methods: ["PUT"],
+      pattern: ["node", "plugins"],
+      auth: "node",
+      gate: "none",
+      reason: "the report is stored under the caller's own verified node id and labels; no persona data",
+      handle: async ({ req, node }) => handleNodePlugins(req, node, opts.nodePlugins),
+    },
+    {
       name: "sessions",
       methods: ["GET", "PATCH"],
       pattern: ["sessions", ":id"],
@@ -160,8 +174,8 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       pattern: ["tenants", ":tenant", "runtime"],
       auth: "node+job",
       gate: "label",
-      handle: async ({ req, seg, claims }) =>
-        tenantScoped(claims!, seg[1]!) ?? handleTenantRuntime(req, seg[1]!, claims!.persona || "default"),
+      handle: async ({ req, seg, claims, node }) =>
+        tenantScoped(claims!, seg[1]!) ?? handleTenantRuntime(req, seg[1]!, claims!.persona || "default", { nodeId: node.id, sessionId: claims!.session, label: jobLabel(claims!), post: claims!.post }),
     },
     {
       // The owner is the token's signed runAs claim and nothing else: there is
@@ -214,11 +228,11 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       pattern: ["tenants", ":tenant", "personas", ":persona", "runtime"],
       auth: "node+job",
       gate: "label",
-      handle: async ({ req, seg, claims }) => {
+      handle: async ({ req, seg, claims, node }) => {
         const scoped = tenantScoped(claims!, seg[1]!);
         if (scoped) return scoped;
         if (claims!.persona !== seg[3]!) return json(403, { error: "job token is not scoped to this persona" });
-        return handleTenantRuntime(req, seg[1]!, seg[3]!);
+        return handleTenantRuntime(req, seg[1]!, seg[3]!, { nodeId: node.id, sessionId: claims!.session, label: jobLabel(claims!), post: claims!.post });
       },
     },
     {
@@ -226,12 +240,16 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       // here, so a tokenless call is accepted only from the legacy identity,
       // and only while SLAUDE_NODE_ALLOW_TOKENLESS_PENDING is on.
       name: "pending",
-      methods: ["GET"],
+      methods: ["GET", "DELETE"],
       pattern: ["pending", ":id"],
       auth: "node+job",
       gate: "label",
       jobOptional: true,
-      handle: async ({ seg, node, claims }) => {
+      handle: async ({ req, seg, node, claims }) => {
+        // DELETE: a node gave up waiting on an owner guardrail's card (its
+        // deadline, the turn stopped): the row is cancelled so a late click
+        // cannot show Approved on a call that was refused. Job token only.
+        if (req.method === "DELETE") return claims ? handlePendingCancel(seg[1]!, claims.session) : json(401, { error: "invalid job token: missing" });
         if (claims) return handlePending(seg[1]!, pendingSource, opts.pending, claims.session);
         if (!node.legacy || !env.allowTokenlessPending()) {
           return json(401, { error: "invalid job token: missing" });

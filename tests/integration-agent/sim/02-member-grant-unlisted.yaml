@@ -1,0 +1,7 @@
+# Seed first: a stored member grant for U0BOB on persona default.
+# U0BOB is then admitted in an unlisted channel.
+layer: restricted
+as: outsider
+steps:
+  - send: { text: "outsider with a member grant" }
+  - expect_reply: { contains: "ack: done" }

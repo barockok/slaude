@@ -57,8 +57,25 @@ switch (sub) {
       rest = argv.slice(2);
       break;
     }
-    console.error("usage: slaude brain connect");
+    if (argv[1] === "reembed") {
+      entry = "src/cli/brain-reembed.ts";
+      rest = argv.slice(2);
+      break;
+    }
+    console.error("usage: slaude brain connect | slaude brain reembed (--model-mismatch | --adopt) [--apply]");
     process.exit(2);
+    break;
+  case "guardrails":
+    entry = "src/cli/guardrails.ts";
+    rest = argv.slice(1);
+    break;
+  case "domain":
+    entry = "src/cli/domain.ts";
+    rest = argv.slice(1);
+    break;
+  case "env":
+    entry = "src/cli/env.ts";
+    rest = argv.slice(1);
     break;
   case "-h":
   case "--help":
@@ -72,6 +89,11 @@ switch (sub) {
         "  slaude brain-server   run the brain engine as a standalone OAuth'd MCP process",
         "  slaude voice-loop     (internal) realtime voice loop child for a call",
         "  slaude brain connect  OAuth-bootstrap the remote brain link (SLAUDE_BRAIN_URL)",
+        "  slaude brain reembed --model-mismatch|--adopt [--apply]  repair embedding labels or the brain record (dry run by default)",
+        "  slaude guardrails import <dir> [--prune] [--dry-run] [--repair]  store GUARDRAIL.md folders as owner guardrails",
+        "  slaude domain reconcile [--dry-run] [--json]  backfill and repair users, bindings and boundaries",
+        "  slaude env list [--tenant <id>] | unbind-shared (--tenant <id> | --all-tenants) (--dry-run | --apply)  shared environments: bound threads, and the rollback step to rc.21",
+        "  slaude domain slice-tombstone add|remove|list  revoke a user-slice name (or *) from the memory union",
         "",
         "SLAUDE_HOME resolves to $SLAUDE_HOME, else the cwd if it has SOUL.md, else ~/.slaude.",
       ].join("\n"),

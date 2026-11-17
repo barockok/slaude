@@ -18,6 +18,7 @@ import { connectableServers, loadExternalMcp, type ExternalMcp } from "../core/e
 import { credentialExpiries } from "../../db/mcp-credentials";
 import { oauthKey, type OAuthServerConfig } from "../../agent/mcp-oauth/store";
 import { getPersonaRegistry, type PersonaRegistry } from "../../persona/registry";
+import type { IntegrationView } from "./api-types";
 
 /** Server name → config, as one persona mounts them. */
 export type ConfiguredServers = Record<string, OAuthServerConfig>;
@@ -33,24 +34,17 @@ export interface PortalServer {
   cfg: OAuthServerConfig;
   /** The personas that mount it, sorted. */
   usedBy: string[];
+  /** The plugin that provides it, when it comes from the node plugin inventory. */
+  plugin?: string;
 }
 
-export interface IntegrationView {
-  id: string;
-  name: string;
-  /** Host only. Enough to recognise the service, without a query or userinfo. */
-  host: string;
-  connected: boolean;
-  /** Epoch ms, or null when not connected. Never a token. */
-  expiresAt: number | null;
-  usedBy: string[];
-}
+export type { IntegrationView } from "./api-types";
 
 /** Merge each persona's servers into one list. Two entries are the same server
  *  when their credential key matches (name, URL and headers), which is exactly
  *  when one stored credential serves both. */
 export function aggregateServers(sources: Array<{ persona: string; servers: ConfiguredServers }>): PortalServer[] {
-  const byKey = new Map<string, { name: string; cfg: OAuthServerConfig; personas: Set<string> }>();
+  const byKey = new Map<string, { name: string; cfg: OAuthServerConfig; personas: Set<string>; plugin?: string }>();
   for (const { persona, servers } of sources) {
     for (const [name, cfg] of Object.entries(servers)) {
       const key = oauthKey(name, cfg);
@@ -60,6 +54,8 @@ export function aggregateServers(sources: Array<{ persona: string; servers: Conf
         byKey.set(key, entry);
       }
       entry.personas.add(persona);
+      const plugin = (cfg as { fromPlugin?: unknown }).fromPlugin;
+      if (typeof plugin === "string") entry.plugin = plugin;
     }
   }
 
@@ -72,7 +68,7 @@ export function aggregateServers(sources: Array<{ persona: string; servers: Conf
     // A bare name only when nothing else shares it; the key otherwise.
     const id = perName.get(e.name) === 1 && !taken.has(e.name) ? e.name : key;
     taken.add(id);
-    rows.push({ id, name: e.name, cfg: e.cfg, usedBy: [...e.personas].sort() });
+    rows.push({ id, name: e.name, cfg: e.cfg, usedBy: [...e.personas].sort(), ...(e.plugin ? { plugin: e.plugin } : {}) });
   }
   return rows.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 }
@@ -111,6 +107,7 @@ export async function integrationsFor(accountId: string, servers: PortalServer[]
       connected: expiresAt !== null,
       expiresAt,
       usedBy: s.usedBy,
+      ...(s.plugin ? { plugin: s.plugin } : {}),
     };
   });
 }
