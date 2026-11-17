@@ -1,7 +1,7 @@
 /**
  * Anthropic adapter. Answers the neutral decision questions with a small model
  * on the gateway's own model provider (any Anthropic-compatible Messages API),
- * with the credentials the gateway already holds for it (ANTHROPIC_API_KEY, or
+ * with the secret reference in the block's optional `apiKey` when there is one, else the credentials the gateway already holds for it (ANTHROPIC_API_KEY, or
  * ANTHROPIC_AUTH_TOKEN, or the subscription OAuth token, against
  * ANTHROPIC_BASE_URL or the public API). No new secret and no new setting
  * beyond the model name.
@@ -16,6 +16,7 @@
  */
 import { z } from "zod";
 import { env } from "../../config/env";
+import { parseRef } from "../../secrets";
 import { registerAdapter } from "../registry";
 import { DecisionError, type DecisionAdapter, type DecisionRequest, type DecisionResult } from "../types";
 
@@ -153,13 +154,21 @@ const blockSchema = z
   .object({
     type: z.literal("anthropic"),
     model: z.string().min(1).max(100).optional(),
+    /** Optional secret reference (`env://PERSONA_...`), resolved at boot like the jev adapter's; preferred over the provider environment. */
+    apiKey: z.string().optional(),
   })
   .strict();
 
-registerAdapter("anthropic", async (block) => {
+registerAdapter("anthropic", async (block, deps) => {
   const b = blockSchema.parse(block);
   const headers: Record<string, string> = {};
-  const key = env.provider.apiKey();
+  let ref = "";
+  if (b.apiKey !== undefined) {
+    parseRef(b.apiKey, "decision.adapter.apiKey"); // throws on a literal or malformed reference
+    ref = await deps.resolveSecret(b.apiKey);
+  }
+  // A configured reference wins over every provider variable; without one nothing changes.
+  const key = ref || env.provider.apiKey();
   const token = env.provider.authToken();
   const oauth = env.provider.oauthToken();
   if (key) headers["x-api-key"] = key;
