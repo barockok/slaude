@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { aliasIssues } from "../persona/aliases";
 
 /**
  * Structured projection of the operator's SOUL.md. Produced by an ephemeral
@@ -166,14 +167,32 @@ export const SoulDataSchema = z.object({
   channelOverrides: z.array(ChannelOverrideSchema).default([]),
   /** Per-channel `engage` settings (agent.yaml only). Empty = every channel at the deployment default. */
   channelEngage: z.array(ChannelEngageSchema).default([]),
-  /** Extra names the persona answers to (agent.yaml `aliases`), as written. */
-  aliases: z.array(z.string()).default([]),
+  /**
+   * Extra names the persona answers to (agent.yaml `aliases`), NFKC-normalised.
+   * Reading is lenient: a stored list that fails the alias rules (an older or
+   * hand-edited row) reads as none, never as an error that would drop the
+   * whole structure. {@link SoulDataStrictSchema} refuses it at parse and sync time.
+   */
+  aliases: z.unknown().transform((v): string[] => {
+    const r = z.array(z.string()).safeParse(v);
+    return r.success && aliasIssues(r.data).length === 0 ? r.data : [];
+  }),
   /** Sub-mandates for direct messages and the two channel classes. */
   scopeMandates: z.array(ScopeMandateSchema).default([]),
   /** Typed Slack references behind the access arrays above (agent.yaml only; a soul extracted from prose has none). */
   accessEntries: z.array(AccessEntrySchema).default([]),
   /** The `email:` and `user:` references of agent.yaml access (internal source only); never in the arrays above. */
   accessRefs: z.array(AccessRefSchema).default([]),
+});
+
+/** The structure as a parse or sync must see it: a bad alias list is refused. */
+export const SoulDataStrictSchema = SoulDataSchema.extend({
+  aliases: z
+    .array(z.string())
+    .default([])
+    .superRefine((list, ctx) => {
+      for (const i of aliasIssues(list)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: i.message, ...(i.index === null ? {} : { path: [i.index] }) });
+    }),
 });
 
 export type ApproverEntry = z.infer<typeof ApproverEntrySchema>;

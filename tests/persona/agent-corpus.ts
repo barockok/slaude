@@ -127,16 +127,21 @@ bad("engage unknown mode", { channels: { [C]: { engage: { mode: "live" } } } });
 bad("engage level null", { channels: { [C]: { engage: { level: null } } } });
 bad("engage unknown key", { channels: { [C]: { engage: { level: "mention", extra: 1 } } } });
 bad("engage not a mapping", { channels: { [C]: { engage: "on" } } });
-ok("aliases", { aliases: ["anabot", "Ana-2"] });
+ok("aliases", { aliases: ["anabot", "Ana2"] });
 ok("aliases null", { aliases: null });
 ok("aliases empty", { aliases: [] });
 bad("aliases not a list", { aliases: "anabot" });
 bad("aliases entry not a string", { aliases: [5] });
-bad("aliases too short", { aliases: ["an"] }, false, ["aliases[0]"]);
+bad("aliases too short", { aliases: ["an"] }, true, ["aliases[0]"]);
 bad("aliases common word", { aliases: ["anabot", "team"] }, false, ["aliases[1]"]);
 bad("aliases repeat by case", { aliases: ["Anabot", "anabot"] }, false, ["aliases[1]"]);
+bad("aliases punctuation", { aliases: ["ana-bot"] }, false, ["aliases[0]"]);
+bad("aliases trailing dot", { aliases: ["anabot."] }, false, ["aliases[0]"]);
+bad("aliases mixed scripts", { aliases: ["an\u0430bot"] }, false, ["aliases[0]"]);
+bad("aliases own name", { aliases: ["ana1", "Ana"] }, false, ["aliases[1]"]);
+bad("aliases repeat by width", { aliases: ["anabot", "\uff41\uff4e\uff41\uff42\uff4f\uff54"] }, false, ["aliases[1]"]);
 bad("aliases two words", { aliases: ["ana bot"] }, false, ["aliases[0]"]);
-bad("aliases too many", { aliases: ["aaa1", "aaa2", "aaa3", "aaa4", "aaa5", "aaa6", "aaa7", "aaa8", "aaa9"] }, false, ["aliases"]);
+bad("aliases too many", { aliases: ["aaa1", "aaa2", "aaa3", "aaa4", "aaa5", "aaa6", "aaa7", "aaa8", "aaa9"] }, true, ["aliases"]);
 
 
 

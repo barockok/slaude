@@ -325,7 +325,11 @@ export const AgentSchema = z
       ),
       aliases: optional(
         z
-          .array(z.string(typeMessage({ other: "must be a string" })), typeMessage({ other: "must be a list of names", null: "has no value: list names, or remove the key" }))
+          .array(
+            z.string(typeMessage({ other: "must be a string" })).min(ALIAS_MIN_LENGTH, `must be at least ${ALIAS_MIN_LENGTH} characters`),
+            typeMessage({ other: "must be a list of names", null: "has no value: list names, or remove the key" }),
+          )
+          .max(ALIAS_MAX_COUNT, `has more than ${ALIAS_MAX_COUNT} aliases`)
           .superRefine((list, ctx) => {
             for (const i of aliasIssues(list)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: i.message, ...(i.index === null ? {} : { path: [i.index] }) });
           })

@@ -12,6 +12,7 @@
 import { parse as parseYaml, YAMLParseError } from "yaml";
 import { MANDATE_LINE_MAX, subMandatesOf, type SubMandate } from "../soul/mandate-scope";
 import { env } from "../config/env";
+import { normalizeAlias, aliasIssues } from "./aliases";
 import { SoulDataSchema, type AccessEntry, type ChannelEngage, type AccessRef, type ApproverEntry, type ChannelOverride, type ScopeMandate, type SoulData } from "../soul/data";
 import { channelOf, endsInOpenFence, isCodeFence, parseProactive, parseWindow } from "../soul/proactive";
 import { AgentSchema, BOUNDARY_RE, CHANNEL_ID_RE, DESCRIPTION_MAX, ENVIRONMENT_INLINE_MSG, USER_ID_RE, type AgentFile } from "./agent-schema";
@@ -277,6 +278,8 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const idList = (path: string, list: string[] | null | undefined, e: Pick<AccessEntry, "field" | "kind" | "role"> & Partial<Pick<AccessEntry, "deny" | "dmOnly">>) =>
     (list ?? []).map((v, i) => entryId(`${path}[${i}]`, v, e)).filter((id): id is string => id !== undefined);
 
+  // The schema checked the list; this adds the rule that needs the agent's own name.
+  for (const i of aliasIssues(file.aliases ?? [], name)) fail(i.index === null ? "aliases" : `aliases[${i.index}]`, i.message);
   const channelEngage: ChannelEngage[] = [];
   const soulData = SoulDataSchema.parse({
     identity: { name, ...(description ? { role: description } : {}) },
@@ -291,7 +294,7 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
     approvalTimeoutSeconds: access.approvalTimeoutSeconds ?? 0,
     ...(global?.trim() ? { mandate: global.trim() } : {}),
     channelOverrides: [...channels.values()],
-    aliases: (file.aliases ?? []).map((a) => a.trim()),
+    aliases: (file.aliases ?? []).map(normalizeAlias),
     scopeMandates: scopes,
     accessEntries,
     accessRefs,

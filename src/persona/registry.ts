@@ -10,6 +10,7 @@ import { effectivePersonas, isManaged, stateVersion } from "../db/personas";
 import { resolveDbConfig } from "../db/client";
 import { SoulDataSchema, type SoulData } from "../soul/data";
 import { __resetSoulDataMemo, setSoulData } from "../soul/extract";
+import { aliasConflicts } from "./aliases";
 import { readFileAgent, type FileAgent } from "./file-agent";
 
 export type { Persona, PersonaConfig };
@@ -148,6 +149,16 @@ function snapshot(
   },
   fileDefault?: DefaultPersonaFields | null,
 ): PersonaRegistry {
+  // Names two personas would both answer to: a bad file stops boot (as any bad
+  // agent.yaml does); a managed snapshot only warns, so a sync can never take a
+  // running gateway down.
+  const clashes = aliasConflicts(
+    personas.map((p) => ({ name: p.name, aliases: p.soulJson == null ? [] : (SoulDataSchema.safeParse(p.soulJson).data?.aliases ?? []) })),
+  );
+  if (clashes.length) {
+    if (!managed) throw new Error(`agent.yaml aliases: ${clashes.join("; ")}`);
+    for (const c of clashes) console.warn(`[persona] ${c}`);
+  }
   const byUserId = new Map<string, Persona>(personas.map((p) => [p.slackUserId, p]));
   const byName = new Map<string, Persona>(personas.map((p) => [p.name, p]));
   const retired = new Map<string, string>(
@@ -162,6 +173,11 @@ function snapshot(
     tombstonedPersonaFor: (id) => retired.get(id) ?? null,
     ...(managed ? { defaultPersona: () => managed.defaultPersona } : fileDefault ? { defaultPersona: () => fileDefault } : {}),
   };
+}
+
+/** TEST SEAM ONLY: the file-registry snapshot of the given personas (throws on an alias clash). */
+export function buildSnapshotForTest(personas: unknown[]): PersonaRegistry {
+  return snapshot(personas as Persona[]);
 }
 
 /** The default persona defined by $SLAUDE_HOME/agent.yaml, as the fields a managed `default` row carries; null without the file. */
