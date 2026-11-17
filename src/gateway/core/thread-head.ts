@@ -18,6 +18,7 @@ export type ThreadMsg = {
   subtype?: string;
   text?: string;
   ts: string;
+  thread_ts?: string;
   files?: Array<{ name?: string; title?: string }>;
 };
 

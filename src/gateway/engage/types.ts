@@ -29,4 +29,16 @@ export interface EngageCandidate {
  */
 export interface EngageClassifier {
   classify(candidate: EngageCandidate): Promise<"run" | "pass">;
+  /**
+   * The model's own verdict and why there is none, with the channel's mode NOT
+   * applied: for shadow logging and counters, never for acting.
+   * `answer` is "run" only on a confident model yes.
+   */
+  classifyDetailed?(candidate: EngageCandidate): Promise<ClassifierVerdict>;
+}
+
+export interface ClassifierVerdict {
+  answer: "run" | "pass";
+  /** `answer`: a model answered. The others: no model answer (a pass). */
+  reason: "answer" | "timeout" | "error" | "noadapter" | "input";
 }

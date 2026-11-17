@@ -100,6 +100,8 @@ export const SITES = [
   { id: "permission.stamp_expect_same", group: 18, kind: "same", where: "turn stamp: the token's initiator is the turn's sole sender (no workspace on the call)" },
   // rc.28: the thread head (src/gateway/core/gateway.ts).
   { id: "gateway.thread_head.admit", group: 19, kind: "admit", where: "thread head: an author the persona does not admit is not read back to the model" },
+  // rc.30: the shadow classifier's input (src/gateway/core/gateway.ts).
+  { id: "gateway.engage_input.admit", group: 19, kind: "admit", where: "implicit engagement classifier input: an author the persona does not admit is not sent to the classifier" },
 ] as const;
 
 export type SiteId = (typeof SITES)[number]["id"];

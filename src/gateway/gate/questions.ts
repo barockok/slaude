@@ -26,8 +26,19 @@ export const GATE_QUESTIONS: Record<keyof GateDecision, DecisionQuestion> = {
   },
 };
 
+/**
+ * The questions an input needs answered. An implicit consult at `addressed`
+ * (or a continuation) is decided by `addressedToAgent` alone, so it asks only
+ * that one; every other input asks all four.
+ */
+export function questionsFor(input: { implicit?: string; continuation?: boolean }): Record<string, DecisionQuestion> {
+  if (input.implicit && (input.implicit === "addressed" || input.continuation)) return { addressedToAgent: GATE_QUESTIONS.addressedToAgent };
+  return GATE_QUESTIONS;
+}
+
+/** A question that was not asked reads as a "no" with no confidence, which no policy row accepts. */
 export function toGateDecision(r: DecisionResult): GateDecision {
-  const pick = (id: keyof GateDecision) => ({ value: r[id]!.choice === "yes", confidence: r[id]!.confidence });
+  const pick = (id: keyof GateDecision) => ({ value: r[id]?.choice === "yes", confidence: r[id]?.confidence ?? 0 });
   return {
     addressedToAgent: pick("addressedToAgent"),
     isQuestionOrRequest: pick("isQuestionOrRequest"),

@@ -5,6 +5,7 @@ import type { Persona } from "../../../src/persona/types";
 import { __setLastSpeakerStoreForTests, memoryLastSpeakerStore, type LastSpeakerStore } from "../../../src/gateway/engage/last-speaker";
 import { observeEngage, type ObserveInput } from "../../../src/gateway/engage/observe";
 import { clearAgentRecord } from "../../../src/gateway/engage/record";
+import { makeUsersCache } from "../../../src/gateway/engage/users";
 
 const CH = "C0SHARED";
 const yaml = (name: string, user: string) => `
@@ -127,5 +128,36 @@ describe("clearAgentRecord", () => {
     await speak("ana", nowTs(-5));
     clearAgentRecord({ channel: "C0QUIET", thread: THREAD, persona: "ana" });
     expect(await store.take({ channel: CH, thread: THREAD, persona: "ana" })).not.toBeNull();
+  });
+});
+
+describe("a colleague who shares the agent's name", () => {
+  const withUsers = (names: Set<string> | null) => {
+    const c = makeUsersCache();
+    if (names) c.ensure("T1", async () => ({ names, complete: true }));
+    return c;
+  };
+  const tick = () => new Promise((r) => setTimeout(r, 5));
+  const root = (text: string): ObserveInput => ({ ...input("ana", { text, thread_ts: undefined }), teamId: "T1" });
+
+  test("unknown names: the name and a comma is not taken as tier 1, it goes to tier 3", async () => {
+    const r = await observeEngage({ ...root("ana, can you check staging?"), users: withUsers(null) });
+    expect(r).toMatchObject({ tier: 3, action: "classify", reason: "same_named_human" });
+  });
+  test("a snapshot with no one of that name: tier 1 run", async () => {
+    const users = withUsers(new Set(["jane"]));
+    await tick();
+    expect(await observeEngage({ ...root("ana, can you check staging?"), users })).toMatchObject({ tier: 1, action: "run", reason: "name_comma" });
+  });
+  test("a snapshot with a colleague of that name: tier 3", async () => {
+    const users = withUsers(new Set(["ana"]));
+    await tick();
+    expect(await observeEngage({ ...root("ana, can you check staging?"), users })).toMatchObject({ tier: 3, action: "classify", reason: "same_named_human" });
+  });
+  test("the lookup is started from the observation, not awaited", async () => {
+    const users = makeUsersCache();
+    let started = 0;
+    await observeEngage({ ...root("ana, can you check staging?"), users, loadUsers: () => (started++, new Promise(() => {})) });
+    expect(started).toBe(1);
   });
 });

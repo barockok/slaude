@@ -77,3 +77,64 @@ describe("engageFor", () => {
     expect(aliasesFor("ana")).toEqual(["anabot"]);
   });
 });
+
+describe("proactive implies addressed", () => {
+  const PRO = `
+name: ana
+slackUserId: UANA1
+soul: You are Ana.
+access:
+  channels:
+    trusted: [C0PRO1, C0PRO2, C0PRO3, C0PRO4, C0PLAIN]
+channels:
+  C0PRO1: { proactive: true }
+  C0PRO2: { proactive: true, engage: { level: mention } }
+  C0PRO3: { proactive: true, engage: { mode: on } }
+  C0PRO4: { proactive: false }
+  C0PLAIN: {}
+  C0PRORESTRICT: { proactive: true }
+`;
+  function proPersona(): Persona {
+    const { spec } = parseAgentYaml("ana", PRO);
+    const { soulData, ...definition } = spec.definition;
+    return {
+      name: "ana", slackUserId: "UANA1", soulMd: spec.soul, config: { slackUserId: "UANA1", name: "ana" },
+      outClient: null, model: null, runsOn: null, provider: null, kbSources: null, background: null, mcp: null,
+      soulJson: soulData, definition,
+    };
+  }
+  beforeEach(() => setPersonaRegistry(registry(proPersona())));
+
+  test("a proactive channel with no engage level is addressed, in shadow", () => {
+    expect(engageFor("ana", "C0PRO1")).toEqual({ level: "addressed", mode: "shadow" });
+  });
+  test("an explicit level always wins, even mention; a mode alone leaves the level to proactive", () => {
+    expect(engageFor("ana", "C0PRO2")).toEqual({ level: "mention", mode: "shadow" });
+    expect(engageFor("ana", "C0PRO3")).toEqual({ level: "addressed", mode: "on" });
+  });
+  test("proactive beats the deployment default; no proactive keeps it", () => {
+    process.env.SLAUDE_ENGAGE_DEFAULT = "contribute";
+    expect(engageFor("ana", "C0PRO1")).toEqual({ level: "addressed", mode: "shadow" });
+    expect(engageFor("ana", "C0PRO4")).toEqual({ level: "contribute", mode: "shadow" });
+    expect(engageFor("ana", "C0PLAIN")).toEqual({ level: "contribute", mode: "shadow" });
+  });
+  test("SLAUDE_ENGAGE_PROACTIVE_DEFAULT=off restores the deployment default; an explicit level is unaffected", () => {
+    const saved = process.env.SLAUDE_ENGAGE_PROACTIVE_DEFAULT;
+    try {
+      process.env.SLAUDE_ENGAGE_PROACTIVE_DEFAULT = "off";
+      expect(engageFor("ana", "C0PRO1")).toEqual({ level: "mention", mode: "shadow" });
+      process.env.SLAUDE_ENGAGE_DEFAULT = "contribute";
+      expect(engageFor("ana", "C0PRO1")).toEqual({ level: "contribute", mode: "shadow" });
+      expect(engageFor("ana", "C0PRO2")).toEqual({ level: "mention", mode: "shadow" });
+      process.env.SLAUDE_ENGAGE_PROACTIVE_DEFAULT = "on";
+      expect(engageFor("ana", "C0PRO1")).toEqual({ level: "addressed", mode: "shadow" });
+    } finally {
+      if (saved === undefined) delete process.env.SLAUDE_ENGAGE_PROACTIVE_DEFAULT;
+      else process.env.SLAUDE_ENGAGE_PROACTIVE_DEFAULT = saved;
+    }
+  });
+  test("without proactive nothing changes; a restricted channel still mentions", () => {
+    expect(engageFor("ana", "C0PLAIN")).toEqual({ level: "mention", mode: "shadow" });
+    expect(engageFor("ana", "C0PRORESTRICT")).toEqual({ level: "mention", mode: "shadow" });
+  });
+});

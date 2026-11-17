@@ -56,6 +56,12 @@ function req(name: string): string {
 
 let poolWarned = false;
 
+/** A whole number from 1 to `max`; anything else is the default. */
+function posInt(raw: string, fallback: number, max: number): number {
+  const n = Number(raw.trim());
+  return raw.trim() !== "" && Number.isInteger(n) && n >= 1 ? Math.min(n, max) : fallback;
+}
+
 function opt(name: string, fallback = ""): string {
   return process.env[name] ?? fallback;
 }
@@ -609,6 +615,27 @@ export const env = {
   engageWindowMinutes: (): number => {
     const n = Number(opt("SLAUDE_ENGAGE_WINDOW_MINUTES", "10"));
     return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), 24 * 60) : 10;
+  },
+  /**
+   * Phase 1 classifier budgets (per channel, across apps and replicas).
+   * `SLAUDE_ENGAGE_DAILY_BUDGET`: classifier calls per channel per UTC day
+   * (default 50). `SLAUDE_ENGAGE_MINUTE_CEILING`: calls per channel per minute
+   * (default 6). `SLAUDE_ENGAGE_SAMPLE`: sample 1 in N tier 2 run decisions for
+   * the classifier (default 20, 0 turns sampling off). Invalid values read as the default.
+   */
+  /**
+   * `SLAUDE_ENGAGE_PROACTIVE_DEFAULT` (default on): a channel where the agent is
+   * proactive and that sets no `engage.level` is `addressed`. `off` (also `0`,
+   * `false`, `no`) restores the deployment default (SLAUDE_ENGAGE_DEFAULT) for
+   * those channels.
+   */
+  engageProactiveDefault: (): boolean => !["off", "0", "false", "no"].includes(opt("SLAUDE_ENGAGE_PROACTIVE_DEFAULT").trim().toLowerCase()),
+  engageDailyBudget: (): number => posInt(opt("SLAUDE_ENGAGE_DAILY_BUDGET"), 50, 100_000),
+  engageMinuteCeiling: (): number => posInt(opt("SLAUDE_ENGAGE_MINUTE_CEILING"), 6, 1_000),
+  engageSample: (): number => {
+    const raw = opt("SLAUDE_ENGAGE_SAMPLE").trim();
+    if (raw === "0") return 0;
+    return posInt(raw, 20, 100_000);
   },
   /**
    * Raw `SLAUDE_PRICE_TABLE` (phase D): inline JSON, or a file path when the

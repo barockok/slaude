@@ -20,7 +20,7 @@ type Script = (req: DecisionRequest) => DecisionResult | Promise<DecisionResult>
 const scripts = new Map<string, Script>();
 registerAdapter("scripted-test", async (block) => {
   const id = String(block.script);
-  const adapter: DecisionAdapter = { name: "scripted-test", decide: async (req) => scripts.get(id)!(req) };
+  const adapter: DecisionAdapter = { name: "scripted-test", decide: async (req) => Object.fromEntries(Object.entries(await scripts.get(id)!(req)).filter(([k]) => k in req.questions)) };
   return adapter;
 });
 afterAll(() => scripts.clear());
