@@ -414,6 +414,15 @@ Deployment walkthrough, role-file example and cross-replica behaviour:
 | `SLAUDE_ENV_SSH_ALLOW_PRIVATE` | No | `0` | `1` lets `ssh` [environments](../guides/environments.md) reach private (LAN) address ranges. Metadata, link-local and reserved ranges are always refused; loopback only with `SLAUDE_OUTBOUND_DEV_LOOPBACK=1`. Hosts in `SLAUDE_OUTBOUND_INTERNAL_HOSTS` may reach private ranges without it. |
 | `SLAUDE_TAILCAT_BIN` | No | `tailcat` | Operator override of the tailcat binary path used by `/remote`. Read at call time; the stock image installs `/usr/local/bin/tailcat`. |
 
+### File uploads <a id="uploads"></a>
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `SLAUDE_UPLOAD_MAX_BYTES` | No | `1073741824` | Read by the gateway. Largest file an agent may upload, in bytes (Slack's documented per-file maximum is 1 GB). Checked at `upload_begin` against the size the node declares; Slack stores at most the declared size, so a node cannot exceed it by sending more. A larger file is refused with the sizes in the message. Positive integer; an unset, empty or invalid value reads as the default. |
+| `SLAUDE_UPLOAD_COLOCATED_MAX_BYTES` | No | `104857600` | Read by the gateway. Largest file the co-located path may upload (mono, or an older node that sends a path the gateway can read). That path reads the whole file into the gateway's memory (`files.uploadV2`), so it has its own, lower cap. It does not apply to a node's direct upload. Positive integer; an unset, empty or invalid value reads as the default. |
+
+How a node uploads a file: see [Uploads from a node](../guides/engagement.md#72-outbound-agent-slack). An agent may upload a regular file under its session working directory or under its per-session scratch directory (`$TMPDIR`, also `$SLAUDE_SCRATCH`), and nothing else under the node's temp area.
+
 ### Metrics & context budget
 
 | Name | Required | Default | Description |

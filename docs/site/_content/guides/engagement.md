@@ -484,12 +484,23 @@ Non-deleted files from Slack Enterprise Grid with `url_private` fallback are als
 
 ### 7.2 Outbound: agent → Slack
 
-When the agent produces a file artifact, it must call `mcp__slaude_slack__upload` (not reply with a path or URL). The file is uploaded via `files.uploadV2` into the same thread — this survives expiring private URLs and renders in-thread.
+When the agent produces a file artifact, it must call `mcp__slaude_surface__upload` (not reply with a path or URL). The file appears in the same thread as an uploaded attachment, which survives expiring private URLs and renders in-thread.
 
 ```
-agent:  [calls mcp__slaude_slack__upload { path: "/data/workspaces/<id>/report.csv", title: "Q2 report" }]
+agent:  [calls mcp__slaude_surface__upload { path: "/data/workspaces/<id>/report.csv", title: "Q2 report" }]
 # → file appears in-thread as an uploaded attachment
 ```
+
+**Where the file may be.** A regular file under the session's working directory, or under its per-session scratch directory. On a node the scratch directory is the agent's `$TMPDIR` (also `$SLAUDE_SCRATCH`): a private (0700) directory the node creates for the session and removes when the session is no longer warm on that node. It exists because the working directory is created by the gateway and may not be writable by the node's user. The rest of `/tmp` is not allowed: it is shared by every session on the worker. Anything else is refused with the file's base name and a hint to copy it into one of those two places. This check prevents mistakes; it is not a security boundary against an agent that has a shell on the same node, which can already write to either place and read what its own user can read.
+
+**How the bytes travel.**
+
+- *Single process (mono), or an older node:* the gateway reads the file (confined to the session working directory, opened once and streamed from the checked descriptor) and uploads it with `files.uploadV2`, which holds the whole file in memory. `SLAUDE_UPLOAD_COLOCATED_MAX_BYTES` (default 100 MB) caps that path.
+- *A node (gateway plus node):* the node opens the file once, takes its size from the open descriptor and asks the gateway for Slack's presigned upload URL (`upload_begin`). It sends the bytes straight to Slack, streamed, with no time limit but the turn's own stop, then checks Slack's answer (HTTP 200 and `OK - <size>`, with the size it declared). Only then does it ask the gateway to finish the upload (`upload_complete`). The gateway never reads a node path and never carries the bytes. `SLAUDE_UPLOAD_MAX_BYTES` (default 1 GB) caps the declared size.
+- *A remote environment turn* (`/env`): refused before any file is looked at, because the file lives on the user's machine.
+- *A new node against an older gateway* falls back to the path call once and logs it, so the file must then be visible to the gateway as before.
+
+The caption (`initial_comment`) goes through the owner's reply rules exactly as before, at `upload_complete`: it can be redacted, refused, or held for an approval card, and a refused or denied caption means the file is not posted. The title, file name and alt text are not run through the reply rules (the same as a co-located upload); the file name is cleaned (base name only, control characters removed, length capped). A Slack upload that was started but never completed is never shown in a channel.
 
 The runtime baseline is explicit about this: pointers to local paths are useless to the user — the user cannot read the agent's filesystem.
 
@@ -574,7 +585,7 @@ t=25  slaude: Yes — still here…
 | Permission gate | `src/gateway/slack/permission-gate.ts` |
 | Slash commands | `src/gateway/slack/commands.ts` (`AGENT_COMMANDS`, `parseSlashCommand`, `helpText`) |
 | Cron | `src/gateway/slack/cron-parser.ts`, `src/gateway/slack/cron-scheduler.ts`, `src/db/cron-jobs.ts` |
-| Attachments | `src/gateway/slack/attachments.ts`, `src/gateway/slack/surface.ts` (`upload`) |
+| Attachments | `src/gateway/slack/attachments.ts`, `src/gateway/slack/surface.ts` (`upload`, `uploadBegin`, `uploadComplete`), `src/node/upload.ts`, `src/node/scratch.ts` |
 | Status | `src/gateway/slack/status.ts`, `src/gateway/core/status-text.ts` |
 | Idle TTL / resume | `src/config/env.ts` (`idleMs`), `src/agent/manager.ts` (`#armIdle`, `#startSession`, `resume`) |
 

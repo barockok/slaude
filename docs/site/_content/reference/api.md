@@ -37,11 +37,18 @@ Source: `src/gateway/core/surface-mcp.ts` · SDK name `slaude_surface`
 | `edit` | `ref: string`, `text: string` | Edit a previous `reply`. Requires `edit` capability. `ref` is the value returned by `reply`. |
 | `react` | `name: string` *(emoji without colons)*, `ref?: string` | Add an emoji reaction. Defaults to the latest inbound user message. Requires `react` capability. Idempotent on `already_reacted`. |
 | `unreact` | `name: string`, `ref?: string` | Remove a reaction previously added by the agent. |
-| `upload` | `path: string` *(absolute, inside session cwd)*, `title?: string`, `initial_comment?: string`, `alt_text?: string` | Upload a local file into the current thread. `initial_comment` is rendered as mrkdwn above the file. Returns `uploaded file_id=…`. Requires `upload` capability. |
+| `upload` | `path: string` *(absolute, a regular file under the session working directory or `$TMPDIR`)*, `title?: string`, `initial_comment?: string`, `alt_text?: string` | Upload a local file into the current thread. `initial_comment` is rendered as mrkdwn above the file. Returns `uploaded`. On a node the bytes go from the node straight to Slack (see below); in a single process the gateway reads the file from the session working directory. Requires `upload` capability. |
 | `typing` | `on: boolean` | Show or clear the typing indicator. Requires `typing` capability. |
 | `set_one_on_one` | `action: "open" \| "off"`, `scope?: string` | Adjust an already-active `/1on1` session for this thread. `open` admits guests with an optional behavioral scope; `off` releases. Cannot initiate 1on1 — use the slash command. |
 | `set_mention_only` | `active: boolean` | Toggle mention-only mode for this thread. `true` = only respond when @-mentioned. |
 | `soul_override` | `field: "trust" \| "allow" \| "dm" \| "block"`, `action: "add" \| "remove" \| "list" \| "clear"`, `value?: string` | Manager-only runtime ACL override. Takes effect next message and shadows `SOUL.md`. Gated on the live initiator id matching `manager.userId`. |
+
+`upload_begin` and `upload_complete` also exist on the REST plane (`POST /v1/tools/surface/upload_begin` and `upload_complete`) and are REST-only: no model ever sees them. A node's `upload` calls them around its own transfer.
+
+| Tool | Params | Result |
+|------|--------|--------|
+| `upload_begin` | `filename: string`, `size: integer` *(declared bytes, at least 1)*, `alt_text?: string` | `{ uploadUrl, fileId, handle }`. The URL and the handle are credentials for that one file. Refused over `SLAUDE_UPLOAD_MAX_BYTES`, and past 10 a minute per session. |
+| `upload_complete` | `handle: string`, `title?: string`, `initial_comment?: string` | `{ ok, file_id }`. The channel and thread come from the handle (signed at begin), never from the request. The caption goes through the owner's reply rules and may wait on an approval card. |
 
 Example — reply and edit:
 

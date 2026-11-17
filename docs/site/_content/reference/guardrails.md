@@ -355,7 +355,7 @@ tool plane's surface executor, which is the same code):
 |---|---|
 | `reply` (surface and legacy slack tools) | `reply` |
 | `edit` | `edit` |
-| `upload` caption | `upload_caption` (a held caption waits for the card, then the file goes out with it) |
+| `upload` caption | `upload_caption` (a held caption waits for the card, then the file goes out with it; on a node the caption is judged at `upload_complete`, after the bytes are already at Slack, and a denial means the upload is never completed). The title, file name and alt text are not judged. |
 | `post_message` | `post_message` |
 | `post_ephemeral` | `ephemeral` (cannot be held in place: posted after the card) |
 | `proactive_post` (wakes and the heartbeat round) | `proactive_post` (approve is a deny) |
