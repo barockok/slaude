@@ -53,6 +53,7 @@ export class SlackSurface implements Surface {
       thread: { channel: b.conversationId, threadTs: b.threadRef ?? null },
       ...(b.appId || b.teamId ? { app: { apiAppId: b.appId, teamId: b.teamId } } : {}),
       sessionId: b.sessionId ?? null,
+      ...(b.userId ? { replyTo: b.userId } : {}),
       unattended: b.unattended === true,
       ...(b.turnSignal ? { signal: b.turnSignal } : {}),
       ...(b.turnDeadline !== undefined ? { deadline: b.turnDeadline } : {}),

@@ -28,6 +28,10 @@ import { proactiveReplyBlock, proactiveWorkBlock } from "../../proactive/reply-c
 import type { PromiseTransport } from "../../proactive/promises";
 import type { ProactiveTransport } from "../../proactive/dispatch";
 import { channelSessionOn, channelSessionWakes, proactiveFor } from "../../soul/proactive";
+import { engageFor } from "../engage/setting";
+import { observeEngage } from "../engage/observe";
+import { noteAgentMessage } from "../engage/record";
+import { setLastSpeakerRedis } from "../engage/last-speaker";
 import { ledgerTurnRun, type TurnPass } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
@@ -1584,6 +1588,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     mono: !queueDispatch,
     redis: queueDispatch?.turns?.redis ? { client: queueDispatch.turns.redis, prefix: queueDispatch.turns.keys?.prefix ?? "slaude" } : null,
   });
+  // The engage last-speaker record is shared by every replica when there is a Redis (mono keeps it in memory).
+  if (queueDispatch?.turns?.redis) setLastSpeakerRedis(queueDispatch.turns.redis, queueDispatch.turns.keys?.prefix ?? "slaude");
   const guardrailReplyQuiet = makeReplyQuiet();
   agent.setStopGuard((sessionId) => {
     if (voiceTurns.active(sessionId)) return null;
@@ -4674,6 +4680,50 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const user = persona ? getPersonaRegistry().lookupByName(persona)?.slackUserId : undefined;
     return !!user && mentions.includes(user);
   };
+  /**
+   * Implicit engagement, phase 0: for a message the agent is not going to
+   * answer, count what the deterministic tiers would have done. Observe only.
+   * Does nothing at all (no read, no counter) while the channel is at level
+   * `mention`, the default, and never throws or changes what happens next.
+   */
+  const observeImplicit = async (args: any, personaId: string | undefined, site: "drop" | "channel_session"): Promise<void> => {
+    try {
+      const e: any = args.event;
+      if (!e?.channel || engageFor(personaId, e.channel).level === "mention") return;
+      const threadTs: string = e.thread_ts || e.ts;
+      await observeEngage({
+        event: e,
+        personaId,
+        appId: args.context?.apiAppId,
+        botId: await getBotId(args),
+        locks: { oneOnOne: (await OneOnOne.find(e.channel, threadTs)) != null, mentionOnly: false, disengaged: false },
+        threadEngaged: false,
+        site,
+      });
+    } catch {
+      /* observing must never reach the handler */
+    }
+  };
+  /** The agent's own message, seen as an echo: remember it for the next human message. Observe only. */
+  const noteEcho = (args: any, e: any): void => {
+    try {
+      if (!e?.channel || !e?.ts) return;
+      const reg = getPersonaRegistry();
+      const named = e.user ? reg.lookupByUserId(e.user)?.name : undefined;
+      const viaOtherApp = Boolean(e.bot_profile?.app_id && args.context?.apiAppId && e.bot_profile.app_id !== args.context.apiAppId);
+      const persona = named ?? (viaOtherApp ? undefined : appPersonaOf(args));
+      noteAgentMessage({
+        channel: e.channel,
+        thread: e.thread_ts && e.thread_ts !== e.ts ? e.thread_ts : null,
+        ts: e.ts,
+        persona,
+        app: e.bot_profile?.app_id ?? args.context?.apiAppId ?? null,
+        fromEcho: true,
+      });
+    } catch {
+      /* observing must never reach the handler */
+    }
+  };
   /** Handles a root message for the agents in channel mode here. True when no agent is left for today's path. */
   const routeChannelSession = async (args: any, mentioned: (persona: string | undefined) => boolean): Promise<boolean> => {
     const e = args.event;
@@ -4692,6 +4742,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           if (act === "record_doubt") await reactDoubt(args, personaId);
           await handleMessage(args, { personaId, channelSession: true, ...(act === "record_doubt" ? { suppress: true } : {}) });
         } else {
+          await observeImplicit(args, personaId, "channel_session");
           await handleMessage(args, { personaId, channelSession: true, suppress: true });
         }
       } catch (err) {
@@ -4727,6 +4778,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // Drop only self bot-echoes (any registered app's bot); other bots flow through.
     if (await isSelfBotEcho(args, e)) {
       metric.slackDropsTotal.inc({ reason: "self_bot" });
+      noteEcho(args, e);
       return;
     }
     if (!e.user) return;
@@ -4736,6 +4788,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const selfUserIds = await getSelfUserIds();
     if (selfUserIds.has(e.user)) {
       metric.slackDropsTotal.inc({ reason: "self_user" });
+      noteEcho(args, e);
       return;
     }
     // A reply under a proactive post (phase E): recorded as an outcome; a
@@ -4965,6 +5018,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — channel msg, thread not engaged (no @mention)`,
     );
     metric.slackDropsTotal.inc({ reason: "engagement" });
+    await observeImplicit(args, appPersona, "drop");
   });
 
   // REST /v1 (spec §3), built inside the gateway so the tool plane runs THE

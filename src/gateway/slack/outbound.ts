@@ -35,6 +35,7 @@ import { sessionGuardrails, type SessionGuardrails } from "../../guardrails/reso
 import { cachedGuardrails, currentGuardrails, failedSetExists, failedSetExistsCached, guardrailsFailure } from "../../guardrails/snapshot";
 import { failureText } from "../core/failure-codes";
 import type { AppRef } from "../core/transport";
+import { noteAgentMessage } from "../engage/record";
 
 /** Where agent text is going. `runtime` is the runtime's own text through a surface: formatted, never ruled. */
 export type OutboundKind =
@@ -100,6 +101,8 @@ export interface OutboundOptions {
   signal?: AbortSignal;
   /** An edit: the message it rewrites (a held phrase approved or denied there is remembered). */
   ref?: string;
+  /** The person this post answers (the turn's user), for the engage last-speaker record. */
+  replyTo?: string | null;
 }
 
 /** Less time than this left: a text is not held (a card no one can answer), it is refused. */
@@ -278,7 +281,26 @@ export function __resetHeldDecisionsForTests(): void {
 const turnOver = (o: OutboundOptions, now = Date.now()) => !!o.signal?.aborted || (o.deadline !== undefined && now >= o.deadline);
 
 /** outbound(), then post, holding the text on a card when a rule says approve. */
-export async function deliver(text: string, o: OutboundOptions, io: DeliverIo): Promise<Delivered> {
+export async function deliver(text: string, o: OutboundOptions, rawIo: DeliverIo): Promise<Delivered> {
+  // Every agent post lands here: remember it as the channel's last speaker (observe only; a no-op unless the channel opted in).
+  const io: DeliverIo = {
+    ...rawIo,
+    post: async (t) => {
+      const ref = await rawIo.post(t);
+      if ((o.kind === "reply" || o.kind === "post_message" || o.kind === "proactive_post") && o.channel && typeof ref === "string") {
+        const sameThread = !o.thread || o.thread.channel === o.channel;
+        noteAgentMessage({
+          channel: o.channel,
+          thread: sameThread ? (o.thread?.threadTs ?? null) : null,
+          ts: ref,
+          persona: o.persona,
+          app: o.app?.apiAppId ?? null,
+          repliedToUser: o.replyTo ?? null,
+        });
+      }
+      return ref;
+    },
+  };
   const v = await outbound(text, o);
   if (v.action === "deny") return { ok: false, error: v.message };
   if (v.action === "send") return { ok: true, ref: await io.post(v.text) };
