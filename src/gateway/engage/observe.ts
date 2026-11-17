@@ -8,7 +8,7 @@ import { lastSpeakers, type LastSpeaker } from "./last-speaker";
 import { aliasesFor, engageFor } from "./setting";
 import { usersCache, type UsersCache, type UsersSnapshot } from "./users";
 import { engageState } from "./budget";
-import { plan, scheduleShadow, type ShadowDeps } from "./shadow";
+import { plan, runCandidate, scheduleShadow, type ShadowDeps } from "./shadow";
 import { MAX_TEXT, runTiers, type TierFacts, type TierResult } from "./tiers";
 
 /** The reads of the last-speaker record may not hold the handler longer than this; a slow Redis reads as no record. */
@@ -29,6 +29,28 @@ const SETTLED_WITHOUT_RECORD: ReadonlySet<string> = new Set([
   "restricted", "subtype", "bot_author", "lock_1on1", "lock_mention_only", "lock_disengaged",
   "names_other_person", "names_group", "names_other_agent", "vocative_other", "ack",
 ]);
+
+/** A decision to take part, handed to the caller's `act` (phase 2, mode on). */
+export interface ImplicitRun {
+  tier: 1 | 2 | 3;
+  level: "addressed" | "contribute";
+  /** Where the yes came from: the deterministic rules, or the classifier's confident answer. */
+  source: "rules" | "classifier";
+  reason: string;
+  /** The ingress checks (blocked, ignored, locks, commands) already ran for this message, as part of the classifier job. */
+  admitted: boolean;
+}
+
+/** Phase 2: what acts on a run decision. Absent (or the channel in shadow): nothing acts. */
+export interface ActHooks {
+  /**
+   * Take part in the message (admission, owner claim, cap, then the mention path). Never
+   * throws. Counts and logs its own outcome.
+   */
+  run(d: ImplicitRun): Promise<void>;
+  /** A tier 3 candidate may be put off (a debounced root question) and acted on later from a timer. */
+  deferrable: boolean;
+}
 
 export interface ObserveInput {
   /** The Slack message event. */
@@ -56,6 +78,8 @@ export interface ObserveInput {
    * the bot alone cannot be told to be this persona's (the root is then not read as the agent's own).
    */
   sharedBot?: boolean;
+  /** Phase 2: acts on a run decision when the channel's mode is `on`. */
+  act?: ActHooks;
   /** Where the observation was made, for the log line. */
   site: "drop" | "channel_session";
 }
@@ -129,6 +153,57 @@ export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute
   };
 }
 
+/** Reasons of a classifier job that are an error, not a "no" (the rest of the non-answers are counted as the classifier's pass). */
+const ERROR_REASONS: ReadonlySet<string> = new Set(["timeout", "error"]);
+
+/**
+ * Phase 2: the channel's mode is on and the ladder said run or classify. A run acts at once; a
+ * classify is awaited (the deadline is the caller's, and it fails closed: anything but a confident
+ * run is a counted pass, which is today's drop).
+ */
+async function actOn(i: ObserveInput, r: TierResult, level: "addressed" | "contribute", channel: string): Promise<void> {
+  const act = i.act!;
+  const count = (outcome: string) => metric.engageActTotal.inc({ tier: String(r.tier), outcome, level });
+  if (r.action === "run") {
+    await act.run({ tier: r.tier as 1 | 2, level, source: "rules", reason: r.reason, admitted: false });
+    return;
+  }
+  const deps = i.shadow;
+  if (!deps) {
+    // No classifier wiring at all: a candidate nobody can judge is a pass.
+    count("classifier_pass");
+    return;
+  }
+  const thread = i.event.thread_ts && i.event.thread_ts !== i.event.ts ? String(i.event.thread_ts) : null;
+  const cand = { channel, ts: String(i.event.ts), thread, author: String(i.event.user ?? ""), level, persona: i.personaId, app: i.appId, result: r };
+  const run: ImplicitRun = { tier: 3, level, source: "classifier", reason: r.reason, admitted: true };
+  if (r.debounceMs !== undefined) {
+    // A root question waits before it is asked. Acting later is possible only where nothing has recorded the message by then.
+    if (!act.deferrable) {
+      scheduleShadow(cand, deps);
+      count("classifier_pass");
+      return;
+    }
+    scheduleShadow(cand, { ...deps, acting: true, onRun: () => act.run(run) });
+    return;
+  }
+  const guard = (deps.deadlineMs ?? 15_000) * 2 + 1_000;
+  const out = await Promise.race([
+    runCandidate(cand, { ...deps, acting: true }).catch(() => "error" as const),
+    timeout(guard, "error" as const),
+  ]);
+  if (out === null) return; // another copy of this persona owns the call
+  if (out === "error") {
+    count("error");
+    return;
+  }
+  if (out.action === "run" && out.reason === "answer") {
+    await act.run(run);
+    return;
+  }
+  count(ERROR_REASONS.has(out.reason) ? "error" : "classifier_pass");
+}
+
 /**
  * Phase 0 shadow: run the ladder on a message the agent is not going to
  * answer, count what it would have done, and log one line. Counters only: no
@@ -163,6 +238,17 @@ export async function observeEngage(i: ObserveInput): Promise<TierResult | null>
     }
     const tier = r.action === "existing" ? "existing" : String(r.tier);
     metric.engageTotal.inc({ tier, outcome: r.action, level });
+    // Phase 2: a channel whose mode is on acts on a run decision. The kill switch is read now, every time.
+    if (setting.mode === "on" && i.act && (r.action === "run" || r.action === "classify")) {
+      const actTier = r.tier as 1 | 2 | 3;
+      if (env.engageForceShadow()) {
+        metric.engageActTotal.inc({ tier: String(actTier), outcome: "forced_shadow", level });
+      } else {
+        console.log(`[engage] phase0 channel=${channel} level=${level} tier=${tier} would=${r.action} reason=${r.reason} classifier=${r.action === "run" ? "none" : "awaited"} mode=on`);
+        await actOn(i, r, level, channel);
+        return r;
+      }
+    }
     const p = plan(r, i.shadow);
     console.log(`[engage] phase0 channel=${channel} level=${level} tier=${tier} would=${r.action} reason=${r.reason} classifier=${"skip" in p ? `skip:${p.skip}` : "queued"}`);
     if (!("skip" in p) && i.shadow) {

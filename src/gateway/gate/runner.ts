@@ -44,6 +44,8 @@ export interface GateConsult {
 export interface GateRunner {
   readonly mode: GateMode;
   readonly contextMessages: number;
+  /** The decision config's deadline for the whole input-and-answer path, in ms (phase 2 awaits an implicit consult within it). */
+  readonly timeoutMs?: number;
   /** Whether a decision adapter is configured (an implicit consult answers from it whatever the mode). */
   readonly hasAdapter: boolean;
   /** off → undefined (caller keeps today's path). shadow → resolves `actual` immediately; the decision runs detached and is logged. on → the decided action. */
@@ -212,6 +214,7 @@ export function makeGateRunner(o: {
   return {
     mode: o.mode,
     contextMessages: o.contextMessages,
+    timeoutMs: o.timeoutMs,
     hasAdapter: o.adapter !== null,
     consult,
     async consultImplicit(key, input, want) {

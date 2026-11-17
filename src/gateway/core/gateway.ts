@@ -29,10 +29,10 @@ import type { PromiseTransport } from "../../proactive/promises";
 import type { ProactiveTransport } from "../../proactive/dispatch";
 import { channelSessionOn, channelSessionWakes, proactiveFor } from "../../soul/proactive";
 import { aliasesFor, engageFor } from "../engage/setting";
-import { observeEngage } from "../engage/observe";
+import { observeEngage, type ImplicitRun } from "../engage/observe";
 import { clearAgentRecord, noteAgentMessage } from "../engage/record";
 import { setLastSpeakerRedis } from "../engage/last-speaker";
-import { setEngageRedis } from "../engage/budget";
+import { engageState, setEngageRedis } from "../engage/budget";
 import { gateClassifier } from "../engage/gate-classifier";
 import { buildImplicitInput } from "../engage/input";
 import { errorCode, loadUserNames } from "../engage/users";
@@ -4835,19 +4835,33 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * all (no read, no counter) while the channel is at level `mention`, the
    * default, and never throws or changes what happens next.
    */
-  const observeImplicit = async (args: any, personaId: string | undefined, site: "drop" | "channel_session"): Promise<void> => {
+  const observeImplicit = async (args: any, personaId: string | undefined, site: "drop" | "channel_session"): Promise<boolean> => {
+    // Whether the agent took part (handleMessage was called as for a mention): the caller then does not record the message itself.
+    let acted = false;
     try {
       const e: any = args.event;
-      if (!e?.channel || engageFor(personaId, e.channel).level === "mention") return;
+      const setting = e?.channel ? engageFor(personaId, e.channel) : null;
+      if (!setting || setting.level === "mention") return false;
       const threadTs: string = e.thread_ts || e.ts;
       // Observing never holds the recording path: each lookup is cut off, and a miss reads as "unknown".
       const bound = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
         Promise.race([p.catch(() => fallback), new Promise<T>((r) => setTimeout(() => r(fallback), 100).unref?.())]);
       const key = `${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? e.team ?? ""}`;
-      const [botId, oneOnOne] = await Promise.all([
+      const [botId, oneOnOne, agents] = await Promise.all([
         bound(getBotId(args), ""),
         bound(OneOnOne.find(e.channel, threadTs).then((r) => r != null), false),
+        bound(channelSessionAgents(args), [] as (string | undefined)[]),
       ]);
+      // Phase 2 acts only in a channel whose mode is on; the hooks are not even built otherwise.
+      const act = setting.mode === "on"
+        ? {
+            deferrable: site === "drop",
+            run: async (d: ImplicitRun): Promise<void> => {
+              acted = (await actImplicit(args, personaId, d, site)) || acted;
+            },
+          }
+        : undefined;
+      const shadow = shadowFor(args, personaId);
       await observeEngage({
         event: e,
         teamId: args.context?.teamId ?? e.team,
@@ -4856,10 +4870,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const ids = await gateSelfIds(args, personaId);
           return loadUserNames(engageReader(args), { exclude: new Set<string>([ids.botUserId, ...ids.userIds].filter(Boolean)) });
         },
-        shadow: shadowFor(args, personaId),
+        // An awaited classifier call (mode on) is bounded by the decision config's own deadline.
+        shadow: act ? { ...shadow, deadlineMs: gateRunner?.timeoutMs ?? 1000 } : shadow,
+        ...(act ? { act } : {}),
         personaId,
         appId: args.context?.apiAppId,
         botId,
+        // More than one persona behind this app's bot: a root it posted cannot be told to be this persona's.
+        sharedBot: personaId !== appPersonaOf(args) || agents.length > 1,
         // The bot's cached user name (from the auth.test the id lookup already made); only for the persona that is this app's own.
         ...(personaId === appPersonaOf(args) && botIdsCache.get(key)?.name ? { botName: botIdsCache.get(key)!.name } : {}),
         locks: { oneOnOne, mentionOnly: false, disengaged: false },
@@ -4868,6 +4886,51 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       });
     } catch {
       /* observing must never reach the handler */
+    }
+    return acted;
+  };
+  /**
+   * Phase 2: take part in a message nobody @mentioned, as if it had been (the same access checks, the same
+   * handler), with the turn marked implicit. In order: the ingress checks (a classifier job has done
+   * them already), the one-owner claim across personas and apps, the channel's hourly cap, then the mention
+   * path. Never throws. True once handleMessage was called.
+   */
+  const actImplicit = async (args: any, personaId: string | undefined, d: ImplicitRun, site: "drop" | "channel_session"): Promise<boolean> => {
+    const e: any = args.event;
+    const teamId: string | undefined = args.context?.teamId ?? e.team;
+    const count = (outcome: string) => metric.engageActTotal.inc({ tier: String(d.tier), outcome, level: d.level });
+    try {
+      if (!d.admitted) {
+        const admit = shadowFor(args, personaId).admit!;
+        if (!(await admit())) {
+          console.log(`[engage] act skipped channel=${e.channel} tier=${d.tier} reason=admit`);
+          return false;
+        }
+      }
+      const state = engageState();
+      if (!(await state.claimAct(e.channel, String(e.ts)))) {
+        count("lost_claim");
+        return false;
+      }
+      const slot = await state.actSlot(e.channel, env.engageActPerHour(), teamId);
+      if (slot !== "ok") {
+        count(slot === "cap" ? "cap" : "error");
+        return false;
+      }
+      count("acted");
+      console.log(`[engage] act channel=${e.channel} level=${d.level} tier=${d.tier} source=${d.source} reason=${d.reason} ts=${e.ts} persona=${personaId ?? "default"} site=${site}`);
+      if (site === "channel_session") {
+        await handleMessage(args, { personaId, channelSession: true, implicit: true });
+        return true;
+      }
+      // The mention path: engage the thread, remember whether it was engaged before so a pass gives it back.
+      const engagedBefore = await engageOnMention(teamId, e.channel, e.thread_ts || e.ts, e.ts, personaId);
+      await handleMessage(args, { personaId, engagedBefore, implicit: true });
+      return true;
+    } catch (err) {
+      count("error");
+      console.error(`[engage] act failed channel=${e.channel} ts=${e.ts}: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
+      return false;
     }
   };
   /** A human message handled some other way (a mention, a reply in an engaged thread) makes the agent's last-speaker record stale. */
@@ -4915,8 +4978,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           if (act === "record_doubt") await reactDoubt(args, personaId);
           await handleMessage(args, { personaId, channelSession: true, ...(act === "record_doubt" ? { suppress: true } : {}) });
         } else {
-          await observeImplicit(args, personaId, "channel_session");
-          await handleMessage(args, { personaId, channelSession: true, suppress: true });
+          // Mode on and a run decision: the agent takes part as for a root mention here; nothing is recorded separately.
+          if (!(await observeImplicit(args, personaId, "channel_session"))) await handleMessage(args, { personaId, channelSession: true, suppress: true });
         }
       } catch (err) {
         console.error(`[slack-rx] channel session ch=${e.channel} ts=${e.ts} persona=${personaId ?? "default"} failed: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
