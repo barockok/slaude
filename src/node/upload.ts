@@ -21,8 +21,8 @@
  * a boundary against an agent that has a shell on this node and can write to
  * the scratch directory or the working directory itself.
  */
-import { closeSync, createReadStream, existsSync } from "node:fs";
-import { basename, isAbsolute, resolve } from "node:path";
+import { closeSync, createReadStream, existsSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { checkUploadUrl } from "../gateway/upload/url";
 import { openConfinedFd } from "../gateway/core/confined-file";
@@ -50,6 +50,55 @@ export interface DirectUploadDeps {
 }
 
 export type DirectUploadOutcome = { result: ToolResult } | { fallback: "old-gateway" | "no-capability" };
+
+const MAX_TITLE = 1024;
+const MAX_ALT_TEXT = 4000;
+/** How much of Slack's answer is read: `OK - <n>` is a few bytes. */
+const ANSWER_BYTES = 512;
+
+/** Whether `path`, with symlinks resolved as far as it exists, lies inside one of `roots`.
+ *  A path that does not exist yet is judged by its nearest existing ancestor. */
+function withinRoots(path: string, roots: readonly string[]): boolean {
+  let probe = resolve(path);
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      const real = join(realpathSync(probe), ...rest);
+      return roots.some((r) => {
+        try {
+          const root = realpathSync(r);
+          return real === root || real.startsWith(root.endsWith(sep) ? root : root + sep);
+        } catch {
+          return false;
+        }
+      });
+    } catch {
+      const up = dirname(probe);
+      if (up === probe) return false;
+      rest.unshift(basename(probe));
+      probe = up;
+    }
+  }
+}
+
+/** Read at most `max` bytes of a response body, then drop the rest. */
+async function readBounded(res: Response, max: number): Promise<string> {
+  if (!res.body) return "";
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  try {
+    while (n < max) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      chunks.push(value);
+      n += value.byteLength;
+    }
+  } catch { /* an answer that breaks off is read as what arrived */ } finally {
+    reader.cancel().catch(() => {});
+  }
+  return Buffer.concat(chunks).subarray(0, max).toString("utf8");
+}
 
 const err = (text: string): { result: ToolResult } => ({ result: { content: [{ type: "text", text }], isError: true } });
 const done = (): { result: ToolResult } => ({ result: { content: [{ type: "text", text: "uploaded" }] } });
@@ -92,6 +141,10 @@ export async function directUpload(args: UploadArgs, deps: DirectUploadDeps): Pr
   const roots = [wd, deps.scratchDir()].filter((r): r is string => !!r);
   const candidate = isAbsolute(args.path) ? args.path : wd ? resolve(wd, args.path) : args.path;
   if (!isAbsolute(candidate)) return err(refusal(args.path));
+  if (typeof args.title === "string" && args.title.length > MAX_TITLE) return err(`upload refused: the title is longer than ${MAX_TITLE} characters`);
+  if (typeof args.alt_text === "string" && args.alt_text.length > MAX_ALT_TEXT) return err(`upload refused: the alt text is longer than ${MAX_ALT_TEXT} characters`);
+  // Outside the allowed places is one refusal whether or not the path exists.
+  if (!withinRoots(candidate, roots)) return err(refusal(candidate));
   if (!existsSync(candidate)) return err(`file not found on this node: ${args.path}`);
 
   let opened: ReturnType<typeof openConfinedFd>;
@@ -148,7 +201,7 @@ export async function directUpload(args: UploadArgs, deps: DirectUploadDeps): Pr
       return err(`upload failed: the connection to Slack broke while sending the file${code}. Nothing was posted; try again.`);
     }
     file.close();
-    const answer = scrub((await res.text().catch(() => "")).slice(0, 200), secrets).trim();
+    const answer = scrub(await readBounded(res, ANSWER_BYTES), secrets).trim();
     if (res.status !== 200) {
       console.warn(`[node] direct upload: Slack answered HTTP ${res.status}`);
       return err(`upload failed: Slack rejected the file (HTTP ${res.status}). Nothing was posted; try again.`);
@@ -164,11 +217,19 @@ export async function directUpload(args: UploadArgs, deps: DirectUploadDeps): Pr
     }
 
     // complete reads the token again: a held caption can outlast the one begin used.
-    const done2 = await deps.client.uploadComplete(
-      { handle: begun.handle, ...(args.title ? { title: args.title } : {}), ...(args.initial_comment ? { initial_comment: args.initial_comment } : {}) },
-      deps.tokenFor() ?? token,
-      deps.signal,
-    );
+    let done2: ToolResult;
+    try {
+      done2 = await deps.client.uploadComplete(
+        { handle: begun.handle, ...(args.title ? { title: args.title } : {}), ...(args.initial_comment ? { initial_comment: args.initial_comment } : {}) },
+        deps.tokenFor() ?? token,
+        deps.signal,
+      );
+    } catch {
+      // A network error or a non-200 from the gateway: never its raw message.
+      console.warn("[node] direct upload: the gateway's complete call failed");
+      if (deps.signal?.aborted) return err("upload stopped: the turn was stopped. The file reached Slack but was not posted.");
+      return err("upload failed: the upload could not be completed. The file reached Slack but was not posted; try again.");
+    }
     if (done2.isError) return err(scrub(done2.content[0]?.text ?? "upload failed", secrets));
     return done();
   } finally {

@@ -289,6 +289,26 @@ describe("what the node refuses before anything leaves it", () => {
     expect(apiCalls).toHaveLength(0);
   });
 
+  test("a path that does not exist outside the allowed places is refused like one that does, so refusals do not reveal what exists", async () => {
+    const a = await upload({ path: "/etc/hosts" });
+    const b = await upload({ path: "/etc/slaude-no-such-file-zz/hosts" });
+    const c = await upload({ path: join(outside, "no-such-zz.txt") });
+    for (const r of [a, b, c]) expect(text(r)).toContain("not a regular file under this session's working directory or scratch directory");
+    expect(text(b)).not.toContain("not found");
+    expect(text(upload === undefined ? a : await upload({ path: join(work, "missing-zz.txt") }))).toContain("file not found on this node");
+  });
+
+  test("an over-long title or alt text is refused before any byte is sent", async () => {
+    writeFileSync(join(scratch, "long.txt"), "x");
+    for (const extra of [{ title: "t".repeat(1025) }, { alt_text: "a".repeat(4001) }]) {
+      const r = await upload({ path: join(scratch, "long.txt"), ...extra });
+      expect(r.isError).toBe(true);
+      expect(text(r)).toMatch(/title|alt text/);
+    }
+    expect(apiCalls).toHaveLength(0);
+    expect(received).toHaveLength(0);
+  });
+
   test("a directory and an empty file", async () => {
     mkdirSync(join(work, "adir"), { recursive: true });
     writeFileSync(join(work, "empty.txt"), "");
@@ -409,6 +429,34 @@ describe("Slack's answer to the transfer is checked before complete", () => {
       expect(text(r)).not.toContain("169.254");
       expect(fetched).toEqual([]);
       expect(completes()).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("Slack's answer is read only up to a few hundred bytes", async () => {
+    writeFileSync(join(scratch, "endless.bin"), bytesOf(50));
+    const endless = (async () => new Response(new ReadableStream({ pull(c) { c.enqueue(new TextEncoder().encode("x".repeat(65536))); } }), { status: 200 })) as any;
+    const t = Date.now();
+    const r = await upload({ path: join(scratch, "endless.bin") }, { uploadFetch: endless });
+    expect(Date.now() - t).toBeLessThan(5000);
+    expect(r.isError).toBe(true);
+    expect(completes()).toHaveLength(0);
+  });
+
+  test("a failing complete is a clean error that never carries the raw message", async () => {
+    writeFileSync(join(scratch, "cfail.bin"), bytesOf(50));
+    const real = nodeClient.postTool.bind(nodeClient);
+    const spy = spyOn(nodeClient, "postTool").mockImplementation(async (seg: string, name: string, body: any, tok: string, sig?: AbortSignal) => {
+      if (name === "upload_complete") throw new Error(`connect ECONNREFUSED handle=${body.handle} url=UPLOADURLSECRET`);
+      return real(seg, name, body, tok, sig);
+    });
+    try {
+      const r = await upload({ path: join(scratch, "cfail.bin") });
+      expect(r.isError).toBe(true);
+      expect(text(r)).toContain("could not be completed");
+      expect(text(r)).not.toContain("ECONNREFUSED");
+      expectNoSecrets([text(r)]);
     } finally {
       spy.mockRestore();
     }

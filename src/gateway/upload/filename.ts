@@ -8,7 +8,7 @@ export const MAX_FILENAME_LENGTH = 255;
  * the extension kept. Falls back to "file" when nothing is left.
  */
 export function sanitizeFilename(raw: string): string {
-  const base = raw.split(/[\\/]/).pop() ?? "";
+  const base = raw.toWellFormed().split(/[\\/]/).pop() ?? "";
   // C0 and C1 controls, line and paragraph separators, bidi overrides and isolates, zero-width marks.
   let name = base.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069\u200b-\u200f\ufeff]/g, "").trim();
   if (name === "" || name === "." || name === "..") return "file";

@@ -106,6 +106,12 @@ describe("upload_begin", () => {
     expect(calls[2]!.args.filename).toBe("ok.txt");
   });
 
+  test("a lone surrogate in a name is replaced, so the name is well-formed", async () => {
+    await begin({ filename: "a\ud800b.txt", size: 1 });
+    expect(calls[0]!.args.filename).toBe("a\ufffdb.txt");
+    expect(calls[0]!.args.filename.isWellFormed()).toBe(true);
+  });
+
   test("a name with nothing left after cleaning falls back to a fixed name", async () => {
     await begin({ filename: "..", size: 1 });
     expect(calls[0]!.args.filename).toBe("file");
