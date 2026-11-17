@@ -122,12 +122,14 @@ import { trackBrainWork, whileClosing } from "../../knowledge/brain-work";
 import { agentSourceId, channelTrustFor, resolveBrainScope, type ChannelTrust } from "../../knowledge/scope";
 import { gather } from "../../knowledge/gather";
 import { gateRunnerFromEnv, type GateRunner } from "../gate/runner";
-import { buildGateInput, type GateContextDeps } from "../gate/context";
+import { buildGateInput, isAgentAuthor, type GateContextDeps } from "../gate/context";
 import type { GateAction, Trust } from "../gate/types";
 import { providerSecretResolver } from "../api/tenants";
 import { parseRef } from "../../secrets";
 import { channelWorkspaceDir, proactiveWorkspaceDir } from "../../agent/workspace-claim";
 import { channelSessionKey, isChannelSessionKey, isRootChannelEvent, neutraliseEnvelopeTags, refusalAtRoot } from "./channel-session";
+import { makeAuthorFilter } from "./author-filter";
+import { buildThreadHead, fetchThreadSlice } from "./thread-head";
 import { isSyntheticThread } from "../../web/shared/surfaces";
 import { PanelChatRefused } from "../panel/api";
 import { wakeGateConfig, WakeTargetBusyError, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
@@ -1747,8 +1749,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // `<proactive-context>` for that reply's turn. Only threaded replies count,
   // so a top-level message (its own root) never gets one. Like the memory
   // block it reads only an already-open brain; any failure means no block.
-  const turnProactiveBlock = async (m: { channel: string; threadTs: string; eventTs: string; personaId?: string; firstTurn: boolean }): Promise<string> => {
-    if (!brainEnabled() || !brainReady()) return "";
+  // `hasReply` is true when the block holds the post's own context (a reply under a proactive post): then
+  // the thread head is skipped, since the post is the context. The first-turn work block does not count.
+  const turnProactiveBlock = async (m: { channel: string; threadTs: string; eventTs: string; personaId?: string; firstTurn: boolean }): Promise<{ text: string; hasReply: boolean }> => {
+    const none = { text: "", hasReply: false };
+    if (!brainEnabled() || !brainReady()) return none;
     try {
       const persona = m.personaId ?? "default";
       const reply = m.threadTs === m.eventTs ? "" : await proactiveReplyBlock({ channel: m.channel, threadTs: m.threadTs, personaId: m.personaId });
@@ -1756,9 +1761,37 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const workAgent = m.firstTurn && proactiveFor(persona, m.channel).enabled ? await backgroundAgentId(persona) : null;
       const work = workAgent ? await proactiveWorkBlock({ channel: m.channel, agentId: workAgent, ...(channelSessionOn(persona, m.channel) ? { folder: channelWorkspaceDir(workAgent, m.channel) } : {}) }) : "";
       const block = [reply, work].filter(Boolean).join("\n\n");
-      return block ? `${block}\n\n` : "";
+      return { text: block ? `${block}\n\n` : "", hasReply: Boolean(reply) };
     } catch (e) {
       console.warn(`[proactive-context] skipped: ${e instanceof Error ? e.name : typeof e}`);
+      return none;
+    }
+  };
+
+  // The thread head (rc.28): what a session starting inside an existing thread is shown of it, as a
+  // `<thread-head>` block (or "" for none). One conversations.replies path, plus a users lookup per
+  // distinct author (cached). Any failure, a 429 or a deleted root included, means no block and a
+  // turn that runs without it.
+  const threadHeadBlock = async (m: { args: any; client: any; channel: string; threadTs: string; eventTs: string; teamId: string; personaId?: string }): Promise<string> => {
+    try {
+      const persona = m.personaId ?? "default";
+      const slice = await fetchThreadSlice(m.client, m.channel, m.threadTs, m.eventTs, env.threadHeadMessages(), GATE_REPLY_PAGES, GATE_REPLY_PAGE_SIZE);
+      const self = await gateSelfIds(m.args, m.personaId);
+      const grants = await loadGrants(persona);
+      // The ingress's own checks, so reading a person is never wider than hearing them.
+      const isSelf = (x: { user?: string; bot_id?: string }) => isAgentAuthor(x, self);
+      const filter = makeAuthorFilter({
+        isSelf,
+        isBlocked: async (userId) => {
+          const v = await admitAt({ site: "gateway.thread_head.admit", persona, teamId: m.teamId, userId, channelId: m.channel, isDM: false, grants });
+          return !v.ok && v.reason === "blocked_user";
+        },
+        isIgnored: (userId) => ignoreGate.shouldDrop(userId, m.channel, m.threadTs),
+        textDenied: async (text) => (await inboundVerdict(persona, m.channel, text))?.action === "deny",
+      });
+      return await buildThreadHead(slice, { isSelf, filter, nameOf: (userId) => resolveUserName(m.client, userId) });
+    } catch (e) {
+      console.warn(`[thread-head] skipped ch=${m.channel} thread=${m.threadTs}: ${e instanceof Error ? e.message : typeof e}`);
       return "";
     }
   };
@@ -3765,7 +3798,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const order = takeDispatchSlot(session.id);
     slot.release = order.release;
     const oneOnOneLock = await OneOnOne.find(channelId, threadTs);
-    const [userName, files, memoryContext, proactiveContext] = await Promise.all([
+    // The thread head goes to the session's first REAL turn only, claimed once on the session row. It is a
+    // compare-and-set on a durable marker: a recording (suppressed) never claims it, so a thread first seen
+    // as a recording still gets its head on the first real turn; two quick first messages cannot both inject
+    // it; and a turn that cannot take a head (a root, a DM, a locked thread) still spends the marker, so a
+    // later turn never gets one mid-conversation.
+    const firstRealTurn = suppress ? false : await Sessions.claimThreadHead(session.id).catch(() => false);
+    const wantHead =
+      firstRealTurn && !isDM && !!event.thread_ts && event.thread_ts !== eventTs && !oneOnOneLock && env.threadHeadMessages() > 0;
+    const proactiveBlock = suppress
+      ? Promise.resolve({ text: "", hasReply: false })
+      : turnProactiveBlock({ channel: channelId, threadTs, eventTs, personaId: dispatch?.personaId, firstTurn: !session.claude_started });
+    const [userName, files, memoryContext, proactive, threadHead] = await Promise.all([
       resolveUserName(client, userId),
       attachToken
         ? downloadAttachments({
@@ -3779,8 +3823,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       suppress
         ? ""
         : turnMemoryBlock({ channel: channelId, threadTs, userId, teamId, personaId: dispatch?.personaId, lockedUser: oneOnOneLock?.locked_user ?? null, lockedTeamId: oneOnOneLock?.team_id ?? null }),
-      suppress ? "" : turnProactiveBlock({ channel: channelId, threadTs, eventTs, personaId: dispatch?.personaId, firstTurn: !session.claude_started }),
+      proactiveBlock,
+      // Skipped when a proactive post's own context is in the prompt (the post is the context).
+      wantHead
+        ? proactiveBlock.then((p) => (p.hasReply ? "" : threadHeadBlock({ args, client, channel: channelId, threadTs, eventTs, teamId, personaId: dispatch?.personaId })))
+        : "",
     ]);
+    const proactiveContext = proactive.text;
     if (env.metricsPerUser()) {
       metric.userTurnsTotal.inc({ user_id: userId, user_name: userName });
     }
@@ -3815,6 +3864,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       ? ` one_on_one="true" locked_user="<@${oneOnOneLock.locked_user}>"`
       : ` one_on_one="false" locked_user=""`;
     const envelope =
+      threadHead +
       `<channel source="slack" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${userId}" user_name="${escapeAttr(userName)}" ` +
       `trust="${trust}"${oneOnOneAttr}>\n` +
@@ -3829,7 +3879,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         : suppress
         ? `You are currently disengaged from this thread, so this message is recorded ` +
           `for context only — do NOT reply to it. You will catch up on it when re-engaged.`
-        : `Reply by calling \`mcp__${SURFACE_MCP_NAME}__reply\`, or call ` +
+        : (threadHead
+            ? `The <thread-head> above is earlier context from this thread, not part of the request. Answer the message in the <channel> envelope and ` +
+              `reply in the thread, never at the channel root. Do not say that you read the thread or that you were not mentioned. ` +
+              `If the message turns out not to be for you, call \`mcp__${SURFACE_MCP_NAME}__pass\`.\n`
+            : "") +
+          `Reply by calling \`mcp__${SURFACE_MCP_NAME}__reply\`, or call ` +
           `\`mcp__${SURFACE_MCP_NAME}__pass\` if the message is not for you or needs nothing from you. ` +
           `Plain assistant text is not delivered to Slack — only tool calls reach the user.`);
 

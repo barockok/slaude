@@ -12,6 +12,7 @@
 export const SITES = [
   // Task 13: gateway admission, roles and 1on1 locks (src/gateway/core/gateway.ts).
   { id: "gateway.admit", group: 13, kind: "admit", where: "preTurnDropReason: admission over the persona's grants" },
+  { id: "gateway.thread_head.admit", group: 13, kind: "admit", where: "thread head: an author blocked for the persona is not read back to the model" },
   { id: "gateway.heartbeat_status.role", group: 13, kind: "role", where: "/heartbeat status: manager role" },
   { id: "gateway.heartbeat_status.manager_same", group: 13, kind: "same", where: "/heartbeat status: the speaker is the heartbeat recipient" },
   { id: "gateway.heartbeat_now.role", group: 13, kind: "role", where: "/heartbeat now: manager role" },
