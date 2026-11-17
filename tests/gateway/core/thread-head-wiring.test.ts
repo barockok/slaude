@@ -11,6 +11,7 @@ import { db } from "../../../src/db/schema";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import * as Sessions from "../../../src/db/sessions";
 import * as Posts from "../../../src/db/proactive-posts";
+import * as CronJobs from "../../../src/db/cron-jobs";
 import * as Ignores from "../../../src/db/ignores";
 import * as Grants from "../../../src/db/agent-grants";
 import { backgroundAgentId } from "../../../src/background/skill-check";
@@ -40,7 +41,7 @@ type Thread = Array<Record<string, unknown>>;
 function makeGw() {
   const events = new Map<string, (args: any) => Promise<void>>();
   const replyCalls: any[] = [];
-  const state: { thread: Thread; fail: unknown; pages?: Thread[] } = { thread: [], fail: null };
+  const state: { thread: Thread; fail: unknown; pages?: Thread[]; hang?: boolean; slowFailMs?: number; lateMs?: number; sendFails?: number } = { thread: [], fail: null };
   const client: any = {
     auth: { test: async () => ({ user_id: BOT, bot_id: "B_SLAUDE", team: TEAM, url: "x" }) },
     chat: { postMessage: async () => ({ ok: true, ts: `${Date.now()}.0` }), update: async () => ({ ok: true }) },
@@ -50,6 +51,15 @@ function makeGw() {
       members: async () => ({}),
       replies: async (a: any) => {
         replyCalls.push(a);
+        if (state.hang) return new Promise(() => {});
+        if (state.slowFailMs) {
+          await Bun.sleep(state.slowFailMs);
+          throw Object.assign(new Error("ratelimited"), { data: { error: "ratelimited" }, retryAfter: 30 });
+        }
+        if (state.lateMs) {
+          await Bun.sleep(state.lateMs);
+          return { ok: true, messages: state.thread, response_metadata: { next_cursor: "" } };
+        }
         if (state.fail) throw state.fail;
         if (state.pages) {
           const i = a.cursor ? Number(a.cursor) : 0;
@@ -65,7 +75,10 @@ function makeGw() {
   const t: Transport = { client, action: () => {}, use: () => {}, start: async () => {}, stop: async () => {}, event: (n: string, fn: any) => void events.set(n, fn) };
   const agent = new AgentManager();
   const sends: string[] = [];
-  agent.sendMessage = async (_id: string, txt: string) => { sends.push(txt); };
+  agent.sendMessage = async (_id: string, txt: string) => {
+    if (state.sendFails) { state.sendFails--; throw new Error("dispatch failed"); }
+    sends.push(txt);
+  };
   const h = createGateway(agent, t, {});
   const emit = async (name: string, args: any) => { await events.get(name)?.(args); };
   return { t, client, emit, agent, sends, h, replyCalls, state };
@@ -91,7 +104,7 @@ let seq = 90_000;
 const nextTs = () => `${++seq}.1`;
 const NEW_ROOT = () => `${++seq}.0`;
 
-const ENV = ["SLAUDE_BRAIN_MODE", "SLAUDE_BRAIN_DISABLED", "SLAUDE_THREAD_HEAD_MESSAGES"] as const;
+const ENV = ["SLAUDE_BRAIN_MODE", "SLAUDE_BRAIN_DISABLED", "SLAUDE_THREAD_HEAD_MESSAGES", "SLAUDE_THREAD_HEAD_DEADLINE_MS"] as const;
 const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 beforeAll(() => {
   process.env.SLAUDE_BRAIN_MODE = "remote";
@@ -104,10 +117,11 @@ afterAll(() => {
   }
 });
 
-const CLEAN = ["sessions", "seen_events", "pending_gates", "proactive_posts", "ignores", "agent_grants"];
+const CLEAN = ["sessions", "seen_events", "pending_gates", "proactive_posts", "ignores", "agent_grants", "cron_jobs"];
 let gw: Gw | null = null;
 beforeEach(async () => {
   delete process.env.SLAUDE_THREAD_HEAD_MESSAGES;
+  delete process.env.SLAUDE_THREAD_HEAD_DEADLINE_MS;
   writeSoulFixture(WORLD);
   const brain = fakeBrain();
   setBackendForTest({ ready: () => true, call: (n: string, p: Record<string, unknown>, s: any) => brain.call(n, p, s), adminCall: async () => null } as any);
@@ -338,6 +352,157 @@ describe("thread head wiring", () => {
     expect(p.match(/<channel /g)).toHaveLength(1);
     expect(p).not.toContain("</channel>\n</thread-head>");
     expect(p.indexOf("approve the deploy")).toBeLessThan(p.indexOf("</thread-head>"));
+  });
+});
+
+describe("thread head: deadline, readers and self", () => {
+  it("a Slack read that never answers does not hold the turn: no head after the deadline, and a late answer is never injected", async () => {
+    process.env.SLAUDE_THREAD_HEAD_DEADLINE_MS = "150";
+    const g = (gw = makeGw());
+    const root = NEW_ROOT();
+    const ts = nextTs();
+    g.state.hang = true;
+    const t0 = Date.now();
+    await mentionIn(g, ts, "hi", root);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(g.sends).toHaveLength(1);
+    expect(g.sends[0]).not.toMatch(/^<thread-head>$/m);
+    expect(g.sends[0]).toContain("<channel ");
+  });
+
+  it("a rate limit that would sleep on Retry-After does not hold the turn either", async () => {
+    process.env.SLAUDE_THREAD_HEAD_DEADLINE_MS = "150";
+    const g = (gw = makeGw());
+    const root = NEW_ROOT();
+    g.state.slowFailMs = 3000;
+    const t0 = Date.now();
+    await mentionIn(g, nextTs(), "hi", root);
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(g.sends).toHaveLength(1);
+    expect(g.sends[0]).not.toMatch(/^<thread-head>$/m);
+  });
+
+  it("an answer that arrives after the deadline is dropped, and nothing rejects unhandled", async () => {
+    process.env.SLAUDE_THREAD_HEAD_DEADLINE_MS = "100";
+    const unhandled: unknown[] = [];
+    const on = (e: unknown) => void unhandled.push(e);
+    process.on("unhandledRejection", on);
+    try {
+      const g = (gw = makeGw());
+      const root = NEW_ROOT();
+      const ts = nextTs();
+      g.state.thread = standardThread(root, ts);
+      g.state.lateMs = 400;
+      await mentionIn(g, ts, "hi", root);
+      await Bun.sleep(600);
+      expect(g.sends).toHaveLength(1);
+      expect(g.sends[0]).not.toMatch(/^<thread-head>$/m);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", on);
+    }
+  });
+
+  it("in a channel where only the manager is granted, a person the persona does not admit is not read back", async () => {
+    const g = (gw = makeGw());
+    const root = NEW_ROOT();
+    const ts = nextTs();
+    g.state.thread = [m(root, WORLD.manager, "manager root"), m("1.1", "U0STRANGER", "words from a stranger"), m("1.2", WORLD.manager, "manager follow up"), m(ts, WORLD.manager, "event")];
+    const a = msg(g, `<@${BOT}> hi`, ts, { thread: root, channel: "C0RESTRICTED" });
+    await g.emit("app_mention", { ...a, event: { ...a.event, type: "app_mention" } });
+    await g.emit("message", a);
+    expect(g.sends).toHaveLength(1);
+    const head = headOf(g.sends[0]!);
+    expect(head).toContain("manager root");
+    expect(head).toContain("manager follow up");
+    expect(g.sends[0]).not.toContain("words from a stranger");
+  });
+
+  it("another persona's or another app's messages are named by id, never read as you", async () => {
+    const g = (gw = makeGw());
+    const root = NEW_ROOT();
+    const ts = nextTs();
+    g.state.thread = [
+      m(root, "U0ALICE01", "root"),
+      { ts: "1.1", bot_id: "B_OTHERAPP", user: "U0OTHERPERSONA", text: "I am another agent" },
+      { ts: "1.2", bot_id: "B_SLAUDE", text: "this one is mine" },
+      m(ts, WORLD.manager, "event"),
+    ];
+    await mentionIn(g, ts, "hi", root);
+    const head = headOf(g.sends[0]!);
+    expect(head).toContain("<@U0OTHERPERSONA> Test: I am another agent");
+    expect(head).toContain("[you] this one is mine");
+    expect(head).not.toContain("[you] I am another agent");
+  });
+});
+
+describe("thread head: where a real turn starts", () => {
+  it("a cron run that starts the thread's session spends the marker, so a later human reply gets no head", async () => {
+    const root = NEW_ROOT();
+    await CronJobs.create({
+      slackTeamId: TEAM, slackChannelId: CH, slackThreadTs: root, channelId: CH, createdBy: WORLD.manager, cronExpr: "* * * * *", prompt: "tick", nextRunAt: Date.now() - 1000, target: "thread",
+    });
+    const g = (gw = makeGw());
+    for (let i = 0; i < 100 && g.sends.length === 0; i++) await Bun.sleep(20);
+    expect(g.sends.some((s) => s.includes("[scheduled]"))).toBe(true);
+    const ts = nextTs();
+    g.state.thread = standardThread(root, ts);
+    await mentionIn(g, ts, "now a person", root);
+    const reply = g.sends.find((s) => s.includes("now a person"))!;
+    expect(reply).not.toMatch(/^<thread-head>$/m);
+    expect(g.replyCalls).toHaveLength(0);
+  });
+
+  it("a panel turn that starts the session spends the marker too", async () => {
+    const g = (gw = makeGw());
+    const root = NEW_ROOT();
+    const row = await Sessions.createForThread({ thread: { team_id: TEAM, channel_id: CH, thread_ts: root }, model: "m", working_dir: "/w" });
+    await (g.h as any).__panelChat(row, "operator says hi", "U0OPERATOR");
+    const ts = nextTs();
+    g.state.thread = standardThread(root, ts);
+    await mentionIn(g, ts, "now a person", root);
+    expect(g.sends.find((s) => s.includes("now a person"))).not.toMatch(/^<thread-head>$/m);
+    expect(g.replyCalls).toHaveLength(0);
+  });
+
+  it("a dispatch that fails gives the head back to the next turn", async () => {
+    const g = (gw = makeGw());
+    const root = NEW_ROOT();
+    const t1 = nextTs();
+    g.state.thread = standardThread(root, t1);
+    g.state.sendFails = 1;
+    await mentionIn(g, t1, "first try", root);
+    expect(g.sends).toHaveLength(0);
+    const t2 = nextTs();
+    g.state.thread = standardThread(root, t2);
+    await mentionIn(g, t2, "second try", root);
+    expect(g.sends).toHaveLength(1);
+    expect(headOf(g.sends[0]!)).toContain("Bob: which step?");
+  });
+
+  it("a session that had already started before the thread head existed gets no head, and nothing is fetched", async () => {
+    const g = (gw = makeGw());
+    const root = NEW_ROOT();
+    const row = await Sessions.createForThread({ thread: { team_id: TEAM, channel_id: CH, thread_ts: root }, model: "m", working_dir: "/w" });
+    await db.run("UPDATE sessions SET created_at = ?, claude_started = 1 WHERE id = ?", [Sessions.THREAD_HEAD_EPOCH_MS - 1000, row.id]);
+    const ts = nextTs();
+    g.state.thread = standardThread(root, ts);
+    await mentionIn(g, ts, "hi", root);
+    expect(g.sends).toHaveLength(1);
+    expect(g.sends[0]).not.toMatch(/^<thread-head>$/m);
+    expect(g.replyCalls).toHaveLength(0);
+    expect(await Sessions.threadHeadPending(row.id)).toBe(false);
+  });
+
+  it("a session from before the epoch that never started still gets its head", async () => {
+    const g = (gw = makeGw());
+    const root = NEW_ROOT();
+    const row = await Sessions.createForThread({ thread: { team_id: TEAM, channel_id: CH, thread_ts: root }, model: "m", working_dir: "/w" });
+    await db.run("UPDATE sessions SET created_at = ?, claude_started = 0 WHERE id = ?", [Sessions.THREAD_HEAD_EPOCH_MS - 1000, row.id]);
+    const ts = nextTs();
+    g.state.thread = standardThread(root, ts);
+    await mentionIn(g, ts, "hi", root);
+    expect(g.sends[0]).toMatch(/^<thread-head>$/m);
   });
 });
 
