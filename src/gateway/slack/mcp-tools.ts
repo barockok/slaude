@@ -39,6 +39,8 @@ function outOpts(ctx: SlackContext, kind: OutboundKind, channel?: string): Outbo
     unattended: !!ctx.wake || ctx.unattended === true,
     ...(ctx.turnSignal?.() ? { signal: ctx.turnSignal()! } : {}),
     ...(ctx.turnDeadline !== undefined ? { deadline: ctx.turnDeadline } : {}),
+    // Only a human's message in Slack, answered interactively, names who the post answers.
+    ...(ctx.origin === "slack" && !ctx.wake && ctx.unattended !== true && ctx.answers ? { replyTo: ctx.answers } : {}),
   };
 }
 
@@ -83,6 +85,8 @@ export type SlackContext = {
   postTarget?: "thread" | "channel";
   /** Slack user id of the current turn's author. */
   userId?: string;
+  /** The person whose message the agent is answering: set by a message that gets a turn, never by one that is only recorded (suppressed). */
+  answers?: string;
   /** Slack team id of the current workspace. */
   teamId?: string;
   /** Set on a heartbeat wake's turn (the route, or the signed `wake` claim). */
@@ -374,7 +378,7 @@ export const slackHandlers = {
       }
       const replyOpts = thread_ts ? (broadcast ? { thread_ts, reply_broadcast: true as const } : { thread_ts }) : {};
       let where = channel;
-      const r = await deliver(text, outOpts(ctx, "post_message", channel), {
+      const r = await deliver(text, { ...outOpts(ctx, "post_message", channel), destThread: thread_ts ?? null }, {
         post: async (t) => {
           const p = await ctx.client.chat.postMessage({ channel, text: t, mrkdwn: true, ...replyOpts }); // outbound: legacy slack tool, through deliver()
           where = String(p.channel ?? channel);
