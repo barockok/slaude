@@ -107,7 +107,7 @@ async function readRecords(channel: string, thread: string | null, own: string, 
 }
 
 /** The facts for the ladder from a Slack event, with the records already read. */
-export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute", restricted: boolean, own: LastSpeaker | null, other: LastSpeaker | null, alternated = false): TierFacts {
+export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute", restricted: boolean, own: LastSpeaker | null, other: LastSpeaker | null, alternated = false, rootAware = false): TierFacts {
   const e = i.event;
   const me = i.personaId ?? "default";
   const self = new Set<string>([i.botId].filter(Boolean));
@@ -121,10 +121,10 @@ export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute
   if (raw.length > MAX_TEXT) metric.engageTruncatedTotal.inc();
   const displayNames = [p?.config?.name, i.botName].filter(usableName);
   // The root is the agent's own when Slack says its author is this app's bot (and no other persona shares that bot)
-  // or this persona's own user. An absent field, or a root by another persona, is not.
+  // or this persona's own user, and only in a channel whose mode is on (shadow stays as in phase 1). An absent field, or a root by another persona, is not.
   const parent = typeof e.parent_user_id === "string" ? e.parent_user_id : "";
   const parentPersona = parent ? getPersonaRegistry().lookupByUserId(parent) : null;
-  const rootIsAgent = !isRoot && !!parent && (parentPersona ? foldAlias(parentPersona.name) === foldAlias(me) : parent === i.botId && !i.sharedBot);
+  const rootIsAgent = rootAware && !isRoot && !!parent && (parentPersona ? foldAlias(parentPersona.name) === foldAlias(me) : parent === i.botId && !i.sharedBot);
   return {
     text: raw.length > MAX_TEXT ? raw.slice(0, MAX_TEXT) : raw,
     subtype: e.subtype ?? null,
@@ -225,7 +225,7 @@ export async function observeEngage(i: ObserveInput): Promise<TierResult | null>
     const level = setting.level;
     if (i.loadUsers) (i.users ?? usersCache()).ensure(i.teamId, i.loadUsers);
     const restricted = channelTrustFor(channel, trustSoulFor(i.personaId)) === "unknown";
-    let r = runTiers(factsFromEvent(i, level, restricted, null, null));
+    let r = runTiers(factsFromEvent(i, level, restricted, null, null, false, setting.mode === "on"));
     if (!SETTLED_WITHOUT_RECORD.has(r.reason)) {
       const thread: string | null = i.event.thread_ts && i.event.thread_ts !== i.event.ts ? i.event.thread_ts : null;
       const me = i.personaId ?? "default";
@@ -233,7 +233,7 @@ export async function observeEngage(i: ObserveInput): Promise<TierResult | null>
       const rec = await readRecords(channel, thread, me, others);
       if (rec.own || rec.other) {
         const alt = rec.own && thread ? await Promise.race([(i.shadow?.state ?? engageState()).alternated(channel, thread).catch(() => false), timeout(RECORD_READ_BUDGET_MS, false)]) : false;
-        r = runTiers(factsFromEvent(i, level, restricted, rec.own, rec.other, alt));
+        r = runTiers(factsFromEvent(i, level, restricted, rec.own, rec.other, alt, setting.mode === "on"));
       }
     }
     const tier = r.action === "existing" ? "existing" : String(r.tier);

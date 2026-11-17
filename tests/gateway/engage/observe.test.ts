@@ -8,7 +8,7 @@ import { clearAgentRecord } from "../../../src/gateway/engage/record";
 import { makeUsersCache } from "../../../src/gateway/engage/users";
 
 const CH = "C0SHARED";
-const yaml = (name: string, user: string) => `
+const yaml = (name: string, user: string, mode = "on") => `
 name: ${name}
 slackUserId: ${user}
 soul: You are ${name}.
@@ -16,10 +16,10 @@ access:
   channels:
     trusted: [${CH}]
 channels:
-  ${CH}: { engage: { level: addressed } }
+  ${CH}: { engage: { level: addressed, mode: ${mode} } }
 `;
-function persona(name: string, user: string): Persona {
-  const { spec } = parseAgentYaml(name, yaml(name, user));
+function persona(name: string, user: string, mode = "on"): Persona {
+  const { spec } = parseAgentYaml(name, yaml(name, user, mode));
   const { soulData, ...definition } = spec.definition;
   return { name, slackUserId: user, soulMd: spec.soul, config: { slackUserId: user, name }, outClient: null, model: null, runsOn: null, provider: null, kbSources: null, background: null, mcp: null, soulJson: soulData, definition } as Persona;
 }
@@ -173,6 +173,11 @@ describe("the thread root is the agent's own message", () => {
     expect(await reply("ana", { parent_user_id: "UANA1" })).toMatchObject({ tier: 3, action: "classify" });
     expect(await reply("ana", { parent_user_id: "UROBIN" })).toMatchObject({ tier: 0, action: "pass" });
     expect(await reply("robin", { parent_user_id: "UROBIN" })).toMatchObject({ tier: 3, action: "classify" });
+  });
+  test("in a channel in shadow the root is not read at all (phase 1 behaviour)", async () => {
+    setPersonaRegistry(registry(persona("ana", "UANA1"), persona("robin", "UROBIN"), persona("kit", "UKIT1", "shadow")));
+    const r = await reply("kit", { parent_user_id: "UBOT" });
+    expect(r).toMatchObject({ action: "pass", reason: "no_band" });
   });
   test("a root posted through a shared bot cannot be told: refused as today", async () => {
     expect(await reply("ana", { parent_user_id: "UBOT" }, { sharedBot: true })).toMatchObject({ tier: 0, action: "pass", reason: "no_band" });
