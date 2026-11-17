@@ -19,6 +19,8 @@
  *    caller reads that as a pass.
  * There is no knowledge-base search, so no document score leaves with it.
  */
+import { foldAlias } from "../../persona/aliases";
+import { redactSecrets } from "../../redact";
 import { normalizeSlackText } from "../gate/context";
 import type { GateInput, ImplicitLevel, Trust } from "../gate/types";
 import type { AuthorFilter } from "../core/author-filter";
@@ -38,6 +40,12 @@ export interface InputDeps {
   /** The channel's last `limit` top-level messages before the event (oldest first). One call. */
   history: (limit: number) => Promise<ThreadMsg[]>;
   filter: AuthorFilter;
+  /**
+   * A per-message refusal the author filter cannot know: a thread-level ignore
+   * for the message's own thread (each message of a channel history is its own
+   * thread). True drops the message.
+   */
+  dropMessage?: (m: ThreadMsg) => Promise<boolean>;
   /** One of this persona's own identities. */
   isSelf: (m: ThreadMsg) => boolean;
   /** Slack user ids that are this agent (bot user, persona user). */
@@ -71,24 +79,35 @@ export interface BuiltInput {
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const TOKENS = /<(agent|user|channel|group|here|email|phone|link)>/g;
+/** A token written by a person is text, not one of ours: it is defanged before any of ours is written. */
+const FORGED_TOKEN = /<(agent|user|channel|group|here|email|phone|link)>/gi;
 const TOKEN_LIST = ["agent", "user", "channel", "group", "here", "email", "phone", "link"];
-const PRIVATE = /[]/g;
+const PRIVATE = /[\uE000\uE001]/g;
+const WORD = /@?[\p{L}\p{N}_]+/gu;
 
-/** One line as sent: Slack markup reduced, names rewritten, neutralised, flattened and cut. */
+/**
+ * One line as sent: secrets masked, Slack markup reduced, the agent's names
+ * (folded exactly as the ladder folds them: NFKC, lower case, whole word)
+ * rewritten, neutralised, flattened and cut. A literal `<agent>` or `<user>`
+ * in the text does not survive as a token.
+ */
 export function sendableLine(raw: string, d: Pick<InputDeps, "selfUserIds" | "botUserId" | "names">, max = LINE_CHARS): string {
-  let s = raw.replace(PRIVATE, "");
+  let s = raw.replace(PRIVATE, "").replace(FORGED_TOKEN, "\u2039$1\u203a");
   for (const id of d.selfUserIds) if (id) s = s.replace(new RegExp(`<@${escapeRe(id)}(?:\\|[^>]*)?>`, "g"), "<agent>");
   s = normalizeSlackText(s, d.botUserId);
   // The tokens this module (and normalizeSlackText) writes survive neutralisation as private-use placeholders.
-  s = s.replace(TOKENS, (_m, t: string) => `${TOKEN_LIST.indexOf(t)}`);
-  s = plainPiece(s);
-  const names = [...new Set(d.names.map((n) => n.normalize("NFKC").trim()).filter((n) => n.length >= 2))].sort((a, b) => b.length - a.length);
+  s = s.replace(TOKENS, (_m, t: string) => `\uE000${TOKEN_LIST.indexOf(t)}\uE001`);
+  s = redactSecrets(plainPiece(s));
+  const names = [...new Set(d.names.map(foldAlias).filter((n) => n.length >= 2))];
   if (names.length) {
-    const re = new RegExp(`(?<![\\p{L}\\p{N}_])@?(?:${names.map(escapeRe).join("|")})(?![\\p{L}\\p{N}_])`, "giu");
-    s = s.replace(re, "0");
+    const words = new Set(names.filter((n) => /^[\p{L}\p{N}_]+$/u.test(n)));
+    s = s.replace(WORD, (w) => (words.has(foldAlias(w.replace(/^@/, ""))) ? "\uE0000\uE001" : w));
+    // A name with punctuation in it ("my-agent") is matched as a whole phrase, whole word at both ends.
+    const phrases = names.filter((n) => !words.has(n)).sort((a, b) => b.length - a.length);
+    if (phrases.length) s = s.replace(new RegExp(`(?<![\\p{L}\\p{N}_])@?(?:${phrases.map(escapeRe).join("|")})(?![\\p{L}\\p{N}_])`, "giu"), "\uE0000\uE001");
   }
-  if (s.length > max) s = s.slice(0, max).replace(/[\ud800-\udbff]$/, "").replace(/\d?$/, "") + "...";
-  return s.replace(/(\d)/g, (_m, i: string) => `<${TOKEN_LIST[Number(i)]}>`).replace(PRIVATE, "");
+  if (s.length > max) s = s.slice(0, max).replace(/[\ud800-\udbff]$/, "").replace(/\uE000\d?$/, "") + "...";
+  return s.replace(/\uE000(\d)\uE001/g, (_m, i: string) => `<${TOKEN_LIST[Number(i)]}>`).replace(PRIVATE, "");
 }
 
 const isBotMessage = (m: ThreadMsg): boolean => Boolean(m.bot_id) || m.subtype === "bot_message";
@@ -127,9 +146,12 @@ export async function buildImplicitInput(d: InputDeps, r: ImplicitRequest, event
   const checks = await bounded(
     Promise.all(
       earlier.map(async (m) => {
+        // Someone the ingress cannot place (no user and no bot) is not admitted by default.
+        if (!m.user && !m.bot_id) return false;
         const self = d.isSelf(m);
         if (!self && isBotMessage(m) && !allowBots) return false;
-        return await d.filter.allows(m);
+        if (!(await d.filter.allows(m))) return false;
+        return !(d.dropMessage && (await d.dropMessage(m)));
       }),
     ),
     deadline,
