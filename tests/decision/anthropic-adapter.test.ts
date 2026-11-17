@@ -6,7 +6,7 @@ import { GATE_QUESTIONS } from "../../src/gateway/gate/questions";
 import { DecisionError, type DecisionErrorKind } from "../../src/decision/types";
 
 /** A fake provider on a loopback port: no real network. */
-type Reply = { status?: number; body?: unknown; raw?: string; hang?: boolean };
+type Reply = { status?: number; body?: unknown; raw?: string; hang?: boolean; stream?: boolean };
 let reply: Reply = {};
 const seen: Array<{ path: string; headers: Record<string, string>; body: any }> = [];
 let server: ReturnType<typeof Bun.serve>;
@@ -19,6 +19,11 @@ beforeAll(() => {
       const url = new URL(req.url);
       seen.push({ path: url.pathname, headers: Object.fromEntries(req.headers), body: await req.json().catch(() => null) });
       if (reply.hang) return new Promise<Response>((res) => req.signal.addEventListener("abort", () => res(new Response(null, { status: 499 }))));
+      if (reply.stream) {
+        // Never finishes: only a reader that stops at its cap returns.
+        const chunk = new TextEncoder().encode("x".repeat(16 * 1024));
+        return new Response(new ReadableStream({ pull: (c) => new Promise((r) => setTimeout(() => (c.enqueue(chunk), r(undefined)), 1)) }));
+      }
       if (reply.raw !== undefined) return new Response(reply.raw, { status: reply.status ?? 200 });
       return Response.json(reply.body ?? {}, { status: reply.status ?? 200 });
     },
@@ -76,6 +81,7 @@ describe("anthropic adapter", () => {
     ["a string confidence", { body: toolUse(Object.fromEntries(Object.keys(GATE_QUESTIONS).map((k) => [k, { choice: "yes", confidence: "0.9" }]))) }],
     ["an array as input", { body: toolUse([]) }],
     ["an oversized body", { raw: JSON.stringify({ pad: "x".repeat(70_000) }) }],
+    ["an oversized body with no end (a stream)", { stream: true }],
   ];
   for (const [name, r] of malformed) {
     test(`malformed (${name}) is a bad_output error`, async () => {
@@ -142,16 +148,36 @@ describe("the registered anthropic adapter", () => {
   const clear = () => keys.forEach((k) => delete process.env[k]);
   const build = (block: unknown) => adapterFromConfig(block, { resolveSecret: async () => "" });
 
-  test("is built from the gateway's provider environment, with a default small model", async () => {
+  test("is built from the gateway's provider environment, with a default small model on the public API host", async () => {
+    clear();
+    process.env.ANTHROPIC_API_KEY = "env-key-value";
+    process.env.ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+    expect((await build({ type: "anthropic" }))?.name).toBe("anthropic");
+    expect(ANTHROPIC_DEFAULT_MODEL).toBe("claude-haiku-5-5");
+  });
+  test("a non-default provider host with no model in the block disables the adapter with one warning naming the field, not the value", async () => {
     clear();
     process.env.ANTHROPIC_API_KEY = "env-key-value";
     process.env.ANTHROPIC_BASE_URL = base;
-    const a = await build({ type: "anthropic" });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    expect(await build({ type: "anthropic" })).toBeNull();
+    const out = warn.mock.calls.map((c) => c.join(" ")).join("\n");
+    warn.mockRestore();
+    expect(out).toContain("adapter.model");
+    expect(out).not.toContain(base);
+    // naming the model is what makes a custom provider usable
+    expect((await build({ type: "anthropic", model: "provider-small" }))?.name).toBe("anthropic");
+  });
+  test("a model is sent to a custom provider, and the default model id is used on the public host", async () => {
+    clear();
+    process.env.ANTHROPIC_API_KEY = "env-key-value";
+    process.env.ANTHROPIC_BASE_URL = base;
+    const a = await build({ type: "anthropic", model: ANTHROPIC_DEFAULT_MODEL });
     expect(a?.name).toBe("anthropic");
     reply = { body: good() };
     await a!.decide(req(), sig());
     expect(seen[0]!.headers["x-api-key"]).toBe("env-key-value");
-    expect(seen[0]!.body.model).toBe(ANTHROPIC_DEFAULT_MODEL);
+    expect(seen[0]!.body.model).toBe("claude-haiku-5-5");
   });
   test("the block's model is used; a bearer token and the OAuth token are accepted in turn", async () => {
     clear();
@@ -164,7 +190,7 @@ describe("the registered anthropic adapter", () => {
     clear();
     process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth";
     process.env.ANTHROPIC_BASE_URL = base;
-    await (await build({ type: "anthropic" }))!.decide(req(), sig());
+    await (await build({ type: "anthropic", model: "m" }))!.decide(req(), sig());
     expect(seen[1]!.headers["anthropic-beta"]).toBe("oauth-2025-04-20");
   });
   test("no credentials or an unknown key disables the adapter, naming nothing", async () => {
@@ -172,6 +198,7 @@ describe("the registered anthropic adapter", () => {
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     expect(await build({ type: "anthropic" })).toBeNull();
     process.env.ANTHROPIC_API_KEY = "k";
+    process.env.ANTHROPIC_BASE_URL = "https://api.anthropic.com";
     expect(await build({ type: "anthropic", apiKey: "x" })).toBeNull();
     expect(await build({ type: "anthropic", model: "" })).toBeNull();
     const out = warn.mock.calls.map((c) => c.join(" ")).join("\n");

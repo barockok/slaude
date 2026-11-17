@@ -19,8 +19,15 @@ import { env } from "../../config/env";
 import { registerAdapter } from "../registry";
 import { DecisionError, type DecisionAdapter, type DecisionRequest, type DecisionResult } from "../types";
 
-export const ANTHROPIC_DEFAULT_MODEL = "claude-haiku-4-5";
+export const ANTHROPIC_DEFAULT_MODEL = "claude-haiku-5-5";
 const DEFAULT_BASE = "https://api.anthropic.com";
+const isDefaultHost = (u: string): boolean => {
+  try {
+    return new URL(u).host === new URL(DEFAULT_BASE).host;
+  } catch {
+    return false;
+  }
+};
 /** The serialised state the adapter will send; a larger one is refused, never cut. */
 export const MAX_STATE_CHARS = 20_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -98,9 +105,22 @@ export function makeAnthropicAdapter(o: AnthropicOpts): DecisionAdapter {
       }
       let text: string;
       try {
-        const buf = await res.arrayBuffer();
-        if (buf.byteLength > MAX_RESPONSE_BYTES) throw bad("the response is larger than expected");
-        text = new TextDecoder().decode(buf);
+        // Read as a stream and stop at the cap: an oversized body is never held whole.
+        const reader = res.body?.getReader();
+        if (!reader) throw bad("the response has no body");
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > MAX_RESPONSE_BYTES) {
+            void reader.cancel().catch(() => {});
+            throw bad("the response is larger than expected");
+          }
+          chunks.push(value);
+        }
+        text = new TextDecoder().decode(Buffer.concat(chunks));
       } catch (e) {
         if (e instanceof DecisionError) throw e;
         if (signal.aborted) throw new DecisionError("timeout", "decision aborted");
@@ -148,5 +168,11 @@ registerAdapter("anthropic", async (block) => {
     headers.authorization = `Bearer ${oauth}`;
     headers["anthropic-beta"] = "oauth-2025-04-20";
   } else throw new Error("no model provider credentials in the environment");
-  return makeAnthropicAdapter({ baseUrl: env.provider.baseUrl() || DEFAULT_BASE, headers, model: b.model ?? ANTHROPIC_DEFAULT_MODEL });
+  const baseUrl = env.provider.baseUrl() || DEFAULT_BASE;
+  if (!b.model && !isDefaultHost(baseUrl)) {
+    // A provider other than the public API may not serve the default model id: name the model rather than guess.
+    console.warn("[decision] adapter anthropic: adapter.model is required when ANTHROPIC_BASE_URL is not the public API; adapter disabled");
+    throw new Error("adapter.model is required for a non-default provider");
+  }
+  return makeAnthropicAdapter({ baseUrl, headers, model: b.model ?? ANTHROPIC_DEFAULT_MODEL });
 });
