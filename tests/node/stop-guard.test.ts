@@ -41,6 +41,15 @@ describe("node Stop guard", () => {
     expect(g.guard(S)).toBeNull();
   });
 
+  test("an implicit turn (no @mention) is not forced to reply; a plain turn still is", () => {
+    const g = guardWith();
+    g.beginTurn(S, { ...slack, implicit: true });
+    expect(g.guard(S)).toBeNull();
+    g.beginTurn(S, { ...slack, implicit: false });
+    expect(g.guard(S)).toBe(MUST_REPLY_INSTRUCTION);
+    expect(mustReplyApplies({ ...slack, implicit: true })).toBe(false);
+  });
+
   test("a panel turn is guarded like a Slack one", () => {
     const g = guardWith();
     g.beginTurn(S, { claims: { origin: "panel" } });

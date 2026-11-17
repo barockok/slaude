@@ -854,7 +854,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       if (data.wake) wakeJobs.add(sessionId);
       else wakeJobs.delete(sessionId);
       const bound = store.tokenFor(sessionId) ?? data.jobToken;
-      stopGuard.beginTurn(sessionId, { claims: decodeClaims(bound), bgRun: data.bgRun, wake: data.wake });
+      stopGuard.beginTurn(sessionId, { claims: decodeClaims(bound), bgRun: data.bgRun, wake: data.wake, implicit: data.messages.length > 0 && data.messages.every((m) => (m as any).implicit === true) });
 
       turnDeadlines.set(sessionId, Date.now() + turnTimeoutMs);
       const outcome = await new Promise<"done" | "error" | "skipped">((resolve, reject) => {

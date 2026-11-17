@@ -39,6 +39,9 @@ export interface TurnMessage {
    *  the transcript via the suppress hook without running the model. A turn
    *  runs suppressed only when EVERY coalesced message is suppressed. */
   suppress?: boolean;
+  /** The message was not an @mention: implicit engagement started this turn, which may end in a pass.
+   *  The must-reply Stop guard is relaxed only when EVERY coalesced message is implicit. */
+  implicit?: boolean;
   /** On-match owner Guidance this message's text triggered. The gateway
    *  matches the trigger; the node hands it to the session, which takes each
    *  guardrail at most once per boot. */

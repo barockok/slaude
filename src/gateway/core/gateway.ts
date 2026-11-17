@@ -318,6 +318,16 @@ async function threadTail(client: any, channel: string, threadTs: string, latest
 
 const STATUS_THINKING = { text: "thinking", emoji: ":thought_balloon:" };
 
+/** How a message is handed to handleMessage. */
+type HandleDispatch = {
+  suppress?: boolean;
+  personaId?: string;
+  engagedBefore?: boolean;
+  channelSession?: boolean;
+  /** Implicit engagement: the message was not an @mention. The first turn says so and the model may pass. */
+  implicit?: boolean;
+};
+
 type SessionRoute = {
   ctx: SlackContext;
   /** The interaction Surface for this session. Built once; reads ctx live (getters). */
@@ -335,6 +345,8 @@ type SessionRoute = {
    *  back (a passing mention is not an invitation). Undefined when the turn did
    *  not come from a mention. Set per turn. */
   engagedBefore?: boolean;
+  /** This turn was started by implicit engagement (no @mention): the Stop guard does not force a reply, so a model that says nothing is a pass. Set per turn. */
+  implicit?: boolean;
   /** Slack message ref for the live todo tracker posted by the TodoWrite interceptor.
    *  Cleared at the start of each new user turn so each request gets a fresh block. */
   todoRef?: string;
@@ -1608,6 +1620,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (route.spoke) return null;
     if (route.passed) return null;
     if (route.silent) return null;
+    // Implicit engagement: the message was not addressed to the agent, so ending without a reply is an answer.
+    if (route.implicit) return null;
     return MUST_REPLY_INSTRUCTION;
   });
 
@@ -2837,7 +2851,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return { ready: prev, release };
   };
 
-  async function handleMessage(args: any, dispatch?: { suppress?: boolean; personaId?: string; engagedBefore?: boolean; channelSession?: boolean }) {
+  async function handleMessage(args: any, dispatch?: HandleDispatch) {
     const slot = { release: () => {} };
     try {
       return await handleMessageInOrder(args, dispatch, slot);
@@ -2848,10 +2862,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   async function handleMessageInOrder(
     args: any,
-    dispatch: { suppress?: boolean; personaId?: string; engagedBefore?: boolean; channelSession?: boolean } | undefined,
+    dispatch: HandleDispatch | undefined,
     slot: { release: () => void },
   ) {
     const suppress = dispatch?.suppress === true;
+    // A recording is never an implicit turn: nothing runs.
+    const implicit = dispatch?.implicit === true && !suppress;
     const { event, client, context } = args;
     const teamId: string | undefined = context.teamId ?? event.team;
     // The app this event arrived through (HTTP mode): everything this turn
@@ -3986,7 +4002,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         : suppress
         ? `You are currently disengaged from this thread, so this message is recorded ` +
           `for context only — do NOT reply to it. You will catch up on it when re-engaged.`
-        : (threadHead
+        : (implicit
+            ? `This message was not an @mention of you. It may be addressed to someone else or need no reply from you. ` +
+              `If it does not need you, call \`mcp__${SURFACE_MCP_NAME}__pass\` and say nothing. Do not mention this note in a reply.\n`
+            : "") +
+          (threadHead
             ? `The <thread-head> above is earlier context from this thread, not part of the request. Answer the message in the <channel> envelope and ` +
               `reply in the thread, never at the channel root. Do not say that you read the thread or that you were not mentioned. ` +
               `If the message turns out not to be for you, call \`mcp__${SURFACE_MCP_NAME}__pass\`.\n`
@@ -4035,6 +4055,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // A person's message: the Stop guard applies again even when the route
         // was last a cron run's (silent), as a node guards a Slack job.
         existing.silent = false;
+        // An implicit message merged into a person's running turn does not relax that turn's guard.
+        existing.implicit = implicit ? ((existing.personTurns ?? 0) > 0 ? existing.implicit === true : true) : false;
         // A message merged into a running turn carries no mention result
         // (undefined) and must not erase the running mention's; the done
         // handler clears it at the end of every turn.
@@ -4074,7 +4096,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           });
         ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
         noteTurnSender(session.id, ctx);
-        routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore, personTurns: suppress ? 0 : 1, ...(suppress ? {} : { personTurnAt: Date.now() }), ...(recordingOnly ? { recordingAhead: true } : {}) });
+        routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore, ...(implicit ? { implicit: true } : {}), personTurns: suppress ? 0 : 1, ...(suppress ? {} : { personTurnAt: Date.now() }), ...(recordingOnly ? { recordingAhead: true } : {}) });
       }
 
       // After the route is in place, so the reaction and status resolvers read
@@ -4119,6 +4141,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             apiAppId: app.apiAppId,
             origin: "slack",
             suppress,
+            ...(implicit ? { implicit: true } : {}),
             ...(dispatch?.channelSession ? { postTarget: "channel" as const, channelSession: true } : {}),
             ...(guidance.length ? { guidance } : {}),
           });
