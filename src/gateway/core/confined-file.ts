@@ -11,7 +11,17 @@ export class UploadRefusal extends Error {
   }
 }
 
+/** The file is larger than the co-located path may send. For the agent: names the base name and sizes, never the path. */
+export class UploadTooLarge extends Error {
+  constructor(path: string, size: number, max: number) {
+    super(`upload refused: ${basename(path) || "file"} is ${size} bytes, over the limit of ${max} bytes for this upload path`);
+    this.name = "UploadTooLarge";
+  }
+}
+
 export interface ConfinedFile {
+  /** Size of the checked descriptor in bytes. */
+  size: number;
   /** Reads the descriptor that was checked, not the path. Closes it at the end. */
   stream: ReadStream;
   /** Base name of the resolved file (what a symlink points at), for a default title. */
@@ -43,7 +53,7 @@ export function openConfined(path: string, workingDir: string | undefined): Conf
     const now = lstatSync(again);
     if (!inside(root, again) || now.ino !== st.ino || now.dev !== st.dev) throw new UploadRefusal(path);
     const stream = createReadStream("", { fd, autoClose: true });
-    return { stream, name: basename(real) };
+    return { stream, name: basename(real), size: st.size };
   } catch (e) {
     if (fd >= 0) { try { closeSync(fd); } catch { /* already closed */ } }
     throw e instanceof UploadRefusal ? e : new UploadRefusal(path);

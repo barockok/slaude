@@ -50,6 +50,11 @@ export interface Surface {
   react?(i: { name: string; ref?: string }): Promise<void>;      // cap: "react"
   unreact?(i: { name: string; ref?: string }): Promise<void>;    // cap: "react" (rides with react)
   upload?(i: { path: string; title?: string; comment?: string; altText?: string }): Promise<void>; // cap: "upload"
+  /** Direct upload, first call: Slack's presigned URL for one file (cap: "upload"). The
+   *  caller sends the bytes to that URL itself. */
+  uploadBegin?(i: { filename: string; size: number; altText?: string }): Promise<{ uploadUrl: string; fileId: string }>;
+  /** Direct upload, last call: finish the file into this conversation (cap: "upload"). */
+  uploadComplete?(i: { fileId: string; filename: string; title?: string; comment?: string }): Promise<void>;
   typing?(i: { on: boolean }): Promise<void>;                    // cap: "typing"
   /** Post a message only `userId` can see (default: the binding's user).
    *  cap: "ephemeral". MUST throw rather than fall back to a public post —
