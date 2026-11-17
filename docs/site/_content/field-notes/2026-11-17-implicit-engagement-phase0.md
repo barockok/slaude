@@ -107,3 +107,42 @@ count it. The guide is
 - With several apps in a channel each app's copy observes a message, so the
   counter counts per copy. A deterministic owner for an implicit run is a later
   phase.
+
+## Phase 1 (rc.30): the shadow classifier
+
+Phase 1 asks the classifier about tier 3 candidates and a sample of tier 2 run
+decisions and only records the answer. What shaped it:
+
+- **The candidate is always shadow.** The observer hands the classifier a
+  candidate in shadow whatever the channel's mode, and reads the model's own
+  verdict from a detailed entry point instead of the mode-applied one, so
+  `mode: on` cannot act by accident in this phase and the log can still say
+  what the model would have done.
+- **Budget keyed by channel, ownership by claim.** Two apps (or replicas) in a
+  channel both see a message. An atomic `SET NX` on channel and ts picks the
+  one copy that does anything about it; the daily bucket and the minute ceiling
+  are channel keys, so they are not doubled. The budget store fails closed (a
+  pass) and the memories fail open (read as empty).
+- **Pass memory has a narrow reach.** Unmentioned messages without the name
+  mostly never reach tier 3 (they are tier 0 `no_band`), and a message after
+  the agent spoke has its own record, so the memory chiefly matters for
+  follow-ups that failed the tier 2 test and for top-level questions, where a
+  cooldown replaces it. It is kept because the plan asked for it and it is
+  cheap, but the counter will say whether it ever fires.
+- **A scrubbed input, one read.** The input is built only after the budget
+  passes, so no message that is skipped costs a history call. The thread read
+  and the root read are one call each. Name rewriting happens after
+  neutralisation using private-use placeholders, so a forged `<agent>` or tag
+  in chat text cannot survive and the tokens the module writes do.
+- **Unknown is the safe side for the users cache.** Before a users list exists a
+  name counts as shared, so "Name, ..." is a tier 3 candidate rather than a run.
+  The list is workspace wide, which errs the same way.
+- **The deployment's own provider for the model.** The `anthropic` adapter
+  reuses the credentials the gateway already holds and forces one tool call so
+  an answer is structured or an error; its size limit and its error mapping
+  live in its own module.
+
+Open after phase 1: acting on a decision, a deterministic owner for an implicit
+run across apps, a channel label on the counter, tuning the sample rate and
+budget from real counts, and whether the root debounce (60 seconds) should
+re-check the thread for a human answer before asking.
