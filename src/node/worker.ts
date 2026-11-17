@@ -45,7 +45,7 @@ import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
 import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../agent/config-root";
 import { RestSessionStore } from "./session-store";
 import { buildShimServers } from "./shims";
-import { ScratchDirs, withScratchEnv } from "./scratch";
+import { ScratchDirs, sweepStaleScratchRoots, withScratchEnv } from "./scratch";
 import { buildBridgeServers } from "./bridge";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { makeNodeSkillCheckBudget, makeNodeSkillUsageRecorder } from "./background";
@@ -534,6 +534,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const agent = opts.agent ?? new AgentManager();
   const store = new RestSessionStore(client);
   /** Per-session scratch directories (the agent's TMPDIR); removed with the session, all at stop. */
+  sweepStaleScratchRoots();
   const scratch = new ScratchDirs();
   /** sessionId → tenant, for runtime-bundle lookups + reload busting. */
   const tenants = new Map<string, string>();

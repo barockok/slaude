@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { ChildEnvPatch, scrubChildEnv } from "../../src/agent/child-env";
-import { ScratchDirs, withScratchEnv } from "../../src/node/scratch";
+import { ScratchDirs, sweepStaleScratchRoots, withScratchEnv } from "../../src/node/scratch";
 
 const made: ScratchDirs[] = [];
 const mk = () => { const s = new ScratchDirs(); made.push(s); return s; };
@@ -81,5 +81,56 @@ describe("withScratchEnv", () => {
     const s = mk();
     const env: any = await withScratchEnv(async () => undefined, s)("sess-4");
     expect(Object.keys(scrubChildEnv(env)).sort()).toEqual(["SLAUDE_SCRATCH", "TMPDIR"]);
+  });
+});
+
+describe("scratch hardening", () => {
+  test("a symlink planted where a session directory goes is refused and never chmod'ed through", () => {
+    const s = mk();
+    const root = dirname(s.ensure("plain"));
+    const target = mkdtempSync(join(tmpdir(), "slaude-victim-"));
+    require("node:fs").chmodSync(target, 0o755);
+    symlinkSync(target, join(root, "victim"));
+    expect(() => s.ensure("victim")).toThrow();
+    expect(statSync(target).mode & 0o777).toBe(0o755);
+    expect(s.pathFor("victim")).toBeUndefined();
+  });
+
+  test("a file planted where a session directory goes is refused", () => {
+    const s = mk();
+    const root = dirname(s.ensure("plain"));
+    writeFileSync(join(root, "afile"), "x");
+    expect(() => s.ensure("afile")).toThrow();
+  });
+
+  test("when the directory cannot be made the session still boots, without TMPDIR or SLAUDE_SCRATCH, and the log says so once", async () => {
+    const s = mk();
+    s.ensure = () => { throw new Error("EROFS: read-only file system"); };
+    const warns: string[] = [];
+    const orig = console.warn;
+    console.warn = (...a: unknown[]) => { warns.push(a.map(String).join(" ")); };
+    try {
+      const r = withScratchEnv(async () => ({ A: "1" }), s);
+      expect(await r("s1")).toEqual({ A: "1" });
+      expect(await r("s2")).toEqual({ A: "1" });
+      expect(await withScratchEnv(async () => new ChildEnvPatch({ A: "1" }, ["B"]), s)("s3")).toBeInstanceOf(ChildEnvPatch);
+    } finally {
+      console.warn = orig;
+    }
+    expect(warns.filter((w) => w.includes("scratch"))).toHaveLength(1);
+    expect(warns[0]).toContain("working directory");
+  });
+
+  test("a stale slaude-scratch root owned by the worker is swept, a fresh one and other names are not", () => {
+    const parent = mkdtempSync(join(tmpdir(), "slaude-sweep-"));
+    const old = join(parent, "slaude-scratch-old"); const fresh = join(parent, "slaude-scratch-new"); const other = join(parent, "other-old");
+    for (const d of [old, fresh, other]) mkdirSync(d);
+    const longAgo = new Date(Date.now() - 3 * 86_400_000);
+    for (const d of [old, other]) utimesSync(d, longAgo, longAgo);
+    expect(sweepStaleScratchRoots(parent)).toBe(1);
+    expect(existsSync(old)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(other)).toBe(true);
+    expect(sweepStaleScratchRoots(parent, { uid: -5 })).toBe(0);
   });
 });
