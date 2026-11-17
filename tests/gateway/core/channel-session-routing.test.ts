@@ -916,7 +916,7 @@ describe("channel session routing", () => {
     });
 
     it("a doubted root mention reacts and is recorded, tolerating already_reacted", async () => {
-      const gateRunner = { mode: "on", contextMessages: 8, gate: async () => "record_doubt" } as unknown as GateRunner;
+      const gateRunner = { mode: "on", contextMessages: 8, consult: async () => ({ action: "record_doubt", source: "adapter" }), gate: async () => "record_doubt" } as unknown as GateRunner;
       const g = makeGw({ gateRunner });
       const ts = nextTs();
       await g.emit("message", rootArgs(g, `<@${BOT}> maybe`, { ts }));
@@ -1062,7 +1062,7 @@ describe("channel session routing", () => {
 
     it("/new in a classic channel is decided by the gate like any other message", async () => {
       let asked = 0;
-      const gateRunner = { mode: "on", contextMessages: 8, gate: async () => { asked++; return "reply"; } } as unknown as GateRunner;
+      const gateRunner = { mode: "on", contextMessages: 8, consult: async () => { asked++; return { action: "reply", source: "adapter" }; }, gate: async () => { asked++; return "reply"; } } as unknown as GateRunner;
       const g = makeGw({ gateRunner });
       await g.emit("message", rootArgs(g, at("/new"), { channel: "C2" }));
       expect(asked).toBe(1);
@@ -1070,7 +1070,7 @@ describe("channel session routing", () => {
 
     it("/new at a channel session's root still bypasses the gate", async () => {
       let asked = 0;
-      const gateRunner = { mode: "on", contextMessages: 8, gate: async () => { asked++; return "reply"; } } as unknown as GateRunner;
+      const gateRunner = { mode: "on", contextMessages: 8, consult: async () => { asked++; return { action: "reply", source: "adapter" }; }, gate: async () => { asked++; return "reply"; } } as unknown as GateRunner;
       const g = makeGw({ gateRunner });
       await g.emit("message", rootArgs(g, at("/new")));
       expect(asked).toBe(0);
