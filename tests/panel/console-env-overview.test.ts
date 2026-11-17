@@ -153,6 +153,9 @@ describe("GET /panel/api/overview", () => {
   test("counts and the ten most recent audit events", async () => {
     await flushAudits();
     await db.run("DELETE FROM audit_events");
+    // Counts are read as a difference against `before`. A pending gate left by an earlier test on the shared
+    // database that expires between the two readings shrinks the difference, so start from none.
+    await db.run("DELETE FROM pending_gates");
     const before = (await get("/panel/api/overview")).body as OverviewResponse;
 
     const s1 = await Sessions.createForThread({ thread: { team_id: "TTEAM", channel_id: "CCHAN", thread_ts: "100.1" }, model: "m", working_dir: "/tmp" });

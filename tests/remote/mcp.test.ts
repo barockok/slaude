@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { afterEach, describe, it, expect } from "bun:test";
 import {
   REMOTE_TOOL_ALIASES, REMOTE_DENIED_LOCAL_TOOLS, builtinFor, remotePermission, denyLocalBuiltins, makeRemoteCanUseTool, createRemoteMcp, REMOTE_MCP_NAME,
 } from "../../src/remote/mcp";
@@ -6,6 +6,11 @@ import { RemoteError } from "../../src/remote/types";
 import { localExec } from "./local-exec";
 
 const sig = { signal: new AbortController().signal } as any;
+
+// Two audit tests below swap console.log to capture lines. A test that hits its timeout skips its own
+// `finally`, which left console.log replaced and failed the NEXT test; restore it after every test.
+const realConsoleLog = console.log;
+afterEach(() => { console.log = realConsoleLog; });
 
 describe("aliases", () => {
   it("routes the six built-ins to mcp__remote__*", () => {
@@ -182,7 +187,8 @@ describe("createRemoteMcp", () => {
     for (const l of lines) { expect(l).not.toContain("ghp_abc123"); expect(l).not.toContain("GITHUB_TOKEN");
       for (const bad of ["abc", "def", "secretfile", "TOKEN", "x)", "y'", "SEC"]) expect(l).not.toContain(bad);
     }
-  });
+    // About twenty real shell runs: well inside the default 5 s on a quiet machine, over it on a loaded CI runner.
+  }, 30_000);
 
   it("audit line carries the exit code and never the command args; exitCode is not returned to the SDK", async () => {
     const lines: string[] = [];
