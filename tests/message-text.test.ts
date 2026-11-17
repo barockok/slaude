@@ -81,6 +81,37 @@ describe("messageToText", () => {
     expect(messageToText(m)).toBe("see doc (https://x.io):fire:");
   });
 
+  const richTextMsg = (...elements: any[]) => ({ text: "", blocks: [{ type: "rich_text", elements }] });
+  const section = (text: string) => ({ type: "rich_text_section", elements: [{ type: "text", text }] });
+
+  test("keeps rich_text list items on their own lines", () => {
+    const m = richTextMsg(
+      section("Steps:\n"),
+      { type: "rich_text_list", style: "bullet", indent: 0, elements: [section("one"), section("two")] },
+      section("done"),
+    );
+    expect(messageToText(m)).toBe("Steps:\n• one\n• two\ndone");
+  });
+
+  test("numbers ordered rich_text lists and indents nested ones", () => {
+    const m = richTextMsg(
+      { type: "rich_text_list", style: "ordered", indent: 0, elements: [section("one"), section("two")] },
+      { type: "rich_text_list", style: "bullet", indent: 1, elements: [section("nested")] },
+      { type: "rich_text_list", style: "ordered", indent: 0, offset: 2, elements: [section("three")] },
+    );
+    expect(messageToText(m)).toBe("1. one\n2. two\n  • nested\n3. three");
+  });
+
+  test("keeps rich_text preformatted and quote blocks apart from their neighbours", () => {
+    const m = richTextMsg(
+      section("error:"),
+      { type: "rich_text_preformatted", elements: [{ type: "text", text: "line 1\nline 2" }] },
+      { type: "rich_text_quote", elements: [{ type: "text", text: "first\nsecond" }] },
+      section("end"),
+    );
+    expect(messageToText(m)).toBe("error:\n```\nline 1\nline 2\n```\n> first\n> second\nend");
+  });
+
   test("reads header, section fields and context blocks", () => {
     const m = {
       text: "Deploy finished",

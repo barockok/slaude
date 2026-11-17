@@ -71,10 +71,41 @@ export function messageBot(m: any): { bot_id?: string; bot_name?: string } {
   };
 }
 
+// The children of a `rich_text` block (section, list, preformatted, quote)
+// each render on their own line or lines.
 function richText(els: any[] = []): string {
   return els
+    .map((e) => richBlock(e).replace(/^\n+|\s+$/g, ""))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function richBlock(e: any): string {
+  const els: any[] = Array.isArray(e?.elements) ? e.elements : [];
+  switch (e?.type) {
+    case "rich_text_list": {
+      const pad = "  ".repeat(e.indent ?? 0);
+      const first = (e.offset ?? 0) + 1;
+      return els
+        .map((item, i) => `${pad}${e.style === "ordered" ? `${first + i}.` : "•"} ${richBlock(item).trim()}`)
+        .join("\n");
+    }
+    case "rich_text_preformatted":
+      return "```\n" + richInline(els).replace(/\n+$/, "") + "\n```";
+    case "rich_text_quote":
+      return richInline(els)
+        .trim()
+        .split("\n")
+        .map((l) => `> ${l}`)
+        .join("\n");
+    default:
+      return Array.isArray(e?.elements) ? richInline(els) : richInline([e]);
+  }
+}
+
+function richInline(els: any[] = []): string {
+  return els
     .map((e) => {
-      if (Array.isArray(e?.elements)) return richText(e.elements) + (e.type === "rich_text_section" ? "" : "\n");
       switch (e?.type) {
         case "text":
           return e.text ?? "";
@@ -94,6 +125,5 @@ function richText(els: any[] = []): string {
           return e?.text ?? "";
       }
     })
-    .join("")
-    .trim();
+    .join("");
 }
