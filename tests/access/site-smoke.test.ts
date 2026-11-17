@@ -69,6 +69,7 @@ export const LIVE_ONLY: Record<string, string> = {
   "gateway.background_managers": "the scheduler's managers callback, called by the background timer when it posts a digest or a person's proposals",
   "bridge.card_scope_lock_same": "cardScope inside the MCP bridge, reached when a node's tool call needs a connect card",
   "approval.resolve_default_managers": "the fallback of a named persona that has no approver or manager of its own; the smoke world's souls always name a manager",
+  "gateway.engage_input.admit": "the shadow classifier's input, reached only in an engage channel with a decision adapter configured; the smoke world has neither (tests/gateway/core/engage-phase1.test.ts covers it)",
   "pass_tools.profile_subject": "the background pass's memory tool, reached from a model-driven pass turn",
 };
 

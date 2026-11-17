@@ -28,10 +28,15 @@ import { proactiveReplyBlock, proactiveWorkBlock } from "../../proactive/reply-c
 import type { PromiseTransport } from "../../proactive/promises";
 import type { ProactiveTransport } from "../../proactive/dispatch";
 import { channelSessionOn, channelSessionWakes, proactiveFor } from "../../soul/proactive";
-import { engageFor } from "../engage/setting";
+import { aliasesFor, engageFor } from "../engage/setting";
 import { observeEngage } from "../engage/observe";
 import { clearAgentRecord, noteAgentMessage } from "../engage/record";
 import { setLastSpeakerRedis } from "../engage/last-speaker";
+import { setEngageRedis } from "../engage/budget";
+import { gateClassifier } from "../engage/gate-classifier";
+import { buildImplicitInput } from "../engage/input";
+import { loadUserNames } from "../engage/users";
+import type { ShadowDeps } from "../engage/shadow";
 import { ledgerTurnRun, type TurnPass } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
@@ -1590,7 +1595,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     redis: queueDispatch?.turns?.redis ? { client: queueDispatch.turns.redis, prefix: queueDispatch.turns.keys?.prefix ?? "slaude" } : null,
   });
   // The engage last-speaker record is shared by every replica when there is a Redis (mono keeps it in memory).
-  if (queueDispatch?.turns?.redis) setLastSpeakerRedis(queueDispatch.turns.redis, queueDispatch.turns.keys?.prefix ?? "slaude");
+  if (queueDispatch?.turns?.redis) {
+    setLastSpeakerRedis(queueDispatch.turns.redis, queueDispatch.turns.keys?.prefix ?? "slaude");
+    // The shadow classifier's budgets, claims and pass memory are per channel across every replica too.
+    setEngageRedis(queueDispatch.turns.redis, queueDispatch.turns.keys?.prefix ?? "slaude");
+  }
   const guardrailReplyQuiet = makeReplyQuiet();
   agent.setStopGuard((sessionId) => {
     if (voiceTurns.active(sessionId)) return null;
@@ -4689,6 +4698,59 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * Does nothing at all (no read, no counter) while the channel is at level
    * `mention`, the default, and never throws or changes what happens next.
    */
+  /**
+   * Phase 1: what the shadow classifier needs for one delivery. With no adapter
+   * configured the classifier is null (a counted pass, no input, no Slack read).
+   * The input builder is only called for a candidate that passed the budget, and
+   * refuses a message the ingress would drop (a blocked or ignored author, an
+   * owner deny rule) before anything is read or sent.
+   */
+  const shadowFor = (args: any, personaId: string | undefined): ShadowDeps => {
+    const runner = gateRunner;
+    return {
+      classifier: runner && runner.hasAdapter ? gateClassifier(runner) : null,
+      buildInput: async (req) => {
+        const e: any = args.event;
+        if (await ingressDrops(args, personaId)) throw new Error("ingress drops this message");
+        if (await ingressHandlesLocally(args, personaId)) throw new Error("ingress handles this message");
+        const client = args.client ?? t.client;
+        const persona = personaId ?? "default";
+        const teamId: string | undefined = args.context?.teamId ?? e.team;
+        const own = await ownIdentities(args, personaId);
+        const grants = await loadGrants(persona);
+        const isSelf = (x: { user?: string; bot_id?: string }) => (x.user ? own.has(`u:${x.user}`) : false) || (x.bot_id ? own.has(`b:${x.bot_id}`) : false);
+        const filter = makeAuthorFilter({
+          isSelf,
+          isAdmitted: async (userId) => (await admitAt({ site: "gateway.engage_input.admit", persona, teamId, userId, channelId: e.channel, isDM: false, grants })).ok,
+          isIgnored: (userId) => ignoreGate.shouldDrop(userId, e.channel, req.thread ?? e.ts),
+          textDenied: async (text) => (await inboundVerdict(persona, e.channel, text))?.action === "deny",
+        });
+        const ids = await gateSelfIds(args, personaId);
+        const reg = personaId && personaId !== "default" ? getPersonaRegistry().lookupByName(personaId) : null;
+        const key = `${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? e.team ?? ""}`;
+        const names = [personaId && personaId !== "default" ? personaId : "", reg?.config?.name ?? "", ...(personaId === appPersonaOf(args) ? [botIdsCache.get(key)?.name ?? ""] : []), ...aliasesFor(personaId)].filter(Boolean);
+        return await buildImplicitInput(
+          {
+            replies: (thread, limit) => threadTail(client, e.channel, thread, e.ts, limit),
+            history: async (limit) => {
+              const r = await client.conversations.history({ channel: e.channel, latest: e.ts, inclusive: false, limit });
+              if (!r?.ok) throw new Error("conversations.history failed");
+              return [...((r.messages ?? []) as any[])].reverse();
+            },
+            filter,
+            isSelf,
+            selfUserIds: new Set<string>([ids.botUserId, ...ids.userIds].filter(Boolean)),
+            botUserId: ids.botUserId,
+            names,
+            channelTrust: GATE_TRUST[channelTrustFor(e.channel, trustSoulFor(personaId))],
+            contextMessages: runner?.contextMessages,
+          },
+          { ts: e.ts, text: String(e.text ?? ""), threadTs: req.thread, level: req.level, continuation: req.continuation },
+          String(e.user ?? ""),
+        );
+      },
+    };
+  };
   const observeImplicit = async (args: any, personaId: string | undefined, site: "drop" | "channel_session"): Promise<void> => {
     try {
       const e: any = args.event;
@@ -4704,6 +4766,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       ]);
       await observeEngage({
         event: e,
+        teamId: args.context?.teamId ?? e.team,
+        loadUsers: () => loadUserNames(args.client ?? t.client),
+        shadow: shadowFor(args, personaId),
         personaId,
         appId: args.context?.apiAppId,
         botId,

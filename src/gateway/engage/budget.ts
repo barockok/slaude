@@ -275,6 +275,8 @@ export interface CircuitBreaker {
   allow(): boolean;
   success(): void;
   failure(): void;
+  /** The call that was allowed made no request (budget, input): free the half-open probe without judging the adapter. */
+  release(): void;
   readonly state: "closed" | "open" | "half-open";
 }
 
@@ -299,6 +301,9 @@ export function circuitBreaker(o: { now?: () => number; threshold?: number; base
       if (s === "open" || probing) return false;
       probing = true;
       return true;
+    },
+    release() {
+      probing = false;
     },
     success() {
       failures = 0;

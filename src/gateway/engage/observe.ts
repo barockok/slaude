@@ -7,6 +7,8 @@ import { trustSoulFor } from "../../soul/per-persona";
 import { lastSpeakers, type LastSpeaker } from "./last-speaker";
 import { aliasesFor, engageFor } from "./setting";
 import { usersCache, type UsersCache } from "./users";
+import { engageState } from "./budget";
+import { plan, scheduleShadow, type ShadowDeps } from "./shadow";
 import { MAX_TEXT, runTiers, type TierFacts, type TierResult } from "./tiers";
 
 /** The reads of the last-speaker record may not hold the handler longer than this; a slow Redis reads as no record. */
@@ -47,6 +49,8 @@ export interface ObserveInput {
   loadUsers?: () => Promise<Set<string>>;
   /** Test seam: the users cache. */
   users?: UsersCache;
+  /** Phase 1: what the shadow classifier needs. Absent: phase 0 only (counters and the one line). */
+  shadow?: ShadowDeps;
   /** Where the observation was made, for the log line. */
   site: "drop" | "channel_session";
 }
@@ -74,7 +78,7 @@ async function readRecords(channel: string, thread: string | null, own: string, 
 }
 
 /** The facts for the ladder from a Slack event, with the records already read. */
-export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute", restricted: boolean, own: LastSpeaker | null, other: LastSpeaker | null): TierFacts {
+export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute", restricted: boolean, own: LastSpeaker | null, other: LastSpeaker | null, alternated = false): TierFacts {
   const e = i.event;
   const me = i.personaId ?? "default";
   const self = new Set<string>([i.botId].filter(Boolean));
@@ -108,8 +112,8 @@ export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute
     sameNamedHuman: (folded) => (i.users ?? usersCache()).sameNamed(i.teamId, folded),
     nowMs: Date.now(),
     windowMs: env.engageWindowMinutes() * 60_000,
-    // STUB (stage 3 or phase 1): telling that two humans took turns needs a history read, which phase 0 never makes.
-    humansAlternated: false,
+    // Known only when an earlier classifier input read the thread (a flag it left behind); otherwise false.
+    humansAlternated: alternated,
     rootBand: { minLength: ROOT_MIN_LENGTH, debounceMs: ROOT_DEBOUNCE_MS },
   };
 }
@@ -141,11 +145,31 @@ export async function observeEngage(i: ObserveInput): Promise<TierResult | null>
       const me = i.personaId ?? "default";
       const others = [...new Set([...getPersonaRegistry().list().map((x) => x.name), "default"])].filter((n) => n !== me);
       const rec = await readRecords(channel, thread, me, others);
-      if (rec.own || rec.other) r = runTiers(factsFromEvent(i, level, restricted, rec.own, rec.other));
+      if (rec.own || rec.other) {
+        const alt = rec.own && thread ? await Promise.race([(i.shadow?.state ?? engageState()).alternated(channel, thread).catch(() => false), timeout(RECORD_READ_BUDGET_MS, false)]) : false;
+        r = runTiers(factsFromEvent(i, level, restricted, rec.own, rec.other, alt));
+      }
     }
     const tier = r.action === "existing" ? "existing" : String(r.tier);
     metric.engageTotal.inc({ tier, outcome: r.action, level });
-    console.log(`[engage] phase0 channel=${channel} level=${level} tier=${tier} would=${r.action} reason=${r.reason}`);
+    const p = plan(r, i.shadow);
+    console.log(`[engage] phase0 channel=${channel} level=${level} tier=${tier} would=${r.action} reason=${r.reason} classifier=${"skip" in p ? `skip:${p.skip}` : "queued"}`);
+    if (!("skip" in p) && i.shadow) {
+      // After the handler has what it needs: the job runs on its own, with its own deadline.
+      scheduleShadow(
+        {
+          channel,
+          ts: String(i.event.ts),
+          thread: i.event.thread_ts && i.event.thread_ts !== i.event.ts ? String(i.event.thread_ts) : null,
+          author: String(i.event.user ?? ""),
+          level,
+          persona: i.personaId,
+          app: i.appId,
+          result: r,
+        },
+        i.shadow,
+      );
+    }
     return r;
   } catch (err) {
     try {
