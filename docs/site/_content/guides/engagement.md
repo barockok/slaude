@@ -99,6 +99,18 @@ Without the `sessions.engaged` column, every disengage lasted zero messages: a d
 
 Restart recovery works the same way: on a plain, non-mention message the gateway looks up `Sessions.findAnyByThread()` — if the row exists and `engaged=1`, it restores the in-memory entry and handles the message without requiring a new `@mention`.
 
+### 1.6 A session that starts inside an existing thread
+
+An @mention can arrive in the middle of a thread the agent has not seen. The session's first real turn then starts with a short **thread head**: the thread's root message and the most recent earlier replies, oldest first, in a `<thread-head>` block placed before the message's own `<channel>` envelope. The agent reads it the way a teammate who was following along would, and answers the message in the envelope.
+
+- **Size.** The root, then up to `SLAUDE_THREAD_HEAD_MESSAGES` earlier replies (default 10, `0` turns the feature off), each cut to 500 characters and 6,000 in total (the oldest replies go first, the root stays). A line says how many earlier messages were left out. Files are listed by name only and are not downloaded.
+- **Once.** Only on the session's first real turn, marked on the session row (`sessions.thread_head_at`). A message that is only recorded (a disengaged thread, a channel session's recording) never takes it, so a thread first seen as a recording still gets its head on the first real turn. A reply in a thread that already has a session, a root mention, a DM and a `/1on1`-locked thread get none.
+- **Who is read.** The agent's own earlier messages read "you said". Messages from a user who is blocked or ignored for this agent, and text the owner's inbound guardrail rules deny, are left out, the same checks that decide whether the agent hears that person at all. The head can show what `get_thread_history` returns on request, so this filtering is what keeps it from reading more than the agent could.
+- **Not for a proactive post's replies.** A reply under a proactive post already carries that post's context, so it gets no head. The first-turn "what you have been doing" block does not count: a new human thread in a proactive channel still gets its head.
+- **Fails open.** A Slack error (a rate limit, a deleted or missing root) means no head and a turn that runs as before, with one log line.
+
+The text of every earlier message is another person's text. It goes through the same tag neutraliser as a channel session's recordings, so a message that contains `</thread-head>` or a forged `<channel ...>` cannot close the block or pose as a person's request. The head is not stored in the episodic turn record.
+
 ---
 
 ## 2. Channel controls and identity
