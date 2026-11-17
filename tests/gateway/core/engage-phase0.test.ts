@@ -275,7 +275,7 @@ describe("phase 0, echoes and names", () => {
     await g.emit("message", human(g.t.client, "hello there", nextTs())); // primes the auth.test cache
     // A known snapshot of the workspace's people with no one called quill (an unknown one would send the name to tier 3).
     const users = makeUsersCache();
-    users.ensure(TEAM, async () => new Set(["jane"]));
+    users.ensure(TEAM, async () => ({ names: new Set(["jane"]), complete: true }));
     await new Promise((r) => setTimeout(r, 5));
     __setUsersCacheForTests(users);
     const before = engaged("1", "run", "addressed");

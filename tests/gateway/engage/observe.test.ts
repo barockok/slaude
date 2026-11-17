@@ -134,7 +134,7 @@ describe("clearAgentRecord", () => {
 describe("a colleague who shares the agent's name", () => {
   const withUsers = (names: Set<string> | null) => {
     const c = makeUsersCache();
-    if (names) c.ensure("T1", async () => names);
+    if (names) c.ensure("T1", async () => ({ names, complete: true }));
     return c;
   };
   const tick = () => new Promise((r) => setTimeout(r, 5));

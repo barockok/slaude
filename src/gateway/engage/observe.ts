@@ -6,7 +6,7 @@ import { COMMON_WORD_DENYLIST, foldAlias } from "../../persona/aliases";
 import { trustSoulFor } from "../../soul/per-persona";
 import { lastSpeakers, type LastSpeaker } from "./last-speaker";
 import { aliasesFor, engageFor } from "./setting";
-import { usersCache, type UsersCache } from "./users";
+import { usersCache, type UsersCache, type UsersSnapshot } from "./users";
 import { engageState } from "./budget";
 import { plan, scheduleShadow, type ShadowDeps } from "./shadow";
 import { MAX_TEXT, runTiers, type TierFacts, type TierResult } from "./tiers";
@@ -46,7 +46,7 @@ export interface ObserveInput {
   /** The Slack team of the delivery, to find colleagues who share the agent's name. */
   teamId?: string;
   /** Starts the team's names lookup when it is missing or stale (never awaited). Without one the lookup stays unknown. */
-  loadUsers?: () => Promise<Set<string>>;
+  loadUsers?: () => Promise<UsersSnapshot>;
   /** Test seam: the users cache. */
   users?: UsersCache;
   /** Phase 1: what the shadow classifier needs. Absent: phase 0 only (counters and the one line). */

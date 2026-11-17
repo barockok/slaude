@@ -35,7 +35,7 @@ import { setLastSpeakerRedis } from "../engage/last-speaker";
 import { setEngageRedis } from "../engage/budget";
 import { gateClassifier } from "../engage/gate-classifier";
 import { buildImplicitInput } from "../engage/input";
-import { loadUserNames } from "../engage/users";
+import { errorCode, loadUserNames } from "../engage/users";
 import type { ShadowDeps } from "../engage/shadow";
 import { ledgerTurnRun, type TurnPass } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
@@ -4693,36 +4693,85 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return !!user && mentions.includes(user);
   };
   /**
-   * Implicit engagement, phase 0: for a message the agent is not going to
-   * answer, count what the deterministic tiers would have done. Observe only.
-   * Does nothing at all (no read, no counter) while the channel is at level
-   * `mention`, the default, and never throws or changes what happens next.
+   * The client engagement reads Slack with (the classifier's input, the debounce
+   * re-check, the users list): the delivering app's no-retry lookup client, as the
+   * thread head uses, which rejects a rate-limited call instead of waiting on
+   * Retry-After. Where no bot token is known the delivery's own client is the
+   * fallback, exactly as for the thread head.
    */
+  const engageReader = (args: any): any => {
+    let token: string | undefined = args?.context?.botToken;
+    if (!token && env.slack.mode() === "socket") {
+      try {
+        token = env.slack.botToken();
+      } catch {
+        token = undefined;
+      }
+    }
+    return (token ? lookupClients.forToken(token) : null) ?? args?.client ?? t.client;
+  };
+  /** Aborted when this gateway stops: pending classifier timers are cancelled and their jobs dropped. */
+  const shadowAbort = new AbortController();
+  /** At most this many messages are asked of Slack for one engagement read, always one page. */
+  const ENGAGE_READ_LIMIT = 15;
+  /** A thread read looks only at the most recent stretch of the thread (a single page is the oldest of its window). */
+  const ENGAGE_THREAD_WINDOW_S = 1200;
+  const withinMs = <T,>(p: Promise<T>, ms: number): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    p.catch(() => {});
+    return Promise.race([p, new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error("deadline")), ms); })]).finally(() => clearTimeout(timer));
+  };
   /**
    * Phase 1: what the shadow classifier needs for one delivery. With no adapter
    * configured the classifier is null (a counted pass, no input, no Slack read).
-   * The input builder is only called for a candidate that passed the budget, and
-   * refuses a message the ingress would drop (a blocked or ignored author, an
-   * owner deny rule) before anything is read or sent.
+   * `admit` refuses, before any budget is spent, a message the ingress would not
+   * hear (a blocked or ignored author, an owner deny rule, a /1on1 thread, a
+   * command); the input builder then makes one single-page Slack read.
    */
   const shadowFor = (args: any, personaId: string | undefined): ShadowDeps => {
     const runner = gateRunner;
+    const e: any = args.event;
+    const teamId: string | undefined = args.context?.teamId ?? e.team;
+    const reader = engageReader(args);
+    const readFailed = (what: string, err: unknown): never => {
+      // The error code only: never a message, a token or a body.
+      console.warn(`[engage] ${what} read failed code=${errorCode(err)}`);
+      throw err;
+    };
     return {
       classifier: runner && runner.hasAdapter ? gateClassifier(runner) : null,
+      ...(teamId ? { tenant: teamId } : {}),
+      signal: shadowAbort.signal,
+      admit: async () => {
+        if (await OneOnOne.find(e.channel, e.thread_ts || e.ts)) return false;
+        if (await ingressDrops(args, personaId)) return false;
+        if (await ingressHandlesLocally(args, personaId)) return false;
+        return true;
+      },
+      // A top-level question waited for a human answer: look once more, on one bounded history page since the message.
+      recheck: async () => {
+        const r: any = await withinMs<any>(reader.conversations.history({ channel: e.channel, oldest: e.ts, inclusive: true, limit: ENGAGE_READ_LIMIT }), 2000).catch((err) => readFailed("recheck", err));
+        if (!r?.ok) return readFailed("recheck", { data: { error: r?.error } });
+        const msgs: any[] = r.messages ?? [];
+        const me = msgs.find((x) => x.ts === e.ts);
+        if (!me || me.edited) return "stale";
+        const ids = await gateSelfIds(args, personaId);
+        const self = new Set<string>([ids.botUserId, ...ids.userIds].filter(Boolean));
+        const human = (u: unknown): boolean => typeof u === "string" && u !== e.user && !self.has(u);
+        if (Array.isArray(me.reply_users) && me.reply_users.some(human)) return "answered";
+        if (msgs.some((x) => Number(x.ts) > Number(e.ts) && !x.bot_id && human(x.user))) return "answered";
+        return "ok";
+      },
       buildInput: async (req) => {
-        const e: any = args.event;
-        if (await ingressDrops(args, personaId)) throw new Error("ingress drops this message");
-        if (await ingressHandlesLocally(args, personaId)) throw new Error("ingress handles this message");
-        const client = args.client ?? t.client;
         const persona = personaId ?? "default";
-        const teamId: string | undefined = args.context?.teamId ?? e.team;
         const own = await ownIdentities(args, personaId);
         const grants = await loadGrants(persona);
         const isSelf = (x: { user?: string; bot_id?: string }) => (x.user ? own.has(`u:${x.user}`) : false) || (x.bot_id ? own.has(`b:${x.bot_id}`) : false);
         const filter = makeAuthorFilter({
           isSelf,
           isAdmitted: async (userId) => (await admitAt({ site: "gateway.engage_input.admit", persona, teamId, userId, channelId: e.channel, isDM: false, grants })).ok,
-          isIgnored: (userId) => ignoreGate.shouldDrop(userId, e.channel, req.thread ?? e.ts),
+          // The user-level ignore; a thread-level one is judged per message (dropMessage), for that message's own thread.
+          isIgnored: async (userId) => (await Ignores.findActiveForUser(userId)) != null,
           textDenied: async (text) => (await inboundVerdict(persona, e.channel, text))?.action === "deny",
         });
         const ids = await gateSelfIds(args, personaId);
@@ -4731,13 +4780,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const names = [personaId && personaId !== "default" ? personaId : "", reg?.config?.name ?? "", ...(personaId === appPersonaOf(args) ? [botIdsCache.get(key)?.name ?? ""] : []), ...aliasesFor(personaId)].filter(Boolean);
         return await buildImplicitInput(
           {
-            replies: (thread, limit) => threadTail(client, e.channel, thread, e.ts, limit),
-            history: async (limit) => {
-              const r = await client.conversations.history({ channel: e.channel, latest: e.ts, inclusive: false, limit });
+            replies: async (thread) => {
+              const r = await reader.conversations.replies({ channel: e.channel, ts: thread, latest: e.ts, inclusive: true, oldest: String(Math.max(0, Number(e.ts) - ENGAGE_THREAD_WINDOW_S)), limit: ENGAGE_READ_LIMIT });
+              if (!r?.ok) throw new Error("conversations.replies failed");
+              return (r.messages ?? []) as any[];
+            },
+            history: async () => {
+              const r = await reader.conversations.history({ channel: e.channel, latest: e.ts, inclusive: false, limit: ENGAGE_READ_LIMIT });
               if (!r?.ok) throw new Error("conversations.history failed");
               return [...((r.messages ?? []) as any[])].reverse();
             },
             filter,
+            dropMessage: async (m) => (await Ignores.findActiveForThread(e.channel, m.thread_ts ?? req.thread ?? m.ts)) != null,
             isSelf,
             selfUserIds: new Set<string>([ids.botUserId, ...ids.userIds].filter(Boolean)),
             botUserId: ids.botUserId,
@@ -4747,10 +4801,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           },
           { ts: e.ts, text: String(e.text ?? ""), threadTs: req.thread, level: req.level, continuation: req.continuation },
           String(e.user ?? ""),
-        );
+        ).catch((err) => readFailed("input", err));
       },
     };
   };
+  /**
+   * Implicit engagement, phases 0 and 1: for a message the agent is not going to
+   * answer, count what the deterministic tiers would have done and, with an
+   * adapter configured, what a classifier would. Observe only. Does nothing at
+   * all (no read, no counter) while the channel is at level `mention`, the
+   * default, and never throws or changes what happens next.
+   */
   const observeImplicit = async (args: any, personaId: string | undefined, site: "drop" | "channel_session"): Promise<void> => {
     try {
       const e: any = args.event;
@@ -4767,7 +4828,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await observeEngage({
         event: e,
         teamId: args.context?.teamId ?? e.team,
-        loadUsers: () => loadUserNames(args.client ?? t.client),
+        loadUsers: async () => {
+          // The agent's own Slack users are not colleagues who share its name.
+          const ids = await gateSelfIds(args, personaId);
+          return loadUserNames(engageReader(args), { exclude: new Set<string>([ids.botUserId, ...ids.userIds].filter(Boolean)) });
+        },
         shadow: shadowFor(args, personaId),
         personaId,
         appId: args.context?.apiAppId,
@@ -5412,6 +5477,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await t.start();
     },
     stop: async () => {
+      // Pending shadow classifier timers (a root question's wait) are cancelled and their jobs dropped.
+      shadowAbort.abort();
       // End live voice calls first, while the transport can still carry each
       // call's summary turn; bounded so shutdown never hangs on a call.
       await drainVoiceCalls(voiceCalls, VOICE_SHUTDOWN_GRACE_MS);

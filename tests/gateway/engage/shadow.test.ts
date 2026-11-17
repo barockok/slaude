@@ -63,7 +63,7 @@ let lines: string[];
 let built: number;
 let store: LastSpeakerStore;
 const users = makeUsersCache();
-users.ensure("T1", async () => new Set(["jane"]));
+users.ensure("T1", async () => ({ names: new Set(["jane"]), complete: true }));
 
 const canned = (thread: string | null): BuiltInput => ({ input: { message: "<agent> thoughts?", recent: [], mentionsAgent: false, engaged: false, kbHitScore: null, channelTrust: "trusted" }, alternated: false, read: thread ? "replies" : "history" });
 function deps(script: Script | null, o: Partial<ShadowDeps> & { timeoutMs?: number } = {}): ShadowDeps {

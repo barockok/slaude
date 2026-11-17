@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { rmSync } from "node:fs";
 import { createGateway } from "../../../src/gateway/core/gateway";
 import { AgentManager } from "../../../src/agent/manager";
@@ -9,6 +9,7 @@ import { SoulDataSchema } from "../../../src/soul/data";
 import { paths } from "../../../src/config/home";
 import { db } from "../../../src/db/schema";
 import * as OneOnOne from "../../../src/db/one-on-one";
+import * as Sessions from "../../../src/db/sessions";
 import * as Ignores from "../../../src/db/ignores";
 import * as Grants from "../../../src/db/agent-grants";
 import { __clearGuardrailsForTests, applyGuardrailChange } from "../../../src/db/guardrails";
@@ -19,6 +20,8 @@ import type { DecisionAdapter, DecisionRequest } from "../../../src/decision/typ
 import { __setEngageBreakerForTests, __setEngageStateForTests } from "../../../src/gateway/engage/budget";
 import { shadowIdle } from "../../../src/gateway/engage/shadow";
 import { __setLastSpeakerStoreForTests } from "../../../src/gateway/engage/last-speaker";
+import { __setDebounceForTests } from "../../../src/gateway/engage/shadow";
+import { __setProactiveSoulSource } from "../../../src/soul/proactive";
 
 ensureGuardrailKeyForPg();
 
@@ -35,16 +38,28 @@ type Msg = Record<string, unknown>;
 function makeGw(adapter: DecisionAdapter | null) {
   const events = new Map<string, (args: any) => Promise<void>>();
   const calls = { replies: 0, history: 0 };
-  const state: { thread: Msg[]; history: Msg[] } = { thread: [], history: [] };
+  const sent = { replies: [] as any[], history: [] as any[], posts: 0 };
+  const state: { thread: Msg[]; history: Msg[]; repliesError: unknown; moreRepliesPages: boolean; historyAfter?: (a: any) => Msg[] } = { thread: [], history: [], repliesError: null, moreRepliesPages: false };
   const client: any = {
     auth: { test: async () => ({ user_id: "USLAUDEBOT", user: "quill", bot_id: "B_SLAUDE", team: TEAM, url: "x" }) },
-    chat: { postMessage: async () => ({ ok: true, ts: `${Date.now()}.0` }), update: async () => ({ ok: true }) },
+    chat: { postMessage: async () => (sent.posts++, { ok: true, ts: `${Date.now()}.0` }), update: async () => ({ ok: true }) },
     reactions: { add: async () => ({ ok: true }), remove: async () => ({ ok: true }) },
     assistant: { threads: { setStatus: async () => ({ ok: true }) } },
     conversations: {
       info: async () => ({}), members: async () => ({}),
-      replies: async () => (calls.replies++, { ok: true, messages: state.thread, response_metadata: { next_cursor: "" } }),
-      history: async () => (calls.history++, { ok: true, messages: [...state.history].reverse() }),
+      replies: async (a: any) => {
+        calls.replies++;
+        sent.replies.push(a);
+        if (state.repliesError) throw state.repliesError;
+        return { ok: true, messages: state.thread, response_metadata: { next_cursor: state.moreRepliesPages ? "more" : "" } };
+      },
+      history: async (a: any) => {
+        calls.history++;
+        sent.history.push(a);
+        // A re-check asks from the message on (oldest); the input asks for what came before it (latest).
+        if (a.oldest !== undefined) return { ok: true, messages: state.historyAfter ? state.historyAfter(a) : [] };
+        return { ok: true, messages: [...state.history].reverse() };
+      },
     },
     users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
     search: { messages: async () => ({}) },
@@ -55,7 +70,7 @@ function makeGw(adapter: DecisionAdapter | null) {
   agent.sendMessage = async (_id: string, txt: string) => { sends.push(txt); };
   const gateRunner = makeGateRunner({ mode: "off", adapter, tAct: 0.8, timeoutMs: 400, contextMessages: 8, log: () => {} });
   const h = createGateway(agent, t, { gateRunner });
-  return { client, emit: async (n: string, a: any) => { await events.get(n)?.(a); }, sends, h, calls, state };
+  return { client, emit: async (n: string, a: any) => { await events.get(n)?.(a); }, sends, h, calls, sent, state };
 }
 type Gw = ReturnType<typeof makeGw>;
 
@@ -86,6 +101,8 @@ afterEach(async () => {
   gw = null;
   __setEngageStateForTests(null);
   __setLastSpeakerStoreForTests(null);
+  __setDebounceForTests(null);
+  __setProactiveSoulSource(null);
   __resetSoulDataMemo();
   await __clearGuardrailsForTests();
   __resetGuardrailSnapshotsForTests();
@@ -163,5 +180,114 @@ describe("phase 1 through the handler", () => {
     await deliver(g, "quill, what about my password: hunter2 ?", nextTs(), nowTs(-100));
     await settle();
     expect(asked).toHaveLength(0);
+  });
+
+  it("one page only: a thread with more pages is read once, with a bounded limit and no cursor", async () => {
+    const g = (gw = makeGw(yes));
+    g.state.moreRepliesPages = true;
+    g.state.thread = [m(nowTs(-50), WORLD.manager, "context line")];
+    await deliver(g, "I wonder what quill thinks", nextTs(), nowTs(-100));
+    await settle();
+    expect(g.calls.replies).toBe(1);
+    expect(g.sent.replies[0].cursor).toBeUndefined();
+    expect(g.sent.replies[0].limit).toBeLessThanOrEqual(15);
+    expect(asked).toHaveLength(1);
+  });
+
+  it("a /1on1 thread: nothing is asked and no budget is spent", async () => {
+    const root = nowTs(-100);
+    await OneOnOne.lock({ channelId: CH, threadTs: root, lockedUser: WORLD.manager, createdBy: WORLD.manager });
+    const g = (gw = makeGw(yes));
+    await deliver(g, "I wonder what quill thinks", nextTs(), root);
+    await settle();
+    expect(asked).toHaveLength(0);
+    expect(g.calls).toEqual({ replies: 0, history: 0 });
+    expect(g.sends).toEqual([]);
+  });
+
+  it("a rate-limited read is a skipped candidate: one attempt, no retry, nothing asked, the agent does nothing", async () => {
+    const g = (gw = makeGw(yes));
+    g.state.repliesError = Object.assign(new Error("ratelimited"), { code: "slack_webapi_rate_limited", data: { error: "ratelimited" } });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    await deliver(g, "I wonder what quill thinks", nextTs(), nowTs(-100));
+    await settle();
+    const warned = warn.mock.calls.map((c) => c.join(" ")).join("\n");
+    warn.mockRestore();
+    expect(g.calls.replies).toBe(1);
+    expect(asked).toHaveLength(0);
+    expect(g.sends).toEqual([]);
+    expect(warned).toContain("code=");
+    expect(warned).not.toContain("quill");
+  });
+
+  describe("a top-level question waits before it is asked", () => {
+    const ask = async (g: Gw, ts: string) => {
+      setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "contribute", mode: "shadow" }] }));
+      __setDebounceForTests(20);
+      await deliver(g, "how do we roll back the release safely today?", ts);
+      await Bun.sleep(80);
+      await shadowIdle();
+    };
+    it("still there and unanswered: it is asked", async () => {
+      const g = (gw = makeGw(yes));
+      const ts = nextTs();
+      g.state.historyAfter = () => [m(ts, WORLD.manager, "how do we roll back the release safely today?")];
+      await ask(g, ts);
+      expect(asked).toHaveLength(1);
+    });
+    it("deleted meanwhile: it is not asked", async () => {
+      const g = (gw = makeGw(yes));
+      g.state.historyAfter = () => [];
+      await ask(g, nextTs());
+      expect(asked).toHaveLength(0);
+      expect(g.calls.history).toBe(1); // the re-check only; no input read
+    });
+    it("edited meanwhile: it is not asked", async () => {
+      const g = (gw = makeGw(yes));
+      const ts = nextTs();
+      g.state.historyAfter = () => [m(ts, WORLD.manager, "how do we roll back?", { edited: { user: WORLD.manager, ts: "1.0" } })];
+      await ask(g, ts);
+      expect(asked).toHaveLength(0);
+    });
+    it("answered by a colleague meanwhile (a thread reply or a later top-level message): it is not asked", async () => {
+      const g = (gw = makeGw(yes));
+      const ts = nextTs();
+      g.state.historyAfter = () => [m(ts, WORLD.manager, "q", { reply_users: ["U0COLLEAGUE"] })];
+      await ask(g, ts);
+      expect(asked).toHaveLength(0);
+      const ts2 = nextTs();
+      g.state.historyAfter = () => [m(nowTs(1000), "U0COLLEAGUE", "try the revert button"), m(ts2, WORLD.manager, "q")];
+      await ask(g, ts2);
+      expect(asked).toHaveLength(0);
+    });
+    it("the gateway stopping cancels the wait", async () => {
+      const g = (gw = makeGw(yes));
+      const ts = nextTs();
+      g.state.historyAfter = () => [m(ts, WORLD.manager, "q")];
+      setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "contribute", mode: "shadow" }] }));
+      __setDebounceForTests(60);
+      await deliver(g, "how do we roll back the release safely today?", ts);
+      await g.h.stop();
+      await Bun.sleep(120);
+      await shadowIdle();
+      expect(asked).toHaveLength(0);
+      expect(g.calls.history).toBe(0);
+    });
+  });
+
+  it("a channel-session root message is observed at the channel_session site: asked once, nothing posted, the agent does nothing", async () => {
+    __setProactiveSoulSource(() => `\n## Channel <#${CH}>\n### Session\n- Mode: channel\n`);
+    setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "addressed", mode: "shadow" }] }));
+    const g = (gw = makeGw(yes));
+    g.state.history = [m(nowTs(-20), WORLD.manager, "morning all")];
+    await deliver(g, "I wonder what quill thinks", nextTs());
+    await settle();
+    expect(asked).toHaveLength(1);
+    expect(g.calls.history).toBe(1);
+    // Today's path for an unmentioned message in a channel session: one suppressed recording (the model does not run), nothing posted.
+    expect(g.sends).toHaveLength(1);
+    expect(g.sent.posts).toBe(0);
+    // It went through the channel session (the message was recorded there, suppressed), not the classic drop path.
+    expect(await Sessions.findByThread({ team_id: TEAM, channel_id: CH, thread_ts: `channel:${CH}`, persona_id: "default" })).toBeTruthy();
   });
 });
