@@ -12,6 +12,7 @@ import { surfaceContract } from "../../../tools/contracts/surface";
 import { parseToolArgs } from "../../../tools/contracts/types";
 import type { JobClaims } from "../auth";
 import type { ToolPlaneDeps, ToolResult } from "./deps";
+import { executeUploadTool, UPLOAD_TOOL_NAMES } from "./upload";
 
 export async function executeSurfaceTool(
   tool: string,
@@ -28,6 +29,8 @@ export async function executeSurfaceTool(
     const res = await deps.openApproval(claims, a);
     return { content: [{ type: "text", text: JSON.stringify(res) }] };
   }
+  // restOnly: not in surfaceTools (no model sees them), served here.
+  if (UPLOAD_TOOL_NAMES.includes(tool)) return executeUploadTool(tool, body, claims, deps);
   const ctx = deps.slackCtx(claims);
   const surface = deps.surfaceFor(ctx);
   const defs = surfaceTools(surface, deps.surfaceOpts(claims, ctx));

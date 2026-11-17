@@ -2,7 +2,7 @@
  * Outbound-Slack suppression wrapper (design §Active-surface lock, outbound
  * gate). While an operator drives a session from the panel, the agent still
  * runs — but its user-visible surface writes (reply / edit / react / upload /
- * typing) must not echo to Slack; the operator watches the turn over the panel
+ * typing, and an upload's complete call) must not echo to Slack; the operator watches the turn over the panel
  * SSE tail instead.
  *
  * This wraps a Surface so those write methods become no-ops while `held(id)` is
@@ -38,6 +38,11 @@ export function suppressibleSurface(
       : undefined,
     upload: surface.upload
       ? async (i) => ((await held(sessionId)) ? undefined : surface.upload!(i))
+      : undefined,
+    // Direct upload: begin only obtains a URL (nothing visible), complete is the write.
+    uploadBegin: surface.uploadBegin ? (i) => surface.uploadBegin!(i) : undefined,
+    uploadComplete: surface.uploadComplete
+      ? async (i) => ((await held(sessionId)) ? undefined : surface.uploadComplete!(i))
       : undefined,
     typing: surface.typing ? async (i) => ((await held(sessionId)) ? undefined : surface.typing!(i)) : undefined,
   };

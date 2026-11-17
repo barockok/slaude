@@ -23,6 +23,7 @@ import { AgentManager } from "../../../src/agent/manager";
 import type { Transport } from "../../../src/gateway/core/transport";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { soulData, setSoulData } from "../../../src/soul/extract";
+import { mintUploadHandle } from "../../../src/gateway/upload/handle";
 import { mintJobToken, JOB_HEADER } from "../../../src/gateway/api/auth";
 import { SERVERS } from "../../../src/gateway/api/tools";
 import * as CronJobs from "../../../src/db/cron-jobs";
@@ -54,7 +55,12 @@ function fakeTransport(): Transport {
       canvases: { edit: async () => ({ ok: true }) },
       users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
       search: { messages: async () => ({ messages: { matches: [], total: 0 } }) },
-      files: { uploadV2: async () => ({ files: [] }), info: async () => ({ file: {} }) },
+      files: {
+        uploadV2: async () => ({ files: [] }),
+        info: async () => ({ file: {} }),
+        getUploadURLExternal: async () => ({ ok: true, upload_url: "https://upload.invalid/roundtrip", file_id: "F_RT" }),
+        completeUploadExternal: async () => ({ ok: true, files: [{ id: "F_RT" }] }),
+      },
     } as any,
     action: () => {}, event: () => {}, use: () => {}, start: async () => {}, stop: async () => {},
   };
@@ -83,6 +89,8 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     react: { input: { name: "eyes" } },
     unreact: { input: { name: "eyes" } },
     upload: { input: () => ({ path: uploadPath }), isErrorOk: true }, // confined to the session folder; the fixture session has no row (tests/gateway/api/upload-confinement.test.ts covers both outcomes)
+    upload_begin: { input: { filename: "roundtrip.txt", size: 10 } }, // REST-only: returns {uploadUrl, fileId, handle}
+    upload_complete: { input: () => ({ handle: mintUploadHandle({ tenant: "default", persona: "default", session: "S-roundtrip", team: "T1", channel: "C0TEAM", thread: "300.0", fileId: "F_RT", filename: "roundtrip.txt", size: 10 }) }) }, // REST-only
     typing: { input: { on: true }, expect: "not_mounted" }, // SlackSurface has no "typing" capability
     set_one_on_one: { input: { action: "off" } },
     set_mention_only: { input: { active: false } },
