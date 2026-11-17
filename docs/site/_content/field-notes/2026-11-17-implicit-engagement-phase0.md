@@ -137,6 +137,17 @@ decisions and only records the answer. What shaped it:
 - **Unknown is the safe side for the users cache.** Before a users list exists a
   name counts as shared, so "Name, ..." is a tier 3 candidate rather than a run.
   The list is workspace wide, which errs the same way.
+- **Review round.** Claims, pass memory and cooldown are keyed by persona (two
+  personas on one message must not share them); the budget stays per channel
+  with the Slack team in its keys. Admission (blocked, ignored, `/1on1`) is
+  checked before the budget is spent, because the observer's own lock read has
+  a 100 ms bound that reads a timeout as unlocked. Reads use the no-retry
+  lookup client and a single page: Slack's replies return the oldest page of a
+  window, so a thread read is a 20 minute window, which for a hot thread is the
+  start of the window, not its tail (an open limitation). The breaker hands out
+  tickets so a late failure cannot double a newer backoff. A shadow consult is
+  counted only by the engage counters. A root question's 60 second wait ends
+  with one history read to see whether it was answered, edited or deleted.
 - **The deployment's own provider for the model.** The `anthropic` adapter
   reuses the credentials the gateway already holds and forces one tool call so
   an answer is structured or an error; its size limit and its error mapping
