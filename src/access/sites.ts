@@ -12,7 +12,6 @@
 export const SITES = [
   // Task 13: gateway admission, roles and 1on1 locks (src/gateway/core/gateway.ts).
   { id: "gateway.admit", group: 13, kind: "admit", where: "preTurnDropReason: admission over the persona's grants" },
-  { id: "gateway.thread_head.admit", group: 13, kind: "admit", where: "thread head: an author blocked for the persona is not read back to the model" },
   { id: "gateway.heartbeat_status.role", group: 13, kind: "role", where: "/heartbeat status: manager role" },
   { id: "gateway.heartbeat_status.manager_same", group: 13, kind: "same", where: "/heartbeat status: the speaker is the heartbeat recipient" },
   { id: "gateway.heartbeat_now.role", group: 13, kind: "role", where: "/heartbeat now: manager role" },
@@ -99,6 +98,8 @@ export const SITES = [
   { id: "kb_tools.memory_about_subject", group: 18, kind: "same", where: "memory_about listing: a page's subject is the turn's sender" },
   { id: "pass_tools.profile_subject", group: 18, kind: "same", where: "background pass profile write: a named subject is the pass's person (no workspace on the call)" },
   { id: "permission.stamp_expect_same", group: 18, kind: "same", where: "turn stamp: the token's initiator is the turn's sole sender (no workspace on the call)" },
+  // rc.28: the thread head (src/gateway/core/gateway.ts).
+  { id: "gateway.thread_head.admit", group: 19, kind: "admit", where: "thread head: an author denied for the persona is not read back to the model" },
 ] as const;
 
 export type SiteId = (typeof SITES)[number]["id"];

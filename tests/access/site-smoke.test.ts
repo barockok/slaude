@@ -243,6 +243,22 @@ const exercisers: Record<string, () => Promise<void>> = {
     await proactiveRule(sc, { kind: "invoice emails", scope: "here", level: "ask", quote: "ask me first" }, { call: brain.call, now: () => new Date("2026-10-27T10:00:00Z") });
     __setProactiveSoulSource(null);
   },
+  async threadHeadAuthors() {
+    // A mention inside an existing thread: the session's first real turn reads the thread, asking about each author.
+    const tr = transport();
+    const root = nextTs();
+    tr.client.conversations.replies = async () => ({
+      ok: true,
+      messages: [{ ts: root, user: "U0MEMBER", text: "the root" }, { ts: "1.5", user: "U0OTHER", text: "a reply" }],
+      response_metadata: { next_cursor: "" },
+    });
+    const agent = new AgentManager();
+    agent.sendMessage = async () => {};
+    createGateway(agent, tr.t, {});
+    const a = dm(tr.client, MGR, "<@U_SLAUDE> look at this", { thread: root, channel: "C0TEAM", type: "channel" });
+    await tr.emit("app_mention", { ...a, event: { ...a.event, type: "app_mention" } });
+    await tr.emit("message", a);
+  },
   async gatewaySlashAndHandles() {
     const tr = transport();
     const agent = new AgentManager();

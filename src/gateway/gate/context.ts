@@ -79,10 +79,11 @@ export function isAgentAuthor(
   m: { user?: string; bot_id?: string },
   self: { botUserId: string; botIds: Set<string>; userIds?: Set<string> },
 ): boolean {
+  const { botUserId, botIds, userIds } = self;
   return (
-    m.user === self.botUserId ||
-    (m.user !== undefined && self.userIds !== undefined && self.userIds.has(m.user)) ||
-    (m.bot_id !== undefined && self.botIds.has(m.bot_id))
+    m.user === botUserId ||
+    (m.user !== undefined && userIds !== undefined && userIds.has(m.user)) ||
+    (m.bot_id !== undefined && botIds.has(m.bot_id))
   );
 }
 

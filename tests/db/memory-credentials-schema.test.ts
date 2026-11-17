@@ -112,10 +112,11 @@ describe("upgrade from 0041", () => {
       await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version < "0052") });
       await seedAccount(db, "a1");
       await db.run(`INSERT INTO mcp_credentials (id, account_id, server_key, payload, expires_at, updated_at) VALUES ('c1', 'a1', 'k', 'ciphertext-bytes', 9, 8)`);
-      const r = await runMigrations(db, { log: () => {}, migrations: all });
+      const upTo52 = all.filter((m) => m.version <= "0052");
+      const r = await runMigrations(db, { log: () => {}, migrations: upTo52 });
       expect(r.applied).toEqual(["0052"]);
       expect(await db.one<Record<string, unknown>>("SELECT payload, expires_at, user_id FROM mcp_credentials WHERE id = 'c1'")).toEqual({ payload: "ciphertext-bytes", expires_at: 9, user_id: null });
-      expect((await runMigrations(db, { log: () => {}, migrations: all })).applied).toEqual([]);
+      expect((await runMigrations(db, { log: () => {}, migrations: upTo52 })).applied).toEqual([]);
     } finally {
       await db.close();
     }

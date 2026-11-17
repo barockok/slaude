@@ -282,10 +282,18 @@ describe("decision gate at the Slack ingress", () => {
       return { ok: true, messages: page, response_metadata: { next_cursor: next } };
     };
     const f = fakeAdapter();
-    const g = makeGw(runner("on", f.a), replies);
-    await g.emit("message", msg(g.t.client, "<@USLAUDEBOT> and now?", ts, { thread }));
-    expect(calls.length).toBeLessThanOrEqual(5);
-    expect(f.states[0]!.recent.map((r) => r.text)).toEqual(Array.from({ length: 8 }, (_, i) => `m${587 + i}`));
+    // The thread head makes its own bounded read on a session's first turn; off here so this counts the gate's.
+    const saved = process.env.SLAUDE_THREAD_HEAD_MESSAGES;
+    process.env.SLAUDE_THREAD_HEAD_MESSAGES = "0";
+    try {
+      const g = makeGw(runner("on", f.a), replies);
+      await g.emit("message", msg(g.t.client, "<@USLAUDEBOT> and now?", ts, { thread }));
+      expect(calls.length).toBeLessThanOrEqual(5);
+      expect(f.states[0]!.recent.map((r) => r.text)).toEqual(Array.from({ length: 8 }, (_, i) => `m${587 + i}`));
+    } finally {
+      if (saved === undefined) delete process.env.SLAUDE_THREAD_HEAD_MESSAGES;
+      else process.env.SLAUDE_THREAD_HEAD_MESSAGES = saved;
+    }
   });
 
   it("an off runner is never consulted", async () => {

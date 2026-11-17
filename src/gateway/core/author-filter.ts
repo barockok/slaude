@@ -28,15 +28,19 @@ export type AuthorFilter = {
 };
 
 export function makeAuthorFilter(d: AuthorFilterDeps): AuthorFilter {
-  // One answer per user for the life of this filter (a filter lives for one read).
-  const byUser = new Map<string, Promise<boolean>>();
-  const userOk = (userId: string): Promise<boolean> => {
-    let p = byUser.get(userId);
-    if (!p) {
-      p = (async () => !(await d.isBlocked(userId)) && !(await d.isIgnored(userId)))().catch(() => false);
-      byUser.set(userId, p);
+  // One answer per user for the life of this filter (a filter lives for one read; its calls run in turn).
+  const byUser = new Map<string, boolean>();
+  const userOk = async (userId: string): Promise<boolean> => {
+    const known = byUser.get(userId);
+    if (known !== undefined) return known;
+    let ok: boolean;
+    try {
+      ok = !(await d.isBlocked(userId)) && !(await d.isIgnored(userId));
+    } catch {
+      ok = false;
     }
-    return p;
+    byUser.set(userId, ok);
+    return ok;
   };
   return {
     allows: async (m) => {
