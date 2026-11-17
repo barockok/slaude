@@ -11,6 +11,7 @@ import type { WebClient } from "@slack/web-api";
 import type { TurnOrigin, TurnSender } from "../../knowledge/gated-dispatch";
 import { deliver, type Delivered, type OutboundKind, type OutboundOptions } from "./outbound";
 import { effectiveSoulForChannel } from "../../soul/extract";
+import { messageBot, messageToText } from "./message-text";
 import * as Ignores from "../../db/ignores";
 import { loadGrants } from "../../access/role";
 import { roleAt } from "../../access/wired";
@@ -295,8 +296,10 @@ export const slackHandlers = {
       });
       const msgs = ((r.messages ?? []) as any[]).map((m) => ({
         ts: m.ts,
+        // `user` is the Slack user ID only; a bot's self-chosen name stays in `bot_name`.
         user: m.user,
-        text: m.text,
+        ...messageBot(m),
+        text: messageToText(m),
         thread_ts: m.thread_ts,
         reply_count: m.reply_count,
         ...(include_replies !== false && m.replies
@@ -343,7 +346,7 @@ export const slackHandlers = {
         channel: { id: m.channel?.id, name: m.channel?.name },
         user: m.user,
         username: m.username,
-        text: m.text,
+        text: messageToText(m),
         permalink: m.permalink,
         score: m.score,
       }));

@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import { openConfined, UploadRefusal } from "../core/confined-file";
 import { deliver, formatOutbound, outbound, OutboundRefusal, TRACKER_HIDDEN, type OutboundKind, type OutboundOptions } from "./outbound";
 import { SLACK_SURFACE_ID } from "../core/surface";
+import { messageAuthor, messageToText } from "./message-text";
 import type {
   ApprovalRequest,
   ApprovalResult,
@@ -87,8 +88,8 @@ export class SlackSurface implements Surface {
       limit: limit ?? 20,
     });
     const messages: HistoryItem[] = ((r.messages ?? []) as any[]).map((m) => ({
-      author: m.user,
-      text: m.text,
+      author: messageAuthor(m),
+      text: messageToText(m),
       ref: m.ts,
       threadRef: m.thread_ts,
       replyCount: m.reply_count,
