@@ -145,9 +145,9 @@ describe("thread head wiring", () => {
     expect(g.sends).toHaveLength(1);
     const p = g.sends[0]!;
     const head = headOf(p);
-    expect(head).toContain("[thread root] Alice: the nightly job is failing");
-    expect(head).toContain("Bob: which step?");
-    expect(head).toContain("you said: it dies in the upload step");
+    expect(head).toContain("[thread root] <@U0ALICE01> Alice: the nightly job is failing");
+    expect(head).toContain("<@U0BOB0001> Bob: which step?");
+    expect(head).toContain("[you] it dies in the upload step");
     expect(head).not.toContain("the event itself");
     expect(p.indexOf("<thread-head>")).toBe(0);
     expect(p.indexOf("</thread-head>")).toBeLessThan(p.indexOf("<channel "));
@@ -223,7 +223,7 @@ describe("thread head wiring", () => {
     const before = g.sends.length;
     await mentionIn(g, t2, "now you", root);
     expect(g.sends.length).toBe(before + 1);
-    expect(headOf(g.sends.at(-1)!)).toContain("Bob: which step?");
+    expect(headOf(g.sends.at(-1)!)).toContain("<@U0BOB0001> Bob: which step?");
   });
 
   it("two first messages at once inject the head once", async () => {
@@ -258,7 +258,7 @@ describe("thread head wiring", () => {
     expect(g.replyCalls).toHaveLength(5);
     expect(g.sends).toHaveLength(1);
     const head = headOf(g.sends[0]!);
-    expect(head).toContain("[thread root] Alice: root text");
+    expect(head).toContain("[thread root] <@U0ALICE01> Alice: root text");
     expect(head).toContain("page 4 msg 2");
     expect(head).not.toContain("page 5");
   });
@@ -297,10 +297,10 @@ describe("thread head wiring", () => {
     g.state.thread = standardThread(root, ts);
     await mentionIn(g, ts, "hi", root);
     const head = headOf(g.sends[0]!);
-    expect(head).toContain("[thread root] Alice");
+    expect(head).toContain("[thread root] <@U0ALICE01> Alice");
     expect(head).toContain("1 earlier message omitted");
-    expect(head).toContain("you said: it dies in the upload step");
-    expect(head).not.toContain("Bob: which step?");
+    expect(head).toContain("[you] it dies in the upload step");
+    expect(head).not.toContain("<@U0BOB0001> Bob: which step?");
   });
 
   it("blocked and ignored authors, and text an owner inbound rule denies, are left out", async () => {

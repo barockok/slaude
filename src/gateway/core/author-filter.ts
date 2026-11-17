@@ -4,18 +4,20 @@
  * classifier's recent messages later).
  *
  * It applies what the ingress applies to a person who writes to the agent, so reading someone
- * is never wider than hearing them: a user blocked for the persona, a user or thread ignored,
- * and the owner's inbound deny rules on the text. The agent's own messages are always kept
+ * is never wider than hearing them: an author the persona's admission does not admit (denied,
+ * or simply not granted here: the ingress drops both), a user or thread ignored, and the owner's
+ * inbound deny rules on the text and on file names. The agent's own messages are always kept
  * (they are what it said, not input). The checks are injected, so the gateway wires the same
- * functions `preTurnDropReason` uses and a test wires fakes.
+ * functions `preTurnDropReason` uses and a test wires fakes. An audit-only owner rule does
+ * nothing here: only a deny hides a line.
  */
 export type AuthorRef = { user?: string; bot_id?: string };
 
 export type AuthorFilterDeps = {
-  /** One of this deployment's own identities. */
+  /** One of this persona's own identities. */
   isSelf: (m: AuthorRef) => boolean;
-  /** The user is denied for this persona (the ingress's `blocked_user`). */
-  isBlocked: (userId: string) => Promise<boolean>;
+  /** The persona's admission lets this user in (the ingress drops everyone it does not admit). */
+  isAdmitted: (userId: string) => Promise<boolean>;
   /** The user, or the thread, is ignored (the ingress's ignore gate). */
   isIgnored: (userId: string) => Promise<boolean>;
   /** The owner's inbound rules deny this text (also true when the rules cannot be read: fail closed). */
@@ -23,32 +25,27 @@ export type AuthorFilterDeps = {
 };
 
 export type AuthorFilter = {
-  /** Whether a message by this author with this text may be shown. Never throws: an error is a refusal. */
-  allows: (m: AuthorRef & { text?: string }) => Promise<boolean>;
+  /** Whether a message by this author may be shown. Never throws: an error is a refusal. */
+  allows: (m: AuthorRef & { text?: string; files?: Array<{ name?: string; title?: string }> }) => Promise<boolean>;
 };
 
 export function makeAuthorFilter(d: AuthorFilterDeps): AuthorFilter {
-  // One answer per user for the life of this filter (a filter lives for one read; its calls run in turn).
-  const byUser = new Map<string, boolean>();
-  const userOk = async (userId: string): Promise<boolean> => {
+  // One answer per user for the life of this filter (a filter lives for one read); calls may overlap.
+  const byUser = new Map<string, Promise<boolean>>();
+  const userOk = (userId: string): Promise<boolean> => {
     const known = byUser.get(userId);
     if (known !== undefined) return known;
-    let ok: boolean;
-    try {
-      ok = !(await d.isBlocked(userId)) && !(await d.isIgnored(userId));
-    } catch {
-      ok = false;
-    }
-    byUser.set(userId, ok);
-    return ok;
+    const fresh = (async () => (await d.isAdmitted(userId)) && !(await d.isIgnored(userId)))().catch(() => false);
+    byUser.set(userId, fresh);
+    return fresh;
   };
   return {
     allows: async (m) => {
       try {
         if (d.isSelf(m)) return true;
         if (m.user && !(await userOk(m.user))) return false;
-        const text = (m.text ?? "").toString();
-        if (text && (await d.textDenied(text))) return false;
+        const texts = [(m.text ?? "").toString(), ...(m.files ?? []).map((f) => (f.name || f.title || "").toString())];
+        for (const t of texts) if (t && (await d.textDenied(t))) return false;
         return true;
       } catch {
         return false;

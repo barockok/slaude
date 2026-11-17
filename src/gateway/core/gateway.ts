@@ -1782,10 +1782,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const isSelf = (x: { user?: string; bot_id?: string }) => isAgentAuthor(x, self);
       const filter = makeAuthorFilter({
         isSelf,
-        isBlocked: async (userId) => {
-          const v = await admitAt({ site: "gateway.thread_head.admit", persona, teamId: m.teamId, userId, channelId: m.channel, isDM: false, grants });
-          return !v.ok && v.reason === "blocked_user";
-        },
+        // Anyone the ingress would not admit (denied or not granted here) is not read back either.
+        isAdmitted: async (userId) => (await admitAt({ site: "gateway.thread_head.admit", persona, teamId: m.teamId, userId, channelId: m.channel, isDM: false, grants })).ok,
         isIgnored: (userId) => ignoreGate.shouldDrop(userId, m.channel, m.threadTs),
         textDenied: async (text) => (await inboundVerdict(persona, m.channel, text))?.action === "deny",
       });
