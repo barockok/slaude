@@ -43,6 +43,13 @@ export const ChannelOverrideSchema = z.object({
   approvers: z.array(ApproverEntrySchema).default([]),
 });
 
+/** Per-channel implicit-engagement setting from agent.yaml `channels.<ref>.engage`; absent keys take the defaults at read time. */
+export const ChannelEngageSchema = z.object({
+  channel: z.string().regex(/^[CGD][A-Z0-9]+$/),
+  level: z.enum(["mention", "addressed", "contribute"]).optional(),
+  mode: z.enum(["shadow", "on"]).optional(),
+});
+
 /** A sub-mandate for a kind of place, from a `## Scope dm|public|trusted` block. */
 export const ScopeMandateSchema = z.object({
   scope: z.enum(["dm", "public", "trusted"]),
@@ -157,6 +164,10 @@ export const SoulDataSchema = z.object({
   /** Per-channel overrides of mandate / approvers. Empty = global only.
    *  Resolved at runtime by `effectiveSoulForChannel(channelId)`. */
   channelOverrides: z.array(ChannelOverrideSchema).default([]),
+  /** Per-channel `engage` settings (agent.yaml only). Empty = every channel at the deployment default. */
+  channelEngage: z.array(ChannelEngageSchema).default([]),
+  /** Extra names the persona answers to (agent.yaml `aliases`), as written. */
+  aliases: z.array(z.string()).default([]),
   /** Sub-mandates for direct messages and the two channel classes. */
   scopeMandates: z.array(ScopeMandateSchema).default([]),
   /** Typed Slack references behind the access arrays above (agent.yaml only; a soul extracted from prose has none). */
@@ -166,6 +177,7 @@ export const SoulDataSchema = z.object({
 });
 
 export type ApproverEntry = z.infer<typeof ApproverEntrySchema>;
+export type ChannelEngage = z.infer<typeof ChannelEngageSchema>;
 export type ChannelOverride = z.infer<typeof ChannelOverrideSchema>;
 export type ScopeMandate = z.infer<typeof ScopeMandateSchema>;
 export type SoulData = z.infer<typeof SoulDataSchema>;

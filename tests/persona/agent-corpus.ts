@@ -117,6 +117,26 @@ ok("channel entry empty", { channels: { [C]: {} } });
 ok("channel entry session", { channels: { [C]: { session: "channel" } } });
 ok("channel entry proactive off", { channels: { [C]: { proactive: false } } });
 ok("private and dm channel ids", { channels: { G0EXAMPLE: { proactive: true }, D0EXAMPLE: { proactive: false } } });
+ok("engage level and mode", { channels: { [C]: { engage: { level: "addressed", mode: "on" } } } });
+ok("engage level only", { channels: { [C]: { engage: { level: "contribute" } } } });
+ok("engage mode only", { channels: { [C]: { engage: { mode: "shadow" } } } });
+ok("engage empty", { channels: { [C]: { engage: {} } } });
+ok("engage null", { channels: { [C]: { engage: null } } });
+bad("engage unknown level", { channels: { [C]: { engage: { level: "always" } } } });
+bad("engage unknown mode", { channels: { [C]: { engage: { mode: "live" } } } });
+bad("engage level null", { channels: { [C]: { engage: { level: null } } } });
+bad("engage unknown key", { channels: { [C]: { engage: { level: "mention", extra: 1 } } } });
+bad("engage not a mapping", { channels: { [C]: { engage: "on" } } });
+ok("aliases", { aliases: ["anabot", "Ana-2"] });
+ok("aliases null", { aliases: null });
+ok("aliases empty", { aliases: [] });
+bad("aliases not a list", { aliases: "anabot" });
+bad("aliases entry not a string", { aliases: [5] });
+bad("aliases too short", { aliases: ["an"] }, false, ["aliases[0]"]);
+bad("aliases common word", { aliases: ["anabot", "team"] }, false, ["aliases[1]"]);
+bad("aliases repeat by case", { aliases: ["Anabot", "anabot"] }, false, ["aliases[1]"]);
+bad("aliases two words", { aliases: ["ana bot"] }, false, ["aliases[0]"]);
+bad("aliases too many", { aliases: ["aaa1", "aaa2", "aaa3", "aaa4", "aaa5", "aaa6", "aaa7", "aaa8", "aaa9"] }, false, ["aliases"]);
 
 
 
