@@ -37,6 +37,17 @@ export function mustReplyApplies(turn: StopGuardTurn): boolean {
   return c?.origin === "slack" || c?.origin === "panel";
 }
 
+/**
+ * Whether a job's turn is an implicit start: every NON-suppressed message in it
+ * is implicit. A recording (suppressed) coalesced with an explicit message
+ * cannot relax that message's must-reply, and one coalesced with an implicit
+ * message does not switch it on.
+ */
+export function turnIsImplicit(messages: ReadonlyArray<{ suppress?: boolean; implicit?: boolean }>): boolean {
+  const live = messages.filter((m) => m.suppress !== true);
+  return live.length > 0 && live.every((m) => m.implicit === true);
+}
+
 export interface NodeStopGuard {
   /** A job's turn is starting on this session: reset spoke/passed and decide whether it is guarded. */
   beginTurn(sessionId: string, turn: StopGuardTurn): void;

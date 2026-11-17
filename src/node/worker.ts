@@ -52,7 +52,7 @@ import { makeNodeSkillCheckBudget, makeNodeSkillUsageRecorder } from "./backgrou
 import type { ModelTokens } from "../background/prices";
 import { makeNodeMemoryProvider } from "./memory";
 import { isWakeTurn, makeNodePermissionResolver } from "./shims/permission";
-import { makeNodeStopGuard } from "./stop-guard";
+import { makeNodeStopGuard, turnIsImplicit } from "./stop-guard";
 import { JOB_TOKEN_TTL_SEC } from "../gateway/api/auth";
 import type { RuntimeBundle } from "../gateway/api/tenants";
 import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
@@ -854,7 +854,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       if (data.wake) wakeJobs.add(sessionId);
       else wakeJobs.delete(sessionId);
       const bound = store.tokenFor(sessionId) ?? data.jobToken;
-      stopGuard.beginTurn(sessionId, { claims: decodeClaims(bound), bgRun: data.bgRun, wake: data.wake, implicit: data.messages.length > 0 && data.messages.every((m) => (m as any).implicit === true) });
+      stopGuard.beginTurn(sessionId, { claims: decodeClaims(bound), bgRun: data.bgRun, wake: data.wake, implicit: turnIsImplicit(data.messages as any) });
 
       turnDeadlines.set(sessionId, Date.now() + turnTimeoutMs);
       const outcome = await new Promise<"done" | "error" | "skipped">((resolve, reject) => {
