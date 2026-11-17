@@ -86,7 +86,7 @@ describe("SlackSurface edit/unreact/upload", () => {
     const file = join(dir, "report.txt");
     writeFileSync(file, "hello");
     const captured: Captured = {};
-    const s = new SlackSurface(fakeClient(captured), binding());
+    const s = new SlackSurface(fakeClient(captured), binding({ workingDir: async () => dir }));
     await s.upload({ path: file });
     const a = captured.uploadV2![0];
     expect(a).toMatchObject({ channel_id: "C1", thread_ts: "123.456", filename: basename(file), title: basename(file) });
@@ -99,7 +99,7 @@ describe("SlackSurface edit/unreact/upload", () => {
     const file = join(dir, "chart.png");
     writeFileSync(file, "png-bytes");
     const captured: Captured = {};
-    const s = new SlackSurface(fakeClient(captured), binding());
+    const s = new SlackSurface(fakeClient(captured), binding({ workingDir: async () => dir }));
     await s.upload({ path: file, title: "Q2 chart", comment: "see **trend**", altText: "trend chart" });
     const a = captured.uploadV2![0];
     expect(a.title).toBe("Q2 chart");
@@ -107,8 +107,8 @@ describe("SlackSurface edit/unreact/upload", () => {
     expect(a.alt_text).toBe("trend chart");
   });
 
-  test("upload throws when the local file is missing (statSync gate)", async () => {
-    const s = new SlackSurface(fakeClient(), binding());
+  test("upload throws when the local file is missing", async () => {
+    const s = new SlackSurface(fakeClient(), binding({ workingDir: async () => tmpdir() }));
     await expect(s.upload({ path: "/nonexistent/slaude-missing.bin" })).rejects.toThrow();
   });
 });

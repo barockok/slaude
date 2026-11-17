@@ -475,6 +475,12 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
     get appId() { return ctx.apiAppId; },
     get turnSignal() { return ctx.turnSignal?.(); },
     get turnDeadline() { return ctx.turnDeadline; },
+    // The session row's folder (on a node-claimed session too: the gateway made the row and a node
+    // only reads it), so an upload is confined to it. No session id or no row: undefined, which refuses.
+    workingDir: async () => {
+      const id = ctx.sessionId ?? ctx.turnSessionId;
+      return id ? (await Sessions.findById(id))?.working_dir : undefined;
+    },
   };
 }
 

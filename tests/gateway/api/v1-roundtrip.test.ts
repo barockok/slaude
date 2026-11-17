@@ -82,7 +82,7 @@ const FIXTURES: Record<string, Record<string, Fixture>> = {
     edit: { input: { ref: "1.1", text: "edited" } },
     react: { input: { name: "eyes" } },
     unreact: { input: { name: "eyes" } },
-    upload: { input: () => ({ path: uploadPath }) },
+    upload: { input: () => ({ path: uploadPath }), isErrorOk: true }, // confined to the session folder; the fixture session has no row (tests/gateway/api/upload-confinement.test.ts covers both outcomes)
     typing: { input: { on: true }, expect: "not_mounted" }, // SlackSurface has no "typing" capability
     set_one_on_one: { input: { action: "off" } },
     set_mention_only: { input: { active: false } },

@@ -9,10 +9,11 @@ import * as SoulOverrides from "../../db/soul-overrides";
 import { soulData } from "../../soul/extract";
 import { redactSecrets } from "./status-text";
 import { OutboundRefusal } from "../slack/outbound";
+import { UploadRefusal } from "./confined-file";
 
 /** A failed post: an owner rule's refusal is shown as is (it is for the agent); anything else is prefixed. */
 const postFailed = (what: string, e: any): ToolResult =>
-  e instanceof OutboundRefusal ? fail(e.message) : fail(`${what} failed: ${e?.message ?? String(e)}`);
+  e instanceof OutboundRefusal || e instanceof UploadRefusal ? fail(e.message) : fail(`${what} failed: ${e?.message ?? String(e)}`);
 const noted = (text: string, note?: string): ToolResult => ok(note ? `${text} (${note})` : text);
 
 export const SURFACE_MCP_NAME = surfaceContract.server;
