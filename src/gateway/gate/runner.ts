@@ -1,11 +1,11 @@
 import "../../decision/adapters/index";
 import { parseDecisionConfig } from "../../decision/config";
 import { adapterFromConfig, decide } from "../../decision/registry";
-import type { DecisionAdapter } from "../../decision/types";
+import { DecisionError, type DecisionAdapter } from "../../decision/types";
 import { env } from "../../config/env";
 import { m } from "../../metrics";
 import { decideAction, rulesDecision } from "./policy";
-import { GATE_QUESTIONS, toGateDecision } from "./questions";
+import { questionsFor, toGateDecision } from "./questions";
 import type { Answer, GateAction, GateDecision, GateInput, ImplicitLevel } from "./types";
 
 export type GateMode = "off" | "shadow" | "on";
@@ -19,6 +19,8 @@ export interface GateResult {
   latencyMs: number;
   implicit?: GateInput["implicit"];
   continuation?: boolean;
+  /** Why no model answered (implicit consults and the rules path): no adapter, a timeout, or another failure. */
+  why?: "noadapter" | "timeout" | "error";
 }
 
 /** The flags a memoised decision must have been made under to be reused. */
@@ -42,6 +44,8 @@ export interface GateConsult {
 export interface GateRunner {
   readonly mode: GateMode;
   readonly contextMessages: number;
+  /** Whether a decision adapter is configured (an implicit consult answers from it whatever the mode). */
+  readonly hasAdapter: boolean;
   /** off → undefined (caller keeps today's path). shadow → resolves `actual` immediately; the decision runs detached and is logged. on → the decided action. */
   gate(key: string, input: () => Promise<GateInput>, actual: GateAction): Promise<GateAction | undefined>;
   /**
@@ -63,7 +67,7 @@ export interface GateRunner {
     key: string,
     input: () => Promise<GateInput>,
     want: { level: ImplicitLevel; continuation: boolean },
-  ): Promise<{ action: "run" | "drop"; source: "adapter" | "rules" } | undefined>;
+  ): Promise<{ action: "run" | "drop"; source: "adapter" | "rules"; why?: "noadapter" | "timeout" | "error" } | undefined>;
 }
 
 /**
@@ -125,13 +129,15 @@ export function makeGateRunner(o: {
     const t0 = Date.now();
     const gi = await boundedInput(input, o.timeoutMs);
     let decision: GateDecision | null = null;
+    let why: GateResult["why"] = o.adapter ? undefined : "noadapter";
     if (o.adapter) {
       try {
         // decide() applies the (remaining) timeout, validates and counts the request.
         const left = Math.max(1, o.timeoutMs - (Date.now() - t0));
-        decision = toGateDecision(await decide(o.adapter, { state: gi, questions: GATE_QUESTIONS }, left));
-      } catch {
+        decision = toGateDecision(await decide(o.adapter, { state: gi, questions: questionsFor(gi) }, left));
+      } catch (e) {
         decision = null; // fall back to rules; an error is never read as "no"
+        why = e instanceof DecisionError && e.kind === "timeout" ? "timeout" : "error";
       }
     }
     const source = decision ? "adapter" : "rules";
@@ -148,6 +154,7 @@ export function makeGateRunner(o: {
       adapter: o.adapter?.name ?? null,
       decision: d,
       latencyMs: Date.now() - t0,
+      ...(!decision && why ? { why } : {}),
     };
     m.gateDecisionsTotal.inc({ action: r.action, source: r.source, mode: r.mode });
     log(logLine(key, r, actual));
@@ -201,13 +208,14 @@ export function makeGateRunner(o: {
   return {
     mode: o.mode,
     contextMessages: o.contextMessages,
+    hasAdapter: o.adapter !== null,
     consult,
     async consultImplicit(key, input, want) {
       try {
         const r = await decision(key, input, "drop", { implicit: want.level, continuation: want.continuation }).p;
         // A decision not made as an implicit one is never read as a yes.
         if (!matches(r, { implicit: want.level, continuation: want.continuation })) return undefined;
-        return { action: r.action === "run" ? "run" : "drop", source: r.source };
+        return { action: r.action === "run" ? "run" : "drop", source: r.source, ...(r.why ? { why: r.why } : {}) };
       } catch (e) {
         log(e instanceof InputTimeout ? `[gate] input timeout key=${key}` : `[gate] implicit input failed key=${key}`);
         return undefined;

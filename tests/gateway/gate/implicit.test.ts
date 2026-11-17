@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
-import { DecisionError, type DecisionAdapter, type DecisionResult } from "../../../src/decision/types";
+import { DecisionError, type DecisionAdapter, type DecisionRequest, type DecisionResult } from "../../../src/decision/types";
 import { formatEngageLine, toEngageAction } from "../../../src/gateway/gate/log";
 import { decideAction } from "../../../src/gateway/gate/policy";
 import { gateKey, makeGateRunner } from "../../../src/gateway/gate/runner";
@@ -55,11 +55,11 @@ const scripted = (r: DecisionResult | "throw" | "hang"): DecisionAdapter & { cal
   const a = {
     name: "scripted",
     calls: 0,
-    decide: () => {
+    decide: (req: DecisionRequest) => {
       a.calls++;
       if (r === "throw") return Promise.reject(new DecisionError("transport", "down"));
       if (r === "hang") return new Promise<DecisionResult>(() => {});
-      return Promise.resolve(r);
+      return Promise.resolve(Object.fromEntries(Object.entries(r).filter(([k]) => k in req.questions)));
     },
   };
   return a;
@@ -78,18 +78,37 @@ describe("implicit consult through the runner", () => {
       const a = scripted(OPEN);
       const r = makeGateRunner({ ...opts, mode, adapter: a });
       expect(await r.consultImplicit(`k1${mode}`, async () => contribute, W)).toEqual({ action: "run", source: "adapter" });
-      expect(await r.consultImplicit(`k2${mode}`, async () => ({ ...contribute, implicit: "addressed" }), { level: "addressed", continuation: false })).toEqual({ action: "drop", source: "adapter" });
+      expect(await r.consultImplicit(`k2${mode}`, async () => ({ ...contribute, implicit: "addressed" }), { level: "addressed", continuation: false })).toMatchObject({ action: "drop", source: "adapter" });
       expect(a.calls).toBe(2);
     });
     it(`gate ${mode}: contribute, adapter throws: pass, never the rules run, no rules answers in the log`, async () => {
       const r = makeGateRunner({ ...opts, mode, adapter: scripted("throw") });
       const c = await r.consultImplicit(`k3${mode}`, async () => contribute, W);
-      expect(c).toEqual({ action: "drop", source: "rules" });
+      expect(c).toMatchObject({ action: "drop", source: "rules" });
       expect(toEngageAction(c?.action)).toBe("pass");
       expect(lines.at(-1)).toContain("source=rules");
       expect(lines.at(-1)).toContain("a=- q=- h=- d=-");
     });
   }
+  it("at addressed (and on a continuation) the adapter is asked one question, at contribute four", async () => {
+    const asked: string[][] = [];
+    const a: DecisionAdapter = { name: "spy", decide: async (req) => { asked.push(Object.keys(req.questions)); return Object.fromEntries(Object.keys(req.questions).map((k) => [k, { choice: "no", confidence: 0.9 }])); } };
+    const r = makeGateRunner({ ...opts, mode: "off", adapter: a });
+    await r.consultImplicit("q1", async () => ({ ...contribute, implicit: "addressed" }), { level: "addressed", continuation: false });
+    await r.consultImplicit("q2", async () => ({ ...contribute, continuation: true }), { level: "contribute", continuation: true });
+    await r.consultImplicit("q3", async () => contribute, W);
+    expect(asked.map((q) => q.length)).toEqual([1, 1, 4]);
+    expect(asked[0]).toEqual(["addressedToAgent"]);
+  });
+  it("says why no model answered", async () => {
+    const none = makeGateRunner({ ...opts, mode: "off", adapter: null });
+    expect(none.hasAdapter).toBe(false);
+    expect(await none.consultImplicit("w1", async () => contribute, W)).toMatchObject({ source: "rules", why: "noadapter" });
+    const t = makeGateRunner({ ...opts, mode: "off", adapter: scripted("hang"), timeoutMs: 30 });
+    expect(await t.consultImplicit("w2", async () => contribute, W)).toMatchObject({ source: "rules", why: "timeout" });
+    const e = makeGateRunner({ ...opts, mode: "off", adapter: scripted("throw") });
+    expect(await e.consultImplicit("w3", async () => contribute, W)).toMatchObject({ source: "rules", why: "error" });
+  });
   it("a logged model answer carries its answers", async () => {
     const r = makeGateRunner({ ...opts, mode: "on", adapter: scripted(OPEN) });
     await r.consultImplicit("k4", async () => contribute, W);
@@ -105,7 +124,7 @@ describe("implicit consult through the runner", () => {
   });
   it("no adapter: pass", async () => {
     const r = makeGateRunner({ ...opts, mode: "on", adapter: null });
-    expect(await r.consultImplicit("k7", async () => contribute, W)).toEqual({ action: "drop", source: "rules" });
+    expect(await r.consultImplicit("k7", async () => contribute, W)).toMatchObject({ action: "drop", source: "rules" });
   });
   it("the mention paths still honor the deployment mode", async () => {
     const a = scripted(OPEN);

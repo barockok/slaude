@@ -298,7 +298,7 @@ describe("decision gate at the Slack ingress", () => {
 
   it("an off runner is never consulted", async () => {
     let calls = 0;
-    const off: GateRunner = { mode: "off", contextMessages: 8, consult: async () => undefined, consultImplicit: async () => undefined, gate: async () => { calls++; return undefined; } };
+    const off: GateRunner = { mode: "off", contextMessages: 8, hasAdapter: true, consult: async () => undefined, consultImplicit: async () => undefined, gate: async () => { calls++; return undefined; } };
     expect(await scenario(makeGw(off))).toEqual(TODAY);
     expect(calls).toBe(0);
   });
@@ -306,7 +306,7 @@ describe("decision gate at the Slack ingress", () => {
   it("no thinking_face on a mention the other copy already handled", async () => {
     // A recomputed decision: the first copy runs, the second is doubted.
     let n = 0;
-    const flip: GateRunner = { mode: "on", contextMessages: 8, consult: async () => { const a = n++ === 0 ? "run" as const : "record_doubt" as const; return { action: a, source: "adapter" as const }; }, consultImplicit: async () => undefined, gate: async () => (n++ === 0 ? "run" : "record_doubt") };
+    const flip: GateRunner = { mode: "on", contextMessages: 8, hasAdapter: true, consult: async () => { const a = n++ === 0 ? "run" as const : "record_doubt" as const; return { action: a, source: "adapter" as const }; }, consultImplicit: async () => undefined, gate: async () => (n++ === 0 ? "run" : "record_doubt") };
     const g = makeGw(flip);
     const ts = nextTs();
     await mention(g, ts, "<@USLAUDEBOT> help me");
@@ -347,7 +347,7 @@ describe("decision gate at the Slack ingress", () => {
   });
 
   it("a gate that throws keeps today's path", async () => {
-    const boom: GateRunner = { mode: "on", contextMessages: 8, consult: async () => { throw new Error("boom"); }, consultImplicit: async () => undefined, gate: async () => { throw new Error("boom"); } };
+    const boom: GateRunner = { mode: "on", contextMessages: 8, hasAdapter: true, consult: async () => { throw new Error("boom"); }, consultImplicit: async () => undefined, gate: async () => { throw new Error("boom"); } };
     expect(await scenario(makeGw(boom))).toEqual(TODAY);
   });
 });
@@ -730,7 +730,7 @@ describe("consultGateWithSource", () => {
   it("an implicit consult with no adapter is a drop from the rules source, never a run", async () => {
     const g = makeGw(runner("on", null));
     const args = msg(g.t.client, "can anyone help?", nextTs());
-    expect(await g.h.__consultGate!(args, { mentionsAgent: false, implicit: "contribute" }, "drop")).toEqual({ action: "drop", source: "rules" });
+    expect(await g.h.__consultGate!(args, { mentionsAgent: false, implicit: "contribute" }, "drop")).toMatchObject({ action: "drop", source: "rules" });
   });
 
   it("the mention paths report their source honestly", async () => {
