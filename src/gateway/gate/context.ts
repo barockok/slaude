@@ -74,16 +74,25 @@ export function normalizeSlackText(text: string, botUserId: string): string {
   });
 }
 
+/** Whether a thread message was posted by one of this deployment's own identities (role "agent"). */
+export function isAgentAuthor(
+  m: { user?: string; bot_id?: string },
+  self: { botUserId: string; botIds: Set<string>; userIds?: Set<string> },
+): boolean {
+  return (
+    m.user === self.botUserId ||
+    (m.user !== undefined && self.userIds !== undefined && self.userIds.has(m.user)) ||
+    (m.bot_id !== undefined && self.botIds.has(m.bot_id))
+  );
+}
+
 export async function buildGateInput(
   e: { channel: string; ts: string; thread_ts?: string; text: string },
   o: { mentionsAgent: boolean; engaged: boolean; channelTrust: Trust; contextMessages: number },
   d: GateContextDeps,
 ): Promise<GateInput> {
-  const { botUserId, botIds, userIds } = d.selfIds;
-  const isAgent = (m: { user?: string; bot_id?: string }) =>
-    m.user === botUserId ||
-    (m.user !== undefined && userIds !== undefined && userIds.has(m.user)) ||
-    (m.bot_id !== undefined && botIds.has(m.bot_id));
+  const { botUserId } = d.selfIds;
+  const isAgent = (m: { user?: string; bot_id?: string }) => isAgentAuthor(m, d.selfIds);
 
   let recent: GateInput["recent"] = [];
   if (e.thread_ts && e.thread_ts !== e.ts) {
