@@ -31,13 +31,9 @@ export type AuthorFilter = {
 
 export function makeAuthorFilter(d: AuthorFilterDeps): AuthorFilter {
   // One answer per user for the life of this filter (a filter lives for one read); calls may overlap.
-  const byUser = new Map<string, Promise<boolean>>();
-  const userOk = (userId: string): Promise<boolean> => {
-    if (byUser.has(userId)) return byUser.get(userId)!;
-    const fresh = (async () => (await d.isAdmitted(userId)) && !(await d.isIgnored(userId)))().catch(() => false);
-    byUser.set(userId, fresh);
-    return fresh;
-  };
+  const answers: Record<string, Promise<boolean> | undefined> = Object.create(null);
+  const userOk = (subject: string): Promise<boolean> =>
+    (answers[subject] ??= (async () => (await d.isAdmitted(subject)) && !(await d.isIgnored(subject)))().catch(() => false));
   return {
     allows: async (m) => {
       try {

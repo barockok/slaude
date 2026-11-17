@@ -1779,23 +1779,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
   };
 
-  // This persona's own identities, for reading "you said" in the thread head: the persona's own user (and
-  // the delivering app's bot, when that app is the persona's), or for the default persona the delivering
-  // bot and the post-as-user identity. Another persona's or app's messages are not "you".
-  const ownIdentities = async (args: any, personaId?: string): Promise<{ users: Set<string>; botIds: Set<string> }> => {
+  // This persona's own identities, for reading "[you]" in the thread head, as keys `u:<user id>` and
+  // `b:<bot id>`: the persona's own user (and the delivering app's bot, when that app is the persona's), or
+  // for the default persona the delivering bot and the post-as-user identity. Another persona's or app's
+  // messages are not "you".
+  const ownIdentities = async (args: any, personaId?: string): Promise<Set<string>> => {
     const named = personaId && personaId !== "default" ? getPersonaRegistry().lookupByName(personaId) : null;
     const own = await botIdsOf(`${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? args?.event?.team ?? ""}`, args?.client ?? t.client);
-    const users = new Set<string>();
-    const botIds = new Set<string>();
+    const keys = new Set<string>();
     if (named) {
-      users.add(named.slackUserId);
-      if (own.userId === named.slackUserId && own.botId) botIds.add(own.botId);
+      keys.add(`u:${named.slackUserId}`);
+      if (keys.has(`u:${own.userId}`) && own.botId) keys.add(`b:${own.botId}`);
     } else {
-      if (own.userId) users.add(own.userId);
-      if (own.botId) botIds.add(own.botId);
-      for (const id of await getSelfUserIds()) if (!getPersonaRegistry().lookupByUserId(id)) users.add(id);
+      if (own.userId) keys.add(`u:${own.userId}`);
+      if (own.botId) keys.add(`b:${own.botId}`);
+      for (const selfId of await getSelfUserIds()) if (!getPersonaRegistry().lookupByUserId(selfId)) keys.add(`u:${selfId}`);
     }
-    return { users, botIds };
+    return keys;
   };
 
   // The thread head (rc.28): what a session starting inside an existing thread is shown of it, as a
@@ -1822,7 +1822,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const own = await ownIdentities(m.args, m.personaId);
       const grants = await loadGrants(persona);
       // The ingress's own checks, so reading a person is never wider than hearing them.
-      const isSelf = (x: { user?: string; bot_id?: string }) => (x.user !== undefined && own.users.has(x.user)) || (x.bot_id !== undefined && own.botIds.has(x.bot_id));
+      const isSelf = (x: { user?: string; bot_id?: string }) => (x.user ? own.has(`u:${x.user}`) : false) || (x.bot_id ? own.has(`b:${x.bot_id}`) : false);
       const filter = makeAuthorFilter({
         isSelf,
         // Anyone the ingress would not admit (denied or not granted here) is not read back either.
@@ -1834,18 +1834,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     };
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await new Promise<string>((resolve) => {
-        timer = setTimeout(() => {
-          console.warn(`[thread-head] skipped ${where}: deadline of ${env.threadHeadDeadlineMs()} ms passed`);
-          resolve("");
-        }, env.threadHeadDeadlineMs());
-        // Both outcomes settle the promise once; a late result finds it settled and is dropped.
-        build().then(resolve, (e) => {
+      // Whichever settles first wins; a late result from the other is dropped (and the read cannot reject
+      // unhandled: its own failure is caught below).
+      return await Promise.race([
+        build().catch((e) => {
           const why = e instanceof Error ? e.message : typeof e;
           console.warn(why === "thread_not_found" ? `[thread-head] skipped ${where}: Slack has no such thread (root deleted or not visible)` : `[thread-head] skipped ${where}: ${why}`);
-          resolve("");
-        });
-      });
+          return "";
+        }),
+        new Promise<string>((resolve) => {
+          timer = setTimeout(() => {
+            console.warn(`[thread-head] skipped ${where}: deadline of ${env.threadHeadDeadlineMs()} ms passed`);
+            resolve("");
+          }, env.threadHeadDeadlineMs());
+        }),
+      ]);
     } finally {
       if (timer) clearTimeout(timer);
     }
