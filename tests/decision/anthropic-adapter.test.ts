@@ -22,7 +22,7 @@ beforeAll(() => {
       if (reply.stream) {
         // Never finishes: only a reader that stops at its cap returns.
         const chunk = new TextEncoder().encode("x".repeat(16 * 1024));
-        return new Response(new ReadableStream({ pull: (c) => new Promise((r) => setTimeout(() => (c.enqueue(chunk), r(undefined)), 1)) }));
+        return new Response(new ReadableStream({ pull: (c) => new Promise((r) => setTimeout(() => { try { c.enqueue(chunk); } catch { /* the reader cancelled at its cap */ } r(undefined); }, 1)) }));
       }
       if (reply.raw !== undefined) return new Response(reply.raw, { status: reply.status ?? 200 });
       return Response.json(reply.body ?? {}, { status: reply.status ?? 200 });
