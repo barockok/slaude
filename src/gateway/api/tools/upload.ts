@@ -86,12 +86,9 @@ async function begin(body: unknown, claims: JobClaims, deps: ToolPlaneDeps): Pro
     thread: claims.thread,
     ...(claims.post === "channel" ? { post: "channel" as const } : {}),
     ...(claims.app ? { app: claims.app } : {}),
-    ...(claims.label ? { label: claims.label } : {}),
-    ...(claims.runAs ? { runAs: claims.runAs } : {}),
     fileId: begun.fileId,
     filename,
     size: a.size,
-    ...(a.alt_text ? { alt_text: a.alt_text } : {}),
   });
   count("begun");
   return ok(JSON.stringify({ uploadUrl: begun.uploadUrl, fileId: begun.fileId, handle }));

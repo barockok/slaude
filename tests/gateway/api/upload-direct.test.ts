@@ -179,6 +179,16 @@ describe("upload_complete", () => {
     expect(calls).toEqual([{ name: "complete", args: { files: [{ id: "F123", title: "Q2" }], channel_id: "C1", thread_ts: "1.0" } }]);
   });
 
+  test("the longest alt text and a 255-character multibyte name still complete (the handle stays small)", async () => {
+    const name = "\u65e5".repeat(251) + ".png";
+    const b = await begin({ filename: name, size: 5, alt_text: "a".repeat(4000) });
+    expect(b.data).toBeDefined();
+    expect(b.data.handle.length).toBeLessThan(4096);
+    const r = await call("upload_complete", { handle: b.data.handle });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.text!).ok).toBe(true);
+  });
+
   test("the title defaults to the cleaned file name", async () => {
     const b = await begin({ filename: "x/y.txt", size: 3 });
     calls.length = 0;

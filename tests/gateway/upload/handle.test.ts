@@ -21,11 +21,11 @@ const verify = (h: string | undefined, c = caller, at = now) => verifyUploadHand
 
 describe("upload handle", () => {
   test("round trip carries every claim", () => {
-    const h = mint({ post: "channel", app: "A1", label: "gpu", runAs: "user:U2", alt_text: "alt" });
+    const h = mint({ post: "channel", app: "A1" });
     const r = verify(h);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.claims).toMatchObject({ ...fields, post: "channel", app: "A1", label: "gpu", runAs: "user:U2", alt_text: "alt", typ: "upload" });
+    expect(r.claims).toMatchObject({ ...fields, post: "channel", app: "A1", typ: "upload" });
     expect(r.claims.exp - r.claims.iat).toBe(UPLOAD_HANDLE_TTL_SEC);
   });
 

@@ -16,6 +16,11 @@
  * token's expiry: a begin shortly before the token expires still completes
  * with the refreshed token the node holds by then.
  *
+ * It carries only what complete reads (destination, file id, name, declared
+ * size). Alt text goes to Slack at begin, and label and run-as identity are
+ * the caller's own job claims, so none of them is in the handle: a long alt
+ * text must not push the handle over the complete schema's size cap.
+ *
  * Treat it as a credential for one file: never log it or echo it.
  */
 import { env } from "../../config/env";
@@ -35,13 +40,10 @@ export interface UploadHandleClaims {
   /** Signed from the begin turn's job claims: "channel" = post at the channel root. */
   post?: "channel";
   app?: string;
-  label?: string;
-  runAs?: string;
   fileId: string;
   filename: string;
   /** Declared size in bytes. */
   size: number;
-  alt_text?: string;
   iat: number;
   exp: number;
 }
@@ -99,7 +101,7 @@ export function verifyUploadHandle(
   for (const k of STRINGS) if (typeof c[k] !== "string") return { ok: false, reason: "bad_claims" };
   if (typeof c.size !== "number" || !Number.isSafeInteger(c.size) || c.size < 0) return { ok: false, reason: "bad_claims" };
   if (c.post !== undefined && c.post !== "channel") return { ok: false, reason: "bad_claims" };
-  for (const k of ["app", "label", "runAs", "alt_text"] as const) {
+  for (const k of ["app"] as const) {
     if (c[k] !== undefined && typeof c[k] !== "string") return { ok: false, reason: "bad_claims" };
   }
   const claims = c as unknown as UploadHandleClaims;
