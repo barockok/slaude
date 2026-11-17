@@ -25,6 +25,7 @@ import { OutboundRefusal } from "../../slack/outbound";
 import { sanitizeFilename } from "../../upload/filename";
 import { UPLOAD_BEGINS_PER_MINUTE, uploadLimiter } from "../../upload/limiter";
 import { mintUploadHandle, verifyUploadHandle } from "../../upload/handle";
+import { UPLOAD_SUPPRESSED } from "../../core/surface";
 import type { JobClaims } from "../auth";
 import type { ToolPlaneDeps, ToolResult } from "./deps";
 
@@ -65,6 +66,11 @@ async function begin(body: unknown, claims: JobClaims, deps: ToolPlaneDeps): Pro
   const ctx = deps.slackCtx(claims);
   const surface = deps.surfaceFor(ctx);
   if (!surface.capabilities.has("upload") || !surface.uploadBegin) return null;
+  const NOT_SENT = "upload not sent: the console is holding this session, so nothing the agent posts reaches Slack right now.";
+  if (await surface.uploadHeld?.()) {
+    count("suppressed");
+    return fail(NOT_SENT);
+  }
   if (!(await uploadLimiter().take(claims.session))) {
     count("rate_limited");
     return fail(`upload refused: at most ${UPLOAD_BEGINS_PER_MINUTE} uploads per minute per session. Wait a little and try again.`);
@@ -72,7 +78,12 @@ async function begin(body: unknown, claims: JobClaims, deps: ToolPlaneDeps): Pro
   const filename = sanitizeFilename(a.filename);
   let begun: { uploadUrl: string; fileId: string };
   try {
-    begun = await surface.uploadBegin({ filename, size: a.size, ...(a.alt_text ? { altText: a.alt_text } : {}) });
+    const got = await surface.uploadBegin({ filename, size: a.size, ...(a.alt_text ? { altText: a.alt_text } : {}) });
+    if ("suppressed" in got) {
+      count("suppressed");
+      return fail(NOT_SENT);
+    }
+    begun = got;
   } catch (e) {
     count("begin_failed");
     return fail(`upload failed: ${why(e)}`);
@@ -116,12 +127,16 @@ async function complete(body: unknown, claims: JobClaims, deps: ToolPlaneDeps): 
   const surface = deps.surfaceFor(ctx);
   if (!surface.capabilities.has("upload") || !surface.uploadComplete) return null;
   try {
-    await surface.uploadComplete({
+    const sent = await surface.uploadComplete({
       fileId: h.fileId,
       filename: h.filename,
       ...(a.title ? { title: a.title } : {}),
       ...(a.initial_comment ? { comment: a.initial_comment } : {}),
     });
+    if (sent && "suppressed" in sent) {
+      count("suppressed");
+      return fail("upload not sent: the console is holding this session, so the file was not posted to Slack.");
+    }
   } catch (e) {
     if (e instanceof OutboundRefusal) {
       count("refused");

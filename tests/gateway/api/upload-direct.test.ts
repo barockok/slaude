@@ -16,6 +16,7 @@ import { __clearGuardrailsForTests, applyGuardrailChange } from "../../../src/db
 import { __resetGuardrailSnapshotsForTests, refreshGuardrails } from "../../../src/guardrails/snapshot";
 import { __resetHeldDecisionsForTests, setOutboundApprover } from "../../../src/gateway/slack/outbound";
 import { metrics } from "../../../src/metrics";
+import { suppressibleSurface } from "../../../src/gateway/panel/suppress";
 import { flushAudits } from "../../../src/audit/emit";
 import { db } from "../../../src/db/schema";
 import { ensureGuardrailKeyForPg } from "../../guardrails/helpers";
@@ -23,6 +24,7 @@ import { ensureGuardrailKeyForPg } from "../../guardrails/helpers";
 ensureGuardrailKeyForPg();
 const SECRET = "upload-direct-secret";
 
+let held = false;
 const calls: Array<{ name: string; args: any }> = [];
 const client: any = {
   chat: { postMessage: async () => ({ ts: "1.1" }), update: async () => ({}) },
@@ -46,7 +48,7 @@ const deps: any = {
     ...(claims.wake ? { unattended: true } : {}),
     ...(typeof claims.exp === "number" ? { turnDeadline: claims.exp * 1000 - 30_000 } : {}),
   }),
-  surfaceFor: (ctx: any) => new SlackSurface(client, bindingFor(ctx)),
+  surfaceFor: (ctx: any) => suppressibleSurface(new SlackSurface(client, bindingFor(ctx)), ctx.sessionId, async () => held),
   surfaceOpts: () => ({}),
 };
 
@@ -79,6 +81,7 @@ afterAll(() => {
   setOutboundApprover(undefined);
 });
 beforeEach(() => {
+  held = false;
   calls.length = 0;
   __setUploadLimiter(localUploadLimiter());
   delete process.env.SLAUDE_UPLOAD_MAX_BYTES;
@@ -342,5 +345,34 @@ describe("a held caption at upload_complete", () => {
     expect(r.text).toContain("Launch codes are never posted.");
     expect(asked).toHaveLength(0);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("a session the console holds", () => {
+  test("begin is refused with no Slack call and no limiter budget spent", async () => {
+    held = true;
+    for (let i = 0; i < 12; i++) {
+      const r = await begin();
+      expect(r.json.isError).toBe(true);
+      expect(r.text).toContain("console");
+    }
+    expect(calls).toHaveLength(0);
+    held = false;
+    expect((await begin()).data).toBeDefined(); // the ten-a-minute allowance was never spent
+  });
+
+  test("a hold that starts between begin and complete: not completed, not audited, counted suppressed, and the agent is told", async () => {
+    const b = await begin({ filename: "held-in-between.csv", size: 9 });
+    calls.length = 0;
+    held = true;
+    const r = await call("upload_complete", { handle: b.data.handle });
+    expect(r.json.isError).toBe(true);
+    expect(r.text).toContain("not sent");
+    expect(r.text).toContain("console");
+    expect(calls).toHaveLength(0);
+    expect(metrics.render()).toMatch(/slaude_upload_total\{[^}]*result="suppressed"[^}]*\} \d+/);
+    await flushAudits();
+    const rows = await db.query<{ details: string }>(`SELECT details FROM audit_events WHERE action = ?`, ["surface.upload"]);
+    expect(rows.some((x) => x.details.includes("held-in-between.csv"))).toBe(false);
   });
 });

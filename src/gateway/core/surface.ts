@@ -30,6 +30,10 @@ export interface ApprovalResult {
   note?: string;
 }
 
+/** What a suppressing wrapper answers an upload call with when it did nothing. */
+export const UPLOAD_SUPPRESSED = Object.freeze({ suppressed: true as const });
+export type UploadSuppressed = typeof UPLOAD_SUPPRESSED;
+
 export interface Surface {
   readonly id: string;                          // real platform id, e.g. "slack"
   readonly capabilities: ReadonlySet<SurfaceCapability>;
@@ -52,9 +56,13 @@ export interface Surface {
   upload?(i: { path: string; title?: string; comment?: string; altText?: string }): Promise<void>; // cap: "upload"
   /** Direct upload, first call: Slack's presigned URL for one file (cap: "upload"). The
    *  caller sends the bytes to that URL itself. */
-  uploadBegin?(i: { filename: string; size: number; altText?: string }): Promise<{ uploadUrl: string; fileId: string }>;
-  /** Direct upload, last call: finish the file into this conversation (cap: "upload"). */
-  uploadComplete?(i: { fileId: string; filename: string; title?: string; comment?: string }): Promise<void>;
+  uploadBegin?(i: { filename: string; size: number; altText?: string }): Promise<{ uploadUrl: string; fileId: string } | UploadSuppressed>;
+  /** Direct upload, last call: finish the file into this conversation (cap: "upload").
+   *  Resolves UPLOAD_SUPPRESSED when the console holds the session and nothing was sent. */
+  uploadComplete?(i: { fileId: string; filename: string; title?: string; comment?: string }): Promise<void | UploadSuppressed>;
+  /** Whether an upload would be suppressed right now (the console holds the session).
+   *  Absent = never. Checked before an upload's Slack call or limiter budget is spent. */
+  uploadHeld?(): Promise<boolean>;
   typing?(i: { on: boolean }): Promise<void>;                    // cap: "typing"
   /** Post a message only `userId` can see (default: the binding's user).
    *  cap: "ephemeral". MUST throw rather than fall back to a public post —

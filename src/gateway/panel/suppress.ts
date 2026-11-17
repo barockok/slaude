@@ -17,7 +17,9 @@
  * replica that is not the lock owner still suppresses the echo. Method calls
  * stay bound to the original surface so instance state (`this`) is preserved.
  */
-import type { Surface } from "../core/surface";
+import { UPLOAD_SUPPRESSED, type Surface } from "../core/surface";
+
+export { UPLOAD_SUPPRESSED };
 
 export function suppressibleSurface(
   surface: Surface,
@@ -39,10 +41,14 @@ export function suppressibleSurface(
     upload: surface.upload
       ? async (i) => ((await held(sessionId)) ? undefined : surface.upload!(i))
       : undefined,
-    // Direct upload: begin only obtains a URL (nothing visible), complete is the write.
-    uploadBegin: surface.uploadBegin ? (i) => surface.uploadBegin!(i) : undefined,
+    // Direct upload: held means nothing is sent, and the caller is told (a silent undefined
+    // would read as an upload that happened).
+    uploadHeld: surface.uploadBegin ? () => held(sessionId) : undefined,
+    uploadBegin: surface.uploadBegin
+      ? async (i) => ((await held(sessionId)) ? UPLOAD_SUPPRESSED : surface.uploadBegin!(i))
+      : undefined,
     uploadComplete: surface.uploadComplete
-      ? async (i) => ((await held(sessionId)) ? undefined : surface.uploadComplete!(i))
+      ? async (i) => ((await held(sessionId)) ? UPLOAD_SUPPRESSED : surface.uploadComplete!(i))
       : undefined,
     typing: surface.typing ? async (i) => ((await held(sessionId)) ? undefined : surface.typing!(i)) : undefined,
   };

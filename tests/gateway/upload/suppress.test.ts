@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { suppressibleSurface } from "../../../src/gateway/panel/suppress";
+import { suppressibleSurface, UPLOAD_SUPPRESSED } from "../../../src/gateway/panel/suppress";
 import type { Surface } from "../../../src/gateway/core/surface";
 
 // An operator driving a session from the console must not echo to Slack. The
@@ -20,15 +20,17 @@ describe("suppressibleSurface forwards the direct upload calls", () => {
     const s = suppressibleSurface(inner(log), "S", async () => false);
     expect(await s.uploadBegin!({ filename: "a", size: 1 })).toEqual({ uploadUrl: "u", fileId: "F" });
     await s.uploadComplete!({ fileId: "F", filename: "a" });
+    expect(await s.uploadHeld!()).toBe(false);
     expect(log).toEqual(["begin", "complete"]);
   });
 
-  test("held: begin still passes, complete is a no-op", async () => {
+  test("held: neither is sent, and both say so with the sentinel", async () => {
     const log: string[] = [];
     const s = suppressibleSurface(inner(log), "S", async () => true);
-    await s.uploadBegin!({ filename: "a", size: 1 });
-    await s.uploadComplete!({ fileId: "F", filename: "a" });
-    expect(log).toEqual(["begin"]);
+    expect(await s.uploadHeld!()).toBe(true);
+    expect(await s.uploadBegin!({ filename: "a", size: 1 })).toBe(UPLOAD_SUPPRESSED);
+    expect(await s.uploadComplete!({ fileId: "F", filename: "a" })).toBe(UPLOAD_SUPPRESSED);
+    expect(log).toEqual([]);
   });
 
   test("a surface without the methods stays without them", () => {
