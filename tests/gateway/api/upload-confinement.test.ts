@@ -116,7 +116,7 @@ describe("v1 tool plane, node-claimed session", () => {
       const r = await upload(sessionId, path);
       expect(r.status).toBe(200);
       expect(r.body.isError).toBe(true);
-      expect(r.body.content[0].text).toBe(`upload refused: ${name} is not a regular file under this session's working directory`);
+      expect(r.body.content[0].text).toBe(`upload refused: ${name} is not a regular file under this session's working directory. Copy the file into your working directory and upload it from there.`);
       expect(r.body.content[0].text).not.toContain(root);
       expect(sent).toHaveLength(0);
     });

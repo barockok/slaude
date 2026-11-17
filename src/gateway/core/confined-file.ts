@@ -6,7 +6,7 @@ import type { ReadStream } from "node:fs";
  *  message is for the agent: it names the file's base name only, never the path. */
 export class UploadRefusal extends Error {
   constructor(path: string) {
-    super(`upload refused: ${basename(path) || "file"} is not a regular file under this session's working directory`);
+    super(`upload refused: ${basename(path) || "file"} is not a regular file under this session's working directory. Copy the file into your working directory and upload it from there.`);
     this.name = "UploadRefusal";
   }
 }

@@ -49,7 +49,7 @@ function world() {
   return { root, work, other };
 }
 
-const REFUSAL = (name: string) => `upload refused: ${name} is not a regular file under this session's working directory`;
+const REFUSAL = (name: string) => `upload refused: ${name} is not a regular file under this session's working directory. Copy the file into your working directory and upload it from there.`;
 
 async function refused(s: SlackSurface, path: string, name: string, sent: any[]) {
   let err: any;
