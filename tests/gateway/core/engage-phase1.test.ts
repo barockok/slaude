@@ -69,7 +69,8 @@ function makeGw(adapter: DecisionAdapter | null) {
   const sends: string[] = [];
   agent.sendMessage = async (_id: string, txt: string) => { sends.push(txt); };
   const gateRunner = makeGateRunner({ mode: "off", adapter, tAct: 0.8, timeoutMs: 400, contextMessages: 8, log: () => {} });
-  const h = createGateway(agent, t, { gateRunner });
+  // Engagement reads Slack through a lookup client built from a token: whatever token the environment holds, it is this fake.
+  const h = createGateway(agent, t, { gateRunner, lookupClientFactory: () => client });
   return { client, emit: async (n: string, a: any) => { await events.get(n)?.(a); }, sends, h, calls, sent, state };
 }
 type Gw = ReturnType<typeof makeGw>;
@@ -86,8 +87,11 @@ let asked: DecisionRequest[] = [];
 const yes: DecisionAdapter = { name: "scripted-test", decide: async (req) => (asked.push(req), Object.fromEntries(Object.keys(req.questions).map((k) => [k, { choice: k === "alreadyAnswered" ? "no" : "yes", confidence: 0.95 }]))) };
 
 const CLEAN = ["sessions", "seen_events", "pending_gates", "ignores", "agent_grants"];
+const TOKEN_ENV = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLAUDE_SLACK_MODE", "SLAUDE_SLACK_API_URL"] as const;
+const savedEnv = Object.fromEntries(TOKEN_ENV.map((k) => [k, process.env[k]]));
 let gw: Gw | null = null;
 beforeEach(async () => {
+  for (const k of TOKEN_ENV) delete process.env[k];
   asked = [];
   writeSoulFixture(WORLD);
   setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "addressed", mode: "on" }] }));
@@ -97,6 +101,10 @@ beforeEach(async () => {
   await OneOnOne._wipeForTests();
 });
 afterEach(async () => {
+  for (const k of TOKEN_ENV) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
   await gw?.h.stop();
   gw = null;
   __setEngageStateForTests(null);
