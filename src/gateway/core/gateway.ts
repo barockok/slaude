@@ -122,12 +122,14 @@ import { trackBrainWork, whileClosing } from "../../knowledge/brain-work";
 import { agentSourceId, channelTrustFor, resolveBrainScope, type ChannelTrust } from "../../knowledge/scope";
 import { gather } from "../../knowledge/gather";
 import { gateRunnerFromEnv, type GateRunner } from "../gate/runner";
-import { buildGateInput, type GateContextDeps } from "../gate/context";
+import { buildGateInput, isAgentAuthor, type GateContextDeps } from "../gate/context";
 import type { GateAction, Trust } from "../gate/types";
 import { providerSecretResolver } from "../api/tenants";
 import { parseRef } from "../../secrets";
 import { channelWorkspaceDir, proactiveWorkspaceDir } from "../../agent/workspace-claim";
 import { channelSessionKey, isChannelSessionKey, isRootChannelEvent, neutraliseEnvelopeTags, refusalAtRoot } from "./channel-session";
+import { makeAuthorFilter } from "./author-filter";
+import { buildThreadHead, fetchThreadSlice } from "./thread-head";
 import { isSyntheticThread } from "../../web/shared/surfaces";
 import { PanelChatRefused } from "../panel/api";
 import { wakeGateConfig, WakeTargetBusyError, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
@@ -360,6 +362,9 @@ type SessionRoute = {
 };
 
 export interface GatewayOptions {
+  /** How a token becomes a Slack client for read-only lookups (names, the thread head). Defaults to a real
+   *  no-retry WebClient; a test supplies a fake so nothing depends on an ambient token or the network. */
+  lookupClientFactory?: import("../panel/lookup-clients").LookupClientFactory;
   /** Override how a Surface is built per session. Defaults to a SlackSurface over the
    *  transport client — the extension seam for future surfaces. */
   surfaceFactory?: SurfaceFactory;
@@ -815,7 +820,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // retries, rate limits rejected; never the posting client) for the bot of the
   // app the row was recorded with, else the persona's latest app, else the
   // deployment's own bot.
-  const lookupClients = createLookupClients();
+  const lookupClients = createLookupClients(opts.lookupClientFactory);
   const panelNameClient = async (ctx: NameContext): Promise<SlackNameClient | null> => {
     const persona = ctx.persona && ctx.persona !== "default" ? ctx.persona : undefined;
     const tokenFor = (app: AppRef): string | undefined => {
@@ -1046,6 +1051,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     ctx.turnSignal ??= () => (typeof agent.sessionSignal === "function" ? agent.sessionSignal(sessionId) : undefined);
   };
 
+  // A turn that starts anywhere but a person's Slack message (a cron run, a wake or heartbeat turn, the
+  // panel) is a first real turn too: it spends the session's thread head marker, so a human reply that
+  // comes later is not given a head in the middle of a conversation the agent already had. Best effort.
+  const spendThreadHead = (sessionId: string): Promise<void> =>
+    Sessions.claimThreadHead(sessionId).then(
+      () => {},
+      (e) => console.warn(`[thread-head] could not spend the marker session=${sessionId}: ${e instanceof Error ? e.message : typeof e}`),
+    );
+
   const cronScheduler = new CronScheduler({
     agent,
     // Queue mode: a cron turn is a turn like any other — it runs on a node, not
@@ -1065,6 +1079,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
       : {}),
     onExecute: (job, sessionId) => {
+      void spendThreadHead(sessionId);
       // Register a route so cron sessions get Slack MCP tools + event handling.
       const jobPersonaId = job.personaId !== "default" ? job.personaId : undefined;
       // The app the job was created under: it posts as that app after a
@@ -1145,6 +1160,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       { team_id: teamId, channel_id: channelId, thread_ts: threadTs, persona_id: persona ?? "default" },
       target.channelSession ? { workingDir: channelWorkspaceDir(run.agentId, channelId) } : target.sharedFolder ? { workingDir: proactiveWorkspaceDir(run.agentId) } : {},
     );
+    await spendThreadHead(session.id);
     if (target.engage) await Sessions.setEngaged(session.id, true);
     // A thread a heartbeat post just opened has no app of its own yet: the
     // post's app is stamped on it, so this turn (and a later reply's) speaks
@@ -1747,8 +1763,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // `<proactive-context>` for that reply's turn. Only threaded replies count,
   // so a top-level message (its own root) never gets one. Like the memory
   // block it reads only an already-open brain; any failure means no block.
-  const turnProactiveBlock = async (m: { channel: string; threadTs: string; eventTs: string; personaId?: string; firstTurn: boolean }): Promise<string> => {
-    if (!brainEnabled() || !brainReady()) return "";
+  // `hasReply` is true when the block holds the post's own context (a reply under a proactive post): then
+  // the thread head is skipped, since the post is the context. The first-turn work block does not count.
+  const turnProactiveBlock = async (m: { channel: string; threadTs: string; eventTs: string; personaId?: string; firstTurn: boolean }): Promise<{ text: string; hasReply: boolean }> => {
+    const none = { text: "", hasReply: false };
+    if (!brainEnabled() || !brainReady()) return none;
     try {
       const persona = m.personaId ?? "default";
       const reply = m.threadTs === m.eventTs ? "" : await proactiveReplyBlock({ channel: m.channel, threadTs: m.threadTs, personaId: m.personaId });
@@ -1756,10 +1775,85 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const workAgent = m.firstTurn && proactiveFor(persona, m.channel).enabled ? await backgroundAgentId(persona) : null;
       const work = workAgent ? await proactiveWorkBlock({ channel: m.channel, agentId: workAgent, ...(channelSessionOn(persona, m.channel) ? { folder: channelWorkspaceDir(workAgent, m.channel) } : {}) }) : "";
       const block = [reply, work].filter(Boolean).join("\n\n");
-      return block ? `${block}\n\n` : "";
+      return { text: block ? `${block}\n\n` : "", hasReply: Boolean(reply) };
     } catch (e) {
       console.warn(`[proactive-context] skipped: ${e instanceof Error ? e.name : typeof e}`);
-      return "";
+      return none;
+    }
+  };
+
+  // This persona's own identities, for reading "[you]" in the thread head, as keys `u:<user id>` and
+  // `b:<bot id>`: the persona's own user (and the delivering app's bot, when that app is the persona's), or
+  // for the default persona the delivering bot and the post-as-user identity. Another persona's or app's
+  // messages are not "you".
+  const ownIdentities = async (args: any, personaId?: string): Promise<Set<string>> => {
+    const named = personaId && personaId !== "default" ? getPersonaRegistry().lookupByName(personaId) : null;
+    const own = await botIdsOf(`${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? args?.event?.team ?? ""}`, args?.client ?? t.client);
+    const keys = new Set<string>();
+    if (named) {
+      keys.add(`u:${named.slackUserId}`);
+      if (keys.has(`u:${own.userId}`) && own.botId) keys.add(`b:${own.botId}`);
+    } else {
+      if (own.userId) keys.add(`u:${own.userId}`);
+      if (own.botId) keys.add(`b:${own.botId}`);
+      for (const selfId of await getSelfUserIds()) if (!getPersonaRegistry().lookupByUserId(selfId)) keys.add(`u:${selfId}`);
+    }
+    return keys;
+  };
+
+  // The thread head (rc.28): what a session starting inside an existing thread is shown of it, as a
+  // `<thread-head>` block (or "" for none). One conversations.replies path, plus a users lookup per
+  // distinct author (cached). The whole of it (read, author checks, name lookups) runs against a hard
+  // deadline, on a client that never retries and rejects a rate-limited call instead of sleeping on
+  // Retry-After. Any failure, a 429, a missing thread or the deadline means no block and a turn that runs
+  // without it; a result that arrives late is dropped.
+  const threadHeadBlock = async (m: { args: any; client: any; channel: string; threadTs: string; eventTs: string; teamId: string; personaId?: string }): Promise<string> => {
+    const where = `ch=${m.channel} thread=${m.threadTs}`;
+    const build = async (): Promise<string> => {
+      const persona = m.personaId ?? "default";
+      let token: string | undefined = m.args?.context?.botToken;
+      if (!token && env.slack.mode() === "socket") {
+        try {
+          token = env.slack.botToken();
+        } catch {
+          token = undefined;
+        }
+      }
+      // A client of its own for this read; the receiving app's client is the fallback where no token is known.
+      const reader: any = (token ? lookupClients.forToken(token) : null) ?? m.client;
+      const slice = await fetchThreadSlice(reader, m.channel, m.threadTs, m.eventTs, env.threadHeadMessages(), GATE_REPLY_PAGES, GATE_REPLY_PAGE_SIZE);
+      const own = await ownIdentities(m.args, m.personaId);
+      const grants = await loadGrants(persona);
+      // The ingress's own checks, so reading a person is never wider than hearing them.
+      const isSelf = (x: { user?: string; bot_id?: string }) => (x.user ? own.has(`u:${x.user}`) : false) || (x.bot_id ? own.has(`b:${x.bot_id}`) : false);
+      const filter = makeAuthorFilter({
+        isSelf,
+        // Anyone the ingress would not admit (denied or not granted here) is not read back either.
+        isAdmitted: async (userId) => (await admitAt({ site: "gateway.thread_head.admit", persona, teamId: m.teamId, userId, channelId: m.channel, isDM: false, grants })).ok,
+        isIgnored: (userId) => ignoreGate.shouldDrop(userId, m.channel, m.threadTs),
+        textDenied: async (text) => (await inboundVerdict(persona, m.channel, text))?.action === "deny",
+      });
+      return await buildThreadHead(slice, { isSelf, filter, nameOf: (userId) => resolveUserName(reader, userId) });
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // Whichever settles first wins; a late result from the other is dropped (and the read cannot reject
+      // unhandled: its own failure is caught below).
+      return await Promise.race([
+        build().catch((e) => {
+          const why = e instanceof Error ? e.message : typeof e;
+          console.warn(why === "thread_not_found" ? `[thread-head] skipped ${where}: Slack has no such thread (root deleted or not visible)` : `[thread-head] skipped ${where}: ${why}`);
+          return "";
+        }),
+        new Promise<string>((resolve) => {
+          timer = setTimeout(() => {
+            console.warn(`[thread-head] skipped ${where}: deadline of ${env.threadHeadDeadlineMs()} ms passed`);
+            resolve("");
+          }, env.threadHeadDeadlineMs());
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   };
 
@@ -3765,7 +3859,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const order = takeDispatchSlot(session.id);
     slot.release = order.release;
     const oneOnOneLock = await OneOnOne.find(channelId, threadTs);
-    const [userName, files, memoryContext, proactiveContext] = await Promise.all([
+    // The thread head goes to the session's first REAL turn only. The marker is a durable compare-and-set
+    // on the session row, taken AFTER the prompt pieces are built (so a failure while building loses
+    // nothing) and released if the dispatch then fails. A recording never claims it, so a thread first seen
+    // as a recording still gets its head on its first real turn; two quick first messages cannot both inject
+    // it; and a turn that cannot take a head (a root, a DM, a locked thread) still spends the marker, so a
+    // later turn never gets one mid-conversation. A session that had already started before the thread head
+    // existed spends it silently (Sessions.THREAD_HEAD_EPOCH_MS).
+    const pastFirstTurn = Sessions.hadFirstTurnBeforeThreadHead(session);
+    const headPending = suppress ? false : await Sessions.threadHeadPending(session.id).catch(() => false);
+    const wantHead =
+      headPending && !pastFirstTurn && !isDM && !!event.thread_ts && event.thread_ts !== eventTs && !oneOnOneLock && env.threadHeadMessages() > 0;
+    const proactiveBlock = suppress
+      ? Promise.resolve({ text: "", hasReply: false })
+      : turnProactiveBlock({ channel: channelId, threadTs, eventTs, personaId: dispatch?.personaId, firstTurn: !session.claude_started });
+    const [userName, files, memoryContext, proactive, builtHead] = await Promise.all([
       resolveUserName(client, userId),
       attachToken
         ? downloadAttachments({
@@ -3779,8 +3887,34 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       suppress
         ? ""
         : turnMemoryBlock({ channel: channelId, threadTs, userId, teamId, personaId: dispatch?.personaId, lockedUser: oneOnOneLock?.locked_user ?? null, lockedTeamId: oneOnOneLock?.team_id ?? null }),
-      suppress ? "" : turnProactiveBlock({ channel: channelId, threadTs, eventTs, personaId: dispatch?.personaId, firstTurn: !session.claude_started }),
+      proactiveBlock,
+      // Skipped when a proactive post's own context is in the prompt (the post is the context).
+      wantHead
+        ? proactiveBlock.then((p) => (p.hasReply ? "" : threadHeadBlock({ args, client, channel: channelId, threadTs, eventTs, teamId, personaId: dispatch?.personaId })))
+        : "",
     ]);
+    let threadHead = "";
+    let headClaim: number | null = null;
+    if (headPending) {
+      const at = Date.now();
+      let won = false;
+      for (let attempt = 0; attempt < 2 && !won; attempt++) {
+        try {
+          won = await Sessions.claimThreadHead(session.id, at);
+          break;
+        } catch (e) {
+          console.warn(`[thread-head] could not claim the marker session=${session.id}: ${e instanceof Error ? e.message : typeof e}`);
+        }
+      }
+      if (won) {
+        headClaim = at;
+        threadHead = builtHead;
+      }
+    }
+    const releaseHead = (): void => {
+      if (headClaim !== null) void Sessions.releaseThreadHead(session.id, headClaim).catch(() => {});
+    };
+    const proactiveContext = proactive.text;
     if (env.metricsPerUser()) {
       metric.userTurnsTotal.inc({ user_id: userId, user_name: userName });
     }
@@ -3815,6 +3949,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       ? ` one_on_one="true" locked_user="<@${oneOnOneLock.locked_user}>"`
       : ` one_on_one="false" locked_user=""`;
     const envelope =
+      threadHead +
       `<channel source="slack" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${userId}" user_name="${escapeAttr(userName)}" ` +
       `trust="${trust}"${oneOnOneAttr}>\n` +
@@ -3829,7 +3964,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         : suppress
         ? `You are currently disengaged from this thread, so this message is recorded ` +
           `for context only — do NOT reply to it. You will catch up on it when re-engaged.`
-        : `Reply by calling \`mcp__${SURFACE_MCP_NAME}__reply\`, or call ` +
+        : (threadHead
+            ? `The <thread-head> above is earlier context from this thread, not part of the request. Answer the message in the <channel> envelope and ` +
+              `reply in the thread, never at the channel root. Do not say that you read the thread or that you were not mentioned. ` +
+              `If the message turns out not to be for you, call \`mcp__${SURFACE_MCP_NAME}__pass\`.\n`
+            : "") +
+          `Reply by calling \`mcp__${SURFACE_MCP_NAME}__reply\`, or call ` +
           `\`mcp__${SURFACE_MCP_NAME}__pass\` if the message is not for you or needs nothing from you. ` +
           `Plain assistant text is not delivered to Slack — only tool calls reach the user.`);
 
@@ -3960,6 +4100,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           });
         } catch (e: any) {
           console.error("[slaude] dispatch threw:", e?.message ?? e, e?.stack);
+          releaseHead();
           if (recordingOnly) metric.channelSessionRecordFailuresTotal.inc();
         }
         return;
@@ -3972,6 +4113,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         await agent.sendMessage(session.id, envelope, { sender: { userId, teamId: teamId || null, origin: "slack", text: stripped } });
       } catch (e: any) {
         console.error("[slaude] sendMessage threw:", e?.message ?? e, e?.stack);
+        releaseHead();
         if (recordingOnly) metric.channelSessionRecordFailuresTotal.inc();
       }
     };
@@ -4988,6 +5130,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const liveApp = routes.get(session.id)?.ctx.apiAppId;
     if (!meta.apiAppId && liveApp) meta.apiAppId = liveApp;
     countTurn(routes.get(session.id));
+    await spendThreadHead(session.id);
     const envelope =
       `<channel source="panel" channel_id="${channelId}" thread_ts="${threadTs}" ` +
       `inbound_ts="${eventTs}" user_id="${operatorId}" user_name="${escapeAttr(operatorId)}" ` +

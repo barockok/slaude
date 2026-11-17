@@ -4,6 +4,7 @@
  * ts as its thread, so nothing Slack-facing ever sees this value.
  */
 import type { SlashHit } from "../slack/commands";
+import { ENVELOPE_TAG_ALTERNATION } from "../../memory/envelope-tags";
 
 export const channelSessionKey = (channelId: string): string => `channel:${channelId}`;
 
@@ -13,8 +14,8 @@ export const isChannelSessionKey = (threadTs: unknown): boolean => typeof thread
 export const isRootChannelEvent = (e: { channel_type?: string; thread_ts?: string }): boolean =>
   !e.thread_ts && e.channel_type !== "im";
 
-/** The tags the gateway and the runtime wrap a turn's text in. */
-const ENVELOPE_TAGS = "channel|runtime-check|attachment|memory-context|proactive-context|proactive-work|skill-args|skill|checklist";
+/** The tags the gateway and the runtime wrap a turn's text in (one list, shared with the memory block). */
+const ENVELOPE_TAGS = ENVELOPE_TAG_ALTERNATION;
 const FORGED_TAG = new RegExp(`(<|&lt;)\\s*(/?)\\s*(${ENVELOPE_TAGS})\\b`, "gi");
 
 /**

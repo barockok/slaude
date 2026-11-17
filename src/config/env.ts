@@ -76,6 +76,13 @@ function numberAtLeastZero(name: string, fallback: number): number {
   return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
+/** A non-negative integer variable; unset, empty or invalid falls back. */
+function intAtLeastZero(name: string, fallback: number): number {
+  const raw = (process.env[name] ?? "").trim();
+  const n = raw === "" ? NaN : Number(raw);
+  return Number.isSafeInteger(n) && n >= 0 ? n : fallback;
+}
+
 function intAtLeastOne(name: string, fallback: number): number {
   const raw = (process.env[name] ?? "").trim();
   const n = raw === "" ? NaN : Number(raw);
@@ -640,6 +647,10 @@ export const env = {
   wakeMaxMinutes: () => numberAtLeastZero("SLAUDE_WAKE_MAX_MINUTES", 15),
   /** How long a wake's session is kept (`SLAUDE_WAKE_KEEP_DAYS`, default 14). */
   wakeKeepDays: () => intAtLeastOne("SLAUDE_WAKE_KEEP_DAYS", 14),
+  /** Earlier replies a session's first turn in an existing thread is shown, besides the thread root (`SLAUDE_THREAD_HEAD_MESSAGES`, default 10, at most 50; 0 turns the thread head off). */
+  threadHeadMessages: () => Math.min(50, intAtLeastZero("SLAUDE_THREAD_HEAD_MESSAGES", 10)),
+  /** Longest the thread head may delay a first turn, in milliseconds, covering the Slack read, the author checks and the name lookups (`SLAUDE_THREAD_HEAD_DEADLINE_MS`, default 1500). Past it the turn runs with no head. */
+  threadHeadDeadlineMs: () => intAtLeastOne("SLAUDE_THREAD_HEAD_DEADLINE_MS", 1500),
   /** Most always-loaded owner guardrail prose per agent (`SLAUDE_GUARDRAIL_PROSE_MAX`, characters, default 4000). */
   guardrailProseMax: () => intAtLeastOne("SLAUDE_GUARDRAIL_PROSE_MAX", 4000),
   /** How long an inbound guardrail's reply stays quiet for the same person in the same thread (`SLAUDE_GUARDRAIL_REPLY_QUIET_SECS`, default 600). */

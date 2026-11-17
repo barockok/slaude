@@ -28,7 +28,7 @@ import { z } from "zod";
 import type { GateInput } from "../../knowledge/gated-dispatch";
 import { agentIdReady } from "../../knowledge/agent-identity";
 import { parseRunAs } from "../../agent/credential-owner";
-import type { MemoryProvider } from "../../memory/provider";
+import { stripTurnMemoryContext, type MemoryProvider } from "../../memory/provider";
 import { BrainMemoryProvider } from "../../memory/brain-provider";
 import { memoryScopeFor, withClaimLock, type MemoryScope } from "../../memory/scope";
 import { noteThreadTurn } from "../../db/thread-activity";
@@ -125,7 +125,9 @@ export function makeMemoryPlane(deps: {
     async sync(claims, turn) {
       assertLive(claims);
       const provider = providerNow();
-      const t = { sessionId: claims.session, ...turn };
+      // Whatever the provider, the per-turn blocks (the memory context, the thread head) are never stored: an
+      // older node may send them, and a provider other than the brain's would keep them whole.
+      const t = { sessionId: claims.session, ...turn, user: stripTurnMemoryContext(turn.user) };
       if (!(provider instanceof BrainMemoryProvider)) return bounded("sync", provider.syncTurn(t), undefined);
       const s = await scope(claims);
       if (!s?.write) return;

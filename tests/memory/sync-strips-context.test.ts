@@ -29,4 +29,17 @@ describe("transcript sync never stores the per-turn memory block", () => {
     expect(stripTurnMemoryContext(`a\n${BLOCK}b\n${BLOCK}c`)).toBe("a\nb\nc");
     expect(stripTurnMemoryContext("plain <profile> text")).toBe("plain <profile> text");
   });
+
+  test("the thread head (other people's earlier messages) is never stored either, and the real message is what is left", async () => {
+    const HEAD = `<thread-head>\nEarlier messages in this thread.\n[thread root] Alice: private chatter\nBob: more chatter\n</thread-head>\n\n`;
+    expect(stripTurnMemoryContext(`${HEAD}<channel>\nhi\n</channel>\n\nReply please.`)).toBe("<channel>\nhi\n</channel>\n\nReply please.");
+    const fb = fakeBrain();
+    const p = new BrainMemoryProvider({ call: fb.call, ready: async () => {} });
+    const scope = { sourceId: "agent-x", allowedSources: ["agent-x"] } as never;
+    await p.syncTurnIn({ sessionId: "S2", user: `${HEAD}<channel>\nhi\n</channel>\n\nReply please.`, assistant: "ok" }, scope);
+    const row = fb.pages.get(`agent-x\u0000conversations/s2`)!.at(-1)!;
+    expect(row.summary).toContain("hi");
+    expect(row.detail).not.toContain("chatter");
+    expect(row.summary).not.toContain("chatter");
+  });
 });

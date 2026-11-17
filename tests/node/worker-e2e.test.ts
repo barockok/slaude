@@ -1186,15 +1186,19 @@ d("gateway↔node E2E (real Redis)", () => {
     slackFiles.begin = async () => ({ ok: true, upload_url: `http://127.0.0.1:${host.port}/up/F1`, file_id: "F1" });
     slackFiles.complete = async (a: any) => { completes.push(a); return { ok: true, files: [{ id: "F1" }] }; };
     let dir = "";
-    let result: any;
+    let resultP: Promise<any> | undefined;
     behavior = async ({ sessionId, servers }) => {
       dir = workerHandle.__scratch.ensure(sessionId);
       writeFileSync(join(dir, "made-on-node.bin"), data);
-      result = await callShim(servers["slaude_surface"], "upload", { path: join(dir, "made-on-node.bin"), title: "From the node" });
+      resultP = callShim(servers["slaude_surface"], "upload", { path: join(dir, "made-on-node.bin"), title: "From the node" });
+      await resultP;
     };
     try {
       await emitSlack("message", msg(THREAD, "9000.20", "<@USLAUDE> make a file"));
-      await until(() => completes.length > 0, 15_000);
+      await until(() => resultP !== undefined, 15_000);
+      // The shim call's own promise, not a side counter: the gateway's complete call can happen before the call returns.
+      const result = await resultP!;
+      expect(completes.length).toBeGreaterThan(0);
       expect(result.content[0].text).toBe("uploaded");
       expect(got).toEqual([{ sha: createHash("sha256").update(data).digest("hex"), n: data.length }]);
       expect(completes[0]).toMatchObject({ channel_id: "C0TEAM", files: [{ id: "F1", title: "From the node" }] });

@@ -27,6 +27,7 @@
 import type { BrainScope } from "../knowledge/scope";
 import { SHARED_SOURCE } from "../knowledge/scope";
 import { readPageRecord } from "../knowledge/memory-pages";
+import { ENVELOPE_TAG_ALTERNATION } from "./envelope-tags";
 import { getPageOrNull, supersededSlugs, type BrainOpCall } from "../knowledge/memory-trail";
 import { isBrainNotOpen } from "../knowledge/brain-work";
 
@@ -63,8 +64,7 @@ const only = (scope: BrainScope, source: string): BrainScope => ({ ...scope, sou
 /** Every envelope tag the runtime gives meaning to, and this block's own
  *  sections: written inside page text, one would let a page close the block,
  *  fake a section or pose as a runtime message, so they are shown escaped. */
-const TAGS =
-  /<(\/?)(memory-context|runtime-check|channel-mandate|recent-turns|open-commitments|channel-notes|channel|profile|lessons)(?=[\s>/]|$)/gi;
+const TAGS = new RegExp(`<(/?)(${ENVELOPE_TAG_ALTERNATION})(?=[\\s>/]|$)`, "gi");
 const neutralize = (s: string): string => s.replace(TAGS, "&lt;$1$2");
 
 const cut = (s: string, limit: number): string => (s.length <= limit ? s : s.slice(0, limit - 1) + "…");

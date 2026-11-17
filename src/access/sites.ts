@@ -98,6 +98,8 @@ export const SITES = [
   { id: "kb_tools.memory_about_subject", group: 18, kind: "same", where: "memory_about listing: a page's subject is the turn's sender" },
   { id: "pass_tools.profile_subject", group: 18, kind: "same", where: "background pass profile write: a named subject is the pass's person (no workspace on the call)" },
   { id: "permission.stamp_expect_same", group: 18, kind: "same", where: "turn stamp: the token's initiator is the turn's sole sender (no workspace on the call)" },
+  // rc.28: the thread head (src/gateway/core/gateway.ts).
+  { id: "gateway.thread_head.admit", group: 19, kind: "admit", where: "thread head: an author the persona does not admit is not read back to the model" },
 ] as const;
 
 export type SiteId = (typeof SITES)[number]["id"];
