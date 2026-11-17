@@ -9,8 +9,6 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { WebClient } from "@slack/web-api";
 import type { TurnOrigin, TurnSender } from "../../knowledge/gated-dispatch";
-import { createReadStream, statSync } from "node:fs";
-import { basename } from "node:path";
 import { deliver, type Delivered, type OutboundKind, type OutboundOptions } from "./outbound";
 import { effectiveSoulForChannel } from "../../soul/extract";
 import * as Ignores from "../../db/ignores";
@@ -224,46 +222,6 @@ export const slackHandlers = {
       return ok(`denied by <@${r.by}>${r.note ? ` (${r.note})` : ""}`);
     } catch (e: any) {
       return err(`approval request failed: ${e?.message ?? String(e)}`);
-    }
-  },
-
-  async upload(
-    ctx: SlackContext,
-    {
-      path,
-      title,
-      initial_comment,
-      alt_text,
-    }: {
-      path: string;
-      title?: string;
-      initial_comment?: string;
-      alt_text?: string;
-    },
-  ): Promise<ToolResult> {
-    try {
-      statSync(path); // throws if missing
-      const filename = basename(path);
-      let ids: string[] = [];
-      const send = async (caption?: string) => {
-        const r = await ctx.client.files.uploadV2({ // outbound: legacy slack tool, through deliver()
-          channel_id: ctx.channel,
-          thread_ts: ctx.threadTs || undefined,
-          file: createReadStream(path),
-          filename,
-          title: title ?? filename,
-          ...(caption ? { initial_comment: caption } : {}),
-          ...(alt_text ? { alt_text } : {}),
-        } as any);
-        ids = ((r as any).files ?? []).map((f: any) => f?.files?.[0]?.id ?? f?.id).filter(Boolean);
-        return undefined;
-      };
-      // No message to hold in place: a held caption waits for the card, then the file goes out with it.
-      const r: Delivered = initial_comment ? await deliver(initial_comment, outOpts(ctx, "upload_caption"), { post: send }) : { ok: true, ref: await send() };
-      return result(r, () => `uploaded${ids.length ? ` file_id=${ids.join(",")}` : ""}`);
-    } catch (e: any) {
-      const msg = e?.data?.error ?? e?.message ?? String(e);
-      return err(`slack upload failed: ${msg}`);
     }
   },
 

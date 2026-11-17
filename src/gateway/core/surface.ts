@@ -77,6 +77,9 @@ export interface SessionBinding {
   turnSignal?: AbortSignal;
   /** Epoch ms the turn must be over by (a node's token expiry less a margin). */
   turnDeadline?: number;
+  /** The session's working directory (its row's `working_dir`), or undefined when
+   *  it cannot be told. An upload is refused outside it, and when this is absent. */
+  workingDir?: () => Promise<string | undefined>;
 }
 
 export type SurfaceFactory = (b: SessionBinding) => Surface;

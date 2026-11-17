@@ -1,6 +1,6 @@
 import type { WebClient } from "@slack/web-api";
-import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
+import { openConfined, UploadRefusal } from "../core/confined-file";
 import { deliver, formatOutbound, outbound, OutboundRefusal, TRACKER_HIDDEN, type OutboundKind, type OutboundOptions } from "./outbound";
 import { SLACK_SURFACE_ID } from "../core/surface";
 import type {
@@ -150,13 +150,18 @@ export class SlackSurface implements Surface {
   }
 
   async upload({ path, title, comment, altText }: { path: string; title?: string; comment?: string; altText?: string }): Promise<void> {
-    statSync(path); // throws if missing
+    // Confined to the session's working directory: the descriptor checked here is the one streamed.
+    let workingDir: string | undefined;
+    try { workingDir = await this.#b.workingDir?.(); } catch { workingDir = undefined; }
+    const file = openConfined(path, workingDir);
     const filename = basename(path);
+    let used = false;
     const send = async (caption: string | undefined) => {
+      used = true;
       await this.#client.files.uploadV2({ // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
         channel_id: this.#b.conversationId,
         thread_ts: this.#b.threadRef,
-        file: createReadStream(path),
+        file: file.stream,
         filename,
         title: title ?? filename,
         ...(caption ? { initial_comment: caption } : {}),
@@ -164,10 +169,15 @@ export class SlackSurface implements Surface {
       } as any);
       return undefined;
     };
-    if (!comment) return void (await send(undefined));
-    // No message to hold in place: a held caption waits for the card, then the file goes out with it.
-    const r = await deliver(comment, this.#opts("upload_caption"), { post: send });
-    if (!r.ok) throw new OutboundRefusal(r.error);
+    try {
+      if (!comment) return void (await send(undefined));
+      // No message to hold in place: a held caption waits for the card, then the file goes out with it.
+      const r = await deliver(comment, this.#opts("upload_caption"), { post: send });
+      if (!r.ok) throw new OutboundRefusal(r.error);
+    } finally {
+      // A refused or failed caption never read the stream: release the descriptor.
+      if (!used) file.stream.destroy();
+    }
   }
 }
 

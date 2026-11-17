@@ -263,7 +263,7 @@ describe("the surface (mono and node replies)", () => {
     const dir = mkdtempSync(join(tmpdir(), "outbound-up-"));
     const f = join(dir, "a.txt");
     writeFileSync(f, "x");
-    const upload = surfaceTools(surface(client)).find((t) => t.name === "upload")!;
+    const upload = surfaceTools(surface(client, { workingDir: async () => dir })).find((t) => t.name === "upload")!;
     expect(((await upload.handler({ path: f, initial_comment: "launch code 1" })) as any).isError).toBe(true);
     await upload.handler({ path: f, initial_comment: "card 1111-2222-3333-4444" });
     await upload.handler({ path: f });
