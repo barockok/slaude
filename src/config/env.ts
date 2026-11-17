@@ -609,6 +609,8 @@ export const env = {
       const on = raw === "1" || raw === "true" || raw === "yes" || raw === "on";
       return on ? opt("SLAUDE_SANDBOX_MCP_URL").trim() : "";
     },
+    /** Directory holding each repo's checkout inside the sandbox (the server's SANDBOX_ROOT). */
+    root: (): string => opt("SLAUDE_SANDBOX_ROOT", "/workspace").trim() || "/workspace",
     /** Bearer token sent to the sandbox MCP server. Empty = no Authorization header. */
     mcpToken: () => opt("SLAUDE_SANDBOX_MCP_TOKEN").trim(),
     /** Slack user ids allowed to switch sandbox mode: `/sandbox on|off`, and the
@@ -637,6 +639,21 @@ export const env = {
     active: (): boolean => {
       const raw = opt("SLAUDE_WORKFLOW", "0").toLowerCase();
       return (raw === "1" || raw === "true" || raw === "yes" || raw === "on") && !!opt("SLAUDE_WORKFLOW_SERVICE_URL").trim();
+    },
+    /** `SLAUDE_WORKFLOW_METHOD=1`, on top of an active workflow: run method stages
+     *  (a factory turn with `context: "fresh"`) in an isolated agent run. Off = such
+     *  a turn is refused with 409, never run in the thread session. Default off. */
+    methodEnabled: (): boolean => {
+      const flag = opt("SLAUDE_WORKFLOW_METHOD", "0").toLowerCase();
+      const on = flag === "1" || flag === "true" || flag === "yes" || flag === "on";
+      const wf = opt("SLAUDE_WORKFLOW", "0").toLowerCase();
+      const wfOn = wf === "1" || wf === "true" || wf === "yes" || wf === "on";
+      return on && wfOn && !!opt("SLAUDE_WORKFLOW_SERVICE_URL").trim();
+    },
+    /** Longest a fresh stage turn may run, in ms. Default 30 minutes. */
+    freshTimeoutMs: (): number => {
+      const n = parseInt(opt("SLAUDE_WORKFLOW_FRESH_TIMEOUT_MS", "1800000").trim(), 10);
+      return Number.isFinite(n) && n > 0 ? n : 1_800_000;
     },
   },
   gitPush: {
