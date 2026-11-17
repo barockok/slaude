@@ -28,10 +28,15 @@ export interface LastSpeaker {
   repliedToUser: string | null;
 }
 
-/** Where a record lives: a channel, and a thread (null: the channel's top level). */
+/**
+ * Where a record lives: a channel, a thread (null: the channel's top level)
+ * and the persona that spoke. Each persona's copy of a message takes only its
+ * own record, so two agents in one channel never consume each other's.
+ */
 export interface SpeakerPlace {
   channel: string;
   thread: string | null;
+  persona: string;
 }
 
 export interface LastSpeakerStore {
@@ -43,9 +48,17 @@ export interface LastSpeakerStore {
   put(place: SpeakerPlace, rec: LastSpeaker, o?: { ttlSeconds?: number; ifAbsent?: boolean }): Promise<void>;
   /** Return the place's record and remove it in one step; null when none. Never throws. */
   take(place: SpeakerPlace): Promise<LastSpeaker | null>;
+  /**
+   * What another persona's copy may look at: the place's last-spoke marker,
+   * which `take` does not consume (so two personas' copies of one message
+   * decide the same way in either order). Never throws.
+   */
+  peek(place: SpeakerPlace): Promise<LastSpeaker | null>;
+  /** Remove the place's record and marker (a human message that is handled some other way). Never throws. */
+  clear(place: SpeakerPlace): Promise<void>;
 }
 
-const placeKey = (p: SpeakerPlace): string => `${p.channel}:${p.thread ?? "root"}`;
+const placeKey = (p: SpeakerPlace): string => `${p.channel}:${p.thread ?? "root"}:${p.persona || "default"}`;
 const defaultTtl = (): number => env.engageWindowMinutes() * 60;
 
 function parse(raw: unknown): LastSpeaker | null {
@@ -62,13 +75,17 @@ function parse(raw: unknown): LastSpeaker | null {
 /** The in-process store (mono, and the fallback). */
 export function memoryLastSpeakerStore(now: () => number = Date.now): LastSpeakerStore {
   const m = new Map<string, { rec: LastSpeaker; until: number }>();
+  /** Last-spoke markers: written with every record, never consumed. */
+  const seen = new Map<string, { rec: LastSpeaker; until: number }>();
   return {
     async put(place, rec, o = {}) {
       const t = now();
-      if (m.size > 5000) for (const [k, v] of m) if (v.until <= t) m.delete(k);
+      for (const map of [m, seen]) if (map.size > 5000) for (const [k, v] of map) if (v.until <= t) map.delete(k);
       const k = placeKey(place);
+      const until = t + (o.ttlSeconds ?? defaultTtl()) * 1000;
+      seen.set(k, { rec, until });
       if (o.ifAbsent && (m.get(k)?.until ?? 0) > t) return;
-      m.set(k, { rec, until: t + (o.ttlSeconds ?? defaultTtl()) * 1000 });
+      m.set(k, { rec, until });
     },
     async take(place) {
       const k = placeKey(place);
@@ -76,19 +93,29 @@ export function memoryLastSpeakerStore(now: () => number = Date.now): LastSpeake
       m.delete(k);
       return v && v.until > now() ? v.rec : null;
     },
+    async peek(place) {
+      const v = seen.get(placeKey(place));
+      return v && v.until > now() ? v.rec : null;
+    },
+    async clear(place) {
+      m.delete(placeKey(place));
+      seen.delete(placeKey(place));
+    },
   };
 }
 
 /** The Redis commands the store uses (GETDEL needs Redis 6.2). */
-export type SpeakerRedis = Pick<Redis, "set" | "getdel">;
+export type SpeakerRedis = Pick<Redis, "set" | "get" | "getdel" | "del">;
 
 /** A Redis-backed store shared by every replica. Errors read as "no record". */
 export function redisLastSpeakerStore(client: SpeakerRedis, prefix = "slaude"): LastSpeakerStore {
   const key = (p: SpeakerPlace) => `${prefix}:engage:last:${placeKey(p)}`;
+  const seenKey = (p: SpeakerPlace) => `${prefix}:engage:seen:${placeKey(p)}`;
   return {
     async put(place, rec, o = {}) {
       try {
         const ttl = Math.max(1, Math.floor(o.ttlSeconds ?? defaultTtl()));
+        await client.set(seenKey(place), JSON.stringify(rec), "EX", ttl);
         if (o.ifAbsent) await client.set(key(place), JSON.stringify(rec), "EX", ttl, "NX");
         else await client.set(key(place), JSON.stringify(rec), "EX", ttl);
       } catch (e) {
@@ -101,6 +128,21 @@ export function redisLastSpeakerStore(client: SpeakerRedis, prefix = "slaude"): 
       } catch (e) {
         console.warn(`[engage] last-speaker read from Redis failed: ${(e as Error).message}`);
         return null;
+      }
+    },
+    async peek(place) {
+      try {
+        return parse(await client.get(seenKey(place)));
+      } catch (e) {
+        console.warn(`[engage] last-speaker peek from Redis failed: ${(e as Error).message}`);
+        return null;
+      }
+    },
+    async clear(place) {
+      try {
+        await client.del(key(place), seenKey(place));
+      } catch (e) {
+        console.warn(`[engage] last-speaker clear in Redis failed: ${(e as Error).message}`);
       }
     },
   };

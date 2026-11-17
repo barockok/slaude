@@ -12,6 +12,15 @@ function fakeRedis(opts: { fail?: boolean } = {}) {
       kv.set(k, { v, until: clock + secs * 1000 });
       return "OK";
     },
+    async get(k: string) {
+      if (opts.fail) throw new Error("down");
+      const e = kv.get(k);
+      return e && e.until > clock ? e.v : null;
+    },
+    async del(...ks: string[]) {
+      if (opts.fail) throw new Error("down");
+      return ks.filter((k) => kv.delete(k)).length;
+    },
     async getdel(k: string) {
       if (opts.fail) throw new Error("down");
       const e = kv.get(k);
@@ -23,7 +32,7 @@ function fakeRedis(opts: { fail?: boolean } = {}) {
 }
 
 const rec: LastSpeaker = { ts: "1700000000.000100", persona: "ana", app: "A0EXAMPLE", repliedToUser: "U0PERSON" };
-const place = { channel: "C0EXAMPLE", thread: "1700000000.000001" };
+const place = { channel: "C0EXAMPLE", thread: "1700000000.000001", persona: "ana" };
 
 describe("memory store", () => {
   test("take returns the record once and clears it", async () => {
@@ -35,8 +44,8 @@ describe("memory store", () => {
   test("places are independent, and a root place differs from a thread", async () => {
     const s = memoryLastSpeakerStore();
     await s.put(place, rec);
-    expect(await s.take({ channel: "C0EXAMPLE", thread: null })).toBeNull();
-    expect(await s.take({ channel: "C0OTHER", thread: place.thread })).toBeNull();
+    expect(await s.take({ ...place, thread: null })).toBeNull();
+    expect(await s.take({ ...place, channel: "C0OTHER" })).toBeNull();
     expect(await s.take(place)).toEqual(rec);
   });
   test("a record expires after its ttl", async () => {
@@ -45,6 +54,43 @@ describe("memory store", () => {
     await s.put(place, rec, { ttlSeconds: 60 });
     t = 61_000;
     expect(await s.take(place)).toBeNull();
+  });
+});
+
+describe("personas, peek and clear", () => {
+  const stores = () => {
+    const f = fakeRedis();
+    return [memoryLastSpeakerStore(), redisLastSpeakerStore(f.r)];
+  };
+  test("each persona has its own record in one place", async () => {
+    for (const s of stores()) {
+      await s.put(place, rec);
+      await s.put({ ...place, persona: "robin" }, { ...rec, persona: "robin" });
+      expect((await s.take({ ...place, persona: "robin" }))?.persona).toBe("robin");
+      expect(await s.take(place)).toEqual(rec);
+    }
+  });
+  test("peek leaves the record", async () => {
+    for (const s of stores()) {
+      await s.put(place, rec);
+      expect(await s.peek(place)).toEqual(rec);
+      expect(await s.peek(place)).toEqual(rec);
+      expect(await s.take(place)).toEqual(rec);
+      expect(await s.peek(place)).toEqual(rec); // the marker outlives the consumed record
+    }
+  });
+  test("clear removes it", async () => {
+    for (const s of stores()) {
+      await s.put(place, rec);
+      await s.clear(place);
+      expect(await s.peek(place)).toBeNull();
+      expect(await s.take(place)).toBeNull();
+    }
+  });
+  test("peek and clear fail open on a Redis error", async () => {
+    const s = redisLastSpeakerStore(fakeRedis({ fail: true }).r);
+    expect(await s.peek(place)).toBeNull();
+    await s.clear(place);
   });
 });
 
@@ -95,7 +141,7 @@ describe("redis store", () => {
   });
   test("a corrupt value reads as no record", async () => {
     const f = fakeRedis();
-    f.kv.set("slaude:engage:last:C0EXAMPLE:root", { v: "{nope", until: Infinity });
-    expect(await redisLastSpeakerStore(f.r).take({ channel: "C0EXAMPLE", thread: null })).toBeNull();
+    f.kv.set("slaude:engage:last:C0EXAMPLE:root:ana", { v: "{nope", until: Infinity });
+    expect(await redisLastSpeakerStore(f.r).take({ ...place, thread: null })).toBeNull();
   });
 });
