@@ -113,7 +113,7 @@ Every earlier message is another person's text, so each piece (message text, dis
 
 ### 1.7 Joining in without an @mention (implicit engagement, phase 0)
 
-By default an agent answers when it is @mentioned, or when a message arrives in a thread it is already engaged in. Implicit engagement is a per-channel setting that lets it also take part when a message is, in effect, said to it. **Today the steps that exist are observe only**: the agent decides what it would have done and counts it, and (from the release candidate that added phase 1) may ask a classifier for a second opinion that is only logged and counted. It never acts on either. This section says what that means, how to read the numbers, and what is not built yet.
+By default an agent answers when it is @mentioned, or when a message arrives in a thread it is already engaged in. Implicit engagement is a per-channel setting that lets it also take part when a message is, in effect, said to it. In **shadow** (the default mode) the agent only decides what it would have done and counts it, and may ask a classifier for a second opinion that is only logged and counted. In a channel whose mode is **`on`** (phase 2, below) it acts on a decision to run. This section says what each does, how to read the numbers, and how to roll a channel out.
 
 #### The setting
 
@@ -243,9 +243,49 @@ The adapter is deployment configuration, `SLAUDE_DECISION_CONFIG` (gateway only)
 
 The `anthropic` adapter answers the questions with a small model on the gateway's own model provider, using the credentials the gateway already has (`ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN`, or the subscription OAuth token, against `ANTHROPIC_BASE_URL` or the public API). It needs no new secret; `model` is optional (default `claude-haiku-5-5`) and the only other key allowed in its block is `type`. If `ANTHROPIC_BASE_URL` points at a provider other than the public API, `model` is required: without it the adapter is disabled at boot with a warning naming `adapter.model`, because that provider may not serve the default id. It forces one tool call whose answers are limited to each question's options, treats anything else as an error, and sends the thread text to that provider, so it widens nothing beyond where the agent's own turns already go. `timeoutMs` bounds the whole decision; a small model needs more than the default 800 ms, so 4000 is recommended for this adapter. Other adapters are registered the same way and configured in the same block (see [Decision gate](../reference/configuration.md#decision-gate)). With `gate.mode` `shadow` or `on` the same adapter also serves the mention-path gate, as before.
 
+#### Phase 2: acting (`mode: on`)
+
+A channel whose `engage.mode` is `on`, at level `addressed` or `contribute`, and that is not restricted, now acts on a `run` decision: the agent takes part **exactly as if it had been @mentioned**, with these differences. In shadow, and at level `mention`, nothing changes.
+
+> [!WARNING]
+> **`on` makes the agent speak in that channel without anyone mentioning it.** Roll it out one channel at a time, in shadow first (below), and know the kill switch.
+
+What acts, and how:
+
+- **Tier 1 and tier 2 `run` act at once.** The agent's name and a comma ("Sam, can you look"), and a follow-up from the person the agent just answered.
+- **Tier 3 is awaited.** The classifier is asked while the message is being handled, within the decision config's `timeoutMs`, and acts only on a confident yes. Every failure (error, timeout, budget, breaker, no adapter, a "no") is a pass, which is today's drop. A top-level question at `contribute` still waits 60 seconds first and then acts from the timer (never in a channel session, where the message has already been recorded by then).
+- **Same checks as a mention.** The author goes through admission, blocked and ignored lists, restricted channels, `/1on1` locks and owner inbound rules exactly as an @mention from them would, and the model receives the same message text. A tier 3 candidate has already passed admission before any budget is spent; a tier 1 or 2 run is admitted before it acts. Budgets, pass memory, the root cooldown and the breaker from phase 1 all apply to tier 3 as before.
+- **Where the reply goes.** A classic agent replies in the thread of the message (under it, for a top-level message). In a channel-session channel an unmentioned root message whose decision is `run` is not recorded suppressed: the agent replies at the root, as for a root mention there.
+- **The first turn is told it may pass.** The turn's prompt says, in neutral words, that the message was not an @mention, may be addressed to someone else or need no reply, and that the agent should `pass` when it does not need it. It does not say why the agent was asked. An implicit turn is not forced to reply by the must-reply guard: ending without a reply is a pass.
+- **Passing gives engagement back.** An implicit run is born with weaker engagement. If the agent then only passes, the thread goes back to how it was: the next plain reply is recorded or dropped, not run. If the agent replies, the thread is engaged like after a mention.
+- **A new session starts inside an existing thread with the thread head** (section 1.6), once, on its first real turn.
+- **One owner per message.** Slack delivers a channel message to every app and persona in it. A copy that has decided `run` takes one atomic claim on the channel and message (`SET NX`, with an in-memory fallback), and only the winner acts; a copy that loses does nothing. A persona that spoke last in the thread already wins before the claim: another agent that spoke after you is a tier 0 pass for you.
+- **A reply in a thread the agent opened** (the root's author is this agent: Slack's `parent_user_id` is this app's bot or this persona's own user) from a person, with no name used, no one else named and no recent record of the agent speaking last, is a tier 3 candidate instead of a drop. A root posted through a bot that several personas share cannot be told, and is refused as before. Slack does not send `parent_user_id` on every event; without it nothing changes.
+
+Safety valves:
+
+| Control | Default | Effect |
+|---|---|---|
+| `SLAUDE_ENGAGE_FORCE_SHADOW` | unset | Truthy (`1`, `true`, `yes`, `on`) forces every channel to shadow behaviour, whatever its mode. Read for every message, never cached, so unsetting it takes effect at once. This is the kill switch. |
+| `SLAUDE_ENGAGE_ACT_PER_HOUR` | `12` | Acted runs per channel per hour (a fixed hour window, shared across apps and replicas with Redis). Past it a run is a pass. |
+| The existing budgets | 50 a day, 6 a minute | Tier 3 classifier calls, as in phase 1. |
+
+Counters and the log line (no channel label on the counter; the line has it, and neither carries message text):
+
+```
+slaude_engage_act_total{tier,outcome,level}
+[engage] act channel=C... level=addressed tier=1 source=rules reason=name_comma ts=... persona=default site=drop
+```
+
+`outcome` is `acted`, `lost_claim` (another persona or app copy owns it), `cap`, `forced_shadow`, `classifier_pass` (a tier 3 candidate the classifier or its guards did not confirm) or `error`. `source` is `rules` or `classifier`; `site` is `drop` or `channel_session`.
+
+**Rolling a channel out.** (1) Put the channel at `addressed` with `mode: shadow` and, if you want tier 3, a decision adapter. (2) Read `slaude_engage_total` and `slaude_engage_classifier_total` for a few days and the `[gate] engage` lines: the share of messages that reach tier 3, and how often the classifier would say run. (3) Switch that one channel to `mode: on`, tell the people in it, and watch `slaude_engage_act_total` and the thread behaviour. (4) Keep `SLAUDE_ENGAGE_FORCE_SHADOW=1` ready as the kill switch for the whole deployment, and lower `SLAUDE_ENGAGE_ACT_PER_HOUR` if a channel is chatty. Go to `contribute` only after `addressed` has behaved.
+
+**What is not acted on.** The other places that drop or record a message for "not engaged" are different cases and are left alone: a thread a colleague mention has disengaged, a `/mention-only` thread, a thread that belongs to another app, and a message that mentions another person (all tier 0 passes anyway).
+
 #### Not built yet
 
-These do **not** exist: acting on a decision (`mode: on` changes nothing; the shadow classifier is the only thing that runs); a deterministic owner for an implicit run across apps; a per-channel counter label. Do not rely on `addressed` or `contribute` to change what the agent answers until a release note says it does.
+A per-channel label on the counter, and a deterministic last-speaker priority beyond what the ladder already does (a persona that spoke after another wins by the ladder; two personas that both decide run get the first claimant). Tuning the cap and budgets from real counts.
 
 ---
 
