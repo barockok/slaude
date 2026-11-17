@@ -9,7 +9,6 @@ const SECRET_PATTERNS: RegExp[] = [
   /bearer\s+[A-Za-z0-9._-]+/gi, // bearer <token>
   /(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|secret|password|passwd|pwd)\s*[:=]\s*\S+/gi,
   /\b(?:sk|pk|rk)-[A-Za-z0-9]{8,}/g, // sk-… style provider keys
-  /\bsk-ant-[A-Za-z0-9_-]{8,}/g, // anthropic keys (the hyphen after sk-ant- ends the pattern above too early)
   /\bgh[oprsu]_[A-Za-z0-9]{20,}/g, // github tokens
   /\bxox[baprs]-[A-Za-z0-9-]{10,}/g, // slack tokens
   /\bglpat-[A-Za-z0-9_-]{10,}/g, // gitlab PAT

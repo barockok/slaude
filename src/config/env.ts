@@ -600,12 +600,6 @@ export const env = {
    */
   decisionConfigRaw: () => opt("SLAUDE_DECISION_CONFIG"),
   /**
-   * `SLAUDE_DECISION_API_KEY`: an Anthropic API key the `anthropic` decision
-   * adapter prefers over every other provider variable (sent as x-api-key).
-   * Gateway only; never part of SLAUDE_DECISION_CONFIG. Empty when unset.
-   */
-  decisionApiKey: () => opt("SLAUDE_DECISION_API_KEY").trim(),
-  /**
    * Deployment default engage level for a channel whose agent.yaml gives none:
    * mention (today), addressed or contribute. Anything else reads as mention.
    */
