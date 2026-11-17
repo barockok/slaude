@@ -14,7 +14,7 @@ export interface EngageSetting {
  * The engage setting for a persona in a channel. Level: the channel's own
  * `engage.level`; else `addressed` in a channel where the agent is proactive
  * (an agent that may speak up unprompted should also answer what is said to
- * it); else the deployment default (SLAUDE_ENGAGE_DEFAULT). Mode: the
+ * it; `SLAUDE_ENGAGE_PROACTIVE_DEFAULT=off` turns this off); else the deployment default (SLAUDE_ENGAGE_DEFAULT). Mode: the
  * channel's own, else shadow. A restricted channel (one neither listed
  * as public nor trusted for the persona) is always `mention`. With no config
  * anywhere the answer is { mention, shadow }, which changes nothing.
@@ -24,7 +24,7 @@ export function engageFor(personaId: string | null | undefined, channelId: strin
   const own = soul.channelEngage.find((c) => c.channel === channelId);
   const mode: EngageMode = own?.mode ?? "shadow";
   if (channelTrustFor(channelId, trustSoulFor(personaId)) === "unknown") return { level: "mention", mode };
-  return { level: own?.level ?? (proactiveIn(personaId, channelId) ? "addressed" : env.engageDefault()), mode };
+  return { level: own?.level ?? ((env.engageProactiveDefault() && proactiveIn(personaId, channelId)) ? "addressed" : env.engageDefault()), mode };
 }
 
 /** Whether this channel's own proactive switch is on for the persona (a channel session). Any failure reads as off. */

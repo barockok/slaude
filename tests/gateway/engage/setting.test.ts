@@ -118,6 +118,21 @@ channels:
     expect(engageFor("ana", "C0PRO4")).toEqual({ level: "contribute", mode: "shadow" });
     expect(engageFor("ana", "C0PLAIN")).toEqual({ level: "contribute", mode: "shadow" });
   });
+  test("SLAUDE_ENGAGE_PROACTIVE_DEFAULT=off restores the deployment default; an explicit level is unaffected", () => {
+    const saved = process.env.SLAUDE_ENGAGE_PROACTIVE_DEFAULT;
+    try {
+      process.env.SLAUDE_ENGAGE_PROACTIVE_DEFAULT = "off";
+      expect(engageFor("ana", "C0PRO1")).toEqual({ level: "mention", mode: "shadow" });
+      process.env.SLAUDE_ENGAGE_DEFAULT = "contribute";
+      expect(engageFor("ana", "C0PRO1")).toEqual({ level: "contribute", mode: "shadow" });
+      expect(engageFor("ana", "C0PRO2")).toEqual({ level: "mention", mode: "shadow" });
+      process.env.SLAUDE_ENGAGE_PROACTIVE_DEFAULT = "on";
+      expect(engageFor("ana", "C0PRO1")).toEqual({ level: "addressed", mode: "shadow" });
+    } finally {
+      if (saved === undefined) delete process.env.SLAUDE_ENGAGE_PROACTIVE_DEFAULT;
+      else process.env.SLAUDE_ENGAGE_PROACTIVE_DEFAULT = saved;
+    }
+  });
   test("without proactive nothing changes; a restricted channel still mentions", () => {
     expect(engageFor("ana", "C0PLAIN")).toEqual({ level: "mention", mode: "shadow" });
     expect(engageFor("ana", "C0PRORESTRICT")).toEqual({ level: "mention", mode: "shadow" });

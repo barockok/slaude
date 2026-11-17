@@ -623,6 +623,13 @@ export const env = {
    * (default 6). `SLAUDE_ENGAGE_SAMPLE`: sample 1 in N tier 2 run decisions for
    * the classifier (default 20, 0 turns sampling off). Invalid values read as the default.
    */
+  /**
+   * `SLAUDE_ENGAGE_PROACTIVE_DEFAULT` (default on): a channel where the agent is
+   * proactive and that sets no `engage.level` is `addressed`. `off` (also `0`,
+   * `false`, `no`) restores the deployment default (SLAUDE_ENGAGE_DEFAULT) for
+   * those channels.
+   */
+  engageProactiveDefault: (): boolean => !["off", "0", "false", "no"].includes(opt("SLAUDE_ENGAGE_PROACTIVE_DEFAULT").trim().toLowerCase()),
   engageDailyBudget: (): number => posInt(opt("SLAUDE_ENGAGE_DAILY_BUDGET"), 50, 100_000),
   engageMinuteCeiling: (): number => posInt(opt("SLAUDE_ENGAGE_MINUTE_CEILING"), 6, 1_000),
   engageSample: (): number => {
