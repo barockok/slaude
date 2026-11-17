@@ -1,4 +1,5 @@
 import { db, type SessionRow } from "./schema";
+import type { DbClient } from "./client";
 import { randomUUID } from "node:crypto";
 import { observeSlackChannel } from "../domain/first-sight";
 import { boundaryForCached, locatorOf } from "../domain/boundary-for";
@@ -19,10 +20,10 @@ export type ThreadKey = {
  * their own queries, and never leave it. Every row this module returns to a caller
  * is the shape rc.21 returned, so REST, the console and the node store are unchanged.
  */
-type RawRow = SessionRow & { boundary_id?: string | null; locator?: string | null };
+type RawRow = SessionRow & { boundary_id?: string | null; locator?: string | null; thread_head_at?: number | string | null };
 function publicRow<T extends RawRow | null>(row: T): T {
   if (!row) return row;
-  const { boundary_id: _b, locator: _l, ...rest } = row as RawRow;
+  const { boundary_id: _b, locator: _l, thread_head_at: _h, ...rest } = row as RawRow;
   return rest as unknown as T;
 }
 
@@ -209,6 +210,19 @@ export async function markStarted(id: string): Promise<void> {
     id,
   ]);
 }
+
+/**
+ * Claim the session's thread head (rc.28): true for exactly one caller, once per session. Compare-and-set
+ * on `thread_head_at IS NULL`, so two quick first messages cannot both inject the head, and the answer
+ * outlives any purge (the marker is on the session row, unlike a seen-events row).
+ * `on` is a seam for the migration test; the gateway uses `claimThreadHead`.
+ */
+export async function claimThreadHeadOn(client: DbClient, id: string, at: number = Date.now()): Promise<boolean> {
+  const r = await client.run(`UPDATE sessions SET thread_head_at = ? WHERE id = ? AND thread_head_at IS NULL`, [at, id]);
+  return (r.changes ?? 0) > 0;
+}
+
+export const claimThreadHead = (id: string): Promise<boolean> => claimThreadHeadOn(db, id);
 
 export async function setStatus(id: string, status: string): Promise<void> {
   await db.run(`UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?`, [
