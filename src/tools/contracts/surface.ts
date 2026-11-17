@@ -71,7 +71,7 @@ export const surfaceContract = {
     upload: {
       name: "upload",
       description:
-        "Upload a local file to the current conversation. Use an absolute path to a regular file under the session working directory or under $TMPDIR (your per-session scratch directory). If the file is anywhere else, copy it into one of those first. The tool does the transfer itself: do not curl or post the file by other means.",
+        "Upload a local file to the current conversation. Use an absolute path to a regular file under the session working directory or under $TMPDIR (your per-session scratch directory). Files in $TMPDIR last only while the session stays warm on its node: after the session goes cold or moves to another node they are gone. If the file is anywhere else, copy it into one of those first. The tool does the transfer itself: do not curl or post the file by other means.",
       schema: {
         path: z.string().describe("Absolute local path to the file to upload."),
         title: z.string().optional(),

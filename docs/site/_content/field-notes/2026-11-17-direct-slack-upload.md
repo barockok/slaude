@@ -108,3 +108,8 @@ path under the temp area, and the child-env scrub strips nothing it needs.
 - An older gateway does not serve `upload_begin`; a new node falls back to the
   path call once and logs it. An old node against a new gateway keeps the rc.26
   behaviour.
+- The upload URL is checked against an exact host list (default `files.slack.com`, https) by the gateway at begin and again by the node, and redirects are not followed, so a wrong URL never receives bytes.
+- A session the console holds is refused at begin ("upload not sent", result `suppressed`), so no Slack call or allowance is spent; a hold that starts between begin and complete is reported the same way and is not audited.
+- A scratch directory that cannot be made does not stop the session: it boots without `TMPDIR`, with one log line, and uploads read from the working directory only. Scratch files do not survive a cold resume or a move to another node; stale scratch roots from a crashed worker are swept (older than a day, same owner) at the next start.
+- The handle holds only the destination, file id, name and declared size, so a maximal alt text cannot push it past the complete input cap. A handle is not bound to one turn: another turn of the same session can complete it, into the begin turn's destination, within its ten minutes. Completing twice posts twice (not guarded).
+- The per-session limiter gives up on Redis after 500 ms and uses its in-process count.
