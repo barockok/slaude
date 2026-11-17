@@ -39,6 +39,19 @@ export interface FakeMessage {
   edited: boolean;
   pinned: boolean;
   reactions: Map<string, Set<string>>;
+  /** Files attached by files.completeUploadExternal. */
+  files?: Array<{ id: string; title: string }>;
+}
+
+/** A file started with files.getUploadURLExternal. `received` is what the upload host stored. */
+export interface FakeUpload {
+  id: string;
+  filename: string;
+  /** The length declared at begin. */
+  length: number;
+  received?: { bytes: number; sha256: string };
+  /** Set by files.completeUploadExternal. */
+  completed?: { channel?: string; threadTs?: string; title: string; comment?: string };
 }
 
 /** An in-memory Slack workspace: users, apps, channels, messages, threads. */
@@ -47,6 +60,10 @@ export class Workspace {
   readonly channels = new Map<string, FakeChannel>();
   readonly apps = new Map<string, FakeApp>();
   readonly #messages = new Map<string, FakeMessage[]>();
+  /** Direct uploads by file id. */
+  readonly uploads = new Map<string, FakeUpload>();
+  /** Where this workspace's upload host is reachable (set by the server). */
+  publicUrl = "";
   readonly #ephemerals: Array<{ channel: string; user: string; text: string; ts: string }> = [];
   readonly clock: TsClock;
   #botCount = 0;
@@ -108,7 +125,7 @@ export class Workspace {
     return m;
   }
 
-  post(i: { channel: string; user: string; text: string; blocks?: unknown; threadTs?: string; appId?: string }): FakeMessage {
+  post(i: { channel: string; user: string; text: string; blocks?: unknown; threadTs?: string; appId?: string; files?: Array<{ id: string; title: string }> }): FakeMessage {
     this.#channel(i.channel);
     if (i.threadTs) {
       const parent = this.#messages.get(i.channel)!.find((x) => x.ts === i.threadTs && !x.deleted && !x.threadTs);
@@ -122,6 +139,7 @@ export class Workspace {
       blocks: i.blocks,
       threadTs: i.threadTs,
       appId: i.appId,
+      ...(i.files ? { files: i.files } : {}),
       deleted: false,
       edited: false,
       pinned: false,

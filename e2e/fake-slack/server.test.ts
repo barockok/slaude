@@ -80,6 +80,26 @@ test("POST apps keeps supplied credentials, so re-adding an app leaves it unchan
   }
 });
 
+test("the upload host: raw body accepted, longer truncated to the declared length, shorter is a 500; the SDK's complete works", async () => {
+  const begin = await client.files.getUploadURLExternal({ filename: "a.bin", length: 4 });
+  expect(begin.upload_url).toContain(`${fake.url}/upload/`);
+  const post = (url: string, body: Uint8Array) => fetch(url, { method: "POST", headers: { "content-type": "application/octet-stream" }, body });
+  const short = await post(begin.upload_url!, new Uint8Array([1, 2]));
+  expect(short.status).toBe(500);
+  const long = await post(begin.upload_url!, new Uint8Array([1, 2, 3, 4, 5, 6]));
+  expect(long.status).toBe(200);
+  expect(await long.text()).toBe("OK - 4");
+  // the URL can be used again
+  expect((await post(begin.upload_url!, new Uint8Array([9, 9, 9, 9]))).status).toBe(200);
+  expect((await post(`${fake.url}/upload/F0NOPE`, new Uint8Array([1]))).status).toBe(404);
+  const done = await client.files.completeUploadExternal({ files: [{ id: begin.file_id!, title: "A" }], channel_id: "C0TEAM", initial_comment: "here" });
+  expect(done.ok).toBe(true);
+  const msg = (await ctl.messages("C0TEAM")).messages.at(-1);
+  expect(msg).toMatchObject({ text: "here" });
+  const uploads = (await ctl.calls({ method: "upload" })).calls;
+  expect(uploads.map((u) => u.status)).toEqual([500, 200, 200]);
+});
+
 test("a Slack platform error surfaces as the SDK's platform error", async () => {
   await expect(client.chat.postMessage({ channel: "C0NOPE", text: "x" })).rejects.toMatchObject({ data: { error: "channel_not_found" } });
 });

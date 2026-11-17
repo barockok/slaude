@@ -118,6 +118,32 @@ test("search.messages, files.info, assistant.threads.setStatus, users.profile.se
   expect(call("users.profile.set", { profile: "{}" }).body).toEqual({ ok: true });
 });
 
+test("a direct upload: begin gives a URL and a file id, complete posts the file with its caption and thread", () => {
+  ws.publicUrl = "http://upload.test";
+  const root = call("chat.postMessage", { channel: "C0TEAM", text: "root" }).body as any;
+  const b = call("files.getUploadURLExternal", { filename: "a.txt", length: "3" }).body as any;
+  expect(b.ok).toBe(true);
+  expect(b.file_id).toMatch(/^F0UP/);
+  expect(b.upload_url).toBe(`http://upload.test/upload/${b.file_id}`);
+  // complete verifies nothing about the bytes, as measured against Slack
+  const c = call("files.completeUploadExternal", { files: [{ id: b.file_id, title: "A" }], channel_id: "C0TEAM", thread_ts: root.ts, initial_comment: "see" }).body as any;
+  expect(c).toEqual({ ok: true, files: [{ id: b.file_id, title: "A" }] });
+  const msg = ws.messages("C0TEAM").at(-1)!;
+  expect(msg).toMatchObject({ text: "see", threadTs: root.ts, files: [{ id: b.file_id, title: "A" }] });
+  expect(ws.uploads.get(b.file_id)!.completed).toMatchObject({ channel: "C0TEAM", title: "A", comment: "see" });
+});
+
+test("a direct upload: bad arguments and unknown files", () => {
+  expect(call("files.getUploadURLExternal", { filename: "a", length: "0" }).body).toEqual({ ok: false, error: "invalid_arguments" });
+  expect(call("files.getUploadURLExternal", { length: "5" }).body).toEqual({ ok: false, error: "invalid_arguments" });
+  expect(call("files.completeUploadExternal", { files: [{ id: "F0NOPE" }] }).body).toEqual({ ok: false, error: "file_not_found" });
+  expect(call("files.completeUploadExternal", {}).body).toEqual({ ok: false, error: "invalid_arguments" });
+  // without a channel nothing is posted
+  const b = call("files.getUploadURLExternal", { filename: "a", length: "1" }).body as any;
+  call("files.completeUploadExternal", { files: [{ id: b.file_id }] });
+  expect(ws.messages("C0TEAM")).toHaveLength(0);
+});
+
 test("an unknown method fails loudly, is flagged in the log, and never succeeds", () => {
   const r = call("nonsense.method", { a: 1 });
   expect(r).toMatchObject({ status: 200, body: { ok: false, error: "unknown_method" } });
@@ -237,6 +263,8 @@ test("every implemented method, called with valid params, matches the vendored s
     "pins.add": { channel: ref.channel, timestamp: ref.timestamp },
     "pins.remove": { channel: ref.channel, timestamp: ref.timestamp },
     "files.info": { file: "F0NONE" }, // the fake answers file_not_found: the request is still judged
+    "files.getUploadURLExternal": { filename: "a.txt", length: 3 }, // not in the vendored spec: the request is unjudged
+    "files.completeUploadExternal": { files: [{ id: "F0NONE", title: "a" }], channel_id: "C0TEAM" }, // the fake answers file_not_found
     "assistant.threads.setStatus": { channel_id: "C0TEAM", thread_ts: m.ts, status: "thinking" },
   };
   // a method added to the fake must get params here, or this test says so
