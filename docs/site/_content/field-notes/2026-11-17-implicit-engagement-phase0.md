@@ -198,6 +198,30 @@ Phase 2 makes `mode: on` mean something. What shaped it:
 - **Valves.** A kill switch read per message, a per-channel hourly cap on acted
   runs, and a counter with no channel label (the log line has it).
 
+Review round on phase 2:
+
+- **A silent or failed end is a pass.** The pass tool is not the only way an
+  implicit turn says nothing: ending with no call at all is the same, and a
+  turn that errors before speaking must not post failure text to a thread
+  nobody addressed. Both give the engagement back and leave no reaction. The
+  received reaction and thinking status are not set for an implicit turn at all.
+- **The implicit flag is per turn.** It is cleared at done, at error and on the
+  panel and compact paths, so a later explicit turn on the same route is
+  guarded again. A recording merged into a running turn never changes the flag,
+  and on a node a job is implicit only when every non-suppressed message is.
+- **A deferred act asks the router again.** After the 60 second wait, the kill
+  switch, the channel's mode, `/mention-only`, any session row for the thread
+  and admission are all read afresh, and any reply in the thread counts as an
+  answer.
+- **A failed channel-session act still records.** The failed attempt had
+  consumed the per-persona dedup key, so it is freed for the recording.
+- **Known limits.** The owner claim is per deployment (Redis or one process): two
+  deployments in one channel can both answer, so keep one deployment per channel
+  at mode `on`. An awaited tier 3 can let a later @mention take its dispatch
+  slot first (the implicit turn then runs after it). The act cap slot is taken
+  after a cheap dedup check, but a delivery that races past it can still spend a
+  slot before the handler drops it.
+
 Open after phase 2: tuning the cap and the budgets from real counts, a per
 channel counter label, an explicit last-speaker priority in the claim (today
 the ladder provides it), and whether a recording in a channel session should
