@@ -2719,6 +2719,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // check that follows a user turn is not one).
         const engagedBefore = route.engagedBefore;
         if (!e.autoEvolve) route.engagedBefore = undefined;
+        // An implicit turn ends with the turn: a later explicit or panel turn on this route is guarded again.
+        const implicitTurn = route.implicit === true;
+        if (!e.autoEvolve) route.implicit = undefined;
         const settled = e.autoEvolve ? null : settleTurn(route);
         void (async () => {
           // Voice-origin turn: the thread stays quiet (no ✅, no task-block
@@ -2760,7 +2763,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           route.tasksMap = undefined;
           // A mention that engaged the thread and ended in a pass (nothing
           // user-visible) gives the engagement back: the thread stays as it was.
-          if (route.passed && !route.spoke && engagedBefore === false) {
+          // An implicit turn that ends without speaking is a pass too, whether or not the pass tool was called.
+          const quiet = !route.spoke && (route.passed || implicitTurn);
+          if (quiet && engagedBefore === false) {
             console.log(`[pass] disengage ch=${route.ctx.channel} ts=${route.ctx.threadTs}`);
             await persistEngaged(route.ctx.teamId, route.ctx.channel, route.ctx.threadTs, false, route.ctx.personaId ?? "default")
               .catch((err) => console.error(`[pass] disengage failed ch=${route.ctx.channel} ts=${route.ctx.threadTs}:`, err?.message ?? err));
@@ -2768,7 +2773,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // No fallback notice: setStopGuard above forces a reply via the SDK
           // Stop hook. If the agent still stops without spoke, manager logs
           // to stderr — surfacing a Slack message here would be redundant.
-          if (route.passed && !route.spoke) {
+          if (quiet) {
             // A pass posts nothing: no ✅. The received 👀 goes too, unless the
             // pass reacted with that same emoji (Slack holds one per name).
             await reactions.clear(e.sessionId, route.passReact);
@@ -2782,6 +2787,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         break;
       }
       case "error": {
+        const implicitTurn = route.implicit === true;
+        const engagedBeforeErr = route.engagedBefore;
+        route.implicit = undefined;
+        route.engagedBefore = undefined;
         const settled = settleTurn(route);
         // The raw error (provider/CLI text, stack fragments) stays in the server
         // log; Slack only ever gets the fixed text for the failure code (D1.6).
@@ -2795,6 +2804,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (settled.recordingNext) route.suppress = true;
         // Voice-origin turn: no failure text or ❌ in the thread (the call voices it).
         if (voiceTurns.active(e.sessionId)) break;
+        // An implicit turn that failed before it spoke stays quiet: nobody asked this thread anything. Log it,
+        // leave nothing behind, and give the engagement back.
+        if (implicitTurn && !route.spoke) {
+          console.error(`[engage] implicit turn failed quietly session=${e.sessionId} ch=${route.ctx.channel} code=${e.code ?? "UNKNOWN"}`);
+          void (async () => {
+            if (engagedBeforeErr === false) {
+              await persistEngaged(route.ctx.teamId, route.ctx.channel, route.ctx.threadTs, false, route.ctx.personaId ?? "default")
+                .catch((err) => console.error(`[pass] disengage failed ch=${route.ctx.channel} ts=${route.ctx.threadTs}:`, err?.message ?? err));
+            }
+            await reactions.clear(e.sessionId);
+            reactions.forget(e.sessionId);
+            presence.exit(e.sessionId);
+            await status.clear(e.sessionId);
+          })();
+          break;
+        }
         void (async () => {
           // One message per failed turn. With a job id (queue mode) the key is the
           // job, so a client retry or a queue attempt that surfaces the same failure
@@ -3785,6 +3810,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             existing.passed = false;
             existing.passReact = undefined;
             existing.silent = false;
+            existing.implicit = false;
             existing.engagedBefore = dispatch?.engagedBefore;
             existing.wasCompacting = true;
             countTurn(existing);
@@ -4056,7 +4082,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // was last a cron run's (silent), as a node guards a Slack job.
         existing.silent = false;
         // An implicit message merged into a person's running turn does not relax that turn's guard.
-        existing.implicit = implicit ? ((existing.personTurns ?? 0) > 0 ? existing.implicit === true : true) : false;
+        if (!suppress) existing.implicit = implicit ? ((existing.personTurns ?? 0) > 0 ? existing.implicit === true : true) : false;
         // A message merged into a running turn carries no mention result
         // (undefined) and must not erase the running mention's; the done
         // handler clears it at the end of every turn.
@@ -4102,14 +4128,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // After the route is in place, so the reaction and status resolvers read
       // THIS turn's app and persona rather than the previous turn's (or, for a
       // new session, no route at all).
-      if (!suppress) {
+      // An implicit turn shows nothing until the model speaks: a pass leaves no flicker behind.
+      if (!suppress && !implicit) {
         // 👀 received
         void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
         presence.enter(session.id, STATUS_THINKING);
         void status.set(session.id, channelId, threadTs, "thinking…");
       }
     };
-    if (routes.get(session.id)?.wakeHold && !suppress) void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
+    if (routes.get(session.id)?.wakeHold && !suppress && !implicit) void reactions.set(session.id, channelId, eventTs, REACT_RECEIVED);
     afterChannelWake(session.id, applyRoute);
 
     // The dispatch tail (queue enqueue in gateway role, in-process
@@ -4781,7 +4808,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const ids = await gateSelfIds(args, personaId);
         const self = new Set<string>([ids.botUserId, ...ids.userIds].filter(Boolean));
         const human = (u: unknown): boolean => typeof u === "string" && u !== e.user && !self.has(u);
-        if (Array.isArray(me.reply_users) && me.reply_users.some(human)) return "answered";
+        // Any reply at all (a colleague, the author, a bot or the agent itself) means the thread has moved on.
+        if ((Number(me.reply_count) || 0) > 0 || (Array.isArray(me.reply_users) && me.reply_users.length > 0)) return "answered";
         if (msgs.some((x) => Number(x.ts) > Number(e.ts) && !x.bot_id && human(x.user))) return "answered";
         return "ok";
       },
@@ -4899,7 +4927,32 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const e: any = args.event;
     const teamId: string | undefined = args.context?.teamId ?? e.team;
     const count = (outcome: string) => metric.engageActTotal.inc({ tier: String(d.tier), outcome, level: d.level });
+    const seenKey = site === "channel_session" ? `${e.channel}:${e.ts}:${personaId ?? "default"}` : `${e.channel}:${e.ts}`;
     try {
+      if (d.deferred) {
+        // Fired from the timer: everything the router decides is decided again for the thread as it is now.
+        if (env.engageForceShadow()) {
+          count("forced_shadow");
+          return false;
+        }
+        const now = engageFor(personaId, e.channel);
+        if (now.level === "mention" || now.mode !== "on") {
+          console.log(`[engage] act skipped channel=${e.channel} tier=${d.tier} reason=mode`);
+          return false;
+        }
+        const rootTs: string = e.thread_ts || e.ts;
+        if (await MentionOnly.find(e.channel, rootTs)) {
+          console.log(`[engage] act skipped channel=${e.channel} tier=${d.tier} reason=mention_only`);
+          return false;
+        }
+        // Any session row for the thread (engaged, disengaged, or one a mention started meanwhile) settles it elsewhere.
+        if (teamId && (await Sessions.findAnyByThread({ team_id: teamId, channel_id: e.channel, thread_ts: rootTs }))) {
+          console.log(`[engage] act skipped channel=${e.channel} tier=${d.tier} reason=session_exists`);
+          return false;
+        }
+      }
+      // Already claimed by another copy or an earlier delivery: nothing to do, nothing to count.
+      if (await SeenEvents.has(seenKey)) return false;
       if (!d.admitted) {
         const admit = shadowFor(args, personaId).admit!;
         if (!(await admit())) {
@@ -4929,6 +4982,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       return true;
     } catch (err) {
       count("error");
+      // A channel session records the message when the agent does not take part: free the claim the failed attempt consumed.
+      if (site === "channel_session") await SeenEvents.remove(seenKey).catch(() => {});
       console.error(`[engage] act failed channel=${e.channel} ts=${e.ts}: ${redactSecrets(err instanceof Error ? err.message : String(err))}`);
       return false;
     }
@@ -5488,6 +5543,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         route.passed = false;
         route.passReact = undefined;
         route.silent = false;
+        route.implicit = undefined;
         noteTurnSender(session.id, route.ctx);
       }
       await agent.sendMessage(session.id, envelope, { sender: { userId: operatorId, teamId: meta.teamId || null, origin: "panel" } });

@@ -39,6 +39,8 @@ export interface ImplicitRun {
   reason: string;
   /** The ingress checks (blocked, ignored, locks, commands) already ran for this message, as part of the classifier job. */
   admitted: boolean;
+  /** Fired from the debounce timer: the caller runs the router's checks again, since the thread may have moved on. */
+  deferred?: boolean;
 }
 
 /** Phase 2: what acts on a run decision. Absent (or the channel in shadow): nothing acts. */
@@ -184,7 +186,7 @@ async function actOn(i: ObserveInput, r: TierResult, level: "addressed" | "contr
       count("classifier_pass");
       return;
     }
-    scheduleShadow(cand, { ...deps, acting: true, onRun: () => act.run(run) });
+    scheduleShadow(cand, { ...deps, acting: true, onRun: () => act.run({ ...run, admitted: false, deferred: true }) });
     return;
   }
   const guard = (deps.deadlineMs ?? 15_000) * 2 + 1_000;

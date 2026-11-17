@@ -25,6 +25,11 @@ export async function has(eventId: string): Promise<boolean> {
   return (await db.one(`SELECT 1 AS x FROM seen_events WHERE event_id = ?`, [eventId])) != null;
 }
 
+/** Forget a claimed id (a claim whose work failed before it did anything, so a retry may take it again). */
+export async function remove(eventId: string): Promise<void> {
+  await db.run(`DELETE FROM seen_events WHERE event_id = ?`, [eventId]);
+}
+
 /** Drop rows older than `maxAgeMs`. Returns how many were purged. */
 export async function purgeOlderThan(
   maxAgeMs: number = MAX_AGE_MS,
