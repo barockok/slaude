@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isAckOnly, runTiers, type TierFacts, type TierResult } from "../../../src/gateway/engage/tiers";
+import { MAX_TEXT, isAckOnly, runTiers, type TierFacts, type TierResult } from "../../../src/gateway/engage/tiers";
 
 const NOW = 1_700_000_600_000;
 const SENT = String(NOW / 1000 - 120); // the agent spoke two minutes ago
@@ -80,11 +80,14 @@ const rows: Row[] = [
   ["empty after stripping code", { text: "```\nls -la\n```" }, 0, "pass", "ack"],
   ["empty after stripping a quote", { text: "> something said before" }, 0, "pass", "ack"],
   ["empty with a file is not ack", { text: "", hasFiles: true, lastSpeaker: followed }, 2, "run", "follows_agent"],
-  ["ack prefix with a request is not ack", { text: "ok, can you also check the logs?", lastSpeaker: followed }, 2, "run", "follows_agent"],
+  ["ack prefix with a request is not ack, but is not a tier 2 run either", { text: "ok, can you also check the logs?", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
   ["ack of the agent's follower", { text: "thanks", lastSpeaker: followed }, 0, "pass", "ack"],
   // other agents
-  ["follows another registered agent", { text: "what about the logs?", lastSpeaker: { ...followed, persona: "Robin", app: "A0TWO" } }, 0, "pass", "follows_other_agent"],
-  ["follows another app's agent", { text: "what about the logs?", lastSpeaker: { ...followed, persona: "Sam", app: "A0TWO" } }, 0, "pass", "follows_other_agent"],
+  ["follows another registered agent", { text: "what about the logs?", otherSpeaker: { ...followed, persona: "Robin", app: "A0TWO" } }, 0, "pass", "follows_other_agent"],
+  ["another agent spoke after this one", { text: "what about the logs?", lastSpeaker: { ...followed, ts: String(NOW / 1000 - 300) }, otherSpeaker: { ...followed, persona: "Robin" } }, 0, "pass", "follows_other_agent"],
+  ["this agent spoke after the other one", { text: "what about the logs?", lastSpeaker: followed, otherSpeaker: { ...followed, persona: "Robin", ts: String(NOW / 1000 - 300) } }, 2, "run", "follows_agent"],
+  ["another agent's old record is ignored", { text: "what about the logs?", otherSpeaker: { ...followed, persona: "Robin", ts: String(NOW / 1000 - 3600) } }, 0, "pass", "no_band"],
+  ["a record of an unregistered persona is not another agent", { text: "what about the logs?", otherSpeaker: { ...followed, persona: "Ghost" } }, 0, "pass", "no_band"],
   // tier 1
   ["engaged thread is today's path", { text: "and the logs?", threadEngaged: true }, 1, "existing", "engaged_thread"],
   ["name with a comma and a question", { text: "Sam, is the build green?" }, 1, "run", "name_comma"],
@@ -117,6 +120,35 @@ const rows: Row[] = [
   ["two humans alternating", { text: "can you check staging?", lastSpeaker: followed, humansAlternated: true }, 2, "pass", "humans_alternating"],
   ["alternating, but the name is used", { text: "Sam, can you check staging?", lastSpeaker: followed, humansAlternated: true }, 1, "run", "name_comma"],
   ["agent did not reply to anyone", { text: "can you check staging?", lastSpeaker: { ...followed, repliedToUser: null } }, 3, "classify", "follower_failed_test"],
+  // tier 2 is a request, not a remark
+  ["thanks, you rock", { text: "thanks, you rock", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["ok you were right", { text: "ok you were right", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["Thanks! you are great", { text: "Thanks! you are great", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["Test passed on staging.", { text: "Test passed on staging.", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["Will do it tomorrow", { text: "Will do it tomorrow", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["please add the flag", { text: "please add the flag", lastSpeaker: followed }, 2, "run", "follows_agent"],
+  ["an imperative", { text: "add the flag to staging too", lastSpeaker: followed }, 2, "run", "follows_agent"],
+  ["can you check staging?", { text: "can you check staging?", lastSpeaker: followed }, 2, "run", "follows_agent"],
+  ["can you check staging without a mark", { text: "Could you check staging", lastSpeaker: followed }, 2, "run", "follows_agent"],
+  ["a remark about you is not a request", { text: "you were right about the cache", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  // sentence openers are not names
+  ["Yeah, can you check staging too?", { text: "Yeah, can you check staging too?", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["Perfect, can you also add X?", { text: "Perfect, can you also add X?", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["Awesome, what about prod?", { text: "Awesome, what about prod?", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["Honestly, can you check staging?", { text: "Honestly, can you check staging?", lastSpeaker: followed }, 2, "run", "follows_agent"],
+  ["Sure, what about prod?", { text: "Sure, what about prod?", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["Great, anything on prod?", { text: "Great, anything on prod?", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["Okay, how about prod?", { text: "Okay, how about prod?", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["Right, how about prod?", { text: "Right, how about prod?", lastSpeaker: followed }, 3, "classify", "follower_failed_test"],
+  ["Well, how about prod?", { text: "Well, how about prod?", lastSpeaker: followed }, 2, "run", "follows_agent"],
+  ["Actually, how about prod?", { text: "Actually, how about prod?", lastSpeaker: followed }, 2, "run", "follows_agent"],
+  ["Also, how about prod?", { text: "Also, how about prod?", lastSpeaker: followed }, 2, "run", "follows_agent"],
+  ["Hmm, how about prod?", { text: "Hmm, how about prod?", lastSpeaker: followed }, 2, "run", "follows_agent"],
+  ["So, how about prod?", { text: "So, how about prod?", lastSpeaker: followed }, 2, "run", "follows_agent"],
+  // the agent's display name
+  ["the display name runs like an alias", { text: "Quill, can you look?", agent: { name: "default", aliases: [], displayNames: ["quill"] } }, 1, "run", "name_comma"],
+  ["the display name is not a vocative to someone else", { text: "Quill, can you look?", agent: { name: "ana", aliases: [], displayNames: ["Quill"] } }, 1, "run", "name_comma"],
+  ["no display name and no alias: a capitalised word is a vocative", { text: "Quill, can you look?", agent: { name: "default", aliases: [] } }, 0, "pass", "vocative_other"],
   // tier 3 contribute band
   ["root question at contribute", { level: "contribute", text: "does anyone know how to rotate the keys?", rootBand: { minLength: 20, debounceMs: 60_000 } }, 3, "classify", "root_question"],
   ["root question too short", { level: "contribute", text: "anyone know?", rootBand: { minLength: 20, debounceMs: 60_000 } }, 0, "pass", "no_band"],
@@ -143,6 +175,32 @@ describe("details", () => {
   });
   test("attachments are never matched (only text is a fact)", () => {
     expect(run({ text: "", hasFiles: false })).toEqual({ tier: 0, action: "pass", reason: "ack" });
+  });
+  test("hostile input is cut and stays fast", () => {
+    const hostile = [
+      "a".repeat(40_000),
+      "<@U1|".repeat(8_000),
+      "<#C".repeat(13_000),
+      "<!subteam^S1|".repeat(3_000),
+      `${"a".repeat(30_000)}@`,
+      `${"a.".repeat(20_000)}@x`,
+      "`".repeat(40_000),
+      "```".repeat(13_000),
+      `${"> ".repeat(20_000)}x`,
+      "Sam".repeat(13_000),
+      " ".repeat(40_000),
+      "http://".repeat(6_000),
+    ];
+    for (const text of hostile) {
+      const t0 = performance.now();
+      runTiers(base({ text, lastSpeaker: followed }));
+      const ms = performance.now() - t0;
+      expect({ len: text.length, fast: ms < 50 }).toEqual({ len: text.length, fast: true });
+    }
+  });
+  test("text past the cap is cut, so a late mention is not seen", () => {
+    const r = runTiers(base({ text: `${"x ".repeat(MAX_TEXT)}<@U0AGENT> look` }));
+    expect(r.action).not.toBe("run");
   });
   test("never throws on odd input", () => {
     for (const text of ["", " ", "<", "<@", "```", "`", ">", "\u0000", "Sam,", "@", ",", "<!subteam^>", "x".repeat(50_000)]) {
