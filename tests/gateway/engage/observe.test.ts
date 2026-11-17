@@ -8,7 +8,7 @@ import { clearAgentRecord } from "../../../src/gateway/engage/record";
 import { makeUsersCache } from "../../../src/gateway/engage/users";
 
 const CH = "C0SHARED";
-const yaml = (name: string, user: string) => `
+const yaml = (name: string, user: string, mode = "on") => `
 name: ${name}
 slackUserId: ${user}
 soul: You are ${name}.
@@ -16,10 +16,10 @@ access:
   channels:
     trusted: [${CH}]
 channels:
-  ${CH}: { engage: { level: addressed } }
+  ${CH}: { engage: { level: addressed, mode: ${mode} } }
 `;
-function persona(name: string, user: string): Persona {
-  const { spec } = parseAgentYaml(name, yaml(name, user));
+function persona(name: string, user: string, mode = "on"): Persona {
+  const { spec } = parseAgentYaml(name, yaml(name, user, mode));
   const { soulData, ...definition } = spec.definition;
   return { name, slackUserId: user, soulMd: spec.soul, config: { slackUserId: user, name }, outClient: null, model: null, runsOn: null, provider: null, kbSources: null, background: null, mcp: null, soulJson: soulData, definition } as Persona;
 }
@@ -159,5 +159,35 @@ describe("a colleague who shares the agent's name", () => {
     let started = 0;
     await observeEngage({ ...root("ana, can you check staging?"), users, loadUsers: () => (started++, new Promise(() => {})) });
     expect(started).toBe(1);
+  });
+});
+
+describe("the thread root is the agent's own message", () => {
+  const reply = (personaId: string | undefined, e: Record<string, unknown>, extra: Partial<ObserveInput> = {}) =>
+    observeEngage({ ...input(personaId as string, { text: "what about the second one", ...e }), ...extra });
+  test("parent_user_id equal to this app's bot: a tier 3 candidate", async () => {
+    const r = await reply("ana", { parent_user_id: "UBOT" });
+    expect(r).toMatchObject({ tier: 3, action: "classify", reason: "agent_thread_reply" });
+  });
+  test("parent_user_id equal to this persona's own user: a tier 3 candidate; another persona's user: a pass", async () => {
+    expect(await reply("ana", { parent_user_id: "UANA1" })).toMatchObject({ tier: 3, action: "classify" });
+    expect(await reply("ana", { parent_user_id: "UROBIN" })).toMatchObject({ tier: 0, action: "pass" });
+    expect(await reply("robin", { parent_user_id: "UROBIN" })).toMatchObject({ tier: 3, action: "classify" });
+  });
+  test("in a channel in shadow the root is not read at all (phase 1 behaviour)", async () => {
+    setPersonaRegistry(registry(persona("ana", "UANA1"), persona("robin", "UROBIN"), persona("kit", "UKIT1", "shadow")));
+    const r = await reply("kit", { parent_user_id: "UBOT" });
+    expect(r).toMatchObject({ action: "pass", reason: "no_band" });
+  });
+  test("a root posted through a shared bot cannot be told: refused as today", async () => {
+    expect(await reply("ana", { parent_user_id: "UBOT" }, { sharedBot: true })).toMatchObject({ tier: 0, action: "pass", reason: "no_band" });
+  });
+  test("no parent_user_id, an unknown author, or a bot author: a pass", async () => {
+    expect(await reply("ana", {})).toMatchObject({ action: "pass" });
+    expect(await reply("ana", { parent_user_id: "U0SOMEONE" })).toMatchObject({ action: "pass" });
+    expect(await reply("ana", { parent_user_id: "UBOT", bot_id: "B0CI" })).toMatchObject({ action: "pass", reason: "bot_author" });
+  });
+  test("a root message is not a reply", async () => {
+    expect(await reply("ana", { parent_user_id: "UBOT", thread_ts: undefined })).toMatchObject({ action: "pass" });
   });
 });

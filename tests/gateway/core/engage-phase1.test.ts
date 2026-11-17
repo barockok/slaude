@@ -94,7 +94,7 @@ beforeEach(async () => {
   for (const k of TOKEN_ENV) delete process.env[k];
   asked = [];
   writeSoulFixture(WORLD);
-  setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "addressed", mode: "on" }] }));
+  setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "addressed", mode: "shadow" }] }));
   __setEngageStateForTests(null);
   __setEngageBreakerForTests(null);
   for (const t of CLEAN) await db.run(`DELETE FROM ${t}`);

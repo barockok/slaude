@@ -202,6 +202,7 @@ export const m = {
   gateShadowDisagreeTotal: metrics.counter("slaude_gate_shadow_disagree_total", "Shadow-mode gate decisions that differ from what happened, labeled by would (run|record|record_doubt|drop) and actual (the same set)."),
   engageTotal: metrics.counter("slaude_engage_total", "Implicit-engagement phase 0 decisions (observe only, nothing acts on them), labeled by tier (0|1|2|3|existing), outcome (pass|run|classify|existing) and level (addressed|contribute)."),
   engageClassifierTotal: metrics.counter("slaude_engage_classifier_total", "Implicit-engagement phase 1 shadow classifier outcomes (nothing acts on them), labeled by result (run|pass), reason (answer|budget|breaker|timeout|error|noadapter|pass_memory|cooldown|input|answered|stale) and level (addressed|contribute). No channel label."),
+  engageActTotal: metrics.counter("slaude_engage_act_total", "Implicit-engagement phase 2 run decisions in a channel whose engage mode is on, labeled by tier (1|2|3), outcome (acted|lost_claim|cap|forced_shadow|classifier_pass|error) and level (addressed|contribute). No channel label."),
   engageTruncatedTotal: metrics.counter("slaude_engage_truncated_total", "Messages whose text was cut to the engagement ladder's length bound."),
   turnsTotal: metrics.counter("slaude_turns_total", "Completed turns, labeled by result."),
   toolCallsTotal: metrics.counter("slaude_tool_calls_total", "Tool invocations, labeled by tool name."),

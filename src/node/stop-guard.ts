@@ -22,15 +22,30 @@ export interface StopGuardTurn {
   /** The job payload's background run and wake, as a fallback for the claims. */
   bgRun?: string;
   wake?: unknown;
+  /** Every message of the job was an implicit start (no @mention): the turn may end in a pass without a reply. */
+  implicit?: boolean;
 }
 
 /** A turn the guard may send back: a person started it and it is not a background run. */
 export function mustReplyApplies(turn: StopGuardTurn): boolean {
   const c = turn.claims;
   if (turn.bgRun || turn.wake || c?.bgRun || c?.wake) return false;
+  // Implicit engagement: the message was not addressed to the agent, so saying nothing is an answer.
+  if (turn.implicit) return false;
   // Mono marks every cron-origin route silent; an absent origin (an older
   // gateway) is not known to be a person's turn, so it is not forced either.
   return c?.origin === "slack" || c?.origin === "panel";
+}
+
+/**
+ * Whether a job's turn is an implicit start: every NON-suppressed message in it
+ * is implicit. A recording (suppressed) coalesced with an explicit message
+ * cannot relax that message's must-reply, and one coalesced with an implicit
+ * message does not switch it on.
+ */
+export function turnIsImplicit(messages: ReadonlyArray<{ suppress?: boolean; implicit?: boolean }>): boolean {
+  const live = messages.filter((m) => m.suppress !== true);
+  return live.length > 0 && live.every((m) => m.implicit === true);
 }
 
 export interface NodeStopGuard {

@@ -4,7 +4,7 @@
  * job, and never forcing a turn mono would not force.
  */
 import { describe, expect, test } from "bun:test";
-import { makeNodeStopGuard, mustReplyApplies } from "../../src/node/stop-guard";
+import { makeNodeStopGuard, mustReplyApplies, turnIsImplicit } from "../../src/node/stop-guard";
 import { MUST_REPLY_INSTRUCTION, mustReplyEffect } from "../../src/agent/must-reply";
 
 const S = "sess-1";
@@ -39,6 +39,24 @@ describe("node Stop guard", () => {
     expect(g.guard(S)).toBe(MUST_REPLY_INSTRUCTION);
     g.onEvent(call("mcp__slaude_surface__pass"));
     expect(g.guard(S)).toBeNull();
+  });
+
+  test("an implicit turn (no @mention) is not forced to reply; a plain turn still is", () => {
+    const g = guardWith();
+    g.beginTurn(S, { ...slack, implicit: true });
+    expect(g.guard(S)).toBeNull();
+    g.beginTurn(S, { ...slack, implicit: false });
+    expect(g.guard(S)).toBe(MUST_REPLY_INSTRUCTION);
+    expect(mustReplyApplies({ ...slack, implicit: true })).toBe(false);
+  });
+
+  test("a job is implicit only when every NON-suppressed message is: a recording changes nothing either way", () => {
+    expect(turnIsImplicit([{ implicit: true }])).toBe(true);
+    expect(turnIsImplicit([{ implicit: true }, { suppress: true }])).toBe(true);
+    expect(turnIsImplicit([{}, { suppress: true }])).toBe(false);
+    expect(turnIsImplicit([{ implicit: true }, {}])).toBe(false);
+    expect(turnIsImplicit([{ suppress: true }, { suppress: true }])).toBe(false);
+    expect(turnIsImplicit([])).toBe(false);
   });
 
   test("a panel turn is guarded like a Slack one", () => {

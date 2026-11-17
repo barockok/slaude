@@ -157,3 +157,72 @@ Open after phase 1: acting on a decision, a deterministic owner for an implicit
 run across apps, a channel label on the counter, tuning the sample rate and
 budget from real counts, and whether the root debounce (60 seconds) should
 re-check the thread for a human answer before asking.
+
+## Phase 2 (rc.31): acting
+
+Phase 2 makes `mode: on` mean something. What shaped it:
+
+- **One path, not a copy.** An implicit run calls the same handler a mention
+  does (the same admission, locks, guardrail inbound rules and thread head),
+  marked implicit. No access site was added: the ingress check the shadow
+  classifier already used runs before a tier 1 or 2 run acts, and a tier 3 job
+  runs it before it spends budget. The marker changes only two things: the
+  prompt tail and the must-reply Stop guard.
+- **Weaker engagement is the existing mechanism.** `engagedBefore: false` is
+  what a first mention passes, so a model that then passes puts the thread
+  back. The test that matters is the next plain reply after an implicit pass:
+  it is recorded suppressed, not run. A reply keeps the thread engaged.
+- **Awaiting the classifier, failing closed.** Tier 3 runs the phase 1 job
+  awaited, with the decision config's `timeoutMs` as its call deadline and an
+  outer guard, and acts only on a confident model answer. Error, timeout,
+  budget, breaker, pass memory, cooldown and no adapter are all a pass. A
+  debounced root question acts from its timer, but only where nothing has
+  recorded the message by then: in a channel session the recording already
+  consumed the per-message dedup key, so it stays recorded only.
+- **Ownership at the act, not at the observation.** Phase 1 claims per persona
+  so that two personas each classify. Acting needs one winner per message across
+  personas and apps, so the claim is a second, persona-free key taken only by a
+  copy that has decided run. The ladder already makes the last speaker win
+  (another agent that spoke after you is a tier 0 pass), so the claim is a
+  tiebreak for the rest, first claimant.
+- **Must-reply and implicit turns.** The Stop guard forces a reply on a person's
+  turn; an implicit turn is a person's message that was not addressed to the
+  agent, so forcing a reply would defeat the pass. Mono sets a per-turn flag on
+  the route (and a mention merged into a running implicit turn clears it); a
+  node reads it from the job's messages, relaxed only when every coalesced
+  message is implicit.
+- **The agent's own thread.** `parent_user_id` makes a reply in a thread the
+  agent opened a tier 3 candidate. It is only used when it names this app's bot
+  (and no other persona shares that bot) or this persona's own user; a root
+  posted through a shared bot cannot be told and stays refused.
+- **Valves.** A kill switch read per message, a per-channel hourly cap on acted
+  runs, and a counter with no channel label (the log line has it).
+
+Review round on phase 2:
+
+- **A silent or failed end is a pass.** The pass tool is not the only way an
+  implicit turn says nothing: ending with no call at all is the same, and a
+  turn that errors before speaking must not post failure text to a thread
+  nobody addressed. Both give the engagement back and leave no reaction. The
+  received reaction and thinking status are not set for an implicit turn at all.
+- **The implicit flag is per turn.** It is cleared at done, at error and on the
+  panel and compact paths, so a later explicit turn on the same route is
+  guarded again. A recording merged into a running turn never changes the flag,
+  and on a node a job is implicit only when every non-suppressed message is.
+- **A deferred act asks the router again.** After the 60 second wait, the kill
+  switch, the channel's mode, `/mention-only`, any session row for the thread
+  and admission are all read afresh, and any reply in the thread counts as an
+  answer.
+- **A failed channel-session act still records.** The failed attempt had
+  consumed the per-persona dedup key, so it is freed for the recording.
+- **Known limits.** The owner claim is per deployment (Redis or one process): two
+  deployments in one channel can both answer, so keep one deployment per channel
+  at mode `on`. An awaited tier 3 can let a later @mention take its dispatch
+  slot first (the implicit turn then runs after it). The act cap slot is taken
+  after a cheap dedup check, but a delivery that races past it can still spend a
+  slot before the handler drops it.
+
+Open after phase 2: tuning the cap and the budgets from real counts, a per
+channel counter label, an explicit last-speaker priority in the claim (today
+the ladder provides it), and whether a recording in a channel session should
+leave the dedup key free for a later debounced run.

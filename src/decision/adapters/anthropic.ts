@@ -1,7 +1,7 @@
 /**
  * Anthropic adapter. Answers the neutral decision questions with a small model
  * on the gateway's own model provider (any Anthropic-compatible Messages API),
- * with the credentials the gateway already holds for it (ANTHROPIC_API_KEY, or
+ * with the secret reference in the block's optional `apiKey` when there is one, else the credentials the gateway already holds for it (ANTHROPIC_API_KEY, or
  * ANTHROPIC_AUTH_TOKEN, or the subscription OAuth token, against
  * ANTHROPIC_BASE_URL or the public API). No new secret and no new setting
  * beyond the model name.
@@ -16,6 +16,7 @@
  */
 import { z } from "zod";
 import { env } from "../../config/env";
+import { parseRef } from "../../secrets";
 import { registerAdapter } from "../registry";
 import { DecisionError, type DecisionAdapter, type DecisionRequest, type DecisionResult } from "../types";
 
@@ -153,21 +154,31 @@ const blockSchema = z
   .object({
     type: z.literal("anthropic"),
     model: z.string().min(1).max(100).optional(),
+    /** Optional secret reference (`env://PERSONA_...`), resolved at boot by the same path every adapter's secret uses; preferred over the provider environment. */
+    apiKey: z.string().optional(),
   })
   .strict();
 
-registerAdapter("anthropic", async (block) => {
+registerAdapter("anthropic", async (block, deps) => {
   const b = blockSchema.parse(block);
   const headers: Record<string, string> = {};
-  const key = env.provider.apiKey();
-  const token = env.provider.authToken();
-  const oauth = env.provider.oauthToken();
-  if (key) headers["x-api-key"] = key;
-  else if (token) headers.authorization = `Bearer ${token}`;
-  else if (oauth) {
-    headers.authorization = `Bearer ${oauth}`;
-    headers["anthropic-beta"] = "oauth-2025-04-20";
-  } else throw new Error("no model provider credentials in the environment");
+  if (b.apiKey !== undefined) {
+    // A configured reference is the only credential: an empty value disables the adapter, it never falls back to the provider variables.
+    parseRef(b.apiKey, "decision.adapter.apiKey"); // throws on a literal or malformed reference
+    const ref = await deps.resolveSecret(b.apiKey);
+    if (!ref) throw new Error("apiKey resolved empty");
+    headers["x-api-key"] = ref;
+  } else {
+    const key = env.provider.apiKey();
+    const token = env.provider.authToken();
+    const oauth = env.provider.oauthToken();
+    if (key) headers["x-api-key"] = key;
+    else if (token) headers.authorization = `Bearer ${token}`;
+    else if (oauth) {
+      headers.authorization = `Bearer ${oauth}`;
+      headers["anthropic-beta"] = "oauth-2025-04-20";
+    } else throw new Error("no model provider credentials in the environment");
+  }
   const baseUrl = env.provider.baseUrl() || DEFAULT_BASE;
   if (!b.model && !isDefaultHost(baseUrl)) {
     // A provider other than the public API may not serve the default model id: name the model rather than guess.

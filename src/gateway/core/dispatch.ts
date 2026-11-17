@@ -75,6 +75,8 @@ export interface DispatchMeta {
    *  not interactive on the node (fail closed), so every path sets it. */
   origin?: TurnOrigin;
   suppress?: boolean;
+  /** The turn was started by implicit engagement (no @mention): it may end in a pass without a reply. */
+  implicit?: boolean;
   /** On-match owner Guidance the message triggered (matched here, on the gateway). */
   guidance?: Array<{ slug: string; name: string; body: string }>;
   /** An open ledger run this turn carries (a promise check, phase E): signed
@@ -538,7 +540,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           // threads: the node serialises turns there across nodes by this field.
           ...(isProactiveWorkspace(session.working_dir) ? { workspace: resolve(session.working_dir!) } : {}),
           messages: [
-            { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}), ...(meta.guidance?.length ? { guidance: meta.guidance } : {}) },
+            { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}), ...(meta.implicit ? { implicit: true } : {}), ...(meta.guidance?.length ? { guidance: meta.guidance } : {}) },
           ],
           // Who sent it, from where: merged messages add theirs (TurnQueues).
           senders: [{ userId: meta.userId, teamId: meta.teamId || null, origin: meta.origin ?? null }],

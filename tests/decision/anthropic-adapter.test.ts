@@ -193,13 +193,65 @@ describe("the registered anthropic adapter", () => {
     await (await build({ type: "anthropic", model: "m" }))!.decide(req(), sig());
     expect(seen[1]!.headers["anthropic-beta"]).toBe("oauth-2025-04-20");
   });
+  test("an apiKey secret reference is resolved at boot and preferred over every provider variable, as x-api-key", async () => {
+    clear();
+    process.env.ANTHROPIC_API_KEY = "env-key-value";
+    process.env.ANTHROPIC_AUTH_TOKEN = "tok";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth";
+    process.env.ANTHROPIC_BASE_URL = base;
+    const asked: string[] = [];
+    reply = { body: good() };
+    const a = await adapterFromConfig({ type: "anthropic", model: "m", apiKey: "env://PERSONA_DECISION_API_KEY" }, { resolveSecret: async (r) => (asked.push(r), "ref-key-value") });
+    await a!.decide(req(), sig());
+    expect(asked).toEqual(["env://PERSONA_DECISION_API_KEY"]);
+    const h = seen.at(-1)!.headers;
+    expect(h["x-api-key"]).toBe("ref-key-value");
+    expect(h.authorization).toBeUndefined();
+    expect(h["anthropic-beta"]).toBeUndefined();
+  });
+  test("a reference alone is enough; its value never reaches a warning or an error", async () => {
+    clear();
+    process.env.ANTHROPIC_BASE_URL = base;
+    reply = { status: 401, body: { error: "ref-key-value" } };
+    const a = await adapterFromConfig({ type: "anthropic", model: "m", apiKey: "env://PERSONA_DECISION_API_KEY" }, { resolveSecret: async () => "ref-key-value" });
+    const err = await a!.decide(req(), sig()).catch((e) => e);
+    expect(String(err.message)).not.toContain("ref-key-value");
+  });
+  test("a literal key, a malformed reference or an unresolved one disables the adapter, echoing nothing", async () => {
+    clear();
+    process.env.ANTHROPIC_API_KEY = "env-key-value";
+    process.env.ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    expect(await adapterFromConfig({ type: "anthropic", apiKey: "sk-literal-secret-value" }, { resolveSecret: async () => "x" })).toBeNull();
+    expect(await adapterFromConfig({ type: "anthropic", apiKey: "env://PERSONA_MISSING" }, { resolveSecret: async () => { throw new Error("no such secret leaky-value"); } })).toBeNull();
+    const out = warn.mock.calls.map((c) => c.join(" ")).join("\n");
+    warn.mockRestore();
+    expect(out).not.toContain("sk-literal-secret-value");
+    expect(out).not.toContain("leaky-value");
+  });
+  test("a reference that resolves empty disables the adapter and never falls back to the provider key", async () => {
+    clear();
+    process.env.ANTHROPIC_API_KEY = "env-key-value";
+    process.env.ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    expect(await adapterFromConfig({ type: "anthropic", apiKey: "env://PERSONA_DECISION_API_KEY" }, { resolveSecret: async () => "" })).toBeNull();
+    warn.mockRestore();
+  });
+  test("without apiKey the adapter behaves as before (the API key variable)", async () => {
+    clear();
+    process.env.ANTHROPIC_API_KEY = "env-key-value";
+    process.env.ANTHROPIC_BASE_URL = base;
+    reply = { body: good() };
+    await (await build({ type: "anthropic", model: "m" }))!.decide(req(), sig());
+    expect(seen.at(-1)!.headers["x-api-key"]).toBe("env-key-value");
+  });
   test("no credentials or an unknown key disables the adapter, naming nothing", async () => {
     clear();
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     expect(await build({ type: "anthropic" })).toBeNull();
     process.env.ANTHROPIC_API_KEY = "k";
     process.env.ANTHROPIC_BASE_URL = "https://api.anthropic.com";
-    expect(await build({ type: "anthropic", apiKey: "x" })).toBeNull();
+    expect(await build({ type: "anthropic", bogus: "x" })).toBeNull();
     expect(await build({ type: "anthropic", model: "" })).toBeNull();
     const out = warn.mock.calls.map((c) => c.join(" ")).join("\n");
     warn.mockRestore();

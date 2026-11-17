@@ -41,6 +41,13 @@ export interface ShadowDeps {
    * (a human other than the author replied) or "stale" (deleted or edited). A throw reads as `input`.
    */
   recheck?: () => Promise<"ok" | "answered" | "stale">;
+  /**
+   * Phase 2 (the channel's mode is on): the candidate is a real one, not a shadow one. The answer
+   * is the one the caller acts on, the gate counts the decision, and the log line says the outcome is pending.
+   */
+  acting?: boolean;
+  /** Phase 2, a debounced candidate: called after a model "run" answer, from the timer, in place of the caller awaiting the outcome. */
+  onRun?: () => Promise<void>;
   /** Slack team, for the tenant part of the budget keys. */
   tenant?: string;
   /** Aborted when the gateway stops: pending timers are cancelled and their jobs dropped. */
@@ -124,6 +131,14 @@ export function scheduleShadow(c: ShadowCandidate, d: ShadowDeps): void {
   schedule(job0, delay);
 }
 
+/**
+ * The classifier job for one candidate, awaited by the caller (phase 2 acts on its
+ * outcome). `null`: this copy does not own the call (another copy of the persona does), or the gateway is stopping.
+ */
+export async function runCandidate(c: ShadowCandidate, d: ShadowDeps): Promise<ShadowOutcome | null> {
+  return job(c, d);
+}
+
 async function job(c: ShadowCandidate, d: ShadowDeps): Promise<ShadowOutcome | null> {
   const t0 = Date.now();
   const state = d.state ?? engageState();
@@ -135,7 +150,7 @@ async function job(c: ShadowCandidate, d: ShadowDeps): Promise<ShadowOutcome | n
   const done = (action: "run" | "pass", reason: ShadowReason): ShadowOutcome => {
     metric.engageClassifierTotal.inc({ result: action, reason, level: c.level });
     const ms = Date.now() - t0;
-    log(`[gate] engage implicit=${c.level} tier=${tier} action=${action} actual=pass reason=${reason} ms=${ms} key=${c.channel}:${c.ts}${sample ? " sampled=1" : ""}`);
+    log(`[gate] engage implicit=${c.level} tier=${tier} action=${action} actual=${d.acting ? "pending" : "pass"} reason=${reason} ms=${ms} key=${c.channel}:${c.ts}${sample ? " sampled=1" : ""}`);
     return { action, reason, ms };
   };
 
@@ -195,8 +210,8 @@ async function job(c: ShadowCandidate, d: ShadowDeps): Promise<ShadowOutcome | n
         persona: c.persona,
         app: c.app,
         level: c.level,
-        // Whatever the channel's mode, phase 1 never acts: the candidate is always a shadow one.
-        mode: "shadow",
+        // In shadow (phase 1) the candidate is always a shadow one; only a channel whose mode is on acts.
+        mode: d.acting ? "on" : "shadow",
         continuation,
         input: async () => {
           built = await d.buildInput({ level: c.level, continuation, thread: c.thread });
@@ -218,5 +233,13 @@ async function job(c: ShadowCandidate, d: ShadowDeps): Promise<ShadowOutcome | n
     if (c.thread) void state.markPass(c.channel, c.thread, persona, c.author).catch(() => {});
     else void state.markCooldown(c.channel, persona).catch(() => {});
   }
-  return done(verdict.answer, verdict.reason);
+  const out = done(verdict.answer, verdict.reason);
+  if (d.onRun && !sample && out.action === "run" && out.reason === "answer") {
+    try {
+      await d.onRun();
+    } catch {
+      /* acting is the caller's; it logs its own failures */
+    }
+  }
+  return out;
 }
