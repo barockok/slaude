@@ -11,6 +11,8 @@
  *  - root cooldown: after a "no" on a root message, the next few candidates (or
  *    120 s) pass unless the name is used.
  *  - sample: a capped sample of tier 2 run decisions.
+ *  - claimAct and actSlot (phase 2): one owner per message across personas and
+ *    apps, and the channel's hourly cap of acted runs.
  *
  * Redis is optional, as in last-speaker.ts: with none the process's memory is
  * the state. A Redis failure fails CLOSED for the classifier (no claim, no
@@ -43,6 +45,17 @@ export interface EngageState {
   markCooldown(channel: string, persona: string): Promise<void>;
   /** Whether a root candidate is inside the persona's cooldown (counts it as one of the next K). */
   cooling(channel: string, persona: string): Promise<boolean>;
+  /**
+   * Phase 2 owner claim: true for exactly one caller per (channel, ts), whatever
+   * the persona or the app. Taken only by a copy that has decided `run` and is
+   * about to act. A store error is false (nobody acts).
+   */
+  claimAct(channel: string, ts: string): Promise<boolean>;
+  /**
+   * Phase 2 acting cap: take one of the channel's acted runs for this hour.
+   * "cap" past `limit`, "error" on a store failure (both mean do not act).
+   */
+  actSlot(channel: string, limit: number, tenant?: string): Promise<"ok" | "cap" | "error">;
   /** One tier 2 sample: false unless the draw hits and the channel's daily sample cap has room. */
   sample(channel: string, tenant?: string): Promise<boolean>;
   /** Remember that two humans took turns in a thread (read by the ladder's next message). */
@@ -55,6 +68,7 @@ export const COOLDOWN_SECONDS = 120;
 export const COOLDOWN_CANDIDATES = 3;
 export const SAMPLE_DAILY_CAP = 5;
 const CLAIM_SECONDS = 120;
+const ACT_CLAIM_SECONDS = 300;
 
 export interface StateOpts {
   dailyBudget?: () => number;
@@ -67,6 +81,7 @@ export interface StateOpts {
 
 const day = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 const minute = (ms: number): number => Math.floor(ms / 60_000);
+const hour = (ms: number): number => Math.floor(ms / 3_600_000);
 const opts = (o: StateOpts) => ({
   daily: o.dailyBudget ?? (() => env.engageDailyBudget()),
   perMinute: o.minuteCeiling ?? (() => env.engageMinuteCeiling()),
@@ -139,6 +154,12 @@ export function memoryEngageState(o: StateOpts = {}): EngageState {
       if (left <= 1) flags.delete(k);
       else flags.set(k, { v: String(left - 1), until: flags.get(k)!.until });
       return true;
+    },
+    async claimAct(channel, ts) {
+      return setFlag(`act:${channel}:${ts}`, "1", ACT_CLAIM_SECONDS, true);
+    },
+    async actSlot(channel, limit, tenant = "-") {
+      return incr(`actcap:${tenant}:${channel}:${hour(c.now())}`, 7200) > limit ? "cap" : "ok";
     },
     async sample(channel, tenant = "-") {
       const n = c.every();
@@ -232,6 +253,22 @@ export function redisEngageState(client: EngageRedis, prefix = "slaude", o: Stat
       } catch (e) {
         warn("cooldown read", e);
         return false;
+      }
+    },
+    async claimAct(channel, ts) {
+      try {
+        return (await client.set(k(`act:${channel}:${ts}`), "1", "EX", ACT_CLAIM_SECONDS, "NX")) === "OK";
+      } catch (e) {
+        warn("act claim", e);
+        return false;
+      }
+    },
+    async actSlot(channel, limit, tenant = "-") {
+      try {
+        return (await incr(k(`actcap:${tenant}:${channel}:${hour(c.now())}`), 7200)) > limit ? "cap" : "ok";
+      } catch (e) {
+        warn("act cap", e);
+        return "error";
       }
     },
     async sample(channel, tenant = "-") {

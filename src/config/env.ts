@@ -632,6 +632,13 @@ export const env = {
   engageProactiveDefault: (): boolean => !["off", "0", "false", "no"].includes(opt("SLAUDE_ENGAGE_PROACTIVE_DEFAULT").trim().toLowerCase()),
   engageDailyBudget: (): number => posInt(opt("SLAUDE_ENGAGE_DAILY_BUDGET"), 50, 100_000),
   engageMinuteCeiling: (): number => posInt(opt("SLAUDE_ENGAGE_MINUTE_CEILING"), 6, 1_000),
+  /**
+   * Phase 2 kill switch: truthy (`1`, `true`, `yes`, `on`) forces every channel
+   * to shadow behaviour whatever its engage mode. Read at decision time, never cached.
+   */
+  engageForceShadow: (): boolean => ["1", "true", "yes", "on"].includes(opt("SLAUDE_ENGAGE_FORCE_SHADOW").trim().toLowerCase()),
+  /** Phase 2: acted runs per channel per hour (`SLAUDE_ENGAGE_ACT_PER_HOUR`, default 12); past it a run decision is a pass. */
+  engageActPerHour: (): number => posInt(opt("SLAUDE_ENGAGE_ACT_PER_HOUR"), 12, 10_000),
   engageSample: (): number => {
     const raw = opt("SLAUDE_ENGAGE_SAMPLE").trim();
     if (raw === "0") return 0;

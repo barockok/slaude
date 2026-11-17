@@ -27,6 +27,24 @@ for (const [name, mk] of impls) {
       expect(await s.claim("C1", "1.0", "robin")).toBe(false);
     });
 
+    test("the act claim has one owner per message, whatever the persona", async () => {
+      const c = clock();
+      const s = mk(c)({});
+      expect(await s.claimAct("C1", "1.0")).toBe(true);
+      expect(await s.claimAct("C1", "1.0")).toBe(false);
+      expect(await s.claimAct("C1", "2.0")).toBe(true);
+      expect(await s.claimAct("C2", "1.0")).toBe(true);
+    });
+
+    test("the acting cap is per channel per hour", async () => {
+      const c = clock();
+      const s = mk(c)({});
+      expect([await s.actSlot("C1", 2), await s.actSlot("C1", 2), await s.actSlot("C1", 2)]).toEqual(["ok", "ok", "cap"]);
+      expect(await s.actSlot("C2", 2)).toBe("ok");
+      c.advance(3600_000);
+      expect(await s.actSlot("C1", 2)).toBe("ok");
+    });
+
     test("the daily bucket and the minute ceiling", async () => {
       const c = clock();
       const s = mk(c)({ dailyBudget: () => 5, minuteCeiling: () => 3 });
