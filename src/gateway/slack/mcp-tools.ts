@@ -10,6 +10,8 @@ import {
 import type { WebClient } from "@slack/web-api";
 import type { TurnOrigin, TurnSender } from "../../knowledge/gated-dispatch";
 import { deliver, type Delivered, type OutboundKind, type OutboundOptions } from "./outbound";
+import { slackMessage } from "./format";
+import { env } from "../../config/env";
 import { effectiveSoulForChannel } from "../../soul/extract";
 import * as Ignores from "../../db/ignores";
 import { loadGrants } from "../../access/role";
@@ -136,13 +138,13 @@ export const SLACK_MCP_NAME = slackContract.server;
 export const slackHandlers = {
   async reply(ctx: SlackContext, { text }: { text: string }): Promise<ToolResult> {
     try {
-      const update = async (ts: string, t: string) => void (await ctx.client.chat.update({ channel: ctx.channel, ts, text: t })); // outbound: legacy slack tool, through deliver()
+      const update = async (ts: string, t: string) => void (await ctx.client.chat.update({ channel: ctx.channel, ts, ...slackMessage(t, { flag: env.slackMarkdownBlocks(), update: true }) })); // outbound: legacy slack tool, through deliver()
       const r = await deliver(text, outOpts(ctx, "reply"), {
         post: async (t) => {
           const p = await ctx.client.chat.postMessage({ // outbound: legacy slack tool, through deliver()
             channel: ctx.channel,
             thread_ts: ctx.postTarget === "channel" ? undefined : ctx.threadTs,
-            text: t,
+            ...slackMessage(t, { flag: env.slackMarkdownBlocks() }),
             mrkdwn: true,
           });
           return String(p.ts);
@@ -159,7 +161,7 @@ export const slackHandlers = {
   async edit(ctx: SlackContext, { ts, text }: { ts: string; text: string }): Promise<ToolResult> {
     try {
       const write = async (t: string) => {
-        await ctx.client.chat.update({ channel: ctx.channel, ts, text: t }); // outbound: legacy slack tool, through deliver()
+        await ctx.client.chat.update({ channel: ctx.channel, ts, ...slackMessage(t, { flag: env.slackMarkdownBlocks(), update: true }) }); // outbound: legacy slack tool, through deliver()
         return ts;
       };
       const r = await deliver(text, { ...outOpts(ctx, "edit"), ref: ts }, { post: write, edit: async (_ref, t) => void (await write(t)) });
@@ -382,11 +384,11 @@ export const slackHandlers = {
       let where = channel;
       const r = await deliver(text, { ...outOpts(ctx, "post_message", channel), destThread: thread_ts ?? null }, {
         post: async (t) => {
-          const p = await ctx.client.chat.postMessage({ channel, text: t, mrkdwn: true, ...replyOpts }); // outbound: legacy slack tool, through deliver()
+          const p = await ctx.client.chat.postMessage({ channel, ...slackMessage(t, { flag: env.slackMarkdownBlocks() }), mrkdwn: true, ...replyOpts }); // outbound: legacy slack tool, through deliver()
           where = String(p.channel ?? channel);
           return String(p.ts);
         },
-        edit: async (ts, t) => void (await ctx.client.chat.update({ channel: where, ts, text: t })), // outbound: legacy slack tool, through deliver()
+        edit: async (ts, t) => void (await ctx.client.chat.update({ channel: where, ts, ...slackMessage(t, { flag: env.slackMarkdownBlocks(), update: true }) })), // outbound: legacy slack tool, through deliver()
       });
       return result(r, (ts) => `posted channel=${where} ts=${ts}`);
     } catch (e: any) {

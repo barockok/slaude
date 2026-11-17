@@ -637,6 +637,12 @@ export const env = {
    * to shadow behaviour whatever its engage mode. Read at decision time, never cached.
    */
   engageForceShadow: (): boolean => ["1", "true", "yes", "on"].includes(opt("SLAUDE_ENGAGE_FORCE_SHADOW").trim().toLowerCase()),
+  /**
+   * Slack replies as `markdown` blocks (`SLAUDE_SLACK_MARKDOWN_BLOCKS`, default off): the agent's raw markdown is
+   * sent as one block and Slack renders it (tables, headings, links, lists), so `mdToMrkdwn` is skipped. A text
+   * over the block's 12,000-character limit still goes out as mrkdwn. Read at post time.
+   */
+  slackMarkdownBlocks: (): boolean => ["1", "true", "yes", "on"].includes(opt("SLAUDE_SLACK_MARKDOWN_BLOCKS").trim().toLowerCase()),
   /** Phase 2: acted runs per channel per hour (`SLAUDE_ENGAGE_ACT_PER_HOUR`, default 12); past it a run decision is a pass. */
   engageActPerHour: (): number => posInt(opt("SLAUDE_ENGAGE_ACT_PER_HOUR"), 12, 10_000),
   engageSample: (): number => {

@@ -276,6 +276,8 @@ Source: `src/gateway/slack/format.ts` · `mdToMrkdwn(md: string) => string`
 
 Slack `mrkdwn` is not CommonMark. Slaude converts what LLMs emit (markdown) to what Slack renders (mrkdwn) before `chat.postMessage`/`chat.update`/`files.uploadV2`. The converter also chunks oversized payloads (`SLACK_MAX_TEXT = 39000`).
 
+With `SLAUDE_SLACK_MARKDOWN_BLOCKS` on, a chat message skips this conversion: `slackMessage(text, { flag, update? })` sends the raw markdown as one `markdown` block (Slack renders tables, headings, links and lists) with the same text as the fallback. A text over `MARKDOWN_BLOCK_MAX = 12000` characters is converted here and sent as text (an update also sends `blocks: []`). Ephemeral messages, file captions, topics, canvases, proactive posts and cards keep mrkdwn.
+
 | Markdown | mrkdwn | Notes |
 |----------|--------|-------|
 | `**bold**` or `__bold__` | `*bold*` | Inner padding trimmed; Slack ignores `* x *`. Carried via sentinels so emphasis rules do not re-nest. |

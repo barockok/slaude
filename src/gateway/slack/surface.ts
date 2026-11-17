@@ -5,6 +5,7 @@ import { env } from "../../config/env";
 import { checkUploadUrl } from "../upload/url";
 import { deliver, formatOutbound, outbound, OutboundRefusal, TRACKER_HIDDEN, type OutboundKind, type OutboundOptions } from "./outbound";
 import { SLACK_SURFACE_ID } from "../core/surface";
+import { slackMessage } from "./format";
 import type {
   ApprovalRequest,
   ApprovalResult,
@@ -61,12 +62,12 @@ export class SlackSurface implements Surface {
   }
 
   async #post(text: string): Promise<string> {
-    const r = await this.#client.chat.postMessage({ channel: this.#b.conversationId, thread_ts: this.#b.threadRef, text, mrkdwn: true }); // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
+    const r = await this.#client.chat.postMessage({ channel: this.#b.conversationId, thread_ts: this.#b.threadRef, ...slackMessage(text, { flag: env.slackMarkdownBlocks() }), mrkdwn: true }); // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
     return String(r.ts);
   }
 
   async #update(ref: string, text: string): Promise<void> {
-    await this.#client.chat.update({ channel: this.#b.conversationId, ts: ref, text }); // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
+    await this.#client.chat.update({ channel: this.#b.conversationId, ts: ref, ...slackMessage(text, { flag: env.slackMarkdownBlocks(), update: true }) }); // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
   }
 
   /** A todo or task list: model-written items through the reply rules; nobody holds it, so a deny or approve hides it. */
@@ -114,7 +115,7 @@ export class SlackSurface implements Surface {
     await this.#client.chat.postEphemeral({ // runtime-ui: sayEphemeral (the runtime's own private notices), formatted only
       channel: this.#b.conversationId,
       user,
-      text: formatOutbound(i.text, "runtime", this.#persona),
+      text: formatOutbound(i.text, "runtime", this.#persona, true),
       ...(i.blocks ? { blocks: i.blocks } : {}),
       ...(this.#b.threadRef ? { thread_ts: this.#b.threadRef } : {}),
     });

@@ -158,6 +158,23 @@ function stripEmphasis(s: string): string {
     .replace(/(^|[^_])_([^_\n]+?)_(?!_)/g, "$1$2");
 }
 
+/** Slack's cap on the characters of a `markdown` block (cumulative per payload). */
+export const MARKDOWN_BLOCK_MAX = 12000;
+
+/**
+ * What to hand `chat.postMessage` / `chat.update` for a message's text. With the markdown-blocks flag on
+ * and the text within the block limit, the raw markdown goes out as one `markdown` block (Slack renders
+ * tables, headings, links and lists itself) with the same text as the notification fallback. Otherwise it
+ * goes out as mrkdwn text: converted here when the flag is on (the outbound formatter left it raw), and
+ * unchanged when the flag is off (the formatter already converted it). An update sends `blocks: []` on the
+ * text path so an earlier message's blocks do not outlive the new text.
+ */
+export function slackMessage(text: string, opts: { flag: boolean; update?: boolean }): { text: string; blocks?: unknown[] } {
+  if (!opts.flag) return { text };
+  if (text.length <= MARKDOWN_BLOCK_MAX) return { text, blocks: [{ type: "markdown", text }] };
+  return { text: mdToMrkdwn(text), ...(opts.update ? { blocks: [] } : {}) };
+}
+
 export const SLACK_MAX_TEXT = 39000;
 
 export function chunkText(text: string, max = SLACK_MAX_TEXT): string[] {
