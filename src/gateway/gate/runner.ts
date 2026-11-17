@@ -17,13 +17,41 @@ export interface GateResult {
   adapter: string | null;
   decision: GateDecision;
   latencyMs: number;
+  implicit?: GateInput["implicit"];
+}
+
+/**
+ * What a consult settled on. `adapter`: a model answered. `rules`: no model
+ * answer, today's rules decided (never for an implicit consult, which drops
+ * instead). `shadow`: shadow mode, the caller's own `actual` is returned.
+ */
+export interface GateConsult {
+  action: GateAction;
+  source: "adapter" | "rules" | "shadow";
 }
 
 export interface GateRunner {
   readonly mode: GateMode;
   readonly contextMessages: number;
-  /** off → undefined (caller keeps today's path). shadow → resolves "run" immediately; the decision runs detached and is logged. on → the decided action. */
+  /** off → undefined (caller keeps today's path). shadow → resolves `actual` immediately; the decision runs detached and is logged. on → the decided action. */
   gate(key: string, input: () => Promise<GateInput>, actual: GateAction): Promise<GateAction | undefined>;
+  /**
+   * `gate` with the source of the answer. For an implicit consult (the input
+   * built with `implicit` set) undefined means PASS, never run: off, an input
+   * timeout or failure, and any error all come back undefined, and a decision
+   * with no model answer is "drop" with source "rules".
+   */
+  consult(key: string, input: () => Promise<GateInput>, actual: GateAction): Promise<GateConsult | undefined>;
+}
+
+/**
+ * The decision memo key: one decision per message, persona, app and flavour.
+ * Two personas (or two apps delivering the same event) must not share a
+ * memoised answer, and an implicit or continuation consult asks a different
+ * question of the same message than a mention does.
+ */
+export function gateKey(o: { channel: string; ts: string; persona?: string; app?: string; continuation?: boolean; implicit?: string }): string {
+  return `${o.channel}:${o.ts}:p=${o.persona ?? "-"}:a=${o.app ?? "-"}:c=${o.continuation ? 1 : 0}:i=${o.implicit ?? "-"}`;
 }
 
 const fmt = (a: Answer) => `${a.value ? "yes" : "no"}:${a.confidence.toFixed(2)}`;
@@ -33,6 +61,7 @@ function logLine(key: string, r: GateResult, actual: GateAction): string {
   const d = r.decision;
   return (
     `[gate] mode=${r.mode} source=${r.source} adapter=${r.adapter ?? "-"} action=${r.action} ms=${r.latencyMs} key=${key} ` +
+    (r.implicit ? `implicit=${r.implicit} ` : "") +
     `a=${fmt(d.addressedToAgent)} q=${fmt(d.isQuestionOrRequest)} h=${fmt(d.agentCanHelp)} d=${fmt(d.alreadyAnswered)}` +
     (r.mode === "shadow" ? ` actual=${actual}` : "")
   );
@@ -80,9 +109,14 @@ export function makeGateRunner(o: {
       }
     }
     const source = decision ? "adapter" : "rules";
+    // An implicit consult has no rules fallback: the rules read every candidate
+    // as an open request, which at `contribute` would run on every message
+    // during an outage. No model answer is a drop.
+    const implicitNoAnswer = !!gi.implicit && !decision;
     const d = decision ?? rulesDecision(gi);
     const r: GateResult = {
-      action: decideAction(gi, d, o.tAct),
+      action: implicitNoAnswer ? "drop" : decideAction(gi, d, o.tAct),
+      ...(gi.implicit ? { implicit: gi.implicit } : {}),
       mode: o.mode,
       source,
       adapter: o.adapter?.name ?? null,
@@ -108,34 +142,39 @@ export function makeGateRunner(o: {
     return { p, fresh: true };
   }
 
+  const consult: GateRunner["consult"] = async (key, input, actual) => {
+    if (o.mode === "off") return undefined;
+    const { p, fresh } = decision(key, input, actual);
+    if (o.mode === "shadow") {
+      // Detached: dispatch never waits, and nothing can escape as an unhandled rejection.
+      void p
+        .then((r) => {
+          if (fresh && r.action !== actual) m.gateShadowDisagreeTotal.inc({ would: r.action, actual });
+        })
+        .catch((e) => {
+          try {
+            log(e instanceof InputTimeout ? `[gate] input timeout key=${key}` : `[gate] mode=shadow input failed key=${key}`);
+          } catch {
+            // a throwing logger must not become an unhandled rejection
+          }
+        });
+      // Shadow acts exactly as off.
+      return { action: actual, source: "shadow" };
+    }
+    try {
+      const r = await p;
+      return { action: r.action, source: r.source };
+    } catch (e) {
+      log(e instanceof InputTimeout ? `[gate] input timeout key=${key}` : `[gate] mode=on input failed key=${key}; keeping today's path`);
+      return undefined;
+    }
+  };
   return {
     mode: o.mode,
     contextMessages: o.contextMessages,
+    consult,
     async gate(key, input, actual) {
-      if (o.mode === "off") return undefined;
-      const { p, fresh } = decision(key, input, actual);
-      if (o.mode === "shadow") {
-        // Detached: dispatch never waits, and nothing can escape as an unhandled rejection.
-        void p
-          .then((r) => {
-            if (fresh && r.action !== actual) m.gateShadowDisagreeTotal.inc({ would: r.action, actual });
-          })
-          .catch((e) => {
-            try {
-              log(e instanceof InputTimeout ? `[gate] input timeout key=${key}` : `[gate] mode=shadow input failed key=${key}`);
-            } catch {
-              // a throwing logger must not become an unhandled rejection
-            }
-          });
-        // Shadow acts exactly as off.
-        return actual;
-      }
-      try {
-        return (await p).action;
-      } catch (e) {
-        log(e instanceof InputTimeout ? `[gate] input timeout key=${key}` : `[gate] mode=on input failed key=${key}; keeping today's path`);
-        return undefined;
-      }
+      return (await consult(key, input, actual))?.action;
     },
   };
 }
