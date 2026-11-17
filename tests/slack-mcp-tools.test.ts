@@ -13,7 +13,6 @@ function fakeCtx(impl: {
   chatPostEphemeral?: () => any;
   reactionsAdd?: () => any;
   reactionsRemove?: () => any;
-  filesUploadV2?: () => any;
   filesInfo?: () => any;
   usersInfo?: (uid: string) => any;
   convInfo?: () => any;
@@ -46,7 +45,6 @@ function fakeCtx(impl: {
         remove: async () => impl.pinsRemove?.() ?? {},
       },
       files: {
-        uploadV2: async () => impl.filesUploadV2?.() ?? { files: [{ id: "F1" }] },
         info: async () => impl.filesInfo?.() ?? { file: {} },
       },
       users: { info: async ({ user }: any) => impl.usersInfo?.(user) ?? { user: {} } },
@@ -193,36 +191,6 @@ describe("slackHandlers", () => {
     const res = await slackHandlers.request_approval(ctx, { summary: "x" });
     expect(res.isError).toBe(true);
     expect(res.content[0]!.text).toContain("timeout");
-  });
-
-  test("upload succeeds", async () => {
-    const ctx = fakeCtx({
-      filesUploadV2: () => ({ files: [{ files: [{ id: "F99" }] }] }),
-    });
-    const res = await slackHandlers.upload(ctx, { path: import.meta.path });
-    expect(res.isError).toBeUndefined();
-    expect(res.content[0]!.text).toContain("F99");
-  });
-
-  test("upload missing file returns error", async () => {
-    const ctx = fakeCtx({});
-    const res = await slackHandlers.upload(ctx, { path: "/tmp/does-not-exist-12345.txt" });
-    expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toContain("upload failed");
-  });
-
-  test("upload surfaces slack error", async () => {
-    const ctx = fakeCtx({
-      filesUploadV2: () => {
-        const e: any = new Error("fail");
-        e.data = { error: "invalid_file" };
-        throw e;
-      },
-    });
-    // Use a path that exists (the test file itself) so statSync passes
-    const res = await slackHandlers.upload(ctx, { path: import.meta.path });
-    expect(res.isError).toBe(true);
-    expect(res.content[0]!.text).toContain("invalid_file");
   });
 
   test("get_user_profile returns structured profile", async () => {
