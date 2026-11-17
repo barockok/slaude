@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { rmSync } from "node:fs";
-import { createGateway } from "../../../src/gateway/core/gateway";
+import { createGateway, quietReactions } from "../../../src/gateway/core/gateway";
 import { AgentManager } from "../../../src/agent/manager";
 import { MUST_REPLY_INSTRUCTION } from "../../../src/agent/must-reply";
 import type { Transport } from "../../../src/gateway/core/transport";
@@ -49,10 +49,12 @@ function makeGw(adapter: DecisionAdapter | null, o: { channel?: string } = {}) {
   const surfaces: Surface[] = [];
   const state: { thread: Msg[]; history: Msg[]; after: Msg[] } = { thread: [], history: [], after: [] };
   const log = (name: string) => slack.push(name);
+  /** The reactions on Slack's messages right now (`ts:name`), after every add and remove. */
+  const live = new Set<string>();
   const client: any = {
     auth: { test: async () => ({ user_id: "USLAUDEBOT", user: "quill", bot_id: "B_SLAUDE", team: TEAM, url: "x" }) },
     chat: { postMessage: async (a: any) => (log("chat.postMessage"), posts.push(a), { ok: true, ts: `${Date.now()}.${posts.length}` }), update: async () => (log("chat.update"), { ok: true }), postEphemeral: async () => (log("chat.postEphemeral"), { ok: true }) },
-    reactions: { add: async () => (log("reactions.add"), { ok: true }), remove: async () => (log("reactions.remove"), { ok: true }) },
+    reactions: { add: async (a: any) => (log("reactions.add"), live.add(`${a.timestamp}:${a.name}`), { ok: true }), remove: async (a: any) => (log("reactions.remove"), live.delete(`${a.timestamp}:${a.name}`), { ok: true }) },
     assistant: { threads: { setStatus: async () => (log("assistant.setStatus"), { ok: true }) } },
     conversations: {
       info: async () => (log("conversations.info"), {}), members: async () => (log("conversations.members"), {}),
@@ -91,7 +93,7 @@ function makeGw(adapter: DecisionAdapter | null, o: { channel?: string } = {}) {
     },
   });
   return {
-    client, emit: async (n: string, a: any) => { await events.get(n)?.(a); }, sends, guardAtSend, h, slack, posts, surfaces, state, agent,
+    client, emit: async (n: string, a: any) => { await events.get(n)?.(a); }, sends, guardAtSend, h, slack, live, posts, surfaces, state, agent,
     setPlan: (p: Plan) => { plan = p; },
     guard: (id: string) => guard?.(id) ?? null,
     channel: o.channel ?? CH,
@@ -689,5 +691,65 @@ describe("phase 2: a recording coalesced with a running turn does not change its
     expect(g.guard(g.sends[0]!.id)).toBe(MUST_REPLY_INSTRUCTION);
     await record(g, root);
     expect(g.guard(g.sends[0]!.id)).toBe(MUST_REPLY_INSTRUCTION);
+  });
+});
+
+describe("phase 2: a pass or a silent end leaves no reaction anywhere in the thread", () => {
+  const SESSION = () => __setProactiveSoulSource(() => `\n## Channel <#${CH}>\n### Session\n- Mode: channel\n`);
+  const NOTE = "Sam, you do not need to reply to this one, I am only noting for the team that the checks are green";
+  const scenario = async (plan: Plan, channelSession: boolean) => {
+    if (channelSession) SESSION();
+    const g = (gw = makeGw(null));
+    const root = nextTs();
+    await deliver(g, "thanks, that worked", root);
+    await settle();
+    g.setPlan(plan);
+    const reply = nextTs();
+    await deliver(g, NAMED.replace("quill", "quill") + " and note that checks are green", reply, root);
+    await settle();
+    return { g, root, reply };
+  };
+  for (const channelSession of [false, true]) {
+    const where = channelSession ? "channel-session channel" : "classic channel";
+    it(`pass (${where}): root and reply end with no reactions`, async () => {
+      const { g, root, reply } = await scenario([PASS], channelSession);
+      expect(g.sends.some((x) => x.text.includes(IMPLICIT_NOTE))).toBe(true);
+      expect([...g.live].filter((r) => r.startsWith(root) || r.startsWith(reply))).toEqual([]);
+    });
+    it(`silent end (${where}): root and reply end with no reactions`, async () => {
+      const { g, root, reply } = await scenario([], channelSession);
+      expect(g.sends.some((x) => x.text.includes(IMPLICIT_NOTE))).toBe(true);
+      expect([...g.live].filter((r) => r.startsWith(root) || r.startsWith(reply))).toEqual([]);
+    });
+    it(`spoke (${where}): the checkmark lands on the triggering message, as before`, async () => {
+      const { g, root, reply } = await scenario([REPLY], channelSession);
+      expect(g.live.has(`${reply}:white_check_mark`)).toBe(true);
+      expect(g.live.has(`${root}:white_check_mark`)).toBe(false);
+    });
+  }
+});
+
+describe("phase 2: an implicit turn adds no reaction of its own", () => {
+  class Fake {
+    #n = 0;
+    id = "fake";
+    capabilities = new Set(["react"]);
+    seen: string[] = [];
+    async react(i: { name: string }) { this.#n++; this.seen.push(i.name); }
+    async unreact(i: { name: string }) { this.seen.push(`-${i.name}`); }
+    async reply() { return { ref: String(++this.#n) }; }
+  }
+  it("react and unreact are dropped while quiet (a pass with a reaction included), other calls pass through", async () => {
+    let quiet = true;
+    const f = new Fake();
+    const s: any = quietReactions(f as any, () => quiet);
+    await s.react({ name: "white_check_mark" });
+    await s.unreact({ name: "eyes" });
+    expect(f.seen).toEqual([]);
+    expect(await s.reply()).toEqual({ ref: "1" });
+    expect(s.capabilities.has("react")).toBe(true);
+    quiet = false;
+    await s.react({ name: "eyes" });
+    expect(f.seen).toEqual(["eyes"]);
   });
 });

@@ -222,6 +222,14 @@ Review round on phase 2:
   after a cheap dedup check, but a delivery that races past it can still spend a
   slot before the handler drops it.
 
+Smoke finding (rc.32): a pass in a thread left a checkmark on the thread root.
+The cause was not the done handler (it reacts on the triggering message and the
+tests pin that) but the node tool plane: a job token carried only the thread
+ts, so the surface's default reaction target was the root. The token now signs
+the triggering message and an implicit flag, and an implicit turn's surface
+drops reactions altogether. Mono tests could not see it because mono reacts
+through the route's own context.
+
 Open after phase 2: tuning the cap and the budgets from real counts, a per
 channel counter label, an explicit last-speaker priority in the claim (today
 the ladder provides it), and whether a recording in a channel session should

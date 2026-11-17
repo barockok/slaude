@@ -81,6 +81,11 @@ export interface JobClaims {
    *  root (a root turn on a channel session), the `thread` claim stays the
    *  turn's real Slack ts. Absent = in the thread. */
   post?: "channel";
+  /** The Slack ts of the message that started the turn, signed at dispatch for a Slack turn. The tool plane
+   *  anchors the turn's reactions on it (not on the thread root). Absent = the thread root, as before. */
+  inbound?: string;
+  /** The turn was started by implicit engagement (no @mention): it adds no reactions of its own. */
+  implicit?: true;
   /** First issue time (unix seconds), carried across token-refresh so the
    *  token's total life is capped. Absent = this token's own `iat`. */
   iat0?: number;
@@ -180,6 +185,10 @@ export function verifyJobToken(
   if (claims.wake !== undefined && (claims.wake !== true || !claims.bgRun)) {
     return { ok: false, reason: "bad_claims" };
   }
+  if (claims.inbound !== undefined && (typeof claims.inbound !== "string" || !/^\d+\.\d+$/.test(claims.inbound))) {
+    return { ok: false, reason: "bad_claims" };
+  }
+  if (claims.implicit !== undefined && claims.implicit !== true) return { ok: false, reason: "bad_claims" };
   // An unknown origin is refused rather than read as some default.
   if (claims.origin !== undefined && !TURN_ORIGINS.includes(claims.origin)) {
     return { ok: false, reason: "bad_claims" };
