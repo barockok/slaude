@@ -95,6 +95,8 @@ export type SlackContext = {
   unattended?: boolean;
   /** The session a route's turns belong to (mono routes; outbound audit and held replies). */
   turnSessionId?: string;
+  /** The turn was started by implicit engagement (signed in the job token): its surface adds no reactions. */
+  implicitTurn?: boolean;
   /** The running turn's abort (mono): a held reply is not posted after it. */
   turnSignal?: () => AbortSignal | undefined;
   /** Epoch ms the turn must be over by (the tool plane: the job token's expiry less 30 s). */

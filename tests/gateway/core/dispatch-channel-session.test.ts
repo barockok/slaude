@@ -93,6 +93,29 @@ describe("dispatch signs the post target", () => {
   });
 });
 
+describe("dispatch signs the message that started the turn", () => {
+  test("a Slack turn signs inbound (the tool plane anchors reactions on it, not on the thread root)", async () => {
+    const h = harness();
+    await h.dispatch.dispatch(S, "hi", { ...META, threadTs: "1.1", eventTs: "2.2", origin: "slack" });
+    expect(h.claims().inbound).toBe("2.2");
+    expect(h.claims().thread).toBe("1.1");
+    expect("implicit" in h.claims()).toBe(false);
+  });
+  test("an implicit turn signs implicit; a non-Slack turn signs no inbound", async () => {
+    const h = harness();
+    await h.dispatch.dispatch(S, "hi", { ...META, eventTs: "2.2", origin: "slack", implicit: true });
+    expect(h.claims().implicit).toBe(true);
+    await h.dispatch.dispatch(S, "hi", { ...META, eventTs: String(Date.now()), origin: "cron" });
+    expect("inbound" in h.claims()).toBe(false);
+  });
+  test("a token with a malformed inbound or implicit claim is refused", () => {
+    const base = { tenant: "default", persona: "default", session: "S", team: "T1", channel: "C1", thread: "1.1", initiator: "U1", scope: "turn" as const };
+    expect(verifyJobToken(mintJobToken({ ...base, inbound: "2.2" })).ok).toBe(true);
+    expect(verifyJobToken(mintJobToken({ ...base, inbound: "not-a-ts" } as any)).ok).toBe(false);
+    expect(verifyJobToken(mintJobToken({ ...base, implicit: false } as any)).ok).toBe(false);
+  });
+});
+
 /** `details` is text on sqlite and a JSONB object on Postgres. */
 const detailsText = (d: unknown): string => (typeof d === "string" ? d : JSON.stringify(d));
 

@@ -485,6 +485,8 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         ...(meta.backgroundRunId ? { bgRun: meta.backgroundRunId } : {}),
         ...(meta.wake && meta.backgroundRunId ? { wake: true } : {}),
         ...(meta.postTarget ? { post: meta.postTarget } : {}),
+        ...(meta.origin === "slack" && /^\d+\.\d+$/.test(meta.eventTs) ? { inbound: meta.eventTs } : {}),
+        ...(meta.implicit ? { implicit: true as const } : {}),
       });
       // Routing (spec §2, node labels spec §4.6): warm + fresh on a node that
       // still carries the persona's label → that node's queue; anything else →

@@ -319,6 +319,20 @@ async function threadTail(client: any, channel: string, threadTs: string, latest
 const STATUS_THINKING = { text: "thinking", emoji: ":thought_balloon:" };
 
 /** How a message is handed to handleMessage. */
+/** A surface that adds no reaction while `quiet()` is true: an implicit turn that passes must leave none anywhere. */
+export function quietReactions(surface: Surface, quiet: () => boolean): Surface {
+  return new Proxy(surface, {
+    get(target, prop) {
+      if ((prop === "react" || prop === "unreact") && (target as any)[prop]) {
+        const inner = (target as any)[prop].bind(target);
+        return async (i: unknown) => (quiet() ? undefined : inner(i));
+      }
+      const v = (target as any)[prop];
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  });
+}
+
 type HandleDispatch = {
   suppress?: boolean;
   personaId?: string;
@@ -792,8 +806,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Wrap a session's Surface so its user-visible writes are suppressed while
   // the panel lock is held (design §Active-surface lock, outbound gate). No-op
   // passthrough when the panel is off, so non-panel deploys are byte-identical.
-  const wrapSurface = (surface: Surface, sessionId: string): Surface =>
-    quietForVoice(panelInfra ? suppressibleSurface(surface, sessionId, panelHeldAsync) : surface, sessionId);
+  const wrapSurface = (surface: Surface, sessionId: string, implicitTurn = false): Surface =>
+    quietReactions(
+      quietForVoice(panelInfra ? suppressibleSurface(surface, sessionId, panelHeldAsync) : surface, sessionId),
+      () => implicitTurn || routes.get(sessionId)?.implicit === true,
+    );
 
   // Outbound content client. When SLACK_USER_TOKEN (xoxp) is set, agent replies,
   // edits, reactions and uploads go out AS the real Slack user account rather than
@@ -2612,7 +2629,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // having spoken, and without the working reaction.
           route.passed = true;
           const react = (e.input as any)?.react;
-          if (typeof react === "string" && react) route.passReact = react.replace(/^:|:$/g, "");
+          // An implicit turn adds no reaction (the surface drops it), so there is none to keep.
+          if (typeof react === "string" && react && !route.implicit) route.passReact = react.replace(/^:|:$/g, "");
         } else if (effect === "spoke") {
           route.spoke = true;
           void reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_WORKING);
@@ -5376,9 +5394,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       resolveBotToken: () => t.botTokenFor?.(app),
       channel: claims.channel,
       threadTs: claims.thread,
-      // No live inbound message on the REST path — reactions and default
-      // react targets anchor on the thread root.
-      inboundTs: claims.thread,
+      // The message that started the turn when the token says (a Slack turn); else the thread root.
+      inboundTs: claims.inbound ?? claims.thread,
+      ...(claims.implicit ? { implicitTurn: true } : {}),
       userId: claims.initiator,
       teamId: claims.team,
       personaId,
@@ -5448,7 +5466,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     tools: {
       mcpBridge,
       slackCtx: v1SlackCtx,
-      surfaceFor: (ctx) => wrapSurface(surfaceForCtx(ctx), ctx.sessionId ?? ""),
+      surfaceFor: (ctx) => wrapSurface(surfaceForCtx(ctx), ctx.sessionId ?? "", ctx.implicitTurn === true),
       surfaceOpts: (claims, ctx) => ({
         initiator: () => ctx.userId,
         auditContext: () => ({
