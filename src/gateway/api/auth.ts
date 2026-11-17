@@ -109,7 +109,7 @@ export function timingSafeStringEqual(a: string, b: string): boolean {
 
 const b64uJson = (v: unknown): string => Buffer.from(JSON.stringify(v)).toString("base64url");
 
-function sign(headerAndPayload: string, secret: string): string {
+export function sign(headerAndPayload: string, secret: string): string {
   return createHmac("sha256", secret).update(headerAndPayload).digest("base64url");
 }
 
