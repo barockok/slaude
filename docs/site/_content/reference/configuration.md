@@ -379,6 +379,8 @@ and roles come from a file or the env lists below.
 | `SLAUDE_GUARDRAIL_PROSE_MAX` | No | `4000` | Most characters of always-loaded owner guardrail Guidance per agent. A guardrail that would tip the total over is left out of that agent's prompt (its rules still apply) and the console names it. See [Guardrails](guardrails.md). |
 | `SLAUDE_THREAD_HEAD_MESSAGES` | No | `10` | Earlier replies (besides the thread root) a session's first real turn is shown when it starts inside an existing thread, at most 50. `0` turns the thread head off. Each message is cut to 500 characters and the block to 6,000. See [Engagement](../guides/engagement.md#16-a-session-that-starts-inside-an-existing-thread). |
 | `SLAUDE_THREAD_HEAD_DEADLINE_MS` | No | `1500` | The longest the thread head may delay a first turn, in milliseconds: the Slack read, the author checks and the name lookups together. Past it the turn runs with no head and a late answer is dropped. The read uses a client that never retries and rejects a rate-limited call instead of waiting out Retry-After. |
+| `SLAUDE_ENGAGE_DEFAULT` | No | `mention` | The engage level for a channel that sets no `engage.level` of its own: `mention`, `addressed` or `contribute` (anything else means `mention`). Restricted channels stay at `mention` whatever this says. At `mention` nothing changes. See [Implicit engagement](#implicit-engagement). |
+| `SLAUDE_ENGAGE_WINDOW_MINUTES` | No | `10` | How long after the agent speaks the next message from the person it answered still counts as addressed to it (tier 2), and how long the last-speaker record lives. Whole minutes from 1 to 1440; an invalid value means 10. |
 | `SLAUDE_GUARDRAIL_REPLY_QUIET_SECS` | No | `600` | How long an inbound guardrail's reply stays quiet for the same person in the same thread; later drops are silent and audited. |
 | `SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC` | No | `600` | How long an owner guardrail's approval card waits (a tool `approve` and a held reply), at most 3600. A timeout is a deny. On nodes a tool card also ends 30 s before the turn deadline. |
 | `SLAUDE_AUDIT_RETENTION_DAYS` | No | `365` | Days an audit event (`audit_events`: gate decisions, grant changes, console actions) is kept before the periodic sweep deletes it. Applies whether or not the panel is mounted. |
@@ -585,6 +587,27 @@ Voice mode lets the agent talk in a live call through a browser tab and a browse
 ```
 
 Metrics: `slaude_decision_requests_total{adapter,outcome}` (outcome `ok`, `timeout` or `error`), `slaude_gate_decisions_total{action,source,mode}` and, in shadow mode, `slaude_gate_shadow_disagree_total{would,actual}`. Each decision logs one `[gate]` line with the mode, source, adapter, action, latency, the event key and each answer's value and confidence; message text is never logged.
+
+### Implicit engagement <a id="implicit-engagement"></a>
+
+Lets an agent take part in a channel without an @mention. **Phase 0 is observe only**: it counts and logs what the agent would have done and changes nothing the agent does. The guide ([Joining in without an @mention](../guides/engagement.md#17-joining-in-without-an-mention-implicit-engagement-phase-0)) explains the tiers and how to read the counters. Keys in the persona's `agent.yaml`:
+
+| Key | Values | Default | What it does |
+|-----|--------|---------|--------------|
+| `aliases` | list of up to 8 names | none | Other names the agent answers to. Each is one word of letters and digits, 3 to 32 characters, not a common word, not the agent's own name, not repeated (case and width ignored), one script (no Latin and Cyrillic mix). No other persona may claim the same name. |
+| `channels.<ref>.engage.level` | `mention`, `addressed`, `contribute` | `SLAUDE_ENGAGE_DEFAULT`, else `mention` | `mention`: only when mentioned or already engaged in the thread. `addressed`: also when a message is in effect said to the agent. `contribute`: also when it plausibly has something to add. A restricted channel is always `mention`. |
+| `channels.<ref>.engage.mode` | `shadow`, `on` | `shadow` | `shadow` decides and logs but acts as `mention` does. Independent of the decision gate's `gate.mode`. In phase 0 `on` also changes nothing. |
+
+Unknown keys under `engage` are rejected. A channel with no `engage` key uses the deployment default. Adding `aliases` or `engage` changes nothing at the default level.
+
+Metrics (phase 0):
+
+- `slaude_engage_total{tier,outcome,level}`: one per observed message. `tier` is `0`, `1`, `2`, `3` or `existing`; `outcome` is `pass`, `run`, `classify` or `existing`; `level` is `addressed` or `contribute`. Counted per Slack app copy of a message.
+- `slaude_engage_truncated_total`: messages whose text was cut to the ladder's 4,000 character bound.
+
+Each observation logs `[engage] phase0 channel=<id> level=<level> tier=<tier> would=<outcome> reason=<reason>`, with no message text. There is no model call, no history read and nothing posted.
+
+The decision adapter that a later phase would use for tier 3 is deployment configuration (`SLAUDE_DECISION_CONFIG`, see [Decision gate](#decision-gate)), never a per-channel setting. Since this release a configured adapter is built at boot even with `gate.mode` off, so an implicit consult can use it; with the gate off and no adapter configured nothing is built.
 
 ### Skills repo & evolution
 

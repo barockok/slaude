@@ -153,6 +153,7 @@ mcp:                              # the same shape as mcp.json
       url: https://tracker.example.com/mcp
       headers:
         Authorization: ${PERSONA_SUPPORT_BOT_TRACKER_TOKEN}
+aliases: [support, supportbot]    # other names the agent answers to (3 to 32 letters or digits)
 skills: [triage, release-notes]   # absent: every skill; []: none
 guardrails: [no-outbound-email]   # guardrails that also apply to this agent
 memory:
@@ -164,6 +165,9 @@ channels:                         # per-channel settings, keyed by channel refer
   "slack:channel:CTEAMCHAN":
     session: channel              # one long-lived session for this channel, no wakes needed
     proactive: true               # the agent works on its own here; on its own this also gives the channel session
+    engage:                       # take part without an @mention (observe only for now)
+      level: addressed            # mention (default) | addressed | contribute
+      mode: shadow                # shadow (default) | on
 ```
 
 **Compiled, never extracted.** The structured parts compile deterministically
@@ -172,6 +176,8 @@ for the default persona as well. The `soul` block stays prose; mandates and
 access come only from their own keys, so a `## Manager` or `## Mandate` heading
 left in the soul has no effect and the sync warns about it. A console edit of
 such a persona's soul changes the prose and keeps the structure.
+
+**`aliases` and `channels.<ref>.engage`** are the implicit engagement settings; see [Implicit engagement](../reference/configuration.md#implicit-engagement) for the values and what is built so far.
 
 **`channels`** compiles to the `## Channel` block a `SOUL.md` would carry
 (`### Session` with `Mode: channel`, `### Proactive` with `Enabled:`), appended
