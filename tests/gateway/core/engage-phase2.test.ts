@@ -14,6 +14,8 @@ import { db } from "../../../src/db/schema";
 import * as OneOnOne from "../../../src/db/one-on-one";
 import * as Sessions from "../../../src/db/sessions";
 import * as Grants from "../../../src/db/agent-grants";
+import * as Ignores from "../../../src/db/ignores";
+import * as MentionOnly from "../../../src/db/mention-only";
 import { makeGateRunner } from "../../../src/gateway/gate/runner";
 import type { DecisionAdapter, DecisionRequest } from "../../../src/decision/types";
 import { __setEngageBreakerForTests, __setEngageStateForTests, circuitBreaker, memoryEngageState, type CircuitBreaker } from "../../../src/gateway/engage/budget";
@@ -63,6 +65,7 @@ function makeGw(adapter: DecisionAdapter | null, o: { channel?: string } = {}) {
   const t: Transport = { client, action: () => {}, use: () => {}, start: async () => {}, stop: async () => {}, event: (n: string, fn: any) => void events.set(n, fn) };
   const agent = new AgentManager();
   const sends: { id: string; text: string }[] = [];
+  const guardAtSend: Array<string | null> = [];
   let plan: Plan = [];
   let guard: ((id: string) => string | null) | undefined;
   const setStopGuard = agent.setStopGuard.bind(agent);
@@ -70,8 +73,11 @@ function makeGw(adapter: DecisionAdapter | null, o: { channel?: string } = {}) {
   agent.sendMessage = async (id: string, text: string) => {
     sends.push({ id, text });
     if (/do NOT reply/i.test(text)) return;
-    for (const tool of plan) agent.emit("event", { type: "toolCall", sessionId: id, tool, input: {} });
-    agent.emit("event", { type: "done", sessionId: id });
+    guardAtSend.push(guard?.(id) ?? null);
+    if (plan.includes("__hold")) return;
+    for (const tool of plan) if (tool !== "__error") agent.emit("event", { type: "toolCall", sessionId: id, tool, input: {} });
+    if (plan.includes("__error")) agent.emit("event", { type: "error", sessionId: id, error: "boom", code: "UNKNOWN" });
+    else agent.emit("event", { type: "done", sessionId: id });
   };
   const gateRunner = makeGateRunner({ mode: "off", adapter, tAct: 0.8, timeoutMs: 400, contextMessages: 8, log: () => {} });
   const real = makeSlackSurfaceFactory(client);
@@ -85,7 +91,7 @@ function makeGw(adapter: DecisionAdapter | null, o: { channel?: string } = {}) {
     },
   });
   return {
-    client, emit: async (n: string, a: any) => { await events.get(n)?.(a); }, sends, h, slack, posts, surfaces, state,
+    client, emit: async (n: string, a: any) => { await events.get(n)?.(a); }, sends, guardAtSend, h, slack, posts, surfaces, state, agent,
     setPlan: (p: Plan) => { plan = p; },
     guard: (id: string) => guard?.(id) ?? null,
     channel: o.channel ?? CH,
@@ -264,17 +270,57 @@ describe("phase 2: acting at the final drop", () => {
     expect(g.sends[1]!.text).not.toContain(IMPLICIT_NOTE);
   });
 
-  it("an implicit turn is not forced to reply by the must-reply guard; a mention turn still is", async () => {
+  it("an implicit turn is not forced to reply while it runs; afterwards a mention in the same thread is guarded again", async () => {
     const g = (gw = makeGw(null));
-    await deliver(g, NAMED, nextTs());
+    const ts = nextTs();
+    await deliver(g, NAMED, ts);
     await settle();
-    expect(g.guard(g.sends[0]!.id)).toBeNull();
-    await g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", user: WORLD.manager, team: TEAM, ts: nextTs(), text: "<@USLAUDEBOT> hello there" }, client: g.client, context: { teamId: TEAM } });
+    expect(g.guardAtSend[0]).toBeNull();
+    // The turn is over: the route is no longer implicit, so the guard applies to anything that follows.
+    expect(g.guard(g.sends[0]!.id)).toBe(MUST_REPLY_INSTRUCTION);
+    await g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", user: WORLD.manager, team: TEAM, ts: nextTs(), thread_ts: ts, text: "<@USLAUDEBOT> hello there" }, client: g.client, context: { teamId: TEAM } });
     await settle();
     expect(g.sends.length).toBe(2);
-    // A mention is a person's turn again on the same route: the guard applies.
     expect(g.sends[1]!.text).not.toContain(IMPLICIT_NOTE);
-    expect(g.guard(g.sends[1]!.id)).toBe(MUST_REPLY_INSTRUCTION);
+    expect(g.guardAtSend[1]).toBe(MUST_REPLY_INSTRUCTION);
+  });
+
+  it("a silent end (no reply, no pass tool) is a pass: engagement is given back and nothing is left behind", async () => {
+    const g = (gw = makeGw(null));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([]);
+    await deliver(g, NAMED, nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(1);
+    expect(g.slack.filter((c) => c === "reactions.add" || c === "chat.postMessage")).toEqual([]);
+    await deliver(g, "and what about staging, does that have the same problem?", nextTs(), root);
+    await settle();
+    expect(g.sends[1]!.text).toMatch(/do NOT reply/i);
+  });
+
+  it("an errored implicit turn stays quiet in the thread and gives the engagement back", async () => {
+    const g = (gw = makeGw(null));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan(["__error"]);
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    await deliver(g, NAMED, nextTs(), root);
+    await settle();
+    err.mockRestore();
+    expect(g.sends).toHaveLength(1);
+    expect(g.slack.filter((c) => c === "chat.postMessage" || c === "reactions.add")).toEqual([]);
+    await deliver(g, "and what about staging, does that have the same problem?", nextTs(), root);
+    await settle();
+    expect(g.sends[1]!.text).toMatch(/do NOT reply/i);
+  });
+
+  it("an implicit turn sets no thinking status of its own", async () => {
+    const g = (gw = makeGw(null));
+    g.setPlan([REPLY]);
+    await deliver(g, NAMED, nextTs());
+    await settle();
+    expect(g.slack.filter((c) => c === "assistant.setStatus")).toEqual([]);
   });
 });
 
@@ -294,6 +340,72 @@ describe("phase 2: a root question at contribute waits, then acts from the timer
     expect(g.sends).toHaveLength(1);
     expect(g.sends[0]!.text).toContain(IMPLICIT_NOTE);
     expect(g.sends[0]!.text).toContain(`thread_ts="${ts}"`);
+  });
+  describe("the router's checks run again when the timer fires", () => {
+    const QUESTION = "how do we roll back the release safely today?";
+    it("a session that exists for the thread by the time it fires (any row) is left alone", async () => {
+      const g = (gw = makeGw(yes));
+      setEngage("contribute", "on");
+      __setDebounceForTests(120);
+      const ts = nextTs();
+      g.state.after = [m(ts, WORLD.manager, QUESTION)];
+      await deliver(g, QUESTION, ts);
+      await deliver(g, "<@USLAUDEBOT> have a look at that please", nextTs(), ts);
+      await Bun.sleep(300);
+      await settle();
+      expect(g.sends).toHaveLength(1);
+      expect(g.sends[0]!.text).not.toContain(IMPLICIT_NOTE);
+    });
+    it("a reply by anyone (the agent, a bot, the author) counts as an answer at the re-check", async () => {
+      const g = (gw = makeGw(yes));
+      setEngage("contribute", "on");
+      __setDebounceForTests(60);
+      const ts = nextTs();
+      g.state.after = [m(ts, WORLD.manager, QUESTION, { reply_count: 1, reply_users: [WORLD.manager] })];
+      await deliver(g, QUESTION, ts);
+      await Bun.sleep(250);
+      await settle();
+      expect(g.sends).toEqual([]);
+    });
+    it("/mention-only set during the wait: nothing runs", async () => {
+      const g = (gw = makeGw(yes));
+      setEngage("contribute", "on");
+      __setDebounceForTests(120);
+      const ts = nextTs();
+      g.state.after = [m(ts, WORLD.manager, QUESTION)];
+      await deliver(g, QUESTION, ts);
+      await MentionOnly.set({ channelId: CH, threadTs: ts, createdBy: WORLD.manager, teamId: TEAM });
+      await Bun.sleep(300);
+      await settle();
+      expect(g.sends).toEqual([]);
+      await MentionOnly.clear(CH, ts);
+    });
+    it("the mode switched to shadow during the wait: nothing runs", async () => {
+      const g = (gw = makeGw(yes));
+      setEngage("contribute", "on");
+      __setDebounceForTests(120);
+      const ts = nextTs();
+      g.state.after = [m(ts, WORLD.manager, QUESTION)];
+      await deliver(g, QUESTION, ts);
+      setEngage("contribute", "shadow");
+      await Bun.sleep(300);
+      await settle();
+      expect(g.sends).toEqual([]);
+    });
+    it("the kill switch set during the wait: nothing runs, and it is counted", async () => {
+      const g = (gw = makeGw(yes));
+      setEngage("contribute", "on");
+      __setDebounceForTests(120);
+      const ts = nextTs();
+      g.state.after = [m(ts, WORLD.manager, QUESTION)];
+      const before = actCount("forced_shadow");
+      await deliver(g, QUESTION, ts);
+      process.env.SLAUDE_ENGAGE_FORCE_SHADOW = "1";
+      await Bun.sleep(300);
+      await settle();
+      expect(g.sends).toEqual([]);
+      expect(actCount("forced_shadow") - before).toBe(1);
+    });
   });
   it("answered by a colleague meanwhile: nothing runs", async () => {
     const g = (gw = makeGw(yes));
@@ -458,5 +570,124 @@ channels:
     log.mockRestore();
     expect(acts).toHaveLength(1);
     expect(actCount("lost_claim") - lost).toBe(1);
+    // One handleMessage call for the message: exactly one turn reached the agent (the loser did nothing, and records nothing).
+    expect(g.sends.filter((x) => x.text.includes(IMPLICIT_NOTE))).toHaveLength(1);
+    expect(g.sends).toHaveLength(1);
+  });
+});
+
+describe("phase 2: mode on, and still nothing acts for", () => {
+  const raw = (g: Gw, o: Record<string, unknown>) =>
+    g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ts: nextTs(), text: NAMED, ...o }, client: g.client, context: { teamId: TEAM } });
+  it("a /mention-only thread", async () => {
+    const g = (gw = makeGw(null));
+    const root = nowTs(-100);
+    await MentionOnly.set({ channelId: CH, threadTs: root, createdBy: WORLD.manager, teamId: TEAM });
+    await deliver(g, NAMED, nextTs(), root);
+    await settle();
+    expect(g.sends).toEqual([]);
+    await MentionOnly.clear(CH, root);
+  });
+  it("a disengaged thread (a pass gave it back): the message is recorded, not run", async () => {
+    const g = (gw = makeGw(null));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([PASS]);
+    await deliver(g, NAMED, nextTs(), root);
+    await settle();
+    await deliver(g, NAMED, nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(2);
+    expect(g.sends[1]!.text).toMatch(/do NOT reply/i);
+    expect(g.sends[1]!.text).not.toContain(IMPLICIT_NOTE);
+  });
+  it("an ignored thread", async () => {
+    const g = (gw = makeGw(null));
+    const root = nowTs(-100);
+    await Ignores.create({ targetType: "thread", channelId: CH, threadTs: root, teamId: TEAM, createdBy: WORLD.manager });
+    await deliver(g, NAMED, nextTs(), root);
+    await settle();
+    expect(g.sends).toEqual([]);
+  });
+  it("a bot author", async () => {
+    const g = (gw = makeGw(null));
+    await raw(g, { user: "U0SOMEBOT", bot_id: "B0OTHERBOT" });
+    await settle();
+    expect(g.sends).toEqual([]);
+  });
+  it("a subtype outside the allowlist", async () => {
+    const g = (gw = makeGw(null));
+    await raw(g, { user: WORLD.manager, subtype: "channel_join" });
+    await settle();
+    expect(g.sends).toEqual([]);
+  });
+  it("an edited message (message_changed carries no user)", async () => {
+    const g = (gw = makeGw(null));
+    await raw(g, { subtype: "message_changed", message: { user: WORLD.manager, text: NAMED, ts: "1.1" } });
+    await settle();
+    expect(g.sends).toEqual([]);
+  });
+  it("level mention at the channel-session site", async () => {
+    __setProactiveSoulSource(() => `\n## Channel <#${CH}>\n### Session\n- Mode: channel\n`);
+    setEngage("mention", "on");
+    const g = (gw = makeGw(null));
+    await deliver(g, NAMED, nextTs());
+    await settle();
+    expect(g.sends).toHaveLength(1);
+    expect(g.sends[0]!.text).toMatch(/do NOT reply/i);
+  });
+});
+
+describe("phase 2: a failed act in a channel session still records the message", () => {
+  it("handleMessage throwing once: the recording lands", async () => {
+    __setProactiveSoulSource(() => `\n## Channel <#${CH}>\n### Session\n- Mode: channel\n`);
+    const g = (gw = makeGw(null));
+    const real = OneOnOne.find;
+    let thrown = false;
+    const spy = spyOn(OneOnOne, "find").mockImplementation(((...a: Parameters<typeof real>) => {
+      if (!thrown && new Error().stack?.includes("handleMessageInOrder")) {
+        thrown = true;
+        throw new Error("boom");
+      }
+      return real(...a);
+    }) as typeof real);
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    await deliver(g, NAMED, nextTs());
+    await settle();
+    spy.mockRestore();
+    err.mockRestore();
+    expect(thrown).toBe(true);
+    expect(g.sends).toHaveLength(1);
+    expect(g.sends[0]!.text).toMatch(/do NOT reply/i);
+  });
+});
+
+describe("phase 2: a recording coalesced with a running turn does not change its must-reply", () => {
+  const record = async (g: Gw, root: string) => {
+    await MentionOnly.set({ channelId: CH, threadTs: root, createdBy: WORLD.manager, teamId: TEAM });
+    await deliver(g, "a side note nobody asked the agent about", nextTs(), root);
+    await settle();
+    await MentionOnly.clear(CH, root);
+  };
+  it("a recording behind a running implicit turn leaves it relaxed", async () => {
+    const g = (gw = makeGw(null));
+    g.setPlan(["__hold"]);
+    const root = nextTs();
+    await deliver(g, NAMED, root);
+    await settle();
+    expect(g.guard(g.sends[0]!.id)).toBeNull();
+    await record(g, root);
+    expect(g.sends.at(-1)!.text).toMatch(/do NOT reply/i);
+    expect(g.guard(g.sends[0]!.id)).toBeNull();
+  });
+  it("a recording behind a running mention turn leaves it guarded", async () => {
+    const g = (gw = makeGw(null));
+    g.setPlan(["__hold"]);
+    const root = nextTs();
+    await g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", user: WORLD.manager, team: TEAM, ts: root, text: "<@USLAUDEBOT> hello there" }, client: g.client, context: { teamId: TEAM } });
+    await settle();
+    expect(g.guard(g.sends[0]!.id)).toBe(MUST_REPLY_INSTRUCTION);
+    await record(g, root);
+    expect(g.guard(g.sends[0]!.id)).toBe(MUST_REPLY_INSTRUCTION);
   });
 });
