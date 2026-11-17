@@ -111,6 +111,86 @@ An @mention can arrive in the middle of a thread the agent has not seen. The ses
 
 Every earlier message is another person's text, so each piece (message text, display name, bot name, file name) is normalised (NFKC, format and zero-width characters removed, line breaks flattened) and every `<` in it is escaped before it is wrapped. A message that contains `</thread-head>` or a forged `<channel ...>` cannot close the block or pose as a person's request. The head is not stored in the episodic turn record.
 
+### 1.7 Joining in without an @mention (implicit engagement, phase 0)
+
+By default an agent answers when it is @mentioned, or when a message arrives in a thread it is already engaged in. Implicit engagement is a per-channel setting that lets it also take part when a message is, in effect, said to it. **Today only the first step exists, and it is observe only**: the agent decides what it would have done and counts it, and does nothing else. This section says what that means, how to read the numbers, and what is not built yet.
+
+#### The setting
+
+Two places in the persona's `agent.yaml` (keys in the [reference](../reference/configuration.md#implicit-engagement)):
+
+```yaml
+aliases: [ana, anabot]            # other names the agent answers to
+channels:
+  "slack:channel:CTEAMCHAN":
+    engage:
+      level: addressed            # mention (default) | addressed | contribute
+      mode: shadow                # shadow (default) | on
+```
+
+- **`level`** is how far the agent may go. `mention`: only when mentioned or already engaged in the thread (today's behaviour, and the default). `addressed`: also when a message is in effect said to it (its name used as a vocative, or a request from the person it just answered). `contribute`: also when it plausibly has something useful to add to a top-level question.
+- **`mode`** is whether a decision is acted on. `shadow` decides and records but behaves exactly as `mention` does; `on` is reserved for acting on the decision. It is per channel and independent of the decision gate's own mode (`SLAUDE_DECISION_CONFIG`), so a channel can be `on` while another is in `shadow`, and the existing mention and engaged-thread handling is untouched.
+- **Default level.** A channel with no `engage.level` uses `SLAUDE_ENGAGE_DEFAULT` (`mention`, `addressed` or `contribute`; anything else means `mention`). With nothing configured anywhere the answer is `mention` in `shadow`, which changes nothing.
+- **Restricted channels are never eligible.** A channel that is neither listed as public nor trusted for the persona stays at `mention` whatever is configured.
+- **`aliases`** are extra names the agent answers to (its own name always counts). Each is one word of letters and digits, 3 to 32 characters, not a common word (`team`, `help`, `thanks` and similar are refused), not the agent's own name, not repeated (case and width are ignored), and not mixing look-alike scripts such as Latin and Cyrillic; at most 8. Two agents may not claim the same name, and an alias may not be another agent's name. A bad alias stops validation with a message that never repeats the value.
+- **Classic agents** answer a root mention inside a thread, so "the agent spoke last" at a channel's top level holds mainly in channel-session channels or after a proactive post. In a classic channel, `addressed` works mostly through names and replies to the agent's thread messages.
+
+#### What phase 0 does
+
+For a channel above `mention`, each message the agent was not going to answer is run through the tier ladder (below), and the result is counted and logged. That is all:
+
+- no model call and no decision adapter is involved;
+- no Slack history read (the ladder uses only the message itself and a small record of who spoke last);
+- nothing is posted, no reaction, no status, no session row;
+- at `mention` (the default) it returns before reading anything.
+
+Each decision increments `slaude_engage_total{tier,outcome,level}` and logs one line with no message text:
+
+```
+[engage] phase0 channel=C... level=addressed tier=3 would=classify reason=name_mid
+```
+
+`tier` is `0`, `1`, `2`, `3` or `existing`; `outcome` is `pass`, `run`, `classify` or `existing`; `level` is `addressed` or `contribute`. A text longer than 4,000 characters is cut to that before the ladder reads it, and `slaude_engage_truncated_total` counts each cut. With several Slack apps in one channel each app's copy observes the message once, so the counter counts per copy.
+
+#### The tier ladder, in plain words
+
+The first rule that settles a message wins.
+
+- **Tier 0, pass (no cost).** The channel is at `mention` or restricted; the message is an edit-like or system subtype; a bot wrote it; the thread is `/1on1`-locked, mention-only or disengaged; it names someone else (an @person, a user group, `@here`, `@channel`, a "Budi, ..." vocative); it is only an acknowledgement ("ok", "thanks, that worked", an emoji); or another registered agent spoke last. Quotes, code, links and emails are stripped before names are looked for, and forwarded text is never matched.
+- **Tier 1, run.** An @mention of the agent; its name or alias at the start followed by a comma and a request or second-person sentence ("Ana, can you look at this"); or a reply in a thread the agent is engaged in (counted as `existing`). A colon form ("Ana: ...") is not tier 1, because pasted transcripts start that way.
+- **Tier 2, run (`addressed` and up).** The agent spoke last here within `SLAUDE_ENGAGE_WINDOW_MINUTES`, the author is the person it answered, and the message looks like a request (a question mark, an imperative, second person) or carries a file, and does not start with an acknowledgement.
+- **Tier 3, classify.** What the deterministic rules cannot settle: the name used mid-sentence or with a colon; a follow-up that failed the tier 2 test; and, at `contribute` only, a long top-level question. Tier 3 is where a classifier would be asked. In phase 0 nothing is asked, so it is only counted.
+- Everything else is a tier 0 pass with the reason `no_band`.
+
+#### Reading the counters
+
+Phase 0 exists to answer one question before anything is switched on: how many messages would reach the classifier. Put a channel at `addressed` (then `contribute`) in `shadow`, let it run for a few busy days, and compare:
+
+```promql
+# share of the channel's observed messages that would reach tier 3
+sum(increase(slaude_engage_total{tier="3"}[1d])) / sum(increase(slaude_engage_total[1d]))
+
+# the same, split by what each rung would do
+sum by (tier, outcome, level) (increase(slaude_engage_total[1d]))
+```
+
+Rough targets to check against, not measurements: at most about 5 percent of a channel's human messages reaching tier 3 at `addressed`, and about 15 percent at `contribute`. For a channel with 1,000 human messages a day that is on the order of 20 to 70 classifier calls at `addressed` and 400 to 600 at `contribute`. The counter has no channel label (the log line has), so use the `[engage]` lines to find which channel is noisy. A large `tier="2", outcome="run"` count says the agent would have answered follow-ups without being asked, which is the number to sanity-check by reading a sample of the log reasons.
+
+#### The classifier is a seam, not a vendor
+
+Tier 3 asks a classifier "run or pass". The classifier is a small interface (`classify(candidate)` returning `run` or `pass`) in front of the decision gate, and the gate in turn talks to a neutral decision adapter. Any adapter registered with the decision gate can serve it; engagement code names none, and a test fails if one is named outside that adapter's own file. The questions are written about "the agent", and an answer is a choice with a confidence, so changing the adapter is a registration and a config change, with no change to the tiers.
+
+The adapter and its credentials are deployment configuration (`SLAUDE_DECISION_CONFIG`, with the key given by secret reference), never per channel and never in git. Per channel you choose only the level and the mode. With no adapter configured, tiers 0 to 2 still work (they need no model) and tier 3 is always a pass. A classifier failure of any kind (an error, a timeout, no adapter) is a pass, never a run: the gate's rules fallback is not used for an implicit decision, because it would read every candidate as a request.
+
+#### What leaves the box
+
+- **In phase 0, nothing.** No message text is sent anywhere, the log line carries no text, and the last-speaker record holds only message ids, a persona name and a user id for the window's length.
+- **In later phases**, only tier 3 candidates are sent to the configured adapter, only for channels that opted in with a level above `mention`, only the candidate message and a capped, filtered slice of recent messages (authors the agent would not admit, ignored users and text the owner's inbound guardrails deny are left out), with the agent's name and aliases rewritten to a neutral placeholder. Tier 0 messages are never sent. Whether text from other bots is ever sent is still an open decision.
+
+#### Not built yet
+
+Phase 0 is the first step of a longer plan. These do **not** exist: classifier calls for tier 3; per-channel and per-day classifier budgets; pass memory (not asking again after a "no"); a circuit breaker; acting on a decision (`mode: on` changes nothing yet); a users cache (so a human who shares the agent's name is not detected, and "Name, ..." counts as a tier 1 run); and detection that two people took turns in a thread (so the "humans alternating" pass never fires). Do not rely on `addressed` or `contribute` to change what the agent answers until a release note says it does.
+
 ---
 
 ## 2. Channel controls and identity
