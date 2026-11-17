@@ -21,6 +21,7 @@ import { SKILL_SLUG_RE } from "../skills/loader";
 import { CHANNEL_ID_RE, USER_ID_RE } from "../refs/ids";
 import { anchored, CHANNEL_REF_SRC, parseRef, SRC, USER_REF_SRC } from "../refs/parse";
 import type { RefRole } from "../refs/types";
+import { aliasIssues, ALIAS_MAX_COUNT, ALIAS_MIN_LENGTH } from "./aliases";
 import { ENV_ALLOW_MAX, ENV_DEF_NAME_RE } from "../remote/definitions/name";
 
 export { CHANNEL_ID_RE, USER_ID_RE };
@@ -35,6 +36,8 @@ export const BOUNDARY_RE = /^(?:channel:[CGD][A-Z0-9]+|trust:(?:public|trusted)|
 export const DESCRIPTION_MAX = 2000;
 /** The one `session` value there is. */
 export const SESSION_VALUES = ["channel"] as const;
+export const ENGAGE_LEVELS = ["mention", "addressed", "contribute"] as const;
+export const ENGAGE_MODES = ["shadow", "on"] as const;
 
 const NO_VALUE = "has no value: list entries, write [] for none, or remove the key for all";
 
@@ -201,6 +204,26 @@ const accessSchema = z
 
 const CHANNEL_KEY_RE = new RegExp(anchored(`${CHANNEL_REF_SRC}|${SRC.bareChannel}`));
 
+const engageEnum = <T extends readonly [string, ...string[]]>(values: T, what: string) =>
+  z.enum(values as unknown as [T[number], ...T[number][]], {
+    errorMap: (_issue, ctx) =>
+      ctx.data === null ? { message: "has no value: set it, or remove the key" } : { message: `must be ${what}` },
+  });
+
+const engageSchema = z
+  .object(
+    {
+      level: engageEnum(ENGAGE_LEVELS, "mention, addressed or contribute")
+        .describe("When the agent takes part without an @mention in this channel: mention (only when mentioned, or in a thread it is already in; the default), addressed (also when a message is in effect said to it), or contribute (also when it plausibly has something useful to add). Leave the key out for the deployment default (SLAUDE_ENGAGE_DEFAULT, itself mention unless set). Restricted channels always stay at mention. Example: addressed")
+        .optional(),
+      mode: engageEnum(ENGAGE_MODES, "shadow or on")
+        .describe("shadow decides and logs but acts exactly as mention does; on acts on the decision. Leave the key out for shadow. Example: shadow")
+        .optional(),
+    },
+    typeMessage({ other: "must be a mapping with level and mode" }),
+  )
+  .strict();
+
 const channelEntry = z
   .object(
     {
@@ -217,6 +240,7 @@ const channelEntry = z
         .boolean(typeMessage({ other: "must be true or false", null: "has no value: set it, or remove the key" }))
         .describe("true lets the agent wake in this channel on its own and speak up; false keeps it silent here. Setting it implies a channel session. Leave the key out to change nothing.")
         .optional(),
+      engage: optional(engageSchema.describe("Whether the agent takes part in this channel without an @mention, and whether that is live or only logged. Leave the key out for the deployment default at shadow.")),
     },
     typeMessage({ other: "must be a mapping" }),
   )
@@ -298,6 +322,18 @@ export const AgentSchema = z
           .string(typeMessage({ other: "must be a string" }))
           .max(DESCRIPTION_MAX, `is longer than ${DESCRIPTION_MAX} characters`)
           .describe(`One or two lines on what the agent is for; it becomes the agent's role. At most ${DESCRIPTION_MAX} characters. Example: Handles support questions for the platform team.`),
+      ),
+      aliases: optional(
+        z
+          .array(
+            z.string(typeMessage({ other: "must be a string" })).min(ALIAS_MIN_LENGTH, `must be at least ${ALIAS_MIN_LENGTH} characters`),
+            typeMessage({ other: "must be a list of names", null: "has no value: list names, or remove the key" }),
+          )
+          .max(ALIAS_MAX_COUNT, `has more than ${ALIAS_MAX_COUNT} aliases`)
+          .superRefine((list, ctx) => {
+            for (const i of aliasIssues(list)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: i.message, ...(i.index === null ? {} : { path: [i.index] }) });
+          })
+          .describe(`Other names the agent answers to when a channel lets it join in without an @mention. Each is one word of at least ${ALIAS_MIN_LENGTH} characters, not a common word, and different from the others without regard to case; at most ${ALIAS_MAX_COUNT}. The agent's own name always counts. Example: [ana, anabot]`),
       ),
       model: optional(text("a string").describe("Model the agent runs on, provider-qualified. Leave out for the deployment default. Example: provider/model-name")),
       // A bare id is any text without a colon (an unquoted one can read as a YAML number); the typed form is checked as a user reference.

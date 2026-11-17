@@ -20,7 +20,7 @@ import { PayloadError } from "./errors";
 import { GUARDRAIL_SLUG_RE, MAX_GUARDRAIL_BYTES } from "../../guardrails/format";
 import { MAX_GUARDRAILS } from "../../guardrails/files";
 import { SKILL_SLUG_RE } from "../../skills/loader";
-import { SoulDataSchema } from "../../soul/data";
+import { SoulDataStrictSchema } from "../../soul/data";
 import { ENV_ALLOW_MAX, ENV_DEF_NAME_RE } from "../../remote/definitions/name";
 
 export { PayloadError };
@@ -125,7 +125,7 @@ const definitionSpec = z
       })
       .strict()
       .optional(),
-    soulData: SoulDataSchema,
+    soulData: SoulDataStrictSchema,
   })
   .strict();
 export type PersonaDefinitionSpec = z.infer<typeof definitionSpec>;

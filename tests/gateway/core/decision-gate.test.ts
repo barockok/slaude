@@ -298,7 +298,7 @@ describe("decision gate at the Slack ingress", () => {
 
   it("an off runner is never consulted", async () => {
     let calls = 0;
-    const off: GateRunner = { mode: "off", contextMessages: 8, gate: async () => { calls++; return undefined; } };
+    const off: GateRunner = { mode: "off", contextMessages: 8, consult: async () => undefined, consultImplicit: async () => undefined, gate: async () => { calls++; return undefined; } };
     expect(await scenario(makeGw(off))).toEqual(TODAY);
     expect(calls).toBe(0);
   });
@@ -306,7 +306,7 @@ describe("decision gate at the Slack ingress", () => {
   it("no thinking_face on a mention the other copy already handled", async () => {
     // A recomputed decision: the first copy runs, the second is doubted.
     let n = 0;
-    const flip: GateRunner = { mode: "on", contextMessages: 8, gate: async () => (n++ === 0 ? "run" : "record_doubt") };
+    const flip: GateRunner = { mode: "on", contextMessages: 8, consult: async () => { const a = n++ === 0 ? "run" as const : "record_doubt" as const; return { action: a, source: "adapter" as const }; }, consultImplicit: async () => undefined, gate: async () => (n++ === 0 ? "run" : "record_doubt") };
     const g = makeGw(flip);
     const ts = nextTs();
     await mention(g, ts, "<@USLAUDEBOT> help me");
@@ -347,7 +347,7 @@ describe("decision gate at the Slack ingress", () => {
   });
 
   it("a gate that throws keeps today's path", async () => {
-    const boom: GateRunner = { mode: "on", contextMessages: 8, gate: async () => { throw new Error("boom"); } };
+    const boom: GateRunner = { mode: "on", contextMessages: 8, consult: async () => { throw new Error("boom"); }, consultImplicit: async () => undefined, gate: async () => { throw new Error("boom"); } };
     expect(await scenario(makeGw(boom))).toEqual(TODAY);
   });
 });
@@ -711,5 +711,38 @@ describe("an owner inbound guardrail and the gate", () => {
     await flushAudits();
     const rows = await db.query<{ action: string }>(`SELECT action FROM audit_events WHERE action LIKE 'guardrail.%'`);
     expect(rows.map((r) => r.action)).toEqual(["guardrail.inbound.denied"]);
+  });
+});
+
+describe("consultGateWithSource", () => {
+  it("an implicit consult tells the model the thread is not engaged, whatever the gate mode", async () => {
+    for (const mode of ["off", "shadow", "on"] as const) {
+      const f = fakeAdapter();
+      const g = makeGw(runner(mode, f.a));
+      const args = msg(g.t.client, "can anyone help with this?", nextTs());
+      const r = await g.h.__consultGate!(args, { mentionsAgent: false, implicit: "contribute", continuation: false }, "drop");
+      expect(f.states.length).toBe(1);
+      expect(f.states[0]).toMatchObject({ engaged: false, implicit: "contribute", continuation: false, mentionsAgent: false });
+      expect(r).toEqual({ action: "run", source: "adapter" });
+    }
+  });
+
+  it("an implicit consult with no adapter is a drop from the rules source, never a run", async () => {
+    const g = makeGw(runner("on", null));
+    const args = msg(g.t.client, "can anyone help?", nextTs());
+    expect(await g.h.__consultGate!(args, { mentionsAgent: false, implicit: "contribute" }, "drop")).toEqual({ action: "drop", source: "rules" });
+  });
+
+  it("the mention paths report their source honestly", async () => {
+    const f = fakeAdapter();
+    const args = (g: ReturnType<typeof makeGw>) => msg(g.t.client, "<@USLAUDEBOT> can you help?", nextTs());
+    const on = makeGw(runner("on", f.a));
+    expect((await on.h.__consultGate!(args(on), { mentionsAgent: true }, "run"))?.source).toBe("adapter");
+    const rules = makeGw(runner("on", null));
+    expect((await rules.h.__consultGate!(args(rules), { mentionsAgent: true }, "run"))?.source).toBe("rules");
+    const shadow = makeGw(runner("shadow", f.a));
+    expect(await shadow.h.__consultGate!(args(shadow), { mentionsAgent: true }, "run")).toEqual({ action: "run", source: "shadow" });
+    const off = makeGw(runner("off", f.a));
+    expect(await off.h.__consultGate!(args(off), { mentionsAgent: true }, "run")).toBeUndefined();
   });
 });

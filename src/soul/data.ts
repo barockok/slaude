@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { aliasIssues } from "../persona/aliases";
 
 /**
  * Structured projection of the operator's SOUL.md. Produced by an ephemeral
@@ -41,6 +42,13 @@ export const ChannelOverrideSchema = z.object({
   /** How `mandate` combines with the global one; absent means `override`. */
   mandateMode: lenientMode,
   approvers: z.array(ApproverEntrySchema).default([]),
+});
+
+/** Per-channel implicit-engagement setting from agent.yaml `channels.<ref>.engage`; absent keys take the defaults at read time. */
+export const ChannelEngageSchema = z.object({
+  channel: z.string().regex(/^[CGD][A-Z0-9]+$/),
+  level: z.enum(["mention", "addressed", "contribute"]).optional(),
+  mode: z.enum(["shadow", "on"]).optional(),
 });
 
 /** A sub-mandate for a kind of place, from a `## Scope dm|public|trusted` block. */
@@ -157,6 +165,18 @@ export const SoulDataSchema = z.object({
   /** Per-channel overrides of mandate / approvers. Empty = global only.
    *  Resolved at runtime by `effectiveSoulForChannel(channelId)`. */
   channelOverrides: z.array(ChannelOverrideSchema).default([]),
+  /** Per-channel `engage` settings (agent.yaml only). Empty = every channel at the deployment default. */
+  channelEngage: z.array(ChannelEngageSchema).default([]),
+  /**
+   * Extra names the persona answers to (agent.yaml `aliases`), NFKC-normalised.
+   * Reading is lenient: a stored list that fails the alias rules (an older or
+   * hand-edited row) reads as none, never as an error that would drop the
+   * whole structure. {@link SoulDataStrictSchema} refuses it at parse and sync time.
+   */
+  aliases: z.unknown().transform((v): string[] => {
+    const r = z.array(z.string()).safeParse(v);
+    return r.success && aliasIssues(r.data).length === 0 ? r.data : [];
+  }),
   /** Sub-mandates for direct messages and the two channel classes. */
   scopeMandates: z.array(ScopeMandateSchema).default([]),
   /** Typed Slack references behind the access arrays above (agent.yaml only; a soul extracted from prose has none). */
@@ -165,7 +185,18 @@ export const SoulDataSchema = z.object({
   accessRefs: z.array(AccessRefSchema).default([]),
 });
 
+/** The structure as a parse or sync must see it: a bad alias list is refused. */
+export const SoulDataStrictSchema = SoulDataSchema.extend({
+  aliases: z
+    .array(z.string())
+    .default([])
+    .superRefine((list, ctx) => {
+      for (const i of aliasIssues(list)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: i.message, ...(i.index === null ? {} : { path: [i.index] }) });
+    }),
+});
+
 export type ApproverEntry = z.infer<typeof ApproverEntrySchema>;
+export type ChannelEngage = z.infer<typeof ChannelEngageSchema>;
 export type ChannelOverride = z.infer<typeof ChannelOverrideSchema>;
 export type ScopeMandate = z.infer<typeof ScopeMandateSchema>;
 export type SoulData = z.infer<typeof SoulDataSchema>;

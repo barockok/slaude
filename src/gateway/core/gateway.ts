@@ -121,9 +121,9 @@ import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { trackBrainWork, whileClosing } from "../../knowledge/brain-work";
 import { agentSourceId, channelTrustFor, resolveBrainScope, type ChannelTrust } from "../../knowledge/scope";
 import { gather } from "../../knowledge/gather";
-import { gateRunnerFromEnv, type GateRunner } from "../gate/runner";
+import { gateKey, gateRunnerFromEnv, type GateConsult, type GateRunner } from "../gate/runner";
 import { buildGateInput, isAgentAuthor, type GateContextDeps } from "../gate/context";
-import type { GateAction, Trust } from "../gate/types";
+import type { GateAction, ImplicitLevel, Trust } from "../gate/types";
 import { providerSecretResolver } from "../api/tenants";
 import { parseRef } from "../../secrets";
 import { channelWorkspaceDir, proactiveWorkspaceDir } from "../../agent/workspace-claim";
@@ -215,6 +215,12 @@ export interface GatewayHandle {
   /** `/brain-import/*` — persona memory migration (own token). Optional so
    *  test doubles needn't implement it. */
   fetchBrainImport?(req: Request): Promise<Response | null>;
+  /** TEST SEAM ONLY. The decision-gate consult, so the implicit path (no call site yet) can be pinned. */
+  __consultGate?(
+    args: any,
+    o: { mentionsAgent: boolean; personaId?: string; continuation?: boolean; implicit?: ImplicitLevel },
+    actual: GateAction,
+  ): Promise<GateConsult | undefined>;
   /** TEST/SIM SEAM ONLY. The pending-gate source behind /v1/pending. */
   __pendingSource(): PendingSource;
   /** TEST/SIM SEAM ONLY. Live per-session MCP contexts built by the resolver.
@@ -4488,16 +4494,33 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * The gate's action for this event, or undefined for today's path: the gate
    * off, the thread under a /1on1 lock, a message the ingress would drop or
    * handle itself (a text command, a pasted connect callback), or any error.
-   * `actual` is "run": what today's code does on every gated path.
+   * `actual` is what the caller does today for this message: "run" on every
+   * mention path (every existing call site passes "run").
+   *
+   * An implicit consult (`o.implicit` set: no mention, the channel opted in)
+   * reads `undefined` as PASS, never run: off, /1on1, an ingress drop, a
+   * timeout, an error and a missing adapter all mean the message does not get
+   * a turn. For such a consult the returned `source` says who decided; a
+   * `rules` source is a pass (the runner already turns it into "drop").
    */
-  const consultGate = async (
+  const consultGateWithSource = async (
     args: any,
-    o: { mentionsAgent: boolean; personaId?: string },
-  ): Promise<GateAction | undefined> => {
+    o: { mentionsAgent: boolean; personaId?: string; continuation?: boolean; implicit?: ImplicitLevel },
+    actual: GateAction,
+  ): Promise<GateConsult | undefined> => {
     const runner = gateRunner;
-    if (!runner || runner.mode === "off") return undefined;
+    // An implicit consult is independent of the deployment gate mode (the
+    // channel's engage mode rules); the mention paths honor it as always.
+    if (!runner || (!o.implicit && runner.mode === "off")) return undefined;
     const e: any = args.event;
-    const key = `${e.channel}:${e.ts}`;
+    const key = gateKey({
+      channel: e.channel,
+      ts: e.ts,
+      persona: o.personaId,
+      app: args.context?.apiAppId,
+      continuation: o.continuation,
+      implicit: o.implicit,
+    });
     try {
       const threadTs: string = e.thread_ts || e.ts;
       if (await OneOnOne.find(e.channel, threadTs)) return undefined;
@@ -4506,7 +4529,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const teamId: string | undefined = args.context?.teamId ?? e.team;
       const client = args.client ?? t.client;
       const input = async () => {
-        const engaged = o.mentionsAgent
+        // An implicit message has no engaged thread to lean on: the model must
+        // not be told it is already in the conversation.
+        const engaged = o.implicit
+          ? false
+          : o.mentionsAgent
           ? !!teamId &&
             !!(await Sessions.findByThread({ team_id: teamId, channel_id: e.channel, thread_ts: threadTs, persona_id: o.personaId ?? "default" }))?.engaged
           : true;
@@ -4522,18 +4549,28 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             : null,
           selfIds: await gateSelfIds(args, o.personaId),
         };
-        return buildGateInput(
+        const gi = await buildGateInput(
           { channel: e.channel, ts: e.ts, thread_ts: e.thread_ts, text: (e.text ?? "").toString() },
           { mentionsAgent: o.mentionsAgent, engaged, channelTrust: GATE_TRUST[channelTrustFor(e.channel, trustSoulFor(o.personaId))], contextMessages: runner.contextMessages },
           deps,
         );
+        return o.implicit ? { ...gi, implicit: o.implicit, continuation: !!o.continuation } : gi;
       };
-      return await runner.gate(key, input, "run");
+      if (o.implicit) {
+        return await runner.consultImplicit(key, input, { level: o.implicit, continuation: !!o.continuation });
+      }
+      return await runner.consult(key, input, actual);
     } catch {
       console.error(`[gate] error key=${key}`);
       return undefined;
     }
   };
+
+  const consultGate = async (
+    args: any,
+    o: { mentionsAgent: boolean; personaId?: string },
+    actual: GateAction,
+  ): Promise<GateAction | undefined> => (await consultGateWithSource(args, o, actual))?.action;
 
   /** The doubt reaction on a mention; the other copy of the same mention may have added it already. */
   const reactDoubt = async (args: any, personaId?: string): Promise<void> => {
@@ -4651,7 +4688,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // One agent's failure does not lose the message for the others.
       try {
         if (isMentioned) {
-          const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
+          const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }, "run") : undefined;
           if (act === "record_doubt") await reactDoubt(args, personaId);
           await handleMessage(args, { personaId, channelSession: true, ...(act === "record_doubt" ? { suppress: true } : {}) });
         } else {
@@ -4676,7 +4713,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Handled above as a channel-session turn; a classic agent of this app continues below.
       if (inChannelMode(e, personaId)) return;
     }
-    const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
+    const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }, "run") : undefined;
     if (act === "record_doubt") return await recordDoubt(args, personaId);
     const engagedBefore = await engageOnMention(args.context?.teamId ?? e.team, e.channel, ts, e.ts, personaId);
     await handleMessage(args, { personaId, engagedBefore });
@@ -4776,7 +4813,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (mentionsBot) {
       // Already run as a channel-session turn above.
       if (inChannelMode(e, appPersona)) return;
-      const act = gated() ? await consultGate(args, { mentionsAgent: true, personaId: appPersona }) : undefined;
+      const act = gated() ? await consultGate(args, { mentionsAgent: true, personaId: appPersona }, "run") : undefined;
       if (act === "record_doubt") return await recordDoubt(args, appPersona);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, appPersona);
       return await handleMessage(args, { personaId: appPersona, engagedBefore });
@@ -4798,7 +4835,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const personaId = mentionedPersona.name;
       // Already run as a channel-session turn above.
       if (inChannelMode(e, personaId)) return;
-      const act = gated() ? await consultGate(args, { mentionsAgent: true, personaId }) : undefined;
+      const act = gated() ? await consultGate(args, { mentionsAgent: true, personaId }, "run") : undefined;
       if (act === "record_doubt") return await recordDoubt(args, personaId);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, mentionedPersona.name);
       return await handleMessage(args, { personaId: mentionedPersona.name, engagedBefore });
@@ -4867,7 +4904,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: appPersona ?? "default" });
       if (def?.engaged) {
         if (otherApp(def)) return;
-        const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: appPersona }) : undefined;
+        const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: appPersona }, "run") : undefined;
         if (act === "record") return await recordEngaged(args, appPersona);
         return await handleMessage(args, { personaId: appPersona });
       }
@@ -4877,7 +4914,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: p.name });
           if (row?.engaged) {
             if (otherApp(row)) return;
-            const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: p.name }) : undefined;
+            const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: p.name }, "run") : undefined;
             if (act === "record") {
               return await recordEngaged(args, p.name);
             }
@@ -4899,7 +4936,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // Engaged session outside the registry (e.g. persona removed from
         // config) — keep handling plain replies as that persona.
         const restoredPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
-        const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: restoredPersonaId }) : undefined;
+        const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: restoredPersonaId }, "run") : undefined;
         if (act === "record") {
           return await recordEngaged(args, restoredPersonaId);
         }
@@ -5258,6 +5295,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     fetchPortal: (req: Request) => portalApi.fetch(req),
     fetchDeploy: (req: Request) => deployApi.fetch(req),
     fetchBrainImport: (req: Request) => brainImportApi.fetch(req),
+    __consultGate: consultGateWithSource,
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),

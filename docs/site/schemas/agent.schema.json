@@ -20,6 +20,22 @@
       ],
       "description": "One or two lines on what the agent is for; it becomes the agent's role. At most 2000 characters. Example: Handles support questions for the platform team."
     },
+    "aliases": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 3
+          },
+          "maxItems": 8
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Other names the agent answers to when a channel lets it join in without an @mention. Each is one word of at least 3 characters, not a common word, and different from the others without regard to case; at most 8. The agent's own name always counts. Example: [ana, anabot]"
+    },
     "model": {
       "type": [
         "string",
@@ -540,6 +556,37 @@
                       "proactive": {
                         "type": "boolean",
                         "description": "true lets the agent wake in this channel on its own and speak up; false keeps it silent here. Setting it implies a channel session. Leave the key out to change nothing."
+                      },
+                      "engage": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "level": {
+                                "type": "string",
+                                "enum": [
+                                  "mention",
+                                  "addressed",
+                                  "contribute"
+                                ],
+                                "description": "When the agent takes part without an @mention in this channel: mention (only when mentioned, or in a thread it is already in; the default), addressed (also when a message is in effect said to it), or contribute (also when it plausibly has something useful to add). Leave the key out for the deployment default (SLAUDE_ENGAGE_DEFAULT, itself mention unless set). Restricted channels always stay at mention. Example: addressed"
+                              },
+                              "mode": {
+                                "type": "string",
+                                "enum": [
+                                  "shadow",
+                                  "on"
+                                ],
+                                "description": "shadow decides and logs but acts exactly as mention does; on acts on the decision. Leave the key out for shadow. Example: shadow"
+                              }
+                            },
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "description": "Whether the agent takes part in this channel without an @mention, and whether that is live or only logged. Leave the key out for the deployment default at shadow."
                       }
                     },
                     "additionalProperties": false

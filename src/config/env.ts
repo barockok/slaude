@@ -594,6 +594,14 @@ export const env = {
    */
   decisionConfigRaw: () => opt("SLAUDE_DECISION_CONFIG"),
   /**
+   * Deployment default engage level for a channel whose agent.yaml gives none:
+   * mention (today), addressed or contribute. Anything else reads as mention.
+   */
+  engageDefault: (): "mention" | "addressed" | "contribute" => {
+    const v = opt("SLAUDE_ENGAGE_DEFAULT", "mention").trim().toLowerCase();
+    return v === "addressed" || v === "contribute" ? v : "mention";
+  },
+  /**
    * Raw `SLAUDE_PRICE_TABLE` (phase D): inline JSON, or a file path when the
    * value does not start with `{`. Parsed by `loadPriceTable`. Empty when unset.
    */
