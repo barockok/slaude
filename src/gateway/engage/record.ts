@@ -39,7 +39,7 @@ export function noteAgentMessage(m: AgentMessage): void {
       ? [{ channel: m.channel, thread: m.thread, persona: who }]
       : [{ channel: m.channel, thread: m.ts, persona: who }, { channel: m.channel, thread: null, persona: who }];
     // The agent spoke: a classifier "no" earlier in this thread no longer covers later messages.
-    void engageState().clearPass(m.channel, m.thread ?? m.ts).catch(() => {});
+    void engageState().clearPass(m.channel, m.thread ?? m.ts, persona ?? "default").catch(() => {});
     for (const place of places) void lastSpeakers().put(place, rec, m.fromEcho ? { ifAbsent: true } : {}).catch(() => {});
   } catch {
     /* observing must never fail a post */

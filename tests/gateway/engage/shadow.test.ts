@@ -8,7 +8,7 @@ import { gateClassifier } from "../../../src/gateway/engage/gate-classifier";
 import { __setLastSpeakerStoreForTests, memoryLastSpeakerStore, type LastSpeakerStore } from "../../../src/gateway/engage/last-speaker";
 import { observeEngage, type ObserveInput } from "../../../src/gateway/engage/observe";
 import { noteAgentMessage } from "../../../src/gateway/engage/record";
-import { shadowIdle, type ShadowDeps } from "../../../src/gateway/engage/shadow";
+import { __setDebounceForTests, shadowIdle, type ShadowDeps } from "../../../src/gateway/engage/shadow";
 import { makeUsersCache } from "../../../src/gateway/engage/users";
 import type { BuiltInput } from "../../../src/gateway/engage/input";
 import type { EngageClassifier } from "../../../src/gateway/engage/types";
@@ -26,13 +26,13 @@ access:
 channels:
   ${CH}: { engage: { level: contribute, mode: on } }
 `;
-function persona(): Persona {
-  const { spec } = parseAgentYaml("ana", yaml);
+function persona(name = "ana", user = "UANA1"): Persona {
+  const { spec } = parseAgentYaml(name, yaml.replace("name: ana", `name: ${name}`).replace("UANA1", user).replace("You are Ana.", `You are ${name}.`));
   const { soulData, ...definition } = spec.definition;
-  return { name: "ana", slackUserId: "UANA1", soulMd: spec.soul, config: { slackUserId: "UANA1", name: "ana" }, outClient: null, model: null, runsOn: null, provider: null, kbSources: null, background: null, mcp: null, soulJson: soulData, definition } as Persona;
+  return { name, slackUserId: user, soulMd: spec.soul, config: { slackUserId: user, name }, outClient: null, model: null, runsOn: null, provider: null, kbSources: null, background: null, mcp: null, soulJson: soulData, definition } as Persona;
 }
-const registry = (p: Persona): PersonaRegistry => ({
-  lookupByUserId: (id) => (id === p.slackUserId ? p : null), lookupByName: (n) => (n === p.name ? p : null), list: () => [p],
+const registry = (...ps: Persona[]): PersonaRegistry => ({
+  lookupByUserId: (id) => ps.find((p) => p.slackUserId === id) ?? null, lookupByName: (n) => ps.find((p) => p.name === n) ?? null, list: () => ps,
   isMultiPersonaMode: () => true, isManaged: () => true, tombstonedPersonaFor: () => null, defaultPersona: () => ({ model: null, mcp: null, definition: null }),
 } as PersonaRegistry);
 
@@ -305,5 +305,111 @@ describe("tier 2 sampling and the tiers that never reach the classifier", () => 
     await run(obs(d, { text: "just chatting here" }));
     expect(asked).toHaveLength(0);
     expect(built).toBe(0);
+  });
+});
+
+
+describe("two different personas on one message", () => {
+  test("A's unsampled tier 2 does not take B's tier 3 call: B is classified once", async () => {
+    setPersonaRegistry(registry(persona("ana", "UANA1"), persona("robin", "UROBIN")));
+    const THREAD = nowTs(-30);
+    const e = { ts: uniq(), thread_ts: THREAD, text: "can you also check staging?" };
+    // ana spoke last to this person (a tier 2 run for her); robin did not (a failed follower for him)
+    await store.put({ channel: CH, thread: THREAD, persona: "ana" }, { ts: nowTs(-5), persona: "ana", app: "", repliedToUser: "U0PERSON" });
+    await store.put({ channel: CH, thread: THREAD, persona: "robin" }, { ts: nowTs(-5), persona: "robin", app: "", repliedToUser: "U0OTHER" });
+    state = memoryEngageState({ rng: () => 0.99, sampleEvery: () => 20, dailyBudget: () => 50, minuteCeiling: () => 100 });
+    __setEngageStateForTests(state);
+    const d = deps("yes");
+    const a = await observeEngage({ ...obs(d, e), personaId: "ana" });
+    const b = await observeEngage({ ...obs(d, e), personaId: "robin" });
+    await shadowIdle();
+    expect(a).toMatchObject({ tier: 2, action: "run" });
+    expect(b).toMatchObject({ tier: 3, action: "classify", reason: "follower_failed_test" });
+    expect(asked).toHaveLength(1);
+  });
+});
+
+describe("what costs nothing", () => {
+  test("a refused author is an input pass and spends no budget", async () => {
+    let spends = 0;
+    const counting: EngageState = { ...memoryEngageState(), spend: async () => (spends++, "ok") };
+    const before = total("pass", "input");
+    await run(obs({ ...deps("yes"), state: counting, admit: async () => false }));
+    expect(total("pass", "input")).toBe(before + 1);
+    expect(spends).toBe(0);
+    expect(asked).toHaveLength(0);
+    await run(obs({ ...deps("yes"), state: counting, admit: async () => { throw new Error("lock lookup failed"); } }));
+    expect(spends).toBe(0);
+    expect(asked).toHaveLength(0);
+  });
+
+  test("a refused call releases the half-open probe", async () => {
+    const t = { now: 0 };
+    const br = circuitBreaker({ now: () => t.now, baseMs: 10 });
+    for (let i = 0; i < 3; i++) br.failure(br.allow()!);
+    t.now = 20;
+    await run(obs({ ...deps("yes"), breaker: br, admit: async () => false }));
+    expect(br.state).toBe("half-open");
+    expect(br.allow()).not.toBeNull();
+  });
+});
+
+describe("the root debounce", () => {
+  const rootAsk = (d: ShadowDeps) => run({ ...obs(d, { text: "how do we roll back the release safely today?" }), shadow: d });
+  test("a human answer during the wait skips the call (answered)", async () => {
+    const before = total("pass", "answered");
+    await rootAsk({ ...deps("yes"), recheck: async () => "answered" });
+    expect(total("pass", "answered")).toBe(before + 1);
+    expect(asked).toHaveLength(0);
+  });
+  test("a message deleted or edited meanwhile is skipped (stale)", async () => {
+    const before = total("pass", "stale");
+    await rootAsk({ ...deps("yes"), recheck: async () => "stale" });
+    expect(total("pass", "stale")).toBe(before + 1);
+    expect(asked).toHaveLength(0);
+  });
+  test("an unchanged message is asked about; a failed re-check is an input pass", async () => {
+    await rootAsk({ ...deps("yes"), recheck: async () => "ok" });
+    expect(asked).toHaveLength(1);
+    const before = total("pass", "input");
+    await rootAsk({ ...deps("yes"), recheck: async () => { throw new Error("slack down"); } });
+    expect(total("pass", "input")).toBe(before + 1);
+    expect(asked).toHaveLength(1);
+  });
+  test("the wait is a real timer, cancelled when the gateway stops", async () => {
+    __setDebounceForTests(40);
+    try {
+      const ac = new AbortController();
+      let rechecked = 0;
+      const d = { ...deps("yes"), schedule: undefined, signal: ac.signal, recheck: async () => (rechecked++, "ok" as const) };
+      await observeEngage({ ...obs(d, { text: "how do we roll back the release safely today?" }), shadow: d });
+      expect(asked).toHaveLength(0); // not yet
+      ac.abort();
+      await new Promise((r) => setTimeout(r, 90));
+      await shadowIdle();
+      expect(asked).toHaveLength(0);
+      expect(rechecked).toBe(0);
+      // and without an abort the same wait does lead to the call
+      const d2 = { ...deps("yes"), schedule: undefined, recheck: async () => "ok" as const };
+      await observeEngage({ ...obs(d2, { text: "how do we roll back the release safely today?" }), shadow: d2 });
+      await new Promise((r) => setTimeout(r, 90));
+      await shadowIdle();
+      expect(asked).toHaveLength(1);
+    } finally {
+      __setDebounceForTests(null);
+    }
+  });
+});
+
+describe("concurrent timeouts", () => {
+  test("five calls timing out together open the breaker once with the base backoff", async () => {
+    let t = 0;
+    const br = circuitBreaker({ now: () => t, baseMs: 1000 });
+    const d = deps("hang", { timeoutMs: 20, breaker: br });
+    await Promise.all([1, 2, 3, 4, 5].map(() => observeEngage({ ...obs(d), shadow: d })));
+    await shadowIdle();
+    expect(br.state).toBe("open");
+    t = 1000;
+    expect(br.state).toBe("half-open"); // not 2000: the stale failures did not double it
   });
 });
