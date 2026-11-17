@@ -51,6 +51,11 @@ export interface ObserveInput {
   users?: UsersCache;
   /** Phase 1: what the shadow classifier needs. Absent: phase 0 only (counters and the one line). */
   shadow?: ShadowDeps;
+  /**
+   * More than one persona posts through this app's bot, so a root whose author is
+   * the bot alone cannot be told to be this persona's (the root is then not read as the agent's own).
+   */
+  sharedBot?: boolean;
   /** Where the observation was made, for the log line. */
   site: "drop" | "channel_session";
 }
@@ -91,6 +96,11 @@ export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute
   const raw = String(e.text ?? "");
   if (raw.length > MAX_TEXT) metric.engageTruncatedTotal.inc();
   const displayNames = [p?.config?.name, i.botName].filter(usableName);
+  // The root is the agent's own when Slack says its author is this app's bot (and no other persona shares that bot)
+  // or this persona's own user. An absent field, or a root by another persona, is not.
+  const parent = typeof e.parent_user_id === "string" ? e.parent_user_id : "";
+  const parentPersona = parent ? getPersonaRegistry().lookupByUserId(parent) : null;
+  const rootIsAgent = !isRoot && !!parent && (parentPersona ? foldAlias(parentPersona.name) === foldAlias(me) : parent === i.botId && !i.sharedBot);
   return {
     text: raw.length > MAX_TEXT ? raw.slice(0, MAX_TEXT) : raw,
     subtype: e.subtype ?? null,
@@ -114,6 +124,7 @@ export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute
     windowMs: env.engageWindowMinutes() * 60_000,
     // Known only when an earlier classifier input read the thread (a flag it left behind); otherwise false.
     humansAlternated: alternated,
+    rootIsAgent,
     rootBand: { minLength: ROOT_MIN_LENGTH, debounceMs: ROOT_DEBOUNCE_MS },
   };
 }

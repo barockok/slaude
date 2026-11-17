@@ -56,6 +56,12 @@ export interface TierFacts {
   windowMs: number;
   /** Two or more humans took turns since the agent last spoke. */
   humansAlternated: boolean;
+  /**
+   * The thread's root message was posted by this agent (Slack's `parent_user_id` is
+   * this app's bot or this persona's own user). False when the field is absent or
+   * the persona that posted through a shared bot cannot be told.
+   */
+  rootIsAgent?: boolean;
   /** Contribute-only root band inputs (the caller owns timers). */
   rootBand?: { minLength: number; debounceMs: number };
 }
@@ -263,6 +269,9 @@ export function runTiers(input: TierFacts): TierResult {
       return { tier: 3, action: "classify", reason: "follower_failed_test" };
     }
   }
+
+  // A human reply in a thread the agent itself opened (no record of it speaking last, nobody else named): ask.
+  if (f.rootIsAgent && f.isThreadReply) return { tier: 3, action: "classify", reason: "agent_thread_reply" };
 
   if (f.level === "contribute" && f.rootBand && f.isRoot && !f.isThreadReply) {
     const long = [...plain(text).trim()].length >= f.rootBand.minLength;

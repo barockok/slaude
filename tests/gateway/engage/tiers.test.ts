@@ -202,6 +202,20 @@ describe("details", () => {
     const r = runTiers(base({ text: `${"x ".repeat(MAX_TEXT)}<@U0AGENT> look` }));
     expect(r.action).not.toBe("run");
   });
+  test("a human reply in a thread the agent opened is a tier 3 candidate, only with the root known to be the agent's", () => {
+    const reply = { isRoot: false, isThreadReply: true, text: "what about the second one" };
+    expect(run({ ...reply, rootIsAgent: true })).toEqual({ tier: 3, action: "classify", reason: "agent_thread_reply" });
+    expect(run({ ...reply })).toEqual({ tier: 0, action: "pass", reason: "no_band" });
+    expect(run({ ...reply, rootIsAgent: false })).toEqual({ tier: 0, action: "pass", reason: "no_band" });
+    // a bot author, another person named, an ack, and a thread of colleagues alternating never reach it
+    expect(run({ ...reply, rootIsAgent: true, authorIsBot: true }).action).toBe("pass");
+    expect(run({ ...reply, rootIsAgent: true, text: "<@U0OTHER> what about it" }).action).toBe("pass");
+    expect(run({ ...reply, rootIsAgent: true, text: "thanks" }).action).toBe("pass");
+    expect(run({ ...reply, rootIsAgent: true, level: "mention" }).action).toBe("pass");
+    expect(run({ ...reply, rootIsAgent: true, restricted: true }).action).toBe("pass");
+    // a root message is not a reply
+    expect(run({ rootIsAgent: true, isRoot: true, isThreadReply: false, text: "what about the second one" }).action).toBe("pass");
+  });
   test("never throws on odd input", () => {
     for (const text of ["", " ", "<", "<@", "```", "`", ">", "\u0000", "Sam,", "@", ",", "<!subteam^>", "x".repeat(50_000)]) {
       expect(() => runTiers(base({ text }))).not.toThrow();
