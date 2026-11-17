@@ -212,7 +212,7 @@ export async function markStarted(id: string): Promise<void> {
 }
 
 /**
- * Sessions created before this change (2026-11-17T05:36:26Z, the date of its migration commit) that
+ * Sessions created before this change (2026-11-17T06:51:16Z, the time the release candidate was tagged) that
  * had already started a query had their first turn before the thread head existed. They carry a NULL
  * marker, and a head in the middle of their conversation would be wrong, so at claim time such a row
  * is treated as already past its first turn: the marker is claimed and nothing is injected. Sessions
@@ -220,7 +220,7 @@ export async function markStarted(id: string): Promise<void> {
  * deploy a session first started by an older replica after the epoch looks new here and gets a head
  * on its next turn on a newer one.
  */
-export const THREAD_HEAD_EPOCH_MS = 1794893786000;
+export const THREAD_HEAD_EPOCH_MS = 1794898276000;
 
 /** Whether a session row predates the thread head and had already run its first turn. */
 export const hadFirstTurnBeforeThreadHead = (row: { created_at: number | string; claude_started: number | boolean }): boolean =>
