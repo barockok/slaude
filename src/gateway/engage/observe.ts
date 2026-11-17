@@ -6,6 +6,7 @@ import { COMMON_WORD_DENYLIST, foldAlias } from "../../persona/aliases";
 import { trustSoulFor } from "../../soul/per-persona";
 import { lastSpeakers, type LastSpeaker } from "./last-speaker";
 import { aliasesFor, engageFor } from "./setting";
+import { usersCache, type UsersCache } from "./users";
 import { MAX_TEXT, runTiers, type TierFacts, type TierResult } from "./tiers";
 
 /** The reads of the last-speaker record may not hold the handler longer than this; a slow Redis reads as no record. */
@@ -40,6 +41,12 @@ export interface ObserveInput {
   botName?: string;
   locks: { oneOnOne: boolean; mentionOnly: boolean; disengaged: boolean };
   threadEngaged: boolean;
+  /** The Slack team of the delivery, to find colleagues who share the agent's name. */
+  teamId?: string;
+  /** Starts the team's names lookup when it is missing or stale (never awaited). Without one the lookup stays unknown. */
+  loadUsers?: () => Promise<Set<string>>;
+  /** Test seam: the users cache. */
+  users?: UsersCache;
   /** Where the observation was made, for the log line. */
   site: "drop" | "channel_session";
 }
@@ -97,9 +104,8 @@ export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute
     otherSpeaker: other,
     agent: { name: me, aliases: aliasesFor(i.personaId), displayNames, ...(i.appId ? { app: i.appId } : {}) },
     otherAgents: others,
-    // STUB (stage 3 or phase 1): there is no users cache yet, so a same-named human is never detected and
-    // "Name, ..." counts as tier 1 run even when a colleague shares the name.
-    sameNamedHuman: () => false,
+    // A colleague who shares the name sends "Name, ..." to the classifier. Unknown (no snapshot yet) reads as shared.
+    sameNamedHuman: (folded) => (i.users ?? usersCache()).sameNamed(i.teamId, folded),
     nowMs: Date.now(),
     windowMs: env.engageWindowMinutes() * 60_000,
     // STUB (stage 3 or phase 1): telling that two humans took turns needs a history read, which phase 0 never makes.
@@ -127,6 +133,7 @@ export async function observeEngage(i: ObserveInput): Promise<TierResult | null>
     const setting = engageFor(i.personaId, channel);
     if (setting.level === "mention") return null;
     const level = setting.level;
+    if (i.loadUsers) (i.users ?? usersCache()).ensure(i.teamId, i.loadUsers);
     const restricted = channelTrustFor(channel, trustSoulFor(i.personaId)) === "unknown";
     let r = runTiers(factsFromEvent(i, level, restricted, null, null));
     if (!SETTLED_WITHOUT_RECORD.has(r.reason)) {
