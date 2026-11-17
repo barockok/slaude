@@ -160,6 +160,13 @@ describe("node reports cannot forge or flood", () => {
     await db.run("DELETE FROM audit_events WHERE action LIKE 'guardrail.%'");
     await applyGuardrailChange("default", { upsert: [{ slug: "no-shell", md: RULES, source: "file" }, { slug: "care", md: CARE, source: "file" }, { slug: "house", md: PROSE, source: "file" }], by: "t" });
     await refreshGuardrails();
+    // Settle before the test body. The rows and the manifest are written by separate statements, so a revalidation
+    // (the interval another test file in this process may have left running) or a refresh still in flight from the
+    // previous test can read the set half written and audit a guardrail.integrity.failed. Wait for the refresh and the
+    // audit writer, then drop what that setup window produced; the test body starts from a verified set and no rows.
+    await refreshGuardrails();
+    await flushAudits();
+    await db.run("DELETE FROM audit_events WHERE action LIKE 'guardrail.%'");
   });
 
   it("what was applied comes from the gateway's rule, never the node's claim", async () => {
