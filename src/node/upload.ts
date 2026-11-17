@@ -95,7 +95,7 @@ async function readBounded(res: Response, max: number): Promise<string> {
       n += value.byteLength;
     }
   } catch { /* an answer that breaks off is read as what arrived */ } finally {
-    reader.cancel().catch(() => {});
+    void reader.cancel().catch(() => {});
   }
   return Buffer.concat(chunks).subarray(0, max).toString("utf8");
 }

@@ -45,7 +45,7 @@ export function localUploadLimiter(now: () => number = Date.now, limit = UPLOAD_
 function within<T>(p: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const t = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error("redis timeout")), ms); });
-  p.catch(() => {}); // the loser must not surface as unhandled
+  void p.catch(() => {}); // the loser must not surface as unhandled
   return Promise.race([p, t]).finally(() => clearTimeout(timer));
 }
 

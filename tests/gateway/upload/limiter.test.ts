@@ -13,7 +13,8 @@ describe("redisUploadLimiter", () => {
 
   test("a Redis that never answers falls back to the local limiter after the timeout", async () => {
     const never = () => new Promise<number>(() => {});
-    const l = redisUploadLimiter(fakeRedis({ incr: never, expire: never }), "p", localUploadLimiter(), Date.now, 10, 50);
+    const fixed = () => 1_800_000_000_000;
+    const l = redisUploadLimiter(fakeRedis({ incr: never, expire: never }), "p", localUploadLimiter(fixed), fixed, 10, 20);
     const t = Date.now();
     expect(await l.take("S")).toBe(true);
     expect(Date.now() - t).toBeLessThan(1000);

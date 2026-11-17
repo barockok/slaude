@@ -1182,6 +1182,7 @@ d("gateway↔node E2E (real Redis)", () => {
       },
     });
     const completes: any[] = [];
+    process.env.SLAUDE_UPLOAD_ALLOWED_HOSTS = "127.0.0.1"; // the fake upload host is loopback http
     slackFiles.begin = async () => ({ ok: true, upload_url: `http://127.0.0.1:${host.port}/up/F1`, file_id: "F1" });
     slackFiles.complete = async (a: any) => { completes.push(a); return { ok: true, files: [{ id: "F1" }] }; };
     let dir = "";
@@ -1201,6 +1202,7 @@ d("gateway↔node E2E (real Redis)", () => {
       expect(existsSync(dir)).toBe(true);
       scratchDirSeen = dir;
     } finally {
+      delete process.env.SLAUDE_UPLOAD_ALLOWED_HOSTS;
       host.stop(true);
       slackFiles.begin = slackFiles.complete = async () => { throw new Error("no upload fake installed"); };
     }
