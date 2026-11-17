@@ -25,18 +25,22 @@ registerAdapter("scripted-test", async (block) => {
 });
 afterAll(() => scripts.clear());
 
-async function classifierFor(script: Script, mode: GateMode = "on") {
+let calls = 0;
+async function runnerFor(script: Script, mode: GateMode = "on") {
   const id = `s${scripts.size}`;
-  scripts.set(id, script);
+  scripts.set(id, (r) => (calls++, script(r)));
   const adapter = await adapterFromConfig({ type: "scripted-test", script: id }, { resolveSecret: async () => "" });
   expect(adapter).not.toBeNull();
-  return gateClassifier(makeGateRunner({ mode, adapter, tAct: 0.8, timeoutMs: 200, contextMessages: 8, log: () => {} }));
+  return makeGateRunner({ mode, adapter, tAct: 0.8, timeoutMs: 200, contextMessages: 8, log: () => {} });
 }
+const classifierFor = async (script: Script, mode: GateMode = "on") => gateClassifier(await runnerFor(script, mode));
 
 let n = 0;
-const cand = (level: EngageCandidate["level"], continuation = false): EngageCandidate => ({
-  key: gateKey({ channel: "C0EXAMPLE", ts: `${++n}.0`, implicit: level, continuation }),
+const cand = (level: EngageCandidate["level"], continuation = false, mode: "shadow" | "on" = "on"): EngageCandidate => ({
+  channel: "C0EXAMPLE",
+  ts: `${++n}.0`,
   level,
+  mode,
   continuation,
   input: async () => input,
 });
@@ -76,12 +80,53 @@ describe("tier 3 outcomes are the same across adapters", () => {
     expect(await c.classify(cand("addressed"))).toBe("pass");
   });
 
-  test("shadow mode never runs; no adapter never runs; a throwing input builder is a pass", async () => {
-    const shadow = await classifierFor(confidentYes, "shadow");
-    expect(await shadow.classify(cand("addressed"))).toBe("pass");
-    const none = gateClassifier(makeGateRunner({ mode: "on", adapter: null, tAct: 0.8, timeoutMs: 200, contextMessages: 8, log: () => {} }));
+  test("the channel's mode, not the deployment gate mode, decides whether the answer acts", async () => {
+    // Gate off and gate shadow, adapter configured: channel on runs, channel shadow passes but the adapter is called.
+    for (const gate of ["off", "shadow", "on"] as const) {
+      const c = await classifierFor(confidentYes, gate);
+      calls = 0;
+      expect(await c.classify(cand("addressed", false, "on"))).toBe("run");
+      expect(calls).toBe(1);
+      expect(await c.classify(cand("addressed", false, "shadow"))).toBe("pass");
+      expect(calls).toBe(2);
+    }
+  });
+
+  test("gate off and no adapter: pass; so is a throwing input builder", async () => {
+    const none = gateClassifier(makeGateRunner({ mode: "off", adapter: null, tAct: 0.8, timeoutMs: 200, contextMessages: 8, log: () => {} }));
     expect(await none.classify(cand("contribute"))).toBe("pass");
     const on = await classifierFor(confidentYes);
     expect(await on.classify({ ...cand("addressed"), input: async () => { throw new Error("x"); } })).toBe("pass");
+  });
+
+  test("the input the model sees is implicit and not engaged", async () => {
+    const seen: GateInput[] = [];
+    const c = await classifierFor((req) => (seen.push(req.state as GateInput), confidentYes()));
+    await c.classify({ ...cand("contribute", true), input: async () => ({ ...input, engaged: true, mentionsAgent: true }) });
+    expect(seen[0]).toMatchObject({ engaged: false, implicit: "contribute", continuation: true });
+  });
+
+  test("a stale memo entry made by a mention is never an implicit answer", async () => {
+    const runner = await runnerFor(confidentYes);
+    const c = gateClassifier(runner);
+    const cd = cand("addressed");
+    // The same key as the classifier derives, filled earlier by a non-implicit consult that said run.
+    const key = gateKey({ channel: cd.channel, ts: cd.ts, continuation: false, implicit: "addressed" });
+    await runner.consult(key, async () => ({ ...input, mentionsAgent: true }), "run");
+    calls = 0;
+    // The model now says no: the stored mention decision must not be returned.
+    scripts.set([...scripts.keys()].at(-1)!, (r) => (calls++, confidentNo()));
+    expect(await c.classify(cd)).toBe("pass");
+    expect(calls).toBe(1);
+  });
+
+  test("a continuation entry is not reused for a fresh message", async () => {
+    const runner = await runnerFor(confidentYes);
+    const key = gateKey({ channel: "C0EXAMPLE", ts: "900.0", persona: "p", implicit: "addressed" });
+    const mk = (continuation: boolean) => async () => ({ ...input, implicit: "addressed" as const, continuation });
+    await runner.consultImplicit(key, mk(true), { level: "addressed", continuation: true });
+    calls = 0;
+    await runner.consultImplicit(key, mk(false), { level: "addressed", continuation: false });
+    expect(calls).toBe(1);
   });
 });

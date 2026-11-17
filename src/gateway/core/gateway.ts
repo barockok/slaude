@@ -215,6 +215,12 @@ export interface GatewayHandle {
   /** `/brain-import/*` — persona memory migration (own token). Optional so
    *  test doubles needn't implement it. */
   fetchBrainImport?(req: Request): Promise<Response | null>;
+  /** TEST SEAM ONLY. The decision-gate consult, so the implicit path (no call site yet) can be pinned. */
+  __consultGate?(
+    args: any,
+    o: { mentionsAgent: boolean; personaId?: string; continuation?: boolean; implicit?: ImplicitLevel },
+    actual: GateAction,
+  ): Promise<GateConsult | undefined>;
   /** TEST/SIM SEAM ONLY. The pending-gate source behind /v1/pending. */
   __pendingSource(): PendingSource;
   /** TEST/SIM SEAM ONLY. Live per-session MCP contexts built by the resolver.
@@ -4503,7 +4509,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     actual: GateAction,
   ): Promise<GateConsult | undefined> => {
     const runner = gateRunner;
-    if (!runner || runner.mode === "off") return undefined;
+    // An implicit consult is independent of the deployment gate mode (the
+    // channel's engage mode rules); the mention paths honor it as always.
+    if (!runner || (!o.implicit && runner.mode === "off")) return undefined;
     const e: any = args.event;
     const key = gateKey({
       channel: e.channel,
@@ -4521,7 +4529,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const teamId: string | undefined = args.context?.teamId ?? e.team;
       const client = args.client ?? t.client;
       const input = async () => {
-        const engaged = o.mentionsAgent
+        // An implicit message has no engaged thread to lean on: the model must
+        // not be told it is already in the conversation.
+        const engaged = o.implicit
+          ? false
+          : o.mentionsAgent
           ? !!teamId &&
             !!(await Sessions.findByThread({ team_id: teamId, channel_id: e.channel, thread_ts: threadTs, persona_id: o.personaId ?? "default" }))?.engaged
           : true;
@@ -4544,11 +4556,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         );
         return o.implicit ? { ...gi, implicit: o.implicit, continuation: !!o.continuation } : gi;
       };
-      // The mention paths keep the long-standing `gate` entry point; only an
-      // implicit consult needs the source.
-      if (!o.implicit) {
-        const action = await runner.gate(key, input, actual);
-        return action === undefined ? undefined : { action, source: "adapter" };
+      if (o.implicit) {
+        return await runner.consultImplicit(key, input, { level: o.implicit, continuation: !!o.continuation });
       }
       return await runner.consult(key, input, actual);
     } catch {
@@ -5286,6 +5295,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     fetchPortal: (req: Request) => portalApi.fetch(req),
     fetchDeploy: (req: Request) => deployApi.fetch(req),
     fetchBrainImport: (req: Request) => brainImportApi.fetch(req),
+    __consultGate: consultGateWithSource,
     __pendingSource: () => v1.pendingSource,
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),

@@ -6,7 +6,7 @@ import { env } from "../../config/env";
 import { m } from "../../metrics";
 import { decideAction, rulesDecision } from "./policy";
 import { GATE_QUESTIONS, toGateDecision } from "./questions";
-import type { Answer, GateAction, GateDecision, GateInput } from "./types";
+import type { Answer, GateAction, GateDecision, GateInput, ImplicitLevel } from "./types";
 
 export type GateMode = "off" | "shadow" | "on";
 
@@ -18,7 +18,16 @@ export interface GateResult {
   decision: GateDecision;
   latencyMs: number;
   implicit?: GateInput["implicit"];
+  continuation?: boolean;
 }
+
+/** The flags a memoised decision must have been made under to be reused. */
+interface Want {
+  implicit?: ImplicitLevel;
+  continuation: boolean;
+}
+const NOT_IMPLICIT: Want = { continuation: false };
+const matches = (r: GateResult, w: Want) => r.implicit === w.implicit && !!r.continuation === w.continuation;
 
 /**
  * What a consult settled on. `adapter`: a model answered. `rules`: no model
@@ -36,12 +45,25 @@ export interface GateRunner {
   /** off → undefined (caller keeps today's path). shadow → resolves `actual` immediately; the decision runs detached and is logged. on → the decided action. */
   gate(key: string, input: () => Promise<GateInput>, actual: GateAction): Promise<GateAction | undefined>;
   /**
-   * `gate` with the source of the answer. For an implicit consult (the input
-   * built with `implicit` set) undefined means PASS, never run: off, an input
-   * timeout or failure, and any error all come back undefined, and a decision
-   * with no model answer is "drop" with source "rules".
+   * `gate` with the source of the answer, for the mention paths. Honors the
+   * deployment mode exactly as `gate` does.
    */
   consult(key: string, input: () => Promise<GateInput>, actual: GateAction): Promise<GateConsult | undefined>;
+  /**
+   * An implicit-engagement consult. Independent of the deployment mode: it is
+   * awaited and answers from the adapter whenever one is configured, even
+   * with the gate off or in shadow (the channel's own engage mode decides
+   * whether to act). `input` must build a GateInput with `implicit` set to
+   * `want.level` and `continuation` equal to `want.continuation`; a memoised
+   * decision made under other flags is never reused. No adapter, an adapter
+   * error, a timeout or an input failure is a pass: undefined, or a "drop"
+   * with source "rules". It never returns "run" without a model answer.
+   */
+  consultImplicit(
+    key: string,
+    input: () => Promise<GateInput>,
+    want: { level: ImplicitLevel; continuation: boolean },
+  ): Promise<{ action: "run" | "drop"; source: "adapter" | "rules" } | undefined>;
 }
 
 /**
@@ -62,7 +84,11 @@ function logLine(key: string, r: GateResult, actual: GateAction): string {
   return (
     `[gate] mode=${r.mode} source=${r.source} adapter=${r.adapter ?? "-"} action=${r.action} ms=${r.latencyMs} key=${key} ` +
     (r.implicit ? `implicit=${r.implicit} ` : "") +
-    `a=${fmt(d.addressedToAgent)} q=${fmt(d.isQuestionOrRequest)} h=${fmt(d.agentCanHelp)} d=${fmt(d.alreadyAnswered)}` +
+    // An implicit decision never prints rules answers as if a model gave them
+    // (the mention paths keep their long-standing line).
+    (r.source === "adapter" || !r.implicit
+      ? `a=${fmt(d.addressedToAgent)} q=${fmt(d.isQuestionOrRequest)} h=${fmt(d.agentCanHelp)} d=${fmt(d.alreadyAnswered)}`
+      : "a=- q=- h=- d=-") +
     (r.mode === "shadow" ? ` actual=${actual}` : "")
   );
 }
@@ -116,7 +142,7 @@ export function makeGateRunner(o: {
     const d = decision ?? rulesDecision(gi);
     const r: GateResult = {
       action: implicitNoAnswer ? "drop" : decideAction(gi, d, o.tAct),
-      ...(gi.implicit ? { implicit: gi.implicit } : {}),
+      ...(gi.implicit ? { implicit: gi.implicit, continuation: !!gi.continuation } : {}),
       mode: o.mode,
       source,
       adapter: o.adapter?.name ?? null,
@@ -129,9 +155,12 @@ export function makeGateRunner(o: {
   }
 
   /** The shared in-flight decision for key, and whether this call started it. */
-  function decision(key: string, input: () => Promise<GateInput>, actual: GateAction): { p: Promise<GateResult>; fresh: boolean } {
+  function decision(key: string, input: () => Promise<GateInput>, actual: GateAction, want: Want): { p: Promise<GateResult>; fresh: boolean } {
     const hit = memo.get(key);
-    if (hit) return { p: hit, fresh: false };
+    // A stored decision made under other flags (a mention's under an implicit
+    // consult, a continuation's under a fresh message) is a miss: recomputed,
+    // not shared and not stored.
+    if (hit) return { p: hit.then((r) => (matches(r, want) ? r : compute(key, input, actual))), fresh: false };
     const p = compute(key, input, actual);
     memo.set(key, p);
     const evict = () => {
@@ -144,7 +173,7 @@ export function makeGateRunner(o: {
 
   const consult: GateRunner["consult"] = async (key, input, actual) => {
     if (o.mode === "off") return undefined;
-    const { p, fresh } = decision(key, input, actual);
+    const { p, fresh } = decision(key, input, actual, NOT_IMPLICIT);
     if (o.mode === "shadow") {
       // Detached: dispatch never waits, and nothing can escape as an unhandled rejection.
       void p
@@ -173,6 +202,17 @@ export function makeGateRunner(o: {
     mode: o.mode,
     contextMessages: o.contextMessages,
     consult,
+    async consultImplicit(key, input, want) {
+      try {
+        const r = await decision(key, input, "drop", { implicit: want.level, continuation: want.continuation }).p;
+        // A decision not made as an implicit one is never read as a yes.
+        if (!matches(r, { implicit: want.level, continuation: want.continuation })) return undefined;
+        return { action: r.action === "run" ? "run" : "drop", source: r.source };
+      } catch (e) {
+        log(e instanceof InputTimeout ? `[gate] input timeout key=${key}` : `[gate] implicit input failed key=${key}`);
+        return undefined;
+      }
+    },
     async gate(key, input, actual) {
       return (await consult(key, input, actual))?.action;
     },
@@ -184,7 +224,9 @@ export async function gateRunnerFromEnv(deps: { resolveSecret: (ref: string) => 
   const { config, error } = parseDecisionConfig(env.decisionConfigRaw());
   if (error) console.warn(`[gate] ${error}; decision gate off`);
   const { mode, tAct, contextMessages } = config.gate;
-  // An off gate never calls an adapter, so it resolves no secret either.
-  const adapter = mode === "off" ? null : await adapterFromConfig(config.adapter, deps);
+    // Implicit engagement answers from the adapter whatever the gate mode, so a
+  // configured adapter is built even with the gate off. With the gate off and
+  // no adapter configured nothing is built or resolved, as before.
+  const adapter = mode === "off" && config.adapter === null ? null : await adapterFromConfig(config.adapter, deps);
   return makeGateRunner({ mode, adapter, tAct, timeoutMs: config.timeoutMs, contextMessages });
 }

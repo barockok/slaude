@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import { DecisionError, type DecisionAdapter, type DecisionResult } from "../../../src/decision/types";
 import { formatEngageLine, toEngageAction } from "../../../src/gateway/gate/log";
 import { decideAction } from "../../../src/gateway/gate/policy";
@@ -66,46 +66,59 @@ const scripted = (r: DecisionResult | "throw" | "hang"): DecisionAdapter & { cal
 };
 const contribute: GateInput = { ...base, implicit: "contribute", continuation: false };
 
+const W = { level: "contribute" as const, continuation: false };
+
 describe("implicit consult through the runner", () => {
-  it("off: undefined, no adapter call", async () => {
-    const a = scripted(OPEN);
-    const r = makeGateRunner({ ...opts, mode: "off", adapter: a });
-    expect(await r.consult("k1", async () => contribute, "drop")).toBeUndefined();
-    expect(a.calls).toBe(0);
+  beforeEach(() => {
+    lines.length = 0;
   });
-  it("shadow: returns actual with source shadow, logs the decision", async () => {
-    const a = scripted(OPEN);
-    const r = makeGateRunner({ ...opts, mode: "shadow", adapter: a });
-    expect(await r.consult("k2", async () => contribute, "drop")).toEqual({ action: "drop", source: "shadow" });
-    await new Promise((res) => setTimeout(res, 30));
-    expect(lines.some((l) => l.includes("implicit=contribute") && l.includes("action=run") && l.includes("actual=drop"))).toBe(true);
-  });
-  it("on: the policy action with source adapter", async () => {
+  // The deployment gate mode does not matter to an implicit consult: the adapter answers in all three.
+  for (const mode of ["off", "shadow", "on"] as const) {
+    it(`gate ${mode}: the adapter's answer is returned, awaited`, async () => {
+      const a = scripted(OPEN);
+      const r = makeGateRunner({ ...opts, mode, adapter: a });
+      expect(await r.consultImplicit(`k1${mode}`, async () => contribute, W)).toEqual({ action: "run", source: "adapter" });
+      expect(await r.consultImplicit(`k2${mode}`, async () => ({ ...contribute, implicit: "addressed" }), { level: "addressed", continuation: false })).toEqual({ action: "drop", source: "adapter" });
+      expect(a.calls).toBe(2);
+    });
+    it(`gate ${mode}: contribute, adapter throws: pass, never the rules run, no rules answers in the log`, async () => {
+      const r = makeGateRunner({ ...opts, mode, adapter: scripted("throw") });
+      const c = await r.consultImplicit(`k3${mode}`, async () => contribute, W);
+      expect(c).toEqual({ action: "drop", source: "rules" });
+      expect(toEngageAction(c?.action)).toBe("pass");
+      expect(lines.at(-1)).toContain("source=rules");
+      expect(lines.at(-1)).toContain("a=- q=- h=- d=-");
+    });
+  }
+  it("a logged model answer carries its answers", async () => {
     const r = makeGateRunner({ ...opts, mode: "on", adapter: scripted(OPEN) });
-    expect(await r.consult("k3", async () => contribute, "drop")).toEqual({ action: "run", source: "adapter" });
-    expect(await r.consult("k3b", async () => ({ ...contribute, implicit: "addressed" }), "drop")).toEqual({ action: "drop", source: "adapter" });
+    await r.consultImplicit("k4", async () => contribute, W);
+    expect(lines.at(-1)).toMatch(/implicit=contribute .*a=no:0\.95 q=yes:0\.95/);
   });
-  it("on, input builder throws: undefined (a pass for implicit)", async () => {
+  it("input failure is undefined (a pass)", async () => {
     const r = makeGateRunner({ ...opts, mode: "on", adapter: scripted(OPEN) });
-    expect(await r.consult("k4", async () => { throw new Error("x"); }, "drop")).toBeUndefined();
+    expect(await r.consultImplicit("k5", async () => { throw new Error("x"); }, W)).toBeUndefined();
   });
-  it("contribute, adapter throws, mode on: pass, never the rules run", async () => {
-    const r = makeGateRunner({ ...opts, mode: "on", adapter: scripted("throw") });
-    const c = await r.consult("k5", async () => contribute, "drop");
-    expect(c).toEqual({ action: "drop", source: "rules" });
-    expect(toEngageAction(c?.action)).toBe("pass");
-  });
-  it("contribute, adapter times out, mode on: pass", async () => {
+  it("adapter times out: pass", async () => {
     const r = makeGateRunner({ ...opts, mode: "on", adapter: scripted("hang") });
-    expect((await r.consult("k6", async () => contribute, "drop"))?.action).toBe("drop");
+    expect((await r.consultImplicit("k6", async () => contribute, W))?.action).toBe("drop");
   });
-  it("contribute, no adapter, mode on: pass", async () => {
+  it("no adapter: pass", async () => {
     const r = makeGateRunner({ ...opts, mode: "on", adapter: null });
-    expect(await r.consult("k7", async () => contribute, "drop")).toEqual({ action: "drop", source: "rules" });
+    expect(await r.consultImplicit("k7", async () => contribute, W)).toEqual({ action: "drop", source: "rules" });
+  });
+  it("the mention paths still honor the deployment mode", async () => {
+    const a = scripted(OPEN);
+    const off = makeGateRunner({ ...opts, mode: "off", adapter: a });
+    expect(await off.consult("k8", async () => ({ ...base, mentionsAgent: true }), "run")).toBeUndefined();
+    expect(a.calls).toBe(0);
+    const shadow = makeGateRunner({ ...opts, mode: "shadow", adapter: a });
+    expect(await shadow.consult("k9", async () => ({ ...base, mentionsAgent: true }), "run")).toEqual({ action: "run", source: "shadow" });
   });
   it("a mention with the adapter down still falls back to the rules (unchanged)", async () => {
     const r = makeGateRunner({ ...opts, mode: "on", adapter: scripted("throw") });
-    expect(await r.gate("k8", async () => ({ ...base, mentionsAgent: true }), "run")).toBe("run");
+    expect(await r.gate("k10", async () => ({ ...base, mentionsAgent: true }), "run")).toBe("run");
+    expect(await r.consult("k11", async () => ({ ...base, mentionsAgent: true }), "run")).toEqual({ action: "run", source: "rules" });
   });
 });
 
@@ -118,8 +131,8 @@ describe("keys and lines", () => {
   it("two personas do not share a memoised decision", async () => {
     const a = scripted(OPEN);
     const r = makeGateRunner({ ...opts, mode: "on", adapter: a });
-    await r.consult(gateKey({ channel: "C", ts: "1", persona: "a", implicit: "contribute" }), async () => contribute, "drop");
-    await r.consult(gateKey({ channel: "C", ts: "1", persona: "b", implicit: "contribute" }), async () => contribute, "drop");
+    await r.consultImplicit(gateKey({ channel: "C", ts: "1", persona: "a", implicit: "contribute" }), async () => contribute, W);
+    await r.consultImplicit(gateKey({ channel: "C", ts: "1", persona: "b", implicit: "contribute" }), async () => contribute, W);
     expect(a.calls).toBe(2);
   });
   it("formats the engage line", () => {
