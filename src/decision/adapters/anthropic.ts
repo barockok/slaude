@@ -154,7 +154,7 @@ const blockSchema = z
   .object({
     type: z.literal("anthropic"),
     model: z.string().min(1).max(100).optional(),
-    /** Optional secret reference (`env://PERSONA_...`), resolved at boot like the jev adapter's; preferred over the provider environment. */
+    /** Optional secret reference (`env://PERSONA_...`), resolved at boot by the same path every adapter's secret uses; preferred over the provider environment. */
     apiKey: z.string().optional(),
   })
   .strict();
