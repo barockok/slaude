@@ -71,12 +71,34 @@ export const surfaceContract = {
     upload: {
       name: "upload",
       description:
-        "Upload a local file to the current conversation. Use an absolute path under the session working dir.",
+        "Upload a local file to the current conversation. Use an absolute path to a regular file under the session working directory or under $TMPDIR (your per-session scratch directory). Files in $TMPDIR last only while the session stays warm on its node: after the session goes cold or moves to another node they are gone. If the file is anywhere else, copy it into one of those first. The tool does the transfer itself: do not curl or post the file by other means.",
       schema: {
         path: z.string().describe("Absolute local path to the file to upload."),
         title: z.string().optional(),
         initial_comment: z.string().optional().describe("Posts above the file as the bot's text."),
         alt_text: z.string().optional(),
+      },
+    },
+    upload_begin: {
+      name: "upload_begin",
+      description:
+        "REST-only (never mounted for the model): the first half of a direct upload. A node asks the gateway for Slack's presigned upload URL for one file it holds (name and declared size), then sends the bytes to Slack itself. Returns {uploadUrl, fileId, handle}: the URL and the handle are credentials for that one file and are never shown to the model.",
+      restOnly: true,
+      schema: {
+        filename: z.string().min(1).max(1024).describe("File name as the node knows it. The gateway keeps the base name, strips control characters and caps its length."),
+        size: z.number().int().min(1).describe("Exact size in bytes of the file the node will send. Slack stores at most this many bytes."),
+        alt_text: z.string().max(4000).optional().describe("Alt text for an image."),
+      },
+    },
+    upload_complete: {
+      name: "upload_complete",
+      description:
+        "REST-only (never mounted for the model): the second half of a direct upload. After the node has sent the bytes to Slack and checked Slack's answer, it asks the gateway to finish the upload with the handle from upload_begin. The destination comes from the handle, never from this body. The caption goes through the owner's reply rules and may be held for approval.",
+      restOnly: true,
+      schema: {
+        handle: z.string().min(1).max(4096).describe("The handle upload_begin returned."),
+        title: z.string().max(1024).optional(),
+        initial_comment: z.string().optional().describe("Posts above the file as the bot's text."),
       },
     },
     typing: {

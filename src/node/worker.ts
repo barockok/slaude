@@ -45,6 +45,7 @@ import { makeAuthRecovery, makeSessionSeeder } from "./credentials";
 import { nodeConfigRoot, sessionConfigDir, existingSessionConfigDir } from "../agent/config-root";
 import { RestSessionStore } from "./session-store";
 import { buildShimServers } from "./shims";
+import { ScratchDirs, sweepStaleScratchRoots, withScratchEnv } from "./scratch";
 import { buildBridgeServers } from "./bridge";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { makeNodeSkillCheckBudget, makeNodeSkillUsageRecorder } from "./background";
@@ -485,6 +486,8 @@ export interface NodeWorkerHandle {
   kill(): void;
   /** TEST SEAM: the node's voice call registry. */
   __voiceCalls: VoiceCalls;
+  /** TEST SEAM. The per-session scratch directories. */
+  __scratch: ScratchDirs;
   /** TEST SEAM: the command Redis connection (break it to probe /healthz). */
   __cmd: Redis;
   /** TEST SEAM: the BullMQ worker connections (one per label plus one). */
@@ -530,6 +533,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
 
   const agent = opts.agent ?? new AgentManager();
   const store = new RestSessionStore(client);
+  /** Per-session scratch directories (the agent's TMPDIR); removed with the session, all at stop. */
+  sweepStaleScratchRoots();
+  const scratch = new ScratchDirs();
   /** sessionId → tenant, for runtime-bundle lookups + reload busting. */
   const tenants = new Map<string, string>();
   /** sessionId → persona. The runtime bundle is per (tenant, persona), so the
@@ -592,6 +598,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         tokenFor: (id) => store.tokenFor(id),
         signalFor: (id) => turnAborts.get(id)?.signal,
         voiceActive: (id) => voiceTurns.active(id),
+        // The upload read guard: the session's folder (the gateway's row) and its scratch directory.
+        workingDirFor: async (id) => (await store.findById(id))?.working_dir,
+        scratchDirFor: (id) => scratch.pathFor(id),
       }),
       // Token budget stays node-local (spec §3): the live Query is here.
       [SESSION_MCP_NAME]: createSessionMcp({ getSnapshot: () => agent.getTokenSnapshot(sessionId) }),
@@ -697,14 +706,19 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   agent.setPersonaModelResolver(makeBundleModelResolver(bundleDeps));
   // A failure here (gateway 503 on an unresolvable reference, gateway
   // unreachable) fails the boot with PROVIDER_CREDENTIALS_UNAVAILABLE.
+  // The agent's TMPDIR and SLAUDE_SCRATCH are the session's scratch directory: the one
+  // place it can always write and upload from (the working directory may not be writable).
   agent.setChildEnvResolver(
-    makeNodeChildEnvResolver({
-      client,
-      tenantFor: (id) => tenants.get(id),
-      tokenFor: (id) => store.tokenFor(id),
-      personaFor: (id) => personas.get(id),
-      fallback: opts.providerEnvFallback,
-    }),
+    withScratchEnv(
+      makeNodeChildEnvResolver({
+        client,
+        tenantFor: (id) => tenants.get(id),
+        tokenFor: (id) => store.tokenFor(id),
+        personaFor: (id) => personas.get(id),
+        fallback: opts.providerEnvFallback,
+      }),
+      scratch,
+    ),
   );
   // Remote mode (spec §4.5): target from the job token's signed claims; key
   // fetched per handle from the gateway (see ./remote).
@@ -914,6 +928,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           evictBundle(sessionId);
           stopGuard.forget(sessionId);
           wakeJobs.delete(sessionId);
+          scratch.remove(sessionId);
           if (warm.delete(sessionId)) await registry.unregister(sessionId);
         }
       } catch (e) {
@@ -1153,6 +1168,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           } else {
             warm.delete(sessionId);
             evictBundle(sessionId);
+            scratch.remove(sessionId);
             store.unbindToken(sessionId);
             tenants.delete(sessionId);
             personas.delete(sessionId);
@@ -1248,6 +1264,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       await registry.unregister(sessionId).catch(() => {});
     }
     await registry.nodeDown(nodeId).catch(() => {});
+    scratch.removeAll();
     for (const unsub of reloadUnsubs.values()) await unsub().catch(() => {});
     reloadUnsubs.clear();
     await pubsub.close().catch(() => {});
@@ -1301,5 +1318,6 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     __cmd: cmd,
     __bullConns: bullConns,
     __voiceCalls: voiceCalls,
+    __scratch: scratch,
   };
 }

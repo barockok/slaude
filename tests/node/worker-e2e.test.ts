@@ -55,6 +55,12 @@ let nodeTurnsQueueFn: any;
 let acquireLockFn: any;
 let sessionIdOf: (thread: string) => Promise<string>;
 let metricsRender: () => string;
+/** The fake Slack files API an upload test installs. */
+let scratchDirSeen = "";
+const slackFiles: { begin: (a: any) => Promise<any>; complete: (a: any) => Promise<any> } = {
+  begin: async () => { throw new Error("no upload fake installed"); },
+  complete: async () => { throw new Error("no upload fake installed"); },
+};
 /** Paths of every /v1/tools/memory request the gateway received. */
 const memoryHits: string[] = [];
 
@@ -156,7 +162,11 @@ beforeAll(async () => {
       conversations: { info: async () => ({}), members: async () => ({ members: [] }), replies: async () => ({ messages: [] }) },
       users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
       search: { messages: async () => ({ messages: { matches: [], total: 0 } }) },
-      files: { uploadV2: async () => ({ files: [] }) },
+      files: {
+        uploadV2: async () => ({ files: [] }),
+        getUploadURLExternal: async (a: any) => slackFiles.begin(a),
+        completeUploadExternal: async (a: any) => slackFiles.complete(a),
+      },
     },
     action: () => {},
     use: () => {},
@@ -1153,6 +1163,51 @@ d("gateway↔node E2E (real Redis)", () => {
     workerHandle.__voiceCalls.remove("voice-exit-s1");
   });
 
+  // Direct upload through the real worker: the file is made in the session's scratch
+  // directory (what the agent's TMPDIR points at) and its bytes go to the fake Slack
+  // upload host; the worker's read guard, working-directory accessor and scratch
+  // directory are the real ones.
+  test("a node agent uploads a file it made in its scratch directory, straight to Slack", async () => {
+    const { createHash } = await import("node:crypto");
+    const { writeFileSync, statSync, existsSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const data = Buffer.alloc(200_000, 42);
+    const got: Array<{ sha: string; n: number }> = [];
+    const host = Bun.serve({
+      port: 0,
+      async fetch(req) {
+        const buf = new Uint8Array(await req.arrayBuffer());
+        got.push({ sha: createHash("sha256").update(buf).digest("hex"), n: buf.byteLength });
+        return new Response(`OK - ${buf.byteLength}`);
+      },
+    });
+    const completes: any[] = [];
+    process.env.SLAUDE_UPLOAD_ALLOWED_HOSTS = "127.0.0.1"; // the fake upload host is loopback http
+    slackFiles.begin = async () => ({ ok: true, upload_url: `http://127.0.0.1:${host.port}/up/F1`, file_id: "F1" });
+    slackFiles.complete = async (a: any) => { completes.push(a); return { ok: true, files: [{ id: "F1" }] }; };
+    let dir = "";
+    let result: any;
+    behavior = async ({ sessionId, servers }) => {
+      dir = workerHandle.__scratch.ensure(sessionId);
+      writeFileSync(join(dir, "made-on-node.bin"), data);
+      result = await callShim(servers["slaude_surface"], "upload", { path: join(dir, "made-on-node.bin"), title: "From the node" });
+    };
+    try {
+      await emitSlack("message", msg(THREAD, "9000.20", "<@USLAUDE> make a file"));
+      await until(() => completes.length > 0, 15_000);
+      expect(result.content[0].text).toBe("uploaded");
+      expect(got).toEqual([{ sha: createHash("sha256").update(data).digest("hex"), n: data.length }]);
+      expect(completes[0]).toMatchObject({ channel_id: "C0TEAM", files: [{ id: "F1", title: "From the node" }] });
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      expect(existsSync(dir)).toBe(true);
+      scratchDirSeen = dir;
+    } finally {
+      delete process.env.SLAUDE_UPLOAD_ALLOWED_HOSTS;
+      host.stop(true);
+      slackFiles.begin = slackFiles.complete = async () => { throw new Error("no upload fake installed"); };
+    }
+  }, 30_000);
+
   test("SIGTERM drain: in-flight turn finishes, node + session keys deregistered", async () => {
     behavior = async ({ servers, text }) => {
       await sleep(700); // in-flight while stop() begins
@@ -1169,5 +1224,7 @@ d("gateway↔node E2E (real Redis)", () => {
     expect(await redis.exists(keys.node(NODE_ID))).toBe(0);
     const { scanKeys } = await import("../../src/queue/registry");
     expect((await scanKeys(redis, keys.sessPattern())).length).toBe(0);
+    // …and its scratch directories went with it.
+    expect(require("node:fs").existsSync(scratchDirSeen)).toBe(false);
   }, 40_000);
 });

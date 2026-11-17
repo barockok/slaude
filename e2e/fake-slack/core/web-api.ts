@@ -36,7 +36,7 @@ export class FaultStore {
   }
 }
 
-const JSON_FIELDS = ["blocks", "attachments", "metadata"];
+const JSON_FIELDS = ["blocks", "attachments", "metadata", "files"];
 
 /** Decode a Web API request body (form or JSON) into plain params. */
 export function parseParams(contentType: string | null, raw: string): Record<string, unknown> {
@@ -83,6 +83,7 @@ function apiMessage(ws: Workspace, m: FakeMessage): Record<string, unknown> {
     ...(m.threadTs ? { thread_ts: m.threadTs } : replyCount ? { thread_ts: m.ts, reply_count: replyCount } : {}),
     ...(m.appId ? { app_id: m.appId, bot_id: `B${m.appId.slice(1)}` } : {}),
     ...(m.blocks ? { blocks: m.blocks } : {}),
+    ...(m.files ? { files: m.files } : {}),
     ...(m.reactions.size
       ? { reactions: [...m.reactions].map(([name, users]) => ({ name, count: users.size, users: [...users] })) }
       : {}),
@@ -190,6 +191,31 @@ const HANDLERS: Record<string, Handler> = {
   },
   "files.info": () => {
     throw new SlackError("file_not_found");
+  },
+  // Slack's three-call upload. As measured against Slack: begin takes any declared length,
+  // and complete succeeds whether or not the bytes ever arrived (it verifies nothing).
+  "files.getUploadURLExternal": (p, { ws }) => {
+    const filename = need(p, "filename");
+    const length = Number(str(p, "length"));
+    if (!Number.isSafeInteger(length) || length < 1) throw new SlackError("invalid_arguments");
+    const id = `F0UP${String(ws.uploads.size + 1).padStart(4, "0")}`;
+    ws.uploads.set(id, { id, filename, length });
+    return { ok: true, upload_url: `${ws.publicUrl}/upload/${id}`, file_id: id };
+  },
+  "files.completeUploadExternal": (p, { ws, botUserId, appId }) => {
+    const files = Array.isArray(p.files) ? (p.files as Array<{ id?: unknown; title?: unknown }>) : [];
+    if (files.length === 0) throw new SlackError("invalid_arguments");
+    const done = files.map((f) => {
+      const up = typeof f.id === "string" ? ws.uploads.get(f.id) : undefined;
+      if (!up) throw new SlackError("file_not_found");
+      return { up, title: typeof f.title === "string" && f.title ? f.title : up.filename };
+    });
+    const channel = str(p, "channel_id");
+    const threadTs = str(p, "thread_ts");
+    const comment = str(p, "initial_comment");
+    for (const d of done) d.up.completed = { ...(channel ? { channel } : {}), ...(threadTs ? { threadTs } : {}), title: d.title, ...(comment ? { comment } : {}) };
+    if (channel) ws.post({ channel, user: botUserId, text: comment ?? "", threadTs, appId, files: done.map((d) => ({ id: d.up.id, title: d.title })) });
+    return { ok: true, files: done.map((d) => ({ id: d.up.id, title: d.title })) };
   },
   "assistant.threads.setStatus": () => ({ ok: true }),
 };

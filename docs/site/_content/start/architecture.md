@@ -113,7 +113,7 @@ Plain assistant text is **invisible**. The only path to Slack is the in-process 
 |---|---|
 | `reply` | Post a message in the bound thread (markdown → mrkdwn at post time) |
 | `edit` | Edit a prior reply by `ref` |
-| `upload` | Upload a file from the session `cwd` |
+| `upload` | Upload a file from the session `cwd` or its scratch dir (on a node the bytes go straight to Slack) |
 | `react` / `unreact` | Emoji reactions |
 | `request_approval` | Block Kit Approve/Deny card — see [Trust boundary](#trust-boundary) |
 

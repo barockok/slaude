@@ -463,6 +463,53 @@ export class NodeClient {
   }
 
   /**
+   * The first half of a direct upload (surface/upload_begin): the gateway asks
+   * Slack for a presigned URL for a file of this name and size. `unavailable`
+   * says the gateway cannot serve it: "old-gateway" (it predates the tool) or
+   * "no-capability" (it has the tool but this surface cannot upload); the caller
+   * falls back to the path call. Any other refusal (too large, rate limit, a
+   * Slack error) is `error`, text for the agent. The URL and handle returned are
+   * credentials for one file: never log them.
+   */
+  async uploadBegin(
+    a: { filename: string; size: number; alt_text?: string },
+    jobToken: string,
+    signal?: AbortSignal,
+  ): Promise<
+    | { ok: true; uploadUrl: string; fileId: string; handle: string }
+    | { ok: false; unavailable?: "old-gateway" | "no-capability"; error: string }
+  > {
+    const r = await this.postTool("surface", "upload_begin", a, jobToken, signal);
+    const t = r.content[0]?.text ?? "";
+    if (r.isError) {
+      if (t.startsWith("tool unavailable:")) {
+        return { ok: false, unavailable: t.includes("not mounted") ? "no-capability" : "old-gateway", error: "upload is not available on this gateway" };
+      }
+      return { ok: false, error: t };
+    }
+    try {
+      const b = JSON.parse(t) as { uploadUrl?: unknown; fileId?: unknown; handle?: unknown };
+      if (typeof b.uploadUrl === "string" && typeof b.fileId === "string" && typeof b.handle === "string") {
+        return { ok: true, uploadUrl: b.uploadUrl, fileId: b.fileId, handle: b.handle };
+      }
+    } catch { /* falls through */ }
+    return { ok: false, error: "upload failed: the gateway's answer to upload_begin was not understood" };
+  }
+
+  /**
+   * The second half (surface/upload_complete). Sent once, no time limit but the
+   * turn's abort: a held caption waits for an approver here. Returns the
+   * gateway's tool result (an isError result carries text for the agent).
+   */
+  async uploadComplete(
+    a: { handle: string; title?: string; initial_comment?: string },
+    jobToken: string,
+    signal?: AbortSignal,
+  ): Promise<ToolResult> {
+    return this.postTool("surface", "upload_complete", a, jobToken, signal);
+  }
+
+  /**
    * The MCP bridge (WS-C §4.2): relay one `tools/list` or `tools/call` for a
    * bridged server to the gateway, which is the MCP client to the real server.
    * The body and the answer are relayed unchanged. A call is never retried (a

@@ -2,7 +2,7 @@
  * Outbound-Slack suppression wrapper (design §Active-surface lock, outbound
  * gate). While an operator drives a session from the panel, the agent still
  * runs — but its user-visible surface writes (reply / edit / react / upload /
- * typing) must not echo to Slack; the operator watches the turn over the panel
+ * typing, and an upload's complete call) must not echo to Slack; the operator watches the turn over the panel
  * SSE tail instead.
  *
  * This wraps a Surface so those write methods become no-ops while `held(id)` is
@@ -17,7 +17,9 @@
  * replica that is not the lock owner still suppresses the echo. Method calls
  * stay bound to the original surface so instance state (`this`) is preserved.
  */
-import type { Surface } from "../core/surface";
+import { UPLOAD_SUPPRESSED, type Surface } from "../core/surface";
+
+export { UPLOAD_SUPPRESSED };
 
 export function suppressibleSurface(
   surface: Surface,
@@ -38,6 +40,15 @@ export function suppressibleSurface(
       : undefined,
     upload: surface.upload
       ? async (i) => ((await held(sessionId)) ? undefined : surface.upload!(i))
+      : undefined,
+    // Direct upload: held means nothing is sent, and the caller is told (a silent undefined
+    // would read as an upload that happened).
+    uploadHeld: surface.uploadBegin ? () => held(sessionId) : undefined,
+    uploadBegin: surface.uploadBegin
+      ? async (i) => ((await held(sessionId)) ? UPLOAD_SUPPRESSED : surface.uploadBegin!(i))
+      : undefined,
+    uploadComplete: surface.uploadComplete
+      ? async (i) => ((await held(sessionId)) ? UPLOAD_SUPPRESSED : surface.uploadComplete!(i))
       : undefined,
     typing: surface.typing ? async (i) => ((await held(sessionId)) ? undefined : surface.typing!(i)) : undefined,
   };

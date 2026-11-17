@@ -1,6 +1,8 @@
 import type { WebClient } from "@slack/web-api";
 import { basename } from "node:path";
-import { openConfined, UploadRefusal } from "../core/confined-file";
+import { openConfined, UploadTooLarge } from "../core/confined-file";
+import { env } from "../../config/env";
+import { checkUploadUrl } from "../upload/url";
 import { deliver, formatOutbound, outbound, OutboundRefusal, TRACKER_HIDDEN, type OutboundKind, type OutboundOptions } from "./outbound";
 import { SLACK_SURFACE_ID } from "../core/surface";
 import type {
@@ -149,11 +151,52 @@ export class SlackSurface implements Surface {
     await this.#client.reactions.remove({ channel: this.#b.conversationId, timestamp, name });
   }
 
+  /** Direct upload, first call. The persona's client asks Slack for a presigned URL; nothing is posted. */
+  async uploadBegin({ filename, size, altText }: { filename: string; size: number; altText?: string }): Promise<{ uploadUrl: string; fileId: string }> {
+    const r = await this.#client.files.getUploadURLExternal({ // outbound: upload begin sends a file name and size only, no message text; the caption is judged at upload complete through deliver()
+      filename,
+      length: size,
+      ...(altText ? { alt_text: altText } : {}),
+    });
+    if (!r.ok || !r.upload_url || !r.file_id) throw new Error("Slack returned no upload URL");
+    // The node sends the bytes wherever this says: only Slack's own upload host will do.
+    if (!checkUploadUrl(r.upload_url)) throw new Error("Slack returned an upload URL on an unexpected host");
+    return { uploadUrl: r.upload_url, fileId: r.file_id };
+  }
+
+  /**
+   * Direct upload, last call. The channel and thread are this surface's binding;
+   * the gateway builds that from the begin handle, never from the node. The caption
+   * is judged here exactly as the co-located upload judges it (held for approval,
+   * redacted or refused by the owner's reply rules). Title, file name and alt text
+   * are not run through the rules, as in the co-located path.
+   */
+  async uploadComplete({ fileId, filename, title, comment }: { fileId: string; filename: string; title?: string; comment?: string }): Promise<void> {
+    const send = async (caption: string | undefined) => {
+      await this.#client.files.completeUploadExternal({ // outbound: surface reply, edit and upload caption through deliver(); runtime and tracker text through outbound() too
+        files: [{ id: fileId, title: title ?? filename }],
+        channel_id: this.#b.conversationId,
+        ...(this.#b.threadRef ? { thread_ts: this.#b.threadRef } : {}),
+        ...(caption ? { initial_comment: caption } : {}),
+      });
+      return undefined;
+    };
+    if (!comment) return void (await send(undefined));
+    const r = await deliver(comment, this.#opts("upload_caption"), { post: send });
+    if (!r.ok) throw new OutboundRefusal(r.error);
+  }
+
   async upload({ path, title, comment, altText }: { path: string; title?: string; comment?: string; altText?: string }): Promise<void> {
     // Confined to the session's working directory: the descriptor checked here is the one streamed.
     let workingDir: string | undefined;
     try { workingDir = await this.#b.workingDir?.(); } catch { workingDir = undefined; }
     const file = openConfined(path, workingDir);
+    // uploadV2 reads the whole stream into memory: a lower cap than the direct path's.
+    const max = env.uploadColocatedMaxBytes();
+    if (file.size > max) {
+      file.stream.destroy();
+      throw new UploadTooLarge(path, file.size, max);
+    }
     const filename = basename(path);
     let used = false;
     const send = async (caption: string | undefined) => {

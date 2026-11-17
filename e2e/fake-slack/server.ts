@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { CallLog } from "./core/call-log";
@@ -33,6 +33,12 @@ interface ResponseTarget {
   channel: string;
   messageTs: string;
   user: string;
+}
+
+async function readBytes(req: http.IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const c of req) chunks.push(c as Buffer);
+  return Buffer.concat(chunks);
 }
 
 async function readBody(req: http.IncomingMessage): Promise<string> {
@@ -281,6 +287,21 @@ export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeS
       const r = api(method, parseParams(req.headers["content-type"] ?? null, raw), bearer);
       return send(res, r.status, r.body, r.headers);
     }
+    if (path.startsWith("/upload/") && req.method === "POST") {
+      // The upload host of a direct upload. As measured against Slack: a raw body is accepted,
+      // a longer one is truncated to the declared length, a shorter one is a 500.
+      const bytes = await readBytes(req);
+      const up = ws.uploads.get(path.slice("/upload/".length));
+      if (!up) return void res.writeHead(404, { "content-type": "text/plain" }).end("unknown upload");
+      if (bytes.length < up.length) {
+        log.add({ kind: "api", method: "upload", ok: false, error: "s3_upload", status: 500, detail: { id: up.id, bytes: bytes.length, declared: up.length } });
+        return void res.writeHead(500, { "content-type": "text/plain" }).end("<Error><Code>s3_upload</Code></Error>");
+      }
+      const kept = bytes.subarray(0, up.length);
+      up.received = { bytes: kept.length, sha256: createHash("sha256").update(kept).digest("hex") };
+      log.add({ kind: "api", method: "upload", ok: true, status: 200, detail: { id: up.id, bytes: kept.length, sha256: up.received.sha256 } });
+      return void res.writeHead(200, { "content-type": "text/plain" }).end(`OK - ${kept.length}`);
+    }
     if (path.startsWith("/response/") && req.method === "POST") {
       const raw = await readBody(req);
       let parsed: unknown = raw;
@@ -319,6 +340,7 @@ export async function startFakeSlack(opts: FakeSlackOptions = {}): Promise<FakeS
   await new Promise<void>((resolve) => server.listen(opts.port ?? 0, opts.host ?? "0.0.0.0", resolve));
   const port = (server.address() as AddressInfo).port;
   if (!publicUrl) publicUrl = `http://127.0.0.1:${port}`;
+  ws.publicUrl = publicUrl;
 
   return {
     url: `http://127.0.0.1:${port}`,
