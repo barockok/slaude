@@ -58,19 +58,22 @@ interface Profile {
   soul: boolean;
   /** Secret masking (src/redact). */
   secrets: boolean;
+  /** Posted as a chat message by a path that can send a markdown block (see slackMessage): raw markdown when the flag is on. */
+  blocks?: boolean;
 }
 
 const MESSAGE: Profile = { mrkdwn: true, soul: true, secrets: false };
+const CHAT: Profile = { ...MESSAGE, blocks: true };
 const RAW: Profile = { mrkdwn: false, soul: false, secrets: false };
 
 /** Each path's formatting, exactly as it was before the choke point. */
 export const PROFILES: Record<OutboundKind, Profile> = {
-  reply: MESSAGE,
-  edit: MESSAGE,
+  reply: CHAT,
+  edit: CHAT,
   upload_caption: MESSAGE,
   ephemeral: MESSAGE,
-  post_message: MESSAGE,
-  runtime: MESSAGE,
+  post_message: CHAT,
+  runtime: CHAT,
   // The wake tool converts to mrkdwn before its restraint checks; the post masks secrets.
   proactive_post: { mrkdwn: false, soul: false, secrets: true },
   // Escaped and clipped by the card after this.
@@ -78,7 +81,7 @@ export const PROFILES: Record<OutboundKind, Profile> = {
   canvas: RAW,
   topic: RAW,
   // The todo and task trackers: the runtime renders them, the model writes their items.
-  todo: MESSAGE,
+  todo: CHAT,
 };
 
 export interface OutboundOptions {
@@ -116,9 +119,11 @@ export type OutboundVerdict =
   | { action: "hold"; text: string; message: string; slug: string; ruleId: string; hits: RuleHit[]; deciding: RuleHit; spans: string };
 
 /** The formatting a kind has always had. */
-export function formatOutbound(text: string, kind: OutboundKind, persona?: string | null): string {
+export function formatOutbound(text: string, kind: OutboundKind, persona?: string | null, plain = false): string {
   const p = PROFILES[kind];
-  let out = p.mrkdwn ? mdToMrkdwn(text) : text;
+  // A chat message sent as a markdown block keeps its raw markdown (slackMessage converts it only past the block limit). `plain`: text for a path that cannot send blocks.
+  const keepMarkdown = p.blocks === true && !plain && env.slackMarkdownBlocks();
+  let out = p.mrkdwn && !keepMarkdown ? mdToMrkdwn(text) : text;
   if (p.soul) out = redactSlack(out, redactPatternsFor(persona));
   if (p.secrets) out = redactSecrets(out);
   return out;
