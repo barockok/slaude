@@ -646,6 +646,10 @@ export const env = {
   guardrailReplyQuietSec: () => intAtLeastOne("SLAUDE_GUARDRAIL_REPLY_QUIET_SECS", 600),
   /** How long an owner guardrail's approval card waits, tool calls and held replies (`SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC`, default 600, at most 3600). */
   guardrailApproveTimeoutSec: () => Math.min(3600, intAtLeastOne("SLAUDE_GUARDRAIL_APPROVE_TIMEOUT_SEC", 600)),
+  /** Largest file an agent may upload, in bytes (`SLAUDE_UPLOAD_MAX_BYTES`, default 1073741824, Slack's documented per-file maximum). Enforced at upload_begin on declared size. */
+  uploadMaxBytes: () => intAtLeastOne("SLAUDE_UPLOAD_MAX_BYTES", 1_073_741_824),
+  /** Largest file the co-located upload path may send, in bytes (`SLAUDE_UPLOAD_COLOCATED_MAX_BYTES`, default 104857600). That path reads the whole file into the gateway's memory (files.uploadV2). */
+  uploadColocatedMaxBytes: () => intAtLeastOne("SLAUDE_UPLOAD_COLOCATED_MAX_BYTES", 104_857_600),
   /** How long audit events are kept (`SLAUDE_AUDIT_RETENTION_DAYS`, default 365). */
   auditRetentionDays: () => intAtLeastOne("SLAUDE_AUDIT_RETENTION_DAYS", 365),
   /** How often the gateway re-reads the skill roots into the version log, in minutes (`SLAUDE_SKILL_VERSION_RECONCILE_MINUTES`, default 5). */
