@@ -34,6 +34,10 @@ import { handleSandboxCommand } from "./sandbox-command";
 import { handleParticipantCommand, handleWorkflowCommand, startWorkflow } from "./workflow-command";
 import { StageGate } from "../slack/stage-gate";
 import { createWorkflowApi } from "../../workflow/api";
+import { factory as factoryClient } from "../../workflow/client";
+import { createCommitter } from "../../workflow/commit";
+import { createFreshRunner } from "../../workflow/fresh-turn";
+import { sandboxBash } from "../../remote/sandbox-call";
 import type { WorkflowThreadRow } from "../../db/workflow";
 import { activeRemoteTarget } from "../../remote/active";
 import { HelperClient } from "../../remote/helper-client";
@@ -3264,6 +3268,23 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
     routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false });
   };
+  const workflowPost = async (row: WorkflowThreadRow, text: string) => {
+    const session = await Sessions.findById(row.session_id);
+    const app: AppRef = { apiAppId: session?.slack_app_id ?? undefined, teamId: session?.slack_team_id ?? undefined };
+    await botClientFor(app).chat.postMessage({ channel: row.channel_id, thread_ts: row.thread_ts, text });
+  };
+  const threadInSandbox = async (row: WorkflowThreadRow) => !!(await Sandbox.find(row.channel_id, row.thread_ts));
+  const freshRunner = createFreshRunner({
+    post: workflowPost,
+    stageGate,
+    client: factoryClient,
+    inSandbox: threadInSandbox,
+    enterSandbox: async (row) => { await Sandbox.set({ channelId: row.channel_id, threadTs: row.thread_ts, createdBy: row.starter_user_id }); },
+    app: async (row) => {
+      const session = await Sessions.findById(row.session_id);
+      return { apiAppId: session?.slack_app_id ?? undefined, teamId: session?.slack_team_id ?? undefined };
+    },
+  });
   const workflowApi = createWorkflowApi({
     injectTurn: async (row: WorkflowThreadRow, prompt: string) => {
       const session = await Sessions.findById(row.session_id);
@@ -3278,11 +3299,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (queueDispatch) await queueDispatch.dispatch(session, envelope, meta);
       else await agent.sendMessage(session.id, envelope);
     },
-    post: async (row: WorkflowThreadRow, text: string) => {
-      const session = await Sessions.findById(row.session_id);
-      const app: AppRef = { apiAppId: session?.slack_app_id ?? undefined, teamId: session?.slack_team_id ?? undefined };
-      await botClientFor(app).chat.postMessage({ channel: row.channel_id, thread_ts: row.thread_ts, text });
-    },
+    post: workflowPost,
+    // Method stages: an isolated agent run per turn, and the commit of an approved artifact.
+    runFreshTurn: (row, turn) => { void freshRunner.run(row, turn); },
+    commit: createCommitter({ inSandbox: threadInSandbox, bash: sandboxBash }),
+    abortRun: (runId) => freshRunner.abort(runId),
   });
 
   const panelApi = panelInfra
