@@ -254,7 +254,7 @@ const exercisers: Record<string, () => Promise<void>> = {
     });
     const agent = new AgentManager();
     agent.sendMessage = async () => {};
-    createGateway(agent, tr.t, {});
+    createGateway(agent, tr.t, { lookupClientFactory: () => tr.client });
     const a = dm(tr.client, MGR, "<@U_SLAUDE> look at this", { thread: root, channel: "C0TEAM", type: "channel" });
     await tr.emit("app_mention", { ...a, event: { ...a.event, type: "app_mention" } });
     await tr.emit("message", a);

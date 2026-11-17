@@ -362,6 +362,9 @@ type SessionRoute = {
 };
 
 export interface GatewayOptions {
+  /** How a token becomes a Slack client for read-only lookups (names, the thread head). Defaults to a real
+   *  no-retry WebClient; a test supplies a fake so nothing depends on an ambient token or the network. */
+  lookupClientFactory?: import("../panel/lookup-clients").LookupClientFactory;
   /** Override how a Surface is built per session. Defaults to a SlackSurface over the
    *  transport client — the extension seam for future surfaces. */
   surfaceFactory?: SurfaceFactory;
@@ -817,7 +820,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // retries, rate limits rejected; never the posting client) for the bot of the
   // app the row was recorded with, else the persona's latest app, else the
   // deployment's own bot.
-  const lookupClients = createLookupClients();
+  const lookupClients = createLookupClients(opts.lookupClientFactory);
   const panelNameClient = async (ctx: NameContext): Promise<SlackNameClient | null> => {
     const persona = ctx.persona && ctx.persona !== "default" ? ctx.persona : undefined;
     const tokenFor = (app: AppRef): string | undefined => {

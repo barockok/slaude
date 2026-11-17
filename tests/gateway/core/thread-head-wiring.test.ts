@@ -79,9 +79,12 @@ function makeGw() {
     if (state.sendFails) { state.sendFails--; throw new Error("dispatch failed"); }
     sends.push(txt);
   };
-  const h = createGateway(agent, t, {});
+  // The head's reads go through this factory, whatever token the environment holds: no test builds a real client.
+  const lookupTokens: string[] = [];
+  const lookupClientFactory = (token: string) => (lookupTokens.push(token), client);
+  const h = createGateway(agent, t, { lookupClientFactory });
   const emit = async (name: string, args: any) => { await events.get(name)?.(args); };
-  return { t, client, emit, agent, sends, h, replyCalls, state };
+  return { t, client, emit, agent, sends, h, replyCalls, state, lookupTokens };
 }
 type Gw = ReturnType<typeof makeGw>;
 
@@ -104,7 +107,7 @@ let seq = 90_000;
 const nextTs = () => `${++seq}.1`;
 const NEW_ROOT = () => `${++seq}.0`;
 
-const ENV = ["SLAUDE_BRAIN_MODE", "SLAUDE_BRAIN_DISABLED", "SLAUDE_THREAD_HEAD_MESSAGES", "SLAUDE_THREAD_HEAD_DEADLINE_MS"] as const;
+const ENV = ["SLAUDE_BRAIN_MODE", "SLAUDE_BRAIN_DISABLED", "SLAUDE_THREAD_HEAD_MESSAGES", "SLAUDE_THREAD_HEAD_DEADLINE_MS", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLAUDE_SLACK_MODE", "SLAUDE_SLACK_API_URL"] as const;
 const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 beforeAll(() => {
   process.env.SLAUDE_BRAIN_MODE = "remote";
@@ -122,6 +125,10 @@ let gw: Gw | null = null;
 beforeEach(async () => {
   delete process.env.SLAUDE_THREAD_HEAD_MESSAGES;
   delete process.env.SLAUDE_THREAD_HEAD_DEADLINE_MS;
+  // Pinned: another file in the same process may leave a token behind.
+  delete process.env.SLACK_BOT_TOKEN;
+  delete process.env.SLACK_APP_TOKEN;
+  delete process.env.SLAUDE_SLACK_MODE;
   writeSoulFixture(WORLD);
   const brain = fakeBrain();
   setBackendForTest({ ready: () => true, call: (n: string, p: Record<string, unknown>, s: any) => brain.call(n, p, s), adminCall: async () => null } as any);
@@ -352,6 +359,24 @@ describe("thread head wiring", () => {
     expect(p.match(/<channel /g)).toHaveLength(1);
     expect(p).not.toContain("</channel>\n</thread-head>");
     expect(p.indexOf("approve the deploy")).toBeLessThan(p.indexOf("</thread-head>"));
+  });
+});
+
+describe("thread head: the read never builds a real client in tests", () => {
+  it("with an ambient bot token the read still goes through the injected factory, and the head is built", async () => {
+    process.env.SLACK_BOT_TOKEN = "xoxb-ambient-not-real";
+    const g = (gw = makeGw());
+    const root = NEW_ROOT();
+    const ts = nextTs();
+    g.state.thread = standardThread(root, ts);
+    await mentionIn(g, ts, "hi", root);
+    expect(g.lookupTokens).toEqual(["xoxb-ambient-not-real"]);
+    expect(headOf(g.sends[0]!)).toContain("<@U0BOB0001> Bob: which step?");
+  });
+
+  it("the gateway defaults to a real client only when no factory is given (so a test must always give one)", async () => {
+    const src = await Bun.file("src/gateway/core/gateway.ts").text();
+    expect(src).toContain("createLookupClients(opts.lookupClientFactory)");
   });
 });
 
