@@ -77,6 +77,8 @@ export interface SessionBinding {
   threadRef?: string;         // slack: threadTs
   inboundRef: string;         // slack: inboundTs
   userId?: string;
+  /** The person the current turn answers (an interactive reply to a human), when there is one. */
+  replyTo?: string;
   teamId?: string;
   requestApproval: (r: ApprovalRequest) => Promise<ApprovalResult>;
   reloadSession: (prompt?: string) => boolean;

@@ -602,6 +602,15 @@ export const env = {
     return v === "addressed" || v === "contribute" ? v : "mention";
   },
   /**
+   * How long after the agent speaks the next message from the person it
+   * answered still counts as addressed to it (`SLAUDE_ENGAGE_WINDOW_MINUTES`,
+   * default 10). Also the last-speaker record's lifetime.
+   */
+  engageWindowMinutes: (): number => {
+    const n = Number(opt("SLAUDE_ENGAGE_WINDOW_MINUTES", "10"));
+    return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), 24 * 60) : 10;
+  },
+  /**
    * Raw `SLAUDE_PRICE_TABLE` (phase D): inline JSON, or a file path when the
    * value does not start with `{`. Parsed by `loadPriceTable`. Empty when unset.
    */

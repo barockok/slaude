@@ -35,6 +35,7 @@ import { sessionGuardrails, type SessionGuardrails } from "../../guardrails/reso
 import { cachedGuardrails, currentGuardrails, failedSetExists, failedSetExistsCached, guardrailsFailure } from "../../guardrails/snapshot";
 import { failureText } from "../core/failure-codes";
 import type { AppRef } from "../core/transport";
+import { noteAgentMessage } from "../engage/record";
 
 /** Where agent text is going. `runtime` is the runtime's own text through a surface: formatted, never ruled. */
 export type OutboundKind =
@@ -100,6 +101,10 @@ export interface OutboundOptions {
   signal?: AbortSignal;
   /** An edit: the message it rewrites (a held phrase approved or denied there is remembered). */
   ref?: string;
+  /** The person this post answers: set only for an interactive reply to a human turn (not a wake, cron, panel or unattended turn). For the engage last-speaker record. */
+  replyTo?: string | null;
+  /** post_message only: the thread the post actually lands in (null: the channel's top level), which may differ from the session's. */
+  destThread?: string | null;
 }
 
 /** Less time than this left: a text is not held (a card no one can answer), it is refused. */
@@ -279,9 +284,32 @@ const turnOver = (o: OutboundOptions, now = Date.now()) => !!o.signal?.aborted |
 
 /** outbound(), then post, holding the text on a card when a rule says approve. */
 export async function deliver(text: string, o: OutboundOptions, io: DeliverIo): Promise<Delivered> {
+  /**
+   * An agent post that reached the channel as its answer: remember it as the
+   * channel's last speaker (observe only; a no-op unless the channel opted
+   * in). Not a held-reply placeholder, and not a kind that is not a spoken
+   * message. A proactive post is recorded through its echo, not here.
+   */
+  const spoke = (ref: string | undefined): void => {
+    if ((o.kind !== "reply" && o.kind !== "post_message") || !o.channel || typeof ref !== "string") return;
+    // Where it landed: a post_message names its own thread (null: the channel's top level); a reply goes to the session's thread.
+    const sessionThread = o.thread && o.thread.channel === o.channel ? (o.thread.threadTs ?? null) : null;
+    noteAgentMessage({
+      channel: o.channel,
+      thread: o.kind === "post_message" && o.destThread !== undefined ? o.destThread : sessionThread,
+      ts: ref,
+      persona: o.persona,
+      app: o.app?.apiAppId ?? null,
+      repliedToUser: o.replyTo ?? null,
+    });
+  };
   const v = await outbound(text, o);
   if (v.action === "deny") return { ok: false, error: v.message };
-  if (v.action === "send") return { ok: true, ref: await io.post(v.text) };
+  if (v.action === "send") {
+    const ref = await io.post(v.text);
+    spoke(ref);
+    return { ok: true, ref };
+  }
   const refuse = (reason: string): Delivered => {
     record(o, v.hits, v.deciding, "deny");
     return { ok: false, error: `${v.message} Not posted: ${reason}.` };
@@ -292,7 +320,9 @@ export async function deliver(text: string, o: OutboundOptions, io: DeliverIo): 
   if (before && !before.approved) return refuse("an approver already declined it in this message");
   if (before && before.approved && before.spans === v.spans) {
     record(o, v.hits, v.deciding, "audit");
-    return { ok: true, ref: await io.post(v.text) };
+    const ref = await io.post(v.text);
+    spoke(ref);
+    return { ok: true, ref };
   }
   const now = Date.now();
   const left = Math.min(env.guardrailApproveTimeoutSec() * 1000, o.deadline !== undefined ? o.deadline - now : Infinity);
@@ -333,10 +363,12 @@ export async function deliver(text: string, o: OutboundOptions, io: DeliverIo): 
     if (placeholder && io.edit) {
       await io.edit(placeholder, v.text);
       memo(o.ref ?? placeholder, true);
+      spoke(placeholder);
       return { ok: true, ref: placeholder, note: `held for approval, approved by <@${d.by}>` };
     }
     const ref = await io.post(v.text);
     memo(o.ref ?? ref, true);
+    spoke(ref);
     return { ok: true, ref, note: `held for approval, approved by <@${d.by}>` };
   }
   const reason = d.by === "system" ? (d.note?.startsWith("timeout") ? "no approver decided in time" : d.note === "aborted" ? "the turn was stopped" : (d.note ?? "not approved")) : `denied by <@${d.by}>`;

@@ -18,6 +18,7 @@ import { SlackSurface } from "../../src/gateway/slack/surface";
 import { surfaceTools } from "../../src/gateway/core/surface-mcp";
 import { slackHandlers, type SlackContext } from "../../src/gateway/slack/mcp-tools";
 import { sendProactive } from "../../src/proactive/heartbeat";
+import { __setLastSpeakerStoreForTests, memoryLastSpeakerStore } from "../../src/gateway/engage/last-speaker";
 import { proposalBlocks } from "../../src/background/proposal-cards";
 import { SoulDataSchema } from "../../src/soul/data";
 import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
@@ -445,5 +446,88 @@ describe("a deployment with no guardrails", () => {
     await refreshGuardrails("default");
     expect((await outbound("hello", opts())).action).toBe("deny");
     await __resetHighWaterForTests();
+  });
+});
+
+describe("the engage last-speaker record at the choke point", () => {
+  const CH = "C0RECORD";
+  const rec = memoryLastSpeakerStore();
+  const tsNow = (n: number) => `${Math.floor(Date.now() / 1000) + n}.000100`;
+  beforeEach(() => {
+    __setLastSpeakerStoreForTests(memoryLastSpeakerStore());
+    setSoulData(SoulDataSchema.parse({ trustedChannels: [CH], channelEngage: [{ channel: CH, level: "addressed", mode: "shadow" }] }));
+  });
+  afterAll(() => {
+    __setLastSpeakerStoreForTests(null);
+    __resetSoulDataMemo();
+    void rec;
+  });
+  const take = (thread: string | null) => import("../../src/gateway/engage/last-speaker").then((m) => m.lastSpeakers().take({ channel: CH, thread, persona: "default" }));
+  const o = (over: Record<string, unknown> = {}) => ({ kind: "reply" as const, persona: "default", channel: CH, thread: { channel: CH, threadTs: "1700000000.000001" }, sessionId: "S-rec", replyTo: "U0PERSON", ...over });
+
+  it("a reply is recorded in the session's thread with the person it answered", async () => {
+    const ts = tsNow(1);
+    await deliver("hello", o(), { post: async () => ts });
+    expect(await take("1700000000.000001")).toMatchObject({ ts, persona: "default", repliedToUser: "U0PERSON" });
+    expect(await take(null)).toBeNull();
+  });
+  it("a top-level reply is recorded under its own ts and the channel's top level", async () => {
+    const ts = tsNow(2);
+    await deliver("hello", o({ thread: null }), { post: async () => ts });
+    expect((await take(null))?.ts).toBe(ts);
+    expect((await take(ts))?.ts).toBe(ts);
+  });
+  it("a post_message goes where it landed, not where the session is", async () => {
+    const ts = tsNow(3);
+    await deliver("hello", o({ kind: "post_message", destThread: null }), { post: async () => ts });
+    expect(await take("1700000000.000001")).toBeNull();
+    expect((await take(null))?.ts).toBe(ts);
+    const ts2 = tsNow(4);
+    await deliver("hello", o({ kind: "post_message", destThread: "1700000000.000009" }), { post: async () => ts2 });
+    expect((await take("1700000000.000009"))?.ts).toBe(ts2);
+  });
+  it("a post to another channel is not recorded under the session's thread", async () => {
+    await deliver("hello", o({ kind: "post_message", channel: "C0ELSEWHERE", destThread: null }), { post: async () => tsNow(5) });
+    expect(await take("1700000000.000001")).toBeNull();
+  });
+  it("an unattended post has no person it answered", async () => {
+    // The surface and the legacy tool set replyTo only for an interactive reply; with none, the record says null.
+    const ts = tsNow(6);
+    const { replyTo: _drop, ...bare } = o();
+    await deliver("hello", bare, { post: async () => ts });
+    expect((await take("1700000000.000001"))?.repliedToUser).toBeNull();
+  });
+  it("a runtime notice, an edit and a proactive post are not recorded here", async () => {
+    for (const kind of ["runtime", "edit", "proactive_post"] as const) await deliver("note", o({ kind }), { post: async () => tsNow(7) });
+    expect(await take("1700000000.000001")).toBeNull();
+  });
+  it("a held reply's waiting placeholder is not recorded; the approved text is, at the placeholder's ts", async () => {
+    const placeholder = tsNow(8);
+    const edits: string[] = [];
+    const r = await deliver("The price is $40", o({ app: undefined }), { post: async () => placeholder, edit: async (_ref, t) => void edits.push(t) });
+    expect(r.ok).toBe(true);
+    expect(edits).toEqual(["The price is $40"]);
+    expect((await take("1700000000.000001"))?.ts).toBe(placeholder);
+  });
+  it("a denied held reply records nothing", async () => {
+    answer = async () => ({ approved: false, by: "UAPPROVER" });
+    const r = await deliver("The price is $40", o(), { post: async () => tsNow(9), edit: async () => {} });
+    expect(r.ok).toBe(false);
+    expect(await take("1700000000.000001")).toBeNull();
+  });
+  it("the binding names the person only for an interactive Slack turn", () => {
+    const ctx = (over: Record<string, unknown>): SlackContext => ({ client: {} as any, channel: CH, threadTs: "1.1", inboundTs: "1.2", origin: "slack", answers: "U0PERSON", ...over }) as SlackContext;
+    expect(bindingFor(ctx({})).replyTo).toBe("U0PERSON");
+    expect(bindingFor(ctx({ origin: "cron" })).replyTo).toBeUndefined();
+    expect(bindingFor(ctx({ origin: "panel" })).replyTo).toBeUndefined();
+    expect(bindingFor(ctx({ answers: undefined })).replyTo).toBeUndefined();
+  });
+  it("a surface reply on an unattended turn records null, and on an interactive one records the person", async () => {
+    const client = { chat: { postMessage: async () => ({ ts: tsNow(10) }), update: async () => ({}) } } as any;
+    const b = (over: Record<string, unknown>) => ({ ...bindingFor({ client, channel: CH, threadTs: "1700000000.000001", inboundTs: "1.2", origin: "slack", answers: "U0PERSON" } as SlackContext), ...over }) as any;
+    await new SlackSurface(client, b({ unattended: true, replyTo: "U0PERSON" })).reply({ text: "x" });
+    expect((await take("1700000000.000001"))?.repliedToUser).toBeNull();
+    await new SlackSurface(client, bindingFor({ client, channel: CH, threadTs: "1700000000.000001", inboundTs: "1.2", origin: "slack", answers: "U0PERSON" } as SlackContext)).reply({ text: "x" });
+    expect((await take("1700000000.000001"))?.repliedToUser).toBe("U0PERSON");
   });
 });

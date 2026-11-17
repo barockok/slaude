@@ -28,6 +28,8 @@ import { __clearGuardrailsForTests, applyGuardrailChange } from "../../../src/db
 import { __resetGuardrailSnapshotsForTests, refreshGuardrails } from "../../../src/guardrails/snapshot";
 import { flushAudits } from "../../../src/audit/emit";
 import { metrics } from "../../../src/metrics";
+import { SoulDataSchema } from "../../../src/soul/data";
+import { setSoulData, soulData } from "../../../src/soul/extract";
 import * as OwnerGuardrails from "../../../src/gateway/core/owner-guardrails";
 import { PanelChatRefused } from "../../../src/gateway/panel/api";
 import { ensureGuardrailKeyForPg } from "../../guardrails/helpers";
@@ -256,6 +258,17 @@ describe("channel session routing", () => {
     await g.emit("message", rootArgs(g, `<@${BOT}> two`));
     expect(g.sends).toHaveLength(2);
     expect(g.sends[0]!.id).toBe(g.sends[1]!.id);
+  });
+
+  it("phase 0: an unmentioned root message in an opted-in channel session is counted, and still only recorded", async () => {
+    setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: "C1", level: "addressed", mode: "shadow" }] }));
+    const count = () => Number((metrics.render().split("\n").find((l) => l.startsWith("slaude_engage_total{") && l.includes('level="addressed"') && l.includes('outcome="pass"'))?.split(" ").at(-1)) || 0);
+    const before = count();
+    const g = makeGw();
+    await g.emit("message", rootArgs(g, "Budi, can you look at the deploy?"));
+    expect(count()).toBe(before + 1);
+    expect(g.sends).toHaveLength(1); // recorded into the session, not run
+    expect(g.suppressed).toHaveLength(1);
   });
 
   it("an unmentioned root message is recorded without a turn, and creates the session", async () => {

@@ -28,6 +28,10 @@ import { proactiveReplyBlock, proactiveWorkBlock } from "../../proactive/reply-c
 import type { PromiseTransport } from "../../proactive/promises";
 import type { ProactiveTransport } from "../../proactive/dispatch";
 import { channelSessionOn, channelSessionWakes, proactiveFor } from "../../soul/proactive";
+import { engageFor } from "../engage/setting";
+import { observeEngage } from "../engage/observe";
+import { clearAgentRecord, noteAgentMessage } from "../engage/record";
+import { setLastSpeakerRedis } from "../engage/last-speaker";
 import { ledgerTurnRun, type TurnPass } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
 import * as SoulOverrides from "../../db/soul-overrides";
@@ -477,6 +481,7 @@ export function bindingFor(ctx: SlackContext): SessionBinding {
     get threadRef() { return ctx.postTarget === "channel" ? undefined : ctx.threadTs; },
     get inboundRef() { return ctx.inboundTs; },
     get userId() { return ctx.userId; },
+    get replyTo() { return ctx.origin === "slack" ? ctx.answers : undefined; },
     get teamId() { return ctx.teamId; },
     requestApproval: (r) => ctx.requestApproval!(r),
     reloadSession: (prompt?) => ctx.reloadSession?.(prompt) ?? false,
@@ -1584,6 +1589,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     mono: !queueDispatch,
     redis: queueDispatch?.turns?.redis ? { client: queueDispatch.turns.redis, prefix: queueDispatch.turns.keys?.prefix ?? "slaude" } : null,
   });
+  // The engage last-speaker record is shared by every replica when there is a Redis (mono keeps it in memory).
+  if (queueDispatch?.turns?.redis) setLastSpeakerRedis(queueDispatch.turns.redis, queueDispatch.turns.keys?.prefix ?? "slaude");
   const guardrailReplyQuiet = makeReplyQuiet();
   agent.setStopGuard((sessionId) => {
     if (voiceTurns.active(sessionId)) return null;
@@ -4004,6 +4011,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         existing.ctx.threadTs = threadTs;
         existing.ctx.inboundTs = eventTs;
         existing.ctx.userId = userId;
+        if (!suppress) existing.ctx.answers = userId;
         existing.ctx.teamId = teamId;
         existing.ctx.origin = "slack";
         existing.ctx.postTarget = dispatch?.channelSession ? "channel" : undefined;
@@ -4039,6 +4047,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           threadTs,
           inboundTs: eventTs,
           userId,
+          ...(suppress ? {} : { answers: userId }),
           teamId,
           botToken: context?.botToken,
           personaId: dispatch?.personaId,
@@ -4216,12 +4225,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // echo, or the bots answer each other. "This bot" (whom a mention engages)
   // is the delivering app's own bot user. Each app's ids come from its own
   // client's auth.test, cached per app.
-  const botIdsCache = new Map<string, { userId: string; botId: string }>();
-  const botIdsOf = async (key: string, client: any): Promise<{ userId: string; botId: string }> => {
+  const botIdsCache = new Map<string, { userId: string; botId: string; name?: string }>();
+  const botIdsOf = async (key: string, client: any): Promise<{ userId: string; botId: string; name?: string }> => {
     const hit = botIdsCache.get(key);
     if (hit) return hit;
     const res = await client.auth.test();
-    const ids = { userId: res.user_id as string, botId: (res as any).bot_id as string };
+    const ids = { userId: res.user_id as string, botId: (res as any).bot_id as string, ...(typeof (res as any).user === "string" ? { name: (res as any).user as string } : {}) };
     botIdsCache.set(key, ids);
     return ids;
   };
@@ -4674,6 +4683,67 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const user = persona ? getPersonaRegistry().lookupByName(persona)?.slackUserId : undefined;
     return !!user && mentions.includes(user);
   };
+  /**
+   * Implicit engagement, phase 0: for a message the agent is not going to
+   * answer, count what the deterministic tiers would have done. Observe only.
+   * Does nothing at all (no read, no counter) while the channel is at level
+   * `mention`, the default, and never throws or changes what happens next.
+   */
+  const observeImplicit = async (args: any, personaId: string | undefined, site: "drop" | "channel_session"): Promise<void> => {
+    try {
+      const e: any = args.event;
+      if (!e?.channel || engageFor(personaId, e.channel).level === "mention") return;
+      const threadTs: string = e.thread_ts || e.ts;
+      // Observing never holds the recording path: each lookup is cut off, and a miss reads as "unknown".
+      const bound = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
+        Promise.race([p.catch(() => fallback), new Promise<T>((r) => setTimeout(() => r(fallback), 100).unref?.())]);
+      const key = `${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? e.team ?? ""}`;
+      const [botId, oneOnOne] = await Promise.all([
+        bound(getBotId(args), ""),
+        bound(OneOnOne.find(e.channel, threadTs).then((r) => r != null), false),
+      ]);
+      await observeEngage({
+        event: e,
+        personaId,
+        appId: args.context?.apiAppId,
+        botId,
+        // The bot's cached user name (from the auth.test the id lookup already made); only for the persona that is this app's own.
+        ...(personaId === appPersonaOf(args) && botIdsCache.get(key)?.name ? { botName: botIdsCache.get(key)!.name } : {}),
+        locks: { oneOnOne, mentionOnly: false, disengaged: false },
+        threadEngaged: false,
+        site,
+      });
+    } catch {
+      /* observing must never reach the handler */
+    }
+  };
+  /** A human message handled some other way (a mention, a reply in an engaged thread) makes the agent's last-speaker record stale. */
+  const staleRecord = (e: any, personaId: string | undefined): void =>
+    clearAgentRecord({ channel: e?.channel, thread: e?.thread_ts && e.thread_ts !== e.ts ? e.thread_ts : null, persona: personaId });
+  /** The agent's own message, seen as an echo: remember it for the next human message. Observe only. */
+  const noteEcho = (args: any, e: any): void => {
+    try {
+      if (!e?.channel || !e?.ts) return;
+      // The runtime's own cards (buttons, sections) and its waiting-for-approval and refusal notices are not the agent speaking.
+      // (A tracker or status text posted as plain text cannot be told apart here and is recorded.)
+      if (Array.isArray(e.blocks) && e.blocks.some((b: any) => b?.type && b.type !== "rich_text")) return;
+      if (/^:(hourglass_flowing_sand|no_entry_sign|warning):/.test(String(e.text ?? ""))) return;
+      const reg = getPersonaRegistry();
+      const named = e.user ? reg.lookupByUserId(e.user)?.name : undefined;
+      const viaOtherApp = Boolean(e.bot_profile?.app_id && args.context?.apiAppId && e.bot_profile.app_id !== args.context.apiAppId);
+      const persona = named ?? (viaOtherApp ? undefined : appPersonaOf(args));
+      noteAgentMessage({
+        channel: e.channel,
+        thread: e.thread_ts && e.thread_ts !== e.ts ? e.thread_ts : null,
+        ts: e.ts,
+        persona,
+        app: e.bot_profile?.app_id ?? args.context?.apiAppId ?? null,
+        fromEcho: true,
+      });
+    } catch {
+      /* observing must never reach the handler */
+    }
+  };
   /** Handles a root message for the agents in channel mode here. True when no agent is left for today's path. */
   const routeChannelSession = async (args: any, mentioned: (persona: string | undefined) => boolean): Promise<boolean> => {
     const e = args.event;
@@ -4692,6 +4762,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           if (act === "record_doubt") await reactDoubt(args, personaId);
           await handleMessage(args, { personaId, channelSession: true, ...(act === "record_doubt" ? { suppress: true } : {}) });
         } else {
+          await observeImplicit(args, personaId, "channel_session");
           await handleMessage(args, { personaId, channelSession: true, suppress: true });
         }
       } catch (err) {
@@ -4715,6 +4786,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
     const act = gateActive() ? await consultGate(args, { mentionsAgent: true, personaId }, "run") : undefined;
     if (act === "record_doubt") return await recordDoubt(args, personaId);
+    staleRecord(e, personaId);
     const engagedBefore = await engageOnMention(args.context?.teamId ?? e.team, e.channel, ts, e.ts, personaId);
     await handleMessage(args, { personaId, engagedBefore });
   });
@@ -4727,6 +4799,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // Drop only self bot-echoes (any registered app's bot); other bots flow through.
     if (await isSelfBotEcho(args, e)) {
       metric.slackDropsTotal.inc({ reason: "self_bot" });
+      noteEcho(args, e);
       return;
     }
     if (!e.user) return;
@@ -4736,6 +4809,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const selfUserIds = await getSelfUserIds();
     if (selfUserIds.has(e.user)) {
       metric.slackDropsTotal.inc({ reason: "self_user" });
+      noteEcho(args, e);
       return;
     }
     // A reply under a proactive post (phase E): recorded as an outcome; a
@@ -4815,6 +4889,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (inChannelMode(e, appPersona)) return;
       const act = gated() ? await consultGate(args, { mentionsAgent: true, personaId: appPersona }, "run") : undefined;
       if (act === "record_doubt") return await recordDoubt(args, appPersona);
+      staleRecord(e, appPersona);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, appPersona);
       return await handleMessage(args, { personaId: appPersona, engagedBefore });
     }
@@ -4837,6 +4912,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (inChannelMode(e, personaId)) return;
       const act = gated() ? await consultGate(args, { mentionsAgent: true, personaId }, "run") : undefined;
       if (act === "record_doubt") return await recordDoubt(args, personaId);
+      staleRecord(e, mentionedPersona.name);
       const engagedBefore = await engageOnMention(teamId, channelId, ts, e.ts, mentionedPersona.name);
       return await handleMessage(args, { personaId: mentionedPersona.name, engagedBefore });
     }
@@ -4904,6 +4980,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const def = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: appPersona ?? "default" });
       if (def?.engaged) {
         if (otherApp(def)) return;
+        staleRecord(e, appPersona);
         const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: appPersona }, "run") : undefined;
         if (act === "record") return await recordEngaged(args, appPersona);
         return await handleMessage(args, { personaId: appPersona });
@@ -4914,6 +4991,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const row = await Sessions.findByThread({ team_id: teamId, channel_id: channelId, thread_ts: ts, persona_id: p.name });
           if (row?.engaged) {
             if (otherApp(row)) return;
+            staleRecord(e, p.name);
             const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: p.name }, "run") : undefined;
             if (act === "record") {
               return await recordEngaged(args, p.name);
@@ -4936,6 +5014,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // Engaged session outside the registry (e.g. persona removed from
         // config) — keep handling plain replies as that persona.
         const restoredPersonaId = any.persona_id !== "default" ? any.persona_id : undefined;
+        staleRecord(e, restoredPersonaId);
         const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: restoredPersonaId }, "run") : undefined;
         if (act === "record") {
           return await recordEngaged(args, restoredPersonaId);
@@ -4965,6 +5044,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       `[slack-rx] drop ch=${channelId} ts=${e.ts} user=${e.user} — channel msg, thread not engaged (no @mention)`,
     );
     metric.slackDropsTotal.inc({ reason: "engagement" });
+    await observeImplicit(args, appPersona, "drop");
   });
 
   // REST /v1 (spec §3), built inside the gateway so the tool plane runs THE
