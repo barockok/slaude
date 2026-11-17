@@ -23,11 +23,15 @@ const oldSession = (db: DbClient, id: string) =>
   );
 
 describe("migration file 0053", () => {
-  test("one nullable column, a short lock timeout, no default, index or key", () => {
+  test("one nullable column, a short lock timeout, a backfill of started sessions, no default, index or key", () => {
     const f = readdirSync(MIGRATIONS_DIR).filter((n) => n.startsWith("0053_"));
     expect(f).toHaveLength(1);
     const sql = readFileSync(join(MIGRATIONS_DIR, f[0]!), "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("--"));
-    expect(sql).toEqual(["SET LOCAL lock_timeout = '2s';", "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS thread_head_at BIGINT;"]);
+    expect(sql).toEqual([
+      "SET LOCAL lock_timeout = '2s';",
+      "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS thread_head_at BIGINT;",
+      "UPDATE sessions SET thread_head_at = created_at WHERE claude_started = 1 AND thread_head_at IS NULL;",
+    ]);
   });
 });
 
@@ -74,6 +78,8 @@ describe("upgrade from 0052", () => {
     const path = join(mkdtempSync(join(tmpdir(), "slaude-0053-")), "old.sqlite");
     const first = await openDb({ dialect: "sqlite", path });
     await oldSession(first, "s1");
+    await oldSession(first, "s2");
+    await first.run(`UPDATE sessions SET claude_started = 1 WHERE id = 's2'`);
     await first.close();
     // An rc.27 file has no such column: remove it, then open again.
     const raw = new Database(path);
@@ -83,7 +89,10 @@ describe("upgrade from 0052", () => {
     const db = await openDb({ dialect: "sqlite", path });
     try {
       expect((await cols(db, "sessions")).filter((c) => c === "thread_head_at")).toHaveLength(1);
-      expect(await db.one<{ id: string; thread_head_at: number | null }>("SELECT id, thread_head_at FROM sessions")).toEqual({ id: "s1", thread_head_at: null });
+      expect(await db.query<{ id: string; thread_head_at: number | null }>("SELECT id, thread_head_at FROM sessions ORDER BY id")).toEqual([
+        { id: "s1", thread_head_at: null },
+        { id: "s2", thread_head_at: 1 },
+      ]);
     } finally {
       await db.close();
     }
@@ -101,9 +110,15 @@ describe("upgrade from 0052", () => {
       const all = loadMigrations();
       await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version < "0053") });
       await oldSession(db, "s1");
+      await oldSession(db, "s2");
+      await db.run(`UPDATE sessions SET claude_started = 1 WHERE id = 's2'`);
       const r = await runMigrations(db, { log: () => {}, migrations: all });
       expect(r.applied).toEqual(["0053"]);
-      expect(await db.one<Record<string, unknown>>("SELECT id, model, thread_head_at FROM sessions WHERE id = 's1'")).toEqual({ id: "s1", model: "m", thread_head_at: null });
+      const rows = (await db.query<{ id: string; model: string; thread_head_at: number | string | null }>("SELECT id, model, thread_head_at FROM sessions ORDER BY id")).map((r) => ({ ...r, thread_head_at: r.thread_head_at === null ? null : Number(r.thread_head_at) }));
+      expect(rows).toEqual([
+        { id: "s1", model: "m", thread_head_at: null },
+        { id: "s2", model: "m", thread_head_at: 1 },
+      ]);
       expect((await runMigrations(db, { log: () => {}, migrations: all })).applied).toEqual([]);
     } finally {
       await db.close();
