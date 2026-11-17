@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { messageAuthor, messageToText } from "../src/gateway/slack/message-text";
+import { messageAuthor, messageBot, messageToText } from "../src/gateway/slack/message-text";
 
 // Shape of a Grafana alert as conversations.replies returns it: no `user`,
 // empty `text`, the body in a legacy attachment.
@@ -130,10 +130,37 @@ describe("messageToText", () => {
 });
 
 describe("messageAuthor", () => {
-  test("prefers user, then bot name, username, bot_id", () => {
+  test("returns the user ID, or a bot: label for bot name, username, bot_id", () => {
     expect(messageAuthor({ user: "U1", bot_profile: { name: "x" } })).toBe("U1");
-    expect(messageAuthor({ bot_id: "B1", bot_profile: { name: "Alert Bot" } })).toBe("Alert Bot");
-    expect(messageAuthor({ bot_id: "B1", username: "grafana" })).toBe("grafana");
-    expect(messageAuthor({ bot_id: "B1" })).toBe("B1");
+    expect(messageAuthor({ bot_id: "B1", bot_profile: { name: "Alert Bot" } })).toBe("bot:Alert Bot");
+    expect(messageAuthor({ bot_id: "B1", username: "grafana" })).toBe("bot:grafana");
+    expect(messageAuthor({ bot_id: "B1" })).toBe("bot:B1");
+  });
+
+  test("a bot named after a user ID never comes back as that bare ID", () => {
+    expect(messageAuthor({ bot_id: "B1", username: "U0MANAGER1" })).toBe("bot:U0MANAGER1");
+    expect(messageAuthor({ bot_id: "B1", bot_profile: { name: "U0MANAGER1" } })).toBe("bot:U0MANAGER1");
+  });
+
+  test("returns an empty string when nothing identifies the sender", () => {
+    expect(messageAuthor({})).toBe("");
+    expect(messageAuthor(undefined)).toBe("");
+    expect(messageAuthor({ user: "" })).toBe("");
+  });
+});
+
+describe("messageBot", () => {
+  test("reports bot_id and bot_name apart from the user", () => {
+    expect(messageBot({ bot_id: "B1", bot_profile: { name: "Alert Bot" }, username: "x" })).toEqual({
+      bot_id: "B1",
+      bot_name: "Alert Bot",
+    });
+    expect(messageBot({ bot_id: "B1", username: "U0MANAGER1" })).toEqual({ bot_id: "B1", bot_name: "U0MANAGER1" });
+    expect(messageBot({ bot_id: "B1" })).toEqual({ bot_id: "B1" });
+  });
+
+  test("is empty for a human message", () => {
+    expect(messageBot({ user: "U1", text: "hi" })).toEqual({});
+    expect(messageBot(undefined)).toEqual({});
   });
 });

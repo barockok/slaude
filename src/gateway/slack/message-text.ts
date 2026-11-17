@@ -52,9 +52,23 @@ export function messageToText(m: any): string {
 }
 
 // Human messages carry `user`; bot and integration posts often only carry
-// `bot_id` plus a display name.
+// `bot_id` plus a display name. Whoever sets up the integration picks that
+// name, so it can read like a real user ID: it is always returned with a
+// `bot:` prefix and never as a bare value.
 export function messageAuthor(m: any): string {
-  return m?.user ?? m?.bot_profile?.name ?? m?.username ?? m?.bot_id ?? "";
+  if (typeof m?.user === "string" && m.user) return m.user;
+  const bot = messageBot(m);
+  const label = bot.bot_name ?? bot.bot_id;
+  return label ? `bot:${label}` : "";
+}
+
+// The bot identity of a message, kept apart from the Slack user ID.
+export function messageBot(m: any): { bot_id?: string; bot_name?: string } {
+  const name = m?.bot_profile?.name ?? m?.username;
+  return {
+    ...(typeof m?.bot_id === "string" && m.bot_id ? { bot_id: m.bot_id } : {}),
+    ...(typeof name === "string" && name ? { bot_name: name } : {}),
+  };
 }
 
 function richText(els: any[] = []): string {

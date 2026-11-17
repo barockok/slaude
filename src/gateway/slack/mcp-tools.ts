@@ -11,7 +11,7 @@ import { createReadStream, statSync } from "node:fs";
 import { basename } from "node:path";
 import { mdToMrkdwn } from "./format";
 import { redactSlack } from "./redact";
-import { messageAuthor, messageToText } from "./message-text";
+import { messageBot, messageToText } from "./message-text";
 import { soulData, effectiveSoulForChannel } from "../../soul/extract";
 import * as Ignores from "../../db/ignores";
 import * as CronJobs from "../../db/cron-jobs";
@@ -282,7 +282,9 @@ export const slackHandlers = {
       });
       const msgs = ((r.messages ?? []) as any[]).map((m) => ({
         ts: m.ts,
-        user: messageAuthor(m),
+        // `user` is the Slack user ID only; a bot's self-chosen name stays in `bot_name`.
+        user: m.user,
+        ...messageBot(m),
         text: messageToText(m),
         thread_ts: m.thread_ts,
         reply_count: m.reply_count,
