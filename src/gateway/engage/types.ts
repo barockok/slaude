@@ -1,0 +1,26 @@
+import type { GateInput, ImplicitLevel } from "../gate/types";
+
+/**
+ * One message the deterministic tiers could not settle. `input` builds the
+ * classifier's view of it (and is only called when a classifier is asked, so
+ * a message that never reaches tier 3 costs nothing).
+ */
+export interface EngageCandidate {
+  /** A stable key for the decision memo (see `gateKey`). */
+  key: string;
+  level: ImplicitLevel;
+  /** The message follows the agent's own message. */
+  continuation: boolean;
+  input: () => Promise<GateInput>;
+}
+
+/**
+ * The seam between engagement and whatever answers the tier 3 question. The
+ * deterministic tiers never depend on it, so engagement works with no
+ * classifier at all (tiers 0 to 2 act, tier 3 is a pass). Any implementation
+ * must answer "pass" for anything but a confident yes: an error, a timeout,
+ * an exhausted budget and a missing adapter are all "pass", never "run".
+ */
+export interface EngageClassifier {
+  classify(candidate: EngageCandidate): Promise<"run" | "pass">;
+}
