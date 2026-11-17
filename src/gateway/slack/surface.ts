@@ -2,6 +2,7 @@ import type { WebClient } from "@slack/web-api";
 import { basename } from "node:path";
 import { openConfined, UploadTooLarge } from "../core/confined-file";
 import { env } from "../../config/env";
+import { checkUploadUrl } from "../upload/url";
 import { deliver, formatOutbound, outbound, OutboundRefusal, TRACKER_HIDDEN, type OutboundKind, type OutboundOptions } from "./outbound";
 import { SLACK_SURFACE_ID } from "../core/surface";
 import type {
@@ -158,6 +159,8 @@ export class SlackSurface implements Surface {
       ...(altText ? { alt_text: altText } : {}),
     });
     if (!r.ok || !r.upload_url || !r.file_id) throw new Error("Slack returned no upload URL");
+    // The node sends the bytes wherever this says: only Slack's own upload host will do.
+    if (!checkUploadUrl(r.upload_url)) throw new Error("Slack returned an upload URL on an unexpected host");
     return { uploadUrl: r.upload_url, fileId: r.file_id };
   }
 

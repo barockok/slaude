@@ -69,6 +69,8 @@ const saved: Record<string, string | undefined> = {};
 beforeAll(() => {
   for (const k of ["SLAUDE_JOB_SECRET", "SLAUDE_UPLOAD_MAX_BYTES", "SLAUDE_BRAIN_DISABLED"]) saved[k] = process.env[k];
   process.env.SLAUDE_JOB_SECRET = SECRET;
+  saved.SLAUDE_UPLOAD_ALLOWED_HOSTS = process.env.SLAUDE_UPLOAD_ALLOWED_HOSTS;
+  process.env.SLAUDE_UPLOAD_ALLOWED_HOSTS = "upload.invalid";
   process.env.SLAUDE_BRAIN_DISABLED = "1";
   ensureHome();
 });
@@ -146,6 +148,20 @@ describe("upload_begin", () => {
       expect(r.text).toContain("not available when you woke");
     }
     expect(calls).toHaveLength(0);
+  });
+
+  test("an upload URL on another host is begin_failed, and nothing is handed to the node", async () => {
+    const orig = client.files.getUploadURLExternal;
+    client.files.getUploadURLExternal = async () => ({ ok: true, upload_url: "https://evilslack.com/SECRET-URL", file_id: "F9" });
+    try {
+      const r = await begin();
+      expect(r.json.isError).toBe(true);
+      expect(r.text).not.toContain("evilslack");
+      expect(r.text).not.toContain("SECRET-URL");
+    } finally {
+      client.files.getUploadURLExternal = orig;
+    }
+    expect(metrics.render()).toMatch(/slaude_upload_total\{[^}]*result="begin_failed"/);
   });
 
   test("a Slack failure is a tool error and never carries the URL", async () => {

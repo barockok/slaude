@@ -24,6 +24,7 @@
 import { closeSync, createReadStream, existsSync } from "node:fs";
 import { basename, isAbsolute, resolve } from "node:path";
 import { Readable } from "node:stream";
+import { checkUploadUrl } from "../gateway/upload/url";
 import { openConfinedFd } from "../gateway/core/confined-file";
 import type { NodeClient, ToolResult } from "./client";
 import { decodeClaims } from "./remote";
@@ -114,6 +115,11 @@ export async function directUpload(args: UploadArgs, deps: DirectUploadDeps): Pr
       return err(begun.error);
     }
     const secrets = [begun.uploadUrl, begun.handle];
+    // Checked again here: the gateway's answer is not trusted with where the bytes go.
+    if (!checkUploadUrl(begun.uploadUrl)) {
+      console.warn("[node] direct upload: refused an upload URL on an unexpected host");
+      return err("upload refused: the upload address was not an expected Slack host. Nothing was sent.");
+    }
 
     const file = fileBody(opened.fd, opened.size);
     fdOwned = false;
@@ -126,6 +132,8 @@ export async function directUpload(args: UploadArgs, deps: DirectUploadDeps): Pr
         duplex: "half",
         // Bun's own 300 s limit would cut a large upload; the turn's abort is the limit.
         timeout: false,
+        // The URL was checked above; a redirect would send the bytes somewhere unchecked.
+        redirect: "error",
         ...(deps.signal ? { signal: deps.signal } : {}),
       } as RequestInit);
     } catch (e) {

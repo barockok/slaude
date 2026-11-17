@@ -177,6 +177,7 @@ let base = "";
 beforeAll(async () => {
   process.env.SLAUDE_NODE_TOKEN = NODE_TOKEN;
   process.env.SLAUDE_JOB_SECRET = JOB_SECRET;
+  process.env.SLAUDE_UPLOAD_ALLOWED_HOSTS = "upload.invalid";
   ensureHome();
   writeSoulFixture(WORLD);
   // request_approval must settle inside the test: 1s auto-deny.
@@ -207,6 +208,7 @@ afterAll(() => {
   server?.stop(true);
   delete process.env.SLAUDE_NODE_TOKEN;
   delete process.env.SLAUDE_JOB_SECRET;
+  delete process.env.SLAUDE_UPLOAD_ALLOWED_HOSTS;
   delete process.env.SLAUDE_BRAIN_DISABLED;
 });
 

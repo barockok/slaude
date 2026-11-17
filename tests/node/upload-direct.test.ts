@@ -42,7 +42,7 @@ const SESSION = "S-upl";
 const sha = (b: Uint8Array | Buffer) => createHash("sha256").update(b).digest("hex");
 
 // ---- fake Slack: the Web API calls and the upload host ----
-type Mode = "ok" | "http500" | "wrong-count" | "junk" | "drop" | "slow";
+type Mode = "ok" | "redirect" | "http500" | "wrong-count" | "junk" | "drop" | "slow";
 let mode: Mode = "ok";
 const apiCalls: Array<{ name: string; args: any }> = [];
 const received: Array<{ id: string; sha: string; n: number; contentLength: string | null; contentType: string | null }> = [];
@@ -95,6 +95,7 @@ const tokenWith = (over: Partial<JobClaims> = {}) =>
 beforeAll(async () => {
   process.env.SLAUDE_NODE_TOKEN = NODE_TOKEN;
   process.env.SLAUDE_JOB_SECRET = JOB_SECRET;
+  process.env.SLAUDE_UPLOAD_ALLOWED_HOSTS = "127.0.0.1";
   ensureHome();
   writeSoulFixture(WORLD);
   const root = realpathSync(mkdtempSync(join(tmpdir(), "slaude-upl-")));
@@ -108,6 +109,7 @@ beforeAll(async () => {
       const id = new URL(req.url).pathname.split("/").pop()!;
       if (req.method !== "POST") return new Response("no", { status: 405 });
       if (mode === "slow") await Bun.sleep(300);
+      if (mode === "redirect") return new Response("", { status: 307, headers: { location: "http://127.0.0.1:1/elsewhere" } });
       const buf = new Uint8Array(await req.arrayBuffer());
       received.push({ id, sha: sha(buf), n: buf.byteLength, contentLength: req.headers.get("content-length"), contentType: req.headers.get("content-type") });
       if (mode === "http500") return new Response("<Error><Code>s3_upload</Code></Error>", { status: 500 });
@@ -149,6 +151,7 @@ afterAll(() => {
   setOutboundApprover(undefined);
   delete process.env.SLAUDE_NODE_TOKEN;
   delete process.env.SLAUDE_JOB_SECRET;
+  delete process.env.SLAUDE_UPLOAD_ALLOWED_HOSTS;
   delete process.env.SLAUDE_BRAIN_DISABLED;
   delete process.env.SLAUDE_UPLOAD_MAX_BYTES;
 });
@@ -381,6 +384,35 @@ describe("Slack's answer to the transfer is checked before complete", () => {
       expectNoSecrets([text(r)]);
     });
   }
+
+  test("a redirect from the upload host is not followed", async () => {
+    mode = "redirect";
+    writeFileSync(join(scratch, "redir.bin"), bytesOf(100));
+    const r = await upload({ path: join(scratch, "redir.bin") });
+    expect(r.isError).toBe(true);
+    expect(completes()).toHaveLength(0);
+    expectNoSecrets([text(r)]);
+  });
+
+  test("the node checks the upload URL again and sends no byte to a host the gateway should not have named", async () => {
+    writeFileSync(join(scratch, "evil.bin"), bytesOf(100));
+    const real = nodeClient.postTool.bind(nodeClient);
+    const spy = spyOn(nodeClient, "postTool").mockImplementation(async (seg: string, name: string, body: any, tok: string, sig?: AbortSignal) =>
+      name === "upload_begin"
+        ? { content: [{ type: "text", text: JSON.stringify({ uploadUrl: "http://169.254.169.254/latest", fileId: "F1", handle: "h.h.h" }) }] }
+        : real(seg, name, body, tok, sig));
+    const fetched: string[] = [];
+    try {
+      const r = await upload({ path: join(scratch, "evil.bin") }, { uploadFetch: (async (u: any) => { fetched.push(String(u)); return new Response("OK - 100"); }) as any });
+      expect(r.isError).toBe(true);
+      expect(text(r)).toContain("not an expected Slack host");
+      expect(text(r)).not.toContain("169.254");
+      expect(fetched).toEqual([]);
+      expect(completes()).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
   test("the turn's abort stops the transfer and complete is not called", async () => {
     mode = "slow";

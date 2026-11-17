@@ -33,7 +33,19 @@ function binding(over: Partial<SessionBinding> = {}): SessionBinding {
   };
 }
 
+process.env.SLAUDE_UPLOAD_ALLOWED_HOSTS = "upload.example";
+
 describe("SlackSurface direct upload calls", () => {
+  test("uploadBegin refuses an upload URL on a host that is not allowed, without echoing it", async () => {
+    for (const url of ["https://evil.example/x", "http://other.example/x", "file:///etc/passwd"]) {
+      const client = fakeClient([]);
+      client.files.getUploadURLExternal = async () => ({ ok: true, upload_url: url, file_id: "F9" });
+      const err: any = await new SlackSurface(client, binding()).uploadBegin({ filename: "a", size: 1 }).catch((e) => e);
+      expect(err.message).toContain("unexpected");
+      expect(err.message).not.toContain("evil");
+    }
+  });
+
   test("uploadBegin asks Slack for an upload URL with the name, length and alt text", async () => {
     const calls: any[] = [];
     const s = new SlackSurface(fakeClient(calls), binding());
