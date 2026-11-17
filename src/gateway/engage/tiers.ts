@@ -43,6 +43,7 @@ export interface TierFacts {
   restricted: boolean;
   locks: { oneOnOne: boolean; mentionOnly: boolean; disengaged: boolean };
   lastSpeaker: LastSpeaker | null;
+  /** `name` is the persona name ('default' for the default persona, which answers only to its aliases). */
   agent: { name: string; aliases: readonly string[]; app?: string };
   /** Names of the other registered agents (compared folded). */
   otherAgents: ReadonlySet<string>;
@@ -131,7 +132,8 @@ export function isAckOnly(text: string): boolean {
 }
 
 const esc = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const names = (f: TierFacts): string[] => [f.agent.name, ...f.agent.aliases].map(foldAlias).filter(Boolean);
+/** What the agent answers to by name; the default persona has no name of its own, only aliases. */
+const names = (f: TierFacts): string[] => [...(f.agent.name === "default" ? [] : [f.agent.name]), ...f.agent.aliases].map(foldAlias).filter(Boolean);
 const NAME_EDGE = String.raw`(?<![\p{L}\p{N}_])`;
 const NAME_END = String.raw`(?![\p{L}\p{N}_])`;
 

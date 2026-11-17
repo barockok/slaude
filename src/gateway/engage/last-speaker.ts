@@ -35,8 +35,12 @@ export interface SpeakerPlace {
 }
 
 export interface LastSpeakerStore {
-  /** Remember `rec` for the place, replacing any earlier one. Never throws. */
-  put(place: SpeakerPlace, rec: LastSpeaker, ttlSeconds?: number): Promise<void>;
+  /**
+   * Remember `rec` for the place, replacing any earlier one; with `ifAbsent`,
+   * only when the place has none (the echo of a message must not overwrite
+   * the richer record the outbound path wrote). Never throws.
+   */
+  put(place: SpeakerPlace, rec: LastSpeaker, o?: { ttlSeconds?: number; ifAbsent?: boolean }): Promise<void>;
   /** Return the place's record and remove it in one step; null when none. Never throws. */
   take(place: SpeakerPlace): Promise<LastSpeaker | null>;
 }
@@ -59,10 +63,12 @@ function parse(raw: unknown): LastSpeaker | null {
 export function memoryLastSpeakerStore(now: () => number = Date.now): LastSpeakerStore {
   const m = new Map<string, { rec: LastSpeaker; until: number }>();
   return {
-    async put(place, rec, ttl = defaultTtl()) {
+    async put(place, rec, o = {}) {
       const t = now();
       if (m.size > 5000) for (const [k, v] of m) if (v.until <= t) m.delete(k);
-      m.set(placeKey(place), { rec, until: t + ttl * 1000 });
+      const k = placeKey(place);
+      if (o.ifAbsent && (m.get(k)?.until ?? 0) > t) return;
+      m.set(k, { rec, until: t + (o.ttlSeconds ?? defaultTtl()) * 1000 });
     },
     async take(place) {
       const k = placeKey(place);
@@ -80,9 +86,11 @@ export type SpeakerRedis = Pick<Redis, "set" | "getdel">;
 export function redisLastSpeakerStore(client: SpeakerRedis, prefix = "slaude"): LastSpeakerStore {
   const key = (p: SpeakerPlace) => `${prefix}:engage:last:${placeKey(p)}`;
   return {
-    async put(place, rec, ttl = defaultTtl()) {
+    async put(place, rec, o = {}) {
       try {
-        await client.set(key(place), JSON.stringify(rec), "EX", Math.max(1, Math.floor(ttl)));
+        const ttl = Math.max(1, Math.floor(o.ttlSeconds ?? defaultTtl()));
+        if (o.ifAbsent) await client.set(key(place), JSON.stringify(rec), "EX", ttl, "NX");
+        else await client.set(key(place), JSON.stringify(rec), "EX", ttl);
       } catch (e) {
         console.warn(`[engage] last-speaker write to Redis failed: ${(e as Error).message}`);
       }

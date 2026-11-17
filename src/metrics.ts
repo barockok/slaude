@@ -200,6 +200,7 @@ export const m = {
   decisionRequestsTotal: metrics.counter("slaude_decision_requests_total", "Decision-adapter requests, labeled by adapter and outcome (ok|timeout|error)."),
   gateDecisionsTotal: metrics.counter("slaude_gate_decisions_total", "Decision-gate decisions, labeled by action (run|record|record_doubt|drop), source (adapter|rules) and mode (shadow|on)."),
   gateShadowDisagreeTotal: metrics.counter("slaude_gate_shadow_disagree_total", "Shadow-mode gate decisions that differ from what happened, labeled by would (run|record|record_doubt|drop) and actual (the same set)."),
+  engageTotal: metrics.counter("slaude_engage_total", "Implicit-engagement phase 0 decisions (observe only, nothing acts on them), labeled by tier (0|1|2|3|existing), outcome (pass|run|classify|existing) and level (addressed|contribute)."),
   turnsTotal: metrics.counter("slaude_turns_total", "Completed turns, labeled by result."),
   toolCallsTotal: metrics.counter("slaude_tool_calls_total", "Tool invocations, labeled by tool name."),
   tokensTotal: metrics.counter("slaude_tokens_total", "Tokens consumed, labeled by kind, channel_id, and model."),

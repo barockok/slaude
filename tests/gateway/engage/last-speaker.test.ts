@@ -6,8 +6,9 @@ function fakeRedis(opts: { fail?: boolean } = {}) {
   const kv = new Map<string, { v: string; until: number }>();
   let clock = 1_000_000;
   const r = {
-    async set(k: string, v: string, _ex: string, secs: number) {
+    async set(k: string, v: string, _ex: string, secs: number, nx?: string) {
       if (opts.fail) throw new Error("down");
+      if (nx === "NX" && (kv.get(k)?.until ?? 0) > clock) return null;
       kv.set(k, { v, until: clock + secs * 1000 });
       return "OK";
     },
@@ -41,9 +42,28 @@ describe("memory store", () => {
   test("a record expires after its ttl", async () => {
     let t = 0;
     const s = memoryLastSpeakerStore(() => t);
-    await s.put(place, rec, 60);
+    await s.put(place, rec, { ttlSeconds: 60 });
     t = 61_000;
     expect(await s.take(place)).toBeNull();
+  });
+});
+
+describe("ifAbsent", () => {
+  const richer = { ...rec, repliedToUser: "U0PERSON" };
+  const echo = { ...rec, repliedToUser: null };
+  test("memory: the echo does not overwrite, a plain put does", async () => {
+    const s = memoryLastSpeakerStore();
+    await s.put(place, richer);
+    await s.put(place, echo, { ifAbsent: true });
+    expect(await s.take(place)).toEqual(richer);
+    await s.put(place, echo, { ifAbsent: true });
+    expect(await s.take(place)).toEqual(echo);
+  });
+  test("redis: the same", async () => {
+    const s = redisLastSpeakerStore(fakeRedis().r);
+    await s.put(place, richer);
+    await s.put(place, echo, { ifAbsent: true });
+    expect(await s.take(place)).toEqual(richer);
   });
 });
 
@@ -64,7 +84,7 @@ describe("redis store", () => {
   test("the ttl is applied (an expired record is gone)", async () => {
     const f = fakeRedis();
     const s = redisLastSpeakerStore(f.r);
-    await s.put(place, rec, 600);
+    await s.put(place, rec, { ttlSeconds: 600 });
     f.advance(601_000);
     expect(await s.take(place)).toBeNull();
   });
