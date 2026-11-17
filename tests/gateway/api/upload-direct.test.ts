@@ -284,12 +284,12 @@ describe("upload_complete", () => {
     const b = await begin({ filename: "r.csv", size: 77 });
     await call("upload_complete", { handle: b.data.handle });
     await flushAudits();
-    const rows = await db.query<{ action: string; channel_id: string | null; details: string; summary: string }>(
+    const rows = await db.query<{ action: string; channel_id: string | null; details: string | Record<string, unknown>; summary: string }>(
       `SELECT action, channel_id, details, summary FROM audit_events WHERE action = ?`, ["surface.upload"],
     );
     const row = rows.at(-1)!;
     expect(row.channel_id).toBe("C1");
-    const d = JSON.parse(row.details);
+    const d = typeof row.details === "string" ? JSON.parse(row.details) : row.details; // jsonb on Postgres arrives parsed
     expect(d).toMatchObject({ size: 77, filename: "r.csv", via: "direct" });
     expect(JSON.stringify(row)).not.toContain("upload.invalid");
     expect(JSON.stringify(row)).not.toContain(b.data.handle);
@@ -379,6 +379,6 @@ describe("a session the console holds", () => {
     expect(metrics.render()).toMatch(/slaude_upload_total\{[^}]*result="suppressed"[^}]*\} \d+/);
     await flushAudits();
     const rows = await db.query<{ details: string }>(`SELECT details FROM audit_events WHERE action = ?`, ["surface.upload"]);
-    expect(rows.some((x) => x.details.includes("held-in-between.csv"))).toBe(false);
+    expect(rows.some((x) => JSON.stringify(x.details).includes("held-in-between.csv"))).toBe(false);
   });
 });
