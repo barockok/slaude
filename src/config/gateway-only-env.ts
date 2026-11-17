@@ -51,6 +51,8 @@ export const GATEWAY_ONLY_ENV_NAMES: readonly string[] = [
   // The decision gate (phase B): its config names the adapter and its key
   // reference; the key variable itself is the adapter's credential.
   "SLAUDE_DECISION_CONFIG",
+  // The anthropic decision adapter's dedicated API key: a node, a child and a model turn never hold it.
+  "SLAUDE_DECISION_API_KEY",
   "TYPESAFE_API_KEY",
 ];
 

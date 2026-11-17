@@ -1,7 +1,8 @@
 /**
  * Anthropic adapter. Answers the neutral decision questions with a small model
  * on the gateway's own model provider (any Anthropic-compatible Messages API),
- * with the credentials the gateway already holds for it (ANTHROPIC_API_KEY, or
+ * with SLAUDE_DECISION_API_KEY when set (an API key, preferred over all else), else the
+ * credentials the gateway already holds for it (ANTHROPIC_API_KEY, or
  * ANTHROPIC_AUTH_TOKEN, or the subscription OAuth token, against
  * ANTHROPIC_BASE_URL or the public API). No new secret and no new setting
  * beyond the model name.
@@ -159,7 +160,8 @@ const blockSchema = z
 registerAdapter("anthropic", async (block) => {
   const b = blockSchema.parse(block);
   const headers: Record<string, string> = {};
-  const key = env.provider.apiKey();
+  // The dedicated decision key wins over every other provider variable; without it nothing changes.
+  const key = env.decisionApiKey() || env.provider.apiKey();
   const token = env.provider.authToken();
   const oauth = env.provider.oauthToken();
   if (key) headers["x-api-key"] = key;

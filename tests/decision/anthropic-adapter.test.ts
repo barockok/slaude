@@ -140,7 +140,7 @@ describe("anthropic adapter", () => {
 });
 
 describe("the registered anthropic adapter", () => {
-  const keys = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"] as const;
+  const keys = ["SLAUDE_DECISION_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL"] as const;
   const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
   afterEach(() => {
     for (const k of keys) saved[k] === undefined ? delete process.env[k] : (process.env[k] = saved[k]);
@@ -192,6 +192,37 @@ describe("the registered anthropic adapter", () => {
     process.env.ANTHROPIC_BASE_URL = base;
     await (await build({ type: "anthropic", model: "m" }))!.decide(req(), sig());
     expect(seen[1]!.headers["anthropic-beta"]).toBe("oauth-2025-04-20");
+  });
+  test("SLAUDE_DECISION_API_KEY is preferred over every other provider variable, as x-api-key", async () => {
+    clear();
+    process.env.SLAUDE_DECISION_API_KEY = "decision-key-value";
+    process.env.ANTHROPIC_API_KEY = "env-key-value";
+    process.env.ANTHROPIC_AUTH_TOKEN = "tok";
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "oauth";
+    process.env.ANTHROPIC_BASE_URL = base;
+    reply = { body: good() };
+    await (await build({ type: "anthropic", model: "m" }))!.decide(req(), sig());
+    const h = seen.at(-1)!.headers;
+    expect(h["x-api-key"]).toBe("decision-key-value");
+    expect(h.authorization).toBeUndefined();
+    expect(h["anthropic-beta"]).toBeUndefined();
+  });
+  test("it alone is enough, and a rejected key never puts the value in a warning or an error", async () => {
+    clear();
+    process.env.SLAUDE_DECISION_API_KEY = "decision-key-value";
+    process.env.ANTHROPIC_BASE_URL = base;
+    reply = { status: 401, body: { error: "decision-key-value" } };
+    const a = await build({ type: "anthropic", model: "m" });
+    const err = await a!.decide(req(), sig()).catch((e) => e);
+    expect(String(err.message)).not.toContain("decision-key-value");
+  });
+  test("absent, the adapter behaves as before (the API key variable)", async () => {
+    clear();
+    process.env.ANTHROPIC_API_KEY = "env-key-value";
+    process.env.ANTHROPIC_BASE_URL = base;
+    reply = { body: good() };
+    await (await build({ type: "anthropic", model: "m" }))!.decide(req(), sig());
+    expect(seen.at(-1)!.headers["x-api-key"]).toBe("env-key-value");
   });
   test("no credentials or an unknown key disables the adapter, naming nothing", async () => {
     clear();
