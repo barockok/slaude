@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type DbClient, openDb } from "../../src/db/client";
 import { MIGRATIONS_DIR, loadMigrations, runMigrations } from "../../src/db/migrate";
-import { claimThreadHeadOn } from "../../src/db/sessions";
+import { THREAD_HEAD_EPOCH_MS, claimThreadHeadOn, hadFirstTurnBeforeThreadHead, releaseThreadHeadOn } from "../../src/db/sessions";
 
 /**
  * Migration 0053 (rc.28): `sessions.thread_head_at`, a nullable column set once by compare-and-set
@@ -23,14 +23,13 @@ const oldSession = (db: DbClient, id: string) =>
   );
 
 describe("migration file 0053", () => {
-  test("one nullable column, a short lock timeout, a backfill of started sessions, no default, index or key", () => {
+  test("one nullable column and a short lock timeout, no backfill, default, index or key", () => {
     const f = readdirSync(MIGRATIONS_DIR).filter((n) => n.startsWith("0053_"));
     expect(f).toHaveLength(1);
     const sql = readFileSync(join(MIGRATIONS_DIR, f[0]!), "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("--"));
     expect(sql).toEqual([
       "SET LOCAL lock_timeout = '2s';",
       "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS thread_head_at BIGINT;",
-      "UPDATE sessions SET thread_head_at = created_at WHERE claude_started = 1 AND thread_head_at IS NULL;",
     ]);
   });
 });
@@ -66,6 +65,15 @@ for (const dialect of ["sqlite", "pg"] as const) {
       expect(r.filter(Boolean)).toHaveLength(1);
     });
 
+    test("a release gives the marker back only to the claim that holds it", async () => {
+      await oldSession(db, "s-rel");
+      expect(await claimThreadHeadOn(db, "s-rel", 111)).toBe(true);
+      expect(await releaseThreadHeadOn(db, "s-rel", 222)).toBe(false);
+      expect(await releaseThreadHeadOn(db, "s-rel", 111)).toBe(true);
+      expect(await claimThreadHeadOn(db, "s-rel", 333)).toBe(true);
+      await db.run(`DELETE FROM sessions WHERE id = 's-rel'`);
+    });
+
     test("an unknown session claims nothing", async () => {
       expect(await claimThreadHeadOn(db, "no-such", 1)).toBe(false);
     });
@@ -73,8 +81,17 @@ for (const dialect of ["sqlite", "pg"] as const) {
   });
 }
 
+describe("the epoch rule", () => {
+  test("only a session created before the epoch that had started counts as past its first turn", () => {
+    expect(hadFirstTurnBeforeThreadHead({ created_at: THREAD_HEAD_EPOCH_MS - 1, claude_started: 1 })).toBe(true);
+    expect(hadFirstTurnBeforeThreadHead({ created_at: THREAD_HEAD_EPOCH_MS - 1, claude_started: 0 })).toBe(false);
+    expect(hadFirstTurnBeforeThreadHead({ created_at: THREAD_HEAD_EPOCH_MS, claude_started: 1 })).toBe(false);
+    expect(hadFirstTurnBeforeThreadHead({ created_at: String(THREAD_HEAD_EPOCH_MS - 5), claude_started: 1 })).toBe(true);
+  });
+});
+
 describe("upgrade from 0052", () => {
-  test("sqlite: an old file gains the column, rows keep their data, a second open is a no-op", async () => {
+  test("sqlite: an old file gains the column, rows keep their data and stay NULL (no backfill), a second open is a no-op", async () => {
     const path = join(mkdtempSync(join(tmpdir(), "slaude-0053-")), "old.sqlite");
     const first = await openDb({ dialect: "sqlite", path });
     await oldSession(first, "s1");
@@ -91,7 +108,7 @@ describe("upgrade from 0052", () => {
       expect((await cols(db, "sessions")).filter((c) => c === "thread_head_at")).toHaveLength(1);
       expect(await db.query<{ id: string; thread_head_at: number | null }>("SELECT id, thread_head_at FROM sessions ORDER BY id")).toEqual([
         { id: "s1", thread_head_at: null },
-        { id: "s2", thread_head_at: 1 },
+        { id: "s2", thread_head_at: null },
       ]);
     } finally {
       await db.close();
@@ -117,7 +134,7 @@ describe("upgrade from 0052", () => {
       const rows = (await db.query<{ id: string; model: string; thread_head_at: number | string | null }>("SELECT id, model, thread_head_at FROM sessions ORDER BY id")).map((r) => ({ ...r, thread_head_at: r.thread_head_at === null ? null : Number(r.thread_head_at) }));
       expect(rows).toEqual([
         { id: "s1", model: "m", thread_head_at: null },
-        { id: "s2", model: "m", thread_head_at: 1 },
+        { id: "s2", model: "m", thread_head_at: null },
       ]);
       expect((await runMigrations(db, { log: () => {}, migrations: all })).applied).toEqual([]);
     } finally {

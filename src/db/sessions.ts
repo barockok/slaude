@@ -212,17 +212,46 @@ export async function markStarted(id: string): Promise<void> {
 }
 
 /**
+ * Sessions created before this change (2026-11-17T05:36:26Z, the date of its migration commit) that
+ * had already started a query had their first turn before the thread head existed. They carry a NULL
+ * marker, and a head in the middle of their conversation would be wrong, so at claim time such a row
+ * is treated as already past its first turn: the marker is claimed and nothing is injected. Sessions
+ * from before the epoch that never started still get a head on their first real turn. During a rolling
+ * deploy a session first started by an older replica after the epoch looks new here and gets a head
+ * on its next turn on a newer one.
+ */
+export const THREAD_HEAD_EPOCH_MS = 1794893786000;
+
+/** Whether a session row predates the thread head and had already run its first turn. */
+export const hadFirstTurnBeforeThreadHead = (row: { created_at: number | string; claude_started: number | boolean }): boolean =>
+  Number(row.created_at) < THREAD_HEAD_EPOCH_MS && Number(row.claude_started) === 1;
+
+/** Whether the session's thread head marker is still unclaimed (a read; the claim is the compare-and-set). */
+export async function threadHeadPending(id: string): Promise<boolean> {
+  const r = await db.one<{ thread_head_at: number | string | null }>(`SELECT thread_head_at FROM sessions WHERE id = ?`, [id]);
+  return !!r && (r.thread_head_at === null || r.thread_head_at === undefined);
+}
+
+/**
  * Claim the session's thread head (rc.28): true for exactly one caller, once per session. Compare-and-set
  * on `thread_head_at IS NULL`, so two quick first messages cannot both inject the head, and the answer
  * outlives any purge (the marker is on the session row, unlike a seen-events row).
- * `on` is a seam for the migration test; the gateway uses `claimThreadHead`.
+ * `client` is a seam for the migration test; the gateway uses `claimThreadHead`.
  */
 export async function claimThreadHeadOn(client: DbClient, id: string, at: number = Date.now()): Promise<boolean> {
   const r = await client.run(`UPDATE sessions SET thread_head_at = ? WHERE id = ? AND thread_head_at IS NULL`, [at, id]);
   return (r.changes ?? 0) > 0;
 }
 
-export const claimThreadHead = (id: string): Promise<boolean> => claimThreadHeadOn(db, id);
+export const claimThreadHead = (id: string, at: number = Date.now()): Promise<boolean> => claimThreadHeadOn(db, id, at);
+
+/** Give the marker back after a turn that claimed it never started: only if it still holds this claim's timestamp. */
+export async function releaseThreadHeadOn(client: DbClient, id: string, at: number): Promise<boolean> {
+  const r = await client.run(`UPDATE sessions SET thread_head_at = NULL WHERE id = ? AND thread_head_at = ?`, [id, at]);
+  return (r.changes ?? 0) > 0;
+}
+
+export const releaseThreadHead = (id: string, at: number): Promise<boolean> => releaseThreadHeadOn(db, id, at);
 
 export async function setStatus(id: string, status: string): Promise<void> {
   await db.run(`UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?`, [
@@ -233,7 +262,8 @@ export async function setStatus(id: string, status: string): Promise<void> {
 }
 
 export async function clearStarted(id: string): Promise<void> {
-  await db.run(`UPDATE sessions SET claude_started = 0, updated_at = ? WHERE id = ?`, [
+  // A restart with no transcript is a new first turn: the thread head is owed again.
+  await db.run(`UPDATE sessions SET claude_started = 0, thread_head_at = NULL, updated_at = ? WHERE id = ?`, [
     Date.now(),
     id,
   ]);

@@ -785,14 +785,10 @@ export function bootstrapSqliteSchema(db: Database): void {
   }
 
   // Migration: the thread head marker (pg 0053). Nullable, no default: set once by compare-and-set
-  // when the head is claimed for a turn's prompt. Placed after the persona_id rebuild above.
+  // when the head is claimed for a turn's prompt (no backfill: see THREAD_HEAD_EPOCH_MS). Placed after the persona_id rebuild above.
   {
     const sessCols = (db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>).map((c) => c.name);
-    if (!sessCols.includes("thread_head_at")) {
-      db.run(`ALTER TABLE sessions ADD COLUMN thread_head_at INTEGER`);
-      // A session that already ran a turn must not get a head mid-conversation (same as pg 0053).
-      db.run(`UPDATE sessions SET thread_head_at = created_at WHERE claude_started = 1 AND thread_head_at IS NULL`);
-    }
+    if (!sessCols.includes("thread_head_at")) db.run(`ALTER TABLE sessions ADD COLUMN thread_head_at INTEGER`);
   }
 
   // Migration: the credential bookkeeping pointer (pg 0052). Nullable and never read for a
