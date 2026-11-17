@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "bun:test";
+import { metrics } from "../../../src/metrics";
 import { DecisionError, type DecisionAdapter, type DecisionRequest, type DecisionResult } from "../../../src/decision/types";
 import { formatEngageLine, toEngageAction } from "../../../src/gateway/gate/log";
 import { decideAction } from "../../../src/gateway/gate/policy";
@@ -99,6 +100,18 @@ describe("implicit consult through the runner", () => {
     await r.consultImplicit("q3", async () => contribute, W);
     expect(asked.map((q) => q.length)).toEqual([1, 1, 4]);
     expect(asked[0]).toEqual(["addressedToAgent"]);
+  });
+  it("a quiet (shadow) consult counts no gate decision and prints no gate line, but still answers", async () => {
+    const decisions = () => metrics.render().split("\n").filter((l) => l.startsWith("slaude_gate_decisions_total{")).reduce((n, l) => n + Number(l.split(" ").at(-1)), 0);
+    const r = makeGateRunner({ ...opts, mode: "on", adapter: scripted(OPEN) });
+    const before = decisions();
+    lines.length = 0;
+    expect(await r.consultImplicit("qq1", async () => contribute, { ...W, quiet: true })).toEqual({ action: "run", source: "adapter" });
+    expect(decisions()).toBe(before);
+    expect(lines).toEqual([]);
+    await r.consultImplicit("qq2", async () => contribute, W);
+    expect(decisions()).toBe(before + 1);
+    expect(lines).toHaveLength(1);
   });
   it("says why no model answered", async () => {
     const none = makeGateRunner({ ...opts, mode: "off", adapter: null });

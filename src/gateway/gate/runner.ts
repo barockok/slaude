@@ -59,14 +59,16 @@ export interface GateRunner {
    * with the gate off or in shadow (the channel's own engage mode decides
    * whether to act). `input` must build a GateInput with `implicit` set to
    * `want.level` and `continuation` equal to `want.continuation`; a memoised
-   * decision made under other flags is never reused. No adapter, an adapter
+   * decision made under other flags is never reused. `quiet` (a shadow
+   * consult, which nothing acts on) counts no gate decision and prints no
+   * `[gate] mode=...` line: the caller records its own outcome. No adapter, an adapter
    * error, a timeout or an input failure is a pass: undefined, or a "drop"
    * with source "rules". It never returns "run" without a model answer.
    */
   consultImplicit(
     key: string,
     input: () => Promise<GateInput>,
-    want: { level: ImplicitLevel; continuation: boolean },
+    want: { level: ImplicitLevel; continuation: boolean; quiet?: boolean },
   ): Promise<{ action: "run" | "drop"; source: "adapter" | "rules"; why?: "noadapter" | "timeout" | "error" } | undefined>;
 }
 
@@ -125,7 +127,7 @@ export function makeGateRunner(o: {
   const memo = new Map<string, Promise<GateResult>>();
 
   /** The whole path (input + decide) is bounded by timeoutMs. */
-  async function compute(key: string, input: () => Promise<GateInput>, actual: GateAction): Promise<GateResult> {
+  async function compute(key: string, input: () => Promise<GateInput>, actual: GateAction, quiet = false): Promise<GateResult> {
     const t0 = Date.now();
     const gi = await boundedInput(input, o.timeoutMs);
     let decision: GateDecision | null = null;
@@ -156,19 +158,21 @@ export function makeGateRunner(o: {
       latencyMs: Date.now() - t0,
       ...(!decision && why ? { why } : {}),
     };
-    m.gateDecisionsTotal.inc({ action: r.action, source: r.source, mode: r.mode });
-    log(logLine(key, r, actual));
+    if (!quiet) {
+      m.gateDecisionsTotal.inc({ action: r.action, source: r.source, mode: r.mode });
+      log(logLine(key, r, actual));
+    }
     return r;
   }
 
   /** The shared in-flight decision for key, and whether this call started it. */
-  function decision(key: string, input: () => Promise<GateInput>, actual: GateAction, want: Want): { p: Promise<GateResult>; fresh: boolean } {
+  function decision(key: string, input: () => Promise<GateInput>, actual: GateAction, want: Want, quiet = false): { p: Promise<GateResult>; fresh: boolean } {
     const hit = memo.get(key);
     // A stored decision made under other flags (a mention's under an implicit
     // consult, a continuation's under a fresh message) is a miss: recomputed,
     // not shared and not stored.
-    if (hit) return { p: hit.then((r) => (matches(r, want) ? r : compute(key, input, actual))), fresh: false };
-    const p = compute(key, input, actual);
+    if (hit) return { p: hit.then((r) => (matches(r, want) ? r : compute(key, input, actual, quiet))), fresh: false };
+    const p = compute(key, input, actual, quiet);
     memo.set(key, p);
     const evict = () => {
       if (memo.get(key) === p) memo.delete(key);
@@ -212,7 +216,7 @@ export function makeGateRunner(o: {
     consult,
     async consultImplicit(key, input, want) {
       try {
-        const r = await decision(key, input, "drop", { implicit: want.level, continuation: want.continuation }).p;
+        const r = await decision(key, input, "drop", { implicit: want.level, continuation: want.continuation }, want.quiet).p;
         // A decision not made as an implicit one is never read as a yes.
         if (!matches(r, { implicit: want.level, continuation: want.continuation })) return undefined;
         return { action: r.action === "run" ? "run" : "drop", source: r.source, ...(r.why ? { why: r.why } : {}) };

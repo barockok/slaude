@@ -14,7 +14,8 @@ export function gateClassifier(runner: GateRunner): EngageClassifier {
     try {
       const key = gateKey({ channel: c.channel, ts: c.ts, persona: c.persona, app: c.app, continuation: c.continuation, implicit: c.level });
       const input = async () => ({ ...(await c.input()), engaged: false, implicit: c.level, continuation: c.continuation });
-      const r = await runner.consultImplicit(key, input, { level: c.level, continuation: c.continuation });
+      // A shadow candidate is never acted on: it is counted by the engage counters, not as a gate decision.
+      const r = await runner.consultImplicit(key, input, { level: c.level, continuation: c.continuation, quiet: c.mode === "shadow" });
       if (r === undefined) return { answer: "pass", reason: "input" };
       if (r.source !== "adapter") return { answer: "pass", reason: r.why ?? "error" };
       return { answer: r.action === "run" ? "run" : "pass", reason: "answer" };
