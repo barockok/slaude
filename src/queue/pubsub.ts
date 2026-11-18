@@ -116,6 +116,14 @@ export function makePubSub(opts: PubSubOpts) {
       return on(keys.reloadChannel(tenantId), () => cb());
     },
 
+    /** Any process → every process: a runtime skill changed in the object store. Payload is JSON `{scope, slug, version, at}`. */
+    async publishSkillChanged(payload: string): Promise<number> {
+      return await redis.publish(keys.skillsChannel(), payload);
+    },
+    onSkillChanged(cb: (payload: string) => void) {
+      return on(keys.skillsChannel(), cb);
+    },
+
     /**
      * Any gateway replica → every gateway replica: a session's active-surface
      * panel lock released (explicit release, force-release, or TTL expiry).

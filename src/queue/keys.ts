@@ -110,6 +110,8 @@ export interface Keys {
   abortFlag(sessionId: string): string;
   /** Pub/sub channel: bust a tenant's cached runtime bundle. */
   reloadChannel(tenantId: string): string;
+  /** `skills-changed` — a runtime skill was written, retired or deleted; every process refreshes its local copy from the object store. */
+  skillsChannel(): string;
   /** Pub/sub channel: a pending gate was resolved. */
   gateChannel(pendingId: string): string;
   /** `events:<sessionId>` capped stream of serialized AgentEvents. */
@@ -176,6 +178,7 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     abortChannel: (sessionId) => `${prefix}:abort:${sessionId}`,
     abortFlag: (sessionId) => `${prefix}:abort-flag:${sessionId}`,
     reloadChannel: (tenantId) => `${prefix}:reload:${tenantId}`,
+    skillsChannel: () => `${prefix}:skills-changed`,
     gateChannel: (pendingId) => `${prefix}:gate:${pendingId}`,
     eventsStream: (sessionId) => `${prefix}:events:${sessionId}`,
     panelLock: (sessionId) => `${prefix}:panel:${sessionId}`,

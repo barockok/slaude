@@ -38,6 +38,7 @@ import { assertNodeIdUsable, DEFAULT_LABEL, LABEL_RE, labelTurnsQueue, makeKeys,
 import { createRedis, heartbeatSec as envHeartbeatSec, nodeDrainSec, redisUrl } from "../queue/redis";
 import { makeRegistry, type Registry } from "../queue/registry";
 import { FsSync } from "./fs-sync";
+import { startSkillMirror } from "../skills/remote-sync";
 import { objectStore, storageMode, syncFlush } from "../storage";
 import { makePubSub, type PubSub } from "../queue/pubsub";
 import { withKeyLock, withSessionLock, HELD_BY_OTHER } from "../queue/locks";
@@ -837,6 +838,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         })
       : null;
 
+  // Runtime skills mirrored from the object store: a write_skill on any node reaches this node's
+  // skills directory through the skills-changed channel, and each turn reconciles in case a message was missed.
+  const skillMirror = storageMode() === "s3" ? await startSkillMirror({ store: objectStore()!, bus: pubsub }) : null;
+
   async function runTurn(job: Job, data: TurnJob): Promise<"done" | "error" | "skipped"> {
     const sessionId = data.sessionId;
     gateDenied.delete(sessionId);
@@ -1083,6 +1088,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           };
           lostLock.addEventListener("abort", onLost, { once: true });
           try {
+            if (skillMirror) await skillMirror.refresh();
             if (fsSync) {
               // Hydrate under the lock. "wait": another live node holds unflushed edits
               // for this session's files, so requeue like a held lock.
@@ -1288,6 +1294,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     }
     // Flush every warm session's files before it is deregistered.
     if (fsSync) await fsSync.drain().catch((e) => console.error(`[node] ${nodeId} filesystem flush on drain failed:`, e));
+    if (skillMirror) await skillMirror.stop();
     // Deregister every warm session + the node itself (spec §2 SIGTERM).
     for (const sessionId of [...warm]) {
       warm.delete(sessionId);

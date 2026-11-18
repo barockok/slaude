@@ -18,6 +18,7 @@ import { SKILL_SLUG_RE, allowedSkillsOf, discoverSkills, globalSkillsRoot, perso
 import { syncManifest } from "./sync-manifest";
 import { skillsAllowedFor } from "../persona/registry";
 import { noteSkillChanged } from "./versions";
+import { notifySkillRemote } from "./remote-sync";
 import { builtinSkillRefusal, cliSkillName, isBuiltinSkillName } from "../soul/builtin";
 import { skillsContract } from "../tools/contracts/skills";
 
@@ -138,6 +139,7 @@ export const skillOps = {
     const created = !existsSync(path);
     writeFileSync(path, buildSkillMd(name, description, body, { authoredBy: "agent", authoredAt: now.toISOString() }), "utf8");
     noteSkillChanged(personaName, slug, dir);
+    notifySkillRemote(personaName, slug);
     return { path, created };
   },
   delete(slug: string, personaName?: string): void {
@@ -146,6 +148,7 @@ export const skillOps = {
     const dir = resolveSkillDir(slug, personaName);
     if (!existsSync(dir)) throw new Error(`skill "${slug}" not found`);
     rmSync(dir, { recursive: true, force: true });
+    notifySkillRemote(personaName, slug);
   },
   /**
    * Soft delete: move the skill's directory to
@@ -169,6 +172,7 @@ export const skillOps = {
     const path = join(store, id);
     renameSync(dir, path);
     noteSkillChanged(personaName, slug, path, now.getTime());
+    notifySkillRemote(personaName, slug);
     return { id, path };
   },
   /**
@@ -194,6 +198,7 @@ export const skillOps = {
     mkdirSync(dirname(dir), { recursive: true });
     renameSync(from, dir);
     noteSkillChanged(personaName, slug, dir);
+    notifySkillRemote(personaName, slug);
     return { slug, path: dir };
   },
   /** The retired copies in a persona's own root, by id (newest timestamp last). */
