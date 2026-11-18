@@ -18,6 +18,22 @@ jobs:
     timeout-minutes: 25
     permissions:
       contents: read
+    # An S3-compatible endpoint for tests/storage and the tree-sync suites, so the
+    # S3 backend is exercised (and counted in coverage) rather than skipped. Any S3
+    # server would do; this one starts with its default command.
+    services:
+      s3:
+        image: rustfs/rustfs:latest
+        ports:
+          - 9000:9000
+        env:
+          RUSTFS_ACCESS_KEY: slaude-test
+          RUSTFS_SECRET_KEY: slaude-test-secret
+        options: >-
+          --health-cmd "curl -fsS http://localhost:9000/health"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +44,13 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Create the S3 test bucket
+        env:
+          AWS_ACCESS_KEY_ID: slaude-test
+          AWS_SECRET_ACCESS_KEY: slaude-test-secret
+          AWS_DEFAULT_REGION: us-east-1
+        run: aws --endpoint-url http://localhost:9000 s3 mb s3://slaude-test
 
       - name: Typecheck
         run: bun run typecheck
@@ -58,6 +81,7 @@ jobs:
         # (project + patch) on the lcov.info uploaded below.
         env:
           SUITE_PASS_FLOOR: "1400"
+          SLAUDE_S3_TEST_ENDPOINT: http://localhost:9000
         run: |
           set +e
           bun test --coverage --parallel=1 2>&1 | tee test-output.txt

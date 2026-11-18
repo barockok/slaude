@@ -1,0 +1,82 @@
+# The scale topology with no PersistentVolume: session files, transcripts and
+# runtime skills live in an S3-compatible bucket, and every pod's $SLAUDE_HOME
+# is pod-local scratch. Apply with `kubectl apply -k deploy/k8s-scale-s3`
+# once every REPLACE_ value here and in the base is filled in.
+#
+# What it changes from the base:
+#   - removes the ReadWriteMany PVC (30-pvc.yaml);
+#   - mounts an emptyDir at /data on the gateway and every node deployment;
+#   - sets SLAUDE_STORAGE=s3 and the bucket settings in slaude-scale-config;
+#   - gives the gateway and every node the S3 credentials (s3-secret.yaml).
+#
+# An emptyDir at /data behaves like a fresh volume at every pod start: the
+# image's own seeding runs each boot, so bundled and installed skills are there
+# and nothing from an earlier pod is. Anything a session needs afterwards comes
+# from the bucket (hydrate on claim), so size `sizeLimit` for the largest set of
+# warm sessions a pod serves, not for history.
+#
+# A second node deployment (the base ships a `finance` one as the pattern) needs
+# the same two patches below; add a target for it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../k8s-scale
+  - s3-secret.yaml
+
+patches:
+  # No PVC.
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: slaude-home
+        namespace: slaude-scale
+
+  # /data becomes pod-local scratch on every Deployment that mounted the PVC.
+  - target: { kind: Deployment, name: slaude-gateway }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/volumes/0
+        value: { name: slaude-home, emptyDir: { sizeLimit: 20Gi } }
+      - op: add
+        path: /spec/template/spec/containers/0/envFrom/-
+        value: { secretRef: { name: slaude-scale-s3 } }
+  - target: { kind: Deployment, name: slaude-node }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/volumes/0
+        value: { name: slaude-home, emptyDir: { sizeLimit: 20Gi } }
+      - op: add
+        path: /spec/template/spec/containers/0/envFrom/-
+        value: { secretRef: { name: slaude-scale-s3 } }
+  - target: { kind: Deployment, name: slaude-node-finance }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/volumes/0
+        value: { name: slaude-home, emptyDir: { sizeLimit: 20Gi } }
+      - op: add
+        path: /spec/template/spec/containers/0/envFrom/-
+        value: { secretRef: { name: slaude-scale-s3 } }
+
+  # The storage settings, shared by the gateway and every node.
+  - patch: |-
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: slaude-scale-config
+        namespace: slaude-scale
+      data:
+        SLAUDE_STORAGE: "s3"
+        # Empty means the AWS endpoint for the region; set it for MinIO, RustFS,
+        # SeaweedFS, Garage, R2 or any other S3-compatible server.
+        SLAUDE_S3_ENDPOINT: "https://s3.REPLACE.example.com"
+        SLAUDE_S3_REGION: "us-east-1"
+        SLAUDE_S3_BUCKET: "REPLACE-slaude"
+        # Lets several clusters share one bucket.
+        SLAUDE_S3_PREFIX: "slaude"
+        # `turn`: flush the workspace after every turn. `idle`: only when the
+        # session goes idle or the node drains (the transcript flushes every turn
+        # either way). See docs/site/_content/deploy/remote-storage.md.
+        SLAUDE_SYNC_FLUSH: "turn"

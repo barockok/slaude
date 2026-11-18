@@ -358,3 +358,34 @@ overlay) is a separate, later change.
 
 Application-level encryption, cross-region replication, and the cutover that
 removes the `fs` path.
+
+## As built (rc.34)
+
+Where the implementation differs from the draft above, the code is right and the
+draft is superseded:
+
+- **Sync units are directories, not sessions.** Two units per session, `ws-<hash
+  of the working directory>` and `tx-<hash of the transcript directory>`, each
+  with its own manifest series and epoch, stored under `sessions/<unit>/`. A
+  proactive or channel folder is shared by several sessions; keying by session
+  would make them overwrite each other.
+- **Skills are store-authoritative and mirrored by every process.** There is no
+  gateway write endpoint. The tool hook uploads the skill (files first, then a
+  head object under `shared/skills-head/`), announces it on the `skills-changed`
+  channel, and every node and gateway replica refetches and swaps it in. The
+  gateway replica also records the arrival in the skill version log. Two writers
+  racing on one slug resolve to the head written last. A delete that exposes a
+  bundled skill restores it at once; an installed (`slaude.lock`) skill returns on
+  the next pod start.
+- **The panel's durable transcript read** is still a TODO in the code, so there
+  was no gateway read to move.
+- **A shared base needs no PVC mount.** The overlay mounts an `emptyDir` at
+  `/data`, which behaves like a fresh volume each pod start; the image's seeding
+  runs every boot.
+- **Garbage collection** (`gcSession`, `removeSession`) is implemented and tested
+  but not yet scheduled by the reaper.
+- **Flush retry** is per node and in memory, with a Redis mark for other nodes; a
+  node that restarts forgets its pending set, and the mark expires after seven
+  days.
+- **Not built:** a bounded local cache of recent sessions (eviction deletes on
+  idle), and application-level encryption (out of scope by decision).

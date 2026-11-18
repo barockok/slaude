@@ -385,6 +385,15 @@ and roles come from a file or the env lists below.
 | `SLAUDE_ENGAGE_DAILY_BUDGET` | No | `50` | Phase 1 shadow classifier: calls per channel per UTC day. Counted per channel across apps and replicas (Redis when there is one). Over it, a candidate is a counted pass (reason `budget`). A whole number from 1 to 100000; anything else means 50. See [Implicit engagement](#implicit-engagement). |
 | `SLAUDE_ENGAGE_MINUTE_CEILING` | No | `6` | Phase 1 shadow classifier: calls per channel per minute. A whole number from 1 to 1000; anything else means 6. |
 | `SLAUDE_SLACK_MARKDOWN_BLOCKS` | No | unset | `1`, `true`, `yes` or `on` sends an agent's chat replies, edits and posts as one Slack `markdown` block holding the raw markdown (Slack renders tables, headings, links and lists), instead of converting to mrkdwn. A text over 12,000 characters still goes out as mrkdwn text. Read at post time. Ephemeral messages, file captions, topics, canvases, proactive posts and cards stay mrkdwn. |
+| `SLAUDE_STORAGE` | No | `fs` | `s3` syncs a session's working directory, its transcript directory and runtime skills to an S3-compatible bucket, so the gateway and node topology needs no shared volume. `fs` keeps today's behavior. Anything else refuses to start. See [Remote storage](../deploy/remote-storage.md). |
+| `SLAUDE_S3_ENDPOINT` | With `s3`, for a non-AWS server | unset | The S3 endpoint URL (MinIO, RustFS, SeaweedFS, Garage, R2 and others). Empty means the AWS endpoint for the region. |
+| `SLAUDE_S3_REGION` | No | `us-east-1` | The bucket's region. |
+| `SLAUDE_S3_BUCKET` | With `s3` | unset | The bucket. A process refuses to start in `s3` mode, naming each missing setting, without it and the two credentials. |
+| `SLAUDE_S3_PREFIX` | No | unset | A key prefix, so several clusters can share one bucket. |
+| `SLAUDE_S3_PATH_STYLE` | No | `1` with an endpoint, else `0` | `1` or `0`. Path-style addressing, which most self-hosted servers need. |
+| `SLAUDE_S3_ACCESS_KEY_ID`, `SLAUDE_S3_SECRET_ACCESS_KEY` | With `s3` | unset | The bucket credentials, on the gateway and every node. Scope them to the prefix. |
+| `SLAUDE_SYNC_FLUSH` | No | `turn` | `turn` writes a session's workspace to the bucket after every turn; `idle` writes it when the session goes idle or the node drains. The transcript is written every turn either way. |
+| `SLAUDE_SYNC_IGNORE` | No | `node_modules,.cache,__pycache__` | Comma-separated names that never sync, matched against every path segment. Setting it replaces the default. |
 | `SLAUDE_ENGAGE_FORCE_SHADOW` | No | unset | Phase 2 kill switch: `1`, `true`, `yes` or `on` forces every channel to shadow behaviour, whatever its `engage.mode`. Read for every message, never cached. |
 | `SLAUDE_ENGAGE_ACT_PER_HOUR` | No | `12` | Phase 2: acted runs per channel per hour. Past it a run decision is a counted pass (`outcome="cap"`). A whole number from 1 to 10000; anything else means 12. |
 | `SLAUDE_ENGAGE_SAMPLE` | No | `20` | Phase 1: sample 1 in N tier 2 run decisions for the classifier (at most 5 a day per channel), to check the rules. `0` turns sampling off. Anything invalid means 20. |
