@@ -29,6 +29,7 @@ export type PermissionMode =
 import { paths } from "../config/home";
 import { dbDialect } from "../db/client";
 import { env } from "../config/env";
+import { storageMode } from "../storage/config";
 import { loadInstalledPluginPaths, loadInstalledPluginMcps } from "../config/plugins";
 import { soulSystemBlock } from "../soul/loader";
 import { BUILTIN_PLUGIN_DIR, cliPluginName, pluginsNamedLikeBuiltin } from "../soul/builtin";
@@ -1015,7 +1016,10 @@ export class AgentManager extends EventEmitter {
       const workingDir =
         opts.workingDir ??
         join(paths.workspaces, `${thread.team_id}-${thread.channel_id}-${thread.thread_ts}${personaSuffix}`);
-      mkdirSync(workingDir, { recursive: true });
+      // With remote storage the node that runs the session creates (and fills) its working directory when it
+      // hydrates. A gateway that made it on a volume the node shares would leave it root-owned and unwritable
+      // for a non-root node, so a gateway leaves it alone.
+      if (!(storageMode() === "s3" && env.role() === "gateway")) mkdirSync(workingDir, { recursive: true });
       try {
         row = await this.#store.createForThread({
           thread,

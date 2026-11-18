@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { paths } from "../../src/config/home";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FsSync, encodeProjectDir, type RedisLike } from "../../src/node/fs-sync";
@@ -110,7 +111,9 @@ function nodeSync(opts: {
   });
 }
 
-const txFile = (m: Machine) => join(m.claude, "projects", encodeProjectDir(m.cwd), "sdk-session.jsonl");
+/** The SDK names its project dir after the directory's real path (macOS temp dirs sit behind a symlink). */
+const txDirOf = (m: Machine) => join(m.claude, "projects", encodeProjectDir(existsSync(m.cwd) ? realpathSync(m.cwd) : m.cwd));
+const txFile = (m: Machine) => join(txDirOf(m), "sdk-session.jsonl");
 
 /** Wipe a machine's disk: the session lands on a different node. */
 function wipe(m: Machine): void {
@@ -138,6 +141,35 @@ describe("FsSync", () => {
     expect(encodeProjectDir("/data/workspaces/T1-C1-1700000000.000100")).toBe("-data-workspaces-T1-C1-1700000000-000100");
   });
 
+  test("SLAUDE_SYNC_STATE_DIR moves the markers out of SLAUDE_HOME", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = machine();
+    const stateDir = tmp("state-dir");
+    process.env.SLAUDE_SYNC_STATE_DIR = stateDir;
+    try {
+      process.env.CLAUDE_CONFIG_DIR = m.claude;
+      // No stateDir dependency: the environment decides, as it does on a node.
+      const a = new FsSync({
+        store,
+        redis,
+        keys: makeKeys("test"),
+        nodeId: "node-a",
+        flush: () => "turn",
+        workingDirOf: async () => m.cwd,
+        nodeAlive: async () => false,
+      });
+      await a.beforeTurn("s1", "default");
+      writeFileSync(join(m.cwd, "f.txt"), "x");
+      await a.afterTurn("s1", false);
+      const markers = readdirSync(stateDir).filter((f) => f.endsWith(".json"));
+      expect(markers.length).toBe(2); // the workspace and the transcript unit
+      expect(existsSync(join(paths.home, ".sync-state"))).toBe(false);
+    } finally {
+      delete process.env.SLAUDE_SYNC_STATE_DIR;
+    }
+  });
+
   test("a turn on node A is visible, with its transcript, on node B", async () => {
     const store = new LocalObjectStore(tmp("store"));
     const redis = memRedis();
@@ -145,7 +177,7 @@ describe("FsSync", () => {
     const a = nodeSync({ id: "node-a", store, redis, m });
     expect(await a.beforeTurn("s1", "default")).toBe("ok");
     writeFileSync(join(m.cwd, "notes.md"), "made on A");
-    mkdirSync(join(m.claude, "projects", encodeProjectDir(m.cwd)), { recursive: true });
+    mkdirSync(txDirOf(m), { recursive: true });
     writeFileSync(txFile(m), '{"turn":1}\n');
     await a.afterTurn("s1", false);
 
@@ -176,7 +208,7 @@ describe("FsSync", () => {
     const a = nodeSync({ id: "node-a", store, redis, m, flush: "idle" });
     await a.beforeTurn("s1", "default");
     writeFileSync(join(m.cwd, "work.txt"), "edits");
-    mkdirSync(join(m.claude, "projects", encodeProjectDir(m.cwd)), { recursive: true });
+    mkdirSync(txDirOf(m), { recursive: true });
     writeFileSync(txFile(m), "history\n");
     await a.afterTurn("s1", false);
 
@@ -412,6 +444,53 @@ describe("FsSync", () => {
     flaky.failing = false;
     await a.drain(); // A's flush now succeeds and clears its own pending entry
     for (const k of marks) expect(JSON.parse((await redis.get(k))!).node).toBe("node-c");
+  });
+
+  test("eviction that cannot delete a leftover file is logged, never raised", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = machine();
+    const a = nodeSync({ id: "node-a", store, redis, m });
+    await a.beforeTurn("s1", "default");
+    // A directory a different (root) process left behind: the node may not unlink what is inside it.
+    const locked = join(m.cwd, "left-by-root");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "f.txt"), "x");
+    chmodSync(locked, 0o500);
+    await a.afterTurn("s1", false);
+    try {
+      await expect(a.evict("s1")).resolves.toBeUndefined();
+      // The copy is still there, so the marker that says what it matches must stay: removing it would make the
+      // next hydrate treat a leftover tree as unknown.
+      if (process.getuid && process.getuid() !== 0) expect(readdirSync(m.state).filter((f) => f.endsWith(".json")).length).toBeGreaterThan(0);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+  });
+
+  test("the first turn resolves a symlinked workspaces path, so the transcript dir is the one the SDK writes", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const real = realpathSync(tmp("real-root"));
+    const link = join(tmp("link-parent"), "link");
+    symlinkSync(real, link);
+    const m = machine();
+    m.cwd = join(link, "workspaces", "t-1"); // does not exist yet: the node creates it on its first hydrate
+    const a = nodeSync({ id: "node-a", store, redis, m });
+    await a.beforeTurn("s1", "default");
+    // The SDK names its project dir after the real path.
+    const txDir = join(m.claude, "projects", encodeProjectDir(join(real, "workspaces", "t-1")));
+    mkdirSync(txDir, { recursive: true });
+    writeFileSync(join(txDir, "sdk.jsonl"), "history\n");
+    await a.afterTurn("s1", false);
+
+    rmSync(real, { recursive: true, force: true });
+    mkdirSync(real);
+    rmSync(m.claude, { recursive: true, force: true });
+    rmSync(m.state, { recursive: true, force: true });
+    const b = nodeSync({ id: "node-b", store, redis, m });
+    await b.beforeTurn("s1", "default");
+    expect(readFileSync(join(txDir, "sdk.jsonl"), "utf8")).toBe("history\n");
   });
 
   test("overlapping flushes of one unit run one after the other", async () => {

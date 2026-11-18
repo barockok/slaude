@@ -290,6 +290,30 @@ function suite(name: string, makeStore: () => ObjectStore) {
       expect(await drainInbox(store, wsUnitId(gw), nodeDir)).toBe(0);
     });
 
+    test("one staged file that cannot be written does not hold up the others", async () => {
+      const store = makeStore();
+      const gw = tmp("gateway");
+      const nodeDir = tmp("nodews");
+      for (const [dir, name] of [["blocked", "stuck.txt"], ["fine", "ok.txt"]] as const) {
+        mkdirSync(join(gw, dir), { recursive: true });
+        writeFileSync(join(gw, dir, name), name);
+        await putInbox(store, gw, join(gw, dir, name));
+      }
+      // The node may not write into `blocked` (a directory an earlier root process left behind).
+      mkdirSync(join(nodeDir, "blocked"));
+      chmodSync(join(nodeDir, "blocked"), 0o500);
+      try {
+        const n = await drainInbox(store, wsUnitId(gw), nodeDir);
+        expect(readFileSync(join(nodeDir, "fine", "ok.txt"), "utf8")).toBe("ok.txt");
+        if (process.getuid && process.getuid() !== 0) {
+          expect(n).toBe(1);
+          expect((await listAll(store, "inbox/")).map((o) => o.key.split("/").pop())).toEqual(["stuck.txt"]); // kept for a later turn
+        }
+      } finally {
+        chmodSync(join(nodeDir, "blocked"), 0o700);
+      }
+    });
+
     test("an inbox file from outside its working directory is refused", async () => {
       const store = makeStore();
       const gw = tmp("gateway");

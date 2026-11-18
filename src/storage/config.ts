@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { StorageError } from "./object-store";
 
 /** `fs` keeps today's behavior (a local or shared filesystem); `s3` syncs session state to an S3-compatible store. */
@@ -35,11 +37,48 @@ export function syncFlush(env: Env = process.env): SyncFlush {
   throw new StorageError("config", `SLAUDE_SYNC_FLUSH must be 'turn' or 'idle' (got '${raw}')`);
 }
 
+/**
+ * Where a node keeps its sync markers (and the skills sync state), or null for the default under `$SLAUDE_HOME`.
+ * A deployment whose worker cannot write `$SLAUDE_HOME` (a non-root worker beside a root-owned shared data
+ * directory) points this at a directory the worker owns. It must survive a worker restart: the markers say
+ * which stored state each local directory matches, and without them the next hydrate is a full pass.
+ */
+export function syncStateDir(env: Env = process.env): string | null {
+  const raw = (env.SLAUDE_SYNC_STATE_DIR ?? "").trim();
+  if (raw === "") return null;
+  if (!raw.startsWith("/")) throw new StorageError("config", `SLAUDE_SYNC_STATE_DIR must be an absolute path (got '${raw}')`);
+  return raw.replace(/\/+$/, "") || "/";
+}
+
+/**
+ * Make the sync state directory and prove this process can write it, at boot. Otherwise a directory the worker may
+ * not write shows up as a failed hydrate on every turn, after the whole session was downloaded.
+ */
+export function checkSyncStateDir(dir: string): void {
+  const probe = join(dir, `.probe-${process.pid}`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(probe, "ok");
+    rmSync(probe, { force: true });
+  } catch (e) {
+    throw new StorageError("config", `SLAUDE_SYNC_STATE_DIR ${dir} is not writable: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * The runtime-skills mirror (skills written while the agent runs, shared through the bucket). On by default in `s3`
+ * mode. Turn it off where gateway and worker already share the skills directory: the mirror would write a directory
+ * the worker may not own and publish what every process already sees.
+ */
+export function skillsMirror(env: Env = process.env): boolean {
+  return bool("SLAUDE_SKILLS_MIRROR", env.SLAUDE_SKILLS_MIRROR, true);
+}
+
 const bool = (name: string, raw: string | undefined, dflt: boolean): boolean => {
   if (raw === undefined || raw.trim() === "") return dflt;
   const v = raw.trim().toLowerCase();
-  if (["1", "true", "yes"].includes(v)) return true;
-  if (["0", "false", "no"].includes(v)) return false;
+  if (["1", "true", "yes", "on"].includes(v)) return true;
+  if (["0", "false", "no", "off"].includes(v)) return false;
   throw new StorageError("config", `${name} must be 1 or 0 (got '${raw}')`);
 };
 

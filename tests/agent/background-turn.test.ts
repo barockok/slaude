@@ -156,6 +156,25 @@ describe("budgeted background turn", () => {
     expect(basename(plain.working_dir)).toMatch(/^T0TEAM-C0TEAM-/);
     expect(dirname(plain.working_dir)).toBe(paths.workspaces);
   });
+  it("ensureSession: on a gateway with remote storage the directory is left for the node to create", async () => {
+    // A directory the gateway makes on a volume the node shares is root-owned: the node could not write into it.
+    const prevRole = process.env.SLAUDE_ROLE;
+    const prevStorage = process.env.SLAUDE_STORAGE;
+    process.env.SLAUDE_ROLE = "gateway";
+    process.env.SLAUDE_STORAGE = "s3";
+    try {
+      const mgr = new AgentManager();
+      const x = join(tmpdir(), `ws-remote-${Date.now()}`);
+      const row = await mgr.ensureSession(thread(), { workingDir: x });
+      expect(row.working_dir).toBe(x);
+      expect(existsSync(x)).toBe(false);
+    } finally {
+      if (prevRole === undefined) delete process.env.SLAUDE_ROLE;
+      else process.env.SLAUDE_ROLE = prevRole;
+      if (prevStorage === undefined) delete process.env.SLAUDE_STORAGE;
+      else process.env.SLAUDE_STORAGE = prevStorage;
+    }
+  });
   it("a fresh session's background input is finished with its own usage", async () => {
     const mgr = new AgentManager();
     const row = await mgr.ensureSession(thread());

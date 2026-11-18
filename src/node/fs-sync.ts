@@ -26,7 +26,7 @@
  * marker and drops the session from the tracked set, and a flush refuses a root
  * directory that is missing (the store would otherwise be told the tree is empty).
  */
-import { existsSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { paths } from "../config/home";
 import { personaConfigDir } from "../agent/oauth-home";
@@ -41,6 +41,7 @@ import {
   hydrateTree,
   ignoreList,
   latestEpoch,
+  syncStateDir,
   txUnitId,
   writeMarker,
   wsUnitId,
@@ -120,7 +121,7 @@ export class FsSync {
   }
 
   #now = (): number => (this.#d.now ?? Date.now)();
-  #state = (): string => this.#d.stateDir ?? join(paths.home, ".sync-state");
+  #state = (): string => this.#d.stateDir ?? syncStateDir() ?? join(paths.home, ".sync-state");
   #ignore = (): readonly string[] => this.#d.ignore ?? ignoreList();
 
   /** One queue per unit: flushes, hydrates and retries of a directory never overlap. */
@@ -184,6 +185,15 @@ export class FsSync {
   async beforeTurn(sessionId: string, persona: string): Promise<"ok" | "wait"> {
     const cwd = await this.#d.workingDirOf(sessionId);
     if (!cwd) return "ok";
+    // The transcript directory is named after the directory's real path, so the directory must exist before it is
+    // worked out. With remote storage nothing else has made it yet (the gateway leaves that to the node).
+    if (!this.#tracked.has(sessionId)) {
+      try {
+        mkdirSync(cwd, { recursive: true });
+      } catch {
+        /* the hydrate reports a directory it cannot make, with its own error */
+      }
+    }
     const tr = this.#tracked.get(sessionId) ?? this.#build(cwd, persona);
     this.#enter(tr);
     try {
@@ -430,7 +440,16 @@ export class FsSync {
   #dropLocal(unit: Unit): void {
     if ((this.#active.get(unit.id) ?? 0) > 0) return;
     for (const t of this.#tracked.values()) if (t.ws.id === unit.id || t.tx.id === unit.id) return;
-    rmSync(unit.root.dir, { recursive: true, force: true });
+    // What is stored is safe already (the flush succeeded), so a leftover the node may not delete, such as a file
+    // an earlier root process wrote into a shared directory, costs disk, never the turn: log it and move on.
+    try {
+      rmSync(unit.root.dir, { recursive: true, force: true });
+    } catch (e) {
+      // The copy is still there, so the marker that says what it matches stays too: dropping it would make the next
+      // hydrate treat a leftover tree as unknown.
+      console.error(`[fs-sync] could not free the local copy of unit=${unit.id}: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
     rmSync(unit.markerPath, { force: true });
     this.#units.delete(unit.id);
   }
