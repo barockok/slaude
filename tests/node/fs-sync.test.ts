@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -119,9 +119,18 @@ function wipe(m: Machine): void {
   rmSync(m.state, { recursive: true, force: true });
 }
 
+// The suite runs every test file in one process, and tests/setup.ts may set CLAUDE_CONFIG_DIR for all of
+// them: put back whatever was there, so no later file sees this one's directories (or loses the setup's).
+const ORIGINAL_CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+const restoreConfigDir = (): void => {
+  if (ORIGINAL_CLAUDE_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = ORIGINAL_CLAUDE_CONFIG_DIR;
+};
 beforeEach(() => {
   delete process.env.CLAUDE_CONFIG_DIR;
 });
+afterEach(restoreConfigDir);
+afterAll(restoreConfigDir);
 
 describe("FsSync", () => {
   test("encodeProjectDir matches the SDK's directory naming", () => {

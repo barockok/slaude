@@ -112,7 +112,7 @@ export class FsSync {
   readonly #pending = new Map<string, Pending>();
   /** Sessions between a turn's hydrate starting and its flush ending, counted per unit. */
   readonly #active = new Map<string, number>();
-  readonly #chains = new Map<string, Promise<unknown>>();
+  readonly #chains = new Map<string, { tail: Promise<void> }>();
   #stopped = false;
 
   constructor(deps: FsSyncDeps) {
@@ -125,15 +125,17 @@ export class FsSync {
 
   /** One queue per unit: flushes, hydrates and retries of a directory never overlap. */
   #serial<T>(id: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.#chains.get(id) ?? Promise.resolve();
-    const run = prev.then(fn);
-    const tail = run.then(
-      () => {},
-      () => {},
-    );
-    this.#chains.set(id, tail);
-    void tail.then(() => {
-      if (this.#chains.get(id) === tail) this.#chains.delete(id);
+    const before = this.#chains.get(id);
+    const run = before ? before.tail.then(fn) : fn();
+    const slot = {
+      tail: run.then(
+        () => {},
+        () => {},
+      ),
+    };
+    this.#chains.set(id, slot);
+    void slot.tail.then(() => {
+      if (this.#chains.get(id) === slot) this.#chains.delete(id);
     });
     return run;
   }

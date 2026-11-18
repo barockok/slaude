@@ -11,7 +11,7 @@ const PUT_TIMEOUT_FACTOR = 10;
 function withDeadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`timed out after ${ms} ms: ${what}`)), ms);
-    p.then(
+    void p.then(
       (v) => {
         clearTimeout(t);
         resolve(v);
@@ -81,7 +81,7 @@ export class S3ObjectStore implements ObjectStore {
           for (;;) {
             const { done, value } = await reader.read();
             if (done) break;
-            w.write(value);
+            await w.write(value);
             await w.flush();
           }
           await w.end();
