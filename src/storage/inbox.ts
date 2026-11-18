@@ -17,14 +17,21 @@ import { wsUnitId } from "./units";
  */
 const inboxPrefix = (unitId: string): string => `inbox/${unitId}/`;
 
-/** Stage one file that belongs at `<workingDir>/<rel>`. */
-export async function putInbox(store: ObjectStore, workingDir: string, absFile: string): Promise<void> {
-  const root = resolve(workingDir);
+/**
+ * Stage one file that belongs at `<workingDir>/<rel>`. `rel` is derived from where the file is, which must then be
+ * inside `workingDir`; or the caller names it, for a file saved elsewhere (a private temp directory) on its way to a
+ * working directory it must not write into.
+ */
+export async function putInbox(store: ObjectStore, workingDir: string, absFile: string, rel?: string): Promise<void> {
   const abs = resolve(absFile);
-  if (!abs.startsWith(root + sep)) throw new StorageError("put", `inbox file '${absFile}' is outside its working directory`);
-  const rel = relative(root, abs).split(sep).join("/");
-  if (!validRel(rel)) throw new StorageError("put", `inbox path '${rel}' is not a safe relative path`);
-  await store.put(`${inboxPrefix(wsUnitId(workingDir))}${rel}`, Bun.file(abs));
+  let path = rel;
+  if (path === undefined) {
+    const root = resolve(workingDir);
+    if (!abs.startsWith(root + sep)) throw new StorageError("put", `inbox file '${absFile}' is outside its working directory`);
+    path = relative(root, abs).split(sep).join("/");
+  }
+  if (!validRel(path)) throw new StorageError("put", `inbox path '${path}' is not a safe relative path`);
+  await store.put(`${inboxPrefix(wsUnitId(workingDir))}${path}`, Bun.file(abs));
 }
 
 /** Write every staged file into `rootDir` and remove it from the box. Returns how many arrived. */

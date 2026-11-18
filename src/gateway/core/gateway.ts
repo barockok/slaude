@@ -94,7 +94,7 @@ import { surfaceOfSession } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { noteSkillChanged, startSkillVersionReconciler } from "../../skills/versions";
 import { GLOBAL_SCOPE, skillDirFor, startSkillMirror } from "../../skills/remote-sync";
-import { objectStore, putInbox, storageMode } from "../../storage";
+import { objectStore, skillsMirror, storageMode } from "../../storage";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
 import { createV1Api } from "../api";
@@ -163,7 +163,8 @@ import { makeLabelMonitor } from "../../queue/label-status";
 import { isInteractiveOrigin, turnBrainScope, type GateInput } from "../../knowledge/gated-dispatch";
 import { personaKbs, personaKbSourceIds } from "../../knowledge/persona-kb";
 import { resolveUserName } from "../slack/users";
-import { downloadAttachments, type SlackFile } from "../slack/attachments";
+import { type SlackFile } from "../slack/attachments";
+import { downloadInboundFiles } from "../slack/attachments-remote";
 import * as Sessions from "../../db/sessions";
 import * as SeenEvents from "../../db/seen-events";
 import * as PendingGates from "../../db/pending-gates";
@@ -1055,7 +1056,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Runtime skills over the object store (SLAUDE_STORAGE=s3): this replica mirrors what nodes write and
   // records each arrival in the version log at once instead of waiting for the reconciler's next sweep.
   let stopSkillMirror: () => Promise<void> = async () => {};
-  if (storageMode() === "s3" && env.role() === "gateway") {
+  if (storageMode() === "s3" && skillsMirror() && env.role() === "gateway") {
     void startSkillMirror({
       store: objectStore()!,
       bus: makePubSub({ redis: getRedis(), sub: getSubRedis() }),
@@ -3973,26 +3974,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       : turnProactiveBlock({ channel: channelId, threadTs, eventTs, personaId: dispatch?.personaId, firstTurn: !session.claude_started });
     const [userName, files, memoryContext, proactive, builtHead] = await Promise.all([
       resolveUserName(client, userId),
-      attachToken
-        ? downloadAttachments({
-            files: inboundFiles,
-            botToken: attachToken,
-            workingDir: session.working_dir,
-            inboundTs: eventTs,
-          }).then(async (got) => {
-            // With remote storage the node that runs this turn has no copy of what the gateway just saved:
-            // stage each file in the bucket's inbox, and the node writes it into the directory before the turn.
-            if (storageMode() === "s3" && env.role() === "gateway") {
-              const st = objectStore()!;
-              for (const f of got) {
-                await putInbox(st, session.working_dir, f.path).catch((e) =>
-                  console.error(`[attachments] could not stage ${f.name} for the node: ${e instanceof Error ? e.message : String(e)}`),
-                );
-              }
-            }
-            return got;
-          })
-        : Promise.resolve([]),
+      attachToken ? downloadInboundFiles({ files: inboundFiles, botToken: attachToken, workingDir: session.working_dir, inboundTs: eventTs }) : Promise.resolve([]),
       // A suppressed message is recorded only; no turn runs, so no context.
       suppress
         ? ""
