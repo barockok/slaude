@@ -1,3 +1,5 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { StorageError } from "./object-store";
 
 /** `fs` keeps today's behavior (a local or shared filesystem); `s3` syncs session state to an S3-compatible store. */
@@ -46,6 +48,21 @@ export function syncStateDir(env: Env = process.env): string | null {
   if (raw === "") return null;
   if (!raw.startsWith("/")) throw new StorageError("config", `SLAUDE_SYNC_STATE_DIR must be an absolute path (got '${raw}')`);
   return raw.replace(/\/+$/, "") || "/";
+}
+
+/**
+ * Make the sync state directory and prove this process can write it, at boot. Otherwise a directory the worker may
+ * not write shows up as a failed hydrate on every turn, after the whole session was downloaded.
+ */
+export function checkSyncStateDir(dir: string): void {
+  const probe = join(dir, `.probe-${process.pid}`);
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(probe, "ok");
+    rmSync(probe, { force: true });
+  } catch (e) {
+    throw new StorageError("config", `SLAUDE_SYNC_STATE_DIR ${dir} is not writable: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /**

@@ -86,6 +86,23 @@ describe("attachments for a node that owns the working directory", () => {
       expect(readFileSync(got[0]!.path, "utf8")).toBe("hello");
     });
 
+    test("a temp directory that cannot be made loses the files, never the message", async () => {
+      fakeFetch();
+      process.env.SLAUDE_ROLE = "gateway";
+      process.env.SLAUDE_STORAGE = "s3";
+      process.env.SLAUDE_STORAGE_LOCAL_DIR = tmp("bucket");
+      resetObjectStore();
+      const prevTmp = process.env.TMPDIR;
+      process.env.TMPDIR = "/nonexistent-slaude-tmp";
+      try {
+        const got = await downloadInboundFiles({ files: [slackFile], botToken: "t", workingDir: "/data/workspaces/x", inboundTs: "1.1" });
+        expect(got).toEqual([]);
+      } finally {
+        if (prevTmp === undefined) delete process.env.TMPDIR;
+        else process.env.TMPDIR = prevTmp;
+      }
+    });
+
     test("on a gateway with remote storage the working directory is untouched and the file waits in the inbox", async () => {
       fakeFetch();
       const bucket = tmp("bucket");

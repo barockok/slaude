@@ -149,11 +149,18 @@ each of them in `s3` mode:
 - **Skills.** Both processes already see the same skills directory, so set `SLAUDE_SKILLS_MIRROR=0` on both. The
   mirror would otherwise try to write a directory the worker may not own.
 - **Working directories.** A gateway in `s3` mode no longer creates a session's directory. The node creates it when it
-  loads the session's files, so it is owned by the worker. A directory an earlier root process already left there is
-  still read and uploaded; if the worker cannot delete something in it when the session goes idle, that is logged and
-  skipped.
+  loads the session's files, so it is owned by the worker. **Directories that already exist are another matter.**
+  Every session started before the mode was turned on has a directory (and an `attachments/` in it) that the gateway
+  made as root, which the worker cannot write: its first turn after the switch would fail on the first file it must
+  place. Give the worker ownership once, before the switch: `chown -R <worker uid> workspaces/` in the data directory.
+  What a root process leaves behind later is read and uploaded as usual, and if the worker cannot delete something in
+  it when the session goes idle, that is logged, the local copy and its marker are kept, and the next turn goes on.
+- **State directory check.** A node that has `SLAUDE_SYNC_STATE_DIR` set creates it and writes a probe file at boot,
+  and refuses to start, naming the directory, if it cannot.
 - **Attachments.** The gateway downloads a Slack file into a private temp directory, puts it in the bucket's `inbox/`
-  and tells the agent the path it will have in the working directory. The node places it there before the turn.
+  and tells the agent the path it will have in the working directory. The node places it there before the turn. A file
+  the node cannot place stays in the inbox for the next turn and is logged, and one bad file does not hold up the rest.
+  Nothing clears an inbox object that no node ever collects.
 
 Because both processes still share the data directory, the local copy stays where it is until a session goes idle:
 the bucket then holds a replica, not the only copy, until eviction removes the local one. Back up the bucket's storage

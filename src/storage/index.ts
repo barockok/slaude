@@ -6,7 +6,7 @@ import type { ObjectStore } from "./object-store";
 import { S3ObjectStore } from "./s3";
 
 export * from "./object-store";
-export { storageMode, syncFlush, s3Config, syncStateDir, skillsMirror } from "./config";
+export { storageMode, syncFlush, s3Config, syncStateDir, skillsMirror, checkSyncStateDir } from "./config";
 export type { S3Config, StorageMode, SyncFlush } from "./config";
 export { LocalObjectStore } from "./local";
 export { S3ObjectStore } from "./s3";

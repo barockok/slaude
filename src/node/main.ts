@@ -30,7 +30,7 @@ import "./first-import"; // must stay the first import: see that file.
 import { ensureHome } from "../config/home";
 import { env } from "../config/env";
 import { startNodeWorker } from "./worker";
-import { objectStore, storageMode, storageSelfCheck, syncFlush } from "../storage";
+import { checkSyncStateDir, objectStore, storageMode, storageSelfCheck, syncFlush, syncStateDir } from "../storage";
 import { enforceNodeBootCheck } from "./boot-check";
 import { NodeClient } from "./client";
 import { nodeHandshake } from "./handshake";
@@ -93,6 +93,8 @@ async function main() {
   if (storageMode() === "s3") {
     try {
       await storageSelfCheck(objectStore()!, instance);
+      const stateDir = syncStateDir();
+      if (stateDir) checkSyncStateDir(stateDir);
       console.log(`[node] object store self-check passed (SLAUDE_STORAGE=s3, flush=${syncFlush()})`);
     } catch (e) {
       console.error(`[node] refusing to boot: ${e instanceof Error ? e.message : String(e)}`);

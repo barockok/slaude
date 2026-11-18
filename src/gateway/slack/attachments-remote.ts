@@ -18,7 +18,14 @@ export async function downloadInboundFiles(args: {
   inboundTs: string;
 }): Promise<DownloadedFile[]> {
   if (!(storageMode() === "s3" && env.role() === "gateway")) return downloadAttachments(args);
-  const stageDir = mkdtempSync(join(tmpdir(), "slaude-att-"));
+  let stageDir: string;
+  try {
+    stageDir = mkdtempSync(join(tmpdir(), "slaude-att-"));
+  } catch (e) {
+    // No place to stage them (a full or read-only temp area): the files are lost, the message must not be.
+    console.error(`[attachments] could not make a staging directory: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
+  }
   try {
     const got = await downloadAttachments({ ...args, workingDir: stageDir });
     return await stageForNodes({ store: objectStore()!, files: got, stageDir, workingDir: args.workingDir });

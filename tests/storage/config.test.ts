@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { objectStore, resetObjectStore, s3Config, skillsMirror, storageMode, syncFlush, syncStateDir, LocalObjectStore } from "../../src/storage";
+import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { checkSyncStateDir, objectStore, resetObjectStore, s3Config, skillsMirror, storageMode, syncFlush, syncStateDir, LocalObjectStore } from "../../src/storage";
 
 describe("storage config", () => {
   test("mode defaults to fs and rejects junk", () => {
@@ -19,6 +22,18 @@ describe("storage config", () => {
     expect(syncStateDir({ SLAUDE_SYNC_STATE_DIR: "  " })).toBeNull();
     expect(syncStateDir({ SLAUDE_SYNC_STATE_DIR: "/var/lib/slaude-sync/" })).toBe("/var/lib/slaude-sync");
     expect(() => syncStateDir({ SLAUDE_SYNC_STATE_DIR: "relative/dir" })).toThrow("must be an absolute path");
+  });
+
+  test("a sync state directory is checked for writability at boot", () => {
+    const ok = join(tmpdir(), `slaude-state-ok-${process.pid}-${Date.now()}`);
+    checkSyncStateDir(ok);
+    expect(existsSync(ok)).toBe(true);
+    expect(readdirSync(ok)).toEqual([]); // the probe is removed
+    rmSync(ok, { recursive: true, force: true });
+    const file = join(tmpdir(), `slaude-state-file-${process.pid}-${Date.now()}`);
+    writeFileSync(file, "x");
+    expect(() => checkSyncStateDir(join(file, "sub"))).toThrow(/SLAUDE_SYNC_STATE_DIR .* is not writable/);
+    rmSync(file, { force: true });
   });
 
   test("the skills mirror is on unless switched off", () => {

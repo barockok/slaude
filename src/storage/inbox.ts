@@ -46,20 +46,23 @@ export async function drainInbox(store: ObjectStore, unitId: string, rootDir: st
       await store.delete([key]);
       continue;
     }
-    const body = await store.get(key);
-    if (!body) continue;
-    const dest = ensureParents(rootDir, rel);
-    const tmp = `${dest}.slaude-sync.${randomBytes(4).toString("hex")}`;
+    // One file the node cannot place (a directory an earlier root process left, say) must not hold up the others,
+    // so each is its own attempt. A file that fails stays in the box and is tried again at the next turn.
+    let tmp: string | undefined;
     try {
+      const body = await store.get(key);
+      if (!body) continue;
+      const dest = ensureParents(rootDir, rel);
+      tmp = `${dest}.slaude-sync.${randomBytes(4).toString("hex")}`;
       await pipeline(Readable.fromWeb(body as never), createWriteStream(tmp));
       chmodSync(tmp, 0o644);
       renameSync(tmp, dest);
+      await store.delete([key]);
+      n++;
     } catch (e) {
-      rmSync(tmp, { force: true });
-      throw e;
+      if (tmp) rmSync(tmp, { force: true });
+      console.error(`[inbox] could not place ${rel} for unit=${unitId}: ${e instanceof Error ? e.message : String(e)} (kept for the next turn)`);
     }
-    await store.delete([key]);
-    n++;
   }
   return n;
 }
