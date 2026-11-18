@@ -39,7 +39,7 @@ import { createRedis, heartbeatSec as envHeartbeatSec, nodeDrainSec, redisUrl } 
 import { makeRegistry, type Registry } from "../queue/registry";
 import { FsSync } from "./fs-sync";
 import { startSkillMirror } from "../skills/remote-sync";
-import { objectStore, skillsMirror, storageMode, syncFlush } from "../storage";
+import { objectStore, storageMode, syncFlush } from "../storage";
 import { makePubSub, type PubSub } from "../queue/pubsub";
 import { withKeyLock, withSessionLock, HELD_BY_OTHER } from "../queue/locks";
 import { jobLabel, TurnQueues, type TurnJob } from "../queue/turns";
@@ -840,8 +840,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
 
   // Runtime skills mirrored from the object store: a write_skill on any node reaches this node's
   // skills directory through the skills-changed channel, and each turn reconciles in case a message was missed.
-  // SLAUDE_SKILLS_MIRROR=0 switches it off where gateway and worker already share the skills directory.
-  const skillMirror = storageMode() === "s3" && skillsMirror() ? await startSkillMirror({ store: objectStore()!, bus: pubsub }) : null;
+  // It follows the storage mode: no separate switch. Where the skills directory is shared and read-only to this
+  // node, a pull that finds the same content already in place is a no-op (see pullSkill).
+  const skillMirror = storageMode() === "s3" ? await startSkillMirror({ store: objectStore()!, bus: pubsub }) : null;
 
   async function runTurn(job: Job, data: TurnJob): Promise<"done" | "error" | "skipped"> {
     const sessionId = data.sessionId;

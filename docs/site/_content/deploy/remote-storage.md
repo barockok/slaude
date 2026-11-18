@@ -47,7 +47,6 @@ each have their own manifest series and their own fencing epoch.
 | `SLAUDE_SYNC_FLUSH` | `turn` (default) or `idle`, see below |
 | `SLAUDE_SYNC_IGNORE` | Comma-separated directory or file names that never sync. Default `node_modules,.cache,__pycache__` |
 | `SLAUDE_SYNC_STATE_DIR` | Absolute path where a node keeps its sync markers and the skills sync state. Default `$SLAUDE_HOME/.sync-state`. Set it when the worker cannot write `$SLAUDE_HOME`, to a directory that survives a restart. See [One machine, a non-root worker](#one-machine-a-non-root-worker) |
-| `SLAUDE_SKILLS_MIRROR` | `1` (default) or `0`. `0` turns the runtime-skills mirror off in the gateway and the nodes. Use it where they already share the skills directory |
 
 Only the S3 API is assumed (get, put, head, list, delete, multipart upload), so
 any compatible endpoint works: AWS S3, Cloudflare R2, or a server you host
@@ -146,8 +145,13 @@ each of them in `s3` mode:
 - **Sync state.** The worker cannot create `$SLAUDE_HOME/.sync-state`. Set `SLAUDE_SYNC_STATE_DIR` to a directory the
   worker owns that survives a restart (a host directory mounted into the worker). Without the markers in it, the next
   hydrate after a restart is a full pass.
-- **Skills.** Both processes already see the same skills directory, so set `SLAUDE_SKILLS_MIRROR=0` on both. The
-  mirror would otherwise try to write a directory the worker may not own.
+- **Skills.** Runtime skills always go through the bucket in `s3` mode; there is no switch. The gateway and the
+  worker may still share one skills directory, and it can stay root-owned and read-only to the worker: the gateway
+  writes it, and a worker that cannot write it leaves a skill alone when it already holds exactly the stored version
+  (right after a change, until the gateway has pulled it, the worker fails and retries on its next turn). On the first start the
+  gateway publishes the agent-written skills it already has (stamped `authored_by: agent`) to the bucket, for every
+  scope that has none stored; skills installed from a lock, bundled with the release or placed by the operator stay in
+  the image or the operator's config and are never published.
 - **Working directories.** A gateway in `s3` mode no longer creates a session's directory. The node creates it when it
   loads the session's files, so it is owned by the worker. **Directories that already exist are another matter.**
   Every session started before the mode was turned on has a directory (and an `attachments/` in it) that the gateway

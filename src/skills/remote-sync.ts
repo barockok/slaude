@@ -28,7 +28,8 @@ import { createWriteStream } from "node:fs";
 import { paths } from "../config/home";
 import { m as metric } from "../metrics";
 import { getText, putText, syncStateDir, type ObjectStore } from "../storage";
-import { SKILL_SLUG_RE, globalSkillsRoot, personaSkillsRoot } from "./loader";
+import { SKILL_SLUG_RE, discoverSkills, globalSkillsRoot, personaSkillsRoot } from "./loader";
+import { provenanceSources, skillProvenance } from "./provenance";
 import { bundledSkillPath } from "./seed";
 
 export const GLOBAL_SCOPE = "global";
@@ -94,11 +95,41 @@ function walkFiles(root: string, rel = ""): string[] {
   return out.sort();
 }
 
+/** True when two directories hold the same files with the same bytes. */
+function sameTree(a: string, b: string): boolean {
+  try {
+    const fa = walkFiles(a);
+    const fb = walkFiles(b);
+    if (fa.length !== fb.length || fa.some((f, i) => f !== fb[i])) return false;
+    return fa.every((f) => readFileSync(join(a, f)).equals(readFileSync(join(b, f))));
+  } catch {
+    return false;
+  }
+}
+
+/** True when `dir` already holds exactly the files and bytes the head names. */
+async function heldInPlace(store: ObjectStore, scope: string, slug: string, head: Head, dir: string): Promise<boolean> {
+  try {
+    const local = walkFiles(dir);
+    if (local.length !== head.files.length || local.some((f, i) => f !== [...head.files].sort()[i])) return false;
+    for (const rel of head.files) {
+      const body = await store.get(fileKey(scope, slug, head.version, rel));
+      if (!body) return false;
+      if (!Buffer.from(await new Response(body as never).arrayBuffer()).equals(readFileSync(join(dir, rel)))) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const newVersion = (): string => `${String(Date.now()).padStart(15, "0")}-${randomBytes(3).toString("hex")}`;
 
 export interface SyncOpts {
   stateFile?: string;
   now?: () => number;
+  /** Test seam: how an existing skill directory is moved aside before the new one is swapped in. */
+  moveAside?: (from: string, to: string) => void;
 }
 
 /** Publish this machine's copy of a skill: files first, then the head. A missing local directory publishes a tombstone. */
@@ -161,17 +192,72 @@ export async function pullSkill(store: ObjectStore, scope: string, slug: string,
     }
     if (!existsSync(join(tmp, "SKILL.md"))) throw new Error(`skill ${key}@${head.version} has no SKILL.md`);
     const old = existsSync(dir) ? `${dir}.old-${randomBytes(4).toString("hex")}` : null;
-    if (old) renameSync(dir, old);
+    try {
+      if (old) (opts.moveAside ?? renameSync)(dir, old);
+    } catch (e) {
+      // A skills directory this process may not rewrite (a root-owned directory shared with the gateway, which has
+      // already put this version there) is fine when it holds exactly what the head says; anything else is a real failure.
+      const code = (e as NodeJS.ErrnoException).code;
+      if ((code === "EACCES" || code === "EPERM") && sameTree(dir, tmp)) {
+        rmSync(tmp, { recursive: true, force: true });
+        st.versions[key] = head.version;
+        writeState(sf, st);
+        return "current";
+      }
+      throw e;
+    }
     renameSync(tmp, dir);
     if (old) rmSync(old, { recursive: true, force: true });
   } catch (e) {
     rmSync(tmp, { recursive: true, force: true });
+    // The skills directory is read-only to this process (a node beside a gateway that owns and writes it): that is
+    // fine while it already holds exactly this version, and a real failure, retried next turn, while it does not.
+    const code = (e as NodeJS.ErrnoException).code;
+    if ((code === "EACCES" || code === "EPERM" || code === "EROFS") && (await heldInPlace(store, scope, slug, head, dir))) {
+      st.versions[key] = head.version;
+      writeState(sf, st);
+      return "current";
+    }
     metric.storageRequestErrorsTotal.inc({ op: "get" });
     throw e;
   }
   st.versions[key] = head.version;
   writeState(sf, st);
   return "updated";
+}
+
+/**
+ * First-run migration: skills the agent wrote before the store existed live only in this machine's skills
+ * directories. Publish each one the store has no head for. A skill the store already knows is never touched, so
+ * running this on every start is safe, and anything installed from a lock, bundled with the release or placed by
+ * the operator is left out (it ships with the image or the operator's config, on every node).
+ */
+export async function seedAgentSkills(store: ObjectStore, opts: SyncOpts & { personas?: string[] } = {}): Promise<{ seeded: string[]; skipped: number }> {
+  const src = provenanceSources();
+  const scopes: Array<{ scope: string; persona?: string }> = [{ scope: GLOBAL_SCOPE }];
+  const personaNames = opts.personas ?? (existsSync(paths.personas) ? readdirSync(paths.personas) : []);
+  for (const p of personaNames) if (validScope(p) && p !== GLOBAL_SCOPE) scopes.push({ scope: p, persona: p });
+  const seeded: string[] = [];
+  let skipped = 0;
+  for (const { scope, persona } of scopes) {
+    for (const skill of discoverSkills(persona)) {
+      // discoverSkills merges the base into a persona's list: only the persona's own overlay belongs to this scope.
+      if (persona && skill.source !== "persona") continue;
+      if (skillProvenance(skill, src) !== "agent" || !SKILL_SLUG_RE.test(skill.slug)) {
+        skipped++;
+        continue;
+      }
+      if ((await getText(store, headKey(scope, skill.slug))) !== null) continue;
+      try {
+        await pushSkill(store, scope, skill.slug, opts);
+        seeded.push(`${scope}/${skill.slug}`);
+      } catch (e) {
+        console.error(`[skills] could not seed ${scope}/${skill.slug}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
+  if (seeded.length) console.log(`[skills] seeded ${seeded.length} agent-written skill(s) into the store: ${seeded.join(", ")}`);
+  return { seeded, skipped };
 }
 
 /** Reconcile every skill the store knows about. One list call when nothing changed since `seen`. */
@@ -261,6 +347,8 @@ export async function startSkillMirror(deps: {
   bus: SkillBus;
   opts?: SyncOpts;
   onPulled?: (scope: string, slug: string, r: PullResult) => void;
+  /** Publish this machine's existing agent-written skills the store lacks. The gateway does; a node does not. */
+  seed?: boolean;
 }): Promise<SkillMirror> {
   const { store, bus } = deps;
   const seen = new Map<string, string>();
@@ -297,6 +385,13 @@ export async function startSkillMirror(deps: {
       console.error(`[skills] refresh failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
+  if (deps.seed) {
+    try {
+      await seedAgentSkills(store, o);
+    } catch (e) {
+      console.error(`[skills] seeding failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
   await refresh();
   return {
     refresh,

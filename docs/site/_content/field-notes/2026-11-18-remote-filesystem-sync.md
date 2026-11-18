@@ -58,6 +58,20 @@ running.
   version log). Two writers racing on one slug resolve to the head written last.
   Plugin, bundled and installed skills stay in the image, and a runtime edit of
   one is an overlay.
+- **The skills mirror has no switch (rc.36).** rc.35 added `SLAUDE_SKILLS_MIRROR=0`
+  for one machine where the gateway and the worker share a read-only skills
+  directory, and the first deployment used it. That left `s3` mode on with the
+  one piece of state a second node needs (skills the agent wrote) not syncing,
+  which contradicts what the mode promises. The flag is gone: the mirror starts
+  with the storage mode. Two things make the shared directory work instead. A
+  pull that cannot write the directory (read-only to the worker, owned and
+  written by the gateway) or cannot move an existing copy aside is a no-op when
+  the bytes already match the stored version, and a failure, retried next turn,
+  when they do not. And the gateway publishes the
+  agent-written skills it already has (the `authored_by: agent` stamp, which
+  provenance already trusts over nothing else) to any scope the store has no head
+  for, so a deployment that switched on `s3` after months of runtime skills loses
+  none of them. A skill the store already holds is never overwritten by that seed.
 
 ## Things that went wrong on the way
 
