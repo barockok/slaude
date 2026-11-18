@@ -41,6 +41,7 @@ import {
   hydrateTree,
   ignoreList,
   latestEpoch,
+  syncStateDir,
   txUnitId,
   writeMarker,
   wsUnitId,
@@ -120,7 +121,7 @@ export class FsSync {
   }
 
   #now = (): number => (this.#d.now ?? Date.now)();
-  #state = (): string => this.#d.stateDir ?? join(paths.home, ".sync-state");
+  #state = (): string => this.#d.stateDir ?? syncStateDir() ?? join(paths.home, ".sync-state");
   #ignore = (): readonly string[] => this.#d.ignore ?? ignoreList();
 
   /** One queue per unit: flushes, hydrates and retries of a directory never overlap. */
@@ -430,7 +431,13 @@ export class FsSync {
   #dropLocal(unit: Unit): void {
     if ((this.#active.get(unit.id) ?? 0) > 0) return;
     for (const t of this.#tracked.values()) if (t.ws.id === unit.id || t.tx.id === unit.id) return;
-    rmSync(unit.root.dir, { recursive: true, force: true });
+    // What is stored is safe already (the flush succeeded), so a leftover the node may not delete, such as a file
+    // an earlier root process wrote into a shared directory, costs disk, never the turn: log it and move on.
+    try {
+      rmSync(unit.root.dir, { recursive: true, force: true });
+    } catch (e) {
+      console.error(`[fs-sync] could not free the local copy of unit=${unit.id}: ${e instanceof Error ? e.message : String(e)}`);
+    }
     rmSync(unit.markerPath, { force: true });
     this.#units.delete(unit.id);
   }

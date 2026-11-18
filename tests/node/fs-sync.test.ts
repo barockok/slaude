@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { paths } from "../../src/config/home";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FsSync, encodeProjectDir, type RedisLike } from "../../src/node/fs-sync";
@@ -136,6 +137,35 @@ describe("FsSync", () => {
   test("encodeProjectDir matches the SDK's directory naming", () => {
     expect(encodeProjectDir("/Users/a/Code/slaude")).toBe("-Users-a-Code-slaude");
     expect(encodeProjectDir("/data/workspaces/T1-C1-1700000000.000100")).toBe("-data-workspaces-T1-C1-1700000000-000100");
+  });
+
+  test("SLAUDE_SYNC_STATE_DIR moves the markers out of SLAUDE_HOME", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = machine();
+    const stateDir = tmp("state-dir");
+    process.env.SLAUDE_SYNC_STATE_DIR = stateDir;
+    try {
+      process.env.CLAUDE_CONFIG_DIR = m.claude;
+      // No stateDir dependency: the environment decides, as it does on a node.
+      const a = new FsSync({
+        store,
+        redis,
+        keys: makeKeys("test"),
+        nodeId: "node-a",
+        flush: () => "turn",
+        workingDirOf: async () => m.cwd,
+        nodeAlive: async () => false,
+      });
+      await a.beforeTurn("s1", "default");
+      writeFileSync(join(m.cwd, "f.txt"), "x");
+      await a.afterTurn("s1", false);
+      const markers = readdirSync(stateDir).filter((f) => f.endsWith(".json"));
+      expect(markers.length).toBe(2); // the workspace and the transcript unit
+      expect(existsSync(join(paths.home, ".sync-state"))).toBe(false);
+    } finally {
+      delete process.env.SLAUDE_SYNC_STATE_DIR;
+    }
   });
 
   test("a turn on node A is visible, with its transcript, on node B", async () => {
@@ -412,6 +442,25 @@ describe("FsSync", () => {
     flaky.failing = false;
     await a.drain(); // A's flush now succeeds and clears its own pending entry
     for (const k of marks) expect(JSON.parse((await redis.get(k))!).node).toBe("node-c");
+  });
+
+  test("eviction that cannot delete a leftover file is logged, never raised", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = machine();
+    const a = nodeSync({ id: "node-a", store, redis, m });
+    await a.beforeTurn("s1", "default");
+    // A directory a different (root) process left behind: the node may not unlink what is inside it.
+    const locked = join(m.cwd, "left-by-root");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "f.txt"), "x");
+    chmodSync(locked, 0o500);
+    await a.afterTurn("s1", false);
+    try {
+      await expect(a.evict("s1")).resolves.toBeUndefined();
+    } finally {
+      chmodSync(locked, 0o700);
+    }
   });
 
   test("overlapping flushes of one unit run one after the other", async () => {

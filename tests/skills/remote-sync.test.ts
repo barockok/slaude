@@ -60,6 +60,21 @@ describe("runtime skills over the object store", () => {
     expect(scopeOf("researcher")).toBe("researcher");
   });
 
+  test("the skills sync state follows SLAUDE_SYNC_STATE_DIR", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const dir = tmp("state-dir");
+    process.env.SLAUDE_SYNC_STATE_DIR = dir;
+    try {
+      const s = slug();
+      writeLocal(GLOBAL_SCOPE, s, "state dir");
+      await pushSkill(store, GLOBAL_SCOPE, s); // no stateFile: the environment decides
+      expect(existsSync(join(dir, "skills-sync.json"))).toBe(true);
+      expect(JSON.parse(readFileSync(join(dir, "skills-sync.json"), "utf8")).versions[`${GLOBAL_SCOPE}/${s}`]).toBeTruthy();
+    } finally {
+      delete process.env.SLAUDE_SYNC_STATE_DIR;
+    }
+  });
+
   test("a skill pushed from one machine arrives intact on another", async () => {
     const store = new LocalObjectStore(tmp("store"));
     const s = slug();

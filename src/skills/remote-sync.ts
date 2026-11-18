@@ -27,7 +27,7 @@ import { pipeline } from "node:stream/promises";
 import { createWriteStream } from "node:fs";
 import { paths } from "../config/home";
 import { m as metric } from "../metrics";
-import { getText, putText, type ObjectStore } from "../storage";
+import { getText, putText, syncStateDir, type ObjectStore } from "../storage";
 import { SKILL_SLUG_RE, globalSkillsRoot, personaSkillsRoot } from "./loader";
 import { bundledSkillPath } from "./seed";
 
@@ -61,7 +61,11 @@ interface SyncState {
   versions: Record<string, string>;
 }
 
-const defaultStateFile = (): string => join(paths.home, ".skills-sync.json");
+/** Beside the node's other sync state when SLAUDE_SYNC_STATE_DIR is set, else under $SLAUDE_HOME as before. */
+const defaultStateFile = (): string => {
+  const dir = syncStateDir();
+  return dir ? join(dir, "skills-sync.json") : join(paths.home, ".skills-sync.json");
+};
 
 function readState(file: string): SyncState {
   try {
