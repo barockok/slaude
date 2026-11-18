@@ -146,9 +146,9 @@ each of them in `s3` mode:
   worker owns that survives a restart (a host directory mounted into the worker). Without the markers in it, the next
   hydrate after a restart is a full pass.
 - **Skills.** Runtime skills always go through the bucket in `s3` mode; there is no switch. The gateway and the
-  worker may still share one skills directory. Make it `chmod 1777` (the sticky bit) with root as owner: the worker can
-  then add and replace the skills it pulls, and cannot rename or delete a root-owned skill the operator placed there.
-  A pull that finds the gateway has already put the same content in place changes nothing. On the first start the
+  worker may still share one skills directory, and it can stay root-owned and read-only to the worker: the gateway
+  writes it, and a worker that cannot write it leaves a skill alone when it already holds exactly the stored version
+  (right after a change, until the gateway has pulled it, the worker fails and retries on its next turn). On the first start the
   gateway publishes the agent-written skills it already has (stamped `authored_by: agent`) to the bucket, for every
   scope that has none stored; skills installed from a lock, bundled with the release or placed by the operator stay in
   the image or the operator's config and are never published.
