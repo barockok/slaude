@@ -13,6 +13,8 @@ export interface ObjectInfo {
   key: string;
   size: number;
   etag: string;
+  /** Last-modified time in ms since the epoch, when the backend reports one. */
+  modified?: number;
 }
 
 export interface ObjectStore {

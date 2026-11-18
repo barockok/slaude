@@ -94,7 +94,8 @@ export class LocalObjectStore implements ObjectStore {
       if (opts.after !== undefined && key <= opts.after) continue;
       if (opts.limit !== undefined && n >= opts.limit) return;
       const p = join(this.#root, key);
-      yield { key, size: statSync(p).size, etag: this.#etag(p) };
+      const st = statSync(p);
+      yield { key, size: st.size, etag: this.#etag(p), modified: Math.floor(st.mtimeMs) };
       n++;
     }
   }

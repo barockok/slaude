@@ -97,7 +97,13 @@ export class S3ObjectStore implements ObjectStore {
       const items = res.contents ?? [];
       for (const it of items) {
         if (opts.limit !== undefined && n >= opts.limit) return;
-        yield { key: it.key.slice(this.#prefix.length), size: it.size ?? 0, etag: clean(it.eTag) };
+        const modified = it.lastModified ? Date.parse(String(it.lastModified)) : NaN;
+        yield {
+          key: it.key.slice(this.#prefix.length),
+          size: it.size ?? 0,
+          etag: clean(it.eTag),
+          ...(Number.isFinite(modified) ? { modified } : {}),
+        };
         n++;
       }
       if (!res.isTruncated || items.length === 0) return;

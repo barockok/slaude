@@ -11,6 +11,11 @@ export type { S3Config, StorageMode, SyncFlush } from "./config";
 export { LocalObjectStore } from "./local";
 export { S3ObjectStore } from "./s3";
 export { storageSelfCheck } from "./selfcheck";
+export * from "./manifest";
+export * from "./tree-sync";
+export { gcSession, removeSession } from "./gc";
+export type { GcOpts, GcResult } from "./gc";
+export { DEFAULT_IGNORE, ignoreList, isIgnored } from "./ignore";
 
 let shared: ObjectStore | undefined;
 
