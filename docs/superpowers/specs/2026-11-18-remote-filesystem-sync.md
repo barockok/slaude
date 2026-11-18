@@ -340,8 +340,8 @@ overlay) is a separate, later change.
 ## Resolved questions
 
 1. **Persona config home base** is image-owned. Settings and plugins come from
-   the image and the gateway bundle. Operators do not edit `.claude` at
-   runtime in S3 mode.
+   the image and the gateway bundle, so nobody hand-edits `.claude` on a
+   running pod. This is unrelated to skills.
 2. **Flush failure** does not hold the session lock (see Flush failure).
 3. **Eviction** deletes the local copy on idle, after a successful final
    flush. A bounded cache is a later optimisation if hydrate time hurts.
@@ -349,13 +349,10 @@ overlay) is a separate, later change.
    `SLAUDE_SYNC_FLUSH`. It is one file, so it is cheap, and a crash never
    loses conversation history, only workspace edits made since the last
    workspace flush when the cadence is `idle`.
-
-## Open questions
-
-1. **Edits to base skills.** An agent's `write_skill` edit of a bundled or
-   installed skill becomes an overlay on every node (current draft). The
-   alternative is to refuse `write_skill` on those slugs in S3 mode. Awaiting
-   confirmation; the draft assumes the overlay.
+5. **Edits to base skills** become an overlay. `write_skill` is fully
+   supported in S3 mode for every slug. An edit of a bundled or installed skill
+   is saved as a runtime skill that shadows the base on every node; the base in
+   the image is untouched. Agent-written skills sync the same way.
 
 ## Out of scope
 
