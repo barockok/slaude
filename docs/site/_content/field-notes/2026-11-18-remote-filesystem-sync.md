@@ -64,9 +64,10 @@ running.
   one piece of state a second node needs (skills the agent wrote) not syncing,
   which contradicts what the mode promises. The flag is gone: the mirror starts
   with the storage mode. Two things make the shared directory work instead. A
-  pull that cannot move the existing directory aside (a root-owned copy the
-  gateway just wrote, in a sticky directory) is a no-op when the bytes already
-  match, and a real failure when they do not. And the gateway publishes the
+  pull that cannot write the directory (read-only to the worker, owned and
+  written by the gateway) or cannot move an existing copy aside is a no-op when
+  the bytes already match the stored version, and a failure, retried next turn,
+  when they do not. And the gateway publishes the
   agent-written skills it already has (the `authored_by: agent` stamp, which
   provenance already trusts over nothing else) to any scope the store has no head
   for, so a deployment that switched on `s3` after months of runtime skills loses

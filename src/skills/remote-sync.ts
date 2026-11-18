@@ -107,6 +107,22 @@ function sameTree(a: string, b: string): boolean {
   }
 }
 
+/** True when `dir` already holds exactly the files and bytes the head names. */
+async function heldInPlace(store: ObjectStore, scope: string, slug: string, head: Head, dir: string): Promise<boolean> {
+  try {
+    const local = walkFiles(dir);
+    if (local.length !== head.files.length || local.some((f, i) => f !== [...head.files].sort()[i])) return false;
+    for (const rel of head.files) {
+      const body = await store.get(fileKey(scope, slug, head.version, rel));
+      if (!body) return false;
+      if (!Buffer.from(await new Response(body as never).arrayBuffer()).equals(readFileSync(join(dir, rel)))) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const newVersion = (): string => `${String(Date.now()).padStart(15, "0")}-${randomBytes(3).toString("hex")}`;
 
 export interface SyncOpts {
@@ -194,6 +210,14 @@ export async function pullSkill(store: ObjectStore, scope: string, slug: string,
     if (old) rmSync(old, { recursive: true, force: true });
   } catch (e) {
     rmSync(tmp, { recursive: true, force: true });
+    // The skills directory is read-only to this process (a node beside a gateway that owns and writes it): that is
+    // fine while it already holds exactly this version, and a real failure, retried next turn, while it does not.
+    const code = (e as NodeJS.ErrnoException).code;
+    if ((code === "EACCES" || code === "EPERM" || code === "EROFS") && (await heldInPlace(store, scope, slug, head, dir))) {
+      st.versions[key] = head.version;
+      writeState(sf, st);
+      return "current";
+    }
     metric.storageRequestErrorsTotal.inc({ op: "get" });
     throw e;
   }

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalObjectStore, getText, putText } from "../../src/storage";
@@ -326,6 +326,40 @@ describe("runtime skills over the object store", () => {
     writeLocal(GLOBAL_SCOPE, s, "locally different");
     await expect(pullSkill(store, GLOBAL_SCOPE, s, { ...machine(), moveAside: denied })).rejects.toThrow("EPERM");
     expect(readFileSync(join(skillDirFor(GLOBAL_SCOPE, s), "SKILL.md"), "utf8")).toContain("locally different");
+  });
+
+  test("a skills directory that is read-only to this process is left alone when it already holds the head", async () => {
+    if (process.getuid?.() === 0) return; // root ignores directory permissions
+    const store = new LocalObjectStore(tmp("store"));
+    const s = slug("ro-dir");
+    writeLocal("researcher", s, "owned by the gateway", { "scripts/run.sh": "echo hi" });
+    await pushSkill(store, "researcher", s, machine());
+    const parent = join(skillDirFor("researcher", s), "..");
+    chmodSync(parent, 0o555);
+    try {
+      const m = machine(); // a node with no state for it yet
+      expect(await pullSkill(store, "researcher", s, m)).toBe("current");
+      expect(await pullSkill(store, "researcher", s, m)).toBe("current"); // recorded: nothing to check the second time
+    } finally {
+      chmodSync(parent, 0o755);
+    }
+  });
+
+  test("a read-only skills directory that does not hold the head yet fails, and the local copy stays", async () => {
+    if (process.getuid?.() === 0) return;
+    const store = new LocalObjectStore(tmp("store"));
+    const s = slug("ro-stale");
+    writeLocal("researcher", s, "version one");
+    await pushSkill(store, "researcher", s, machine());
+    writeLocal("researcher", s, "the gateway has not pulled this yet");
+    const parent = join(skillDirFor("researcher", s), "..");
+    chmodSync(parent, 0o555);
+    try {
+      await expect(pullSkill(store, "researcher", s, machine())).rejects.toThrow();
+      expect(readFileSync(join(skillDirFor("researcher", s), "SKILL.md"), "utf8")).toContain("has not pulled");
+    } finally {
+      chmodSync(parent, 0o755);
+    }
   });
 
   test("notifySkillRemote does nothing, and does not throw, with no hook installed or a failing one", async () => {
