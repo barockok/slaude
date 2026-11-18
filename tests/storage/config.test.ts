@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { objectStore, resetObjectStore, s3Config, storageMode, syncFlush, LocalObjectStore } from "../../src/storage";
+import { objectStore, resetObjectStore, s3Config, skillsMirror, storageMode, syncFlush, syncStateDir, LocalObjectStore } from "../../src/storage";
 
 describe("storage config", () => {
   test("mode defaults to fs and rejects junk", () => {
@@ -12,6 +12,20 @@ describe("storage config", () => {
     expect(syncFlush({})).toBe("turn");
     expect(syncFlush({ SLAUDE_SYNC_FLUSH: "idle" })).toBe("idle");
     expect(() => syncFlush({ SLAUDE_SYNC_FLUSH: "never" })).toThrow("must be 'turn' or 'idle'");
+  });
+
+  test("the sync state directory is unset by default and must be an absolute path", () => {
+    expect(syncStateDir({})).toBeNull();
+    expect(syncStateDir({ SLAUDE_SYNC_STATE_DIR: "  " })).toBeNull();
+    expect(syncStateDir({ SLAUDE_SYNC_STATE_DIR: "/var/lib/slaude-sync/" })).toBe("/var/lib/slaude-sync");
+    expect(() => syncStateDir({ SLAUDE_SYNC_STATE_DIR: "relative/dir" })).toThrow("must be an absolute path");
+  });
+
+  test("the skills mirror is on unless switched off", () => {
+    expect(skillsMirror({})).toBe(true);
+    expect(skillsMirror({ SLAUDE_SKILLS_MIRROR: "1" })).toBe(true);
+    for (const off of ["0", "false", "no", "off", " OFF "]) expect(skillsMirror({ SLAUDE_SKILLS_MIRROR: off })).toBe(false);
+    expect(() => skillsMirror({ SLAUDE_SKILLS_MIRROR: "maybe" })).toThrow("must be 1 or 0");
   });
 
   test("s3 config lists every missing required variable at once", () => {
