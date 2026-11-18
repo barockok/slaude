@@ -37,6 +37,9 @@ import type { FiringEvent } from "../guardrails/audit";
 import { assertNodeIdUsable, DEFAULT_LABEL, LABEL_RE, labelTurnsQueue, makeKeys, nodeTurnsQueue, type Keys } from "../queue/keys";
 import { createRedis, heartbeatSec as envHeartbeatSec, nodeDrainSec, redisUrl } from "../queue/redis";
 import { makeRegistry, type Registry } from "../queue/registry";
+import { FsSync } from "./fs-sync";
+import { startSkillMirror } from "../skills/remote-sync";
+import { objectStore, storageMode, syncFlush } from "../storage";
 import { makePubSub, type PubSub } from "../queue/pubsub";
 import { withKeyLock, withSessionLock, HELD_BY_OTHER } from "../queue/locks";
 import { jobLabel, TurnQueues, type TurnJob } from "../queue/turns";
@@ -821,6 +824,24 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     }
   }
 
+  // Remote filesystem sync (SLAUDE_STORAGE=s3): null in fs mode, where nothing changes.
+  const fsSync: FsSync | null =
+    storageMode() === "s3"
+      ? new FsSync({
+          store: objectStore()!,
+          redis: cmd,
+          keys,
+          nodeId,
+          flush: syncFlush,
+          workingDirOf: async (id) => (await store.findById(id))?.working_dir,
+          nodeAlive: (n) => registry.nodeAlive(n),
+        })
+      : null;
+
+  // Runtime skills mirrored from the object store: a write_skill on any node reaches this node's
+  // skills directory through the skills-changed channel, and each turn reconciles in case a message was missed.
+  const skillMirror = storageMode() === "s3" ? await startSkillMirror({ store: objectStore()!, bus: pubsub }) : null;
+
   async function runTurn(job: Job, data: TurnJob): Promise<"done" | "error" | "skipped"> {
     const sessionId = data.sessionId;
     gateDenied.delete(sessionId);
@@ -1028,7 +1049,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     // Which lock a lost-lock abort came from, for its log line.
     const lockSignals: { session?: AbortSignal; folder?: AbortSignal } = {};
     try {
-      res = await runLockedTurn<"done" | "error" | "skipped">({
+      res = await runLockedTurn<"done" | "error" | "skipped" | typeof HELD_BY_OTHER>({
         lock: (fn) => {
           // The TTL is also the takeover delay when this node dies: it never gets to
           // release the lock, so the re-delivered turn waits the lock out.
@@ -1067,7 +1088,21 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           };
           lostLock.addEventListener("abort", onLost, { once: true });
           try {
-            return await runTurn(job, data);
+            if (skillMirror) await skillMirror.refresh();
+            if (fsSync) {
+              // Hydrate under the lock. "wait": another live node holds unflushed edits
+              // for this session's files, so requeue like a held lock.
+              if ((await fsSync.beforeTurn(data.sessionId, data.personaId ?? "default")) === "wait") return HELD_BY_OTHER;
+            }
+            try {
+              return await runTurn(job, data);
+            } finally {
+              // Whatever the turn did, even when it threw: its edits go to the store (a lost lock flushes nothing).
+              if (fsSync) {
+                await fsSync.afterTurn(data.sessionId, lostLock.aborted);
+                if (!agent.isLive(data.sessionId)) await fsSync.evict(data.sessionId);
+              }
+            }
           } finally {
             lostLock.removeEventListener("abort", onLost);
           }
@@ -1172,6 +1207,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
             store.unbindToken(sessionId);
             tenants.delete(sessionId);
             personas.delete(sessionId);
+            // Flush before the session leaves the registry: until then no other node is routed to it.
+            if (fsSync) await fsSync.evict(sessionId);
             await registry.unregister(sessionId);
           }
         }
@@ -1258,6 +1295,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       console.error(`[node] ${nodeId} drain grace expired — force-closing`);
       await Promise.all(workers.map((w) => w.close(true))).catch(() => {});
     }
+    // Flush every warm session's files before it is deregistered.
+    if (fsSync) await fsSync.drain().catch((e) => console.error(`[node] ${nodeId} filesystem flush on drain failed:`, e));
+    if (skillMirror) await skillMirror.stop();
     // Deregister every warm session + the node itself (spec §2 SIGTERM).
     for (const sessionId of [...warm]) {
       warm.delete(sessionId);

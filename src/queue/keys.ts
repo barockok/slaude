@@ -93,6 +93,10 @@ export interface Keys {
    *  shared working directory (the agent's proactive folder) across nodes.
    *  Hashed so a path never puts `/` into the key. */
   workspaceLock(dir: string): string;
+  /** `fsepoch:<unit>` — the fencing epoch of one remote-sync unit (a workspace or a transcript dir). Incremented when a node takes the unit's lock; a flush commits only while its epoch is still the current one. */
+  fsEpoch(unit: string): string;
+  /** `fsflush:<unit>` — set while a unit's last flush failed: JSON `{node, since}`. The node named holds the newest copy. */
+  needsFlush(unit: string): string;
   /** `lock:leader:<role>` — cron / reaper / migrate leader election. */
   leaderLock(role: string): string;
   /** `coalesce:<sessionId>` — pending-job index for message coalescing. */
@@ -106,6 +110,8 @@ export interface Keys {
   abortFlag(sessionId: string): string;
   /** Pub/sub channel: bust a tenant's cached runtime bundle. */
   reloadChannel(tenantId: string): string;
+  /** `skills-changed` — a runtime skill was written, retired or deleted; every process refreshes its local copy from the object store. */
+  skillsChannel(): string;
   /** Pub/sub channel: a pending gate was resolved. */
   gateChannel(pendingId: string): string;
   /** `events:<sessionId>` capped stream of serialized AgentEvents. */
@@ -164,12 +170,15 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     nodeSet: () => `${prefix}:nodeset`,
     sessionLock: (sessionId) => `${prefix}:lock:session:${sessionId}`,
     workspaceLock: (dir) => `${prefix}:lock:workspace:${createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 32)}`,
+    fsEpoch: (unit) => `${prefix}:fsepoch:${unit}`,
+    needsFlush: (unit) => `${prefix}:fsflush:${unit}`,
     leaderLock: (role) => `${prefix}:lock:leader:${role}`,
     coalesce: (sessionId) => `${prefix}:coalesce:${sessionId}`,
     coalesceLock: (sessionId) => `${prefix}:lock:coalesce:${sessionId}`,
     abortChannel: (sessionId) => `${prefix}:abort:${sessionId}`,
     abortFlag: (sessionId) => `${prefix}:abort-flag:${sessionId}`,
     reloadChannel: (tenantId) => `${prefix}:reload:${tenantId}`,
+    skillsChannel: () => `${prefix}:skills-changed`,
     gateChannel: (pendingId) => `${prefix}:gate:${pendingId}`,
     eventsStream: (sessionId) => `${prefix}:events:${sessionId}`,
     panelLock: (sessionId) => `${prefix}:panel:${sessionId}`,

@@ -28,6 +28,7 @@ Two rules for reading the gauges below:
 | [The legacy door in use](#the-legacy-door-in-use-while-a-node-key-is-set) | `slaude_node_legacy_auth_total` | gateway |
 | [A node holding gateway-only variables](#a-node-pod-holding-gateway-only-variables) | `slaude_node_gateway_secrets_present` | node |
 | [A node paused on a refused credential](#a-node-paused-on-a-refused-credential) | `slaude_node_auth_paused` | node |
+| [Remote storage](#remote-storage) | `slaude_storage_flush_pending_age_seconds`, `slaude_storage_unflushed_loss_total`, `slaude_storage_flush_total{result}` | node |
 
 ```yaml
 groups:
@@ -53,6 +54,13 @@ groups:
       - alert: SlaudeNodeAuthPaused
         expr: max by (instance) (slaude_node_auth_paused) == 1
         for: 5m
+      - alert: SlaudeStorageFlushStuck
+        expr: max(slaude_storage_flush_pending_age_seconds) > 300
+      - alert: SlaudeStorageUnflushedLoss
+        expr: sum(increase(slaude_storage_unflushed_loss_total[1h])) > 0
+      - alert: SlaudeStorageFlushErrors
+        expr: sum(rate(slaude_storage_flush_total{result="error"}[10m])) > 0
+        for: 10m
 ```
 
 Every alert here must be **exercised** once before a release is promoted: make it
@@ -235,3 +243,43 @@ unserved.
 **What to do.** Inspect the credential on a gateway, mint a new one for the
 Deployment, and roll it. The node resumes by itself once `GET /v1/node/whoami`
 succeeds again, retrying every 5 s doubling to 60 s.
+
+## Remote storage
+
+Only with `SLAUDE_STORAGE=s3` ([Remote storage](remote-storage.md)). Three alerts,
+all read from the node's `/metrics`.
+
+**Signals.**
+
+- `slaude_storage_flush_pending_age_seconds`: how long the oldest directory has
+  been waiting to be written to the bucket after a failed flush.
+  `slaude_storage_flush_pending` counts them.
+- `slaude_storage_unflushed_loss_total`: claims that ran from an older stored
+  state because the node holding newer edits was gone.
+- `slaude_storage_flush_total{result="error"}`, with `fenced` for flushes refused
+  because another node owns the session now.
+- A node that cannot pass the startup check of the bucket (one put, get, list and
+  delete) exits with a log line naming the operation, so it shows as a pod
+  restart loop, not as a metric. Alert on `kube_pod_container_status_restarts_total`
+  for the node deployments.
+
+**What it means.**
+
+- *Flush stuck*: the bucket is unreachable or refusing writes from this node. The
+  node keeps its copy and retries, so nothing is lost yet, but a node that dies
+  now loses those edits.
+- *Unflushed loss*: edits really were lost. Treat it as an incident: some
+  workspace changes made by an agent never reached the bucket.
+- *Flush errors*: a sustained rate means writes are failing, even if each retry
+  eventually lands.
+- *Boot check failed*: the endpoint is wrong, the credentials are rejected, or the
+  server is only partly S3-compatible. The log names the operation that failed.
+
+**What to do.** Check, in order: that the endpoint answers from the pod (a plain
+`curl` to its health path), that the credentials are still valid and the bucket
+exists, and that the bucket policy allows put, get, list and delete on
+`<prefix>/sessions/*` and `<prefix>/shared/*`. Look at `slaude_storage_request_errors_total{op}`
+to see which operation fails. While flushes are stuck, do not drain or roll the
+nodes holding pending directories: draining tries one last flush, and a node
+that cannot write loses those edits. Once the bucket is reachable the retries
+land by themselves and the pending gauges fall to 0.

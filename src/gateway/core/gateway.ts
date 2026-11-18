@@ -92,7 +92,9 @@ import { turnKindOf } from "../../remote/definitions/decision";
 import type { Surface, SurfaceFactory, SessionBinding } from "./surface";
 import { surfaceOfSession } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
-import { startSkillVersionReconciler } from "../../skills/versions";
+import { noteSkillChanged, startSkillVersionReconciler } from "../../skills/versions";
+import { GLOBAL_SCOPE, skillDirFor, startSkillMirror } from "../../skills/remote-sync";
+import { objectStore, putInbox, storageMode } from "../../storage";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
 import { createV1Api } from "../api";
@@ -1050,6 +1052,20 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     .catch((e) => console.error("[gates] boot sweep failed:", e));
   // The skill version log: reconcile now, then on a timer. Best effort, never blocks boot.
   const stopSkillVersionReconciler = startSkillVersionReconciler();
+  // Runtime skills over the object store (SLAUDE_STORAGE=s3): this replica mirrors what nodes write and
+  // records each arrival in the version log at once instead of waiting for the reconciler's next sweep.
+  let stopSkillMirror: () => Promise<void> = async () => {};
+  if (storageMode() === "s3" && env.role() === "gateway") {
+    void startSkillMirror({
+      store: objectStore()!,
+      bus: makePubSub({ redis: getRedis(), sub: getSubRedis() }),
+      onPulled: (scope, slug) => noteSkillChanged(scope === GLOBAL_SCOPE ? undefined : scope, slug, skillDirFor(scope, slug)),
+    })
+      .then((mirror) => {
+        stopSkillMirror = () => mirror.stop();
+      })
+      .catch((e) => console.error("[skills] remote mirror failed to start:", e));
+  }
   // Domain sessions, slice D: the periodic boundary fill, started once Slack auth knows the workspaces.
   let boundaryFillStopped = false;
   let stopBoundaryFill: () => Promise<void> = async () => {
@@ -3963,6 +3979,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             botToken: attachToken,
             workingDir: session.working_dir,
             inboundTs: eventTs,
+          }).then(async (got) => {
+            // With remote storage the node that runs this turn has no copy of what the gateway just saved:
+            // stage each file in the bucket's inbox, and the node writes it into the directory before the turn.
+            if (storageMode() === "s3" && env.role() === "gateway") {
+              const st = objectStore()!;
+              for (const f of got) {
+                await putInbox(st, session.working_dir, f.path).catch((e) =>
+                  console.error(`[attachments] could not stage ${f.name} for the node: ${e instanceof Error ? e.message : String(e)}`),
+                );
+              }
+            }
+            return got;
           })
         : Promise.resolve([]),
       // A suppressed message is recorded only; no turn runs, so no context.
@@ -5648,6 +5676,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await backgroundScheduler?.stop().catch(() => {});
       cronScheduler.stop();
       stopSkillVersionReconciler();
+      void stopSkillMirror();
       await stopBoundaryFill().catch(() => {});
       stopOwnerGuardrails();
       pluginInventory?.stop();

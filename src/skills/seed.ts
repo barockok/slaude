@@ -11,6 +11,9 @@ import { isBuiltinSkillName } from "../soul/builtin";
  */
 const BUNDLED_SKILLS_DIR = join(import.meta.dir, "..", "..", "skills");
 
+/** Where the release keeps a bundled skill's files (it need not exist for every slug). */
+export const bundledSkillPath = (slug: string): string => join(BUNDLED_SKILLS_DIR, slug);
+
 /** The slugs the release bundles (whether or not they were seeded here): a
  *  skill with one of these slugs is provenance `bundled` (provenance.ts). */
 export function bundledSkillSlugs(bundledDir: string = BUNDLED_SKILLS_DIR): Set<string> {

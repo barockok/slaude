@@ -30,6 +30,7 @@ import "./first-import"; // must stay the first import: see that file.
 import { ensureHome } from "../config/home";
 import { env } from "../config/env";
 import { startNodeWorker } from "./worker";
+import { objectStore, storageMode, storageSelfCheck, syncFlush } from "../storage";
 import { enforceNodeBootCheck } from "./boot-check";
 import { NodeClient } from "./client";
 import { nodeHandshake } from "./handshake";
@@ -86,6 +87,19 @@ async function main() {
   // The worker heartbeats under the same id the report names, which is how the
   // gateway knows this process's report is live.
   const instance = `${hostname()}-${randomBytes(3).toString("hex")}`;
+
+  // Remote filesystem sync: prove the object store works before claiming a job,
+  // so a half-compatible endpoint or bad credentials stop the boot, not a turn.
+  if (storageMode() === "s3") {
+    try {
+      await storageSelfCheck(objectStore()!, instance);
+      console.log(`[node] object store self-check passed (SLAUDE_STORAGE=s3, flush=${syncFlush()})`);
+    } catch (e) {
+      console.error(`[node] refusing to boot: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
+  }
+
   await reportNodePlugins({ client: new NodeClient(), instance, manifest });
 
   const handle = await startNodeWorker({ nodeId: instance, labels: hs.identity?.labels ?? ["default"], manifest });
