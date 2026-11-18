@@ -21,6 +21,17 @@ export class FencedError extends Error {
   }
 }
 
+/**
+ * A sync root's directory is not there. A flush must not read that as "the tree is
+ * empty" and commit it over stored state, so it refuses and writes nothing.
+ */
+export class RootMissingError extends StorageError {
+  constructor(name: string, dir: string) {
+    super("put", `sync root '${name}' (${dir}) is missing: refusing to commit an empty tree over stored state`);
+    this.name = "RootMissingError";
+  }
+}
+
 export interface FlushOpts {
   epoch: number;
   /** Asked once, just before the manifest is written. False aborts with FencedError. */
@@ -121,6 +132,7 @@ const sameEntry = (a: FileEntry | LinkEntry, b: FileEntry | LinkEntry): boolean 
 export async function flushTree(store: ObjectStore, sessionId: string, roots: readonly Root[], opts: FlushOpts): Promise<FlushResult> {
   checkRoots(roots);
   const ignore = opts.ignore ?? DEFAULT_IGNORE;
+  for (const r of roots) if (!existsSync(r.dir)) throw new RootMissingError(r.name, r.dir);
   const prev = await latestManifest(store, sessionId);
   if (prev && prev.manifest.epoch > opts.epoch) throw new FencedError(`flush fenced: manifest epoch ${prev.manifest.epoch} is newer than ${opts.epoch}`);
 
@@ -189,7 +201,7 @@ export async function flushTree(store: ObjectStore, sessionId: string, roots: re
   return { id, changed: true, uploadedBlobs, uploadedBytes };
 }
 
-function validRel(rel: string): boolean {
+export function validRel(rel: string): boolean {
   if (rel === "" || rel.startsWith("/") || rel.includes("\\") || rel.includes("\0")) return false;
   return rel.split("/").every((s) => s !== "" && s !== "." && s !== "..");
 }
@@ -203,8 +215,13 @@ function splitKey(key: string, roots: Map<string, Root>): { root: Root; rel: str
   return { root, rel };
 }
 
-/** Create the parent directories of `rel` under `rootDir`, refusing to pass through a symlink. */
-function ensureParents(rootDir: string, rel: string): string {
+/**
+ * Create the parent directories of `rel` under `rootDir`. An ancestor that is a file or a
+ * symlink here but a directory in the stored tree (a path changed type) is replaced by a
+ * real directory: removing a symlink removes the link, never what it points at, and nothing
+ * is ever written through one.
+ */
+export function ensureParents(rootDir: string, rel: string): string {
   mkdirSync(rootDir, { recursive: true });
   let cur = rootDir;
   const segs = rel.split("/");
@@ -217,7 +234,10 @@ function ensureParents(rootDir: string, rel: string): string {
       mkdirSync(cur);
       continue;
     }
-    if (st.isSymbolicLink() || !st.isDirectory()) throw new StorageError("get", `refusing to write through '${cur}'`);
+    if (st.isSymbolicLink() || !st.isDirectory()) {
+      rmSync(cur, { force: true });
+      mkdirSync(cur);
+    }
   }
   return join(cur, segs[segs.length - 1]!);
 }
@@ -242,6 +262,9 @@ export async function hydrateTree(store: ObjectStore, sessionId: string, roots: 
   const latest = await latestManifest(store, sessionId);
   if (!latest) return { mode: "empty", id: null, downloadedBytes: 0 };
   if (readMarker(opts.markerPath) === latest.id) return { mode: "warm", id: latest.id, downloadedBytes: 0 };
+  // From here the local tree is being rewritten. If this dies half way, a marker naming the
+  // old state would let the next hydrate call a hybrid tree warm; no marker forces a full pass.
+  rmSync(opts.markerPath, { force: true });
 
   const byName = new Map(roots.map((r) => [r.name, r]));
   const m = latest.manifest;

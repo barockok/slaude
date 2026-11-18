@@ -57,7 +57,7 @@ export function runContract(name: string, make: () => Promise<ObjectStore> | Obj
       const back = await getBytes(s, k);
       expect(back?.length).toBe(big.length);
       expect(Buffer.compare(Buffer.from(back!), Buffer.from(big))).toBe(0);
-    });
+    }, 60_000);
 
     test("range get returns the inclusive slice", async () => {
       const s = await make();

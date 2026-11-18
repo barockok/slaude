@@ -3,14 +3,37 @@ import { assertKey, StorageError, type ObjectInfo, type ObjectStore, type PutBod
 import type { S3Config } from "./config";
 
 const PAGE = 1000;
+const DEFAULT_TIMEOUT_MS = 60_000;
+/** A put moves a whole file, so it gets this many times a metadata request's deadline. */
+const PUT_TIMEOUT_FACTOR = 10;
+
+/** Reject if `p` has not settled in `ms`. The request itself is not cancelled (Bun's S3 client takes no signal), but the caller, which may hold a session lock, is released. */
+function withDeadline<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`timed out after ${ms} ms: ${what}`)), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      },
+    );
+  });
+}
 
 /**
  * An ObjectStore over any S3-compatible endpoint, using Bun's built-in S3
- * client (no SDK dependency). Large bodies go up as multipart uploads.
+ * client (no SDK dependency). Large bodies go up as multipart uploads. Every
+ * request has a deadline, because a black-holed endpoint would otherwise hold
+ * the session and folder locks of the turn that called it.
  */
 export class S3ObjectStore implements ObjectStore {
   readonly #c: S3Client;
   readonly #prefix: string;
+  readonly #timeout: number;
 
   constructor(cfg: S3Config) {
     this.#c = new S3Client({
@@ -22,6 +45,7 @@ export class S3ObjectStore implements ObjectStore {
       virtualHostedStyle: !cfg.pathStyle,
     });
     this.#prefix = cfg.prefix ? `${cfg.prefix}/` : "";
+    this.#timeout = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   #key(key: string): string {
@@ -33,7 +57,7 @@ export class S3ObjectStore implements ObjectStore {
     const k = this.#key(key);
     try {
       let f = this.#c.file(k);
-      if (!(await f.exists())) return null;
+      if (!(await withDeadline(f.exists(), this.#timeout, `get ${key}`))) return null;
       if (opts.range) f = f.slice(opts.range[0], opts.range[1] + 1);
       return f.stream();
     } catch (e) {
@@ -46,9 +70,11 @@ export class S3ObjectStore implements ObjectStore {
     try {
       const f = this.#c.file(k);
       const type = opts.contentType;
-      if (body instanceof Uint8Array || body instanceof Blob) {
-        await f.write(body, type ? { type } : undefined);
-      } else {
+      const upload = async (): Promise<void> => {
+        if (body instanceof Uint8Array || body instanceof Blob) {
+          await f.write(body, type ? { type } : undefined);
+          return;
+        }
         const w = f.writer(type ? { type } : undefined);
         const reader = body.getReader();
         try {
@@ -60,11 +86,16 @@ export class S3ObjectStore implements ObjectStore {
           }
           await w.end();
         } catch (e) {
-          try { await w.end(); } catch { /* the upload failed; the original error is what matters */ }
+          try {
+            await w.end();
+          } catch {
+            /* the upload failed; the original error is what matters */
+          }
           throw e;
         }
-      }
-      const st = await f.stat();
+      };
+      await withDeadline(upload(), this.#timeout * PUT_TIMEOUT_FACTOR, `put ${key}`);
+      const st = await withDeadline(f.stat(), this.#timeout, `stat ${key}`);
       return { etag: clean(st.etag) };
     } catch (e) {
       throw new StorageError("put", `${key}: ${msg(e)}`, { cause: e });
@@ -75,8 +106,8 @@ export class S3ObjectStore implements ObjectStore {
     const k = this.#key(key);
     try {
       const f = this.#c.file(k);
-      if (!(await f.exists())) return null;
-      const st = await f.stat();
+      if (!(await withDeadline(f.exists(), this.#timeout, `head ${key}`))) return null;
+      const st = await withDeadline(f.stat(), this.#timeout, `stat ${key}`);
       return { size: st.size, etag: clean(st.etag) };
     } catch (e) {
       throw new StorageError("head", `${key}: ${msg(e)}`, { cause: e });
@@ -90,7 +121,11 @@ export class S3ObjectStore implements ObjectStore {
     for (;;) {
       let res;
       try {
-        res = await this.#c.list({ prefix: this.#prefix + prefix, maxKeys: PAGE, ...(startAfter ? { startAfter } : {}) });
+        res = await withDeadline(
+          this.#c.list({ prefix: this.#prefix + prefix, maxKeys: PAGE, ...(startAfter ? { startAfter } : {}) }),
+          this.#timeout,
+          `list ${prefix}`,
+        );
       } catch (e) {
         throw new StorageError("list", `${prefix}: ${msg(e)}`, { cause: e });
       }
@@ -115,7 +150,7 @@ export class S3ObjectStore implements ObjectStore {
     for (const key of keys) {
       const k = this.#key(key);
       try {
-        await this.#c.delete(k);
+        await withDeadline(this.#c.delete(k), this.#timeout, `delete ${key}`);
       } catch (e) {
         throw new StorageError("delete", `${key}: ${msg(e)}`, { cause: e });
       }

@@ -130,6 +130,9 @@ export async function pullSkill(store: ObjectStore, scope: string, slug: string,
   const st = readState(sf);
   const key = `${scope}/${slug}`;
   if (st.versions[key] === head.version) return "current";
+  // An edit made here that has not reached the store yet (the store was down, or the push is in flight)
+  // is newer than the head: pulling now would replace it with an older version and lose it.
+  if (dirty.has(key)) return "current";
   const dir = skillDirFor(scope, slug);
 
   if (head.deleted) {
@@ -196,18 +199,42 @@ export async function pullAll(
 /** The hook the skill tools call after a local change; installed by whichever process owns the store and the bus. */
 let remote: ((scope: string, slug: string) => Promise<void>) | null = null;
 
+/** Local skill changes the store has not accepted yet (`scope/slug`). They are retried before every refresh and never overwritten by a pull. */
+const dirty = new Set<string>();
+
 export function setSkillRemote(fn: ((scope: string, slug: string) => Promise<void>) | null): void {
   remote = fn;
+  if (!fn) dirty.clear();
+}
+
+/** Push one local change, tracking it as unpublished until the store has it. */
+async function publish(fn: (scope: string, slug: string) => Promise<void>, scope: string, slug: string): Promise<void> {
+  const key = `${scope}/${slug}`;
+  dirty.add(key);
+  try {
+    await fn(scope, slug);
+    dirty.delete(key);
+  } catch (e) {
+    metric.storageRequestErrorsTotal.inc({ op: "put" });
+    console.error(`[skills] could not publish ${key}: ${e instanceof Error ? e.message : String(e)} (will retry)`);
+  }
+}
+
+/** Retry every change the store has not accepted. Called before each refresh. */
+export async function retryUnpublishedSkills(): Promise<void> {
+  const fn = remote;
+  if (!fn) return;
+  for (const key of [...dirty]) {
+    const i = key.indexOf("/");
+    await publish(fn, key.slice(0, i), key.slice(i + 1));
+  }
 }
 
 /** Fire and forget: the local change already happened and must not wait on, or fail because of, the store. */
 export function notifySkillRemote(personaName: string | undefined, slug: string): void {
   const fn = remote;
   if (!fn) return;
-  void fn(scopeOf(personaName), slug).catch((e) => {
-    metric.storageRequestErrorsTotal.inc({ op: "put" });
-    console.error(`[skills] could not publish ${scopeOf(personaName)}/${slug}: ${e instanceof Error ? e.message : String(e)}`);
-  });
+  void publish(fn, scopeOf(personaName), slug);
 }
 
 export interface SkillBus {
@@ -260,6 +287,7 @@ export async function startSkillMirror(deps: {
   });
   const refresh = async (): Promise<void> => {
     try {
+      await retryUnpublishedSkills();
       await pullAll(store, { ...o, seen, ...(deps.onPulled ? { onPulled: deps.onPulled } : {}) });
     } catch (e) {
       console.error(`[skills] refresh failed: ${e instanceof Error ? e.message : String(e)}`);

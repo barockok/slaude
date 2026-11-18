@@ -5,14 +5,18 @@ import { join } from "node:path";
 import {
   FencedError,
   LocalObjectStore,
+  RootMissingError,
   S3ObjectStore,
+  drainInbox,
   flushTree,
   gcSession,
   hydrateTree,
   latestManifest,
   listAll,
   manifestKey,
+  putInbox,
   removeSession,
+  wsUnitId,
   type ObjectStore,
   type Root,
 } from "../../src/storage";
@@ -37,6 +41,8 @@ function node(name: string) {
     { name: "ws", dir: join(base, "ws") },
     { name: "tx", dir: join(base, "tx") },
   ];
+  // As on a node, where hydrate creates every root before a turn: a flush refuses a missing one.
+  for (const r of roots) mkdirSync(r.dir, { recursive: true });
   return { roots, marker: join(base, "state", "marker.json"), ws: roots[0]!.dir, tx: roots[1]!.dir };
 }
 
@@ -197,7 +203,7 @@ function suite(name: string, makeStore: () => ObjectStore) {
       await expect(hydrateTree(store, id, b.roots, { markerPath: b.marker })).rejects.toThrow(/unsafe path/);
     });
 
-    test("hydrate refuses to write through a symlinked directory", async () => {
+    test("hydrate never writes through a symlinked directory: the link is replaced and its target is untouched", async () => {
       const store = makeStore();
       const id = sid();
       const a = node("a");
@@ -206,10 +212,90 @@ function suite(name: string, makeStore: () => ObjectStore) {
       await flushTree(store, id, a.roots, { epoch: 1, isCurrent: yes });
       const b = node("b");
       const outside = tmp("outside");
+      writeFileSync(join(outside, "keep.txt"), "not ours");
       mkdirSync(b.ws, { recursive: true });
       symlinkSync(outside, join(b.ws, "d"));
-      await expect(hydrateTree(store, id, b.roots, { markerPath: b.marker })).rejects.toThrow(/refusing to write through/);
+      await hydrateTree(store, id, b.roots, { markerPath: b.marker });
+      expect(lstatSync(join(b.ws, "d")).isSymbolicLink()).toBe(false);
+      expect(readFileSync(join(b.ws, "d", "f.txt"), "utf8")).toBe("payload");
       expect(existsSync(join(outside, "f.txt"))).toBe(false);
+      expect(readFileSync(join(outside, "keep.txt"), "utf8")).toBe("not ours");
+    });
+
+    test("a path that changed from a file to a directory hydrates over the old copy", async () => {
+      const store = makeStore();
+      const id = sid();
+      const a = node("a");
+      mkdirSync(a.ws, { recursive: true });
+      writeFileSync(join(a.ws, "x"), "was a file");
+      await flushTree(store, id, a.roots, { epoch: 1, isCurrent: yes });
+      const b = node("b");
+      await hydrateTree(store, id, b.roots, { markerPath: b.marker });
+      expect(readFileSync(join(b.ws, "x"), "utf8")).toBe("was a file");
+      rmSync(join(a.ws, "x"));
+      mkdirSync(join(a.ws, "x"));
+      writeFileSync(join(a.ws, "x", "y"), "now a directory");
+      await flushTree(store, id, a.roots, { epoch: 2, isCurrent: yes });
+      await hydrateTree(store, id, b.roots, { markerPath: b.marker });
+      expect(readFileSync(join(b.ws, "x", "y"), "utf8")).toBe("now a directory");
+    });
+
+    test("a flush refuses a missing root instead of committing an empty tree", async () => {
+      const store = makeStore();
+      const id = sid();
+      const a = node("a");
+      mkdirSync(a.ws, { recursive: true });
+      writeFileSync(join(a.ws, "precious.txt"), "keep me");
+      const first = await flushTree(store, id, a.roots, { epoch: 1, isCurrent: yes });
+      rmSync(a.ws, { recursive: true, force: true });
+      await expect(flushTree(store, id, a.roots, { epoch: 2, isCurrent: yes })).rejects.toBeInstanceOf(RootMissingError);
+      expect((await latestManifest(store, id))?.id).toBe(first.id);
+      const b = node("b");
+      await hydrateTree(store, id, b.roots, { markerPath: b.marker });
+      expect(readFileSync(join(b.ws, "precious.txt"), "utf8")).toBe("keep me");
+    });
+
+    test("a hydrate that dies half way leaves no marker, so the next one is a full pass", async () => {
+      const store = makeStore();
+      const id = sid();
+      const a = node("a");
+      mkdirSync(a.ws, { recursive: true });
+      writeFileSync(join(a.ws, "one.txt"), "1");
+      await flushTree(store, id, a.roots, { epoch: 1, isCurrent: yes });
+      const b = node("b");
+      await hydrateTree(store, id, b.roots, { markerPath: b.marker });
+      expect(existsSync(b.marker)).toBe(true);
+      writeFileSync(join(a.ws, "two.txt"), "2");
+      const f2 = await flushTree(store, id, a.roots, { epoch: 2, isCurrent: yes });
+      // Break the new blob so the next hydrate throws part way.
+      const m = (await latestManifest(store, id))!.manifest;
+      await store.delete([`sessions/${id}/blobs/${(m.files["ws/two.txt"] as { hash: string }).hash}`]);
+      await expect(hydrateTree(store, id, b.roots, { markerPath: b.marker })).rejects.toThrow(/missing from the store/);
+      expect(existsSync(b.marker)).toBe(false);
+      expect(f2.changed).toBe(true);
+    });
+
+    test("staged inbox files are written into the directory and removed from the box", async () => {
+      const store = makeStore();
+      const gw = tmp("gateway");
+      mkdirSync(join(gw, "attachments", "1700000000.000100"), { recursive: true });
+      const file = join(gw, "attachments", "1700000000.000100", "report.pdf");
+      writeFileSync(file, "pdf bytes");
+      await putInbox(store, gw, file);
+      const nodeDir = tmp("nodews");
+      const n = await drainInbox(store, wsUnitId(gw), nodeDir);
+      expect(n).toBe(1);
+      expect(readFileSync(join(nodeDir, "attachments", "1700000000.000100", "report.pdf"), "utf8")).toBe("pdf bytes");
+      expect(await listAll(store, "inbox/")).toEqual([]);
+      expect(await drainInbox(store, wsUnitId(gw), nodeDir)).toBe(0);
+    });
+
+    test("an inbox file from outside its working directory is refused", async () => {
+      const store = makeStore();
+      const gw = tmp("gateway");
+      const other = tmp("other");
+      writeFileSync(join(other, "x.txt"), "x");
+      await expect(putInbox(store, gw, join(other, "x.txt"))).rejects.toThrow(/outside its working directory/);
     });
 
     test("a large file streams through and comes back identical", async () => {
@@ -224,7 +310,7 @@ function suite(name: string, makeStore: () => ObjectStore) {
       const b = node("b");
       await hydrateTree(store, id, b.roots, { markerPath: b.marker });
       expect(Buffer.compare(readFileSync(join(b.ws, "big.bin")), big)).toBe(0);
-    });
+    }, 60_000);
 
     test("identical files share one blob", async () => {
       const store = makeStore();

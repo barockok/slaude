@@ -18,9 +18,10 @@ afterAll(() => {
 });
 
 /** An in-memory stand-in for the Redis commands FsSync uses. */
-function memRedis(): RedisLike {
+function memRedis(): RedisLike & { keys(): string[] } {
   const m = new Map<string, string>();
   return {
+    keys: () => [...m.keys()],
     get: async (k) => m.get(k) ?? null,
     incr: async (k) => {
       const n = Number(m.get(k) ?? 0) + 1;
@@ -291,12 +292,144 @@ describe("FsSync", () => {
     const m = machine();
     const a = nodeSync({ id: "node-a", store, redis, m });
     await a.beforeTurn("s1", "default");
-    await a.beforeTurn("s2", "default"); // a second session in the same folder
+    await a.afterTurn("s1", false);
+    await a.beforeTurn("s2", "default"); // a second session in the same folder, mid-turn
     writeFileSync(join(m.cwd, "shared.txt"), "shared");
-    await a.afterTurn("s2", false);
-    await a.evict("s1");
+    await a.evict("s1"); // s1 is idle, but its folder is in use
     expect(existsSync(join(m.cwd, "shared.txt"))).toBe(true);
-    await a.evict("s2");
+    await a.afterTurn("s2", false);
+    await a.evict("s1"); // idle now, but s2 is still tracked in the folder
+    expect(existsSync(join(m.cwd, "shared.txt"))).toBe(true);
+    await a.evict("s2"); // the last user: the local copy goes
     expect(existsSync(m.cwd)).toBe(false);
+  });
+
+  test("an eviction that races a new turn does not delete the directory or wipe the store", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = machine();
+    const a = nodeSync({ id: "node-a", store, redis, m });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(m.cwd, "work.txt"), "committed work");
+    await a.afterTurn("s1", false);
+    // The idle TTL closes the session and the heartbeat starts evicting; a new job for it starts first.
+    expect(await a.beforeTurn("s1", "default")).toBe("ok");
+    await a.evict("s1"); // the session is active again: nothing to do
+    expect(readFileSync(join(m.cwd, "work.txt"), "utf8")).toBe("committed work");
+    await a.afterTurn("s1", false);
+    wipe(m);
+    const b = nodeSync({ id: "node-b", store, redis, m });
+    await b.beforeTurn("s1", "default");
+    expect(readFileSync(join(m.cwd, "work.txt"), "utf8")).toBe("committed work");
+  });
+
+  test("a directory deleted under a tracked session is not committed as an empty tree", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = machine();
+    const a = nodeSync({ id: "node-a", store, redis, m });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(m.cwd, "work.txt"), "committed work");
+    await a.afterTurn("s1", false);
+    await a.beforeTurn("s1", "default");
+    rmSync(m.cwd, { recursive: true, force: true }); // something removed it mid-turn
+    await a.afterTurn("s1", false);
+    wipe(m);
+    const b = nodeSync({ id: "node-b", store, redis, m });
+    await b.beforeTurn("s1", "default");
+    expect(readFileSync(join(m.cwd, "work.txt"), "utf8")).toBe("committed work");
+  });
+
+  test("a hydrate that fails drops the session and is never flushed over newer state", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const ma = machine();
+    const mb = { ...ma, claude: ma.claude + "-b", state: ma.state + "-b" };
+    const b = nodeSync({ id: "node-b", store, redis, m: mb });
+    await b.beforeTurn("s1", "default");
+    writeFileSync(join(mb.cwd, "a.txt"), "from B");
+    writeFileSync(join(mb.cwd, "b.txt"), "from B too");
+    await b.afterTurn("s1", false);
+
+    const a = nodeSync({ id: "node-a", store, redis, m: ma });
+    wipe(ma);
+    // The store loses a blob, so A's hydrate dies part way.
+    const files = await Array.fromAsync(store.list("sessions/"));
+    const blob = files.find((o) => o.key.includes("/blobs/") && o.key.includes("ws-"));
+    await store.delete([blob!.key]);
+    await expect(a.beforeTurn("s1", "default")).rejects.toThrow();
+    expect(a.tracked()).toEqual([]); // nothing of it will be flushed
+    await a.evict("s1");
+    await a.drain();
+  });
+
+  test("after Redis loses the epoch counter, new epochs start above what is stored", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = machine();
+    const a = nodeSync({ id: "node-a", store, redis, m });
+    for (let i = 0; i < 3; i++) {
+      await a.beforeTurn("s1", "default");
+      writeFileSync(join(m.cwd, "f.txt"), `turn ${i}`);
+      await a.afterTurn("s1", false);
+    }
+    // A fresh Redis: the counter restarts at 0, below the stored manifests' epoch.
+    const fresh = memRedis();
+    const b = nodeSync({ id: "node-b", store, redis: fresh, m });
+    await b.beforeTurn("s1", "default");
+    writeFileSync(join(m.cwd, "f.txt"), "after the redis loss");
+    const fencedBefore = counter("slaude_storage_flush_total", { result: "fenced" });
+    await b.afterTurn("s1", false);
+    expect(counter("slaude_storage_flush_total", { result: "fenced" })).toBe(fencedBefore); // not silently discarded
+    wipe(m);
+    const c = nodeSync({ id: "node-c", store, redis: fresh, m });
+    await c.beforeTurn("s1", "default");
+    expect(readFileSync(join(m.cwd, "f.txt"), "utf8")).toBe("after the redis loss");
+  });
+
+  test("clearing a flushed unit never deletes another node's needs-flush mark", async () => {
+    const flaky = new FlakyStore(new LocalObjectStore(tmp("store")));
+    const redis = memRedis();
+    const m = machine();
+    const a = nodeSync({ id: "node-a", store: flaky, redis, m });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(m.cwd, "f.txt"), "x");
+    flaky.failing = true;
+    await a.afterTurn("s1", false);
+    // Another node has since taken the unit and failed to flush too: its mark replaces ours.
+    const marks = redis.keys().filter((k) => k.includes(":fsflush:"));
+    expect(marks.length).toBeGreaterThan(0);
+    for (const k of marks) await redis.set(k, JSON.stringify({ node: "node-c", since: Date.now() }));
+    flaky.failing = false;
+    await a.drain(); // A's flush now succeeds and clears its own pending entry
+    for (const k of marks) expect(JSON.parse((await redis.get(k))!).node).toBe("node-c");
+  });
+
+  test("overlapping flushes of one unit run one after the other", async () => {
+    const inner = new LocalObjectStore(tmp("store"));
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const slow: ObjectStore = {
+      get: (k, o) => inner.get(k, o),
+      head: (k) => inner.head(k),
+      list: (p, o) => inner.list(p, o),
+      delete: (k) => inner.delete(k),
+      put: async (k, b) => {
+        if (k.includes("/manifest/")) {
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await Bun.sleep(30);
+          inFlight--;
+        }
+        return inner.put(k, b);
+      },
+    };
+    const redis = memRedis();
+    const m = machine();
+    const a = nodeSync({ id: "node-a", store: slow, redis, m });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(m.cwd, "f.txt"), "v1");
+    await Promise.all([a.afterTurn("s1", false), a.drain()]);
+    expect(maxInFlight).toBeLessThanOrEqual(1);
   });
 });

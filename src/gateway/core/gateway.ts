@@ -94,7 +94,7 @@ import { surfaceOfSession } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { noteSkillChanged, startSkillVersionReconciler } from "../../skills/versions";
 import { GLOBAL_SCOPE, skillDirFor, startSkillMirror } from "../../skills/remote-sync";
-import { objectStore, storageMode } from "../../storage";
+import { objectStore, putInbox, storageMode } from "../../storage";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
 import { createV1Api } from "../api";
@@ -3979,6 +3979,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             botToken: attachToken,
             workingDir: session.working_dir,
             inboundTs: eventTs,
+          }).then(async (got) => {
+            // With remote storage the node that runs this turn has no copy of what the gateway just saved:
+            // stage each file in the bucket's inbox, and the node writes it into the directory before the turn.
+            if (storageMode() === "s3" && env.role() === "gateway") {
+              const st = objectStore()!;
+              for (const f of got) {
+                await putInbox(st, session.working_dir, f.path).catch((e) =>
+                  console.error(`[attachments] could not stage ${f.name} for the node: ${e instanceof Error ? e.message : String(e)}`),
+                );
+              }
+            }
+            return got;
           })
         : Promise.resolve([]),
       // A suppressed message is recorded only; no turn runs, so no context.

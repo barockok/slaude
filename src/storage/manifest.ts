@@ -59,6 +59,13 @@ export async function listManifestKeys(store: ObjectStore, sessionId: string): P
   return keys.sort();
 }
 
+/** The highest epoch any stored manifest of a session carries, or 0 before the first flush. One list call, no reads. */
+export async function latestEpoch(store: ObjectStore, sessionId: string): Promise<number> {
+  const keys = await listManifestKeys(store, sessionId);
+  const key = keys[keys.length - 1];
+  return key ? parseManifestKey(key)!.epoch : 0;
+}
+
 /** The newest manifest by (epoch, seq), or null before the first flush. */
 export async function latestManifest(store: ObjectStore, sessionId: string): Promise<{ id: string; manifest: Manifest } | null> {
   const keys = await listManifestKeys(store, sessionId);

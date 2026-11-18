@@ -15,6 +15,8 @@ export interface S3Config {
   pathStyle: boolean;
   accessKeyId: string;
   secretAccessKey: string;
+  /** Deadline for one metadata request (head, list, delete, the existence check of a get). A put gets ten times it. */
+  timeoutMs?: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -62,5 +64,13 @@ export function s3Config(env: Env = process.env): S3Config {
     pathStyle: bool("SLAUDE_S3_PATH_STYLE", env.SLAUDE_S3_PATH_STYLE, endpoint !== ""),
     accessKeyId,
     secretAccessKey,
+    timeoutMs: timeoutMs(env.SLAUDE_S3_TIMEOUT_MS),
   };
+}
+
+function timeoutMs(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return 60_000;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1000) throw new StorageError("config", `SLAUDE_S3_TIMEOUT_MS must be a whole number of milliseconds, 1000 or more (got '${raw}')`);
+  return n;
 }

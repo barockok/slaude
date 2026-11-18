@@ -1094,12 +1094,15 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
               // for this session's files, so requeue like a held lock.
               if ((await fsSync.beforeTurn(data.sessionId, data.personaId ?? "default")) === "wait") return HELD_BY_OTHER;
             }
-            const outcome = await runTurn(job, data);
-            if (fsSync) {
-              await fsSync.afterTurn(data.sessionId, lostLock.aborted);
-              if (!agent.isLive(data.sessionId)) await fsSync.evict(data.sessionId);
+            try {
+              return await runTurn(job, data);
+            } finally {
+              // Whatever the turn did, even when it threw: its edits go to the store (a lost lock flushes nothing).
+              if (fsSync) {
+                await fsSync.afterTurn(data.sessionId, lostLock.aborted);
+                if (!agent.isLive(data.sessionId)) await fsSync.evict(data.sessionId);
+              }
             }
-            return outcome;
           } finally {
             lostLock.removeEventListener("abort", onLost);
           }
