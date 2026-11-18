@@ -7,8 +7,8 @@ This release closes them. Every change is inert unless `SLAUDE_STORAGE=s3`.
 1. **State directory.** The node keeps sync markers in `$SLAUDE_HOME/.sync-state`, which a non-root worker cannot
    create. `SLAUDE_SYNC_STATE_DIR` moves them (and the skills sync state) to a path the operator provides.
 2. **Skills mirror.** It writes the skills directory and its state file. Where gateway and worker already share that
-   directory it is redundant and, for a read-only worker, an error on every change. `SLAUDE_SKILLS_MIRROR=0` turns it
-   off in both roles.
+   directory it is redundant and, for a read-only worker, an error on every change. `SLAUDE_SKILLS_MIRROR=0` turned it
+   off in both roles. (Superseded in rc.36: the switch is removed and the mirror follows the storage mode.)
 3. **Root-owned working directories.** The gateway creates each session's directory in `ensureSession`; on a shared
    volume it is root-owned and the worker cannot write into it. In S3 mode the gateway no longer creates it: the node
    creates it when it hydrates. Attachments follow: the gateway downloads them to a private temp directory, stages them

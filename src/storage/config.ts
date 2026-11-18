@@ -65,15 +65,6 @@ export function checkSyncStateDir(dir: string): void {
   }
 }
 
-/**
- * The runtime-skills mirror (skills written while the agent runs, shared through the bucket). On by default in `s3`
- * mode. Turn it off where gateway and worker already share the skills directory: the mirror would write a directory
- * the worker may not own and publish what every process already sees.
- */
-export function skillsMirror(env: Env = process.env): boolean {
-  return bool("SLAUDE_SKILLS_MIRROR", env.SLAUDE_SKILLS_MIRROR, true);
-}
-
 const bool = (name: string, raw: string | undefined, dflt: boolean): boolean => {
   if (raw === undefined || raw.trim() === "") return dflt;
   const v = raw.trim().toLowerCase();

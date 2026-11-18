@@ -94,7 +94,7 @@ import { surfaceOfSession } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { noteSkillChanged, startSkillVersionReconciler } from "../../skills/versions";
 import { GLOBAL_SCOPE, skillDirFor, startSkillMirror } from "../../skills/remote-sync";
-import { objectStore, skillsMirror, storageMode } from "../../storage";
+import { objectStore, storageMode } from "../../storage";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
 import { createV1Api } from "../api";
@@ -1056,9 +1056,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Runtime skills over the object store (SLAUDE_STORAGE=s3): this replica mirrors what nodes write and
   // records each arrival in the version log at once instead of waiting for the reconciler's next sweep.
   let stopSkillMirror: () => Promise<void> = async () => {};
-  if (storageMode() === "s3" && skillsMirror() && env.role() === "gateway") {
+  if (storageMode() === "s3" && env.role() === "gateway") {
     void startSkillMirror({
       store: objectStore()!,
+      seed: true,
       bus: makePubSub({ redis: getRedis(), sub: getSubRedis() }),
       onPulled: (scope, slug) => noteSkillChanged(scope === GLOBAL_SCOPE ? undefined : scope, slug, skillDirFor(scope, slug)),
     })

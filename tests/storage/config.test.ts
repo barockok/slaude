@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkSyncStateDir, objectStore, resetObjectStore, s3Config, skillsMirror, storageMode, syncFlush, syncStateDir, LocalObjectStore } from "../../src/storage";
+import { checkSyncStateDir, objectStore, resetObjectStore, s3Config, storageMode, syncFlush, syncStateDir, LocalObjectStore } from "../../src/storage";
 
 describe("storage config", () => {
   test("mode defaults to fs and rejects junk", () => {
@@ -34,13 +34,6 @@ describe("storage config", () => {
     writeFileSync(file, "x");
     expect(() => checkSyncStateDir(join(file, "sub"))).toThrow(/SLAUDE_SYNC_STATE_DIR .* is not writable/);
     rmSync(file, { force: true });
-  });
-
-  test("the skills mirror is on unless switched off", () => {
-    expect(skillsMirror({})).toBe(true);
-    expect(skillsMirror({ SLAUDE_SKILLS_MIRROR: "1" })).toBe(true);
-    for (const off of ["0", "false", "no", "off", " OFF "]) expect(skillsMirror({ SLAUDE_SKILLS_MIRROR: off })).toBe(false);
-    expect(() => skillsMirror({ SLAUDE_SKILLS_MIRROR: "maybe" })).toThrow("must be 1 or 0");
   });
 
   test("s3 config lists every missing required variable at once", () => {

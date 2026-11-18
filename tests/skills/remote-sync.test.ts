@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalObjectStore, putText } from "../../src/storage";
+import { LocalObjectStore, getText, putText } from "../../src/storage";
 import {
   GLOBAL_SCOPE,
   notifySkillRemote,
@@ -10,6 +10,7 @@ import {
   pullSkill,
   pushSkill,
   scopeOf,
+  seedAgentSkills,
   setSkillRemote,
   skillDirFor,
   startSkillMirror,
@@ -256,6 +257,75 @@ describe("runtime skills over the object store", () => {
     } finally {
       await mirror.stop();
     }
+  });
+
+  test("seedAgentSkills publishes agent-written skills the store lacks, and leaves the rest alone", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const mine = slug("seed-agent");
+    const placed = slug("seed-operator");
+    const known = slug("seed-known");
+    const stamped = (name: string) => `---\nname: ${name}\ndescription: test skill\nauthored_by: "agent"\nauthored_at: "2026-01-01T00:00:00Z"\n---\nbody\n`;
+    for (const [s, text] of [
+      [mine, stamped(mine)],
+      [known, stamped(known)],
+      [placed, skillMd(placed, "operator placed, no stamp")],
+    ] as const) {
+      mkdirSync(skillDirFor(GLOBAL_SCOPE, s), { recursive: true });
+      writeFileSync(join(skillDirFor(GLOBAL_SCOPE, s), "SKILL.md"), text);
+    }
+    // The store already holds a head for one of them: it must not be republished or changed.
+    await putText(store, `shared/skills-head/global/${known}.json`, JSON.stringify({ version: "000000000000001-aaaaaa", deleted: false, files: ["SKILL.md"], at: 1 }));
+
+    const m = machine();
+    const r = await seedAgentSkills(store, { ...m, personas: [] });
+    expect(r.seeded).toContain(`global/${mine}`);
+    expect(r.seeded).not.toContain(`global/${known}`);
+    expect(r.seeded).not.toContain(`global/${placed}`);
+    expect(await getText(store, `shared/skills-head/global/${mine}.json`)).not.toBeNull();
+    expect(await getText(store, `shared/skills-head/global/${placed}.json`)).toBeNull();
+    expect(JSON.parse((await getText(store, `shared/skills-head/global/${known}.json`))!).version).toBe("000000000000001-aaaaaa");
+
+    // A second run finds nothing to do.
+    const again = await seedAgentSkills(store, { ...m, personas: [] });
+    expect(again.seeded).not.toContain(`global/${mine}`);
+
+  });
+
+  test("seedAgentSkills seeds a persona's own overlay under its scope only", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const s = slug("seed-persona");
+    mkdirSync(skillDirFor("researcher", s), { recursive: true });
+    writeFileSync(join(skillDirFor("researcher", s), "SKILL.md"), `---\nname: ${s}\ndescription: d\nauthored_by: "agent"\nauthored_at: "2026-01-01T00:00:00Z"\n---\nb\n`);
+    const r = await seedAgentSkills(store, { ...machine(), personas: ["researcher"] });
+    expect(r.seeded).toContain(`researcher/${s}`);
+    expect(r.seeded).not.toContain(`global/${s}`);
+  });
+
+  const denied = (): never => {
+    throw Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" });
+  };
+
+  test("a pull into a directory this process may not rewrite is a no-op when the content already matches", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const s = slug("ro");
+    writeLocal(GLOBAL_SCOPE, s, "same everywhere");
+    await pushSkill(store, GLOBAL_SCOPE, s, machine());
+    // A machine with no state for it (the worker's first start) beside a gateway-owned copy must not fail or rewrite it.
+    const m = { ...machine(), moveAside: denied };
+    expect(await pullSkill(store, GLOBAL_SCOPE, s, m)).toBe("current");
+    expect(readFileSync(join(skillDirFor(GLOBAL_SCOPE, s), "SKILL.md"), "utf8")).toContain("same everywhere");
+    // The state now records it, so the next pull is current without touching anything.
+    expect(await pullSkill(store, GLOBAL_SCOPE, s, m)).toBe("current");
+  });
+
+  test("a pull into a directory that may not be rewritten and holds different content still fails", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const s = slug("ro-diff");
+    writeLocal(GLOBAL_SCOPE, s, "version one");
+    await pushSkill(store, GLOBAL_SCOPE, s, machine());
+    writeLocal(GLOBAL_SCOPE, s, "locally different");
+    await expect(pullSkill(store, GLOBAL_SCOPE, s, { ...machine(), moveAside: denied })).rejects.toThrow("EPERM");
+    expect(readFileSync(join(skillDirFor(GLOBAL_SCOPE, s), "SKILL.md"), "utf8")).toContain("locally different");
   });
 
   test("notifySkillRemote does nothing, and does not throw, with no hook installed or a failing one", async () => {

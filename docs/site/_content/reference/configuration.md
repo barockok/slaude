@@ -394,7 +394,6 @@ and roles come from a file or the env lists below.
 | `SLAUDE_S3_ACCESS_KEY_ID`, `SLAUDE_S3_SECRET_ACCESS_KEY` | With `s3` | unset | The bucket credentials, on the gateway and every node. Scope them to the prefix. |
 | `SLAUDE_SYNC_FLUSH` | No | `turn` | `turn` writes a session's workspace to the bucket after every turn; `idle` writes it when the session goes idle or the node drains. The transcript is written every turn either way. |
 | `SLAUDE_SYNC_STATE_DIR` | No | `$SLAUDE_HOME/.sync-state` | An absolute path where a node keeps its remote-sync markers and the skills sync state. Set it when the worker cannot write `$SLAUDE_HOME`; it must survive a restart. See [Remote storage](../deploy/remote-storage.md#one-machine-a-non-root-worker). |
-| `SLAUDE_SKILLS_MIRROR` | No | `1` | `0` turns off the runtime-skills mirror in `s3` mode, in the gateway and the nodes. Use it where they share the skills directory. |
 | `SLAUDE_SYNC_IGNORE` | No | `node_modules,.cache,__pycache__` | Comma-separated names that never sync, matched against every path segment. Setting it replaces the default. |
 | `SLAUDE_ENGAGE_FORCE_SHADOW` | No | unset | Phase 2 kill switch: `1`, `true`, `yes` or `on` forces every channel to shadow behaviour, whatever its `engage.mode`. Read for every message, never cached. |
 | `SLAUDE_ENGAGE_ACT_PER_HOUR` | No | `12` | Phase 2: acted runs per channel per hour. Past it a run decision is a counted pass (`outcome="cap"`). A whole number from 1 to 10000; anything else means 12. |
