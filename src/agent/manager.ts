@@ -37,6 +37,7 @@ import { personaSoulText } from "../persona/soul-source";
 import { effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
 import { compiledPromptSoul } from "../soul/per-persona";
 import { allowedSkillNames, sdkSkillsOption } from "./skill-allow";
+import { homePluginDirFor } from "../skills/persona-plugin";
 import { resolveSoulMandate } from "../soul/mandate-scope";
 import { SoulDataSchema } from "../soul/data";
 import { getPersonaRegistry, livePersona, managedPersonaDefinition, managedPersonaModel, onPersonaRegistryInstalled, type PersonaRegistry } from "../persona/registry";
@@ -2097,7 +2098,8 @@ export class AgentManager extends EventEmitter {
     // ~/.slaude/skills/<slug>/SKILL.md and injects them into <system-reminder>.
     // skipMcpDiscovery prevents the SDK from reading slaude's own mcp.json
     // (those servers are managed separately via Options.mcpServers above).
-    const slaudeHomePlugin = { type: "local" as const, path: paths.home, skipMcpDiscovery: true };
+    // A named persona's own skills (personas/<name>/skills) are not under paths.home/skills: its derived plugin carries both.
+    const slaudeHomePlugin = { type: "local" as const, path: homePluginDirFor(personaName) ?? paths.home, skipMcpDiscovery: true };
     // The built-in `slaude` plugin (read-only, shipped in src/): its skills are
     // `slaude:<name>`, named by the skill index in the core prompt.
     const builtinPlugin = { type: "local" as const, path: BUILTIN_PLUGIN_DIR, skipMcpDiscovery: true };

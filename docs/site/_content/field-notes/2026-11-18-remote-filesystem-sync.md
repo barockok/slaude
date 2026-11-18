@@ -91,3 +91,15 @@ running.
   unflushed turn of a warm session. It is documented, not hidden.
 - Garbage collection exists (`gcSession`, `removeSession`) but nothing schedules
   it yet. Stored manifests and blobs grow until it is wired into the reaper.
+- **A named agent's skills were never loadable (rc.37).** Testing the skills
+  mirror on the single-box deployment, the Skill tool said "Unknown skill" for a
+  skill the agent had just written, and for one that had existed for months,
+  while a shared skill loaded. The first read was a timing problem (the listing
+  is fixed at session start); a control with an old persona skill and an old
+  shared skill showed it was neither timing nor the bucket. The SDK discovers
+  skills through plugins and the `$SLAUDE_HOME` plugin only exposes
+  `$SLAUDE_HOME/skills/`; a persona's overlay was listed by `list_skills`, never
+  mounted. The fix mounts a derived plugin of symlinks (shared skills, overlay
+  on top, same plugin name) for a persona that has its own skills. The CLI's
+  plugin validator says a `--plugin-dir` session follows symlinks, which is how
+  the SDK mounts a local plugin; the live check on the box is the proof.
