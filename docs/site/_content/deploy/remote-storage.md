@@ -46,6 +46,8 @@ each have their own manifest series and their own fencing epoch.
 | `SLAUDE_S3_ACCESS_KEY_ID`, `SLAUDE_S3_SECRET_ACCESS_KEY` | Credentials (required) |
 | `SLAUDE_SYNC_FLUSH` | `turn` (default) or `idle`, see below |
 | `SLAUDE_SYNC_IGNORE` | Comma-separated directory or file names that never sync. Default `node_modules,.cache,__pycache__` |
+| `SLAUDE_SYNC_STATE_DIR` | Absolute path where a node keeps its sync markers and the skills sync state. Default `$SLAUDE_HOME/.sync-state`. Set it when the worker cannot write `$SLAUDE_HOME`, to a directory that survives a restart. See [One machine, a non-root worker](#one-machine-a-non-root-worker) |
+| `SLAUDE_SKILLS_MIRROR` | `1` (default) or `0`. `0` turns the runtime-skills mirror off in the gateway and the nodes. Use it where they already share the skills directory |
 
 Only the S3 API is assumed (get, put, head, list, delete, multipart upload), so
 any compatible endpoint works: AWS S3, Cloudflare R2, or a server you host
@@ -133,6 +135,29 @@ and the storage tests run against it:
 docker compose -f docker-compose.s3-test.yaml up -d --wait
 SLAUDE_S3_TEST_ENDPOINT=http://localhost:9100 bun test tests/storage tests/skills tests/node
 ```
+
+## One machine, a non-root worker
+
+The Kubernetes overlay gives every pod a writable `$SLAUDE_HOME`. A compose deployment is often different: the
+gateway runs as root, the worker as an unprivileged user, and both mount one data directory that is root-owned except
+for the worker's own `workspaces/` and `.claude/projects/`. Four things follow, and from v0.46.0-rc.35 slaude handles
+each of them in `s3` mode:
+
+- **Sync state.** The worker cannot create `$SLAUDE_HOME/.sync-state`. Set `SLAUDE_SYNC_STATE_DIR` to a directory the
+  worker owns that survives a restart (a host directory mounted into the worker). Without the markers in it, the next
+  hydrate after a restart is a full pass.
+- **Skills.** Both processes already see the same skills directory, so set `SLAUDE_SKILLS_MIRROR=0` on both. The
+  mirror would otherwise try to write a directory the worker may not own.
+- **Working directories.** A gateway in `s3` mode no longer creates a session's directory. The node creates it when it
+  loads the session's files, so it is owned by the worker. A directory an earlier root process already left there is
+  still read and uploaded; if the worker cannot delete something in it when the session goes idle, that is logged and
+  skipped.
+- **Attachments.** The gateway downloads a Slack file into a private temp directory, puts it in the bucket's `inbox/`
+  and tells the agent the path it will have in the working directory. The node places it there before the turn.
+
+Because both processes still share the data directory, the local copy stays where it is until a session goes idle:
+the bucket then holds a replica, not the only copy, until eviction removes the local one. Back up the bucket's storage
+before relying on that.
 
 ## Rolling back
 
