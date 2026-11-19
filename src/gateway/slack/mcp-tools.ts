@@ -778,8 +778,8 @@ export const adminHandlers = {
     const ok_ = ctx.reloadSession(prompt);
     if (!ok_) return err("session not live — nothing to reload");
     return prompt
-      ? ok("Session reloaded. Prompt will be injected automatically on the fresh session.")
-      : ok("Session reloaded. Next message will start fresh with newly-resolved MCPs, plugins, and skills.");
+      ? ok("Reload requested: the prompt is injected automatically on the fresh session.")
+      : ok("Reload requested: the next message starts fresh with newly-resolved MCPs, plugins, and skills.");
   },
 };
 

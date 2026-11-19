@@ -139,6 +139,7 @@ import { providerSecretResolver } from "../api/tenants";
 import { parseRef } from "../../secrets";
 import { channelWorkspaceDir, proactiveWorkspaceDir } from "../../agent/workspace-claim";
 import { channelSessionKey, isChannelSessionKey, isRootChannelEvent, neutraliseEnvelopeTags, refusalAtRoot } from "./channel-session";
+import { routeReload } from "./reload-route";
 import { makeAuthorFilter } from "./author-filter";
 import { buildThreadHead, fetchThreadSlice } from "./thread-head";
 import { isSyntheticThread } from "../../web/shared/surfaces";
@@ -607,6 +608,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         ? makeQueueDispatch(agent)
         : null;
   if (queueDispatch) console.log("[slaude] gateway role: turns dispatch to the node queue");
+
+  /**
+   * Reload a session wherever it runs: here, or on the node that holds its live query. The gateway's own
+   * manager only knows the sessions it booted, so with a node queue a reload on that manager alone cannot reach a
+   * node session. Every reload in this file goes through here (tests/gateway/reload-routing.test.ts).
+   */
+  const reloadSession = (sessionId: string, prompt?: string): boolean =>
+    routeReload((id, p) => agent.reload(id, p), queueDispatch ? (id, p) => queueDispatch.reload(id, p) : null, sessionId, prompt);
 
   // Nodes seed MCP credentials only from the gateway's store, so credentials
   // still on disk from before the store existed are imported once. Insert-only
@@ -1095,7 +1104,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (env.remote.enabled()) {
       void sweepIdleSandboxes(undefined, (ch, ts) => {
         if (queueDispatch) return;
-        for (const [sid, r] of routes) if (r.ctx.channel === ch && (r.ctx.threadTs ?? r.ctx.inboundTs) === ts) agent.reload(sid);
+        for (const [sid, r] of routes) if (r.ctx.channel === ch && (r.ctx.threadTs ?? r.ctx.inboundTs) === ts) reloadSession(sid);
       }).catch((e) => console.error("[env] idle sweep failed:", e));
     }
   }, 5 * 60 * 1000);
@@ -1170,7 +1179,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           ...req,
           persona: ctx.personaId,
         });
-      ctx.reloadSession = (prompt?) => agent.reload(sessionId, prompt);
+      ctx.reloadSession = (prompt?) => reloadSession(sessionId, prompt);
       noteTurnSender(sessionId, ctx);
       routes.set(sessionId, { ctx, surface: wrapSurface(surfaceForCtx(ctx), sessionId), spoke: false, silent: true });
     },
@@ -1250,7 +1259,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       ? refuseApprovalInWake
       : (req) => approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app, ...req, persona: ctx.personaId });
     if (target.wake) ctx.wake = { runId: run.runId, deps: wakeToolDeps, channelSession: channelId };
-    ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+    ctx.reloadSession = (prompt?) => reloadSession(session.id, prompt);
     noteTurnSender(session.id, ctx);
     // A channel wake runs only with the route to itself. A person's turn on it
     // must not end up answering as the wake: `busy` keeps a wake back while a
@@ -2129,7 +2138,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         throw new Error("your Slack user isn't connected to an account yet: send me ` /link` as a message (with a space before it, or after mentioning me), sign in, then connect again");
       }
       agent.noteSessionEvent(a.sessionId, `Connected MCP server \`${a.serverName}\`${a.scope === "global" ? " (agent's shared identity)" : ""}.`);
-      agent.reload(a.sessionId);
+      reloadSession(a.sessionId);
       return;
     }
     // initiator: ensureInitiatorConfigDir seeds + creates the dir (the connect flow
@@ -2138,7 +2147,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const configDir = scopeConfigDir(a.scope, a.userId, a.personaName);
     writeEntry(configDir, a.serverName, a.serverConfig, tokens);
     agent.noteSessionEvent(a.sessionId, `Connected MCP server \`${a.serverName}\`${a.scope === "global" ? " (agent's shared identity)" : ""}.`);
-    agent.reload(a.sessionId);
+    reloadSession(a.sessionId);
   }
 
   // Build a Surface for the connect channel/thread so the OAuth flow talks to
@@ -2316,7 +2325,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (prevTarget && !(await sameAt({ site: "gateway.one_on_one_agent_lock.prev_target_same", persona: ctx.personaId, teamId: ctx.teamId, userId, otherUserId: prevTarget.user_id, otherTeamId: prevTarget.team_id }))) await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true });
       await OneOnOne.lock({ channelId: ctx.channel, threadTs, lockedUser: userId, createdBy: userId, teamId: ctx.teamId || null });
       auditOneOnOne("one_on_one.locked", { userId, sessionId, channelId: ctx.channel, threadTs, persona: ctx.personaId, lockedUser: userId, via: "agent_tool" });
-      agent.reload(sessionId);
+      reloadSession(sessionId);
       return `Locked this thread to a 1on1 with <@${userId}> — only they and the manager are heard here now.`;
     }
     if (action === "open") {
@@ -2327,7 +2336,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true }); // open mode forbids remote
       await OneOnOne.setOpen(ctx.channel, threadTs, scope ?? "");
-      agent.reload(sessionId);
+      reloadSession(sessionId);
       const scopeNote = scope ? ` Scope: ${scope}` : "";
       return `Opened this 1on1 to all participants.${scopeNote} Use set_one_on_one(action="lock") to restrict again.`;
     }
@@ -2335,7 +2344,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     await endRemoteForThread(ctx.channel, threadTs, { sessionId, userMachineOnly: true });
     await OneOnOne.unlock(ctx.channel, threadTs);
     auditOneOnOne("one_on_one.unlocked", { userId, sessionId, channelId: ctx.channel, threadTs, persona: ctx.personaId, via: "agent_tool" });
-    agent.reload(sessionId);
+    reloadSession(sessionId);
     return "Released 1on1 — the thread is open again.";
   }
 
@@ -2412,10 +2421,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             },
           }
         : {}),
-      reload: () => { agent.reload(sessionId); },
+      reload: () => { reloadSession(sessionId); },
       reloadThread: async (ch, ts) => {
         const other = await Sessions.findAnyByThread({ team_id: teamId, channel_id: ch, thread_ts: ts }).catch(() => null);
-        if (other) agent.reload(other.id);
+        if (other) reloadSession(other.id);
       },
     };
   }
@@ -3133,7 +3142,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // there must not boot on the archived session and spend a call with no route.
       agent.dropQueuedInputs(current.id);
       agent.abort(current.id);
-      agent.reload(current.id);
+      reloadSession(current.id);
       await reactions.clear(current.id);
       presence.exit(current.id);
       await status.clear(current.id);
@@ -3259,7 +3268,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           if (prevTarget && !(await sameAt({ site: "gateway.one_on_one_slash.prev_target_same", persona: dispatch?.personaId, teamId, userId, otherUserId: prevTarget.user_id, otherTeamId: prevTarget.team_id }))) await endRemoteForThread(channelId, threadTs, { sessionId: session.id, userMachineOnly: true });
           await OneOnOne.lock({ channelId, threadTs, lockedUser: userId, createdBy: userId, teamId });
           auditOneOnOne("one_on_one.locked", { userId, sessionId: session.id, channelId, threadTs, persona: dispatch?.personaId, lockedUser: userId, via: "slash" });
-          agent.reload(session.id);
+          reloadSession(session.id);
           await reply(`:lock: *1on1 mode* — only <@${userId}> and the manager will be heard in this thread. \`/1on1 off\` to release. Ask me to open it to guests when needed.`);
           // Onboarding unlocks this person's own integrations; it never gates
           // the 1:1, which is already open above. So a failure here is logged
@@ -3304,7 +3313,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           await OneOnOne.setLocked(channelId, threadTs);
           auditOneOnOne("one_on_one.locked", { userId, sessionId: session.id, channelId, threadTs, persona: dispatch?.personaId, lockedUser: existing.locked_user, via: "slash", mode: "relock" });
-          agent.reload(session.id);
+          reloadSession(session.id);
           await reply(`:lock: *1on1 re-locked* — only <@${existing.locked_user}> and the manager are heard again.`);
           return;
         }
@@ -3316,7 +3325,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const r = await endRemoteForThread(channelId, threadTs, { sessionId: session.id, userMachineOnly: true });
         await OneOnOne.unlock(channelId, threadTs);
         auditOneOnOne("one_on_one.unlocked", { userId, sessionId: session.id, channelId, threadTs, persona: dispatch?.personaId, lockedUser: existing.locked_user, via: "slash" });
-        agent.reload(session.id);
+        reloadSession(session.id);
         await reply(":unlock: 1on1 released — the thread is open again." + (r.ended ? " Remote mode ended." : ""));
         return;
       }
@@ -3867,7 +3876,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             };
             ctx.requestApproval = (req) =>
               approvals.request({ channel: ctx.channel, threadTs: ctx.threadTs, sessionId: session.id, app: appOf(ctx), ...req, persona: ctx.personaId });
-            ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+            ctx.reloadSession = (prompt?) => reloadSession(session.id, prompt);
             noteTurnSender(session.id, ctx);
             routes.set(session.id, {
               ctx,
@@ -4103,7 +4112,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         existing.ctx.apiAppId = app.apiAppId;
         existing.ctx.personaId = dispatch?.personaId;
         existing.ctx.client = outClientForPersona(dispatch?.personaId, appOf(existing.ctx));
-        existing.ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+        existing.ctx.reloadSession = (prompt?) => reloadSession(session.id, prompt);
         existing.spoke = false;
         existing.passed = false;
         existing.passReact = undefined;
@@ -4149,7 +4158,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             ...req,
             persona: ctx.personaId,
           });
-        ctx.reloadSession = (prompt?) => agent.reload(session.id, prompt);
+        ctx.reloadSession = (prompt?) => reloadSession(session.id, prompt);
         noteTurnSender(session.id, ctx);
         routes.set(session.id, { ctx, surface: wrapSurface(surfaceForCtx(ctx), session.id), spoke: false, suppress, engagedBefore: dispatch?.engagedBefore, ...(implicit ? { implicit: true } : {}), personTurns: suppress ? 0 : 1, ...(suppress ? {} : { personTurnAt: Date.now() }), ...(recordingOnly ? { recordingAhead: true } : {}) });
       }
@@ -5429,7 +5438,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (claims.wake) ctx.unattended = true;
     // A held reply is decided before the job token expires, or not posted.
     if (typeof claims.exp === "number") ctx.turnDeadline = claims.exp * 1000 - 30_000;
-    ctx.reloadSession = (prompt?) => agent.reload(claims.session, prompt);
+    ctx.reloadSession = (prompt?) => reloadSession(claims.session, prompt);
     return ctx;
   };
   /** A node turn's tool permission card (the /v1 can_use_tool relay). */
@@ -5610,7 +5619,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         // every replica replays its own deferred inbound.
         onLockReleased: (sessionId) => broadcastPanelResume(sessionId),
         // A warm mono session keeps its remote tools until reloaded.
-        onUnlock: (sessionId) => { agent.reload(sessionId); },
+        onUnlock: (sessionId) => { reloadSession(sessionId); },
         // The persona view says where a persona's stdio MCP servers run.
         role: queueDispatch ? "gateway" : "mono",
         // The read-only Plugins page: nodes exist only with a queue.

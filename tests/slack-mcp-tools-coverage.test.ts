@@ -683,9 +683,18 @@ describe("adminHandlers reloadSession", () => {
     expect(res.content[0]!.text).toContain("session not live");
   });
 
-  test("reloads live session", async () => {
+  test("reports a requested reload, which is true whether it ran here or was routed to a node", async () => {
     const res = await adminHandlers.reloadSession(makeCtx({ reloadSession: () => true }), {});
     expect(res.isError).toBeUndefined();
-    expect(res.content[0]!.text).toContain("Session reloaded");
+    expect(res.content[0]!.text).toContain("Reload requested");
+    expect(res.content[0]!.text).toContain("next message starts fresh");
+  });
+
+  test("a reload with a prompt says the prompt goes to the fresh session", async () => {
+    let got: string | undefined;
+    const res = await adminHandlers.reloadSession(makeCtx({ reloadSession: (p?: string) => ((got = p), true) }), { prompt: "carry on" });
+    expect(got).toBe("carry on");
+    expect(res.content[0]!.text).toContain("Reload requested");
+    expect(res.content[0]!.text).toContain("prompt");
   });
 });
