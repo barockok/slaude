@@ -96,6 +96,8 @@ export interface QueueDispatch {
   dispatch(session: SessionRow, text: string, meta: DispatchMeta): Promise<void>;
   /** Durable + published abort for /abort (spec §2). */
   abort(sessionId: string): Promise<void>;
+  /** Ask the node that runs this session to reload it (fresh query on its next turn), with an optional prompt for the fresh session. */
+  reload(sessionId: string, prompt?: string): Promise<void>;
   pubsub: PubSub;
   turns: TurnQueues;
   registry: Registry;
@@ -560,6 +562,10 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
 
     async abort(sessionId: string): Promise<void> {
       await pubsub.publishAbort(sessionId);
+    },
+
+    async reload(sessionId: string, prompt?: string): Promise<void> {
+      await pubsub.publishSessionReload(sessionId, prompt);
     },
 
     async close(): Promise<void> {

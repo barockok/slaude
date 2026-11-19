@@ -26,7 +26,8 @@
  * marker and drops the session from the tracked set, and a flush refuses a root
  * directory that is missing (the store would otherwise be told the tree is empty).
  */
-import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { paths } from "../config/home";
 import { personaConfigDir } from "../agent/oauth-home";
@@ -39,8 +40,10 @@ import {
   flushTree,
   gcSession,
   hydrateTree,
+  readMarker,
   ignoreList,
   latestEpoch,
+  latestManifest,
   syncStateDir,
   txUnitId,
   writeMarker,
@@ -55,6 +58,8 @@ export { encodeProjectDir };
 
 /** How long a node waits for another, live node to flush before continuing from the last committed manifest. */
 const WAIT_FOR_OWNER_MS = 120_000;
+/** How long a unit counts as open after its last prepare or flush. A turn longer than this refreshes it at its flush. */
+const IN_USE_TTL_MS = 30 * 60_000;
 const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 /** A unit's old manifests and unreferenced blobs are swept every this many committed flushes. */
@@ -222,12 +227,53 @@ export class FsSync {
     return "ok";
   }
 
+  /** True when the mark was left by this very disk and its marker names the newest stored manifest, so a warm hydrate keeps the local files. Any read failure counts as "no". */
+  async #ownCopyIsCurrent(unit: Unit, markDisk: string | undefined): Promise<boolean> {
+    try {
+      // The marker only says this disk matches the store. The edits are here only if THIS disk is the one that left the mark;
+      // a mark from another disk (the unit moved) or from before disks were identified means they are somewhere we cannot reach.
+      if (markDisk === undefined || markDisk !== this.#diskId()) return false;
+      const marker = readMarker(unit.markerPath);
+      if (marker === null) return false;
+      const latest = await latestManifest(this.#d.store, unit.id);
+      return latest !== null && latest.id === marker;
+    } catch {
+      return false;
+    }
+  }
+
+  #disk: string | null = null;
+  /**
+   * An id for THIS disk (the sync state directory), created once and kept with the markers. A needs-flush mark records it,
+   * so a recreated process on the same disk can tell its own unflushed edits from edits that sit on some other disk.
+   */
+  #diskId(): string {
+    if (this.#disk) return this.#disk;
+    const file = join(this.#state(), "disk-id");
+    try {
+      const existing = readFileSync(file, "utf8").trim();
+      if (existing) return (this.#disk = existing);
+    } catch {
+      /* none yet */
+    }
+    const id = randomUUID();
+    mkdirSync(this.#state(), { recursive: true });
+    writeFileSync(file, id);
+    return (this.#disk = id);
+  }
+
+  /** Tell the bucket sweeper this unit is open on this node. Refreshed at every prepare and flush, so it outlives a long turn. */
+  async #markInUse(unit: Unit): Promise<void> {
+    await this.#d.redis.set(this.#d.keys.fsInUse(unit.id), this.#d.nodeId, "PX", IN_USE_TTL_MS);
+  }
+
   async #prepare(unit: Unit): Promise<"ok" | "wait"> {
     const { redis, keys, nodeId, store } = this.#d;
+    await this.#markInUse(unit);
     const raw = await redis.get(keys.needsFlush(unit.id));
     let ownPending = false;
     if (raw) {
-      let mark: { node?: string; since?: number } = {};
+      let mark: { node?: string; since?: number; disk?: string } = {};
       try {
         mark = JSON.parse(raw);
       } catch {
@@ -238,9 +284,15 @@ export class FsSync {
       } else if (mark.node && (await this.#d.nodeAlive(mark.node)) && this.#now() - (mark.since ?? 0) < WAIT_FOR_OWNER_MS) {
         return "wait";
       } else {
-        // The node that held the newest copy is gone: continue from the last committed manifest.
-        metric.storageUnflushedLossTotal.inc();
-        console.error(`[fs-sync] unflushed edits lost unit=${unit.id} owner=${mark.node ?? "unknown"}: continuing from the last committed manifest`);
+        // The node that held the newest copy is gone. A process recreated on the same disk still has those
+        // edits: when its marker names the newest stored manifest the hydrate below is a warm no-op and the
+        // next flush uploads them, so nothing is lost. Otherwise continue from the last committed manifest.
+        if (await this.#ownCopyIsCurrent(unit, mark.disk)) {
+          console.log(`[fs-sync] recovered local copy unit=${unit.id} previous-owner=${mark.node ?? "unknown"}`);
+        } else {
+          metric.storageUnflushedLossTotal.inc();
+          console.error(`[fs-sync] unflushed edits lost unit=${unit.id} owner=${mark.node ?? "unknown"}: continuing from the last committed manifest`);
+        }
         await redis.del(keys.needsFlush(unit.id));
       }
     }
@@ -279,6 +331,7 @@ export class FsSync {
 
   async #flushNow(unit: Unit): Promise<void> {
     const { store, redis, keys } = this.#d;
+    await this.#markInUse(unit).catch(() => {}); // best effort: a failed mark must not fail the flush
     const t0 = this.#now();
     try {
       const r = await flushTree(store, unit.id, [unit.root], {
@@ -334,7 +387,7 @@ export class FsSync {
     const p: Pending = { unit, since, attempts: prior?.attempts ?? 0, evict: prior?.evict ?? false, ...(prior?.timer ? { timer: prior.timer } : {}) };
     this.#pending.set(unit.id, p);
     try {
-      await redis.set(keys.needsFlush(unit.id), JSON.stringify({ node: nodeId, since }), "EX", 7 * 24 * 3600);
+      await redis.set(keys.needsFlush(unit.id), JSON.stringify({ node: nodeId, since, disk: this.#diskId() }), "EX", 7 * 24 * 3600);
     } catch (e) {
       console.error(`[fs-sync] could not record needs-flush unit=${unit.id}: ${e instanceof Error ? e.message : String(e)}`);
     }

@@ -43,10 +43,10 @@ export async function gcSession(store: ObjectStore, sessionId: string, opts: GcO
   return { manifestsDeleted: dropped.length, blobsDeleted: stale.length };
 }
 
-/** Delete everything stored for a closed session. */
-export async function removeSession(store: ObjectStore, sessionId: string): Promise<number> {
+/** Delete everything stored for one unit (a synced directory, `ws-…` or `tx-…`; not a session id: units are directories). */
+export async function removeUnit(store: ObjectStore, unitId: string): Promise<number> {
   const keys: string[] = [];
-  for await (const o of store.list(`sessions/${sessionId}/`)) keys.push(o.key);
+  for await (const o of store.list(`sessions/${unitId}/`)) keys.push(o.key);
   if (keys.length > 0) await store.delete(keys);
   return keys.length;
 }

@@ -97,6 +97,8 @@ export interface Keys {
   fsEpoch(unit: string): string;
   /** `fsflush:<unit>` — set while a unit's last flush failed: JSON `{node, since}`. The node named holds the newest copy. */
   needsFlush(unit: string): string;
+  /** Short-lived mark that a node has this unit open (prepared or flushing); the bucket sweeper never deletes a unit that has one. */
+  fsInUse(unit: string): string;
   /** `lock:leader:<role>` — cron / reaper / migrate leader election. */
   leaderLock(role: string): string;
   /** `coalesce:<sessionId>` — pending-job index for message coalescing. */
@@ -108,6 +110,12 @@ export interface Keys {
   /** Durable abort flag set alongside the publish — survives a node that
    *  wasn't subscribed at publish time (checked at turn start, GETDEL). */
   abortFlag(sessionId: string): string;
+  /** Held (not released) by the gateway replica that ran this interval's bucket sweep, so one replica sweeps per interval. */
+  storageSweepLock(): string;
+  /** Pub/sub channel: reload one session on the node that runs it (a fresh query on its next turn). */
+  sessionReloadChannel(sessionId: string): string;
+  /** Durable reload flag set alongside the publish, with a TTL, for a session whose node was not subscribed (GETDEL at turn start). */
+  sessionReloadFlag(sessionId: string): string;
   /** Pub/sub channel: bust a tenant's cached runtime bundle. */
   reloadChannel(tenantId: string): string;
   /** `skills-changed` — a runtime skill was written, retired or deleted; every process refreshes its local copy from the object store. */
@@ -172,11 +180,15 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     workspaceLock: (dir) => `${prefix}:lock:workspace:${createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 32)}`,
     fsEpoch: (unit) => `${prefix}:fsepoch:${unit}`,
     needsFlush: (unit) => `${prefix}:fsflush:${unit}`,
+    fsInUse: (unit) => `${prefix}:fsinuse:${unit}`,
     leaderLock: (role) => `${prefix}:lock:leader:${role}`,
     coalesce: (sessionId) => `${prefix}:coalesce:${sessionId}`,
     coalesceLock: (sessionId) => `${prefix}:lock:coalesce:${sessionId}`,
     abortChannel: (sessionId) => `${prefix}:abort:${sessionId}`,
     abortFlag: (sessionId) => `${prefix}:abort-flag:${sessionId}`,
+    storageSweepLock: () => `${prefix}:lock:storage-sweep`,
+    sessionReloadChannel: (sessionId) => `${prefix}:session-reload:${sessionId}`,
+    sessionReloadFlag: (sessionId) => `${prefix}:session-reload-flag:${sessionId}`,
     reloadChannel: (tenantId) => `${prefix}:reload:${tenantId}`,
     skillsChannel: () => `${prefix}:skills-changed`,
     gateChannel: (pendingId) => `${prefix}:gate:${pendingId}`,

@@ -141,3 +141,14 @@ d("dispatch clears a lingering abort flag", () => {
     await until(() => events.some((e) => e.type === "done" && e.sessionId === "s-superseded"), 10_000);
   }, 20_000);
 });
+
+d("dispatch reload", () => {
+  test("reload publishes a durable per-session flag carrying the prompt, and leaves other sessions alone", async () => {
+    await qd.reload("s-reload", "carry on");
+    expect(JSON.parse((await redis.get(keys.sessionReloadFlag("s-reload"))) ?? "null")).toEqual({ prompt: "carry on" });
+    await qd.reload("s-reload-plain");
+    expect(JSON.parse((await redis.get(keys.sessionReloadFlag("s-reload-plain"))) ?? "null")).toEqual({});
+    expect(await redis.get(keys.sessionReloadFlag("s-never-reloaded"))).toBeNull();
+    expect(await redis.get(keys.abortFlag("s-reload"))).toBeNull(); // a reload is not an abort
+  });
+});

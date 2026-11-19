@@ -16,11 +16,13 @@ export async function downloadInboundFiles(args: {
   botToken: string;
   workingDir: string;
   inboundTs: string;
+  /** Where the staging directory is made. The system temp directory unless a caller (a test) says otherwise. */
+  stageBase?: string;
 }): Promise<DownloadedFile[]> {
   if (!(storageMode() === "s3" && env.role() === "gateway")) return downloadAttachments(args);
   let stageDir: string;
   try {
-    stageDir = mkdtempSync(join(tmpdir(), "slaude-att-"));
+    stageDir = mkdtempSync(join(args.stageBase ?? tmpdir(), "slaude-att-"));
   } catch (e) {
     // No place to stage them (a full or read-only temp area): the files are lost, the message must not be.
     console.error(`[attachments] could not make a staging directory: ${e instanceof Error ? e.message : String(e)}`);

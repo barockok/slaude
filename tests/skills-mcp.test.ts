@@ -63,7 +63,9 @@ describe("skillOps", () => {
     const out = discoverSkills();
     expect(out.length).toBe(1);
     expect(out[0]?.slug).toBe("greet");
-    expect(out[0]?.name).toBe("Greet");
+    // The CLI names a skill by its frontmatter name, so write_skill makes that the slug and keeps the title beside it.
+    expect(out[0]?.name).toBe("greet");
+    expect(out[0]?.title).toBe("Greet");
     expect(out[0]?.description).toBe("say hi");
   });
   test("second write updates without creating", () => {
@@ -121,7 +123,8 @@ describe("skillHandlers", () => {
     skillOps.write("r", "R", "desc", "body");
     const r = await skillHandlers.read_skill({ slug: "r" });
     expect(r.isError).toBeUndefined();
-    expect(r.content[0]?.text).toContain('name: "R"');
+    expect(r.content[0]?.text).toContain('name: "r"');
+    expect(r.content[0]?.text).toContain('title: "R"');
   });
   test("read_skill missing returns error", async () => {
     const r = await skillHandlers.read_skill({ slug: "ghost" });

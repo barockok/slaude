@@ -92,15 +92,15 @@ describe("attachments for a node that owns the working directory", () => {
       process.env.SLAUDE_STORAGE = "s3";
       process.env.SLAUDE_STORAGE_LOCAL_DIR = tmp("bucket");
       resetObjectStore();
-      const prevTmp = process.env.TMPDIR;
-      process.env.TMPDIR = "/nonexistent-slaude-tmp";
-      try {
-        const got = await downloadInboundFiles({ files: [slackFile], botToken: "t", workingDir: "/data/workspaces/x", inboundTs: "1.1" });
-        expect(got).toEqual([]);
-      } finally {
-        if (prevTmp === undefined) delete process.env.TMPDIR;
-        else process.env.TMPDIR = prevTmp;
-      }
+      // The staging base is injected: relying on TMPDIR being re-read by os.tmpdir() made this test order-dependent in CI.
+      const got = await downloadInboundFiles({
+        files: [slackFile],
+        botToken: "t",
+        workingDir: "/data/workspaces/x",
+        inboundTs: "1.1",
+        stageBase: "/nonexistent-slaude-tmp",
+      });
+      expect(got).toEqual([]);
     });
 
     test("on a gateway with remote storage the working directory is untouched and the file waits in the inbox", async () => {

@@ -15,7 +15,7 @@ export * from "./manifest";
 export * from "./tree-sync";
 export * from "./units";
 export { putInbox, drainInbox } from "./inbox";
-export { gcSession, removeSession } from "./gc";
+export { gcSession, removeUnit } from "./gc";
 export type { GcOpts, GcResult } from "./gc";
 export { DEFAULT_IGNORE, ignoreList, isIgnored } from "./ignore";
 

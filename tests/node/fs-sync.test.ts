@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { FsSync, encodeProjectDir, type RedisLike } from "../../src/node/fs-sync";
 import { metrics } from "../../src/metrics";
 import { makeKeys } from "../../src/queue/keys";
-import { LocalObjectStore, latestManifest, type ObjectStore, type PutBody } from "../../src/storage";
+import { LocalObjectStore, latestManifest, wsUnitId, type ObjectInfo, type ObjectStore, type PutBody } from "../../src/storage";
 
 const dirs: string[] = [];
 const tmp = (n: string): string => {
@@ -53,7 +53,18 @@ class FlakyStore implements ObjectStore {
   head(key: string) {
     return this.#inner.head(key);
   }
-  list(prefix: string, opts?: { after?: string; limit?: number }) {
+  /** A key prefix: the first `list` under it fails once (while it is iterated), then the store behaves again. */
+  failNextList: string | null = null;
+  list(prefix: string, opts?: { after?: string; limit?: number }): AsyncIterable<ObjectInfo> {
+    if (this.failNextList !== null && prefix.startsWith(this.failNextList)) {
+      this.failNextList = null;
+      return {
+        // eslint-disable-next-line require-yield
+        async *[Symbol.asyncIterator]() {
+          throw new Error("list unavailable");
+        },
+      };
+    }
     return this.#inner.list(prefix, opts);
   }
   delete(keys: string[]) {
@@ -168,6 +179,16 @@ describe("FsSync", () => {
     } finally {
       delete process.env.SLAUDE_SYNC_STATE_DIR;
     }
+  });
+
+  test("preparing a unit marks it in use, so a bucket sweeper never takes it from under a resuming session", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = machine();
+    const a = nodeSync({ id: "node-a", store, redis, m });
+    await a.beforeTurn("s1", "default");
+    expect(redis.keys()).toContain(`test:fsinuse:${wsUnitId(m.cwd)}`);
+    a.stop();
   });
 
   test("a turn on node A is visible, with its transcript, on node B", async () => {
@@ -324,6 +345,89 @@ describe("FsSync", () => {
     expect(await b.beforeTurn("s1", "default")).toBe("ok");
     expect(readFileSync(join(mb.cwd, "f.txt"), "utf8")).toBe("committed");
     // Only the workspace unit had edits the store never got: the transcript had nothing new to put.
+    expect(counter("slaude_storage_unflushed_loss_total")).toBe(lossBefore + 1);
+  });
+
+  /** Node A leaves unflushed edits behind (its flush failed), then dies; returns what a recreated node on the SAME disk sees. */
+  async function deadOwnerOnSameDisk() {
+    const flaky = new FlakyStore(new LocalObjectStore(tmp("store")));
+    const redis = memRedis();
+    const m = machine();
+    const a = nodeSync({ id: "node-a", store: flaky, redis, m, alive: () => false });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(m.cwd, "f.txt"), "committed");
+    await a.afterTurn("s1", false);
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(m.cwd, "f.txt"), "edited after the last flush");
+    flaky.failing = true;
+    await a.afterTurn("s1", false);
+    a.stop(); // the process is gone; its disk and Redis mark remain
+    flaky.failing = false;
+    return { flaky, redis, m };
+  }
+
+  test("a recreated node whose own copy still matches the store does not count a loss, and the edits survive", async () => {
+    const { flaky, redis, m } = await deadOwnerOnSameDisk();
+    const lossBefore = counter("slaude_storage_unflushed_loss_total");
+    const b = nodeSync({ id: "node-b", store: flaky, redis, m, alive: () => false });
+    expect(await b.beforeTurn("s1", "default")).toBe("ok");
+    expect(counter("slaude_storage_unflushed_loss_total")).toBe(lossBefore);
+    expect(readFileSync(join(m.cwd, "f.txt"), "utf8")).toBe("edited after the last flush");
+    await b.afterTurn("s1", false);
+    // Nothing was lost: a third node on a fresh disk now sees the edit.
+    const mc = { ...m, claude: m.claude + "-c", state: m.state + "-c" };
+    wipe(mc);
+    const c = nodeSync({ id: "node-c", store: flaky, redis, m: mc, alive: () => false });
+    await c.beforeTurn("s1", "default");
+    expect(readFileSync(join(mc.cwd, "f.txt"), "utf8")).toBe("edited after the last flush");
+  });
+
+  test("a mark left by another disk is a loss even when this disk's copy matches the store: the edits are on that other disk", async () => {
+    const { flaky, redis, m } = await deadOwnerOnSameDisk();
+    // The unit had moved: another node, on another disk, held the newest edits when it died. Its mark names its disk.
+    const key = `test:fsflush:${wsUnitId(m.cwd)}`;
+    const mark = JSON.parse((await redis.get(key))!) as Record<string, unknown>;
+    await redis.set(key, JSON.stringify({ ...mark, node: "node-elsewhere", disk: "some-other-disk" }));
+    const lossBefore = counter("slaude_storage_unflushed_loss_total");
+    const b = nodeSync({ id: "node-b", store: flaky, redis, m, alive: () => false });
+    await b.beforeTurn("s1", "default");
+    expect(counter("slaude_storage_unflushed_loss_total")).toBe(lossBefore + 1);
+  });
+
+  test("a mark written before disks were identified is treated as a loss, the safe direction", async () => {
+    const { flaky, redis, m } = await deadOwnerOnSameDisk();
+    const key = `test:fsflush:${wsUnitId(m.cwd)}`;
+    const { disk: _ignored, ...legacy } = JSON.parse((await redis.get(key))!) as Record<string, unknown>;
+    await redis.set(key, JSON.stringify(legacy));
+    const lossBefore = counter("slaude_storage_unflushed_loss_total");
+    const b = nodeSync({ id: "node-b", store: flaky, redis, m, alive: () => false });
+    await b.beforeTurn("s1", "default");
+    expect(counter("slaude_storage_unflushed_loss_total")).toBe(lossBefore + 1);
+  });
+
+  test("the mark a failed flush leaves names the disk that holds the edits", async () => {
+    const { redis, m } = await deadOwnerOnSameDisk();
+    const mark = JSON.parse((await redis.get(`test:fsflush:${wsUnitId(m.cwd)}`))!) as { node?: string; disk?: string };
+    expect(mark.node).toBe("node-a");
+    expect(typeof mark.disk).toBe("string");
+    expect(mark.disk!.length).toBeGreaterThan(8);
+  });
+
+  test("a dead owner with a local marker that is not the latest manifest still counts a loss", async () => {
+    const { flaky, redis, m } = await deadOwnerOnSameDisk();
+    writeFileSync(join(m.state, `${wsUnitId(m.cwd)}.json`), JSON.stringify({ id: "0000000000-000000" }));
+    const lossBefore = counter("slaude_storage_unflushed_loss_total");
+    const b = nodeSync({ id: "node-b", store: flaky, redis, m, alive: () => false });
+    await b.beforeTurn("s1", "default");
+    expect(counter("slaude_storage_unflushed_loss_total")).toBe(lossBefore + 1);
+  });
+
+  test("when the latest manifest cannot be read, a dead owner is counted as a loss", async () => {
+    const { flaky, redis, m } = await deadOwnerOnSameDisk();
+    const lossBefore = counter("slaude_storage_unflushed_loss_total");
+    const b = nodeSync({ id: "node-b", store: flaky, redis, m, alive: () => false });
+    flaky.failNextList = `sessions/${wsUnitId(m.cwd)}/`;
+    await b.beforeTurn("s1", "default");
     expect(counter("slaude_storage_unflushed_loss_total")).toBe(lossBefore + 1);
   });
 

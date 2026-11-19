@@ -45,8 +45,11 @@ each have their own manifest series and their own fencing epoch.
 | `SLAUDE_S3_PATH_STYLE` | `1` for path-style addressing. Defaults on when an endpoint is set |
 | `SLAUDE_S3_ACCESS_KEY_ID`, `SLAUDE_S3_SECRET_ACCESS_KEY` | Credentials (required) |
 | `SLAUDE_SYNC_FLUSH` | `turn` (default) or `idle`, see below |
-| `SLAUDE_SYNC_IGNORE` | Comma-separated directory or file names that never sync. Default `node_modules,.cache,__pycache__` |
+| `SLAUDE_SYNC_IGNORE` | Comma-separated directory or file names that never sync. Default `node_modules,.cache,__pycache__,.venv` (a virtualenv is rebuilt from its requirements, not synced; `.git` is deliberately not ignored) |
 | `SLAUDE_SYNC_STATE_DIR` | Absolute path where a node keeps its sync markers and the skills sync state. Default `$SLAUDE_HOME/.sync-state`. Set it when the worker cannot write `$SLAUDE_HOME`, to a directory that survives a restart. See [One machine, a non-root worker](#one-machine-a-non-root-worker) |
+| `SLAUDE_STORAGE_SWEEP` | `off` (default), `dry-run` or `on`. The gateway deletes stored directories nothing has written to for a long time and uncollected attachments, see [Cleaning up the bucket](#cleaning-up-the-bucket). An unknown value means `off` |
+| `SLAUDE_STORAGE_RETAIN_DAYS` | A stored directory is deleted only when its newest object is older than this. Default `90` |
+| `SLAUDE_STORAGE_INBOX_TTL_HOURS` | An attachment no node collected is deleted when older than this. Default `168` |
 
 Only the S3 API is assumed (get, put, head, list, delete, multipart upload), so
 any compatible endpoint works: AWS S3, Cloudflare R2, or a server you host
@@ -100,7 +103,10 @@ node took over) is refused rather than merged; see
 A `write_skill`, delete, retire or restore on any process updates its local copy,
 uploads the skill, and announces it on the `skills-changed` Redis channel. Every
 other process refetches that one skill and swaps it in with a rename, so the new
-text is visible to the next tool call. Each turn also reconciles with the bucket,
+file is current on every node by the next tool call. The agent SDK reads its
+plugins when a query starts, so the `Skill` tool in a session that is already
+running does not see a skill written, renamed or deleted after that point; the
+agent's next session does. Each turn also reconciles with the bucket,
 which repairs a missed announcement. A write the bucket did not accept is kept
 and retried before every reconcile, and a pull never replaces an edit that has
 not been published yet. Deleting a runtime skill that overlaid a bundled one
@@ -111,6 +117,26 @@ A retired skill's old copy stays on the machine that retired it (and goes with
 that pod); every other process sees the skill removed. Restoring it works only
 there. Old versions of a skill stay in the bucket under `shared/skills/`; they
 are small, and nothing sweeps them yet.
+
+## Cleaning up the bucket
+
+Each directory's own history is trimmed as it syncs (the newest manifests are kept and unreferenced blobs go). What nothing trimmed
+was a directory nobody uses any more, and attachments no node collected. The gateway can sweep both, once a day, from one replica
+at a time (a Redis lock). It is **off by default** because it deletes data.
+
+- `SLAUDE_STORAGE_SWEEP=dry-run` logs what it would delete and deletes nothing. Run that first.
+- `SLAUDE_STORAGE_SWEEP=on` deletes a stored directory (`sessions/<unit>/`, its manifests and blobs together) when its newest
+  object is older than `SLAUDE_STORAGE_RETAIN_DAYS` (default 90), and an `inbox/` object older than
+  `SLAUDE_STORAGE_INBOX_TTL_HOURS` (default 168).
+- The age is the newest object's modified time, so only writes count; reading or resuming a session does not. That is why the default
+  window is long. A directory is shared by every session that works in it, so the directory's age decides, never one session's.
+- Never swept: a directory with a pending flush (a node still holds edits the store has not got), a directory a node has open
+  (a node marks a directory in use in Redis for 30 minutes at every prepare and flush), a directory with any object that reports no
+  modified time (its age is unknown), and anything outside `sessions/` and `inbox/` (runtime skills are not touched). The sweeper
+  also lists a directory again right before deleting it and keeps it if anything new has appeared.
+- A dry run does not take the day's lock, so switching to `on` afterwards sweeps at the next run; the lock is held 23 hours.
+- A session whose directory was swept and that resumes later gets a fresh working directory; its transcript is gone too, so the
+  agent starts a new conversation (the same path as any resume miss).
 
 ## Deploying
 
@@ -164,7 +190,7 @@ each of them in `s3` mode:
 - **Attachments.** The gateway downloads a Slack file into a private temp directory, puts it in the bucket's `inbox/`
   and tells the agent the path it will have in the working directory. The node places it there before the turn. A file
   the node cannot place stays in the inbox for the next turn and is logged, and one bad file does not hold up the rest.
-  Nothing clears an inbox object that no node ever collects.
+  An inbox object no node ever collects is removed by the sweeper (see [Cleaning up the bucket](#cleaning-up-the-bucket)); with it off, nothing clears it.
 
 Because both processes still share the data directory, the local copy stays where it is until a session goes idle:
 the bucket then holds a replica, not the only copy, until eviction removes the local one. Back up the bucket's storage

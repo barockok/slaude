@@ -29,7 +29,7 @@ export const skillsContract = {
         slug: z
           .string()
           .describe("Lowercase a-z 0-9 -, ≤64 chars. Invoked as /<slug>."),
-        name: z.string().describe("Human-readable name."),
+        name: z.string().describe("Short title. The skill is always called by its slug; this is kept as its title."),
         description: z
           .string()
           .describe("One-line description shown to the model on match."),

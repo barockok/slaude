@@ -1324,6 +1324,49 @@ describe("AgentManager reload around a turn in flight", () => {
     expect(mgr.reloadAfterTurn(row.id)).toBe(false);
   });
 
+  it("reloadAfterTurn with a prompt boots the fresh session with that prompt, as reload does", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    plan((s) => {
+      s.onUser = () => s.emit(res());
+    });
+    await mgr.sendMessage(row.id, "hello");
+    await until(() => events.some((e) => e.type === "done"), 3000, "done");
+    const second = plan((s) => {
+      s.onUser = () => s.emit(res());
+    });
+    expect(mgr.reloadAfterTurn(row.id, "carry on")).toBe(true);
+    await until(() => second.users.length === 1, 3000, "prompt delivered to the fresh session");
+    expect(String(second.users[0].message.content)).toContain("carry on");
+    await shutdown(mgr, row.id);
+  });
+
+  it("reloadAfterTurn with a prompt defers behind a turn in flight and still delivers the prompt", async () => {
+    const mgr = new AgentManager();
+    const events = record(mgr);
+    const row = await mgr.ensureSession(thread());
+    let finish: () => void = () => {};
+    const first = plan((s) => {
+      s.onUser = () => {
+        finish = () => s.emit(res());
+      };
+    });
+    await mgr.sendMessage(row.id, "long turn");
+    await until(() => first.users.length === 1, 3000, "turn delivered");
+    const second = plan((s) => {
+      s.onUser = () => s.emit(res());
+    });
+    expect(mgr.reloadAfterTurn(row.id, "after the turn")).toBe(true);
+    await Bun.sleep(30);
+    expect(first.ended).toBe(false); // input stays open until the turn's result
+    finish();
+    await until(() => second.users.length === 1, 3000, "prompt delivered after the turn");
+    expect(String(second.users[0].message.content)).toContain("after the turn");
+    expect(events.filter((e) => e.type === "error")).toHaveLength(0);
+    await shutdown(mgr, row.id);
+  });
+
   it("a message sent while the session is reloading is delivered by a fresh session, not dropped", async () => {
     const mgr = new AgentManager();
     const events = record(mgr);

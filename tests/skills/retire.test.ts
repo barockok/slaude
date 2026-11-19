@@ -48,7 +48,7 @@ describe("write_skill stamps provenance", () => {
     const r = await makeSkillHandlers().write_skill({ slug: "greet", name: "Greet", description: "say hi", body: "hello" });
     expect(r.isError).toBeUndefined();
     const md = readFileSync(join(paths.skills, "greet", "SKILL.md"), "utf8");
-    expect(md).toMatch(/^---\nname: "Greet"\ndescription: "say hi"\nauthored_by: "agent"\nauthored_at: "\d{4}-\d\d-\d\dT[\d:.]+Z"\n---\nhello\n$/);
+    expect(md).toMatch(/^---\nname: "greet"\ntitle: "Greet"\ndescription: "say hi"\nauthored_by: "agent"\nauthored_at: "\d{4}-\d\d-\d\dT[\d:.]+Z"\n---\nhello\n$/);
     const s = discoverSkills().find((x) => x.slug === "greet")!;
     expect(s.authoredBy).toBe("agent");
     expect(Date.parse(s.authoredAt!)).toBeGreaterThan(0);
@@ -60,7 +60,8 @@ describe("write_skill stamps provenance", () => {
     const s = discoverSkills().find((x) => x.slug === "sneaky")!;
     expect(s.authoredBy).toBe("agent");
     expect(s.authoredAt).toBe(NOW.toISOString());
-    expect(s.name).toBe("x\nauthored_by: operator");
+    expect(s.name).toBe("sneaky"); // the CLI-visible name is the slug; the awkward text is only the title
+    expect(s.title).toBe("x\nauthored_by: operator");
   });
 
   test("buildSkillMd without authorship writes no provenance keys", () => {

@@ -31,9 +31,13 @@ export function skillUsageKey(raw: string, homePlugin: string = cliPluginName(pa
   return n;
 }
 
-/** The usage keys a skill in a skills root answers to: its slug and its CLI name. */
-export function usageKeysOf(skill: Pick<Skill, "slug" | "name">): string[] {
-  return [...new Set([skill.slug, cliSkillName(skill.name)])];
+/**
+ * The usage keys a skill in a skills root answers to: its slug and its CLI name, and the CLI name of its old
+ * title. Before write_skill named skills by slug the CLI called a skill by its title, so uses recorded then sit
+ * under that key; without it a renamed skill would look idle to the weekly review and be retired.
+ */
+export function usageKeysOf(skill: Pick<Skill, "slug" | "name"> & { title?: string }): string[] {
+  return [...new Set([skill.slug, cliSkillName(skill.name), ...(skill.title ? [cliSkillName(skill.title)] : [])])];
 }
 
 /** Record one use; logged on failure, never thrown. */
