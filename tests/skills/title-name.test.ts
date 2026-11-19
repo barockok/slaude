@@ -6,6 +6,7 @@ import { skillHandlers, skillOps } from "../../src/skills/mcp-tools";
 import { buildSkillInvocation, discoverSkills, parseSkillText } from "../../src/skills/loader";
 import { allowedSkillNames } from "../../src/agent/skill-allow";
 import { cliSkillName } from "../../src/soul/builtin";
+import { usageKeysOf } from "../../src/skills/usage";
 
 beforeEach(() => {
   ensureHome();
@@ -51,5 +52,14 @@ describe("a skill written with a human title is still named by its slug", () => 
     const names = allowedSkillNames(["clone-repo"], undefined);
     expect(names).toContain("clone-repo");
     expect(names).toContain(cliSkillName("Clone a repo by name"));
+  });
+
+  test("usage recorded under the old title's CLI name still counts for the renamed skill, so review does not see it as idle", () => {
+    skillOps.write("clone-repo", "Clone a repo by name", "clone it", "body");
+    const skill = discoverSkills().find((x) => x.slug === "clone-repo")!;
+    const keys = usageKeysOf(skill);
+    expect(keys).toContain("clone-repo");
+    expect(keys).toContain(cliSkillName("Clone a repo by name"));
+    expect(usageKeysOf({ slug: "plain", name: "plain" })).toEqual(["plain"]);
   });
 });
