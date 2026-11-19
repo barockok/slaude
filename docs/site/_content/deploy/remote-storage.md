@@ -130,8 +130,11 @@ at a time (a Redis lock). It is **off by default** because it deletes data.
   `SLAUDE_STORAGE_INBOX_TTL_HOURS` (default 168).
 - The age is the newest object's modified time, so only writes count; reading or resuming a session does not. That is why the default
   window is long. A directory is shared by every session that works in it, so the directory's age decides, never one session's.
-- Never swept: a directory with a pending flush (a node still holds edits the store has not got), a directory with any object that
-  reports no modified time (its age is unknown), and anything outside `sessions/` and `inbox/` (runtime skills are not touched).
+- Never swept: a directory with a pending flush (a node still holds edits the store has not got), a directory a node has open
+  (a node marks a directory in use in Redis for 30 minutes at every prepare and flush), a directory with any object that reports no
+  modified time (its age is unknown), and anything outside `sessions/` and `inbox/` (runtime skills are not touched). The sweeper
+  also lists a directory again right before deleting it and keeps it if anything new has appeared.
+- A dry run does not take the day's lock, so switching to `on` afterwards sweeps at the next run; the lock is held 23 hours.
 - A session whose directory was swept and that resumes later gets a fresh working directory; its transcript is gone too, so the
   agent starts a new conversation (the same path as any resume miss).
 

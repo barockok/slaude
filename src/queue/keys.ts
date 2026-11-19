@@ -97,6 +97,8 @@ export interface Keys {
   fsEpoch(unit: string): string;
   /** `fsflush:<unit>` — set while a unit's last flush failed: JSON `{node, since}`. The node named holds the newest copy. */
   needsFlush(unit: string): string;
+  /** Short-lived mark that a node has this unit open (prepared or flushing); the bucket sweeper never deletes a unit that has one. */
+  fsInUse(unit: string): string;
   /** `lock:leader:<role>` — cron / reaper / migrate leader election. */
   leaderLock(role: string): string;
   /** `coalesce:<sessionId>` — pending-job index for message coalescing. */
@@ -178,6 +180,7 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     workspaceLock: (dir) => `${prefix}:lock:workspace:${createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 32)}`,
     fsEpoch: (unit) => `${prefix}:fsepoch:${unit}`,
     needsFlush: (unit) => `${prefix}:fsflush:${unit}`,
+    fsInUse: (unit) => `${prefix}:fsinuse:${unit}`,
     leaderLock: (role) => `${prefix}:lock:leader:${role}`,
     coalesce: (sessionId) => `${prefix}:coalesce:${sessionId}`,
     coalesceLock: (sessionId) => `${prefix}:lock:coalesce:${sessionId}`,

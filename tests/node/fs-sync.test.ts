@@ -181,6 +181,16 @@ describe("FsSync", () => {
     }
   });
 
+  test("preparing a unit marks it in use, so a bucket sweeper never takes it from under a resuming session", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = machine();
+    const a = nodeSync({ id: "node-a", store, redis, m });
+    await a.beforeTurn("s1", "default");
+    expect(redis.keys()).toContain(`test:fsinuse:${wsUnitId(m.cwd)}`);
+    a.stop();
+  });
+
   test("a turn on node A is visible, with its transcript, on node B", async () => {
     const store = new LocalObjectStore(tmp("store"));
     const redis = memRedis();

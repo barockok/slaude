@@ -95,6 +95,25 @@ describe("sweepUnits", () => {
     expect(s.keys()).toEqual(["inbox/ws-a/file.txt", "sessions/ws-ab/blobs/x", "shared/skills/global/s/1/SKILL.md"]);
   });
 
+  test("a unit that gains an object between the listing and the delete is kept: a resuming session is writing it", async () => {
+    class RacyStore extends MemStore {
+      injected = false;
+      override async *list(prefix: string): AsyncIterable<ObjectInfo> {
+        if (prefix === "sessions/ws-race/" && !this.injected) {
+          this.injected = true; // the session's flush lands after the sweeper's first listing
+          this.add("sessions/ws-race/manifest/0000000002-000001.json", 1000);
+        }
+        yield* super.list(prefix);
+      }
+    }
+    const s = new RacyStore().add("sessions/ws-race/blobs/old", 500 * DAY).add("sessions/ws-other/blobs/old", 500 * DAY);
+    const r = await sweepUnits(s, { retainMs: 90 * DAY, now: NOW });
+    expect(r.unitsDeleted).toEqual(["ws-other"]);
+    expect(r.unitsKept).toBe(1);
+    expect(s.keys().some((k) => k.startsWith("sessions/ws-race/"))).toBe(true);
+    expect(s.keys().some((k) => k.startsWith("sessions/ws-other/"))).toBe(false);
+  });
+
   test("an empty store is a no-op", async () => {
     expect(await sweepUnits(new MemStore(), { retainMs: DAY, now: NOW })).toEqual({ unitsDeleted: [], unitsKept: 0, objectsDeleted: 0 });
   });
@@ -204,6 +223,19 @@ describe("runStorageSweep", () => {
     const real = await runStorageSweep({ store: s, redis, keys, cfg: { mode: "on", retainMs: 90 * DAY, inboxTtlMs: DAY }, now: NOW });
     expect(real?.units.unitsDeleted).toEqual(["ws-gone"]);
     expect(s.keys()).toEqual([]);
+  });
+
+  test("a unit a node has marked in use is never swept, whatever its age", async () => {
+    const s = new MemStore().add("sessions/ws-busy/blobs/x", 500 * DAY).add("sessions/ws-gone/blobs/x", 500 * DAY);
+    const r = await runStorageSweep({
+      store: s,
+      redis: fakeRedis(new Set(), new Set(["inuse:ws-busy"])),
+      keys,
+      cfg: { mode: "on", retainMs: 90 * DAY, inboxTtlMs: DAY },
+      now: NOW,
+    });
+    expect(r?.units.unitsDeleted).toEqual(["ws-gone"]);
+    expect(s.keys()).toEqual(["sessions/ws-busy/blobs/x"]);
   });
 
   test("dry-run deletes nothing but still reports", async () => {

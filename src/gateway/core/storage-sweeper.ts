@@ -13,7 +13,7 @@ const LOCK_TTL_MS = DAY_MS - 3_600_000;
 export interface SweeperDeps {
   store: ObjectStore;
   redis: Pick<Redis, "set" | "get">;
-  keys: Pick<Keys, "storageSweepLock" | "needsFlush">;
+  keys: Pick<Keys, "storageSweepLock" | "needsFlush" | "fsInUse">;
   cfg: SweepConfig;
   now?: number;
   /** How long the lock is held: one sweep per interval across replicas. Default 23 hours. */
@@ -22,7 +22,8 @@ export interface SweeperDeps {
 
 /**
  * One sweep of the bucket, or null when it did not run (mode off, or another replica already took this interval's
- * lock). A unit with a needs-flush mark is never swept: a node still holds edits the store has not got.
+ * lock). A unit with a needs-flush mark (a node holds edits the store has not got) or an in-use mark (a node has it open)
+ * is never swept.
  */
 export async function runStorageSweep(d: SweeperDeps): Promise<{ units: UnitSweepResult; inbox: { objectsDeleted: number } } | null> {
   if (d.cfg.mode === "off") return null;
@@ -34,7 +35,7 @@ export async function runStorageSweep(d: SweeperDeps): Promise<{ units: UnitSwee
     retainMs: d.cfg.retainMs,
     ...(d.now !== undefined ? { now: d.now } : {}),
     dryRun,
-    skip: async (unit) => (await d.redis.get(d.keys.needsFlush(unit))) !== null,
+    skip: async (unit) => (await d.redis.get(d.keys.needsFlush(unit))) !== null || (await d.redis.get(d.keys.fsInUse(unit))) !== null,
   });
   const inbox = await sweepInbox(d.store, { ttlMs: d.cfg.inboxTtlMs, ...(d.now !== undefined ? { now: d.now } : {}), dryRun });
   console.log(

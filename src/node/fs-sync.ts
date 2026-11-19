@@ -57,6 +57,8 @@ export { encodeProjectDir };
 
 /** How long a node waits for another, live node to flush before continuing from the last committed manifest. */
 const WAIT_FOR_OWNER_MS = 120_000;
+/** How long a unit counts as open after its last prepare or flush. A turn longer than this refreshes it at its flush. */
+const IN_USE_TTL_MS = 30 * 60_000;
 const RETRY_BASE_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 /** A unit's old manifests and unreferenced blobs are swept every this many committed flushes. */
@@ -236,8 +238,14 @@ export class FsSync {
     }
   }
 
+  /** Tell the bucket sweeper this unit is open on this node. Refreshed at every prepare and flush, so it outlives a long turn. */
+  async #markInUse(unit: Unit): Promise<void> {
+    await this.#d.redis.set(this.#d.keys.fsInUse(unit.id), this.#d.nodeId, "PX", IN_USE_TTL_MS);
+  }
+
   async #prepare(unit: Unit): Promise<"ok" | "wait"> {
     const { redis, keys, nodeId, store } = this.#d;
+    await this.#markInUse(unit);
     const raw = await redis.get(keys.needsFlush(unit.id));
     let ownPending = false;
     if (raw) {
@@ -299,6 +307,7 @@ export class FsSync {
 
   async #flushNow(unit: Unit): Promise<void> {
     const { store, redis, keys } = this.#d;
+    await this.#markInUse(unit).catch(() => {}); // best effort: a failed mark must not fail the flush
     const t0 = this.#now();
     try {
       const r = await flushTree(store, unit.id, [unit.root], {

@@ -4,6 +4,15 @@ const SESSIONS = "sessions/";
 const INBOX = "inbox/";
 const DELETE_BATCH = 500;
 
+/** True when the unit now holds a key the first listing did not, or any object newer than it saw (or of unknown age). */
+async function changedSince(store: ObjectStore, unit: string, before: { keys: string[]; newest: number }): Promise<boolean> {
+  const known = new Set(before.keys);
+  for await (const obj of store.list(`${SESSIONS}${unit}/`)) {
+    if (!known.has(obj.key) || obj.modified === undefined || obj.modified > before.newest) return true;
+  }
+  return false;
+}
+
 export interface UnitSweepResult {
   /** Units deleted (or, in a dry run, that would be). */
   unitsDeleted: string[];
@@ -45,7 +54,15 @@ export async function sweepUnits(
       result.unitsKept++;
       continue;
     }
-    if (!o.dryRun) await deleteAll(store, u.keys);
+    if (!o.dryRun) {
+      // A resuming session may have started writing this unit after the listing above: look again right before the
+      // delete and keep the unit if anything is new or newer. (The nodes' in-use mark closes the rest of the window.)
+      if (await changedSince(store, unit, u)) {
+        result.unitsKept++;
+        continue;
+      }
+      await deleteAll(store, u.keys);
+    }
     result.unitsDeleted.push(unit);
     result.objectsDeleted += u.keys.length;
   }
