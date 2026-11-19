@@ -382,6 +382,37 @@ describe("FsSync", () => {
     expect(readFileSync(join(mc.cwd, "f.txt"), "utf8")).toBe("edited after the last flush");
   });
 
+  test("a mark left by another disk is a loss even when this disk's copy matches the store: the edits are on that other disk", async () => {
+    const { flaky, redis, m } = await deadOwnerOnSameDisk();
+    // The unit had moved: another node, on another disk, held the newest edits when it died. Its mark names its disk.
+    const key = `test:fsflush:${wsUnitId(m.cwd)}`;
+    const mark = JSON.parse((await redis.get(key))!) as Record<string, unknown>;
+    await redis.set(key, JSON.stringify({ ...mark, node: "node-elsewhere", disk: "some-other-disk" }));
+    const lossBefore = counter("slaude_storage_unflushed_loss_total");
+    const b = nodeSync({ id: "node-b", store: flaky, redis, m, alive: () => false });
+    await b.beforeTurn("s1", "default");
+    expect(counter("slaude_storage_unflushed_loss_total")).toBe(lossBefore + 1);
+  });
+
+  test("a mark written before disks were identified is treated as a loss, the safe direction", async () => {
+    const { flaky, redis, m } = await deadOwnerOnSameDisk();
+    const key = `test:fsflush:${wsUnitId(m.cwd)}`;
+    const { disk: _ignored, ...legacy } = JSON.parse((await redis.get(key))!) as Record<string, unknown>;
+    await redis.set(key, JSON.stringify(legacy));
+    const lossBefore = counter("slaude_storage_unflushed_loss_total");
+    const b = nodeSync({ id: "node-b", store: flaky, redis, m, alive: () => false });
+    await b.beforeTurn("s1", "default");
+    expect(counter("slaude_storage_unflushed_loss_total")).toBe(lossBefore + 1);
+  });
+
+  test("the mark a failed flush leaves names the disk that holds the edits", async () => {
+    const { redis, m } = await deadOwnerOnSameDisk();
+    const mark = JSON.parse((await redis.get(`test:fsflush:${wsUnitId(m.cwd)}`))!) as { node?: string; disk?: string };
+    expect(mark.node).toBe("node-a");
+    expect(typeof mark.disk).toBe("string");
+    expect(mark.disk!.length).toBeGreaterThan(8);
+  });
+
   test("a dead owner with a local marker that is not the latest manifest still counts a loss", async () => {
     const { flaky, redis, m } = await deadOwnerOnSameDisk();
     writeFileSync(join(m.state, `${wsUnitId(m.cwd)}.json`), JSON.stringify({ id: "0000000000-000000" }));

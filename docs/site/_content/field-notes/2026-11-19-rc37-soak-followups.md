@@ -61,7 +61,10 @@ day (a Redis lock held for the interval). An unreadable setting is `off`, never 
 recreated on the same disk is a new node, but its local files and its sync marker survive. When the marker still names
 the newest stored manifest the hydrate is a warm no-op, the edits stay on disk and the next flush uploads them, so
 nothing is lost and an alert on the counter would fire on every deploy. The dead-owner branch now reads the marker and
-the latest manifest first; only a mismatch, or a read that fails, counts a loss.
+the latest manifest first; only a mismatch, or a read that fails, counts a loss. A marker matching the store is not enough:
+it is true for any disk that once hydrated that manifest, including one the unit has since left. So a needs-flush mark records
+an id of the disk (kept with the sync markers) that holds the edits, and "recovered" needs the mark's disk to be this disk;
+a mark from another disk, or one written before disks were identified, still counts a loss.
 
 ## Smaller changes
 
