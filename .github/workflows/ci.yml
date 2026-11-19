@@ -20,8 +20,19 @@ jobs:
       contents: read
     # An S3-compatible endpoint for tests/storage and the tree-sync suites, so the
     # S3 backend is exercised (and counted in coverage) rather than skipped. Any S3
-    # server would do; this one starts with its default command.
+    # server would do; this one starts with its default command. A Redis for the
+    # real-Redis suites (reload routing, the storage sweeper's lock, dispatch), for
+    # the same reason: skipped tests leave the code they cover out of the report.
     services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
       s3:
         image: rustfs/rustfs:latest
         ports:
@@ -82,6 +93,7 @@ jobs:
         env:
           SUITE_PASS_FLOOR: "1400"
           SLAUDE_S3_TEST_ENDPOINT: http://localhost:9000
+          SLAUDE_REDIS_TEST_URL: redis://localhost:6379
         run: |
           set +e
           bun test --coverage --parallel=1 2>&1 | tee test-output.txt
