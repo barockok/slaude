@@ -4,7 +4,7 @@
  * runaway tree, so the default is conservative; `SLAUDE_SYNC_IGNORE` replaces it
  * (comma-separated names, not globs).
  */
-export const DEFAULT_IGNORE = ["node_modules", ".cache", "__pycache__"];
+export const DEFAULT_IGNORE = ["node_modules", ".cache", "__pycache__", ".venv"];
 
 /** Always ignored, whatever the list says: the sync's own bookkeeping. */
 const ALWAYS = /^\.slaude-sync(\.|$)/;

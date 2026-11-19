@@ -45,7 +45,7 @@ each have their own manifest series and their own fencing epoch.
 | `SLAUDE_S3_PATH_STYLE` | `1` for path-style addressing. Defaults on when an endpoint is set |
 | `SLAUDE_S3_ACCESS_KEY_ID`, `SLAUDE_S3_SECRET_ACCESS_KEY` | Credentials (required) |
 | `SLAUDE_SYNC_FLUSH` | `turn` (default) or `idle`, see below |
-| `SLAUDE_SYNC_IGNORE` | Comma-separated directory or file names that never sync. Default `node_modules,.cache,__pycache__` |
+| `SLAUDE_SYNC_IGNORE` | Comma-separated directory or file names that never sync. Default `node_modules,.cache,__pycache__,.venv` (a virtualenv is rebuilt from its requirements, not synced; `.git` is deliberately not ignored) |
 | `SLAUDE_SYNC_STATE_DIR` | Absolute path where a node keeps its sync markers and the skills sync state. Default `$SLAUDE_HOME/.sync-state`. Set it when the worker cannot write `$SLAUDE_HOME`, to a directory that survives a restart. See [One machine, a non-root worker](#one-machine-a-non-root-worker) |
 
 Only the S3 API is assumed (get, put, head, list, delete, multipart upload), so
