@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { Redis } from "ioredis";
 import type { Keys } from "../../queue/keys";
-import { acquireLock } from "../../queue/locks";
+import { acquireLock, releaseLock } from "../../queue/locks";
 import type { SweepConfig } from "../../storage/config";
 import type { ObjectStore } from "../../storage/object-store";
 import { sweepInbox, sweepUnits, type UnitSweepResult } from "../../storage/sweep";
 
 const DAY_MS = 86_400_000;
+/** One hour under the interval: a replica's own next tick (and its clock skew) must never find its own lock still held. */
+const LOCK_TTL_MS = DAY_MS - 3_600_000;
 
 export interface SweeperDeps {
   store: ObjectStore;
@@ -14,7 +16,7 @@ export interface SweeperDeps {
   keys: Pick<Keys, "storageSweepLock" | "needsFlush">;
   cfg: SweepConfig;
   now?: number;
-  /** How long the lock is held: one sweep per interval across replicas. Default 24 hours. */
+  /** How long the lock is held: one sweep per interval across replicas. Default 23 hours. */
   lockTtlMs?: number;
 }
 
@@ -24,7 +26,9 @@ export interface SweeperDeps {
  */
 export async function runStorageSweep(d: SweeperDeps): Promise<{ units: UnitSweepResult; inbox: { objectsDeleted: number } } | null> {
   if (d.cfg.mode === "off") return null;
-  if (!(await acquireLock(d.redis as Redis, d.keys.storageSweepLock(), randomUUID(), d.lockTtlMs ?? DAY_MS))) return null;
+  const lockKey = d.keys.storageSweepLock();
+  const owner = randomUUID();
+  if (!(await acquireLock(d.redis as Redis, lockKey, owner, d.lockTtlMs ?? LOCK_TTL_MS))) return null;
   const dryRun = d.cfg.mode === "dry-run";
   const units = await sweepUnits(d.store, {
     retainMs: d.cfg.retainMs,
@@ -37,6 +41,8 @@ export async function runStorageSweep(d: SweeperDeps): Promise<{ units: UnitSwee
     `[storage-sweep] ${dryRun ? "dry run: would delete" : "deleted"} ${units.unitsDeleted.length} unit(s) (${units.objectsDeleted} objects), ` +
       `${inbox.objectsDeleted} inbox object(s); kept ${units.unitsKept} unit(s)${units.unitsDeleted.length ? `: ${units.unitsDeleted.join(", ")}` : ""}`,
   );
+  // A dry run must not take this interval's turn: the operator switches to `on` next, and would otherwise wait a day.
+  if (dryRun) await releaseLock(d.redis as Redis, lockKey, owner).catch(() => {});
   return { units, inbox };
 }
 

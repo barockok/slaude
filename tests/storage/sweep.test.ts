@@ -141,13 +141,20 @@ describe("storageSweepConfig", () => {
   });
 });
 
-/** The two Redis commands the sweeper uses: SET NX PX (the lock) and GET (the needs-flush mark). */
+/** The Redis commands the sweeper uses: SET NX PX (the lock), the compare-owner release (EVAL), and GET (marks). */
+const lockTtls: number[] = [];
 const fakeRedis = (held: Set<string> = new Set(), marks: Set<string> = new Set()) =>
   ({
-    set: async (k: string, _v: string, _px: string, _ttl: number, _nx: string) => (held.has(k) ? null : (held.add(k), "OK")),
+    set: async (k: string, _v: string, _px: string, ttl: number, _nx: string) => {
+      if (held.has(k)) return null;
+      lockTtls.push(ttl);
+      held.add(k);
+      return "OK";
+    },
+    eval: async (_script: string, _n: number, key: string) => (held.delete(key) ? 1 : 0),
     get: async (k: string) => (marks.has(k) ? "{}" : null),
   }) as never;
-const keys = { storageSweepLock: () => "lock:sweep", needsFlush: (u: string) => `flush:${u}` } as never;
+const keys = { storageSweepLock: () => "lock:sweep", needsFlush: (u: string) => `flush:${u}`, fsInUse: (u: string) => `inuse:${u}` } as never;
 
 describe("runStorageSweep", () => {
   test("mode off lists and deletes nothing", async () => {
@@ -178,6 +185,25 @@ describe("runStorageSweep", () => {
     expect(r?.units.unitsDeleted).toEqual(["ws-gone"]);
     expect(r?.inbox.objectsDeleted).toBe(1);
     expect(s.keys()).toEqual(["sessions/ws-pending/blobs/x"]);
+  });
+
+  test("the lock is held for one hour less than the interval, so a replica's own next tick is never blocked by it", async () => {
+    lockTtls.length = 0;
+    const s = new MemStore();
+    await runStorageSweep({ store: s, redis: fakeRedis(), keys, cfg: { mode: "on", retainMs: DAY, inboxTtlMs: DAY }, now: NOW });
+    expect(lockTtls).toEqual([DAY - 3_600_000]);
+  });
+
+  test("a dry run releases the lock, so switching to on is not blocked for a day", async () => {
+    const held = new Set<string>();
+    const s = new MemStore().add("sessions/ws-gone/blobs/x", 500 * DAY);
+    const redis = fakeRedis(held);
+    const dry = await runStorageSweep({ store: s, redis, keys, cfg: { mode: "dry-run", retainMs: 90 * DAY, inboxTtlMs: DAY }, now: NOW });
+    expect(dry?.units.unitsDeleted).toEqual(["ws-gone"]);
+    expect(held.size).toBe(0);
+    const real = await runStorageSweep({ store: s, redis, keys, cfg: { mode: "on", retainMs: 90 * DAY, inboxTtlMs: DAY }, now: NOW });
+    expect(real?.units.unitsDeleted).toEqual(["ws-gone"]);
+    expect(s.keys()).toEqual([]);
   });
 
   test("dry-run deletes nothing but still reports", async () => {
