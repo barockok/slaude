@@ -15,7 +15,7 @@ import {
   listAll,
   manifestKey,
   putInbox,
-  removeSession,
+  removeUnit,
   wsUnitId,
   type ObjectStore,
   type Root,
@@ -369,14 +369,14 @@ function suite(name: string, makeStore: () => ObjectStore) {
       expect(readFileSync(join(b.ws, "f.txt"), "utf8")).toBe("version 4");
     });
 
-    test("removeSession deletes everything stored for the session", async () => {
+    test("removeUnit deletes everything stored for the session", async () => {
       const store = makeStore();
       const id = sid();
       const a = node("a");
       mkdirSync(a.ws, { recursive: true });
       writeFileSync(join(a.ws, "f.txt"), "x");
       await flushTree(store, id, a.roots, { epoch: 1, isCurrent: yes });
-      expect(await removeSession(store, id)).toBeGreaterThan(0);
+      expect(await removeUnit(store, id)).toBeGreaterThan(0);
       expect(await listAll(store, `sessions/${id}/`)).toEqual([]);
     });
   });

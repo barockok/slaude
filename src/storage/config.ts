@@ -104,3 +104,33 @@ function timeoutMs(raw: string | undefined): number {
   if (!Number.isInteger(n) || n < 1000) throw new StorageError("config", `SLAUDE_S3_TIMEOUT_MS must be a whole number of milliseconds, 1000 or more (got '${raw}')`);
   return n;
 }
+
+export type SweepMode = "off" | "dry-run" | "on";
+export interface SweepConfig {
+  mode: SweepMode;
+  /** A unit (a stored directory) is deleted only when its newest object is older than this. */
+  retainMs: number;
+  /** An uncollected inbox object is deleted when older than this. */
+  inboxTtlMs: number;
+}
+
+const positiveInt = (raw: string | undefined, fallback: number): number => {
+  const n = Number((raw ?? "").trim());
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+};
+
+/**
+ * The bucket sweeper's settings. It deletes data, so it is off unless asked for, and a value it cannot read never
+ * turns it on: an unknown mode is `off`, an unreadable window is the default.
+ * `SLAUDE_STORAGE_SWEEP` (off | dry-run | on), `SLAUDE_STORAGE_RETAIN_DAYS` (default 90),
+ * `SLAUDE_STORAGE_INBOX_TTL_HOURS` (default 168).
+ */
+export function storageSweepConfig(env: Env = process.env): SweepConfig {
+  const raw = (env.SLAUDE_STORAGE_SWEEP ?? "off").trim().toLowerCase();
+  const mode: SweepMode = raw === "on" ? "on" : raw === "dry-run" ? "dry-run" : "off";
+  return {
+    mode,
+    retainMs: positiveInt(env.SLAUDE_STORAGE_RETAIN_DAYS, 90) * 86_400_000,
+    inboxTtlMs: positiveInt(env.SLAUDE_STORAGE_INBOX_TTL_HOURS, 168) * 3_600_000,
+  };
+}

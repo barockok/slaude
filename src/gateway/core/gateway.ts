@@ -95,7 +95,9 @@ import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { noteSkillChanged, startSkillVersionReconciler } from "../../skills/versions";
 import { GLOBAL_SCOPE, skillDirFor, startSkillMirror } from "../../skills/remote-sync";
 import { normaliseSkillNames } from "../../skills/name-migration";
+import { startStorageSweeper } from "./storage-sweeper";
 import { objectStore, storageMode } from "../../storage";
+import { storageSweepConfig } from "../../storage/config";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
 import { createV1Api } from "../api";
@@ -1090,6 +1092,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       .catch((e) => console.error("[skills] remote mirror failed to start:", e));
   } else {
     renameSkillsBySlug();
+  }
+  // Bucket cleanup (SLAUDE_STORAGE_SWEEP, off unless asked for): directories nothing has written to for a long time and
+  // attachments no node collected. One replica sweeps per day (a Redis lock); a unit with a pending flush is never swept.
+  let stopStorageSweeper = (): void => {};
+  if (storageMode() === "s3" && env.role() === "gateway") {
+    const sweepCfg = storageSweepConfig();
+    if (sweepCfg.mode !== "off") {
+      console.log(`[storage-sweep] ${sweepCfg.mode}: units idle over ${sweepCfg.retainMs / 86_400_000} days, inbox objects over ${sweepCfg.inboxTtlMs / 3_600_000} hours`);
+      stopStorageSweeper = startStorageSweeper({ store: objectStore()!, redis: getRedis(), keys: makeKeys(), cfg: sweepCfg });
+    }
   }
   // Domain sessions, slice D: the periodic boundary fill, started once Slack auth knows the workspaces.
   let boundaryFillStopped = false;
@@ -5683,6 +5695,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       cronScheduler.stop();
       stopSkillVersionReconciler();
       void stopSkillMirror();
+      stopStorageSweeper();
       await stopBoundaryFill().catch(() => {});
       stopOwnerGuardrails();
       pluginInventory?.stop();
