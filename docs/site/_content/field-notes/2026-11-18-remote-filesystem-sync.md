@@ -89,8 +89,9 @@ running.
   from the volume, so nothing there needed to move.
 - The loss window with `idle` cadence is real: a node that dies loses every
   unflushed turn of a warm session. It is documented, not hidden.
-- Garbage collection exists (`gcSession`, `removeSession`) but nothing schedules
-  it yet. Stored manifests and blobs grow until it is wired into the reaper.
+- Garbage collection of one directory's history exists (`gcSession`, run every tenth flush) but nothing removed a
+  directory nobody uses any more, or an attachment no node collected. The
+  [2026-11-19 follow-up](2026-11-19-rc37-soak-followups.md) adds an age-based sweeper (off by default).
 - **A named agent's skills were never loadable (rc.37).** Testing the skills
   mirror on the single-box deployment, the Skill tool said "Unknown skill" for a
   skill the agent had just written, and for one that had existed for months,

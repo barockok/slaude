@@ -50,8 +50,9 @@ Tool text: "reload requested" when it was routed to a node, not "reloaded".
 
 ### 2. Bucket cleanup
 Facts (verified): the bucket stores directories ("units"), `sessions/<ws|tx>-<hash>/` and `inbox/<ws-hash>/`, not sessions;
-a unit can be shared by several sessions (channel and proactive folders). `removeSession(store, sessionId)` therefore
-matches no real key and has no caller. The gateway cannot compute a transcript unit id (it depends on a node-side path).
+a unit can be shared by several sessions (channel and proactive folders). `removeSession(store, sessionId)` takes a unit
+id in practice (the storage layer's "session id" argument is the unit id) and works, but its name says "session" and it has
+no caller. The gateway cannot compute a transcript unit id (it depends on a node-side path).
 - A. Map session rows to unit ids and delete units of closed sessions. Rejected: needs node-side path logic on the gateway
   and is wrong for shared units.
 - B. Sweep by age: delete a whole unit only when its newest object is older than a retention window.
@@ -62,7 +63,7 @@ runs them. Settings: `SLAUDE_STORAGE_SWEEP` = `off` (default) | `dry-run` | `on`
 `SLAUDE_STORAGE_INBOX_TTL_HOURS` (default 168); interval fixed at 24 h. Dry-run logs what would go. A swept session that
 resumes later gets a fresh workspace and the existing resume-miss path starts a new transcript; this is documented.
 Skill version history is left alone (small, and the head pointers matter for tombstones).
-`removeSession` is deleted as dead and misleading.
+`removeSession` is renamed `removeUnit` (corrected during implementation: it works, it was only misnamed; a caller passing a session id would delete nothing).
 
 ### 3. Loss counter
 Facts (verified): after a worker recreate the new process has a new node id and an empty in-memory pending set, so
