@@ -5,7 +5,7 @@ date: 2026-11-19
 
 # Soak follow-ups after the remote-storage releases
 
-**Date:** 2026-11-19. **Status:** merged behind the existing settings; the sweeper is off by default.
+**Date:** 2026-11-19. **Status:** shipped in rc.38, behind the existing settings; the sweeper is off by default.
 Spec: `docs/superpowers/specs/2026-11-19-s3-followups-design.md`.
 
 Running the remote-storage releases on one machine (a gateway, one node, Postgres, Redis and an S3-compatible server)
@@ -60,7 +60,9 @@ day (a Redis lock held for the interval). An unreadable setting is `off`, never 
 `slaude_storage_unflushed_loss_total` counted a loss whenever the node that owned a needs-flush mark was gone. A worker
 recreated on the same disk is a new node, but its local files and its sync marker survive. When the marker still names
 the newest stored manifest the hydrate is a warm no-op, the edits stay on disk and the next flush uploads them, so
-nothing is lost and an alert on the counter would fire on every deploy. The dead-owner branch now reads the marker and
+nothing is lost and an alert on the counter would fire on every deploy. A marker equal to the latest manifest is true for any disk that ever hydrated the unit, so the mark now also records
+which disk left it (an id kept with the sync markers) and "recovered" requires that disk to be this one; a mark with no
+disk id, from an older node, counts a loss (the safe direction). The dead-owner branch now reads the marker and
 the latest manifest first; only a mismatch, or a read that fails, counts a loss. A marker matching the store is not enough:
 it is true for any disk that once hydrated that manifest, including one the unit has since left. So a needs-flush mark records
 an id of the disk (kept with the sync markers) that holds the edits, and "recovered" needs the mark's disk to be this disk;
