@@ -87,6 +87,35 @@ describe.skipIf(!realEnabled)("queue/locks against real Redis", () => {
     expect(await redis.get(key)).toBeNull();
   });
 
+  test("withSessionLock: twenty nodes racing for one session, exactly one runs and the lock is free afterwards", async () => {
+    await ready;
+    const opts = { redis, keys, ttlMs: 5000 };
+    let running = 0;
+    let most = 0;
+    let ran = 0;
+    const results = await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        locks.withSessionLock(
+          "race-n",
+          `node-${i}`,
+          async () => {
+            ran++;
+            running++;
+            most = Math.max(most, running);
+            await sleep(150);
+            running--;
+            return i;
+          },
+          opts,
+        ),
+      ),
+    );
+    expect(results.filter((r) => r !== locks.HELD_BY_OTHER)).toHaveLength(1);
+    expect(ran).toBe(1);
+    expect(most).toBe(1);
+    expect(await locks.withSessionLock("race-n", "node-late", async () => "ok", opts)).toBe("ok");
+  });
+
   test("withKeyLock: runs once the holder's TTL lapses", async () => {
     await ready;
     const key = keys.workspaceLock("/w/agent-U0B/proactive");
