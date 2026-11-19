@@ -16,7 +16,11 @@ export function allowedSkillNames(allowed: readonly string[], persona: string | 
   const set = new Set(allowed);
   const names = new Set<string>(allowed);
   for (const s of discoverSkills(persona)) {
-    if (set.has(s.slug)) names.add(cliSkillName(s.name || s.slug));
+    if (set.has(s.slug)) {
+      names.add(cliSkillName(s.name || s.slug));
+      // A skill rewritten by the name migration keeps its old title; an agent.yaml entry that spelled it still matches.
+      if (s.title) names.add(cliSkillName(s.title));
+    }
   }
   return [...names];
 }

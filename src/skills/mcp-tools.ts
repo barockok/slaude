@@ -63,6 +63,8 @@ export function buildSkillMd(
   description: string,
   body: string,
   authorship?: SkillAuthorship,
+  /** Human-readable name kept beside `name` (the CLI matches a skill by `name`, so write_skill makes that the slug). */
+  title?: string,
 ): string {
   // JSON-quote frontmatter values so colons/newlines in name/description
   // can't break the yaml block. The provenance keys come only from the
@@ -71,6 +73,7 @@ export function buildSkillMd(
   const fm = [
     "---",
     `name: ${JSON.stringify(name)}`,
+    ...(title !== undefined ? [`title: ${JSON.stringify(title)}`] : []),
     `description: ${JSON.stringify(description)}`,
     ...(authorship
       ? [`authored_by: ${JSON.stringify(authorship.authoredBy)}`, `authored_at: ${JSON.stringify(authorship.authoredAt)}`]
@@ -137,7 +140,13 @@ export const skillOps = {
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "SKILL.md");
     const created = !existsSync(path);
-    writeFileSync(path, buildSkillMd(name, description, body, { authoredBy: "agent", authoredAt: now.toISOString() }), "utf8");
+    // The CLI matches a skill by its frontmatter `name`, so that is always the slug (callable as /<slug> and by
+    // slug through the Skill tool); the human-readable name is kept as `title`.
+    writeFileSync(
+      path,
+      buildSkillMd(slug, description, body, { authoredBy: "agent", authoredAt: now.toISOString() }, name !== slug ? name : undefined),
+      "utf8",
+    );
     noteSkillChanged(personaName, slug, dir);
     notifySkillRemote(personaName, slug);
     return { path, created };
@@ -244,7 +253,7 @@ export function makeSkillHandlers(personaName?: string) {
         skills
           .map(
             (s) =>
-              `- /${s.slug}  —  ${s.name}: ${s.description || "(no description)"}`,
+              `- /${s.slug}  —  ${s.title ?? s.name}: ${s.description || "(no description)"}`,
           )
           .join("\n"),
       );

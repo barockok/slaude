@@ -8,6 +8,8 @@ export type Skill = {
   slug: string;
   /** Frontmatter `name`, defaults to slug */
   name: string;
+  /** Frontmatter `title`: the human-readable name write_skill keeps beside the slug-valued `name`. */
+  title?: string;
   /** Frontmatter `description` */
   description: string;
   /** Markdown body (without frontmatter) */
@@ -33,7 +35,7 @@ export const SKILL_MD_MAX_BYTES = 256 * 1024;
 
 const FRONTMATTER_RE = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
 
-type ParsedSkill = Pick<Skill, "name" | "description" | "body" | "authoredBy" | "authoredAt">;
+type ParsedSkill = Pick<Skill, "name" | "description" | "body" | "authoredBy" | "authoredAt" | "title">;
 
 /** Parse SKILL.md text into its frontmatter fields and body. */
 export function parseSkillText(raw: string): ParsedSkill {
@@ -51,6 +53,7 @@ export function parseSkillText(raw: string): ParsedSkill {
     name: typeof fm.name === "string" ? fm.name : "",
     description: typeof fm.description === "string" ? fm.description : "",
     body: m[2] ?? "",
+    ...(typeof fm.title === "string" && fm.title ? { title: fm.title } : {}),
     ...(typeof fm.authored_by === "string" ? { authoredBy: fm.authored_by } : {}),
     ...(typeof fm.authored_at === "string" ? { authoredAt: fm.authored_at } : {}),
   };
@@ -108,6 +111,7 @@ function scanSkillsRoot(root: string, source: SkillSource): Skill[] {
     out.push({
       slug: entry,
       name: parsed.name || entry,
+      ...(parsed.title !== undefined ? { title: parsed.title } : {}),
       description: parsed.description,
       body: parsed.body,
       dir,
@@ -159,7 +163,7 @@ export function buildSkillInvocation(skill: Skill, args: string, sessionId: stri
     body = body.replaceAll(`\${${k}}`, v);
   }
   return [
-    `<skill name="${skill.name}" slug="${skill.slug}">`,
+    `<skill name="${skill.title ?? skill.name}" slug="${skill.slug}">`,
     body.trim(),
     `</skill>`,
     args ? `\n<skill-args>\n${args}\n</skill-args>` : "",

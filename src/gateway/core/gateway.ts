@@ -94,6 +94,7 @@ import { surfaceOfSession } from "./surface";
 import { createSkillsMcp, SKILLS_MCP_NAME } from "../../skills/mcp-tools";
 import { noteSkillChanged, startSkillVersionReconciler } from "../../skills/versions";
 import { GLOBAL_SCOPE, skillDirFor, startSkillMirror } from "../../skills/remote-sync";
+import { normaliseSkillNames } from "../../skills/name-migration";
 import { objectStore, storageMode } from "../../storage";
 import { createSessionMcp, SESSION_MCP_NAME } from "../../agent/session-mcp";
 import { createKbMcp, KB_MCP_NAME, type BrainToolDeps } from "../../knowledge/mcp-tools";
@@ -1065,6 +1066,15 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // Runtime skills over the object store (SLAUDE_STORAGE=s3): this replica mirrors what nodes write and
   // records each arrival in the version log at once instead of waiting for the reconciler's next sweep.
   let stopSkillMirror: () => Promise<void> = async () => {};
+  // Agent-written skills whose frontmatter name is a title cannot be called by their slug; write_skill now names by slug, and
+  // this renames the older ones once (idempotent, best effort).
+  const renameSkillsBySlug = (): void => {
+    try {
+      normaliseSkillNames();
+    } catch (e) {
+      console.error("[skills] renaming skills by slug failed:", e);
+    }
+  };
   if (storageMode() === "s3" && env.role() === "gateway") {
     void startSkillMirror({
       store: objectStore()!,
@@ -1074,8 +1084,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     })
       .then((mirror) => {
         stopSkillMirror = () => mirror.stop();
+        // After the mirror is up, so each rewrite is published to the store and pulled by the nodes.
+        renameSkillsBySlug();
       })
       .catch((e) => console.error("[skills] remote mirror failed to start:", e));
+  } else {
+    renameSkillsBySlug();
   }
   // Domain sessions, slice D: the periodic boundary fill, started once Slack auth knows the workspaces.
   let boundaryFillStopped = false;
