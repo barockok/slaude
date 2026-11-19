@@ -100,7 +100,10 @@ node took over) is refused rather than merged; see
 A `write_skill`, delete, retire or restore on any process updates its local copy,
 uploads the skill, and announces it on the `skills-changed` Redis channel. Every
 other process refetches that one skill and swaps it in with a rename, so the new
-text is visible to the next tool call. Each turn also reconciles with the bucket,
+file is current on every node by the next tool call. The agent SDK reads its
+plugins when a query starts, so the `Skill` tool in a session that is already
+running does not see a skill written, renamed or deleted after that point; the
+agent's next session does. Each turn also reconciles with the bucket,
 which repairs a missed announcement. A write the bucket did not accept is kept
 and retried before every reconcile, and a pull never replaces an edit that has
 not been published yet. Deleting a runtime skill that overlaid a bundled one
