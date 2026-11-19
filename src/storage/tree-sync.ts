@@ -242,7 +242,7 @@ export function ensureParents(rootDir: string, rel: string): string {
   return join(cur, segs[segs.length - 1]!);
 }
 
-function readMarker(path: string): string | null {
+export function readMarker(path: string): string | null {
   try {
     return (JSON.parse(readFileSync(path, "utf8")) as { id?: string }).id ?? null;
   } catch {

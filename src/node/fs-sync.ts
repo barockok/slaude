@@ -39,8 +39,10 @@ import {
   flushTree,
   gcSession,
   hydrateTree,
+  readMarker,
   ignoreList,
   latestEpoch,
+  latestManifest,
   syncStateDir,
   txUnitId,
   writeMarker,
@@ -222,6 +224,18 @@ export class FsSync {
     return "ok";
   }
 
+  /** True when this disk's marker names the newest stored manifest, so a warm hydrate keeps the local files. Any read failure counts as "no". */
+  async #ownCopyIsCurrent(unit: Unit): Promise<boolean> {
+    try {
+      const marker = readMarker(unit.markerPath);
+      if (marker === null) return false;
+      const latest = await latestManifest(this.#d.store, unit.id);
+      return latest !== null && latest.id === marker;
+    } catch {
+      return false;
+    }
+  }
+
   async #prepare(unit: Unit): Promise<"ok" | "wait"> {
     const { redis, keys, nodeId, store } = this.#d;
     const raw = await redis.get(keys.needsFlush(unit.id));
@@ -238,9 +252,15 @@ export class FsSync {
       } else if (mark.node && (await this.#d.nodeAlive(mark.node)) && this.#now() - (mark.since ?? 0) < WAIT_FOR_OWNER_MS) {
         return "wait";
       } else {
-        // The node that held the newest copy is gone: continue from the last committed manifest.
-        metric.storageUnflushedLossTotal.inc();
-        console.error(`[fs-sync] unflushed edits lost unit=${unit.id} owner=${mark.node ?? "unknown"}: continuing from the last committed manifest`);
+        // The node that held the newest copy is gone. A process recreated on the same disk still has those
+        // edits: when its marker names the newest stored manifest the hydrate below is a warm no-op and the
+        // next flush uploads them, so nothing is lost. Otherwise continue from the last committed manifest.
+        if (await this.#ownCopyIsCurrent(unit)) {
+          console.log(`[fs-sync] recovered local copy unit=${unit.id} previous-owner=${mark.node ?? "unknown"}`);
+        } else {
+          metric.storageUnflushedLossTotal.inc();
+          console.error(`[fs-sync] unflushed edits lost unit=${unit.id} owner=${mark.node ?? "unknown"}: continuing from the last committed manifest`);
+        }
         await redis.del(keys.needsFlush(unit.id));
       }
     }
