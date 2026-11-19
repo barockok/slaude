@@ -14,7 +14,7 @@ export function routeReload(
 ): boolean {
   if (local(sessionId, prompt)) return true;
   if (!remote) return false;
-  remote(sessionId, prompt).catch((e: unknown) => {
+  void remote(sessionId, prompt).catch((e: unknown) => {
     console.error(`[gateway] reload request for session=${sessionId} was not published: ${e instanceof Error ? e.message : String(e)}`);
   });
   return true;

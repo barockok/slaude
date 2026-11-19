@@ -44,7 +44,7 @@ export async function runStorageSweep(d: SweeperDeps): Promise<{ units: UnitSwee
 export function startStorageSweeper(d: SweeperDeps & { firstRunDelayMs?: number; intervalMs?: number }): () => void {
   if (d.cfg.mode === "off") return () => {};
   const tick = (): void => {
-    runStorageSweep(d).catch((e: unknown) => console.error(`[storage-sweep] failed: ${e instanceof Error ? e.message : String(e)}`));
+    void runStorageSweep(d).catch((e: unknown) => console.error(`[storage-sweep] failed: ${e instanceof Error ? e.message : String(e)}`));
   };
   const first = setTimeout(tick, d.firstRunDelayMs ?? 60_000);
   const every = setInterval(tick, d.intervalMs ?? DAY_MS);
