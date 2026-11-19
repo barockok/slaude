@@ -1573,10 +1573,13 @@ export class AgentManager extends EventEmitter {
    *  mid-turn ends the CLI's stdin, which a turn still needs (permission
    *  prompts, hooks, in-process MCP), so a session with a turn in flight is
    *  marked and reloaded when that turn's result arrives; an idle session
-   *  reloads now. Either way the next turn boots fresh. False if not live. */
-  reloadAfterTurn(sessionId: string): boolean {
+   *  reloads now. Either way the next turn boots fresh (with `prompt`, when
+   *  given). False if not live. */
+  reloadAfterTurn(sessionId: string, prompt?: string): boolean {
     const live = this.#live.get(sessionId);
     if (!live) return false;
+    // As in reload(): the prompt is injected into the fresh session that boots after the reload.
+    if (prompt) this.#reloadPrompt.set(sessionId, prompt);
     if (live.reloading) return true;
     if (live.pendingInputs > 0) {
       this.#reloadAfterTurn.add(sessionId);

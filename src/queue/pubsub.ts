@@ -19,6 +19,17 @@ export interface StreamEvent {
  *  (10m) — the spec's proxy for the maximum turn duration: an abort older
  *  than the longest possible turn can only refer to a turn that is gone. */
 export const ABORT_FLAG_TTL_MS = 600_000;
+const RELOAD_FLAG_TTL_MS = 600_000;
+
+/** A reload payload is `{}` or `{"prompt": "..."}`; anything unreadable means a plain reload. */
+function parseReloadPayload(raw: string): { prompt?: string } {
+  try {
+    const v = JSON.parse(raw) as { prompt?: unknown };
+    return typeof v.prompt === "string" ? { prompt: v.prompt } : {};
+  } catch {
+    return {};
+  }
+}
 
 export interface PubSubOpts {
   /** Command connection: PUBLISH / XADD / XRANGE. */
@@ -30,6 +41,8 @@ export interface PubSubOpts {
   streamMaxLen?: number;
   /** Abort-flag TTL override (tests). Default: ABORT_FLAG_TTL_MS. */
   abortFlagTtlMs?: number;
+  /** How long a reload flag waits for a node to claim it. Default 10 minutes. */
+  reloadFlagTtlMs?: number;
 }
 
 export type PubSub = ReturnType<typeof makePubSub>;
@@ -50,6 +63,7 @@ export function makePubSub(opts: PubSubOpts) {
   const keys = opts.keys ?? makeKeys();
   const maxLen = opts.streamMaxLen ?? 1000;
   const abortTtlMs = opts.abortFlagTtlMs ?? ABORT_FLAG_TTL_MS;
+  const reloadFlagTtlMs = opts.reloadFlagTtlMs ?? RELOAD_FLAG_TTL_MS;
   const handlers = new Map<string, Set<(payload: string) => void>>();
   let listening = false;
 
@@ -106,6 +120,26 @@ export function makePubSub(opts: PubSubOpts) {
      *  listening? True at most once per flag (GETDEL). */
     async consumeAbortFlag(sessionId: string): Promise<boolean> {
       return (await redis.getdel(keys.abortFlag(sessionId))) !== null;
+    },
+
+    /**
+     * Gateway → the node running the session: close the live query so the next turn boots a fresh one
+     * (new MCPs, plugins, skills). Like publishAbort a durable flag is set first, with a TTL, for a node
+     * that is not subscribed right now; the node consumes it at turn start. Returns the subscriber count.
+     */
+    async publishSessionReload(sessionId: string, prompt?: string): Promise<number> {
+      const payload = JSON.stringify(prompt === undefined ? {} : { prompt });
+      await redis.set(keys.sessionReloadFlag(sessionId), payload, "PX", reloadFlagTtlMs);
+      return await redis.publish(keys.sessionReloadChannel(sessionId), payload);
+    },
+    /** Node-side: fires when a reload for this session is published. Returns an unsubscribe fn. */
+    onSessionReload(sessionId: string, cb: (prompt?: string) => void) {
+      return on(keys.sessionReloadChannel(sessionId), (payload) => cb(parseReloadPayload(payload).prompt));
+    },
+    /** Node-side, at turn start: was a reload published while nobody was listening? At most once per flag (GETDEL). */
+    async consumeSessionReloadFlag(sessionId: string): Promise<{ prompt?: string } | null> {
+      const raw = await redis.getdel(keys.sessionReloadFlag(sessionId));
+      return raw === null ? null : parseReloadPayload(raw);
     },
 
     /** Gateway → nodes: tenant config changed, bust the runtime-bundle cache. */

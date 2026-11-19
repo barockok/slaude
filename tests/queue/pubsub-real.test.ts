@@ -11,7 +11,7 @@ describe.skipIf(!realEnabled)("queue/pubsub against real Redis", () => {
   let sub: Redis;
   let keys: Keys;
   let ps: PubSub;
-  let mkPubSub: (opts?: { streamMaxLen?: number; abortFlagTtlMs?: number }) => PubSub;
+  let mkPubSub: (opts?: { streamMaxLen?: number; abortFlagTtlMs?: number; reloadFlagTtlMs?: number }) => PubSub;
 
   const ready = (async () => {
     if (!realEnabled) return;
@@ -185,5 +185,45 @@ describe.skipIf(!realEnabled)("queue/pubsub against real Redis", () => {
     await ps.publishReload("tenZ");
     await sleep(150);
     expect(hits).toBe(0);
+  });
+
+  test("session reload: delivered to the right session with its prompt; unsubscribe stops it", async () => {
+    await ready;
+    const got: Array<string | undefined> = [];
+    let other = 0;
+    const offA = await ps.onSessionReload("reloadA", (prompt) => got.push(prompt));
+    const offB = await ps.onSessionReload("reloadB", () => other++);
+
+    expect(await ps.publishSessionReload("reloadA", "carry on")).toBe(1);
+    await until(() => got.length === 1);
+    expect(got).toEqual(["carry on"]);
+    expect(other).toBe(0);
+
+    expect(await ps.publishSessionReload("reloadA")).toBe(1);
+    await until(() => got.length === 2);
+    expect(got[1]).toBeUndefined();
+
+    await offA();
+    expect(await ps.publishSessionReload("reloadA")).toBe(0);
+    await offB();
+    await ps.consumeSessionReloadFlag("reloadA"); // leave nothing behind
+  });
+
+  test("session reload: a node that was not listening finds the flag once, with the prompt", async () => {
+    await ready;
+    await ps.publishSessionReload("reloadC", "after reload");
+    expect(await ps.consumeSessionReloadFlag("reloadC")).toEqual({ prompt: "after reload" });
+    expect(await ps.consumeSessionReloadFlag("reloadC")).toBeNull();
+    await ps.publishSessionReload("reloadD");
+    expect(await ps.consumeSessionReloadFlag("reloadD")).toEqual({});
+  });
+
+  test("session reload: the durable flag expires so it cannot fire at a later, unrelated turn", async () => {
+    await ready;
+    const shortLived = mkPubSub({ reloadFlagTtlMs: 150 });
+    await shortLived.publishSessionReload("reloadE");
+    await sleep(350);
+    expect(await shortLived.consumeSessionReloadFlag("reloadE")).toBeNull();
+    await shortLived.close();
   });
 });

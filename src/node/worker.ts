@@ -66,6 +66,7 @@ import { VoiceCalls } from "../voice/call";
 import { drainVoiceCalls, endCallsOnSessionExit, makeNodeVoiceHost, voiceServersFor } from "../voice/hosts";
 import { injectedTurns, voiceTurns } from "../voice/turn-flags";
 import { BootFailure, createOnceGuard, type FailureCode } from "../gateway/core/failure-codes";
+import { applyPendingSessionReload, subscribeSessionReload } from "./session-reload";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -858,6 +859,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       agent.abort(sessionId);
     };
     const unsubAbort = await pubsub.onAbort(sessionId, abortAgent);
+    // A reload requested from inside this turn (or by the gateway) closes the query once the turn ends.
+    const unsubReload = await subscribeSessionReload(pubsub, agent, sessionId);
     try {
       // One prompt per job: coalesced messages arrive as one turn (spec §2).
       const text = data.messages.map((m) => m.text).join("\n\n");
@@ -940,6 +943,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       turnAborts.delete(sessionId);
       turnDeadlines.delete(sessionId);
       await unsubAbort().catch(() => {});
+      await unsubReload().catch(() => {});
       // Warm registry: the Query outlives the turn under the idle TTL.
       try {
         if (agent.isLive(sessionId)) {
@@ -999,6 +1003,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       console.log(`[node] job=${job.id} label=${label} not carried here — moved to ${moved.queue}`);
       return { moved: moved.queue };
     }
+    // Durable reload flag: a reload was requested while no node held this session.
+    await applyPendingSessionReload(pubsub, agent, data.sessionId);
     // Durable abort flag: /abort published before any node claimed the job.
     if (await pubsub.consumeAbortFlag(data.sessionId)) {
       metric.nodeTurnsTotal.inc({ result: "skipped" });

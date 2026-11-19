@@ -108,6 +108,10 @@ export interface Keys {
   /** Durable abort flag set alongside the publish — survives a node that
    *  wasn't subscribed at publish time (checked at turn start, GETDEL). */
   abortFlag(sessionId: string): string;
+  /** Pub/sub channel: reload one session on the node that runs it (a fresh query on its next turn). */
+  sessionReloadChannel(sessionId: string): string;
+  /** Durable reload flag set alongside the publish, with a TTL, for a session whose node was not subscribed (GETDEL at turn start). */
+  sessionReloadFlag(sessionId: string): string;
   /** Pub/sub channel: bust a tenant's cached runtime bundle. */
   reloadChannel(tenantId: string): string;
   /** `skills-changed` — a runtime skill was written, retired or deleted; every process refreshes its local copy from the object store. */
@@ -177,6 +181,8 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     coalesceLock: (sessionId) => `${prefix}:lock:coalesce:${sessionId}`,
     abortChannel: (sessionId) => `${prefix}:abort:${sessionId}`,
     abortFlag: (sessionId) => `${prefix}:abort-flag:${sessionId}`,
+    sessionReloadChannel: (sessionId) => `${prefix}:session-reload:${sessionId}`,
+    sessionReloadFlag: (sessionId) => `${prefix}:session-reload-flag:${sessionId}`,
     reloadChannel: (tenantId) => `${prefix}:reload:${tenantId}`,
     skillsChannel: () => `${prefix}:skills-changed`,
     gateChannel: (pendingId) => `${prefix}:gate:${pendingId}`,
