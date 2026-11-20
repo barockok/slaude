@@ -4,81 +4,11 @@
  * short public line.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { appendFileSync } from "node:fs";
-import { createGateway } from "../../../src/gateway/core/gateway";
-import { AgentManager } from "../../../src/agent/manager";
-import type { Transport } from "../../../src/gateway/core/transport";
-import { makeSlackSurfaceFactory } from "../../../src/gateway/slack/surface";
 import { db } from "../../../src/db/schema";
 import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
-import { paths } from "../../../src/config/home";
 import { __setProactiveSoulSource } from "../../../src/soul/proactive";
 import { __resetPersonaRegistry } from "../../../src/persona/registry";
-import { ensureGuardrailKeyForPg } from "../../guardrails/helpers";
-
-ensureGuardrailKeyForPg();
-
-const BOT = "U0BOT";
-const SENDER = WORLD.manager;
-
-function richTransport(o: { ephemeralFails?: boolean; dmFails?: boolean } = {}) {
-  const posts: any[] = [];
-  const ephemerals: any[] = [];
-  const reacts: any[] = [];
-  const handlers = new Map<string, (args: any) => Promise<void>>();
-  const clientFor = (bot: string): any => ({
-    auth: { test: async () => ({ user_id: bot, bot_id: `B${bot}`, team: "T", url: "x" }) },
-    chat: {
-      postMessage: async (a: any) => {
-        if (o.dmFails && a.channel === SENDER) throw new Error("dm failed");
-        const ts = `${Date.now()}.${posts.length}`;
-        posts.push({ ...a, ts });
-        return { ok: true, ts };
-      },
-      update: async () => ({ ok: true }),
-      postEphemeral: async (a: any) => {
-        if (o.ephemeralFails) throw Object.assign(new Error("x"), { data: { error: "user_not_in_channel" } });
-        ephemerals.push(a);
-        return { ok: true };
-      },
-    },
-    reactions: { add: async (a: any) => { reacts.push(a); return { ok: true }; }, remove: async () => ({ ok: true }) },
-    conversations: { info: async () => ({}), members: async () => ({ members: [] }), replies: async () => ({ messages: [] }) },
-    users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
-    search: { messages: async () => ({}) },
-    assistant: { threads: { setStatus: async () => ({ ok: true }) } },
-  });
-  const client = clientFor(BOT);
-  const t: Transport = {
-    client,
-    action: () => {},
-    use: () => {},
-    start: async () => {},
-    stop: async () => {},
-    event: (name: string, fn: any) => void handlers.set(name, fn),
-  };
-  const emit = async (name: string, args: any) => { await handlers.get(name)?.(args); };
-  return { t, client, posts, ephemerals, reacts, emit };
-}
-
-function makeGw(o: { ephemeralFails?: boolean; dmFails?: boolean } = {}) {
-  const cap = richTransport(o);
-  const agent = new AgentManager();
-  agent.sendMessage = async () => {};
-  agent.suppressNextTurn = () => {};
-  createGateway(agent, cap.t, { surfaceFactory: makeSlackSurfaceFactory(cap.client) });
-  return { ...cap, agent };
-}
-type Gw = ReturnType<typeof makeGw>;
-
-let tsCounter = 900;
-const nextTs = () => `${++tsCounter}.1`;
-const threadMsg = (g: Gw, text: string, thread: string) => ({
-  event: { type: "message", channel: "C1", channel_type: "channel", user: SENDER, team: "T", ts: nextTs(), thread_ts: thread, text },
-  client: g.client,
-  context: { teamId: "T" },
-});
-const tick = () => new Promise((r) => setTimeout(r, 15));
+import { BOT, SENDER, makeGw, nextTs, threadMsg, tick } from "./private-harness";
 
 describe("private command replies", () => {
   beforeEach(async () => {

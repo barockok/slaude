@@ -150,7 +150,7 @@ import { PanelChatRefused } from "../panel/api";
 import { wakeGateConfig, WakeTargetBusyError, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
 import { wakeRefusal } from "../../proactive/wake-guard";
 import { MUST_REPLY_INSTRUCTION, mustReplyEffect } from "../../agent/must-reply";
-import { inboundGuidance, inboundVerdict, installOwnerGuardrails, makeReplyQuiet, type InboundVerdict } from "./owner-guardrails";
+import { inboundGuidance, inboundVerdict, installOwnerGuardrails, type InboundVerdict } from "./owner-guardrails";
 import { privateSender, type PrivateClass } from "../slack/private";
 import { auditFiring } from "../../guardrails/audit";
 import { wakeStatusText } from "../../proactive/wake-status";
@@ -1683,7 +1683,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // The shadow classifier's budgets, claims and pass memory are per channel across every replica too.
     setEngageRedis(queueDispatch.turns.redis, queueDispatch.turns.keys?.prefix ?? "slaude");
   }
-  const guardrailReplyQuiet = makeReplyQuiet();
   agent.setStopGuard((sessionId) => {
     if (voiceTurns.active(sessionId)) return null;
     const route = routes.get(sessionId);
@@ -2986,6 +2985,32 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // the ignore checks exactly where it has always been. The id check is
     // repeated here only to narrow teamId/userId for the code below.
     if (!teamId || !userId) return;
+    /**
+     * Tell a person, privately, why the agent will not answer them (a thread locked to
+     * someone else, an ignore). Only when they spoke to the agent: a mention, or a DM.
+     * Chatter between other people in the thread is not answered and not remarked on.
+     * At most one per person, thread and kind in a quiet window. Never posted to the thread.
+     */
+    const rejectionNotice = async (kind: "one_on_one" | "ignored", noticeText: string): Promise<void> => {
+      try {
+        if (dispatch?.channelSession && suppress) return; // a recording was addressed to no one
+        const selfIds = (await getSelfBots(args)).userIds;
+        const mentioned = [...(event.text ?? "").toString().matchAll(/<@([A-Z0-9]+)>/g)].some((m) => selfIds.has(m[1]!) || !!getPersonaRegistry().lookupByUserId(m[1]!));
+        if (!(mentioned || event.type === "app_mention" || channelType === "im")) return;
+        const noticeThread: string | undefined = event.thread_ts || undefined;
+        await privateSender.send(outClientForPersona(dispatch?.personaId, app), {
+          cls: "info",
+          kind,
+          userId,
+          channel: channelId,
+          ...(noticeThread ? { thread: noticeThread } : {}),
+          text: noticeText,
+          limitKey: `${dispatch?.personaId || "default"}:${channelId}:${noticeThread ?? "root"}:${userId}:${kind}`,
+        });
+      } catch (err: unknown) {
+        console.error(`[slack-rx] rejection notice failed ch=${channelId} user=${userId}: ${(err as Error)?.message ?? String(err)}`);
+      }
+    };
     {
       let guardrailVerdict: InboundVerdict | null = null;
       const drop = await preTurnDropReason(args, {
@@ -3023,15 +3048,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (drop.reason === "owner_guardrail" && drop.reply && !(dispatch?.channelSession && suppress)) {
           const thread = event.thread_ts || eventTs;
           // One reply per person per thread per quiet window; later denies are silent (and audited above).
-          if (guardrailReplyQuiet(`${dispatch?.personaId || "default"}:${channelId}:${thread}:${userId}`)) {
-            const out = outClientForPersona(dispatch?.personaId, app);
-            try {
-              await out.chat.postEphemeral({ channel: channelId, user: userId, thread_ts: thread, text: drop.reply }); // runtime-ui: gateway notice, card or command reply
-            } catch {
-              await out.chat.postMessage({ channel: channelId, thread_ts: thread, text: drop.reply }).catch((err: unknown) => // runtime-ui: gateway notice, card or command reply
-                console.error(`[slack-rx] guardrail reply failed ch=${channelId}: ${(err as Error)?.message ?? String(err)}`));
-            }
-          }
+          // Private to the sender: an ephemeral, then a DM, never the thread.
+          await privateSender.send(outClientForPersona(dispatch?.personaId, app), {
+            cls: "info",
+            kind: "guardrail",
+            userId,
+            channel: channelId,
+            thread,
+            text: drop.reply,
+            limitKey: `${dispatch?.personaId || "default"}:${channelId}:${thread}:${userId}:guardrail`,
+          }).catch((err: unknown) => console.error(`[slack-rx] guardrail reply failed ch=${channelId}: ${(err as Error)?.message ?? String(err)}`));
+        }
+        if (drop.reason === "ignored") {
+          await rejectionNotice("ignored", "I am set to ignore you here, so I did not respond to your message. Ask a manager if that is a mistake.");
         }
         return;
       }
@@ -3054,6 +3083,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (lock.open_scope === null && !isLockOwner && !isMgr) {
           console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — 1on1 locked to ${lock.locked_user}`);
           metric.slackDropsTotal.inc({ reason: "one_on_one" });
+          await rejectionNotice("one_on_one", `This thread is locked 1on1 to <@${lock.locked_user}> (and the manager), so I did not respond to your message.`);
           return;
         }
         // A personal environment runs tools on the owner's machine: only the owner
@@ -3075,6 +3105,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           if (!allowed) {
             console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — remote mode, 1on1 locked to ${lock.locked_user}`);
             metric.slackDropsTotal.inc({ reason: "one_on_one" });
+            await rejectionNotice("one_on_one", `This thread is locked 1on1 to <@${lock.locked_user}> and is running on their machine, so I did not respond to your message.`);
             return;
           }
         }
