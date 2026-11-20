@@ -81,7 +81,9 @@ export function makePrivateSender(deps: Deps = {}) {
       } catch { /* a callback must not undo a delivery */ }
       return path;
     };
-    if (n.cls !== "sensitive") {
+    // A DM is already private to the person, and Slack's ephemeral support there is unreliable: post into it.
+    const inOwnDm = n.channel.startsWith("D");
+    if (n.cls !== "sensitive" && !inOwnDm) {
       try {
         const r = await client.chat.postEphemeral({ // runtime-ui: private notice delivery (ephemeral)
           channel: n.channel,
@@ -98,7 +100,8 @@ export function makePrivateSender(deps: Deps = {}) {
     try {
       const text = n.permalink ? `${n.text}\n<${n.permalink}|Open the thread>` : n.text;
       const r = await client.chat.postMessage({ // runtime-ui: private notice delivery (DM to the user)
-        channel: n.userId,
+        channel: inOwnDm ? n.channel : n.userId,
+        ...(inOwnDm && n.thread ? { thread_ts: n.thread } : {}),
         text,
         ...(n.blocks ? { blocks: n.blocks } : {}),
       });

@@ -114,4 +114,12 @@ describe("sendPrivate", () => {
     const r = await makePrivateSender().send(f.client, { ...base, onDelivered: () => { throw new Error("x"); } });
     expect(r).toBe("ephemeral");
   });
+
+  it("in the person's own DM there is no ephemeral: it posts into that DM, in its thread", async () => {
+    const f = fake();
+    const r = await makePrivateSender().send(f.client, { ...base, channel: "D1", thread: "7.7" });
+    expect(r).toBe("dm");
+    expect(f.calls.map((c) => c.m)).toEqual(["post"]);
+    expect(f.calls[0]!.a).toEqual({ channel: "D1", thread_ts: "7.7", text: "hi" });
+  });
 });
