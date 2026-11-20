@@ -34,6 +34,11 @@ export interface PrivateNotice {
   permalink?: string;
   /** Runs only when the switch is off: the old public behavior, kept as a rollback. */
   publicFallback?: () => Promise<void>;
+  /**
+   * Called after a successful delivery with where it landed. A DM can be edited
+   * later (for example to take a spent link out); an ephemeral cannot.
+   */
+  onDelivered?: (d: { path: "ephemeral" | "dm"; channel?: string; ts?: string }) => void;
 }
 
 export interface PrivateClient {
@@ -68,33 +73,36 @@ export function makePrivateSender(deps: Deps = {}) {
       return "disabled";
     }
     if (n.limitKey && quiet(n.limitKey)) return "limited";
-    const done = (path: "ephemeral" | "dm"): PrivateResult => {
+    const done = (path: "ephemeral" | "dm", res?: any): PrivateResult => {
       if (n.limitKey) spend(n.limitKey);
       metric.privateNoticeSentTotal.inc({ class: n.cls, path });
+      try {
+        n.onDelivered?.({ path, ...(typeof res?.channel === "string" ? { channel: res.channel } : {}), ...(typeof (res?.ts ?? res?.message_ts) === "string" ? { ts: res.ts ?? res.message_ts } : {}) });
+      } catch { /* a callback must not undo a delivery */ }
       return path;
     };
     if (n.cls !== "sensitive") {
       try {
-        await client.chat.postEphemeral({ // runtime-ui: private notice delivery (ephemeral)
+        const r = await client.chat.postEphemeral({ // runtime-ui: private notice delivery (ephemeral)
           channel: n.channel,
           user: n.userId,
           ...(n.thread ? { thread_ts: n.thread } : {}),
           text: n.text,
           ...(n.blocks ? { blocks: n.blocks } : {}),
         });
-        return done("ephemeral");
+        return done("ephemeral", r);
       } catch (e) {
         console.error(`[private-notice] ephemeral failed kind=${n.kind} ch=${n.channel}: ${reason(e)}`);
       }
     }
     try {
       const text = n.permalink ? `${n.text}\n<${n.permalink}|Open the thread>` : n.text;
-      await client.chat.postMessage({ // runtime-ui: private notice delivery (DM to the user)
+      const r = await client.chat.postMessage({ // runtime-ui: private notice delivery (DM to the user)
         channel: n.userId,
         text,
         ...(n.blocks ? { blocks: n.blocks } : {}),
       });
-      return done("dm");
+      return done("dm", r);
     } catch (e) {
       console.error(`[private-notice] dm failed kind=${n.kind}: ${reason(e)}`);
       metric.privateNoticeDroppedTotal.inc({ class: n.cls });

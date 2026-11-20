@@ -101,4 +101,17 @@ describe("sendPrivate", () => {
     await makePrivateSender().send(f.client, { ...base, thread: undefined });
     expect("thread_ts" in f.calls[0]!.a).toBe(false);
   });
+
+  it("reports where a DM landed so it can be edited later", async () => {
+    const seen: any[] = [];
+    const f = fake({ eph: refused, dm: async () => ({ ok: true, channel: "D9", ts: "5.5" }) });
+    await makePrivateSender().send(f.client, { ...base, onDelivered: (d) => seen.push(d) });
+    expect(seen).toEqual([{ path: "dm", channel: "D9", ts: "5.5" }]);
+  });
+
+  it("a throwing onDelivered does not undo a delivery", async () => {
+    const f = fake();
+    const r = await makePrivateSender().send(f.client, { ...base, onDelivered: () => { throw new Error("x"); } });
+    expect(r).toBe("ephemeral");
+  });
 });
