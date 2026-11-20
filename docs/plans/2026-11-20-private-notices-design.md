@@ -47,8 +47,8 @@ A URL pasted into the thread is still accepted (existing users), followed by a p
 ## 3. Commands, 1on1, ignored users
 
 - All 16 gateway command and notice sites move to `sendPrivate`. Read-only answers are `info`. Pickers (`/model`, `/env`) are interactive ephemeral blocks; free-text input opens a modal.
-- State changes keep one short gateway-generated public line, "this thread is now 1on1 with <user>", so others know why the agent went quiet. Open question for the implementer: confirm with the owner before making it private too.
-- Not the locked user in a 1on1 thread: the message is still ignored, and the sender gets a private `info` notice (rate-limited).
+- State changes are private too, with no public line (owner decision, 2026-11-20). `/1on1` confirms the lock only to the person who ran it, as an ephemeral notice. Others learn about the lock when their own message is rejected, below.
+- Not the locked user in a 1on1 thread: the message is still ignored, and the sender gets a private `info` notice naming the lock, "this thread is locked 1on1 to <user>, so I did not respond to your message" (rate-limited per user and thread, 10 minutes). This is the only way other people find out about the lock.
 - Ignored users: the ignore gate still drops the message, and the user gets one private notice (rate-limited), then silence.
 - Gate refusals (rate limit, decision-gate skip, input guardrail block) use class `failure`.
 - Out of scope: the model's posts, including a deliberate `pass`.
