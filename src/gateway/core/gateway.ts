@@ -2408,7 +2408,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const personaName = personaKey(ctx.personaId);
     void connectServer({ sessionId, channelId: ctx.channel, threadTs, userId, serverName, serverCfg: cfg, scope, personaName, app: appOf(ctx) })
       .catch(() => { /* connectServer posts its own failure out-of-band */ });
-    return `Started authorizing \`${serverName}\` — I've posted the authorization link in this thread. Open it to approve; I'll confirm here once it's connected. You won't need to paste anything back.`;
+    return `Started authorizing \`${serverName}\`. I've sent you the authorization link by DM (it is not posted in the thread). Open it to approve; you'll get a private note here once it's connected.`;
   }
 
   // Agent-facing 1on1 toggle — driven by the set_one_on_one surface tool.
