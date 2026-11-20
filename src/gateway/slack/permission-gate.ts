@@ -852,7 +852,7 @@ export class PermissionGate {
         if (pend.messageTs && pend.blocks) {
           const stopped = `:no_entry_sign: Cancelled: the turn was stopped. ${whenText()}`;
           void clientForApp(this.#transport, route.app).chat
-            .update({ channel: pend.channel, ts: pend.messageTs, text: stopped, blocks: decidedBlocks(pend.blocks, stopped) ?? [] })
+            .update({ channel: pend.channel, ts: pend.messageTs, text: stopped, blocks: decidedBlocks(pend.blocks, stopped) ?? [] }) // runtime-ui: permission card closed when its turn stops
             .catch(() => {});
         }
         resolveFn({ behavior: "deny", message: "aborted" });

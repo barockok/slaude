@@ -565,7 +565,7 @@ export class ApprovalGate {
           await this.#publish(id);
           if (cardTs) {
             void client.chat
-              .update({
+              .update({ // runtime-ui: approval card closed at its timeout
                 channel: req.channel,
                 ts: cardTs,
                 text: `:hourglass: Auto-denied after ${timeoutSec}s — no approver clicked.`,
@@ -684,7 +684,7 @@ export class ApprovalGate {
           // Best-effort UI update so the block doesn't look pending forever.
           if (p.ts) {
             void p.client.chat
-              .update({
+              .update({ // runtime-ui: approval card closed at its timeout
                 channel: p.channel,
                 ts: p.ts,
                 text: `:hourglass: Auto-denied after ${timeoutSec}s — no approver clicked.`,
@@ -735,7 +735,7 @@ export class ApprovalGate {
         if (p.ts) {
           const aborted = `:no_entry_sign: Cancelled: the turn was stopped. ${whenText()}`;
           void p.client.chat
-            .update({ channel: p.channel, ts: p.ts, text: aborted, blocks: decidedBlocks(cardBlocks, aborted) ?? [] })
+            .update({ channel: p.channel, ts: p.ts, text: aborted, blocks: decidedBlocks(cardBlocks, aborted) ?? [] }) // runtime-ui: approval card closed when its turn stops
             .catch(() => {});
         }
         p.resolve({ approved: false, by: "system", note: "aborted" });

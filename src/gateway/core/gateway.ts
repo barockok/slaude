@@ -1398,7 +1398,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const persona = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
       const session = await promiseSession(row);
       const app: AppRef = { apiAppId: session?.slack_app_id ?? undefined, teamId: teamId ?? undefined };
-      await outClientForPersona(persona, app).chat.postMessage({ channel: row.channelId, thread_ts: row.threadTs, text }); // runtime-ui: gateway notice, card or command reply
+      await outClientForPersona(persona, app).chat.postMessage({ channel: row.channelId, thread_ts: row.threadTs, text }); // runtime-ui: public promise line (a timer posts it, no user is present)
     },
   };
 
@@ -2482,7 +2482,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     });
     const canEphemeral = surface.capabilities.has("ephemeral") && !!surface.sayEphemeral;
     const reply = async (text: string) => {
-      await outClientForPersona(i.personaId, i.app).chat.postMessage({ channel: channelId, thread_ts: threadTs, text, mrkdwn: true }); // runtime-ui: gateway notice, card or command reply
+      await outClientForPersona(i.personaId, i.app).chat.postMessage({ channel: channelId, thread_ts: threadTs, text, mrkdwn: true }); // runtime-ui: public /remote and /env state (the thread must know where tools run)
     };
     const isManager = await managerAt("gateway.remote_ctx.role", i.personaId, userId, teamId);
     // The conversation's tenant, as dispatch reads it (the session's own column; sqlite has none).
@@ -2543,7 +2543,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const decoded = await decodeEnvOffer((action as { value?: string }).value, (body as any).user?.id);
     if (!decoded.ok) {
       if (decoded.reason === "expired") {
-        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {}); // runtime-ui: private ephemeral answer to a click
       }
       return;
     }
@@ -2560,7 +2560,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const decoded = await decodeEnvOffer((action as { value?: string }).value, (body as any).user?.id);
     if (!decoded.ok) {
       if (decoded.reason === "expired") {
-        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {}); // runtime-ui: private ephemeral answer to a click
       }
       return;
     }
@@ -2568,7 +2568,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const client = botClientFor(clickApp);
     const triggerId = (body as any).trigger_id;
     if (!client.views || !triggerId) return;
-    await client.views.open({ trigger_id: triggerId, view: envAddModal({ ...decoded.offer, issuedAt: Date.now() }) }); // runtime-ui: gateway notice, card or command reply
+    await client.views.open({ trigger_id: triggerId, view: envAddModal({ ...decoded.offer, issuedAt: Date.now() }) }); // runtime-ui: private modal
   });
 
   // Kind picked in the Add modal: redraw the modal with that kind's fields.
@@ -2583,7 +2583,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const clickApp: AppRef = { apiAppId: (body as any).api_app_id, teamId: (body as any).team?.id ?? (body as any).user?.team_id };
     const client = botClientFor(clickApp);
     if (!client.views?.update) return;
-    await client.views.update({ view_id: view.id, hash: view.hash, view: envAddModal({ ...decoded.offer, kindName }) }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+    await client.views.update({ view_id: view.id, hash: view.hash, view: envAddModal({ ...decoded.offer, kindName }) }).catch(() => {}); // runtime-ui: private modal
   });
 
   t.view?.(ENV_ADD_VIEW, async ({ ack, view, body }) => {
@@ -2612,7 +2612,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const decoded = await decodeRemoteOffer((action as { value?: string }).value, (body as any).user?.id);
     if (!decoded.ok) {
       if (decoded.reason === "expired") {
-        await respond({ response_type: "ephemeral", replace_original: true, text: "That Connect button expired. Send `/remote` again for a new one." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That Connect button expired. Send `/remote` again for a new one." }).catch(() => {}); // runtime-ui: private ephemeral answer to a click
       }
       return;
     }
@@ -2624,7 +2624,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const existing = await Remote.findTarget(decoded.offer.channelId, decoded.offer.threadTs);
     const initialDir = existing?.user_id === decoded.offer.userId ? existing.dir : undefined;
     // Restamp: the modal's own clock starts when it opens.
-    await client.views.open({ trigger_id: triggerId, view: remoteConnectModal({ ...decoded.offer, issuedAt: Date.now() }, initialDir) }); // runtime-ui: gateway notice, card or command reply
+    await client.views.open({ trigger_id: triggerId, view: remoteConnectModal({ ...decoded.offer, issuedAt: Date.now() }, initialDir) }); // runtime-ui: private modal
   });
 
   // Connect modal submitted: the same path as `/remote <addr> <dir>`, minus the
@@ -2657,21 +2657,21 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const decoded = await decodeRemoteOffer((action as { value?: string }).value, clicker);
     if (!decoded.ok) {
       if (decoded.reason === "expired") {
-        await respond({ response_type: "ephemeral", replace_original: false, text: "That button expired. Run `/mcp connect` again." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+        await respond({ response_type: "ephemeral", replace_original: false, text: "That button expired. Run `/mcp connect` again." }).catch(() => {}); // runtime-ui: private ephemeral answer to a click
       }
       return;
     }
     const { offer } = decoded;
     const pend = await SlackOauthFlows.peekFlow(pasteKey(offer.channelId, offer.threadTs, clicker));
     if (!pend) {
-      await respond({ response_type: "ephemeral", replace_original: false, text: "No connect is waiting for a code. Run `/mcp connect` again." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+      await respond({ response_type: "ephemeral", replace_original: false, text: "No connect is waiting for a code. Run `/mcp connect` again." }).catch(() => {}); // runtime-ui: private ephemeral answer to a click
       return;
     }
     const clickApp: AppRef = { apiAppId: (body as any).api_app_id ?? offer.apiAppId, teamId: (body as any).team?.id ?? (body as any).user?.team_id ?? offer.teamId };
     const client = botClientFor(clickApp);
     const triggerId = (body as any).trigger_id;
     if (!client.views || !triggerId) return;
-    await client.views.open({ trigger_id: triggerId, view: oauthPasteModal(pend.serverName, { ...offer, issuedAt: Date.now() }) }); // runtime-ui: gateway notice, card or command reply
+    await client.views.open({ trigger_id: triggerId, view: oauthPasteModal(pend.serverName, { ...offer, issuedAt: Date.now() }) }); // runtime-ui: private modal
   });
 
   t.view?.(OAUTH_PASTE_VIEW, async ({ ack, view, body }) => {
@@ -2732,8 +2732,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const clickApp: AppRef = { apiAppId: (body as any).api_app_id, teamId: (body as any).team?.id ?? (body as any).user?.team_id };
     const cfg = httpExternalServers(ctx.personaName)[ctx.serverName];
     if (!cfg) {
-      await connectSurface(ctx.channelId, ctx.threadTs, ctx.userId, clickApp)
-        .reply({ text: `:warning: \`${ctx.serverName}\` is not available for this agent any more, so it can't be connected. Run \`/mcp\` for the current list.`, runtime: true })
+      await connectNotifier({ sessionId: gate.sessionId, channelId: ctx.channelId, threadTs: ctx.threadTs, userId: clicker, personaName: ctx.personaName, app: clickApp })
+        .tell(`:warning: \`${ctx.serverName}\` is not available for this agent any more, so it can't be connected. Run \`/mcp\` for the current list.`)
         .catch(() => {});
       return;
     }
@@ -3278,7 +3278,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
      * a command says is for the sender alone and goes through `reply`.
      */
     const announce = async (txt: string, blocks?: unknown[]) => {
-      await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
+      await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: public state change line (announce)
         channel: channelId,
         ...slashThread,
         text: txt,
@@ -4476,7 +4476,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
         if (shouldNotice) {
           try {
-            await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
+            await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: public ops panel hold notice (it concerns the whole thread)
               channel: channelId,
               thread_ts: threadTs,
               text: "⏸ handled in ops panel — I'll catch up on your messages here when the operator hands back.",
@@ -4952,7 +4952,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     call: brainCall,
     now: () => new Date(),
     reply: async (channel, threadTs, text) => {
-      await (args.client ?? t.client).chat.postMessage({ channel, thread_ts: threadTs, text }); // runtime-ui: gateway notice, card or command reply
+      await (args.client ?? t.client).chat.postMessage({ channel, thread_ts: threadTs, text }); // runtime-ui: public proactive feedback reply (it answers a visible post)
     },
     once: (key) => SeenEvents.tryInsert(key),
   });
