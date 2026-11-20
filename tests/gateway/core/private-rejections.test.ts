@@ -122,4 +122,16 @@ describe("private rejection notices", () => {
       expect(dm[0].text).toContain("Please do not paste passwords here.");
     });
   });
+
+  describe("lifting an ignore", () => {
+    it("an ignored manager can still run /unignore on themselves", async () => {
+      const g = makeGw();
+      await Ignores.create({ targetType: "user", userId: SENDER, createdBy: SENDER });
+      const thread = nextTs();
+      await g.emit("message", say(g, SENDER, `<@${BOT}> /unignore <@${SENDER}>`, thread));
+      await tick();
+      expect(await Ignores.findActiveForUser(SENDER)).toBeNull();
+      expect(g.posts.map((p) => String(p.text)).join("\n")).toContain("stopped ignoring");
+    });
+  });
 });

@@ -4722,9 +4722,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     {
       const text: string = (e.text || "").toString().trim();
       const threadTs: string = e.thread_ts || eventTs;
-      // botUserId isn't resolved yet here; strip any leading user-mention so a
-      // "<@bot> /unignore-thread" still parses.
-      const peek = parseSlashCommand(text.replace(/<@[^>]+>/g, "").trim());
+      // botUserId isn't resolved yet here; strip the leading user-mention(s) so a
+      // "<@bot> /unignore-thread" still parses. Only the leading ones: "/unignore <@user>"
+      // names its target, and stripping that too turned it into a bare "/unignore" that
+      // the ignore gate then dropped, so an ignored manager could not lift their own ignore.
+      const peek = parseSlashCommand(text.replace(/^(\s*<@[^>]+>)+/, "").trim());
       const isUnignore = peek?.kind === "unignore";
       if (!isUnignore && (await ignoreGate.shouldDrop(userId, channelId, threadTs))) {
         return { reason: "ignored", log: `[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — ignored` };
