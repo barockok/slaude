@@ -3304,7 +3304,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           kind: "command",
           userId,
           channel: channelId,
-          ...(slashThread.thread_ts ? { thread: slashThread.thread_ts } : {}),
+          // Only a message that is itself in a thread gets a thread ephemeral: Slack may not show one in a thread with no replies yet.
+          ...(event.thread_ts && slashThread.thread_ts ? { thread: slashThread.thread_ts } : {}),
           text: txt,
           ...(o?.blocks ? { blocks: o.blocks } : {}),
           publicFallback: () => announce(txt, o?.blocks),

@@ -1204,9 +1204,13 @@ describe("channel session routing", () => {
       const g = makeGw();
       await g.emit("message", rootArgs(g, at("/help")));
       expect(g.ephemerals.at(-1).thread_ts).toBeUndefined();
-      const ts = nextTs();
-      await g.emit("message", rootArgs(g, at("/help"), { ts, channel: "C2" }));
-      expect(g.ephemerals.at(-1).thread_ts).toBe(ts);
+      // A top-level message in a classic channel: the answer is at the channel (a thread with no replies may not show it).
+      await g.emit("message", rootArgs(g, at("/help"), { ts: nextTs(), channel: "C2" }));
+      expect(g.ephemerals.at(-1).thread_ts).toBeUndefined();
+      // A message inside a thread: the answer is in that thread.
+      const thread = nextTs();
+      await g.emit("message", rootArgs(g, at("/help"), { ts: nextTs(), channel: "C2", thread_ts: thread }));
+      expect(g.ephemerals.at(-1).thread_ts).toBe(thread);
       expect(g.posts).toHaveLength(0);
     });
 
