@@ -10,7 +10,8 @@ import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { voiceStartProblem } from "../../agent/voice-mcp";
 import { matchAudioOrigin, type AudioPolicy } from "../../voice/audio-acl";
 import { audioPolicyFromEnv } from "../../voice/config";
-import { redactTree } from "../../redact";
+import { redactSecrets, redactTree } from "../../redact";
+import { decidedBlocks, respondClosed, respondDecided, whenText } from "./card-decision";
 import { auditGateRow } from "../../audit/emit";
 import * as OneOnOne from "../../db/one-on-one";
 import { canDecidePermission } from "../../access/permission-auth";
@@ -28,6 +29,8 @@ type Pending = {
   channel: string;
   threadTs: string;
   messageTs: string;
+  /** The card as posted, to close it if the turn is stopped. */
+  blocks?: unknown[];
   toolName: string;
   input: Record<string, unknown>;
   suggestions?: PermissionUpdate[];
@@ -253,7 +256,8 @@ export function decisionFromPermRow(
 /** Copy of `value` with secret-named keys, header values and capability URLs
  *  redacted (see redactTree). The card is posted into a shared thread. */
 export function redactForCard(value: unknown): unknown {
-  return redactTree(value);
+  // The string pass matters more now that a decided card keeps this text as its record.
+  return redactTree(value, { strings: redactSecrets });
 }
 
 const VOICE_START = "mcp__slaude_voice__voice_start";
@@ -534,6 +538,9 @@ export class PermissionGate {
           // ephemerally and leave the card alone: a decided card's rewrite is
           // the only visible record. Expired/cancelled rows were never decided.
           try {
+            const closed = `:hourglass: \`${a.action_id.split(":")[2]}\` ${status}`;
+            // Never decided: close the card in place, keeping its record, instead of leaving buttons that do nothing.
+            if ((status === "expired" || status === "cancelled") && (await respondClosed(respond, body, closed, `:hourglass: This request ${status}. ${whenText()}`))) return;
             await respond({ // runtime-ui: permission card
               response_type: "ephemeral",
               replace_original: false,
@@ -603,11 +610,8 @@ export class PermissionGate {
             auditPermDecided(row, userId, decision);
             await this.#publish(toolUseId);
             try {
-              await respond({ // runtime-ui: permission card
-                replace_original: true,
-                text: decidedText(String((cur.payload as any)?.toolName ?? "tool")),
-                blocks: [],
-              });
+              const t = decidedText(String((cur.payload as any)?.toolName ?? "tool"));
+              await respondDecided(respond, body, t, `${t} ${whenText()}`);
             } catch {}
             return;
           }
@@ -648,11 +652,8 @@ export class PermissionGate {
         // faster than chat.update, so the buttons disappear before the user
         // has a chance to double-click.
         try {
-          await respond({ // runtime-ui: permission card
-            replace_original: true,
-            text: decidedText(pend.toolName),
-            blocks: [],
-          });
+          const t = decidedText(pend.toolName);
+          await respondDecided(respond, body, t, `${t} ${whenText()}`);
         } catch (e) {
           console.error("[permission-gate] respond failed", e);
         }
@@ -847,18 +848,27 @@ export class PermissionGate {
         void PendingGates.resolve(toolUseId, "cancelled", "system")
           .then((row) => row && auditPermCancelled(row, "system", "system", "turn aborted", input))
           .catch(() => {});
+        // Close the card so it does not offer buttons that can no longer decide anything.
+        if (pend.messageTs && pend.blocks) {
+          const stopped = `:no_entry_sign: Cancelled: the turn was stopped. ${whenText()}`;
+          void clientForApp(this.#transport, route.app).chat
+            .update({ channel: pend.channel, ts: pend.messageTs, text: stopped, blocks: decidedBlocks(pend.blocks, stopped) ?? [] })
+            .catch(() => {});
+        }
         resolveFn({ behavior: "deny", message: "aborted" });
       },
       { once: true },
     );
 
     try {
+      const cardBlocks = permBlocks(toolName, input, toolUseId, ctx.decisionReason, forced ? { ruleId: forced.ruleId, message: forced.message } : undefined);
       const posted = await clientForApp(this.#transport, route.app).chat.postMessage({ // runtime-ui: permission card
         channel: route.channel,
         thread_ts: route.threadTs || undefined,
         text: `:lock: Approval needed: \`${toolName}\``,
-        blocks: permBlocks(toolName, input, toolUseId, ctx.decisionReason, forced ? { ruleId: forced.ruleId, message: forced.message } : undefined),
+        blocks: cardBlocks,
       });
+      pend.blocks = cardBlocks;
       pend.messageTs = (posted.ts as string) ?? "";
     } catch (e) {
       // The prompt never reached Slack — tear both stores down and rethrow.

@@ -15,6 +15,7 @@ import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
 import { approvalTitle, auditGateRow } from "../../audit/emit";
 import { redactSlack } from "./redact";
+import { decidedBlocks, respondClosed, respondDecided, whenText } from "./card-decision";
 
 export type ApprovalRequest = {
   channel: string;
@@ -179,6 +180,9 @@ export class ApprovalGate {
         const userId = (body as any).user?.id ?? "unknown";
         const stale = async (status?: string) => {
           try {
+            // A card that expired or was cancelled was never decided: close it in place (keeping its
+            // record) so it stops offering buttons; otherwise answer the click privately.
+            if ((status === "expired" || status === "cancelled") && (await respondClosed(respond, body, `:hourglass: this approval ${status}`, `:hourglass: This approval ${status}. ${whenText()}`))) return;
             // Ephemeral note only: a decided card is the visible record. An
             // expired/cancelled row was never decided, so don't say it was.
             await respond({ // runtime-ui: approval card
@@ -291,11 +295,8 @@ export class ApprovalGate {
             auditApprovalDecided(resolved, userId, approved);
             await this.#publish(id);
             try {
-              await respond({ // runtime-ui: approval card
-                replace_original: true,
-                text: decidedLine(resolved.payload, approved, userId),
-                blocks: [],
-              });
+              const t = decidedLine(resolved.payload, approved, userId);
+              await respondDecided(respond, body, t, `${t} ${whenText()}`);
             } catch {}
             return;
           }
@@ -343,11 +344,8 @@ export class ApprovalGate {
         auditApprovalDecided(resolved, userId, approved);
         await this.#publish(id);
         try {
-          await respond({ // runtime-ui: approval card
-            replace_original: true,
-            text: decidedLine(resolved.payload, approved, userId),
-            blocks: [],
-          });
+          const t = decidedLine(resolved.payload, approved, userId);
+          await respondDecided(respond, body, t, `${t} ${whenText()}`);
         } catch {}
         pending.resolve({ approved, by: userId });
       },
@@ -556,6 +554,7 @@ export class ApprovalGate {
     });
 
     const client = this.#clientFor(req);
+    const cardBlocks = this.#card(req, shown, id, timeoutSec, resolved.users.size > 0);
     let cardTs: string | undefined;
     if (timeoutSec > 0) {
       const timer = setTimeout(() => {
@@ -570,7 +569,7 @@ export class ApprovalGate {
                 channel: req.channel,
                 ts: cardTs,
                 text: `:hourglass: Auto-denied after ${timeoutSec}s — no approver clicked.`,
-                blocks: [],
+                blocks: decidedBlocks(cardBlocks, `:hourglass: Auto-denied after ${timeoutSec}s, no approver clicked. ${whenText()}`) ?? [],
               })
               .catch(() => {});
           }
@@ -584,7 +583,7 @@ export class ApprovalGate {
         channel: req.channel,
         thread_ts: req.threadTs || undefined,
         text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
-        blocks: this.#card(req, shown, id, timeoutSec, resolved.users.size > 0),
+        blocks: cardBlocks,
       });
       cardTs = posted.ts as string | undefined;
     } catch (e) {
@@ -648,6 +647,7 @@ export class ApprovalGate {
       expiresAt: timeoutSec > 0 ? Date.now() + timeoutSec * 1000 : undefined,
     });
 
+    const cardBlocks = this.#card(req, shown, id, timeoutSec, resolved.users.size > 0);
     let resolveFn!: (d: ApprovalDecision) => void;
     const promise = new Promise<ApprovalDecision>((resolve) => {
       resolveFn = resolve;
@@ -688,7 +688,7 @@ export class ApprovalGate {
                 channel: p.channel,
                 ts: p.ts,
                 text: `:hourglass: Auto-denied after ${timeoutSec}s — no approver clicked.`,
-                blocks: [],
+                blocks: decidedBlocks(cardBlocks, `:hourglass: Auto-denied after ${timeoutSec}s, no approver clicked. ${whenText()}`) ?? [],
               })
               .catch(() => {});
           }
@@ -731,6 +731,13 @@ export class ApprovalGate {
             return this.#publish(id);
           })
           .catch(() => {});
+        // The turn was stopped: close the card so it does not offer buttons that can no longer decide anything.
+        if (p.ts) {
+          const aborted = `:no_entry_sign: Cancelled: the turn was stopped. ${whenText()}`;
+          void p.client.chat
+            .update({ channel: p.channel, ts: p.ts, text: aborted, blocks: decidedBlocks(cardBlocks, aborted) ?? [] })
+            .catch(() => {});
+        }
         p.resolve({ approved: false, by: "system", note: "aborted" });
       },
       { once: true },
@@ -741,7 +748,7 @@ export class ApprovalGate {
         channel: req.channel,
         thread_ts: req.threadTs || undefined,
         text: `:bell: Approval needed: ${truncate(req.summary, 80)}`,
-        blocks: this.#card(req, shown, id, timeoutSec, resolved.users.size > 0),
+        blocks: cardBlocks,
       });
       pending.ts = posted.ts as string | undefined;
       if (req.privateDetail !== undefined) await this.#sendDetail(pending.client, req, shown);

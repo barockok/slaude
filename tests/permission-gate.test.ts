@@ -33,9 +33,11 @@ function fakeApp() {
     app,
     posts,
     updates,
-    fire: async (action_id: string, userId: string) => {
+    fire: async (action_id: string, userId: string, message?: { blocks?: unknown[] }, failFirstRespond = false) => {
       const respondCalls: any[] = [];
+      let tried = 0;
       const respond = async (m: any) => {
+        if (failFirstRespond && tried++ === 0) throw new Error("invalid_blocks");
         respondCalls.push(m);
       };
       const ack = async () => {};
@@ -44,7 +46,7 @@ function fakeApp() {
           await h.fn({
             ack,
             action: { action_id },
-            body: { user: { id: userId } },
+            body: { user: { id: userId }, ...(message ? { message } : {}) },
             respond,
           });
         }
@@ -569,6 +571,53 @@ describe("PermissionGate", () => {
     expect(r.behavior).toBe("deny");
   });
 
+  test("a decided card keeps what was asked, with the buttons replaced by the decision", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app, AS_USR);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    const p = gate.resolver("S", "Bash", { command: "ls -la /srv" }, ctx("UREC1", ac.signal));
+    const card = await firstPost(f);
+    const allowId = card.blocks.find((b: any) => b.type === "actions").elements.find((e: any) => e.action_id.includes("allow:")).action_id;
+    const calls = await f.fire(allowId, "USR", { blocks: card.blocks });
+    await p;
+    expect(calls).toHaveLength(1);
+    expect(calls[0].replace_original).toBe(true);
+    const out = JSON.stringify(calls[0].blocks);
+    expect(out).toContain("ls -la /srv");
+    expect(out).toContain("Approval needed");
+    expect(out).toContain("Allowed");
+    expect(out).toContain("<@USR>");
+    expect(calls[0].blocks.some((b: any) => b.type === "actions")).toBe(false);
+  });
+
+  test("the card never shows a secret in the input, so the kept record has none", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app, AS_USR);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    void gate.resolver("S", "Bash", { command: "mysql --password hunter2 -h db postgres://app:pw9secret@db/x" }, ctx("UREC2", ac.signal));
+    const card = await firstPost(f);
+    const shown = JSON.stringify(card.blocks);
+    expect(shown).not.toContain("hunter2");
+    expect(shown).not.toContain("pw9secret");
+    ac.abort();
+  });
+
+  test("when Slack refuses the rich update the card falls back to one line, never keeping buttons", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app, AS_USR);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    const p = gate.resolver("S", "Bash", { command: "ls" }, ctx("UREC3", ac.signal));
+    const card = await firstPost(f);
+    const allowId = card.blocks.find((b: any) => b.type === "actions").elements.find((e: any) => e.action_id.includes("allow:")).action_id;
+    const calls = await f.fire(allowId, "USR", { blocks: card.blocks }, true);
+    await p;
+    expect(calls).toHaveLength(1);
+    expect(calls[0].blocks).toEqual([]);
+  });
+
   test("duplicate click after decision → already-decided respond", async () => {
     const f = fakeApp();
     const gate = new PermissionGate(f.app, AS_USR);
@@ -606,6 +655,41 @@ describe("PermissionGate", () => {
     expect(calls[0].text).not.toContain("already decided");
     expect(calls[0].replace_original).toBe(false);
     expect(f.updates.length).toBe(0);
+    expect((await p).behavior).toBe("deny");
+  });
+
+  test("stopping the turn closes the card instead of leaving live buttons", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app, AS_USR);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    const p = gate.resolver("S", "Bash", { command: "ls -la /srv" }, ctx("UABORT1", ac.signal));
+    await firstPost(f);
+    ac.abort();
+    expect((await p).behavior).toBe("deny");
+    await new Promise((r) => setTimeout(r, 10));
+    const upd = f.updates.at(-1);
+    expect(upd).toBeTruthy();
+    expect(upd.text).toContain("Cancelled");
+    expect(JSON.stringify(upd.blocks)).toContain("ls -la /srv");
+    expect(upd.blocks.some((b: any) => b.type === "actions")).toBe(false);
+  });
+
+  test("a click on an expired card closes it in place, keeping what was asked", async () => {
+    const f = fakeApp();
+    const gate = new PermissionGate(f.app, AS_USR);
+    gate.bindSession("S", "C", "T");
+    const ac = new AbortController();
+    const p = gate.resolver("S", "Bash", { command: "ls -la /srv" }, ctx("UEXP1", ac.signal));
+    const card = await firstPost(f);
+    const allowId = card.blocks.find((b: any) => b.type === "actions").elements.find((e: any) => e.action_id.includes("allow:")).action_id;
+    await PendingGates.resolve("UEXP1", "expired", "system");
+    const calls = await f.fire(allowId, "USR", { blocks: card.blocks });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].replace_original).toBe(true);
+    expect(JSON.stringify(calls[0].blocks)).toContain("ls -la /srv");
+    expect(JSON.stringify(calls[0].blocks)).toContain("expired");
+    expect(calls[0].blocks.some((b: any) => b.type === "actions")).toBe(false);
     expect((await p).behavior).toBe("deny");
   });
 
