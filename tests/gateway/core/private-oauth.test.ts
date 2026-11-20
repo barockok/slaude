@@ -12,6 +12,9 @@ import { writeSoulFixture, WORLD } from "../../../src/gateway/sim/soul-fixture";
 import { __setProactiveSoulSource } from "../../../src/soul/proactive";
 import { __resetPersonaRegistry } from "../../../src/persona/registry";
 import { OAUTH_PASTE_ACTION, OAUTH_PASTE_VIEW } from "../../../src/gateway/slack/oauth-paste";
+import * as SlackOauthFlows from "../../../src/db/slack-oauth-flows";
+import * as PendingGates from "../../../src/db/pending-gates";
+import { encodeRemoteOffer } from "../../../src/gateway/core/remote-command";
 import { BOT, SENDER, makeGw, nextTs, tick, type Gw } from "./private-harness";
 
 const mcpJsonPath = join(paths.home, ".mcp.json");
@@ -58,7 +61,7 @@ describe("private MCP OAuth connect", () => {
     __resetPersonaRegistry();
   });
 
-  const start = async (o: { ephemeralFails?: boolean } = {}) => {
+  const start = async (o: { ephemeralFails?: boolean; failPost?: (a: any) => boolean } = {}) => {
     const log = { exchanged: [] as string[] };
     const g = makeGw({ ...o, gateway: gatewayOpts(log) });
     const thread = nextTs();
@@ -141,6 +144,104 @@ describe("private MCP OAuth connect", () => {
     await tick();
     expect(g.sends).toHaveLength(0);
     expect(g.ephemerals.map((e) => String(e.text)).join("\n")).toContain("expired");
+  });
+
+  it("the sent link is edited away in the DM once the flow finishes", async () => {
+    const { g } = await start();
+    const btn = buttonOf(dms(g).find((p) => String(p.text).includes("idp.example")));
+    await g.click(OAUTH_PASTE_ACTION, { value: btn.value, user: SENDER });
+    await g.submit(OAUTH_PASTE_VIEW, { metadata: g.viewsOpened[0].view.private_metadata, fields: { oauth_paste: `${REDIRECT}?code=abc&state=STATE1` }, user: SENDER });
+    await tick();
+    const gone = g.updates.find((u) => String(u.text).includes("link removed"));
+    expect(gone).toBeDefined();
+    expect(gone.channel).toBe(SENDER);
+    expect(gone.blocks).toEqual([]);
+  });
+
+  it("when the link cannot be delivered privately the flow does not start, and nothing is posted to the thread", async () => {
+    const { g, thread } = await start({ failPost: (a) => a.channel === SENDER });
+    expect(await SlackOauthFlows.peekFlow(`C1:${thread}:${SENDER}`)).toBeNull();
+    expect(inChannel(g)).toHaveLength(0);
+    expect(g.posts.map((p) => String(p.text)).join("\n")).not.toContain("idp.example");
+  });
+
+  it("with SLAUDE_PRIVATE_NOTICES off the link is posted to the thread as before, and is edited away afterwards", async () => {
+    process.env.SLAUDE_PRIVATE_NOTICES = "off";
+    try {
+      const { g, log, thread } = await start();
+      expect(inChannel(g).map((p) => String(p.text)).join("\n")).toContain("idp.example");
+      await g.emit("message", inThread(g, SENDER, `${REDIRECT}?code=old&state=STATE1`, thread));
+      await tick();
+      expect(log.exchanged).toEqual(["old"]);
+      expect(g.updates.some((u) => String(u.text).includes("link removed"))).toBe(true);
+    } finally {
+      delete process.env.SLAUDE_PRIVATE_NOTICES;
+    }
+  });
+
+  describe("the Enter code form", () => {
+    const offerFor = (thread: string, issuedAt = Date.now()) =>
+      encodeRemoteOffer({ sessionId: "S", teamId: "T", channelId: "C1", threadTs: thread, userId: SENDER, issuedAt });
+
+    it("an old form says it expired", async () => {
+      const g = makeGw({ gateway: gatewayOpts({ exchanged: [] }) });
+      await g.submit(OAUTH_PASTE_VIEW, { metadata: offerFor("9.9", Date.now() - 6 * 60 * 60 * 1000), fields: { oauth_paste: "x" }, user: SENDER });
+      await tick();
+      expect(g.ephemerals.map((e) => String(e.text)).join("\n")).toContain("form expired");
+    });
+
+    it("with no connect waiting for a code, it says the authorization expired", async () => {
+      const g = makeGw({ gateway: gatewayOpts({ exchanged: [] }) });
+      await g.submit(OAUTH_PASTE_VIEW, { metadata: offerFor("9.9"), fields: { oauth_paste: `${REDIRECT}?code=abc&state=S` }, user: SENDER });
+      await tick();
+      expect(g.ephemerals.map((e) => String(e.text)).join("\n")).toContain("authorization has expired");
+    });
+
+    it("text that is not a redirect URL or a code is refused and leaves the flow parked", async () => {
+      const { g, log, thread } = await start();
+      await g.submit(OAUTH_PASTE_VIEW, { metadata: offerFor(thread), fields: { oauth_paste: "not a code" }, user: SENDER });
+      await tick();
+      expect(g.ephemerals.map((e) => String(e.text)).join("\n")).toContain("did not look like");
+      expect(log.exchanged).toEqual([]);
+      expect(await SlackOauthFlows.peekFlow(`C1:${thread}:${SENDER}`)).not.toBeNull();
+    });
+
+    it("the button reports a connect that is no longer waiting", async () => {
+      const g = makeGw({ gateway: gatewayOpts({ exchanged: [] }) });
+      await g.click(OAUTH_PASTE_ACTION, { value: offerFor("9.9"), user: SENDER });
+      expect(g.viewsOpened).toHaveLength(0);
+      expect(g.responds.map((r) => String(r.text)).join("\n")).toContain("No connect is waiting");
+    });
+  });
+
+  it("a Connect card for a server that is gone answers the person privately", async () => {
+    const g = makeGw({ gateway: gatewayOpts({ exchanged: [] }) });
+    const thread = nextTs();
+    await PendingGates.create({
+      id: "card-gone-1",
+      kind: "mcp_connect",
+      sessionId: "S-gone",
+      payload: { channelId: "C1", threadTs: thread, userId: SENDER, serverName: "gone", scope: "global" },
+      expiresAt: Date.now() + 60_000,
+    });
+    await g.click("slaude_mcp:connect:card-gone-1", { user: SENDER });
+    await tick();
+    expect(inChannel(g)).toHaveLength(0);
+    expect(g.ephemerals.map((e) => String(e.text)).join("\n")).toContain("not available");
+  });
+
+  it("in a DM, a link that cannot be posted stops the flow instead of throwing", async () => {
+    const log = { exchanged: [] as string[] };
+    const g = makeGw({ failPost: (a) => a.channel === "D0OWN" && String(a.text).includes("idp.example"), gateway: gatewayOpts(log) });
+    const thread = nextTs();
+    await g.emit("message", {
+      event: { type: "message", channel: "D0OWN", channel_type: "im", user: SENDER, team: "T", ts: thread, text: "/mcp connect svc" },
+      client: g.client,
+      context: { teamId: "T" },
+    });
+    await tick();
+    expect(await SlackOauthFlows.peekFlow(`D0OWN:${thread}:${SENDER}`)).toBeNull();
+    expect(g.posts.map((p) => String(p.text)).join("\n")).not.toContain("idp.example");
   });
 
   it("the loopback link is private too", async () => {

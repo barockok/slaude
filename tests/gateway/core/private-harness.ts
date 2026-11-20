@@ -14,6 +14,8 @@ export const SENDER = WORLD.manager;
 export interface HarnessOpts {
   ephemeralFails?: boolean;
   dmFails?: boolean;
+  /** Make a chat.postMessage throw when this returns true for its arguments. */
+  failPost?: (a: any) => boolean;
   /** Passed to createGateway (for the OAuth stubs and the like). */
   gateway?: Record<string, unknown>;
 }
@@ -23,6 +25,7 @@ function richTransport(o: HarnessOpts = {}) {
   const viewHandlers = new Map<string, (a: any) => Promise<void>>();
   const viewsOpened: any[] = [];
   const posts: any[] = [];
+  const updates: any[] = [];
   const ephemerals: any[] = [];
   const reacts: any[] = [];
   const handlers = new Map<string, (args: any) => Promise<void>>();
@@ -31,11 +34,12 @@ function richTransport(o: HarnessOpts = {}) {
     chat: {
       postMessage: async (a: any) => {
         if (o.dmFails && a.channel === SENDER) throw new Error("dm failed");
+        if (o.failPost?.(a)) throw new Error("post failed");
         const ts = `${Date.now()}.${posts.length}`;
         posts.push({ ...a, ts });
-        return { ok: true, ts };
+        return { ok: true, ts, channel: a.channel };
       },
-      update: async () => ({ ok: true }),
+      update: async (a: any) => { updates.push(a); return { ok: true }; },
       postEphemeral: async (a: any) => {
         if (o.ephemeralFails) throw Object.assign(new Error("x"), { data: { error: "user_not_in_channel" } });
         ephemerals.push(a);
@@ -84,7 +88,7 @@ function richTransport(o: HarnessOpts = {}) {
       body: { user: { id: v.user, team_id: "T" }, team: { id: "T" } },
     });
   };
-  return { t, client, posts, ephemerals, reacts, emit, viewsOpened, responds, click, submit };
+  return { t, client, posts, updates, ephemerals, reacts, emit, viewsOpened, responds, click, submit };
 }
 
 export function makeGw(o: HarnessOpts = {}) {

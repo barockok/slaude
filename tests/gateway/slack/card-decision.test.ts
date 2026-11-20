@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { decidedBlocks, respondDecided } from "../../../src/gateway/slack/card-decision";
+import { decidedBlocks, respondClosed, respondDecided } from "../../../src/gateway/slack/card-decision";
 import { redactSecrets } from "../../../src/redact";
 
 const card = [
@@ -58,3 +58,22 @@ describe("secret shapes a decided card must not keep", () => {
   it("cookies", () => expect(masked("Cookie: session=abcdef123456; other=1")).not.toContain("abcdef123456"));
   it("leaves ordinary text alone", () => expect(masked("ls -la /tmp && echo done")).toBe("ls -la /tmp && echo done"));
 });
+
+describe("respondClosed", () => {
+  const body = { message: { blocks: card } };
+  it("closes the card in place and says so", async () => {
+    const sent: any[] = [];
+    expect(await respondClosed(async (m: any) => void sent.push(m), body, "t", "line")).toBe(true);
+    expect(sent[0].replace_original).toBe(true);
+    expect(sent[0].blocks.some((b: any) => b.type === "actions")).toBe(false);
+  });
+  it("returns false, sending nothing, when the click carried no blocks", async () => {
+    const sent: any[] = [];
+    expect(await respondClosed(async (m: any) => void sent.push(m), {}, "t", "line")).toBe(false);
+    expect(sent).toEqual([]);
+  });
+  it("returns false when Slack refuses, so the caller can answer privately", async () => {
+    expect(await respondClosed(async () => { throw new Error("invalid_blocks"); }, body, "t", "line")).toBe(false);
+  });
+});
+
