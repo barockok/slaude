@@ -1023,7 +1023,7 @@ describe("gateway uncovered branches", () => {
         const connect = async () => {
           const ts = nextTs();
           await g.emit("message", dmArgs(g, "/mcp connect svc", { ts }));
-          const authPost = g.posts.filter((p) => String(p.text).includes("Paste the full redirect URL")).at(-1);
+          const authPost = g.posts.filter((p) => String(p.text).includes("Click *Enter code*")).at(-1);
           expect(authPost).toBeDefined();
           const state = new URL(String(authPost.text).match(/(https?:\/\/\S+)/)![1]!).searchParams.get("state")!;
           return { ts, state };
@@ -1055,13 +1055,15 @@ describe("gateway uncovered branches", () => {
         expect(g.posts.some((p) => String(p.text).includes("`svc` connect failed: token exchange failed"))).toBe(true);
         idp.state.failToken = false;
 
-        // expiry: jump time past the 10-minute window — pasted code is dropped, msg flows on
+        // expiry: jump time past the 10-minute window, the pasted code is dropped and the person is told
         const f4 = await connect();
         setSystemTime(new Date(Date.now() + 11 * 60_000));
         const sendsBefore = g.sends.length;
         await g.emit("message", dmArgs(g, `http://127.0.0.1:9/cb?code=abc&state=${f4.state}`, { thread_ts: f4.ts }));
         setSystemTime();
-        expect(g.sends.length).toBe(sendsBefore + 1); // expired → treated as a normal message
+        // expired: the redirect URL carries a code, so it never reaches the model (it would sit in the transcript)
+        expect(g.sends.length).toBe(sendsBefore);
+        expect(g.posts.some((p) => String(p.text).includes("authorization has expired"))).toBe(true);
       } finally {
         idp.server.stop(true);
         delete process.env.SLAUDE_OUTBOUND_DEV_LOOPBACK;

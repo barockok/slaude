@@ -11,7 +11,17 @@ ensureGuardrailKeyForPg();
 export const BOT = "U0BOT";
 export const SENDER = WORLD.manager;
 
-function richTransport(o: { ephemeralFails?: boolean; dmFails?: boolean } = {}) {
+export interface HarnessOpts {
+  ephemeralFails?: boolean;
+  dmFails?: boolean;
+  /** Passed to createGateway (for the OAuth stubs and the like). */
+  gateway?: Record<string, unknown>;
+}
+
+function richTransport(o: HarnessOpts = {}) {
+  const actions: Array<{ id: string | RegExp; fn: (a: any) => Promise<void> }> = [];
+  const viewHandlers = new Map<string, (a: any) => Promise<void>>();
+  const viewsOpened: any[] = [];
   const posts: any[] = [];
   const ephemerals: any[] = [];
   const reacts: any[] = [];
@@ -36,28 +46,54 @@ function richTransport(o: { ephemeralFails?: boolean; dmFails?: boolean } = {}) 
     conversations: { info: async () => ({}), members: async () => ({ members: [] }), replies: async () => ({ messages: [] }) },
     users: { info: async () => ({ user: { real_name: "Test" } }), profile: { set: async () => ({}) } },
     search: { messages: async () => ({}) },
+    views: { open: async (a: any) => { viewsOpened.push(a); return { ok: true }; }, update: async () => ({ ok: true }) },
     assistant: { threads: { setStatus: async () => ({ ok: true }) } },
   });
   const client = clientFor(BOT);
   const t: Transport = {
     client,
-    action: () => {},
+    action: (id: string | RegExp, fn: any) => void actions.push({ id, fn }),
+    view: (id: string, fn: any) => void viewHandlers.set(id, fn),
     use: () => {},
     start: async () => {},
     stop: async () => {},
     event: (name: string, fn: any) => void handlers.set(name, fn),
   };
   const emit = async (name: string, args: any) => { await handlers.get(name)?.(args); };
-  return { t, client, posts, ephemerals, reacts, emit };
+  const responds: any[] = [];
+  /** Click a button as `user`: the first registered handler whose id matches `actionId`. */
+  const click = async (actionId: string, c: { value?: string; user: string; trigger?: string }) => {
+    const h = actions.find((a) => (typeof a.id === "string" ? a.id === actionId : a.id.test(actionId)));
+    if (!h) throw new Error(`no action handler for ${actionId}`);
+    await h.fn({
+      ack: async () => {},
+      action: { action_id: actionId, value: c.value },
+      body: { user: { id: c.user, team_id: "T" }, team: { id: "T" }, api_app_id: undefined, trigger_id: c.trigger ?? "TRIG" },
+      respond: async (m: any) => void responds.push(m),
+    });
+  };
+  /** Submit a modal as `user`. */
+  const submit = async (callbackId: string, v: { metadata: string; fields: Record<string, string>; user: string }) => {
+    const h = viewHandlers.get(callbackId);
+    if (!h) throw new Error(`no view handler for ${callbackId}`);
+    const values: any = {};
+    for (const [block, val] of Object.entries(v.fields)) values[block] = { value: { value: val } };
+    await h({
+      ack: async () => {},
+      view: { callback_id: callbackId, private_metadata: v.metadata, state: { values }, id: "V1", hash: "h" },
+      body: { user: { id: v.user, team_id: "T" }, team: { id: "T" } },
+    });
+  };
+  return { t, client, posts, ephemerals, reacts, emit, viewsOpened, responds, click, submit };
 }
 
-export function makeGw(o: { ephemeralFails?: boolean; dmFails?: boolean } = {}) {
+export function makeGw(o: HarnessOpts = {}) {
   const cap = richTransport(o);
   const agent = new AgentManager();
   const sends: { id: string; text: string }[] = [];
   agent.sendMessage = async (id: string, text: string) => void sends.push({ id, text });
   agent.suppressNextTurn = () => {};
-  createGateway(agent, cap.t, { surfaceFactory: makeSlackSurfaceFactory(cap.client) });
+  createGateway(agent, cap.t, { surfaceFactory: makeSlackSurfaceFactory(cap.client), ...(o.gateway ?? {}) } as any);
   return { ...cap, agent, sends };
 }
 export type Gw = ReturnType<typeof makeGw>;

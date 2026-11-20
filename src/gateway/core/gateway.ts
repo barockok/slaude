@@ -152,6 +152,7 @@ import { wakeRefusal } from "../../proactive/wake-guard";
 import { MUST_REPLY_INSTRUCTION, mustReplyEffect } from "../../agent/must-reply";
 import { inboundGuidance, inboundVerdict, installOwnerGuardrails, type InboundVerdict } from "./owner-guardrails";
 import { privateSender, type PrivateClass } from "../slack/private";
+import { OAUTH_PASTE_ACTION, OAUTH_PASTE_VIEW, oauthLinkBlocks, oauthPasteModal, readOAuthPasteValue } from "../slack/oauth-paste";
 import { auditFiring } from "../../guardrails/audit";
 import { wakeStatusText } from "../../proactive/wake-status";
 import type { WakeToolDeps } from "../../proactive/wake-tools";
@@ -2195,16 +2196,77 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // link (redact rather than delete — keeps the breadcrumb, kills the URL). The
   // URL is single-use/expired by now; this just avoids a stale clickable secret
   // lingering in the thread. Best-effort; needs the "edit" capability.
-  const redactAuthMessage = async (surface: Surface, ref: string | undefined, serverName: string) => {
-    if (!ref || !surface.capabilities.has("edit") || !surface.edit) return;
+  const redactAuthMessage = async (surface: Surface, ref: string | undefined, serverName: string, app?: AppRef, personaName?: string) => {
+    if (!ref) return;
+    const gone = `:link: Authorize \`${serverName}\`: link removed (flow finished).`;
+    // A link sent by DM is edited in the DM (ref "dm:<channel>:<ts>"); an older parked flow holds a thread ref.
+    if (ref.startsWith("dm:")) {
+      const [, dmChannel, dmTs] = ref.split(":");
+      try {
+        await outClientForPersona(personaName, app).chat.update({ channel: dmChannel, ts: dmTs, text: gone, blocks: [] }); // runtime-ui: private authorize link removed after the flow
+      } catch { /* best-effort */ }
+      return;
+    }
+    if (!surface.capabilities.has("edit") || !surface.edit) return;
     try {
-      await surface.edit({ ref, text: `:link: Authorize \`${serverName}\`: link removed (flow finished).`, runtime: true });
+      await surface.edit({ ref, text: gone, runtime: true });
     } catch { /* best-effort: redaction failure must not mask the connect outcome */ }
   };
 
-  async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any; scope: ConnectScope; personaName?: string; app?: AppRef }) {
+  /**
+   * A connect flow's words to the person who started it, for them alone: the answer is
+   * an ephemeral in the thread (a DM if that fails), and the authorize link, which would
+   * be a credential in anyone's hands, is a DM with an Enter code button. Nothing here is
+   * posted to the thread. With SLAUDE_PRIVATE_NOTICES off both go back to the thread.
+   */
+  const connectNotifier = (a: { sessionId: string; channelId: string; threadTs: string; userId: string; personaName?: string; app?: AppRef }) => {
     const surface = connectSurface(a.channelId, a.threadTs, a.userId, a.app);
-    const post = (text: string) => surface.reply({ text, runtime: true });
+    const publicPost = (text: string) => surface.reply({ text, runtime: true });
+    const client = () => outClientForPersona(a.personaName, a.app);
+    // In the person's own DM there is nothing to hide from anyone: a plain post is already private.
+    const inOwnDm = a.channelId.startsWith("D");
+    const tell = (text: string) =>
+      inOwnDm
+        ? publicPost(text)
+        : privateSender.send(client(), { cls: "info", kind: "oauth", userId: a.userId, channel: a.channelId, thread: a.threadTs, text, publicFallback: async () => void (await publicPost(text)) });
+    /** Sends the link by DM; returns the ref to edit it away later, or false when it reached no one. */
+    const sendLink = async (text: string, blocks: unknown[] | null): Promise<{ ref?: string } | false> => {
+      if (inOwnDm) {
+        try {
+          const r = await client().chat.postMessage({ channel: a.channelId, ...(a.threadTs ? { thread_ts: a.threadTs } : {}), text, ...(blocks ? { blocks } : {}) }); // runtime-ui: authorize link in the person's own DM
+          const dmCh = typeof r?.channel === "string" ? r.channel : a.channelId;
+          return { ref: typeof r?.ts === "string" ? `dm:${dmCh}:${r.ts}` : undefined };
+        } catch (e) {
+          console.error(`[mcp-connect] authorize link post failed: ${(e as Error)?.message ?? String(e)}`);
+          return false;
+        }
+      }
+      let ref: string | undefined;
+      const res = await privateSender.send(client(), {
+        cls: "sensitive",
+        kind: "oauth_link",
+        userId: a.userId,
+        channel: a.channelId,
+        thread: a.threadTs,
+        text,
+        ...(blocks ? { blocks } : {}),
+        onDelivered: (d) => {
+          if (d.path === "dm" && d.channel && d.ts) ref = `dm:${d.channel}:${d.ts}`;
+        },
+        publicFallback: async () => {
+          const r = await publicPost(text);
+          ref = (r as { ref?: string } | undefined)?.ref;
+        },
+      });
+      if (res === "dropped") return false;
+      return { ref };
+    };
+    return { surface, tell, sendLink };
+  };
+
+  async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any; scope: ConnectScope; personaName?: string; app?: AppRef }) {
+    const { surface, tell, sendLink } = connectNotifier(a);
+    const post = async (text: string): Promise<void> => void (await tell(text));
     const serverConfig: OAuthServerConfig = { type: "http", url: a.serverCfg.url, headers: a.serverCfg.headers };
     const redirectUrl = env.oauthRedirectUrl();
 
@@ -2227,10 +2289,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       try {
         const prepared = await runPrepare({ serverName: a.serverName, serverConfig, redirectUri: redirectUrl });
-        const { ref } = await post(
+        const teamId = a.app?.teamId ?? (await Sessions.findById(a.sessionId))?.slack_team_id ?? "";
+        const offer = { sessionId: a.sessionId, teamId, channelId: a.channelId, threadTs: a.threadTs, userId: a.userId, apiAppId: a.app?.apiAppId, issuedAt: Date.now() };
+        const sent = await sendLink(
           `:link: Authorize \`${a.serverName}\`:\n${prepared.authorizeUrl}\n\n` +
-            `After you approve, the page will show a code. *Paste the full redirect URL (or just the code) back here in this thread* to finish.`,
+            `After you approve, the page shows a code or a redirect URL. Click *Enter code* and paste it there. It never goes in the thread.`,
+          oauthLinkBlocks(a.serverName, prepared.authorizeUrl, offer),
         );
+        if (!sent) {
+          console.error(`[mcp-connect] could not deliver the authorize link privately server=${a.serverName} user=${a.userId}; flow not started`);
+          return;
+        }
+        const ref = sent.ref;
         await SlackOauthFlows.putFlow(pasteKey(a.channelId, a.threadTs, a.userId), {
           state: prepared.state,
           parts: prepared.parts,
@@ -2253,15 +2323,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const tokens = await runConnect({
         sessionId: a.sessionId, serverName: a.serverName, serverConfig,
         postAuthorizeUrl: async (url) => {
-          const { ref } = await post(`:link: Authorize \`${a.serverName}\`: ${url}\n(opens a browser; the loopback captures the result)`);
-          authMsgRef = ref;
+          const sent = await sendLink(`:link: Authorize \`${a.serverName}\`: ${url}\n(opens a browser; the loopback captures the result)`, null);
+          if (!sent) throw new Error("could not send you the authorize link privately");
+          authMsgRef = sent.ref;
         },
       });
       await persistTokens({ sessionId: a.sessionId, userId: a.userId, serverName: a.serverName, serverConfig, scope: a.scope, personaName: a.personaName }, tokens);
-      await redactAuthMessage(surface, authMsgRef, a.serverName);
+      await redactAuthMessage(surface, authMsgRef, a.serverName, a.app, a.personaName);
       await post(`:white_check_mark: \`${a.serverName}\` connected. Next message will use it.`);
     } catch (e) {
-      await redactAuthMessage(surface, authMsgRef, a.serverName);
+      await redactAuthMessage(surface, authMsgRef, a.serverName, a.app, a.personaName);
       await post(`:x: \`${a.serverName}\` connect failed: ${(e as Error).message}`);
     }
   }
@@ -2276,8 +2347,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * retrying could not work.
    */
   async function completePaste(pend: SlackOauthFlows.SlackOauthFlow, code: string, state: string | undefined, app: AppRef): Promise<void> {
-    const surface = connectSurface(pend.channelId, pend.threadTs, pend.userId, app);
-    const post = (text: string) => surface.reply({ text, runtime: true });
+    const { surface, tell } = connectNotifier({ ...pend, app });
+    const post = async (text: string): Promise<void> => void (await tell(text));
     if (state && state !== pend.state) {
       await post(":x: OAuth `state` mismatch — paste the URL from the same authorize step, or rerun `/mcp connect`.");
       return;
@@ -2292,10 +2363,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         sessionId: claimed.sessionId, userId: claimed.userId, serverName: claimed.serverName,
         serverConfig: claimed.cfg as OAuthServerConfig, scope: claimed.scope, personaName: claimed.personaName,
       }, tokens);
-      await redactAuthMessage(surface, claimed.authMsgRef, claimed.serverName);
+      await redactAuthMessage(surface, claimed.authMsgRef, claimed.serverName, app, claimed.personaName);
       await post(`:white_check_mark: \`${claimed.serverName}\` connected. Next message will use it.`);
     } catch (e) {
-      await redactAuthMessage(surface, claimed.authMsgRef, claimed.serverName);
+      await redactAuthMessage(surface, claimed.authMsgRef, claimed.serverName, app, claimed.personaName);
       await post(`:x: \`${claimed.serverName}\` connect failed: ${(e as Error).message}`);
     }
   }
@@ -2574,6 +2645,61 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
     const { addr, dir } = readRemoteConnectValues(view);
     await handleRemoteCommand({ kind: "remote", action: "on", addr, dir }, ctx);
+  });
+
+  // Paste-back OAuth: the Enter code button on the private link message opens a modal, and
+  // what is typed there never reaches the thread. Both carry the /remote offer: bound to the
+  // clicking user and a max age. The parked flow is looked up from the verified clicker, never
+  // from anything the modal's metadata says about who the flow belongs to.
+  t.action(new RegExp(`^${OAUTH_PASTE_ACTION}$`), async ({ ack, action, body, respond }) => {
+    await ack();
+    const clicker = (body as any).user?.id;
+    const decoded = await decodeRemoteOffer((action as { value?: string }).value, clicker);
+    if (!decoded.ok) {
+      if (decoded.reason === "expired") {
+        await respond({ response_type: "ephemeral", replace_original: false, text: "That button expired. Run `/mcp connect` again." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+      }
+      return;
+    }
+    const { offer } = decoded;
+    const pend = await SlackOauthFlows.peekFlow(pasteKey(offer.channelId, offer.threadTs, clicker));
+    if (!pend) {
+      await respond({ response_type: "ephemeral", replace_original: false, text: "No connect is waiting for a code. Run `/mcp connect` again." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+      return;
+    }
+    const clickApp: AppRef = { apiAppId: (body as any).api_app_id ?? offer.apiAppId, teamId: (body as any).team?.id ?? (body as any).user?.team_id ?? offer.teamId };
+    const client = botClientFor(clickApp);
+    const triggerId = (body as any).trigger_id;
+    if (!client.views || !triggerId) return;
+    await client.views.open({ trigger_id: triggerId, view: oauthPasteModal(pend.serverName, { ...offer, issuedAt: Date.now() }) }); // runtime-ui: gateway notice, card or command reply
+  });
+
+  t.view?.(OAUTH_PASTE_VIEW, async ({ ack, view, body }) => {
+    await ack();
+    const clicker = (body as any).user?.id;
+    const decoded = await decodeRemoteOffer(view.private_metadata, clicker);
+    if (!("offer" in decoded)) return; // not ours to answer
+    const { offer } = decoded;
+    const app: AppRef = { apiAppId: (body as any).api_app_id ?? offer.apiAppId, teamId: offer.teamId };
+    // The transport has no way to show a field error, and the token exchange cannot fit
+    // the acknowledgement window, so every outcome is a private notice.
+    const tell = (text: string) =>
+      privateSender.send(botClientFor(app), { cls: "info", kind: "oauth", userId: clicker, channel: offer.channelId, thread: offer.threadTs, text });
+    if (!decoded.ok) {
+      await tell("That form expired. Run `/mcp connect` again.");
+      return;
+    }
+    const pend = await SlackOauthFlows.peekFlow(pasteKey(offer.channelId, offer.threadTs, clicker));
+    if (!pend) {
+      await tell(":hourglass: That authorization has expired. Run `/mcp connect` again.");
+      return;
+    }
+    const parsed = parseOAuthCallback(readOAuthPasteValue(view));
+    if (!parsed.code) {
+      await tell(":warning: That did not look like a redirect URL or a code. Click *Enter code* on the link message and try again.");
+      return;
+    }
+    await completePaste(pend, parsed.code, parsed.state, app);
   });
 
   t.action(/^slaude_mcp:connect:.+$/, async ({ ack, action, body }) => {
@@ -3251,12 +3377,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // scope; global has no lock, so the key, not the lock, is what binds.)
     {
       const pend = await SlackOauthFlows.peekFlow(pasteKey(channelId, threadTs, userId));
+      const parsed = parseOAuthCallback(stripped);
       if (pend) {
-        const parsed = parseOAuthCallback(stripped);
         if (parsed.code) {
           await completePaste(pend, parsed.code, parsed.state, app);
+          // The code is already in the thread (and cannot be removed from it): say how to keep it out next time.
+          await reply("Next time click *Enter code* on the private link message, so the code stays out of the thread.");
           return;
         }
+      } else if (parsed.code && parsed.state && !/\s/.test(stripped)) {
+        // A redirect URL with nothing parked for this person (expired, or another thread): it must
+        // not reach the model, where the code would sit in the transcript and the memory.
+        await reply(":hourglass: That authorization has expired, so I did not use that link. Run `/mcp connect` again.");
+        return;
       }
     }
 
