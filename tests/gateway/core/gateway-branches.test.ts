@@ -728,6 +728,7 @@ describe("gateway uncovered branches", () => {
       // happy path (global/manager): returns a started-status, never the URL; same engine fires
       const status = await g.h.__agentConnect(session.id, "svc");
       expect(status).toContain("Started authorizing");
+      expect(status).toContain("by DM");
       expect(status).not.toContain("http");
       await waitFor(() => g.posts.some((p) => String(p.text).includes("`svc` connected")));
       expect(connects).toBe(1);
