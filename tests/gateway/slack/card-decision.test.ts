@@ -17,6 +17,12 @@ describe("decidedBlocks", () => {
     expect(out[2]).toEqual({ type: "context", elements: [{ type: "mrkdwn", text: "Allowed once by <@U1>" }] });
     expect(JSON.stringify(out)).not.toContain("slaude_perm");
   });
+  it("drops the auto-deny hint, which is no longer true once the card is decided", () => {
+    const withHint = [...card.slice(0, 2), { type: "context", block_id: "slaude_expiry", elements: [{ type: "mrkdwn", text: "Auto-denies in 300s" }] }, card[2]];
+    const out = decidedBlocks(withHint, "Allowed once by <@U1>")!;
+    expect(JSON.stringify(out)).not.toContain("Auto-denies");
+    expect(out).toHaveLength(3);
+  });
   it("is null when there is nothing to keep", () => {
     expect(decidedBlocks(undefined, "x")).toBeNull();
     expect(decidedBlocks([{ type: "section" }], "x")).toBeNull();
