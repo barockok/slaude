@@ -190,8 +190,9 @@ describe("channel session routing", () => {
       const g = makeGw({ wakeNow: w.fn });
       await g.emit("message", rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4" }));
       expect(w.calls).toEqual([{ channel: "C4", persona: "default" }]);
-      expect(text(g)).toContain("On it");
-      expect(g.posts[0].thread_ts).toBeUndefined();
+      expect(priv(g)).toContain("On it");
+      expect(g.ephemerals[0].thread_ts).toBeUndefined();
+      expect(g.posts).toHaveLength(0);
       expect(g.sends).toHaveLength(0);
     });
 
@@ -208,9 +209,9 @@ describe("channel session routing", () => {
     });
 
     it.each([
-      ["a thread of a proactive channel", false, (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4", thread_ts: "1000.1" })],
+      ["a thread of a proactive channel", true, (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C4", thread_ts: "1000.1" })],
       ["a channel session with no proactive", true, (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C1" })],
-      ["a classic channel", false, (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C2" })],
+      ["a classic channel", true, (g: Gw) => rootArgs(g, `<@${BOT}> /heartbeat now`, { channel: "C2" })],
     ])("in %s it says where it works and runs nothing", async (_n, expectPrivate, args) => {
       const w = seam("woke");
       const g = makeGw({ wakeNow: w.fn });
@@ -310,7 +311,8 @@ describe("channel session routing", () => {
     const g = makeGw();
     await g.emit("message", rootArgs(g, `<@${BOT}> /help`));
     expect(g.sends).toHaveLength(0);
-    expect(g.posts).toHaveLength(1);
+    expect(g.posts).toHaveLength(0);
+    expect(g.ephemerals).toHaveLength(1);
   });
 
   it("a thread mention in the channel keeps its own session under the thread", async () => {
@@ -1092,11 +1094,12 @@ describe("channel session routing", () => {
     it("/help lists /new only at a channel session's root", async () => {
       const g = makeGw();
       await g.emit("message", rootArgs(g, at("/help")));
-      expect(g.posts.at(-1).text).toContain("/new");
+      expect(g.ephemerals.at(-1).text).toContain("/new");
       await g.emit("message", rootArgs(g, at("/help"), { channel: "C2" }));
-      expect(g.posts.at(-1).text).not.toContain("/new");
+      expect(g.ephemerals.at(-1).text).not.toContain("/new");
       await g.emit("message", rootArgs(g, at("/help"), { thread_ts: nextTs() }));
-      expect(g.posts.at(-1).text).not.toContain("/new");
+      expect(g.ephemerals.at(-1).text).not.toContain("/new");
+      expect(g.posts).toHaveLength(0);
     });
 
     it("/new drops what waits behind the session, before ending it", async () => {
@@ -1197,13 +1200,14 @@ describe("channel session routing", () => {
       expect(g.sends.at(-1)!.text).toContain("/new");
     });
 
-    it("other commands reply at root, and in a thread as before", async () => {
+    it("other commands answer privately at root, and in the thread as before", async () => {
       const g = makeGw();
       await g.emit("message", rootArgs(g, at("/help")));
-      expect(g.posts.at(-1).thread_ts).toBeUndefined();
+      expect(g.ephemerals.at(-1).thread_ts).toBeUndefined();
       const ts = nextTs();
       await g.emit("message", rootArgs(g, at("/help"), { ts, channel: "C2" }));
-      expect(g.posts.at(-1).thread_ts).toBe(ts);
+      expect(g.ephemerals.at(-1).thread_ts).toBe(ts);
+      expect(g.posts).toHaveLength(0);
     });
 
     it("/new during a running turn ends it: no working reaction stays, a late done touches nothing", async () => {
@@ -1378,31 +1382,50 @@ describe("channel session routing", () => {
       expect(g.posts).toHaveLength(0);
     });
 
-    it("a failed ephemeral post stays private: no public post, the error reaction, no throw", async () => {
+    const inChannel = (g: Gw) => g.posts.filter((p) => p.channel === "C1");
+    const dms = (g: Gw) => g.posts.filter((p) => p.channel === SENDER);
+    const failingDm = (g: Gw) => {
+      const real = g.client.chat.postMessage;
+      g.client.chat.postMessage = async (a: any) => {
+        if (a.channel === SENDER) throw new Error("cannot_dm");
+        return real(a);
+      };
+    };
+
+    it("a failed ephemeral post goes to the sender's DM: nothing public, no error reaction, no throw", async () => {
       const g = makeGw();
       failing(g);
+      const ts = nextTs();
+      await g.emit("message", rootArgs(g, at("/1on1"), { ts }));
+      expect(inChannel(g)).toHaveLength(0);
+      expect(dms(g)).toHaveLength(1);
+      expect(g.reacts.some((r) => r.timestamp === ts && r.name === "x")).toBe(false);
+    });
+
+    it("when the ephemeral and the DM both fail nothing is posted, the error reaction is the floor", async () => {
+      const g = makeGw();
+      failing(g);
+      failingDm(g);
       const ts = nextTs();
       await g.emit("message", rootArgs(g, at("/1on1"), { ts }));
       expect(g.posts).toHaveLength(0);
       expect(g.reacts.some((r) => r.timestamp === ts && r.name === "x")).toBe(true);
     });
 
-    it("a failed ephemeral on a /new refusal also reacts and posts nothing", async () => {
+    it("a failed ephemeral on a /new refusal also goes to a DM and posts nothing in the channel", async () => {
       const g = makeGw();
       failing(g);
-      const ts = nextTs();
-      await g.emit("message", rootArgs(g, at("/new"), { ts }));
-      expect(g.posts).toHaveLength(0);
-      expect(g.reacts.some((r) => r.timestamp === ts && r.name === "x")).toBe(true);
+      await g.emit("message", rootArgs(g, at("/new"), { ts: nextTs() }));
+      expect(inChannel(g)).toHaveLength(0);
+      expect(dms(g)).toHaveLength(1);
     });
 
-    it("a client with no postEphemeral falls back to the reaction", async () => {
+    it("a client with no postEphemeral falls back to the DM, never the channel", async () => {
       const g = makeGw();
       delete g.client.chat.postEphemeral;
-      const ts = nextTs();
-      await g.emit("message", rootArgs(g, at("/env"), { ts }));
-      expect(g.posts).toHaveLength(0);
-      expect(g.reacts.some((r) => r.timestamp === ts && r.name === "x")).toBe(true);
+      await g.emit("message", rootArgs(g, at("/env"), { ts: nextTs() }));
+      expect(inChannel(g)).toHaveLength(0);
+      expect(dms(g)).toHaveLength(1);
     });
 
     it("the same commands in a thread of the channel stay public and in the thread", async () => {
@@ -1419,14 +1442,16 @@ describe("channel session routing", () => {
       expect(g.posts.at(-1).thread_ts).toBe(thread);
     });
 
-    it("in a classic channel a /1on1 or /soul denial is public as before", async () => {
+    it("in a classic channel a /1on1 or /soul denial is private too", async () => {
       const g = makeGw();
       await g.emit("message", rootArgs(g, at("/soul list"), { channel: "C2", user: "U0MEMBER" }));
-      expect(g.ephemerals).toHaveLength(0);
-      expect(g.posts.at(-1).text).toContain("manager-only");
+      expect(g.posts).toHaveLength(0);
+      expect(g.ephemerals).toHaveLength(1);
+      expect(g.ephemerals[0].text).toContain("manager-only");
+      expect(g.ephemerals[0].user).toBe("U0MEMBER");
     });
 
-    it("in a DM a denial is public as before", async () => {
+    it("in a DM a denial is a plain reply in the DM, which is already private", async () => {
       const g = makeGw();
       const args = rootArgs(g, "/heartbeat now", { channel: "D0DM" });
       (args.event as any).channel_type = "im";

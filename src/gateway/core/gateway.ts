@@ -151,6 +151,7 @@ import { wakeGateConfig, WakeTargetBusyError, type WakeRunOptions, type WakeTran
 import { wakeRefusal } from "../../proactive/wake-guard";
 import { MUST_REPLY_INSTRUCTION, mustReplyEffect } from "../../agent/must-reply";
 import { inboundGuidance, inboundVerdict, installOwnerGuardrails, makeReplyQuiet, type InboundVerdict } from "./owner-guardrails";
+import { privateSender, type PrivateClass } from "../slack/private";
 import { auditFiring } from "../../guardrails/audit";
 import { wakeStatusText } from "../../proactive/wake-status";
 import type { WakeToolDeps } from "../../proactive/wake-tools";
@@ -3101,7 +3102,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const slash = parsed?.kind === "new" && !dispatch?.channelSession ? null : parsed;
     // A command at a channel session's root is answered at root, like its turns.
     const slashThread = dispatch?.channelSession ? {} : { thread_ts: threadTs };
-    const reply = async (txt: string) => {
+    /**
+     * The one public gateway line a command may post: a state change other people
+     * must know about (`/mode`, `/ignore`, cron edits and the like). Everything else
+     * a command says is for the sender alone and goes through `reply`.
+     */
+    const announce = async (txt: string) => {
       await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
         channel: channelId,
         ...slashThread,
@@ -3110,30 +3116,41 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       });
     };
     /**
-     * A refusal for the person who sent the command, shown to them alone: an
-     * ephemeral post to the sender at the channel session's root (no thread_ts).
-     * Anywhere else it is `reply`, unchanged. It never turns public: if the
-     * ephemeral cannot be posted (not in the channel, a missing scope, a
-     * transport without it) the error is logged and counted, and the sender's
-     * message gets the error reaction instead. Not rate limited: a retry shows again.
+     * A command's answer, for the sender alone: an ephemeral (at the channel
+     * session's root when that is where the command was sent), then a DM, never the
+     * channel. Not rate limited: a retry shows again. When neither works the error
+     * is logged and counted and the sender's message gets the error reaction, as the
+     * root refusals always did. With SLAUDE_PRIVATE_NOTICES off it is `announce`.
      */
-    const replyPrivately = async (txt: string) => {
-      if (!dispatch?.channelSession) return reply(txt);
+    const reply = async (txt: string, o?: { cls?: PrivateClass }) => {
+      // A DM is already private to the sender, and Slack's ephemeral support in a DM is unreliable.
+      if (channelType === "im") return announce(txt);
       let out: ReturnType<typeof outClientForPersona> | undefined;
       try {
         out = outClientForPersona(dispatch?.personaId, app);
-        if (typeof out.chat.postEphemeral !== "function") throw new Error("postEphemeral unavailable");
-        await out.chat.postEphemeral({ channel: channelId, user: userId, text: txt }); // runtime-ui: gateway notice, card or command reply
+        const res = await privateSender.send(out, {
+          cls: o?.cls ?? "info",
+          kind: "command",
+          userId,
+          channel: channelId,
+          ...(slashThread.thread_ts ? { thread: slashThread.thread_ts } : {}),
+          text: txt,
+          publicFallback: () => announce(txt),
+        });
+        if (res !== "dropped") return;
+        metric.ephemeralReplyFailuresTotal.inc();
       } catch (err: unknown) {
         metric.ephemeralReplyFailuresTotal.inc();
         console.error(`[slack-rx] private reply failed ch=${channelId} user=${userId}: ${(err as any)?.data?.error ?? (err as Error)?.message ?? String(err)}`);
-        try {
-          await (out ?? client).reactions.add({ channel: channelId, timestamp: eventTs, name: REACT_ERROR });
-        } catch (e2: unknown) {
-          if ((e2 as any)?.data?.error !== "already_reacted") console.error(`[slack-rx] error reaction failed ch=${channelId} ts=${eventTs}: ${(e2 as Error)?.message ?? String(e2)}`);
-        }
+      }
+      try {
+        await (out ?? client).reactions.add({ channel: channelId, timestamp: eventTs, name: REACT_ERROR });
+      } catch (e2: unknown) {
+        if ((e2 as any)?.data?.error !== "already_reacted") console.error(`[slack-rx] error reaction failed ch=${channelId} ts=${eventTs}: ${(e2 as Error)?.message ?? String(e2)}`);
       }
     };
+    /** Kept for the root refusals that named themselves private: the same as `reply` now. */
+    const replyPrivately = reply;
     // These answer before the session is looked up, so a refused command does
     // not create one.
     if (slash && dispatch?.channelSession) {
@@ -3173,7 +3190,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       presence.exit(current.id);
       await status.clear(current.id);
       routes.delete(current.id);
-      await reply("Started this channel's session over. The old one stays in the console.");
+      await announce("Started this channel's session over. The old one stays in the console.");
       return;
     }
 
@@ -3256,7 +3273,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "mode") {
         await agent.setPermissionMode(session.id, slash.mode);
         agent.noteSessionEvent(session.id, `Permission mode changed to \`${humanModeName(slash.mode)}\`.`);
-        await reply(`mode → \`${humanModeName(slash.mode)}\``);
+        await announce(`mode → \`${humanModeName(slash.mode)}\``);
         return;
       }
       if (slash.kind === "abort") {
@@ -3267,7 +3284,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await queueDispatch.abort(session.id).catch((e) => console.error("[slaude] abort publish failed:", e));
         }
         agent.abort(session.id);
-        await reply("aborted");
+        await announce("aborted");
         return;
       }
       if (slash.kind === "ingest") {
@@ -3330,7 +3347,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             return;
           }
           if (!(await sameAt({ site: "gateway.one_on_one_relock.lock_owner", persona: dispatch?.personaId, teamId, userId, otherUserId: existing.locked_user, otherTeamId: existing.team_id })) && !(await managerAt("gateway.one_on_one_relock.role", dispatch?.personaId, userId, teamId))) {
-            await reply(`:lock: only the session owner (<@${existing.locked_user}>) can lock it.`);
+            await reply(`:lock: only the session owner (<@${existing.locked_user}>) can lock it.`, { cls: "failure" });
             return;
           }
           if (existing.open_scope === null) {
@@ -3358,7 +3375,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "mention-only") {
         if (slash.action === "on") {
           await MentionOnly.set({ channelId, threadTs, createdBy: userId, teamId });
-          await reply(":speech_balloon: *mention-only* — I'll reply in this thread only when @-mentioned. `/mention-only off` to restore.");
+          await announce(":speech_balloon: *mention-only* — I'll reply in this thread only when @-mentioned. `/mention-only off` to restore.");
           return;
         }
         if (!await MentionOnly.find(channelId, threadTs)) {
@@ -3366,7 +3383,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           return;
         }
         await MentionOnly.clear(channelId, threadTs);
-        await reply(":speech_balloon: mention-only off — I'll follow the thread normally again.");
+        await announce(":speech_balloon: mention-only off — I'll follow the thread normally again.");
         return;
       }
       if (slash.kind === "soul" || slash.kind === "soul-list" || slash.kind === "soul-clear") {
@@ -3391,11 +3408,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             });
             agent.noteSessionEvent(session.id, `Soul ACL override: ${slash.action} \`${res.value}\` to \`${res.field}\` (shadows SOUL.md).`);
           }
-          await reply(
-            res.ok
-              ? `:white_check_mark: soul override: \`${res.field}\` ${slash.action} \`${res.value}\` — effective immediately, all sessions.`
-              : `:warning: ${res.reason}`,
-          );
+          if (res.ok) await announce(`:white_check_mark: soul override: \`${res.field}\` ${slash.action} \`${res.value}\` — effective immediately, all sessions.`);
+          else await reply(`:warning: ${res.reason}`, { cls: "failure" });
           return;
         }
         if (slash.kind === "soul-clear") {
@@ -3406,7 +3420,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             field: slash.field === "all" ? "all" : FIELD_ALIASES[slash.field], via: "slash",
           });
           agent.noteSessionEvent(session.id, `Soul ACL overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
-          await reply(`:leftwards_arrow_with_hook: soul overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
+          await announce(`:leftwards_arrow_with_hook: soul overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
           return;
         }
         // soul-list: provenance — SOUL.md base vs runtime overlay.
@@ -3476,7 +3490,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         let scope: ConnectScope;
         if (lock) {
           if (!(await sameAt({ site: "gateway.mcp_slash.lock_owner", persona: dispatch?.personaId, teamId, userId, otherUserId: lock.locked_user, otherTeamId: lock.team_id }))) {
-            await reply(`:lock: \`/mcp\` in a 1on1 thread is for the lock owner — only <@${lock.locked_user}> can connect here.`);
+            await reply(`:lock: \`/mcp\` in a 1on1 thread is for the lock owner — only <@${lock.locked_user}> can connect here.`, { cls: "failure" });
             return;
           }
           scope = "initiator";
@@ -3585,7 +3599,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await Ignores.create({ targetType: "user", userId: slash.userId, createdBy: userId, expiresAt, reason: "manual" });
             auditIgnore("ignore.set", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "user", targetUser: slash.userId, expiresAt, via: "slash" });
             const durText = duration ? `for ${duration}` : "permanently";
-            await reply(`:mute: ignoring <@${slash.userId}> ${durText}`);
+            await announce(`:mute: ignoring <@${slash.userId}> ${durText}`);
           } else {
             const duration = slash.duration;
             let expiresAt: number | undefined;
@@ -3601,7 +3615,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await Ignores.create({ targetType: "thread", channelId, threadTs, teamId, createdBy: userId, expiresAt, reason: "manual" });
             auditIgnore("ignore.set", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "thread", expiresAt, via: "slash" });
             const durText = duration ? `for ${duration}` : "permanently";
-            await reply(`:mute: ignoring this thread ${durText}`);
+            await announce(`:mute: ignoring this thread ${durText}`);
           }
           return;
         }
@@ -3614,11 +3628,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
             const removed = await Ignores.remove({ targetType: "user", userId: slash.userId });
             if (removed) auditIgnore("ignore.cleared", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "user", targetUser: slash.userId, via: "slash" });
-            await reply(`:speaker: stopped ignoring <@${slash.userId}>`);
+            await announce(`:speaker: stopped ignoring <@${slash.userId}>`);
           } else {
             const removed = await Ignores.remove({ targetType: "thread", channelId, threadTs });
             if (removed) auditIgnore("ignore.cleared", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "thread", via: "slash" });
-            await reply(":speaker: stopped ignoring this thread");
+            await announce(":speaker: stopped ignoring this thread");
           }
           return;
         }
@@ -3682,7 +3696,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           await CronJobs.deactivate(job.id);
           agent.noteSessionEvent(session.id, `Removed scheduled cron job \`${job.id.slice(0, 8)}\`.`);
-          await reply(`:wastebasket: cron job \`${job.id.slice(0, 8)}\` removed`);
+          await announce(`:wastebasket: cron job \`${job.id.slice(0, 8)}\` removed`);
           return;
         }
 
@@ -3702,7 +3716,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           if (slash.kind === "cron-pause") {
             await CronJobs.pause(job.id);
-            await reply(`:pause_button: cron job \`${job.id.slice(0, 8)}\` paused`);
+            await announce(`:pause_button: cron job \`${job.id.slice(0, 8)}\` paused`);
             return;
           }
           let nextRun: number;
@@ -3713,7 +3727,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             return;
           }
           await CronJobs.resume(job.id, nextRun);
-          await reply(`:arrow_forward: cron job \`${job.id.slice(0, 8)}\` resumed — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
+          await announce(`:arrow_forward: cron job \`${job.id.slice(0, 8)}\` resumed — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
 
@@ -3759,7 +3773,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           });
           const mode = slash.whenActive === "skip" ? ", passive (skips when active)" : "";
           const where = slash.target === "channel" ? "channel root" : "this thread";
-          await reply(`:pencil2: cron job \`${job.id.slice(0, 8)}\` updated (posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
+          await announce(`:pencil2: cron job \`${job.id.slice(0, 8)}\` updated (posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
 
@@ -3821,7 +3835,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const where = slash.target === "channel" ? "channel root" : "this thread";
           const mode = slash.whenActive === "skip" ? ", passive (skips when active)" : "";
           agent.noteSessionEvent(session.id, `Scheduled cron job \`${job.id.slice(0, 8)}\`: \`${slash.cronExpr}\` → "${slash.prompt}" (posts to ${where}).`);
-          await reply(`:calendar: cron job created (\`${job.id.slice(0, 8)}\`, posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
+          await announce(`:calendar: cron job created (\`${job.id.slice(0, 8)}\`, posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
       }
