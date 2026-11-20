@@ -15,7 +15,7 @@ import { defaultGateBus, type GateBus } from "../../queue/gate-bus";
 import { randomBytes } from "node:crypto";
 import { approvalTitle, auditGateRow } from "../../audit/emit";
 import { redactSlack } from "./redact";
-import { decidedBlocks, respondClosed, respondDecided, whenText } from "./card-decision";
+import { EXPIRY_BLOCK_ID, decidedBlocks, respondClosed, respondDecided, whenText } from "./card-decision";
 
 export type ApprovalRequest = {
   channel: string;
@@ -518,6 +518,7 @@ export class ApprovalGate {
     if (timeoutSec > 0) {
       sections.push({
         type: "context",
+        block_id: EXPIRY_BLOCK_ID,
         elements: [{ type: "mrkdwn", text: `:hourglass: Auto-denies in *${timeoutSec}s* if no one clicks.` }],
       });
     }

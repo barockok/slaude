@@ -520,9 +520,10 @@ describe("ApprovalGate", () => {
   test("a decided approval card keeps its summary and files, with the buttons replaced by the decision", async () => {
     writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
     const f = fakeApp();
-    const gate = new ApprovalGate(f.app, []);
+    const gate = new ApprovalGate(f.app, [], { timeoutSeconds: () => 300 as any });
     const p = gate.request({ channel: "C", threadTs: "T", summary: "Rotate the staging key", files: ["deploy/keys.yml"] });
     const card = await firstPost(f);
+    expect(JSON.stringify(card.blocks)).toContain("Auto-denies");
     const id = card.blocks.find((b: any) => b.type === "actions").elements.find((e: any) => e.action_id.includes("approve")).action_id;
     const respond = await f.fire(id, "U001", { blocks: card.blocks });
     await p;
@@ -533,6 +534,7 @@ describe("ApprovalGate", () => {
     expect(out).toContain("Approved");
     expect(out).toContain("<@U001>");
     expect(done.blocks.some((b: any) => b.type === "actions")).toBe(false);
+    expect(out).not.toContain("Auto-denies");
   });
 
   test("the auto-deny timer closes the card but keeps what was asked", async () => {

@@ -7,12 +7,17 @@
 
 type Block = Record<string, unknown>;
 
+/** The block_id of a card's auto-deny hint, which a decided or closed card drops. */
+export const EXPIRY_BLOCK_ID = "slaude_expiry";
+
 /** The card's blocks with its buttons replaced by `line`, or null when there is nothing to keep. */
 export function decidedBlocks(blocks: unknown, line: string): Block[] | null {
   if (!Array.isArray(blocks)) return null;
   let swapped = false;
   const out: Block[] = [];
   for (const b of blocks as Block[]) {
+    // The auto-deny hint ("Auto-denies in 300s") stops being true once the card is decided or closed.
+    if (b?.block_id === EXPIRY_BLOCK_ID) continue;
     if (b?.type === "actions") {
       if (swapped) continue;
       swapped = true;
