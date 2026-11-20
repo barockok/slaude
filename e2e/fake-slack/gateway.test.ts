@@ -13,6 +13,8 @@ import { randomBytes } from "node:crypto";
 import { rmSync } from "node:fs";
 import { paths } from "../../src/config/home";
 import { __resetMasterKeyCache, encrypt } from "../../src/db/crypto";
+import * as Ignores from "../../src/db/ignores";
+import * as OneOnOne from "../../src/db/one-on-one";
 import type { SlackAppRow } from "../../src/db/slack-apps";
 import { createGateway, type GatewayHandle } from "../../src/gateway/core/gateway";
 import { StubAgent } from "../../src/gateway/sim/stub-agent";
@@ -254,6 +256,45 @@ describe("real gateway + HTTP transport + fake Slack", () => {
   // (src/gateway/slack/http-transport.ts); a method missing from that proxy throws a TypeError
   // inside the gateway and never reaches the fake, so a green result here does NOT mean the
   // gateway's Slack surface is complete.
+  test("a person who is not the lock owner is told privately, once, and nothing is posted to the thread", async () => {
+    const root = await ctl.send({ app: "A0FAKE", channel: "C0TEAM", user: "U0MGR", text: "start", target: base, mention: true });
+    await until(async () => (await acks("C0TEAM"))[0], { timeoutMs: WAIT_MS, what: "the first reply" });
+    await OneOnOne.lock({ channelId: "C0TEAM", threadTs: root.message.ts, lockedUser: "U0MGR", createdBy: "U0MGR", teamId: "T0FAKE" });
+    try {
+      const botBefore = (await botMessages("C0TEAM")).length;
+      const acksBefore = (await acks("C0TEAM")).length;
+      const ask = () => ctl.send({ app: "A0FAKE", channel: "C0TEAM", user: "U0ALICE", text: "can I help?", target: base, mention: true, threadTs: root.message.ts });
+      const ephemerals = async () => (await ctl.calls({ method: "chat.postEphemeral" })).calls;
+      await ask();
+      const first = await until(async () => (await ephemerals())[0], { timeoutMs: WAIT_MS, what: "the private lock notice" });
+      expect(first.args).toMatchObject({ channel: "C0TEAM", user: "U0ALICE", thread_ts: root.message.ts });
+      expect(String(first.args?.text)).toContain("locked 1on1");
+      expect(String(first.args?.text)).toContain("<@U0MGR>");
+      await ask();
+      await settle();
+      expect(await ephemerals()).toHaveLength(1); // rate limited: once per person and thread
+      expect((await botMessages("C0TEAM")).length).toBe(botBefore); // the thread got nothing from the bot
+      expect(await acks("C0TEAM")).toHaveLength(acksBefore); // and no turn ran for her message
+    } finally {
+      await OneOnOne.unlock("C0TEAM", root.message.ts);
+    }
+  }, TEST_MS);
+
+  test("an ignored person is told privately and the message does not run", async () => {
+    await Ignores.create({ targetType: "user", userId: "U0ALICE", createdBy: "U0MGR" });
+    try {
+      await ctl.send({ app: "A0FAKE", channel: "C0TEAM", user: "U0ALICE", text: "hello?", target: base, mention: true });
+      const first = await until(async () => (await ctl.calls({ method: "chat.postEphemeral" })).calls[0], { timeoutMs: WAIT_MS, what: "the private ignore notice" });
+      expect(first.args).toMatchObject({ channel: "C0TEAM", user: "U0ALICE" });
+      expect(String(first.args?.text).toLowerCase()).toContain("ignor");
+      await settle();
+      expect(await acks("C0TEAM")).toHaveLength(0);
+      expect((await botMessages("C0TEAM")).length).toBe(0);
+    } finally {
+      await Ignores.remove({ targetType: "user", userId: "U0ALICE" });
+    }
+  }, TEST_MS);
+
   test("the gateway only ever calls Web API methods the fake implements", async () => {
     await ctl.send({ app: "A0FAKE", channel: "D0MGR", user: "U0MGR", text: "one more", target: base });
     await until(async () => (await acks("D0MGR")).length >= 1, { timeoutMs: WAIT_MS, what: "reply" });
