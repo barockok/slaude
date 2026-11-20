@@ -152,6 +152,7 @@ import { wakeRefusal } from "../../proactive/wake-guard";
 import { MUST_REPLY_INSTRUCTION, mustReplyEffect } from "../../agent/must-reply";
 import { inboundGuidance, inboundVerdict, installOwnerGuardrails, type InboundVerdict } from "./owner-guardrails";
 import { privateSender, type PrivateClass } from "../slack/private";
+import { notifyTurnFailure } from "../slack/failure-notice";
 import { OAUTH_PASTE_ACTION, OAUTH_PASTE_VIEW, oauthLinkBlocks, oauthPasteModal, readOAuthPasteValue } from "../slack/oauth-paste";
 import { auditFiring } from "../../guardrails/audit";
 import { wakeStatusText } from "../../proactive/wake-status";
@@ -3025,25 +3026,14 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // once. The guard is an in-process Set: it does NOT span replicas.
           if (!e.quiet && firstFailurePost(e.jobId ? `${e.sessionId}:job:${e.jobId}` : `${e.sessionId}:ts:${route.ctx.inboundTs}`)) {
             try {
-              if (route.ctx.userId) {
-                // The person whose turn failed: an ephemeral, then a DM. The error reaction below is the floor.
-                await privateSender.send(botClientFor(appOf(route.ctx)), {
-                  cls: "failure",
-                  kind: "turn_failure",
-                  userId: route.ctx.userId,
-                  channel: route.ctx.channel,
-                  ...(route.ctx.threadTs ? { thread: route.ctx.threadTs } : {}),
-                  text: failureText(e.code),
-                });
-              } else {
-                // An unattended turn (a wake, a cron job) has nobody to tell: the channel is who is waiting.
-                await botClientFor(appOf(route.ctx)).chat.postMessage({ // runtime-ui: unattended turn failure, no user to tell
-                  channel: route.ctx.channel,
-                  thread_ts: route.ctx.threadTs,
-                  text: failureText(e.code),
-                  mrkdwn: true,
-                });
-              }
+              // The person whose turn failed, else the agent's manager, never the channel. The error reaction below is the floor.
+              await notifyTurnFailure(botClientFor(appOf(route.ctx)), {
+                ...(route.ctx.userId ? { userId: route.ctx.userId } : {}),
+                ...(soulDataFor(route.ctx.personaId).manager.userId ? { managerId: soulDataFor(route.ctx.personaId).manager.userId } : {}),
+                channel: route.ctx.channel,
+                ...(route.ctx.threadTs ? { thread: route.ctx.threadTs } : {}),
+                text: failureText(e.code),
+              });
             } catch {}
           }
           await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_ERROR);

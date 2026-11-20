@@ -54,7 +54,6 @@ describe("outbound coverage", () => {
     "public state change line", // /mode, /ignore, cron edits: others must know
     "public ops panel hold notice", // concerns the whole thread
     "public proactive feedback reply", // answers a visible post
-    "unattended turn failure", // a wake or cron job has no user to tell
     "authorize link in the person's own DM", // a DM already is private
     "private notice delivery", // sendPrivate itself: an ephemeral or a DM
   ];
