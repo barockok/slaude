@@ -93,8 +93,8 @@ export function makeGw(o: HarnessOpts = {}) {
   const sends: { id: string; text: string }[] = [];
   agent.sendMessage = async (id: string, text: string) => void sends.push({ id, text });
   agent.suppressNextTurn = () => {};
-  createGateway(agent, cap.t, { surfaceFactory: makeSlackSurfaceFactory(cap.client), ...(o.gateway ?? {}) } as any);
-  return { ...cap, agent, sends };
+  const h = createGateway(agent, cap.t, { surfaceFactory: makeSlackSurfaceFactory(cap.client), ...(o.gateway ?? {}) } as any);
+  return { ...cap, agent, sends, h };
 }
 export type Gw = ReturnType<typeof makeGw>;
 

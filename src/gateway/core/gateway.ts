@@ -3025,12 +3025,25 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // once. The guard is an in-process Set: it does NOT span replicas.
           if (!e.quiet && firstFailurePost(e.jobId ? `${e.sessionId}:job:${e.jobId}` : `${e.sessionId}:ts:${route.ctx.inboundTs}`)) {
             try {
-              await botClientFor(appOf(route.ctx)).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
-                channel: route.ctx.channel,
-                thread_ts: route.ctx.threadTs,
-                text: failureText(e.code),
-                mrkdwn: true,
-              });
+              if (route.ctx.userId) {
+                // The person whose turn failed: an ephemeral, then a DM. The error reaction below is the floor.
+                await privateSender.send(botClientFor(appOf(route.ctx)), {
+                  cls: "failure",
+                  kind: "turn_failure",
+                  userId: route.ctx.userId,
+                  channel: route.ctx.channel,
+                  ...(route.ctx.threadTs ? { thread: route.ctx.threadTs } : {}),
+                  text: failureText(e.code),
+                });
+              } else {
+                // An unattended turn (a wake, a cron job) has nobody to tell: the channel is who is waiting.
+                await botClientFor(appOf(route.ctx)).chat.postMessage({ // runtime-ui: unattended turn failure, no user to tell
+                  channel: route.ctx.channel,
+                  thread_ts: route.ctx.threadTs,
+                  text: failureText(e.code),
+                  mrkdwn: true,
+                });
+              }
             } catch {}
           }
           await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_ERROR);
@@ -3264,11 +3277,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
      * must know about (`/mode`, `/ignore`, cron edits and the like). Everything else
      * a command says is for the sender alone and goes through `reply`.
      */
-    const announce = async (txt: string) => {
+    const announce = async (txt: string, blocks?: unknown[]) => {
       await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
         channel: channelId,
         ...slashThread,
         text: txt,
+        ...(blocks ? { blocks } : {}),
         mrkdwn: true,
       });
     };
@@ -3279,9 +3293,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
      * is logged and counted and the sender's message gets the error reaction, as the
      * root refusals always did. With SLAUDE_PRIVATE_NOTICES off it is `announce`.
      */
-    const reply = async (txt: string, o?: { cls?: PrivateClass }) => {
+    const reply = async (txt: string, o?: { cls?: PrivateClass; blocks?: unknown[] }) => {
       // A DM is already private to the sender, and Slack's ephemeral support in a DM is unreliable.
-      if (channelType === "im") return announce(txt);
+      if (channelType === "im") return announce(txt, o?.blocks);
       let out: ReturnType<typeof outClientForPersona> | undefined;
       try {
         out = outClientForPersona(dispatch?.personaId, app);
@@ -3292,7 +3306,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           channel: channelId,
           ...(slashThread.thread_ts ? { thread: slashThread.thread_ts } : {}),
           text: txt,
-          publicFallback: () => announce(txt),
+          ...(o?.blocks ? { blocks: o.blocks } : {}),
+          publicFallback: () => announce(txt, o?.blocks),
         });
         if (res !== "dropped") return;
         metric.ephemeralReplyFailuresTotal.inc();
@@ -3739,7 +3754,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           blocks.push({ type: "actions", elements });
         }
-        await client.chat.postMessage({ channel: channelId, ...slashThread, blocks, text: "MCP servers", mrkdwn: true }); // runtime-ui: gateway notice, card or command reply
+        // Private to the sender: the Connect buttons act on their account, and the server list is theirs to see.
+        await reply("MCP servers", { blocks });
         return;
       }
       if (slash.kind === "ignore" || slash.kind === "unignore") {
@@ -5597,12 +5613,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const button = await connectButton(claims.session, {
       channelId: claims.channel, threadTs, userId, serverName: server, scope, personaName: personaKey(personaId),
     });
-    await outClientForPersona(personaId, { apiAppId: claims.app, teamId: claims.team }).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
+    // For the person who must click it (the manager, who may not be in the channel, or the initiator), by
+    // DM, where it stays until used: a lost card would leave the server disconnected with no sign why.
+    const where = claims.channel.startsWith("D") ? "" : ` (in <#${claims.channel}>)`;
+    const cardText = `${text}${where}`;
+    await privateSender.send(outClientForPersona(personaId, { apiAppId: claims.app, teamId: claims.team }), {
+      cls: "sensitive",
+      kind: "mcp_connect_card",
+      userId,
       channel: claims.channel,
-      thread_ts: threadTs || undefined,
-      text,
-      blocks: [{ type: "section", text: { type: "mrkdwn", text } }, { type: "actions", elements: [button] }],
-      mrkdwn: true,
+      ...(threadTs ? { thread: threadTs } : {}),
+      text: cardText,
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: cardText } }, { type: "actions", elements: [button] }],
     });
   }
   /** The /v1 tool plane's SlackContext for a verified job token: everything
