@@ -36,7 +36,7 @@ function fakeApp() {
     app,
     posts,
     updates,
-    fire: async (action_id: string, userId: string) => {
+    fire: async (action_id: string, userId: string, message?: { blocks?: unknown[] }) => {
       const respond: any = (() => {
         const calls: any[] = [];
         const fn = async (m: any) => {
@@ -51,7 +51,7 @@ function fakeApp() {
           await h.fn({
             ack,
             action: { action_id },
-            body: { user: { id: userId } },
+            body: { user: { id: userId }, ...(message ? { message } : {}) },
             respond,
           });
         }
@@ -517,6 +517,56 @@ describe("ApprovalGate", () => {
     expect(JSON.stringify(blocks)).toContain("Approver(s):");
   });
 
+  test("a decided approval card keeps its summary and files, with the buttons replaced by the decision", async () => {
+    writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+    const f = fakeApp();
+    const gate = new ApprovalGate(f.app, []);
+    const p = gate.request({ channel: "C", threadTs: "T", summary: "Rotate the staging key", files: ["deploy/keys.yml"] });
+    const card = await firstPost(f);
+    const id = card.blocks.find((b: any) => b.type === "actions").elements.find((e: any) => e.action_id.includes("approve")).action_id;
+    const respond = await f.fire(id, "U001", { blocks: card.blocks });
+    await p;
+    const done = (respond as any).calls.find((c: any) => c.replace_original === true);
+    const out = JSON.stringify(done.blocks);
+    expect(out).toContain("Rotate the staging key");
+    expect(out).toContain("deploy/keys.yml");
+    expect(out).toContain("Approved");
+    expect(out).toContain("<@U001>");
+    expect(done.blocks.some((b: any) => b.type === "actions")).toBe(false);
+  });
+
+  test("the auto-deny timer closes the card but keeps what was asked", async () => {
+    writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+    const f = fakeApp();
+    const gate = new ApprovalGate(f.app, [], { timeoutSeconds: () => 0.05 as any });
+    await gate.request({ channel: "C", threadTs: "T", summary: "Drop the old index" });
+    await new Promise((r) => setTimeout(r, 30));
+    const upd = f.updates.at(-1);
+    expect(upd).toBeTruthy();
+    const out = JSON.stringify(upd.blocks);
+    expect(out).toContain("Drop the old index");
+    expect(out).toContain("Auto-denied");
+    expect(upd.blocks.some((b: any) => b.type === "actions")).toBe(false);
+  });
+
+  test("stopping the turn closes the card instead of leaving live buttons", async () => {
+    writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
+    const f = fakeApp();
+    const gate = new ApprovalGate(f.app, []);
+    const ac = new AbortController();
+    const p = gate.request({ channel: "C", threadTs: "T", summary: "Drop the old index" }, ac.signal);
+    await firstPost(f);
+    ac.abort();
+    const r = await p;
+    expect(r.approved).toBe(false);
+    await new Promise((r2) => setTimeout(r2, 10));
+    const upd = f.updates.at(-1);
+    expect(upd).toBeTruthy();
+    expect(upd.text).toContain("Cancelled");
+    expect(JSON.stringify(upd.blocks)).toContain("Drop the old index");
+    expect(upd.blocks.some((b: any) => b.type === "actions")).toBe(false);
+  });
+
   test("duplicate click → already-decided message, no second resolve", async () => {
     writeFileSync(paths.soul, "# Persona\n## Approvers\n- <@U001>: anything\n");
     const f = fakeApp();
@@ -607,8 +657,10 @@ describe("ApprovalGate", () => {
     const d = await p;
     expect(d.note).toBe("aborted");
     await new Promise((r) => setTimeout(r, 150));
-    // Timer was cleared on abort — no timeout update.
-    expect(f.updates.length).toBe(0);
+    // Timer was cleared on abort: the only edit is the one that closes the card, never an auto-deny.
+    expect(f.updates.length).toBe(1);
+    expect(f.updates[0].text).toContain("Cancelled");
+    expect(f.updates.some((u: any) => String(u.text).includes("Auto-denied"))).toBe(false);
   });
 
   test("structured approvers from soul data", async () => {

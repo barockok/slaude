@@ -213,6 +213,8 @@ export const m = {
   errorsTotal: metrics.counter("slaude_errors_total", "Errors raised during a turn, labeled by kind."),
   slackDropsTotal: metrics.counter("slaude_slack_drops_total", "Inbound Slack events dropped before processing, labeled by reason."),
   ephemeralReplyFailuresTotal: metrics.counter("slaude_ephemeral_reply_failures_total", "Private (ephemeral) refusals at a channel session root that could not be posted; the sender got the error reaction instead, nothing went public."),
+  privateNoticeSentTotal: metrics.counter("slaude_private_notice_sent_total", "Private gateway notices delivered, labeled by class (info|failure|sensitive) and path (ephemeral|dm). A delivered ephemeral can still go unseen."),
+  privateNoticeDroppedTotal: metrics.counter("slaude_private_notice_dropped_total", "Private gateway notices that could not be delivered by ephemeral or DM and were dropped (never posted publicly), labeled by class."),
   channelSessionRecordFailuresTotal: metrics.counter("slaude_channel_session_record_failures_total", "Channel-session messages that failed to be recorded into the session (no model run was due)."),
   disengagedSuppressedTotal: metrics.counter("slaude_disengaged_suppressed_total", "Messages recorded into a disengaged thread's session transcript but suppressed by the UserPromptSubmit hook (no model run)."),
   userTurnsTotal: metrics.counter("slaude_user_turns_total", "Inbound user turns, labeled by user_id + user_name (opt-in via SLAUDE_METRICS_PER_USER=1)."),

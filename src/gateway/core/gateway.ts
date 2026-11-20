@@ -150,7 +150,9 @@ import { PanelChatRefused } from "../panel/api";
 import { wakeGateConfig, WakeTargetBusyError, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
 import { wakeRefusal } from "../../proactive/wake-guard";
 import { MUST_REPLY_INSTRUCTION, mustReplyEffect } from "../../agent/must-reply";
-import { inboundGuidance, inboundVerdict, installOwnerGuardrails, makeReplyQuiet, type InboundVerdict } from "./owner-guardrails";
+import { inboundGuidance, inboundVerdict, installOwnerGuardrails, type InboundVerdict } from "./owner-guardrails";
+import { privateSender, type PrivateClass } from "../slack/private";
+import { OAUTH_PASTE_ACTION, OAUTH_PASTE_VIEW, oauthLinkBlocks, oauthPasteModal, readOAuthPasteValue } from "../slack/oauth-paste";
 import { auditFiring } from "../../guardrails/audit";
 import { wakeStatusText } from "../../proactive/wake-status";
 import type { WakeToolDeps } from "../../proactive/wake-tools";
@@ -1396,7 +1398,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const persona = row.personaId && row.personaId !== "default" ? row.personaId : undefined;
       const session = await promiseSession(row);
       const app: AppRef = { apiAppId: session?.slack_app_id ?? undefined, teamId: teamId ?? undefined };
-      await outClientForPersona(persona, app).chat.postMessage({ channel: row.channelId, thread_ts: row.threadTs, text }); // runtime-ui: gateway notice, card or command reply
+      await outClientForPersona(persona, app).chat.postMessage({ channel: row.channelId, thread_ts: row.threadTs, text }); // runtime-ui: public promise line (a timer posts it, no user is present)
     },
   };
 
@@ -1682,7 +1684,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // The shadow classifier's budgets, claims and pass memory are per channel across every replica too.
     setEngageRedis(queueDispatch.turns.redis, queueDispatch.turns.keys?.prefix ?? "slaude");
   }
-  const guardrailReplyQuiet = makeReplyQuiet();
   agent.setStopGuard((sessionId) => {
     if (voiceTurns.active(sessionId)) return null;
     const route = routes.get(sessionId);
@@ -2195,16 +2196,77 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // link (redact rather than delete — keeps the breadcrumb, kills the URL). The
   // URL is single-use/expired by now; this just avoids a stale clickable secret
   // lingering in the thread. Best-effort; needs the "edit" capability.
-  const redactAuthMessage = async (surface: Surface, ref: string | undefined, serverName: string) => {
-    if (!ref || !surface.capabilities.has("edit") || !surface.edit) return;
+  const redactAuthMessage = async (surface: Surface, ref: string | undefined, serverName: string, app?: AppRef, personaName?: string) => {
+    if (!ref) return;
+    const gone = `:link: Authorize \`${serverName}\`: link removed (flow finished).`;
+    // A link sent by DM is edited in the DM (ref "dm:<channel>:<ts>"); an older parked flow holds a thread ref.
+    if (ref.startsWith("dm:")) {
+      const [, dmChannel, dmTs] = ref.split(":");
+      try {
+        await outClientForPersona(personaName, app).chat.update({ channel: dmChannel, ts: dmTs, text: gone, blocks: [] }); // runtime-ui: private authorize link removed after the flow
+      } catch { /* best-effort */ }
+      return;
+    }
+    if (!surface.capabilities.has("edit") || !surface.edit) return;
     try {
-      await surface.edit({ ref, text: `:link: Authorize \`${serverName}\`: link removed (flow finished).`, runtime: true });
+      await surface.edit({ ref, text: gone, runtime: true });
     } catch { /* best-effort: redaction failure must not mask the connect outcome */ }
   };
 
-  async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any; scope: ConnectScope; personaName?: string; app?: AppRef }) {
+  /**
+   * A connect flow's words to the person who started it, for them alone: the answer is
+   * an ephemeral in the thread (a DM if that fails), and the authorize link, which would
+   * be a credential in anyone's hands, is a DM with an Enter code button. Nothing here is
+   * posted to the thread. With SLAUDE_PRIVATE_NOTICES off both go back to the thread.
+   */
+  const connectNotifier = (a: { sessionId: string; channelId: string; threadTs: string; userId: string; personaName?: string; app?: AppRef }) => {
     const surface = connectSurface(a.channelId, a.threadTs, a.userId, a.app);
-    const post = (text: string) => surface.reply({ text, runtime: true });
+    const publicPost = (text: string) => surface.reply({ text, runtime: true });
+    const client = () => outClientForPersona(a.personaName, a.app);
+    // In the person's own DM there is nothing to hide from anyone: a plain post is already private.
+    const inOwnDm = a.channelId.startsWith("D");
+    const tell = (text: string) =>
+      inOwnDm
+        ? publicPost(text)
+        : privateSender.send(client(), { cls: "info", kind: "oauth", userId: a.userId, channel: a.channelId, thread: a.threadTs, text, publicFallback: async () => void (await publicPost(text)) });
+    /** Sends the link by DM; returns the ref to edit it away later, or false when it reached no one. */
+    const sendLink = async (text: string, blocks: unknown[] | null): Promise<{ ref?: string } | false> => {
+      if (inOwnDm) {
+        try {
+          const r = await client().chat.postMessage({ channel: a.channelId, ...(a.threadTs ? { thread_ts: a.threadTs } : {}), text, ...(blocks ? { blocks } : {}) }); // runtime-ui: authorize link in the person's own DM
+          const dmCh = typeof r?.channel === "string" ? r.channel : a.channelId;
+          return { ref: typeof r?.ts === "string" ? `dm:${dmCh}:${r.ts}` : undefined };
+        } catch (e) {
+          console.error(`[mcp-connect] authorize link post failed: ${(e as Error)?.message ?? String(e)}`);
+          return false;
+        }
+      }
+      let ref: string | undefined;
+      const res = await privateSender.send(client(), {
+        cls: "sensitive",
+        kind: "oauth_link",
+        userId: a.userId,
+        channel: a.channelId,
+        thread: a.threadTs,
+        text,
+        ...(blocks ? { blocks } : {}),
+        onDelivered: (d) => {
+          if (d.path === "dm" && d.channel && d.ts) ref = `dm:${d.channel}:${d.ts}`;
+        },
+        publicFallback: async () => {
+          const r = await publicPost(text);
+          ref = (r as { ref?: string } | undefined)?.ref;
+        },
+      });
+      if (res === "dropped") return false;
+      return { ref };
+    };
+    return { surface, tell, sendLink };
+  };
+
+  async function connectServer(a: { sessionId: string; channelId: string; threadTs: string; userId: string; serverName: string; serverCfg: any; scope: ConnectScope; personaName?: string; app?: AppRef }) {
+    const { surface, tell, sendLink } = connectNotifier(a);
+    const post = async (text: string): Promise<void> => void (await tell(text));
     const serverConfig: OAuthServerConfig = { type: "http", url: a.serverCfg.url, headers: a.serverCfg.headers };
     const redirectUrl = env.oauthRedirectUrl();
 
@@ -2227,10 +2289,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       try {
         const prepared = await runPrepare({ serverName: a.serverName, serverConfig, redirectUri: redirectUrl });
-        const { ref } = await post(
+        const teamId = a.app?.teamId ?? (await Sessions.findById(a.sessionId))?.slack_team_id ?? "";
+        const offer = { sessionId: a.sessionId, teamId, channelId: a.channelId, threadTs: a.threadTs, userId: a.userId, apiAppId: a.app?.apiAppId, issuedAt: Date.now() };
+        const sent = await sendLink(
           `:link: Authorize \`${a.serverName}\`:\n${prepared.authorizeUrl}\n\n` +
-            `After you approve, the page will show a code. *Paste the full redirect URL (or just the code) back here in this thread* to finish.`,
+            `After you approve, the page shows a code or a redirect URL. Click *Enter code* and paste it there. It never goes in the thread.`,
+          oauthLinkBlocks(a.serverName, prepared.authorizeUrl, offer),
         );
+        if (!sent) {
+          console.error(`[mcp-connect] could not deliver the authorize link privately server=${a.serverName} user=${a.userId}; flow not started`);
+          return;
+        }
+        const ref = sent.ref;
         await SlackOauthFlows.putFlow(pasteKey(a.channelId, a.threadTs, a.userId), {
           state: prepared.state,
           parts: prepared.parts,
@@ -2253,15 +2323,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const tokens = await runConnect({
         sessionId: a.sessionId, serverName: a.serverName, serverConfig,
         postAuthorizeUrl: async (url) => {
-          const { ref } = await post(`:link: Authorize \`${a.serverName}\`: ${url}\n(opens a browser; the loopback captures the result)`);
-          authMsgRef = ref;
+          const sent = await sendLink(`:link: Authorize \`${a.serverName}\`: ${url}\n(opens a browser; the loopback captures the result)`, null);
+          if (!sent) throw new Error("could not send you the authorize link privately");
+          authMsgRef = sent.ref;
         },
       });
       await persistTokens({ sessionId: a.sessionId, userId: a.userId, serverName: a.serverName, serverConfig, scope: a.scope, personaName: a.personaName }, tokens);
-      await redactAuthMessage(surface, authMsgRef, a.serverName);
+      await redactAuthMessage(surface, authMsgRef, a.serverName, a.app, a.personaName);
       await post(`:white_check_mark: \`${a.serverName}\` connected. Next message will use it.`);
     } catch (e) {
-      await redactAuthMessage(surface, authMsgRef, a.serverName);
+      await redactAuthMessage(surface, authMsgRef, a.serverName, a.app, a.personaName);
       await post(`:x: \`${a.serverName}\` connect failed: ${(e as Error).message}`);
     }
   }
@@ -2276,8 +2347,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    * retrying could not work.
    */
   async function completePaste(pend: SlackOauthFlows.SlackOauthFlow, code: string, state: string | undefined, app: AppRef): Promise<void> {
-    const surface = connectSurface(pend.channelId, pend.threadTs, pend.userId, app);
-    const post = (text: string) => surface.reply({ text, runtime: true });
+    const { surface, tell } = connectNotifier({ ...pend, app });
+    const post = async (text: string): Promise<void> => void (await tell(text));
     if (state && state !== pend.state) {
       await post(":x: OAuth `state` mismatch — paste the URL from the same authorize step, or rerun `/mcp connect`.");
       return;
@@ -2292,10 +2363,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         sessionId: claimed.sessionId, userId: claimed.userId, serverName: claimed.serverName,
         serverConfig: claimed.cfg as OAuthServerConfig, scope: claimed.scope, personaName: claimed.personaName,
       }, tokens);
-      await redactAuthMessage(surface, claimed.authMsgRef, claimed.serverName);
+      await redactAuthMessage(surface, claimed.authMsgRef, claimed.serverName, app, claimed.personaName);
       await post(`:white_check_mark: \`${claimed.serverName}\` connected. Next message will use it.`);
     } catch (e) {
-      await redactAuthMessage(surface, claimed.authMsgRef, claimed.serverName);
+      await redactAuthMessage(surface, claimed.authMsgRef, claimed.serverName, app, claimed.personaName);
       await post(`:x: \`${claimed.serverName}\` connect failed: ${(e as Error).message}`);
     }
   }
@@ -2411,7 +2482,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     });
     const canEphemeral = surface.capabilities.has("ephemeral") && !!surface.sayEphemeral;
     const reply = async (text: string) => {
-      await outClientForPersona(i.personaId, i.app).chat.postMessage({ channel: channelId, thread_ts: threadTs, text, mrkdwn: true }); // runtime-ui: gateway notice, card or command reply
+      await outClientForPersona(i.personaId, i.app).chat.postMessage({ channel: channelId, thread_ts: threadTs, text, mrkdwn: true }); // runtime-ui: public /remote and /env state (the thread must know where tools run)
     };
     const isManager = await managerAt("gateway.remote_ctx.role", i.personaId, userId, teamId);
     // The conversation's tenant, as dispatch reads it (the session's own column; sqlite has none).
@@ -2472,7 +2543,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const decoded = await decodeEnvOffer((action as { value?: string }).value, (body as any).user?.id);
     if (!decoded.ok) {
       if (decoded.reason === "expired") {
-        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {}); // runtime-ui: private ephemeral answer to a click
       }
       return;
     }
@@ -2489,7 +2560,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const decoded = await decodeEnvOffer((action as { value?: string }).value, (body as any).user?.id);
     if (!decoded.ok) {
       if (decoded.reason === "expired") {
-        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That button expired. Send `/env` again." }).catch(() => {}); // runtime-ui: private ephemeral answer to a click
       }
       return;
     }
@@ -2497,7 +2568,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const client = botClientFor(clickApp);
     const triggerId = (body as any).trigger_id;
     if (!client.views || !triggerId) return;
-    await client.views.open({ trigger_id: triggerId, view: envAddModal({ ...decoded.offer, issuedAt: Date.now() }) }); // runtime-ui: gateway notice, card or command reply
+    await client.views.open({ trigger_id: triggerId, view: envAddModal({ ...decoded.offer, issuedAt: Date.now() }) }); // runtime-ui: private modal
   });
 
   // Kind picked in the Add modal: redraw the modal with that kind's fields.
@@ -2512,7 +2583,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const clickApp: AppRef = { apiAppId: (body as any).api_app_id, teamId: (body as any).team?.id ?? (body as any).user?.team_id };
     const client = botClientFor(clickApp);
     if (!client.views?.update) return;
-    await client.views.update({ view_id: view.id, hash: view.hash, view: envAddModal({ ...decoded.offer, kindName }) }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+    await client.views.update({ view_id: view.id, hash: view.hash, view: envAddModal({ ...decoded.offer, kindName }) }).catch(() => {}); // runtime-ui: private modal
   });
 
   t.view?.(ENV_ADD_VIEW, async ({ ack, view, body }) => {
@@ -2541,7 +2612,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const decoded = await decodeRemoteOffer((action as { value?: string }).value, (body as any).user?.id);
     if (!decoded.ok) {
       if (decoded.reason === "expired") {
-        await respond({ response_type: "ephemeral", replace_original: true, text: "That Connect button expired. Send `/remote` again for a new one." }).catch(() => {}); // runtime-ui: gateway notice, card or command reply
+        await respond({ response_type: "ephemeral", replace_original: true, text: "That Connect button expired. Send `/remote` again for a new one." }).catch(() => {}); // runtime-ui: private ephemeral answer to a click
       }
       return;
     }
@@ -2553,7 +2624,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const existing = await Remote.findTarget(decoded.offer.channelId, decoded.offer.threadTs);
     const initialDir = existing?.user_id === decoded.offer.userId ? existing.dir : undefined;
     // Restamp: the modal's own clock starts when it opens.
-    await client.views.open({ trigger_id: triggerId, view: remoteConnectModal({ ...decoded.offer, issuedAt: Date.now() }, initialDir) }); // runtime-ui: gateway notice, card or command reply
+    await client.views.open({ trigger_id: triggerId, view: remoteConnectModal({ ...decoded.offer, issuedAt: Date.now() }, initialDir) }); // runtime-ui: private modal
   });
 
   // Connect modal submitted: the same path as `/remote <addr> <dir>`, minus the
@@ -2574,6 +2645,61 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     }
     const { addr, dir } = readRemoteConnectValues(view);
     await handleRemoteCommand({ kind: "remote", action: "on", addr, dir }, ctx);
+  });
+
+  // Paste-back OAuth: the Enter code button on the private link message opens a modal, and
+  // what is typed there never reaches the thread. Both carry the /remote offer: bound to the
+  // clicking user and a max age. The parked flow is looked up from the verified clicker, never
+  // from anything the modal's metadata says about who the flow belongs to.
+  t.action(new RegExp(`^${OAUTH_PASTE_ACTION}$`), async ({ ack, action, body, respond }) => {
+    await ack();
+    const clicker = (body as any).user?.id;
+    const decoded = await decodeRemoteOffer((action as { value?: string }).value, clicker);
+    if (!decoded.ok) {
+      if (decoded.reason === "expired") {
+        await respond({ response_type: "ephemeral", replace_original: false, text: "That button expired. Run `/mcp connect` again." }).catch(() => {}); // runtime-ui: private ephemeral answer to a click
+      }
+      return;
+    }
+    const { offer } = decoded;
+    const pend = await SlackOauthFlows.peekFlow(pasteKey(offer.channelId, offer.threadTs, clicker));
+    if (!pend) {
+      await respond({ response_type: "ephemeral", replace_original: false, text: "No connect is waiting for a code. Run `/mcp connect` again." }).catch(() => {}); // runtime-ui: private ephemeral answer to a click
+      return;
+    }
+    const clickApp: AppRef = { apiAppId: (body as any).api_app_id ?? offer.apiAppId, teamId: (body as any).team?.id ?? (body as any).user?.team_id ?? offer.teamId };
+    const client = botClientFor(clickApp);
+    const triggerId = (body as any).trigger_id;
+    if (!client.views || !triggerId) return;
+    await client.views.open({ trigger_id: triggerId, view: oauthPasteModal(pend.serverName, { ...offer, issuedAt: Date.now() }) }); // runtime-ui: private modal
+  });
+
+  t.view?.(OAUTH_PASTE_VIEW, async ({ ack, view, body }) => {
+    await ack();
+    const clicker = (body as any).user?.id;
+    const decoded = await decodeRemoteOffer(view.private_metadata, clicker);
+    if (!("offer" in decoded)) return; // not ours to answer
+    const { offer } = decoded;
+    const app: AppRef = { apiAppId: (body as any).api_app_id ?? offer.apiAppId, teamId: offer.teamId };
+    // The transport has no way to show a field error, and the token exchange cannot fit
+    // the acknowledgement window, so every outcome is a private notice.
+    const tell = (text: string) =>
+      privateSender.send(botClientFor(app), { cls: "info", kind: "oauth", userId: clicker, channel: offer.channelId, thread: offer.threadTs, text });
+    if (!decoded.ok) {
+      await tell("That form expired. Run `/mcp connect` again.");
+      return;
+    }
+    const pend = await SlackOauthFlows.peekFlow(pasteKey(offer.channelId, offer.threadTs, clicker));
+    if (!pend) {
+      await tell(":hourglass: That authorization has expired. Run `/mcp connect` again.");
+      return;
+    }
+    const parsed = parseOAuthCallback(readOAuthPasteValue(view));
+    if (!parsed.code) {
+      await tell(":warning: That did not look like a redirect URL or a code. Click *Enter code* on the link message and try again.");
+      return;
+    }
+    await completePaste(pend, parsed.code, parsed.state, app);
   });
 
   t.action(/^slaude_mcp:connect:.+$/, async ({ ack, action, body }) => {
@@ -2606,8 +2732,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const clickApp: AppRef = { apiAppId: (body as any).api_app_id, teamId: (body as any).team?.id ?? (body as any).user?.team_id };
     const cfg = httpExternalServers(ctx.personaName)[ctx.serverName];
     if (!cfg) {
-      await connectSurface(ctx.channelId, ctx.threadTs, ctx.userId, clickApp)
-        .reply({ text: `:warning: \`${ctx.serverName}\` is not available for this agent any more, so it can't be connected. Run \`/mcp\` for the current list.`, runtime: true })
+      await connectNotifier({ sessionId: gate.sessionId, channelId: ctx.channelId, threadTs: ctx.threadTs, userId: clicker, personaName: ctx.personaName, app: clickApp })
+        .tell(`:warning: \`${ctx.serverName}\` is not available for this agent any more, so it can't be connected. Run \`/mcp\` for the current list.`)
         .catch(() => {});
       return;
     }
@@ -2899,12 +3025,25 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           // once. The guard is an in-process Set: it does NOT span replicas.
           if (!e.quiet && firstFailurePost(e.jobId ? `${e.sessionId}:job:${e.jobId}` : `${e.sessionId}:ts:${route.ctx.inboundTs}`)) {
             try {
-              await botClientFor(appOf(route.ctx)).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
-                channel: route.ctx.channel,
-                thread_ts: route.ctx.threadTs,
-                text: failureText(e.code),
-                mrkdwn: true,
-              });
+              if (route.ctx.userId) {
+                // The person whose turn failed: an ephemeral, then a DM. The error reaction below is the floor.
+                await privateSender.send(botClientFor(appOf(route.ctx)), {
+                  cls: "failure",
+                  kind: "turn_failure",
+                  userId: route.ctx.userId,
+                  channel: route.ctx.channel,
+                  ...(route.ctx.threadTs ? { thread: route.ctx.threadTs } : {}),
+                  text: failureText(e.code),
+                });
+              } else {
+                // An unattended turn (a wake, a cron job) has nobody to tell: the channel is who is waiting.
+                await botClientFor(appOf(route.ctx)).chat.postMessage({ // runtime-ui: unattended turn failure, no user to tell
+                  channel: route.ctx.channel,
+                  thread_ts: route.ctx.threadTs,
+                  text: failureText(e.code),
+                  mrkdwn: true,
+                });
+              }
             } catch {}
           }
           await reactions.set(e.sessionId, route.ctx.channel, route.ctx.inboundTs, REACT_ERROR);
@@ -2985,6 +3124,32 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // the ignore checks exactly where it has always been. The id check is
     // repeated here only to narrow teamId/userId for the code below.
     if (!teamId || !userId) return;
+    /**
+     * Tell a person, privately, why the agent will not answer them (a thread locked to
+     * someone else, an ignore). Only when they spoke to the agent: a mention, or a DM.
+     * Chatter between other people in the thread is not answered and not remarked on.
+     * At most one per person, thread and kind in a quiet window. Never posted to the thread.
+     */
+    const rejectionNotice = async (kind: "one_on_one" | "ignored", noticeText: string): Promise<void> => {
+      try {
+        if (dispatch?.channelSession && suppress) return; // a recording was addressed to no one
+        const selfIds = (await getSelfBots(args)).userIds;
+        const mentioned = [...(event.text ?? "").toString().matchAll(/<@([A-Z0-9]+)>/g)].some((m) => selfIds.has(m[1]!) || !!getPersonaRegistry().lookupByUserId(m[1]!));
+        if (!(mentioned || event.type === "app_mention" || channelType === "im")) return;
+        const noticeThread: string | undefined = event.thread_ts || undefined;
+        await privateSender.send(outClientForPersona(dispatch?.personaId, app), {
+          cls: "info",
+          kind,
+          userId,
+          channel: channelId,
+          ...(noticeThread ? { thread: noticeThread } : {}),
+          text: noticeText,
+          limitKey: `${dispatch?.personaId || "default"}:${channelId}:${noticeThread ?? "root"}:${userId}:${kind}`,
+        });
+      } catch (err: unknown) {
+        console.error(`[slack-rx] rejection notice failed ch=${channelId} user=${userId}: ${(err as Error)?.message ?? String(err)}`);
+      }
+    };
     {
       let guardrailVerdict: InboundVerdict | null = null;
       const drop = await preTurnDropReason(args, {
@@ -3022,15 +3187,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (drop.reason === "owner_guardrail" && drop.reply && !(dispatch?.channelSession && suppress)) {
           const thread = event.thread_ts || eventTs;
           // One reply per person per thread per quiet window; later denies are silent (and audited above).
-          if (guardrailReplyQuiet(`${dispatch?.personaId || "default"}:${channelId}:${thread}:${userId}`)) {
-            const out = outClientForPersona(dispatch?.personaId, app);
-            try {
-              await out.chat.postEphemeral({ channel: channelId, user: userId, thread_ts: thread, text: drop.reply }); // runtime-ui: gateway notice, card or command reply
-            } catch {
-              await out.chat.postMessage({ channel: channelId, thread_ts: thread, text: drop.reply }).catch((err: unknown) => // runtime-ui: gateway notice, card or command reply
-                console.error(`[slack-rx] guardrail reply failed ch=${channelId}: ${(err as Error)?.message ?? String(err)}`));
-            }
-          }
+          // Private to the sender: an ephemeral, then a DM, never the thread.
+          await privateSender.send(outClientForPersona(dispatch?.personaId, app), {
+            cls: "info",
+            kind: "guardrail",
+            userId,
+            channel: channelId,
+            thread,
+            text: drop.reply,
+            limitKey: `${dispatch?.personaId || "default"}:${channelId}:${thread}:${userId}:guardrail`,
+          }).catch((err: unknown) => console.error(`[slack-rx] guardrail reply failed ch=${channelId}: ${(err as Error)?.message ?? String(err)}`));
+        }
+        if (drop.reason === "ignored") {
+          await rejectionNotice("ignored", "I am set to ignore you here, so I did not respond to your message. Ask a manager if that is a mistake.");
         }
         return;
       }
@@ -3053,6 +3222,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (lock.open_scope === null && !isLockOwner && !isMgr) {
           console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — 1on1 locked to ${lock.locked_user}`);
           metric.slackDropsTotal.inc({ reason: "one_on_one" });
+          await rejectionNotice("one_on_one", `This thread is locked 1on1 to <@${lock.locked_user}> (and the manager), so I did not respond to your message.`);
           return;
         }
         // A personal environment runs tools on the owner's machine: only the owner
@@ -3074,6 +3244,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           if (!allowed) {
             console.log(`[slack-rx] drop ch=${channelId} user=${userId} thread=${threadTs} — remote mode, 1on1 locked to ${lock.locked_user}`);
             metric.slackDropsTotal.inc({ reason: "one_on_one" });
+            await rejectionNotice("one_on_one", `This thread is locked 1on1 to <@${lock.locked_user}> and is running on their machine, so I did not respond to your message.`);
             return;
           }
         }
@@ -3101,39 +3272,58 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const slash = parsed?.kind === "new" && !dispatch?.channelSession ? null : parsed;
     // A command at a channel session's root is answered at root, like its turns.
     const slashThread = dispatch?.channelSession ? {} : { thread_ts: threadTs };
-    const reply = async (txt: string) => {
-      await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
+    /**
+     * The one public gateway line a command may post: a state change other people
+     * must know about (`/mode`, `/ignore`, cron edits and the like). Everything else
+     * a command says is for the sender alone and goes through `reply`.
+     */
+    const announce = async (txt: string, blocks?: unknown[]) => {
+      await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: public state change line (announce)
         channel: channelId,
         ...slashThread,
         text: txt,
+        ...(blocks ? { blocks } : {}),
         mrkdwn: true,
       });
     };
     /**
-     * A refusal for the person who sent the command, shown to them alone: an
-     * ephemeral post to the sender at the channel session's root (no thread_ts).
-     * Anywhere else it is `reply`, unchanged. It never turns public: if the
-     * ephemeral cannot be posted (not in the channel, a missing scope, a
-     * transport without it) the error is logged and counted, and the sender's
-     * message gets the error reaction instead. Not rate limited: a retry shows again.
+     * A command's answer, for the sender alone: an ephemeral (at the channel
+     * session's root when that is where the command was sent), then a DM, never the
+     * channel. Not rate limited: a retry shows again. When neither works the error
+     * is logged and counted and the sender's message gets the error reaction, as the
+     * root refusals always did. With SLAUDE_PRIVATE_NOTICES off it is `announce`.
      */
-    const replyPrivately = async (txt: string) => {
-      if (!dispatch?.channelSession) return reply(txt);
+    const reply = async (txt: string, o?: { cls?: PrivateClass; blocks?: unknown[] }) => {
+      // A DM is already private to the sender, and Slack's ephemeral support in a DM is unreliable.
+      if (channelType === "im") return announce(txt, o?.blocks);
       let out: ReturnType<typeof outClientForPersona> | undefined;
       try {
         out = outClientForPersona(dispatch?.personaId, app);
-        if (typeof out.chat.postEphemeral !== "function") throw new Error("postEphemeral unavailable");
-        await out.chat.postEphemeral({ channel: channelId, user: userId, text: txt }); // runtime-ui: gateway notice, card or command reply
+        const res = await privateSender.send(out, {
+          cls: o?.cls ?? "info",
+          kind: "command",
+          userId,
+          channel: channelId,
+          // Only a message that is itself in a thread gets a thread ephemeral: Slack may not show one in a thread with no replies yet.
+          ...(event.thread_ts && slashThread.thread_ts ? { thread: slashThread.thread_ts } : {}),
+          text: txt,
+          ...(o?.blocks ? { blocks: o.blocks } : {}),
+          publicFallback: () => announce(txt, o?.blocks),
+        });
+        if (res !== "dropped") return;
+        metric.ephemeralReplyFailuresTotal.inc();
       } catch (err: unknown) {
         metric.ephemeralReplyFailuresTotal.inc();
         console.error(`[slack-rx] private reply failed ch=${channelId} user=${userId}: ${(err as any)?.data?.error ?? (err as Error)?.message ?? String(err)}`);
-        try {
-          await (out ?? client).reactions.add({ channel: channelId, timestamp: eventTs, name: REACT_ERROR });
-        } catch (e2: unknown) {
-          if ((e2 as any)?.data?.error !== "already_reacted") console.error(`[slack-rx] error reaction failed ch=${channelId} ts=${eventTs}: ${(e2 as Error)?.message ?? String(e2)}`);
-        }
+      }
+      try {
+        await (out ?? client).reactions.add({ channel: channelId, timestamp: eventTs, name: REACT_ERROR });
+      } catch (e2: unknown) {
+        if ((e2 as any)?.data?.error !== "already_reacted") console.error(`[slack-rx] error reaction failed ch=${channelId} ts=${eventTs}: ${(e2 as Error)?.message ?? String(e2)}`);
       }
     };
+    /** Kept for the root refusals that named themselves private: the same as `reply` now. */
+    const replyPrivately = reply;
     // These answer before the session is looked up, so a refused command does
     // not create one.
     if (slash && dispatch?.channelSession) {
@@ -3173,7 +3363,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       presence.exit(current.id);
       await status.clear(current.id);
       routes.delete(current.id);
-      await reply("Started this channel's session over. The old one stays in the console.");
+      await announce("Started this channel's session over. The old one stays in the console.");
       return;
     }
 
@@ -3203,12 +3393,19 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     // scope; global has no lock, so the key, not the lock, is what binds.)
     {
       const pend = await SlackOauthFlows.peekFlow(pasteKey(channelId, threadTs, userId));
+      const parsed = parseOAuthCallback(stripped);
       if (pend) {
-        const parsed = parseOAuthCallback(stripped);
         if (parsed.code) {
           await completePaste(pend, parsed.code, parsed.state, app);
+          // The code is already in the thread (and cannot be removed from it): say how to keep it out next time.
+          await reply("Next time click *Enter code* on the private link message, so the code stays out of the thread.");
           return;
         }
+      } else if (parsed.code && parsed.state && !/\s/.test(stripped)) {
+        // A redirect URL with nothing parked for this person (expired, or another thread): it must
+        // not reach the model, where the code would sit in the transcript and the memory.
+        await reply(":hourglass: That authorization has expired, so I did not use that link. Run `/mcp connect` again.");
+        return;
       }
     }
 
@@ -3256,7 +3453,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "mode") {
         await agent.setPermissionMode(session.id, slash.mode);
         agent.noteSessionEvent(session.id, `Permission mode changed to \`${humanModeName(slash.mode)}\`.`);
-        await reply(`mode → \`${humanModeName(slash.mode)}\``);
+        await announce(`mode → \`${humanModeName(slash.mode)}\``);
         return;
       }
       if (slash.kind === "abort") {
@@ -3267,7 +3464,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           await queueDispatch.abort(session.id).catch((e) => console.error("[slaude] abort publish failed:", e));
         }
         agent.abort(session.id);
-        await reply("aborted");
+        await announce("aborted");
         return;
       }
       if (slash.kind === "ingest") {
@@ -3330,7 +3527,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             return;
           }
           if (!(await sameAt({ site: "gateway.one_on_one_relock.lock_owner", persona: dispatch?.personaId, teamId, userId, otherUserId: existing.locked_user, otherTeamId: existing.team_id })) && !(await managerAt("gateway.one_on_one_relock.role", dispatch?.personaId, userId, teamId))) {
-            await reply(`:lock: only the session owner (<@${existing.locked_user}>) can lock it.`);
+            await reply(`:lock: only the session owner (<@${existing.locked_user}>) can lock it.`, { cls: "failure" });
             return;
           }
           if (existing.open_scope === null) {
@@ -3358,7 +3555,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       if (slash.kind === "mention-only") {
         if (slash.action === "on") {
           await MentionOnly.set({ channelId, threadTs, createdBy: userId, teamId });
-          await reply(":speech_balloon: *mention-only* — I'll reply in this thread only when @-mentioned. `/mention-only off` to restore.");
+          await announce(":speech_balloon: *mention-only* — I'll reply in this thread only when @-mentioned. `/mention-only off` to restore.");
           return;
         }
         if (!await MentionOnly.find(channelId, threadTs)) {
@@ -3366,7 +3563,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           return;
         }
         await MentionOnly.clear(channelId, threadTs);
-        await reply(":speech_balloon: mention-only off — I'll follow the thread normally again.");
+        await announce(":speech_balloon: mention-only off — I'll follow the thread normally again.");
         return;
       }
       if (slash.kind === "soul" || slash.kind === "soul-list" || slash.kind === "soul-clear") {
@@ -3391,11 +3588,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             });
             agent.noteSessionEvent(session.id, `Soul ACL override: ${slash.action} \`${res.value}\` to \`${res.field}\` (shadows SOUL.md).`);
           }
-          await reply(
-            res.ok
-              ? `:white_check_mark: soul override: \`${res.field}\` ${slash.action} \`${res.value}\` — effective immediately, all sessions.`
-              : `:warning: ${res.reason}`,
-          );
+          if (res.ok) await announce(`:white_check_mark: soul override: \`${res.field}\` ${slash.action} \`${res.value}\` — effective immediately, all sessions.`);
+          else await reply(`:warning: ${res.reason}`, { cls: "failure" });
           return;
         }
         if (slash.kind === "soul-clear") {
@@ -3406,7 +3600,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             field: slash.field === "all" ? "all" : FIELD_ALIASES[slash.field], via: "slash",
           });
           agent.noteSessionEvent(session.id, `Soul ACL overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
-          await reply(`:leftwards_arrow_with_hook: soul overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
+          await announce(`:leftwards_arrow_with_hook: soul overrides cleared (\`${slash.field}\`) — reverted to SOUL.md.`);
           return;
         }
         // soul-list: provenance — SOUL.md base vs runtime overlay.
@@ -3476,7 +3670,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         let scope: ConnectScope;
         if (lock) {
           if (!(await sameAt({ site: "gateway.mcp_slash.lock_owner", persona: dispatch?.personaId, teamId, userId, otherUserId: lock.locked_user, otherTeamId: lock.team_id }))) {
-            await reply(`:lock: \`/mcp\` in a 1on1 thread is for the lock owner — only <@${lock.locked_user}> can connect here.`);
+            await reply(`:lock: \`/mcp\` in a 1on1 thread is for the lock owner — only <@${lock.locked_user}> can connect here.`, { cls: "failure" });
             return;
           }
           scope = "initiator";
@@ -3561,7 +3755,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           blocks.push({ type: "actions", elements });
         }
-        await client.chat.postMessage({ channel: channelId, ...slashThread, blocks, text: "MCP servers", mrkdwn: true }); // runtime-ui: gateway notice, card or command reply
+        // Private to the sender: the Connect buttons act on their account, and the server list is theirs to see.
+        await reply("MCP servers", { blocks });
         return;
       }
       if (slash.kind === "ignore" || slash.kind === "unignore") {
@@ -3585,7 +3780,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await Ignores.create({ targetType: "user", userId: slash.userId, createdBy: userId, expiresAt, reason: "manual" });
             auditIgnore("ignore.set", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "user", targetUser: slash.userId, expiresAt, via: "slash" });
             const durText = duration ? `for ${duration}` : "permanently";
-            await reply(`:mute: ignoring <@${slash.userId}> ${durText}`);
+            await announce(`:mute: ignoring <@${slash.userId}> ${durText}`);
           } else {
             const duration = slash.duration;
             let expiresAt: number | undefined;
@@ -3601,7 +3796,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             await Ignores.create({ targetType: "thread", channelId, threadTs, teamId, createdBy: userId, expiresAt, reason: "manual" });
             auditIgnore("ignore.set", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "thread", expiresAt, via: "slash" });
             const durText = duration ? `for ${duration}` : "permanently";
-            await reply(`:mute: ignoring this thread ${durText}`);
+            await announce(`:mute: ignoring this thread ${durText}`);
           }
           return;
         }
@@ -3614,11 +3809,11 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             }
             const removed = await Ignores.remove({ targetType: "user", userId: slash.userId });
             if (removed) auditIgnore("ignore.cleared", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "user", targetUser: slash.userId, via: "slash" });
-            await reply(`:speaker: stopped ignoring <@${slash.userId}>`);
+            await announce(`:speaker: stopped ignoring <@${slash.userId}>`);
           } else {
             const removed = await Ignores.remove({ targetType: "thread", channelId, threadTs });
             if (removed) auditIgnore("ignore.cleared", { by: userId, persona: dispatch?.personaId, sessionId: session.id, channelId, threadTs, targetType: "thread", via: "slash" });
-            await reply(":speaker: stopped ignoring this thread");
+            await announce(":speaker: stopped ignoring this thread");
           }
           return;
         }
@@ -3682,7 +3877,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           await CronJobs.deactivate(job.id);
           agent.noteSessionEvent(session.id, `Removed scheduled cron job \`${job.id.slice(0, 8)}\`.`);
-          await reply(`:wastebasket: cron job \`${job.id.slice(0, 8)}\` removed`);
+          await announce(`:wastebasket: cron job \`${job.id.slice(0, 8)}\` removed`);
           return;
         }
 
@@ -3702,7 +3897,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           }
           if (slash.kind === "cron-pause") {
             await CronJobs.pause(job.id);
-            await reply(`:pause_button: cron job \`${job.id.slice(0, 8)}\` paused`);
+            await announce(`:pause_button: cron job \`${job.id.slice(0, 8)}\` paused`);
             return;
           }
           let nextRun: number;
@@ -3713,7 +3908,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             return;
           }
           await CronJobs.resume(job.id, nextRun);
-          await reply(`:arrow_forward: cron job \`${job.id.slice(0, 8)}\` resumed — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
+          await announce(`:arrow_forward: cron job \`${job.id.slice(0, 8)}\` resumed — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
 
@@ -3759,7 +3954,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           });
           const mode = slash.whenActive === "skip" ? ", passive (skips when active)" : "";
           const where = slash.target === "channel" ? "channel root" : "this thread";
-          await reply(`:pencil2: cron job \`${job.id.slice(0, 8)}\` updated (posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
+          await announce(`:pencil2: cron job \`${job.id.slice(0, 8)}\` updated (posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
 
@@ -3821,7 +4016,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           const where = slash.target === "channel" ? "channel root" : "this thread";
           const mode = slash.whenActive === "skip" ? ", passive (skips when active)" : "";
           agent.noteSessionEvent(session.id, `Scheduled cron job \`${job.id.slice(0, 8)}\`: \`${slash.cronExpr}\` → "${slash.prompt}" (posts to ${where}).`);
-          await reply(`:calendar: cron job created (\`${job.id.slice(0, 8)}\`, posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
+          await announce(`:calendar: cron job created (\`${job.id.slice(0, 8)}\`, posts to ${where}${mode}) — next run: <t:${Math.floor(nextRun / 1000)}:R>`);
           return;
         }
       }
@@ -4282,7 +4477,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
         if (shouldNotice) {
           try {
-            await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
+            await outClientForPersona(dispatch?.personaId, app).chat.postMessage({ // runtime-ui: public ops panel hold notice (it concerns the whole thread)
               channel: channelId,
               thread_ts: threadTs,
               text: "⏸ handled in ops panel — I'll catch up on your messages here when the operator hands back.",
@@ -4758,7 +4953,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     call: brainCall,
     now: () => new Date(),
     reply: async (channel, threadTs, text) => {
-      await (args.client ?? t.client).chat.postMessage({ channel, thread_ts: threadTs, text }); // runtime-ui: gateway notice, card or command reply
+      await (args.client ?? t.client).chat.postMessage({ channel, thread_ts: threadTs, text }); // runtime-ui: public proactive feedback reply (it answers a visible post)
     },
     once: (key) => SeenEvents.tryInsert(key),
   });
@@ -5419,12 +5614,18 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const button = await connectButton(claims.session, {
       channelId: claims.channel, threadTs, userId, serverName: server, scope, personaName: personaKey(personaId),
     });
-    await outClientForPersona(personaId, { apiAppId: claims.app, teamId: claims.team }).chat.postMessage({ // runtime-ui: gateway notice, card or command reply
+    // For the person who must click it (the manager, who may not be in the channel, or the initiator), by
+    // DM, where it stays until used: a lost card would leave the server disconnected with no sign why.
+    const where = claims.channel.startsWith("D") ? "" : ` (in <#${claims.channel}>)`;
+    const cardText = `${text}${where}`;
+    await privateSender.send(outClientForPersona(personaId, { apiAppId: claims.app, teamId: claims.team }), {
+      cls: "sensitive",
+      kind: "mcp_connect_card",
+      userId,
       channel: claims.channel,
-      thread_ts: threadTs || undefined,
-      text,
-      blocks: [{ type: "section", text: { type: "mrkdwn", text } }, { type: "actions", elements: [button] }],
-      mrkdwn: true,
+      ...(threadTs ? { thread: threadTs } : {}),
+      text: cardText,
+      blocks: [{ type: "section", text: { type: "mrkdwn", text: cardText } }, { type: "actions", elements: [button] }],
     });
   }
   /** The /v1 tool plane's SlackContext for a verified job token: everything

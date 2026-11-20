@@ -434,6 +434,7 @@ Deployment walkthrough, role-file example and cross-replica behaviour:
 | `SLAUDE_REMOTE` | No | `0` | `1`/`true`/`yes` enables `/env` and `/remote` (a thread's shell and file tools run in a saved environment: the user's own machine over tailcat or ssh, or a sandbox). Off by default. Also required for shared environments: sync refuses an agent that declares `environment:` while it is off. See the [Environments guide](../guides/environments.md) and the [Remote mode guide](../guides/remote.md). |
 | `SLAUDE_ENV_SSH_ALLOW_PRIVATE` | No | `0` | `1` lets `ssh` [environments](../guides/environments.md) reach private (LAN) address ranges. Metadata, link-local and reserved ranges are always refused; loopback only with `SLAUDE_OUTBOUND_DEV_LOOPBACK=1`. Hosts in `SLAUDE_OUTBOUND_INTERNAL_HOSTS` may reach private ranges without it. |
 | `SLAUDE_TAILCAT_BIN` | No | `tailcat` | Operator override of the tailcat binary path used by `/remote`. Read at call time; the stock image installs `/usr/local/bin/tailcat`. |
+| `SLAUDE_PRIVATE_NOTICES` | No | `on` | A notice the gateway writes itself (a command's answer, "this thread is locked 1on1", "I am set to ignore you", an OAuth link, a failed turn) goes only to the person it is for: an ephemeral message, then a DM, never the channel. `off` (also `0`, `false`) restores the old public posts without a release, as a rollback. State changes other people must know about (`/mode`, `/ignore`, cron edits, `/soul` edits, `/abort`, `/new`) keep one short public line either way. The model's own replies and the permission and approval cards are not affected. |
 
 ### File uploads <a id="uploads"></a>
 
@@ -475,7 +476,7 @@ Two modes for the authorization-code callback when connecting HTTP MCP servers v
 
 # Paste-back (k8s / remote)
 SLAUDE_OAUTH_REDIRECT_URL=https://slaude.example.com/oauth/paste
-# That static page must display `code` and `state` and instruct the user to paste the full callback URL back into the locked Slack thread.
+# That static page must display `code` and `state` and tell the user to copy the full callback URL. They paste it into the *Enter code* form on the private link message, not into the thread.
 
 # Shared always-on loopback (multi-session concurrency behind one port)
 SLAUDE_OAUTH_SHARED_LOOPBACK=true

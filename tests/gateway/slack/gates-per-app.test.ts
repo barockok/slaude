@@ -74,7 +74,8 @@ describe("gates resolve their client from the session's app", () => {
     void gate.resolver("S-perm-app", "Bash", { command: "rm -rf /tmp/x" }, { signal: ac.signal, toolUseID, suggestions: [] } as any);
     await until(() => calls.length > 0);
     ac.abort();
-    expect(calls.map((c) => `${c.method}:${c.app}`)).toEqual(["chat.postMessage:A0TWO"]);
+    // The card is posted as the session's app, and closing it on abort goes out as that same app.
+    expect(calls.map((c) => `${c.method}:${c.app}`)).toEqual(["chat.postMessage:A0TWO", "chat.update:A0TWO"]);
   });
 
   it("PermissionGate.open (REST plane) posts as the given app", async () => {

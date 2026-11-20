@@ -399,6 +399,9 @@ export const env = {
   /** Gateway: accept a /v1/pending call with no job token from the legacy
    *  identity (old nodes send none). Default on for one release. */
   allowTokenlessPending: (): boolean => flag(opt("SLAUDE_NODE_ALLOW_TOKENLESS_PENDING"), true, false),
+  /** Gateway-generated notices meant for one person go to that person privately (ephemeral, then a DM,
+   *  never the channel). SLAUDE_PRIVATE_NOTICES=off restores the old public posts without a release. */
+  privateNotices: (): boolean => flag(opt("SLAUDE_PRIVATE_NOTICES"), true, true),
   /** Cap on a job token's total life across refreshes, measured from its
    *  first issue (`iat0`). Seconds, or a duration like `6h`. Default 6h. */
   jobTokenMaxAgeSec: (): number => durationEnvSec("SLAUDE_JOB_TOKEN_MAX_AGE", 6 * 3600),

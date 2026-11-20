@@ -15,6 +15,12 @@ const SECRET_PATTERNS: RegExp[] = [
   /\bAKIA[0-9A-Z]{12,}/g, // aws access key id
   /\bAIza[0-9A-Za-z._-]{20,}/g, // google api key
   /\beyJ[A-Za-z0-9._-]{10,}/g, // JWT
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s:@/]+:[^\s@/]+@/gi, // URL userinfo: scheme://user:pass@host
+  /--?(?:password|passwd|pwd|secret|token|api[-_]?key)(?:=|\s+)\S+/gi, // --password x, --token=x
+  /\s-u\s+\S+:\S+/g, // curl -u user:pass
+  /([?&](?:x-amz-signature|x-amz-credential|x-amz-security-token|signature|sig|access_token|token)=)[^&\s]+/gi, // signed URL parameters
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, // PEM private key block
+  /\b(?:set-)?cookie\s*:\s*[^\n]+/gi, // cookie header values
 ];
 
 /** How many secret shapes redactSecrets masks (the console lists the family, not the regexes). */

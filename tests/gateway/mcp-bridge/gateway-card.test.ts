@@ -125,7 +125,7 @@ describe("the bridge in the gateway", () => {
     }
   });
 
-  test("a refused credential: fixed text, one connect card for the manager, no upstream body", async () => {
+  test("a refused credential: fixed text, one connect card by DM for the manager, no upstream body", async () => {
     posts.length = 0;
     const r = await mcpx("locked/call", { name: "whoami", arguments: {} });
     expect(r).toEqual({ status: 200, body: { content: [{ type: "text", text: reauthText("locked") }], isError: true } });
@@ -133,7 +133,10 @@ describe("the bridge in the gateway", () => {
     for (let i = 0; i < 100 && posts.length === 0; i++) await new Promise((res) => setTimeout(res, 10));
     expect(posts).toHaveLength(1);
     const card = posts[0];
-    expect(card).toMatchObject({ channel: "C0TEAM", thread_ts: "500.0" });
+    // The card goes by DM to the manager who must click it (not into the channel), and names the channel.
+    expect(card.channel).toBe(WORLD.manager);
+    expect(card.thread_ts).toBeUndefined();
+    expect(JSON.stringify(card.blocks)).toContain("<#C0TEAM>");
     expect(JSON.stringify(card)).not.toContain(LEAKY_BODY);
     const button = card.blocks[1].elements[0];
     expect(button.text.text).toBe("Connect locked");
