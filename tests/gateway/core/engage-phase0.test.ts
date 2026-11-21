@@ -14,7 +14,6 @@ import { makeGateRunner } from "../../../src/gateway/gate/runner";
 import type { DecisionAdapter } from "../../../src/decision/types";
 import { __setLastSpeakerStoreForTests, memoryLastSpeakerStore, type LastSpeakerStore } from "../../../src/gateway/engage/last-speaker";
 import { deliver } from "../../../src/gateway/slack/outbound";
-import { __setUsersCacheForTests, makeUsersCache } from "../../../src/gateway/engage/users";
 
 /**
  * Implicit engagement, phase 0: counters only. The ladder runs at the
@@ -103,7 +102,6 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  __setUsersCacheForTests(null);
   __setLastSpeakerStoreForTests(null);
   __resetSoulDataMemo();
   try { rmSync(paths.soul, { force: true }); } catch {}
@@ -141,18 +139,18 @@ describe("phase 0, unconfigured", () => {
 });
 
 describe("phase 0, addressed in shadow", () => {
-  it("a reply following the agent's answer counts tier 2 run; behavior is unchanged (dropped); no adapter call", async () => {
+  it("a reply following the agent's answer counts tier 3 classify; behavior is unchanged (dropped); no adapter call", async () => {
     configureEngage("addressed");
     const g = makeGw();
     const root = nextTs();
     // The agent answers through the outbound choke point, as a reply to the person.
     await deliver("an answer", { kind: "reply", channel: CH, thread: { channel: CH, threadTs: root }, replyTo: WORLD.manager }, { post: async () => nowTs(1) });
     expect(store.puts).toBe(1);
-    const before = engaged("2", "run", "addressed");
+    const before = engaged("3", "classify", "addressed");
     const logs = spyOn(console, "log");
     await g.emit("message", human(g.t.client, "can you also check staging?", nextTs(), { thread: root }));
-    expect(engaged("2", "run", "addressed")).toBe(before + 1);
-    expect(logs.mock.calls.some((c) => String(c[0]).includes(`[engage] phase0 channel=${CH} level=addressed tier=2 would=run reason=follows_agent`))).toBe(true);
+    expect(engaged("3", "classify", "addressed")).toBe(before + 1);
+    expect(logs.mock.calls.some((c) => String(c[0]).includes(`[engage] phase0 channel=${CH} level=addressed tier=3 would=classify reason=classify`))).toBe(true);
     logs.mockRestore();
     expect(g.sends).toEqual([]); // the agent was never run
     expect(adapterCalls).toBe(0);
@@ -164,10 +162,12 @@ describe("phase 0, addressed in shadow", () => {
     const root = nextTs();
     await deliver("an answer", { kind: "reply", channel: CH, thread: { channel: CH, threadTs: root }, replyTo: WORLD.manager }, { post: async () => nowTs(1) });
     await g.emit("message", human(g.t.client, "can you also check staging?", nextTs(), { thread: root }));
-    const run2 = engaged("2", "run", "addressed");
+    expect(store.takes).toBe(1);
+    expect(await store.take({ channel: CH, thread: root, persona: "default" })).toBeNull(); // the first message consumed it
+    const classified = engaged("3", "classify", "addressed");
     await g.emit("message", human(g.t.client, "and what about production?", nextTs(), { thread: root }));
-    expect(engaged("2", "run", "addressed")).toBe(run2);
-    expect(store.takes).toBe(2);
+    expect(engaged("3", "classify", "addressed")).toBe(classified + 1); // still asked, without the record
+    expect(store.takes).toBe(3);
   });
 
   it("the agent's echo alone records a speaker without a person answered (classify, not run)", async () => {
@@ -182,11 +182,11 @@ describe("phase 0, addressed in shadow", () => {
     expect(g.sends).toEqual([]);
   });
 
-  it("a message naming a colleague counts tier 0 pass", async () => {
+  it("a message to the whole channel counts tier 0 pass", async () => {
     configureEngage("addressed");
     const g = makeGw();
     const before = engaged("0", "pass", "addressed");
-    await g.emit("message", human(g.t.client, "Budi, can you look at the deploy?", nextTs()));
+    await g.emit("message", human(g.t.client, "<!here> can you look at the deploy?", nextTs()));
     expect(engaged("0", "pass", "addressed")).toBe(before + 1);
     expect(g.sends).toEqual([]);
     expect(adapterCalls).toBe(0);
@@ -217,7 +217,7 @@ describe("phase 0, the record is consumed only by a conversational human message
   const speak = async (root: string) => deliver("an answer", { kind: "reply", channel: CH, thread: { channel: CH, threadTs: root }, replyTo: WORLD.manager }, { post: async () => nowTs(1) });
   const followUp = "can you also check staging?";
 
-  it("a bot post, a join, an ack and a note to a colleague leave the record for the real follow-up", async () => {
+  it("a bot post, a join and a note to a colleague leave the record for the real follow-up", async () => {
     configureEngage("addressed");
     const g = makeGw();
     const root = nextTs();
@@ -226,12 +226,11 @@ describe("phase 0, the record is consumed only by a conversational human message
     const send = (event: Record<string, unknown>) => g.emit("message", { event: { type: "message", ...base, ts: nextTs(), ...event }, client: g.t.client, context: { teamId: TEAM } });
     await send({ user: "U0CIBOT", bot_id: "B_OTHER", text: "build failed" });
     await send({ user: "U0NEWBIE", subtype: "channel_join", text: "joined" });
-    await send({ user: WORLD.manager, text: "thanks" });
-    await send({ user: WORLD.manager, text: "Budi, can you look at the deploy?" });
+    await send({ user: WORLD.manager, text: "<@U0COLLEAGUE> can you look at the deploy?" });
     expect(store.takes).toBe(0);
     await send({ user: WORLD.manager, text: followUp });
     expect(store.takes).toBe(1);
-    expect(engaged("2", "run", "addressed")).toBeGreaterThan(0);
+    expect(engaged("3", "classify", "addressed")).toBeGreaterThan(0);
   });
 
   it("a mention of the agent clears the record; an engaged-thread reply does too", async () => {
@@ -255,7 +254,7 @@ describe("phase 0, the record is consumed only by a conversational human message
   });
 });
 
-describe("phase 0, echoes and names", () => {
+describe("phase 0, echoes", () => {
   const echo = (g: ReturnType<typeof makeGw>, over: Record<string, unknown>) =>
     g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", user: "USLAUDEBOT", bot_id: "B_SLAUDE", team: TEAM, ts: nowTs(1), text: "an answer", ...over }, client: g.t.client, context: { teamId: TEAM } });
 
@@ -267,21 +266,6 @@ describe("phase 0, echoes and names", () => {
     expect(store.puts).toBe(0);
     await echo(g, { blocks: [{ type: "rich_text" }] });
     expect(store.puts).toBe(2); // a top-level post is kept under its own ts and under the channel's top level
-  });
-
-  it("the bot's cached user name works as the agent's name", async () => {
-    configureEngage("addressed");
-    const g = makeGw();
-    await g.emit("message", human(g.t.client, "hello there", nextTs())); // primes the auth.test cache
-    // A known snapshot of the workspace's people with no one called quill (an unknown one would send the name to tier 3).
-    const users = makeUsersCache();
-    users.ensure(TEAM, async () => ({ names: new Set(["jane"]), complete: true }));
-    await new Promise((r) => setTimeout(r, 5));
-    __setUsersCacheForTests(users);
-    const before = engaged("1", "run", "addressed");
-    await g.emit("message", human(g.t.client, "Quill, can you look at staging?", nextTs()));
-    expect(engaged("1", "run", "addressed")).toBe(before + 1);
-    expect(g.sends).toEqual([]);
   });
 
   it("a self-user echo (posting as a real user) records the speaker too", async () => {

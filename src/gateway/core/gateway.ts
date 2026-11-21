@@ -35,7 +35,7 @@ import { setLastSpeakerRedis } from "../engage/last-speaker";
 import { engageState, setEngageRedis } from "../engage/budget";
 import { gateClassifier } from "../engage/gate-classifier";
 import { buildImplicitInput } from "../engage/input";
-import { errorCode, loadUserNames } from "../engage/users";
+import { errorCode } from "../engage/input";
 import type { ShadowDeps } from "../engage/shadow";
 import { ledgerTurnRun, type TurnPass } from "../../background/skill-check";
 import { mutateOverride, FIELD_ALIASES } from "../../soul/overrides";
@@ -4994,8 +4994,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return !!user && mentions.includes(user);
   };
   /**
-   * The client engagement reads Slack with (the classifier's input, the debounce
-   * re-check, the users list): the delivering app's no-retry lookup client, as the
+   * The client engagement reads Slack with (the classifier's input): the delivering app's no-retry lookup client, as the
    * thread head uses, which rejects a rate-limited call instead of waiting on
    * Retry-After. Where no bot token is known the delivery's own client is the
    * fallback, exactly as for the thread head.
@@ -5017,11 +5016,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   const ENGAGE_READ_LIMIT = 15;
   /** A thread read looks only at the most recent stretch of the thread (a single page is the oldest of its window). */
   const ENGAGE_THREAD_WINDOW_S = 1200;
-  const withinMs = <T,>(p: Promise<T>, ms: number): Promise<T> => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    p.catch(() => {});
-    return Promise.race([p, new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error("deadline")), ms); })]).finally(() => clearTimeout(timer));
-  };
   /**
    * Phase 1: what the shadow classifier needs for one delivery. With no adapter
    * configured the classifier is null (a counted pass, no input, no Slack read).
@@ -5048,21 +5042,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (await ingressDrops(args, personaId)) return false;
         if (await ingressHandlesLocally(args, personaId)) return false;
         return true;
-      },
-      // A top-level question waited for a human answer: look once more, on one bounded history page since the message.
-      recheck: async () => {
-        const r: any = await withinMs<any>(reader.conversations.history({ channel: e.channel, oldest: e.ts, inclusive: true, limit: ENGAGE_READ_LIMIT }), 2000).catch((err) => readFailed("recheck", err));
-        if (!r?.ok) return readFailed("recheck", { data: { error: r?.error } });
-        const msgs: any[] = r.messages ?? [];
-        const me = msgs.find((x) => x.ts === e.ts);
-        if (!me || me.edited) return "stale";
-        const ids = await gateSelfIds(args, personaId);
-        const self = new Set<string>([ids.botUserId, ...ids.userIds].filter(Boolean));
-        const human = (u: unknown): boolean => typeof u === "string" && u !== e.user && !self.has(u);
-        // Any reply at all (a colleague, the author, a bot or the agent itself) means the thread has moved on.
-        if ((Number(me.reply_count) || 0) > 0 || (Array.isArray(me.reply_users) && me.reply_users.length > 0)) return "answered";
-        if (msgs.some((x) => Number(x.ts) > Number(e.ts) && !x.bot_id && human(x.user))) return "answered";
-        return "ok";
       },
       buildInput: async (req) => {
         const persona = personaId ?? "default";
@@ -5102,7 +5081,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             contextMessages: runner?.contextMessages,
           },
           { ts: e.ts, text: String(e.text ?? ""), threadTs: req.thread, level: req.level, continuation: req.continuation },
-          String(e.user ?? ""),
         ).catch((err) => readFailed("input", err));
       },
     };
@@ -5125,16 +5103,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Observing never holds the recording path: each lookup is cut off, and a miss reads as "unknown".
       const bound = <T,>(p: Promise<T>, fallback: T): Promise<T> =>
         Promise.race([p.catch(() => fallback), new Promise<T>((r) => setTimeout(() => r(fallback), 100).unref?.())]);
-      const key = `${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? e.team ?? ""}`;
-      const [botId, oneOnOne, agents] = await Promise.all([
+      const [botId, oneOnOne] = await Promise.all([
         bound(getBotId(args), ""),
         bound(OneOnOne.find(e.channel, threadTs).then((r) => r != null), false),
-        bound(channelSessionAgents(args), [] as (string | undefined)[]),
       ]);
       // Phase 2 acts only in a channel whose mode is on; the hooks are not even built otherwise.
       const act = setting.mode === "on"
         ? {
-            deferrable: site === "drop",
             run: async (d: ImplicitRun): Promise<void> => {
               acted = (await actImplicit(args, personaId, d, site)) || acted;
             },
@@ -5143,22 +5118,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       const shadow = shadowFor(args, personaId);
       await observeEngage({
         event: e,
-        teamId: args.context?.teamId ?? e.team,
-        loadUsers: async () => {
-          // The agent's own Slack users are not colleagues who share its name.
-          const ids = await gateSelfIds(args, personaId);
-          return loadUserNames(engageReader(args), { exclude: new Set<string>([ids.botUserId, ...ids.userIds].filter(Boolean)) });
-        },
         // An awaited classifier call (mode on) is bounded by the decision config's own deadline.
         shadow: act ? { ...shadow, deadlineMs: gateRunner?.timeoutMs ?? 1000 } : shadow,
         ...(act ? { act } : {}),
         personaId,
         appId: args.context?.apiAppId,
         botId,
-        // More than one persona behind this app's bot: a root it posted cannot be told to be this persona's.
-        sharedBot: personaId !== appPersonaOf(args) || agents.length > 1,
-        // The bot's cached user name (from the auth.test the id lookup already made); only for the persona that is this app's own.
-        ...(personaId === appPersonaOf(args) && botIdsCache.get(key)?.name ? { botName: botIdsCache.get(key)!.name } : {}),
         locks: { oneOnOne, mentionOnly: false, disengaged: false },
         threadEngaged: false,
         site,
@@ -5180,28 +5145,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const count = (outcome: string) => metric.engageActTotal.inc({ tier: String(d.tier), outcome, level: d.level });
     const seenKey = site === "channel_session" ? `${e.channel}:${e.ts}:${personaId ?? "default"}` : `${e.channel}:${e.ts}`;
     try {
-      if (d.deferred) {
-        // Fired from the timer: everything the router decides is decided again for the thread as it is now.
-        if (env.engageForceShadow()) {
-          count("forced_shadow");
-          return false;
-        }
-        const now = engageFor(personaId, e.channel);
-        if (now.level === "mention" || now.mode !== "on") {
-          console.log(`[engage] act skipped channel=${e.channel} tier=${d.tier} reason=mode`);
-          return false;
-        }
-        const rootTs: string = e.thread_ts || e.ts;
-        if (await MentionOnly.find(e.channel, rootTs)) {
-          console.log(`[engage] act skipped channel=${e.channel} tier=${d.tier} reason=mention_only`);
-          return false;
-        }
-        // Any session row for the thread (engaged, disengaged, or one a mention started meanwhile) settles it elsewhere.
-        if (teamId && (await Sessions.findAnyByThread({ team_id: teamId, channel_id: e.channel, thread_ts: rootTs }))) {
-          console.log(`[engage] act skipped channel=${e.channel} tier=${d.tier} reason=session_exists`);
-          return false;
-        }
-      }
       // Already claimed by another copy or an earlier delivery: nothing to do, nothing to count.
       if (await SeenEvents.has(seenKey)) return false;
       if (!d.admitted) {

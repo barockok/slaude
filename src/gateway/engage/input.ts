@@ -1,6 +1,6 @@
 /**
  * The classifier's view of one implicit candidate: a GateInput built only when
- * a classifier is actually going to be asked (tier 3, or a sampled tier 2), so
+ * a classifier is actually going to be asked (tier 3), so
  * no message that never reaches it costs a history call.
  *
  * What leaves the gateway is chosen here:
@@ -71,8 +71,6 @@ export interface ImplicitRequest {
 
 export interface BuiltInput {
   input: GateInput;
-  /** Two or more humans took turns since the agent last spoke; false whenever no thread was read. */
-  alternated: boolean;
   /** Which single Slack read was made. */
   read: "replies" | "history";
 }
@@ -120,21 +118,7 @@ function bounded<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([p, new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new DeadlineError("deadline")), ms); })]).finally(() => clearTimeout(timer));
 }
 
-/** Humans who spoke after the agent's last message (the event's author included) and whether at least two differ. */
-function humansTookTurns(msgs: ThreadMsg[], d: InputDeps, eventAuthor: string | undefined): boolean {
-  let after = msgs;
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (d.isSelf(msgs[i]!)) {
-      after = msgs.slice(i + 1);
-      break;
-    }
-  }
-  const who = new Set(after.filter((m) => m.user && !isBotMessage(m) && !d.isSelf(m)).map((m) => m.user!));
-  if (eventAuthor) who.add(eventAuthor);
-  return who.size >= 2;
-}
-
-export async function buildImplicitInput(d: InputDeps, r: ImplicitRequest, eventAuthor?: string): Promise<BuiltInput> {
+export async function buildImplicitInput(d: InputDeps, r: ImplicitRequest): Promise<BuiltInput> {
   const limit = Math.max(1, Math.min(d.contextMessages ?? 8, MAX_RECENT));
   const deadline = d.deadlineMs ?? DEFAULT_DEADLINE_MS;
   const threaded = r.threadTs !== null && r.threadTs !== r.ts;
@@ -174,7 +158,13 @@ export async function buildImplicitInput(d: InputDeps, r: ImplicitRequest, event
       implicit: r.level,
       continuation: r.continuation,
     },
-    alternated: threaded ? humansTookTurns(earlier, d, eventAuthor) : false,
     read: threaded ? "replies" : "history",
   };
+}
+
+/** An error's code and nothing else: a Slack error name (`missing_scope`), a client code, or "error". */
+export function errorCode(e: unknown): string {
+  const x = e as { data?: { error?: unknown }; code?: unknown } | null;
+  const c = x?.data?.error ?? x?.code;
+  return typeof c === "string" && /^[\w.:-]{1,64}$/.test(c) ? c : "error";
 }

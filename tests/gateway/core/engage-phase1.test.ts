@@ -20,7 +20,6 @@ import type { DecisionAdapter, DecisionRequest } from "../../../src/decision/typ
 import { __setEngageBreakerForTests, __setEngageStateForTests } from "../../../src/gateway/engage/budget";
 import { shadowIdle } from "../../../src/gateway/engage/shadow";
 import { __setLastSpeakerStoreForTests } from "../../../src/gateway/engage/last-speaker";
-import { __setDebounceForTests } from "../../../src/gateway/engage/shadow";
 import { __setProactiveSoulSource } from "../../../src/soul/proactive";
 
 ensureGuardrailKeyForPg();
@@ -109,7 +108,6 @@ afterEach(async () => {
   gw = null;
   __setEngageStateForTests(null);
   __setLastSpeakerStoreForTests(null);
-  __setDebounceForTests(null);
   __setProactiveSoulSource(null);
   __resetSoulDataMemo();
   await __clearGuardrailsForTests();
@@ -226,61 +224,6 @@ describe("phase 1 through the handler", () => {
     expect(g.sends).toEqual([]);
     expect(warned).toContain("code=");
     expect(warned).not.toContain("quill");
-  });
-
-  describe("a top-level question waits before it is asked", () => {
-    const ask = async (g: Gw, ts: string) => {
-      setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "contribute", mode: "shadow" }] }));
-      __setDebounceForTests(20);
-      await deliver(g, "how do we roll back the release safely today?", ts);
-      await Bun.sleep(80);
-      await shadowIdle();
-    };
-    it("still there and unanswered: it is asked", async () => {
-      const g = (gw = makeGw(yes));
-      const ts = nextTs();
-      g.state.historyAfter = () => [m(ts, WORLD.manager, "how do we roll back the release safely today?")];
-      await ask(g, ts);
-      expect(asked).toHaveLength(1);
-    });
-    it("deleted meanwhile: it is not asked", async () => {
-      const g = (gw = makeGw(yes));
-      g.state.historyAfter = () => [];
-      await ask(g, nextTs());
-      expect(asked).toHaveLength(0);
-      expect(g.calls.history).toBe(1); // the re-check only; no input read
-    });
-    it("edited meanwhile: it is not asked", async () => {
-      const g = (gw = makeGw(yes));
-      const ts = nextTs();
-      g.state.historyAfter = () => [m(ts, WORLD.manager, "how do we roll back?", { edited: { user: WORLD.manager, ts: "1.0" } })];
-      await ask(g, ts);
-      expect(asked).toHaveLength(0);
-    });
-    it("answered by a colleague meanwhile (a thread reply or a later top-level message): it is not asked", async () => {
-      const g = (gw = makeGw(yes));
-      const ts = nextTs();
-      g.state.historyAfter = () => [m(ts, WORLD.manager, "q", { reply_users: ["U0COLLEAGUE"] })];
-      await ask(g, ts);
-      expect(asked).toHaveLength(0);
-      const ts2 = nextTs();
-      g.state.historyAfter = () => [m(nowTs(1000), "U0COLLEAGUE", "try the revert button"), m(ts2, WORLD.manager, "q")];
-      await ask(g, ts2);
-      expect(asked).toHaveLength(0);
-    });
-    it("the gateway stopping cancels the wait", async () => {
-      const g = (gw = makeGw(yes));
-      const ts = nextTs();
-      g.state.historyAfter = () => [m(ts, WORLD.manager, "q")];
-      setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "contribute", mode: "shadow" }] }));
-      __setDebounceForTests(60);
-      await deliver(g, "how do we roll back the release safely today?", ts);
-      await g.h.stop();
-      await Bun.sleep(120);
-      await shadowIdle();
-      expect(asked).toHaveLength(0);
-      expect(g.calls.history).toBe(0);
-    });
   });
 
   it("a channel-session root message is observed at the channel_session site: asked once, nothing posted, the agent does nothing", async () => {

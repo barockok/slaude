@@ -69,7 +69,6 @@ describe("buildImplicitInput", () => {
     const r = await buildImplicitInput(d, req({ threadTs: null }));
     expect(d.calls).toEqual(["history"]);
     expect(r.read).toBe("history");
-    expect(r.alternated).toBe(false);
   });
   test("third-party bot text, blocked authors and denied text never reach the input", async () => {
     const d = deps({
@@ -92,12 +91,6 @@ describe("buildImplicitInput", () => {
     const r = await buildImplicitInput({ ...d, dropMessage: async (m) => (seen.push(m.ts), m.ts === "61.0") }, req({ threadTs: null }));
     expect(r.input.recent).toEqual([{ role: "user", text: "a fine line" }]);
     expect(seen).toEqual(["61.0", "62.0"]); // each message is judged on its own, an unattributed one never reaches the check
-  });
-  test("humans alternating since the agent spoke is read from the thread read", async () => {
-    const turns = await buildImplicitInput(deps({ replies: [{ user: SELF, ts: "60.0", text: "a" }, { user: "UHUMAN1", ts: "61.0", text: "b" }] }), req(), "UHUMAN2");
-    expect(turns.alternated).toBe(true);
-    const one = await buildImplicitInput(deps({ replies: [{ user: "UHUMAN2", ts: "55.0", text: "old" }, { user: SELF, ts: "60.0", text: "a" }, { user: "UHUMAN1", ts: "61.0", text: "b" }] }), req(), "UHUMAN1");
-    expect(one.alternated).toBe(false);
   });
   test("a failed or late read rejects", async () => {
     const d = deps();

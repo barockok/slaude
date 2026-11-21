@@ -45,7 +45,6 @@
   "src/gateway/core/plugin-inventory.ts [not] v",
   "src/gateway/engage/input.ts [floating] p.catch(() => {})",
   "src/gateway/engage/shadow.ts [floating] p.catch(() => {})",
-  "src/gateway/engage/users.ts [floating] p.catch(() => {})",
   "src/gateway/gate/runner.ts [binop] memo.get(key)",
   "src/gateway/gate/runner.ts [binop] p",
   "src/gateway/gate/runner.ts [cond] hit",

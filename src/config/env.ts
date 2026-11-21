@@ -623,8 +623,7 @@ export const env = {
    * Phase 1 classifier budgets (per channel, across apps and replicas).
    * `SLAUDE_ENGAGE_DAILY_BUDGET`: classifier calls per channel per UTC day
    * (default 50). `SLAUDE_ENGAGE_MINUTE_CEILING`: calls per channel per minute
-   * (default 6). `SLAUDE_ENGAGE_SAMPLE`: sample 1 in N tier 2 run decisions for
-   * the classifier (default 20, 0 turns sampling off). Invalid values read as the default.
+   * (default 6). Invalid values read as the default.
    */
   /**
    * `SLAUDE_ENGAGE_PROACTIVE_DEFAULT` (default on): a channel where the agent is
@@ -648,11 +647,6 @@ export const env = {
   slackMarkdownBlocks: (): boolean => ["1", "true", "yes", "on"].includes(opt("SLAUDE_SLACK_MARKDOWN_BLOCKS").trim().toLowerCase()),
   /** Phase 2: acted runs per channel per hour (`SLAUDE_ENGAGE_ACT_PER_HOUR`, default 12); past it a run decision is a pass. */
   engageActPerHour: (): number => posInt(opt("SLAUDE_ENGAGE_ACT_PER_HOUR"), 12, 10_000),
-  engageSample: (): number => {
-    const raw = opt("SLAUDE_ENGAGE_SAMPLE").trim();
-    if (raw === "0") return 0;
-    return posInt(raw, 20, 100_000);
-  },
   /**
    * Raw `SLAUDE_PRICE_TABLE` (phase D): inline JSON, or a file path when the
    * value does not start with `{`. Parsed by `loadPriceTable`. Empty when unset.
