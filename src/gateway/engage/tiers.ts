@@ -1,9 +1,10 @@
 /**
  * The engagement ladder: safety rules, then the classifier. A pure function of
  * normalised message facts: no clock, no database, no Slack call, no model. A
- * rule may only state a certain fact (the level, a lock, the author is a bot,
- * the text mentions someone by Slack token, another registered agent is named
- * or spoke last); it never guesses at meaning. Everything the rules leave open
+ * rule may only state a certain fact (the level, a lock, the author is this
+ * agent itself, the text mentions someone by Slack token, another registered
+ * agent is named or spoke last); it never guesses at meaning. A bot or another
+ * agent as author is no reason to pass: the classifier decides. Everything the rules leave open
  * is a candidate for the classifier.
  *
  * Mention detection strips quotes, fenced and inline code first. Text that was
@@ -28,7 +29,10 @@ export interface TierFacts {
   text: string;
   /** Slack message subtype; absent or empty for a plain message. */
   subtype?: string | null;
+  /** The message came from a bot or an app (another agent, CI, an alert). Not a reason to pass by itself. */
   authorIsBot: boolean;
+  /** The Slack user id of the author, when the event names one. */
+  authorId?: string | null;
   /** Slack user ids that are this agent (its bot user, its persona user). */
   selfUserIds: ReadonlySet<string>;
   /** The thread already has an engaged session for this agent. */
@@ -86,6 +90,8 @@ const ownFresh = (f: TierFacts): LastSpeaker | null =>
 
 /** Another registered agent spoke last here, within the window, and after this agent did. */
 function followsOtherAgent(f: TierFacts): boolean {
+  // The rule stops two agents answering one PERSON's message; a message from an agent or bot is not that.
+  if (f.authorIsBot) return false;
   const o = f.otherSpeaker;
   if (!o || !fresh(f, o)) return false;
   const own = f.lastSpeaker && fresh(f, f.lastSpeaker) ? f.lastSpeaker : null;
@@ -100,7 +106,7 @@ export function runTiers(input: TierFacts): TierResult {
   if (f.level === "mention") return pass("level_mention");
   if (f.restricted) return pass("restricted");
   if (f.subtype && !ALLOWED_SUBTYPES.has(f.subtype)) return pass("subtype");
-  if (f.authorIsBot) return pass("bot_author");
+  if (f.authorId && f.selfUserIds.has(f.authorId)) return pass("self_author");
   if (f.locks.oneOnOne) return pass("lock_1on1");
 
   const raw = stripCodeAndQuotes((f.text ?? "").normalize("NFKC"));

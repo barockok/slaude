@@ -513,8 +513,8 @@ describe("phase 2: mode on, and still nothing acts for", () => {
     await settle();
     expect(g.sends).toEqual([]);
   });
-  it("a bot author", async () => {
-    const g = (gw = makeGw(yes));
+  it("a bot author when the classifier says no", async () => {
+    const g = (gw = makeGw(no));
     await raw(g, { user: "U0SOMEBOT", bot_id: "B0OTHERBOT" });
     await settle();
     expect(g.sends).toEqual([]);
@@ -653,5 +653,15 @@ describe("phase 2: an implicit turn adds no reaction of its own", () => {
     quiet = false;
     await s.react({ name: "eyes" });
     expect(f.seen).toEqual(["eyes"]);
+  });
+});
+
+describe("phase 2: a bot author goes to the classifier like anyone", () => {
+  it("acts when the classifier says yes (the classifier decides, not the author kind)", async () => {
+    const g = (gw = makeGw(yes));
+    await g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ts: nextTs(), text: NAMED, user: "U0SOMEBOT", bot_id: "B0OTHERBOT" }, client: g.client, context: { teamId: TEAM } });
+    await settle();
+    expect(g.sends).toHaveLength(1);
+    expect(g.sends[0]!.text).toContain(IMPLICIT_NOTE);
   });
 });

@@ -20,7 +20,7 @@ const MAX_PEEKS = 8;
  * post, a join or a message to a colleague is not the follower of the agent's answer.
  */
 const SETTLED_WITHOUT_RECORD: ReadonlySet<string> = new Set([
-  "restricted", "subtype", "bot_author", "lock_1on1", "lock_mention_only", "lock_disengaged",
+  "restricted", "subtype", "self_author", "lock_1on1", "lock_mention_only", "lock_disengaged",
   "names_other_person", "names_group", "names_other_agent",
 ]);
 
@@ -65,12 +65,13 @@ export interface ObserveInput {
 
 const timeout = <T>(ms: number, v: T): Promise<T> => new Promise((r) => setTimeout(() => r(v), ms).unref?.());
 
-async function readRecords(channel: string, thread: string | null, own: string, others: string[]): Promise<{ own: LastSpeaker | null; other: LastSpeaker | null }> {
+async function readRecords(channel: string, thread: string | null, own: string, others: string[], consume = true): Promise<{ own: LastSpeaker | null; other: LastSpeaker | null }> {
   const none = { own: null, other: null };
   try {
     const store = lastSpeakers();
     const read = Promise.all([
-      store.take({ channel, thread, persona: own }),
+      // A bot or agent post is not the follower of this agent's answer: it reads the record and leaves it for a person's follow-up.
+      consume ? store.take({ channel, thread, persona: own }) : store.peek({ channel, thread, persona: own }),
       Promise.all(others.slice(0, MAX_PEEKS).map((persona) => store.peek({ channel, thread, persona }))),
     ]).then(([o, peeks]) => ({
       own: o,
@@ -98,6 +99,7 @@ export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute
     text: raw.length > MAX_TEXT ? raw.slice(0, MAX_TEXT) : raw,
     subtype: e.subtype ?? null,
     authorIsBot: Boolean(e.bot_id || e.bot_profile),
+    authorId: typeof e.user === "string" ? e.user : null,
     selfUserIds: self,
     threadEngaged: i.threadEngaged,
     level,
@@ -178,7 +180,7 @@ export async function observeEngage(i: ObserveInput): Promise<TierResult | null>
       const thread: string | null = i.event.thread_ts && i.event.thread_ts !== i.event.ts ? i.event.thread_ts : null;
       const me = i.personaId ?? "default";
       const others = [...new Set([...getPersonaRegistry().list().map((x) => x.name), "default"])].filter((n) => n !== me);
-      const rec = await readRecords(channel, thread, me, others);
+      const rec = await readRecords(channel, thread, me, others, !(i.event.bot_id || i.event.bot_profile));
       if (rec.own || rec.other) r = runTiers(factsFromEvent(i, level, restricted, rec.own, rec.other));
     }
     const tier = r.action === "existing" ? "existing" : String(r.tier);

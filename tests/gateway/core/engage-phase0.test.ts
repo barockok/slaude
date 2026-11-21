@@ -217,14 +217,14 @@ describe("phase 0, the record is consumed only by a conversational human message
   const speak = async (root: string) => deliver("an answer", { kind: "reply", channel: CH, thread: { channel: CH, threadTs: root }, replyTo: WORLD.manager }, { post: async () => nowTs(1) });
   const followUp = "can you also check staging?";
 
-  it("a bot post, a join and a note to a colleague leave the record for the real follow-up", async () => {
+  it("a bot post (peeked), a join and a note to a colleague leave the record for the real follow-up", async () => {
     configureEngage("addressed");
     const g = makeGw();
     const root = nextTs();
     await speak(root);
     const base = { channel: CH, channel_type: "channel", team: TEAM, thread_ts: root };
     const send = (event: Record<string, unknown>) => g.emit("message", { event: { type: "message", ...base, ts: nextTs(), ...event }, client: g.t.client, context: { teamId: TEAM } });
-    await send({ user: "U0CIBOT", bot_id: "B_OTHER", text: "build failed" });
+    await send({ user: "U0CIBOT", bot_id: "B_OTHER", text: "build failed" }); // classified, its record read without taking
     await send({ user: "U0NEWBIE", subtype: "channel_join", text: "joined" });
     await send({ user: WORLD.manager, text: "<@U0COLLEAGUE> can you look at the deploy?" });
     expect(store.takes).toBe(0);
