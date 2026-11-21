@@ -45,6 +45,17 @@ for (const [name, mk] of impls) {
       expect(await s.actSlot("C1", 2)).toBe("ok");
     });
 
+    test("the bot cap is its own counter: only bot-started runs count against it, and it is per channel per hour", async () => {
+      const c = clock();
+      const s = mk(c)({});
+      expect([await s.actSlot("C1", 2, undefined, "bot"), await s.actSlot("C1", 2, undefined, "bot"), await s.actSlot("C1", 2, undefined, "bot")]).toEqual(["ok", "ok", "cap"]);
+      // the normal cap is untouched by the bot slots
+      expect([await s.actSlot("C1", 2), await s.actSlot("C1", 2), await s.actSlot("C1", 2)]).toEqual(["ok", "ok", "cap"]);
+      expect(await s.actSlot("C2", 2, undefined, "bot")).toBe("ok");
+      c.advance(3600_000);
+      expect(await s.actSlot("C1", 2, undefined, "bot")).toBe("ok");
+    });
+
     test("the daily bucket and the minute ceiling", async () => {
       const c = clock();
       const s = mk(c)({ dailyBudget: () => 5, minuteCeiling: () => 3 });

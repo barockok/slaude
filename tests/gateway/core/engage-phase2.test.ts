@@ -124,7 +124,7 @@ const actCount = (outcome: string, tier?: number): number =>
     .reduce((n, l) => n + Number(l.split(" ").at(-1)), 0);
 
 const CLEAN = ["sessions", "seen_events", "pending_gates", "ignores", "agent_grants"];
-const ENV_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLAUDE_SLACK_MODE", "SLAUDE_SLACK_API_URL", "SLAUDE_ENGAGE_FORCE_SHADOW", "SLAUDE_ENGAGE_ACT_PER_HOUR"] as const;
+const ENV_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLAUDE_SLACK_MODE", "SLAUDE_SLACK_API_URL", "SLAUDE_ENGAGE_FORCE_SHADOW", "SLAUDE_ENGAGE_ACT_PER_HOUR", "SLAUDE_ENGAGE_BOT_ACT_PER_HOUR"] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 const setEngage = (level: "mention" | "addressed" | "contribute", mode: "shadow" | "on", channel = CH) =>
   setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel, level, mode }] }));
@@ -663,5 +663,22 @@ describe("phase 2: a bot author goes to the classifier like anyone", () => {
     await settle();
     expect(g.sends).toHaveLength(1);
     expect(g.sends[0]!.text).toContain(IMPLICIT_NOTE);
+  });
+});
+
+describe("phase 2: the loop guard for bot-started runs", () => {
+  const fromBot = (g: Gw, ts: string) =>
+    g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ts, text: NAMED, user: "U0SOMEBOT", bot_id: "B0OTHERBOT" }, client: g.client, context: { teamId: TEAM } });
+  it("past the hourly bot cap a bot-started run is a counted pass, while a person's message still acts under the normal cap", async () => {
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "2";
+    const g = (gw = makeGw(yes));
+    const before = actCount("cap");
+    for (let i = 0; i < 3; i++) await fromBot(g, nextTs());
+    await settle();
+    expect(g.sends).toHaveLength(2);
+    expect(actCount("cap") - before).toBe(1);
+    await deliver(g, NAMED, nextTs());
+    await settle();
+    expect(g.sends).toHaveLength(3);
   });
 });

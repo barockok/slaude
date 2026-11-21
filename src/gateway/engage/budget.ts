@@ -38,8 +38,9 @@ export interface EngageState {
   /**
    * Phase 2 acting cap: take one of the channel's acted runs for this hour.
    * "cap" past `limit`, "error" on a store failure (both mean do not act).
+   * `kind` "bot" is a separate counter for runs started by a bot or agent's message (the loop guard).
    */
-  actSlot(channel: string, limit: number, tenant?: string): Promise<"ok" | "cap" | "error">;
+  actSlot(channel: string, limit: number, tenant?: string, kind?: "all" | "bot"): Promise<"ok" | "cap" | "error">;
 }
 
 const CLAIM_SECONDS = 120;
@@ -100,8 +101,8 @@ export function memoryEngageState(o: StateOpts = {}): EngageState {
     async claimAct(channel, ts) {
       return setFlag(`act:${channel}:${ts}`, "1", ACT_CLAIM_SECONDS, true);
     },
-    async actSlot(channel, limit, tenant = "-") {
-      return incr(`actcap:${tenant}:${channel}:${hour(c.now())}`, 7200) > limit ? "cap" : "ok";
+    async actSlot(channel, limit, tenant = "-", kind = "all") {
+      return incr(`${kind === "bot" ? "actcapbot" : "actcap"}:${tenant}:${channel}:${hour(c.now())}`, 7200) > limit ? "cap" : "ok";
     },
   };
 }
@@ -152,9 +153,9 @@ export function redisEngageState(client: EngageRedis, prefix = "slaude", o: Stat
         return false;
       }
     },
-    async actSlot(channel, limit, tenant = "-") {
+    async actSlot(channel, limit, tenant = "-", kind = "all") {
       try {
-        return (await incr(k(`actcap:${tenant}:${channel}:${hour(c.now())}`), 7200)) > limit ? "cap" : "ok";
+        return (await incr(k(`${kind === "bot" ? "actcapbot" : "actcap"}:${tenant}:${channel}:${hour(c.now())}`), 7200)) > limit ? "cap" : "ok";
       } catch (e) {
         warn("act cap", e);
         return "error";

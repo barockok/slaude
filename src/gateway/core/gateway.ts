@@ -5160,6 +5160,16 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         count("lost_claim");
         return false;
       }
+      // Loop guard: two agents that always answer each other stop at the bot cap. Taken first, so a bot-started run
+      // refused here does not spend one of the people's slots.
+      if (e.bot_id || e.bot_profile) {
+        const botSlot = await state.actSlot(e.channel, env.engageBotActPerHour(), teamId, "bot");
+        if (botSlot !== "ok") {
+          count(botSlot === "cap" ? "cap" : "error");
+          console.log(`[engage] act skipped channel=${e.channel} tier=${d.tier} reason=bot_${botSlot}`);
+          return false;
+        }
+      }
       const slot = await state.actSlot(e.channel, env.engageActPerHour(), teamId);
       if (slot !== "ok") {
         count(slot === "cap" ? "cap" : "error");
