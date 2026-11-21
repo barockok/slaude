@@ -622,8 +622,8 @@ export const env = {
   /**
    * Phase 1 classifier budgets (per channel, across apps and replicas).
    * `SLAUDE_ENGAGE_DAILY_BUDGET`: classifier calls per channel per UTC day
-   * (default 50). `SLAUDE_ENGAGE_MINUTE_CEILING`: calls per channel per minute
-   * (default 6). Invalid values read as the default.
+   * (default 2000). `SLAUDE_ENGAGE_MINUTE_CEILING`: calls per channel per minute
+   * (default 20). Invalid values read as the default.
    */
   /**
    * `SLAUDE_ENGAGE_PROACTIVE_DEFAULT` (default on): a channel where the agent is
@@ -632,8 +632,8 @@ export const env = {
    * those channels.
    */
   engageProactiveDefault: (): boolean => !["off", "0", "false", "no"].includes(opt("SLAUDE_ENGAGE_PROACTIVE_DEFAULT").trim().toLowerCase()),
-  engageDailyBudget: (): number => posInt(opt("SLAUDE_ENGAGE_DAILY_BUDGET"), 50, 100_000),
-  engageMinuteCeiling: (): number => posInt(opt("SLAUDE_ENGAGE_MINUTE_CEILING"), 6, 1_000),
+  engageDailyBudget: (): number => posInt(opt("SLAUDE_ENGAGE_DAILY_BUDGET"), 2000, 100_000),
+  engageMinuteCeiling: (): number => posInt(opt("SLAUDE_ENGAGE_MINUTE_CEILING"), 20, 1_000),
   /**
    * Phase 2 kill switch: truthy (`1`, `true`, `yes`, `on`) forces every channel
    * to shadow behaviour whatever its engage mode. Read at decision time, never cached.
