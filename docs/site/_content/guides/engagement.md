@@ -128,17 +128,17 @@ channels:
       mode: shadow                # shadow (default) | on
 ```
 
-- **`level`** is how far the agent may go. `mention`: only when mentioned or already engaged in the thread (today's behaviour, and the default). `addressed`: also when a message is in effect said to it (its name used as a vocative, or a request from the person it just answered). `contribute`: also when it plausibly has something useful to add to a top-level question.
+- **`level`** is how far the agent may go. `mention`: only when mentioned or already engaged in the thread (today's behaviour, and the default). `addressed`: also when a message is in effect said to it (the classifier is asked one question: is it for the agent). `contribute`: also when it plausibly has something useful to add (the classifier is asked the four decision questions).
 - **`mode`** is whether a decision is acted on. `shadow` decides and records but behaves exactly as `mention` does; `on` is reserved for acting on the decision. It is per channel and independent of the decision gate's own mode (`SLAUDE_DECISION_CONFIG`), so a channel can be `on` while another is in `shadow`, and the existing mention and engaged-thread handling is untouched.
 - **Default level.** A channel with no `engage.level` uses `addressed` when the agent is proactive there (see the warning below) (`proactive: true` on the channel, which is a channel session: an agent that may speak up unprompted should also hear what is said to it), else `SLAUDE_ENGAGE_DEFAULT` (`mention`, `addressed` or `contribute`; anything else means `mention`). An explicit `engage.level` always wins, including `mention`; a channel with only `engage.mode` set still takes the proactive default for its level. With nothing configured anywhere the answer is `mention` in `shadow`, which changes nothing.
 - **Warning: proactive channels start classifying on upgrade.** Because a proactive channel now defaults to `addressed`, a deployment that has a decision adapter configured begins shadow classification of unaddressed text in every proactive channel as soon as it upgrades, with no `engage` key written anywhere: the candidate and a short slice of recent text go to the adapter (see "What leaves the box"). Nothing acts on the answers. To keep the old behaviour set `SLAUDE_ENGAGE_PROACTIVE_DEFAULT=off` (the channel then uses `SLAUDE_ENGAGE_DEFAULT`, normally `mention`), or write `engage: { level: mention }` on the channel. With no adapter configured the only effect is phase 0 counting.
 - **Restricted channels are never eligible.** A channel that is neither listed as public nor trusted for the persona stays at `mention` whatever is configured.
 - **`aliases`** are extra names the agent answers to (its own name always counts). Each is one word of letters and digits, 3 to 32 characters, not a common word (`team`, `help`, `thanks` and similar are refused), not the agent's own name, not repeated (case and width are ignored), and not mixing look-alike scripts such as Latin and Cyrillic; at most 8. Two agents may not claim the same name, and an alias may not be another agent's name. A bad alias stops validation with a message that never repeats the value.
-- **Classic agents** answer a root mention inside a thread, so "the agent spoke last" at a channel's top level holds mainly in channel-session channels or after a proactive post. In a classic channel, `addressed` works mostly through names and replies to the agent's thread messages.
+- **Classic agents** answer a root mention inside a thread, so "the agent spoke last" at a channel's top level holds mainly in channel-session channels or after a proactive post. In a classic channel, `addressed` works mostly through the classifier reading what was said in a thread.
 
 #### What phase 0 does
 
-This is the base layer, and it is all there is when no decision adapter is configured. For a channel above `mention`, each message the agent was not going to answer is run through the tier ladder (below), and the result is counted and logged. That is all:
+This is the base layer, and it is all there is when no decision adapter is configured. For a channel above `mention`, each message the agent was not going to answer is run through the ladder (below), and the result is counted and logged. That is all:
 
 - no model call and no decision adapter is involved;
 - no Slack history read (the ladder uses only the message itself and a small record of who spoke last);
@@ -148,22 +148,22 @@ This is the base layer, and it is all there is when no decision adapter is confi
 Each decision increments `slaude_engage_total{tier,outcome,level}` and logs one line with no message text:
 
 ```
-[engage] phase0 channel=C... level=addressed tier=3 would=classify reason=name_mid classifier=queued
+[engage] phase0 channel=C... level=addressed tier=3 would=classify reason=classify classifier=queued
 ```
 
-The trailing `classifier=` field is `queued` when phase 1 will ask a classifier about the message, or `skip:<why>` (`disabled`: no shadow classifier wired, `not_candidate`: tier 0 or 1, or a tier 2 decision that is not run). What the classifier said comes later, on its own line (see phase 1).
+The trailing `classifier=` field is `queued` when phase 1 will ask a classifier about the message, or `skip:<why>` (`disabled`: no shadow classifier wired, `not_candidate`: a rule settled it). What the classifier said comes later, on its own line (see phase 1).
 
-`tier` is `0`, `1`, `2`, `3` or `existing`; `outcome` is `pass`, `run`, `classify` or `existing`; `level` is `addressed` or `contribute`. A text longer than 4,000 characters is cut to that before the ladder reads it, and `slaude_engage_truncated_total` counts each cut. With several Slack apps in one channel each app's copy observes the message once, so the counter counts per copy.
+`tier` is `0`, `1`, `3` or `existing`; `outcome` is `pass`, `run`, `classify` or `existing`; `level` is `addressed` or `contribute`. A text longer than 4,000 characters is cut to that before the ladder reads it, and `slaude_engage_truncated_total` counts each cut. With several Slack apps in one channel each app's copy observes the message once, so the counter counts per copy.
 
-#### The tier ladder, in plain words
+#### The ladder, in plain words
 
-The first rule that settles a message wins.
+The ladder is safety rules, then the classifier. A rule is allowed only when it states a certain fact (the channel's level, who wrote the message, a Slack mention token, a lock); it never guesses at what a message means. Meaning goes to the classifier, for every message the rules leave open. The first rule that settles a message wins.
 
-- **Tier 0, pass (no cost).** The channel is at `mention` or restricted; the message is an edit-like or system subtype; a bot wrote it; the thread is `/1on1`-locked, mention-only or disengaged; it names someone else (an @person, a user group, `@here`, `@channel`, a "Budi, ..." vocative); it is only an acknowledgement ("ok", "thanks, that worked", an emoji); or another registered agent spoke last. Quotes, code, links and emails are stripped before names are looked for, and forwarded text is never matched.
-- **Tier 1, run.** An @mention of the agent; its name or alias at the start followed by a comma and a request or second-person sentence ("Ana, can you look at this"); or a reply in a thread the agent is engaged in (counted as `existing`). A colon form ("Ana: ...") is not tier 1, because pasted transcripts start that way.
-- **Tier 2, run (`addressed` and up).** The agent spoke last here within `SLAUDE_ENGAGE_WINDOW_MINUTES`, the author is the person it answered, and the message looks like a request (a question mark, an imperative, second person) or carries a file, and does not start with an acknowledgement.
-- **Tier 3, classify.** What the deterministic rules cannot settle: the name used mid-sentence or with a colon; a follow-up that failed the tier 2 test; and, at `contribute` only, a long top-level question. Tier 3 is where a classifier is asked. With no adapter it is only counted.
-- Everything else is a tier 0 pass with the reason `no_band`.
+- **Pass (tier 0, no cost).** The channel is at `mention` or restricted; the message is an edit-like or system subtype; a bot wrote it; the thread is `/1on1`-locked, mention-only or disengaged; it @mentions another person, a user group, `@here` or `@channel`; it starts with the name of another registered agent and a comma ("Robin, ..."); or another registered agent spoke last here and after this one did (so two agents do not answer one message). Quotes, code, links and emails are stripped before mentions are looked for, and forwarded text is never matched.
+- **Run (tier 1).** An @mention of the agent (counted as `run`), or a reply in a thread the agent is engaged in (counted as `existing`).
+- **Classify (tier 3).** Everything else: a nickname with a comma ("Dude, can you check that?"), a "thanks", a reply in a thread, a top-level message, the agent's own name anywhere in the text. There is no rule that reads a word as a name, an acknowledgement or a follow-up; the classifier sees the recent messages (the agent's and people's, anonymised) and decides. With no adapter it is only counted.
+
+When the agent spoke last in the place within `SLAUDE_ENGAGE_WINDOW_MINUTES`, the classifier input carries `continuation`, so it can weigh "a reply to the agent" against "people talking". That record is the only memory of the agent's own speech the ladder uses.
 
 #### Reading the counters
 
@@ -177,43 +177,39 @@ sum(increase(slaude_engage_total{tier="3"}[1d])) / sum(increase(slaude_engage_to
 sum by (tier, outcome, level) (increase(slaude_engage_total[1d]))
 ```
 
-Rough targets to check against, not measurements: at most about 5 percent of a channel's human messages reaching tier 3 at `addressed`, and about 15 percent at `contribute`. For a channel with 1,000 human messages a day that is on the order of 20 to 70 classifier calls at `addressed` and 400 to 600 at `contribute`. The counter has no channel label (the log line has), so use the `[engage]` lines to find which channel is noisy. A large `tier="2", outcome="run"` count says the agent would have answered follow-ups without being asked, which is the number to sanity-check by reading a sample of the log reasons.
+Every message the rules leave open is a classifier call, so the tier 3 share is most of a channel's human messages. Size the budgets from it: a channel with 1,000 human messages a day needs about 1,000 calls a day, which is why the default daily budget is 2000 (see the phase 1 steps below). The counter has no channel label (the log line has), so use the `[engage]` lines to find which channel is busy.
 
 #### The classifier is a seam, not a vendor
 
 Tier 3 asks a classifier "run or pass". The classifier is a small interface (`classify(candidate)` returning `run` or `pass`) in front of the decision gate, and the gate in turn talks to a neutral decision adapter. Any adapter registered with the decision gate can serve it; engagement code names none, and a test fails if one is named outside that adapter's own file. The questions are written about "the agent", and an answer is a choice with a confidence, so changing the adapter is a registration and a config change, with no change to the tiers.
 
-The adapter and its credentials are deployment configuration (`SLAUDE_DECISION_CONFIG`, with the key given by secret reference), never per channel and never in git. Per channel you choose only the level and the mode. With no adapter configured, tiers 0 to 2 still work (they need no model) and tier 3 is always a pass. A classifier failure of any kind (an error, a timeout, no adapter) is a pass, never a run: the gate's rules fallback is not used for an implicit decision, because it would read every candidate as a request.
+The adapter and its credentials are deployment configuration (`SLAUDE_DECISION_CONFIG`, with the key given by secret reference), never per channel and never in git. Per channel you choose only the level and the mode. With no adapter configured, the rules still work (they need no model) and every classify candidate is a pass. A classifier failure of any kind (an error, a timeout, no adapter) is a pass, never a run: the gate's rules fallback is not used for an implicit decision, because it would read every candidate as a request.
 
 #### What leaves the box
 
 - **With no adapter, nothing.** No message text is sent anywhere, the log lines carry no text, and the last-speaker record holds only message ids, a persona name and a user id for the window's length.
-- **With an adapter (phase 1)**, only tier 3 candidates and a small sample of tier 2 run decisions are sent, only for channels that opted in with a level above `mention` (a proactive channel counts, see the warning above): the candidate message and a capped, filtered slice of recent messages (at most 8 by default, each cut to 400 characters, secret-shaped text masked, a literal `<agent>` typed in chat defanged; authors the agent would not admit, ignored users and text the owner's inbound guardrails deny are left out), with the agent's name, aliases and every mention of its identities rewritten to `<agent>`, other people's mentions to `<user>`, and links reduced to their label or host. Text from other bots (CI output and other integrations) is never sent. No knowledge-base search is made, so no document score leaves either. Tier 0 and tier 1 messages are never sent. The channel's opt-in is what permits this; the adapter chosen is the operator's explicit decision.
+- **With an adapter (phase 1)**, only classify candidates are sent, only for channels that opted in with a level above `mention` (a proactive channel counts, see the warning above): the candidate message and a capped, filtered slice of recent messages (at most 8 by default, each cut to 400 characters, secret-shaped text masked, a literal `<agent>` typed in chat defanged; authors the agent would not admit, ignored users and text the owner's inbound guardrails deny are left out), with the agent's name, aliases and every mention of its identities rewritten to `<agent>`, other people's mentions to `<user>`, and links reduced to their label or host. Text from other bots (CI output and other integrations) is never sent. No knowledge-base search is made, so no document score leaves either. A message a rule settles (a pass or an @mention) is never sent. The channel's opt-in is what permits this; the adapter chosen is the operator's explicit decision.
 
 #### Phase 1: the shadow classifier
 
-When a decision adapter is configured, a channel above `mention` also asks it about the messages the rules could not settle, and records the answer. **It never acts**: the candidate is always handed over in shadow, whatever the channel's `mode`, so what the agent does is identical with or without it. The point is to measure how a classifier would have decided before anything is allowed to act on it.
+When a decision adapter is configured, a channel above `mention` also asks it about every message the rules left open, and records the answer. **It never acts**: the candidate is always handed over in shadow, whatever the channel's `mode`, so what the agent does is identical with or without it. The point is to measure how a classifier would have decided before anything is allowed to act on it.
 
 What is asked, and when:
 
-- **Tier 3 candidates** (the name used mid-sentence or with a colon, a colleague sharing the agent's name, a follow-up that failed the tier 2 test, and at `contribute` a long top-level question).
-- **A sample of tier 2 run decisions**, to check the rules: 1 in 20 by default (`SLAUDE_ENGAGE_SAMPLE`, `0` turns it off), at most 5 a day per channel.
-- **Never tier 0, and never tier 1.** A message the rules pass or run on their own never reaches the classifier.
+- **Every classify candidate**: any message that no safety rule settled.
+- **Never a message a rule settled.** A pass or an @mention never reaches the classifier.
 - **At `addressed`** one question is asked (is the message said to the agent), at `contribute` the existing four. A decision needs a confident answer (the gate's `tAct`, default 0.8); anything less is a pass.
 
-The call is made in the background after the message has been handled, with its own deadline, so it can never delay the agent or the handler, and a failure of any kind is a counted pass. A top-level question at `contribute` waits 60 seconds before it is asked, so a human answer can land first. Each candidate goes through these steps in order, and each can end it as a pass:
+The call is made in the background after the message has been handled, with its own deadline, so it can never delay the agent or the handler, and a failure of any kind is a counted pass. Each candidate goes through these steps in order, and each can end it as a pass:
 
-1. **One owner per persona.** With several apps in a channel every app's copy sees a message, but one copy of each persona wins an atomic claim on the channel, message and persona and makes the call; the others do nothing and count nothing. Two different personas on one message each have their own claim, pass memory and cooldown. (A tier 2 sample is drawn before the claim, so a miss never takes it.)
-2. **No adapter.** A tier 3 candidate is a counted pass with reason `noadapter`, and nothing else is done: no input is built and no Slack history is read.
-3. **Pass memory.** After a classifier "no", later unmentioned messages from the same author in that thread pass without a call, until the agent speaks in the thread, a new author joins, the name is used, or 30 minutes pass. A "no" on a top-level message cools the channel for the next 3 candidates or 120 seconds, unless the name is used.
+1. **One owner per persona.** With several apps in a channel every app's copy sees a message, but one copy of each persona wins an atomic claim on the channel, message and persona and makes the call; the others do nothing and count nothing. Two different personas on one message each have their own claim.
+2. **No adapter.** A candidate is a counted pass with reason `noadapter`, and nothing else is done: no input is built and no Slack history is read.
+3. **No memory of an earlier no.** Every candidate is asked, even right after a "no" in the same thread or channel: the classifier sees the recent messages and is better placed to tell a follow-up from a side conversation than a timer is.
 4. **Circuit breaker.** Three consecutive failures (errors or timeouts) open it, with a doubling backoff from 30 seconds up to 10 minutes; then a single probe is let through. Per process. A late result from a call started before the breaker changed state is ignored, so five calls timing out together do not double the backoff.
 5. **Admission, free of charge.** A message the agent would not hear (blocked or ignored author, a `/1on1` thread, a command) is a counted `input` pass before anything is spent or read.
-6. **A top-level question waits.** At `contribute` it is held 60 seconds, then one bounded history page since the message is read: if a human other than the author answered (a thread reply or a later message) it is a pass with reason `answered`; if it was deleted or edited meanwhile, reason `stale`. The wait is a timer, cancelled when the gateway stops.
-7. **Budget.** Per channel, across apps and replicas: a daily bucket (`SLAUDE_ENGAGE_DAILY_BUDGET`, default 50 calls) and a per-minute ceiling (`SLAUDE_ENGAGE_MINUTE_CEILING`, default 6). Over either is a pass with reason `budget`. With Redis the counts are shared by every replica; with none they are per process. If Redis fails the classifier fails closed (a pass) while the rest of the observation carries on.
-8. **Input.** One Slack read at most, made only here, always a single page of at most 15 messages and never a loop: for a thread reply one `conversations.replies` call over the last 20 minutes (when the window holds more than 15 messages it is the earliest 15 of the window), for a top-level message one `conversations.history` call for the messages before it; under a 2 second deadline. Reads use the delivering app's no-retry client: a rate-limited or failed read is skipped (reason `input`, one log line with the error code), never retried. A message the agent would not hear (a blocked or ignored author, a `/1on1`-locked thread, or text an owner inbound rule denies) is never sent, and a message with no author is skipped. A failed or late read is a pass with reason `input`.
-9. **Ask.** The adapter answers or it does not. A timeout or error is a pass (and counts against the breaker); only a confident model "yes" is a `run`.
-
-A tier 3 reason that names the agent also ends the pass memory above, so a message that uses the agent's name is always asked about (budget permitting).
+6. **Budget.** Per channel, across apps and replicas: a daily bucket (`SLAUDE_ENGAGE_DAILY_BUDGET`, default 2000 calls) and a per-minute ceiling (`SLAUDE_ENGAGE_MINUTE_CEILING`, default 20). Over either is a pass with reason `budget`. With Redis the counts are shared by every replica; with none they are per process. If Redis fails the classifier fails closed (a pass) while the rest of the observation carries on.
+7. **Input.** One Slack read at most, made only here, always a single page of at most 15 messages and never a loop: for a thread reply one `conversations.replies` call over the last 20 minutes (when the window holds more than 15 messages it is the earliest 15 of the window), for a top-level message one `conversations.history` call for the messages before it; under a 2 second deadline. Reads use the delivering app's no-retry client: a rate-limited or failed read is skipped (reason `input`, one log line with the error code), never retried. A message the agent would not hear (a blocked or ignored author, a `/1on1`-locked thread, or text an owner inbound rule denies) is never sent, and a message with no author is skipped. A failed or late read is a pass with reason `input`.
+8. **Ask.** The adapter answers or it does not. A timeout or error is a pass (and counts against the breaker); only a confident model "yes" is a `run`.
 
 The result is one counter and one log line, neither with message text:
 
@@ -221,13 +217,9 @@ The result is one counter and one log line, neither with message text:
 [gate] engage implicit=addressed tier=3 action=pass actual=pass reason=answer ms=412 key=C...:1731...
 ```
 
-`action` is what the classifier would have done (`run` or `pass`); `actual=pass` is always true in phase 1. `sampled=1` is added for a tier 2 sample. The counter is `slaude_engage_classifier_total{result,reason,level}`, with `result` `run` or `pass` and `reason` one of `answer` (a model answered), `budget`, `breaker`, `timeout`, `error`, `noadapter`, `pass_memory`, `cooldown`, `input`, `answered` or `stale`. A shadow consult is counted only here; it does not move `slaude_gate_decisions_total` and prints no `[gate] mode=...` line. It has no channel label; the log line has. The decision adapter's request counter (`slaude_decision_requests_total`) still counts the call.
+`action` is what the classifier would have done (`run` or `pass`); `actual=pass` is always true in phase 1. The counter is `slaude_engage_classifier_total{result,reason,level}`, with `result` `run` or `pass` and `reason` one of `answer` (a model answered), `budget`, `breaker`, `timeout`, `error`, `noadapter` or `input`. A shadow consult is counted only here; it does not move `slaude_gate_decisions_total` and prints no `[gate] mode=...` line. It has no channel label; the log line has. The decision adapter's request counter (`slaude_decision_requests_total`) still counts the call.
 
-To read it: the share of `result="run"` among `reason="answer"` for tier 3 is how often a classifier would have joined in; read a sample of the log lines for the tier 2 samples to see where the rules and the classifier disagree. A rule the classifier keeps overturning is a rule to fix.
-
-**A colleague who shares the agent's name.** "Sam, can you look" is a tier 1 run unless a person in the workspace goes by that name; then it goes to tier 3. The names come from one cached `users.list` read per workspace, refreshed at most hourly in the background: up to 5 pages, a 2 second deadline on each page and 5 seconds in all, deleted users and bots ignored, and the agent's own Slack users (its bot user and the registered persona users) left out, so a persona that posts as a real user still gets tier 1. If the read stops part way, what was read is kept and a name missing from it counts as shared (retried within 5 minutes); a failed refresh keeps the last list and logs one `[engage] users.list failed team=... code=<error code>` line per team per hour (a missing `users:read` scope shows as `missing_scope`). Until the first list arrives, or if it never does, the safe side applies: the name counts as shared, so `name_comma` is not taken and the message goes to tier 3 (a pass when there is no adapter). The list is workspace wide, not per channel, which only ever errs toward "someone shares the name".
-
-**Humans alternating.** When a classifier input read a thread and two or more humans have taken turns since the agent last spoke, a short flag is kept for the thread; the next message's ladder reads it (so the "humans alternating" tier 2 pass can now fire). It is false whenever no thread was read.
+To read it: the share of `result="run"` among `reason="answer"` is how often a classifier would have joined in.
 
 #### Choosing the adapter
 
@@ -252,16 +244,13 @@ A channel whose `engage.mode` is `on`, at level `addressed` or `contribute`, and
 
 What acts, and how:
 
-- **Tier 1 and tier 2 `run` act at once.** The agent's name and a comma ("Sam, can you look"), and a follow-up from the person the agent just answered.
-- **Tier 3 is awaited.** The classifier is asked while the message is being handled, within the decision config's `timeoutMs`, and acts only on a confident yes. Every failure (error, timeout, budget, breaker, no adapter, a "no") is a pass, which is today's drop. A top-level question at `contribute` still waits 60 seconds first and then acts from the timer (never in a channel session, where the message has already been recorded by then). When the timer fires the router's checks run again (kill switch, mode, `/mention-only`, any session row for the thread, admission), and any reply in the thread during the wait counts as an answer.
-- **Same checks as a mention.** The author goes through admission, blocked and ignored lists, restricted channels, `/1on1` locks and owner inbound rules exactly as an @mention from them would, and the model receives the same message text. A tier 3 candidate has already passed admission before any budget is spent; a tier 1 or 2 run is admitted before it acts. Budgets, pass memory, the root cooldown and the breaker from phase 1 all apply to tier 3 as before.
+- **The classifier is awaited.** It is asked while the message is being handled, within the decision config's `timeoutMs`, and the agent acts only on a confident yes. Every failure (error, timeout, budget, breaker, no adapter, a "no") is a pass, which is today's drop. A message that @mentions the agent is not part of this: it takes the mention path as always.
+- **Same checks as a mention.** The author goes through admission, blocked and ignored lists, restricted channels, `/1on1` locks and owner inbound rules exactly as an @mention from them would, and the model receives the same message text. A candidate has already passed admission before any budget is spent. The budgets and the breaker from phase 1 apply as before.
 - **Where the reply goes.** A classic agent replies in the thread of the message (under it, for a top-level message). In a channel-session channel an unmentioned root message whose decision is `run` is not recorded suppressed: the agent replies at the root, as for a root mention there.
-- **Tier 1 and 2 skip the mention-path gate consult on purpose.** The deterministic tiers run before any model, so an implicit run does not ask the decision gate again; access checks are the same as for a mention.
 - **The first turn is told it may pass.** The turn's prompt says, in neutral words, that the message was not an @mention, may be addressed to someone else or need no reply, and that the agent should `pass` when it does not need it. It does not say why the agent was asked. An implicit turn is not forced to reply by the must-reply guard: ending without a reply or a pass call is a pass: the thread is given back, no checkmark is set, and no received reaction or thinking status is shown until the model speaks. A turn that fails before it speaks stays quiet in the thread (the failure is logged) and gives the engagement back.
 - **Passing gives engagement back.** An implicit run is born with weaker engagement. If the agent then only passes, the thread goes back to how it was: the next plain reply is recorded or dropped, not run. If the agent replies, the thread is engaged like after a mention.
 - **A new session starts inside an existing thread with the thread head** (section 1.6), once, on its first real turn.
-- **One owner per message, per deployment.** Slack delivers a channel message to every app and persona in it. A copy that has decided `run` takes one atomic claim on the channel and message (`SET NX`, with an in-memory fallback), and only the winner acts; a copy that loses does nothing. A persona that spoke last in the thread already wins before the claim: another agent that spoke after you is a tier 0 pass for you. The claim lives in Redis when the deployment has one, else in the process, so it only spans one deployment: two separate single-persona deployments in one channel can both answer. Keep one deployment per channel at mode `on`.
-- **A reply in a thread the agent opened** (the root's author is this agent: Slack's `parent_user_id` is this app's bot or this persona's own user) from a person, with no name used, no one else named and no recent record of the agent speaking last, is a tier 3 candidate instead of a drop. A root posted through a bot that several personas share cannot be told, and is refused as before. Slack does not send `parent_user_id` on every event; without it nothing changes. This candidate is read only in a channel whose mode is `on`; in shadow the ladder is as in phase 1.
+- **One owner per message, per deployment.** Slack delivers a channel message to every app and persona in it. A copy that has decided `run` takes one atomic claim on the channel and message (`SET NX`, with an in-memory fallback), and only the winner acts; a copy that loses does nothing. Another agent that spoke last here after you is a pass for you before any claim. The claim lives in Redis when the deployment has one, else in the process, so it only spans one deployment: two separate single-persona deployments in one channel can both answer. Keep one deployment per channel at mode `on`.
 
 Safety valves:
 
@@ -269,24 +258,24 @@ Safety valves:
 |---|---|---|
 | `SLAUDE_ENGAGE_FORCE_SHADOW` | unset | Truthy (`1`, `true`, `yes`, `on`) forces every channel to shadow behaviour, whatever its mode. Read for every message, never cached, so unsetting it takes effect at once. This is the kill switch. |
 | `SLAUDE_ENGAGE_ACT_PER_HOUR` | `12` | Acted runs per channel per hour (a fixed hour window, shared across apps and replicas with Redis). Past it a run is a pass. |
-| The existing budgets | 50 a day, 6 a minute | Tier 3 classifier calls, as in phase 1. |
+| The existing budgets | 2000 a day, 20 a minute | Classifier calls, as in phase 1. |
 
 Counters and the log line (no channel label on the counter; the line has it, and neither carries message text):
 
 ```
 slaude_engage_act_total{tier,outcome,level}
-[engage] act channel=C... level=addressed tier=1 source=rules reason=name_comma ts=... persona=default site=drop
+[engage] act channel=C... level=addressed tier=3 source=classifier reason=classify ts=... persona=default site=drop
 ```
 
-`outcome` is `acted`, `lost_claim` (another persona or app copy owns it), `cap`, `forced_shadow`, `classifier_pass` (a tier 3 candidate the classifier or its guards did not confirm) or `error`. `source` is `rules` or `classifier`; `site` is `drop` or `channel_session`.
+`outcome` is `acted`, `lost_claim` (another persona or app copy owns it), `cap`, `forced_shadow`, `classifier_pass` (a candidate the classifier or its guards did not confirm) or `error`. `source` is `classifier` (or `rules`, for a mention the ladder settles); `site` is `drop` or `channel_session`.
 
-**Rolling a channel out.** (1) Put the channel at `addressed` with `mode: shadow` and, if you want tier 3, a decision adapter. (2) Read `slaude_engage_total` and `slaude_engage_classifier_total` for a few days and the `[gate] engage` lines: the share of messages that reach tier 3, and how often the classifier would say run. (3) Switch that one channel to `mode: on`, tell the people in it, and watch `slaude_engage_act_total` and the thread behaviour. (4) Keep `SLAUDE_ENGAGE_FORCE_SHADOW=1` ready as the kill switch for the whole deployment, and lower `SLAUDE_ENGAGE_ACT_PER_HOUR` if a channel is chatty. Go to `contribute` only after `addressed` has behaved.
+**Rolling a channel out.** (1) Put the channel at `addressed` with `mode: shadow` and, a decision adapter. (2) Read `slaude_engage_total` and `slaude_engage_classifier_total` for a few days and the `[gate] engage` lines: how many messages reach the classifier, and how often it would say run. (3) Switch that one channel to `mode: on`, tell the people in it, and watch `slaude_engage_act_total` and the thread behaviour. (4) Keep `SLAUDE_ENGAGE_FORCE_SHADOW=1` ready as the kill switch for the whole deployment, and lower `SLAUDE_ENGAGE_ACT_PER_HOUR` if a channel is chatty. Go to `contribute` only after `addressed` has behaved.
 
-**What is not acted on.** The other places that drop or record a message for "not engaged" are different cases and are left alone: a thread a colleague mention has disengaged, a `/mention-only` thread, a thread that belongs to another app, and a message that mentions another person (all tier 0 passes anyway).
+**What is not acted on.** The other places that drop or record a message for "not engaged" are different cases and are left alone: a thread a colleague mention has disengaged, a `/mention-only` thread, a thread that belongs to another app, and a message that mentions another person (all passes anyway).
 
 #### Not built yet
 
-A per-channel label on the counter, and a deterministic last-speaker priority beyond what the ladder already does (a persona that spoke after another wins by the ladder; two personas that both decide run get the first claimant). Tuning the cap and budgets from real counts.
+A per-channel label on the counter, and a way for the classifier to say "seen, no reply needed" for messages that mention the agent (the decision gate's mention row can do this once a deployment turns it on). Tuning the cap and budgets from real counts.
 
 ---
 
