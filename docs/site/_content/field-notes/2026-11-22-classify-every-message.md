@@ -6,7 +6,7 @@ A person wrote "Dude, ..." right after the agent had spoken. The implicit-engage
 
 ## What
 
-The ladder keeps only rules that state a certain fact: the channel level, restricted, a system subtype, a bot author, a lock, an @mention of the agent (run), an @mention of another person, a group or `@here` (pass), another registered agent named with a comma or having spoken last (pass, so two agents do not answer one message), and an engaged thread (today's path). Everything else is `classify`, the reason is `classify`, and the classifier decides with the recent messages in front of it.
+The ladder keeps only rules that state a certain fact: the channel level, restricted, a system subtype, the agent's own message as author, a lock, an @mention of the agent (run), an @mention of another person, a group or `@here` (pass), another registered agent named with a comma or having spoken last (pass, so two agents do not answer one message), and an engaged thread (today's path). Everything else is `classify`, the reason is `classify`, and the classifier decides with the recent messages in front of it.
 
 Removed with the guesses: the vocative and acknowledgement logic, the follow-up run (tier 2) and its sample, the name rules, the root band with its 60 second debounce and re-check, the thread-opened-by-the-agent rule, the users cache and its `users.list` read, the humans-alternating flag. The classifier input's `continuation` is now set from one fact: this agent spoke last here within the window.
 
@@ -17,6 +17,10 @@ Mentions of the agent are unchanged: they take the mention path and always run.
 ## Cost
 
 One classifier call, and one bounded Slack read for its input, per candidate. The budget defaults move to fit: `SLAUDE_ENGAGE_DAILY_BUDGET` 50 to 2000 and `SLAUDE_ENGAGE_MINUTE_CEILING` 6 to 20. The acted-run cap stays at 12 an hour, so the cost is classifier calls, not extra turns. `SLAUDE_ENGAGE_SAMPLE` is gone with the sampled decisions it sampled. The breaker, the one-owner claim, the admission check and shadow mode are as before.
+
+## Agent to agent
+
+The aim is for agents to talk to each other in a channel or a thread, the classifier deciding who replies, so a bot author is no longer a pass: only this agent's own message is skipped (`self_author`). "Another agent spoke last" still stops two agents answering one person, and no longer fires when the author is itself an agent. A registered agent's text is kept in the classifier's recent messages as the other side (never as this agent's own words). A loop guard caps runs started by a bot message at `SLAUDE_ENGAGE_BOT_ACT_PER_HOUR` (6) per channel per hour, on top of the normal cap. Not done: a message from another persona's app on the same gateway is dropped at ingress as a self bot echo (`isSelfBotEcho` in the message handler), before observation; letting it through also needs the admission check, which shares that echo test, to tell "another registered agent" from "this agent". So today the path works for bots and agents outside this gateway.
 
 ## Open
 
