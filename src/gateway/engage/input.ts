@@ -10,7 +10,8 @@
  *    persona does not admit, an ignored author and text the owner's inbound
  *    deny rules refuse are dropped (one reusable author filter), and a third
  *    party bot's text (CI output, other integrations) is never sent unless
- *    ALLOW_THIRD_PARTY_BOT_TEXT is changed in code;
+ *    ALLOW_THIRD_PARTY_BOT_TEXT is changed in code. The text of a registered
+ *    agent of this gateway is kept, as the other side (role `user`);
  *  - every line is neutralised like the thread head is (no `<` survives except
  *    the tokens this module writes), whitespace is flattened and each line cut;
  *  - at most one Slack read: the thread's last messages for a threaded
@@ -48,6 +49,12 @@ export interface InputDeps {
   dropMessage?: (m: ThreadMsg) => Promise<boolean>;
   /** One of this persona's own identities. */
   isSelf: (m: ThreadMsg) => boolean;
+  /**
+   * A registered agent of this gateway (another persona's bot or user id). Its text is kept in `recent`
+   * as the other side of the conversation (role `user`, never `agent`), still through the author filter.
+   * An unknown bot is not an agent.
+   */
+  isAgent?: (m: ThreadMsg) => boolean;
   /** Slack user ids that are this agent (bot user, persona user). */
   selfUserIds: ReadonlySet<string>;
   /** The identity the message is addressed to (the delivering bot). */
@@ -133,7 +140,7 @@ export async function buildImplicitInput(d: InputDeps, r: ImplicitRequest): Prom
         // Someone the ingress cannot place (no user and no bot) is not admitted by default.
         if (!m.user && !m.bot_id) return false;
         const self = d.isSelf(m);
-        if (!self && isBotMessage(m) && !allowBots) return false;
+        if (!self && isBotMessage(m) && !allowBots && !d.isAgent?.(m)) return false;
         if (!(await d.filter.allows(m))) return false;
         return !(d.dropMessage && (await d.dropMessage(m)));
       }),

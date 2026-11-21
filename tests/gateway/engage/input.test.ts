@@ -85,6 +85,28 @@ describe("buildImplicitInput", () => {
     expect(r.input.recent).toEqual([{ role: "user", text: "fine line" }]);
     expect(JSON.stringify(r.input)).not.toMatch(/blocked author|build 123|hunter2/);
   });
+  test("a registered agent's message is kept as the other side (role user); an unknown bot's is still dropped", async () => {
+    const d = deps({
+      replies: [
+        { user: "UROBIN1", bot_id: "B0ROBIN", subtype: "bot_message", ts: "60.0", text: "I checked the logs, nothing odd" },
+        { bot_id: "B0CI", subtype: "bot_message", ts: "61.0", text: "build 123 failed on ci" },
+        { user: SELF, ts: "62.0", text: "Sam here, looking" },
+        { bot_id: "B0ROBIN", ts: "63.0", text: "agent by bot id only" },
+      ],
+    });
+    const r = await buildImplicitInput({ ...d, isAgent: (m) => m.user === "UROBIN1" || m.bot_id === "B0ROBIN" }, req());
+    expect(r.input.recent).toEqual([
+      { role: "user", text: "I checked the logs, nothing odd" },
+      { role: "agent", text: "<agent> here, looking" },
+      { role: "user", text: "agent by bot id only" },
+    ]);
+    expect(JSON.stringify(r.input)).not.toContain("build 123");
+  });
+  test("a registered agent's text still goes through the author filter (a deny rule hides it)", async () => {
+    const d = deps({ denyText: /hunter2/, replies: [{ user: "UROBIN1", bot_id: "B0ROBIN", ts: "60.0", text: "the password is hunter2" }] });
+    const r = await buildImplicitInput({ ...d, isAgent: () => true }, req());
+    expect(r.input.recent).toEqual([]);
+  });
   test("a message with neither a user nor a bot id is skipped, and a per-message refusal (a thread-level ignore) drops its message", async () => {
     const d = deps({ history: [{ ts: "60.0", text: "who wrote this" }, { user: "UHUMAN1", ts: "61.0", text: "in an ignored thread" }, { user: "UHUMAN1", ts: "62.0", text: "a fine line" }] });
     const seen: string[] = [];

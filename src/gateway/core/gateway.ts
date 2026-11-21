@@ -5074,6 +5074,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             filter,
             dropMessage: async (m) => (await Ignores.findActiveForThread(e.channel, m.thread_ts ?? req.thread ?? m.ts)) != null,
             isSelf,
+            isAgent: (x) => (x.user ? ids.userIds.has(x.user) : false) || (x.bot_id ? ids.botIds.has(x.bot_id) : false),
             selfUserIds: new Set<string>([ids.botUserId, ...ids.userIds].filter(Boolean)),
             botUserId: ids.botUserId,
             names,
