@@ -20,6 +20,7 @@ import type { DecisionAdapter, DecisionRequest } from "../../../src/decision/typ
 import { __setEngageBreakerForTests, __setEngageStateForTests } from "../../../src/gateway/engage/budget";
 import { shadowIdle } from "../../../src/gateway/engage/shadow";
 import { __setLastSpeakerStoreForTests } from "../../../src/gateway/engage/last-speaker";
+import { __setConversationLogForTests, conversationLog, logKey } from "../../../src/gateway/engage/conversation-log";
 import { __setProactiveSoulSource } from "../../../src/soul/proactive";
 
 ensureGuardrailKeyForPg();
@@ -80,6 +81,12 @@ let seq = 0;
 const nextTs = () => nowTs(++seq);
 const deliver = (g: Gw, text: string, ts: string, thread?: string, user = WORLD.manager) =>
   g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", user, team: TEAM, ts, ...(thread ? { thread_ts: thread } : {}), text }, client: g.client, context: { teamId: TEAM } });
+/** What the gateway heard earlier in a conversation (a thread, or null for the channel's top level), put in the conversation log. */
+const seed = async (thread: string | null, msgs: Msg[]) => {
+  for (const x of msgs) {
+    await conversationLog().append(logKey("slack", CH, thread), { ref: String(x.ts), author: String(x.bot_id ?? x.user), isBot: Boolean(x.bot_id), text: String(x.text), ...(thread ? { threadRef: thread } : {}) });
+  }
+};
 const settle = async () => { await Bun.sleep(30); await shadowIdle(); };
 
 let asked: DecisionRequest[] = [];
@@ -92,6 +99,7 @@ let gw: Gw | null = null;
 beforeEach(async () => {
   for (const k of TOKEN_ENV) delete process.env[k];
   asked = [];
+  __setConversationLogForTests(null);
   writeSoulFixture(WORLD);
   setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "addressed", mode: "shadow" }] }));
   __setEngageStateForTests(null);
@@ -108,6 +116,7 @@ afterEach(async () => {
   gw = null;
   __setEngageStateForTests(null);
   __setLastSpeakerStoreForTests(null);
+  __setConversationLogForTests(null);
   __setProactiveSoulSource(null);
   __resetSoulDataMemo();
   await __clearGuardrailsForTests();
@@ -116,7 +125,7 @@ afterEach(async () => {
 });
 
 describe("phase 1 through the handler", () => {
-  it("a tier 3 message in a thread: one adapter call, one replies read, a scrubbed input, and the agent does nothing", async () => {
+  it("a tier 3 message in a thread: one adapter call, context from the log and no Slack read, a scrubbed input, and the agent does nothing", async () => {
     await Grants.create({ persona: "default", subjectKind: "user", subjectId: "U0BLOCKED1", role: "member", deny: true, createdBy: WORLD.manager });
     await Ignores.create({ targetType: "user", userId: "U0IGNORED1", teamId: TEAM, createdBy: WORLD.manager });
     await applyGuardrailChange("default", { upsert: [{ slug: "inbound-care", md: PASSWORD_RULE, source: "file" }], by: "test" });
@@ -125,7 +134,7 @@ describe("phase 1 through the handler", () => {
     const g = (gw = makeGw(yes));
     const root = nowTs(-100);
     const ts = nextTs();
-    g.state.thread = [
+    await seed(root, [
       m(root, WORLD.manager, "the deploy is stuck again"),
       m(nowTs(-90), "U0BLOCKED1", "blocked author text"),
       m(nowTs(-80), "U0IGNORED1", "ignored author text"),
@@ -133,12 +142,12 @@ describe("phase 1 through the handler", () => {
       { ts: nowTs(-60), bot_id: "B0CIBOT", subtype: "bot_message", text: "pipeline 4412 failed" },
       m(nowTs(-50), WORLD.manager, "a fine message"),
       m(ts, WORLD.manager, "I wonder what quill thinks"),
-    ];
+    ]);
     await deliver(g, "I wonder what quill thinks", ts, root);
     await settle();
     expect(g.sends).toEqual([]); // the agent was never run
     expect(asked).toHaveLength(1);
-    expect(g.calls).toEqual({ replies: 1, history: 0 });
+    expect(g.calls).toEqual({ replies: 0, history: 0 });
     const state = JSON.stringify((asked[0] as any).state);
     expect(state).toContain("<agent> thinks");
     expect(state).toContain("the deploy is stuck again");
@@ -146,15 +155,16 @@ describe("phase 1 through the handler", () => {
     expect(state).not.toMatch(/quill|blocked author|ignored author|hunter2|pipeline 4412/i);
   });
 
-  it("a root candidate at contribute: one history read, no replies read", async () => {
+  it("a root candidate at contribute: context is the channel's log, no Slack read", async () => {
     setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "contribute", mode: "shadow" }] }));
     const g = (gw = makeGw(yes));
-    g.state.history = [m(nowTs(-20), WORLD.manager, "morning all"), { ts: nowTs(-10), bot_id: "B0CIBOT", subtype: "bot_message", text: "nightly job done" }];
+    await seed(null, [m(nowTs(-20), WORLD.manager, "morning all"), { ts: nowTs(-10), bot_id: "B0CIBOT", subtype: "bot_message", text: "nightly job done" }]);
     await deliver(g, "does anyone know how to roll back a release, quill?", nextTs());
     await settle();
     expect(g.sends).toEqual([]);
-    expect(g.calls).toEqual({ replies: 0, history: 1 });
+    expect(g.calls).toEqual({ replies: 0, history: 0 });
     expect(asked).toHaveLength(1);
+    expect(JSON.stringify((asked[0] as any).state)).toContain("morning all");
     expect(JSON.stringify((asked[0] as any).state)).not.toMatch(/nightly job|quill/i);
   });
 
@@ -188,16 +198,17 @@ describe("phase 1 through the handler", () => {
     expect(asked).toHaveLength(0);
   });
 
-  it("one page only: a thread with more pages is read once, with a bounded limit and no cursor", async () => {
+  it("a long log is read in one bounded step: only the newest few lines reach the classifier", async () => {
     const g = (gw = makeGw(yes));
-    g.state.moreRepliesPages = true;
-    g.state.thread = [m(nowTs(-50), WORLD.manager, "context line")];
-    await deliver(g, "I wonder what quill thinks", nextTs(), nowTs(-100));
+    const root = nowTs(-500);
+    await seed(root, Array.from({ length: 30 }, (_v, i) => m(nowTs(-400 + i), WORLD.manager, `line ${i + 1}`)));
+    await deliver(g, "I wonder what quill thinks", nextTs(), root);
     await settle();
-    expect(g.calls.replies).toBe(1);
-    expect(g.sent.replies[0].cursor).toBeUndefined();
-    expect(g.sent.replies[0].limit).toBeLessThanOrEqual(15);
-    expect(asked).toHaveLength(1);
+    const state = JSON.stringify((asked[0] as any).state);
+    expect(state).toContain("line 30");
+    expect(state).not.toContain("line 1\"");
+    expect(state.match(/line \d+/g)!.length).toBeLessThanOrEqual(12);
+    expect(g.calls).toEqual({ replies: 0, history: 0 });
   });
 
   it("a /1on1 thread: nothing is asked and no budget is spent", async () => {
@@ -211,30 +222,62 @@ describe("phase 1 through the handler", () => {
     expect(g.sends).toEqual([]);
   });
 
-  it("a rate-limited read is a skipped candidate: one attempt, no retry, nothing asked, the agent does nothing", async () => {
+  it("messages the gateway heard are the context of the next candidate, with no Slack read", async () => {
+    setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "contribute", mode: "shadow" }] }));
     const g = (gw = makeGw(yes));
-    g.state.repliesError = Object.assign(new Error("ratelimited"), { code: "slack_webapi_rate_limited", data: { error: "ratelimited" } });
-    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    await deliver(g, "the staging deploy keeps failing", nextTs());
+    await deliver(g, "same here, the migration step hangs", nextTs(), undefined, "U0OTHER001");
+    await settle();
+    asked = [];
+    await deliver(g, "does anyone know how to roll back a release, quill?", nextTs());
+    await settle();
+    expect(asked).toHaveLength(1);
+    const state = JSON.stringify((asked[0] as any).state);
+    expect(state).toContain("the staging deploy keeps failing");
+    expect(state).toContain("the migration step hangs");
+    expect(g.calls).toEqual({ replies: 0, history: 0 });
+    expect(g.sent.posts).toBe(0);
+  });
+
+  it("the agent's own earlier post is context (its side), another bot's is not", async () => {
+    const g = (gw = makeGw(yes));
+    const root = nowTs(-100);
+    await seed(root, [m(root, WORLD.manager, "why is staging red")]);
+    await conversationLog().append(logKey("slack", CH, root), { ref: nowTs(-60), author: "", isBot: true, text: "it is the cache", threadRef: root, agent: "default" });
+    await seed(root, [{ ts: nowTs(-50), bot_id: "B0CIBOT", text: "pipeline 9 failed" }]);
+    await deliver(g, "I wonder what quill thinks", nextTs(), root);
+    await settle();
+    const state = JSON.stringify((asked[0] as any).state);
+    expect(state).toContain('"role":"agent","text":"it is the cache"');
+    expect(state).toContain("why is staging red");
+    expect(state).not.toContain("pipeline 9");
+  });
+
+  it("an empty log is no reason to skip: the message is classified alone", async () => {
+    const g = (gw = makeGw(yes));
     await deliver(g, "I wonder what quill thinks", nextTs(), nowTs(-100));
     await settle();
-    const warned = warn.mock.calls.map((c) => c.join(" ")).join("\n");
-    warn.mockRestore();
-    expect(g.calls.replies).toBe(1);
-    expect(asked).toHaveLength(0);
-    expect(g.sends).toEqual([]);
-    expect(warned).toContain("code=");
-    expect(warned).not.toContain("quill");
+    expect(asked).toHaveLength(1);
+    expect(g.calls).toEqual({ replies: 0, history: 0 });
+  });
+
+  it("a channel at level mention keeps no log", async () => {
+    setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "mention", mode: "shadow" }] }));
+    const g = (gw = makeGw(yes));
+    await deliver(g, "something said here", nextTs());
+    await settle();
+    expect(await conversationLog().recent(logKey("slack", CH), 10)).toEqual([]);
   });
 
   it("a channel-session root message is observed at the channel_session site: asked once, nothing posted, the agent does nothing", async () => {
     __setProactiveSoulSource(() => `\n## Channel <#${CH}>\n### Session\n- Mode: channel\n`);
     setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: CH, level: "addressed", mode: "shadow" }] }));
     const g = (gw = makeGw(yes));
-    g.state.history = [m(nowTs(-20), WORLD.manager, "morning all")];
+    await seed(null, [m(nowTs(-20), WORLD.manager, "morning all")]);
     await deliver(g, "I wonder what quill thinks", nextTs());
     await settle();
     expect(asked).toHaveLength(1);
-    expect(g.calls.history).toBe(1);
+    expect(g.calls.history).toBe(0);
     // Today's path for an unmentioned message in a channel session: one suppressed recording (the model does not run), nothing posted.
     expect(g.sends).toHaveLength(1);
     expect(g.sent.posts).toBe(0);

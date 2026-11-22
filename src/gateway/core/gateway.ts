@@ -31,7 +31,7 @@ import { channelSessionOn, channelSessionWakes, proactiveFor } from "../../soul/
 import { aliasesFor, engageFor } from "../engage/setting";
 import { observeEngage, type ImplicitRun } from "../engage/observe";
 import { clearAgentRecord, noteAgentMessage, noteConversation } from "../engage/record";
-import { setConversationLogRedis } from "../engage/conversation-log";
+import { AGENT_BOT_ID, conversationLog, logKey, setConversationLogRedis, toThreadMsg } from "../engage/conversation-log";
 import { setLastSpeakerRedis } from "../engage/last-speaker";
 import { engageState, setEngageRedis } from "../engage/budget";
 import { gateClassifier } from "../engage/gate-classifier";
@@ -145,7 +145,7 @@ import { channelWorkspaceDir, proactiveWorkspaceDir } from "../../agent/workspac
 import { channelSessionKey, isChannelSessionKey, isRootChannelEvent, neutraliseEnvelopeTags, refusalAtRoot } from "./channel-session";
 import { routeReload } from "./reload-route";
 import { makeAuthorFilter } from "./author-filter";
-import { buildThreadHead, fetchThreadSlice } from "./thread-head";
+import { buildThreadHead, fetchThreadSlice, type ThreadMsg } from "./thread-head";
 import { isSyntheticThread } from "../../web/shared/surfaces";
 import { PanelChatRefused } from "../panel/api";
 import { wakeGateConfig, WakeTargetBusyError, type WakeRunOptions, type WakeTransport } from "../../proactive/wake";
@@ -4996,29 +4996,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const user = persona ? getPersonaRegistry().lookupByName(persona)?.slackUserId : undefined;
     return !!user && mentions.includes(user);
   };
-  /**
-   * The client engagement reads Slack with (the classifier's input): the delivering app's no-retry lookup client, as the
-   * thread head uses, which rejects a rate-limited call instead of waiting on
-   * Retry-After. Where no bot token is known the delivery's own client is the
-   * fallback, exactly as for the thread head.
-   */
-  const engageReader = (args: any): any => {
-    let token: string | undefined = args?.context?.botToken;
-    if (!token && env.slack.mode() === "socket") {
-      try {
-        token = env.slack.botToken();
-      } catch {
-        token = undefined;
-      }
-    }
-    return (token ? lookupClients.forToken(token) : null) ?? args?.client ?? t.client;
-  };
   /** Aborted when this gateway stops: pending classifier timers are cancelled and their jobs dropped. */
   const shadowAbort = new AbortController();
-  /** At most this many messages are asked of Slack for one engagement read, always one page. */
+  /** The classifier reads at most this many entries of the conversation log for one candidate. */
   const ENGAGE_READ_LIMIT = 15;
-  /** A thread read looks only at the most recent stretch of the thread (a single page is the oldest of its window). */
-  const ENGAGE_THREAD_WINDOW_S = 1200;
   /**
    * Phase 1: what the shadow classifier needs for one delivery. With no adapter
    * configured the classifier is null (a counted pass, no input, no Slack read).
@@ -5030,7 +5011,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const runner = gateRunner;
     const e: any = args.event;
     const teamId: string | undefined = args.context?.teamId ?? e.team;
-    const reader = engageReader(args);
     const readFailed = (what: string, err: unknown): never => {
       // The error code only: never a message, a token or a body.
       console.warn(`[engage] ${what} read failed code=${errorCode(err)}`);
@@ -5059,25 +5039,24 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           textDenied: async (text) => (await inboundVerdict(persona, e.channel, text))?.action === "deny",
         });
         const ids = await gateSelfIds(args, personaId);
+        const readLog = async (thread: string | null): Promise<ThreadMsg[]> => {
+          const entries = await conversationLog().recent(logKey("slack", e.channel, thread), ENGAGE_READ_LIMIT);
+          return entries
+            .map((x) => toThreadMsg(x, { persona, userId: ids.botUserId }, (p) => getPersonaRegistry().lookupByName(p)?.slackUserId))
+            .sort((x, y) => Number(x.ts) - Number(y.ts));
+        };
         const reg = personaId && personaId !== "default" ? getPersonaRegistry().lookupByName(personaId) : null;
         const key = `${args?.context?.apiAppId ?? ""}:${args?.context?.teamId ?? e.team ?? ""}`;
         const names = [personaId && personaId !== "default" ? personaId : "", reg?.config?.name ?? "", ...(personaId === appPersonaOf(args) ? [botIdsCache.get(key)?.name ?? ""] : []), ...aliasesFor(personaId)].filter(Boolean);
         return await buildImplicitInput(
           {
-            replies: async (thread) => {
-              const r = await reader.conversations.replies({ channel: e.channel, ts: thread, latest: e.ts, inclusive: true, oldest: String(Math.max(0, Number(e.ts) - ENGAGE_THREAD_WINDOW_S)), limit: ENGAGE_READ_LIMIT });
-              if (!r?.ok) throw new Error("conversations.replies failed");
-              return (r.messages ?? []) as any[];
-            },
-            history: async () => {
-              const r = await reader.conversations.history({ channel: e.channel, latest: e.ts, inclusive: false, limit: ENGAGE_READ_LIMIT });
-              if (!r?.ok) throw new Error("conversations.history failed");
-              return [...((r.messages ?? []) as any[])].reverse();
-            },
+            // The gateway's own conversation log (fed where messages are heard and the agent posts), never a read of Slack.
+            replies: async (thread) => readLog(thread),
+            history: async () => readLog(null),
             filter,
             dropMessage: async (m) => (await Ignores.findActiveForThread(e.channel, m.thread_ts ?? req.thread ?? m.ts)) != null,
             isSelf,
-            isAgent: (x) => (x.user ? ids.userIds.has(x.user) : false) || (x.bot_id ? ids.botIds.has(x.bot_id) : false),
+            isAgent: (x) => (x.user ? ids.userIds.has(x.user) : false) || (x.bot_id ? ids.botIds.has(x.bot_id) || x.bot_id === AGENT_BOT_ID : false),
             selfUserIds: new Set<string>([ids.botUserId, ...ids.userIds].filter(Boolean)),
             botUserId: ids.botUserId,
             names,

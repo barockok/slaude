@@ -328,10 +328,10 @@ describe("phase 2: nothing changes unless the mode is on", () => {
     await settle();
     return g;
   };
-  it("mode shadow: no turn, no session, no Slack call beyond the shadow classifier's read", async () => {
+  it("mode shadow: no turn, no session, no Slack call at all (the classifier reads the conversation log)", async () => {
     const g = await baseline(() => setEngage("addressed", "shadow"));
     expect(g.sends).toEqual([]);
-    expect(g.slack).toEqual(["conversations.history"]); // the shadow classifier's one read, nothing else
+    expect(g.slack).toEqual([]); // the classifier's context is the gateway's own log: no Slack read
     expect(Number((await db.one<{ n: number }>("SELECT COUNT(*) AS n FROM sessions"))?.n)).toBe(0);
     expect(actCount("acted") - beforeActed).toBe(0);
   });
