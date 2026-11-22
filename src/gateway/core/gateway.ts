@@ -30,7 +30,8 @@ import type { ProactiveTransport } from "../../proactive/dispatch";
 import { channelSessionOn, channelSessionWakes, proactiveFor } from "../../soul/proactive";
 import { aliasesFor, engageFor } from "../engage/setting";
 import { observeEngage, type ImplicitRun } from "../engage/observe";
-import { clearAgentRecord, noteAgentMessage } from "../engage/record";
+import { clearAgentRecord, noteAgentMessage, noteConversation } from "../engage/record";
+import { setConversationLogRedis } from "../engage/conversation-log";
 import { setLastSpeakerRedis } from "../engage/last-speaker";
 import { engageState, setEngageRedis } from "../engage/budget";
 import { gateClassifier } from "../engage/gate-classifier";
@@ -1684,6 +1685,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     setLastSpeakerRedis(queueDispatch.turns.redis, queueDispatch.turns.keys?.prefix ?? "slaude");
     // The shadow classifier's budgets, claims and pass memory are per channel across every replica too.
     setEngageRedis(queueDispatch.turns.redis, queueDispatch.turns.keys?.prefix ?? "slaude");
+    // The classifier's context is the conversation log: shared by every replica too.
+    setConversationLogRedis(queueDispatch.turns.redis, queueDispatch.turns.keys?.prefix ?? "slaude");
   }
   agent.setStopGuard((sessionId) => {
     if (voiceTurns.active(sessionId)) return null;
@@ -5215,6 +5218,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         persona,
         app: e.bot_profile?.app_id ?? args.context?.apiAppId ?? null,
         fromEcho: true,
+        text: String(e.text ?? ""),
+        author: e.user ?? e.bot_id ?? null,
+        // The copy that hears the echo decides whether its channel is being logged.
+        viewer: appPersonaOf(args) ?? null,
       });
     } catch {
       /* observing must never reach the handler */
@@ -5249,8 +5256,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return agents.length === all.length;
   };
 
+  /** A message heard in a channel, for the classifier's conversation log (observe only; nothing at level `mention`). */
+  const noteHeard = (args: any, e: any): void =>
+    noteConversation({
+      channel: e?.channel,
+      thread: e?.thread_ts && e.thread_ts !== e.ts ? e.thread_ts : null,
+      ts: e?.ts,
+      text: String(e?.text ?? ""),
+      author: e?.user ?? e?.bot_id ?? null,
+      isBot: Boolean(e?.bot_id || e?.bot_profile),
+      subtype: e?.subtype ?? null,
+      viewer: appPersonaOf(args) ?? null,
+    });
+
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
+    noteHeard(args, e);
     const ts: string = e.thread_ts || e.ts;
     const personaId = appPersonaOf(args);
     if (isRootChannelEvent(e)) {
@@ -5320,6 +5341,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (e.channel_type === "im") {
       return await handleMessage(args, { personaId: appPersonaOf(args) });
     }
+    noteHeard(args, e);
 
     const mentions = Array.from(text.matchAll(/<@([A-Z0-9]+)>/g)).map((m) => m[1]);
     const mentionsBot = mentions.includes(botId);

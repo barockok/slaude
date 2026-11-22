@@ -295,7 +295,7 @@ export async function deliver(text: string, o: OutboundOptions, io: DeliverIo): 
    * in). Not a held-reply placeholder, and not a kind that is not a spoken
    * message. A proactive post is recorded through its echo, not here.
    */
-  const spoke = (ref: string | undefined): void => {
+  const spoke = (ref: string | undefined, text: string): void => {
     if ((o.kind !== "reply" && o.kind !== "post_message") || !o.channel || typeof ref !== "string") return;
     // Where it landed: a post_message names its own thread (null: the channel's top level); a reply goes to the session's thread.
     const sessionThread = o.thread && o.thread.channel === o.channel ? (o.thread.threadTs ?? null) : null;
@@ -303,6 +303,7 @@ export async function deliver(text: string, o: OutboundOptions, io: DeliverIo): 
       channel: o.channel,
       thread: o.kind === "post_message" && o.destThread !== undefined ? o.destThread : sessionThread,
       ts: ref,
+      text,
       persona: o.persona,
       app: o.app?.apiAppId ?? null,
       repliedToUser: o.replyTo ?? null,
@@ -312,7 +313,7 @@ export async function deliver(text: string, o: OutboundOptions, io: DeliverIo): 
   if (v.action === "deny") return { ok: false, error: v.message };
   if (v.action === "send") {
     const ref = await io.post(v.text);
-    spoke(ref);
+    spoke(ref, v.text);
     return { ok: true, ref };
   }
   const refuse = (reason: string): Delivered => {
@@ -326,7 +327,7 @@ export async function deliver(text: string, o: OutboundOptions, io: DeliverIo): 
   if (before && before.approved && before.spans === v.spans) {
     record(o, v.hits, v.deciding, "audit");
     const ref = await io.post(v.text);
-    spoke(ref);
+    spoke(ref, v.text);
     return { ok: true, ref };
   }
   const now = Date.now();
@@ -368,12 +369,12 @@ export async function deliver(text: string, o: OutboundOptions, io: DeliverIo): 
     if (placeholder && io.edit) {
       await io.edit(placeholder, v.text);
       memo(o.ref ?? placeholder, true);
-      spoke(placeholder);
+      spoke(placeholder, v.text);
       return { ok: true, ref: placeholder, note: `held for approval, approved by <@${d.by}>` };
     }
     const ref = await io.post(v.text);
     memo(o.ref ?? ref, true);
-    spoke(ref);
+    spoke(ref, v.text);
     return { ok: true, ref, note: `held for approval, approved by <@${d.by}>` };
   }
   const reason = d.by === "system" ? (d.note?.startsWith("timeout") ? "no approver decided in time" : d.note === "aborted" ? "the turn was stopped" : (d.note ?? "not approved")) : `denied by <@${d.by}>`;

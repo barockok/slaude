@@ -19,6 +19,7 @@ import { surfaceTools } from "../../src/gateway/core/surface-mcp";
 import { slackHandlers, type SlackContext } from "../../src/gateway/slack/mcp-tools";
 import { sendProactive } from "../../src/proactive/heartbeat";
 import { __setLastSpeakerStoreForTests, memoryLastSpeakerStore } from "../../src/gateway/engage/last-speaker";
+import { __setConversationLogForTests, conversationLog, logKey } from "../../src/gateway/engage/conversation-log";
 import { proposalBlocks } from "../../src/background/proposal-cards";
 import { SoulDataSchema } from "../../src/soul/data";
 import { __resetSoulDataMemo, setSoulData } from "../../src/soul/extract";
@@ -470,6 +471,15 @@ describe("the engage last-speaker record at the choke point", () => {
     await deliver("hello", o(), { post: async () => ts });
     expect(await take("1700000000.000001")).toMatchObject({ ts, persona: "default", repliedToUser: "U0PERSON" });
     expect(await take(null)).toBeNull();
+  });
+  it("the text of a reply goes into the conversation log, in the thread it was posted in", async () => {
+    __setConversationLogForTests(null);
+    const ts = tsNow(10);
+    await deliver("hello there", o(), { post: async () => ts });
+    expect(await conversationLog().recent(logKey("slack", CH, "1700000000.000001"), 5)).toEqual([{ ref: ts, author: "", isBot: true, text: "hello there", threadRef: "1700000000.000001", agent: "default" }]);
+    await deliver("note", o({ kind: "runtime" }), { post: async () => tsNow(11) });
+    expect(await conversationLog().recent(logKey("slack", CH, "1700000000.000001"), 5)).toHaveLength(1);
+    __setConversationLogForTests(null);
   });
   it("a top-level reply is recorded under its own ts and the channel's top level", async () => {
     const ts = tsNow(2);

@@ -1,5 +1,11 @@
 import { engageFor } from "./setting";
 import { lastSpeakers, type SpeakerPlace } from "./last-speaker";
+import { conversationLog, logKey, type LogEntry } from "./conversation-log";
+
+/** The surface id the conversation log keys use. */
+const SURFACE = "slack";
+/** Message kinds that are conversation (a join, a topic change or an edit is not). */
+const CONVERSATION_SUBTYPES: ReadonlySet<string | undefined> = new Set([undefined, "file_share", "bot_message", "me_message", "thread_broadcast"]);
 
 /** A Slack message ts. */
 const TS = /^\d+\.\d+$/;
@@ -16,6 +22,58 @@ export interface AgentMessage {
   repliedToUser?: string | null;
   /** The record comes from the agent's echo, which knows less than the outbound path. */
   fromEcho?: boolean;
+  /** What it said, for the conversation log. */
+  text?: string;
+  /** The surface user id it posted as, when known (the echo knows it). */
+  author?: string | null;
+  /** The persona whose copy is looking (its level decides whether the log is written); default: the speaker. */
+  viewer?: string | null;
+}
+
+/** A message heard in a conversation (a person's, a bot's or an agent's), for the conversation log. */
+export interface ConversationNote {
+  channel: string;
+  /** The thread it is in; null for a top-level message. */
+  thread: string | null;
+  ts: string;
+  text: string;
+  author?: string | null;
+  isBot: boolean;
+  /** The Slack message subtype; a kind that is not conversation is skipped. */
+  subtype?: string | null;
+  /** Set when an agent of this gateway wrote it: its persona name (null: the default persona). */
+  agent?: { persona: string | null };
+  /** The persona whose copy hears it; its level decides whether anything is written. */
+  viewer?: string | null;
+}
+
+/**
+ * Add a heard message to the conversation log the engagement classifier reads. Observe only: a
+ * channel at level `mention` (for the persona that heard it) writes nothing, an entry that is
+ * already there (a message and its app_mention, an agent's post and its echo) is ignored, and
+ * nothing here waits on or fails the caller. A top-level message is also the head of its own
+ * thread (the replies under it find their root there).
+ */
+export function noteConversation(n: ConversationNote): void {
+  try {
+    if (!n.channel || !TS.test(n.ts) || !CONVERSATION_SUBTYPES.has(n.subtype ?? undefined)) return;
+    const text = (n.text ?? "").toString();
+    if (!text.trim()) return;
+    const viewer = n.viewer && n.viewer !== "default" ? n.viewer : undefined;
+    if (engageFor(viewer, n.channel).level === "mention") return;
+    const entry: LogEntry = {
+      ref: n.ts,
+      author: n.author ?? "",
+      isBot: n.isBot,
+      text,
+      ...(n.thread ? { threadRef: n.thread } : {}),
+      ...(n.agent ? { agent: n.agent.persona && n.agent.persona !== "default" ? n.agent.persona : "default" } : {}),
+    };
+    const keys = n.thread ? [logKey(SURFACE, n.channel, n.thread)] : [logKey(SURFACE, n.channel), logKey(SURFACE, n.channel, n.ts)];
+    for (const k of keys) void Promise.resolve(conversationLog().append(k, entry)).catch(() => {});
+  } catch {
+    /* observing must never fail a message */
+  }
 }
 
 /**
@@ -31,6 +89,7 @@ export function noteAgentMessage(m: AgentMessage): void {
   try {
     if (!m.channel || !TS.test(m.ts)) return;
     const persona = m.persona && m.persona !== "default" ? m.persona : undefined;
+    noteConversation({ channel: m.channel, thread: m.thread, ts: m.ts, text: m.text ?? "", author: m.author, isBot: true, agent: { persona: persona ?? null }, viewer: m.viewer ?? persona });
     if (engageFor(persona, m.channel).level === "mention") return;
     const rec = { ts: m.ts, persona: persona ?? "default", app: m.app ?? "", repliedToUser: m.repliedToUser ?? null };
     const who = persona ?? "default";
