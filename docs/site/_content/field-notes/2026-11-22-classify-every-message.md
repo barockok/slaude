@@ -32,3 +32,15 @@ Reading Slack for every candidate message was one rate-limited, Slack-only call 
 
 - Messages that mention the agent but need no reply still always run. The decision gate's mention row (`record_doubt`) can ask the classifier about them once a deployment turns it on; that is configuration, not part of this change.
 - Tune the budgets from real counts. With the pass memory gone, a very chatty channel will spend its daily bucket sooner and then be silent until the next UTC day.
+
+## Review fixes
+
+An independent review of the change found four things, fixed before merging:
+
+- **The loop guard did not cover an engaged thread.** The bot cap applied only to a run that started in the engagement path. That run engages the thread, so every later bot reply took the engaged path with no cap: two agents each answering once were then both engaged and answered each other without a limit. A bot's reply in an engaged thread now takes a slot from the same hourly bot bucket, wherever implicit engagement is on for the channel, and past the cap it is recorded, not run.
+- **An agent with a user token looked like a person.** Slack marks no bot on a message posted with a user token. `SLAUDE_ENGAGE_AGENT_USERS` names such agents; they count as bots for the cap and the last-speaker rule.
+- **The conversation log kept raw text.** Secrets are now masked before an entry is stored (it lives in Redis for 24 hours), and a message deleted or edited by a person at the source is forgotten (an edit is heard again as new). An agent's own streamed edits are left alone so its entry keeps its agent mark. Still true: text from an author the agent would not admit is stored until it expires and is filtered when read.
+- **A shared app logged by one agent's level only.** A delivery to an app that serves several agents wrote to the log only when the app's own agent was above `mention`. It now writes when any agent it speaks for is.
+
+Not changed: the claim is taken before the caps, the caps are clock-hour buckets, the minute ceiling is shared by every persona in a channel, and the breaker is one per process.
+
