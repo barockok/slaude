@@ -128,7 +128,7 @@ const actCount = (outcome: string, tier?: number): number =>
     .reduce((n, l) => n + Number(l.split(" ").at(-1)), 0);
 
 const CLEAN = ["sessions", "seen_events", "pending_gates", "ignores", "agent_grants"];
-const ENV_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLAUDE_SLACK_MODE", "SLAUDE_SLACK_API_URL", "SLAUDE_ENGAGE_FORCE_SHADOW", "SLAUDE_ENGAGE_ACT_PER_HOUR", "SLAUDE_ENGAGE_BOT_ACT_PER_HOUR", "SLAUDE_ENGAGE_AGENT_USERS"] as const;
+const ENV_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLAUDE_SLACK_MODE", "SLAUDE_SLACK_API_URL", "SLAUDE_ENGAGE_FORCE_SHADOW", "SLAUDE_ENGAGE_ACT_PER_HOUR"] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 const setEngage = (level: "mention" | "addressed" | "contribute", mode: "shadow" | "on", channel = CH) =>
   setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel, level, mode }] }));
@@ -671,91 +671,23 @@ describe("phase 2: a bot author goes to the classifier like anyone", () => {
   });
 });
 
-describe("phase 2: the loop guard for bot-started runs", () => {
+describe("phase 2: one cap for every author", () => {
   const fromBot = (g: Gw, ts: string) =>
     g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ts, text: NAMED, user: "U0SOMEBOT", bot_id: "B0OTHERBOT" }, client: g.client, context: { teamId: TEAM } });
-  it("past the hourly bot cap a bot-started run is a counted pass, while a person's message still acts under the normal cap", async () => {
-    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "2";
+  it("a bot's message and a person's share the one hourly cap: past it a run is a counted pass, whoever sent it", async () => {
+    process.env.SLAUDE_ENGAGE_ACT_PER_HOUR = "2";
     const g = (gw = makeGw(yes));
     const before = actCount("cap");
-    for (let i = 0; i < 3; i++) await fromBot(g, nextTs());
+    await fromBot(g, nextTs());
+    await deliver(g, NAMED, nextTs());
+    await fromBot(g, nextTs());
     await settle();
     expect(g.sends).toHaveLength(2);
     expect(actCount("cap") - before).toBe(1);
     await deliver(g, NAMED, nextTs());
     await settle();
-    expect(g.sends).toHaveLength(3);
-  });
-});
-
-describe("hardening: the loop guard in an engaged thread", () => {
-  const botEvent = (g: Gw, text: string, ts: string, thread: string, o: Record<string, unknown> = { user: "U0SOMEBOT", bot_id: "B0OTHERBOT" }) =>
-    g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ts, thread_ts: thread, text, ...o }, client: g.client, context: { teamId: TEAM } });
-  it("past the bot cap a bot's reply in a thread a bot-started run engaged is recorded, not run; a person's reply still runs", async () => {
-    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
-    const g = (gw = makeGw(yes));
-    const root = nowTs(-100);
-    g.state.thread = [m(root, WORLD.manager, "context")];
-    g.setPlan([REPLY]);
-    await botEvent(g, NAMED, nextTs(), root);
-    await settle();
-    expect(g.sends).toHaveLength(1);
-    const cap = actCount("cap");
-    await botEvent(g, "and one more thing about the deploy", nextTs(), root);
-    await settle();
     expect(g.sends).toHaveLength(2);
-    expect(g.sends[1]!.text).toMatch(/do NOT reply/i);
-    expect(actCount("cap") - cap).toBe(1);
-    await deliver(g, "thanks, and one more question: is it fixed?", nextTs(), root);
-    await settle();
-    expect(g.sends).toHaveLength(3);
-    expect(g.sends[2]!.text).not.toMatch(/do NOT reply/i);
-  });
-  it("under the cap a bot's reply in an engaged thread runs as before", async () => {
-    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "5";
-    const g = (gw = makeGw(yes));
-    const root = nowTs(-100);
-    g.state.thread = [m(root, WORLD.manager, "context")];
-    g.setPlan([REPLY]);
-    await botEvent(g, NAMED, nextTs(), root);
-    await settle();
-    await botEvent(g, "and one more thing about the deploy", nextTs(), root);
-    await settle();
-    expect(g.sends).toHaveLength(2);
-    expect(g.sends[1]!.text).not.toMatch(/do NOT reply/i);
-  });
-  it("a channel at level mention keeps today's behaviour: no cap on an engaged thread", async () => {
-    setEngage("mention", "on");
-    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
-    const g = (gw = makeGw(yes));
-    const root = nowTs(-100);
-    g.state.thread = [m(root, WORLD.manager, "context")];
-    g.setPlan([REPLY]);
-    await g.emit("app_mention", { event: { type: "app_mention", channel: CH, user: WORLD.manager, team: TEAM, ts: nextTs(), thread_ts: root, text: "<@USLAUDEBOT> hi" }, client: g.client, context: { teamId: TEAM } });
-    await settle();
-    for (let i = 0; i < 2; i++) await botEvent(g, "status update", nextTs(), root);
-    await settle();
-    expect(g.sends.filter((x) => /do NOT reply/i.test(x.text))).toHaveLength(0);
-  });
-});
-
-describe("hardening: an agent that posts with a user token", () => {
-  it("counts as a bot for the loop guard when SLAUDE_ENGAGE_AGENT_USERS names it", async () => {
-    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
-    process.env.SLAUDE_ENGAGE_AGENT_USERS = "U0AGENTX";
-    const g = (gw = makeGw(yes));
-    const before = actCount("cap");
-    for (let i = 0; i < 2; i++) await deliver(g, NAMED, nextTs(), undefined, "U0AGENTX");
-    await settle();
-    expect(g.sends).toHaveLength(1);
-    expect(actCount("cap") - before).toBe(1);
-  });
-  it("without the setting the same author is a person: no bot cap", async () => {
-    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
-    const g = (gw = makeGw(yes));
-    for (let i = 0; i < 2; i++) await deliver(g, NAMED, nextTs(), undefined, "U0AGENTX");
-    await settle();
-    expect(g.sends).toHaveLength(2);
+    expect(actCount("cap") - before).toBe(2);
   });
 });
 
@@ -832,6 +764,69 @@ channels:
     await deliver(g, "a remark in a shared channel", nextTs());
     await settle();
     expect((await conversationLog().recent(logKey("slack", CH), 10)).map((x) => x.text)).toEqual(["a remark in a shared channel"]);
+  });
+});
+
+describe("an engaged thread continues as the persona that is engaged in it", () => {
+  const yaml = (name: string, user: string) => `
+name: ${name}
+slackUserId: ${user}
+soul: You are ${name}.
+access:
+  channels:
+    trusted: [${CH}]
+channels:
+  ${CH}: { engage: { level: addressed, mode: shadow } }
+`;
+  const persona = (name: string, user: string): Persona => {
+    const { spec } = parseAgentYaml(name, yaml(name, user));
+    const { soulData: sd, ...definition } = spec.definition;
+    return { name, slackUserId: user, soulMd: spec.soul, config: { slackUserId: user, name }, outClient: null, model: null, runsOn: null, provider: null, kbSources: null, background: null, mcp: null, soulJson: sd, definition } as Persona;
+  };
+  const registryOf = (ps: Persona[], managed: boolean): PersonaRegistry =>
+    ({
+      lookupByUserId: (id) => ps.find((p) => p.slackUserId === id) ?? null,
+      lookupByName: (n) => ps.find((p) => p.name === n) ?? null,
+      list: () => ps,
+      isMultiPersonaMode: () => true,
+      isManaged: () => managed,
+      tombstonedPersonaFor: () => null,
+      defaultPersona: () => ({ model: null, mcp: null, definition: null }),
+    }) as PersonaRegistry;
+  const mention = (g: Gw, ts: string, root: string, personaId: string) =>
+    g.emit("app_mention", { event: { type: "app_mention", channel: CH, user: WORLD.manager, team: TEAM, ts, thread_ts: root, text: "<@USLAUDEBOT> hello" }, client: g.client, context: { teamId: TEAM, apiAppId: `A0${personaId.toUpperCase()}`, personaId } });
+  const plain = (g: Gw, ts: string, root: string) =>
+    g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", user: WORLD.manager, team: TEAM, ts, thread_ts: root, text: "and one more thing" }, client: g.client, context: { teamId: TEAM } });
+
+  it("a plain reply continues as the other persona that is engaged there (shared app)", async () => {
+    setEngage("mention", "shadow");
+    setPersonaRegistry(registryOf([persona("ana", "UANA1")], true));
+    const g = (gw = makeGw(no));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([REPLY]);
+    await mention(g, nextTs(), root, "ana");
+    await settle();
+    await plain(g, nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(2);
+    expect(g.sends[1]!.text).not.toMatch(/do NOT reply/i);
+  });
+  it("a plain reply continues as a persona that has left the registry (an unmanaged tenant)", async () => {
+    setEngage("mention", "shadow");
+    setPersonaRegistry(registryOf([persona("ghost", "UGHOST")], true));
+    const g = (gw = makeGw(no));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([REPLY]);
+    await mention(g, nextTs(), root, "ghost");
+    await settle();
+    // The persona is no longer listed, and the registry is not complete (not managed): its thread is still continued.
+    setPersonaRegistry(registryOf([], false));
+    await plain(g, nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(2);
+    expect(g.sends[1]!.text).not.toMatch(/do NOT reply/i);
   });
 });
 

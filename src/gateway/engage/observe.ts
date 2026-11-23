@@ -11,12 +11,6 @@ import { MAX_TEXT, runTiers, type TierFacts, type TierResult } from "./tiers";
 
 /** The reads of the last-speaker record may not hold the handler longer than this; a slow Redis reads as no record. */
 
-/**
- * Whether a message's author is a bot or another agent: Slack marks a bot (`bot_id`, `bot_profile`), and
- * `SLAUDE_ENGAGE_AGENT_USERS` names agents that post with a user token and carry no mark.
- */
-export const authorIsAgent = (e: { bot_id?: unknown; bot_profile?: unknown; user?: string }): boolean =>
-  Boolean(e.bot_id || e.bot_profile) || (!!e.user && env.engageAgentUsers().has(e.user));
 
 export const RECORD_READ_BUDGET_MS = 100;
 /** At most this many other personas are looked at for "another agent spoke last". */
@@ -106,7 +100,7 @@ export function factsFromEvent(i: ObserveInput, level: "addressed" | "contribute
   return {
     text: raw.length > MAX_TEXT ? raw.slice(0, MAX_TEXT) : raw,
     subtype: e.subtype ?? null,
-    authorIsBot: authorIsAgent(e),
+    authorIsBot: Boolean(e.bot_id || e.bot_profile),
     authorId: typeof e.user === "string" ? e.user : null,
     selfUserIds: self,
     threadEngaged: i.threadEngaged,
@@ -188,7 +182,7 @@ export async function observeEngage(i: ObserveInput): Promise<TierResult | null>
       const thread: string | null = i.event.thread_ts && i.event.thread_ts !== i.event.ts ? i.event.thread_ts : null;
       const me = i.personaId ?? "default";
       const others = [...new Set([...getPersonaRegistry().list().map((x) => x.name), "default"])].filter((n) => n !== me);
-      const rec = await readRecords(channel, thread, me, others, !authorIsAgent(i.event));
+      const rec = await readRecords(channel, thread, me, others, !(i.event.bot_id || i.event.bot_profile));
       if (rec.own || rec.other) r = runTiers(factsFromEvent(i, level, restricted, rec.own, rec.other));
     }
     const tier = r.action === "existing" ? "existing" : String(r.tier);

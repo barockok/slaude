@@ -29,7 +29,7 @@ import type { PromiseTransport } from "../../proactive/promises";
 import type { ProactiveTransport } from "../../proactive/dispatch";
 import { channelSessionOn, channelSessionWakes, proactiveFor } from "../../soul/proactive";
 import { aliasesFor, engageFor } from "../engage/setting";
-import { authorIsAgent, observeEngage, type ImplicitRun } from "../engage/observe";
+import { observeEngage, type ImplicitRun } from "../engage/observe";
 import { clearAgentRecord, forgetConversationMessage, noteAgentMessage, noteConversation } from "../engage/record";
 import { AGENT_BOT_ID, conversationLog, logKey, setConversationLogRedis, toThreadMsg } from "../engage/conversation-log";
 import { setLastSpeakerRedis } from "../engage/last-speaker";
@@ -5142,16 +5142,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         count("lost_claim");
         return false;
       }
-      // Loop guard: two agents that always answer each other stop at the bot cap. Taken first, so a bot-started run
-      // refused here does not spend one of the people's slots.
-      if (authorIsAgent(e)) {
-        const botSlot = await state.actSlot(e.channel, env.engageBotActPerHour(), teamId, "bot");
-        if (botSlot !== "ok") {
-          count(botSlot === "cap" ? "cap" : "error");
-          console.log(`[engage] act skipped channel=${e.channel} tier=${d.tier} reason=bot_${botSlot}`);
-          return false;
-        }
-      }
       const slot = await state.actSlot(e.channel, env.engageActPerHour(), teamId);
       if (slot !== "ok") {
         count(slot === "cap" ? "cap" : "error");
@@ -5248,7 +5238,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         ts: e?.ts,
         text: String(e?.text ?? ""),
         author: e?.user ?? e?.bot_id ?? null,
-        isBot: authorIsAgent(e ?? {}),
+        isBot: Boolean(e?.bot_id || e?.bot_profile),
         subtype: e?.subtype ?? null,
         viewers,
       });
@@ -5293,27 +5283,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const engagedBefore = await engageOnMention(args.context?.teamId ?? e.team, e.channel, ts, e.ts, personaId);
     await handleMessage(args, { personaId, engagedBefore });
   });
-
-  /**
-   * A reply in a thread the agent is engaged in. A message from a bot or another agent counts against the same
-   * hourly bot cap as a run it starts, wherever implicit engagement is on for the channel: otherwise two agents
-   * that each answered once (capped) are both engaged, and answer each other without a limit. Past the cap the
-   * message is recorded and no turn runs.
-   */
-  const engagedReply = async (args: any, personaId: string | undefined) => {
-    const e: any = args.event;
-    const setting = e?.channel ? engageFor(personaId, e.channel) : null;
-    if (setting && setting.level !== "mention" && authorIsAgent(e)) {
-      const teamId: string | undefined = args.context?.teamId ?? e.team;
-      const slot = await engageState().actSlot(e.channel, env.engageBotActPerHour(), teamId, "bot").catch(() => "error" as const);
-      if (slot !== "ok") {
-        metric.engageActTotal.inc({ tier: "1", outcome: slot === "cap" ? "cap" : "error", level: setting.level });
-        console.log(`[engage] engaged reply recorded only channel=${e.channel} ts=${e.ts} reason=bot_${slot}`);
-        return await handleMessage(args, { suppress: true, personaId });
-      }
-    }
-    return await handleMessage(args, { personaId });
-  };
 
   // Single message router: every non-bot message goes here so we can manage
   // engagement state consistently. We dispatch to handleMessage when slaude
@@ -5509,7 +5478,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         staleRecord(e, appPersona);
         const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: appPersona }, "run") : undefined;
         if (act === "record") return await recordEngaged(args, appPersona);
-        return await engagedReply(args, appPersona);
+        return await handleMessage(args, { personaId: appPersona });
       }
       // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
       if (registry.isMultiPersonaMode()) {
@@ -5522,7 +5491,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             if (act === "record") {
               return await recordEngaged(args, p.name);
             }
-            return await engagedReply(args, p.name);
+            return await handleMessage(args, { personaId: p.name });
           }
         }
       }
@@ -5545,7 +5514,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (act === "record") {
           return await recordEngaged(args, restoredPersonaId);
         }
-        return await engagedReply(args, restoredPersonaId);
+        return await handleMessage(args, { personaId: restoredPersonaId });
       }
       // Explicitly disengaged (row.engaged=0): record plain messages into the
       // transcript too (suppressed by the hook) so the session stays populated

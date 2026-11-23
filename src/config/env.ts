@@ -648,18 +648,6 @@ export const env = {
   /** Phase 2: acted runs per channel per hour (`SLAUDE_ENGAGE_ACT_PER_HOUR`, default 12); past it a run decision is a pass. */
   engageActPerHour: (): number => posInt(opt("SLAUDE_ENGAGE_ACT_PER_HOUR"), 12, 10_000),
   /**
-   * Loop guard: acted runs per channel per hour that were started by a message from a bot or another agent
-   * (`SLAUDE_ENGAGE_BOT_ACT_PER_HOUR`, default 6), in addition to the cap above; past it the run is a pass.
-   */
-  engageBotActPerHour: (): number => posInt(opt("SLAUDE_ENGAGE_BOT_ACT_PER_HOUR"), 6, 10_000),
-  /**
-   * Slack user ids that are agents although Slack marks no bot on their messages (an agent from another gateway
-   * posting with a user token): `SLAUDE_ENGAGE_AGENT_USERS`, comma separated. Their messages count as bot messages
-   * for the loop guard and the last-speaker rule. Empty by default.
-   */
-  engageAgentUsers: (): Set<string> =>
-    new Set(opt("SLAUDE_ENGAGE_AGENT_USERS").split(",").map((x) => x.trim()).filter((x) => /^[UW][A-Z0-9]{1,32}$/.test(x))),
-  /**
    * Raw `SLAUDE_PRICE_TABLE` (phase D): inline JSON, or a file path when the
    * value does not start with `{`. Parsed by `loadPriceTable`. Empty when unset.
    */
