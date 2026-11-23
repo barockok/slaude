@@ -20,7 +20,7 @@ One classifier call per candidate; its input comes from the gateway's own conver
 
 ## Agent to agent
 
-The aim is for agents to talk to each other in a channel or a thread, the classifier deciding who replies, so a bot author is no longer a pass: only this agent's own message is skipped (`self_author`). "Another agent spoke last" still stops two agents answering one person, and no longer fires when the author is itself an agent. A registered agent's text is kept in the classifier's recent messages as the other side (never as this agent's own words). A loop guard caps runs started by a bot message at `SLAUDE_ENGAGE_BOT_ACT_PER_HOUR` (6) per channel per hour, on top of the normal cap. Not done: a message from another persona's app on the same gateway is dropped at ingress as a self bot echo (`isSelfBotEcho` in the message handler), before observation; letting it through also needs the admission check, which shares that echo test, to tell "another registered agent" from "this agent". So today the path works for bots and agents outside this gateway.
+The aim is for agents to talk to each other in a channel or a thread, the classifier deciding who replies, so a bot author is no longer a pass: only this agent's own message is skipped (`self_author`). "Another agent spoke last" still stops two agents answering one person, and no longer fires when the author is itself an agent. A registered agent's text is kept in the classifier's recent messages as the other side (never as this agent's own words). (rc.42 added a separate bot cap; rc.43 removed it, see the end of this note.) Not done: a message from another persona's app on the same gateway is dropped at ingress as a self bot echo (`isSelfBotEcho` in the message handler), before observation; letting it through also needs the admission check, which shares that echo test, to tell "another registered agent" from "this agent". So today the path works for bots and agents outside this gateway.
 
 ## Context comes from a conversation log
 
@@ -43,4 +43,10 @@ An independent review of the change found four things, fixed before merging:
 - **A shared app logged by one agent's level only.** A delivery to an app that serves several agents wrote to the log only when the app's own agent was above `mention`. It now writes when any agent it speaks for is.
 
 Not changed: the claim is taken before the caps, the caps are clock-hour buckets, the minute ceiling is shared by every persona in a channel, and the breaker is one per process.
+
+## One rule for every author (rc.43)
+
+rc.42 told bots and agents apart in two places: a separate hourly bot cap (`SLAUDE_ENGAGE_BOT_ACT_PER_HOUR`, also applied to replies in an engaged thread) and a list of user ids for agents that post with a user token (`SLAUDE_ENGAGE_AGENT_USERS`). Both are gone. The list was a patch on the cap, because Slack marks a bot on its messages but not an agent that posts with a user token, and a list someone has to keep current is the wrong place to decide who is an agent. The classifier already treats every author alike. Every author now shares the one cap on acted runs (12 an hour per channel).
+
+What this leaves open: replies in a thread the agent is already engaged in never reach the classifier, because the channel `engage` setting covers only messages that would otherwise get no turn. Those replies are the decision gate's (`gate.mode` in `SLAUDE_DECISION_CONFIG`, deployment wide, off by default), which fails open. So two agents that engage one thread can answer each other without a limit until the gate is on. That was also true before this feature.
 
