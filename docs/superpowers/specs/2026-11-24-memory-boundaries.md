@@ -83,10 +83,10 @@ An independent review read the spec against the code. Findings that change the d
 4. **Source-kind checks that mishandle a new kind:** `storeKind` (returns `other`), `isPrivateStore` in the console API, `isAgentLike` in brain-migrate, and `runAsOf` in the commitment index.
 5. **Supersede is per source**, so a turn in B cannot correct a persona-wide page and writes a shadow instead. `memory_about` skips `bnd-` sources.
 6. **Federated reads cost.** The per-turn block scans commitments in every readable source under a 1.5 second deadline and drops the whole block on timeout, so many sources raise that risk. `gather` fans out one search per source.
-7. **Rollback is not lossless.** With the flag off the persona still reads the boundary sources of its trusted channels, but a manager-DM boundary cannot be enumerated from `trustedChannels`, so those pages are invisible after a rollback. This is the cost of making a manager DM its own boundary (decided); the reviewer would keep it persona-wide.
+7. **Rollback and manager DMs.** A manager-DM boundary cannot be enumerated from `trustedChannels`. Resolved: with the flag off, list sources by the `bnd-<agent>-` prefix. The reviewer would keep DMs persona-wide; that is rejected (decided).
 8. **More leaks to list:** `list_cron_jobs` returns every active job, `read_channel` checks only the target channel and never the caller's, public-channel transcripts are stored in `agent-<id>`, and skills are persona-wide.
 
-The review also recommends shipping the non-memory gates first, since they close three of the four paths in #247 with no migration. That conflicts with the decided order and is raised again below.
+The review also recommended shipping the non-memory gates first. Decided: memory stays first (see Decisions).
 
 ## Rollout
 
@@ -126,8 +126,14 @@ Decided on 2026-11-24:
 - Publish to `public` is later. Only promote to the persona-wide tier ships now.
 - Memory boundaries ship before the other #247 gates.
 
+Decided after the review, 2026-11-24:
+
+- **Order stays memory first.** The agent-level round and the global `Read:` are gone (rc.44), so a wake and `read_channel` are relative to the channel that switched proactive on. The part rc.44 did not finish: `read_channel` still reaches every channel the agent works in on its own, so one proactive channel can read another. It narrows to the current channel as part of this work (it is a few lines), not as a separate release. The mandate fill-in and proactive outbound approval stay on the list, after memory.
+- **Wake writes to `shared`: create is automatic, modify needs a card.** A page that does not exist in `shared` is saved without a card. A write that changes an existing `shared` page (overwrite, supersede, delete) is approval tier. A wake has nobody to answer a card, so a wake's modify is refused with a message to ask in the channel. Interactive turns are unchanged (every `shared` write cards today).
+- **A manager DM stays its own boundary.** Putting DMs in the persona-wide tier would make them readable by every trusted turn, close to public. The rollback cost is solved differently: with the flag off, the read union is built by listing sources with the `bnd-<agent>-` prefix (the brain admin already lists sources, `listBrainSources` in the scheduler), not from `trustedChannels`, so manager-DM boundaries stay readable.
+
 Still open:
 
 1. Lessons: generalise a lesson before it is written, or route the nightly proposals through promotion.
-2. Order: the review recommends the non-memory gates first (they stop the harm that was seen, an unapproved send, without a migration). The decision above is memory first; confirm it with this in view.
-3. The four uncarded cross-tier writes in the review findings (wake to `shared`, manager in a public channel, background proposals, proactive rules): card, deny or accept each.
+2. A manager in a public or unknown channel resolves to `agent-<id>` today and auto-passes. Card it, send it to its own boundary, or accept it.
+3. Background proposals (`self/lesson-proposals`) and proactive rules live in the agent slice: move them per boundary, or accept as persona-wide.
