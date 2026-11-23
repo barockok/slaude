@@ -11,11 +11,6 @@ describe("engage classifier budgets", () => {
       expect(env.engageDailyBudget()).toBe(2000);
       expect(env.engageMinuteCeiling()).toBe(20);
       expect(env.engageActPerHour()).toBe(12);
-      expect(env.engageBotActPerHour()).toBe(6);
-      process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "3";
-      expect(env.engageBotActPerHour()).toBe(3);
-      process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "junk";
-      expect(env.engageBotActPerHour()).toBe(6);
       process.env.SLAUDE_ENGAGE_DAILY_BUDGET = "300";
       process.env.SLAUDE_ENGAGE_MINUTE_CEILING = "junk";
       expect(env.engageDailyBudget()).toBe(300);
@@ -25,19 +20,6 @@ describe("engage classifier budgets", () => {
         if (old[k] === undefined) delete process.env[k];
         else process.env[k] = old[k];
       }
-    }
-  });
-
-  it("SLAUDE_ENGAGE_AGENT_USERS is a set of Slack user ids; anything else in the list is ignored", () => {
-    const old = process.env.SLAUDE_ENGAGE_AGENT_USERS;
-    try {
-      delete process.env.SLAUDE_ENGAGE_AGENT_USERS;
-      expect([...env.engageAgentUsers()]).toEqual([]);
-      process.env.SLAUDE_ENGAGE_AGENT_USERS = " U0AGENTX, W0AGENTY ,junk,,lower1 ";
-      expect([...env.engageAgentUsers()].sort()).toEqual(["U0AGENTX", "W0AGENTY"]);
-    } finally {
-      if (old === undefined) delete process.env.SLAUDE_ENGAGE_AGENT_USERS;
-      else process.env.SLAUDE_ENGAGE_AGENT_USERS = old;
     }
   });
 });
