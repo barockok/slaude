@@ -263,11 +263,11 @@ describe("channel session routing", () => {
 
   it("phase 0: an unmentioned root message in an opted-in channel session is counted, and still only recorded", async () => {
     setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel: "C1", level: "addressed", mode: "shadow" }] }));
-    const count = () => Number((metrics.render().split("\n").find((l) => l.startsWith("slaude_engage_total{") && l.includes('level="addressed"') && l.includes('outcome="pass"'))?.split(" ").at(-1)) || 0);
+    const count = () => Number((metrics.render().split("\n").find((l) => l.startsWith("slaude_engage_total{") && l.includes('level="addressed"') && l.includes('outcome="classify"'))?.split(" ").at(-1)) || 0);
     const before = count();
     const g = makeGw();
     await g.emit("message", rootArgs(g, "Budi, can you look at the deploy?"));
-    expect(count()).toBe(before + 1);
+    expect(count()).toBe(before + 1); // no name rule any more: the classifier decides
     expect(g.sends).toHaveLength(1); // recorded into the session, not run
     expect(g.suppressed).toHaveLength(1);
   });
