@@ -27,7 +27,7 @@ A trusted channel is its own boundary. Nothing crosses from one trusted channel 
 
 ### 1. The boundary is a brain source
 
-One source per (persona, trusted channel): `bnd-<first 24 hex of sha256(team:agentId:channel)>`, the same pattern as `profileSourceId` for long ids. It gets its own `StoreKind` ("boundary") so `storeKind` does not read it as `agent-`.
+One source per (persona, trusted channel): `bnd-<agent>-<channel>` (about 27 characters), hashed only when it would exceed the 32-character source id limit. The workspace is not part of the id: a cron job has no team, a single-app mono turn has an empty one, and the gate maps both differently, so one channel could otherwise hash to two sources. It gets its own `StoreKind` ("boundary") so `storeKind` does not read it as `agent-`.
 
 Why a source and not a tag on each page: the brain enforces sources in SQL. A tag would need a filter in about eight readers that fails open, the think gather has leaked across sources before (see the `scopedThinkEngine` comment), and an untyped page passes through `composePage` unchanged, so the model could write its own tag. A new source needs no migration, because sources are created lazily on first write.
 
@@ -37,12 +37,14 @@ Code changes: add `channel` to `ScopeInput` and `GateInput`, set where the gate 
 
 | Turn | Writes to | Reads |
 |---|---|---|
-| Trusted channel B (any speaker, manager included) | `bnd(B)` | `bnd(B)`, `agent-<id>`, legacy `agent`, `shared`, `public`, KBs, the speaker's profile |
+| Trusted channel B (any speaker, manager included) | `bnd(B)` (auto: the gate treats the current boundary like the persona slice today) | `bnd(B)`, `agent-<id>`, legacy `agent`, `shared`, `public`, KBs, the speaker's profile |
 | Wake or cron in B | `bnd(B)` | the same |
 | Background turn with no channel (nightly, triage) | nothing by default | `agent-<id>` and shared tiers only |
 | Manager DM | its own boundary (decided) | as a trusted channel |
 | /1on1, non-manager DM | `user-<id>` (unchanged) | unchanged; never gains a boundary source |
 | Public or unknown channel, non-manager | unchanged | `public` only |
+| Manager in a public or unknown channel | `agent-<id>` today; a decision is needed (see Review findings) | persona-wide tier, `shared`, `public` |
+| Cron or wake with no team | `bnd(B)` by channel, never by team | as a wake in B |
 
 Conversation pages move to `bnd(B)`. `agent-<id>` is now the **persona-wide tier**: what the persona knows across channels (identity, lessons, promoted pages). A boundary source is never readable from another channel's turn.
 
@@ -54,7 +56,7 @@ Three separate acts, because the audiences differ (only the first ships in this 
 2. **Share**: to `shared` (exists today, carded).
 3. **Publish**: to `public`, which allow-listed non-managers read. No `memory_save` target writes `public` today, so this is new and waits.
 
-Promote is approval tier. The approver must be a manager, and a standing grant never covers it. In `classifyBrainOp` the check sits before the `userId === null` automatic branch, as the /1on1 check does, or every wake could promote freely. Demotion is `memory_delete` of the promoted copy, already approval tier.
+Promote is tier `manager`, not `approval`: an approval-tier `put_page` is covered by a standing grant, and the approver is only checked for the manager tier (`gated-dispatch.ts`). Promote and demote take an explicit source, because `memory_delete` runs in the turn's own write source and could not reach the copy in `agent-<id>`. In `classifyBrainOp` the check sits before the `userId === null` automatic branch, as the /1on1 check does, or every wake could promote freely. Demotion deletes the promoted copy through the same explicit-source path.
 
 ### 4. The other paths in #247
 
@@ -70,6 +72,21 @@ Pages in `agent-<id>` become persona-wide by default: no migration, nothing brea
 ### 6. Lessons
 
 `self/lessons` stays persona-wide (capped at 40 lines, rewritten nightly, injected into every turn). The nightly pass that proposes lessons reads conversations from every channel and writes to the persona-wide page, so it is itself a crossing: a lesson sourced from one boundary must be generalised before it is written, or go through promotion. Open decision 1.
+
+## Review findings (2026-11-24)
+
+An independent review read the spec against the code. Findings that change the design (checked by me where marked):
+
+1. **Four writes already cross tiers without a card.** A wake has `userId === null`, and `classifyBrainOp` returns `auto` for it before it looks at the target, so a wake's `memory_save target:"shared"` is not carded (checked, `gated-dispatch.ts:116`). A manager in a non-trusted channel resolves to `agent-<id>` and auto-passes. Agent-scope background passes write `self/lesson-proposals` to `agent-<id>` from every channel's transcripts. Proactive rules live in the agent slice. Each needs a decision before "promotion is the only way across" is true. The wake-to-`shared` write is a bug on its own and gets fixed in the gates change.
+2. **Fixed-slice readers go blind once conversation pages move.** Nightly review reads timelines only from `agent-<id>` (checked, `nightly-review.ts:191`). `activityScopeOf` returns null for any source that is not `agent-<id>` or `user-` (checked, `thread-activity.ts:43`) and `passScopeOf` accepts only those (checked, `quiet-moment.ts:88`), so thread summaries stop. The design therefore needs a boundary scope in `thread_activity.scope` and the pass scope, and the nightly pass runs per boundary, writing its proposals into that boundary. A lesson from one boundary then reaches the persona-wide `self/lessons` only through promotion or generalisation (open decision 1).
+3. **Thread history breaks at the flag flip.** Existing sessions' pages stay in `agent-<id>`, so `<recent-turns>` and `memory_thread_history` go empty until the move job runs. Read conversations from `bnd(B)` then `agent-<id>` during the transition instead of requiring the move job first.
+4. **Source-kind checks that mishandle a new kind:** `storeKind` (returns `other`), `isPrivateStore` in the console API, `isAgentLike` in brain-migrate, and `runAsOf` in the commitment index.
+5. **Supersede is per source**, so a turn in B cannot correct a persona-wide page and writes a shadow instead. `memory_about` skips `bnd-` sources.
+6. **Federated reads cost.** The per-turn block scans commitments in every readable source under a 1.5 second deadline and drops the whole block on timeout, so many sources raise that risk. `gather` fans out one search per source.
+7. **Rollback is not lossless.** With the flag off the persona still reads the boundary sources of its trusted channels, but a manager-DM boundary cannot be enumerated from `trustedChannels`, so those pages are invisible after a rollback. This is the cost of making a manager DM its own boundary (decided); the reviewer would keep it persona-wide.
+8. **More leaks to list:** `list_cron_jobs` returns every active job, `read_channel` checks only the target channel and never the caller's, public-channel transcripts are stored in `agent-<id>`, and skills are persona-wide.
+
+The review also recommends shipping the non-memory gates first, since they close three of the four paths in #247 with no migration. That conflicts with the decided order and is raised again below.
 
 ## Rollout
 
@@ -112,3 +129,5 @@ Decided on 2026-11-24:
 Still open:
 
 1. Lessons: generalise a lesson before it is written, or route the nightly proposals through promotion.
+2. Order: the review recommends the non-memory gates first (they stop the harm that was seen, an unapproved send, without a migration). The decision above is memory first; confirm it with this in view.
+3. The four uncarded cross-tier writes in the review findings (wake to `shared`, manager in a public channel, background proposals, proactive rules): card, deny or accept each.
