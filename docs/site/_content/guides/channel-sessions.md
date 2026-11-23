@@ -48,7 +48,7 @@ channels:
 
 `Enabled: no` with no `Mode` is an ordinary channel. An unknown `Mode` in a soul reads as off for that channel, whatever `Enabled` says: no channel session and no wakes, and a warning is logged. An invalid value in `agent.yaml` fails the compile.
 
-`## Proactive` at the top level is not about a channel. `Enabled: yes` there starts no wake and warns once; it only keeps the summarising round going, which reads the sources under `Watch:` and reports to the manager. `Watch:` without it reads nothing and logs a warning.
+`## Proactive` at the top level is not about a channel and switches nothing on. It carries limits every channel inherits unless it sets its own (`Max per day`, `Quiet hours`, and the narrowing `Highest`, `Cooldown` and `Wake: no`). `Enabled`, `Watch` and `Read` there have no effect and warn once: there is no agent-level round that reads watched sources, and `read_channel` reaches only the channels the agent works in on its own. Proactive is per channel, so what an agent does on its own stays in that channel's session and checklist.
 
 Two agents in one channel each have their own session and each records the channel for itself.
 

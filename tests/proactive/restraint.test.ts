@@ -13,11 +13,17 @@ const MGR = "U0MANAGER";
 const NOW = new Date("2026-10-26T12:00:00Z"); // a Monday, noon UTC
 const H = 3_600_000;
 
+/**
+ * A resolved config for the restraint rules. The agent-level `Enabled` is not
+ * parsed any more, so this helper reads it from the text before the first channel
+ * block: the DM audiences (never reached by a wake) stay covered.
+ */
 function configFrom(soul: string): (channelId?: string) => ResolvedProactive {
   const c = parseProactive(soul);
+  const globalOn = /^\s*[-*]\s*enabled:\s*yes\b/im.test(soul.split(/^## Channel/m)[0]!);
   return (ch) => {
-    const { channels, ...g } = c;
-    return ch !== undefined && channels[ch] !== undefined ? { ...g, enabled: channels[ch]! } : g;
+    const { channels, wake: _w, ignoredGlobal: _i, channelHighest: _h, channelCooldownHours: _c, channelMaxPerDay: _m, sessions: _s, invalidSessions: _v, ...g } = c;
+    return { ...g, enabled: ch !== undefined && channels[ch] !== undefined ? channels[ch]! : globalOn };
   };
 }
 const ON = configFrom("## Proactive\n- Enabled: yes\n");
@@ -125,7 +131,7 @@ describe("rules", () => {
 
   test("unchanged: the agent's own checklist or notes as evidence do not dedupe recurring posts", () => {
     const loose = configFrom("## Proactive\n- Enabled: yes\n- Cooldown: 0\n- Max per person per day: 50\n");
-    for (const own of ["self/heartbeat", "self/heartbeat-journal", "self/wake-journal", " SELF/Heartbeat ", "self/heartbeat/c0abcdef", "SELF/heartbeat/C0ABCDEF"]) {
+    for (const own of ["self/heartbeat", " SELF/Heartbeat ", "self/heartbeat/c0abcdef", "SELF/heartbeat/C0ABCDEF"]) {
       const history = [{ postedAt: NOW.getTime() - 26 * H, textHash: textHash("Yesterday's brief."), evidenceHash: textHash(own) }];
       expect(rule(checkProactive(req({ text: "Today's brief.", evidence: own }), ctx({ config: loose, history })))).toBe("ok");
       // The same text still dedupes.

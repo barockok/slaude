@@ -11,7 +11,7 @@ const AGENT = "U0AGENT";
 const MGR = "U0MANAGER";
 const NOW = new Date("2026-10-26T12:00:00Z");
 const H = 3_600_000;
-const SOUL = "## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n- Max per person per day: 20\n- Cooldown: 0\n- Read: C0READABLE\n\n## Channel C0ONCHANNE\n### Proactive\n- Enabled: yes\n- Highest: act\n- Max per day: 20\n- Cooldown: 0\n\n## Channel C0ASKCHANN\n### Proactive\n- Enabled: yes\n- Highest: inform\n- Max per day: 20\n- Cooldown: 0\n";
+const SOUL = "## Proactive\n- Enabled: yes\n- Wake: yes\n- Highest: act\n- Max per person per day: 20\n- Cooldown: 0\n\n## Channel C0ONCHANNE\n### Proactive\n- Enabled: yes\n- Highest: act\n- Max per day: 20\n- Cooldown: 0\n\n## Channel C0ASKCHANN\n### Proactive\n- Enabled: yes\n- Highest: inform\n- Max per day: 20\n- Cooldown: 0\n";
 
 function harness(over: Partial<WakeToolDeps> = {}, history: unknown = { messages: [] }) {
   const brain = fakeBrain();
@@ -201,16 +201,17 @@ describe("post_message in a wake", () => {
 });
 
 describe("read_channel", () => {
-  test("a listed channel reads, in any turn; secrets are redacted", async () => {
+  test("a channel the agent works in reads, in any turn; secrets are redacted", async () => {
     const secret = `xoxb-${"1".repeat(20)}`;
     const h = harness({}, { messages: [{ ts: "1.0", user: "U1", text: `token ${secret}` }], has_more: false });
     const { wake: _w, ...normal } = h.ctx;
-    const r = parsed(await readChannelTool(normal, { channel: "C0READABLE" }));
+    const r = parsed(await readChannelTool(normal, { channel: "C0ONCHANNE" }));
     expect(r.messages[0].ts).toBe("1.0");
     expect(r.messages[0].text).not.toContain(secret);
     expect(r.note).toContain("data");
   });
-  test("an unlisted channel is refused, in a wake and out of one", async () => {
+  test("a channel the agent does not work in is refused, in a wake and out of one, even when a global Read names it", async () => {
+    __setProactiveSoulSource(() => `${SOUL}\n## Proactive\n- Read: C0OTHERCHA\n`);
     const h = harness();
     const { wake: _w, ...normal } = h.ctx;
     expect((await readChannelTool(h.ctx, { channel: "C0OTHERCHA" })).isError).toBe(true);
@@ -219,7 +220,7 @@ describe("read_channel", () => {
   test("a missing scope says the operator must fix it", async () => {
     const e = Object.assign(new Error("x"), { data: { error: "missing_scope" } });
     const h = harness({}, e);
-    const r = await readChannelTool(h.ctx, { channel: "C0READABLE" });
+    const r = await readChannelTool(h.ctx, { channel: "C0ONCHANNE" });
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toContain("operator");
   });

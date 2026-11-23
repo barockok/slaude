@@ -26,7 +26,6 @@ import type { CommitmentRow } from "../../db/commitments";
 import { onProactiveReaction, onProactiveReply, type FeedbackDeps } from "../../proactive/feedback";
 import { proactiveReplyBlock, proactiveWorkBlock } from "../../proactive/reply-context";
 import type { PromiseTransport } from "../../proactive/promises";
-import type { ProactiveTransport } from "../../proactive/dispatch";
 import { channelSessionOn, channelSessionWakes, proactiveFor } from "../../soul/proactive";
 import { aliasesFor, engageFor } from "../engage/setting";
 import { observeEngage, type ImplicitRun } from "../engage/observe";
@@ -182,7 +181,6 @@ import { auditIgnore, auditOneOnOne, auditSoulOverride } from "../../audit/event
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { bridgeExternalMcp, connectableServers, loadExternalMcp, privateOverrides, sessionExternalMcp } from "./external-mcp";
 import { connectText, createMcpBridge, reauthText, type McpBridge } from "./mcp-bridge";
-import { createSourceReader, oauthOnlyWatches, unservedWatches } from "../../proactive/source-reader";
 import { parseRunAs } from "../../agent/credential-owner";
 import * as SlackOauthFlows from "../../db/slack-oauth-flows";
 import { randomBytes } from "node:crypto";
@@ -253,8 +251,6 @@ export interface GatewayHandle {
   __resolveMcp(sessionId: string): Promise<Record<string, McpServerConfig> | undefined>;
   /** Test seam: how this gateway delivers promise checks (phase E). */
   __promises?: PromiseTransport;
-  /** Test seam: how this gateway dispatches heartbeat ask/act turns. */
-  __proactive?: ProactiveTransport;
   __wake?: WakeTransport;
   /** TEST SEAM: the mono process's voice call registry. */
   __voiceCalls?: VoiceCalls;
@@ -1009,41 +1005,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
    *  the managed persona's config; files only with the operator's opt-in). */
   const bridgeServers = (claims: JobClaims) =>
     bridgeExternalMcp(claims.persona && claims.persona !== "default" ? claims.persona : undefined, { label: jobLabel(claims) });
-  /** Boot warning: a watched server a session mounts but the bridge does not
-   *  serve (a file-configured server without the opt-in) is never read. */
-  const warnUnservedWatches = (): void => {
-    const personas = ["default", ...getPersonaRegistry().list().map((p) => p.name)];
-    for (const p of new Set(personas)) {
-      try {
-        const watch = proactiveFor(p).watch;
-        if (!watch.length) continue;
-        const named = p === "default" ? undefined : p;
-        for (const name of unservedWatches(watch, sessionExternalMcp(named, loadExternalMcp()), bridgeExternalMcp(named))) {
-          console.warn(
-            `[proactive] persona=${p} watch "${name}": the MCP bridge does not serve it, so the heartbeat cannot read it; a file-configured server needs SLAUDE_MCP_BRIDGE_ALLOW_FILE_CONFIG=1`,
-          );
-        }
-        // Mono: /mcp global connect writes the agent's OAuth grant into the
-        // CLI's own store, which the bridge neither reads nor may refresh (the
-        // CLI rotates it), so a server with no config headers is not readable.
-        if (env.role() === "mono") {
-          for (const name of oauthOnlyWatches(watch, bridgeExternalMcp(named))) {
-            console.warn(
-              `[proactive] persona=${p} watch "${name}": it has no config headers, so the heartbeat would need the agent's OAuth connection, which on mono lives in the agent CLI's own store and is not used; the source is skipped when it asks for auth`,
-            );
-          }
-        }
-      } catch (e) {
-        console.warn(`[proactive] persona=${p}: could not check watched sources: ${e instanceof Error ? e.message : String(e)}`);
-      }
-    }
-  };
   const backgroundSlack: SchedulerSlack = {
     // As the bot of the app the message names; on a multi-app transport a
     // post that does not name both app id and team is refused (cardPoster).
     post: cardPoster(t),
-    // Mono keeps the agent's OAuth grants in the CLI's own store (persistTokens).
-    ...(env.role() === "mono" ? { agentOAuthInCli: true } : {}),
     managers: backgroundManagers,
     digestRecipient: () => digestRecipientOf(soulData()),
   };
@@ -1404,42 +1369,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     },
   };
 
-  // Heartbeat ask/act (src/proactive/dispatch.ts): the item's turn goes into
-  // the thread of the post the round just made, as the agent. The thread is
-  // new, so no /1on1 lock is expected; one taken since would make the turn
-  // run as that person, so it is refused. The initiator is the agent's own id
-  // in a DM as in a channel: no person sent this turn, and the route's
-  // userId is what manager-only tools and the brain gate's isManager read,
-  // so a DM recipient (often the manager) must not lend the turn their
-  // rights. A human reply rewrites the route with its real sender. Engaged,
-  // so that reply continues the thread.
-  backgroundSlack.proactive = {
-    dispatch: async (post, envelope, run, personaId) => {
-      if (!post.messageTs) throw new Error("the post has no message ts");
-      if (!post.teamId) throw new Error("no Slack team is known for this post");
-      if (await OneOnOne.find(post.channelId, post.messageTs)) throw new Error("the post's thread has a /1on1 lock; a heartbeat turn runs only as the agent");
-      const persona = personaId && personaId !== "default" ? personaId : undefined;
-      await dispatchThreadTurn(
-        {
-          teamId: post.teamId,
-          channelId: post.channelId,
-          threadTs: post.messageTs,
-          personaId: persona,
-          userId: post.agentId,
-          engage: true,
-          appId: post.appId,
-          // Only a channel post's thread shares the proactive folder: a DM
-          // post's thread (manager or person) keeps its own, so files made
-          // for one person never sit where a channel thread works.
-          sharedFolder: post.audience === "channel",
-        },
-        envelope,
-        run,
-        "heartbeat-turn",
-      );
-    },
-  };
-
   // Nobody is in a wake's turn to click a card (mono; a node asks the tool plane).
   agent.setPermissionResolver((sessionId, toolName, input, ctx) =>
     routes.get(sessionId)?.ctx.wake ? Promise.resolve({ behavior: "deny", message: wakeRefusal(toolName) }) : permissions.resolver(sessionId, toolName, input, ctx),
@@ -1607,15 +1536,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // claimed in the database, so a leader change mid-pass never re-runs one);
   // mono runs it directly. Ticks wait for an open brain and never boot it.
   let backgroundScheduler: { stop(graceMs?: number): Promise<void> } | undefined;
-  // The heartbeat round reads the agent's own sources through a bridge of its
-  // own: the same servers as the node bridge (bridgeServers), but no
-  // onNeedsAuth, so a source that needs re-authorising posts no card; the
-  // round reports it instead. Reads go out as the agent (backgroundClaims).
-  let backgroundBridge: McpBridge | undefined;
   if (opts.backgroundLearning === true && env.role() !== "node" && brainEnabled()) {
-    backgroundBridge = createMcpBridge({ servers: bridgeServers });
-    backgroundSlack.sources = createSourceReader(backgroundBridge);
-    warnUnservedWatches();
     backgroundScheduler = startBackgroundScheduler(defaultSchedulerDeps(backgroundSlack), queueDispatch ? { elect: leaderElect(getRedis()) } : {});
     console.log(`[slaude] background learning scheduler ${queueDispatch ? "contending for leadership" : "started"}`);
   }
@@ -5870,7 +5791,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await panelResumeUnsub?.().catch(() => {});
       await panelHoldUnsub?.().catch(() => {});
       await mcpBridge.close().catch(() => {});
-      await backgroundBridge?.close().catch(() => {});
       await t.stop();
       // Never rejects (errors are logged above). While closing, the KB import
       // stops before its next KB, so shutdown does not wait for a full import.
@@ -5886,7 +5806,6 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     __sessionCtx: (sessionId: string) => sessionCtx.get(sessionId),
     __resolveMcp: (sessionId: string) => mcpResolver(sessionId),
     __promises: backgroundSlack.promises!,
-    __proactive: backgroundSlack.proactive!,
     __wake: backgroundSlack.wake!,
     __voiceCalls: voiceCalls,
     __brainGate: async (sessionId: string) => {

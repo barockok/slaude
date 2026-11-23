@@ -180,7 +180,8 @@ describe("GET /panel/api/agents/:name/settings/:group", () => {
     expect(r.text).not.toContain("secret-");
 
     const pro = family(g, "proactive");
-    expect(value(pro, "enabled")).toMatchObject({ value: true, source: "soul" });
+    // Nothing is switched on at the agent level, so the family lists no summarising-round setting.
+    expect(pro.settings.some((x) => ["enabled", "watch", "read"].includes(x.key))).toBe(false);
     expect(value(pro, "highest")).toMatchObject({ value: "ask", source: "soul" });
     expect(value(pro, "quiet")).toMatchObject({ value: "22:00 to 07:00", source: "soul" });
     expect(value(pro, "cap")).toMatchObject({ value: 6, source: "default" });
@@ -222,7 +223,7 @@ describe("GET /panel/api/agents/:name/settings/:group", () => {
     const g = (await all("scout")).body;
     // scout's soul names no manager or approver: it inherits the default's (per unit), so they are soul grants.
     expect(value(family(g, "approvals"), "approvers").value).toEqual(expect.arrayContaining(["UMGR"]));
-    expect(value(family(g, "proactive"), "enabled")).toMatchObject({ value: false, source: "default" });
+    expect(value(family(g, "proactive"), "wake")).toMatchObject({ value: true, source: "default" });
     expect(value(family(g, "memory-gating"), "own-slice").value).toBe("agent-upscout");
     // scout's soul names no redaction patterns or timeout: the default agent's apply, and the page says so.
     expect(value(family(g, "redaction"), "own-patterns")).toMatchObject({ value: "0 patterns", source: "default" });

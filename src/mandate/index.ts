@@ -152,21 +152,17 @@ export async function listMandates(personaName: string): Promise<Mandate[]> {
     });
   }
 
-  // A channel's own Proactive starts its wakes; a global Enabled turns on only the round. An invalid Mode reads as off.
+  // A channel's own Proactive starts its wakes. An invalid Mode reads as off.
   const onChannels = proactive ? Object.entries(proactive.channels).filter(([id, on]) => on && !proactive.invalidSessions.includes(id)).map(([id]) => id).sort() : [];
-  if (proactive && (proactive.enabled || onChannels.length > 0)) {
+  if (proactive && onChannels.length > 0) {
     const parts: string[] = [];
-    if (proactive.enabled) {
-      parts.push(`Watches: ${proactive.watch.length ? proactive.watch.join(", ") : "no sources"}.`);
-      parts.push(`Highest action: ${proactive.highest}.`);
-    }
     if (onChannels.length) parts.push(`Works on its own in ${onChannels.map((c) => `<#${c}>`).join(", ")}.`);
     out.push({
       id: "heartbeat",
       kind: "heartbeat",
       title: "Heartbeat",
       instructions: parts.join(" "),
-      triggers: proactive.wake && onChannels.length ? ["heartbeat round", "wake"] : ["heartbeat round"],
+      triggers: proactive.wake ? ["wake"] : ["channel session"],
       approvers: await approversIn(),
       source: "proactive",
     });

@@ -10,7 +10,7 @@
 import * as Posts from "../db/proactive-posts";
 import { brainCallIfOpen } from "../knowledge/brain";
 import { proactiveFor } from "../soul/proactive";
-import { DATA_LINE, ruleLine, safe, sourceLine } from "./dispatch";
+import { DATA_LINE, ruleLine, safe, sourceLine } from "./reply-lines";
 import { loadRules, type ProactiveRule } from "./rules";
 import { proactiveWorkspaceDir } from "../agent/workspace-claim";
 

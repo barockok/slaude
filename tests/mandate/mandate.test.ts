@@ -39,8 +39,6 @@ Keep the team informed.
 Answer team questions.
 
 ## Proactive
-- Enabled: yes
-- Watch: mail, tracker
 - Highest: ask
 - Wake: yes
 
@@ -144,9 +142,8 @@ describe("listMandates", () => {
     expect(quiet).toMatchObject({ instructions: "", inheritsGlobal: true, proactive: { enabled: false } });
 
     const hb = ms.find((m) => m.id === "heartbeat")!;
-    expect(hb).toMatchObject({ kind: "heartbeat", source: "proactive", triggers: ["heartbeat round", "wake"] });
-    expect(hb.instructions).toContain("mail, tracker");
-    expect(hb.instructions).toContain("ask");
+    expect(hb).toMatchObject({ kind: "heartbeat", source: "proactive", triggers: ["wake"] });
+    expect(hb.instructions).toContain("<#COPS>");
     expect(sorted(hb.approvers)).toEqual(["UALICE", "UBACKUP", "USCOUT"]);
 
     const c = ms.find((m) => m.id === `cron:${active.id}`)!;
@@ -183,15 +180,15 @@ describe("listMandates", () => {
   });
 
   test("heartbeat without wake, and an unreadable soul text reads as no heartbeat", async () => {
-    // A global `Enabled: yes` is the round only; a channel's own `Enabled: yes` wakes.
+    // Only a channel's own `Enabled: yes` shows it: a global one switches nothing on.
     setManagedDefaultSoul("## Proactive\n- Enabled: yes\n");
-    expect((await listMandates("default")).find((m) => m.id === "heartbeat")!.triggers).toEqual(["heartbeat round"]);
+    expect((await listMandates("default")).find((m) => m.id === "heartbeat")).toBeUndefined();
     setManagedDefaultSoul("## Channel <#CONE>\n### Proactive\n- Enabled: yes\n");
-    expect((await listMandates("default")).find((m) => m.id === "heartbeat")!.triggers).toEqual(["heartbeat round", "wake"]);
-    setManagedDefaultSoul("## Proactive\n- Enabled: yes\n- Wake: no\n");
+    expect((await listMandates("default")).find((m) => m.id === "heartbeat")!.triggers).toEqual(["wake"]);
+    setManagedDefaultSoul("## Proactive\n- Wake: no\n\n## Channel <#CONE>\n### Proactive\n- Enabled: yes\n");
     const hb = (await listMandates("default")).find((m) => m.id === "heartbeat")!;
-    expect(hb.triggers).toEqual(["heartbeat round"]);
-    expect(hb.instructions).toContain("no sources");
+    expect(hb.triggers).toEqual(["channel session"]);
+    expect(hb.instructions).toContain("<#CONE>");
 
     setPersonaRegistry(registryWith([{ name: "ghost", soulPath: "/nonexistent/SOUL.md" } as never]));
     const ms = await listMandates("ghost");
@@ -262,7 +259,7 @@ describe("listMandates", () => {
     expect(ms.find((m) => m.id === "channel:CMUTE")!).toMatchObject({ inheritsGlobal: true, proactive: { enabled: false } });
     // Global `## Proactive` is absent: a channel's own `Enabled: yes` turns wakes on.
     const hb = ms.find((m) => m.id === "heartbeat")!;
-    expect(hb.triggers).toEqual(["heartbeat round", "wake"]);
+    expect(hb.triggers).toEqual(["wake"]);
     expect(hb.instructions).toBe("Works on its own in <#CREL>.");
   });
 
@@ -283,10 +280,12 @@ describe("listMandates", () => {
     expect((await listMandates("bare")).find((m) => m.id === "global")).toBeUndefined();
   });
 
-  test("filesystem persona with only a global proactive switch shows the heartbeat", async () => {
+  test("filesystem persona with only a global Enabled shows no heartbeat: proactive is per channel", async () => {
     setPersonaRegistry(registryWith([{ name: "solo", soulMd: "# Solo\n\n## Proactive\n- Enabled: yes\n" }]));
     const ms = await listMandates("solo");
-    expect(ms.map((m) => m.id)).toEqual(["heartbeat"]);
+    expect(ms.map((m) => m.id)).toEqual([]);
+    setPersonaRegistry(registryWith([{ name: "solo", soulMd: "# Solo\n\n## Channel <#CONE>\n### Proactive\n- Enabled: yes\n" }]));
+    expect((await listMandates("solo")).map((m) => m.id)).toEqual(["channel:CONE", "heartbeat"]);
   });
 });
 

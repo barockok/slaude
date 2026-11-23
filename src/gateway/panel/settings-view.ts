@@ -39,7 +39,7 @@ import { agentSourceId } from "../../knowledge/scope";
 import { KB_MEMOIZE_MAX_PAGES } from "../../tools/contracts/kb";
 import { MEMORY_WRITE_TOOLS, PROACTIVE_RULE_TOOL } from "../../agent/profile-write-guard";
 import { SECRET_PATTERN_COUNT } from "../../redact";
-import { HEARTBEAT_MAX_POSTS } from "../../proactive/heartbeat";
+import { HEARTBEAT_MAX_POSTS } from "../../proactive/post";
 import { MAX_UNANSWERED } from "../../proactive/wake-tools";
 import { UNCHANGED_WINDOW_MS } from "../../proactive/restraint";
 import { WAKE_TOOL_ALLOWLIST } from "../../proactive/wake-guard";
@@ -362,16 +362,13 @@ function proactive(text: string): SettingsFamily {
     scope: "agent",
     status: "active",
     settings: [
-      setting("enabled", "Summarising round on", cfg.enabled, src("enabled"), "SOUL.md ## Proactive"),
       setting("highest", "Highest action", cfg.highest, src("highest"), "SOUL.md ## Proactive", "ignore < inform < ask < act. Learned rules can only lower it."),
       setting("quiet", "Quiet hours", cfg.quietHours ? `${clock(cfg.quietHours.start)} to ${clock(cfg.quietHours.end)}` : null, src("quiet hours"), "SOUL.md ## Proactive",
         "A person's own quiet hours (from their profile) apply too."),
       setting("cap", "Posts per person per day", cfg.maxPerPersonPerDay, src("max per person per day", "max per day"), "SOUL.md ## Proactive"),
       setting("cooldown", "Cooldown between posts to a person", `${cfg.cooldownHours} hours`, src("cooldown"), "SOUL.md ## Proactive"),
       setting("wake", "Wakes in its proactive channels", cfg.wake, src("wake"), "SOUL.md ## Proactive"),
-      setting("watch", "Watches", list(cfg.watch), src("watch"), "SOUL.md ## Proactive"),
-      setting("read", "Channels it may read", list(cfg.read), src("read"), "SOUL.md ## Proactive"),
-      setting("round-posts", "Posts per heartbeat round", HEARTBEAT_MAX_POSTS, "code", "HEARTBEAT_MAX_POSTS"),
+      setting("round-posts", "Posts per wake", HEARTBEAT_MAX_POSTS, "code", "HEARTBEAT_MAX_POSTS"),
       setting("follow-up", "Messages in a thread nobody answered", MAX_UNANSWERED, "code", "MAX_UNANSWERED", "Its post and one follow-up."),
       setting("unchanged", "The same news is not posted again for", `${UNCHANGED_WINDOW_MS / 86_400_000} days`, "code", "UNCHANGED_WINDOW_MS"),
       setting("slot", "Heartbeat slot", `${env.heartbeatMinutes()} minutes`, fromEnv("SLAUDE_HEARTBEAT_MINUTES"), "SLAUDE_HEARTBEAT_MINUTES"),

@@ -252,28 +252,28 @@ const proactiveSchema = z
     {
       enabled: z
         .boolean(typeMessage({ other: "must be true or false", null: "has no value: set it, or remove the key" }))
-        .describe("true turns on the summarising round and lets its posts reach the manager and people who opted in. It starts no wake: waking is per channel (channels.<ref>.proactive). Leave the key out for off.")
+        .describe("Deprecated, no effect: there is no agent-level round any more. Proactive is per channel (channels.<ref>.proactive). Remove the key.")
         .optional(),
       read: optional(
-        refList("channel").describe("Further channels the agent may read with read_channel, in any turn. Example: [slack:channel:C0EXAMPLE]"),
+        refList("channel").describe("Deprecated, no effect: read_channel reaches only channels the agent works in on its own. Remove the key."),
       ),
       watch: optional(
         z
           .array(z.string(typeMessage({ other: "must be a source name" })).regex(/^[^,#\r\n\u2028\u2029]+$/, "must be one source name, without commas, # or line breaks"), typeMessage({ other: "must be a list of source names", null: NO_VALUE }))
-          .describe("External sources the summarising round reads, by name. Example: [mail, tracker]"),
+          .describe("Deprecated, no effect: there is no summarising round to read sources. Remove the key."),
       ),
       quietHours: optional(
         z
           .string(typeMessage({ other: "must be a window such as 21:00-08:00" }))
           .regex(/^\d{1,2}:\d{2}\s*[-\u2013]\s*\d{1,2}:\d{2}$/, "must be a window such as 21:00-08:00")
-          .describe("Hours when the round does not post, local time, as HH:MM-HH:MM. A window that ends before it starts wraps midnight. Example: 21:00-08:00"),
+          .describe("Hours when the agent does not post proactively, local time, as HH:MM-HH:MM. A window that ends before it starts wraps midnight. Example: 21:00-08:00"),
       ),
       maxPerDay: optional(
         z
           .number(typeMessage({ other: "must be a whole number" }))
           .int("must be a whole number")
           .positive("must be at least 1")
-          .describe("Most proactive posts to one person per day. Example: 6"),
+          .describe("Most proactive posts to one recipient per day, unless a channel sets its own. Example: 6"),
       ),
     },
     typeMessage({ other: "must be a mapping" }),

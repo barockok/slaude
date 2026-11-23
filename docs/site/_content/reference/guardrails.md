@@ -358,7 +358,7 @@ tool plane's surface executor, which is the same code):
 | `upload` caption | `upload_caption` (a held caption waits for the card, then the file goes out with it; on a node the caption is judged at `upload_complete`, after the bytes are already at Slack, and a denial means the upload is never completed). The title, file name and alt text are not judged. |
 | `post_message` | `post_message` |
 | `post_ephemeral` | `ephemeral` (cannot be held in place: posted after the card) |
-| `proactive_post` (wakes and the heartbeat round) | `proactive_post` (approve is a deny) |
+| `proactive_post` (wakes) | `proactive_post` (approve is a deny) |
 | proposal previews on digest and DM cards | `proposal_preview` (deny or approve hides the preview) |
 | `create_canvas`, `append_canvas`, `prepend_canvas` | `canvas` |
 | `set_topic`, `set_purpose` | `topic` |

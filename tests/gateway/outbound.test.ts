@@ -17,7 +17,7 @@ import { __resetHighWaterForTests } from "../../src/guardrails/high-water";
 import { SlackSurface } from "../../src/gateway/slack/surface";
 import { surfaceTools } from "../../src/gateway/core/surface-mcp";
 import { slackHandlers, type SlackContext } from "../../src/gateway/slack/mcp-tools";
-import { sendProactive } from "../../src/proactive/heartbeat";
+import { sendProactive } from "../../src/proactive/post";
 import { __setLastSpeakerStoreForTests, memoryLastSpeakerStore } from "../../src/gateway/engage/last-speaker";
 import { __setConversationLogForTests, conversationLog, logKey } from "../../src/gateway/engage/conversation-log";
 import { proposalBlocks } from "../../src/background/proposal-cards";

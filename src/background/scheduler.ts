@@ -60,14 +60,11 @@ import type { ThreadActivity } from "../db/thread-activity";
 import { defaultRunnerDeps } from "./runner";
 import { backgroundAgentId, finishSkillCheck, startSkillCheck } from "./skill-check";
 import { runDueCommitments, type PromiseTransport } from "../proactive/promises";
-import type { ProactiveTransport } from "../proactive/dispatch";
 import { readPingPrefs } from "../proactive/prefs";
-import { runHeartbeat } from "../proactive/heartbeat";
 import type { WakeDeps, WakeResult, WakeTransport } from "../proactive/wake";
 import { runChannelWakeNow, runChannelWakes } from "../proactive/channel-wake";
 import { parseManager } from "../soul/proactive";
 import type { BrainOpCall } from "../knowledge/memory-trail";
-import { bridgeExternalMcp } from "../gateway/core/external-mcp";
 import { anyProactiveEnabled } from "../soul/proactive";
 import { env } from "../config/env";
 import { personaApp } from "./digest";
@@ -77,7 +74,6 @@ import { personaSoulText } from "../persona/soul-source";
 import type { MandateParts } from "../soul/mandate-scope";
 import { effectiveMandateIn, personaMandateText } from "../soul/persona-mandates";
 import { sweepStaleRuns } from "./stale-runs";
-import type { SourceReader } from "../proactive/source-reader";
 
 export { isoWeekSlot, previousDay };
 
@@ -458,14 +454,8 @@ export interface SchedulerSlack {
   post: CardPost;
   /** How promise checks reach their threads (phase E). Absent: promises are not checked. */
   promises?: PromiseTransport;
-  /** How the heartbeat round's ask/act turns reach their post's thread. Absent: such items are only posted. */
-  proactive?: ProactiveTransport;
-  /** The agent's own MCP sources, read as the agent (heartbeat round). Absent: no source is read. */
-  sources?: SourceReader;
-  /** How a channel's wake reaches its session. Absent: nobody wakes; personas stay on the round. */
+  /** How a channel's wake reaches its session. Absent: nobody wakes. */
   wake?: WakeTransport;
-  /** Mono: the agent's OAuth credentials live in the CLI's own store, which the heartbeat cannot read (HeartbeatDeps.agentOAuthInCli). */
-  agentOAuthInCli?: boolean;
   /** The manager and the backup manager (who may decide manager proposals). */
   managers: () => string[];
   /** Whom the weekly digest goes to: the manager, else the backup manager. */
@@ -480,24 +470,12 @@ export function passHandlers(deps: NightlyDeps, slack?: SchedulerSlack): Partial
     "quiet-moment": (r) => runQuietMoment(r, deps),
     "skill-review": (r) => runSkillReview(r, deps),
     digest: (r) => runDigest(r, { call: deps.call, recipient: slack?.digestRecipient ?? (() => null), ...(slack ? { post: slack.post } : {}) }),
-    // The heartbeat needs Slack to speak: without it there is nothing to run.
+    // The slot is the tick for channel wakes; it needs Slack to speak.
     ...(slack
       ? {
           heartbeat: async (r: SlotRun) => {
-            await runHeartbeat(r, {
-              runner: deps.runner,
-              call: deps.call,
-              post: slack.post,
-              managerId: personaManager,
-              mandates: personaMandates,
-              app: personaApp,
-              ...(slack.sources ? { sources: slack.sources } : {}),
-              ...(slack.proactive ? { proactive: slack.proactive } : {}),
-              ...(slack.agentOAuthInCli ? { agentOAuthInCli: true } : {}),
-              mcp: bridgeExternalMcp,
-            });
             // Read at run time: the gateway sets this after building the scheduler deps.
-            // The heartbeat slot is the tick; each proactive channel wakes when it is due.
+            // Each proactive channel wakes when it is due.
             if (slack.wake) await runChannelWakes(r, wakeDepsFor(deps.call, slack, slack.wake));
           },
         }

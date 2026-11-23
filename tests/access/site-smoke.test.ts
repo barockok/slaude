@@ -234,7 +234,7 @@ const exercisers: Record<string, () => Promise<void>> = {
   async backgroundAndRules() {
     personaManager("default");
     digestRecipientOf({ manager: { userId: MGR }, backupManager: {} });
-    const on = parseProactive("## Proactive\n- Enabled: yes\n");
+    const on = { ...parseProactive("## Proactive\n- Max per day: 6\n"), enabled: true };
     const ctx: RestraintContext = { config: () => on, managerId: MGR, prefs: NO_PREFS, now: new Date("2026-10-26T12:00:00Z"), timeZone: "UTC", history: [] };
     checkProactive({ audience: "manager", recipient: MGR, topic: "deploys", text: "x" }, ctx);
     stampFromSenders([{ userId: "U0ONE", origin: "slack" }], { expect: "U0ONE" });

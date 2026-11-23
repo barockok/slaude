@@ -10,10 +10,9 @@ export type PageType =
   | "lessons"
   | "heartbeat"
   | "team-fact"
-  | "proactive-rule"
-  | "heartbeat-journal";
+  | "proactive-rule";
 
 export const PAGE_TYPES: readonly PageType[] = [
   "profile", "person-note", "commitment", "investigation", "correction", "outcome", "lessons", "heartbeat", "team-fact",
-  "proactive-rule", "heartbeat-journal",
+  "proactive-rule",
 ];

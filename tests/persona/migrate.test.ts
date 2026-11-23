@@ -142,7 +142,6 @@ describe("migratePersona", () => {
     expect(a.soulJson.approvers).toEqual(inherited.approvers);
     expect(a.soulJson.channelOverrides).toEqual(inherited.channelOverrides);
     const p = parseProactive(a.soulMd);
-    expect(p.read).toEqual(["C0WORK"]);
     expect(p.sessions).toEqual({ C0SAM: "channel" });
     expect(p.channels).toEqual({ C0SAM: true });
     // The token stays where it was; the file never holds it.

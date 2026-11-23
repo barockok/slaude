@@ -71,7 +71,6 @@ export function collectRefs(persona: string, soul: SoulData, soulText: string): 
   });
   try {
     const p = parseProactive(soulText);
-    p.read.forEach((c, i) => add(`proactive.read[${i}]`, bareChannel(c)));
     const keys = new Set([...Object.keys(p.channels), ...Object.keys(p.sessions), ...p.invalidSessions]);
     for (const c of keys) add("channels", bareChannel(c));
   } catch {

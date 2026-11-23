@@ -31,7 +31,6 @@ describe("readFileAgent", () => {
       "    trusted: [slack:channel:C0TEAM]",
       "skills: [triage]",
       "proactive:",
-      "  read: [slack:channel:C0TEAM]",
       "channels:",
       "  slack:channel:C0TEAM: { proactive: true }",
       "",
@@ -43,7 +42,6 @@ describe("readFileAgent", () => {
     expect(a.definition).toEqual({ description: "Handles support", skills: ["triage"] });
     expect(a.soulMd.startsWith("You are Ana.")).toBe(true);
     const p = parseProactive(a.soulMd);
-    expect(p.read).toEqual(["C0TEAM"]);
     expect(p.channels).toEqual({ C0TEAM: true });
     expect(a.warnings).toEqual([]);
   });

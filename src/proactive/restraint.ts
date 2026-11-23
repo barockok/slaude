@@ -69,7 +69,7 @@ export const UNCHANGED_WINDOW_MS = 7 * 24 * 60 * 60_000;
  * repeats an earlier one: comparing them refused every later post of a
  * recurring check as `unchanged` for the whole window.
  */
-export const SELF_EVIDENCE: ReadonlySet<string> = new Set(["self/heartbeat", "self/heartbeat-journal", "self/wake-journal"]);
+export const SELF_EVIDENCE: ReadonlySet<string> = new Set(["self/heartbeat"]);
 /** The prefix of a channel's own checklist page (`self/heartbeat/<channel>`). */
 const SELF_EVIDENCE_PREFIX = "self/heartbeat/";
 

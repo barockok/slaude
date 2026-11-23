@@ -10,8 +10,6 @@ import { agentSourceId, type BrainScope } from "../knowledge/scope";
 import { minLevel, parseLevel, type Level } from "./levels";
 
 export const RULE_PREFIX = "rules/proactive/";
-export const JOURNAL_SLUG = "self/heartbeat-journal";
-export const JOURNAL_MAX_CHARS = 4000;
 
 /** gbrain's list_pages ceiling per call. */
 const LIST_LIMIT = 500;
