@@ -767,3 +767,66 @@ channels:
   });
 });
 
+describe("an engaged thread continues as the persona that is engaged in it", () => {
+  const yaml = (name: string, user: string) => `
+name: ${name}
+slackUserId: ${user}
+soul: You are ${name}.
+access:
+  channels:
+    trusted: [${CH}]
+channels:
+  ${CH}: { engage: { level: addressed, mode: shadow } }
+`;
+  const persona = (name: string, user: string): Persona => {
+    const { spec } = parseAgentYaml(name, yaml(name, user));
+    const { soulData: sd, ...definition } = spec.definition;
+    return { name, slackUserId: user, soulMd: spec.soul, config: { slackUserId: user, name }, outClient: null, model: null, runsOn: null, provider: null, kbSources: null, background: null, mcp: null, soulJson: sd, definition } as Persona;
+  };
+  const registryOf = (ps: Persona[], managed: boolean): PersonaRegistry =>
+    ({
+      lookupByUserId: (id) => ps.find((p) => p.slackUserId === id) ?? null,
+      lookupByName: (n) => ps.find((p) => p.name === n) ?? null,
+      list: () => ps,
+      isMultiPersonaMode: () => true,
+      isManaged: () => managed,
+      tombstonedPersonaFor: () => null,
+      defaultPersona: () => ({ model: null, mcp: null, definition: null }),
+    }) as PersonaRegistry;
+  const mention = (g: Gw, ts: string, root: string, personaId: string) =>
+    g.emit("app_mention", { event: { type: "app_mention", channel: CH, user: WORLD.manager, team: TEAM, ts, thread_ts: root, text: "<@USLAUDEBOT> hello" }, client: g.client, context: { teamId: TEAM, apiAppId: `A0${personaId.toUpperCase()}`, personaId } });
+  const plain = (g: Gw, ts: string, root: string) =>
+    g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", user: WORLD.manager, team: TEAM, ts, thread_ts: root, text: "and one more thing" }, client: g.client, context: { teamId: TEAM } });
+
+  it("a plain reply continues as the other persona that is engaged there (shared app)", async () => {
+    setEngage("mention", "shadow");
+    setPersonaRegistry(registryOf([persona("ana", "UANA1")], true));
+    const g = (gw = makeGw(no));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([REPLY]);
+    await mention(g, nextTs(), root, "ana");
+    await settle();
+    await plain(g, nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(2);
+    expect(g.sends[1]!.text).not.toMatch(/do NOT reply/i);
+  });
+  it("a plain reply continues as a persona that has left the registry (an unmanaged tenant)", async () => {
+    setEngage("mention", "shadow");
+    setPersonaRegistry(registryOf([persona("ghost", "UGHOST")], true));
+    const g = (gw = makeGw(no));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([REPLY]);
+    await mention(g, nextTs(), root, "ghost");
+    await settle();
+    // The persona is no longer listed, and the registry is not complete (not managed): its thread is still continued.
+    setPersonaRegistry(registryOf([], false));
+    await plain(g, nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(2);
+    expect(g.sends[1]!.text).not.toMatch(/do NOT reply/i);
+  });
+});
+
