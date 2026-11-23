@@ -37,6 +37,24 @@ function suite(name: string, make: (o?: { now?: () => number }) => { log: Conver
       expect(t[0]!.threadRef).toBe("1000.000100");
       expect(await log.recent(logKey("slack", "C0OTHER"), 10)).toEqual([]);
     });
+    test("forget removes one entry and leaves the others; forgetting an unknown ref is harmless", async () => {
+      const { log } = make();
+      for (let i = 1; i <= 3; i++) await log.append(K, e(i));
+      await log.forget(K, e(2).ref);
+      await log.forget(K, "9999.000100");
+      await log.forget(logKey("slack", "C0NOTHING"), e(1).ref);
+      expect((await log.recent(K, 10)).map((x) => x.text)).toEqual(["message 1", "message 3"]);
+      // The ref can be appended again (an edit is heard as a new message).
+      await log.append(K, e(2, { text: "edited" }));
+      expect((await log.recent(K, 10)).map((x) => x.text)).toEqual(["message 1", "message 3", "edited"]);
+    });
+    test("forget matches the whole ref, not a prefix of another", async () => {
+      const { log } = make();
+      await log.append(K, e(1, { ref: "1000.000100" }));
+      await log.append(K, e(2, { ref: "1000.0001001" }));
+      await log.forget(K, "1000.000100");
+      expect((await log.recent(K, 10)).map((x) => x.ref)).toEqual(["1000.0001001"]);
+    });
     test("text is cut, and the flags and agent survive", async () => {
       const { log } = make();
       await log.append(K, e(1, { text: "x".repeat(5000), isBot: true, agent: "ana" }));

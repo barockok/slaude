@@ -4,7 +4,11 @@ import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from
 import type { Persona } from "../../../src/persona/types";
 import { __setConversationLogForTests, logKey, memoryConversationLog, type ConversationLog } from "../../../src/gateway/engage/conversation-log";
 import { __setLastSpeakerStoreForTests, memoryLastSpeakerStore } from "../../../src/gateway/engage/last-speaker";
-import { noteAgentMessage, noteConversation } from "../../../src/gateway/engage/record";
+import { forgetConversationMessage, noteAgentMessage, noteConversation } from "../../../src/gateway/engage/record";
+
+// Key-shaped fixtures built at run time so no secret-looking literal sits in the source.
+const FAKE_SK = ["sk", "abcdefghijklmnopqrstuvwxyz0123456789"].join("-");
+const FAKE_GH = ["ghp", "abcdefghijklmnopqrstuvwxyz0123456789ABCD"].join("_");
 
 const CH = "C0SHARED";
 const yaml = (name: string, user: string, level: string) => `
@@ -80,7 +84,7 @@ describe("noteAgentMessage feeds the conversation log", () => {
     expect((await top()).map((x) => [x.agent, x.author])).toEqual([["quiet", "UQUIET1"]]);
   });
   test("a log that fails never fails the post", () => {
-    __setConversationLogForTests({ append: () => { throw new Error("boom"); }, recent: async () => [] });
+    __setConversationLogForTests({ append: () => { throw new Error("boom"); }, recent: async () => [], forget: async () => {} });
     expect(() => noteAgentMessage({ channel: CH, thread: null, ts: "1700000000.000100", persona: "ana", text: "x" })).not.toThrow();
   });
 });
@@ -103,6 +107,49 @@ describe("noteConversation feeds what people and bots said", () => {
   test("level mention writes nothing; a subtype that is not conversation is skipped", async () => {
     noteConversation({ channel: CH, thread: null, ts: "1700000000.000100", text: "hello", author: "U0PERSON", isBot: false, viewer: "quiet" });
     noteConversation({ channel: CH, thread: null, ts: "1700000000.000101", text: "joined", author: "U0PERSON", isBot: false, viewer: "ana", subtype: "channel_join" });
+    await Bun.sleep(5);
+    expect(await top()).toEqual([]);
+  });
+});
+
+describe("the log at rest", () => {
+  test("a secret in a heard message is masked before it is stored", async () => {
+    noteConversation({ channel: CH, thread: null, ts: "1700000000.000100", text: `the key is ${FAKE_SK} ok`, author: "U0PERSON", isBot: false, viewer: "ana" });
+    await Bun.sleep(5);
+    const [x] = await top();
+    expect(x!.text).not.toContain(FAKE_SK);
+    expect(x!.text).toContain("the key is");
+  });
+  test("a secret in an agent's own post is masked too", async () => {
+    noteAgentMessage({ channel: CH, thread: null, ts: "1700000000.000100", persona: "ana", text: `token ${FAKE_GH}` });
+    await Bun.sleep(5);
+    expect((await top())[0]!.text).not.toContain(FAKE_GH);
+  });
+  test("forgetConversationMessage removes a top-level message from the channel and its own thread, and a reply from its thread", async () => {
+    noteConversation({ channel: CH, thread: null, ts: "1700000000.000100", text: "root", author: "U0PERSON", isBot: false, viewer: "ana" });
+    noteConversation({ channel: CH, thread: "1700000000.000100", ts: "1700000000.000150", text: "reply", author: "U0OTHER", isBot: false, viewer: "ana" });
+    await Bun.sleep(5);
+    await forgetConversationMessage({ channel: CH, thread: "1700000000.000100", ts: "1700000000.000150" });
+    expect((await thread("1700000000.000100")).map((x) => x.text)).toEqual(["root"]);
+    await forgetConversationMessage({ channel: CH, thread: null, ts: "1700000000.000100" });
+    expect(await top()).toEqual([]);
+    expect(await thread("1700000000.000100")).toEqual([]);
+  });
+  test("forgetting works whatever the channel's level now, and never throws on a log that fails", async () => {
+    __setConversationLogForTests({ append: async () => {}, recent: async () => [], forget: () => { throw new Error("boom"); } });
+    await expect(forgetConversationMessage({ channel: CH, thread: null, ts: "1700000000.000100" })).resolves.toBeUndefined();
+    await expect(forgetConversationMessage({ channel: "", thread: null, ts: "x" })).resolves.toBeUndefined();
+  });
+});
+
+describe("a shared app serves several agents", () => {
+  test("the message is kept when any agent the delivery speaks for is above mention, even if the first is at mention", async () => {
+    noteConversation({ channel: CH, thread: null, ts: "1700000000.000100", text: "hello", author: "U0PERSON", isBot: false, viewers: ["quiet", "ana"] });
+    await Bun.sleep(5);
+    expect((await top()).map((x) => x.text)).toEqual(["hello"]);
+  });
+  test("nothing is kept when every agent it speaks for is at mention", async () => {
+    noteConversation({ channel: CH, thread: null, ts: "1700000000.000100", text: "hello", author: "U0PERSON", isBot: false, viewers: ["quiet", null] });
     await Bun.sleep(5);
     expect(await top()).toEqual([]);
   });

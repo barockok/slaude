@@ -27,4 +27,17 @@ describe("engage classifier budgets", () => {
       }
     }
   });
+
+  it("SLAUDE_ENGAGE_AGENT_USERS is a set of Slack user ids; anything else in the list is ignored", () => {
+    const old = process.env.SLAUDE_ENGAGE_AGENT_USERS;
+    try {
+      delete process.env.SLAUDE_ENGAGE_AGENT_USERS;
+      expect([...env.engageAgentUsers()]).toEqual([]);
+      process.env.SLAUDE_ENGAGE_AGENT_USERS = " U0AGENTX, W0AGENTY ,junk,,lower1 ";
+      expect([...env.engageAgentUsers()].sort()).toEqual(["U0AGENTX", "W0AGENTY"]);
+    } finally {
+      if (old === undefined) delete process.env.SLAUDE_ENGAGE_AGENT_USERS;
+      else process.env.SLAUDE_ENGAGE_AGENT_USERS = old;
+    }
+  });
 });

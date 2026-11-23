@@ -1,6 +1,7 @@
 import { engageFor } from "./setting";
 import { lastSpeakers, type SpeakerPlace } from "./last-speaker";
 import { conversationLog, logKey, type LogEntry } from "./conversation-log";
+import { redactSecrets } from "../core/status-text";
 
 /** The surface id the conversation log keys use. */
 const SURFACE = "slack";
@@ -28,6 +29,8 @@ export interface AgentMessage {
   author?: string | null;
   /** The persona whose copy is looking (its level decides whether the log is written); default: the speaker. */
   viewer?: string | null;
+  /** Every persona the delivery speaks for; see ConversationNote. */
+  viewers?: ReadonlyArray<string | null | undefined>;
 }
 
 /** A message heard in a conversation (a person's, a bot's or an agent's), for the conversation log. */
@@ -45,6 +48,27 @@ export interface ConversationNote {
   agent?: { persona: string | null };
   /** The persona whose copy hears it; its level decides whether anything is written. */
   viewer?: string | null;
+  /** Every persona this delivery speaks for (a shared app serves several): written when any one of them is above `mention`. Overrides `viewer`. */
+  viewers?: ReadonlyArray<string | null | undefined>;
+}
+
+/** The log keys a message is stored under: its thread, or (top level) the channel and its own thread. */
+function conversationKeys(channel: string, thread: string | null, ts: string): string[] {
+  return thread ? [logKey(SURFACE, channel, thread)] : [logKey(SURFACE, channel), logKey(SURFACE, channel, ts)];
+}
+
+/**
+ * A message deleted or edited at the source: drop it from the log (an edit is then heard again as a new
+ * message). Written whatever the channel's level (an entry may predate a change of level) and never throws.
+ * Resolves when the removal has been attempted.
+ */
+export async function forgetConversationMessage(m: { channel: string; thread: string | null; ts: string }): Promise<void> {
+  try {
+    if (!m.channel || !TS.test(m.ts)) return;
+    await Promise.all(conversationKeys(m.channel, m.thread, m.ts).map((k) => Promise.resolve(conversationLog().forget(k, m.ts)).catch(() => {})));
+  } catch {
+    /* observing must never fail a message */
+  }
 }
 
 /**
@@ -57,10 +81,12 @@ export interface ConversationNote {
 export function noteConversation(n: ConversationNote): void {
   try {
     if (!n.channel || !TS.test(n.ts) || !CONVERSATION_SUBTYPES.has(n.subtype ?? undefined)) return;
-    const text = (n.text ?? "").toString();
-    if (!text.trim()) return;
-    const viewer = n.viewer && n.viewer !== "default" ? n.viewer : undefined;
-    if (engageFor(viewer, n.channel).level === "mention") return;
+    const raw = (n.text ?? "").toString();
+    if (!raw.trim()) return;
+    // Secrets are masked before anything is stored: the log outlives the message in Redis.
+    const text = redactSecrets(raw);
+    const viewers = n.viewers ?? [n.viewer];
+    if (!viewers.some((v) => engageFor(v && v !== "default" ? v : undefined, n.channel).level !== "mention")) return;
     const entry: LogEntry = {
       ref: n.ts,
       author: n.author ?? "",
@@ -69,7 +95,7 @@ export function noteConversation(n: ConversationNote): void {
       ...(n.thread ? { threadRef: n.thread } : {}),
       ...(n.agent ? { agent: n.agent.persona && n.agent.persona !== "default" ? n.agent.persona : "default" } : {}),
     };
-    const keys = n.thread ? [logKey(SURFACE, n.channel, n.thread)] : [logKey(SURFACE, n.channel), logKey(SURFACE, n.channel, n.ts)];
+    const keys = conversationKeys(n.channel, n.thread, n.ts);
     for (const k of keys) void Promise.resolve(conversationLog().append(k, entry)).catch(() => {});
   } catch {
     /* observing must never fail a message */
@@ -89,7 +115,7 @@ export function noteAgentMessage(m: AgentMessage): void {
   try {
     if (!m.channel || !TS.test(m.ts)) return;
     const persona = m.persona && m.persona !== "default" ? m.persona : undefined;
-    noteConversation({ channel: m.channel, thread: m.thread, ts: m.ts, text: m.text ?? "", author: m.author, isBot: true, agent: { persona: persona ?? null }, viewer: m.viewer ?? persona });
+    noteConversation({ channel: m.channel, thread: m.thread, ts: m.ts, text: m.text ?? "", author: m.author, isBot: true, agent: { persona: persona ?? null }, viewer: m.viewer ?? persona, ...(m.viewers ? { viewers: m.viewers } : {}) });
     if (engageFor(persona, m.channel).level === "mention") return;
     const rec = { ts: m.ts, persona: persona ?? "default", app: m.app ?? "", repliedToUser: m.repliedToUser ?? null };
     const who = persona ?? "default";

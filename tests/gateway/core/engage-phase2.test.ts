@@ -21,6 +21,7 @@ import type { DecisionAdapter, DecisionRequest } from "../../../src/decision/typ
 import { __setEngageBreakerForTests, __setEngageStateForTests, circuitBreaker, memoryEngageState, type CircuitBreaker } from "../../../src/gateway/engage/budget";
 import { shadowIdle } from "../../../src/gateway/engage/shadow";
 import { __setLastSpeakerStoreForTests, lastSpeakers } from "../../../src/gateway/engage/last-speaker";
+import { __setConversationLogForTests, conversationLog, logKey } from "../../../src/gateway/engage/conversation-log";
 import { __setProactiveSoulSource } from "../../../src/soul/proactive";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../../src/persona/registry";
 import { parseAgentYaml } from "../../../src/persona/agent-def";
@@ -33,6 +34,9 @@ import { metrics } from "../../../src/metrics";
  * shadow, at level mention, or under the kill switch nothing about what the agent does changes.
  */
 const TEAM = "T";
+// Key-shaped fixtures built at run time so no secret-looking literal sits in the source.
+const FAKE_SK = ["sk", "abcdefghijklmnopqrstuvwxyz0123456789"].join("-");
+
 const CH = "C0TEAM";
 const PASS = "mcp__slaude_surface__pass";
 const REPLY = "mcp__slaude_surface__reply";
@@ -124,7 +128,7 @@ const actCount = (outcome: string, tier?: number): number =>
     .reduce((n, l) => n + Number(l.split(" ").at(-1)), 0);
 
 const CLEAN = ["sessions", "seen_events", "pending_gates", "ignores", "agent_grants"];
-const ENV_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLAUDE_SLACK_MODE", "SLAUDE_SLACK_API_URL", "SLAUDE_ENGAGE_FORCE_SHADOW", "SLAUDE_ENGAGE_ACT_PER_HOUR", "SLAUDE_ENGAGE_BOT_ACT_PER_HOUR"] as const;
+const ENV_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLAUDE_SLACK_MODE", "SLAUDE_SLACK_API_URL", "SLAUDE_ENGAGE_FORCE_SHADOW", "SLAUDE_ENGAGE_ACT_PER_HOUR", "SLAUDE_ENGAGE_BOT_ACT_PER_HOUR", "SLAUDE_ENGAGE_AGENT_USERS"] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 const setEngage = (level: "mention" | "addressed" | "contribute", mode: "shadow" | "on", channel = CH) =>
   setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel, level, mode }] }));
@@ -138,6 +142,7 @@ beforeEach(async () => {
   __setEngageStateForTests(null);
   __setEngageBreakerForTests(null);
   __setLastSpeakerStoreForTests(null);
+  __setConversationLogForTests(null);
   for (const t of CLEAN) await db.run(`DELETE FROM ${t}`);
   await OneOnOne._wipeForTests();
   beforeActed = actCount("acted");
@@ -682,3 +687,151 @@ describe("phase 2: the loop guard for bot-started runs", () => {
     expect(g.sends).toHaveLength(3);
   });
 });
+
+describe("hardening: the loop guard in an engaged thread", () => {
+  const botEvent = (g: Gw, text: string, ts: string, thread: string, o: Record<string, unknown> = { user: "U0SOMEBOT", bot_id: "B0OTHERBOT" }) =>
+    g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ts, thread_ts: thread, text, ...o }, client: g.client, context: { teamId: TEAM } });
+  it("past the bot cap a bot's reply in a thread a bot-started run engaged is recorded, not run; a person's reply still runs", async () => {
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
+    const g = (gw = makeGw(yes));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([REPLY]);
+    await botEvent(g, NAMED, nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(1);
+    const cap = actCount("cap");
+    await botEvent(g, "and one more thing about the deploy", nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(2);
+    expect(g.sends[1]!.text).toMatch(/do NOT reply/i);
+    expect(actCount("cap") - cap).toBe(1);
+    await deliver(g, "thanks, and one more question: is it fixed?", nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(3);
+    expect(g.sends[2]!.text).not.toMatch(/do NOT reply/i);
+  });
+  it("under the cap a bot's reply in an engaged thread runs as before", async () => {
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "5";
+    const g = (gw = makeGw(yes));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([REPLY]);
+    await botEvent(g, NAMED, nextTs(), root);
+    await settle();
+    await botEvent(g, "and one more thing about the deploy", nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(2);
+    expect(g.sends[1]!.text).not.toMatch(/do NOT reply/i);
+  });
+  it("a channel at level mention keeps today's behaviour: no cap on an engaged thread", async () => {
+    setEngage("mention", "on");
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
+    const g = (gw = makeGw(yes));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([REPLY]);
+    await g.emit("app_mention", { event: { type: "app_mention", channel: CH, user: WORLD.manager, team: TEAM, ts: nextTs(), thread_ts: root, text: "<@USLAUDEBOT> hi" }, client: g.client, context: { teamId: TEAM } });
+    await settle();
+    for (let i = 0; i < 2; i++) await botEvent(g, "status update", nextTs(), root);
+    await settle();
+    expect(g.sends.filter((x) => /do NOT reply/i.test(x.text))).toHaveLength(0);
+  });
+});
+
+describe("hardening: an agent that posts with a user token", () => {
+  it("counts as a bot for the loop guard when SLAUDE_ENGAGE_AGENT_USERS names it", async () => {
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
+    process.env.SLAUDE_ENGAGE_AGENT_USERS = "U0AGENTX";
+    const g = (gw = makeGw(yes));
+    const before = actCount("cap");
+    for (let i = 0; i < 2; i++) await deliver(g, NAMED, nextTs(), undefined, "U0AGENTX");
+    await settle();
+    expect(g.sends).toHaveLength(1);
+    expect(actCount("cap") - before).toBe(1);
+  });
+  it("without the setting the same author is a person: no bot cap", async () => {
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
+    const g = (gw = makeGw(yes));
+    for (let i = 0; i < 2; i++) await deliver(g, NAMED, nextTs(), undefined, "U0AGENTX");
+    await settle();
+    expect(g.sends).toHaveLength(2);
+  });
+});
+
+describe("hardening: the conversation log follows deletes and edits", () => {
+  const heard = async (g: Gw, text: string, ts: string) => {
+    await deliver(g, text, ts);
+    await settle();
+  };
+  const texts = async () => (await conversationLog().recent(logKey("slack", CH), 10)).map((x) => x.text);
+  const admin = (g: Gw, event: Record<string, unknown>) =>
+    g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ...event }, client: g.client, context: { teamId: TEAM } });
+  it("a deleted message leaves the log", async () => {
+    const g = (gw = makeGw(no));
+    const ts = nextTs();
+    await heard(g, "an offhand remark", ts);
+    expect(await texts()).toEqual(["an offhand remark"]);
+    await admin(g, { subtype: "message_deleted", ts: nextTs(), deleted_ts: ts, previous_message: { ts, user: WORLD.manager } });
+    await settle();
+    expect(await texts()).toEqual([]);
+  });
+  it("an edit by a person replaces the text; the old words are gone", async () => {
+    const g = (gw = makeGw(no));
+    const ts = nextTs();
+    await heard(g, "the old words", ts);
+    await admin(g, { subtype: "message_changed", ts: nextTs(), message: { ts, user: WORLD.manager, text: "the new words" }, previous_message: { ts, text: "the old words" } });
+    await settle();
+    expect(await texts()).toEqual(["the new words"]);
+  });
+  it("an edit of a bot's message (a streamed reply) is left alone", async () => {
+    const g = (gw = makeGw(no));
+    const ts = nextTs();
+    await conversationLog().append(logKey("slack", CH), { ref: ts, author: "", isBot: true, text: "first text", agent: "default" });
+    await admin(g, { subtype: "message_changed", ts: nextTs(), message: { ts, user: "USLAUDEBOT", bot_id: "B_SLAUDE", text: "first text, more" } });
+    await settle();
+    const [x] = await conversationLog().recent(logKey("slack", CH), 10);
+    expect([x!.text, x!.agent]).toEqual(["first text", "default"]);
+  });
+  it("a secret in a message is stored masked", async () => {
+    const g = (gw = makeGw(no));
+    await heard(g, `use ${FAKE_SK} for staging`, nextTs());
+    expect((await texts())[0]).not.toContain(FAKE_SK);
+  });
+});
+
+describe("hardening: a shared app with agents at different levels", () => {
+  const yaml = (name: string, user: string, level: string) => `
+name: ${name}
+slackUserId: ${user}
+soul: You are ${name}.
+access:
+  channels:
+    trusted: [${CH}]
+channels:
+  ${CH}: { engage: { level: ${level}, mode: shadow } }
+`;
+  const persona = (name: string, user: string, level: string): Persona => {
+    const { spec } = parseAgentYaml(name, yaml(name, user, level));
+    const { soulData: sd, ...definition } = spec.definition;
+    return { name, slackUserId: user, soulMd: spec.soul, config: { slackUserId: user, name }, outClient: null, model: null, runsOn: null, provider: null, kbSources: null, background: null, mcp: null, soulJson: sd, definition } as Persona;
+  };
+  it("a message is logged when one agent the app serves is above mention, though the app's default agent is at mention", async () => {
+    setEngage("mention", "shadow");
+    const ps = [persona("ana", "UANA1", "addressed")];
+    setPersonaRegistry({
+      lookupByUserId: (id) => ps.find((p) => p.slackUserId === id) ?? null,
+      lookupByName: (n) => ps.find((p) => p.name === n) ?? null,
+      list: () => ps,
+      isMultiPersonaMode: () => true,
+      isManaged: () => true,
+      tombstonedPersonaFor: () => null,
+      defaultPersona: () => ({ model: null, mcp: null, definition: null }),
+    } as PersonaRegistry);
+    const g = (gw = makeGw(no));
+    await deliver(g, "a remark in a shared channel", nextTs());
+    await settle();
+    expect((await conversationLog().recent(logKey("slack", CH), 10)).map((x) => x.text)).toEqual(["a remark in a shared channel"]);
+  });
+});
+

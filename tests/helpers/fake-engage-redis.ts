@@ -62,6 +62,13 @@ export function fakeEngageRedis(opts: { fail?: () => boolean; now?: () => number
         lists.set(key, l);
         return 1;
       }
+      if (script === LOG_SCRIPTS.forget) {
+        const l = liveList(key);
+        if (!l) return 0;
+        const before = l.items.length;
+        l.items = l.items.filter((v) => !v.startsWith(`${a[1]}|`));
+        return before - l.items.length;
+      }
       throw new Error("unknown script");
     },
   };

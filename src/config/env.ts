@@ -653,6 +653,13 @@ export const env = {
    */
   engageBotActPerHour: (): number => posInt(opt("SLAUDE_ENGAGE_BOT_ACT_PER_HOUR"), 6, 10_000),
   /**
+   * Slack user ids that are agents although Slack marks no bot on their messages (an agent from another gateway
+   * posting with a user token): `SLAUDE_ENGAGE_AGENT_USERS`, comma separated. Their messages count as bot messages
+   * for the loop guard and the last-speaker rule. Empty by default.
+   */
+  engageAgentUsers: (): Set<string> =>
+    new Set(opt("SLAUDE_ENGAGE_AGENT_USERS").split(",").map((x) => x.trim()).filter((x) => /^[UW][A-Z0-9]{1,32}$/.test(x))),
+  /**
    * Raw `SLAUDE_PRICE_TABLE` (phase D): inline JSON, or a file path when the
    * value does not start with `{`. Parsed by `loadPriceTable`. Empty when unset.
    */

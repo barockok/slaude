@@ -12,7 +12,8 @@
  * Redis is optional and best effort, as in last-speaker.ts: with none, this process's memory is the
  * log; a Redis error or a slow Redis reads as "no entries" and never reaches a caller. An empty log
  * means the classifier sees the message alone (right after a channel is switched on, for one).
- * Text is stored cut to `LOG_TEXT_CHARS`; secrets are masked when the classifier input is built.
+ * Text is stored cut to `LOG_TEXT_CHARS` and secrets are masked before it is stored (and again when the classifier
+ * input is built); a message deleted or edited at the source is forgotten (`forget`).
  */
 import type { Redis } from "ioredis";
 import type { ThreadMsg } from "../core/thread-head";
@@ -48,6 +49,8 @@ export interface ConversationLog {
   append(key: string, entry: LogEntry): Promise<void>;
   /** The conversation's newest `limit` entries, oldest first. Never throws; [] when unknown. */
   recent(key: string, limit: number): Promise<LogEntry[]>;
+  /** Remove the entry with this `ref` (a message deleted or edited at the source). Never throws. */
+  forget(key: string, ref: string): Promise<void>;
 }
 
 /** `<surface>:<channel>` for a channel's top level, `<surface>:<channel>:<thread>` for a thread. */
@@ -101,6 +104,10 @@ export function memoryConversationLog(now: () => number = Date.now): Conversatio
       if (!v || v.until <= now()) return [];
       return v.entries.slice(-Math.max(0, limit)).map((e) => ({ ...e }));
     },
+    async forget(key, ref) {
+      const v = m.get(key);
+      if (v) v.entries = v.entries.filter((x) => x.ref !== ref);
+    },
   };
 }
 
@@ -111,6 +118,10 @@ export const LOG_SCRIPTS = {
     "local items = redis.call('LRANGE', KEYS[1], 0, -1); local p = ARGV[1] .. '|'; " +
     "for _, v in ipairs(items) do if string.sub(v, 1, #p) == p then return 0 end end; " +
     "redis.call('RPUSH', KEYS[1], ARGV[2]); redis.call('LTRIM', KEYS[1], -tonumber(ARGV[3]), -1); redis.call('EXPIRE', KEYS[1], ARGV[4]); return 1",
+  /** KEYS[1] list; ARGV: ref. Removes every item with this ref (items are `<ref>|<json>`). */
+  forget:
+    "local items = redis.call('LRANGE', KEYS[1], 0, -1); local p = ARGV[1] .. '|'; local n = 0; " +
+    "for _, v in ipairs(items) do if string.sub(v, 1, #p) == p then n = n + redis.call('LREM', KEYS[1], 0, v) end end; return n",
 } as const;
 
 /** The Redis commands the log uses. */
@@ -136,6 +147,13 @@ export function redisConversationLog(client: LogRedis, prefix = "slaude", o: { b
       } catch (err) {
         console.warn(`[engage] conversation log read from Redis failed: ${(err as Error).message}`);
         return [];
+      }
+    },
+    async forget(key, ref) {
+      try {
+        await bounded(client.eval(LOG_SCRIPTS.forget, 1, k(key), ref), budget, null);
+      } catch (err) {
+        console.warn(`[engage] conversation log forget in Redis failed: ${(err as Error).message}`);
       }
     },
   };

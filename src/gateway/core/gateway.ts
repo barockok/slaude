@@ -29,8 +29,8 @@ import type { PromiseTransport } from "../../proactive/promises";
 import type { ProactiveTransport } from "../../proactive/dispatch";
 import { channelSessionOn, channelSessionWakes, proactiveFor } from "../../soul/proactive";
 import { aliasesFor, engageFor } from "../engage/setting";
-import { observeEngage, type ImplicitRun } from "../engage/observe";
-import { clearAgentRecord, noteAgentMessage, noteConversation } from "../engage/record";
+import { authorIsAgent, observeEngage, type ImplicitRun } from "../engage/observe";
+import { clearAgentRecord, forgetConversationMessage, noteAgentMessage, noteConversation } from "../engage/record";
 import { AGENT_BOT_ID, conversationLog, logKey, setConversationLogRedis, toThreadMsg } from "../engage/conversation-log";
 import { setLastSpeakerRedis } from "../engage/last-speaker";
 import { engageState, setEngageRedis } from "../engage/budget";
@@ -5144,7 +5144,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       }
       // Loop guard: two agents that always answer each other stop at the bot cap. Taken first, so a bot-started run
       // refused here does not spend one of the people's slots.
-      if (e.bot_id || e.bot_profile) {
+      if (authorIsAgent(e)) {
         const botSlot = await state.actSlot(e.channel, env.engageBotActPerHour(), teamId, "bot");
         if (botSlot !== "ok") {
           count(botSlot === "cap" ? "cap" : "error");
@@ -5235,18 +5235,45 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     return agents.length === all.length;
   };
 
-  /** A message heard in a channel, for the classifier's conversation log (observe only; nothing at level `mention`). */
-  const noteHeard = (args: any, e: any): void =>
-    noteConversation({
-      channel: e?.channel,
-      thread: e?.thread_ts && e.thread_ts !== e.ts ? e.thread_ts : null,
-      ts: e?.ts,
-      text: String(e?.text ?? ""),
-      author: e?.user ?? e?.bot_id ?? null,
-      isBot: Boolean(e?.bot_id || e?.bot_profile),
-      subtype: e?.subtype ?? null,
-      viewer: appPersonaOf(args) ?? null,
-    });
+  /**
+   * A message heard in a channel, for the classifier's conversation log (observe only; nothing at level `mention`).
+   * Written when any agent this delivery speaks for is above `mention` there: a shared app serves several agents,
+   * and the one that holds the app's name may be at `mention` while another is not.
+   */
+  const noteHeard = (args: any, e: any): void => {
+    const note = (viewers: ReadonlyArray<string | null | undefined>): void =>
+      noteConversation({
+        channel: e?.channel,
+        thread: e?.thread_ts && e.thread_ts !== e.ts ? e.thread_ts : null,
+        ts: e?.ts,
+        text: String(e?.text ?? ""),
+        author: e?.user ?? e?.bot_id ?? null,
+        isBot: authorIsAgent(e ?? {}),
+        subtype: e?.subtype ?? null,
+        viewers,
+      });
+    const own = appPersonaOf(args);
+    if (own) return note([own]);
+    void channelSessionAgents(args).then(note, () => note([undefined]));
+  };
+
+  /** A message deleted, or edited by a person, at Slack: gone from the conversation log (an edit is then heard again as new). */
+  const noteLogEdit = (args: any, e: any): void => {
+    try {
+      if (e?.subtype === "message_deleted" && e.deleted_ts) {
+        const prev = e.previous_message ?? {};
+        void forgetConversationMessage({ channel: e.channel, thread: prev.thread_ts && prev.thread_ts !== e.deleted_ts ? prev.thread_ts : null, ts: e.deleted_ts });
+      } else if (e?.subtype === "message_changed" && e.message?.ts) {
+        const m = e.message;
+        // An agent's own edits (a streamed reply) keep their first text: re-adding one would lose its agent mark.
+        if (m.bot_id || m.bot_profile) return;
+        const thread = m.thread_ts && m.thread_ts !== m.ts ? m.thread_ts : null;
+        void forgetConversationMessage({ channel: e.channel, thread, ts: m.ts }).then(() => noteHeard(args, { ...m, channel: e.channel }));
+      }
+    } catch {
+      /* observing must never reach the handler */
+    }
+  };
 
   t.event("app_mention", async (args: any) => {
     const e: any = args.event;
@@ -5267,11 +5294,33 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     await handleMessage(args, { personaId, engagedBefore });
   });
 
+  /**
+   * A reply in a thread the agent is engaged in. A message from a bot or another agent counts against the same
+   * hourly bot cap as a run it starts, wherever implicit engagement is on for the channel: otherwise two agents
+   * that each answered once (capped) are both engaged, and answer each other without a limit. Past the cap the
+   * message is recorded and no turn runs.
+   */
+  const engagedReply = async (args: any, personaId: string | undefined) => {
+    const e: any = args.event;
+    const setting = e?.channel ? engageFor(personaId, e.channel) : null;
+    if (setting && setting.level !== "mention" && authorIsAgent(e)) {
+      const teamId: string | undefined = args.context?.teamId ?? e.team;
+      const slot = await engageState().actSlot(e.channel, env.engageBotActPerHour(), teamId, "bot").catch(() => "error" as const);
+      if (slot !== "ok") {
+        metric.engageActTotal.inc({ tier: "1", outcome: slot === "cap" ? "cap" : "error", level: setting.level });
+        console.log(`[engage] engaged reply recorded only channel=${e.channel} ts=${e.ts} reason=bot_${slot}`);
+        return await handleMessage(args, { suppress: true, personaId });
+      }
+    }
+    return await handleMessage(args, { personaId });
+  };
+
   // Single message router: every non-bot message goes here so we can manage
   // engagement state consistently. We dispatch to handleMessage when slaude
   // should answer.
   t.event("message", async (args: any) => {
     const e: any = args.event;
+    if (e?.subtype === "message_deleted" || e?.subtype === "message_changed") noteLogEdit(args, e);
     // Drop only self bot-echoes (any registered app's bot); other bots flow through.
     if (await isSelfBotEcho(args, e)) {
       metric.slackDropsTotal.inc({ reason: "self_bot" });
@@ -5460,7 +5509,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         staleRecord(e, appPersona);
         const act = gated() ? await consultGate(args, { mentionsAgent: false, personaId: appPersona }, "run") : undefined;
         if (act === "record") return await recordEngaged(args, appPersona);
-        return await handleMessage(args, { personaId: appPersona });
+        return await engagedReply(args, appPersona);
       }
       // Multi-persona: a plain reply continues whichever persona is engaged in this thread.
       if (registry.isMultiPersonaMode()) {
@@ -5473,7 +5522,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
             if (act === "record") {
               return await recordEngaged(args, p.name);
             }
-            return await handleMessage(args, { personaId: p.name });
+            return await engagedReply(args, p.name);
           }
         }
       }
@@ -5496,7 +5545,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         if (act === "record") {
           return await recordEngaged(args, restoredPersonaId);
         }
-        return await handleMessage(args, { personaId: restoredPersonaId });
+        return await engagedReply(args, restoredPersonaId);
       }
       // Explicitly disengaged (row.engaged=0): record plain messages into the
       // transcript too (suppressed by the hook) so the session stays populated
