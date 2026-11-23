@@ -40,7 +40,7 @@ Code changes: add `channel` to `ScopeInput` and `GateInput`, set where the gate 
 | Trusted channel B (any speaker, manager included) | `bnd(B)` | `bnd(B)`, `agent-<id>`, legacy `agent`, `shared`, `public`, KBs, the speaker's profile |
 | Wake or cron in B | `bnd(B)` | the same |
 | Background turn with no channel (nightly, triage) | nothing by default | `agent-<id>` and shared tiers only |
-| Manager DM | its own boundary (open decision 1) | as a trusted channel |
+| Manager DM | its own boundary (decided) | as a trusted channel |
 | /1on1, non-manager DM | `user-<id>` (unchanged) | unchanged; never gains a boundary source |
 | Public or unknown channel, non-manager | unchanged | `public` only |
 
@@ -48,11 +48,11 @@ Conversation pages move to `bnd(B)`. `agent-<id>` is now the **persona-wide tier
 
 ### 3. Promotion
 
-Three separate acts, because the audiences differ:
+Three separate acts, because the audiences differ (only the first ships in this work; publish is later, decided):
 
 1. **Promote**: copy a page from `bnd(B)` to `agent-<id>`, readable by the persona in every trusted channel and /1on1. The original stays in its boundary. The copy carries `promoted_from`, `promoted_by` and `as_of` in its frontmatter.
 2. **Share**: to `shared` (exists today, carded).
-3. **Publish**: to `public`, which allow-listed non-managers read. No `memory_save` target writes `public` today, so this is new and may wait (open decision 3).
+3. **Publish**: to `public`, which allow-listed non-managers read. No `memory_save` target writes `public` today, so this is new and waits.
 
 Promote is approval tier. The approver must be a manager, and a standing grant never covers it. In `classifyBrainOp` the check sits before the `userId === null` automatic branch, as the /1on1 check does, or every wake could promote freely. Demotion is `memory_delete` of the promoted copy, already approval tier.
 
@@ -69,13 +69,13 @@ Pages in `agent-<id>` become persona-wide by default: no migration, nothing brea
 
 ### 6. Lessons
 
-`self/lessons` stays persona-wide (capped at 40 lines, rewritten nightly, injected into every turn). The nightly pass that proposes lessons reads conversations from every channel and writes to the persona-wide page, so it is itself a crossing: a lesson sourced from one boundary must be generalised before it is written, or go through promotion. Open decision 4.
+`self/lessons` stays persona-wide (capped at 40 lines, rewritten nightly, injected into every turn). The nightly pass that proposes lessons reads conversations from every channel and writes to the persona-wide page, so it is itself a crossing: a lesson sourced from one boundary must be generalised before it is written, or go through promotion. Open decision 1.
 
 ## Rollout
 
 - Flag `SLAUDE_MEMORY_BOUNDARIES=off|on`, off for one RC, then on. Reads include every `bnd-*` source of the persona's trusted channels even when the flag is off, so a rollback does not hide pages.
 - It changes the agent loop, so it ships as an RC. No schema change.
-- Order: (1) the #247 gates (mandate fill-in, proactive outbound approval, `read_channel` to the current channel); (2) boundary sources behind the flag; (3) promotion; (4) the move job; (5) lessons.
+- Order (decided: memory first): (1) boundary sources behind the flag, with conversation pages and the checklist moved into them; (2) promotion; (3) the move job for existing pages; (4) lessons; (5) the other #247 gates (mandate fill-in, proactive outbound approval, `read_channel` to the current channel). The gates do not depend on memory and can be pulled forward if the memory work slips.
 
 ## Tests
 
@@ -100,10 +100,15 @@ Pages in `agent-<id>` become persona-wide by default: no migration, nothing brea
 - Whether a durable approval audit log exists.
 - The 32-character source id limit, taken from a code comment.
 
-## Open decisions
+## Decisions
 
-1. A manager DM: its own boundary, or the persona-wide home?
-2. Legacy pages: leave persona-wide, or require review before they stay visible?
-3. Is publish to `public` in scope now?
-4. Lessons: generalise before writing, or route proposals through promotion?
-5. Whether the #247 gates ship first as their own RC.
+Decided on 2026-11-24:
+
+- A manager DM is its own boundary.
+- Existing pages stay persona-wide, and a one-time job moves the attributable ones (checklists, conversation pages). The rest get a manager review list.
+- Publish to `public` is later. Only promote to the persona-wide tier ships now.
+- Memory boundaries ship before the other #247 gates.
+
+Still open:
+
+1. Lessons: generalise a lesson before it is written, or route the nightly proposals through promotion.
