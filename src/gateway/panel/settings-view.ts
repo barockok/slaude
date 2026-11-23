@@ -39,7 +39,7 @@ import { agentSourceId } from "../../knowledge/scope";
 import { KB_MEMOIZE_MAX_PAGES } from "../../tools/contracts/kb";
 import { MEMORY_WRITE_TOOLS, PROACTIVE_RULE_TOOL } from "../../agent/profile-write-guard";
 import { SECRET_PATTERN_COUNT } from "../../redact";
-import { HEARTBEAT_MAX_POSTS } from "../../proactive/heartbeat";
+import { HEARTBEAT_MAX_POSTS } from "../../proactive/post";
 import { MAX_UNANSWERED } from "../../proactive/wake-tools";
 import { UNCHANGED_WINDOW_MS } from "../../proactive/restraint";
 import { WAKE_TOOL_ALLOWLIST } from "../../proactive/wake-guard";

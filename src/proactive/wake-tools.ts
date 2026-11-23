@@ -12,7 +12,7 @@ import { redactSecrets } from "../gateway/core/status-text";
 import type { BrainOpCall } from "../knowledge/memory-trail";
 import { m as metric } from "../metrics";
 import { proactiveFor, proactiveRead, type ResolvedProactive } from "../soul/proactive";
-import { HEARTBEAT_MAX_POSTS, sendProactive, type ProactivePostContext } from "./heartbeat";
+import { HEARTBEAT_MAX_POSTS, sendProactive, type ProactivePostContext } from "./post";
 import { minLevel, type Level } from "./levels";
 import { nextLocal } from "./promises";
 import { isSelfEvidence, textHash, UNCHANGED_WINDOW_MS, type Audience, type RestraintRule } from "./restraint";

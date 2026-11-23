@@ -23,7 +23,7 @@ import { getPageOrNull } from "../knowledge/memory-trail";
 import { m as metric } from "../metrics";
 import { personaDefaultModel } from "../persona/registry";
 import { channelSessionWakes } from "../soul/proactive";
-import { agentPageBody, agentScope, channelChecklistSlug, HEARTBEAT_SLUG, line, OUT_OF_BUDGET_TEXT, tellManagerOnce } from "./heartbeat";
+import { agentPageBody, agentScope, channelChecklistSlug, HEARTBEAT_SLUG, line, OUT_OF_BUDGET_TEXT, tellManagerOnce } from "./post";
 import { loadRules } from "./rules";
 import { checklistHash, FAILURES_WORTH_A_NOTICE, wakeCaps, wakeGateConfig, WakeTargetBusyError, type WakeDeps, type WakeResult } from "./wake";
 import { wakeDue } from "./wake-gate";

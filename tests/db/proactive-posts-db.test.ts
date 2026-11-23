@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { db } from "../../src/db/schema";
 import * as Posts from "../../src/db/proactive-posts";
-import * as Marks from "../../src/db/heartbeat-watermarks";
 
 // Runs on whichever driver the suite is on (sqlite by default, PGLite with
 // SLAUDE_DB=pg), like the other repo tests.
@@ -19,7 +18,6 @@ const base = {
 
 beforeEach(async () => {
   await db.run("DELETE FROM proactive_posts");
-  await db.run("DELETE FROM heartbeat_watermarks");
 });
 
 describe("proactive_posts text and context", () => {
@@ -50,21 +48,5 @@ describe("proactive_posts text and context", () => {
     await Posts.recordPost({ ...base, messageTs: "3.3" });
     await db.run(`UPDATE proactive_posts SET context = '{nope' WHERE message_ts = '3.3'`);
     expect((await Posts.findByMessage("D1", "3.3"))?.context).toBeNull();
-  });
-});
-
-describe("heartbeat watermarks", () => {
-  test("watermarks only move forward", async () => {
-    await Marks.advance("a1", "mail", 200, 1);
-    await Marks.advance("a1", "mail", 100, 2);
-    expect(await Marks.getSince("a1", "mail")).toBe(200);
-    await Marks.advance("a1", "mail", 300, 3);
-    expect(await Marks.getSince("a1", "mail")).toBe(300);
-  });
-
-  test("an unknown source has no watermark; agents are separate", async () => {
-    await Marks.advance("a1", "mail", 200, 1);
-    expect(await Marks.getSince("a1", "chat")).toBeNull();
-    expect(await Marks.getSince("a2", "mail")).toBeNull();
   });
 });
