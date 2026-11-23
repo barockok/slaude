@@ -19,9 +19,9 @@ import * as MentionOnly from "../../../src/db/mention-only";
 import { makeGateRunner } from "../../../src/gateway/gate/runner";
 import type { DecisionAdapter, DecisionRequest } from "../../../src/decision/types";
 import { __setEngageBreakerForTests, __setEngageStateForTests, circuitBreaker, memoryEngageState, type CircuitBreaker } from "../../../src/gateway/engage/budget";
-import { __setDebounceForTests, shadowIdle } from "../../../src/gateway/engage/shadow";
-import { __setUsersCacheForTests, makeUsersCache } from "../../../src/gateway/engage/users";
+import { shadowIdle } from "../../../src/gateway/engage/shadow";
 import { __setLastSpeakerStoreForTests, lastSpeakers } from "../../../src/gateway/engage/last-speaker";
+import { __setConversationLogForTests, conversationLog, logKey } from "../../../src/gateway/engage/conversation-log";
 import { __setProactiveSoulSource } from "../../../src/soul/proactive";
 import { __resetPersonaRegistry, setPersonaRegistry, type PersonaRegistry } from "../../../src/persona/registry";
 import { parseAgentYaml } from "../../../src/persona/agent-def";
@@ -34,6 +34,9 @@ import { metrics } from "../../../src/metrics";
  * shadow, at level mention, or under the kill switch nothing about what the agent does changes.
  */
 const TEAM = "T";
+// Key-shaped fixtures built at run time so no secret-looking literal sits in the source.
+const FAKE_SK = ["sk", "abcdefghijklmnopqrstuvwxyz0123456789"].join("-");
+
 const CH = "C0TEAM";
 const PASS = "mcp__slaude_surface__pass";
 const REPLY = "mcp__slaude_surface__reply";
@@ -125,7 +128,7 @@ const actCount = (outcome: string, tier?: number): number =>
     .reduce((n, l) => n + Number(l.split(" ").at(-1)), 0);
 
 const CLEAN = ["sessions", "seen_events", "pending_gates", "ignores", "agent_grants"];
-const ENV_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLAUDE_SLACK_MODE", "SLAUDE_SLACK_API_URL", "SLAUDE_ENGAGE_FORCE_SHADOW", "SLAUDE_ENGAGE_ACT_PER_HOUR"] as const;
+const ENV_KEYS = ["SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLAUDE_SLACK_MODE", "SLAUDE_SLACK_API_URL", "SLAUDE_ENGAGE_FORCE_SHADOW", "SLAUDE_ENGAGE_ACT_PER_HOUR", "SLAUDE_ENGAGE_BOT_ACT_PER_HOUR", "SLAUDE_ENGAGE_AGENT_USERS"] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 const setEngage = (level: "mention" | "addressed" | "contribute", mode: "shadow" | "on", channel = CH) =>
   setSoulData(SoulDataSchema.parse({ ...soulData(), channelEngage: [{ channel, level, mode }] }));
@@ -139,13 +142,10 @@ beforeEach(async () => {
   __setEngageStateForTests(null);
   __setEngageBreakerForTests(null);
   __setLastSpeakerStoreForTests(null);
+  __setConversationLogForTests(null);
   for (const t of CLEAN) await db.run(`DELETE FROM ${t}`);
   await OneOnOne._wipeForTests();
   beforeActed = actCount("acted");
-  // The workspace's names are known (nobody shares the agent's), so a name and a comma is a tier 1 run.
-  const users = makeUsersCache();
-  users.ensure(TEAM, async () => ({ names: new Set<string>(), complete: true }));
-  __setUsersCacheForTests(users);
   await Bun.sleep(5);
 });
 afterEach(async () => {
@@ -160,8 +160,6 @@ afterEach(async () => {
   __setLastSpeakerStoreForTests(null);
   __setProactiveSoulSource(null);
   __resetPersonaRegistry();
-  __setUsersCacheForTests(null);
-  __setDebounceForTests(null);
   __resetSoulDataMemo();
   try { rmSync(paths.soul, { force: true }); } catch {}
 });
@@ -169,8 +167,8 @@ afterEach(async () => {
 const NAMED = "quill, can you look at the deploy?";
 
 describe("phase 2: acting at the final drop", () => {
-  it("tier 1 (name and comma) acts at once: a turn runs with the implicit note, in a session, replying under the message", async () => {
-    const g = (gw = makeGw(null));
+  it("a confident classifier run on a name and a comma acts: a turn runs with the implicit note, in a session, replying under the message", async () => {
+    const g = (gw = makeGw(yes));
     const ts = nextTs();
     await deliver(g, NAMED, ts);
     await settle();
@@ -182,11 +180,11 @@ describe("phase 2: acting at the final drop", () => {
     // The reply goes in the thread of the message for a classic agent.
     await g.surfaces.at(-1)!.reply({ text: "on it" });
     expect(g.posts.at(-1)!.thread_ts).toBe(ts);
-    expect(actCount("acted", 1) - beforeActed).toBe(1);
+    expect(actCount("acted", 3) - beforeActed).toBe(1);
   });
 
-  it("tier 2 (the person the agent answered, request shape) acts, with the thread head seeded on the first turn", async () => {
-    const g = (gw = makeGw(null));
+  it("a follow-up to the agent is asked, and a yes acts, with the thread head seeded on the first turn", async () => {
+    const g = (gw = makeGw(yes));
     const root = nowTs(-100);
     g.state.thread = [m(root, WORLD.manager, "why is staging red"), m(nowTs(-60), "U0BOT0001", "it is the cache", { bot_id: "B_SLAUDE" })];
     await lastSpeakers().put({ channel: CH, thread: root, persona: "default" }, { ts: nowTs(-30), persona: "default", app: "", repliedToUser: WORLD.manager });
@@ -196,7 +194,8 @@ describe("phase 2: acting at the final drop", () => {
     expect(g.sends[0]!.text).toContain(IMPLICIT_NOTE);
     expect(g.sends[0]!.text).toContain("<thread-head>");
     expect(g.sends[0]!.text).toContain("why is staging red");
-    expect(actCount("acted", 2)).toBeGreaterThan(0);
+    expect(asked).toHaveLength(1);
+    expect(actCount("acted", 3)).toBeGreaterThan(0);
   });
 
   it("tier 3: a confident classifier run acts; its call was awaited and logged as a decision", async () => {
@@ -245,7 +244,7 @@ describe("phase 2: acting at the final drop", () => {
   });
 
   it("a model pass gives the engagement back: the next plain reply is recorded, not run", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const root = nowTs(-100);
     g.state.thread = [m(root, WORLD.manager, "context")];
     g.setPlan([PASS]);
@@ -259,7 +258,7 @@ describe("phase 2: acting at the final drop", () => {
   });
 
   it("a model reply keeps the thread engaged: the next plain reply runs as an ordinary turn", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const root = nowTs(-100);
     g.state.thread = [m(root, WORLD.manager, "context")];
     g.setPlan([REPLY]);
@@ -273,7 +272,7 @@ describe("phase 2: acting at the final drop", () => {
   });
 
   it("an implicit turn is not forced to reply while it runs; afterwards a mention in the same thread is guarded again", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const ts = nextTs();
     await deliver(g, NAMED, ts);
     await settle();
@@ -288,7 +287,7 @@ describe("phase 2: acting at the final drop", () => {
   });
 
   it("a silent end (no reply, no pass tool) is a pass: engagement is given back and nothing is left behind", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const root = nowTs(-100);
     g.state.thread = [m(root, WORLD.manager, "context")];
     g.setPlan([]);
@@ -302,7 +301,7 @@ describe("phase 2: acting at the final drop", () => {
   });
 
   it("an errored implicit turn stays quiet in the thread and gives the engagement back", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const root = nowTs(-100);
     g.state.thread = [m(root, WORLD.manager, "context")];
     g.setPlan(["__error"]);
@@ -318,7 +317,7 @@ describe("phase 2: acting at the final drop", () => {
   });
 
   it("an implicit turn sets no thinking status of its own", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     g.setPlan([REPLY]);
     await deliver(g, NAMED, nextTs());
     await settle();
@@ -326,110 +325,18 @@ describe("phase 2: acting at the final drop", () => {
   });
 });
 
-describe("phase 2: a root question at contribute waits, then acts from the timer", () => {
-  const ask = async (g: Gw, ts: string) => {
-    setEngage("contribute", "on");
-    __setDebounceForTests(20);
-    await deliver(g, "how do we roll back the release safely today?", ts);
-    await Bun.sleep(100);
-    await settle();
-  };
-  it("still there and unanswered: the agent takes part, replying under the question", async () => {
-    const g = (gw = makeGw(yes));
-    const ts = nextTs();
-    g.state.after = [m(ts, WORLD.manager, "how do we roll back the release safely today?")];
-    await ask(g, ts);
-    expect(g.sends).toHaveLength(1);
-    expect(g.sends[0]!.text).toContain(IMPLICIT_NOTE);
-    expect(g.sends[0]!.text).toContain(`thread_ts="${ts}"`);
-  });
-  describe("the router's checks run again when the timer fires", () => {
-    const QUESTION = "how do we roll back the release safely today?";
-    it("a session that exists for the thread by the time it fires (any row) is left alone", async () => {
-      const g = (gw = makeGw(yes));
-      setEngage("contribute", "on");
-      __setDebounceForTests(120);
-      const ts = nextTs();
-      g.state.after = [m(ts, WORLD.manager, QUESTION)];
-      await deliver(g, QUESTION, ts);
-      await deliver(g, "<@USLAUDEBOT> have a look at that please", nextTs(), ts);
-      await Bun.sleep(300);
-      await settle();
-      expect(g.sends).toHaveLength(1);
-      expect(g.sends[0]!.text).not.toContain(IMPLICIT_NOTE);
-    });
-    it("a reply by anyone (the agent, a bot, the author) counts as an answer at the re-check", async () => {
-      const g = (gw = makeGw(yes));
-      setEngage("contribute", "on");
-      __setDebounceForTests(60);
-      const ts = nextTs();
-      g.state.after = [m(ts, WORLD.manager, QUESTION, { reply_count: 1, reply_users: [WORLD.manager] })];
-      await deliver(g, QUESTION, ts);
-      await Bun.sleep(250);
-      await settle();
-      expect(g.sends).toEqual([]);
-    });
-    it("/mention-only set during the wait: nothing runs", async () => {
-      const g = (gw = makeGw(yes));
-      setEngage("contribute", "on");
-      __setDebounceForTests(120);
-      const ts = nextTs();
-      g.state.after = [m(ts, WORLD.manager, QUESTION)];
-      await deliver(g, QUESTION, ts);
-      await MentionOnly.set({ channelId: CH, threadTs: ts, createdBy: WORLD.manager, teamId: TEAM });
-      await Bun.sleep(300);
-      await settle();
-      expect(g.sends).toEqual([]);
-      await MentionOnly.clear(CH, ts);
-    });
-    it("the mode switched to shadow during the wait: nothing runs", async () => {
-      const g = (gw = makeGw(yes));
-      setEngage("contribute", "on");
-      __setDebounceForTests(120);
-      const ts = nextTs();
-      g.state.after = [m(ts, WORLD.manager, QUESTION)];
-      await deliver(g, QUESTION, ts);
-      setEngage("contribute", "shadow");
-      await Bun.sleep(300);
-      await settle();
-      expect(g.sends).toEqual([]);
-    });
-    it("the kill switch set during the wait: nothing runs, and it is counted", async () => {
-      const g = (gw = makeGw(yes));
-      setEngage("contribute", "on");
-      __setDebounceForTests(120);
-      const ts = nextTs();
-      g.state.after = [m(ts, WORLD.manager, QUESTION)];
-      const before = actCount("forced_shadow");
-      await deliver(g, QUESTION, ts);
-      process.env.SLAUDE_ENGAGE_FORCE_SHADOW = "1";
-      await Bun.sleep(300);
-      await settle();
-      expect(g.sends).toEqual([]);
-      expect(actCount("forced_shadow") - before).toBe(1);
-    });
-  });
-  it("answered by a colleague meanwhile: nothing runs", async () => {
-    const g = (gw = makeGw(yes));
-    const ts = nextTs();
-    g.state.after = [m(ts, WORLD.manager, "q", { reply_users: ["U0COLLEAGUE"] })];
-    await ask(g, ts);
-    expect(g.sends).toEqual([]);
-  });
-});
-
 describe("phase 2: nothing changes unless the mode is on", () => {
   const baseline = async (setup: () => void) => {
     setup();
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     await deliver(g, NAMED, nextTs());
     await settle();
     return g;
   };
-  it("mode shadow: no turn, no session, no Slack call beyond what the observer always made", async () => {
+  it("mode shadow: no turn, no session, no Slack call at all (the classifier reads the conversation log)", async () => {
     const g = await baseline(() => setEngage("addressed", "shadow"));
     expect(g.sends).toEqual([]);
-    expect(g.slack).toEqual([]);
+    expect(g.slack).toEqual([]); // the classifier's context is the gateway's own log: no Slack read
     expect(Number((await db.one<{ n: number }>("SELECT COUNT(*) AS n FROM sessions"))?.n)).toBe(0);
     expect(actCount("acted") - beforeActed).toBe(0);
   });
@@ -449,7 +356,7 @@ describe("phase 2: nothing changes unless the mode is on", () => {
     expect(g.slack.filter((c) => c === "chat.postMessage" || c === "reactions.add")).toEqual([]);
   });
   it("the kill switch forces shadow at decision time, and is counted", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     process.env.SLAUDE_ENGAGE_FORCE_SHADOW = "1";
     const before = actCount("forced_shadow");
     await deliver(g, NAMED, nextTs());
@@ -464,7 +371,7 @@ describe("phase 2: nothing changes unless the mode is on", () => {
   });
   it("the per channel act cap: past it a run is a pass, and counted", async () => {
     process.env.SLAUDE_ENGAGE_ACT_PER_HOUR = "2";
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const before = actCount("cap");
     for (let i = 0; i < 3; i++) await deliver(g, NAMED, nextTs());
     await settle();
@@ -476,7 +383,7 @@ describe("phase 2: nothing changes unless the mode is on", () => {
 describe("phase 2: the same access checks as a mention", () => {
   it("a blocked author never acts", async () => {
     await Grants.create({ persona: "default", subjectKind: "user", subjectId: "U0BLOCKED1", role: "member", deny: true, createdBy: WORLD.manager });
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     await deliver(g, NAMED, nextTs(), undefined, "U0BLOCKED1");
     await settle();
     expect(g.sends).toEqual([]);
@@ -485,7 +392,7 @@ describe("phase 2: the same access checks as a mention", () => {
   it("a /1on1 thread never acts", async () => {
     const root = nowTs(-100);
     await OneOnOne.lock({ channelId: CH, threadTs: root, lockedUser: WORLD.manager, createdBy: WORLD.manager });
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     await deliver(g, NAMED, nextTs(), root);
     await settle();
     expect(g.sends).toEqual([]);
@@ -502,7 +409,7 @@ describe("phase 2: the same access checks as a mention", () => {
 describe("phase 2: channel sessions", () => {
   it("an unmentioned root message whose decision is run is not suppressed: one turn, replying at the root", async () => {
     __setProactiveSoulSource(() => `\n## Channel <#${CH}>\n### Session\n- Mode: channel\n`);
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     await deliver(g, NAMED, nextTs());
     await settle();
     expect(g.sends).toHaveLength(1);
@@ -513,7 +420,7 @@ describe("phase 2: channel sessions", () => {
   });
   it("a root message with no run decision is still recorded suppressed", async () => {
     __setProactiveSoulSource(() => `\n## Channel <#${CH}>\n### Session\n- Mode: channel\n`);
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(no));
     await deliver(g, "just a status note for the channel", nextTs());
     await settle();
     expect(g.sends).toHaveLength(1);
@@ -522,7 +429,7 @@ describe("phase 2: channel sessions", () => {
   it("in shadow the same message is recorded suppressed, as before", async () => {
     __setProactiveSoulSource(() => `\n## Channel <#${CH}>\n### Session\n- Mode: channel\n`);
     setEngage("addressed", "shadow");
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     await deliver(g, NAMED, nextTs());
     await settle();
     expect(g.sends).toHaveLength(1);
@@ -557,7 +464,7 @@ channels:
       tombstonedPersonaFor: () => null,
       defaultPersona: () => ({ model: null, mcp: null, definition: null }),
     } as PersonaRegistry);
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const root = nowTs(-100);
     const at = nowTs(-30);
     // Both spoke at the same moment: neither follows the other, so both decide run (tier 2).
@@ -582,7 +489,7 @@ describe("phase 2: mode on, and still nothing acts for", () => {
   const raw = (g: Gw, o: Record<string, unknown>) =>
     g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ts: nextTs(), text: NAMED, ...o }, client: g.client, context: { teamId: TEAM } });
   it("a /mention-only thread", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const root = nowTs(-100);
     await MentionOnly.set({ channelId: CH, threadTs: root, createdBy: WORLD.manager, teamId: TEAM });
     await deliver(g, NAMED, nextTs(), root);
@@ -591,7 +498,7 @@ describe("phase 2: mode on, and still nothing acts for", () => {
     await MentionOnly.clear(CH, root);
   });
   it("a disengaged thread (a pass gave it back): the message is recorded, not run", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const root = nowTs(-100);
     g.state.thread = [m(root, WORLD.manager, "context")];
     g.setPlan([PASS]);
@@ -604,27 +511,27 @@ describe("phase 2: mode on, and still nothing acts for", () => {
     expect(g.sends[1]!.text).not.toContain(IMPLICIT_NOTE);
   });
   it("an ignored thread", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const root = nowTs(-100);
     await Ignores.create({ targetType: "thread", channelId: CH, threadTs: root, teamId: TEAM, createdBy: WORLD.manager });
     await deliver(g, NAMED, nextTs(), root);
     await settle();
     expect(g.sends).toEqual([]);
   });
-  it("a bot author", async () => {
-    const g = (gw = makeGw(null));
+  it("a bot author when the classifier says no", async () => {
+    const g = (gw = makeGw(no));
     await raw(g, { user: "U0SOMEBOT", bot_id: "B0OTHERBOT" });
     await settle();
     expect(g.sends).toEqual([]);
   });
   it("a subtype outside the allowlist", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     await raw(g, { user: WORLD.manager, subtype: "channel_join" });
     await settle();
     expect(g.sends).toEqual([]);
   });
   it("an edited message (message_changed carries no user)", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     await raw(g, { subtype: "message_changed", message: { user: WORLD.manager, text: NAMED, ts: "1.1" } });
     await settle();
     expect(g.sends).toEqual([]);
@@ -632,7 +539,7 @@ describe("phase 2: mode on, and still nothing acts for", () => {
   it("level mention at the channel-session site", async () => {
     __setProactiveSoulSource(() => `\n## Channel <#${CH}>\n### Session\n- Mode: channel\n`);
     setEngage("mention", "on");
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     await deliver(g, NAMED, nextTs());
     await settle();
     expect(g.sends).toHaveLength(1);
@@ -643,7 +550,7 @@ describe("phase 2: mode on, and still nothing acts for", () => {
 describe("phase 2: a failed act in a channel session still records the message", () => {
   it("handleMessage throwing once: the recording lands", async () => {
     __setProactiveSoulSource(() => `\n## Channel <#${CH}>\n### Session\n- Mode: channel\n`);
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const real = OneOnOne.find;
     let thrown = false;
     const spy = spyOn(OneOnOne, "find").mockImplementation(((...a: Parameters<typeof real>) => {
@@ -672,7 +579,7 @@ describe("phase 2: a recording coalesced with a running turn does not change its
     await MentionOnly.clear(CH, root);
   };
   it("a recording behind a running implicit turn leaves it relaxed", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     g.setPlan(["__hold"]);
     const root = nextTs();
     await deliver(g, NAMED, root);
@@ -683,7 +590,7 @@ describe("phase 2: a recording coalesced with a running turn does not change its
     expect(g.guard(g.sends[0]!.id)).toBeNull();
   });
   it("a recording behind a running mention turn leaves it guarded", async () => {
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     g.setPlan(["__hold"]);
     const root = nextTs();
     await g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", user: WORLD.manager, team: TEAM, ts: root, text: "<@USLAUDEBOT> hello there" }, client: g.client, context: { teamId: TEAM } });
@@ -699,9 +606,9 @@ describe("phase 2: a pass or a silent end leaves no reaction anywhere in the thr
   const NOTE = "Sam, you do not need to reply to this one, I am only noting for the team that the checks are green";
   const scenario = async (plan: Plan, channelSession: boolean) => {
     if (channelSession) SESSION();
-    const g = (gw = makeGw(null));
+    const g = (gw = makeGw(yes));
     const root = nextTs();
-    await deliver(g, "thanks, that worked", root);
+    await deliver(g, "<!here> thanks, that worked", root);
     await settle();
     g.setPlan(plan);
     const reply = nextTs();
@@ -753,3 +660,178 @@ describe("phase 2: an implicit turn adds no reaction of its own", () => {
     expect(f.seen).toEqual(["eyes"]);
   });
 });
+
+describe("phase 2: a bot author goes to the classifier like anyone", () => {
+  it("acts when the classifier says yes (the classifier decides, not the author kind)", async () => {
+    const g = (gw = makeGw(yes));
+    await g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ts: nextTs(), text: NAMED, user: "U0SOMEBOT", bot_id: "B0OTHERBOT" }, client: g.client, context: { teamId: TEAM } });
+    await settle();
+    expect(g.sends).toHaveLength(1);
+    expect(g.sends[0]!.text).toContain(IMPLICIT_NOTE);
+  });
+});
+
+describe("phase 2: the loop guard for bot-started runs", () => {
+  const fromBot = (g: Gw, ts: string) =>
+    g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ts, text: NAMED, user: "U0SOMEBOT", bot_id: "B0OTHERBOT" }, client: g.client, context: { teamId: TEAM } });
+  it("past the hourly bot cap a bot-started run is a counted pass, while a person's message still acts under the normal cap", async () => {
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "2";
+    const g = (gw = makeGw(yes));
+    const before = actCount("cap");
+    for (let i = 0; i < 3; i++) await fromBot(g, nextTs());
+    await settle();
+    expect(g.sends).toHaveLength(2);
+    expect(actCount("cap") - before).toBe(1);
+    await deliver(g, NAMED, nextTs());
+    await settle();
+    expect(g.sends).toHaveLength(3);
+  });
+});
+
+describe("hardening: the loop guard in an engaged thread", () => {
+  const botEvent = (g: Gw, text: string, ts: string, thread: string, o: Record<string, unknown> = { user: "U0SOMEBOT", bot_id: "B0OTHERBOT" }) =>
+    g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ts, thread_ts: thread, text, ...o }, client: g.client, context: { teamId: TEAM } });
+  it("past the bot cap a bot's reply in a thread a bot-started run engaged is recorded, not run; a person's reply still runs", async () => {
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
+    const g = (gw = makeGw(yes));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([REPLY]);
+    await botEvent(g, NAMED, nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(1);
+    const cap = actCount("cap");
+    await botEvent(g, "and one more thing about the deploy", nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(2);
+    expect(g.sends[1]!.text).toMatch(/do NOT reply/i);
+    expect(actCount("cap") - cap).toBe(1);
+    await deliver(g, "thanks, and one more question: is it fixed?", nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(3);
+    expect(g.sends[2]!.text).not.toMatch(/do NOT reply/i);
+  });
+  it("under the cap a bot's reply in an engaged thread runs as before", async () => {
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "5";
+    const g = (gw = makeGw(yes));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([REPLY]);
+    await botEvent(g, NAMED, nextTs(), root);
+    await settle();
+    await botEvent(g, "and one more thing about the deploy", nextTs(), root);
+    await settle();
+    expect(g.sends).toHaveLength(2);
+    expect(g.sends[1]!.text).not.toMatch(/do NOT reply/i);
+  });
+  it("a channel at level mention keeps today's behaviour: no cap on an engaged thread", async () => {
+    setEngage("mention", "on");
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
+    const g = (gw = makeGw(yes));
+    const root = nowTs(-100);
+    g.state.thread = [m(root, WORLD.manager, "context")];
+    g.setPlan([REPLY]);
+    await g.emit("app_mention", { event: { type: "app_mention", channel: CH, user: WORLD.manager, team: TEAM, ts: nextTs(), thread_ts: root, text: "<@USLAUDEBOT> hi" }, client: g.client, context: { teamId: TEAM } });
+    await settle();
+    for (let i = 0; i < 2; i++) await botEvent(g, "status update", nextTs(), root);
+    await settle();
+    expect(g.sends.filter((x) => /do NOT reply/i.test(x.text))).toHaveLength(0);
+  });
+});
+
+describe("hardening: an agent that posts with a user token", () => {
+  it("counts as a bot for the loop guard when SLAUDE_ENGAGE_AGENT_USERS names it", async () => {
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
+    process.env.SLAUDE_ENGAGE_AGENT_USERS = "U0AGENTX";
+    const g = (gw = makeGw(yes));
+    const before = actCount("cap");
+    for (let i = 0; i < 2; i++) await deliver(g, NAMED, nextTs(), undefined, "U0AGENTX");
+    await settle();
+    expect(g.sends).toHaveLength(1);
+    expect(actCount("cap") - before).toBe(1);
+  });
+  it("without the setting the same author is a person: no bot cap", async () => {
+    process.env.SLAUDE_ENGAGE_BOT_ACT_PER_HOUR = "1";
+    const g = (gw = makeGw(yes));
+    for (let i = 0; i < 2; i++) await deliver(g, NAMED, nextTs(), undefined, "U0AGENTX");
+    await settle();
+    expect(g.sends).toHaveLength(2);
+  });
+});
+
+describe("hardening: the conversation log follows deletes and edits", () => {
+  const heard = async (g: Gw, text: string, ts: string) => {
+    await deliver(g, text, ts);
+    await settle();
+  };
+  const texts = async () => (await conversationLog().recent(logKey("slack", CH), 10)).map((x) => x.text);
+  const admin = (g: Gw, event: Record<string, unknown>) =>
+    g.emit("message", { event: { type: "message", channel: CH, channel_type: "channel", team: TEAM, ...event }, client: g.client, context: { teamId: TEAM } });
+  it("a deleted message leaves the log", async () => {
+    const g = (gw = makeGw(no));
+    const ts = nextTs();
+    await heard(g, "an offhand remark", ts);
+    expect(await texts()).toEqual(["an offhand remark"]);
+    await admin(g, { subtype: "message_deleted", ts: nextTs(), deleted_ts: ts, previous_message: { ts, user: WORLD.manager } });
+    await settle();
+    expect(await texts()).toEqual([]);
+  });
+  it("an edit by a person replaces the text; the old words are gone", async () => {
+    const g = (gw = makeGw(no));
+    const ts = nextTs();
+    await heard(g, "the old words", ts);
+    await admin(g, { subtype: "message_changed", ts: nextTs(), message: { ts, user: WORLD.manager, text: "the new words" }, previous_message: { ts, text: "the old words" } });
+    await settle();
+    expect(await texts()).toEqual(["the new words"]);
+  });
+  it("an edit of a bot's message (a streamed reply) is left alone", async () => {
+    const g = (gw = makeGw(no));
+    const ts = nextTs();
+    await conversationLog().append(logKey("slack", CH), { ref: ts, author: "", isBot: true, text: "first text", agent: "default" });
+    await admin(g, { subtype: "message_changed", ts: nextTs(), message: { ts, user: "USLAUDEBOT", bot_id: "B_SLAUDE", text: "first text, more" } });
+    await settle();
+    const [x] = await conversationLog().recent(logKey("slack", CH), 10);
+    expect([x!.text, x!.agent]).toEqual(["first text", "default"]);
+  });
+  it("a secret in a message is stored masked", async () => {
+    const g = (gw = makeGw(no));
+    await heard(g, `use ${FAKE_SK} for staging`, nextTs());
+    expect((await texts())[0]).not.toContain(FAKE_SK);
+  });
+});
+
+describe("hardening: a shared app with agents at different levels", () => {
+  const yaml = (name: string, user: string, level: string) => `
+name: ${name}
+slackUserId: ${user}
+soul: You are ${name}.
+access:
+  channels:
+    trusted: [${CH}]
+channels:
+  ${CH}: { engage: { level: ${level}, mode: shadow } }
+`;
+  const persona = (name: string, user: string, level: string): Persona => {
+    const { spec } = parseAgentYaml(name, yaml(name, user, level));
+    const { soulData: sd, ...definition } = spec.definition;
+    return { name, slackUserId: user, soulMd: spec.soul, config: { slackUserId: user, name }, outClient: null, model: null, runsOn: null, provider: null, kbSources: null, background: null, mcp: null, soulJson: sd, definition } as Persona;
+  };
+  it("a message is logged when one agent the app serves is above mention, though the app's default agent is at mention", async () => {
+    setEngage("mention", "shadow");
+    const ps = [persona("ana", "UANA1", "addressed")];
+    setPersonaRegistry({
+      lookupByUserId: (id) => ps.find((p) => p.slackUserId === id) ?? null,
+      lookupByName: (n) => ps.find((p) => p.name === n) ?? null,
+      list: () => ps,
+      isMultiPersonaMode: () => true,
+      isManaged: () => true,
+      tombstonedPersonaFor: () => null,
+      defaultPersona: () => ({ model: null, mcp: null, definition: null }),
+    } as PersonaRegistry);
+    const g = (gw = makeGw(no));
+    await deliver(g, "a remark in a shared channel", nextTs());
+    await settle();
+    expect((await conversationLog().recent(logKey("slack", CH), 10)).map((x) => x.text)).toEqual(["a remark in a shared channel"]);
+  });
+});
+

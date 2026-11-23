@@ -5,7 +5,6 @@ import type { Persona } from "../../../src/persona/types";
 import { __setLastSpeakerStoreForTests, memoryLastSpeakerStore, type LastSpeakerStore } from "../../../src/gateway/engage/last-speaker";
 import { observeEngage, type ObserveInput } from "../../../src/gateway/engage/observe";
 import { clearAgentRecord } from "../../../src/gateway/engage/record";
-import { makeUsersCache } from "../../../src/gateway/engage/users";
 
 const CH = "C0SHARED";
 const yaml = (name: string, user: string, mode = "on") => `
@@ -66,7 +65,7 @@ describe("two personas in one channel", () => {
         results[who] = `${r?.tier}:${r?.action}:${r?.reason}`;
       }
       // ana's copy sees robin spoke last (another agent): pass. robin's copy follows its own answer.
-      expect(results.robin).toBe("2:run:follows_agent");
+      expect(results.robin).toBe("3:classify:classify");
       expect(results.ana).toBe("0:pass:follows_other_agent");
     });
   }
@@ -80,18 +79,17 @@ describe("two personas in one channel", () => {
   test("when ana spoke last, ana's copy runs and robin's copy passes", async () => {
     await speak("robin", nowTs(-20));
     await speak("ana", nowTs(-5));
-    expect((await observeEngage(input("ana")))?.reason).toBe("follows_agent");
+    expect(await observeEngage(input("ana"))).toMatchObject({ action: "classify", continuation: true });
     expect((await observeEngage(input("robin")))?.reason).toBe("follows_other_agent");
   });
 });
 
 describe("what consumes the record", () => {
   const cases: [string, Record<string, unknown>][] = [
-    ["a bot author", { user: "U0CIBOT", bot_id: "B0CI" }],
     ["a channel_join", { subtype: "channel_join" }],
     ["a message_changed", { subtype: "message_changed" }],
-    ["an ack", { text: "thanks, that worked" }],
-    ["a note to a colleague", { text: "Budi, can you look at it?" }],
+    ["a mention of a colleague", { text: "<@U0COLLEAGUE> can you look at it?" }],
+    ["a note to another agent", { text: "Robin, can you look at it?" }],
     ["a user group", { text: "<!subteam^S0GROUP> please look" }],
     ["@here", { text: "<!here> deploy done?" }],
   ];
@@ -104,9 +102,15 @@ describe("what consumes the record", () => {
       expect(await store.take({ channel: CH, thread: THREAD, persona: "ana" })).not.toBeNull();
     });
   }
+  test("a bot author is classified with the record peeked, never taken", async () => {
+    await speak("ana", nowTs(-5));
+    expect(await observeEngage(input("ana", { user: "U0CIBOT", bot_id: "B0CI" }))).toMatchObject({ action: "classify", continuation: true });
+    expect(store.takes).toBe(0);
+    expect(await store.take({ channel: CH, thread: THREAD, persona: "ana" })).not.toBeNull();
+  });
   test("a conversational human message reads and clears it", async () => {
     await speak("ana", nowTs(-5));
-    expect((await observeEngage(input("ana")))?.reason).toBe("follows_agent");
+    expect(await observeEngage(input("ana"))).toMatchObject({ action: "classify", continuation: true });
     expect(store.takes).toBe(1);
     expect(await store.take({ channel: CH, thread: THREAD, persona: "ana" })).toBeNull();
   });
@@ -131,63 +135,34 @@ describe("clearAgentRecord", () => {
   });
 });
 
-describe("a colleague who shares the agent's name", () => {
-  const withUsers = (names: Set<string> | null) => {
-    const c = makeUsersCache();
-    if (names) c.ensure("T1", async () => ({ names, complete: true }));
-    return c;
-  };
-  const tick = () => new Promise((r) => setTimeout(r, 5));
-  const root = (text: string): ObserveInput => ({ ...input("ana", { text, thread_ts: undefined }), teamId: "T1" });
-
-  test("unknown names: the name and a comma is not taken as tier 1, it goes to tier 3", async () => {
-    const r = await observeEngage({ ...root("ana, can you check staging?"), users: withUsers(null) });
-    expect(r).toMatchObject({ tier: 3, action: "classify", reason: "same_named_human" });
+describe("messages the rules do not settle go to the classifier", () => {
+  const msg = (personaId: string, e: Record<string, unknown>) => observeEngage(input(personaId, e));
+  test("a nickname with a comma, a thanks, a thread reply and a root all classify", async () => {
+    for (const text of ["Dude, can you check that?", "thanks", "what about the second one", "ana, can you check staging?"]) {
+      expect(await msg("ana", { text })).toMatchObject({ tier: 3, action: "classify", reason: "classify" });
+    }
+    expect(await msg("ana", { text: "anyone around?", thread_ts: undefined })).toMatchObject({ tier: 3, action: "classify", reason: "classify" });
   });
-  test("a snapshot with no one of that name: tier 1 run", async () => {
-    const users = withUsers(new Set(["jane"]));
-    await tick();
-    expect(await observeEngage({ ...root("ana, can you check staging?"), users })).toMatchObject({ tier: 1, action: "run", reason: "name_comma" });
+  test("the thread's root being the agent's message changes nothing", async () => {
+    expect(await msg("ana", { text: "what about the second one", parent_user_id: "UBOT" })).toMatchObject({ tier: 3, action: "classify" });
   });
-  test("a snapshot with a colleague of that name: tier 3", async () => {
-    const users = withUsers(new Set(["ana"]));
-    await tick();
-    expect(await observeEngage({ ...root("ana, can you check staging?"), users })).toMatchObject({ tier: 3, action: "classify", reason: "same_named_human" });
-  });
-  test("the lookup is started from the observation, not awaited", async () => {
-    const users = makeUsersCache();
-    let started = 0;
-    await observeEngage({ ...root("ana, can you check staging?"), users, loadUsers: () => (started++, new Promise(() => {})) });
-    expect(started).toBe(1);
+  test("a bot author classifies; this agent's own message passes; a mention of someone else still passes", async () => {
+    expect(await msg("ana", { text: "hi", bot_id: "B0CI", user: "U0CIBOT" })).toMatchObject({ action: "classify", reason: "classify" });
+    expect(await msg("ana", { text: "hi", bot_id: "B0ONE", user: "UBOT" })).toMatchObject({ action: "pass", reason: "self_author" });
+    expect(await msg("ana", { text: "hi", user: "UANA1" })).toMatchObject({ action: "pass", reason: "self_author" });
+    expect(await msg("ana", { text: "<@U0COLLEAGUE> hi" })).toMatchObject({ action: "pass", reason: "names_other_person" });
   });
 });
 
-describe("the thread root is the agent's own message", () => {
-  const reply = (personaId: string | undefined, e: Record<string, unknown>, extra: Partial<ObserveInput> = {}) =>
-    observeEngage({ ...input(personaId as string, { text: "what about the second one", ...e }), ...extra });
-  test("parent_user_id equal to this app's bot: a tier 3 candidate", async () => {
-    const r = await reply("ana", { parent_user_id: "UBOT" });
-    expect(r).toMatchObject({ tier: 3, action: "classify", reason: "agent_thread_reply" });
+describe("a bot post and the agent's own record", () => {
+  test("a bot author's message is read without clearing the record a person's follow-up needs", async () => {
+    await speak("ana", nowTs(-20));
+    await observeEngage(input("ana", { text: "build finished", bot_id: "B0CI", user: "U0CIBOT" }));
+    expect(await store.take({ channel: CH, thread: THREAD, persona: "ana" })).not.toBeNull();
   });
-  test("parent_user_id equal to this persona's own user: a tier 3 candidate; another persona's user: a pass", async () => {
-    expect(await reply("ana", { parent_user_id: "UANA1" })).toMatchObject({ tier: 3, action: "classify" });
-    expect(await reply("ana", { parent_user_id: "UROBIN" })).toMatchObject({ tier: 0, action: "pass" });
-    expect(await reply("robin", { parent_user_id: "UROBIN" })).toMatchObject({ tier: 3, action: "classify" });
-  });
-  test("in a channel in shadow the root is not read at all (phase 1 behaviour)", async () => {
-    setPersonaRegistry(registry(persona("ana", "UANA1"), persona("robin", "UROBIN"), persona("kit", "UKIT1", "shadow")));
-    const r = await reply("kit", { parent_user_id: "UBOT" });
-    expect(r).toMatchObject({ action: "pass", reason: "no_band" });
-  });
-  test("a root posted through a shared bot cannot be told: refused as today", async () => {
-    expect(await reply("ana", { parent_user_id: "UBOT" }, { sharedBot: true })).toMatchObject({ tier: 0, action: "pass", reason: "no_band" });
-  });
-  test("no parent_user_id, an unknown author, or a bot author: a pass", async () => {
-    expect(await reply("ana", {})).toMatchObject({ action: "pass" });
-    expect(await reply("ana", { parent_user_id: "U0SOMEONE" })).toMatchObject({ action: "pass" });
-    expect(await reply("ana", { parent_user_id: "UBOT", bot_id: "B0CI" })).toMatchObject({ action: "pass", reason: "bot_author" });
-  });
-  test("a root message is not a reply", async () => {
-    expect(await reply("ana", { parent_user_id: "UBOT", thread_ts: undefined })).toMatchObject({ action: "pass" });
+  test("another agent's reply is classified, and a person's message after it still passes", async () => {
+    await speak("robin", nowTs(-10));
+    expect(await observeEngage(input("ana", { text: "what about the logs?", bot_id: "B0TWO", user: "UROBIN" }))).toMatchObject({ action: "classify" });
+    expect(await observeEngage(input("ana", { text: "what about the logs?" }))).toMatchObject({ action: "pass", reason: "follows_other_agent" });
   });
 });

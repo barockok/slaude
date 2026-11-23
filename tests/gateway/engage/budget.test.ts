@@ -45,6 +45,17 @@ for (const [name, mk] of impls) {
       expect(await s.actSlot("C1", 2)).toBe("ok");
     });
 
+    test("the bot cap is its own counter: only bot-started runs count against it, and it is per channel per hour", async () => {
+      const c = clock();
+      const s = mk(c)({});
+      expect([await s.actSlot("C1", 2, undefined, "bot"), await s.actSlot("C1", 2, undefined, "bot"), await s.actSlot("C1", 2, undefined, "bot")]).toEqual(["ok", "ok", "cap"]);
+      // the normal cap is untouched by the bot slots
+      expect([await s.actSlot("C1", 2), await s.actSlot("C1", 2), await s.actSlot("C1", 2)]).toEqual(["ok", "ok", "cap"]);
+      expect(await s.actSlot("C2", 2, undefined, "bot")).toBe("ok");
+      c.advance(3600_000);
+      expect(await s.actSlot("C1", 2, undefined, "bot")).toBe("ok");
+    });
+
     test("the daily bucket and the minute ceiling", async () => {
       const c = clock();
       const s = mk(c)({ dailyBudget: () => 5, minuteCeiling: () => 3 });
@@ -56,47 +67,11 @@ for (const [name, mk] of impls) {
       expect(await s.spend("C1")).toBe("ok");
     });
 
-    test("pass memory covers the author, not a new one, and ends when the agent speaks or after 30 minutes", async () => {
-      const c = clock();
-      const s = mk(c)({});
-      expect(await s.passed("C1", "9.0", "ana", "UA")).toBe(false);
-      await s.markPass("C1", "9.0", "ana", "UA");
-      expect(await s.passed("C1", "9.0", "ana", "UA")).toBe(true);
-      expect(await s.passed("C1", "9.0", "ana", "UB")).toBe(false);
-      expect(await s.passed("C1", "9.0", "robin", "UA")).toBe(false); // another persona's memory is its own
-      await s.clearPass("C1", "9.0", "ana");
-      expect(await s.passed("C1", "9.0", "ana", "UA")).toBe(false);
-      await s.markPass("C1", "9.0", "ana", "UA");
-      c.advance(1801_000);
-      expect(await s.passed("C1", "9.0", "ana", "UA")).toBe(false);
-    });
-
-    test("a root cooldown covers the next three candidates, or 120 seconds", async () => {
-      const c = clock();
-      const s = mk(c)({});
-      expect(await s.cooling("C1", "ana")).toBe(false);
-      await s.markCooldown("C1", "ana");
-      expect([await s.cooling("C1", "ana"), await s.cooling("C1", "ana"), await s.cooling("C1", "ana"), await s.cooling("C1", "ana")]).toEqual([true, true, true, false]);
-      await s.markCooldown("C1", "ana");
-      expect(await s.cooling("C1", "robin")).toBe(false);
-      c.advance(121_000);
-      expect(await s.cooling("C1", "ana")).toBe(false);
-    });
-
-    test("sampling: a draw and a daily cap of 5", async () => {
-      const c = clock();
-      const s = mk(c)({ sampleEvery: () => 20, rng: () => 0 });
-      const taken: boolean[] = [];
-      for (let i = 0; i < 7; i++) taken.push(await s.sample("C1"));
-      expect(taken).toEqual([true, true, true, true, true, false, false]);
-      expect(await mk(c)({ sampleEvery: () => 20, rng: () => 0.5 }).sample("C9")).toBe(false);
-      expect(await mk(c)({ sampleEvery: () => 0, rng: () => 0 }).sample("C9")).toBe(false);
-    });
   });
 }
 
 describe("two instances over one fake Redis", () => {
-  test("one claim, one budget, one pass memory", async () => {
+  test("one claim, one budget", async () => {
     const c = clock();
     const r = fakeEngageRedis({ now: c.now });
     const a = redisEngageState(r, "t", { now: c.now, dailyBudget: () => 4, minuteCeiling: () => 10 });
@@ -104,50 +79,28 @@ describe("two instances over one fake Redis", () => {
     const claims = await Promise.all([a.claim("C1", "5.0", "ana"), b.claim("C1", "5.0", "ana")]);
     expect(claims.filter(Boolean)).toHaveLength(1);
     expect([await a.spend("C1"), await b.spend("C1"), await a.spend("C1"), await b.spend("C1"), await a.spend("C1")]).toEqual(["ok", "ok", "ok", "ok", "day"]);
-    await a.markPass("C1", "7.0", "ana", "UA");
-    expect(await b.passed("C1", "7.0", "ana", "UA")).toBe(true);
-    await b.clearPass("C1", "7.0", "ana");
-    expect(await a.passed("C1", "7.0", "ana", "UA")).toBe(false);
   });
 
-  test("a Redis failure fails closed for the classifier and open for observation", async () => {
+  test("a Redis failure fails closed", async () => {
     let down = false;
     const r = fakeEngageRedis({ fail: () => down });
     const s = redisEngageState(r, "t", {});
-    await s.markPass("C1", "7.0", "ana", "UA");
     down = true;
     expect(await s.claim("C1", "1.0", "ana")).toBe(false);
     expect(await s.spend("C1")).toBe("error");
-    expect(await s.sample("C1")).toBe(false);
-    expect(await s.passed("C1", "7.0", "ana", "UA")).toBe(false);
-    expect(await s.cooling("C1", "ana")).toBe(false);
-    await s.markPass("C1", "8.0", "ana", "UA");
-    await s.clearPass("C1", "8.0", "ana");
+    expect(await s.claimAct("C1", "1.0")).toBe(false);
+    expect(await s.actSlot("C1", 5)).toBe("error");
   });
 });
 
 describe("atomic Redis operations", () => {
-  test("every counter, pass and cooldown step is one eval, and the cooldown never goes below zero", async () => {
+  test("every counter step is one eval, with the tenant in the key", async () => {
     const c = clock();
     const r = fakeEngageRedis({ now: c.now });
     const s = redisEngageState(r, "t", { now: c.now, dailyBudget: () => 50, minuteCeiling: () => 50 });
     await s.spend("C1", "T1");
     expect(r.evals).toBe(2); // the minute and the day counter, one script each
-    expect([...r.data.keys()].some((k) => k.includes(":day:T1:C1:"))).toBe(true); // the tenant is in the key
-    await s.markCooldown("C1", "ana");
-    expect([await s.cooling("C1", "ana"), await s.cooling("C1", "ana"), await s.cooling("C1", "ana"), await s.cooling("C1", "ana"), await s.cooling("C1", "ana")]).toEqual([true, true, true, false, false]);
-    expect([...r.data.keys()].some((k) => k.includes("cool:"))).toBe(false); // gone at zero, not recreated at -1
-  });
-  test("pass memory keeps the window of the first no, and expiry drops the whole set", async () => {
-    const c = clock();
-    const r = fakeEngageRedis({ now: c.now });
-    const s = redisEngageState(r, "t", { now: c.now });
-    await s.markPass("C1", "7.0", "ana", "UA");
-    c.advance(1000_000);
-    await s.markPass("C1", "7.0", "ana", "UB");
-    expect(await s.passed("C1", "7.0", "ana", "UA")).toBe(true);
-    c.advance(801_000); // 1801 s after the first add
-    expect(await s.passed("C1", "7.0", "ana", "UB")).toBe(false);
+    expect([...r.data.keys()].some((k) => k.includes(":day:T1:C1:"))).toBe(true);
   });
 });
 

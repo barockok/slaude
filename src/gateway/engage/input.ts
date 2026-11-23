@@ -1,6 +1,6 @@
 /**
  * The classifier's view of one implicit candidate: a GateInput built only when
- * a classifier is actually going to be asked (tier 3, or a sampled tier 2), so
+ * a classifier is actually going to be asked (tier 3), so
  * no message that never reaches it costs a history call.
  *
  * What leaves the gateway is chosen here:
@@ -10,7 +10,8 @@
  *    persona does not admit, an ignored author and text the owner's inbound
  *    deny rules refuse are dropped (one reusable author filter), and a third
  *    party bot's text (CI output, other integrations) is never sent unless
- *    ALLOW_THIRD_PARTY_BOT_TEXT is changed in code;
+ *    ALLOW_THIRD_PARTY_BOT_TEXT is changed in code. The text of a registered
+ *    agent of this gateway is kept, as the other side (role `user`);
  *  - every line is neutralised like the thread head is (no `<` survives except
  *    the tokens this module writes), whitespace is flattened and each line cut;
  *  - at most one Slack read: the thread's last messages for a threaded
@@ -48,6 +49,12 @@ export interface InputDeps {
   dropMessage?: (m: ThreadMsg) => Promise<boolean>;
   /** One of this persona's own identities. */
   isSelf: (m: ThreadMsg) => boolean;
+  /**
+   * A registered agent of this gateway (another persona's bot or user id). Its text is kept in `recent`
+   * as the other side of the conversation (role `user`, never `agent`), still through the author filter.
+   * An unknown bot is not an agent.
+   */
+  isAgent?: (m: ThreadMsg) => boolean;
   /** Slack user ids that are this agent (bot user, persona user). */
   selfUserIds: ReadonlySet<string>;
   /** The identity the message is addressed to (the delivering bot). */
@@ -71,8 +78,6 @@ export interface ImplicitRequest {
 
 export interface BuiltInput {
   input: GateInput;
-  /** Two or more humans took turns since the agent last spoke; false whenever no thread was read. */
-  alternated: boolean;
   /** Which single Slack read was made. */
   read: "replies" | "history";
 }
@@ -120,21 +125,7 @@ function bounded<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([p, new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new DeadlineError("deadline")), ms); })]).finally(() => clearTimeout(timer));
 }
 
-/** Humans who spoke after the agent's last message (the event's author included) and whether at least two differ. */
-function humansTookTurns(msgs: ThreadMsg[], d: InputDeps, eventAuthor: string | undefined): boolean {
-  let after = msgs;
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (d.isSelf(msgs[i]!)) {
-      after = msgs.slice(i + 1);
-      break;
-    }
-  }
-  const who = new Set(after.filter((m) => m.user && !isBotMessage(m) && !d.isSelf(m)).map((m) => m.user!));
-  if (eventAuthor) who.add(eventAuthor);
-  return who.size >= 2;
-}
-
-export async function buildImplicitInput(d: InputDeps, r: ImplicitRequest, eventAuthor?: string): Promise<BuiltInput> {
+export async function buildImplicitInput(d: InputDeps, r: ImplicitRequest): Promise<BuiltInput> {
   const limit = Math.max(1, Math.min(d.contextMessages ?? 8, MAX_RECENT));
   const deadline = d.deadlineMs ?? DEFAULT_DEADLINE_MS;
   const threaded = r.threadTs !== null && r.threadTs !== r.ts;
@@ -149,7 +140,7 @@ export async function buildImplicitInput(d: InputDeps, r: ImplicitRequest, event
         // Someone the ingress cannot place (no user and no bot) is not admitted by default.
         if (!m.user && !m.bot_id) return false;
         const self = d.isSelf(m);
-        if (!self && isBotMessage(m) && !allowBots) return false;
+        if (!self && isBotMessage(m) && !allowBots && !d.isAgent?.(m)) return false;
         if (!(await d.filter.allows(m))) return false;
         return !(d.dropMessage && (await d.dropMessage(m)));
       }),
@@ -174,7 +165,13 @@ export async function buildImplicitInput(d: InputDeps, r: ImplicitRequest, event
       implicit: r.level,
       continuation: r.continuation,
     },
-    alternated: threaded ? humansTookTurns(earlier, d, eventAuthor) : false,
     read: threaded ? "replies" : "history",
   };
+}
+
+/** An error's code and nothing else: a Slack error name (`missing_scope`), a client code, or "error". */
+export function errorCode(e: unknown): string {
+  const x = e as { data?: { error?: unknown }; code?: unknown } | null;
+  const c = x?.data?.error ?? x?.code;
+  return typeof c === "string" && /^[\w.:-]{1,64}$/.test(c) ? c : "error";
 }

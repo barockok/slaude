@@ -22,7 +22,7 @@ export interface EngageCandidate {
 /**
  * The seam between engagement and whatever answers the tier 3 question. The
  * deterministic tiers never depend on it, so engagement works with no
- * classifier at all (tiers 0 to 2 act, tier 3 is a pass). The channel's mode is
+ * classifier at all (the safety rules and a mention act, everything else is a pass). The channel's mode is
  * applied here, not by the gate: it does not depend on the deployment's gate mode. Any implementation
  * must answer "pass" for anything but a confident yes: an error, a timeout,
  * an exhausted budget and a missing adapter are all "pass", never "run".

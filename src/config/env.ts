@@ -622,9 +622,8 @@ export const env = {
   /**
    * Phase 1 classifier budgets (per channel, across apps and replicas).
    * `SLAUDE_ENGAGE_DAILY_BUDGET`: classifier calls per channel per UTC day
-   * (default 50). `SLAUDE_ENGAGE_MINUTE_CEILING`: calls per channel per minute
-   * (default 6). `SLAUDE_ENGAGE_SAMPLE`: sample 1 in N tier 2 run decisions for
-   * the classifier (default 20, 0 turns sampling off). Invalid values read as the default.
+   * (default 2000). `SLAUDE_ENGAGE_MINUTE_CEILING`: calls per channel per minute
+   * (default 20). Invalid values read as the default.
    */
   /**
    * `SLAUDE_ENGAGE_PROACTIVE_DEFAULT` (default on): a channel where the agent is
@@ -633,8 +632,8 @@ export const env = {
    * those channels.
    */
   engageProactiveDefault: (): boolean => !["off", "0", "false", "no"].includes(opt("SLAUDE_ENGAGE_PROACTIVE_DEFAULT").trim().toLowerCase()),
-  engageDailyBudget: (): number => posInt(opt("SLAUDE_ENGAGE_DAILY_BUDGET"), 50, 100_000),
-  engageMinuteCeiling: (): number => posInt(opt("SLAUDE_ENGAGE_MINUTE_CEILING"), 6, 1_000),
+  engageDailyBudget: (): number => posInt(opt("SLAUDE_ENGAGE_DAILY_BUDGET"), 2000, 100_000),
+  engageMinuteCeiling: (): number => posInt(opt("SLAUDE_ENGAGE_MINUTE_CEILING"), 20, 1_000),
   /**
    * Phase 2 kill switch: truthy (`1`, `true`, `yes`, `on`) forces every channel
    * to shadow behaviour whatever its engage mode. Read at decision time, never cached.
@@ -648,11 +647,18 @@ export const env = {
   slackMarkdownBlocks: (): boolean => ["1", "true", "yes", "on"].includes(opt("SLAUDE_SLACK_MARKDOWN_BLOCKS").trim().toLowerCase()),
   /** Phase 2: acted runs per channel per hour (`SLAUDE_ENGAGE_ACT_PER_HOUR`, default 12); past it a run decision is a pass. */
   engageActPerHour: (): number => posInt(opt("SLAUDE_ENGAGE_ACT_PER_HOUR"), 12, 10_000),
-  engageSample: (): number => {
-    const raw = opt("SLAUDE_ENGAGE_SAMPLE").trim();
-    if (raw === "0") return 0;
-    return posInt(raw, 20, 100_000);
-  },
+  /**
+   * Loop guard: acted runs per channel per hour that were started by a message from a bot or another agent
+   * (`SLAUDE_ENGAGE_BOT_ACT_PER_HOUR`, default 6), in addition to the cap above; past it the run is a pass.
+   */
+  engageBotActPerHour: (): number => posInt(opt("SLAUDE_ENGAGE_BOT_ACT_PER_HOUR"), 6, 10_000),
+  /**
+   * Slack user ids that are agents although Slack marks no bot on their messages (an agent from another gateway
+   * posting with a user token): `SLAUDE_ENGAGE_AGENT_USERS`, comma separated. Their messages count as bot messages
+   * for the loop guard and the last-speaker rule. Empty by default.
+   */
+  engageAgentUsers: (): Set<string> =>
+    new Set(opt("SLAUDE_ENGAGE_AGENT_USERS").split(",").map((x) => x.trim()).filter((x) => /^[UW][A-Z0-9]{1,32}$/.test(x))),
   /**
    * Raw `SLAUDE_PRICE_TABLE` (phase D): inline JSON, or a file path when the
    * value does not start with `{`. Parsed by `loadPriceTable`. Empty when unset.
