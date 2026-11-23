@@ -464,14 +464,14 @@ describe("typed references compile down to the Slack ids the runtime reads", () 
 describe("parseAgentYaml proactive", () => {
   const compile = (extra: string) => parseAgentYaml("default", def(extra));
 
-  test("the global key compiles to the section the parser reads", () => {
-    const { spec } = compile(
+  test("the global key compiles to the section the parser reads; enabled, read and watch compile to nothing and warn", () => {
+    const { spec, warnings } = compile(
       "proactive:\n  enabled: true\n  read: [slack:channel:C0EXAMPLE, slack:channel:C0OTHER]\n  watch: [mail, tracker]\n  quietHours: 21:00-08:00\n  maxPerDay: 6\n",
     );
     const c = parseProactive(spec.soul);
-    expect(c.enabled).toBe(true);
-    expect(c.read).toEqual(["C0EXAMPLE", "C0OTHER"]);
-    expect(c.watch).toEqual(["mail", "tracker"]);
+    expect(c.ignoredGlobal).toEqual([]);
+    expect(spec.soul).not.toMatch(/Enabled|Watch|Read:/);
+    expect(warnings.filter((w) => /proactive\.(enabled|read|watch) has no effect/.test(w))).toHaveLength(3);
     expect(c.quietHours).toEqual({ start: 21 * 60, end: 8 * 60 });
     expect(c.maxPerPersonPerDay).toBe(6);
   });

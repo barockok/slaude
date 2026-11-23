@@ -25,9 +25,9 @@ describe("collectRefs", () => {
       dmAllowedUsers: ["U4EXAMPLE"],
       channelOverrides: [{ channel: "C2EXAMPLE", approvers: [{ userId: "U5EXAMPLE", scope: "anything", catchall: true }] }],
     });
-    const uses = collectRefs("ana", soul, "## Proactive\n- Enabled: yes\n- Read: <#C3EXAMPLE>\n");
+    const uses = collectRefs("ana", soul, "## Proactive\n- Max per day: 4\n");
     const ids = uses.map((u) => (u.ref.kind === "external" ? u.ref.id : "")).sort();
-    expect(ids).toEqual(["C0EXAMPLE", "C1EXAMPLE", "C2EXAMPLE", "C3EXAMPLE", "U0EXAMPLE", "U1EXAMPLE", "U2EXAMPLE", "U3EXAMPLE", "U4EXAMPLE", "U5EXAMPLE"]);
+    expect(ids).toEqual(["C0EXAMPLE", "C1EXAMPLE", "C2EXAMPLE", "U0EXAMPLE", "U1EXAMPLE", "U2EXAMPLE", "U3EXAMPLE", "U4EXAMPLE", "U5EXAMPLE"]);
     expect(uses.every((u) => u.persona === "ana" && u.field.length > 0)).toBe(true);
   });
 });

@@ -972,14 +972,6 @@
     "reason": "attributes a proactive post's reply to its recipient for feedback counts; not access"
   },
   {
-    "file": "src/proactive/heartbeat.ts",
-    "pattern": "id-compare",
-    "lines": [
-      "const audience: Audience | null = channel ? \"channel\" : a.managerId && d === a.managerId ? \"manager\" : USER_ID.test(d) ? \"person\" : null;"
-    ],
-    "reason": "classifies a destination (manager, person, channel) for restraint; the manager check itself is the registered restraint.manager_recipient site"
-  },
-  {
     "file": "src/proactive/rule-tool.ts",
     "pattern": "id-compare",
     "lines": [

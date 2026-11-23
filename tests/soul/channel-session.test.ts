@@ -78,13 +78,12 @@ describe("channel session mode", () => {
       warn.mockRestore();
     }
   });
-  test("a global Enabled: yes alone turns on no channel, but the summarising round still runs", () => {
+  test("a global Enabled: yes alone turns on nothing: no channel, no round", () => {
     const warn = spyOn(console, "warn").mockImplementation(() => {});
     try {
       __setProactiveSoulSource(() => "## Proactive\n- Enabled: yes\n- Watch: mail\n");
-      expect(anyProactiveEnabled("a")).toBe(true);
-      expect(proactiveFor("a").enabled).toBe(true);
-      expect(proactiveFor("a").watch).toEqual(["mail"]);
+      expect(anyProactiveEnabled("a")).toBe(false);
+      expect(proactiveFor("a").enabled).toBe(false);
       expect(channelSessionWakes("a")).toEqual([]);
       expect(channelSessionOn("a", "C888")).toBe(false);
     } finally {

@@ -16,18 +16,16 @@
  *   ### Session
  *   - Mode: channel          # anything else is logged and reads as off: no session, no wakes
  *
- * `## Proactive` carries what is not about one channel. `Enabled: yes` there
- * starts no wake (it warns once per soul); it turns on the summarising round
- * and lets the round's posts reach the manager and people who opted in:
- *   - Enabled: yes
+ * `## Proactive` carries only limits that every channel inherits unless it sets its
+ * own. It switches nothing on: `Enabled`, `Watch` and `Read` there have no effect
+ * (a warning names them), because proactive is per channel and an agent-level round
+ * or channel allowlist would reach across the boundary between channels:
  *   - Max per day: 6         # posts per recipient per day (either section)
  *   - Quiet hours: 21:00–08:00
- *   - Read: <#C…>, <#C…>     # further channels it may read, in any turn (global only)
- *   - Watch: mail, tracker   # external sources for the locked triage round (global only)
  *
  * Still honoured so a soul can narrow things, never needed to turn anything on:
  *   - Wake: no               # this agent never wakes; its channel sessions stay (global only)
- *   - Highest: ask           # lower the round's ceiling: ignore | inform | ask (default act)
+ *   - Highest: ask           # lower the ceiling: ignore | inform | ask (default act)
  *   - Cooldown: 4 hours      # minimum gap between posts to one recipient
  *   - Max per person per day # the old name of Max per day
  *
@@ -49,18 +47,15 @@ export interface QuietHours {
 }
 
 export interface ProactiveConfig {
-  enabled: boolean;
   quietHours: QuietHours | null;
   maxPerPersonPerDay: number;
   cooldownHours: number;
-  /** Sources the heartbeat round reads (global only). */
-  watch: string[];
   /** The ceiling no learned reaction may raise the level past. */
   highest: Level;
   /** False when the soul says `Wake: no`: this agent never wakes in any channel (global only). */
   wake: boolean;
-  /** Channels this agent may read with read_channel (global only). */
-  read: string[];
+  /** Keys written under the global `## Proactive` that no longer do anything (`enabled`, `watch`, `read`), once each. */
+  ignoredGlobal: string[];
   /** Channel id → that channel's own `### Proactive` `Enabled`. */
   channels: Record<string, boolean>;
   /** Channel id → that channel's own `### Proactive` `Highest`. */
@@ -79,8 +74,8 @@ export interface ProactiveConfig {
   invalidSessions: string[];
 }
 
-/** The resolved switch for one audience: the global settings, `enabled` per channel when one is given. */
-export type ResolvedProactive = Omit<ProactiveConfig, "wake" | "read" | "channels" | "channelHighest" | "channelCooldownHours" | "channelMaxPerDay" | "sessions" | "invalidSessions">;
+/** The resolved switch for one audience: the global limits, and `enabled` only for a channel whose own `### Proactive` says so. */
+export type ResolvedProactive = Omit<ProactiveConfig, "wake" | "ignoredGlobal" | "channels" | "channelHighest" | "channelCooldownHours" | "channelMaxPerDay" | "sessions" | "invalidSessions"> & { enabled: boolean };
 
 export const DEFAULT_MAX_PER_PERSON_PER_DAY = 6;
 export const DEFAULT_COOLDOWN_HOURS = 1;
@@ -90,7 +85,6 @@ const DISABLED: ResolvedProactive = {
   quietHours: null,
   maxPerPersonPerDay: DEFAULT_MAX_PER_PERSON_PER_DAY,
   cooldownHours: DEFAULT_COOLDOWN_HOURS,
-  watch: [],
   highest: "inform",
 };
 
@@ -145,12 +139,6 @@ function keyValue(line: string): [string, string] | null {
   return [m[1]!.trim().toLowerCase(), m[2]!.replace(/\s+#.*$/, "").trim()];
 }
 
-/** Channel ids from a comma-separated SOUL value (`<#C…|name>` or `C…`); anything else is dropped. */
-function parseChannelList(value: string): string[] {
-  const ids = value.split(",").map((v) => /^\s*(?:<#([A-Za-z0-9]+)(?:\|[^>]*)?>|([A-Za-z0-9]+))\s*$/.exec(v)).map((m) => (m ? (m[1] ?? m[2])! : ""));
-  return ids.filter((id) => CHANNEL_ID.test(id));
-}
-
 /** A cap from a SOUL line: a positive whole number, or null. */
 function parseCap(value: string): number | null {
   const n = /^\d+$/.test(value) ? Number(value) : NaN;
@@ -165,15 +153,13 @@ function parseCooldown(value: string): number | null {
 
 export function parseProactive(text: string): ProactiveConfig {
   const out: ProactiveConfig = {
-    enabled: false,
     quietHours: null,
     maxPerPersonPerDay: DEFAULT_MAX_PER_PERSON_PER_DAY,
     cooldownHours: DEFAULT_COOLDOWN_HOURS,
-    watch: [],
     // Where proactiveness is on, the mandate is the authority: the ceiling only narrows.
     highest: "act",
     wake: true,
-    read: [],
+    ignoredGlobal: [],
     channels: {},
     channelHighest: {},
     channelCooldownHours: {},
@@ -238,10 +224,9 @@ export function parseProactive(text: string): ProactiveConfig {
       }
       continue;
     }
-    if (key === "enabled") out.enabled = value.toLowerCase() === "yes";
-    else if (key === "wake") out.wake = value.toLowerCase() === "yes";
-    else if (key === "read") out.read = parseChannelList(value);
-    else if (key === "watch") out.watch = value.split(",").map((w) => w.trim()).filter(Boolean);
+    if (key === "enabled" || key === "read" || key === "watch") {
+      if (!out.ignoredGlobal.includes(key)) out.ignoredGlobal.push(key);
+    } else if (key === "wake") out.wake = value.toLowerCase() === "yes";
     else if (key === "highest") out.highest = parseLevel(value) ?? out.highest;
     else if (key === "quiet hours") out.quietHours = parseWindow(value);
     else if (key === "max per person per day" || key === "max per day") {
@@ -274,7 +259,7 @@ function configFor(personaId: string): ProactiveConfig | null {
     if (!c) {
       c = parseProactive(text);
       for (const id of c.invalidSessions) console.warn(`[proactive] persona=${personaId} channel=${id}: unknown session Mode, so this channel has no channel session and no wakes`);
-      if (c.enabled) console.warn(`[proactive] persona=${personaId}: a global ## Proactive Enabled: yes no longer starts a wake. Proactive is per channel: set ### Proactive under a ## Channel block. The summarising round and Watch sources keep running.`);
+      if (c.ignoredGlobal.length) console.warn(`[proactive] persona=${personaId}: a global ## Proactive ${c.ignoredGlobal.map((k) => k[0]!.toUpperCase() + k.slice(1)).join(", ")} has no effect. Proactive is per channel: set ### Proactive under a ## Channel block.`);
       for (const id of Object.keys(c.channels)) {
         // Only the channels this release turned into sessions: a written Mode always ignored them.
         if (!c.channels[id] || c.sessions[id] || !hasChannelSession(c, id)) continue;
@@ -297,19 +282,20 @@ function hasChannelSession(c: ProactiveConfig, channelId: string): boolean {
 
 /**
  * The switch for a persona, for one channel when given: that channel's own
- * `### Proactive` when it has one, else the global value
- * (`watch` is always the global value). Any failure reads
- * as disabled.
+ * `### Proactive` for `enabled` (off without one), its own limits when it sets
+ * them, else the global limits. Without a channel it is never enabled. Any failure
+ * reads as disabled.
  */
 export function proactiveFor(personaId: string, channelId?: string): ResolvedProactive {
   const c = configFor(personaId);
   if (!c) return { ...DISABLED };
-  const { wake: _wake, read: _read, channels, channelHighest, channelCooldownHours, channelMaxPerDay, sessions: _sessions, invalidSessions, ...global } = c;
-  if (channelId === undefined) return global;
+  const { wake: _wake, ignoredGlobal: _ignored, channels, channelHighest, channelCooldownHours, channelMaxPerDay, sessions: _sessions, invalidSessions, ...global } = c;
+  // Nothing is on at the agent level: only a channel's own `Enabled: yes` turns proactiveness on.
+  if (channelId === undefined) return { ...global, enabled: false };
   const resolved: ResolvedProactive = {
     ...global,
     // An invalid Mode reads as off, whatever the rest of the channel's block says.
-    enabled: invalidSessions.includes(channelId) ? false : channels[channelId] ?? global.enabled,
+    enabled: invalidSessions.includes(channelId) ? false : channels[channelId] ?? false,
     highest: channelHighest[channelId] ?? global.highest,
     cooldownHours: channelCooldownHours[channelId] ?? global.cooldownHours,
     maxPerPersonPerDay: channelMaxPerDay[channelId] ?? global.maxPerPersonPerDay,
@@ -340,13 +326,12 @@ export function wakesSwitchedOff(personaId: string): boolean {
   return !!c && !c.wake && Object.entries(c.channels).some(([id, on]) => on && hasChannelSession(c, id));
 }
 
-/** The channels this persona may read with read_channel: where it works on its own, and any its SOUL lists. */
+/** The channels this persona may read with read_channel: only where it works on its own. */
 export function proactiveRead(personaId: string): string[] {
   const c = configFor(personaId);
   if (!c) return [];
   // Not channelSessionWakes: `Wake: no` stops the wakes, not the reading.
-  const own = Object.entries(c.channels).filter(([id, on]) => on && hasChannelSession(c, id)).map(([id]) => id);
-  return [...new Set([...c.read, ...own])];
+  return Object.entries(c.channels).filter(([id, on]) => on && hasChannelSession(c, id)).map(([id]) => id);
 }
 
 /**
@@ -466,8 +451,8 @@ export function parseMandates(text: string): { global: string; channels: Record<
   return { global, channels };
 }
 
-/** True when the persona's SOUL enables proactiveness globally or in any channel. */
+/** True when the persona's SOUL enables proactiveness in any channel. */
 export function anyProactiveEnabled(personaId: string): boolean {
   const c = configFor(personaId);
-  return !!c && (c.enabled || Object.entries(c.channels).some(([id, on]) => on && !c.invalidSessions.includes(id)));
+  return !!c && Object.entries(c.channels).some(([id, on]) => on && !c.invalidSessions.includes(id));
 }

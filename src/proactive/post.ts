@@ -60,7 +60,7 @@ export interface ProactivePostArgs {
   topic: string;
   text: string;
   evidence: string;
-  /** What the post rests on, recorded with it (the heartbeat round's items). */
+  /** What the post rests on, recorded with it (a wake post). */
   context?: Posts.PostContext;
 }
 

@@ -92,6 +92,6 @@ describe("outbound coverage", () => {
   });
 
   it("proactive posts go through it before cardPoster", async () => {
-    expect(await Bun.file("src/proactive/heartbeat.ts").text()).toMatch(/await outbound\(raw, \{ kind: "proactive_post"/);
+    expect(await Bun.file("src/proactive/post.ts").text()).toMatch(/await outbound\(raw, \{ kind: "proactive_post"/);
   });
 });

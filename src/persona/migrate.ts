@@ -117,6 +117,7 @@ export async function migratePersona(o: MigrateOptions): Promise<MigrateResult> 
   if (global.dropped.length && !o.allowLoss) {
     throw new PayloadError(`persona '${name}': the soul sets ${global.dropped.join(", ")} under ## Proactive, which agent.yaml has no key for; the file would be looser than the soul. Remove the line(s) or pass --allow-loss`);
   }
+  if (global.ignored.length) warnings.push(`persona '${name}': ## Proactive ${global.ignored.join(", ")} has no effect (proactive is per channel), so it is not carried over`);
   if (global.dropped.length) warnings.push(`persona '${name}': ## Proactive ${global.dropped.join(", ")} not carried over, agent.yaml has no key for ${global.dropped.length > 1 ? "them" : "it"}`);
 
   const doc = agentDocument({
@@ -186,9 +187,6 @@ function assertSame(name: string, before: SoulData, beforeProactive: ReturnType<
     ["approval timeout", before.approvalTimeoutSeconds, after.approvalTimeoutSeconds],
     ["mandate", (before.mandate ?? "").trim(), (after.mandate ?? "").trim()],
     ["scoped mandates", before.scopeMandates, after.scopeMandates],
-    ["proactive enabled", beforeProactive.enabled, afterProactive.enabled],
-    ["proactive read", sorted(beforeProactive.read), sorted(afterProactive.read)],
-    ["proactive watch", beforeProactive.watch, afterProactive.watch],
     ["quiet hours", beforeProactive.quietHours, afterProactive.quietHours],
     ["max per day", beforeProactive.maxPerPersonPerDay, afterProactive.maxPerPersonPerDay],
     ["channel proactive", beforeProactive.channels, afterProactive.channels],

@@ -327,9 +327,10 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const pro = file.proactive;
   if (pro) {
     const lines: string[] = [];
-    if (pro.enabled != null) lines.push(`- Enabled: ${pro.enabled ? "yes" : "no"}`);
-    if (pro.read?.length) lines.push(`- Read: ${pro.read.map((v, i) => `<#${slackId(`proactive.read[${i}]`, v, "channel")}>`).join(", ")}`);
-    if (pro.watch?.length) lines.push(`- Watch: ${pro.watch.map((w) => w.trim()).join(", ")}`);
+    // `enabled`, `read` and `watch` are accepted for now but compile to nothing: proactive is per channel.
+    for (const key of ["enabled", "read", "watch"] as const) {
+      if (pro[key] != null) warnings.push(`persona '${name}': agent.yaml proactive.${key} has no effect, since proactive is per channel; remove it`);
+    }
     if (pro.quietHours) {
       if (!parseWindow(pro.quietHours)) fail("proactive.quietHours", "is not a valid window: hours are 0 to 23, minutes 0 to 59");
       lines.push(`- Quiet hours: ${pro.quietHours}`);
@@ -464,21 +465,18 @@ const clock = (m: number): string => `${String(Math.floor(m / 60)).padStart(2, "
  * section. `Wake`, `Highest` and `Cooldown` have no key (they only narrow, and
  * waking is per channel); they come back as `dropped` so the author hears of it.
  */
-export function globalProactive(soulMd: string): { proactive: Record<string, unknown>; dropped: string[] } {
+export function globalProactive(soulMd: string): { proactive: Record<string, unknown>; dropped: string[]; ignored: string[] } {
   const section = proactiveSectionLines(soulMd);
   const c = parseProactive(soulMd);
   const proactive: Record<string, unknown> = {};
   const dropped: string[] = [];
   const has = (key: string) => section.some((l) => new RegExp(`^\\s*[-*]\\s*${key}\\s*:`, "i").test(l));
-  if (has("enabled")) proactive.enabled = c.enabled;
-  if (c.read.length) proactive.read = c.read.map(slackChannelRef);
-  if (c.watch.length) proactive.watch = c.watch;
   if (c.quietHours) proactive.quietHours = `${clock(c.quietHours.start)}-${clock(c.quietHours.end)}`;
   if (has("max per day") || has("max per person per day")) proactive.maxPerDay = c.maxPerPersonPerDay;
   if (has("wake")) dropped.push("Wake");
   if (has("highest")) dropped.push("Highest");
   if (has("cooldown")) dropped.push("Cooldown");
-  return { proactive, dropped };
+  return { proactive, dropped, ignored: c.ignoredGlobal.map((k) => k[0]!.toUpperCase() + k.slice(1)) };
 }
 
 /** The lines of the first global `## Proactive` section outside a code fence. */

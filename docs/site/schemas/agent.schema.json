@@ -469,7 +469,7 @@
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "true turns on the summarising round and lets its posts reach the manager and people who opted in. It starts no wake: waking is per channel (channels.<ref>.proactive). Leave the key out for off."
+              "description": "Deprecated, no effect: there is no agent-level round any more. Proactive is per channel (channels.<ref>.proactive). Remove the key."
             },
             "read": {
               "anyOf": [
@@ -484,7 +484,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Further channels the agent may read with read_channel, in any turn. Example: [slack:channel:C0EXAMPLE]"
+              "description": "Deprecated, no effect: read_channel reaches only channels the agent works in on its own. Remove the key."
             },
             "watch": {
               "anyOf": [
@@ -499,7 +499,7 @@
                   "type": "null"
                 }
               ],
-              "description": "External sources the summarising round reads, by name. Example: [mail, tracker]"
+              "description": "Deprecated, no effect: there is no summarising round to read sources. Remove the key."
             },
             "quietHours": {
               "anyOf": [
@@ -511,7 +511,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Hours when the round does not post, local time, as HH:MM-HH:MM. A window that ends before it starts wraps midnight. Example: 21:00-08:00"
+              "description": "Hours when the agent does not post proactively, local time, as HH:MM-HH:MM. A window that ends before it starts wraps midnight. Example: 21:00-08:00"
             },
             "maxPerDay": {
               "anyOf": [
@@ -523,7 +523,7 @@
                   "type": "null"
                 }
               ],
-              "description": "Most proactive posts to one person per day. Example: 6"
+              "description": "Most proactive posts to one recipient per day, unless a channel sets its own. Example: 6"
             }
           },
           "additionalProperties": false
