@@ -324,6 +324,26 @@ groups:
 
 **Read the limits first.** Queue names are **routing, not access control**: every node reaches Redis directly, so a node can read any label's queue, and with it the job payloads, which hold the message text. What a label enforces is the **credential path**: a node without the label cannot get that agent's runtime bundle, provider credentials, MCP tokens, SSH key or tool access, even holding a valid job token for it. Files on the shared volume are shared by every node until sandboxing exists. A **node is the trust unit**: every agent turn on a node runs as the node's user and can read the node's environment and the other turns' processes, so labels separate nodes, never personas that share a node. Put personas that must not see each other's secrets on nodes with different labels.
 
+### What labels are for once sessions run in boxes
+
+The paragraph above describes sessions that run on the node itself (sandbox
+tier `none`), which is every session today. [Boxes](boxes.md) are in
+development and off by default. Where a node offers a sandbox tier, a label
+is technically the same thing (a signed claim on the node credential and the
+job token, gating the credential path), and what an operator needs it for
+changes:
+
+| Purpose | Sessions on the node (tier `none`) | Sessions in boxes |
+|---|---|---|
+| Keep two personas' secrets apart | Required: different labels | Not required: a box holds no secret, and the sandbox separates files |
+| Toolchain ("this persona needs Ruby") | A label and a custom node image | Gone: the box image |
+| Capability and capacity routing (size, region, sandbox tier) | Label | Label |
+| Separation that must survive a sandbox escape | Label | Label, still recommended |
+| Redis and bucket reach | Not separated by labels | Unchanged: not separated by labels |
+
+A node that offers a sandbox tier serves boxed and unboxed personas of its
+label alike. For the unboxed ones on it, the node is still one trust domain.
+
 ### What a label is
 
 A label is a name a node's signed credential carries (see [Minting](#minting)), matching `[a-z0-9][a-z0-9-]{0,31}`. A persona runs on the label in its `runsOn` field in [personas as code](personas-as-code.md); a persona without one, and every filesystem or sqlite persona, runs on `default`. `runsOn` is set only from git, never by a runtime override.
