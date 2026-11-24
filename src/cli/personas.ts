@@ -47,6 +47,7 @@ import { parseEnvironmentYaml } from "../remote/definitions/parse";
 import { ENV_DEF_NAME_RE } from "../remote/definitions/name";
 import { migratePersona } from "../persona/migrate";
 import { BOX_NAME_RE, type BoxPayloadEntry } from "../box/definition";
+import { BUILTIN_BOX_NAME } from "../box/builtin";
 import { BOX_REGISTRY_ENV, BOX_YAML, compileBoxes, dockerResolver } from "./box";
 import type { SoulData } from "../soul/data";
 
@@ -187,7 +188,15 @@ export function renderDir(
   });
   if (boxes) {
     const have = new Set(boxes.map((b) => b.name));
-    for (const r of boxRefs) if (!have.has(r.name)) throw new PayloadError(`persona '${r.persona}': box names '${r.name}', but this repository has no boxes/${r.name}/${BOX_YAML}`);
+    for (const r of boxRefs) {
+      if (have.has(r.name)) continue;
+      // The gateway's image may carry a box of this one name. Whether it does is known only there, so the sync decides.
+      if (r.name === BUILTIN_BOX_NAME) {
+        definitionWarnings.push(`persona '${r.persona}' names box '${r.name}', which this repository does not define: it is the box built into the gateway's image, if that image carries one (the sync refuses it otherwise)`);
+        continue;
+      }
+      throw new PayloadError(`persona '${r.persona}': box names '${r.name}', but this repository has no boxes/${r.name}/${BOX_YAML}`);
+    }
   } else if (boxRefs.length) {
     definitionWarnings.push(`persona '${boxRefs[0]!.persona}' names a box, but this repository has no boxes/ folder: the name is checked against the deployed boxes at sync, not here`);
   }

@@ -10,7 +10,14 @@
  *
  * Nothing here is consulted while SLAUDE_BOX is off, apart from the set
  * version, which is an ETag input of the runtime bundle.
+ *
+ * The built-in default box (src/box/builtin.ts) joins a snapshot only after
+ * the stored set verified, and only under a name the stored set does not
+ * hold. It has no stored history: its one version is the image this gateway
+ * shipped with, numbered 0.
  */
+import { builtinBox } from "../../box/builtin";
+import { isStandInImage } from "../../box/definition";
 import { checkBoxHighWater, raiseBoxHighWater } from "../../box/high-water";
 import { BoxIntegrityError, verifyBoxSet } from "../../box/integrity";
 import type { BoxPolicy } from "../../box/policy";
@@ -37,6 +44,8 @@ export interface BoxEntry {
   current: BoxVersion;
   /** Every version, oldest first. */
   versions: BoxVersion[];
+  /** True for the box that ships in the image: not stored, not signed, one version. */
+  builtin?: true;
 }
 
 export interface BoxSnapshot {
@@ -72,6 +81,12 @@ export async function loadBoxes(tenant = "default", client: DbClient = db): Prom
     const current = versions.find((v) => v.version === b.version)!;
     boxes.set(b.name, { name: b.name, description: b.description, current, versions });
   }
+  // Only here, after the stored set verified, and never over a stored name.
+  const shipped = builtinBox();
+  if (shipped && !boxes.has(shipped.name)) {
+    const current: BoxVersion = { name: shipped.name, version: 0, image: shipped.image, digest: shipped.digest, policy: shipped.policy, forced: shipped.policy.refresh.force };
+    boxes.set(shipped.name, { name: shipped.name, description: shipped.description, current, versions: [current], builtin: true });
+  }
   return { setVersion, boxes };
 }
 
@@ -104,6 +119,26 @@ export async function currentBox(tenant: string, name: string, client: DbClient 
   return (await boxSnapshot(tenant, client)).boxes.get(name)?.current ?? null;
 }
 
+const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
+
+/**
+ * The version of a box that has `digest`: the newest stored one, which names
+ * the repository the image lives in. Null when the box never had it.
+ *
+ * The built-in box keeps no history, so a session pinned to the image of an
+ * earlier gateway release has no row to find. It is answered with that same
+ * digest in the built-in's repository: the session keeps the image it was
+ * pinned to (it moves only through a refresh, which writes its audit row),
+ * and a digest that repository does not hold fails the pull, never the pin.
+ */
+export function versionAt(entry: BoxEntry, digest: string): BoxVersion | null {
+  const at = [...entry.versions].reverse().find((v) => v.digest === digest);
+  if (at) return at;
+  if (!entry.builtin || !DIGEST_RE.test(digest) || isStandInImage(digest)) return null;
+  const cur = entry.current;
+  return { ...cur, image: `${cur.image.slice(0, cur.image.indexOf("@"))}@${digest}`, digest };
+}
+
 /**
  * What a session pinned to `digest` of box `name` runs with: the image of the
  * newest version that has that digest, and the box's CURRENT policy. Policy is
@@ -113,10 +148,13 @@ export async function currentBox(tenant: string, name: string, client: DbClient 
 export async function pinnedBox(tenant: string, name: string, digest: string, client: DbClient = db): Promise<(BoxVersion & { stale: boolean }) | null> {
   const entry = (await boxSnapshot(tenant, client)).boxes.get(name);
   if (!entry) return null;
-  const at = [...entry.versions].reverse().find((v) => v.digest === digest);
+  const at = versionAt(entry, digest);
   if (!at) return null;
-  // Stale: a newer version with another digest was marked forced (the refresh itself is a later phase).
-  const stale = entry.versions.some((v) => v.version > at.version && v.forced && v.digest !== digest);
+  // Stale: a newer version with another digest was marked forced. The built-in has one version, so an older pin is
+  // stale only when the shipped box.yaml forces the refresh.
+  const stale = entry.builtin
+    ? entry.current.forced && entry.current.digest !== digest
+    : entry.versions.some((v) => v.version > at.version && v.forced && v.digest !== digest);
   return { ...at, policy: entry.current.policy, forced: entry.current.forced, version: at.version, stale };
 }
 

@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProviderForm } from "../box/env";
 import { boxTierCapability } from "../box/capability";
+import { BUILTIN_BOX_NAME } from "../box/builtin";
 import { isSecretShaped } from "../box/definition";
 import type { BoxTier } from "../box/policy";
 import { BOX_SUPPORTED_PROVIDER_FORMS, declaredProviderForms } from "../box/provider-forms";
@@ -235,7 +236,9 @@ export async function preflight(persona: string, o: PreflightOpts): Promise<Pref
     checks.push({ id: "box", status: "manual", detail: `this repository has no boxes/ folder, so box '${boxName}' is checked against the deployed boxes at sync, not here` });
   } else {
     const entry = readBoxDir(join(o.repo, "boxes")).find((b) => b.file.name === boxName);
-    if (!entry) checks.push({ id: "box", status: "fail", detail: `box '${boxName}' is not defined: boxes/${boxName}/${BOX_YAML} does not exist` });
+    if (!entry && boxName === BUILTIN_BOX_NAME) {
+      checks.push({ id: "box", status: "manual", detail: `box '${boxName}' is not in this repository: it is the box built into the gateway's image, if that image carries one; the sync refuses the name otherwise, and its tier is not checked here` });
+    } else if (!entry) checks.push({ id: "box", status: "fail", detail: `box '${boxName}' is not defined: boxes/${boxName}/${BOX_YAML} does not exist` });
     else {
       tier = entry.file.policy.tier;
       checks.push({ id: "box", status: "ok", detail: `box '${boxName}' is defined; its weakest accepted tier is ${tier}` });

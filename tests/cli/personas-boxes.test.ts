@@ -281,6 +281,15 @@ describe("personas render with boxes/", () => {
     expect(e.message).toBe("persona 'ana': box names 'nope', but this repository has no boxes/nope/box.yaml");
   });
 
+  test("the one exception is `default`: the gateway's image may carry it, so the render warns and the sync decides", async () => {
+    const dir = repo({ agents: { default: agent("default"), ana: agent("ana", "box: default\n") }, boxes: { "py-dev": { [BOX_YAML]: refYaml("py-dev") } } });
+    const warnings: string[] = [];
+    const p = renderDir(dir, meta, undefined, (w) => warnings.push(...w), await boxes(dir));
+    expect(p.boxes!.map((b) => b.name)).toEqual(["py-dev"]);
+    expect(parsePayload(p).personas.find((x) => x.name === "ana")!.definition!.box).toBe("default");
+    expect(warnings.filter((w) => w.includes("the box built into the gateway's image"))).toHaveLength(1);
+  });
+
   test("a persona naming a box in a repository with no boxes/ folder is a warning: the gateway checks it", () => {
     const warnings: string[] = [];
     const p = renderDir(repo({ agents: { default: agent("default"), ana: agent("ana", "box: py-dev\n") } }), meta, undefined, (w) => warnings.push(...w));

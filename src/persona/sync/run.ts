@@ -41,6 +41,7 @@ import { BoxIntegrityError, verifyBoxSet } from "../../box/integrity";
 import { checkBoxHighWater, raiseBoxHighWater } from "../../box/high-water";
 import { unboxableProviderForms } from "../../box/provider-forms";
 import { isStandInImage } from "../../box/definition";
+import { builtinBox } from "../../box/builtin";
 import { boxFlagValue, boxUnboxedFallbackValue } from "../../config/env";
 
 function masterKeySet(): boolean {
@@ -496,6 +497,11 @@ async function planBoxSync(
   for (const p of naming) {
     const name = p.definition!.box!;
     if (known.has(name)) continue;
+    // The box that ships in the gateway's image needs no entry in the deploy
+    // repository. Only for a name the stored set never held: a deploy that
+    // removes its own box of that name is still refused, since its sessions
+    // are pinned to digests of another repository.
+    if (!storedNames.has(name) && builtinBox()?.name === name) continue;
     throw new SyncFailure(422, storedNames.has(name)
       ? `persona '${p.name}': box names '${name}', which this deploy removes; keep boxes/${name} or remove the box key from the agent first`
       : `persona '${p.name}': box names '${name}', which this deploy does not define`);

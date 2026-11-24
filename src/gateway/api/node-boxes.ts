@@ -20,7 +20,7 @@ import { json } from "./http";
 import { env } from "../../config/env";
 import { db } from "../../db/client";
 import { getPersonaRegistry, managedPersonaDefinition, runsOnFor } from "../../persona/registry";
-import { boxSnapshot, type BoxSnapshot } from "../core/box-registry";
+import { boxSnapshot, versionAt, type BoxSnapshot } from "../core/box-registry";
 
 /** How far back a pinned session counts as one a node may be asked to resume. */
 export const PINNED_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
@@ -76,7 +76,8 @@ export async function boxesForLabels(labels: ReadonlySet<string>, tenant: string
   for (const p of await (deps.pinned ?? defaultPinned)(now - PINNED_WINDOW_MS)) {
     if (!wanted.has(p.name) || out.has(`${p.name}\n${p.digest}`)) continue;
     // The newest version that has this digest names the repository it lives in. A digest the set no longer has is not listed.
-    const at = [...(snap.boxes.get(p.name)?.versions ?? [])].reverse().find((v) => v.digest === p.digest);
+    const entry = snap.boxes.get(p.name);
+    const at = entry ? versionAt(entry, p.digest) : null;
     if (at) out.set(`${p.name}\n${p.digest}`, { name: p.name, image: at.image, digest: at.digest, current: false });
   }
   return { setVersion: snap.setVersion, boxes: [...out.values()] };

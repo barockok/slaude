@@ -180,6 +180,16 @@ describe("preflight: the opt-in checklist", () => {
     expect(text).toContain("This command reports only. It changed nothing.");
   });
 
+  test("`default` with no boxes/default: the gateway's image may carry it, so it is a manual item, not a failure", async () => {
+    const { dir } = repo({ agent: AGENT("box: default\nprovider:\n  apiKey: env://PERSONA_ANA_KEY\n") });
+    const r = await preflight("ana", { repo: dir, privateCode: false, liveNodes: gvisorNodes });
+    expect(status(r).box).toBe("manual");
+    expect(detail(r, "box")).toContain("the box built into the gateway's image");
+    // Any other name the repository lacks still fails.
+    const other = repo({ agent: AGENT("box: nope\n") });
+    expect(status(await preflight("ana", { repo: other.dir })).box).toBe("fail");
+  });
+
   test("provider form: supported today; with a form taken out of the constant it fails and names the form", async () => {
     const { dir } = repo({ agent: AGENT("box: ruby-dev\nprovider:\n  oauthToken: env://PERSONA_ANA_OAUTH\n") });
     expect(status(await preflight("ana", { repo: dir })).provider).toBe("ok");

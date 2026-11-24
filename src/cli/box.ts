@@ -262,6 +262,7 @@ const USAGE = [
   "       slaude box import <oci layout directory> [--box-dir <directory>]",
   "       slaude box preflight <persona> --repo <deploy repository> [--box <name>] [--manifest <node.json>]",
   "                            [--private-code | --no-private-code] [--code-host <mcp server>]",
+  "       slaude box digests --in-use",
 ].join("\n");
 
 /** Ask one yes/no question on a terminal. Undefined when there is no terminal to ask. */
@@ -334,6 +335,16 @@ if (import.meta.main) {
       } finally {
         await close?.();
       }
+    } else if (cmd === "digests" && flags.has("--in-use") && pos.length === 0) {
+      // For a registry retention job: what must be kept. Reads the gateway's database; a node has none.
+      if ((process.env.SLAUDE_ROLE ?? "").trim().toLowerCase() === "node") throw new PayloadError("box digests runs on the gateway or mono host (a node has no database)");
+      const { digestsInUse } = await import("./box-digests");
+      const { builtinBox } = await import("../box/builtin");
+      const { db } = await import("../db/schema");
+      const r = await digestsInUse(db, { builtin: builtinBox() });
+      for (const image of r.images) console.log(image);
+      if (r.unresolved) console.error(`[box] ${r.unresolved} session pin(s) name a box that is no longer stored; their repository is not known, so they are not listed`);
+      await db.close?.();
     } else if (cmd === "check" && dir) {
       const r = checkBoxes(dir);
       for (const b of r.boxes) console.log(`ok  ${b.name}  (${b.image === "build" ? `build, context ${b.contextHash!.slice(0, 12)}` : "ref"})`);
