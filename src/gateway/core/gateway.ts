@@ -1166,6 +1166,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         postTarget: job.target,
         personaId: jobPersonaId,
         origin: "cron",
+        cronJobId: job.id,
       };
       ctx.requestApproval = (req) =>
         approvals.request({
@@ -1625,7 +1626,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
   // Brain gate input from the live SlackContext — read per tool call so the
   // current turn's author (not the session creator) drives KB scoping.
-  type BrainGateCtx = Pick<SlackContext, "channel" | "threadTs" | "userId" | "teamId" | "personaId" | "origin" | "turnSenders">;
+  type BrainGateCtx = Pick<SlackContext, "channel" | "threadTs" | "userId" | "teamId" | "personaId" | "origin" | "turnSenders" | "cronJobId">;
   // `lockedUser`: the thread's lock owner when the caller already read it.
   const brainGateFor = async (ctx: BrainGateCtx, known?: { lockedUser: string | null; lockedTeamId?: string | null }): Promise<GateInput> => {
     const soul = trustSoulFor(ctx.personaId);
@@ -1657,7 +1658,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       agentId: personaAgentId,
       threadKey: `${ctx.channel}:${ctx.threadTs}`,
       // Shadow (rc.45): measured, never read for a decision. placeFor never throws and is bounded.
-      place: await placeFor({ agentId: personaAgentId, teamId: ctx.teamId || null, channel: ctx.channel, threadTs: ctx.threadTs, personaId: ctx.personaId ?? null }),
+      place: await placeFor({ agentId: personaAgentId, teamId: ctx.teamId || null, channel: ctx.channel, threadTs: ctx.threadTs, personaId: ctx.personaId ?? null, ...(ctx.cronJobId ? { cronJobId: ctx.cronJobId } : {}) }),
     };
     // Memory places (rc.46): active only in mode `on` for the personas the canary list names.
     // A manager's own /1on1 also reads that manager's DM place (decision 1).
