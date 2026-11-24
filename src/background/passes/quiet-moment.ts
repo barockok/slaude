@@ -15,7 +15,8 @@
  * Scope is the thread_activity row's, set at turn end by the rule memory sync
  * uses: `user:<id>` (a /1on1 or DM thread) runs as that person over their
  * `user-<id>` slice, with only their own turns, the agent's and runtime text;
- * `agent` runs agent-scope over `agent-<id>`.
+ * `agent` runs agent-scope over `agent-<id>`; `place:<source>` (memory places on)
+ * runs over that one place, and the summary is written beside the page there.
  *
  * The summary is written by the pass's own `write_summary` tool to
  * `conversations/<session>/summary` in the same source as the conversation
@@ -35,6 +36,8 @@ import { getPageOrNull } from "../../knowledge/memory-trail";
 import type { BrainScope } from "../../knowledge/scope";
 import { conversationSlug, conversationSummarySlug, orderTimeline } from "../../memory/brain-provider";
 import { localDay } from "../budget";
+import { isPlaceSourceId } from "../../memory/place-id";
+import { placeBound } from "../../memory/place-binding";
 import { passToolId, passWriteSource, type PassScope, type PassTool, type TranscriptTurn } from "../pass-tools";
 import { renderPassPrompt } from "../prompts";
 import { runPass, type Outcome } from "../runner";
@@ -85,8 +88,10 @@ export async function dueQuietThreads(g: AgentGroup, now: Date, t: QuietThreshol
 }
 
 /** The pass scope a thread_activity scope names, or null when it is unusable. */
-function passScopeOf(scope: string, teamId: string): PassScope | null {
+export function passScopeOf(scope: string, teamId: string): PassScope | null {
   if (scope === "agent") return { kind: "agent" };
+  // rc.47: a thread whose page went to a memory place. Its summary is written beside the page, in that place.
+  if (scope.startsWith("place:") && isPlaceSourceId(scope.slice("place:".length))) return { kind: "place", source: scope.slice("place:".length) };
   if (scope.startsWith("user:") && scope.length > "user:".length) return { kind: "user", userId: scope.slice("user:".length), teamId };
   return null;
 }
@@ -174,8 +179,13 @@ export async function runQuietMoment(r: AgentGroup & { slot: string; signal?: Ab
     console.warn(`${tag}: session=${sessionId} has an unusable scope; not running`);
     return null;
   }
+  // A place the registry does not bind to this agent is never read or written (fail closed).
+  if (scope.kind === "place" && !(await placeBound(r.agentId, scope.source))) {
+    console.warn(`${tag}: session=${sessionId} names a place the registry does not bind to this agent; not running`);
+    return null;
+  }
   const source = passWriteSource(scope, r.agentId);
-  const brainScope: BrainScope = { clientId: scope.kind === "user" ? scope.userId : r.agentId, sourceId: source, allowedSources: [source] };
+  const brainScope: BrainScope = { clientId: scope.kind === "user" ? scope.userId : r.agentId, sourceId: source, allowedSources: [source], ...(scope.kind === "place" ? { placeAgent: r.agentId } : {}) };
 
   const slug = conversationSlug(sessionId);
   const rows = await deps.call("get_timeline", { slug }, brainScope);

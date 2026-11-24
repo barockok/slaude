@@ -10,6 +10,7 @@ import type { startSkillCheck } from "../background/skill-check";
 import { env } from "../config/env";
 import type { AppRef } from "../gateway/core/transport";
 import type { BrainOpCall } from "../knowledge/memory-trail";
+import type { PlaceHomeDeps } from "./place-home";
 import type { WakeGateConfig } from "./wake-gate";
 
 /** How long and how much one wake may run. Absent or 0: that cap is off. The pool always applies to the USD one. */
@@ -60,6 +61,8 @@ export interface WakeDeps {
   startRun?: typeof startSkillCheck;
   caps?: () => { maxUsd: number; maxTurns: number; maxMinutes: number };
   left?: (personaId: string, agentId: string, now: Date) => Promise<number>;
+  /** Memory places (rc.46): how a channel's place is found (tests). */
+  placeHome?: PlaceHomeDeps;
 }
 
 export type WakeResult = "woke" | "idle" | "no-checklist" | "busy" | "no-budget" | "no-model" | "no-team" | "failed";

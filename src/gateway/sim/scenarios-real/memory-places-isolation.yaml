@@ -1,0 +1,13 @@
+# Live-model only (--real), with SLAUDE_MEMORY_BOUNDARIES=on: a page saved in one channel is not
+# readable from another channel of the same agent through memory_search. The manager speaks in two
+# channels (a manager has a place in any channel); the agent is asked for tool calls by name so the
+# check does not depend on its wording. Run it with a real brain; the stub agent cannot call tools.
+layer: trusted
+as: manager
+steps:
+  - send: { as: U0MGR, channel: C0TEAM, text: "Call the memory_save tool with pages set to a single-element array containing { slug: \"notes/places-iso\", content: \"The launch codename is PLACEISOMARK.\", summary: \"places isolation check\" }. After the tool succeeds, reply with the single word SAVEDHERE." }
+  - expect_reply: { contains: "SAVEDHERE" }
+  - send: { as: U0MGR, channel: C0TEAM, text: "Call the memory_search tool with query \"PLACEISOMARK\" and reply with the slug of the page you found." }
+  - expect_reply: { contains: "places-iso" }
+  - send: { as: U0MGR, channel: C0PUB, text: "Call the memory_search tool with query \"PLACEISOMARK\". If it returns no page, reply with the single word NOTHERE, otherwise reply with the slug." }
+  - expect_reply: { contains: "NOTHERE", not_contains: "places-iso" }

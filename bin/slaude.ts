@@ -77,6 +77,10 @@ switch (sub) {
     entry = "src/cli/domain.ts";
     rest = argv.slice(1);
     break;
+  case "memory-places":
+    entry = "src/cli/memory-places.ts";
+    rest = argv.slice(1);
+    break;
   case "env":
     entry = "src/cli/env.ts";
     rest = argv.slice(1);
@@ -98,6 +102,7 @@ switch (sub) {
         "  slaude box check <dir>  validate every boxes/<name>/box.yaml of a deploy repository",
         "  slaude domain reconcile [--dry-run] [--json]  backfill and repair users, bindings and boundaries",
         "  slaude env list [--tenant <id>] | unbind-shared (--tenant <id> | --all-tenants) (--dry-run | --apply)  shared environments: bound threads, and the rollback step to rc.21",
+        "  slaude memory-places move [--apply] [--persona <name>]  copy the pages that belong to one memory place out of the persona's slice (dry run by default; originals are kept)",
         "  slaude domain slice-tombstone add|remove|list  revoke a user-slice name (or *) from the memory union",
         "",
         "SLAUDE_HOME resolves to $SLAUDE_HOME, else the cwd if it has SOUL.md, else ~/.slaude.",

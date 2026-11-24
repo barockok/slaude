@@ -12,6 +12,7 @@ import { agentSourceId, profileSourceId, PUBLIC_SOURCE, resolveBrainScope, SHARE
 import { composePage } from "../../src/knowledge/memory-pages";
 import { SUPERSEDED_TAG } from "../../src/knowledge/memory-trail";
 import { fakeBrain } from "../memory/fake-brain";
+import { NO_PLACE } from "../../src/memory/place";
 
 const TEAM = "T0TEAM";
 const AGENT = "AGENT1";
@@ -52,7 +53,7 @@ async function setup(brain: Brain, over: Partial<GateInput> = {}) {
   const reads: Read[] = [];
   const g: GateInput = {
     userId: "U0ALICE", teamId: TEAM, interactive: true, origin: "slack", lockedUser: null,
-    channelTrust: "trusted", isManager: false, agentId: AGENT, threadKey: "C0CHAN:1.1",
+    channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: AGENT, threadKey: "C0CHAN:1.1",
     turnSenders: [ALICE], ...over,
   };
   const scope = (await resolveBrainScope({ ...g, kbSources: [] }));

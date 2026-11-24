@@ -23,6 +23,7 @@ import { decidePersonSlices } from "../../src/slices/decide";
 import { resolveBrainScope as resolveRc21 } from "./rc21/knowledge-scope";
 import { memoryScopeFor as memoryRc21 } from "./rc21/memory-scope";
 import { TEAM, newUser, resetWorld, slack, cleanWorld } from "../helpers/person-world";
+import { NO_PLACE } from "../../src/memory/place";
 
 const MODES: Array<string | undefined> = [undefined, "off", "shadow", "union", "garbage"];
 
@@ -67,7 +68,7 @@ describe("scope parity with rc.21", () => {
         lockedTeamId: pick(r, [null, TEAM]),
         channelTrust: pick(r, ["trusted", "public", "unknown"] as const),
         isManager: r() < 0.3,
-        agentId: pick(r, ["agent-one", "agent-two"]),
+        place: NO_PLACE, agentId: pick(r, ["agent-one", "agent-two"]),
       };
       // A stray union person (for the speaker, plus a runAs person): ignored unless the flag is `union`.
       const stray = (id: string | null) => (id && mode !== "union" ? { own: userSourceId(id), reads: [userSourceId(id), "user-u9strayexample"], via: "union" as const, dropped: { conflict: 0, tombstoned: 0 } } : undefined);
@@ -89,7 +90,7 @@ describe("scope parity with rc.21", () => {
     await slack(a, "U1AEXAMPLE");
     for (const mode of MODES) {
       setMode(mode);
-      const base: ScopeInput = { userId: "U0AEXAMPLE", teamId: TEAM, lockedUser: "U0ZEXAMPLE", channelTrust: "trusted", isManager: false, kbSources: [], agentId: "agent-one" };
+      const base: ScopeInput = { userId: "U0AEXAMPLE", teamId: TEAM, lockedUser: "U0ZEXAMPLE", channelTrust: "trusted", isManager: false, kbSources: [], place: NO_PLACE, agentId: "agent-one" };
       const locked = await resolveBrainScope(base);
       expect(locked.sourceId).toBe("public");
       // Public plus the speaker's own profile (rc.21's rule) and nothing else: no user- slice of either id.
@@ -103,7 +104,7 @@ describe("scope parity with rc.21", () => {
 
   test("union mode with no person attached is still byte-identical to rc.21 (the attach is the only difference)", async () => {
     process.env.SLAUDE_PERSON_SLICES = "union";
-    const input: ScopeInput = { userId: "U0AEXAMPLE", teamId: TEAM, lockedUser: "U0AEXAMPLE", channelTrust: "public", isManager: false, kbSources: [], agentId: "agent-one" };
+    const input: ScopeInput = { userId: "U0AEXAMPLE", teamId: TEAM, lockedUser: "U0AEXAMPLE", channelTrust: "public", isManager: false, kbSources: [], place: NO_PLACE, agentId: "agent-one" };
     expect(await resolveBrainScope(input)).toEqual(await resolveRc21(input));
   });
 });
@@ -147,7 +148,7 @@ describe("union mode against rc.21", () => {
         lockedTeamId: null,
         channelTrust: pick(r, ["trusted", "public", "unknown"] as const),
         isManager: r() < 0.3,
-        agentId: pick(r, ["agent-one", "agent-two"]),
+        place: NO_PLACE, agentId: pick(r, ["agent-one", "agent-two"]),
         ...(person ? { person } : {}),
       };
       const kb = r() < 0.5 ? ["kb-a"] : [];

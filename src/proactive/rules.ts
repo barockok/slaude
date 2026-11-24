@@ -37,9 +37,20 @@ const agentScope = (agentId: string): BrainScope => {
   return { clientId: agentId, sourceId: source, allowedSources: [source] };
 };
 
-/** The agent's live rules; superseded and unparsable pages are skipped. */
-export async function loadRules(agentId: string, call: BrainOpCall): Promise<ProactiveRule[]> {
-  const scope = agentScope(agentId);
+/**
+ * The agent's live rules; superseded and unparsable pages are skipped. With a `place` (rc.46) the
+ * rules stored in that place are read too, beside the persona-wide ones: a rule of the same slug in
+ * the place wins. Old rules stay where they are, so the persona-wide read never goes away.
+ */
+export async function loadRules(agentId: string, call: BrainOpCall, place?: BrainScope | null): Promise<ProactiveRule[]> {
+  const bySlug = new Map<string, ProactiveRule>();
+  for (const scope of place ? [agentScope(agentId), place] : [agentScope(agentId)]) {
+    for (const rule of await loadRulesIn(call, scope)) bySlug.set(rule.slug, rule);
+  }
+  return [...bySlug.values()];
+}
+
+async function loadRulesIn(call: BrainOpCall, scope: BrainScope): Promise<ProactiveRule[]> {
   const rows = await call("list_pages", { type: "proactive-rule", limit: LIST_LIMIT }, scope);
   if (!Array.isArray(rows)) return [];
   const gone = await supersededSlugs(call, scope, [scope.sourceId]);

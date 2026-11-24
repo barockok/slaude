@@ -1,3 +1,4 @@
+import { assertPlacesBound } from "../memory/place-binding";
 import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import { scrubChildEnv, TOOLS_SURVIVING_EMPTY_SET } from "../agent/child-env";
 import { join } from "node:path";
@@ -210,6 +211,8 @@ export async function brainThink(
   scope: BrainScope,
   deps: { client?: ThinkClient; call?: GatherOpts["call"] } = {},
 ): Promise<unknown> {
+  // runThink reads the engine directly, past brainCall: a place source in the scope is checked here too.
+  await assertPlacesBound(scope);
   if (brainMode() === "remote") return gatherThink(question, scope, deps);
   const engine = scopedThinkEngine(await getBrain(), scope.allowedSources);
   const thinkPath = join(import.meta.dir, "../../node_modules/gbrain/src/core/think/index.ts");

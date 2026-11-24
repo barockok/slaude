@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NO_PLACE } from "../../src/memory/place";
 
 const realSdk = await import("@anthropic-ai/claude-agent-sdk");
 const realQuery = realSdk.query;
@@ -131,7 +132,7 @@ function gateway(opts: { serveMemory?: boolean } = {}) {
               lockedUser: c.lock?.user ?? null,
               channelTrust: "trusted",
               isManager: false,
-              agentId: PERSONA_IDS[c.persona] ?? "default",
+              place: NO_PLACE, agentId: PERSONA_IDS[c.persona] ?? "default",
             }),
           }),
   });

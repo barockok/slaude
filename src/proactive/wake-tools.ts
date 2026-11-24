@@ -11,12 +11,14 @@ import * as Posts from "../db/proactive-posts";
 import { redactSecrets } from "../gateway/core/status-text";
 import type { BrainOpCall } from "../knowledge/memory-trail";
 import { m as metric } from "../metrics";
+import { env } from "../config/env";
 import { proactiveFor, proactiveRead, type ResolvedProactive } from "../soul/proactive";
 import { HEARTBEAT_MAX_POSTS, sendProactive, type ProactivePostContext } from "./post";
 import { minLevel, type Level } from "./levels";
 import { nextLocal } from "./promises";
 import { isSelfEvidence, textHash, UNCHANGED_WINDOW_MS, type Audience, type RestraintRule } from "./restraint";
 import { mdToMrkdwn } from "../gateway/slack/format";
+import { placeHome } from "./place-home";
 import { loadRules, resolveLevel } from "./rules";
 import { clampNextCheck, type WakeGateConfig } from "./wake-gate";
 
@@ -101,7 +103,8 @@ export async function proactivePostTool(c: WakeToolContext, a: ProactivePostTool
   const cfg = proactiveFor(personaId, audience === "channel" ? recipient : undefined);
   // A rule and the ceiling can only lower what the agent asks for. Unlike the
   // round, no rule does not mean `inform`: the mandate is the authority here.
-  const rules = await loadRules(agentId, deps.call);
+  const home = await placeHome({ agentId, personaId, teamId: c.teamId, channel: own });
+  const rules = await loadRules(agentId, deps.call, home.scope);
   const { rule } = resolveLevel({ rules, kind, destination: recipient, proposed: asked, highest: cfg.highest });
   const level: Level = minLevel(minLevel(rule ? rule.level : asked, asked), cfg.highest);
   if (level === "ignore") {
@@ -184,11 +187,15 @@ export async function wakeThreadRefusal(wake: WakeTurn, client: WebClient, chann
 
 const READ_CHANNEL_LIMIT = 50;
 
-/** Recent messages of a channel this agent works in on its own. Available in any turn. */
+/** Recent messages of a channel this agent works in on its own (with memory places on, only this turn's channel). Available in any turn. */
 export async function readChannelTool(c: WakeToolContext, a: { channel: string; thread_ts?: string; oldest?: string; limit?: number }): Promise<ToolResult> {
   const channel = a.channel.trim();
   if (!proactiveRead(personaOf(c)).includes(channel)) {
     return err("refused: you can read only a channel you work in on your own.");
+  }
+  // Memory places on (rc.47): a place is one channel's audience, so this turn reads that channel and no other.
+  if (env.memory.placesOn(personaOf(c)) && channel !== (c.wake?.channelSession ?? c.channel)) {
+    return err("refused: you can read only the channel this turn is in.");
   }
   try {
     const page = { channel, limit: Math.min(Math.max(a.limit ?? 20, 1), READ_CHANNEL_LIMIT), ...(a.oldest ? { oldest: a.oldest } : {}) };

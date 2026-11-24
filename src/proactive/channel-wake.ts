@@ -23,7 +23,8 @@ import { getPageOrNull } from "../knowledge/memory-trail";
 import { m as metric } from "../metrics";
 import { personaDefaultModel } from "../persona/registry";
 import { channelSessionWakes } from "../soul/proactive";
-import { agentPageBody, agentScope, channelChecklistSlug, HEARTBEAT_SLUG, line, OUT_OF_BUDGET_TEXT, tellManagerOnce } from "./post";
+import { placeHome } from "./place-home";
+import { agentPageBody, agentScope, channelChecklistSlug, HEARTBEAT_SLUG, line, OUT_OF_BUDGET_TEXT, scopePageBody, tellManagerOnce } from "./post";
 import { loadRules } from "./rules";
 import { checklistHash, FAILURES_WORTH_A_NOTICE, wakeCaps, wakeGateConfig, WakeTargetBusyError, type WakeDeps, type WakeResult } from "./wake";
 import { wakeDue } from "./wake-gate";
@@ -75,9 +76,54 @@ async function migrateChecklist(r: Run, channels: readonly string[], deps: WakeD
   }
 }
 
+/** The ledger pass name of a channel's one-time copy of its checklist into its place (rc.46). */
+const PLACE_MIGRATION_PASS = "heartbeat-place-migration";
+
+/**
+ * The first wake after memory places are switched on for the persona: a channel's checklist page
+ * (`self/heartbeat/<channel>` in the persona's slice) is copied into that channel's place, once,
+ * claimed in `background_slots` as the earlier checklist migration was. The copy never overwrites a page
+ * the place already has, and the legacy page stays. A failure is logged and tried again at the next wake.
+ */
+async function migrateChecklistsToPlaces(r: Run, channels: readonly string[], teamId: string | null | undefined, deps: WakeDeps): Promise<void> {
+  const tag = `[background] agent=${r.agentId} pass=heartbeat-wake`;
+  for (const channel of channels) {
+    try {
+      const home = await placeHome({ agentId: r.agentId, personaId: r.personaId, teamId, channel }, deps.placeHome);
+      if (!home.on || !home.scope) continue;
+      if ((await claimedAt(r.agentId, PLACE_MIGRATION_PASS, channel)) !== null) continue;
+      const slug = channelChecklistSlug(channel);
+      const legacy = await agentPageBody(r.agentId, deps.call, slug);
+      const have = readPageRecord(await getPageOrNull(deps.call, slug, home.scope));
+      if (legacy && !have) {
+        const page = composePage({ slug, content: legacy, type: "heartbeat" }, r.now);
+        if ("error" in page) throw new Error(page.error);
+        await deps.call("put_page", { slug, content: page.content }, home.scope);
+        console.log(`${tag}: copied ${slug} into the channel's memory place`);
+      }
+      await claimSlot(r.agentId, PLACE_MIGRATION_PASS, channel, r.now.getTime());
+    } catch (e) {
+      console.warn(`${tag}: could not copy the checklist of <#${channel}> into its place: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+}
+
+/**
+ * A channel's checklist body. With places on it is the place's page only (the legacy one was copied
+ * once); with places off a place bound earlier is read first, then the persona-wide page (rollback);
+ * with no place, the persona-wide page, as before.
+ */
+async function checklistBody(r: Run, channel: string, teamId: string | null | undefined, deps: WakeDeps): Promise<string> {
+  const slug = channelChecklistSlug(channel);
+  const home = await placeHome({ agentId: r.agentId, personaId: r.personaId, teamId, channel }, deps.placeHome);
+  if (!home.scope) return agentPageBody(r.agentId, deps.call, slug);
+  const here = await scopePageBody(home.scope, deps.call, slug);
+  return home.on ? here : here || (await agentPageBody(r.agentId, deps.call, slug));
+}
+
 /** One channel's job: its mandate plus its checklist page. `hash` is null with neither. */
-async function channelJob(r: Run, channel: string, mandate: string, deps: WakeDeps): Promise<{ page: string; hash: string | null }> {
-  const page = await agentPageBody(r.agentId, deps.call, channelChecklistSlug(channel));
+async function channelJob(r: Run, channel: string, mandate: string, deps: WakeDeps, teamId?: string | null): Promise<{ page: string; hash: string | null }> {
+  const page = await checklistBody(r, channel, teamId, deps);
   const job = [mandate, page].filter(Boolean).join("\n");
   return { page, hash: job ? checklistHash(job) : null };
 }
@@ -115,7 +161,8 @@ async function startChannelWake(r: Run, d: Job, managerId: string, app: AppRef, 
       console.log(`${tag}: <#${d.channel}> is claimed by another wake`);
       return "busy";
     }
-    const rules = await loadRules(r.agentId, deps.call);
+    const home = await placeHome({ agentId: r.agentId, personaId: r.personaId, teamId: app.teamId, channel: d.channel }, deps.placeHome);
+    const rules = await loadRules(r.agentId, deps.call, home.scope);
     const envelope = renderPassPrompt("channel-wake", {
       NOW: new Date(now).toISOString(),
       TIME_ZONE: r.timeZone,
@@ -158,11 +205,12 @@ export async function runChannelWakes(r: Run, deps: WakeDeps): Promise<WakeResul
   const m = deps.mandates(r.personaId, channels);
   const cfg = (deps.gate ?? wakeGateConfig)();
   await migrateChecklist(r, channels, deps);
+  await migrateChecklistsToPlaces(r, channels, app?.teamId, deps);
 
   const due: (Job & { at: number; reason: string })[] = [];
   for (const channel of channels) {
     const mandate = m.channels[channel] ?? m.global;
-    const { page, hash } = await channelJob(r, channel, mandate, deps);
+    const { page, hash } = await channelJob(r, channel, mandate, deps, app?.teamId);
     const state = await ChannelWake.get(r.agentId, channel);
     if (state && state.failures >= FAILURES_WORTH_A_NOTICE) {
       if (state.lastOutcome === "stopped-budget") {
@@ -221,9 +269,10 @@ export async function runChannelWakeNow(r: Run, channel: string, deps: WakeDeps)
     return "busy";
   }
   await migrateChecklist(r, channels, deps);
+  await migrateChecklistsToPlaces(r, [channel], app.teamId, deps);
   const m = deps.mandates(r.personaId, [channel]);
   const mandate = m.channels[channel] ?? m.global;
-  const { page, hash } = await channelJob(r, channel, mandate, deps);
+  const { page, hash } = await channelJob(r, channel, mandate, deps, app.teamId);
   if (hash === null) return "no-checklist";
   const state = await ChannelWake.get(r.agentId, channel);
   const notice = { managerId, app, post: deps.post, at: r.now, tag };

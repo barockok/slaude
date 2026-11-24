@@ -906,6 +906,32 @@ export const env = {
     /** Most rows one fill tick updates across tables (default 2000). */
     fillMaxRows: (): number => intAtLeastOne("SLAUDE_BOUNDARY_FILL_MAX_ROWS", 2000),
   },
+  memory: {
+    /**
+     * `SLAUDE_MEMORY_BOUNDARIES` (default `shadow`): the memory places design. `off`: no
+     * place is computed and nothing is counted. `shadow`: where each write WOULD go is
+     * computed and counted beside the write, which is unchanged. `on` (rc.46): saved pages, the checklist, commitments and place-scoped rules
+     * are written to the place and read from it, for the personas `SLAUDE_MEMORY_BOUNDARIES_PERSONAS` names (every persona when empty); any other persona behaves as `shadow`. Read on every call. Anything else
+     * reads as `shadow`.
+     */
+    boundaries: (): "off" | "shadow" | "on" => {
+      const raw = opt("SLAUDE_MEMORY_BOUNDARIES", "shadow").trim().toLowerCase();
+      return raw === "off" || raw === "on" ? raw : "shadow";
+    },
+    /**
+     * `SLAUDE_MEMORY_BOUNDARIES_PERSONAS`: a comma list of persona names that narrows where
+     * `SLAUDE_MEMORY_BOUNDARIES=on` applies (the canary). Empty or unset: every persona. A persona
+     * outside the list behaves as in `shadow`. Names compare case-insensitively; the default
+     * persona is `default`. Read on every call.
+     */
+    placePersonas: (): string[] => csv(opt("SLAUDE_MEMORY_BOUNDARIES_PERSONAS", "")).map((s) => s.toLowerCase()),
+    /** True when the memory places are active for this persona's turns: the mode is `on` and the persona is in the canary list (or the list is empty). */
+    placesOn: (persona: string | null | undefined): boolean => {
+      if (env.memory.boundaries() !== "on") return false;
+      const only = env.memory.placePersonas();
+      return only.length === 0 || only.includes((persona || "default").toLowerCase());
+    },
+  },
   slices: {
     /**
      * `SLAUDE_PERSON_SLICES` (default `off`, slice F). `off`: no resolver call, every

@@ -11,6 +11,7 @@ import { clearKbCache } from "../../src/knowledge/loader";
 import { personaKbList, personaKbs, personaKbSourceIds, installedKbSourceIds } from "../../src/knowledge/persona-kb";
 import { brainHandlers, createKbMcp, type BrainToolDeps } from "../../src/knowledge/mcp-tools";
 import { resolveBrainScope, type BrainScope } from "../../src/knowledge/scope";
+import { NO_PLACE } from "../../src/memory/place";
 
 beforeEach(() => {
   ensureHome();
@@ -61,10 +62,10 @@ describe("kb_think with a persona's scope", () => {
     const searched: string[] = [];
     const deps: BrainToolDeps = {
       scope: async () => (await resolveBrainScope({
-        userId: null, teamId: null, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "U0FIN",
+        userId: null, teamId: null, lockedUser: null, channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: "U0FIN",
         kbSources: personaKbSourceIds("finance", reg),
       })),
-      gate: () => ({ userId: null, teamId: null, interactive: false, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "U0FIN" }),
+      gate: () => ({ userId: null, teamId: null, interactive: false, lockedUser: null, channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: "U0FIN" }),
       managers: () => [],
       requestApproval: async () => ({ approved: false }) as any,
       think: async (_q, scope) => {

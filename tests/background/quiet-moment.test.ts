@@ -23,6 +23,7 @@ import {
   SUMMARY_MAX_CHARS,
   SUMMARY_TOOL,
 } from "../../src/background/passes/quiet-moment";
+import { NO_PLACE } from "../../src/memory/place";
 import { createBackgroundScheduler, passHandlers } from "../../src/background/scheduler";
 import { sweepStaleRuns, RUN_STALE_MS } from "../../src/background/stale-runs";
 import { makeMemoryPlane } from "../../src/gateway/api/memory";
@@ -400,7 +401,7 @@ describe("runQuietMoment", () => {
 
 describe("turn end counts thread activity", () => {
   const gate = (over: Partial<GateInput> = {}): GateInput => ({
-    userId: "U0ALICE", teamId: "T0TEAM", interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: AGENT, ...over,
+    userId: "U0ALICE", teamId: "T0TEAM", interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: AGENT, ...over,
   });
   const claims = (o: Partial<JobClaims> = {}) =>
     ({ tenant: "default", persona: "default", session: "S-node", team: "T0TEAM", channel: "C0CHAN", thread: "1.0", initiator: "U0ALICE", scope: "turn", job: "J1", runAs: "agent", label: "default", exp: 0, iat: 0, ...o }) as JobClaims;

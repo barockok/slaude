@@ -41,6 +41,7 @@ import { resolveBrainScope, userSourceId, type ScopeInput } from "../../src/know
 import { memoryScopeFor } from "../../src/memory/scope";
 import { invalidateActors } from "../../src/refs/actor";
 import { TEAM, TEAM2, resetWorld, cleanWorld } from "../helpers/person-world";
+import { NO_PLACE } from "../../src/memory/place";
 
 const ISS = "https://idp.example.com";
 const NAME_OK = /^user-[a-z0-9]+$/;
@@ -140,7 +141,7 @@ async function assertNoLeak(): Promise<number> {
     expect(liveUsers.has(a.user_id)).toBe(true);
     // 7: the scopes built from this person
     const withPerson = extras.length > 0 ? { ...person } : undefined;
-    const base: ScopeInput = { userId: a.value, teamId: a.workspace, lockedUser: "U0NOTSAMEEXAMPLE", channelTrust: "trusted", isManager: false, kbSources: [], agentId: "agent-one", person: withPerson };
+    const base: ScopeInput = { userId: a.value, teamId: a.workspace, lockedUser: "U0NOTSAMEEXAMPLE", channelTrust: "trusted", isManager: false, kbSources: [], place: NO_PLACE, agentId: "agent-one", person: withPerson };
     const locked = await resolveBrainScope(base);
     expect({ where, src: locked.sourceId, user: locked.allowedSources.filter((s) => s.startsWith("user-")) }).toEqual({ where, src: "public", user: [] });
     const mine = await resolveBrainScope({ ...base, lockedUser: a.value });

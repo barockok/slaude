@@ -1,5 +1,6 @@
 import type { BrainScope } from "../knowledge/scope";
 import { agentSourceId, userSourceId } from "../knowledge/scope";
+import { hasPlacePrefix } from "../memory/place-id";
 import { db } from "./schema";
 
 /**
@@ -13,7 +14,7 @@ export interface ThreadActivity {
   turns: number;
   lastTurnAt: number;
   summarizedAt: number | null;
-  /** 'agent' or 'user:<id>': whose memory the thread's conversation page is kept in. */
+  /** 'agent', 'user:<id>' or 'place:<source>' (rc.47): whose memory the thread's conversation page is kept in. */
   scope: string;
 }
 
@@ -37,12 +38,14 @@ const toActivity = (r: Row): ThreadActivity => ({
 
 /**
  * The activity scope of a memory write: 'agent' when the turn's page went to
- * the agent's own slice, 'user:<id>' when it went to that person's slice, null
- * for anything else (no page, or a source no pass reviews).
+ * the agent's own slice, 'user:<id>' when it went to that person's slice,
+ * 'place:<source>' when it went to one of the agent's memory places (rc.47; free
+ * text, no schema change), null for anything else (no page, or a source no pass reviews).
  */
 export function activityScopeOf(write: BrainScope | null, agentId: string): string | null {
   if (!write) return null;
   if (write.sourceId === agentSourceId(agentId)) return "agent";
+  if (hasPlacePrefix(write.sourceId) && write.placeAgent === agentId) return `place:${write.sourceId}`;
   if (write.clientId && write.sourceId.startsWith("user-") && userSourceId(write.clientId) === write.sourceId) return `user:${write.clientId}`;
   return null;
 }

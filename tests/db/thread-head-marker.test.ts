@@ -124,7 +124,7 @@ describe("upgrade from 0052", () => {
   test("pg: 0053 applies on top of 0052 data, keeps old rows, reruns as a no-op", async () => {
     const db = await openDb({ dialect: "pg", driver: "pglite" });
     try {
-      const all = loadMigrations();
+      const all = loadMigrations().filter((m) => m.version <= "0053"); // this file owns 0053; later migrations have their own tests
       await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version < "0053") });
       await oldSession(db, "s1");
       await oldSession(db, "s2");

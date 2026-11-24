@@ -311,6 +311,7 @@ describe("guard: who may assign boundary_id and locator on an existing row", () 
     "src/db/commitments.ts": 2,
     "src/db/environments.ts": 4,
     "src/db/channel-wake-state.ts": 3,
+    "src/db/memory-scopes.ts": 1, // a read: `WHERE agent_id = ? AND boundary_id = ?` on the places registry (no existing row is assigned)
   };
   const root = join(import.meta.dir, "../..");
   const files = (): string[] => {

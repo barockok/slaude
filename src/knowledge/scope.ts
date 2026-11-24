@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { sameAt } from "../access/wired";
 import { env } from "../config/env";
+import { hasPlacePrefix } from "../memory/place-id";
+import { bindPlace, placeBound } from "../memory/place-binding";
+import type { PlaceRef } from "../memory/place";
 import type { SoulData } from "../soul/data";
 
 export type ChannelTrust = "trusted" | "public" | "unknown";
@@ -19,6 +22,9 @@ export interface BrainScope {
    *  exactly when it is in `allowedSources`. Never the write target here:
    *  profile writes are an explicit, speaker-only target (phase C §8.6). */
   profileSource?: string;
+  /** The agent that owns the place source this scope names, set exactly when it names one (rc.46).
+   *  The registry check (src/memory/place-binding.ts) refuses a place source not bound to it. */
+  placeAgent?: string;
 }
 
 /**
@@ -68,7 +74,21 @@ export interface ScopeInput {
   agentId: string;
   /** The speaker's verified-only person slices (`union` mode, reads only); absent = legacy. */
   person?: PersonSlices;
+  /** The turn's memory place, or why there is none (src/memory/place.ts). Required so a caller
+   *  cannot forget it, and `{ kind: "none" }` is always a valid answer. In rc.45 (shadow) no
+   *  read or write decision uses it. */
+  place: PlaceRef;
+  /** True when the memory places are active for this turn's persona (mode `on` and the persona in the canary list).
+   *  Absent reads as false: the scope is rc.45's, plus the rollback read of a place already bound. */
+  placesOn?: boolean;
+  /** The speaker's own DM place, read in a /1on1 the speaker (a manager) holds (owner decision 1). Only under `placesOn`. */
+  dmPlace?: PlaceRef;
 }
+
+/** True when no person is behind the turn (a wake, a cron job, a background turn). Not an identity compare. */
+export const noPerson = (g: Pick<ScopeInput, "userId">): boolean => g.userId === null;
+/** True when the thread is under a /1on1 lock. Whose lock it is stays a question for the access seam. */
+export const underLock = (g: Pick<ScopeInput, "lockedUser">): boolean => g.lockedUser !== null;
 
 /** Legacy single-agent source. Kept in the agent read union for continuity with
  *  brains created before per-agent slices — new writes target `agent-<id>`. */
@@ -130,10 +150,11 @@ export function kbSourceId(label: string): string {
 /**
  * Memory store kinds (the user-facing name for brain sources), read off the
  * source naming above: `agent` and `agent-<id>` private minds, `shared`,
- * `public`, `user-<id>` personal slices, `profile-*` person profiles and
- * `kb-<label>` libraries. Anything else (gbrain's own `default`) is `other`.
+ * `public`, `user-<id>` personal slices, `profile-*` person profiles,
+ * `mb-<28 hex>` memory places (one per agent and boundary, named only by
+ * src/memory/place.ts) and `kb-<label>` libraries. Anything else (gbrain's own `default`) is `other`.
  */
-export type StoreKind = "agent" | "shared" | "public" | "personal" | "profile" | "library" | "other";
+export type StoreKind = "agent" | "shared" | "public" | "personal" | "profile" | "place" | "library" | "other";
 
 export function storeKind(sourceId: string): StoreKind {
   if (sourceId === AGENT_SOURCE || sourceId.startsWith("agent-")) return "agent";
@@ -141,6 +162,7 @@ export function storeKind(sourceId: string): StoreKind {
   if (sourceId === PUBLIC_SOURCE) return "public";
   if (sourceId.startsWith("user-")) return "personal";
   if (sourceId.startsWith(PROFILE_PREFIX)) return "profile";
+  if (hasPlacePrefix(sourceId)) return "place";
   if (sourceId.startsWith("kb-")) return "library";
   return "other";
 }
@@ -159,7 +181,7 @@ export function channelTrustFor(channel: string, soul: SoulData): ChannelTrust {
  * never the rest of their `user-` slice. The write target is unchanged.
  */
 export async function resolveBrainScope(i: ScopeInput): Promise<BrainScope> {
-  const base = await baseScope(i);
+  const base = await withPlaces(i, await baseScope(i));
   const profile = speakerProfileSource(i.teamId, i.userId);
   if (profile === null) return base;
   return { ...base, allowedSources: [...base.allowedSources, profile], profileSource: profile };
@@ -210,4 +232,39 @@ async function baseScope(i: ScopeInput): Promise<BrainScope> {
     };
   }
   return { clientId: i.userId, sourceId: PUBLIC_SOURCE, allowedSources: [PUBLIC_SOURCE] };
+}
+
+/**
+ * Memory places (rc.46) over the legacy scope, never replacing it:
+ *  - `placesOn`, a turn that wrote the persona's own `agent-<id>` slice (a trusted or manager turn,
+ *    a wake): the write goes to the turn's place and the place is read first, after it is bound in
+ *    the registry. A place that cannot be worked out, or cannot be bound, leaves the legacy scope
+ *    (persona-wide, owner decision 3);
+ *  - `placesOn`, a /1on1 the speaker holds as a manager: the speaker's own DM place is read too
+ *    (decision 1), when it is bound. Nobody else's, and never the thread's place;
+ *  - not `placesOn` (mode off or shadow, or a persona outside the canary): writes are the legacy
+ *    ones, and the turn's place is read only when it is already bound, so a page saved while the
+ *    flag was on stays visible where it was written (decision 7).
+ * A scope with no place source is returned untouched.
+ */
+async function withPlaces(i: ScopeInput, base: BrainScope): Promise<BrainScope> {
+  const agentSrc = agentSourceId(i.agentId);
+  if (base.sourceId === agentSrc && i.place?.kind === "place") {
+    const place = i.place;
+    if (i.placesOn === true) {
+      if (!(await bindPlace(i.agentId, place))) return base;
+      return { ...base, sourceId: place.source, allowedSources: [place.source, ...base.allowedSources], placeAgent: i.agentId };
+    }
+    if (!(await placeBound(i.agentId, place.source))) return base;
+    return { ...base, allowedSources: [place.source, ...base.allowedSources], placeAgent: i.agentId };
+  }
+  // The lock owner's scope is the only one that is neither the persona slice nor public here.
+  if (i.placesOn === true && i.isManager && underLock(i) && i.dmPlace?.kind === "place" && base.sourceId !== PUBLIC_SOURCE) {
+    const dm = i.dmPlace;
+    if (await placeBound(i.agentId, dm.source)) {
+      const [own, ...rest] = base.allowedSources;
+      return { ...base, allowedSources: [own!, dm.source, ...rest], placeAgent: i.agentId };
+    }
+  }
+  return base;
 }

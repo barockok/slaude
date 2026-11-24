@@ -16,6 +16,7 @@ import type { MemoryProvider } from "../../../src/memory/provider";
 import { agentSourceId, userSourceId } from "../../../src/knowledge/scope";
 import type { GateInput } from "../../../src/knowledge/gated-dispatch";
 import { fakeBrain } from "../../memory/fake-brain";
+import { NO_PLACE } from "../../../src/memory/place";
 
 const VARS = ["SLAUDE_NODE_KEY", "SLAUDE_NODE_LEGACY_TOKEN", "SLAUDE_NODE_TOKEN", "SLAUDE_JOB_SECRET", "SLAUDE_NODE_LEGACY"];
 const saved: Record<string, string | undefined> = {};
@@ -51,7 +52,7 @@ const gateFromClaims = async (c: JobClaims): Promise<GateInput> => ({
   lockedUser: liveLock,
   channelTrust: c.channel === TRUSTED ? "trusted" : "public",
   isManager: false,
-  agentId: PERSONA_IDS[c.persona] ?? "default",
+  place: NO_PLACE, agentId: PERSONA_IDS[c.persona] ?? "default",
 });
 
 function setup(opts: { memory?: "none"; provider?: MemoryProvider; assertLive?: (c: JobClaims) => void } = {}) {

@@ -38,6 +38,7 @@ import type { GateInput } from "../knowledge/gated-dispatch";
 import { brainHandlers, type BrainToolDeps, type KbMemoizeArgs, type MemoizeTarget } from "../knowledge/mcp-tools";
 import type { BrainOpCall } from "../knowledge/memory-trail";
 import { resolveBrainScope } from "../knowledge/scope";
+import { NO_PLACE } from "../memory/place";
 import { skillOps } from "../skills/mcp-tools";
 import { proposalWrite } from "./proposal-payload";
 
@@ -256,8 +257,8 @@ async function applyWrite(p: Proposal, w: { pages: PageArg[]; target: MemoizeTar
   // lock and no profile: the write lands in shared or the agent's own slice. The
   // click's workspace therefore goes to the managers lookup only, never into the
   // gate: a team here would add the approver's profile source to the scope.
-  const gate: GateInput = { userId: by, teamId: null, interactive: false, lockedUser: null, channelTrust: "trusted", isManager, agentId: p.agentId, threadKey: null };
-  const scope = await resolveBrainScope({ userId: by, teamId: null, lockedUser: null, channelTrust: "trusted", isManager, kbSources: [], agentId: p.agentId });
+  const gate: GateInput = { userId: by, teamId: null, interactive: false, lockedUser: null, channelTrust: "trusted", isManager, agentId: p.agentId, threadKey: null, place: NO_PLACE };
+  const scope = await resolveBrainScope({ userId: by, teamId: null, lockedUser: null, channelTrust: "trusted", isManager, kbSources: [], agentId: p.agentId, place: NO_PLACE });
   const d: BrainToolDeps = {
     scope: () => scope,
     gate: () => gate,

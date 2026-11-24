@@ -7,11 +7,12 @@ import { describe, expect, test } from "bun:test";
 import { memoryScopeFor, withClaimLock } from "../../src/memory/scope";
 import { AGENT_SOURCE, agentSourceId, userSourceId } from "../../src/knowledge/scope";
 import type { GateInput } from "../../src/knowledge/gated-dispatch";
+import { NO_PLACE } from "../../src/memory/place";
 
 const PERSONA = "U0PERSONA"; // a named persona's own Slack user id
 const A = agentSourceId(PERSONA);
 const g = (o: Partial<GateInput>): GateInput => ({
-  userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: PERSONA, ...o,
+  userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: PERSONA, ...o,
 });
 
 describe("memoryScopeFor", () => {

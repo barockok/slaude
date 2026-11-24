@@ -203,3 +203,23 @@ export function readPageRecord(raw: unknown): { meta: Record<string, string>; bo
   if (meta.as_of !== undefined && /^\d{4}-\d{2}-\d{2}T00:00:00(?:\.0+)?Z$/.test(meta.as_of)) meta.as_of = meta.as_of.slice(0, 10);
   return { meta, body: r.compiled_truth, superseded };
 }
+
+/**
+ * Set frontmatter keys on a page, by code (provenance, promotion): each value is written as a JSON
+ * string (a valid one-line YAML scalar), except an ISO date, which stays a plain date like `as_of`
+ * elsewhere. A key the page already has is replaced, so the model cannot pre-set a provenance key; a
+ * page with no frontmatter gets a block of just these keys.
+ */
+export function withFrontmatter(content: string, fields: Record<string, string>): string {
+  const keys = new Set(Object.keys(fields));
+  const m = FRONTMATTER.exec(content);
+  const kept = m
+    ? m[1]!.split(/\r?\n/).filter((l) => {
+        const kv = /^([A-Za-z_][A-Za-z0-9_-]*):/.exec(l);
+        return !(kv && keys.has(kv[1]!));
+      })
+    : [];
+  const body = m ? content.slice(m[0].length) : content;
+  const added = Object.entries(fields).map(([k, v]) => `${k}: ${/^\d{4}-\d{2}-\d{2}$/.test(v) ? v : JSON.stringify(v)}`);
+  return `${["---", ...kept, ...added, "---"].join("\n")}\n${body}`;
+}

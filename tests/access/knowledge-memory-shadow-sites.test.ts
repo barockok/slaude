@@ -12,6 +12,7 @@ import { agentSourceId, resolveBrainScope, userSourceId } from "../../src/knowle
 import { memoryScopeFor, withClaimLock } from "../../src/memory/scope";
 import { fakeBrain } from "../memory/fake-brain";
 import { compared, decisions, legacyUnderEveryMode, useShadowEnv } from "../helpers/shadow-modes";
+import { NO_PLACE } from "../../src/memory/place";
 
 const TEAM = "T0EXAMPLE";
 const AGENT = "U0AGENT";
@@ -20,7 +21,7 @@ beforeEach(() => resetStandingGrants());
 
 const gate = (o: Partial<GateInput> = {}): GateInput => ({
   userId: "U0ONE", teamId: TEAM, interactive: true, origin: "slack", lockedUser: null, lockedTeamId: TEAM,
-  channelTrust: "trusted", isManager: false, agentId: AGENT, threadKey: "C0EXAMPLE:1.1", ...o,
+  channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: AGENT, threadKey: "C0EXAMPLE:1.1", ...o,
 });
 
 describe("brain write gate and scope", () => {
