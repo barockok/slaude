@@ -15,6 +15,8 @@ import type { RuntimeBundle } from "../gateway/api/tenants";
 import type { ConnectInfo } from "../remote/transport";
 import { BootFailure } from "../gateway/core/failure-codes";
 import { AGENT_DEFINITION_CAPABILITY, CAPABILITIES_HEADER, CHANNEL_SESSION_CAPABILITY, GUARDRAILS_CAPABILITY } from "../guardrails/capability";
+import { nodeBoxCapabilities } from "../box/capability";
+import { env } from "../config/env";
 import type { PluginReport } from "../config/plugin-inventory";
 
 export interface NodeClientOpts {
@@ -336,7 +338,7 @@ export class NodeClient {
       `/v1/tenants/${encodeURIComponent(tenantId)}/personas/${encodeURIComponent(personaId)}/runtime`,
       // The capability header: the gateway refuses an agent with enforced
       // owner guardrails to a node that does not send it.
-      { jobToken, headers: { [CAPABILITIES_HEADER]: `${GUARDRAILS_CAPABILITY},${AGENT_DEFINITION_CAPABILITY},${CHANNEL_SESSION_CAPABILITY}`, ...(cached ? { "if-none-match": cached.etag } : {}) } },
+      { jobToken, headers: { [CAPABILITIES_HEADER]: [GUARDRAILS_CAPABILITY, AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, ...nodeBoxCapabilities(env.box.tier())].join(","), ...(cached ? { "if-none-match": cached.etag } : {}) } },
     );
     if (res.status === 304 && cached) return cached.bundle;
     const bundle = await this.#json<RuntimeBundle>(res);

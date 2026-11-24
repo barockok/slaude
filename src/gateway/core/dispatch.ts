@@ -33,6 +33,8 @@ import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { TurnQueues, type TurnJob, type TurnTarget } from "../../queue/turns";
 import { isFailureCode } from "./failure-codes";
 import { personaNeedsGuardrails } from "../../guardrails/node";
+import { BOX_CAPABILITY, requiredBoxCapabilities } from "../../box/capability";
+import { sessionBoxPin, type SessionBoxPin } from "./box-pin";
 import { AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, definitionNeedsSharedEnv, GUARDRAILS_CAPABILITY, SHARED_ENV_CAPABILITY } from "../../guardrails/capability";
 import { turnKindOf } from "../../remote/definitions/decision";
 import { managedPersonaDefinition } from "../../persona/registry";
@@ -126,6 +128,9 @@ export interface QueueDispatchOpts {
    *  threshold. Poll cadence: guardrailPollMs (default 1 s). */
   guardrailWaitMs?: number;
   guardrailPollMs?: number;
+  /** The box a session runs in, pinned at its first dispatch (null: not boxed).
+   *  A throw refuses the turn. Default: the signed box set, only when SLAUDE_BOX is on. */
+  box?: (ctx: { tenant: string; persona: string; sessionId: string }) => Promise<SessionBoxPin | null>;
 }
 
 export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts = {}): QueueDispatch {
@@ -375,9 +380,33 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
     agent.emit("event", { type: "error", sessionId, error: refusal.message, code: refusal.code, ...(quiet ? { quiet: true } : {}) } as AgentEvent);
   }
 
+  /** The persona's box could not be resolved or pinned: audited, and the thread is told. Nothing runs, and nothing runs unboxed in its place. */
+  function refuseBoxUnavailable(sessionId: string, persona: string, tenantId: string, meta: DispatchMeta, e: unknown): void {
+    const reason = e instanceof Error ? e.message : String(e);
+    emitAudit({
+      tenantId, persona, actorKind: "system", actorId: "dispatch", action: "box.unavailable", targetKind: "session",
+      targetId: sessionId, decision: "refused", sessionId, channelId: meta.channelId, threadTs: meta.threadTs,
+      summary: "the agent's box could not be resolved; the turn was not dispatched",
+      details: { agent: persona, reason: reason.slice(0, 300) },
+    });
+    console.error(`[dispatch] session=${sessionId} persona=${persona}: box unavailable (${reason}); not dispatched`);
+    agent.emit("event", { type: "error", sessionId, error: "the agent's box is unavailable", code: "BOX_UNAVAILABLE" } as AgentEvent);
+  }
+
   /** No capable node in time: audited, and the thread is told (the turn is not queued). */
   async function refuseUnsupported(sessionId: string, persona: string, tenantId: string, meta: DispatchMeta, label: string, cap: string): Promise<void> {
     const channelSession = cap === CHANNEL_SESSION_CAPABILITY;
+    if (cap === BOX_CAPABILITY || cap.startsWith("box-tier/")) {
+      emitAudit({
+        tenantId, persona, actorKind: "system", actorId: "dispatch", action: "box.node.unsupported", targetKind: "label",
+        targetId: label, decision: "refused", sessionId, channelId: meta.channelId, threadTs: meta.threadTs,
+        summary: `no node on label ${label} offers the sandbox this agent's box requires; the turn was not dispatched`,
+        details: { agent: persona, label, capability: cap, waitedMs: guardrailWaitMs },
+      });
+      console.warn(`[dispatch] session=${sessionId} persona=${persona}: no ${cap} node on label ${label}; not dispatched`);
+      agent.emit("event", { type: "error", sessionId, error: "no box-capable node", code: "BOX_UNSUPPORTED" } as AgentEvent);
+      return;
+    }
     emitAudit({
       tenantId,
       persona,
@@ -453,6 +482,17 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         refuseSharedEnv(session.id, personaId, tenantId, meta, refused);
         return;
       }
+      // Boxes: the session's box is pinned here, before the job exists, so the
+      // node never chooses a digest. Off (the default) this reads nothing. A
+      // box that cannot be resolved refuses the turn: it is never run unboxed.
+      let boxPin: SessionBoxPin | null;
+      try {
+        boxPin = await (opts.box ?? sessionBoxPin)({ tenant: tenantId, persona: personaId, sessionId: session.id });
+      } catch (e) {
+        refuseBoxUnavailable(session.id, personaId, tenantId, meta, e);
+        return;
+      }
+      const boxCaps = boxPin ? requiredBoxCapabilities(boxPin.tier) : [];
       // The node label the persona runs on, signed into the token (the /v1
       // gate checks it against the node's credential) and carried in the payload.
       const label = runsOnFor(personaId);
@@ -503,11 +543,13 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       const needsDefinition = definitionNeedsNode(managedPersonaDefinition(personaId));
       // An agent that allows shared environments needs a node that applies the shared-environment rules.
       const needsShared = definitionNeedsSharedEnv(managedPersonaDefinition(personaId));
-      const needs = !!meta.channelSession || needsDefinition || needsShared || (await (opts.needsGuardrails ?? personaNeedsGuardrails)(tenantId, personaId).catch(() => false));
+      const needs = boxCaps.length > 0 || !!meta.channelSession || needsDefinition || needsShared || (await (opts.needsGuardrails ?? personaNeedsGuardrails)(tenantId, personaId).catch(() => false));
       // A node with this capability is newer than the others, so it is the one waited for.
-      const cap = needsShared ? SHARED_ENV_CAPABILITY : meta.channelSession ? CHANNEL_SESSION_CAPABILITY : needsDefinition ? AGENT_DEFINITION_CAPABILITY : GUARDRAILS_CAPABILITY;
+      // A box's tier is the newest capability of all, and the one a mixed fleet is least likely to offer.
+      const cap = boxCaps.length ? boxCaps[boxCaps.length - 1]! : needsShared ? SHARED_ENV_CAPABILITY : meta.channelSession ? CHANNEL_SESSION_CAPABILITY : needsDefinition ? AGENT_DEFINITION_CAPABILITY : GUARDRAILS_CAPABILITY;
       // Every capability this turn needs, for the reaper (a re-pinned job goes only to a node that has all of them).
-      const requiredCaps = [...new Set([...(needsShared ? [SHARED_ENV_CAPABILITY] : []), ...(meta.channelSession ? [CHANNEL_SESSION_CAPABILITY] : []), cap])];
+      const baseCap = needsShared ? SHARED_ENV_CAPABILITY : meta.channelSession ? CHANNEL_SESSION_CAPABILITY : needsDefinition ? AGENT_DEFINITION_CAPABILITY : GUARDRAILS_CAPABILITY;
+      const requiredCaps = [...new Set([...(needsShared ? [SHARED_ENV_CAPABILITY] : []), ...(meta.channelSession ? [CHANNEL_SESSION_CAPABILITY] : []), ...(boxCaps.length ? [baseCap] : []), ...boxCaps, cap])];
       const warmOk = !!loc && loc.fresh && (await registry.nodeCarries(loc.node, label)) && (!needs || ((caps) => requiredCaps.every((c) => caps.has(c)))(await registry.nodeCaps(loc.node)));
       let target: TurnTarget = warmOk ? { node: loc!.node } : { label };
       if (needs && !warmOk) {

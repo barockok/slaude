@@ -32,6 +32,8 @@ import { env } from "../config/env";
 import { m as metric, metrics } from "../metrics";
 import { bundleSessionGuardrails } from "../guardrails/node";
 import { AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, GUARDRAILS_CAPABILITY, SHARED_ENV_CAPABILITY } from "../guardrails/capability";
+import { nodeBoxCapabilities } from "../box/capability";
+import type { BoxTier } from "../box/policy";
 import type { SessionGuardrails } from "../guardrails/resolve";
 import type { FiringEvent } from "../guardrails/audit";
 import { assertNodeIdUsable, DEFAULT_LABEL, LABEL_RE, labelTurnsQueue, makeKeys, nodeTurnsQueue, type Keys } from "../queue/keys";
@@ -368,6 +370,11 @@ export function makeBundleSoulResolver(deps: BundleResolverDeps): (sessionId: st
 
 /** What this node advertises on its heartbeat (and on every bundle fetch). */
 export const NODE_CAPS: readonly string[] = [GUARDRAILS_CAPABILITY, AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, SHARED_ENV_CAPABILITY];
+
+/** NODE_CAPS plus what the node's sandbox tier adds (`box/1` and its tiers). On tier `none`, the default, exactly NODE_CAPS. */
+export function nodeCapabilities(tier: BoxTier = env.box.tier()): readonly string[] {
+  return [...NODE_CAPS, ...nodeBoxCapabilities(tier)];
+}
 
 /** The session's owner guardrails from its runtime bundle (none when the
  *  gateway sends none). A refused bundle (GUARDRAILS_UNAVAILABLE) fails the boot. */
@@ -768,7 +775,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         }
       }
       if (stopped) return;
-      await registry.nodeUp(nodeId, labels, NODE_CAPS).catch(() => {});
+      await registry.nodeUp(nodeId, labels, nodeCapabilities()).catch(() => {});
       for (const w of claimWorkers) w.resume();
       authPaused = false;
       metric.nodeAuthPaused.set(0);
@@ -1163,7 +1170,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   };
 
   // Announce liveness (and the labels, same transaction) BEFORE claiming anything.
-  await registry.nodeUp(nodeId, labels, NODE_CAPS);
+  await registry.nodeUp(nodeId, labels, nodeCapabilities());
 
   // One BullMQ worker per label plus this node's own queue, each on its own
   // connection (blocking claims must never share) with its own concurrency.
@@ -1203,7 +1210,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       // Paused on a 401: not serving, so not announced (pauseForAuth).
       if (authPaused) return;
       try {
-        await registry.beatNode(nodeId, labels, NODE_CAPS);
+        await registry.beatNode(nodeId, labels, nodeCapabilities());
         metric.nodeSessionsLive.set(agent.liveCount());
         for (const sessionId of [...warm]) {
           if (agent.isLive(sessionId)) {

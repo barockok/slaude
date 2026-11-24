@@ -27,6 +27,8 @@ export const FAILURE_TEXT = {
     ":warning: No worker that can run shared environments is available right now, so this message was not handled. Try again later; the details are in the server log.",
   BOX_UNAVAILABLE:
     ":warning: I can't start: this agent runs in a sandbox, and the sandbox could not be started, so I won't run without it. The details are in the server log.",
+  BOX_UNSUPPORTED:
+    ":warning: No worker that can run this agent's sandbox is available right now, so this message was not handled. Try again later; the details are in the server log.",
   TURN_FAILED: ":warning: Something went wrong while handling that message. Try again; details are in the server log.",
   UNKNOWN: ":warning: Something went wrong. Details are in the server log.",
 } as const;
