@@ -791,6 +791,15 @@ export function bootstrapSqliteSchema(db: Database): void {
     if (!sessCols.includes("thread_head_at")) db.run(`ALTER TABLE sessions ADD COLUMN thread_head_at INTEGER`);
   }
 
+  // Migration: the box a session is pinned to (pg 0057). Both nullable, no default, no index.
+  // The box tables themselves (pg 0054 to 0056) are Postgres only, like personas: a box is
+  // declared by a persona sync, which sqlite does not run.
+  {
+    const sessCols = (db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>).map((c) => c.name);
+    if (!sessCols.includes("box_name")) db.run(`ALTER TABLE sessions ADD COLUMN box_name TEXT`);
+    if (!sessCols.includes("box_digest")) db.run(`ALTER TABLE sessions ADD COLUMN box_digest TEXT`);
+  }
+
   // Migration: the credential bookkeeping pointer (pg 0052). Nullable and never read for a
   // decision. SQLite cannot add the pg CHECK (user_id IS NULL OR account_id IS NOT NULL)
   // without a rebuild; src/db/credential-pointers.ts enforces it here.
