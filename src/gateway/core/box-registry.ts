@@ -11,6 +11,7 @@
  * Nothing here is consulted while SLAUDE_BOX is off, apart from the set
  * version, which is an ETag input of the runtime bundle.
  */
+import { checkBoxHighWater, raiseBoxHighWater } from "../../box/high-water";
 import { BoxIntegrityError, verifyBoxSet } from "../../box/integrity";
 import type { BoxPolicy } from "../../box/policy";
 import { boxSetVersion, readBoxes, type BoxVersionRow } from "../../db/boxes";
@@ -54,10 +55,16 @@ function toVersion(v: BoxVersionRow): BoxVersion {
   return { name: v.name, version: v.version, image: v.image, digest: v.digest, policy, forced: v.forced };
 }
 
-/** Read and verify one tenant's boxes. Throws BoxIntegrityError when the set does not verify. */
+/**
+ * Read and verify one tenant's boxes: the manifest and rows, then the
+ * high-water mark, so a set rolled back to an older signed one (or deleted)
+ * fails closed. Throws BoxIntegrityError when the set does not verify.
+ */
 export async function loadBoxes(tenant = "default", client: DbClient = db): Promise<BoxSnapshot> {
   const stored = await readBoxes(tenant, client);
   const setVersion = verifyBoxSet(tenant, stored);
+  await checkBoxHighWater(tenant, setVersion);
+  await raiseBoxHighWater(tenant, setVersion);
   const boxes = new Map<string, BoxEntry>();
   for (const b of stored.boxes) {
     const versions = stored.versions.filter((v) => v.name === b.name).sort((x, y) => x.version - y.version).map(toVersion);
@@ -81,6 +88,7 @@ export async function boxSnapshot(tenant = "default", client: DbClient = db): Pr
     const v = await boxSetVersion(tenant, client);
     const hit = cache.get(key);
     // Version 0 is never trusted from cache: rows without a manifest must be seen.
+    // A cached answer is the newest this process verified, so an unchanged version cannot be a rollback.
     if (hit && v > 0 && hit.setVersion === v) return hit;
     const fresh = await loadBoxes(tenant, client);
     cache.set(key, fresh);

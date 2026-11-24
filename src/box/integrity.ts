@@ -17,9 +17,9 @@
  * The key is a subkey of the guardrail key, so it has the same sources: a
  * subkey of SLAUDE_MASTER_KEY, which Postgres requires.
  *
- * Not covered here, stated: a whole signed set replaced by an OLDER signed set
- * (a rollback) verifies. Guardrails close that with a high-water mark kept
- * outside the database; boxes do not have one yet.
+ * A whole signed set replaced by an OLDER signed set (a rollback) verifies
+ * here. The high-water mark (src/box/high-water.ts), kept outside the
+ * database, is what refuses it; every reader checks both.
  */
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { guardrailKey } from "../guardrails/integrity";

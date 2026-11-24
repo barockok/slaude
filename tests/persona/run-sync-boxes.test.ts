@@ -10,6 +10,7 @@ import { SyncFailure, runSync } from "../../src/persona/sync/run";
 import { __resetGuardrailKeyForTests } from "../../src/guardrails/integrity";
 import { __clearBoxesForTests, boxSetVersion, readBoxes } from "../../src/db/boxes";
 import { __resetBoxRegistryForTests, loadBoxes } from "../../src/gateway/core/box-registry";
+import { boxHighWater } from "../../src/box/high-water";
 import { BOX_SUPPORTED_PROVIDER_FORMS, declaredProviderForms, unboxableProviderForms } from "../../src/box/provider-forms";
 
 const isPg = process.env.SLAUDE_DB === "pg";
@@ -214,5 +215,30 @@ describe.skipIf(!isPg)("box sync", () => {
     expect(await boxSetVersion(T)).toBe(1);
     const named = await refusal(payload({ ana: "box: ruby-dev\n" }));
     expect(named.status).toBe(503);
+  });
+
+  test("a committed sync raises the high-water mark, and a set rolled back under it refuses the next sync", async () => {
+    await run(payload({ boxes: [box()] }));
+    expect(await boxHighWater(T)).toBe(1);
+    const rows = async (t: string) => db.query<Record<string, unknown>>(`SELECT * FROM ${t}`);
+    const old = { boxes: await rows("boxes"), box_versions: await rows("box_versions"), boxes_manifest: await rows("boxes_manifest") };
+    await run(payload({ boxes: [box({ image: image("b") })] }));
+    expect(await boxHighWater(T)).toBe(2);
+    // A dry run commits nothing and so raises nothing.
+    await run(payload({ boxes: [box({ image: image("c") })] }), { dryRun: true });
+    expect(await boxHighWater(T)).toBe(2);
+
+    for (const t of ["box_versions", "boxes", "boxes_manifest"]) await db.run(`DELETE FROM ${t}`);
+    for (const [t, list] of Object.entries(old)) {
+      for (const row of list) {
+        const cols = Object.keys(row);
+        await db.run(`INSERT INTO ${t} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, cols.map((c) => row[c]));
+      }
+    }
+    const e = await refusal(payload({ boxes: [box({ image: image("d") })] }));
+    expect(e.status).toBe(503);
+    expect(e.message).toMatch(/older than version 2 seen before \(rolled back\)/);
+    expect((await refusal(payload({ boxes: [box({ image: image("d") })] }), { dryRun: true })).status).toBe(503);
+    expect(await boxSetVersion(T)).toBe(1);
   });
 });

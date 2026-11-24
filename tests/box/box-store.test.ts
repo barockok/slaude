@@ -13,6 +13,8 @@ import { __resetMasterKeyCache } from "../../src/db/crypto";
 import { __resetGuardrailKeyForTests } from "../../src/guardrails/integrity";
 import { parseBoxPayload } from "../../src/box/definition";
 import { BoxIntegrityError, verifyBoxSet } from "../../src/box/integrity";
+import { boxHighWater, boxHighWaterKey, checkBoxHighWater, raiseBoxHighWater } from "../../src/box/high-water";
+import { highWater } from "../../src/guardrails/high-water";
 import { __clearBoxesForTests, applyBoxes, boxSetVersion, boxTablesPresent, boxesChanged, pinSessionBoxOn, planBoxes, readBoxes, sessionBoxOn } from "../../src/db/boxes";
 import { __resetBoxRegistryForTests, boxSnapshot, currentBox, loadBoxes, pinnedBox } from "../../src/gateway/core/box-registry";
 
@@ -312,6 +314,77 @@ describe("integrity: the stored set fails closed", () => {
     } finally {
       JSON.parse = real;
     }
+  });
+});
+
+describe("high-water mark: an older signed set does not replace a newer one", () => {
+  const TABLES = ["boxes", "box_versions", "boxes_manifest"] as const;
+  /** Every row of the three tables, as stored: a database backup of the box set. */
+  const backup = async () => Object.fromEntries(await Promise.all(TABLES.map(async (t) => [t, await db.query<Record<string, unknown>>(`SELECT * FROM ${t}`)] as const)));
+  const restore = async (b: Awaited<ReturnType<typeof backup>>) => {
+    for (const t of ["box_versions", "boxes", "boxes_manifest"]) await db.run(`DELETE FROM ${t}`);
+    for (const t of TABLES) {
+      for (const row of b[t]!) {
+        const cols = Object.keys(row);
+        await db.run(`INSERT INTO ${t} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`, cols.map((c) => row[c]));
+      }
+    }
+  };
+
+  test("the mark is the box set's own: it never reads or moves the guardrail mark", async () => {
+    await raiseBoxHighWater(T, 5);
+    expect(await boxHighWater(T)).toBe(5);
+    expect(await highWater(T)).toBe(0);
+    expect(boxHighWaterKey(T)).not.toBe(T);
+    await raiseBoxHighWater(T, 3);
+    expect(await boxHighWater(T)).toBe(5);
+    await expect(checkBoxHighWater(T, 5)).resolves.toBeUndefined();
+    await expect(checkBoxHighWater(T, 4)).rejects.toThrow(/older than version 5 seen before \(rolled back\)/);
+    await expect(checkBoxHighWater(T, 0)).rejects.toThrow(/gone, but version 5 was seen before \(deleted\)/);
+  });
+
+  test("a read raises the mark; the older set, restored whole, verifies on its own and is refused", async () => {
+    await sync([box()]);
+    const old = await backup();
+    await sync([box({ image: image("b") })], 2000);
+    expect((await currentBox(T, "ruby-dev", db))!.digest).toBe(digest("b"));
+    expect(await boxHighWater(T)).toBe(2);
+
+    await restore(old);
+    // The signatures are all valid: only the mark knows this set is old.
+    expect(verifyBoxSet(T, await readBoxes(T, db))).toBe(1);
+    await expect(loadBoxes(T, db)).rejects.toThrow(/older than version 2 seen before/);
+    await expect(boxSnapshot(T, db)).rejects.toBeInstanceOf(BoxIntegrityError);
+    await expect(currentBox(T, "ruby-dev", db)).rejects.toBeInstanceOf(BoxIntegrityError);
+    await expect(pinnedBox(T, "ruby-dev", digest("a"), db)).rejects.toBeInstanceOf(BoxIntegrityError);
+  });
+
+  test("a write does not re-sign a rolled back set", async () => {
+    await sync([box()]);
+    const old = await backup();
+    await sync([box({ image: image("b") })], 2000);
+    await loadBoxes(T, db);
+    await restore(old);
+    await expect(sync([box({ image: image("c") })], 3000)).rejects.toThrow(/rolled back/);
+    expect(await boxSetVersion(T, db)).toBe(1);
+    expect((await readBoxes(T, db)).versions).toHaveLength(1);
+  });
+
+  test("a deleted set is refused, not read as 'no boxes'", async () => {
+    await sync([box()]);
+    await loadBoxes(T, db);
+    for (const t of ["box_versions", "boxes", "boxes_manifest"]) await db.run(`DELETE FROM ${t}`);
+    await expect(loadBoxes(T, db)).rejects.toThrow(/gone, but version 1 was seen before/);
+    await expect(sync([box()], 2000)).rejects.toBeInstanceOf(BoxIntegrityError);
+  });
+
+  test("a set at or above the mark is served, and removing every box is not a deletion", async () => {
+    await sync([box()]);
+    await loadBoxes(T, db);
+    await sync([], 2000);
+    const snap = await loadBoxes(T, db);
+    expect(snap.setVersion).toBe(2);
+    expect(snap.boxes.size).toBe(0);
   });
 });
 

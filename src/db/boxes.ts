@@ -24,6 +24,7 @@ import {
   type SignedBoxVersion,
   type StoredBoxSet,
 } from "../box/integrity";
+import { __resetBoxHighWaterForTests, checkBoxHighWater } from "../box/high-water";
 import type { BoxPolicy } from "../box/policy";
 import { db, type DbClient } from "./client";
 
@@ -157,7 +158,8 @@ export function planBoxes(stored: StoredBoxes, incoming: readonly ParsedBox[]): 
  * Write the deploy repo's whole box set in the caller's transaction and
  * re-sign it. A sync that changes nothing writes nothing (the set version does
  * not move). Throws BoxIntegrityError when the stored set does not verify: a
- * write must never launder tampering into a valid signature.
+ * write must never launder tampering into a valid signature. The caller raises
+ * the high-water mark once its transaction has committed (raiseBoxHighWater).
  */
 export async function applyBoxes(
   tx: DbClient,
@@ -172,6 +174,8 @@ export async function applyBoxes(
   );
   const cur = await readWith(tx, tenant, true);
   const stored = verifyBoxSet(tenant, cur);
+  // Never re-sign over a set older than one seen before: that would launder a rollback into the newest signature.
+  await checkBoxHighWater(tenant, stored);
   const report = planBoxes(cur, incoming);
   if (!boxesChanged(report)) return report;
 
@@ -245,4 +249,5 @@ export const sessionBox = (sessionId: string) => sessionBoxOn(db, sessionId);
 export async function __clearBoxesForTests(client: DbClient = db): Promise<void> {
   if (client.dialect !== "pg") return;
   for (const t of ["box_versions", "boxes", "boxes_manifest"]) await client.run(`DELETE FROM ${t}`);
+  await __resetBoxHighWaterForTests();
 }

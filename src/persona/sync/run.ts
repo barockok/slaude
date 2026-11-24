@@ -36,8 +36,9 @@ import { applyDefinitions, changed as environmentsChanged, planDefinitions } fro
 import { definitionRows } from "../../remote/definitions/resolve";
 import type { RemoteKeyPair } from "../../db/remote";
 import { db } from "../../db/schema";
-import { applyBoxes, boxTablesPresent, boxesChanged, planBoxes, readBoxes, type BoxSyncReport, type StoredBoxes } from "../../db/boxes";
+import { applyBoxes, boxSetVersion, boxTablesPresent, boxesChanged, planBoxes, readBoxes, type BoxSyncReport, type StoredBoxes } from "../../db/boxes";
 import { BoxIntegrityError, verifyBoxSet } from "../../box/integrity";
+import { checkBoxHighWater, raiseBoxHighWater } from "../../box/high-water";
 import { unboxableProviderForms } from "../../box/provider-forms";
 import { boxFlagValue } from "../../config/env";
 
@@ -420,7 +421,11 @@ export async function runSync(
     if (recordsFailed) warnings.push("records could not be created for this sync (the persona sync was applied); run `slaude domain reconcile` or sync again");
     auditPersonaSync(tenant, opts.by, meta.revision, applied);
     if (applied.environments && environmentsChanged(applied.environments)) auditEnvironmentSync(tenant, opts.by, meta.revision, applied.environments);
-    if (applied.boxes && boxesChanged(applied.boxes)) auditBoxSync(tenant, opts.by, meta.revision, applied.boxes);
+    if (applied.boxes && boxesChanged(applied.boxes)) {
+      // Committed: from here an older signed set is a rollback.
+      await raiseBoxHighWater(tenant, await boxSetVersion(tenant));
+      auditBoxSync(tenant, opts.by, meta.revision, applied.boxes);
+    }
     await auditRecords(tenant, opts.by, meta.revision, createdRecords, domainEvents);
     let guardrails: GuardrailSyncReport | undefined;
     if (guardrailPlan) {
@@ -466,7 +471,7 @@ async function planBoxSync(
   let stored: StoredBoxes;
   try {
     stored = await readBoxes(tenant);
-    verifyBoxSet(tenant, stored);
+    await checkBoxHighWater(tenant, verifyBoxSet(tenant, stored));
   } catch (e) {
     if (e instanceof BoxIntegrityError) throw new SyncFailure(503, boxIntegrityMessage(e));
     if (e instanceof GuardrailKeyError) throw new SyncFailure(422, "boxes need SLAUDE_MASTER_KEY (the stored set is signed with it)");

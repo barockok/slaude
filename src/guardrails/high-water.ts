@@ -90,7 +90,7 @@ export async function raiseHighWater(tenant: string, version: number): Promise<v
 }
 
 /** TEST SEAM: forget the mark everywhere this process keeps it. */
-export async function __resetHighWaterForTests(): Promise<void> {
+export async function __resetHighWaterForTests(keys: readonly string[] = ["default"]): Promise<void> {
   memory.clear();
   try {
     if (existsSync(HIGH_WATER_FILE)) writeFileSync(HIGH_WATER_FILE, "{}");
@@ -98,7 +98,7 @@ export async function __resetHighWaterForTests(): Promise<void> {
     /* read-only test home */
   }
   if (redis) {
-    for (const t of ["default"]) await redis.client.del(redis.key(t)).catch(() => {});
+    for (const t of keys) await redis.client.del(redis.key(t)).catch(() => {});
   }
 }
 
