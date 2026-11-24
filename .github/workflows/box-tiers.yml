@@ -1,0 +1,58 @@
+name: box-tiers
+
+# The tier-gated box suites (tests/box/tier-contract.test.ts and
+# tests/node/worker-box-real.test.ts) through scripts/smoke/box-smoke.sh: real
+# sandboxes under gVisor and bwrap, a real node worker, the mock model.
+#
+# Started by hand only. NOT RUN on a hosted runner yet: the script passes on a
+# development VM (see the 2026-11-25 box smoke field note), and whether a
+# hosted runner can run runsc at all is not known. Move it into ci.yml once it
+# has been seen to pass here; until then it must not gate a pull request.
+on:
+  workflow_dispatch:
+    inputs:
+      tiers:
+        description: "Tiers to run, space separated"
+        default: "gvisor bwrap"
+        required: false
+
+jobs:
+  smoke:
+    name: box smoke (gvisor, bwrap)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      # The same pin as the Dockerfile (RUNSC_VERSION and RUNSC_SHA256_AMD64).
+      RUNSC_VERSION: "20261116.0"
+      RUNSC_SHA256_AMD64: 4eb0475337f119ae7411c1d99d3acd727f1278a0286a244dee8dac91c6db5355
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runsc (pinned), bubblewrap, skopeo, umoci
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap skopeo umoci zstd unzip curl
+          curl -fsSL --retry 5 -o /tmp/gvisor.tar.zstd "https://storage.googleapis.com/gvisor/releases/release/${RUNSC_VERSION}/x86_64/gvisor.tar.zstd"
+          echo "${RUNSC_SHA256_AMD64}  /tmp/gvisor.tar.zstd" | sha256sum -c -
+          mkdir /tmp/gv && tar --zstd -xf /tmp/gvisor.tar.zstd -C /tmp/gv
+          runsc="$(find /tmp/gv -name runsc -type f | head -1)"
+          sudo install -m 0755 "$runsc" /usr/local/bin/runsc
+          sudo cp -r "$(dirname "$runsc")/gvisor-bin" /usr/local/bin/gvisor-bin
+          runsc --version
+
+      - name: Run the box smoke test
+        env:
+          TIERS: ${{ inputs.tiers }}
+        # Through the environment, never spliced into the command line.
+        run: sudo scripts/smoke/box-smoke.sh $TIERS
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: box-smoke-logs
+          path: /var/lib/slaude-smoke/logs
+          if-no-files-found: ignore

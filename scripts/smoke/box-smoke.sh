@@ -50,8 +50,13 @@ for tier in $TIERS; do
   esac
 done
 
+mkdir -p "$SMOKE/repo" "$SMOKE/logs" "$SMOKE/init" "$SMOKE/tmp"
+# A node refuses to start a sandbox with less than 1 GB free on its box volume (the admission rule, working as
+# meant), and this run needs room for an image, unpacked copies of it and a container image on top.
+free_mb="$(df -Pm "$SMOKE" | awk 'NR==2 {print $4}')"
+[ "$free_mb" -ge 3072 ] || { echo "box-smoke: $SMOKE has $free_mb MB free; at least 3072 MB are needed"; exit 2; }
+
 say "copying the repository to $SMOKE/repo"
-mkdir -p "$SMOKE/repo" "$SMOKE/logs" "$SMOKE/init"
 find "$SMOKE/repo" -mindepth 1 -maxdepth 1 ! -name node_modules -exec rm -rf {} +
 # tar exits 1 when a file changed while it was read (an editor, another checkout of the tree): the copy is still whole.
 { tar -C "$SRC" --warning=no-file-changed --exclude ./node_modules --exclude ./.git --exclude ./.claude --exclude ./coverage --exclude ./dist -cf - . || [ $? -eq 1 ]; } | tar -C "$SMOKE/repo" -xf - --no-same-owner
@@ -93,9 +98,15 @@ skopeo copy --quiet docker-daemon:slaude-box-smoke:dev "oci:$SMOKE/layout:box"
 
 say "starting Redis and the mock model"
 IMAGE=slaude-mock-llm:smoke bash scripts/build-mock-llm.sh >/dev/null 2>&1
-cleanup() { docker rm -f slaude-smoke-redis slaude-smoke-mock >/dev/null 2>&1 || true; }
+cleanup() {
+  docker rm -f slaude-smoke-redis slaude-smoke-mock >/dev/null 2>&1 || true
+  # Test homes and work directories of this run. The container image is rebuilt by the next run.
+  rm -rf "$SMOKE/tmp" "$SMOKE/work"
+  [ "${SLAUDE_SMOKE_KEEP_IMAGES:-0}" = "1" ] || docker rmi slaude-box-nested:smoke >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
 cleanup
+mkdir -p "$SMOKE/tmp" "$SMOKE/work"
 docker run -d --rm --name slaude-smoke-redis -p "127.0.0.1:$REDIS_PORT:6379" redis:7-alpine >/dev/null
 docker run -d --rm --name slaude-smoke-mock -p "127.0.0.1:$MOCK_PORT:8080" slaude-mock-llm:smoke >/dev/null
 for _ in $(seq 1 60); do curl -fsS "http://127.0.0.1:$MOCK_PORT/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
@@ -108,7 +119,7 @@ for tier in $TIERS; do
   log="$SMOKE/logs/$tier.log"
   # A clean environment: nothing of the caller's reaches the tests, the worker or the supervisor.
   set +e
-  env -i PATH="$PATH" HOME=/root \
+  env -i PATH="$PATH" HOME=/root TMPDIR="$SMOKE/tmp" \
     SLAUDE_BOX_TEST_TIER="$tier" \
     SLAUDE_BOX_TEST_LAYOUT="$SMOKE/layout" \
     SLAUDE_BOX_TEST_INIT_DIR="$SMOKE/init" \
@@ -122,6 +133,47 @@ for tier in $TIERS; do
   summary="$summary\n  $tier:$counts (exit $code, log $log)"
   [ "$code" = "0" ] || status=1
 done
+
+# The same two suites again, NESTED: in a privileged container with its own cgroup namespace and a memory limit,
+# which is the shape of the supervisor container in a node pod (not a pod: no Kubernetes is involved). The image is
+# built from the box layers of the repository's own Dockerfile, so those lines (the pinned runsc, bubblewrap, tini,
+# the compiled box-init) are what runs. Skip with SLAUDE_SMOKE_NESTED=0.
+if [ "${SLAUDE_SMOKE_NESTED:-1}" != "0" ]; then
+  say "building the box layers of the Dockerfile"
+  mkdir -p "$SMOKE/nested" "$SMOKE/work"
+  {
+    awk '/^FROM oven\/bun:1.3-debian AS boxinit/,/^$/' Dockerfile
+    echo 'FROM oven/bun:1.3-debian'
+    echo 'RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git curl && rm -rf /var/lib/apt/lists/*'
+    echo 'ARG TARGETARCH'
+    awk '/^ARG RUNSC_VERSION/,/^COPY --from=boxinit/' Dockerfile
+  } >"$SMOKE/nested/Dockerfile"
+  docker build -q -t slaude-box-nested:smoke -f "$SMOKE/nested/Dockerfile" "$SMOKE/repo" >/dev/null
+  for tier in $TIERS; do
+    say "tier $tier, nested in a privileged container (private cgroup namespace, 4 GB)"
+    log="$SMOKE/logs/$tier-nested.log"
+    rm -rf "$SMOKE/work"/* "$SMOKE/tmp"/*
+    set +e
+    # tini as pid 1, as the supervisor container must be started: runsc and bwrap leave processes for pid 1 to reap.
+    docker run --rm --privileged --cgroupns=private --memory=4g --network host \
+      -v "$SMOKE:$SMOKE" -w "$SMOKE/repo" \
+      -e TMPDIR="$SMOKE/tmp" \
+      -e SLAUDE_BOX_TEST_TIER="$tier" \
+      -e SLAUDE_BOX_TEST_LAYOUT="$SMOKE/layout" \
+      -e SLAUDE_BOX_TEST_INIT_DIR=/usr/local/lib/slaude-box \
+      -e SLAUDE_BOX_TEST_WORKDIR="$SMOKE/work" \
+      -e SLAUDE_REDIS_TEST_URL="redis://127.0.0.1:$REDIS_PORT" \
+      -e SLAUDE_BOX_TEST_MOCK_LLM="http://127.0.0.1:$MOCK_PORT" \
+      slaude-box-nested:smoke tini -- bun test tests/box/tier-contract.test.ts tests/node/worker-box-real.test.ts --timeout 120000 >"$log" 2>&1
+    code=$?
+    set -e
+    grep -E '^\((pass|fail|skip)\)|^\[tier ' "$log" || true
+    counts="$(grep -E '^ +[0-9]+ (pass|fail|skip)$' "$log" | tr -s ' ' | tr '\n' ',' | sed 's/,$//')"
+    summary="$summary\n  $tier, nested:$counts (exit $code, log $log)"
+    [ "$code" = "0" ] || status=1
+  done
+  rm -rf "$SMOKE/work"
+fi
 
 say "summary"
 printf '%b\n' "$summary"
