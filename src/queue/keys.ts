@@ -163,6 +163,10 @@ export interface Keys {
   /** `label-unserved-since` hash: label → ms since which it has had waiting
    *  jobs and no live node (spec §4.7), written by the reaper leader. */
   labelUnservedSince(): string;
+  /** `box-refresh-note:<sessionId>`: set when a session is moved to a new box
+   *  image, taken (GETDEL) by the dispatch of its next turn, which then carries
+   *  the `<box-refreshed>` note once. JSON `{box, from, to, at}`, with a TTL. */
+  boxRefreshNote(sessionId: string): string;
 }
 
 export function makeKeys(prefix: string = redisPrefix()): Keys {
@@ -202,5 +206,6 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     jobMoved: (jobId) => `${prefix}:job-moved:${jobId}`,
     redispatch: (jobId) => `${prefix}:redispatch:${jobId}`,
     labelUnservedSince: () => `${prefix}:label-unserved-since`,
+    boxRefreshNote: (sessionId) => `${prefix}:box-refresh-note:${sessionId}`,
   };
 }

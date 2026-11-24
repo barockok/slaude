@@ -35,6 +35,8 @@ import { isFailureCode } from "./failure-codes";
 import { personaNeedsGuardrails } from "../../guardrails/node";
 import { BOX_CAPABILITY, requiredBoxCapabilities } from "../../box/capability";
 import { BoxNotBoxableError, sessionBoxPin, type SessionBoxPin } from "./box-pin";
+import { boxRefreshedNote, refreshIfStale, storedBoxRefreshDeps, type BoxRefreshDeps, type BoxRefreshMark } from "./box-refresh";
+import { routeReload } from "./reload-route";
 import { AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, definitionNeedsSharedEnv, GUARDRAILS_CAPABILITY, SHARED_ENV_CAPABILITY } from "../../guardrails/capability";
 import { turnKindOf } from "../../remote/definitions/decision";
 import { managedPersonaDefinition } from "../../persona/registry";
@@ -100,11 +102,36 @@ export interface QueueDispatch {
   abort(sessionId: string): Promise<void>;
   /** Ask the node that runs this session to reload it (fresh query on its next turn), with an optional prompt for the fresh session. */
   reload(sessionId: string, prompt?: string): Promise<void>;
+  /**
+   * Called when a dispatch moved a session to a new box image because the
+   * box's newest version is forced. The gateway tells the person privately.
+   * Optional: a test double need not have it.
+   */
+  onBoxRefreshed?(fn: (n: BoxRefreshedNotice) => void): void;
   pubsub: PubSub;
   turns: TurnQueues;
   registry: Registry;
   /** Stop every stream follower (tests/shutdown). */
   close(): Promise<void>;
+}
+
+/** A forced refresh that a dispatch did, for the private notice. */
+export interface BoxRefreshedNotice {
+  sessionId: string;
+  meta: DispatchMeta;
+  box: string;
+  /** The box's own note for this version (may be empty). */
+  note: string;
+}
+
+/** What dispatch asks of the refresh code (src/gateway/core/box-refresh.ts). */
+export interface BoxRefreshHooks {
+  /** Refresh the session when its pin is stale. Null: nothing was done. */
+  ifStale: (ctx: { tenant: string; persona: string; sessionId: string; channelId?: string; threadTs?: string }, pin: { name: string; digest: string }) => Promise<{ box: string; to: string; note: string } | null>;
+  /** Take the "next turn must be told" mark, at most once. */
+  takeMark: (sessionId: string) => Promise<BoxRefreshMark | null>;
+  /** Put a taken mark back (the turn was not queued after all). */
+  restoreMark: (sessionId: string, mark: BoxRefreshMark) => Promise<void>;
 }
 
 export interface QueueDispatchOpts {
@@ -131,6 +158,9 @@ export interface QueueDispatchOpts {
   /** The box a session runs in, pinned at its first dispatch (null: not boxed).
    *  A throw refuses the turn. Default: the signed box set, only when SLAUDE_BOX is on. */
   box?: (ctx: { tenant: string; persona: string; sessionId: string }) => Promise<SessionBoxPin | null>;
+  /** Forced refresh and the first-turn note, for a boxed session. Default: the signed
+   *  box set and the registry. With an injected `box` and none given here: off. */
+  boxRefresh?: BoxRefreshHooks | null;
 }
 
 export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts = {}): QueueDispatch {
@@ -344,6 +374,27 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
     })();
   }
 
+  // Refresh (box spec, "Refresh semantics"). Asked only for a session that has a pin, so with boxes off nothing here runs.
+  const refreshDeps: BoxRefreshDeps = {
+    ...storedBoxRefreshDeps,
+    // Queued behind another turn, or a node is running one: never refreshed now.
+    turnInFlight: async (id) => (await turns.hasPending(id)) || (await registry.turnRunning(id)),
+    // A dispatched session is warm on a node, never in this process: only the remote half of the route applies.
+    reload: (id) => void routeReload(() => false, async (sid) => void (await pubsub.publishSessionReload(sid)), id),
+    mark: (id, m) => registry.markBoxRefresh(id, m),
+  };
+  const boxRefresh: BoxRefreshHooks | null =
+    opts.boxRefresh !== undefined
+      ? opts.boxRefresh
+      : opts.box
+        ? null
+        : {
+            ifStale: (ctx, pin) => refreshIfStale(ctx, pin, refreshDeps),
+            takeMark: (id) => registry.takeBoxRefresh(id),
+            restoreMark: (id, m) => registry.markBoxRefresh(id, m),
+          };
+  let boxNotifier: ((n: BoxRefreshedNotice) => void) | null = null;
+
   const guardrailWaitMs = opts.guardrailWaitMs ?? env.labelUnservedSec() * 1000;
   const guardrailPollMs = opts.guardrailPollMs ?? 1000;
 
@@ -504,6 +555,33 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         refuseBoxUnavailable(session.id, personaId, tenantId, meta, e);
         return;
       }
+      // A forced box version makes an older pin stale: the session moves to the
+      // current image here, before the job exists and never during a turn. A
+      // suppressed message runs no turn, so it neither refreshes nor spends the note.
+      let boxMark: BoxRefreshMark | null = null;
+      if (boxPin && boxRefresh && !meta.suppress) {
+        try {
+          const moved = await boxRefresh.ifStale(
+            { tenant: tenantId, persona: personaId, sessionId: session.id, channelId: meta.channelId, threadTs: meta.threadTs },
+            { name: boxPin.name, digest: boxPin.digest },
+          );
+          if (moved) {
+            boxPin = { ...boxPin, digest: moved.to };
+            try {
+              boxNotifier?.({ sessionId: session.id, meta, box: moved.box, note: moved.note });
+            } catch (e) {
+              console.error(`[dispatch] session=${session.id}: box refresh notice failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+        } catch (e) {
+          refuseBoxUnavailable(session.id, personaId, tenantId, meta, e);
+          return;
+        }
+        // The first turn after a refresh (forced just now, or asked for with /box refresh) is told once.
+        boxMark = await boxRefresh.takeMark(session.id).catch(() => null);
+        if (boxMark && boxMark.to !== boxPin.digest) boxMark = null;
+      }
+      const turnText = boxMark ? boxRefreshedNote() + text : text;
       const boxCaps = boxPin ? requiredBoxCapabilities(boxPin.tier) : [];
       // The node label the persona runs on, signed into the token (the /v1
       // gate checks it against the node's credential) and carried in the payload.
@@ -567,6 +645,8 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       if (needs && !warmOk) {
         const capable = await waitForCapableNodes(label, cap);
         if (capable === null) {
+          // Not queued: the note is still owed to the turn that does run.
+          if (boxMark && boxRefresh) await boxRefresh.restoreMark(session.id, boxMark).catch(() => {});
           await refuseUnsupported(session.id, personaId, tenantId, meta, label, cap);
           return;
         }
@@ -598,7 +678,7 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           // threads: the node serialises turns there across nodes by this field.
           ...(isProactiveWorkspace(session.working_dir) ? { workspace: resolve(session.working_dir!) } : {}),
           messages: [
-            { ts: meta.eventTs, user: meta.userId, text, ...(meta.suppress ? { suppress: true } : {}), ...(meta.implicit ? { implicit: true } : {}), ...(meta.guidance?.length ? { guidance: meta.guidance } : {}) },
+            { ts: meta.eventTs, user: meta.userId, text: turnText, ...(meta.suppress ? { suppress: true } : {}), ...(meta.implicit ? { implicit: true } : {}), ...(meta.guidance?.length ? { guidance: meta.guidance } : {}) },
           ],
           // Who sent it, from where: merged messages add theirs (TurnQueues).
           senders: [{ userId: meta.userId, teamId: meta.teamId || null, origin: meta.origin ?? null }],
@@ -607,7 +687,11 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
         },
         target,
         jobId,
-      );
+      ).catch(async (e: unknown) => {
+        // Not queued: the note is still owed to the turn that does run.
+        if (boxMark && boxRefresh) await boxRefresh.restoreMark(session.id, boxMark).catch(() => {});
+        throw e;
+      });
       console.log(
         `[dispatch] session=${session.id} queue=${res.queue} job=${res.jobId} coalesced=${res.coalesced}`,
       );
@@ -620,6 +704,10 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
 
     async reload(sessionId: string, prompt?: string): Promise<void> {
       await pubsub.publishSessionReload(sessionId, prompt);
+    },
+
+    onBoxRefreshed(fn: (n: BoxRefreshedNotice) => void): void {
+      boxNotifier = fn;
     },
 
     async close(): Promise<void> {

@@ -43,6 +43,7 @@ describe("queue/keys", () => {
     expect(k.turnSenders("j1")).toBe("p:turn-senders:j1");
     expect(k.nodeLabels("n1")).toBe("p:nodelabels:n1");
     expect(k.jobMoved("j1")).toBe("p:job-moved:j1");
+    expect(k.boxRefreshNote("s1")).toBe("p:box-refresh-note:s1");
     // The labels key must never match the heartbeat SCAN pattern.
     expect(k.nodeLabels("n1").startsWith("p:nodes:")).toBe(false);
   });

@@ -13,6 +13,7 @@ export const ENVELOPE_TAG_NAMES = [
   "proactive-context",
   "proactive-work",
   "thread-head",
+  "box-refreshed",
   "skill-args",
   "skill",
   "checklist",

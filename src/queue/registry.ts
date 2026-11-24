@@ -23,6 +23,9 @@ else
   return 0
 end`;
 
+/** How long a refresh mark waits for the session's next turn: a thread can sit idle for weeks. */
+export const BOX_REFRESH_NOTE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 export interface SessionLocation {
   node: string;
   since: number;
@@ -308,6 +311,37 @@ export function makeRegistry(opts: RegistryOpts) {
     /** Reaper bookkeeping: forget a dead node after cleaning it up. */
     async forgetNode(node: string): Promise<void> {
       await redis.srem(keys.nodeSet(), node);
+    },
+
+    /**
+     * Whether a node is running a turn of this session right now: the session
+     * lock is held for exactly the length of a turn (src/queue/locks.ts), on
+     * whichever node runs it, so it answers the same on every gateway replica.
+     */
+    async turnRunning(sessionId: string): Promise<boolean> {
+      return (await redis.exists(keys.sessionLock(sessionId))) === 1;
+    },
+
+    /**
+     * A session was moved to a new box image: remember it until its next turn
+     * is dispatched. A later refresh before that turn replaces the mark (the
+     * note says "a new image", once, whatever number of moves there were).
+     */
+    async markBoxRefresh(sessionId: string, mark: { box: string; from: string; to: string; at: number }): Promise<void> {
+      await redis.set(keys.boxRefreshNote(sessionId), JSON.stringify(mark), "PX", BOX_REFRESH_NOTE_TTL_MS);
+    },
+
+    /** Take the mark, at most once (GETDEL): the dispatch that gets it carries the note. Null: none, or unreadable. */
+    async takeBoxRefresh(sessionId: string): Promise<{ box: string; from: string; to: string; at: number } | null> {
+      const raw = await redis.getdel(keys.boxRefreshNote(sessionId));
+      if (raw === null) return null;
+      try {
+        const v = JSON.parse(raw) as { box?: unknown; from?: unknown; to?: unknown; at?: unknown };
+        if (typeof v.box !== "string" || typeof v.from !== "string" || typeof v.to !== "string") return null;
+        return { box: v.box, from: v.from, to: v.to, at: typeof v.at === "number" ? v.at : 0 };
+      } catch {
+        return null;
+      }
     },
   };
 }
