@@ -60,6 +60,7 @@
  *   GET    /panel/api/environments                 node pools, persona runsOn, personal environments (no secrets)
  *   GET    /panel/api/console-roles                the console's email allowlist (read-only, superadmin)
  *   GET    /panel/api/plugins                      the node plugin inventory, by node label (read-only)
+ *   GET    /panel/api/boxes                        the tenant's boxes: versions, digests, policy (read-only; no env value, no argument)
  *   GET    /panel/api/skills                       every skill: source, origin, agents, status, usage
  *   GET    /panel/api/skills/:id                   one skill: frontmatter, SKILL.md, files, provenance, usage, proposals
  *   GET    /panel/api/skills/:id/versions          the skill's recorded versions (no text)
@@ -119,6 +120,8 @@ import * as AgentGrants from "../../db/agent-grants";
 import { invalidateGrants } from "../../access/role";
 import { emitAudit } from "../../audit/emit";
 import { pluginsView } from "./plugins-view";
+import { boxesView } from "./boxes-view";
+import { env } from "../../config/env";
 import type { InventorySources } from "../core/plugin-inventory";
 import { agentDetail, agentNames, agentSummaries, allConsoleGrants, consoleGrantViewWithState, environmentsView, grantViews, isAgent, labelGrants } from "./console-views";
 import { loadRoleConfig } from "./auth/roles";
@@ -143,6 +146,7 @@ import type {
   ConsoleRolesResponse,
   EnvironmentsResponse,
   PluginsResponse,
+  BoxesResponse,
   OverviewResponse,
   MemoryPageResponse,
   MemoryPagesResponse,
@@ -1107,6 +1111,13 @@ export function createPanelApi(deps: PanelApiDeps): PanelApi {
         if (req.method !== "GET") return json(405, { error: "method not allowed" });
         if (!deps.plugins) return json(200, { available: false, labels: [] } satisfies PluginsResponse);
         return json(200, (await pluginsView(deps.plugins)) satisfies PluginsResponse);
+      }
+
+      // GET /panel/api/boxes: the boxes of the deploy repository. Read-only, any
+      // operator; a box changes only through the deploy repository.
+      if (seg.length === 3 && seg[2] === "boxes") {
+        if (req.method !== "GET") return json(405, { error: "method not allowed" });
+        return json(200, (await boxesView("default", { enabled: env.box.enabled() })) satisfies BoxesResponse);
       }
 
       // GET /panel/api/environments: where agents run. Read-only, any operator.
