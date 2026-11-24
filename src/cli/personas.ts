@@ -46,6 +46,8 @@ import { extractSoulData } from "./legacy-soul-extract";
 import { parseEnvironmentYaml } from "../remote/definitions/parse";
 import { ENV_DEF_NAME_RE } from "../remote/definitions/name";
 import { migratePersona } from "../persona/migrate";
+import type { BoxPayloadEntry } from "../box/definition";
+import { BOX_REGISTRY_ENV, BOX_YAML, compileBoxes, dockerResolver } from "./box";
 import type { SoulData } from "../soul/data";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
@@ -67,6 +69,9 @@ export function readEnvironmentDir(dir: string): Array<{ name: string; yaml: str
   return out;
 }
 
+/** A rendered payload: what is POSTed. Its boxes are payload entries, which the gateway parses itself. */
+export type RenderedPayload = Omit<SyncPayload, "boxes"> & { boxes?: BoxPayloadEntry[] };
+
 const YAML_KEYS = new Set(["slackUserId", "userToken", "model", "provider", "runsOn", "kbSources", "background"]);
 
 /** `onUnknown` receives `persona.<name>.<key>` for each persona.yaml key the payload has no field for (names only).
@@ -76,7 +81,9 @@ export function renderDir(
   meta: { revision: string; committedAt: string },
   onUnknown?: (paths: string[]) => void,
   onWarnings?: (warnings: string[]) => void,
-): SyncPayload {
+  /** The compiled boxes of the repository's boxes/ folder (src/cli/box.ts, compileBoxes). Absent: the payload carries no boxes list. */
+  boxes?: BoxPayloadEntry[],
+): RenderedPayload {
   const unknown: string[] = [];
   const root = join(dir, "personas");
   if (!existsSync(root)) throw new PayloadError(`no personas/ directory in ${dir}`);
@@ -172,7 +179,22 @@ export function renderDir(
   } else if (refs.length) {
     definitionWarnings.push(`persona '${refs[0]!.persona}' allows environments, but this repository has no environments/ folder: the references are checked against the deployed definitions at sync, not here`);
   }
-  const payload = parsePayload({ version: payloadVersionFor(personas, guardrails, environments), ...meta, personas, ...(guardrails ? { guardrails } : {}), ...(environments ? { environments } : {}) });
+  // boxes/<name>/box.yaml: a folder that exists (even empty) is the whole set. A persona may name
+  // only a box the deploy will have; with no folder the name is checked against the deployed boxes at sync.
+  const boxRefs = personas.flatMap((p) => {
+    const b = (p as { definition?: { box?: string } }).definition?.box;
+    return b ? [{ persona: p.name, name: b }] : [];
+  });
+  if (boxes) {
+    const have = new Set(boxes.map((b) => b.name));
+    for (const r of boxRefs) if (!have.has(r.name)) throw new PayloadError(`persona '${r.persona}': box names '${r.name}', but this repository has no boxes/${r.name}/${BOX_YAML}`);
+  } else if (boxRefs.length) {
+    definitionWarnings.push(`persona '${boxRefs[0]!.persona}' names a box, but this repository has no boxes/ folder: the name is checked against the deployed boxes at sync, not here`);
+  }
+  const parsed = parsePayload({ version: payloadVersionFor(personas, guardrails, environments, boxes), ...meta, personas, ...(guardrails ? { guardrails } : {}), ...(environments ? { environments } : {}), ...(boxes ? { boxes } : {}) });
+  // The payload that is sent carries each box as its entry (what the gateway's own check reads), not as the parsed form.
+  const { boxes: _parsedBoxes, ...withoutBoxes } = parsed;
+  const payload: RenderedPayload = { ...withoutBoxes, ...(boxes ? { boxes } : {}) };
   if (unknown.length) onUnknown?.(capPaths(unknown));
   const warnings = [
     ...providerWarnings(payload),
@@ -446,6 +468,22 @@ if (import.meta.main) {
   const flag = (n: string) => flags.get(n);
   try {
     if (cmd === "render" && rest[0]) {
+      // boxes/: resolved to digests before the payload is built. --check reads files only (no registry,
+      // no build); --no-push builds what the registry lacks without pushing, for a pull request's dry run.
+      let boxes: BoxPayloadEntry[] | undefined;
+      if (existsSync(join(rest[0], "boxes"))) {
+        const mode = flags.has("--check") ? "static" : flags.has("--no-push") ? "check" : "push";
+        const compiled = await compileBoxes(join(rest[0], "boxes"), {
+          mode,
+          registry: process.env[BOX_REGISTRY_ENV],
+          ...(mode === "static" ? {} : { resolver: dockerResolver() }),
+          log: (line) => console.error(`[personas] ${line}`),
+        });
+        boxes = compiled.boxes;
+        if (compiled.unpushed.length && mode !== "static") {
+          console.error(`[personas] warning: not pushed, so this payload is for a dry run only and must not be deployed (its image digests are stand-ins): ${compiled.unpushed.join(", ")}`);
+        }
+      }
       const p = renderDir(rest[0], {
         revision: flag("--revision") ?? process.env.GITHUB_SHA ?? "local",
         committedAt: flag("--committed-at") ?? new Date().toISOString(),
@@ -453,7 +491,7 @@ if (import.meta.main) {
         if (flags.has("--check")) console.error(`[personas] unknown persona.yaml keys, left out of the payload (the gateway never sees them): ${paths.join(", ")}`);
       }, (warnings) => {
         for (const w of warnings) console.error(`[personas] warning: ${w}`);
-      });
+      }, boxes);
       if (!flags.has("--check")) console.log(JSON.stringify(p, null, 2));
     } else if (cmd === "export") {
       const out = flag("--out") ?? "./persona-repo";
