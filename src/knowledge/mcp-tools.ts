@@ -12,7 +12,7 @@ import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient, synthesizeFromHits } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, soleSlackSender, type ApprovalReq, type ApprovalRes, type GateInput, type TurnSender } from "./gated-dispatch";
-import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, agentSourceId, kbSourceId, speakerProfileSource, storeKind, userSourceId, type BrainScope } from "./scope";
+import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, agentSourceId, kbSourceId, noPerson, speakerProfileSource, storeKind, underLock, userSourceId, type BrainScope } from "./scope";
 import { carriedFields, composePage, readPageRecord, withFrontmatter, type TypedPageInput } from "./memory-pages";
 import { SUPERSEDED_TAG, getPageOrNull, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
@@ -435,7 +435,7 @@ async function internalUserRef(teamId: string | null, slackUserId: string): Prom
  */
 function stampPage(content: string, typed: boolean, target: MemoizeTarget, scope: BrainScope, g: GateInput, promoteFrom: string | undefined, now: Date, originHash?: string): string {
   if (g.placesOn !== true || target === "profile") return content;
-  const writtenBy = g.userId === null ? "wake" : "turn";
+  const writtenBy = noPerson(g) ? "wake" : "turn";
   if (promoteFrom !== undefined) {
     return withFrontmatter(content, { origin_scope: scope.sourceId, origin_kind: "persona", written_by: writtenBy, promoted_from: promoteFrom, origin_hash: originHash ?? "none", as_of: isoDay(now) });
   }
@@ -445,7 +445,7 @@ function stampPage(content: string, typed: boolean, target: MemoizeTarget, scope
     fields.origin_kind = hasPlacePrefix(scope.sourceId) ? (g.place.kind === "place" ? g.place.boundaryKind : "place") : storeKind(scope.sourceId);
     fields.written_by = writtenBy;
   }
-  if (g.lockedUser === null && target !== "shared" && scope.sourceId === agentSourceId(g.agentId)) fields.place = "unknown";
+  if (!underLock(g) && target !== "shared" && scope.sourceId === agentSourceId(g.agentId)) fields.place = "unknown";
   return Object.keys(fields).length > 0 ? withFrontmatter(content, fields) : content;
 }
 
@@ -591,7 +591,7 @@ export const brainHandlers = {
       composed.push({ slug: pg.slug, content: stampPage(c.content, pg.type !== undefined, target, scope, gate, promoteFrom, now, originHashes.get(pg.slug)), ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) });
     }
     // Pages that land persona-wide only because the place is unknown are counted by reason (owner decision 3).
-    if (gate.placesOn === true && promoteFrom === undefined && target !== "profile" && target !== "shared" && scope.sourceId === agentSourceId(gate.agentId) && gate.lockedUser === null) {
+    if (gate.placesOn === true && promoteFrom === undefined && target !== "profile" && target !== "shared" && scope.sourceId === agentSourceId(gate.agentId) && !underLock(gate)) {
       const reason = gate.place.kind === "none" ? gate.place.reason : "unbound";
       for (const pg of pages) metric.memoryPlaceFallbackTotal.inc({ surface: pg.type === "commitment" ? "commitment" : pg.slug.startsWith(CHECKLIST_SLUG_PREFIX) ? "checklist" : "memory_save", reason });
     }
@@ -759,7 +759,7 @@ export const brainHandlers = {
     // Demote: an explicit source (the persona tier), because a delete otherwise runs in the turn's own write source.
     try {
       const gate = await d.gate();
-      if (gate.placesOn !== true || gate.userId === null || gate.lockedUser !== null) return err(DEMOTE_REFUSAL);
+      if (gate.placesOn !== true || noPerson(gate) || underLock(gate)) return err(DEMOTE_REFUSAL);
       const slug = p.slug.toLowerCase();
       const persona = agentSourceId(gate.agentId);
       const base = await d.scope();

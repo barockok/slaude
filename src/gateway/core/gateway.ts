@@ -133,7 +133,7 @@ import { brainMode } from "../../knowledge/brain-config";
 import { syncKbWikis } from "../../knowledge/brain-sync";
 import { scheduleNightlyMaintenance } from "../../knowledge/brain-cycle";
 import { trackBrainWork, whileClosing } from "../../knowledge/brain-work";
-import { agentSourceId, channelTrustFor, resolveBrainScope, type ChannelTrust } from "../../knowledge/scope";
+import { agentSourceId, channelTrustFor, resolveBrainScope, underLock, type ChannelTrust } from "../../knowledge/scope";
 import { gather } from "../../knowledge/gather";
 import { gateKey, gateRunnerFromEnv, type GateConsult, type GateRunner } from "../gate/runner";
 import { buildGateInput, isAgentAuthor, type GateContextDeps } from "../gate/context";
@@ -1665,7 +1665,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const placesOn = env.memory.placesOn(ctx.personaId ?? "default");
     if (placesOn) {
       gate.placesOn = true;
-      if (gate.lockedUser !== null && gate.isManager && gate.userId && ctx.teamId) {
+      if (underLock(gate) && gate.isManager && gate.userId && ctx.teamId) {
         const dmPlace = await managerDmPlace({
           agentId: personaAgentId, teamId: ctx.teamId, userId: gate.userId, personaId: ctx.personaId ?? null, place: placeFor,
           open: async (u) => {
@@ -1730,6 +1730,12 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     recordSkillUse(await backgroundAgentId(personaName ?? "default"), skill),
   );
 
+  // The managers the brain gate trusts, by the access seam: all of them, or (soulOnly) only those the soul names.
+  const brainManagersOf = async (ctx: Pick<SlackContext, "personaId" | "teamId">, soulOnly: boolean): Promise<string[]> => {
+    const grants = await loadGrants(ctx.personaId);
+    return approversAt({ site: "gateway.brain_managers", persona: ctx.personaId, teamId: ctx.teamId, grants: soulOnly ? grants.filter((g) => g.source === "soul" || g.deny) : grants, roles: ["manager"] });
+  };
+
   // Brain tool deps for a context + surface — shared by the per-session MCP
   // resolver and the REST tool plane so both run identical scoping and gating.
   const brainDepsFor = (ctx: SlackContext, surface: Surface, sessionId: string | undefined = ctx.sessionId, claims?: JobClaims): BrainToolDeps | undefined => {
@@ -1760,16 +1766,10 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           },
           // The persona's managers (roleOf "manager": its soul's manager and
           // backup plus stored manager grants, no deny).
-          managers: async () => {
-            return (await approversAt({ site: "gateway.brain_managers", persona: ctx.personaId, teamId: ctx.teamId, grants: await loadGrants(ctx.personaId), roles: ["manager"] }));
-          },
+          managers: () => brainManagersOf(ctx, false),
           // A promotion to the persona-wide tier: the manager and backup only (owner decision 4), so a stored
-          // manager grant does not count. The soul's managers, intersected with who holds the role now.
-          promoteApprovers: async () => {
-            const grants = await loadGrants(ctx.personaId);
-            const soulManagers = new Set(grants.filter((g) => g.source === "soul" && g.role === "manager" && g.subjectKind === "user" && !g.deny).map((g) => g.subjectId));
-            return (await approversAt({ site: "gateway.brain_managers", persona: ctx.personaId, teamId: ctx.teamId, grants, roles: ["manager"] })).filter((id) => soulManagers.has(id));
-          },
+          // manager grant does not count: the same lookup over the soul's own grants.
+          promoteApprovers: () => brainManagersOf(ctx, true),
           requestApproval: (r) => surface.requestApproval(r),
           // A commitment written here is indexed for the promise scheduler (phase E).
           onWritten: async (pages, scope) =>

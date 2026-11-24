@@ -85,6 +85,11 @@ export interface ScopeInput {
   dmPlace?: PlaceRef;
 }
 
+/** True when no person is behind the turn (a wake, a cron job, a background turn). Not an identity compare. */
+export const noPerson = (g: Pick<ScopeInput, "userId">): boolean => g.userId === null;
+/** True when the thread is under a /1on1 lock. Whose lock it is stays a question for the access seam. */
+export const underLock = (g: Pick<ScopeInput, "lockedUser">): boolean => g.lockedUser !== null;
+
 /** Legacy single-agent source. Kept in the agent read union for continuity with
  *  brains created before per-agent slices — new writes target `agent-<id>`. */
 export const AGENT_SOURCE = "agent";
@@ -253,7 +258,8 @@ async function withPlaces(i: ScopeInput, base: BrainScope): Promise<BrainScope> 
     if (!(await placeBound(i.agentId, place.source))) return base;
     return { ...base, allowedSources: [place.source, ...base.allowedSources], placeAgent: i.agentId };
   }
-  if (i.placesOn === true && i.isManager && i.lockedUser !== null && i.userId !== null && i.dmPlace?.kind === "place" && base.sourceId === userSourceId(i.userId)) {
+  // The lock owner's scope is the only one that is neither the persona slice nor public here.
+  if (i.placesOn === true && i.isManager && underLock(i) && i.dmPlace?.kind === "place" && base.sourceId !== PUBLIC_SOURCE) {
     const dm = i.dmPlace;
     if (await placeBound(i.agentId, dm.source)) {
       const [own, ...rest] = base.allowedSources;

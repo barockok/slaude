@@ -3,7 +3,7 @@ import type { BrainScope, ChannelTrust } from "./scope";
 import type { PersonSlices } from "./scope";
 import type { PlaceRef } from "../memory/place";
 import { hasPlacePrefix } from "../memory/place-id";
-import { agentSourceId, isProfileSourceId, resolveBrainScope, SHARED_SOURCE, speakerProfileSource, userSourceId } from "./scope";
+import { agentSourceId, isProfileSourceId, noPerson, resolveBrainScope, SHARED_SOURCE, speakerProfileSource, userSourceId } from "./scope";
 
 export type GateTier = "auto" | "approval" | "manager" | "deny";
 
@@ -141,7 +141,7 @@ export async function classifyBrainOp(op: string, scope: BrainScope, g: GateInpu
   if (MANAGER_OPS.has(op)) return "manager";
   if (DESTRUCTIVE_OPS.has(op)) {
     // Demoting a promoted copy (rc.46): the same tier as the promotion, never from a wake.
-    if (w?.promote) return g.userId === null ? "deny" : "manager";
+    if (w?.promote) return noPerson(g) ? "deny" : "manager";
     // A wake cannot answer a card, and a delete changes an existing shared page by definition.
     if (isUserlessSharedWrite(scope, g)) return "deny";
     return g.channelTrust === "public" && !g.isManager ? "deny" : "approval";
@@ -160,7 +160,7 @@ export async function classifyBrainOp(op: string, scope: BrainScope, g: GateInpu
     }
     // A promotion (place to persona-wide, rc.46): only a manager's approval, never a wake's and never
     // covered by a standing grant (only the approval tier is). Checked before the background branch.
-    if (w?.promote) return g.userId === null ? "deny" : "manager";
+    if (w?.promote) return noPerson(g) ? "deny" : "manager";
     // A write to a place source: automatic in the turn's own place, nothing else (rc.46).
     if (hasPlacePrefix(scope.sourceId)) return g.placesOn === true && g.place.kind === "place" && scope.sourceId === g.place.source ? "auto" : "deny";
     // A turn with no user in the shared KB (rc.45): a new page is automatic; a change to an
