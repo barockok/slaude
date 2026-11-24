@@ -9,21 +9,19 @@
  *   2. The provider proxy adds exactly one credential header, for exactly one
  *      upstream. Asked for any other host it adds nothing and forwards nothing.
  *
- * NOT RUN YET. The two proxies are Phase 2 of the plan (src/box/egress/proxy.ts
- * and src/box/egress/llm.ts) and do not exist on this branch, so every test
- * here is skipped, and says so in its name. The assertions are written against
- * the interface the plan describes: an HTTP proxy on a Unix socket per session
+ * These assertions were written before the two proxies existed, against the
+ * interface the plan describes: an HTTP proxy on a Unix socket per session
  * with rules read from a supplier, and a reverse proxy on a Unix socket with
- * one upstream and a credential read from the bundle.
- *
- * When Phase 2 lands: adapt the three lines marked ADAPT to the real option
- * names, keep the assertions as they are, and delete the skip. A proxy that
- * cannot pass these as written has a credential route this design refused.
+ * one upstream and a credential read from the bundle. The proxies
+ * (src/box/egress/proxy.ts and src/box/egress/llm.ts) took the option names
+ * used here, so the three lines marked ADAPT needed no change. The assertions
+ * are as first written; only the request helper changed (see viaSocket). The
+ * skip below stays as a guard: it can only fire if a proxy module is deleted.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { createServer, request, type IncomingHttpHeaders, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
+import { connect, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -56,15 +54,24 @@ function recorder(): Promise<{ server: Server; port: number; seen: Seen[] }> {
 
 /** One HTTP request over a Unix socket. `target` is the request target as written (absolute form for a forward proxy). */
 function viaSocket(socketPath: string, target: string, headers: Record<string, string>): Promise<{ status: number; headers: IncomingHttpHeaders; body: string }> {
+  // Written on a raw socket: Bun's node:http reads an absolute request target as "use a proxy" and refuses that over a Unix socket.
   return new Promise((resolve, reject) => {
-    const req = request({ socketPath, path: target, method: "GET", headers }, (res) => {
-      let body = "";
-      res.setEncoding("utf8");
-      res.on("data", (c: string) => (body += c));
-      res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+    const sock = connect(socketPath);
+    let raw = Buffer.alloc(0);
+    sock.on("error", reject);
+    sock.on("data", (d: Buffer) => (raw = Buffer.concat([raw, d])));
+    sock.on("close", () => {
+      const text = raw.toString("utf8");
+      const cut = text.indexOf("\r\n\r\n");
+      const head = (cut < 0 ? text : text.slice(0, cut)).split("\r\n");
+      const got: IncomingHttpHeaders = {};
+      for (const line of head.slice(1)) {
+        const at = line.indexOf(":");
+        if (at > 0) got[line.slice(0, at).trim().toLowerCase()] = line.slice(at + 1).trim();
+      }
+      resolve({ status: Number((head[0] ?? "").split(" ")[1] ?? 0), headers: got, body: cut < 0 ? "" : text.slice(cut + 4) });
     });
-    req.on("error", reject);
-    req.end();
+    sock.write(`GET ${target} HTTP/1.1\r\n${Object.entries(headers).map(([k, v]) => `${k}: ${v}\r\n`).join("")}connection: close\r\n\r\n`);
   });
 }
 
