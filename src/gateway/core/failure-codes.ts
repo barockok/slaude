@@ -25,6 +25,8 @@ export const FAILURE_TEXT = {
     ":no_entry: This thread is bound to a shared environment, but environments are switched off on this deployment, so this message was not handled. An operator can run `slaude env unbind-shared`.",
   SHARED_ENV_UNSUPPORTED:
     ":warning: No worker that can run shared environments is available right now, so this message was not handled. Try again later; the details are in the server log.",
+  BOX_UNAVAILABLE:
+    ":warning: I can't start: this agent runs in a sandbox, and the sandbox could not be started, so I won't run without it. The details are in the server log.",
   TURN_FAILED: ":warning: Something went wrong while handling that message. Try again; details are in the server log.",
   UNKNOWN: ":warning: Something went wrong. Details are in the server log.",
 } as const;

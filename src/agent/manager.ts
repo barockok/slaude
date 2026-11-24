@@ -49,6 +49,7 @@ import type { OneOnOneLockRow } from "../db/one-on-one";
 import { memory } from "../memory";
 import { stripTurnMemoryContext, type MemoryProvider } from "../memory/provider";
 import { ChildEnvPatch, scrubChildEnv, withoutKeys } from "./child-env";
+import type { SandboxResolver, SessionSandbox, SpawnOptions } from "../box/sandbox";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock, type RemoteModeInfo } from "./session-mode";
@@ -535,6 +536,8 @@ export class AgentManager extends EventEmitter {
   #guidanceQueue = new Map<string, Array<{ slug: string; name: string; body: string }>>();
   #mcpResolver: McpResolver | undefined;
   #localMcpResolver: McpResolver | undefined;
+  /** Optional per-session sandbox (src/box/sandbox.ts). Unset or a null answer = today's spawn. */
+  #sandboxResolver: SandboxResolver | undefined;
   /** Episodic memory. The process provider in mono and on the gateway; the
    *  node worker installs a REST client of the gateway's memory routes. */
   #memory: MemoryProvider = memory;
@@ -835,6 +838,16 @@ export class AgentManager extends EventEmitter {
   /** Whether a permission resolver is installed (absent: no canUseTool). */
   hasPermissionResolver(): boolean {
     return this.#resolver !== undefined;
+  }
+
+  /** Boxes (box spec, "Sandbox tiers"): the resolver says which sandbox a
+   *  session's CLI runs in. Null = tier `none`, the spawn is unchanged. A
+   *  sandbox adds `spawnClaudeCodeProcess` and nothing else: hooks, canUseTool
+   *  and in-process MCP servers already cross the child's stdio. A throw fails
+   *  the boot with a BootFailure (its own code, else BOX_UNAVAILABLE); a
+   *  sandbox that cannot be had never becomes an unboxed run. */
+  setSandboxResolver(resolver: SandboxResolver | undefined) {
+    this.#sandboxResolver = resolver;
   }
 
   /** Remote mode (spec §4.1): resolver says whether a session's tools run remotely;
@@ -2112,6 +2125,18 @@ export class AgentManager extends EventEmitter {
     // option that hides the rest from the model's listing.
     const allowedSkills = soul.definition?.skills ? allowedSkillNames(soul.definition.skills, personaName) : null;
 
+    // Boxes: resolved before the remote handle opens, so a boot that fails
+    // here holds no connection. A failure is FATAL: falling through would run
+    // a boxed persona's agent on the node itself.
+    let sandbox: SessionSandbox | null = null;
+    if (this.#sandboxResolver) {
+      try {
+        sandbox = await this.#sandboxResolver(sessionId);
+      } catch (e) {
+        console.error(`[mgr] sandbox resolver failed session=${sessionId}: ${redactSecrets(e instanceof Error ? e.message : String(e))}`);
+        throw e instanceof BootFailure ? e : new BootFailure("BOX_UNAVAILABLE", "sandbox resolver failed", { cause: e });
+      }
+    }
     // Opened after the soul resolves, so a boot that fails there holds no connection.
     const remoteHandle = await this.#remoteHandleFor(sessionId, remoteTarget);
     const resolver = this.#resolver;
@@ -2147,6 +2172,9 @@ export class AgentManager extends EventEmitter {
         ...(model ? { model } : {}),
         abortController: abort,
         env: scrubChildEnv(withoutKeys({ ...process.env, ...providerEnv }, unsetChildEnv)),
+        // Boxed: the CLI itself starts inside the sandbox, which builds the
+        // box's environment from nothing (src/box/env.ts) rather than from `env`.
+        ...(sandbox ? { spawnClaudeCodeProcess: (o: SpawnOptions) => sandbox.spawn(o) } : {}),
         ...(canUseTool ? { canUseTool } : {}),
         ...(hasMcpServers ? { mcpServers: mergedMcpServers } : {}),
         ...(localMcp ? { strictMcpConfig: true } : {}),
