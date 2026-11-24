@@ -1,0 +1,106 @@
+# Boxes on the scale topology: the autoscaling and drain half.
+#
+# INCOMPLETE ON PURPOSE. DO NOT APPLY YET. This overlay does not add the
+# supervisor container (`boxd`) or its volumes: those arrive with the sandbox
+# driver. What is here is everything about capacity that does not depend on
+# it, so it is reviewed and tested ahead of time:
+#
+#   - each node Deployment's ScaledObject gains KEDA `memory` and `cpu`
+#     triggers on the `boxd` container, beside the existing wait-list trigger.
+#     KEDA scales to the largest replica count any trigger asks for, so any
+#     one of the three scales up;
+#   - terminationGracePeriodSeconds becomes 300 on every node Deployment: the
+#     drain window (SLAUDE_NODE_DRAIN_SEC, default 120) plus the flush of the
+#     warm boxes, several at a time. The rule is in
+#     docs/site/_content/deploy/scale-operations.md ("Drain arithmetic");
+#   - optional/node-box-fallback-hpa.yaml is the HPA for clusters without
+#     KEDA, with ContainerResource metrics for `boxd`. Like the base's CPU
+#     fallback it is NOT in this kustomization: never two autoscalers on one
+#     Deployment.
+#
+# Applied before `boxd` exists, the memory and cpu triggers name a container
+# no pod has: KEDA reports the ScaledObject as failing and the wait-list
+# trigger alone keeps scaling. Nothing breaks, and nothing is gained.
+#
+# Composable with ../k8s-scale-s3 (list both as resources in your own
+# kustomization); boxes keep a session's home across nodes only with
+# SLAUDE_STORAGE=s3.
+#
+# Why memory and CPU of `boxd`, not of the pod: the `node` container is small
+# and roughly constant; the boxes are in `boxd`. Heavy boxes fill a pod before
+# its slot count does, and a warm sandbox holds memory while no turn runs and
+# the queue is empty, which the wait-list trigger cannot see.
+#
+# A second node Deployment (the base ships `finance` as the pattern) needs the
+# same patches; both are below.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../k8s-scale
+
+patches:
+  - target: { kind: Deployment, name: slaude-node }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/terminationGracePeriodSeconds
+        value: 300
+  - target: { kind: Deployment, name: slaude-node-finance }
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/terminationGracePeriodSeconds
+        value: 300
+
+  # The targets are percentages of the container's REQUESTS, so `boxd` must
+  # set memory and cpu requests. 75 and 70 leave room for a burst of new
+  # sessions while a new pod starts and pulls its images.
+  - target: { kind: ScaledObject, name: slaude-node }
+    patch: |-
+      - op: add
+        path: /spec/triggers/-
+        value:
+          type: memory
+          metricType: Utilization
+          metadata: { value: "75", containerName: boxd }
+      - op: add
+        path: /spec/triggers/-
+        value:
+          type: cpu
+          metricType: Utilization
+          metadata: { value: "70", containerName: boxd }
+  - target: { kind: ScaledObject, name: slaude-node-finance }
+    patch: |-
+      - op: add
+        path: /spec/triggers/-
+        value:
+          type: memory
+          metricType: Utilization
+          metadata: { value: "75", containerName: boxd }
+      - op: add
+        path: /spec/triggers/-
+        value:
+          type: cpu
+          metricType: Utilization
+          metadata: { value: "70", containerName: boxd }
+
+# --- Optional third trigger, for clusters that run Prometheus: box occupancy.
+# It scales BEFORE a backlog forms and holds replicas while sessions are warm
+# though the queue is empty. Add to each ScaledObject's triggers (one patch per
+# label, with the label's own Deployment in the selector):
+#
+#   - op: add
+#     path: /spec/triggers/-
+#     value:
+#       type: prometheus
+#       metadata:
+#         serverAddress: http://REPLACE-prometheus:9090
+#         # Running boxes over capacity, for this label's node pods only.
+#         query: >-
+#           sum(slaude_node_boxes_running{namespace="slaude-scale",pod=~"slaude-node-[a-z0-9]+-[a-z0-9]+"})
+#           / sum(slaude_node_boxes_capacity{namespace="slaude-scale",pod=~"slaude-node-[a-z0-9]+-[a-z0-9]+"})
+#         # KEDA divides the query's value by this to get the wanted replica
+#         # ratio: 0.7 means "add nodes above 70 percent occupied".
+#         threshold: "0.7"
+#
+# cooldownPeriod stays 300 s (the base): a removed pod's sessions resume
+# elsewhere from the bucket, which is cheap but not free.

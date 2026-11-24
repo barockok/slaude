@@ -1,0 +1,91 @@
+# OPTIONAL: a HorizontalPodAutoscaler per node label for clusters WITHOUT
+# KEDA, on a topology whose node pods run boxes. A copy of
+# ../../k8s-scale/optional/node-cpu-fallback-hpa.yaml with the metrics changed.
+# Not in kustomization.yaml: 70-autoscale.yaml's KEDA ScaledObjects scale the
+# same Deployments, and two autoscalers on one Deployment fight over its
+# replica count. Use one or the other:
+#
+#   kubectl delete -f deploy/k8s-scale/70-autoscale.yaml     # if it was applied
+#   kubectl apply -f deploy/k8s-scale-box/optional/node-box-fallback-hpa.yaml
+#
+# Needs the `boxd` container in the node pods (it arrives with the sandbox
+# driver) and memory and cpu REQUESTS on it: the targets below are percentages
+# of requests. ContainerResource metrics are stable from Kubernetes 1.30 and
+# on by default (beta) from 1.27; check your cluster's version before relying
+# on them.
+#
+# The base file says CPU is a poor proxy for slaude's load, because a turn
+# mostly waits on the model. With boxes that changes: a warm sandbox holds
+# memory whether or not a turn runs, so the MEMORY of `boxd` follows the number
+# of warm sessions closely, and it is the better signal of the two. CPU is
+# kept beside it for boxes that build or test. What this fallback still cannot
+# see is the label's wait list: work that no node claimed. With every node of a
+# label full, new sessions wait until memory use pulls another pod in. KEDA,
+# with the wait-list trigger, does not have that gap.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: slaude-node-box-fallback
+  namespace: slaude-scale
+  annotations:
+    slaude/disabled: "delete the ScaledObject before applying this fallback"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: slaude-node
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: ContainerResource
+      containerResource:
+        name: memory
+        container: boxd
+        target:
+          type: Utilization
+          averageUtilization: 75
+    - type: ContainerResource
+      containerResource:
+        name: cpu
+        container: boxd
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Slow scale-down: a removed pod's warm sessions resume elsewhere from
+      # the bucket (a cold resume), and its parked copies are gone with its disk.
+      stabilizationWindowSeconds: 600
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: slaude-node-finance-box-fallback
+  namespace: slaude-scale
+  annotations:
+    slaude/disabled: "delete the ScaledObject before applying this fallback"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: slaude-node-finance
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: ContainerResource
+      containerResource:
+        name: memory
+        container: boxd
+        target:
+          type: Utilization
+          averageUtilization: 75
+    - type: ContainerResource
+      containerResource:
+        name: cpu
+        container: boxd
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600
