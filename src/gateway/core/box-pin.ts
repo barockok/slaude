@@ -31,12 +31,26 @@ export interface SessionBoxPin {
 /** The box named for a persona could not be resolved; the turn is refused. */
 export class BoxUnavailableError extends Error {}
 
+/**
+ * The persona names a box, cannot be boxed (its provider credential is of a
+ * form no box can use), and the deployment does not run such a persona
+ * unboxed (SLAUDE_BOX_UNBOXED=refuse). The turn is refused; the credential is
+ * never put into a box to make it work.
+ */
+export class BoxNotBoxableError extends BoxUnavailableError {
+  constructor(readonly box: string, readonly forms: readonly string[]) {
+    super(`persona names box '${box}' but uses a provider credential form a box cannot serve (${forms.join(", ")}), and this deployment does not run it unboxed`);
+  }
+}
+
 export interface BoxPinDeps {
   enabled: () => boolean;
   /** The box a persona runs in by name, or null when it names none. */
   boxNameFor: (persona: string) => string | null;
   /** The provider credential forms the persona declares that a box cannot serve. */
   unboxableForms: (persona: string) => string[];
+  /** Whether a persona that cannot be boxed runs unboxed (true) or is refused (false). */
+  unboxedAllowed: () => boolean;
   current: (tenant: string, name: string) => Promise<BoxVersion | null>;
   pinned: (tenant: string, name: string, digest: string) => Promise<BoxVersion | null>;
   read: (sessionId: string) => Promise<{ name: string; digest: string } | null>;
@@ -54,6 +68,7 @@ export const defaultBoxPinDeps: BoxPinDeps = {
     const p = persona === "default" ? r.defaultPersona?.() : r.lookupByName(persona);
     return unboxableProviderForms((p as { provider?: Record<string, unknown> | null } | null | undefined)?.provider ?? null);
   },
+  unboxedAllowed: () => env.box.unboxedFallback(),
   current: (tenant, name) => currentBox(tenant, name),
   pinned: (tenant, name, digest) => pinnedBox(tenant, name, digest),
   read: (sessionId) => sessionBox(sessionId),
@@ -76,9 +91,11 @@ export async function sessionBoxPin(
   const name = deps.boxNameFor(ctx.persona);
   if (!name) return null;
   // No secret enters a box. A persona whose credential form the provider
-  // proxy cannot serve is not boxable: it runs unboxed (the sync warned), and
-  // the token is never put into a box to make it work.
+  // proxy cannot serve is not boxable: it runs unboxed where the deployment
+  // allows that (the sync warned) and is refused where it does not. The token
+  // is never put into a box to make it work.
   const bad = deps.unboxableForms(ctx.persona);
+  if (bad.length && !deps.unboxedAllowed()) throw new BoxNotBoxableError(name, bad);
   if (bad.length) {
     if (!warnedUnboxable.has(ctx.persona)) {
       warnedUnboxable.add(ctx.persona);

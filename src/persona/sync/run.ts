@@ -41,7 +41,7 @@ import { BoxIntegrityError, verifyBoxSet } from "../../box/integrity";
 import { checkBoxHighWater, raiseBoxHighWater } from "../../box/high-water";
 import { unboxableProviderForms } from "../../box/provider-forms";
 import { isStandInImage } from "../../box/definition";
-import { boxFlagValue } from "../../config/env";
+import { boxFlagValue, boxUnboxedFallbackValue } from "../../config/env";
 
 function masterKeySet(): boolean {
   try {
@@ -500,12 +500,24 @@ async function planBoxSync(
       ? `persona '${p.name}': box names '${name}', which this deploy removes; keep boxes/${name} or remove the box key from the agent first`
       : `persona '${p.name}': box names '${name}', which this deploy does not define`);
   }
-  // A boxed persona must use a credential form the provider proxy can serve: no secret enters a box.
+  // A boxed persona must use a credential form the provider proxy can serve:
+  // no secret enters a box. Where the deployment runs such a persona unboxed
+  // the sync warns; where it does not (SLAUDE_BOX_UNBOXED=refuse, with boxes
+  // on) the deploy is refused here, dry run included, so the pull request
+  // sees it and no thread finds out at its next message.
+  let unboxedAllowed: boolean;
+  try {
+    unboxedAllowed = boxUnboxedFallbackValue(env.SLAUDE_BOX_UNBOXED);
+  } catch (e) {
+    throw new SyncFailure(503, `this gateway is misconfigured: ${(e as Error).message}`);
+  }
   for (const p of naming) {
     const bad = unboxableProviderForms(p.provider);
-    if (bad.length) {
-      warnings.push(`persona '${p.name}' names a box, but its provider credential form (${bad.join(", ")}) cannot be used from a box; it stays unboxed until it uses an API key or an auth token`);
+    if (!bad.length) continue;
+    if (!unboxedAllowed && boxFlagValue(env.SLAUDE_BOX)) {
+      throw new SyncFailure(422, `persona '${p.name}': names a box, but its provider credential form (${bad.join(", ")}) cannot be used from a box, and this gateway does not run such an agent unboxed (SLAUDE_BOX_UNBOXED=refuse); give it an API key or an auth token, or remove the box key`);
     }
+    warnings.push(`persona '${p.name}' names a box, but its provider credential form (${bad.join(", ")}) cannot be used from a box; it stays unboxed until it uses an API key or an auth token`);
   }
   if (naming.length && !boxFlagValue(env.SLAUDE_BOX)) {
     warnings.push(`${naming.length === 1 ? `persona '${naming[0]!.name}' names a box` : `${naming.length} personas name a box`}, but SLAUDE_BOX is off on this gateway: the box is stored and not applied`);

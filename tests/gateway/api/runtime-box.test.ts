@@ -17,6 +17,7 @@ import { nodeBoxCapabilities } from "../../../src/box/capability";
 import { __resetBoxRegistryForTests } from "../../../src/gateway/core/box-registry";
 import { NODE_CAPS } from "../../../src/node/worker";
 import { flushAudits } from "../../../src/audit/emit";
+import { withoutForm } from "../../helpers/box-forms";
 
 const isPg = process.env.SLAUDE_DB === "pg";
 const digest = (c: string) => `sha256:${c.repeat(64)}`;
@@ -40,7 +41,7 @@ const sync = (p: DesiredPersona, boxes?: ReturnType<typeof box>[]) => {
 const req = (caps: string[] = [...NODE_CAPS, ...nodeBoxCapabilities("gvisor")]) => new Request("https://x/", { headers: { [CAPABILITIES_HEADER]: caps.join(",") } });
 const bundle = async (r: Request = req()) => handleTenantRuntime(r, "default", "ana", { nodeId: "n1", sessionId: "S1" });
 
-const saved = { key: process.env.SLAUDE_MASTER_KEY, box: process.env.SLAUDE_BOX, def: process.env.SLAUDE_BOX_DEFAULT };
+const saved = { key: process.env.SLAUDE_MASTER_KEY, box: process.env.SLAUDE_BOX, def: process.env.SLAUDE_BOX_DEFAULT, unboxed: process.env.SLAUDE_BOX_UNBOXED, apiKey: process.env.ANTHROPIC_API_KEY };
 const wipe = async () => {
   for (const t of ["persona_overrides", "persona_sync_state", "personas"]) await db.run(`DELETE FROM ${t}`);
   await __clearBoxesForTests();
@@ -54,11 +55,12 @@ beforeEach(async () => {
   __resetGuardrailKeyForTests();
   delete process.env.SLAUDE_BOX;
   delete process.env.SLAUDE_BOX_DEFAULT;
+  delete process.env.SLAUDE_BOX_UNBOXED;
   if (isPg) await wipe();
 });
 afterEach(async () => {
   if (isPg) await wipe();
-  for (const [name, v] of [["SLAUDE_MASTER_KEY", saved.key], ["SLAUDE_BOX", saved.box], ["SLAUDE_BOX_DEFAULT", saved.def]] as const) {
+  for (const [name, v] of [["SLAUDE_MASTER_KEY", saved.key], ["SLAUDE_BOX", saved.box], ["SLAUDE_BOX_DEFAULT", saved.def], ["SLAUDE_BOX_UNBOXED", saved.unboxed], ["ANTHROPIC_API_KEY", saved.apiKey]] as const) {
     if (v === undefined) delete process.env[name];
     else process.env[name] = v;
   }
@@ -155,6 +157,38 @@ describe.skipIf(!isPg)("runtime bundle and boxes", () => {
     await sync(persona("box: ruby-dev\n"), [box({ tier: "bwrap" })]);
     expect((await bundle(req([...NODE_CAPS, ...nodeBoxCapabilities("bwrap")]))).status).toBe(200);
     expect((await bundle()).status).toBe(200);
+  });
+
+  test("a credential form no box can serve: unboxed where that is allowed, no bundle where it is refused", async () => {
+    process.env.SLAUDE_BOX = "on";
+    // The agent declares an API key; the constant is flipped below to say a box cannot use one.
+    process.env.PERSONA_ANA_KEY = "test-provider-key-not-a-secret";
+    const keyed = { apiKey: "env://PERSONA_ANA_KEY" } as DesiredPersona["provider"];
+    await sync(persona("box: ruby-dev\n", keyed), [box()]);
+    expect(((await (await bundle()).json()) as any).box.name).toBe("ruby-dev");
+    const err = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await withoutForm("api-key", async () => {
+        // allow (the default): the bundle is served without a box, so the node runs the agent unboxed.
+        const unboxed = await bundle();
+        expect(unboxed.status).toBe(200);
+        expect(Object.hasOwn((await unboxed.json()) as object, "box")).toBe(false);
+        // refuse: no bundle at all. A node cannot run the agent on itself with what it was not given.
+        process.env.SLAUDE_BOX_UNBOXED = "refuse";
+        const refused = await bundle();
+        expect(refused.status).toBe(503);
+        expect(await refused.json()).toEqual({ error: "agent cannot be boxed", code: "BOX_NOT_BOXABLE", transient: false });
+        // An agent that names no box is not affected by the switch.
+        await sync(persona("", keyed), [box()]);
+        expect((await bundle()).status).toBe(200);
+      });
+      // With the form supported again the same agent is boxed, in refuse mode too.
+      await sync(persona("box: ruby-dev\n", keyed), [box()]);
+      expect(((await (await bundle()).json()) as any).box.name).toBe("ruby-dev");
+    } finally {
+      err.mockRestore();
+      delete process.env.PERSONA_ANA_KEY;
+    }
   });
 
   test("a box that is gone or does not verify refuses the bundle: it is never shipped without its box", async () => {

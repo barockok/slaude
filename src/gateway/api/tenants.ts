@@ -656,8 +656,19 @@ export async function handleTenantRuntime(
   let boxSet: number | null = null;
   if (env.box.enabled()) {
     const boxName = bundle.definition?.box ?? env.box.defaultBox();
-    // A credential form the provider proxy cannot serve: the persona is not boxable and runs unboxed (dispatch decided the same).
-    if (boxName && unboxableProviderForms(bundle.providerCreds).length === 0) {
+    // A credential form the provider proxy cannot serve: the persona is not
+    // boxable. It runs unboxed where the deployment allows that, and gets no
+    // bundle where it does not (dispatch decided the same): a node that asked
+    // anyway must not be handed what it needs to run the persona on itself.
+    const unboxable = boxName ? unboxableProviderForms(bundle.providerCreds) : [];
+    if (boxName && unboxable.length > 0 && !env.box.unboxedFallback()) {
+      console.error(`[runtime] not boxable tenant=${tenantId} persona=${bundle.personaId}: provider credential form ${unboxable.join(", ")}; SLAUDE_BOX_UNBOXED=refuse`);
+      return new Response(JSON.stringify({ error: "agent cannot be boxed", code: "BOX_NOT_BOXABLE", transient: false }), {
+        status: 503,
+        headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      });
+    }
+    if (boxName && unboxable.length === 0) {
       let box: BundleBox | null = null;
       try {
         const snap = await boxSnapshot(tenantId);

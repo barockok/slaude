@@ -11,6 +11,7 @@ import { __resetGuardrailKeyForTests } from "../../src/guardrails/integrity";
 import { __clearBoxesForTests, boxSetVersion, readBoxes } from "../../src/db/boxes";
 import { __resetBoxRegistryForTests, loadBoxes } from "../../src/gateway/core/box-registry";
 import { boxHighWater } from "../../src/box/high-water";
+import { withoutForm } from "../helpers/box-forms";
 import { standInDigestFor } from "../../src/box/definition";
 import { BOX_SUPPORTED_PROVIDER_FORMS, declaredProviderForms, unboxableProviderForms } from "../../src/box/provider-forms";
 
@@ -261,6 +262,30 @@ describe.skipIf(!isPg)("box sync", () => {
     expect(invalid.status).toBe(422);
     // Nothing else of the refused sync was applied either: the personas are as the first sync left them.
     expect((await db.query(`SELECT name FROM personas WHERE name = 'ana'`)).length).toBe(1);
+  });
+
+  test("a persona that names a box on a form no box can serve: a warning where unboxed runs are allowed, a refusal where they are not", async () => {
+    const oauth = "box: ruby-dev\nprovider:\n  oauthToken: env://PERSONA_ANA_OAUTH\n";
+    // Today's constant: the form is supported, so there is nothing to say.
+    // A persona's own provider needs a gateway with nodes (it is refused on a single process).
+    const GW = { SLAUDE_BOX: "on", SLAUDE_ROLE: "gateway", PERSONA_ANA_OAUTH: "test-oauth-value" };
+    expect((await run(payload({ ana: oauth, boxes: [box()] }), { dryRun: true, env: GW })).warnings.join("\n")).not.toContain("cannot be used from a box");
+    await withoutForm("oauth-token", async () => {
+      const allowed = await run(payload({ ana: oauth, boxes: [box()] }), { dryRun: true, env: GW });
+      expect(allowed.warnings.join("\n")).toContain("persona 'ana' names a box, but its provider credential form (oauth-token) cannot be used from a box; it stays unboxed");
+      for (const dryRun of [true, false]) {
+        const e = await refusal(payload({ ana: oauth, boxes: [box()] }), { dryRun, env: { ...GW, SLAUDE_BOX_UNBOXED: "refuse" } });
+        expect(e.status).toBe(422);
+        expect(e.message).toContain("persona 'ana': names a box, but its provider credential form (oauth-token) cannot be used from a box, and this gateway does not run such an agent unboxed");
+        expect(e.message).not.toContain("PERSONA_ANA_OAUTH");
+      }
+      expect(await boxSetVersion(T)).toBe(0);
+      // With boxes switched off nothing is boxed, so refuse has nothing to refuse: the sync warns and applies.
+      const off = await run(payload({ ana: oauth, boxes: [box()] }), { env: { ...GW, SLAUDE_BOX: "off", SLAUDE_BOX_UNBOXED: "refuse" } });
+      expect(off.warnings.join("\n")).toContain("it stays unboxed");
+      // A value that is neither allow nor refuse is never read as allow.
+      expect((await refusal(payload({ ana: oauth, boxes: [box()] }), { env: { ...GW, SLAUDE_BOX_UNBOXED: "maybe" } })).status).toBe(503);
+    });
   });
 
   test("a first sync that carries only a stand-in creates no box", async () => {

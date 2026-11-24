@@ -109,7 +109,7 @@ export function bundleFetchFailure(e: unknown): BootFailure {
         return undefined;
       }
     })();
-    if (code === "GUARDRAILS_UNAVAILABLE" || code === "GUARDRAILS_UNSUPPORTED" || code === "SHARED_ENV_UNSUPPORTED") {
+    if (code === "GUARDRAILS_UNAVAILABLE" || code === "GUARDRAILS_UNSUPPORTED" || code === "SHARED_ENV_UNSUPPORTED" || code === "BOX_UNAVAILABLE" || code === "BOX_NOT_BOXABLE") {
       return new BootFailure(code, `the gateway refused the runtime bundle: ${code}`, { cause: e, transient: false });
     }
     if (e.status === 503) {

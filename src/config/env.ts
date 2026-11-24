@@ -10,6 +10,20 @@ import { flag } from "./security-switches";
 const DOTENV_REFUSED = new Set(["SLAUDE_PLUGIN_ROOT"]);
 
 // Load a .env file if present (does not override existing process.env)
+/**
+ * The SLAUDE_BOX_UNBOXED value rule (`allow`, the default, or `refuse`),
+ * shared by `env.box.unboxedFallback()` and the sync. It says what happens to
+ * an agent that names a box and cannot be boxed (its provider credential is of
+ * a form no box can use): `allow` runs it unboxed, `refuse` does not run it.
+ * An unknown value is an error, never read as `allow`.
+ */
+export function boxUnboxedFallbackValue(raw: string | undefined): boolean {
+  const v = (raw ?? "").trim().toLowerCase();
+  if (v === "" || v === "allow") return true;
+  if (v === "refuse") return false;
+  throw new Error("SLAUDE_BOX_UNBOXED must be allow or refuse");
+}
+
 /** The SLAUDE_BOX switch's value rule (`on` or `off`, default off), shared by `env.box.enabled()` and the sync. */
 export function boxFlagValue(raw: string | undefined): boolean {
   const v = (raw ?? "off").trim().toLowerCase();
@@ -932,6 +946,13 @@ export const env = {
       const v = opt("SLAUDE_BOX_DEFAULT", "").trim();
       return v ? v : null;
     },
+    /**
+     * `SLAUDE_BOX_UNBOXED` (gateway, default `allow`): whether an agent that
+     * names a box but cannot be boxed runs unboxed (`allow`) or is refused
+     * (`refuse`). Refuse is for a deployment that no longer offers tier `none`
+     * to boxed agents.
+     */
+    unboxedFallback: (): boolean => boxUnboxedFallbackValue(opt("SLAUDE_BOX_UNBOXED", "allow")),
     /**
      * `SLAUDE_BOX_TIER` (node, default `none`): the sandbox tier this node offers.
      * An unknown value is refused rather than read as `none`: a node meant to

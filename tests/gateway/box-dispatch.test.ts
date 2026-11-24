@@ -66,7 +66,7 @@ describe("box capabilities", () => {
 });
 
 /** An in-memory box store standing in for the signed set and the session rows. */
-function store(o: { enabled?: boolean; box?: string | null; unboxable?: string[] } = {}) {
+function store(o: { enabled?: boolean; box?: string | null; unboxable?: string[]; unboxedAllowed?: boolean } = {}) {
   const versions: BoxVersion[] = [version(1, "a")];
   const pins = new Map<string, { name: string; digest: string }>();
   const audits: any[] = [];
@@ -75,6 +75,7 @@ function store(o: { enabled?: boolean; box?: string | null; unboxable?: string[]
     enabled: () => o.enabled ?? true,
     boxNameFor: () => (o.box === undefined ? "ruby-dev" : o.box),
     unboxableForms: () => o.unboxable ?? [],
+    unboxedAllowed: () => o.unboxedAllowed ?? true,
     current: async (_t, name) => versions.filter((v) => v.name === name).at(-1) ?? null,
     pinned: async (_t, name, d) => {
       const at = [...versions].reverse().find((v) => v.name === name && v.digest === d);

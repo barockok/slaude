@@ -34,7 +34,7 @@ import { TurnQueues, type TurnJob, type TurnTarget } from "../../queue/turns";
 import { isFailureCode } from "./failure-codes";
 import { personaNeedsGuardrails } from "../../guardrails/node";
 import { BOX_CAPABILITY, requiredBoxCapabilities } from "../../box/capability";
-import { sessionBoxPin, type SessionBoxPin } from "./box-pin";
+import { BoxNotBoxableError, sessionBoxPin, type SessionBoxPin } from "./box-pin";
 import { AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, definitionNeedsSharedEnv, GUARDRAILS_CAPABILITY, SHARED_ENV_CAPABILITY } from "../../guardrails/capability";
 import { turnKindOf } from "../../remote/definitions/decision";
 import { managedPersonaDefinition } from "../../persona/registry";
@@ -383,6 +383,18 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
   /** The persona's box could not be resolved or pinned: audited, and the thread is told. Nothing runs, and nothing runs unboxed in its place. */
   function refuseBoxUnavailable(sessionId: string, persona: string, tenantId: string, meta: DispatchMeta, e: unknown): void {
     const reason = e instanceof Error ? e.message : String(e);
+    // Not boxable, and the deployment does not run it unboxed: its own audit row and notice, so an operator can tell it from a broken box.
+    if (e instanceof BoxNotBoxableError) {
+      emitAudit({
+        tenantId, persona, actorKind: "system", actorId: "dispatch", action: "box.not_boxable", targetKind: "session",
+        targetId: sessionId, decision: "refused", sessionId, channelId: meta.channelId, threadTs: meta.threadTs,
+        summary: "the agent names a box, its provider credential form cannot be used from one, and unboxed runs are refused; the turn was not dispatched",
+        details: { agent: persona, box: e.box, forms: [...e.forms] },
+      });
+      console.error(`[dispatch] session=${sessionId} persona=${persona}: not boxable (${e.forms.join(", ")}) and SLAUDE_BOX_UNBOXED=refuse; not dispatched`);
+      agent.emit("event", { type: "error", sessionId, error: "the agent cannot be boxed and unboxed runs are refused", code: "BOX_NOT_BOXABLE" } as AgentEvent);
+      return;
+    }
     emitAudit({
       tenantId, persona, actorKind: "system", actorId: "dispatch", action: "box.unavailable", targetKind: "session",
       targetId: sessionId, decision: "refused", sessionId, channelId: meta.channelId, threadTs: meta.threadTs,
