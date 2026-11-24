@@ -4,6 +4,7 @@
 # listing cache, in-place rewrite of cached file content, size change. Run as root after 01-run.sh's setup.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/spike/box/lib.sh
 source "$HERE/lib.sh"
 exec > >(tee "$RESULTS/02c-coherence.txt") 2>&1
 prep_image
@@ -22,8 +23,10 @@ for mode in shared exclusive; do
   head -c 10485760 /dev/zero | tr '\0' 'B' | dd of="$B/ws/big" conv=notrunc 2>/dev/null   # same-size in-place rewrite
   echo -n " world" >> "$B/ws/grow"                                      # size change
   rm -f "$B/ws/d/a"                                                     # removal
+  # shellcheck disable=SC2016  # the single-quoted command is run by the shell inside the sandbox, which expands it
   imm=$(sb 'echo list=$(ls /work/d | tr "\n" ","); test -e /work/d/new && echo newfile=visible || echo newfile=INVISIBLE; test -e /work/d/a && echo removed=STILL-THERE || echo removed=gone; echo big=$(md5sum /work/big | cut -c1-8) expect=$(head -c 10485760 /dev/zero | tr "\0" "B" | md5sum | cut -c1-8); echo grow_size=$(stat -c %s /work/grow) expect=11' | tr '\n' ' ')
   sleep 5
+  # shellcheck disable=SC2016  # the single-quoted command is run by the shell inside the sandbox, which expands it
   late=$(sb 'echo list=$(ls /work/d | tr "\n" ","); test -e /work/d/new && echo newfile=visible || echo newfile=INVISIBLE; test -e /work/d/a && echo removed=STILL-THERE || echo removed=gone; echo big=$(md5sum /work/big | cut -c1-8); echo grow_size=$(stat -c %s /work/grow)' | tr '\n' ' ')
   echo "RESULT coherence/$mode | INFO | immediately: $imm | after 5 s: $late"
   runsc --root "$RS" delete -force "$N" >/dev/null 2>&1

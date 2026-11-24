@@ -2,8 +2,10 @@
 # Spike 1: runsc nested in a node pod (here: any Linux host, run as root).
 # Usage: sudo bash 01-run.sh [label]     (label names the results file, default "vm")
 # Output: results/01-run.<label>.txt (raw), a PASS/FAIL/INFO line per check.
+# shellcheck disable=SC2015  # "check && res PASS || res FAIL": res only echoes, so the FAIL branch runs only when the check failed
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/spike/box/lib.sh
 source "$HERE/lib.sh"
 LABEL=${1:-vm}
 mkdir -p "$RESULTS" "$SPIKE"
@@ -49,7 +51,7 @@ KEEPCAPS=1 start s1 2g && res run-detach PASS ok || res run-detach FAIL "start f
 ex s1 /bin/sh -c 'id; df -h / | tail -1; cat /proc/version; (ip addr 2>&1 || cat /proc/net/dev) | head -5; ls -ld /home/agent /work /run/slaude' || true
 ex s1 /bin/sh -c 'mount | head -12' || true
 ex s1 /bin/sh -c 'echo ws-from-sandbox > /work/from-sandbox.txt; echo home-from-sandbox > /home/agent/h.txt' && \
-  { [ "$(cat $W/s1/ws/from-sandbox.txt)" = ws-from-sandbox ] && res bind-mount-rw PASS "host sees sandbox writes" || res bind-mount-rw FAIL "host does not see"; }
+  { [ "$(cat "$W"/s1/ws/from-sandbox.txt)" = ws-from-sandbox ] && res bind-mount-rw PASS "host sees sandbox writes" || res bind-mount-rw FAIL "host does not see"; }
 echo host-wrote > "$W/s1/ws/from-host.txt"
 [ "$(ex s1 cat /work/from-host.txt 2>/dev/null)" = host-wrote ] && res host-write-visible-shared-mode PASS "sandbox sees host write (shared mode)" || res host-write-visible-shared-mode FAIL "sandbox did not see host write"
 
@@ -61,7 +63,7 @@ df1=$(df --output=used -B1M "$W" | tail -1)
 ls -la "$W/s1/ov" || true
 du -sm "$W/s1/ov" || true
 exr s1 ls -la /usr/local/big1
-res overlay-1GB-write INFO "host disk used delta MB=$((df1-df0)); backing dir listing above; rootfs untouched: $(du -sm $BUNDLE/rootfs/usr/local | cut -f1)MB"
+res overlay-1GB-write INFO "host disk used delta MB=$((df1-df0)); backing dir listing above; rootfs untouched: $(du -sm "$BUNDLE"/rootfs/usr/local | cut -f1)MB"
 [ -e "$BUNDLE/rootfs/usr/local/big1" ] && res overlay-root-untouched FAIL "write leaked into image dir" || res overlay-root-untouched PASS "image dir has no big1"
 # size limit: 256 MB overlay, write 400 MB
 KEEPCAPS=1 start s2 256m
@@ -75,7 +77,8 @@ if exr s3 test -e /usr/local/iso.txt || exr s3 test -e /etc/iso.txt; then res ov
 stop s2; stop s3
 # after stop the overlay file must be disposable
 stop s1
-res overlay-after-stop INFO "backing dir after stop: $(du -sm $W/s1/ov | cut -f1)MB $(ls $W/s1/ov | wc -l) entries"
+# shellcheck disable=SC2012  # a count for the log; the names are not used
+res overlay-after-stop INFO "backing dir after stop: $(du -sm "$W"/s1/ov | cut -f1)MB $(ls "$W"/s1/ov | wc -l) entries"
 rm -rf "$W/s1/ov" "$W/s2/ov" "$W/s3/ov"
 
 # ---- 3. exec stdio ---------------------------------------------------------
@@ -173,7 +176,7 @@ for i in $(seq 1 20); do
   runsc --root "$RS" exec "$n" /bin/true >/dev/null 2>&1
   t2=$(now_ms)
   echo "$((t1-t0)) $((t2-t0))" >> "$W/times"
-  stop "$n"; rm -rf "$W/$n"
+  stop "$n"; rm -rf "${W:?}/$n"
 done
 python3 - "$W/times" <<'PY'
 import sys,statistics as s
@@ -188,9 +191,9 @@ say "== 8 density"
 pss_runsc() { # sum PSS (kB) of every process whose cmdline mentions runsc
   local tot=0 n=0
   for p in $(pgrep -f 'runsc|exe' 2>/dev/null); do
-    c=$(tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null) || continue
+    c=$(tr '\0' ' ' < /proc/"$p"/cmdline 2>/dev/null) || continue
     case "$c" in *runsc*boot*|*runsc*gofer*|*"--root $RS"*|*runsc-sandbox*) ;; *) continue;; esac
-    v=$(awk '/^Pss:/{print $2}' /proc/$p/smaps_rollup 2>/dev/null) || continue
+    v=$(awk '/^Pss:/{print $2}' /proc/"$p"/smaps_rollup 2>/dev/null) || continue
     [ -n "$v" ] && { tot=$((tot+v)); n=$((n+1)); }
   done
   echo "$tot $n"

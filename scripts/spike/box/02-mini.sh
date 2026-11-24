@@ -6,8 +6,10 @@
 #   C2      C1 with --file-access-mounts=exclusive
 #   C5      C1 with --directfs=false
 # Usage (root): bash 02-mini.sh <label> [runs=3] ; output results/02-mini.<label>.tsv (cfg workload run ms rc)
+# shellcheck disable=SC2016  # the single-quoted commands are run by the shell inside the sandbox, which expands them
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/spike/box/lib.sh
 source "$HERE/lib.sh"
 LABEL=${1:-pod}; RUNS=${2:-3}
 mkdir -p "$RESULTS" "$SPIKE"
@@ -17,7 +19,7 @@ cg_delegate
 IMG=${BENCH_IMAGE:-docker.io/library/node:22-bookworm}
 ROOTFS=$SPIKE/mini-root
 if [ ! -d "$SPIKE/mini-bundle/rootfs/usr" ]; then
-  [ -d "$SPIKE/mini-oci" ] || skopeo copy docker://$IMG oci:"$SPIKE/mini-oci":latest
+  [ -d "$SPIKE/mini-oci" ] || skopeo copy docker://"$IMG" oci:"$SPIKE/mini-oci":latest
   umoci unpack --image "$SPIKE/mini-oci":latest "$SPIKE/mini-bundle"
 fi
 ROOTFS=$SPIKE/mini-bundle/rootfs
@@ -77,16 +79,16 @@ run_cfg() { # run_cfg CFG exec-prefix...   (the prefix executes `sh -c <script>`
 
 # plain baseline: directly in the pod, same volume
 B=$SPIKE/mini/plain; rm -rf "$B"; mkdir -p "$B/ws"; chown -R 1000:1000 "$B"
-plain() { setpriv --reuid 1000 --regid 1000 --clear-groups env WS=$B/ws MIRROR=$SPIKE/mirror-mini HOME=$B /bin/sh -c "$1"; }
+plain() { setpriv --reuid 1000 --regid 1000 --clear-groups env WS="$B"/ws MIRROR="$SPIKE"/mirror-mini HOME="$B" /bin/sh -c "$1"; }
 sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
 run_cfg plain plain
 
 for cfg in C1 C2 C5; do
   B=$SPIKE/mini/$cfg; rm -rf "$B"; mkdir -p "$B"/{home,ws,run,ov}; chown -R 1000:1000 "$B/home" "$B/ws"
-  N=mini-$(echo $cfg | tr A-Z a-z)
+  N=mini-$(echo $cfg | tr '[:upper:]' '[:lower:]')
   FLAGS=(); [ $cfg = C2 ] && FLAGS+=(--file-access-mounts=exclusive); [ $cfg = C5 ] && FLAGS+=(--directfs=false)
   ROOTFS=$ROOTFS EXTRA_MOUNTS="$SPIKE/mirror-mini:/mirror" mkspec "$N" "$B/home" "$B/ws" "$B/run"
-  runsc --root "$RS" --platform "$PLATFORM" --network none --host-uds open "${FLAGS[@]}" --overlay2 "root:dir=$B/ov,size=4g" run --detach --bundle "$SPIKE/specs/$N" "$N" </dev/null >"$B/run.log" 2>&1 || { echo "$cfg not-run start failed: $(tail -2 $B/run.log)" >> "$TSV"; continue; }
+  runsc --root "$RS" --platform "$PLATFORM" --network none --host-uds open "${FLAGS[@]}" --overlay2 "root:dir=$B/ov,size=4g" run --detach --bundle "$SPIKE/specs/$N" "$N" </dev/null >"$B/run.log" 2>&1 || { echo "$cfg not-run start failed: $(tail -2 "$B"/run.log)" >> "$TSV"; continue; }
   sbx() { runsc --root "$RS" exec --user 1000:1000 --cwd /work "$N" /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/agent WS=/work MIRROR=/mirror /bin/sh -c "$1"; }
   sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
   run_cfg "$cfg" sbx

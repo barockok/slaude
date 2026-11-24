@@ -871,6 +871,7 @@ except Exception:
     probe cleanup >/dev/null || true
     gw_pod="$(gateway)"
     # The probe's workspaces: named by its own mark, under the shared volume.
+    # shellcheck disable=SC2016  # the gateway pod's shell expands SLAUDE_HOME, not this one
     [[ -z "$gw_pod" ]] || k exec "$gw_pod" -- sh -c 'rm -rf "${SLAUDE_HOME:-/data}"/workspaces/verify-turns-box-*' >/dev/null 2>&1 ||
       diag "  !! could not remove the box probe's workspaces under workspaces/verify-turns-box-*"
   fi

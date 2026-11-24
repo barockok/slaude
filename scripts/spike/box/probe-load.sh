@@ -4,6 +4,7 @@
 # bun install and an npm ci inside one sandbox. Run as root after 02-setup-bench.sh.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/spike/box/lib.sh
 source "$HERE/lib.sh"
 exec > >(tee "$RESULTS/01c-load-memory${LIMIT_MB:+-limit$LIMIT_MB}.txt") 2>&1
 N=load; B=$SPIKE/load; rm -rf "$B"; mkdir -p "$B"/{home,ws,run,ov}
@@ -13,7 +14,7 @@ runsc --root "$RS" delete -force $N >/dev/null 2>&1
 ROOTFS=$SPIKE/bench-root EXTRA_MOUNTS="$SPIKE/mirror:/mirror" mkspec $N "$B/home" "$B/ws" "$B/run" $(( ${LIMIT_MB:-0} * 1048576 ))
 runsc --root "$RS" --platform "$PLATFORM" --network none --host-uds open --overlay2 "root:dir=$B/ov,size=4g" run --detach --bundle "$SPIKE/specs/$N" $N </dev/null >/dev/null 2>&1
 CG=/sys/fs/cgroup/$N
-rss() { local t=0; for p in $(pgrep -f "runsc-(sandbox|gofer)" ); do v=$(awk '/VmRSS/{print $2}' /proc/$p/status 2>/dev/null); t=$((t+${v:-0})); done; echo $((t/1024)); }
+rss() { local t=0; for p in $(pgrep -f "runsc-(sandbox|gofer)" ); do v=$(awk '/VmRSS/{print $2}' /proc/"$p"/status 2>/dev/null); t=$((t+${v:-0})); done; echo $((t/1024)); }
 sb() { echo "-- $1" | cut -c1-90; runsc --root "$RS" exec --user 1000:1000 --cwd /work $N /usr/bin/env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/agent /bin/sh -c "$1" ; echo "   rc=$? sandbox: $(runsc --root "$RS" state $N 2>&1 | grep -E '"status"' | tr -d ' ')"; }
 sleep 1
 echo "idle: sentry+gofer RSS $(rss) MB, cgroup memory.current $(( $(cat $CG/memory.current) / 1048576 )) MB"

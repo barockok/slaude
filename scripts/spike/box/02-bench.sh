@@ -4,11 +4,13 @@
 # C0 runc (docker), C1 runsc systrap + dir overlay (the design), C2 = C1 with exclusive file access for
 # bind mounts, C3 = erofs root, C4 = C1 on kvm (only if /dev/kvm), C5 = C1 with directfs off.
 # Output: results/02-bench.<cfg>.tsv  (cfg workload run ms rc), one line per timed command.
+# shellcheck disable=SC2016  # the single-quoted commands are run by the shell inside the sandbox, which expands them
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/spike/box/lib.sh
 source "$HERE/lib.sh"
 CFG=${1:?config}; RUNS=${2:-5}; GO_RUNS=${GO_RUNS:-3}
-B=$SPIKE/b/$CFG; NAME=bench-$(echo "$CFG" | tr 'A-Z' 'a-z')
+B=$SPIKE/b/$CFG; NAME=bench-$(echo "$CFG" | tr '[:upper:]' '[:lower:]')
 TSV=$RESULTS/02-bench.$CFG.tsv; : > "$TSV"
 mkdir -p "$RESULTS"
 cg_delegate
@@ -53,7 +55,7 @@ REAL=REALCRED-$RANDOM-$RANDOM; PH=sk-ant-api03-PLACEHOLDERPLACEHOLDERPLACEHOLDER
 bun "$HERE/lib/serve.ts" "$B/run/llm.sock" A "$REAL" "$PH" > "$B/serve.log" 2>&1 &
 SERVE=$!
 trap 'kill $SERVE 2>/dev/null; stop_all' EXIT
-for i in $(seq 1 50); do [ -S "$B/run/llm.sock" ] && break; sleep 0.1; done
+for _ in $(seq 1 50); do [ -S "$B/run/llm.sock" ] && break; sleep 0.1; done
 
 X() { # X "shell command" -> runs as the agent user in /work, returns the command's rc
   case $CFG in
@@ -74,31 +76,31 @@ echo "[$CFG] sanity: $(X 'id -u; git --version; bun --version; node --version; g
 sync; echo 3 > /proc/sys/vm/drop_caches   # run 1 of every workload starts after a cold host page cache
 for r in $(seq 1 "$RUNS"); do
   X 'rm -rf /work/* /work/.[a-z]* 2>/dev/null; true'
-  T clone $r 'git clone -q /mirror/synth.git /work/repo'
+  T clone "$r" 'git clone -q /mirror/synth.git /work/repo'
   X 'test "$(git -C /work/repo ls-files | wc -l)" -ge 20000' || echo "[$CFG] run $r: CLONE INVALID (fewer than 20000 files)"
-  T git-status $r 'cd /work/repo && git status -s > /tmp/st.out && test "$(wc -l < /tmp/st.out)" -eq 0'
-  T git-log100 $r 'cd /work/repo && git log -100 --stat > /tmp/log.out && test "$(wc -l < /tmp/log.out)" -gt 100'
-  T git-checkout $r 'cd /work/repo && git checkout -q feature && git checkout -q main'
-  T rg $r 'rg -c xyzzy42 /work/repo --glob "!.git" > /tmp/rg.out && test "$(wc -l < /tmp/rg.out)" -gt 1000'
+  T git-status "$r" 'cd /work/repo && git status -s > /tmp/st.out && test "$(wc -l < /tmp/st.out)" -eq 0'
+  T git-log100 "$r" 'cd /work/repo && git log -100 --stat > /tmp/log.out && test "$(wc -l < /tmp/log.out)" -gt 100'
+  T git-checkout "$r" 'cd /work/repo && git checkout -q feature && git checkout -q main'
+  T rg "$r" 'rg -c xyzzy42 /work/repo --glob "!.git" > /tmp/rg.out && test "$(wc -l < /tmp/rg.out)" -gt 1000'
   X 'mkdir -p /work/proj && cp /home/agent/proj/package.json /home/agent/proj/bun.lock /work/proj/ 2>/dev/null || cp /home/agent/proj/package.json /home/agent/proj/bun.lockb /work/proj/'
-  T bun-install-warm $r 'cd /work/proj && bun install --frozen-lockfile >/dev/null 2>&1'
+  T bun-install-warm "$r" 'cd /work/proj && bun install --frozen-lockfile >/dev/null 2>&1'
   X 'mkdir -p /work/proj2 && cp /home/agent/proj/package.json /home/agent/proj/package-lock.json /work/proj2/'
-  T npm-ci-warm $r 'cd /work/proj2 && npm ci --offline --ignore-scripts --no-audit --no-fund >/dev/null 2>&1'
-  T pip-venv-numpy $r 'python3 -m venv /work/venv && /work/venv/bin/pip install -q --no-index --find-links /home/agent/wheels numpy'
+  T npm-ci-warm "$r" 'cd /work/proj2 && npm ci --offline --ignore-scripts --no-audit --no-fund >/dev/null 2>&1'
+  T pip-venv-numpy "$r" 'python3 -m venv /work/venv && /work/venv/bin/pip install -q --no-index --find-links /home/agent/wheels numpy'
   X 'mkdir -p /work/tiny && cd /work/tiny && for i in 1 2 3 4 5; do printf "import {test,expect} from \"bun:test\"; test(\"t$i\",()=>{expect(1+$i).toBe(1+$i)});\n" > a$i.test.ts; done'
-  T bun-test-tiny $r 'cd /work/tiny && bun test >/dev/null 2>&1'
-  T many-files-create $r 'mkdir /work/many && cd /work/many && seq 1 20000 | xargs -P4 -n500 sh -c "for i in \"\$@\"; do echo \$i > f\$i; done" _'
-  T many-files-find $r 'find /work/many | wc -l; du -s /work/many >/dev/null'
-  T many-files-delete $r 'rm -rf /work/many'
-  T toolchain-python-imports $r 'python3 -c "import asyncio,ssl,email,xml.dom.minidom,http.client,sqlite3,json,decimal,unittest,argparse,logging.handlers,multiprocessing,concurrent.futures,urllib.request,zipfile,tarfile,csv,ast,dis,typing"'
-  T toolchain-node-builtins $r 'node -e "for (const m of require(\"module\").builtinModules) { try { require(m) } catch {} }"'
-  T toolchain-claude-version $r 'claude --version'
+  T bun-test-tiny "$r" 'cd /work/tiny && bun test >/dev/null 2>&1'
+  T many-files-create "$r" 'mkdir /work/many && cd /work/many && seq 1 20000 | xargs -P4 -n500 sh -c "for i in \"\$@\"; do echo \$i > f\$i; done" _'
+  T many-files-find "$r" 'find /work/many | wc -l; du -s /work/many >/dev/null'
+  T many-files-delete "$r" 'rm -rf /work/many'
+  T toolchain-python-imports "$r" 'python3 -c "import asyncio,ssl,email,xml.dom.minidom,http.client,sqlite3,json,decimal,unittest,argparse,logging.handlers,multiprocessing,concurrent.futures,urllib.request,zipfile,tarfile,csv,ast,dis,typing"'
+  T toolchain-node-builtins "$r" 'node -e "for (const m of require(\"module\").builtinModules) { try { require(m) } catch {} }"'
+  T toolchain-claude-version "$r" 'claude --version'
   CLIENV='env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/home/agent CLAUDE_CONFIG_DIR=/home/agent/.claude ANTHROPIC_API_KEY='$PH' ANTHROPIC_BASE_URL=http://127.0.0.1:3129 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 DISABLE_AUTOUPDATER=1'
-  T cli-boot-plain-turn $r "$CLIENV claude -p --output-format json 'hello plain' >/dev/null"
-  T agent-turn-10-tools $r "$CLIENV claude -p --dangerously-skip-permissions --output-format json 'TURN10 go' | grep -c 'turn10 done'"
+  T cli-boot-plain-turn "$r" "$CLIENV claude -p --output-format json 'hello plain' >/dev/null"
+  T agent-turn-10-tools "$r" "$CLIENV claude -p --dangerously-skip-permissions --output-format json 'TURN10 go' | grep -c 'turn10 done'"
   if [ "$r" -le "$GO_RUNS" ]; then
     X 'rm -rf /home/agent/gocache; git clone -q /mirror/xtools.git /work/xtools'
-    T go-build-xtools $r 'cd /work/xtools && go build ./... 2>&1 | tail -3'
+    T go-build-xtools "$r" 'cd /work/xtools && go build ./... 2>&1 | tail -3'
   fi
   echo "[$CFG] run $r done"
 done

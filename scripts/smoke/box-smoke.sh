@@ -27,17 +27,20 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TIERS="${*:-gvisor bwrap}"
+# The tiers as separate words, for the commands that pass them on.
+read -r -a TIER_LIST <<<"$TIERS"
 
 if [ "$(uname -s)" = "Darwin" ]; then
   command -v colima >/dev/null || { echo "box-smoke: on macOS this needs a running Colima VM (colima ssh)"; exit 2; }
-  exec colima ssh -- sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" SLAUDE_SMOKE_NESTED="${SLAUDE_SMOKE_NESTED:-1}" SLAUDE_SMOKE_KEEP_IMAGES="${SLAUDE_SMOKE_KEEP_IMAGES:-0}" SLAUDE_SMOKE_SUITES="${SLAUDE_SMOKE_SUITES:-}" bash "$SRC/scripts/smoke/box-smoke.sh" $TIERS
+  exec colima ssh -- sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" SLAUDE_SMOKE_NESTED="${SLAUDE_SMOKE_NESTED:-1}" SLAUDE_SMOKE_KEEP_IMAGES="${SLAUDE_SMOKE_KEEP_IMAGES:-0}" SLAUDE_SMOKE_SUITES="${SLAUDE_SMOKE_SUITES:-}" bash "$SRC/scripts/smoke/box-smoke.sh" "${TIER_LIST[@]}"
 fi
 
-[ "$(id -u)" = "0" ] || exec sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" SLAUDE_SMOKE_NESTED="${SLAUDE_SMOKE_NESTED:-1}" SLAUDE_SMOKE_KEEP_IMAGES="${SLAUDE_SMOKE_KEEP_IMAGES:-0}" SLAUDE_SMOKE_SUITES="${SLAUDE_SMOKE_SUITES:-}" bash "$0" $TIERS
+[ "$(id -u)" = "0" ] || exec sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" SLAUDE_SMOKE_NESTED="${SLAUDE_SMOKE_NESTED:-1}" SLAUDE_SMOKE_KEEP_IMAGES="${SLAUDE_SMOKE_KEEP_IMAGES:-0}" SLAUDE_SMOKE_SUITES="${SLAUDE_SMOKE_SUITES:-}" bash "$0" "${TIER_LIST[@]}"
 
 SMOKE="${SLAUDE_SMOKE_DIR:-/var/lib/slaude-smoke}"
 BUN_VERSION="1.3.11"
 SUITES="${SLAUDE_SMOKE_SUITES:-tests/box/tier-contract.test.ts tests/node/worker-box-real.test.ts tests/integration/box-resume.test.ts}"
+read -r -a SUITE_LIST <<<"$SUITES"
 REDIS_PORT=16379
 MOCK_PORT=18080
 export PATH="$SMOKE/bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -123,7 +126,7 @@ curl -fsS "http://127.0.0.1:$MOCK_PORT/healthz" >/dev/null || { echo "box-smoke:
 status=0
 summary=""
 for tier in $TIERS; do
-  say "tier $tier ($( [ "$tier" = gvisor ] && runsc --version | head -1 || bwrap --version ))"
+  say "tier $tier ($(if [ "$tier" = gvisor ]; then runsc --version | head -1; else bwrap --version; fi))"
   log="$SMOKE/logs/$tier.log"
   # A clean environment: nothing of the caller's reaches the tests, the worker or the supervisor.
   set +e
@@ -133,7 +136,7 @@ for tier in $TIERS; do
     SLAUDE_BOX_TEST_INIT_DIR="$SMOKE/init" \
     SLAUDE_REDIS_TEST_URL="redis://127.0.0.1:$REDIS_PORT" \
     SLAUDE_BOX_TEST_MOCK_LLM="http://127.0.0.1:$MOCK_PORT" \
-    bun test $SUITES --timeout 120000 >"$log" 2>&1
+    bun test "${SUITE_LIST[@]}" --timeout 120000 >"$log" 2>&1
   code=$?
   set -e
   grep -E '^\((pass|fail|skip)\)|^\[tier ' "$log" || true
@@ -172,7 +175,7 @@ if [ "${SLAUDE_SMOKE_NESTED:-1}" != "0" ]; then
       -e SLAUDE_BOX_TEST_WORKDIR="$SMOKE/work" \
       -e SLAUDE_REDIS_TEST_URL="redis://127.0.0.1:$REDIS_PORT" \
       -e SLAUDE_BOX_TEST_MOCK_LLM="http://127.0.0.1:$MOCK_PORT" \
-      slaude-box-nested:smoke tini -- bun test $SUITES --timeout 120000 >"$log" 2>&1
+      slaude-box-nested:smoke tini -- bun test "${SUITE_LIST[@]}" --timeout 120000 >"$log" 2>&1
     code=$?
     set -e
     grep -E '^\((pass|fail|skip)\)|^\[tier ' "$log" || true

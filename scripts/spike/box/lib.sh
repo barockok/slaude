@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared helpers for the box spikes. Source this file; it assumes root (sudo) inside a Linux VM.
 # Work area: SPIKE (default /var/lib/slaude-spike), on the VM's own disk (not a host mount).
 SPIKE=${SPIKE:-/var/lib/slaude-spike}
@@ -69,7 +70,7 @@ cg_delegate() {
   if [ "$self" = "/" ] && [ -f /sys/fs/cgroup/cgroup.subtree_control ]; then
     if [ -n "$(cat /sys/fs/cgroup/cgroup.procs 2>/dev/null)" ]; then
       mkdir -p /sys/fs/cgroup/init
-      for p in $(cat /sys/fs/cgroup/cgroup.procs); do echo "$p" > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true; done
+      while read -r p; do echo "$p" > /sys/fs/cgroup/init/cgroup.procs 2>/dev/null || true; done <<<"$(cat /sys/fs/cgroup/cgroup.procs)"
     fi
     echo "+cpu +memory +pids +cpuset +io" > /sys/fs/cgroup/cgroup.subtree_control 2>&1 && echo "cg_delegate: controllers enabled: $(cat /sys/fs/cgroup/cgroup.subtree_control)" || echo "cg_delegate: FAILED to enable controllers"
     CGSURR=/sys/fs/cgroup

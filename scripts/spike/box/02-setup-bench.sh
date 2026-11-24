@@ -4,6 +4,7 @@
 # Run as root in the VM: sudo bash 02-setup-bench.sh        (needs network; ~10 min)
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/spike/box/lib.sh
 source "$HERE/lib.sh"
 S=$SPIKE
 mkdir -p "$S/ctx" "$S/mirror" "$S/seed/home"
@@ -88,6 +89,7 @@ du -sm "$S/seed/home/.bun" "$S/seed/home/.npm" 2>/dev/null
 echo "== pip wheels"
 mkdir -p "$S/seed/home/wheels"
 python3 -m pip download --quiet --dest "$S/seed/home/wheels" numpy 2>&1 | tail -2 || true
+# shellcheck disable=SC2012  # a listing for the log
 ls "$S/seed/home/wheels" | head
 
 echo "== go module and mirror"

@@ -3,6 +3,7 @@
 # annotation spellings and overlay media and records each outcome. Run as root after 02-setup-bench.sh.
 set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=scripts/spike/box/lib.sh
 source "$HERE/lib.sh"
 exec > >(tee "$RESULTS/02b-erofs.txt") 2>&1
 IMG=$SPIKE/bench.erofs
@@ -10,7 +11,7 @@ try() { # try NAME overlay-annotation overlay2-flag init
   local n=$1 ann=$2 flag=$3 init=${4:-sleep}
   local B=$SPIKE/erofs/$n; rm -rf "$B"; mkdir -p "$B"/{home,ws,run,ov}
   runsc --root "$RS" delete -force "e-$n" >/dev/null 2>&1
-  [ "$init" = probe ] && export BOX_INIT=1 || unset BOX_INIT
+  if [ "$init" = probe ]; then export BOX_INIT=1; else unset BOX_INIT; fi
   ROOTFS=$SPIKE/bench-root mkspec "e-$n" "$B/home" "$B/ws" "$B/run"
   python3 - "$SPIKE/specs/e-$n/config.json" "$IMG" "$ann" <<'PY'
 import json,sys
