@@ -31,6 +31,7 @@ import { brainCall } from "../knowledge/brain";
 import { SUPERSEDED_TAG, supersededSlugs, type BrainOpCall } from "../knowledge/memory-trail";
 import { agentSourceId, type BrainScope } from "../knowledge/scope";
 import { proactiveFor } from "../soul/proactive";
+import { placeHome, type PlaceHomeDeps } from "./place-home";
 import { levelRank, type Level } from "./levels";
 import { composeRulePage, loadRules, resolveLevel } from "./rules";
 
@@ -94,7 +95,7 @@ async function quoteInTurn(ctx: SlackContext, quote: string): Promise<boolean | 
 export async function proactiveRule(
   ctx: SlackContext,
   a: ProactiveRuleArgs,
-  deps: { call?: BrainOpCall; now?: () => Date } = {},
+  deps: { call?: BrainOpCall; now?: () => Date; place?: PlaceHomeDeps } = {},
 ): Promise<ToolResult> {
   const userId = ctx.userId;
   if (!userId) return err(ONE_ON_ONE_REFUSAL);
@@ -124,9 +125,12 @@ export async function proactiveRule(
   }, now);
   if ("error" in composed) return err(composed.error);
 
+  // Memory places (rc.46): the place of this channel or DM, read beside the persona-wide rules; a rule scoped
+  // to this channel or DM is stored in it (a `global` rule stays persona-wide).
+  const home = await placeHome({ agentId, personaId: persona, teamId: ctx.teamId, channel: ctx.channel }, deps.place);
   let current: Level;
   try {
-    const rules = await loadRules(agentId, call);
+    const rules = await loadRules(agentId, call, home.scope);
     current = resolveLevel({ rules, kind: a.kind, destination: scope, proposed: "act", highest: "act" }).level;
   } catch (e) {
     return err(`could not read the current rules: ${e instanceof Error ? e.message : String(e)}`);
@@ -174,8 +178,10 @@ export async function proactiveRule(
     approvedBy = r.by;
   }
 
-  const source = agentSourceId(agentId);
-  const brainScope: BrainScope = { clientId: agentId, sourceId: source, allowedSources: [source] };
+  // Stored in the place only while places are on for this persona and the rule is not global.
+  const inPlace = home.on && home.scope !== null && scope !== "global";
+  const source = inPlace ? home.scope!.sourceId : agentSourceId(agentId);
+  const brainScope: BrainScope = inPlace ? home.scope! : { clientId: agentId, sourceId: source, allowedSources: [source] };
   try {
     // The page of the same slug is the earlier rule for this kind and scope:
     // put_page replaces it, and a superseded tag it carried is dropped so

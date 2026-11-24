@@ -1811,6 +1811,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         speaker: m.userId,
         threadKey: `${m.channel}:${m.threadTs}`,
         channelId: m.channel,
+        ...(g.placesOn ? { placesOn: true } : {}),
       });
       return inner ? `<memory-context>\n${inner}\n</memory-context>\n\n` : "";
     } catch (e) {

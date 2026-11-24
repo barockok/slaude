@@ -25,7 +25,8 @@
  * No LLM calls (phase C non-goal).
  */
 import type { BrainScope } from "../knowledge/scope";
-import { SHARED_SOURCE } from "../knowledge/scope";
+import { AGENT_SOURCE, SHARED_SOURCE } from "../knowledge/scope";
+import { parseThread } from "../proactive/due";
 import { readPageRecord } from "../knowledge/memory-pages";
 import { ENVELOPE_TAG_ALTERNATION } from "./envelope-tags";
 import { getPageOrNull, supersededSlugs, type BrainOpCall } from "../knowledge/memory-trail";
@@ -54,6 +55,9 @@ export interface TurnMemoryDeps {
   /** `<channel>:<threadTs>`, as a commitment's `thread` field names it. */
   threadKey: string;
   channelId: string;
+  /** Memory places are on for this turn (rc.46): a commitment the persona-wide slice holds is shown only here or
+   *  when its `thread` names no other channel, so another place's promise does not appear in this one. */
+  placesOn?: boolean;
   timeoutMs?: number;
   /** Today, for marking a commitment whose date `due` has passed. */
   now?: () => Date;
@@ -156,6 +160,11 @@ async function commitmentsIn(r: Reads, scope: BrainScope, source: string, d: Tur
     const m = pg.meta;
     if (m.type !== "commitment" || m.status !== "open") continue;
     if (!names(m.promiser, d.speaker) && !names(m.beneficiary, d.speaker) && m.thread?.trim() !== d.threadKey) continue;
+    // The legacy persona-wide scan stays while pages move into places, minus any commitment of another boundary.
+    if (d.placesOn === true && (source === d.agentSource || source === AGENT_SOURCE)) {
+      const thread = parseThread(m.thread);
+      if (thread && thread.channelId !== d.channelId) continue;
+    }
     const asOf = m.as_of ?? "";
     const what = pg.body.replace(/\s+/g, " ").trim() || slug;
     const facts = [
