@@ -246,3 +246,26 @@ export async function hydratePack(store: ObjectStore, unitId: string, opts: Pack
     for (const l of layers) rmSync(l.path, { force: true });
   }
 }
+
+/** One pack unit on a node's disk, as the packer needs it. Plain data. */
+export interface PackUnitRef {
+  /** The directory the unit lives in. Several units may share one (a workspace holds `ws` and `wx`): the filter says which paths are this unit's. */
+  root: string;
+  filter: PackFilter;
+  /** Where the packer keeps its index of the tree, beside the marker and outside the root. */
+  indexPath: string;
+}
+
+/**
+ * The packer as the sync sees it: the box supervisor in production (it owns the files
+ * and is charged for the archive work), an in-process packer in tests and development.
+ */
+export interface PackPort {
+  /** A directory both sides can read and write: archives in transit. */
+  spoolDir: string;
+  pack(unit: PackUnitRef, req: PackRequest): Promise<PackedLayer | null>;
+  /** Delete what the filter selects under the root, apply the layers in order, rebuild the index against `id`. */
+  apply(unit: PackUnitRef, req: { id: string; layers: AppliedLayer[] }): Promise<{ liveBytes?: number } | void>;
+  /** Delete the unit's local copy: what the filter selects under the root, and the index. */
+  clear(unit: PackUnitRef): Promise<void>;
+}
