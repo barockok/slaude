@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { parse as parseYaml, YAMLParseError } from "yaml";
 import { z, type ZodIssue } from "zod";
+import { STDIO_SERVER_NAME_RE, validateStdioServer } from "../config/stdio-server";
 import { PayloadError } from "../persona/sync/errors";
 import { redactSecrets } from "../redact";
 import { looksLikeCredential } from "../secrets/token-shape";
@@ -39,7 +40,8 @@ export const BOX_IMAGE_REF_RE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5}
 /** A host name with an optional leading `*.` and an optional port. */
 export const BOX_EGRESS_HOST_RE = /^(?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?::[0-9]{1,5})?$/;
 export const BOX_ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
-export const BOX_MCP_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+/** A stdio server's name: the pattern the node manifest uses, from the one shared definition. */
+export const BOX_MCP_NAME_RE = STDIO_SERVER_NAME_RE;
 /** A relative path under the context or the home: no leading slash, no `..` segment, no backslash. */
 const RELATIVE_PATH_RE = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\\\0]+$/;
 
@@ -171,6 +173,8 @@ const envSchema = z
     }
   });
 
+const STDIO_NO_PLACEHOLDER = "contains ${, and a box has no placeholders: nothing is expanded, and a box holds no secret";
+
 const stdioServer = z
   .object(
     {
@@ -204,7 +208,15 @@ const mcpSchema = z
           const names = Object.keys(servers);
           if (names.length > BOX_LIMITS.stdio) ctx.addIssue({ code: z.ZodIssueCode.custom, message: `declares more than ${BOX_LIMITS.stdio} servers` });
           for (const n of names) {
-            if (!BOX_MCP_NAME_RE.test(n)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [n], message: `is not a valid server name (${BOX_MCP_NAME_RE.source})` });
+            // The checks shared with the node manifest, in the stricter box form: the
+            // name pattern, and no `${` anywhere (the CLI would expand one). The
+            // whole-document placeholder check runs first and names the field; this
+            // is the same rule stated where the servers are declared, and the one a
+            // node applies again to what it receives.
+            for (const issue of validateStdioServer(n, servers[n], "box")) {
+              if (issue.code === "name") ctx.addIssue({ code: z.ZodIssueCode.custom, path: [n], message: `is not a valid server name (${BOX_MCP_NAME_RE.source})` });
+              else if (issue.code === "box-ref") ctx.addIssue({ code: z.ZodIssueCode.custom, path: [n, ...issue.field.split(".").map((p) => (/^[0-9]+$/.test(p) ? Number(p) : p))], message: STDIO_NO_PLACEHOLDER });
+            }
           }
         })
         .describe("Stdio MCP servers that are programs in the image. They get no credential. Example: { ruby-lsp: { command: /usr/local/bin/ruby-lsp-mcp, args: [--stdio] } }")

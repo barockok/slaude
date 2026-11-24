@@ -63,6 +63,7 @@ import type { RuntimeBundle } from "../gateway/api/tenants";
 import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
 import { lockFromClaims } from "./session-lock";
 import { type NodeManifest, loadNodeManifest, makeNodeLocalMcpResolver } from "./manifest";
+import { makeNodeSessionBoxes, type NodeSessionBoxes } from "./session-boxes";
 import { ChildEnvPatch } from "../agent/child-env";
 import { VoiceCalls } from "../voice/call";
 import { drainVoiceCalls, endCallsOnSessionExit, makeNodeVoiceHost, voiceServersFor } from "../voice/hosts";
@@ -639,9 +640,22 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // The manifest's stdio servers for the persona in the job token's claims
   // (never the payload's personaId); merged before the resolver above, so a
   // bridged or shim server wins a name collision against the manifest.
-  if (manifest) {
+  // On a node that offers a sandbox, a boxed session gets its box's stdio
+  // servers (they run inside the sandbox) and never the manifest's. On tier
+  // `none`, the default, nothing asks which box a session runs in.
+  const sessionBoxes: NodeSessionBoxes | null =
+    env.box.tier() === "none"
+      ? null
+      : makeNodeSessionBoxes({ client, tenantFor: (id) => tenants.get(id), tokenFor: (id) => store.tokenFor(id), sessionFor: (id) => store.findById(id) });
+  if (manifest || sessionBoxes) {
     agent.setLocalMcpResolver(
-      makeNodeLocalMcpResolver({ manifest, client, tenantFor: (id) => tenants.get(id), tokenFor: (id) => store.tokenFor(id) }),
+      makeNodeLocalMcpResolver({
+        manifest,
+        client,
+        tenantFor: (id) => tenants.get(id),
+        tokenFor: (id) => store.tokenFor(id),
+        ...(sessionBoxes ? { boxOf: (id: string) => sessionBoxes.boxOf(id) } : {}),
+      }),
     );
   }
   // Every session's CLAUDE_CONFIG_DIR is pod-local, seeded from the gateway

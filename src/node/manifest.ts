@@ -42,15 +42,18 @@ import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { isChildScrubbedEnv } from "../agent/child-env";
 import { env as appEnv } from "../config/env";
+import { CLI_REF, STDIO_ENV_KEY_RE, STDIO_ENV_REF_RE, STDIO_SERVER_NAME_RE, hasNonPlainRef, validateStdioServer } from "../config/stdio-server";
+import { BootFailure } from "../gateway/core/failure-codes";
+import type { BoxStdioServer } from "../box/policy";
 import { type NodeClient, bundleFetchFailure } from "./client";
 import { decodeClaims } from "./remote";
 
 export const NODE_MANIFEST_DEFAULT_PATH = "/etc/slaude/node.json";
-const SERVER_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const ENV_REF_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
-/** What the CLI would expand (any of its forms starts with this). */
-const CLI_REF = "${";
+// The name and key patterns and the `${` rules are shared with a box's
+// mcp.stdio (src/config/stdio-server.ts, validateStdioServer).
+const SERVER_NAME_RE = STDIO_SERVER_NAME_RE;
+const ENV_KEY_RE = STDIO_ENV_KEY_RE;
+const ENV_REF_RE = STDIO_ENV_REF_RE;
 const CLI_REFUSAL = "the CLI would expand it again against the agent child's environment";
 /** The node variables every stdio server gets, besides its own `env`. */
 export const MINIMAL_ENV_NAMES = ["PATH", "HOME", "LANG", "TMPDIR"] as const;
@@ -146,7 +149,7 @@ function expandEnv(where: string, raw: Record<string, string>, nodeEnv: Record<s
     if (isChildScrubbedEnv(key)) {
       throw new NodeManifestError(`${where}.${key}: ${key} is a gateway-only or node-held variable and may not be given to a stdio server`);
     }
-    if (value.replace(ENV_REF_RE, "").includes(CLI_REF)) {
+    if (hasNonPlainRef(value)) {
       throw new NodeManifestError(
         `${where}.${key}: only a plain \${NAME} reference is expanded; a default, a modifier or an unterminated "\${" is refused (${CLI_REFUSAL})`,
       );
@@ -197,8 +200,12 @@ export function parseNodeManifest(text: string, nodeEnv: Record<string, string |
   const servers: Record<string, NodeStdioServer> = {};
   try {
     for (const [name, s] of Object.entries(m.mcpServers)) {
-      refuseCliRef(`mcpServers.${name}.command`, s.command);
-      (s.args ?? []).forEach((a, i) => refuseCliRef(`mcpServers.${name}.args.${i}`, a));
+      // The shared check, for the fields slaude does not expand (the schema above
+      // already settled names and shapes). Env values are checked key by key
+      // in expandEnv, beside the checks that need this node's environment.
+      for (const issue of validateStdioServer(name, s, "node")) {
+        if (issue.code === "cli-ref") refuseCliRef(`mcpServers.${name}.${issue.field}`, CLI_REF);
+      }
       servers[name] = { command: s.command, args: s.args ?? [], env: expandEnv(`mcpServers.${name}.env`, s.env ?? {}, nodeEnv) };
     }
     // The base variables every server gets come from this node's environment.
@@ -297,8 +304,44 @@ export function stdioServersFor(
   return out;
 }
 
+/**
+ * The SDK configs of a BOXED session's stdio servers: the box's `mcp.stdio`,
+ * as the gateway sent it in the bundle. They start inside the sandbox as
+ * children of the CLI, with the box's environment, so there is no exec
+ * wrapper and no `env`: a box holds no credential to keep away from a server.
+ *
+ * The gateway vetted the box at sync. The node checks again what it received
+ * (the stricter box form: no `${` anywhere), because the CLI would expand one.
+ * A failed check fails the boot; it never drops the server and runs on.
+ */
+export function boxStdioServers(stdio: Readonly<Record<string, BoxStdioServer>>): Record<string, McpServerConfig> {
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, s] of Object.entries(stdio)) {
+    const issues = validateStdioServer(name, s, "box");
+    if (issues.length) {
+      // The name is echoed only when it is one; a field is named, never a value.
+      const label = STDIO_SERVER_NAME_RE.test(name) ? name : "(invalid name)";
+      throw new BootFailure("BOX_UNAVAILABLE", `the box's stdio server '${label}' was refused on the node: ${issues.map((i) => `${i.field} (${i.code})`).join(", ")}`);
+    }
+    if (!s.command.startsWith("/")) {
+      throw new BootFailure("BOX_UNAVAILABLE", `the box's stdio server '${name}' was refused on the node: command is not an absolute path`);
+    }
+    out[name] = { type: "stdio" as const, command: s.command, args: [...s.args] };
+  }
+  return out;
+}
+
 export interface NodeLocalMcpDeps {
-  manifest: NodeManifest;
+  /** The node manifest; null when the node has none (it then serves boxed sessions' servers only). */
+  manifest: NodeManifest | null;
+  /**
+   * The session's box, when it runs in one (src/box/session-box.ts). A boxed
+   * session gets the box's servers and never the manifest's. Absent: no
+   * session of this node is boxed (tier `none`).
+   */
+  boxOf?: (sessionId: string) => Promise<{ name: string; policy: { mcp: { stdio: Readonly<Record<string, BoxStdioServer>> } } } | null>;
+  /** One line per persona that is both boxed and allowed in the manifest. Default: console.warn. */
+  warn?: (line: string) => void;
   client: Pick<NodeClient, "getRuntime">;
   tenantFor: (sessionId: string) => string | undefined;
   tokenFor: (sessionId: string) => string | undefined;
@@ -314,17 +357,33 @@ export interface NodeLocalMcpDeps {
  * classified transient or definitive as the child-env resolver's is.
  */
 export function makeNodeLocalMcpResolver(deps: NodeLocalMcpDeps): (sessionId: string) => Promise<Record<string, McpServerConfig>> {
+  const manifest = deps.manifest ?? EMPTY_NODE_MANIFEST;
+  const warned = new Set<string>();
   return async (sessionId) => {
     const token = deps.tokenFor(sessionId);
     const tenant = deps.tenantFor(sessionId);
     const persona = token ? decodeClaims(token)?.persona : undefined;
+    // A boxed session: the box's own servers, from the bundle the gateway
+    // answered this session's token with (boxOf reads it, which is the same
+    // check of the persona claim the manifest path makes below). The manifest
+    // is not consulted: its servers run on the node, outside the sandbox.
+    const box = deps.boxOf ? await deps.boxOf(sessionId) : null;
+    if (box) {
+      if (persona && !warned.has(persona) && allowedServers(manifest, persona).length > 0) {
+        warned.add(persona);
+        (deps.warn ?? console.warn)(
+          `[node] persona=${persona} runs in box '${box.name}' and is also allowed stdio servers in the node manifest: a boxed session ignores the manifest (declare the servers in the box's mcp.stdio, or move a server that needs a credential behind the gateway)`,
+        );
+      }
+      return boxStdioServers(box.policy.mcp.stdio);
+    }
     if (!token || !tenant || !persona) return {};
-    if (allowedServers(deps.manifest, persona).length === 0) return {};
+    if (allowedServers(manifest, persona).length === 0) return {};
     try {
       await deps.client.getRuntime(tenant, persona, token);
     } catch (e) {
       throw bundleFetchFailure(e);
     }
-    return stdioServersFor(deps.manifest, persona, deps.nodeEnv, deps.execPath);
+    return stdioServersFor(manifest, persona, deps.nodeEnv, deps.execPath);
   };
 }
