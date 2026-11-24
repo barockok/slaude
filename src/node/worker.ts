@@ -1583,6 +1583,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     // force-close with an in-flight job can wait on it, and a real SIGKILL
     // waits for nothing.
     for (const w of workers) void w.close(true).catch(() => {});
+    // A dead process retries no flush: without this its timers would go on in the test's process.
+    fsSync?.stop();
     // Sever every connection: BullMQ job-lock renewal, the session-lock
     // extender and heartbeats all start failing NOW, like a dead process.
     for (const c of [...bullConns, cmd, sub]) c.disconnect(false);
