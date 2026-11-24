@@ -16,7 +16,7 @@ import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, agentSourceId, kbSourceId, 
 import { carriedFields, composePage, readPageRecord, withFrontmatter, type TypedPageInput } from "./memory-pages";
 import { SUPERSEDED_TAG, getPageOrNull, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
-import { conversationSlug, conversationSummarySlug, orderTimeline, type TimelineRow } from "../memory/brain-provider";
+import { conversationSlug, conversationSummarySlug, orderTimeline, readTimeline, type TimelineRow } from "../memory/brain-provider";
 import { isMemoryToolAlias, kbContract, KB_MEMOIZE_MAX_PAGES } from "../tools/contracts/kb";
 import { env } from "../config/env";
 
@@ -281,6 +281,14 @@ async function threadSummaryBlock(call: NonNullable<BrainToolDeps["call"]>, sess
   let rec: ReturnType<typeof readPageRecord> = null;
   try {
     rec = readPageRecord(await getPageOrNull(call, conversationSummarySlug(sessionId), { ...read, allowedSources: [read.sourceId] }));
+    // A place's scope (rc.47) falls back to the persona's slice, where a summary written before the switch lives.
+    if (!rec && hasPlacePrefix(read.sourceId)) {
+      for (const source of read.allowedSources) {
+        if (hasPlacePrefix(source)) continue;
+        rec = readPageRecord(await getPageOrNull(call, conversationSummarySlug(sessionId), { ...read, sourceId: source, allowedSources: [source] }));
+        if (rec) break;
+      }
+    }
   } catch {
     return null;
   }
@@ -716,7 +724,7 @@ export const brainHandlers = {
     if (!t?.sessionId) return err(THREAD_HISTORY_NO_SESSION);
     if (!t.read) return err(THREAD_HISTORY_REFUSAL);
     try {
-      const raw = (await (d.call ?? brainCall)("get_timeline", { slug: conversationSlug(t.sessionId) }, t.read)) as TimelineRow[] | null;
+      const raw = await readTimeline(d.call ?? brainCall, conversationSlug(t.sessionId), t.read);
       // A row without an id is keyed by its position, so paging stays consistent.
       let rows = orderTimeline(raw ?? []).map((r, i) => ({ r, id: r.id ?? i + 1 }));
       if (p.before !== undefined) {

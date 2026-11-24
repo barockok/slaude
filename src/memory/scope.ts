@@ -1,5 +1,6 @@
 import { sameAt } from "../access/wired";
 import { hasPlacePrefix } from "./place-id";
+import { bindPlace } from "./place-binding";
 import type { GateInput } from "../knowledge/gated-dispatch";
 import { AGENT_SOURCE, PUBLIC_SOURCE, agentSourceId, extraPersonReads, resolveBrainScope, userSourceId, type BrainScope, type PersonSlices } from "../knowledge/scope";
 
@@ -48,6 +49,11 @@ const both = (clientId: string, source: string, reads: string[] = [source]): Mem
   write: { clientId, sourceId: source, allowedSources: [source] },
 });
 
+const placeBoth = (clientId: string, source: string, reads: string[], placeAgent: string): MemoryScope => ({
+  read: { clientId, sourceId: source, allowedSources: reads, placeAgent },
+  write: { clientId, sourceId: source, allowedSources: [source], placeAgent },
+});
+
 const NONE: MemoryScope = { read: null, write: null };
 
 export async function memoryScopeFor(g: GateInput, opts: { channel?: string; runAsUser?: string | null; runAsPerson?: PersonSlices } = {}): Promise<MemoryScope> {
@@ -63,9 +69,13 @@ export async function memoryScopeFor(g: GateInput, opts: { channel?: string; run
   }
   const r = await resolveBrainScope({ ...g, kbSources: [] });
   const agentSrc = agentSourceId(g.agentId);
-  // Conversation pages stay in the persona's slice until the transcripts move (a later release):
-  // a place source the KB scope writes is the persona slice here, and the place is never read for a transcript.
-  if (hasPlacePrefix(r.sourceId)) return both(r.clientId, agentSrc, [agentSrc, AGENT_SOURCE]);
+  // Under `on` (rc.47) a transcript is kept in the turn's place, read place first and then the persona's slice (dual read,
+  // so a session that began before the switch keeps its history). Otherwise it stays in the persona's slice (rc.46).
+  const placeOn = g.placesOn === true && g.place?.kind === "place" ? g.place : null;
+  if (hasPlacePrefix(r.sourceId)) {
+    if (placeOn && r.sourceId === placeOn.source) return placeBoth(r.clientId, placeOn.source, [placeOn.source, agentSrc, AGENT_SOURCE], g.agentId);
+    return both(r.clientId, agentSrc, [agentSrc, AGENT_SOURCE]);
+  }
   if (r.sourceId !== PUBLIC_SOURCE) {
     return both(r.clientId, r.sourceId, r.sourceId === agentSrc ? [agentSrc, AGENT_SOURCE] : [r.sourceId]);
   }
@@ -73,6 +83,8 @@ export async function memoryScopeFor(g: GateInput, opts: { channel?: string; run
     const own = userSourceId(g.userId);
     return both(g.userId, own, [own, ...extraPersonReads(g.person, own)]);
   }
+  // A non-manager in a public or unknown channel: the transcript goes to that channel's place, not the persona's slice.
+  if (placeOn && (await bindPlace(g.agentId, placeOn))) return placeBoth(g.agentId, placeOn.source, [placeOn.source, agentSrc], g.agentId);
   return both(g.agentId, agentSrc);
 }
 
