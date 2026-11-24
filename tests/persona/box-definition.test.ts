@@ -197,6 +197,25 @@ describe("a box holds no secret", () => {
     });
   }
 
+  // Free text is shown to people (the console, the forced-refresh notice) and stored in the signed set: no credential there either.
+  const token = ["gh", "p_"].join("") + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
+  const freeText: Array<[string, string, RegExp]> = [
+    ["the description", minimal(`description: "use ${token}"\n`), /box 'ruby-dev': description looks like a credential/],
+    ["the refresh note", minimal(`refresh:\n  force: true\n  note: "token ${token}"\n`), /refresh\.note looks like a credential/],
+    ["a durable exclude path", minimal(`durable:\n  exclude: [".cache/${token}"]\n`), /durable\.exclude\[0\] looks like a credential/],
+  ];
+  for (const [where, yaml, re] of freeText) {
+    test(`a credential-shaped value in ${where} fails the file and is never echoed`, () => {
+      const msg = failure(() => parseBoxYaml("ruby-dev", yaml));
+      expect(msg).toMatch(re);
+      expect(msg).not.toContain(token);
+    });
+  }
+  test("ordinary free text passes", () => {
+    const yaml = minimal('description: "Ruby 3.3 and Node 22 for the storefront repositories"\nrefresh:\n  force: true\n  note: "Ruby moved to 3.4; reinstall gems."\ndurable:\n  exclude: [".cache/huggingface"]\n');
+    expect(parseBoxYaml("ruby-dev", yaml).name).toBe("ruby-dev");
+  });
+
   test("a secret-shaped unknown key is not echoed either", () => {
     const key = ["gh", "p_"].join("") + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8";
     const msg = failure(() => parseBoxYaml("ruby-dev", minimal(`${key}: 1\n`)));

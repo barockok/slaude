@@ -79,7 +79,12 @@ const typeMessage = (m: { other: string; missing?: string }): z.RawCreateParams 
     return { message: m.other };
   },
 });
-const text = (what: string, max: number) => z.string(typeMessage({ other: `must be ${what}` })).max(max, `must be at most ${max} characters`);
+/** Free text. It is stored in the signed set and shown to people, so a value shaped like a credential is refused here too. */
+const text = (what: string, max: number) =>
+  z
+    .string(typeMessage({ other: `must be ${what}` }))
+    .max(max, `must be at most ${max} characters`)
+    .refine((v) => !isSecretShaped(v), NOT_SECRET);
 const int = (min: number, max: number) =>
   z
     .number(typeMessage({ other: `must be a whole number from ${min} to ${max}` }))
@@ -231,7 +236,8 @@ const relativePath = (what: string) =>
     .string(typeMessage({ other: `must be ${what}` }))
     .min(1, `must be ${what}`)
     .max(BOX_LIMITS.path, `must be at most ${BOX_LIMITS.path} characters`)
-    .regex(RELATIVE_PATH_RE, `must be ${what}`);
+    .regex(RELATIVE_PATH_RE, `must be ${what}`)
+    .refine((v) => !isSecretShaped(v), NOT_SECRET);
 
 const durableSchema = z
   .object(
