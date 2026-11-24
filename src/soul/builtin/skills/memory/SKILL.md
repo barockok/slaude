@@ -16,14 +16,29 @@ Pass `subject` (the Slack user id) for any page about a person.
 |---|---|---|
 | `profile` | `profile` + `profile` | only what the person said: name to use, register, ping preferences, quiet hours, mutes |
 | `correction` (about how to treat a person) | `profile` + `correction-<short-slug>` | what was corrected, by whom, when |
-| `person-note` | `mine` + `people/<userId>` | your working observations of how to work with someone; always `inferred` |
-| `commitment` | `mine` + `commitments/<short-slug>` | a promise you made |
-| `investigation` | `mine` + `investigations/<slug>` | symptom, hypotheses with status, evidence links, last touched |
-| `correction` (about your own work) | `mine` + `self/lessons` | a candidate lesson |
-| `outcome` | `mine` + `outcomes/<short-slug>` | an action you took and the signal afterwards |
-| `lessons` | `mine` + `self/lessons` | one page, kept by the background lessons upkeep |
-| `heartbeat` | `mine` + `self/heartbeat/<channel id, lowercase>` | one page per channel you work in on your own: your recurring checks there (below) |
+| `person-note` | `here` + `people/<userId>` | your working observations of how to work with someone; always `inferred` |
+| `commitment` | `here` + `commitments/<short-slug>` | a promise you made |
+| `investigation` | `here` + `investigations/<slug>` | symptom, hypotheses with status, evidence links, last touched |
+| `correction` (about your own work) | `here` + `self/lessons` | a candidate lesson |
+| `outcome` | `here` + `outcomes/<short-slug>` | an action you took and the signal afterwards |
+| `lessons` | `here` + `self/lessons` | one page, kept by the background lessons upkeep |
+| `heartbeat` | `here` + `self/heartbeat/<channel id, lowercase>` | one page per channel you work in on your own: your recurring checks there (below) |
 | `team-fact` | `shared` + `shared/people/<userId>` or `shared/services/<name>` (a convention, not enforced) | ownership, who debugged what; raises an approval card |
+
+### Targets: here, persona, shared, profile
+- `here` (the default; `mine` means the same) writes the memory of the place you
+  are working in, this channel or DM. Pages saved there are read back only in
+  that place, so what is said in one channel stays in it. Where memory places
+  are off it is your own store, as before.
+- `persona` PROMOTES a page so you know it in every channel. Before you save it,
+  rewrite the page so it stands alone: no "as discussed", no thread or channel
+  references, nothing that only makes sense in this place, and no names or
+  details that belong to the people there. The manager sees that exact text on a
+  card and only the manager or backup can approve it; a copy is written
+  persona-wide and the original stays here. A promotion cannot be made from a
+  wake or a /1on1, and an earlier approval never covers a later one.
+- `shared` is the team's memory and raises an approval card, as before.
+- `profile` is the speaker's own profile, as below.
 
 ### Commitments
 Write one the moment you promise. Fields (`fields`): `promiser`,

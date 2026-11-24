@@ -120,7 +120,7 @@ const memoryGraph = {
 
 const memorySave = {
   name: "memory_save",
-  description: `Write/update one or more memory pages in a single call (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Pass an array of pages, up to ${KB_MEMOIZE_MAX_PAGES} per call. By default (target:"mine") pages go to YOUR OWN memory store (your private agent mind, or the person's own store inside their /1on1) and are saved without asking. Set target:"shared" ONLY for durable team-common knowledge (decisions, people/project facts everyone needs); shared writes ask the manager for approval, and are refused inside a /1on1. Default to "mine" for your own notes, learnings, and working context; reserve "shared" for the team's shared memory. Give a page a \`type\` (${PAGE_TYPE_LIST}) and its content becomes the body under generated frontmatter (type, as_of, confidence, source, supersedes, fields); set supersedes to the older page's slug in the same memory and that page is tagged "superseded". Set \`subject\` (the Slack user id a page is about) per page, or once for the call. Use target:"profile" to record what the person you are talking to said about themselves (name to use, register, ping preferences) as a type:"profile" page with slug "profile" in their own profile, only on their own turn and never on someone else's behalf.`,
+  description: `Write/update one or more memory pages in a single call (markdown, optional YAML frontmatter; [[wikilinks]] become graph edges). Pass an array of pages, up to ${KB_MEMOIZE_MAX_PAGES} per call. By default (target:"here", alias "mine") pages go to the memory of THIS place (this channel or DM, or your own store when places are off, or the person's own store inside their /1on1) and are saved without asking; other channels cannot read them. Set target:"persona" to PROMOTE a page so you know it in every channel: first rewrite the page so it stands alone (no "as discussed", no thread or channel references, no names or details that belong only to this place), because the manager is shown that exact text on a card and only the manager or backup can approve it; the original stays here and a copy is written persona-wide. Set target:"shared" ONLY for durable team-common knowledge (decisions, people/project facts everyone needs); shared writes ask the manager for approval, and are refused inside a /1on1. Default to "here" for your own notes, learnings, and working context; reserve "persona" for what you should know everywhere and "shared" for the team's shared memory. Give a page a \`type\` (${PAGE_TYPE_LIST}) and its content becomes the body under generated frontmatter (type, as_of, confidence, source, supersedes, fields); set supersedes to the older page's slug in the same memory and that page is tagged "superseded". Set \`subject\` (the Slack user id a page is about) per page, or once for the call. Use target:"profile" to record what the person you are talking to said about themselves (name to use, register, ping preferences) as a type:"profile" page with slug "profile" in their own profile, only on their own turn and never on someone else's behalf.`,
   schema: {
     pages: z
       .array(
@@ -143,9 +143,9 @@ const memorySave = {
       .max(KB_MEMOIZE_MAX_PAGES)
       .describe(`Pages to write (1..${KB_MEMOIZE_MAX_PAGES}).`),
     target: z
-      .enum(["mine", "shared", "profile"])
+      .enum(["here", "mine", "persona", "shared", "profile"])
       .optional()
-      .describe(`Where to write. "mine" (default) = your own memory store, saved without approval. "shared" = the team's shared memory, requires manager approval. "profile" = the current speaker's own profile, saved without approval on their own turn.`),
+      .describe(`Where to write. "here" (default; "mine" is the same) = this place's memory, saved without approval. "persona" = promote a stand-alone copy to your persona-wide memory, only the manager or backup can approve (rewrite the page to stand alone first). "shared" = the team's shared memory, requires manager approval. "profile" = the current speaker's own profile, saved without approval on their own turn.`),
     subject: z
       .string()
       .optional()
@@ -169,6 +169,7 @@ const memoryDelete = {
   schema: {
     slug: z.string().describe("Page slug to delete."),
     reason: z.string().describe("Why this page should be deleted (shown on the approval card)."),
+    target: z.enum(["here", "persona"]).optional().describe('Where the page is. "here" (default) = this place\'s memory. "persona" = DEMOTE: delete a page you earlier promoted to your persona-wide memory (only a promoted copy, only the manager or backup can approve); the original in the place stays.'),
   },
 } as const;
 

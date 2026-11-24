@@ -1762,6 +1762,13 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
           managers: async () => {
             return (await approversAt({ site: "gateway.brain_managers", persona: ctx.personaId, teamId: ctx.teamId, grants: await loadGrants(ctx.personaId), roles: ["manager"] }));
           },
+          // A promotion to the persona-wide tier: the manager and backup only (owner decision 4), so a stored
+          // manager grant does not count. The soul's managers, intersected with who holds the role now.
+          promoteApprovers: async () => {
+            const grants = await loadGrants(ctx.personaId);
+            const soulManagers = new Set(grants.filter((g) => g.source === "soul" && g.role === "manager" && g.subjectKind === "user" && !g.deny).map((g) => g.subjectId));
+            return (await approversAt({ site: "gateway.brain_managers", persona: ctx.personaId, teamId: ctx.teamId, grants, roles: ["manager"] })).filter((id) => soulManagers.has(id));
+          },
           requestApproval: (r) => surface.requestApproval(r),
           // A commitment written here is indexed for the promise scheduler (phase E).
           onWritten: async (pages, scope) =>

@@ -140,6 +140,8 @@ export async function classifyBrainOp(op: string, scope: BrainScope, g: GateInpu
   if (READ_OPS.has(op)) return "auto";
   if (MANAGER_OPS.has(op)) return "manager";
   if (DESTRUCTIVE_OPS.has(op)) {
+    // Demoting a promoted copy (rc.46): the same tier as the promotion, never from a wake.
+    if (w?.promote) return g.userId === null ? "deny" : "manager";
     // A wake cannot answer a card, and a delete changes an existing shared page by definition.
     if (isUserlessSharedWrite(scope, g)) return "deny";
     return g.channelTrust === "public" && !g.isManager ? "deny" : "approval";
@@ -232,7 +234,8 @@ export interface GatedCallDeps {
    *  hard backstop on WHO clicked, independent of routing. */
   managers: string[];
   requestApproval: (r: ApprovalReq) => Promise<ApprovalRes>;
-  call: () => Promise<unknown>;
+  /** Runs the call; `approvedBy` is who approved it when a card was answered. */
+  call: (approvedBy?: string) => Promise<unknown>;
   describe: string;
   /** What the write does to its pages; needed for a turn with no user writing to shared. */
   write?: WriteIntent;
@@ -299,6 +302,7 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
   if (grantable && liveGrant(gkey, now)) {
     return { ok: true, result: await d.call() };
   }
+  let approvedBy: string | undefined;
   if (tier === "approval" || tier === "manager") {
     const r = await d.requestApproval({
       summary: d.describe,
@@ -306,6 +310,7 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
       category: tier === "manager" ? "kb-admin" : "kb",
     });
     if (!r.approved) return { ok: false, reason: `denied by ${r.by}${r.note ? `: ${r.note}` : ""}` };
+    approvedBy = r.by;
     if (tier === "manager" && !(await someSameAt(d.managers, (mgr) => ({ site: "brain_gate.manager_approver", persona: d.gate.agentId, teamId: d.gate.teamId, userId: r.by, otherUserId: mgr })))) {
       return { ok: false, reason: `kb operation "${op}" needs manager approval — approved by ${r.by}, who is not the manager` };
     }
@@ -315,5 +320,5 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
       standingGrants.set(gkey, { by: r.by, expiresAt: now + grantTtlMs() });
     }
   }
-  return { ok: true, result: await d.call() };
+  return { ok: true, result: await d.call(approvedBy) };
 }
