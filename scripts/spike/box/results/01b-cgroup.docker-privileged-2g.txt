@@ -1,0 +1,34 @@
+cg_delegate: controllers enabled: cpuset cpu io memory pids
+self cgroup: /sys/fs/cgroup
+--- processes and their cgroups
+37 runsc-gofer --overlay2=root:dir=/var/lib/slaude-spike/w2/a/ov,size=1g  cg=/a
+41 runsc-sandbox --overlay2=root:dir=/var/lib/slaude-spike/w2/a/ov,size=1 cg=/a
+42 /usr/local/bin/gvisor-bin/runsc-fd-parking  cg=/init
+--- spec cgroupsPath: None
+sandbox cgroup dir: /sys/fs/cgroup/a
+memory.max=536870912
+pids.max=64
+cpu.max=100000 100000
+memory.current=7688192
+pids.current=24
+--- memory charged: alloc 300MB held 6s in sandbox
+RESULT charge | INFO | surrounding scope delta MB=304; sandbox cgroup (/sys/fs/cgroup/a) delta MB=303; sandbox cgroup memory.current=310 MB
+--- RSS per runsc process during alloc
+37 runsc-gofer --overlay2=root:dir=/var/lib rss_kb=10752
+41 runsc-sandbox --overlay2=root:dir=/var/l rss_kb=26960
+42 runsc-fd-parking  rss_kb=0
+96 runsc --root /var/lib/slaude-spike/rs ex rss_kb=10368
+--- cpu limit measured on the host: 4 busy threads for 6s
+BUSY wall=6.01 cpu=7.78 cores=1.30 gomaxprocs=2
+RESULT cpu-host-measured | INFO | sandbox cgroup cpu usage over 6 s wall: 6081 ms => 1.01 cores (limit 1.0); throttled: nr_throttled 63 throttled_usec 7891279 
+--- pids: host threads of the sandbox cgroup at idle: 30
+--- exec client kill: does the in-sandbox process die?
+UID       PID       PPID      PGID      C         TTY       STIME     TIME      CMD
+1000      1         0         1         0         ?         17:00     0s        sleep
+1000      10        0         10        0         ?         17:00     0s        sleep
+ps 1 s after TERM to the exec client:
+UID       PID       PPID      PGID      C         TTY       STIME     TIME      CMD
+1000      1         0         1         0         ?         17:00     0s        sleep
+1000      10        0         10        0         ?         17:00     0s        sleep
+RESULT kill-exec-client | INFO | client TERM -> exit in 2 ms; 'sleep' rows in ps after 1 s: 2
+RESULT kill-sandbox | INFO | runsc kill KILL -> state stopped in 91 ms, exec client gone in 92 ms; state=  "status": "stopped",

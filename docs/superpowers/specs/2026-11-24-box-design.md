@@ -524,6 +524,44 @@ cgroup limits apply when runsc runs nested in a privileged container; that
 the systrap platform inside a pod on common managed node images; the
 `dir=` overlay medium with one directory per sandbox.
 
+**Phase 0 results (dev VM, 2026-11-24).** Measured on a Mac VM (Ubuntu 24.04
+aarch64, kernel 6.8, 4 vCPU, no KVM, runsc release 20261116.0, systrap), alone
+and in a privileged docker container; **not** on the owner's cluster, so
+nothing here retires R1. Detail and raw numbers: `docs/site/_content/field-notes/2026-11-24-box-spikes.md`.
+
+- Confirmed: a host Unix socket bind mounted into the sandbox is connectable
+  with `--host-uds=open` (the values are `none`, `open`, `create`, `all`;
+  the default `none` refuses); loopback works with `--network none`; the
+  `root:dir=<dir>,size=<n>` overlay takes the writes (1 GB landed in the
+  directory, the image directory stayed untouched), refuses writes past its
+  size with "no space left on device", and two sandboxes on one image
+  directory with different `dir=` values do not see each other; `exec` stdio
+  round trips 100 MB intact; memory, pids and cpu limits from the OCI spec
+  take effect (a memory kill stops the **whole sandbox**).
+- Corrections: the bundle must set `root.readonly: false`. With `true` the root
+  is read-only even under the overlay and every write fails. The `pids` limit
+  counts host threads of the sandbox (an idle sandbox holds 25 to 30; about
+  2 per process). Killing the `runsc exec` client does not end the process
+  inside; the CLI must be run with `runsc exec --new-pidns --internal-pid-file`
+  and ended with `runsc kill --pid`.
+- Needed: inside a container with its own cgroup namespace, runsc fails to
+  start unless the container's processes are first moved to a child cgroup
+  and the controllers enabled in `cgroup.subtree_control`. With that done the
+  sandbox's memory is charged to the boxd container's cgroup.
+- Bind mounts and exclusive mode: with `--file-access-mounts=exclusive` the
+  sandbox does not see a host-side new file, removal or size change (still
+  stale after 5 s), so exclusive mode is **not usable** while the node writes
+  into a live workspace. `--directfs=false` is 5x to 60x slower on file work;
+  keep directfs on.
+- EROFS base (C3): not usable on this runsc build. Only an uncompressed image
+  mounts, and every `exec` from it fails with `bad address`. Left as not run.
+- Measured cost of C1 against runc on this VM (3 runs): `git clone` 3.0x, `git
+  status` 2.6x (+0.45 s), `bun install` warm 4.3x (+2.2 s), `rg` 8.1x; reads of
+  the toolchain from the root at parity. The scripted ten tool call turn is
+  2.4x (+0.96 s) with a zero-latency model, which exceeds K2c as written; the
+  real-model turn that K2c is paired with has not been run.
+- Sandbox start: median 31 to 37 ms for `run --detach` plus the first `exec`.
+
 Node layout:
 
 ```
@@ -970,7 +1008,7 @@ Per box, from `box.yaml`:
 | `memoryMb` | the sandbox's cgroup | hard ceiling; the sandbox is killed above it |
 | `memoryReserveMb` | the node's admission | what is set aside; default a third of `memoryMb` |
 | `cpu` | the sandbox's cgroup quota | ceiling; CPU is overcommitted |
-| `pids` | cgroup | hard |
+| `pids` | cgroup | hard; counts host threads of the sandbox (about 30 at idle, about 2 per process), so set it well above the process count wanted |
 | `homeMb`, `workspaceExtrasMb` | measured at flush | soft (below) |
 | `rootOverlayMb` | the overlay's size option | hard; writes fail with "no space" |
 
@@ -980,7 +1018,7 @@ Node settings:
 |---|---|---|
 | `SLAUDE_NODE_MAX_BOXES` | Most sandboxes running at once on this pod | 8 |
 | `SLAUDE_BOX_MEMORY_BUDGET_MB` | Memory the boxes may reserve in total | 85 percent of boxd's cgroup memory limit, read at boot |
-| `SLAUDE_BOX_SANDBOX_OVERHEAD_MB` | Added to each reserve for the sentry and gofer | 150 until Phase 0 measures it |
+| `SLAUDE_BOX_SANDBOX_OVERHEAD_MB` | Added to each reserve for the sentry and gofer | 150 (kept after Phase 0: idle sentry plus gofer measured 10 to 40 MB, peak 568 MB RSS during file-heavy work with the workload's own memory included; see below) |
 | `SLAUDE_BOX_DIR` volume size | Disk for images, live sessions and parked sessions | from the manifest |
 
 The rule a pod must satisfy, checked at node boot (a violation stops the
@@ -1012,6 +1050,18 @@ default box: memoryMb 3072, memoryReserveMb 1024, cpu 2
   overcommitted 2.2 times; the pressure rule below is what keeps that safe
 box data volume 80 Gi: images 15, live 10 x 3 = 30, parked 30, slack 5
 ```
+
+**Phase 0 measurements (dev VM, 4 vCPU; detail in `docs/site/_content/field-notes/2026-11-24-box-spikes.md`).** An
+idle sandbox is 8 to 10 MB of cgroup memory (33 MB on a cold page cache), with
+the CLI started and idle 140 to 151 MB, and ten sandboxes each with an idle CLI
+took 151 MB each (the first one, with the CLI binary cold in the page cache,
+was charged 372 MB). During a clone, a warm `bun install` and an `npm ci` the
+sandbox's sentry and gofer reached 568 MB RSS (which includes the workload's
+own memory) and its cgroup 2 GB with the guest file cache; under a 1 GiB
+limit the same work completed with the cache reclaimed. This leaves
+`SLAUDE_BOX_SANDBOX_OVERHEAD_MB` at 150 and `SLAUDE_NODE_MAX_BOXES` at 8 (a
+16 GiB boxd container holds 11 default boxes by memory); CPU saturation with
+many busy sandboxes was not measured.
 
 `SLAUDE_NODE_CONCURRENCY` (turns running at once, per BullMQ worker) is
 unchanged and is a different number: a warm session between turns holds a
@@ -1491,6 +1541,27 @@ changed, and its home is simply not mounted.
 | R9 | Agents hit the allowlist constantly | Soak on one persona with refusals counted and listed | A wider default list, through git |
 | R10 | "No secrets" removes something a persona needs daily (private repositories) | The migration checklist per persona, before opting in | A gateway-side code-host MCP server, or the persona stays unboxed |
 
+**Phase 0 results (dev VM, 2026-11-24), per risk.** Run on a Mac VM and a
+privileged container on it, not on the owner's cluster; detail in
+`docs/site/_content/field-notes/2026-11-24-box-spikes.md`.
+
+- R1: not retired. runsc runs nested in a privileged container on the dev VM
+  once cgroup v2 delegation is done; host 3 not run.
+- R2: measured on the dev VM. C1 is 1.4x to 8x slower than runc on git, `rg`,
+  installs and small-file work, by 0.05 to 4.5 s on the fixtures (17.6 s on a
+  Go build of x/tools); exclusive mode is
+  incoherent with host writes (unusable); EROFS does not run on this runsc;
+  KVM absent. K2c (scripted turn, 2.4x) is exceeded with a zero-latency model;
+  the real-model turn is not run. Not enough to change the tier.
+- R3: the three credential forms pass against a **fake** provider with a
+  placeholder in the box; the real OAuth-token path is untested.
+- R4: retired on the dev VM. Every SDK case passes over `runsc exec`; abort
+  needs `--new-pidns` and an explicit `runsc kill --pid`.
+- R5: retired on the dev VM: `--host-uds=open` makes a bind-mounted host
+  socket connectable.
+- R6: an idle sandbox with an idle CLI is about 150 MB; K5 (400 MB) is not
+  tripped.
+
 ## Recommendations and confidence
 
 | Recommendation | Confidence |
@@ -1498,17 +1569,17 @@ changed, and its home is simply not mounted.
 | Run the CLI itself inside the box through `spawnClaudeCodeProcess`; keep hooks, shims and the bridge in the worker | High (the seam is documented for this use; untested here) |
 | Identical paths inside and outside | High |
 | A separate privileged boxd with no credential | High |
-| No network in the box; two Unix sockets; policy in the worker | High for the shape; medium for the gVisor socket detail (R5) |
+| No network in the box; two Unix sockets; policy in the worker | High (R5 retired on the dev VM with `--host-uds=open`) |
 | Provider proxy for the API key and auth token forms | High |
-| Provider proxy for the OAuth form | Low until Phase 0 |
+| Provider proxy for the OAuth form | Low-medium: passes against a fake provider with a placeholder; a real-token run is still needed |
 | Durable home and workspace, throwaway root overlay | High |
 | Pack units for `hm` and `wx` | High |
-| Root overlay backed by a per-session file on disk; EROFS base if it measures well | Medium |
+| Root overlay backed by a per-session file on disk | High on the dev VM (EROFS base: not usable on the tested runsc build, dropped for now) |
 | Parking on by default | High |
-| Capacity by reserved memory and a slot count; pause claiming when full | Medium-high (the numbers need Phase 0) |
+| Capacity by reserved memory and a slot count; pause claiming when full | Medium-high (dev VM numbers kept the defaults; host 3 and a loaded run still to do) |
 | Wait list plus occupancy plus boxd memory as the scale signal | Medium-high |
 | Registry only, no baked core box in v1 | Medium-high |
-| `bwrap` as the fallback production tier | Medium |
+| `bwrap` as the fallback production tier | Medium; the live contingency while K2c is unresolved |
 | Soft disk quota for home in v1 | Medium |
 
 ## Out of scope and later

@@ -1,0 +1,206 @@
+{
+ "label": "vm-colima-nonessential",
+ "started": "2026-11-24T16:07:49.789Z",
+ "formA": {
+  "cases": [
+   {
+    "name": "stream",
+    "ok": true,
+    "detail": "exit=0 stream_events=7 result=\"plain reply\" err=",
+    "ms": 1778
+   },
+   {
+    "name": "tool-loop",
+    "ok": true,
+    "detail": "exit=0 result=\"loop done\" turns=4 err=",
+    "ms": 620
+   },
+   {
+    "name": "thinking",
+    "ok": true,
+    "detail": "exit=0 result=\"thought done\" err=",
+    "ms": 640
+   },
+   {
+    "name": "subagent",
+    "ok": true,
+    "detail": "exit=0 result=\"main done\" turns=2 err=",
+    "ms": 621
+   },
+   {
+    "name": "resume",
+    "ok": true,
+    "detail": "exit=0 result=\"loop done\" session=same err=",
+    "ms": 480
+   },
+   {
+    "name": "compaction",
+    "ok": true,
+    "detail": "exit=0 out={\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":76,\"duration_api_ms\":31,\"num_turns\":0,\"result\":\"\",\"stop_reason\":null,\"session_id\":\"<id>\",\"total_cost err=",
+    "ms": 588
+   },
+   {
+    "name": "rotation",
+    "ok": true,
+    "detail": "exit=0 result=\"plain reply\" err=",
+    "ms": 434
+   },
+   {
+    "name": "no-real-credential-in-box",
+    "ok": true,
+    "detail": "env/args hit=false file hits=0  output hit=false",
+    "ms": 0
+   },
+   {
+    "name": "placeholder-never-reaches-upstream",
+    "ok": true,
+    "detail": "upstream saw 12 requests, 0 carried the placeholder",
+    "ms": 0
+   }
+  ],
+  "inboundCredHeaders": [
+   "x-api-key"
+  ],
+  "upstreamPaths": [
+   "POST /v1/messages"
+  ],
+  "proxyPaths": [
+   "POST /v1/messages"
+  ],
+  "egressLines": [],
+  "upstreamFirstHeaderNames": [
+   "accept",
+   "accept-encoding",
+   "anthropic-beta",
+   "anthropic-dangerous-direct-browser-access",
+   "anthropic-version",
+   "connection",
+   "content-type",
+   "host",
+   "transfer-encoding",
+   "user-agent",
+   "x-api-key",
+   "x-app",
+   "x-claude-code-session-id",
+   "x-stainless-arch",
+   "x-stainless-lang",
+   "x-stainless-os",
+   "x-stainless-package-version",
+   "x-stainless-retry-count",
+   "x-stainless-runtime",
+   "x-stainless-runtime-version",
+   "x-stainless-timeout"
+  ],
+  "scenarios": {
+   "plain": 3,
+   "toolloop-step0": 1,
+   "toolloop-step1": 1,
+   "toolloop-step2": 1,
+   "toolloop-final": 3,
+   "thinking": 1,
+   "subagent-call": 1,
+   "subagent-final": 1
+  }
+ },
+ "formC": {
+  "cases": [
+   {
+    "name": "stream",
+    "ok": true,
+    "detail": "exit=0 stream_events=7 result=\"plain reply\" err=",
+    "ms": 818
+   },
+   {
+    "name": "tool-loop",
+    "ok": true,
+    "detail": "exit=0 result=\"loop done\" turns=4 err=",
+    "ms": 687
+   },
+   {
+    "name": "thinking",
+    "ok": true,
+    "detail": "exit=0 result=\"thought done\" err=",
+    "ms": 454
+   },
+   {
+    "name": "subagent",
+    "ok": true,
+    "detail": "exit=0 result=\"main done\" turns=2 err=",
+    "ms": 556
+   },
+   {
+    "name": "resume",
+    "ok": true,
+    "detail": "exit=0 result=\"loop done\" session=same err=",
+    "ms": 1563
+   },
+   {
+    "name": "compaction",
+    "ok": true,
+    "detail": "exit=0 out={\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":114,\"duration_api_ms\":31,\"num_turns\":0,\"result\":\"\",\"stop_reason\":null,\"session_id\":\"<id>\",\"total_cos err=",
+    "ms": 794
+   },
+   {
+    "name": "rotation",
+    "ok": true,
+    "detail": "exit=0 result=\"plain reply\" err=",
+    "ms": 953
+   },
+   {
+    "name": "no-real-credential-in-box",
+    "ok": true,
+    "detail": "env/args hit=false file hits=0  output hit=false",
+    "ms": 0
+   },
+   {
+    "name": "placeholder-never-reaches-upstream",
+    "ok": true,
+    "detail": "upstream saw 12 requests, 0 carried the placeholder",
+    "ms": 0
+   }
+  ],
+  "inboundCredHeaders": [
+   "authorization"
+  ],
+  "upstreamPaths": [
+   "POST /v1/messages"
+  ],
+  "proxyPaths": [
+   "POST /v1/messages"
+  ],
+  "egressLines": [],
+  "upstreamFirstHeaderNames": [
+   "accept",
+   "accept-encoding",
+   "anthropic-beta",
+   "anthropic-dangerous-direct-browser-access",
+   "anthropic-version",
+   "authorization",
+   "connection",
+   "content-type",
+   "host",
+   "transfer-encoding",
+   "user-agent",
+   "x-app",
+   "x-claude-code-session-id",
+   "x-stainless-arch",
+   "x-stainless-lang",
+   "x-stainless-os",
+   "x-stainless-package-version",
+   "x-stainless-retry-count",
+   "x-stainless-runtime",
+   "x-stainless-runtime-version",
+   "x-stainless-timeout"
+  ],
+  "scenarios": {
+   "plain": 3,
+   "toolloop-step0": 1,
+   "toolloop-step1": 1,
+   "toolloop-step2": 1,
+   "toolloop-final": 3,
+   "thinking": 1,
+   "subagent-call": 1,
+   "subagent-final": 1
+  }
+ }
+}

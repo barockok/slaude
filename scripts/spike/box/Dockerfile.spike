@@ -1,0 +1,3 @@
+# Stand-in for a privileged boxd/node container: runsc and the spike data come from bind mounts.
+FROM ubuntu:24.04
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 procps bash coreutils util-linux iproute2 >/dev/null && rm -rf /var/lib/apt/lists/*

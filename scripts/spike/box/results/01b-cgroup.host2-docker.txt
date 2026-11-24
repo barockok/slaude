@@ -1,0 +1,33 @@
+self cgroup: /sys/fs/cgroup/init
+--- processes and their cgroups
+6759 runsc-gofer --overlay2=root:dir=/var/lib/slaude-spike/w2/a/ov,size=1g  cg=/a
+6763 runsc-sandbox --root=/var/lib/slaude-spike/rs --overlay2=root:dir=/var cg=/a
+6764 /usr/local/bin/gvisor-bin/runsc-fd-parking  cg=/init
+--- spec cgroupsPath: None
+sandbox cgroup dir: /sys/fs/cgroup/a
+memory.max=536870912
+pids.max=64
+cpu.max=100000 100000
+memory.current=7593984
+pids.current=24
+--- memory charged: alloc 300MB held 6s in sandbox
+RESULT charge | INFO | surrounding scope delta MB=1; sandbox cgroup (/sys/fs/cgroup/a) delta MB=303; sandbox cgroup memory.current=310 MB
+--- RSS per runsc process during alloc
+6759 runsc-gofer --overlay2=root:dir=/var/lib rss_kb=10752
+6763 runsc-sandbox --root=/var/lib/slaude-spi rss_kb=27356
+6764 runsc-fd-parking  rss_kb=0
+6818 runsc --root /var/lib/slaude-spike/rs ex rss_kb=10368
+--- cpu limit measured on the host: 4 busy threads for 6s
+BUSY wall=6.08 cpu=7.68 cores=1.26 gomaxprocs=2
+RESULT cpu-host-measured | INFO | sandbox cgroup cpu usage over 6 s wall: 6113 ms => 1.02 cores (limit 1.0); throttled: nr_throttled 63 throttled_usec 8123756 
+--- pids: host threads of the sandbox cgroup at idle: 30
+--- exec client kill: does the in-sandbox process die?
+UID       PID       PPID      PGID      C         TTY       STIME     TIME      CMD
+1000      1         0         1         0         ?         17:28     0s        sleep
+1000      11        0         11        0         ?         17:28     0s        sleep
+ps 1 s after TERM to the exec client:
+UID       PID       PPID      PGID      C         TTY       STIME     TIME      CMD
+1000      1         0         1         0         ?         17:28     0s        sleep
+1000      11        0         11        0         ?         17:28     0s        sleep
+RESULT kill-exec-client | INFO | client TERM -> exit in 1 ms; 'sleep' rows in ps after 1 s: 2
+RESULT kill-sandbox | INFO | runsc kill KILL -> state stopped in 12 ms, exec client gone in 13 ms; state=  "status": "stopped",

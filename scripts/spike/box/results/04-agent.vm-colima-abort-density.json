@@ -1,0 +1,39 @@
+{
+ "label": "vm-colima-abort-density",
+ "finished": "2026-11-24T17:21:35.904Z",
+ "results": [
+  {
+   "name": "sdk/abort-mid-turn[naive]",
+   "status": "FAIL",
+   "detail": "sleep procs before abort=1; query ended 55174 ms after abort; sleep procs left 2.5 s later=0; error=Claude Code process aborted by user result=sleep done",
+   "ms": 55174
+  },
+  {
+   "name": "sdk/abort-mid-turn[pidkill]",
+   "status": "FAIL",
+   "detail": "sleep procs before abort=1; query ended 2169 ms after abort; sleep procs left 2.5 s later=1; error=Claude Code process aborted by user result=sleep done",
+   "ms": 2169
+  },
+  {
+   "name": "sdk/abort-mid-turn[newpidns]",
+   "status": "PASS",
+   "detail": "sleep procs before abort=1; query ended 2186 ms after abort; sleep procs left 2.5 s later=0; error=Claude Code process aborted by user result=sleep done",
+   "ms": 2186
+  },
+  {
+   "name": "density/1-sandbox",
+   "status": "INFO",
+   "detail": "sandbox cgroup memory.current: idle sandbox 10 MB; with CLI started (before any message) 15 MB; CLI idle after one turn 15 MB; sentry+gofer RSS sum 43 MB"
+  },
+  {
+   "name": "density/10-sandboxes-with-idle-cli",
+   "status": "INFO",
+   "detail": "sum of sandbox cgroup memory.current = 1513 MB (151 MB each); VM used memory delta = 1517 MB (152 MB each; includes page cache of the shared image)"
+  },
+  {
+   "name": "proxy/placeholder-never-upstream",
+   "status": "PASS",
+   "detail": "16 upstream requests, 0 carried the placeholder"
+  }
+ ]
+}

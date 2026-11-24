@@ -1,0 +1,316 @@
+{
+ "label": "vm-colima",
+ "started": "2026-11-24T16:05:01.516Z",
+ "formA": {
+  "cases": [
+   {
+    "name": "stream",
+    "ok": true,
+    "detail": "exit=0 stream_events=7 result=\"plain reply\" err=",
+    "ms": 3060
+   },
+   {
+    "name": "tool-loop",
+    "ok": true,
+    "detail": "exit=0 result=\"loop done\" turns=4 err=",
+    "ms": 1502
+   },
+   {
+    "name": "thinking",
+    "ok": true,
+    "detail": "exit=0 result=\"thought done\" err=",
+    "ms": 1165
+   },
+   {
+    "name": "subagent",
+    "ok": true,
+    "detail": "exit=0 result=\"main done\" turns=2 err=",
+    "ms": 864
+   },
+   {
+    "name": "resume",
+    "ok": true,
+    "detail": "exit=0 result=\"loop done\" session=same err=",
+    "ms": 647
+   },
+   {
+    "name": "compaction",
+    "ok": true,
+    "detail": "exit=0 out={\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":51,\"duration_api_ms\":14,\"num_turns\":0,\"result\":\"\",\"stop_reason\":null,\"session_id\":\"<id>\",\"total_cost err=",
+    "ms": 487
+   },
+   {
+    "name": "rotation",
+    "ok": true,
+    "detail": "exit=0 result=\"plain reply\" err=",
+    "ms": 498
+   },
+   {
+    "name": "no-real-credential-in-box",
+    "ok": true,
+    "detail": "env/args hit=false file hits=0  output hit=false",
+    "ms": 0
+   },
+   {
+    "name": "placeholder-never-reaches-upstream",
+    "ok": true,
+    "detail": "upstream saw 17 requests, 0 carried the placeholder",
+    "ms": 0
+   }
+  ],
+  "inboundCredHeaders": [
+   "x-api-key"
+  ],
+  "upstreamPaths": [
+   "POST /v1/messages"
+  ],
+  "proxyPaths": [
+   "POST /v1/messages"
+  ],
+  "egressLines": [
+   "DENY CONNECT api.anthropic.com:443 HTTP/1.1"
+  ],
+  "upstreamFirstHeaderNames": [
+   "accept",
+   "accept-encoding",
+   "anthropic-beta",
+   "anthropic-dangerous-direct-browser-access",
+   "anthropic-version",
+   "connection",
+   "content-type",
+   "host",
+   "transfer-encoding",
+   "user-agent",
+   "x-api-key",
+   "x-app",
+   "x-claude-code-session-id",
+   "x-stainless-arch",
+   "x-stainless-lang",
+   "x-stainless-os",
+   "x-stainless-package-version",
+   "x-stainless-retry-count",
+   "x-stainless-runtime",
+   "x-stainless-runtime-version",
+   "x-stainless-timeout"
+  ],
+  "scenarios": {
+   "side-request-text": 5,
+   "plain": 3,
+   "toolloop-step0": 1,
+   "toolloop-step1": 1,
+   "toolloop-step2": 1,
+   "toolloop-final": 3,
+   "thinking": 1,
+   "subagent-call": 1,
+   "subagent-final": 1
+  }
+ },
+ "formB": {
+  "cases": [
+   {
+    "name": "stream",
+    "ok": true,
+    "detail": "exit=0 stream_events=7 result=\"plain reply\" err=",
+    "ms": 1377
+   },
+   {
+    "name": "tool-loop",
+    "ok": true,
+    "detail": "exit=0 result=\"loop done\" turns=4 err=",
+    "ms": 691
+   },
+   {
+    "name": "thinking",
+    "ok": true,
+    "detail": "exit=0 result=\"thought done\" err=",
+    "ms": 620
+   },
+   {
+    "name": "subagent",
+    "ok": true,
+    "detail": "exit=0 result=\"main done\" turns=2 err=",
+    "ms": 468
+   },
+   {
+    "name": "resume",
+    "ok": true,
+    "detail": "exit=0 result=\"loop done\" session=same err=",
+    "ms": 436
+   },
+   {
+    "name": "compaction",
+    "ok": true,
+    "detail": "exit=0 out={\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":82,\"duration_api_ms\":23,\"num_turns\":0,\"result\":\"\",\"stop_reason\":null,\"session_id\":\"<id>\",\"total_cost err=",
+    "ms": 737
+   },
+   {
+    "name": "rotation",
+    "ok": true,
+    "detail": "exit=0 result=\"plain reply\" err=",
+    "ms": 1202
+   },
+   {
+    "name": "no-real-credential-in-box",
+    "ok": true,
+    "detail": "env/args hit=false file hits=0  output hit=false",
+    "ms": 0
+   },
+   {
+    "name": "placeholder-never-reaches-upstream",
+    "ok": true,
+    "detail": "upstream saw 17 requests, 0 carried the placeholder",
+    "ms": 0
+   }
+  ],
+  "inboundCredHeaders": [
+   "authorization"
+  ],
+  "upstreamPaths": [
+   "POST /v1/messages"
+  ],
+  "proxyPaths": [
+   "POST /v1/messages"
+  ],
+  "egressLines": [
+   "DENY CONNECT api.anthropic.com:443 HTTP/1.1"
+  ],
+  "upstreamFirstHeaderNames": [
+   "accept",
+   "accept-encoding",
+   "anthropic-beta",
+   "anthropic-dangerous-direct-browser-access",
+   "anthropic-version",
+   "authorization",
+   "connection",
+   "content-type",
+   "host",
+   "transfer-encoding",
+   "user-agent",
+   "x-app",
+   "x-claude-code-session-id",
+   "x-stainless-arch",
+   "x-stainless-lang",
+   "x-stainless-os",
+   "x-stainless-package-version",
+   "x-stainless-retry-count",
+   "x-stainless-runtime",
+   "x-stainless-runtime-version",
+   "x-stainless-timeout"
+  ],
+  "scenarios": {
+   "side-request-text": 5,
+   "plain": 3,
+   "toolloop-step0": 1,
+   "toolloop-step1": 1,
+   "toolloop-step2": 1,
+   "toolloop-final": 3,
+   "thinking": 1,
+   "subagent-call": 1,
+   "subagent-final": 1
+  }
+ },
+ "formC": {
+  "cases": [
+   {
+    "name": "stream",
+    "ok": true,
+    "detail": "exit=0 stream_events=7 result=\"plain reply\" err=",
+    "ms": 1647
+   },
+   {
+    "name": "tool-loop",
+    "ok": true,
+    "detail": "exit=0 result=\"loop done\" turns=4 err=",
+    "ms": 3186
+   },
+   {
+    "name": "thinking",
+    "ok": true,
+    "detail": "exit=0 result=\"thought done\" err=",
+    "ms": 2775
+   },
+   {
+    "name": "subagent",
+    "ok": true,
+    "detail": "exit=0 result=\"main done\" turns=2 err=",
+    "ms": 5086
+   },
+   {
+    "name": "resume",
+    "ok": true,
+    "detail": "exit=0 result=\"loop done\" session=same err=",
+    "ms": 4885
+   },
+   {
+    "name": "compaction",
+    "ok": true,
+    "detail": "exit=0 out={\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"duration_ms\":201,\"duration_api_ms\":61,\"num_turns\":0,\"result\":\"\",\"stop_reason\":null,\"session_id\":\"<id>\",\"total_cos err=",
+    "ms": 2133
+   },
+   {
+    "name": "rotation",
+    "ok": true,
+    "detail": "exit=0 result=\"plain reply\" err=",
+    "ms": 3190
+   },
+   {
+    "name": "no-real-credential-in-box",
+    "ok": true,
+    "detail": "env/args hit=false file hits=0  output hit=false",
+    "ms": 0
+   },
+   {
+    "name": "placeholder-never-reaches-upstream",
+    "ok": true,
+    "detail": "upstream saw 17 requests, 0 carried the placeholder",
+    "ms": 0
+   }
+  ],
+  "inboundCredHeaders": [
+   "authorization"
+  ],
+  "upstreamPaths": [
+   "POST /v1/messages"
+  ],
+  "proxyPaths": [
+   "POST /v1/messages"
+  ],
+  "egressLines": [
+   "DENY CONNECT api.anthropic.com:443 HTTP/1.1"
+  ],
+  "upstreamFirstHeaderNames": [
+   "accept",
+   "accept-encoding",
+   "anthropic-beta",
+   "anthropic-dangerous-direct-browser-access",
+   "anthropic-version",
+   "authorization",
+   "connection",
+   "content-type",
+   "host",
+   "transfer-encoding",
+   "user-agent",
+   "x-app",
+   "x-claude-code-session-id",
+   "x-stainless-arch",
+   "x-stainless-lang",
+   "x-stainless-os",
+   "x-stainless-package-version",
+   "x-stainless-retry-count",
+   "x-stainless-runtime",
+   "x-stainless-runtime-version",
+   "x-stainless-timeout"
+  ],
+  "scenarios": {
+   "side-request-text": 5,
+   "plain": 3,
+   "toolloop-step0": 1,
+   "toolloop-step1": 1,
+   "toolloop-step2": 1,
+   "toolloop-final": 3,
+   "thinking": 1,
+   "subagent-call": 1,
+   "subagent-final": 1
+  }
+ }
+}

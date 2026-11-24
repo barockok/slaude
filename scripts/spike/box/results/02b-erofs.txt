@@ -1,0 +1,8 @@
+RESULT erofs/dir-sleep | FAIL | panic: anonymous overlay medium = "self" does not have dir= prefix
+RESULT erofs/dir-probe | FAIL | panic: anonymous overlay medium = "self" does not have dir= prefix
+RESULT erofs/both-flag-and-annotation | FAIL | running container: starting container: starting root container: starting sandbox: creating process: failed to load /bin/sleep: bad address
+RESULT erofs/self-sleep | FAIL | running container: starting container: starting root container: starting sandbox: creating process: failed to load /bin/sleep: bad address
+RESULT erofs/memory-sleep | FAIL | running container: starting container: starting root container: starting sandbox: creating process: failed to load /bin/sleep: bad address
+RESULT erofs/none-sleep | FAIL | running container: starting container: starting root container: starting sandbox: creating process: failed to load /bin/sleep: bad address
+RESULT erofs/usrbin-none | FAIL | running container: starting container: starting root container: starting sandbox: creating process: failed to load /usr/bin/sleep: bad address
+RESULT erofs/usrbin-self | FAIL | running container: starting container: starting root container: starting sandbox: creating process: failed to load /usr/bin/sleep: bad address

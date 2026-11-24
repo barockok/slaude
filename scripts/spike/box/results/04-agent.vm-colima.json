@@ -1,0 +1,175 @@
+{
+ "label": "vm-colima",
+ "finished": "2026-11-24T17:16:53.674Z",
+ "results": [
+  {
+   "name": "sdk/tool-loop",
+   "status": "PASS",
+   "detail": "result=loop done reqs=4 ",
+   "ms": 703
+  },
+  {
+   "name": "sdk/pretooluse-hook-deny",
+   "status": "PASS",
+   "detail": "hook calls=1 marker created=false result=touch done ",
+   "ms": 431
+  },
+  {
+   "name": "sdk/canusetool-allow",
+   "status": "PASS",
+   "detail": "asked=1 marker created=true result=touch done ",
+   "ms": 455
+  },
+  {
+   "name": "sdk/canusetool-deny",
+   "status": "PASS",
+   "detail": "asked=1 marker created=false result=touch done",
+   "ms": 511
+  },
+  {
+   "name": "sdk/in-process-mcp",
+   "status": "PASS",
+   "detail": "handler calls=1 result=mcpcall done ",
+   "ms": 411
+  },
+  {
+   "name": "sdk/stdio-mcp-in-sandbox",
+   "status": "PASS",
+   "detail": "result=stdiomcp done tool result found in transcript=true mcp_servers=[{\"name\":\"stdiospike\",\"status\":\"connected\"}] ",
+   "ms": 598
+  },
+  {
+   "name": "sdk/plugin-skill-from-ro-mount",
+   "status": "PASS",
+   "detail": "init skills/commands mention spike=true ([\"deep-research\",\"spike:spike-skill\",\"update-config\",\"verify\",\"debug\",\"code-review\",\"simplify\",\"batch\",\"fewer-permission-prompts\",\"loop\",\"claude-api\",\"run\",\"run) write to mount: touch: cannot touch '/plugins/spike/x': Permission denied rc=1",
+   "ms": 648
+  },
+  {
+   "name": "sdk/plugin-hook-runs-inside",
+   "status": "PASS",
+   "detail": "marker: hook ran as 1000 in /var/lib/slaude-spike/w4/ws at 1795540477 result=touch done ",
+   "ms": 648
+  },
+  {
+   "name": "sdk/resume-same-path-transcript",
+   "status": "PASS",
+   "detail": "result=loop done model requests=1 (history loaded when the loop does not rerun) transcript at identical path exists=true /var/lib/slaude-spike/w4/home/.claude/projects/-var-lib-slaude-spike-w4-ws/5ba4abb2-347c-4abb-a9bf-87f78e1e48fa.jsonl",
+   "ms": 411
+  },
+  {
+   "name": "sdk/abort-mid-turn[naive]",
+   "status": "PASS",
+   "detail": "sleep procs before abort=1; query ended 54550 ms after abort; sleep procs left 2.5 s later=0; error=Claude Code process aborted by user result=sleep done",
+   "ms": 54550
+  },
+  {
+   "name": "sdk/abort-mid-turn[pidkill]",
+   "status": "FAIL",
+   "detail": "sleep procs before abort=1; query ended 2149 ms after abort; sleep procs left 2.5 s later=1; error=Claude Code process aborted by user result=sleep done",
+   "ms": 2149
+  },
+  {
+   "name": "sdk/abort-mid-turn[newpidns]",
+   "status": "PASS",
+   "detail": "sleep procs before abort=1; query ended 2144 ms after abort; sleep procs left 2.5 s later=0; error=Claude Code process aborted by user result=sleep done",
+   "ms": 2144
+  },
+  {
+   "name": "egress/deny-all/curl",
+   "status": "PASS",
+   "detail": "output: curl: (56) CONNECT tunnel failed, response 403 / http=000 | proxy log hosts so far: example.com:443",
+   "ms": 74
+  },
+  {
+   "name": "egress/deny-all/git-clone-https",
+   "status": "PASS",
+   "detail": "output: Cloning into '/tmp/hw'... / fatal: unable to access 'https://github.com/octocat/Hello-World.git/': CONNECT tunnel failed, response 403 | proxy log hosts so far: example.com:443,github.com:443",
+   "ms": 59
+  },
+  {
+   "name": "egress/deny-all/npm-view",
+   "status": "PASS",
+   "detail": "output: npm ERR! 403 on a server you do not have access to. /  / npm ERR! A complete log of this run can be found in: / npm ERR!     /tmp/npmc/_logs/2026-11-24T17_16_06_851Z-debug-0.log | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443",
+   "ms": 600
+  },
+  {
+   "name": "egress/deny-all/pip-download",
+   "status": "FAIL",
+   "detail": "output: ERROR: Could not find a version that satisfies the requirement six (from versions: none) / ERROR: No matching distribution found for six | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443,pypi.org:443",
+   "ms": 472
+  },
+  {
+   "name": "egress/deny-all/go-mod-download",
+   "status": "FAIL",
+   "detail": "output: go: golang.org/x/text@v0.14.0: Get \"https://proxy.golang.org/golang.org/x/text/@v/v0.14.0.info\": Forbidden | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443,pypi.org:443,proxy.golang.org:443",
+   "ms": 26
+  },
+  {
+   "name": "egress/deny-all/proxy-log",
+   "status": "INFO",
+   "detail": "DENY CONNECT example.com:443 HTTP/1.1 | DENY CONNECT github.com:443 HTTP/1.1 | DENY CONNECT registry.npmjs.org:443 HTTP/1.1 | DENY CONNECT pypi.org:443 HTTP/1.1 | DENY CONNECT proxy.golang.org:443 HTTP/1.1"
+  },
+  {
+   "name": "egress/allowlisted/curl",
+   "status": "PASS",
+   "detail": "output: http=200 | proxy log hosts so far: example.com:443",
+   "ms": 124
+  },
+  {
+   "name": "egress/allowlisted/git-clone-https",
+   "status": "PASS",
+   "detail": "output: Cloning into '/tmp/hw'... / cloned | proxy log hosts so far: example.com:443,github.com:443",
+   "ms": 1103
+  },
+  {
+   "name": "egress/allowlisted/npm-view",
+   "status": "PASS",
+   "detail": "output: 1.3.0 | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443",
+   "ms": 863
+  },
+  {
+   "name": "egress/allowlisted/pip-download",
+   "status": "PASS",
+   "detail": "output: Downloading six-1.17.0-py2.py3-none-any.whl (11 kB) / Saved ./pp/six-1.17.0-py2.py3-none-any.whl / Successfully downloaded six / six-1.17.0-py2.py3-none-any.whl | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443,pypi.org:443,files.pythonhosted.org:443",
+   "ms": 655
+  },
+  {
+   "name": "egress/allowlisted/go-mod-download",
+   "status": "PASS",
+   "detail": "output: downloaded | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443,pypi.org:443,files.pythonhosted.org:443,proxy.golang.org:443,sum.golang.org:443",
+   "ms": 2022
+  },
+  {
+   "name": "egress/allowlisted/proxy-log",
+   "status": "INFO",
+   "detail": "ALLOW CONNECT example.com:443 HTTP/1.1 | ALLOW CONNECT github.com:443 HTTP/1.1 | ALLOW CONNECT registry.npmjs.org:443 HTTP/1.1 | ALLOW CONNECT pypi.org:443 HTTP/1.1 | ALLOW CONNECT files.pythonhosted.org:443 HTTP/1.1 | ALLOW CONNECT proxy.golang.org:443 HTTP/1.1 | ALLOW CONNECT sum.golang.org:443 HTTP/1.1"
+  },
+  {
+   "name": "pack/50k-files-zstd-1",
+   "status": "INFO",
+   "detail": "create 1363 ms, size 166.5 MB, extract (cold cache, same VM, local disk) 2206 ms, files extracted 50020, identical-sample",
+   "ms": 3569
+  },
+  {
+   "name": "pack/50k-files-zstd-3",
+   "status": "INFO",
+   "detail": "create 5191 ms, size 163.6 MB, extract (cold cache, same VM, local disk) 1398 ms, files extracted 50020, identical-sample",
+   "ms": 6589
+  },
+  {
+   "name": "density/1-sandbox",
+   "status": "INFO",
+   "detail": "sandbox cgroup memory.current: idle sandbox 33 MB; with CLI started (before any message) 359 MB; CLI idle after one turn 372 MB; sentry+gofer RSS sum NaN MB"
+  },
+  {
+   "name": "density/10-sandboxes-with-idle-cli",
+   "status": "INFO",
+   "detail": "sum of sandbox cgroup memory.current = 1503 MB (150 MB each); VM used memory delta = 1473 MB (147 MB each; includes page cache of the shared image)"
+  },
+  {
+   "name": "proxy/placeholder-never-upstream",
+   "status": "PASS",
+   "detail": "34 upstream requests, 0 carried the placeholder"
+  }
+ ]
+}

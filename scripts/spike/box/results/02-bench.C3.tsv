@@ -1,0 +1,1 @@
+C3 not-run EROFS root mounts but every exec from it fails (failed to load: bad address), see 02b-erofs.txt

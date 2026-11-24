@@ -1,0 +1,45 @@
+idle: sentry+gofer RSS 36 MB, cgroup memory.current 37 MB
+-- git clone -q /mirror/synth.git /work/repo
+   rc=0 sandbox: "status":"running",
+-- mkdir -p /work/proj && cp /home/agent/proj/package.json /home/agent/proj/bun.lock /work
+bun install v1.4.5 (a7733435c)
+
++ @aws-sdk/client-s3@3.670.0
++ @babel/core@7.25.8
++ @babel/preset-env@7.25.8
++ @babel/preset-react@7.25.7
++ axios@1.7.7
++ eslint@8.57.1
++ express@4.21.1
++ jest@29.7.0
++ lodash@4.17.21
++ next@14.2.15
++ prettier@3.3.3
++ react@18.3.1
++ react-dom@18.3.1
++ rxjs@7.8.1
++ typescript@5.6.3
++ vite@5.4.9
++ webpack@5.95.0
++ zod@3.23.8
+
+663 packages installed [2.79s]
+   rc=0 sandbox: "status":"running",
+-- mkdir -p /work/proj2 && cp /home/agent/proj/package.json /home/agent/proj/package-lock.
+npm WARN EBADENGINE Unsupported engine {
+npm WARN EBADENGINE   package: '@aws-sdk/util-locate-window@3.965.10',
+npm WARN EBADENGINE   required: { node: '>=20.0.0' },
+npm WARN EBADENGINE   current: { node: 'v18.19.1', npm: '9.2.0' }
+npm WARN EBADENGINE }
+npm WARN deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm WARN deprecated @humanwhocodes/config-array@0.13.0: Use @eslint/config-array instead
+npm WARN deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+npm WARN deprecated glob@7.2.3: Old versions of glob are not supported, and contain widely publicized security vulnerabilities, which have been fixed in the current version. Please update. Support for old versions may be purchased (at exorbitant rates) by contacting i@izs.me
+npm WARN deprecated @humanwhocodes/object-schema@2.0.3: Use @eslint/object-schema instead
+npm WARN deprecated uuid@9.0.1: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
+npm WARN deprecated eslint@8.57.1: This version is no longer supported. Please see https://eslint.org/version-support for other options.
+npm WARN deprecated next@14.2.15: This version has a security vulnerability. Please upgrade to a patched version. See https://nextjs.org/blog/security-update-2025-12-11 for more details.
+
+added 687 packages in 12s
+   rc=0 sandbox: "status":"running",
+RESULT load-memory | INFO | during clone + bun install + npm ci: sentry+gofer RSS peak 568 MB; sandbox cgroup memory.current peak 2050 MB (includes the guest file cache and the workload's own memory); cgroup memory.peak 2056 MB; after the work (idle again) sentry+gofer RSS 64 MB, memory.current 1353 MB
