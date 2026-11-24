@@ -35,6 +35,60 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The default box image (boxes/default): what `box: default` runs on. It
+      # is built first because the slaude image records where it was pushed
+      # (BOX_DEFAULT_IMAGES below). The build gets no secret and no build
+      # argument: a box image holds no credential.
+      #
+      # NOT RUN YET as written: these three steps have never executed on a
+      # runner, and no node has pulled the image they push. See
+      # docs/site/_content/deploy/boxes.md.
+      - name: Extract metadata (default box)
+        id: boxmeta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-box-default
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # OCI media types and no attestation manifest: a node copies the image
+      # by digest without converting it, and the index must list platforms only.
+      - name: Build and push the default box
+        id: box
+        uses: docker/build-push-action@v6
+        with:
+          context: boxes/default
+          platforms: linux/amd64,linux/arm64
+          outputs: type=image,oci-mediatypes=true,push=${{ github.event_name != 'pull_request' }}
+          provenance: false
+          sbom: false
+          tags: ${{ steps.boxmeta.outputs.tags }}
+          labels: ${{ steps.boxmeta.outputs.labels }}
+          cache-from: type=gha,scope=box-default
+          cache-to: type=gha,mode=max,scope=box-default
+
+      # One manifest digest per architecture, not the index digest (see the
+      # script). Skipped on a pull request: nothing was pushed, so the slaude
+      # image is built without a built-in box, as before.
+      - name: Resolve the default box digests
+        id: boxrefs
+        if: github.event_name != 'pull_request'
+        env:
+          BOX_REPOSITORY: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-box-default
+          BOX_DIGEST: ${{ steps.box.outputs.digest }}
+        run: |
+          set -euo pipefail
+          repo="$(printf '%s' "$BOX_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          images="$(scripts/box-default-refs.sh "$repo" "$BOX_DIGEST" amd64 arm64)"
+          echo "images=${images}" >> "$GITHUB_OUTPUT"
+          echo "default box: ${images}"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -57,5 +111,9 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Where the default box was pushed (a location, not a secret). Empty
+          # on a pull request: the image then carries no built-in box.
+          build-args: |
+            BOX_DEFAULT_IMAGES=${{ steps.boxrefs.outputs.images }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

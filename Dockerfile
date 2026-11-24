@@ -46,7 +46,13 @@ COPY src/box/init ./src/box/init
 RUN bun build --compile src/box/init/main.ts --outfile /out/box-init \
  && test -x /out/box-init
 
-FROM oven/bun:1.3-debian
+# Three targets share everything below:
+#   base      everything except the tools only an unboxed agent uses;
+#   node-box  `docker build --target node-box .`: base and nothing more, for a deployment whose nodes run
+#             every session in a box (the agent's tools then come from the box image, not from this one);
+#   (last)    the default image, `docker build .`: base plus uv and the prefetched MCP server. It is what
+#             the gateway, a mono deployment and a node on tier `none` run, and tier `none` stays supported.
+FROM oven/bun:1.3-debian AS base
 WORKDIR /app
 
 # claude-agent-sdk spawns the bundled `claude` CLI which needs Node-runtime
@@ -54,11 +60,7 @@ WORKDIR /app
 # persistent state.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git curl \
- && rm -rf /var/lib/apt/lists/* \
- && curl -LsSf https://astral.sh/uv/install.sh | sh \
- && mv /root/.local/bin/uv /root/.local/bin/uvx /usr/local/bin/ \
- && uvx --version \
- && uvx --from mcp-grafana mcp-grafana --help > /dev/null
+ && rm -rf /var/lib/apt/lists/*
 
 # tailcat: SSH transport for /remote (runs a thread's tools on the user's machine).
 # The release archive holds the binary at its root next to LICENSE and README.md.
@@ -138,6 +140,25 @@ COPY --from=builder /app/.slaude/.claude   /data/.slaude/.claude
 COPY --from=web /app/src/web/console/dist ./src/web/console/dist
 COPY --from=web /app/src/web/portal/dist  ./src/web/portal/dist
 
+# The default box (docs: deploy/boxes): its policy, and where its image lives. The gateway reads both so that
+# `box: default` resolves with no entry in a deploy repository (src/box/builtin.ts).
+#   box.yaml   the file in this repository;
+#   image.ref  written only when the build is told where the box image was published: BOX_DEFAULT_IMAGES is a
+#              comma list of `<amd64|arm64>=<repository>@sha256:<digest>`, one manifest digest per architecture
+#              (a node fetches by digest and checks the manifest it got against it, so an index digest would be
+#              refused). Without the argument there is no image.ref and no built-in box: nothing else changes.
+# It is a location, not a credential; nothing secret is passed to this build.
+COPY boxes/default/box.yaml ./boxes/default/box.yaml
+ARG BOX_DEFAULT_IMAGES=""
+RUN set -eu; \
+    if [ -n "$BOX_DEFAULT_IMAGES" ]; then \
+      printf '%s\n' "$BOX_DEFAULT_IMAGES" | tr ',' '\n' > boxes/default/image.ref; \
+      if grep -vqE '^(amd64|arm64)=[a-z0-9][a-z0-9._:/-]*@sha256:[a-f0-9]{64}$' boxes/default/image.ref; then \
+        echo "BOX_DEFAULT_IMAGES must be a comma list of <amd64|arm64>=<repository>@sha256:<digest>" >&2; exit 1; \
+      fi; \
+      cat boxes/default/image.ref; \
+    fi
+
 ENV SLAUDE_HOME=/data
 VOLUME ["/data"]
 
@@ -145,3 +166,15 @@ VOLUME ["/data"]
 # SOUL.md lives at /data/SOUL.md — bake it into the image OR mount per deploy.
 
 CMD ["bun", "run", "start"]
+
+# For nodes that run every session in a box: no uv and no prefetched MCP server (both exist for unboxed agents).
+# Optional, and not built by the release workflows.
+FROM base AS node-box
+
+# The default image. Keep this stage last: `docker build .` must keep producing it.
+FROM base
+# uv, and the MCP server unboxed agents start through it, fetched at build time.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+ && mv /root/.local/bin/uv /root/.local/bin/uvx /usr/local/bin/ \
+ && uvx --version \
+ && uvx --from mcp-grafana mcp-grafana --help > /dev/null
