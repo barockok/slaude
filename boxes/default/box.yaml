@@ -1,0 +1,78 @@
+# yaml-language-server: $schema=https://barockok.github.io/slaude/schemas/box.schema.json
+#
+# The default box. It ships inside the slaude image and is what `box: default`
+# means when the deploy repository has no boxes/default of its own (one there
+# always wins).
+#
+# The egress list is a starting point: the public package registries and code
+# hosts an agent installing and cloning public code needs. Narrow it for your
+# deployment by copying this directory into your deploy repository. Nothing
+# here authenticates: private repositories and registries are reached through
+# a gateway-side MCP server, never from a box.
+version: 1
+name: default
+description: The tools of the slaude image (git, curl, bun, uv) with public package registries and code hosts allowed
+image:
+  build: {}
+tier: gvisor
+resources:
+  cpu: 2
+  memoryMb: 3072
+  pids: 512
+  homeMb: 4096
+  workspaceExtrasMb: 4096
+  rootOverlayMb: 2048
+egress:
+  allow:
+    # npm and bun
+    - registry.npmjs.org
+    - bun.sh
+    # Python: the index, its files, and the installer of uv
+    - pypi.org
+    - files.pythonhosted.org
+    - astral.sh
+    # Rust
+    - crates.io
+    - index.crates.io
+    - static.crates.io
+    - static.rust-lang.org
+    # Go
+    - proxy.golang.org
+    - sum.golang.org
+    - go.dev
+    # Ruby
+    - rubygems.org
+    - index.rubygems.org
+    # Code hosts, public read over HTTPS
+    - github.com
+    - api.github.com
+    - codeload.github.com
+    - raw.githubusercontent.com
+    - objects.githubusercontent.com
+    - release-assets.githubusercontent.com
+    - gitlab.com
+    - bitbucket.org
+    # Debian's mirrors. Under gVisor the agent cannot write system directories,
+    # so `apt-get install` does not work there; these serve `apt-get download`
+    # and tools that fetch a .deb to unpack into the home. On the bwrap tier a
+    # system install works and is thrown away when the sandbox stops.
+    - deb.debian.org
+    - deb.debian.org:80
+    - security.debian.org
+    - security.debian.org:80
+  deny:
+    # Uploads and gists are ways out for data, not ways in for code.
+    - uploads.github.com
+    - gist.github.com
+env:
+  NPM_CONFIG_PREFIX: /home/agent/.npm-global
+  PIP_USER: "1"
+  GOPATH: /home/agent/go
+  BUN_INSTALL: /home/agent/.bun
+  UV_CACHE_DIR: /home/agent/.cache/uv
+  UV_TOOL_BIN_DIR: /home/agent/.local/bin
+durable:
+  exclude:
+    - .cache/uv
+    - .bun/install/cache
+    - .npm/_cacache
