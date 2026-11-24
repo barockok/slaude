@@ -283,3 +283,72 @@ to see which operation fails. While flushes are stuck, do not drain or roll the
 nodes holding pending directories: draining tries one last flush, and a node
 that cannot write loses those edits. Once the bucket is reachable the retries
 land by themselves and the pending gauges fall to 0.
+
+## Every node of a label is full
+
+Applies only where node pods run [boxes](boxes.md) (in development).
+
+**Signal.** `slaude_node_boxes_full` is 1 on a node that has no room for
+another sandbox and has paused its label queues. One node at 1 is normal under
+load. **Every** node of a label at 1 for more than a few minutes means the
+label needs more nodes than it has:
+
+```promql
+min by (label) (slaude_node_boxes_full) == 1
+```
+
+(`label` here is whatever your scrape config attaches to the pods of one node
+Deployment.) `slaude_box_admission_total{result="full"}` rising, and the
+label's wait list growing, say the same.
+
+**What it means.** New sessions and cold resumes of that label wait on the
+queue. Warm sessions keep working: a full node still serves the turns of the
+sessions it holds. Nothing fails and nothing runs without its sandbox.
+
+**What to do.**
+
+1. Check the autoscaler: is the Deployment at `maxReplicaCount`, or is the
+   cluster out of nodes to schedule on? Raise the bound or add capacity.
+2. Look at occupancy, `sum(slaude_node_boxes_running) /
+   sum(slaude_node_boxes_capacity)`: near 1 with low memory use means
+   `SLAUDE_NODE_MAX_BOXES` is the limit and the pod could hold more. Raise it
+   only as far as the [sizing rule](scale-operations.md#the-sizing-model)
+   allows; the node refuses to start otherwise.
+3. `slaude_box_pressure_evictions_total` rising means memory, not slots, is
+   the limit: the boxes use more than their reserve. Give `boxd` more memory,
+   or raise `memoryReserveMb` of the heavy box so fewer are admitted.
+4. Sessions that sit idle hold a sandbox until their idle timeout. If most of
+   a full node's sessions are idle, a lower `SLAUDE_BOX_PRESSURE_IDLE_SEC`
+   lets it park them sooner to make room.
+
+## Cold resume p95 above 20 seconds
+
+Applies only where node pods run [boxes](boxes.md) (in development).
+
+**Signal.** The first turn of a session on a node that does not hold its
+files downloads them first. With boxes that includes the home and the
+installed dependencies:
+
+```promql
+histogram_quantile(0.95, sum by (le) (rate(slaude_storage_hydrate_duration_seconds_bucket[15m]))) > 20
+```
+
+This measures the download and unpack. The sandbox's own start is not
+measured yet (there is no driver to measure).
+
+**What it means.** People wait at the start of a conversation that resumed on
+another node. 20 seconds is the budget the design accepts for a heavy
+session; above it, something grew.
+
+**What to do.**
+
+1. Find what is large. A home or an installed-dependency tree near its limit
+   (`homeMb`, `workspaceExtrasMb` in `box.yaml`) takes the longest. The agent
+   is told when a session is over a limit.
+2. Cache directories that are cheap to rebuild do not need to travel: list
+   them under `durable.exclude` in the box.
+3. Check how often sessions resume cold at all. Frequent scale-down, or a
+   node pool that is replaced often, turns warm sessions into cold ones:
+   lengthen the scale-down stabilisation, or keep more replicas.
+4. Check the bucket: its latency and the node's network path to it. The
+   `Remote storage` section above covers a store that is slow or failing.
