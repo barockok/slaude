@@ -988,6 +988,51 @@ export const env = {
      */
     pullTimeoutSec: (): number => Math.max(1, nonNegativeInt("SLAUDE_BOX_PULL_TIMEOUT_SEC", 180)),
     /**
+     * `SLAUDE_NODE_MAX_BOXES` (node, default 8): the most sandboxes this pod runs
+     * at once. A default until the density spike measures one. Checked at boot
+     * against the supervisor's memory limit and the box data volume.
+     */
+    maxBoxes: (): number => {
+      const raw = opt("SLAUDE_NODE_MAX_BOXES", "8").trim();
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) throw new Error(`SLAUDE_NODE_MAX_BOXES must be a positive integer (got '${raw}')`);
+      return n;
+    },
+    /**
+     * `SLAUDE_BOX_MEMORY_BUDGET_MB` (node, optional): memory the boxes may
+     * reserve in total. Unset: 85 percent of the supervisor container's memory
+     * limit, read at boot.
+     */
+    memoryBudgetMb: (): number | null => {
+      const raw = opt("SLAUDE_BOX_MEMORY_BUDGET_MB", "").trim();
+      if (!raw) return null;
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) throw new Error(`SLAUDE_BOX_MEMORY_BUDGET_MB must be a positive integer (got '${raw}')`);
+      return n;
+    },
+    /**
+     * `SLAUDE_BOX_SANDBOX_OVERHEAD_MB` (node, default 150): added to each box's
+     * reserve for the sandbox's own processes. A guess until the density spike
+     * measures it.
+     */
+    sandboxOverheadMb: (): number => nonNegativeInt("SLAUDE_BOX_SANDBOX_OVERHEAD_MB", 150),
+    /**
+     * `SLAUDE_BOX_PRESSURE_IDLE_SEC` (node, default 60): how long a warm session
+     * must be idle before it may be parked early to make room for another.
+     */
+    pressureIdleSec: (): number => nonNegativeInt("SLAUDE_BOX_PRESSURE_IDLE_SEC", 60),
+    /**
+     * `SLAUDE_BOX_PARK_BUDGET_MB` (node, optional): disk the parked sessions'
+     * local copies may hold. Unset: half of the box data volume, and never more
+     * than the volume has left after the image budget and the live sessions.
+     */
+    parkBudgetMb: (): number | null => {
+      const raw = opt("SLAUDE_BOX_PARK_BUDGET_MB", "").trim();
+      if (!raw) return null;
+      const n = Number(raw);
+      return Number.isInteger(n) && n >= 0 ? n : null;
+    },
+    /**
      * `SLAUDE_BOX_TIER` (node, default `none`): the sandbox tier this node offers.
      * An unknown value is refused rather than read as `none`: a node meant to
      * sandbox must not quietly run without one.

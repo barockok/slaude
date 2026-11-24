@@ -245,7 +245,18 @@ export const m = {
     "slaude_node_gateway_secrets_present",
     "Gateway-only variables found in this node's environment at boot (0 = the Secret split is done).",
   ),
-  nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued|moved|deduped)."),
+  nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued|moved|deduped|handed_back)."),
+  // Boxes on a node (box spec, "Capacity, admission and autoscaling"). All 0 on a node that offers no sandbox.
+  nodeBoxesRunning: metrics.gauge("slaude_node_boxes_running", "Sandboxes running on this node (warm sessions that hold one, a turn running or not)."),
+  nodeBoxesCapacity: metrics.gauge("slaude_node_boxes_capacity", "The most sandboxes this node runs at once (SLAUDE_NODE_MAX_BOXES). Occupancy is running divided by capacity."),
+  nodeBoxesFull: metrics.gauge(
+    "slaude_node_boxes_full",
+    "1 while this node has paused its label queues because it has no room for another sandbox, else 0. /readyz stays 200 meanwhile; every node of a label at 1 means the label needs more nodes.",
+  ),
+  nodeBoxesParked: metrics.gauge("slaude_node_boxes_parked", "Sessions whose files are parked on this node's disk: flushed, no sandbox, no memory, no capacity slot."),
+  boxMemoryReservedBytes: metrics.gauge("slaude_box_memory_reserved_bytes", "Memory the running sandboxes on this node have set aside: each box's reserve plus the sandbox overhead."),
+  boxAdmissionTotal: metrics.counter("slaude_box_admission_total", "Sandbox starts decided by this node's admission, labeled by result (admit|make-room|full)."),
+  boxPressureEvictionsTotal: metrics.counter("slaude_box_pressure_evictions_total", "Idle sessions parked early because the supervisor's memory passed 90 percent of its limit."),
   nodeTurnDuration: metrics.histogram(
     "slaude_node_turn_duration_seconds",
     "Wall-clock duration of turn jobs run on this node (lock wait included).",
