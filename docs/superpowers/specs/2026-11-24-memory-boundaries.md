@@ -43,7 +43,7 @@ Code changes: add `channel` to `ScopeInput` and `GateInput`, set where the gate 
 | Manager DM | its own boundary (decided) | as a trusted channel |
 | /1on1, non-manager DM | `user-<id>` (unchanged) | unchanged; never gains a boundary source |
 | Public or unknown channel, non-manager | unchanged | `public` only |
-| Manager in a public or unknown channel | `agent-<id>` today; a decision is needed (see Review findings) | persona-wide tier, `shared`, `public` |
+| Manager in a public or unknown channel | `bnd(channel)` (was `agent-<id>`) | `bnd(channel)`, persona-wide tier, `shared`, `public` |
 | Cron or wake with no team | `bnd(B)` by channel, never by team | as a wake in B |
 
 Conversation pages move to `bnd(B)`. `agent-<id>` is now the **persona-wide tier**: what the persona knows across channels (identity, lessons, promoted pages). A boundary source is never readable from another channel's turn.
@@ -135,7 +135,7 @@ Decided after the review, 2026-11-24:
 Decided on the open items, 2026-11-24:
 
 - **Every memory write is bound to a boundary by default.** `memory_save` with no target writes to the boundary of the turn. A page leaves it only by an explicit act: `target: persona` (promote, manager tier), `target: shared` (carded; create automatic for a wake, see above). A background pass is no exception: it writes into the boundary it read.
-- **A manager in a public or unknown channel stays in that channel's boundary.** The persona-wide tier is not readable there. Such a channel is a boundary like any other (its own `bnd-<agent>-<channel>` source for what is saved there, `public` for what everyone reads), and the manager's role does not widen it. This replaces today's rule, where any manager turn reads and writes `agent-<id>` (`scope.ts:198`).
+- **A manager in a public or unknown channel is bound to that channel's boundary for what it writes, and reads the promoted tiers.** Writes default to `bnd-<agent>-<channel>`. Reads are that boundary, the persona-wide tier (`agent-<id>`), `shared` and `public`: promoted memory is memory a manager approved for sharing, so it is readable wherever the manager is. What is not readable there is another channel's boundary. This replaces today's rule only on the write side: today a manager turn in any channel writes to `agent-<id>` (`scope.ts:198`). A non-manager in a public channel is unchanged (`public` only).
 - **Lessons are generalised before they are written.** The nightly pass reads one boundary at a time and writes lesson proposals into that boundary. The lessons-upkeep pass then merges proposals from every boundary into `self/lessons`, rewriting each line so it names no channel, person, customer or task, only the behaviour to repeat or avoid. A proposal it cannot generalise stays in its boundary.
 - **Proactive rules are not gone with the global round.** They are still read by the channel wake, `proactive_post` and reply context (`loadRules`, `rule-tool.ts`), and a rule's `scope` is already a boundary: a channel id, a DM user id, or `global`. Rules scoped to a channel or a DM live in that boundary. A `global` rule stays persona-wide, and teaching one already needs an approver. `loadRules` reads the boundary plus the persona-wide tier. Lesson proposals are unrelated to proactiveness (written by the nightly review) and follow the lessons rule above.
 
