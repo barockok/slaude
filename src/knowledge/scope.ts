@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { sameAt } from "../access/wired";
 import { env } from "../config/env";
+import type { PlaceRef } from "../memory/place";
 import type { SoulData } from "../soul/data";
 
 export type ChannelTrust = "trusted" | "public" | "unknown";
@@ -68,6 +69,10 @@ export interface ScopeInput {
   agentId: string;
   /** The speaker's verified-only person slices (`union` mode, reads only); absent = legacy. */
   person?: PersonSlices;
+  /** The turn's memory place, or why there is none (src/memory/place.ts). Required so a caller
+   *  cannot forget it, and `{ kind: "none" }` is always a valid answer. In rc.45 (shadow) no
+   *  read or write decision uses it. */
+  place: PlaceRef;
 }
 
 /** Legacy single-agent source. Kept in the agent read union for continuity with

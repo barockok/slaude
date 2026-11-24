@@ -8,6 +8,7 @@ import { brainHandlers, THREAD_HISTORY_MAX_CHARS, THREAD_HISTORY_REFUSAL, THREAD
 import type { BrainScope } from "../../src/knowledge/scope";
 import type { GateInput } from "../../src/knowledge/gated-dispatch";
 import { memoryScopeFor } from "../../src/memory/scope";
+import { NO_PLACE } from "../../src/memory/place";
 
 const AGENT = "AGENT1";
 const SESSION = "Sess-ABC";
@@ -24,7 +25,7 @@ const rows = (n = 30): Row[] =>
 
 const gate = (over: Partial<GateInput> = {}): GateInput => ({
   userId: "U0ALICE", teamId: "T0TEAM", interactive: true, origin: "slack", lockedUser: null,
-  channelTrust: "trusted", isManager: false, agentId: AGENT, threadKey: "C0CHAN:1.1", ...over,
+  channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: AGENT, threadKey: "C0CHAN:1.1", ...over,
 });
 
 function setup(over: { gate?: Partial<GateInput>; sessionId?: string | undefined; data?: Row[]; summary?: string } = {}) {

@@ -4,6 +4,7 @@ import type { Redis } from "ioredis";
 import { cleanupPrefix, realEnabled, realRedis, testPrefix, until } from "./real";
 import type { TurnJob, TurnQueues, TurnQueuesOpts } from "../../src/queue/turns";
 import type { Keys } from "../../src/queue/keys";
+import { NO_PLACE } from "../../src/memory/place";
 
 const prefix = testPrefix("turns");
 
@@ -144,7 +145,7 @@ describe.skipIf(!realEnabled)("queue/turns against real Redis", () => {
     const { profileSourceId, resolveBrainScope } = await import("../../src/knowledge/scope");
     /** Whether the brain gate lets U1's Slack turn write U1's profile with these senders. */
     const profileWrite = async (senders: unknown) => {
-      const g = { userId: "U1", teamId: "T1", interactive: true, origin: "slack" as const, lockedUser: null, channelTrust: "trusted" as const, isManager: false, agentId: "A1", turnSenders: senders as any };
+      const g = { userId: "U1", teamId: "T1", interactive: true, origin: "slack" as const, lockedUser: null, channelTrust: "trusted" as const, isManager: false, place: NO_PLACE, agentId: "A1", turnSenders: senders as any };
       return (await classifyBrainOp("put_page", { ...(await resolveBrainScope({ ...g, kbSources: [] })), sourceId: profileSourceId("T1", "U1") }, g));
     };
 

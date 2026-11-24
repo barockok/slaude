@@ -14,6 +14,7 @@ import { indexCommitment, indexWritten, runAsOf } from "../../src/proactive/comm
 import { parseDue, parseThread } from "../../src/proactive/due";
 import { passHandlers, type PassToolContext } from "../../src/background/pass-tools";
 import { fakeBrain } from "../memory/fake-brain";
+import { NO_PLACE } from "../../src/memory/place";
 
 const AGENT = "AGENT1";
 const TEAM = "T0TEAM";
@@ -138,7 +139,7 @@ describe("write hooks", () => {
     const brain = fakeBrain();
     const g: GateInput = {
       userId: "U0ALICE", teamId: TEAM, interactive: true, origin: "slack", lockedUser: "U0ALICE",
-      channelTrust: "trusted", isManager: false, agentId: AGENT, threadKey: "C0CHAN:1.1",
+      channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: AGENT, threadKey: "C0CHAN:1.1",
       turnSenders: [{ userId: "U0ALICE", teamId: TEAM, origin: "slack" }],
     };
     const deps: BrainToolDeps = {
@@ -162,7 +163,7 @@ describe("write hooks", () => {
     const brain = fakeBrain();
     const g: GateInput = {
       userId: "U0ALICE", teamId: TEAM, interactive: true, origin: "slack", lockedUser: null,
-      channelTrust: "trusted", isManager: false, agentId: AGENT, threadKey: "C0CHAN:1.1",
+      channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: AGENT, threadKey: "C0CHAN:1.1",
     };
     const r = await brainHandlers.kb_memoize(
       { pages: [{ slug: "notes/x", content: "x", summary: "x" }] },

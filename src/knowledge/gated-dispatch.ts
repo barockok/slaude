@@ -1,6 +1,7 @@
 import { sameAt, someSameAt } from "../access/wired";
 import type { BrainScope, ChannelTrust } from "./scope";
 import type { PersonSlices } from "./scope";
+import type { PlaceRef } from "../memory/place";
 import { agentSourceId, isProfileSourceId, resolveBrainScope, speakerProfileSource, userSourceId } from "./scope";
 
 export type GateTier = "auto" | "approval" | "manager" | "deny";
@@ -57,6 +58,8 @@ export interface GateInput {
   threadKey?: string | null;
   /** The speaker's verified-only person slices, set by the gateway under SLAUDE_PERSON_SLICES=union. Reads only: a write is classified against the writer's own slice and never uses this. */
   person?: PersonSlices;
+  /** The turn's memory place, or why there is none. Required; shadow only in rc.45 (nothing decides on it). */
+  place: PlaceRef;
 }
 
 const READ_OPS = new Set([

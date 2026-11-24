@@ -18,13 +18,14 @@ import { memoryScopeFor } from "../../src/memory/scope";
 import { decidePersonSlices } from "../../src/slices/decide";
 import { fakeBrain } from "../memory/fake-brain";
 import { TEAM, TEAM2, newUser, resetWorld, slack, cleanWorld } from "../helpers/person-world";
+import { NO_PLACE } from "../../src/memory/place";
 
 const ISS = "https://idp.example.com";
 const U = (id: string) => userSourceId(id);
 
 async function gateFor(speaker: string, over: Partial<GateInput> = {}, team: string = TEAM): Promise<GateInput> {
   const person = await decidePersonSlices({ site: "brain.gate_speaker", teamId: team, slackUserId: speaker });
-  return { userId: speaker, teamId: team, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "agent-one", ...over, ...(person ? { person } : {}) };
+  return { userId: speaker, teamId: team, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: "agent-one", ...over, ...(person ? { person } : {}) };
 }
 const kbScope = async (g: GateInput) => resolveBrainScope({ ...g, kbSources: [] });
 const userNames = (s: { allowedSources: string[] }) => s.allowedSources.filter((x) => x.startsWith("user-"));

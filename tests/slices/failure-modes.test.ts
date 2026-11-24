@@ -17,6 +17,7 @@ import { m } from "../../src/metrics";
 import * as Actor from "../../src/refs/actor";
 import { decidePersonSlices } from "../../src/slices/decide";
 import { TEAM, newUser, resetWorld, slack, cleanWorld } from "../helpers/person-world";
+import { NO_PLACE } from "../../src/memory/place";
 
 const OWN = userSourceId("U0AEXAMPLE");
 const BREAKS: Record<string, () => Array<{ mockRestore: () => void }>> = {
@@ -62,7 +63,7 @@ describe("union failure modes", () => {
         const person = await decidePersonSlices({ site: "brain.gate_speaker", teamId: TEAM, slackUserId: "U0AEXAMPLE" });
         // A metrics failure does not fail the decision: the union may still be returned. Anything else gives none.
         if (name !== "metrics throw") expect(person).toBeUndefined();
-        const g: GateInput = { userId: "U0AEXAMPLE", teamId: TEAM, interactive: true, lockedUser: "U0AEXAMPLE", channelTrust: "trusted", isManager: false, agentId: "agent-one", ...(person ? { person } : {}) };
+        const g: GateInput = { userId: "U0AEXAMPLE", teamId: TEAM, interactive: true, lockedUser: "U0AEXAMPLE", channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: "agent-one", ...(person ? { person } : {}) };
         const kb = await resolveBrainScope({ ...g, kbSources: [] });
         expect(kb.sourceId).toBe(OWN);
         if (name !== "metrics throw") expect(kb.allowedSources.filter((s) => s.startsWith("user-"))).toEqual([OWN]);

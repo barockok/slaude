@@ -62,11 +62,17 @@ export interface PlaceDeps {
   /** True when `channelBoundary`'s null means a failed read, not an absent boundary. */
   channelLookupFailed?: (team: string, channel: string) => boolean;
   kindOf?: (boundaryId: string) => Promise<string | null>;
+  now?: () => number;
 }
 
 class Timeout extends Error {}
 
 const KIND_CAP = 5000;
+/** How long an answer is reused: a place never moves, an absent boundary may appear, a failure is retried soon. */
+const TTL_PLACE_MS = 10 * 60 * 1000;
+const TTL_ABSENT_MS = 30 * 1000;
+const TTL_FAILED_MS = 5 * 1000;
+const ANSWER_CAP = 5000;
 
 export function createPlaceResolver(deps: PlaceDeps = {}): (i: PlaceInput) => Promise<PlaceRef> {
   const role = deps.role ?? (() => env.role());
@@ -113,8 +119,26 @@ export function createPlaceResolver(deps: PlaceDeps = {}): (i: PlaceInput) => Pr
   };
 
   const none = (reason: NoPlaceReason): PlaceRef => ({ kind: "none", reason });
+  const now = deps.now ?? Date.now;
+  // The gate input is built on every tool call; a turn must not pay a read each time.
+  const answers = new Map<string, { at: number; ref: PlaceRef }>();
+  const ttl = (r: PlaceRef): number => (r.kind === "place" ? TTL_PLACE_MS : r.reason === "no-boundary" ? TTL_ABSENT_MS : TTL_FAILED_MS);
+  const keyOf = (i: PlaceInput): string => JSON.stringify([i.agentId, i.teamId ?? null, i.channel ?? null, i.threadTs ?? null, i.personaId ?? null, i.sessionId ?? null, i.cronJobId ?? null]);
 
   return async function placeFor(i: PlaceInput): Promise<PlaceRef> {
+    const key = keyOf(i);
+    const hit = answers.get(key);
+    if (hit && now() - hit.at < ttl(hit.ref)) return hit.ref;
+    const ref = await resolve(i);
+    if (role() !== "node") {
+      answers.delete(key);
+      answers.set(key, { at: now(), ref });
+      while (answers.size > ANSWER_CAP) answers.delete(answers.keys().next().value as string);
+    }
+    return ref;
+  };
+
+  async function resolve(i: PlaceInput): Promise<PlaceRef> {
     try {
       if (role() === "node") return none("node-no-db");
       if (!i.agentId) return none("lookup-failed");
@@ -134,13 +158,13 @@ export function createPlaceResolver(deps: PlaceDeps = {}): (i: PlaceInput) => Pr
     } catch {
       return none("lookup-failed");
     }
-  };
+  }
 }
 
 let shared: ((i: PlaceInput) => Promise<PlaceRef>) | undefined;
 
 /** The turn's place, or why there is none. Never throws; bounded by SLAUDE_BOUNDARY_TIMEOUT_MS per read. */
-export const placeFor = (i: PlaceInput): Promise<PlaceRef> => (shared ??= createPlaceResolver())(i);
+export const placeFor = (i: PlaceInput): Promise<PlaceRef> => (env.memory.boundaries() === "off" ? Promise.resolve(NO_PLACE) : (shared ??= createPlaceResolver())(i));
 
-/** The place used where a caller has no turn to ask about (tests, internal passes): none, unknown surface. */
+/** The answer where there is no turn to ask about (an approval card, a test) or the flag is `off`: none, unknown surface. */
 export const NO_PLACE: PlaceRef = { kind: "none", reason: "unknown-surface" };

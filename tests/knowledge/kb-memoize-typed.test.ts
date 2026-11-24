@@ -12,6 +12,7 @@ import { agentSourceId, profileSourceId, resolveBrainScope, SHARED_SOURCE, userS
 import { parseFrontmatter } from "../../src/knowledge/memory-pages";
 import { SUPERSEDED_TAG, supersededSlugs } from "../../src/knowledge/memory-trail";
 import { fakeBrain } from "../memory/fake-brain";
+import { NO_PLACE } from "../../src/memory/place";
 
 const TEAM = "T0TEAM";
 const AGENT = "AGENT1";
@@ -32,7 +33,7 @@ function setup(over: Partial<GateInput> = {}) {
   let cards = 0;
   const g: GateInput = {
     userId: "U0ALICE", teamId: TEAM, interactive: true, origin: "slack", lockedUser: null,
-    channelTrust: "trusted", isManager: false, agentId: AGENT, threadKey: "C0CHAN:1.1",
+    channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: AGENT, threadKey: "C0CHAN:1.1",
     turnSenders: [{ userId: "U0ALICE", teamId: TEAM, origin: "slack" }], ...over,
   };
   const deps: BrainToolDeps = {

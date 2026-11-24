@@ -2,13 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { brainHandlers, humanizeBrainError, type BrainToolDeps } from "../src/knowledge/mcp-tools";
 import { agentSourceId, type BrainScope } from "../src/knowledge/scope";
 import { agentIdSync, resolveAgentId, resetAgentId } from "../src/knowledge/agent-identity";
+import { NO_PLACE } from "../src/memory/place";
 
 const scope: BrainScope = { clientId: "U1", sourceId: "shared", allowedSources: ["shared"] };
 // kb_memoize reads the write source's superseded pages first (list_pages,
 // a read); the write-recording stubs below answer it with [] and skip it.
 const deps = (over: Partial<BrainToolDeps> = {}): BrainToolDeps => ({
   scope: () => scope,
-  gate: () => ({ userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1" }),
+  gate: () => ({ userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: "AGENT1" }),
   managers: () => ["UMGR"],
   requestApproval: async () => ({ approved: true, by: "UMGR" }),
   call: async (name) => ({ echoed: name }),

@@ -1,9 +1,10 @@
 import { describe, expect, test, beforeEach } from "bun:test";
 import { classifyBrainOp, gatedBrainCall, resetStandingGrants, turnBrainScope, type GateInput } from "../src/knowledge/gated-dispatch";
 import { agentSourceId, profileSourceId, resolveBrainScope, SHARED_SOURCE, userSourceId, type BrainScope } from "../src/knowledge/scope";
+import { NO_PLACE } from "../src/memory/place";
 
 const gate = (over: Partial<GateInput> = {}): GateInput => ({
-  userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, agentId: "AGENT1", ...over,
+  userId: "U1", teamId: null, interactive: true, lockedUser: null, channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: "AGENT1", ...over,
 });
 const scopeFor = async (g: GateInput, kb: string[] = []) => (await resolveBrainScope({ ...g, kbSources: kb }));
 // Explicit "shared" escalation — kb_memoize target:"shared" overrides sourceId.
