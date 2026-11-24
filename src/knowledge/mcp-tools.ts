@@ -323,7 +323,7 @@ export const MEMORY_ABOUT_REFUSAL = "refused: memory_about only answers for the 
 
 /** One page memory_about shows (spec §8.3 "what do you know about me?"). */
 export interface MemoryEntry {
-  where: "profile" | "agent" | "user" | "shared" | "public";
+  where: "profile" | "agent" | "user" | "shared" | "public" | "place";
   slug: string;
   type: string;
   confidence: string;
@@ -331,10 +331,11 @@ export interface MemoryEntry {
   body: string;
 }
 
-const WHERE_ORDER: MemoryEntry["where"][] = ["profile", "user", "agent", "shared", "public"];
+const WHERE_ORDER: MemoryEntry["where"][] = ["profile", "user", "place", "agent", "shared", "public"];
 const WHERE_LABEL: Record<MemoryEntry["where"], string> = {
   profile: "their profile",
   user: "their /1on1 notes",
+  place: "this place's notes",
   agent: "the agent's notes",
   shared: "the team knowledge base",
   public: "the public notes",
@@ -359,9 +360,9 @@ const ABOUT_LIST_LIMIT = 500;
  * profile (only when it is the one in this scope; `profile`), and
  * `people/<userId>` in the agent's slices, their own `user-` slice (in the
  * scope only in their own /1on1), `shared` (plus the `shared/people/<userId>`
- * team fact) and `public`. KB sources are operator material and not read.
+ * team fact) and `public`; under memory places (`placesOn`) also `people/<userId>` in the turn's place. KB sources are operator material and not read.
  */
-function memorySources(scope: BrainScope, sender: TurnSender): Array<{ where: MemoryEntry["where"]; source: string; fixed: string[] }> {
+function memorySources(scope: BrainScope, sender: TurnSender, placesOn = false): Array<{ where: MemoryEntry["where"]; source: string; fixed: string[] }> {
   const out: Array<{ where: MemoryEntry["where"]; source: string; fixed: string[] }> = [];
   const profile = speakerProfileSource(sender.teamId, sender.userId);
   // gbrain stores slugs lowercased and reads them exactly, so the note for an
@@ -370,6 +371,7 @@ function memorySources(scope: BrainScope, sender: TurnSender): Array<{ where: Me
   for (const source of new Set(scope.allowedSources)) {
     if (source === profile) out.push({ where: "profile", source, fixed: ["profile"] });
     else if (source === userSourceId(sender.userId)) out.push({ where: "user", source, fixed: [note] });
+    else if (placesOn && hasPlacePrefix(source)) out.push({ where: "place", source, fixed: [note] });
     else if (source === AGENT_SOURCE || source.startsWith("agent-")) out.push({ where: "agent", source, fixed: [note] });
     else if (source === SHARED_SOURCE) out.push({ where: "shared", source, fixed: [note, `shared/${note}`] });
     else if (source === PUBLIC_SOURCE) out.push({ where: "public", source, fixed: [note] });
@@ -388,11 +390,11 @@ const rowSlugs = (rows: unknown): string[] =>
  * keep a page whose `subject` is the sender. A page with no `subject` is kept
  * only at a fixed slug or in the person's own profile source.
  */
-async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scope: BrainScope, sender: TurnSender): Promise<MemoryEntry[]> {
+async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scope: BrainScope, sender: TurnSender, placesOn = false): Promise<MemoryEntry[]> {
   const entries: MemoryEntry[] = [];
   // At most this many subject compares per listing resolve people (a few under shadow, more when the answer is used); the rest compare as strings only.
   let shadowBudget = isInternal() ? 50 : 3;
-  for (const m of memorySources(scope, sender)) {
+  for (const m of memorySources(scope, sender, placesOn)) {
     const only: BrainScope = { ...scope, sourceId: m.source, allowedSources: [m.source] };
     const listed = new Set<string>();
     for (const type of ABOUT_TYPES) {
@@ -713,7 +715,7 @@ export const brainHandlers = {
     const sender = ownTurnSender(gate);
     if (!sender || !(await sameAt({ site: "kb_tools.memory_about", persona: gate.agentId, teamId: sender.teamId, userId: sender.userId, otherUserId: p.userId }))) return err(MEMORY_ABOUT_REFUSAL);
     try {
-      const entries = await collectMemoryAbout(d.call ?? brainCall, await d.scope(), sender);
+      const entries = await collectMemoryAbout(d.call ?? brainCall, await d.scope(), sender, gate.placesOn === true);
       return ok(entries.length > 0 ? formatMemoryAbout(entries) : `Nothing is recorded about ${p.userId} in what this turn can read.`);
     } catch (e) {
       return err(humanizeBrainError("memory_about", e));

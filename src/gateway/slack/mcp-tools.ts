@@ -17,6 +17,8 @@ import * as Ignores from "../../db/ignores";
 import { loadGrants } from "../../access/role";
 import { roleAt } from "../../access/wired";
 import * as CronJobs from "../../db/cron-jobs";
+import { placeFor } from "../../memory/place";
+import { backgroundAgentId } from "../../background/skill-check";
 import * as OneOnOne from "../../db/one-on-one";
 import { getNextRun } from "./cron-parser";
 import { run as runIngest } from "../../knowledge/ingest";
@@ -589,6 +591,13 @@ export const adminHandlers = {
   async listCronJobs(ctx: SlackContext): Promise<ToolResult> {
     if (!(await isManagerOrApprover(ctx.personaId, ctx.userId, ctx.channel, ctx.teamId))) {
       return err("Only manager or approver can list cron jobs.");
+    }
+    // Memory places on (rc.47): only the jobs stored with this turn's boundary. A turn whose boundary is unknown sees none.
+    if (env.memory.placesOn(ctx.personaId)) {
+      const ref = await placeFor({ agentId: await backgroundAgentId(ctx.personaId ?? "default"), teamId: ctx.teamId ?? null, channel: ctx.channel, ...(ctx.threadTs ? { threadTs: ctx.threadTs } : {}), personaId: ctx.personaId && ctx.personaId !== "default" ? ctx.personaId : null });
+      const here = ref.kind === "place" ? await CronJobs.listActiveInBoundary(ref.boundaryId) : [];
+      if (!here.length) return ok("No active cron jobs here.");
+      return ok("*Active cron jobs here*\n" + here.map(cronJobLine).join("\n"));
     }
     const jobs = await CronJobs.listActive();
     if (!jobs.length) return ok("No active cron jobs.");
