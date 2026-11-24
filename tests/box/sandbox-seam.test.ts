@@ -139,6 +139,26 @@ describe("sandbox seam", () => {
     expect(Object.keys(opts).sort()).toEqual(UNBOXED_OPTION_KEYS);
   });
 
+  it("a boxed session is told what lasts in its box and how a refused host looks; an unboxed one is told nothing of it", async () => {
+    const { BOXED_SESSION_BLOCK } = await import("../../src/box/prompt");
+    const unboxed = (await boot(new AgentManager())).opts.systemPrompt.append as string;
+    const viaNull = new AgentManager();
+    viaNull.setSandboxResolver(async () => null);
+    const unboxedNull = (await boot(viaNull)).opts.systemPrompt.append as string;
+    const mgr = new AgentManager();
+    mgr.setSandboxResolver(async () => fakeSandbox().sandbox);
+    const boxed = (await boot(mgr)).opts.systemPrompt.append as string;
+    expect(unboxed).not.toContain("<box>");
+    expect(unboxedNull).not.toContain("<box>");
+    expect(boxed.endsWith(BOXED_SESSION_BLOCK)).toBe(true);
+    // The box block is the only difference a sandbox makes to the prompt.
+    expect(boxed.slice(0, -BOXED_SESSION_BLOCK.length).trimEnd().length).toBe(unboxed.length);
+    expect(BOXED_SESSION_BLOCK).toContain("/home/agent");
+    expect(BOXED_SESSION_BLOCK).toContain("403");
+    expect(BOXED_SESSION_BLOCK).toContain("pip");
+    expect(BOXED_SESSION_BLOCK).not.toMatch(/\u2014/);
+  });
+
   it("a sandbox: the spawn hook hands the SDK's request to sandbox.spawn and returns its process", async () => {
     const mgr = new AgentManager();
     const fake = fakeSandbox();

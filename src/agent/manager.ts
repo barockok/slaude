@@ -50,6 +50,7 @@ import { memory } from "../memory";
 import { stripTurnMemoryContext, type MemoryProvider } from "../memory/provider";
 import { ChildEnvPatch, scrubChildEnv, withoutKeys } from "./child-env";
 import type { SandboxResolver, SessionSandbox, SpawnOptions } from "../box/sandbox";
+import { withBoxBlock } from "../box/prompt";
 import { resolveSessionConfigDir } from "./oauth-home";
 import { sessionIdOpts } from "./session-id-opts";
 import { sessionModeBlock, type RemoteModeInfo } from "./session-mode";
@@ -2221,7 +2222,8 @@ export class AgentManager extends EventEmitter {
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
-          append: systemAppend,
+          // A boxed session is also told what lasts in its box and how a refused host looks; unboxed, unchanged.
+          append: withBoxBlock(systemAppend, sandbox !== null),
         },
         ...sessionIdOpts(row),
       };
