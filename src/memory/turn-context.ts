@@ -18,6 +18,9 @@
  * the whole block to TURN_CONTEXT_LIMITS.total, dropping the oldest
  * commitments first.
  *
+ * With memory places on (`placesOn`), each section has its own slice of the deadline and a late or failed section
+ * is dropped alone (see buildSliced); otherwise one late read drops the whole block, as before.
+ *
  * Bounded in time and load: past `timeoutMs`, or on any error, there is no
  * block (null) and the turn goes ahead without it; once the deadline passes
  * no further brain call starts (calls already in flight finish on their own),
@@ -181,20 +184,8 @@ async function commitmentsIn(r: Reads, scope: BrainScope, source: string, d: Tur
 
 const section = (name: string, inner: string): string => `<${name}>\n${inner}\n</${name}>`;
 
-async function build(r: Reads, d: TurnMemoryDeps): Promise<string | null> {
-  const { scope } = d;
-  const readable = new Set(scope.allowedSources);
-  const today = (d.now ?? (() => new Date()))().toISOString().slice(0, 10);
-
-  const [profile, lessons, commitments, channel] = await Promise.all([
-    scope.profileSource && readable.has(scope.profileSource) ? currentBody(r, scope.profileSource, "profile") : null,
-    readable.has(d.agentSource) ? currentBody(r, d.agentSource, "self/lessons") : null,
-    Promise.all([...readable].filter((s) => !s.startsWith("kb-")).map((s) => commitmentsIn(r, scope, s, d, today))).then((all) =>
-      all.flat().sort((a, b) => (a.asOf === b.asOf ? a.slug.localeCompare(b.slug) : a.asOf < b.asOf ? 1 : -1)).slice(0, MAX_COMMITMENTS),
-    ),
-    readable.has(SHARED_SOURCE) ? currentBody(r, SHARED_SOURCE, `shared/channels/${d.channelId.toLowerCase()}`) : null,
-  ]);
-
+/** The sections' texts to a block: newest commitments first, dropping the oldest until the whole fits. */
+function assemble(profile: string | null, lessons: string | null, commitments: Commitment[], channel: string | null): string | null {
   const head = [
     profile ? section("profile", cut(neutralize(profile), TURN_CONTEXT_LIMITS.profile)) : null,
     lessons ? section("lessons", cut(neutralize(lessons), TURN_CONTEXT_LIMITS.lessons)) : null,
@@ -216,6 +207,73 @@ async function build(r: Reads, d: TurnMemoryDeps): Promise<string | null> {
   return text || null;
 }
 
+const readSections = (r: Reads, d: TurnMemoryDeps) => {
+  const { scope } = d;
+  const readable = new Set(scope.allowedSources);
+  const today = (d.now ?? (() => new Date()))().toISOString().slice(0, 10);
+  return {
+    profile: (): Promise<string | null> => (scope.profileSource && readable.has(scope.profileSource) ? currentBody(r, scope.profileSource, "profile") : Promise.resolve(null)),
+    lessons: (): Promise<string | null> => (readable.has(d.agentSource) ? currentBody(r, d.agentSource, "self/lessons") : Promise.resolve(null)),
+    commitments: (): Promise<Commitment[]> =>
+      Promise.all([...readable].filter((s) => !s.startsWith("kb-")).map((s) => commitmentsIn(r, scope, s, d, today))).then((all) =>
+        all.flat().sort((a, b) => (a.asOf === b.asOf ? a.slug.localeCompare(b.slug) : a.asOf < b.asOf ? 1 : -1)).slice(0, MAX_COMMITMENTS),
+      ),
+    channel: (): Promise<string | null> => (readable.has(SHARED_SOURCE) ? currentBody(r, SHARED_SOURCE, `shared/channels/${d.channelId.toLowerCase()}`) : Promise.resolve(null)),
+  };
+};
+
+async function build(r: Reads, d: TurnMemoryDeps): Promise<string | null> {
+  const s = readSections(r, d);
+  const [profile, lessons, commitments, channel] = await Promise.all([s.profile(), s.lessons(), s.commitments(), s.channel()]);
+  return assemble(profile, lessons, commitments, channel);
+}
+
+/** Each section's share of the deadline when places are on: the commitment scan reads every source, so it gets all of it. */
+export const SECTION_SLICE = { profile: 0.4, lessons: 0.4, commitments: 1, channel: 0.4 } as const;
+
+/**
+ * Memory places on (rc.47): every section has its own reads and its own slice of the deadline, and a section that is
+ * late or fails is dropped alone, so one slow source no longer takes the whole block with it. A brain that is not open
+ * drops every section silently; any other failure logs one line naming only the section and the error's kind.
+ */
+async function buildSliced(d: TurnMemoryDeps, ms: number): Promise<string | null> {
+  const part = async <T>(name: string, frac: number, run: (r: Reads) => Promise<T>, empty: T): Promise<T> => {
+    const reads = new Reads(d.call as BrainOpCall, d.scope);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<"late">((resolve) => {
+      timer = setTimeout(() => {
+        reads.expire();
+        resolve("late");
+      }, Math.max(1, Math.floor(ms * frac)));
+    });
+    try {
+      const r = await Promise.race([run(reads), late]);
+      if (r === "late") {
+        console.warn(`[memory-context] ${name} skipped: brain reads took longer than ${Math.floor(ms * frac)}ms`);
+        return empty;
+      }
+      return r;
+    } catch (e) {
+      if (!isBrainNotOpen(e)) {
+        const code = (e as { code?: unknown } | null)?.code;
+        const kind = typeof code === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(code) ? code : e instanceof Error ? e.name : typeof e;
+        console.warn(`[memory-context] ${name} skipped: a brain read failed (${kind})`);
+      }
+      return empty;
+    } finally {
+      clearTimeout(timer);
+      reads.expire();
+    }
+  };
+  const [profile, lessons, commitments, channel] = await Promise.all([
+    part("profile", SECTION_SLICE.profile, (r) => readSections(r, d).profile(), null),
+    part("lessons", SECTION_SLICE.lessons, (r) => readSections(r, d).lessons(), null),
+    part("open-commitments", SECTION_SLICE.commitments, (r) => readSections(r, d).commitments(), [] as Commitment[]),
+    part("channel-notes", SECTION_SLICE.channel, (r) => readSections(r, d).channel(), null),
+  ]);
+  return assemble(profile, lessons, commitments, channel);
+}
+
 /**
  * The inner text of this message's `<memory-context>` block (without the
  * tags), or null when there is nothing to show, the reads take longer than
@@ -225,6 +283,7 @@ async function build(r: Reads, d: TurnMemoryDeps): Promise<string | null> {
  */
 export async function buildTurnMemoryContext(deps: TurnMemoryDeps): Promise<string | null> {
   const ms = deps.timeoutMs ?? TURN_CONTEXT_TIMEOUT_MS;
+  if (deps.placesOn === true) return buildSliced(deps, ms);
   const reads = new Reads(deps.call as BrainOpCall, deps.scope);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<"timeout">((resolve) => {
