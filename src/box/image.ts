@@ -284,12 +284,9 @@ export function makeImageStore(o: ImageStoreOpts) {
         write(have);
         return have;
       }
-      let p = inflight.get(digest);
-      if (!p) {
-        p = fetch(image, digest, opts.deadlineMs).finally(() => inflight.delete(digest));
-        inflight.set(digest, p);
-      }
-      return p;
+      // One fetch per digest: a second caller gets the first one's promise.
+      if (!inflight.has(digest)) inflight.set(digest, fetch(image, digest, opts.deadlineMs).finally(() => inflight.delete(digest)));
+      return inflight.get(digest)!;
     },
 
     /** A session started on this image: it is the most recently used. */

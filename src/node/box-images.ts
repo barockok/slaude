@@ -48,7 +48,9 @@ export function makeBoxPrewarm(deps: BoxPrewarmDeps) {
   const warn = deps.warn ?? ((l: string) => console.warn(l));
   /** What the gateway last said this node's labels need, by tenant. */
   const wanted = new Map<string, WantedImage[]>();
-  let running: Promise<void> | null = null;
+  /** The pass in flight (or the last one), and whether one is in flight. */
+  let current: Promise<void> = Promise.resolve();
+  let busy = false;
   let again: string | null = null;
   let listedOnce = false;
 
@@ -88,11 +90,12 @@ export function makeBoxPrewarm(deps: BoxPrewarmDeps) {
      * queues exactly one more, for the newest tenant asked.
      */
     refresh(tenant = "default"): Promise<void> {
-      if (running) {
+      if (busy) {
         again = tenant;
-        return running;
+        return current;
       }
-      running = (async () => {
+      busy = true;
+      current = (async () => {
         try {
           await pass(tenant);
           while (again !== null) {
@@ -101,10 +104,10 @@ export function makeBoxPrewarm(deps: BoxPrewarmDeps) {
             await pass(next);
           }
         } finally {
-          running = null;
+          busy = false;
         }
       })();
-      return running;
+      return current;
     },
 
     /** Whether every CURRENT image the gateway listed is present. False until the list was read once. */
