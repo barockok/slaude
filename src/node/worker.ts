@@ -64,6 +64,8 @@ import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
 import { lockFromClaims } from "./session-lock";
 import { type NodeManifest, loadNodeManifest, makeNodeLocalMcpResolver } from "./manifest";
 import { makeNodeSessionBoxes, type NodeSessionBoxes } from "./session-boxes";
+import { noDriverRefusal, setupNodeBoxes, type NodeBoxOpts, type NodeBoxes } from "./box-node";
+import { makeClaimPause, type ClaimPause } from "./claim-pause";
 import { ChildEnvPatch } from "../agent/child-env";
 import { VoiceCalls } from "../voice/call";
 import { drainVoiceCalls, endCallsOnSessionExit, makeNodeVoiceHost, voiceServersFor } from "../voice/hosts";
@@ -470,7 +472,16 @@ export interface NodeWorkerOpts {
   /** Backoff of the whoami retry while paused on a 401 (tests shrink it).
    *  Default 5s doubling to 60s. */
   authRetry?: { initialMs?: number; maxMs?: number };
+  /**
+   * Boxes (box spec). Default: the node's SLAUDE_BOX_TIER, which is `none`,
+   * where nothing here applies. On a sandbox tier a driver is required: this
+   * build ships none, so the worker refuses to start; tests pass a fake.
+   */
+  box?: NodeBoxOpts;
 }
+
+/** A turn that found no room for its sandbox: the job is handed back, not run. */
+const BOX_FULL = Symbol("box-full");
 
 /** How long a turn-done marker outlives its job (covers Slack's retry window
  *  and any realistic BullMQ stall-recovery delay by a wide margin). */
@@ -517,6 +528,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const labelSet: ReadonlySet<string> = new Set(labels);
   // Before any connection: an invalid manifest stops the node here.
   const manifest = opts.manifest !== undefined ? opts.manifest : env.role() === "node" ? loadNodeManifest() : null;
+  // The sandbox tier this node offers. A tier with no driver is refused below, before anything is announced.
+  const boxTier: BoxTier = opts.box?.tier ?? env.box.tier();
+  if (boxTier !== "none" && !opts.box?.driver) throw new Error(noDriverRefusal(boxTier));
   const keys = opts.keys ?? makeKeys();
   const url = opts.redisUrl ?? redisUrl();
   const client = opts.client ?? new NodeClient({ baseUrl: env.gatewayUrl(), token: env.nodeToken() });
@@ -644,9 +658,11 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // servers (they run inside the sandbox) and never the manifest's. On tier
   // `none`, the default, nothing asks which box a session runs in.
   const sessionBoxes: NodeSessionBoxes | null =
-    env.box.tier() === "none"
+    boxTier === "none"
       ? null
-      : makeNodeSessionBoxes({ client, tenantFor: (id) => tenants.get(id), tokenFor: (id) => store.tokenFor(id), sessionFor: (id) => store.findById(id) });
+      : opts.box?.boxOf
+        ? { boxOf: opts.box.boxOf, egressOf: async () => ({ allow: [], deny: [] }) }
+        : makeNodeSessionBoxes({ client, tenantFor: (id) => tenants.get(id), tokenFor: (id) => store.tokenFor(id), sessionFor: (id) => store.findById(id) });
   if (manifest || sessionBoxes) {
     agent.setLocalMcpResolver(
       makeNodeLocalMcpResolver({
@@ -766,6 +782,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
    * slaude_node_auth_paused gauge, which is what to alert on.
    */
   let claimWorkers: Worker[] = [];
+  /** Why claim loops are paused: the credential and capacity are independent reasons (./claim-pause). Set once the workers exist. */
+  let claimPause: ClaimPause | null = null;
   let authPaused = false;
   metric.nodeAuthPaused.set(0);
   const authRetry = { initialMs: opts.authRetry?.initialMs ?? 5_000, maxMs: opts.authRetry?.maxMs ?? 60_000 };
@@ -775,7 +793,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     metric.nodeAuthPaused.set(1);
     console.error(`[node] ${nodeId} the gateway refused this node's credential (401): pausing claims until it is accepted again`);
     void (async () => {
-      await Promise.all(claimWorkers.map((w) => w.pause(true).catch(() => {})));
+      if (claimPause) await claimPause.pause("auth", "all");
+      else await Promise.all(claimWorkers.map((w) => w.pause(true).catch(() => {})));
       let delay = authRetry.initialMs;
       while (!stopped) {
         await sleep(delay);
@@ -789,8 +808,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         }
       }
       if (stopped) return;
-      await registry.nodeUp(nodeId, labels, nodeCapabilities()).catch(() => {});
-      for (const w of claimWorkers) w.resume();
+      await registry.nodeUp(nodeId, labels, nodeCapabilities(boxTier), await boxReport()).catch(() => {});
+      // Only the credential's own pause is lifted: a node that is also full stays paused on its label queues.
+      if (claimPause) claimPause.resume("auth");
+      else for (const w of claimWorkers) w.resume();
       authPaused = false;
       metric.nodeAuthPaused.set(0);
       console.log(`[node] ${nodeId} credential accepted again: resuming claims`);
@@ -839,12 +860,59 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         reload: (sid) => agent.reloadAfterTurn(sid),
         tenants,
       });
-      const unsub = await pubsub.onReload(tenantId, () => onReload(tenantId));
+      const unsub = await pubsub.onReload(tenantId, () => {
+        onReload(tenantId);
+        // A deploy may have brought a new box version: fetch its image before a session needs it.
+        void boxes?.prewarm?.refresh(tenantId);
+      });
       reloadUnsubs.set(tenantId, unsub);
     } catch (e) {
       console.error(`[node] reload subscribe failed tenant=${tenantId}:`, e);
     }
   }
+
+  /**
+   * Park one warm session early: end its CLI, flush its files (they stay on
+   * this node's disk), forget its credentials and leave the registry, so its
+   * next turn is routed afresh. The box runtime stops its sandbox afterwards.
+   */
+  async function parkWarm(sessionId: string): Promise<void> {
+    agent.reload(sessionId);
+    warm.delete(sessionId);
+    evictBundle(sessionId);
+    scratch.remove(sessionId);
+    if (fsSync) await fsSync.evict(sessionId).catch((e) => console.error(`[node] flush while parking session=${sessionId} failed:`, e));
+    store.unbindToken(sessionId);
+    tenants.delete(sessionId);
+    personas.delete(sessionId);
+    await registry.unregister(sessionId).catch(() => {});
+  }
+
+  // Boxes: null on tier `none`. On a sandbox tier this probes the driver and checks the pod's sizing,
+  // and a failure of either stops the node here, before it announces itself or claims anything.
+  const boxes: NodeBoxes | null = sessionBoxes
+    ? await setupNodeBoxes(opts.box, {
+        nodeId,
+        turnConcurrency: (labels.length + 1) * concurrency,
+        sessionBoxes,
+        listBoxes: (tenant) => client.getBoxes(tenant),
+        park: (sid) => parkWarm(sid),
+        turnRunning: (sid) => agent.turnRunning(sid),
+        // A second, independent pause reason: resuming for capacity never resumes a node paused for its credential.
+        setClaiming: async (on) => {
+          if (!claimPause) return;
+          if (on) claimPause.resume("capacity");
+          else await claimPause.pause("capacity", "labels");
+        },
+      })
+    : null;
+  // The sandbox resolver: null for an unboxed session; for a boxed one the sandbox `prepare` started, or a boot failure.
+  if (boxes) agent.setSandboxResolver((sessionId) => boxes.runtime.sandboxFor(sessionId));
+  /** What the heartbeat says about boxes; undefined on tier `none`, so no key is written. */
+  const boxReport = async () => (boxes ? await boxes.report().catch(() => undefined) : undefined);
+
+  // Hear deploys from the start, not only once a first job of the tenant arrives: the prewarm follows them.
+  if (boxes?.prewarm) void ensureReloadSub("default");
 
   // Remote filesystem sync (SLAUDE_STORAGE=s3): null in fs mode, where nothing changes.
   const fsSync: FsSync | null =
@@ -857,8 +925,45 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           flush: syncFlush,
           workingDirOf: async (id) => (await store.findById(id))?.working_dir,
           nodeAlive: (n) => registry.nodeAlive(n),
+          // Boxed sessions: the home and workspace-extras units, parking and its budget. Only where a
+          // packer exists (the supervisor serves it); without one a boxed session syncs like any other.
+          ...(boxes && boxes.packer
+            ? {
+                boxOf: (id: string) => boxes.syncFacts(id),
+                packer: boxes.packer,
+                parkBudgetMb: boxes.parkBudgetMb,
+                freeDiskMb: async () => (await boxes.freeDiskMb()) ?? Number.POSITIVE_INFINITY,
+                // Another node owns the unit now: the sandbox must stop touching it, and the local copy is not trusted.
+                onFenced: (_unit: string, sessionIds: string[]) => {
+                  for (const sid of sessionIds) {
+                    console.error(`[node] box session=${sid} was fenced by another node: stopping its sandbox`);
+                    agent.abort(sid);
+                    void boxes.runtime.stop(sid, "fenced");
+                  }
+                },
+                // The hint dispatch reads to send the next turn back to the node that holds the parked copy.
+                onPark: (sid: string, parked: boolean) => {
+                  void (parked ? registry.setParked(sid, nodeId) : registry.clearParked(sid, nodeId)).catch(() => {});
+                  metric.nodeBoxesParked.set(fsSync?.parked().length ?? 0);
+                },
+                onQuota: (e: { sessionIds: string[]; unit: "hm" | "wx"; state: "over" | "refused"; bytes: number; limitBytes: number }) => {
+                  const what = e.unit === "hm" ? "home directory" : "installed dependencies";
+                  for (const sid of e.sessionIds) {
+                    agent.noteSessionEvent(
+                      sid,
+                      e.state === "refused"
+                        ? `Your ${what} hold ${Math.round(e.bytes / 1048576)} MB, more than twice the limit of ${Math.round(e.limitBytes / 1048576)} MB: they are NOT being saved. Remove what you do not need.`
+                        : `Your ${what} hold ${Math.round(e.bytes / 1048576)} MB, over the limit of ${Math.round(e.limitBytes / 1048576)} MB. They are still saved; remove what you do not need.`,
+                    );
+                  }
+                },
+              }
+            : {}),
         })
       : null;
+  if (boxes && storageMode() !== "s3") {
+    console.log("[node] boxes without SLAUDE_STORAGE=s3: a session's home and installed dependencies stay on this node; a resume on another node starts with an empty home");
+  }
 
   // Runtime skills mirrored from the object store: a write_skill on any node reaches this node's
   // skills directory through the skills-changed channel, and each turn reconciles in case a message was missed.
@@ -1074,11 +1179,11 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     await ensureReloadSub(data.tenantId);
 
     const started = Date.now();
-    let res: "done" | "error" | "skipped" | typeof STALE_CONFIG | typeof HELD_BY_OTHER;
+    let res: "done" | "error" | "skipped" | typeof STALE_CONFIG | typeof HELD_BY_OTHER | typeof BOX_FULL;
     // Which lock a lost-lock abort came from, for its log line.
     const lockSignals: { session?: AbortSignal; folder?: AbortSignal } = {};
     try {
-      res = await runLockedTurn<"done" | "error" | "skipped" | typeof HELD_BY_OTHER>({
+      res = await runLockedTurn<"done" | "error" | "skipped" | typeof HELD_BY_OTHER | typeof BOX_FULL>({
         lock: (fn) => {
           // The TTL is also the takeover delay when this node dies: it never gets to
           // release the lock, so the re-delivered turn waits the lock out.
@@ -1123,14 +1228,25 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
               // for this session's files, so requeue like a held lock.
               if ((await fsSync.beforeTurn(data.sessionId, data.personaId ?? "default")) === "wait") return HELD_BY_OTHER;
             }
+            // Boxes: the sandbox starts here, after the files are in place and before the session can boot.
+            // A session that already has its sandbox is always served. No room: the job is handed back.
+            if (boxes) {
+              const prepared = await boxes.runtime.prepare(data.sessionId, {
+                onStatus: (text: string) => console.log(`[node] session=${data.sessionId}: ${text}`),
+              });
+              if (prepared === "full") return BOX_FULL;
+            }
             try {
               return await runTurn(job, data);
             } finally {
+              boxes?.runtime.turnEnded(data.sessionId);
               // Whatever the turn did, even when it threw: its edits go to the store (a lost lock flushes nothing).
               if (fsSync) {
                 await fsSync.afterTurn(data.sessionId, lostLock.aborted);
                 if (!agent.isLive(data.sessionId)) await fsSync.evict(data.sessionId);
               }
+              // No live child any more (the turn ended it, or its boot failed): its sandbox goes with it.
+              if (boxes && !agent.isLive(data.sessionId)) await boxes.runtime.stop(data.sessionId, lostLock.aborted ? "fenced" : "idle");
             }
           } finally {
             lostLock.removeEventListener("abort", onLost);
@@ -1160,6 +1276,23 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       throw new UnrecoverableError(e.code);
     }
 
+    if (res === BOX_FULL) {
+      // This node has no room for the session's sandbox (a race with another
+      // claim, or a job routed to this node's own queue for a parked session).
+      // The job is never failed and never run unboxed: from this node's own
+      // queue it goes to its label's queue with the existing atomic move; a job
+      // already on the label queue is put back there with a short delay, and
+      // this node's label workers are paused meanwhile, so another node takes it.
+      metric.nodeTurnsTotal.inc({ result: "handed_back" });
+      if (job.queueName === nodeTurnsQueue(nodeId)) {
+        const moved = await turnQueues.moveTo(job, label, { claimed: true });
+        console.log(`[node] job=${job.id} session=${data.sessionId}: no room for its sandbox here, moved to ${moved.queue}`);
+        return { moved: moved.queue };
+      }
+      console.log(`[node] job=${job.id} session=${data.sessionId}: no room for its sandbox here, put back on ${job.queueName}`);
+      await job.moveToDelayed(Date.now() + 1000, token);
+      throw new DelayedError();
+    }
     if (res === HELD_BY_OTHER || res === STALE_CONFIG) {
       // Another node is mid-turn on this session, or this node's warm session
       // has a reboot pending — requeue with a short delay (spec §2
@@ -1184,7 +1317,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   };
 
   // Announce liveness (and the labels, same transaction) BEFORE claiming anything.
-  await registry.nodeUp(nodeId, labels, nodeCapabilities());
+  await registry.nodeUp(nodeId, labels, nodeCapabilities(boxTier), await boxReport());
 
   // One BullMQ worker per label plus this node's own queue, each on its own
   // connection (blocking claims must never share) with its own concurrency.
@@ -1204,6 +1337,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       }),
   );
   claimWorkers = workers;
+  // The last worker is this node's own queue: capacity never pauses it.
+  claimPause = makeClaimPause(workers.map((worker, i) => ({ worker, label: i < labels.length })));
   for (const w of workers) {
     w.on("error", (e) => {
       lastWorkerError = { at: Date.now(), message: String((e as Error)?.message ?? e) };
@@ -1211,7 +1346,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     });
   }
   // Ready once every BullMQ worker has actually subscribed to its queue.
-  void Promise.all(workers.map((w) => w.waitUntilReady()))
+  // On a sandbox tier, also once the labels' current box images are present (or the prewarm timeout passed).
+  void Promise.all([...workers.map((w) => w.waitUntilReady()), boxes ? boxes.ready() : Promise.resolve()])
     .then(() => {
       if (state === "starting") state = "ready";
     })
@@ -1224,7 +1360,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       // Paused on a 401: not serving, so not announced (pauseForAuth).
       if (authPaused) return;
       try {
-        await registry.beatNode(nodeId, labels, nodeCapabilities());
+        await registry.beatNode(nodeId, labels, nodeCapabilities(boxTier), await boxReport());
         metric.nodeSessionsLive.set(agent.liveCount());
         for (const sessionId of [...warm]) {
           if (agent.isLive(sessionId)) {
@@ -1238,6 +1374,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
             personas.delete(sessionId);
             // Flush before the session leaves the registry: until then no other node is routed to it.
             if (fsSync) await fsSync.evict(sessionId);
+            // The sandbox goes once its files are flushed; the local copies stay (parked).
+            if (boxes) await boxes.runtime.stop(sessionId, "idle");
             await registry.unregister(sessionId);
           }
         }
@@ -1247,6 +1385,27 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     })();
   }, hbSec * 1000);
   hbTimer.unref?.();
+
+  // Boxes: the pressure rule and the claim gate on a short timer; the parked copies' pruner on a
+  // longer one (free disk moves without any session parking). Neither exists on tier `none`.
+  const boxTimer = boxes
+    ? setInterval(() => {
+        if (stopped || authPaused) return;
+        void boxes.runtime.tick().catch((e) => console.error("[node] box tick failed:", e));
+      }, boxes.tickMs)
+    : null;
+  boxTimer?.unref?.();
+  const pruneTimer =
+    boxes && fsSync
+      ? setInterval(() => {
+          if (stopped) return;
+          void fsSync!
+            .prune()
+            .then(() => metric.nodeBoxesParked.set(fsSync!.parked().length))
+            .catch((e) => console.error("[node] parked copy pruning failed:", e));
+        }, 60_000)
+      : null;
+  pruneTimer?.unref?.();
 
   // /healthz + /readyz + /metrics (spec §6). Both probes gate on the worker
   // lifecycle: a draining node must drop out of rotation, and a node whose
@@ -1315,6 +1474,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     const deadline = Date.now() + grace;
     console.log(`[node] ${nodeId} draining (grace ${grace}ms)`);
     clearInterval(hbTimer);
+    if (boxTimer) clearInterval(boxTimer);
+    if (pruneTimer) clearInterval(pruneTimer);
     // Stop claiming; end every voice call (goodbye line, transcript, summary
     // turn) and wait for in-flight turns, all within the one grace, then force.
     const closing = Promise.all(workers.map((w) => w.close()));
@@ -1326,6 +1487,12 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     }
     // Flush every warm session's files before it is deregistered.
     if (fsSync) await fsSync.drain().catch((e) => console.error(`[node] ${nodeId} filesystem flush on drain failed:`, e));
+    if (boxes) {
+      // Every warm box is flushed (above, several sessions at a time); now every sandbox stops, in parallel.
+      await boxes.runtime.drain().catch((e) => console.error(`[node] ${nodeId} sandbox stop on drain failed:`, e));
+      // Parked sessions are already flushed, and this pod's disk goes with it: their hints must not route anything here.
+      for (const sid of fsSync?.parked() ?? []) await registry.clearParked(sid, nodeId).catch(() => {});
+    }
     if (skillMirror) await skillMirror.stop();
     // Deregister every warm session + the node itself (spec §2 SIGTERM).
     for (const sessionId of [...warm]) {
@@ -1364,6 +1531,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     stopped = true;
     console.log(`[node] ${nodeId} KILLED (no drain)`);
     clearInterval(hbTimer);
+    if (boxTimer) clearInterval(boxTimer);
+    if (pruneTimer) clearInterval(pruneTimer);
     http?.stop(true);
     // Best-effort quiet-down of the claim loops; deliberately NOT awaited — a
     // force-close with an in-flight job can wait on it, and a real SIGKILL
