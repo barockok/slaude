@@ -201,10 +201,11 @@ scrape_configs:
 ## Boxes: sizing, admission and drain
 
 > **Status: in development.** These rules are implemented and tested with a
-> stand-in for the sandbox, and once end to end with a real one on a
-> development VM. The manifests that add the supervisor container (`boxd`) to
-> a node pod are not written yet, and nothing here has run on a cluster.
-> The numbers marked as guesses are replaced when the sandbox is measured.
+> stand-in for the sandbox, and end to end with a real one on a development
+> VM. The manifests that add the supervisor container (`boxd`) to a node pod
+> exist (`deploy/k8s-scale-box`) and render, and **have never been applied to
+> a cluster**: nothing here has run on one. The numbers marked as guesses are
+> replaced when the sandbox is measured.
 
 Boxes run inside the node pod, so a node pod is the unit of capacity and the
 Deployment's replica count is the only thing that scales.
