@@ -51,6 +51,8 @@ export interface BoundaryResolver {
   cached(team: string | null | undefined, channel: string | null | undefined): BoundaryRef | null | undefined;
   resolve(team: string | null | undefined, channel: string | null | undefined): Promise<BoundaryRef | null>;
   prime(team: string, channel: string, id: string): void;
+  /** True when the last read for this key failed (timeout or error) and the key is still in its backoff: "unknown", not "absent". */
+  failed(team: string | null | undefined, channel: string | null | undefined): boolean;
   reset(): void;
 }
 
@@ -185,6 +187,14 @@ export function createBoundaryResolver(deps: BoundaryResolverDeps = {}): Boundar
         /* never into the caller */
       }
     },
+    failed(team, channel) {
+      try {
+        if (!team || !channel) return false;
+        return failedAt.has(keyOf(team, channel));
+      } catch {
+        return false;
+      }
+    },
     reset() {
       cache.clear();
       inflight.clear();
@@ -206,6 +216,9 @@ export const boundaryFor = (team: string | null | undefined, channel: string | n
 
 /** First sight calls this after it creates or finds a boundary. */
 export const primeBoundary = (team: string, channel: string, id: string): void => resolver().prime(team, channel, id);
+
+/** True when the shared resolver's last read for the channel failed (the answer is unknown, not absent). */
+export const boundaryLookupFailed = (team: string | null | undefined, channel: string | null | undefined): boolean => resolver().failed(team, channel);
 
 export const resetBoundaryResolver = (): void => resolver().reset();
 

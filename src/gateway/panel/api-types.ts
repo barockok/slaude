@@ -435,7 +435,7 @@ export interface AuditPageResponse {
 
 /** Store kinds, from the brain source naming. `other` is a source outside that
  *  naming (the brain's own `default`). */
-export type MemoryStoreKind = "agent" | "shared" | "public" | "personal" | "profile" | "library" | "other";
+export type MemoryStoreKind = "agent" | "shared" | "public" | "personal" | "profile" | "place" | "library" | "other";
 
 export interface MemoryStoreView {
   id: string;

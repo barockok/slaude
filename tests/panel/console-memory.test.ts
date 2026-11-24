@@ -214,6 +214,27 @@ describe("memory API", () => {
     expect((await AuditEvents.list({ action: "memory.page.viewed" })).items).toEqual([]);
   });
 
+  test("a memory place is private like a personal store: an operator never sees it, a superadmin does", async () => {
+    const place = "mb-0123456789abcdef0123456789ab";
+    const withPlace: MemoryBrowser = {
+      ...stub,
+      async stores() {
+        return [{ id: "shared", kind: "shared", pageCount: 5 }, { id: place, kind: "place", pageCount: 3 }];
+      },
+      async page(store, slug) {
+        return store === place && slug === "notes/a" ? { ...PAGE, store, content: "PRIVATE-CONTENT" } : stub.page(store, slug);
+      },
+    };
+    const list = await get("/panel/api/memory/stores", operator, withPlace);
+    expect((list.body as MemoryStoresResponse).stores.map((s) => s.id)).toEqual(["shared"]);
+    const denied = await get(`/panel/api/memory/pages?store=${place}&slug=notes%2Fa`, operator, withPlace);
+    expect(denied.status).toBe(403);
+    expect(JSON.stringify(denied.body)).not.toContain("PRIVATE-CONTENT");
+    const all = await get("/panel/api/memory/stores", superadmin, withPlace);
+    expect((all.body as MemoryStoresResponse).stores.find((s) => s.id === place)).toMatchObject({ kind: "place", label: "Place: 01234567" });
+    expect((await get(`/panel/api/memory/pages?store=${place}&slug=notes%2Fa`, superadmin, withPlace)).status).toBe(200);
+  });
+
   test("a superadmin reads them, and each page read is audited without its content", async () => {
     expect((await get("/panel/api/memory/stores/user-ualice/pages?limit=2", superadmin)).status).toBe(200);
     const r = await get("/panel/api/memory/pages?store=user-ualice&slug=notes%2Fa", superadmin);

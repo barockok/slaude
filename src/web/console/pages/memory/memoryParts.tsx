@@ -10,6 +10,7 @@ export const KIND_LABEL: Record<MemoryStoreKind, string> = {
   public: "Public",
   personal: "Personal",
   profile: "Profile",
+  place: "Place",
   library: "Library",
   other: "Other",
 };
@@ -20,6 +21,7 @@ const KIND_TONE: Record<MemoryStoreKind, BadgeTone> = {
   public: "success",
   personal: "warning",
   profile: "warning",
+  place: "warning",
   library: "neutral",
   other: "neutral",
 };
@@ -29,8 +31,8 @@ export function KindBadge({ kind }: { kind: MemoryStoreKind }) {
 }
 
 /** Personal and profile stores: one person's memory, superadmin only. */
-export const isPrivateKind = (kind: MemoryStoreKind) => kind === "personal" || kind === "profile";
-export const isPrivateStoreId = (id: string) => /^(user-|profile-)/.test(id);
+export const isPrivateKind = (kind: MemoryStoreKind) => kind === "personal" || kind === "profile" || kind === "place";
+export const isPrivateStoreId = (id: string) => /^(user-|profile-|mb-)/.test(id);
 
 export function PrivateBadge() {
   return (

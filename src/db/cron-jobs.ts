@@ -248,3 +248,9 @@ function mapRow(row: any): CronJob {
     personaId: row.persona_id ?? "default",
   };
 }
+
+/** The boundary a job was created in, or null (a console-made job, or a row the fill has not reached). */
+export async function boundaryIdOfJob(id: string): Promise<string | null> {
+  const row = await db.one<{ boundary_id: string | null }>("SELECT boundary_id FROM cron_jobs WHERE id = ?", [id]);
+  return row?.boundary_id ?? null;
+}

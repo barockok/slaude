@@ -145,6 +145,8 @@ export function storeLabel(id: string, agents: ReadonlyMap<string, string> = new
       return `Personal: ${id.slice("user-".length)}`;
     case "profile":
       return "Profile";
+    case "place":
+      return `Place: ${id.slice("mb-".length, "mb-".length + 8)}`;
     case "library":
       return `Library: ${id.slice("kb-".length)}`;
     default:
