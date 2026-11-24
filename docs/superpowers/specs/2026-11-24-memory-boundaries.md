@@ -132,8 +132,11 @@ Decided after the review, 2026-11-24:
 - **Wake writes to `shared`: create is automatic, modify needs a card.** A page that does not exist in `shared` is saved without a card. A write that changes an existing `shared` page (overwrite, supersede, delete) is approval tier. A wake has nobody to answer a card, so a wake's modify is refused with a message to ask in the channel. Interactive turns are unchanged (every `shared` write cards today).
 - **A manager DM stays its own boundary.** Putting DMs in the persona-wide tier would make them readable by every trusted turn, close to public. The rollback cost is solved differently: with the flag off, the read union is built by listing sources with the `bnd-<agent>-` prefix (the brain admin already lists sources, `listBrainSources` in the scheduler), not from `trustedChannels`, so manager-DM boundaries stay readable.
 
-Still open:
+Decided on the open items, 2026-11-24:
 
-1. Lessons: generalise a lesson before it is written, or route the nightly proposals through promotion.
-2. A manager in a public or unknown channel resolves to `agent-<id>` today and auto-passes. Card it, send it to its own boundary, or accept it.
-3. Background proposals (`self/lesson-proposals`) and proactive rules live in the agent slice: move them per boundary, or accept as persona-wide.
+- **Every memory write is bound to a boundary by default.** `memory_save` with no target writes to the boundary of the turn. A page leaves it only by an explicit act: `target: persona` (promote, manager tier), `target: shared` (carded; create automatic for a wake, see above). A background pass is no exception: it writes into the boundary it read.
+- **A manager in a public or unknown channel stays in that channel's boundary.** The persona-wide tier is not readable there. Such a channel is a boundary like any other (its own `bnd-<agent>-<channel>` source for what is saved there, `public` for what everyone reads), and the manager's role does not widen it. This replaces today's rule, where any manager turn reads and writes `agent-<id>` (`scope.ts:198`).
+- **Lessons are generalised before they are written.** The nightly pass reads one boundary at a time and writes lesson proposals into that boundary. The lessons-upkeep pass then merges proposals from every boundary into `self/lessons`, rewriting each line so it names no channel, person, customer or task, only the behaviour to repeat or avoid. A proposal it cannot generalise stays in its boundary.
+- **Proactive rules are not gone with the global round.** They are still read by the channel wake, `proactive_post` and reply context (`loadRules`, `rule-tool.ts`), and a rule's `scope` is already a boundary: a channel id, a DM user id, or `global`. Rules scoped to a channel or a DM live in that boundary. A `global` rule stays persona-wide, and teaching one already needs an approver. `loadRules` reads the boundary plus the persona-wide tier. Lesson proposals are unrelated to proactiveness (written by the nightly review) and follow the lessons rule above.
+
+Open: none blocking the plan.
