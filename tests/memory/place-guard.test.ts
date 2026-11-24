@@ -38,6 +38,8 @@ function literals(file: string, text: string): Array<{ line: number; text: strin
 
 export function placeNamingHits(file: string, text: string): string[] {
   if (PLACE_NAMING.has(file)) return [];
+  // Build output (the console bundle exists after a web build, as in CI) is not source.
+  if (/(^|\/)dist\//.test(file)) return [];
   return literals(file, text)
     .filter((l) => NAMES_PREFIX.test(l.text))
     .filter((l) => !(RECOGNITION_ONLY.has(file) && l.kind === "regex"))
