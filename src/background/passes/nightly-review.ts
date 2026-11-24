@@ -6,6 +6,8 @@
  * (brain-provider.ts) of this agent's sessions touched in or after that day,
  * read one slice at a time:
  *   - the agent's own slice `agent-<id>` (channel threads): one agent-scope pass;
+ *   - with memory places on (rc.47), each place of the agent with activity that day, taken from
+ *     the registry: one pass per place, reading that place plus the tiers and writing its proposals there;
  *   - each person's `user-<id>` (their /1on1 threads and DMs): one pass per
  *     person and Slack team, running as that person.
  * A pass gets only its slice's timeline entries whose timestamp falls in that
@@ -30,6 +32,9 @@ import { previousDay } from "../calendar";
 import { LESSONS_SLUG, PROPOSALS_SLUG } from "./lessons-upkeep";
 import type { AgentGroup } from "../scheduler";
 import type { AppRef } from "../../gateway/core/transport";
+import { env } from "../../config/env";
+import * as MemoryScopes from "../../db/memory-scopes";
+import { placeBound } from "../../memory/place-binding";
 
 export interface NightlyDeps {
   runner: RunnerDeps;
@@ -41,6 +46,10 @@ export interface NightlyDeps {
   run?: typeof runPass;
   /** Posts a run-as pass's proposals to that person's DM, once per run. Absent: they wait unseen until they expire. */
   deliver?: PersonDelivery;
+  /** Seam (tests): whether memory places are on for a persona (default env.memory.placesOn). */
+  placesOn?: (persona: string) => boolean;
+  /** Seam (tests): the agent's registered places (default the memory_scopes registry). */
+  places?: (agentId: string) => Promise<string[]>;
 }
 
 /** Delivery of one pass run's proposals to the person it ran as (proposal-cards.ts postPersonProposals). */
@@ -168,11 +177,18 @@ export interface PersonDay {
  * group's personas' sessions touched since the day began (setStatus bumps
  * updated_at every turn).
  */
-export async function collectDay(group: AgentGroup, day: string, deps: NightlyDeps): Promise<{ agent: TranscriptTurn[]; agentThreads: string[]; users: PersonDay[] }> {
+export interface PlaceDay {
+  /** The place source whose conversation pages these turns came from. */
+  source: string;
+  turns: TranscriptTurn[];
+  threads: string[];
+}
+
+export async function collectDay(group: AgentGroup, day: string, deps: NightlyDeps): Promise<{ agent: TranscriptTurn[]; agentThreads: string[]; users: PersonDay[]; places: PlaceDay[] }> {
   const tag = `[background] agent=${group.agentId} pass=nightly-review`;
   const since = Date.parse(`${day}T00:00:00Z`) - MAX_OFFSET_MS;
   const sessions = await Sessions.updatedSince(group.personaIds, since, MAX_SESSIONS);
-  if (sessions.length === 0) return { agent: [], agentThreads: [], users: [] };
+  if (sessions.length === 0) return { agent: [], agentThreads: [], users: [], places: [] };
   if (sessions.length >= MAX_SESSIONS) console.warn(`${tag}: over ${MAX_SESSIONS} sessions since ${day}; only the ${MAX_SESSIONS} touched most recently are read`);
   const teamOf = new Map(sessions.map((s) => [conversationSlug(s.id), s.slack_team_id ?? ""]));
   // Sessions come most recently touched first: the first app seen per slug is the thread's own.
@@ -222,7 +238,30 @@ export async function collectDay(group: AgentGroup, day: string, deps: NightlyDe
       users.set(key, person);
     }
   }
-  return { agent, agentThreads: [...agentThreads], users: [...users.values()] };
+
+  // Memory places on (rc.47): one set of turns per place with activity that day, the places taken from the registry.
+  // The agent slice above is still read, so pages written before the switch are reviewed once as before.
+  const places: PlaceDay[] = [];
+  if (group.personaIds.some((p) => (deps.placesOn ?? ((x: string) => env.memory.placesOn(x)))(p))) {
+    const registered = await (deps.places ?? (async (a: string) => (await MemoryScopes.listByAgent(a)).map((r) => r.source_id)))(group.agentId);
+    for (const source of [...registered].sort()) {
+      // A source the registry names but does not bind to this agent is never read.
+      if (!(await placeBound(group.agentId, source))) continue;
+      const scope: BrainScope = { ...only(source), placeAgent: group.agentId };
+      const turns: TranscriptTurn[] = [];
+      const threads = new Set<string>();
+      for (const slug of await candidatesIn(source, [...teamOf.keys()], deps.call, scope)) {
+        const rows = await deps.call("get_timeline", { slug }, scope);
+        if (Array.isArray(rows) && rows.length >= TIMELINE_CEILING) console.warn(`${tag}: ${slug} in ${source} returned ${rows.length} timeline entries, gbrain's limit; some of ${day}'s turns may be missing`);
+        const t = threadTurns(Array.isArray(rows) ? (rows as DayRow[]) : [], slug, day, group.timeZone);
+        turns.push(...t);
+        const th = threadOf.get(slug);
+        if (t.length > 0 && th) threads.add(th);
+      }
+      if (turns.length > 0) places.push({ source, turns, threads: [...threads] });
+    }
+  }
+  return { agent, agentThreads: [...agentThreads], users: [...users.values()], places };
 }
 
 /** Only that person's own turns, the agent's and runtime text: a pass never mixes two people. */
@@ -273,17 +312,20 @@ export interface NightlyResult {
 export async function runNightlyReview(r: AgentGroup & { slot: string; signal?: AbortSignal }, deps: NightlyDeps): Promise<NightlyResult[]> {
   const day = reviewedDay(r.slot);
   const tag = `[background] agent=${r.agentId} pass=nightly-review`;
-  const { agent, agentThreads, users } = await collectDay(r, day, deps);
+  const { agent, agentThreads, users, places } = await collectDay(r, day, deps);
   const run = deps.run ?? runPass;
   const out: NightlyResult[] = [];
   const queue: Array<{ scope: PassScope; app?: AppRef; prompt: () => string; transcripts: TranscriptTurn[]; threads: string[] }> = [];
   if (agent.length > 0) {
     queue.push({ scope: { kind: "agent" }, prompt: () => renderPassPrompt("nightly-review-agent", { DAY: day, PROPOSALS_SLUG, LESSONS_SLUG }), transcripts: agent, threads: agentThreads });
   }
+  for (const p of places) {
+    queue.push({ scope: { kind: "place", source: p.source }, prompt: () => renderPassPrompt("nightly-review-place", { DAY: day, PROPOSALS_SLUG, LESSONS_SLUG }), transcripts: p.turns, threads: p.threads });
+  }
   for (const u of users) {
     queue.push({ scope: { kind: "user", userId: u.userId, teamId: u.teamId }, ...(u.app ? { app: u.app } : {}), prompt: () => renderPassPrompt("nightly-review-user", { DAY: day, USER_ID: u.userId }), transcripts: u.turns, threads: u.threads });
   }
-  const label = (s: PassScope) => (s.kind === "user" ? `user:${s.userId}` : "agent");
+  const label = (s: PassScope) => (s.kind === "user" ? `user:${s.userId}` : s.kind === "place" ? `place:${s.source}` : "agent");
   for (const [i, q] of queue.entries()) {
     if (r.signal?.aborted) {
       console.log(`${tag}: shutting down; not reviewed on ${day}: ${queue.slice(i).map((x) => label(x.scope)).join(", ")}`);

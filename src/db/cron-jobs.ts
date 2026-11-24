@@ -225,6 +225,12 @@ export async function listActive(): Promise<CronJob[]> {
   return rows.map(mapRow);
 }
 
+/** Active jobs stored with this boundary (memory places on: list_cron_jobs shows only the current boundary's). */
+export async function listActiveInBoundary(boundaryId: string): Promise<CronJob[]> {
+  const rows = await db.query<any>("SELECT * FROM cron_jobs WHERE active = 1 AND boundary_id IN (?) ORDER BY paused, next_run_at", [boundaryId]);
+  return rows.map(mapRow);
+}
+
 /** Active jobs (paused included: they can be resumed) that fire into this exact
  *  Slack thread and were created by anyone other than `userId`. */
 export async function countForeignThreadJobs(slackChannelId: string, slackThreadTs: string, userId: string): Promise<number> {

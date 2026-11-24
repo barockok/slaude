@@ -3,6 +3,7 @@ import { truncate } from "./sqlite-provider";
 import { brainCall, ensureSources } from "../knowledge/brain";
 import { agentIdReady, agentScope } from "../knowledge/agent-identity";
 import type { BrainScope } from "../knowledge/scope";
+import { hasPlacePrefix } from "./place-id";
 
 /**
  * Brain-backed memory: each session gets a conversation page in the agent's
@@ -25,6 +26,32 @@ export const conversationSummarySlug = (sessionId: string): string => `${convers
 
 /** Timeline rows in write order (by id). */
 export const orderTimeline = (rows: TimelineRow[]): TimelineRow[] => [...rows].sort((a, b) => (a.id ?? 0) - (b.id ?? 0));
+
+/**
+ * A session's timeline rows from the scope's read sources. A scope whose write source is a place (memory places
+ * on, rc.47) is read place first and then the persona's slice, because a session that began before the switch keeps
+ * its earlier turns there: the older slice's rows come first and the place's after them, ids renumbered so paging
+ * by id stays consistent. Any other scope is one call, as before.
+ */
+export async function readTimeline(call: BrainOpCall, slug: string, scope: BrainScope): Promise<TimelineRow[] | null> {
+  if (!hasPlacePrefix(scope.sourceId) || scope.allowedSources.length < 2) return (await call("get_timeline", { slug }, scope)) as TimelineRow[] | null;
+  const [head, ...rest] = scope.allowedSources;
+  const narrow = (sources: string[]): BrainScope => ({ ...scope, sourceId: sources[0]!, allowedSources: sources });
+  const here = ((await call("get_timeline", { slug }, narrow([head!]))) as TimelineRow[] | null) ?? [];
+  const older: TimelineRow[] = [];
+  for (const source of rest) {
+    if (hasPlacePrefix(source)) continue;
+    const rows = ((await call("get_timeline", { slug }, narrow([source]))) as TimelineRow[] | null) ?? [];
+    older.push(...orderTimeline(rows));
+    // The first slice that holds the page is the session's earlier home; the persona's legacy source follows it.
+    if (rows.length > 0) break;
+  }
+  // A turn the move job copied into the place is held by both slices: it shows once, from the place.
+  const key = (r: TimelineRow): string => `${r.date}\u0000${r.summary}\u0000${r.detail ?? ""}`;
+  const held = new Set(here.map(key));
+  const merged = [...older.filter((r) => !held.has(key(r))), ...orderTimeline(here)].map((r, i) => ({ ...r, id: i + 1 }));
+  return merged.length > 0 ? merged : null;
+}
 
 export class BrainMemoryProvider implements MemoryProvider {
   /** How many recent turns to surface in <memory-context>. */
@@ -95,7 +122,7 @@ export class BrainMemoryProvider implements MemoryProvider {
   async prefetchIn(sessionId: string, scope: BrainScope): Promise<string | null> {
     try {
       await this.#ensureReady();
-      const rows = (await this.#call("get_timeline", { slug: this.#slug(sessionId) }, scope)) as TimelineRow[] | null;
+      const rows = await readTimeline(this.#call, this.#slug(sessionId), scope);
       if (!rows || rows.length === 0) return null;
       const ordered = orderTimeline(rows);
       const recent = ordered.slice(-this.recentTurnLimit);

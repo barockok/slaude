@@ -95,11 +95,11 @@ describe("scope under on", () => {
   });
 });
 
-describe("memoryScopeFor under on keeps the transcript in the persona slice", () => {
+describe("memoryScopeFor under on moves the transcript to the place (rc.47)", () => {
   test("a trusted turn", async () => {
     const s = await memoryScopeFor(gate());
-    expect(s.write).toEqual({ clientId: AGENT, sourceId: A, allowedSources: [A] });
-    expect(s.read).toEqual({ clientId: AGENT, sourceId: A, allowedSources: [A, AGENT_SOURCE] });
+    expect(s.write).toEqual({ clientId: AGENT, sourceId: src(P1), allowedSources: [src(P1)], placeAgent: AGENT });
+    expect(s.read).toEqual({ clientId: AGENT, sourceId: src(P1), allowedSources: [src(P1), A, AGENT_SOURCE], placeAgent: AGENT });
   });
 });
 

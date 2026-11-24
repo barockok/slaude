@@ -29,13 +29,15 @@ import { gather } from "../knowledge/gather";
 import { composePage, CREDENTIAL_REFUSAL, readPageRecord, type TypedPageInput } from "../knowledge/memory-pages";
 import { getPageOrNull, SUPERSEDED_TAG, supersededSlugs, type BrainOpCall } from "../knowledge/memory-trail";
 import { PAGE_TYPES, type PageType } from "../knowledge/page-types";
+import { hasPlacePrefix } from "../memory/place-id";
 import { AGENT_SOURCE, agentSourceId, PUBLIC_SOURCE, SHARED_SOURCE, speakerProfileSource, userSourceId, type BrainScope } from "../knowledge/scope";
 import * as Proposals from "../db/proposals";
-import { CONVERSATION_REFUSAL, hasDotSegment, holdsCredential, isConversationSlug, SLUG_SEGMENT_REFUSAL, LESSONS_MAX_LINES, LESSONS_REFUSAL, lineCount, proposalPayloadError } from "./proposal-payload";
+import { CONVERSATION_REFUSAL, hasDotSegment, holdsCredential, isConversationSlug, SLUG_SEGMENT_REFUSAL, LESSONS_MAX_LINES, LESSONS_REFUSAL, lineCount, proposalPayloadError, LESSONS_PAGE_SLUG } from "./proposal-payload";
 
 export { CONVERSATION_REFUSAL, holdsCredential, LESSONS_MAX_LINES, LESSONS_REFUSAL };
 
-export type PassScope = { kind: "agent" } | { kind: "user"; userId: string; teamId: string };
+/** `place` (rc.47): one memory place of the agent, read with the tiers and written alone. */
+export type PassScope = { kind: "agent" } | { kind: "user"; userId: string; teamId: string } | { kind: "place"; source: string };
 
 /** One transcript turn handed to a pass. `author` is the Slack user id of who wrote it, or "agent". */
 export interface TranscriptTurn {
@@ -87,6 +89,7 @@ export const PROFILE_SCOPE_REFUSAL =
 export const QUOTE_REFUSAL = "refused: a profile entry must quote that person's own words";
 export const SOURCE_REFUSAL = "refused: that source is outside this pass's scope";
 export const NO_PROFILE_REFUSAL = "refused: this person's profile is unavailable to this pass (no Slack team id)";
+export const PLACE_LESSONS_REFUSAL = "refused: the lessons page is written only by the lessons upkeep; a pass in a place proposes a lesson as a correction page";
 export const CORRECTION_SLUG_REFUSAL = 'refused: a correction page may not use slug "profile"';
 export const USER_PROPOSAL_KIND_REFUSAL = 'refused: a pass running as a person proposes only kind "promote"';
 export const PROPOSE_TO_PERSON_REFUSAL = 'refused: an agent-scope pass proposes only to the manager (to: "manager")';
@@ -107,6 +110,10 @@ export function passReadSources(scope: PassScope, agentId: string, kbSources: re
   // The legacy single-agent `agent` source rides along read-only, as in resolveBrainScope.
   const common = [agentSourceId(agentId), AGENT_SOURCE, SHARED_SOURCE, PUBLIC_SOURCE, ...kbSources.filter((s) => s.startsWith("kb-"))];
   if (scope.kind === "agent") return [...new Set(common)];
+  if (scope.kind === "place") {
+    if (!hasPlacePrefix(scope.source)) throw new Error("place-scope pass needs a place source");
+    return [...new Set([scope.source, ...common])];
+  }
   const p = personSources(scope);
   if (!p) throw new Error("user-scope pass needs a usable userId");
   return [...new Set([p.own, ...(p.profile ? [p.profile] : []), ...common])];
@@ -120,13 +127,15 @@ export function passProfileSource(scope: PassScope): string | null {
 /** Where the pass's ordinary (non-profile) pages are written. */
 export function passWriteSource(scope: PassScope, agentId: string): string {
   if (scope.kind === "agent") return agentSourceId(agentId);
+  if (scope.kind === "place") return scope.source;
   const p = personSources(scope);
   if (!p) throw new Error("user-scope pass needs a usable userId");
   return p.own;
 }
 
 const clientOf = (ctx: PassToolContext): string => (ctx.scope.kind === "user" ? ctx.scope.userId : ctx.agentId);
-const only = (ctx: PassToolContext, source: string): BrainScope => ({ clientId: clientOf(ctx), sourceId: source, allowedSources: [source] });
+/** A scope naming a place source carries the owning agent, for the registry check where the brain call leaves. */
+const only = (ctx: PassToolContext, source: string): BrainScope => ({ clientId: clientOf(ctx), sourceId: source, allowedSources: [source], ...(hasPlacePrefix(source) ? { placeAgent: ctx.agentId } : {}) });
 
 /** The sources a read covers: the one named (if readable), else all. */
 function readTargets(ctx: PassToolContext, source: string | undefined): string[] | null {
@@ -181,6 +190,8 @@ function composeOne(pg: PassPage, ctx: PassToolContext, now: Date): Composed | {
   // agent's own slice (spec §8.2).
   const toProfile = pg.target === "profile" || pg.type === "profile" || (pg.type === "correction" && ctx.scope.kind === "user");
   if (!toProfile) {
+    // The lessons page is persona-wide: a place pass proposes lessons (a correction page) and never writes it.
+    if (ctx.scope.kind === "place" && (pg.type === "lessons" || pg.slug === LESSONS_PAGE_SLUG)) return { error: PLACE_LESSONS_REFUSAL };
     if (pg.type === "lessons" && lineCount(pg.content) > LESSONS_MAX_LINES) return { error: LESSONS_REFUSAL };
     const { quote: _q, target: _t, ...page } = pg;
     const c = composePage(page as TypedPageInput, now);
@@ -258,7 +269,7 @@ export const passHandlers = {
     const sources = readTargets(ctx, p.source);
     if (!sources) return err(SOURCE_REFUSAL);
     try {
-      const scope: BrainScope = { clientId: clientOf(ctx), sourceId: sources[0]!, allowedSources: sources };
+      const scope: BrainScope = { clientId: clientOf(ctx), sourceId: sources[0]!, allowedSources: sources, ...(sources.some(hasPlacePrefix) ? { placeAgent: ctx.agentId } : {}) };
       return ok(await gather(p.query, scope, { finalLimit: Math.min(Math.max(p.limit ?? 20, 1), 50), call: ctx.call }));
     } catch (e) {
       return brainErr("search", e);

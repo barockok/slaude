@@ -233,7 +233,7 @@ export function passQueryOptions(a: {
 
 const envPriceTable = (): PriceTable => loadEnvPriceTable(env.priceTableRaw());
 
-const scopeLabel = (s: PassScope): string => (s.kind === "user" ? `user:${s.userId}` : "agent");
+const scopeLabel = (s: PassScope): string => (s.kind === "user" ? `user:${s.userId}` : s.kind === "place" ? `place:${s.source}` : "agent");
 
 type AssistantMsg = { type: "assistant"; message?: { id?: string; model?: string; usage?: Partial<ResultUsage> } };
 type ResultMsg = { type: "result"; subtype?: string; is_error?: boolean; usage?: Partial<ResultUsage>; modelUsage?: Record<string, ModelUsageRow> };
