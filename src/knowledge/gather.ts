@@ -87,7 +87,7 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
   let failures = 0;
   const perSource = await Promise.all(
     sources.map(async (s): Promise<GatherHit[]> => {
-      const sub: BrainScope = { clientId: scope.clientId, sourceId: s, allowedSources: [s] };
+      const sub: BrainScope = { clientId: scope.clientId, sourceId: s, allowedSources: [s], ...(scope.placeAgent ? { placeAgent: scope.placeAgent } : {}) };
       try {
         const hits = await call("search", { query: targetQuery, limit: perSourceK }, sub);
         return Array.isArray(hits) ? (hits as GatherHit[]) : [];

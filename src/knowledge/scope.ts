@@ -244,7 +244,7 @@ async function baseScope(i: ScopeInput): Promise<BrainScope> {
  */
 async function withPlaces(i: ScopeInput, base: BrainScope): Promise<BrainScope> {
   const agentSrc = agentSourceId(i.agentId);
-  if (base.sourceId === agentSrc && i.place.kind === "place") {
+  if (base.sourceId === agentSrc && i.place?.kind === "place") {
     const place = i.place;
     if (i.placesOn === true) {
       if (!(await bindPlace(i.agentId, place))) return base;
