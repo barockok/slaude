@@ -10,6 +10,12 @@ import { flag } from "./security-switches";
 const DOTENV_REFUSED = new Set(["SLAUDE_PLUGIN_ROOT"]);
 
 // Load a .env file if present (does not override existing process.env)
+/** The SLAUDE_BOX switch's value rule (`on` or `off`, default off), shared by `env.box.enabled()` and the sync. */
+export function boxFlagValue(raw: string | undefined): boolean {
+  const v = (raw ?? "off").trim().toLowerCase();
+  return v === "on" || v === "1" || v === "true" || v === "yes";
+}
+
 /** The SLAUDE_REMOTE switch's value rule, shared by `env.remote.enabled()` and the sync (which reads the deployment's variables from a record). */
 export function remoteFlagValue(raw: string | undefined): boolean {
   const v = (raw ?? "0").toLowerCase();
@@ -912,6 +918,29 @@ export const env = {
     credentialPointers: (): boolean => {
       const raw = opt("SLAUDE_CREDENTIAL_POINTERS", "off").trim().toLowerCase();
       return raw === "on" || raw === "1" || raw === "true" || raw === "yes";
+    },
+  },
+  box: {
+    /**
+     * `SLAUDE_BOX` (gateway, default `off`). `on`: a persona that names a box is
+     * pinned to it and dispatched only to a node that offers a sandbox. `off`:
+     * boxes are validated and stored by a sync, and nothing reads them.
+     */
+    enabled: (): boolean => boxFlagValue(opt("SLAUDE_BOX", "off")),
+    /** `SLAUDE_BOX_DEFAULT` (gateway): the box of a persona that names none. Unset: such a persona stays unboxed. */
+    defaultBox: (): string | null => {
+      const v = opt("SLAUDE_BOX_DEFAULT", "").trim();
+      return v ? v : null;
+    },
+    /**
+     * `SLAUDE_BOX_TIER` (node, default `none`): the sandbox tier this node offers.
+     * An unknown value is refused rather than read as `none`: a node meant to
+     * sandbox must not quietly run without one.
+     */
+    tier: (): "none" | "bwrap" | "gvisor" => {
+      const v = opt("SLAUDE_BOX_TIER", "none").trim().toLowerCase();
+      if (v === "none" || v === "bwrap" || v === "gvisor") return v;
+      throw new Error("SLAUDE_BOX_TIER must be one of none, bwrap, gvisor");
     },
   },
   remote: {
