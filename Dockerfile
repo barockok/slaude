@@ -89,7 +89,7 @@ RUN set -eux; \
 #     bumping RUNSC_VERSION requires updating both hashes;
 #   - bubblewrap for the bwrap tier; skopeo and umoci for the node's image cache; zstd for the release archive;
 #   - box-init, compiled above, alone in its directory (the supervisor mounts the directory, not the file);
-#   - tini, as pid 1 of the supervisor container: runsc and bwrap both leave processes for pid 1 to reap, and
+#   - tini, as pid 1 of the supervisor container: bwrap (measured) and runsc leave processes for pid 1 to reap, and
 #     the supervisor is not an init (`tini -- bun --no-env-file src/box/boxd/main.ts ...`).
 ARG RUNSC_VERSION=20261116.0
 ARG RUNSC_SHA256_AMD64=4eb0475337f119ae7411c1d99d3acd727f1278a0286a244dee8dac91c6db5355

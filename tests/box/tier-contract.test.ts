@@ -314,7 +314,7 @@ d(`the sandbox contract on tier ${tier}`, () => {
       after = await pids();
     }
     // A count that stays up with no process to show for it is a zombie nobody reaped: the supervisor is running as
-    // pid 1 of a container without an init (bwrap and runsc both leave processes for pid 1 to reap). See boxd/main.ts.
+    // pid 1 of a container without an init (bwrap leaves its ended processes for pid 1 to reap). See boxd/main.ts.
     expect(after).toBeLessThanOrEqual(baseline);
   }, 120_000);
 

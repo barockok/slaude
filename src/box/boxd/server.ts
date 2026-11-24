@@ -152,7 +152,8 @@ interface Live {
 /**
  * The environment of every program the supervisor starts (runsc, bwrap, mount, cp): a search path and nothing else.
  * Not this process's own: the supervisor holds no credential, but a stray variable still changes what those programs
- * do. Measured: with TMPDIR set, a runsc sandbox exits before its container starts.
+ * do. Seen once, not isolated: with a TMPDIR that named a directory that no longer existed, every runsc sandbox exited
+ * before its container started.
  */
 const childEnv = (): Record<string, string> => ({ PATH: process.env.PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" });
 

@@ -47,8 +47,9 @@ async function main(): Promise<void> {
   if (refused.length) fail(`its environment holds ${refused.length} credential or provider variable(s): ${refused.join(", ")}. The supervisor is privileged and must hold none: give it no envFrom and no Secret.`);
   if (process.platform !== "linux") fail("the box supervisor runs on Linux only");
   if (process.getuid?.() !== 0) fail("it must run as root (it creates cgroups and sandboxes)");
-  // runsc and bwrap both leave ended processes for pid 1 to reap, and this process does not reap what it did not start.
-  // Measured: as pid 1 of a container it keeps one zombie per process a box ran. The image ships tini for this.
+  // bwrap leaves an ended process for pid 1 to reap, and this process does not reap what it did not start. Measured on
+  // the bwrap tier: as pid 1 of a container it keeps one zombie per process a box ran, charged to the sandbox's cgroup.
+  // runsc's detached sandbox processes are orphans of the same kind (not measured). The image ships tini for this.
   if (process.pid === 1) {
     console.warn("[boxd] running as pid 1: ended sandbox processes will stay as zombies. Start the supervisor under an init: tini -- bun --no-env-file src/box/boxd/main.ts ...");
   }

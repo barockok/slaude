@@ -14,6 +14,8 @@
 #   tests/node/worker-box-real.test.ts     a node worker with SLAUDE_BOX_TIER set, the supervisor as its own root
 #                                          process, the real CLI in a box, a turn with a Bash tool call
 #
+# Then both suites again in a privileged container built from the Dockerfile's box layers (SLAUDE_SMOKE_NESTED=0 skips it).
+#
 # Work area: $SLAUDE_SMOKE_DIR (default /var/lib/slaude-smoke), on the machine's own disk: a copy of the repository
 # with Linux dependencies, a pinned Bun, the compiled box-init, the box image, and logs/<tier>.log.
 set -euo pipefail
@@ -23,10 +25,10 @@ TIERS="${*:-gvisor bwrap}"
 
 if [ "$(uname -s)" = "Darwin" ]; then
   command -v colima >/dev/null || { echo "box-smoke: on macOS this needs a running Colima VM (colima ssh)"; exit 2; }
-  exec colima ssh -- sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" bash "$SRC/scripts/smoke/box-smoke.sh" $TIERS
+  exec colima ssh -- sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" SLAUDE_SMOKE_NESTED="${SLAUDE_SMOKE_NESTED:-1}" SLAUDE_SMOKE_KEEP_IMAGES="${SLAUDE_SMOKE_KEEP_IMAGES:-0}" bash "$SRC/scripts/smoke/box-smoke.sh" $TIERS
 fi
 
-[ "$(id -u)" = "0" ] || exec sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" bash "$0" $TIERS
+[ "$(id -u)" = "0" ] || exec sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" SLAUDE_SMOKE_NESTED="${SLAUDE_SMOKE_NESTED:-1}" SLAUDE_SMOKE_KEEP_IMAGES="${SLAUDE_SMOKE_KEEP_IMAGES:-0}" bash "$0" $TIERS
 
 SMOKE="${SLAUDE_SMOKE_DIR:-/var/lib/slaude-smoke}"
 BUN_VERSION="1.3.11"
@@ -154,7 +156,7 @@ if [ "${SLAUDE_SMOKE_NESTED:-1}" != "0" ]; then
     log="$SMOKE/logs/$tier-nested.log"
     rm -rf "$SMOKE/work"/* "$SMOKE/tmp"/*
     set +e
-    # tini as pid 1, as the supervisor container must be started: runsc and bwrap leave processes for pid 1 to reap.
+    # tini as pid 1, as the supervisor container must be started: bwrap leaves processes for pid 1 to reap.
     docker run --rm --privileged --cgroupns=private --memory=4g --network host \
       -v "$SMOKE:$SMOKE" -w "$SMOKE/repo" \
       -e TMPDIR="$SMOKE/tmp" \
