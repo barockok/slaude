@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import * as Domain from "../db/domain";
+import { m as metric } from "../metrics";
+import { hasPlacePrefix } from "../memory/place-id";
 import { measureWrite } from "../memory/place-shadow";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
@@ -8,8 +12,8 @@ import { brainCall, brainEnabled } from "./brain";
 import { brainThink, sdkThinkClient, synthesizeFromHits } from "./brain-think";
 import { gather } from "./gather";
 import { gatedBrainCall, soleSlackSender, type ApprovalReq, type ApprovalRes, type GateInput, type TurnSender } from "./gated-dispatch";
-import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, kbSourceId, speakerProfileSource, userSourceId, type BrainScope } from "./scope";
-import { carriedFields, composePage, readPageRecord, type TypedPageInput } from "./memory-pages";
+import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, agentSourceId, kbSourceId, noPerson, speakerProfileSource, storeKind, underLock, userSourceId, type BrainScope } from "./scope";
+import { carriedFields, composePage, readPageRecord, withFrontmatter, type TypedPageInput } from "./memory-pages";
 import { SUPERSEDED_TAG, getPageOrNull, supersededSlugs } from "./memory-trail";
 import { agentIdReady } from "./agent-identity";
 import { conversationSlug, conversationSummarySlug, orderTimeline, type TimelineRow } from "../memory/brain-provider";
@@ -97,6 +101,11 @@ export interface BrainToolDeps {
   /** Told the pages a kb_memoize call wrote, after the write succeeded (the
    *  commitment index). Awaited, but a failure is logged, never returned. */
   onWritten?: (pages: Array<{ slug: string; content: string; source: string }>, scope: BrainScope) => Promise<void> | void;
+  /** Who may approve a promotion to the persona-wide tier: the manager and backup only (owner decision 4).
+   *  Absent: the same list as `managers`. */
+  promoteApprovers?: () => string[] | Promise<string[]>;
+  /** The internal user reference of a Slack id, for a promoted page's `promoted_by`. Default: the domain bindings. */
+  internalUserRef?: (teamId: string | null, slackUserId: string) => Promise<string | null>;
 }
 
 const asJson = (v: unknown): ToolResult => ok(typeof v === "string" ? v : JSON.stringify(v, null, 2));
@@ -182,12 +191,14 @@ export const PROFILE_REFUSAL = "refused: a profile is written only on that perso
 export const SUPERSEDE_REFUSAL = "refused: supersedes must name a page in the same memory";
 export const SELF_SUPERSEDE_REFUSAL = "refused: a page cannot supersede itself";
 export const SAME_CALL_SUPERSEDE_REFUSAL = "refused: a page cannot supersede a page written in the same call";
+export const DEMOTE_REFUSAL = "refused: a promoted copy is removed only by a person, outside a /1on1, while memory places are on";
+export const DEMOTE_NOT_PROMOTED = "refused: only a page that was promoted to the persona-wide memory can be demoted";
 export const LOCK_REFUSAL = "refused: in a /1on1, memory stays with this person; ask them before sharing it";
 
 /** A channel wake's checklist page lives under this slug prefix (`self/heartbeat/<channel>`). */
 const CHECKLIST_SLUG_PREFIX = "self/heartbeat/";
 
-export type MemoizeTarget = "mine" | "shared" | "profile";
+export type MemoizeTarget = "here" | "mine" | "persona" | "shared" | "profile";
 export interface KbMemoizeArgs {
   pages: Array<TypedPageInput & { summary: string }>;
   target?: MemoizeTarget;
@@ -220,7 +231,7 @@ function ownTurnSender(g: GateInput): TurnSender | null {
  * - mine: the turn's own slice as resolved.
  * The gate (classifyBrainOp) enforces the same rules again.
  */
-async function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined, base: BrainScope, g: GateInput): Promise<{ scope: BrainScope; speaker?: string } | { error: string }> {
+async function resolveMemoizeScope(target: MemoizeTarget, subject: string | undefined, base: BrainScope, g: GateInput): Promise<{ scope: BrainScope; speaker?: string; promoteFrom?: string } | { error: string }> {
   if (target === "profile") {
     const sender = ownTurnSender(g);
     const own = sender ? speakerProfileSource(sender.teamId, sender.userId) : null;
@@ -229,11 +240,14 @@ async function resolveMemoizeScope(target: MemoizeTarget, subject: string | unde
     }
     return { scope: { ...base, sourceId: own }, speaker: sender.userId };
   }
-  const scope = target === "shared" ? { ...base, sourceId: SHARED_SOURCE } : base;
+  // persona: a promotion, from the turn's place to the persona-wide tier. With no place to promote from
+  // (places off, or the place unknown) the turn's own slice already is that tier, so it is a plain write.
+  const promoting = target === "persona" && g.placesOn === true && hasPlacePrefix(base.sourceId);
+  const scope = target === "shared" ? { ...base, sourceId: SHARED_SOURCE } : promoting ? { ...base, sourceId: agentSourceId(g.agentId) } : base;
   if (g.lockedUser !== null) {
     if (!(await sameAt({ site: "kb_tools.lock_owner", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) || scope.sourceId !== userSourceId(g.lockedUser)) return { error: LOCK_REFUSAL };
   }
-  return { scope };
+  return promoting ? { scope, promoteFrom: base.sourceId } : { scope };
 }
 
 /** Which page types go where: a profile page only to the profile (slug
@@ -399,6 +413,48 @@ async function collectMemoryAbout(call: NonNullable<BrainToolDeps["call"]>, scop
   return entries;
 }
 
+/** The most characters a promotion's pages may total: the approval card shows all of them. */
+export const PROMOTE_MAX_CHARS = 2400;
+export const PROMOTE_TOO_LONG = `refused: a promoted page is shown whole on the manager's card, so the pages of one promotion may total at most ${PROMOTE_MAX_CHARS} characters; shorten it or promote less`;
+
+const isoDay = (d: Date): string => d.toISOString().slice(0, 10);
+
+/** The internal user a Slack id is bound to, or null (the domain bindings). */
+async function internalUserRef(teamId: string | null, slackUserId: string): Promise<string | null> {
+  if (!teamId || !slackUserId) return null;
+  const b = await Domain.findBinding({ service: "slack", kind: "user", workspace: teamId, value: slackUserId });
+  return b?.user_id ?? null;
+}
+
+/**
+ * Frontmatter set by code on a page, only while memory places are on: provenance on a typed page
+ * (`origin_scope`, `origin_kind`, `written_by`), `place: unknown` on a page that lands persona-wide
+ * because the place is unknown (decision 3), and the promotion keys on a promoted copy
+ * (`promoted_from`, `origin_hash`, `as_of`; `promoted_by` is added after the approval). Any other
+ * write is returned as composed. Never an access control: no reader trusts these keys.
+ */
+function stampPage(content: string, typed: boolean, target: MemoizeTarget, scope: BrainScope, g: GateInput, promoteFrom: string | undefined, now: Date, originHash?: string): string {
+  if (g.placesOn !== true || target === "profile") return content;
+  const writtenBy = noPerson(g) ? "wake" : "turn";
+  if (promoteFrom !== undefined) {
+    return withFrontmatter(content, { origin_scope: scope.sourceId, origin_kind: "persona", written_by: writtenBy, promoted_from: promoteFrom, origin_hash: originHash ?? "none", as_of: isoDay(now) });
+  }
+  const fields: Record<string, string> = {};
+  if (typed) {
+    fields.origin_scope = scope.sourceId;
+    fields.origin_kind = hasPlacePrefix(scope.sourceId) ? (g.place.kind === "place" ? g.place.boundaryKind : "place") : storeKind(scope.sourceId);
+    fields.written_by = writtenBy;
+  }
+  if (!underLock(g) && target !== "shared" && scope.sourceId === agentSourceId(g.agentId)) fields.place = "unknown";
+  return Object.keys(fields).length > 0 ? withFrontmatter(content, fields) : content;
+}
+
+/** The approval card of a promotion: the exact text that will be written. */
+function promoteCard(composed: Array<{ slug: string; content: string }>, summaries: string[], trail: string): string {
+  const pages = composed.map((pg) => `--- ${pg.slug} ---\n${pg.content}`).join("\n");
+  return `Promote to persona-wide memory (the agent will know this in every channel). Only the manager or backup can approve. ${summaries.filter(Boolean).join("; ")}${trail}\nThis exact text will be written (the approver is recorded as promoted_by):\n${pages}`;
+}
+
 export const brainHandlers = {
   kb_think: async (p: { question: string }, d: BrainToolDeps): Promise<ToolResult> => {
     try {
@@ -492,11 +548,11 @@ export const brainHandlers = {
     // in the boot window (before auth.test lands) targets the real `agent-<id>`
     // slice, not `agent-default`. No-op once resolved; never hangs (falls back).
     await agentIdReady();
-    const target = p.target ?? "mine";
+    const target = p.target ?? "here";
     const gate = await d.gate();
     const resolved = await resolveMemoizeScope(target, p.subject, await d.scope(), gate);
     if ("error" in resolved) return err(resolved.error);
-    const { scope, speaker } = resolved;
+    const { scope, speaker, promoteFrom } = resolved;
     // A profile rewrite keeps the fields it does not set. Ping preferences
     // (mutes from a "stop" reply, opt-ins, quiet hours) live there, and a live
     // model rewrote the page with only a new name, dropping its mutes.
@@ -505,6 +561,15 @@ export const brainHandlers = {
     if (pages.some(isProfile)) {
       const rec = readPageRecord(await getPageOrNull(d.call ?? brainCall, "profile", { ...scope, allowedSources: [scope.sourceId] }));
       if (rec && !rec.superseded) kept = carriedFields(rec.meta);
+    }
+    // A promotion carries a hash of the page it was made from, in the turn's own place, so a later run can tell when the original moved on.
+    const originHashes = new Map<string, string>();
+    if (promoteFrom !== undefined) {
+      const origin: BrainScope = { ...scope, sourceId: promoteFrom, allowedSources: [promoteFrom] };
+      for (const pg of pages) {
+        const rec = readPageRecord(await getPageOrNull(d.call ?? brainCall, pg.slug, origin));
+        originHashes.set(pg.slug, rec ? createHash("sha256").update(rec.body.trim()).digest("hex").slice(0, 16) : "none");
+      }
     }
     // Compose every page before anything is written: one refusal stops the batch.
     const now = new Date();
@@ -523,12 +588,18 @@ export const brainHandlers = {
       const page = isProfile(pg) && Object.keys(kept).length > 0 ? { ...own, fields: { ...kept, ...(own.fields ?? {}) } } : own;
       const c = composePage({ ...page, ...(source !== undefined ? { source } : {}), ...(subject !== undefined ? { subject } : {}) }, now);
       if ("error" in c) return err(c.error);
-      composed.push({ slug: pg.slug, content: c.content, ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) });
+      composed.push({ slug: pg.slug, content: stampPage(c.content, pg.type !== undefined, target, scope, gate, promoteFrom, now, originHashes.get(pg.slug)), ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) });
+    }
+    // Pages that land persona-wide only because the place is unknown are counted by reason (owner decision 3).
+    if (gate.placesOn === true && promoteFrom === undefined && target !== "profile" && target !== "shared" && scope.sourceId === agentSourceId(gate.agentId) && !underLock(gate)) {
+      const reason = gate.place.kind === "none" ? gate.place.reason : "unbound";
+      for (const pg of pages) metric.memoryPlaceFallbackTotal.inc({ surface: pg.type === "commitment" ? "commitment" : pg.slug.startsWith(CHECKLIST_SLUG_PREFIX) ? "checklist" : "memory_save", reason });
     }
     // Shadow (rc.45): count where each page would go under the places design. Changes nothing.
-    pages.forEach((pg) => {
+    if (gate.placesOn !== true) pages.forEach((pg) => {
       measureWrite({ surface: pg.type === "commitment" ? "commitment" : pg.slug.startsWith(CHECKLIST_SLUG_PREFIX) ? "checklist" : "memory_save", place: gate.place, todaySource: scope.sourceId, agentId: gate.agentId });
     });
+    if (promoteFrom !== undefined && composed.reduce((n, pg) => n + pg.content.length, 0) > PROMOTE_MAX_CHARS) return err(PROMOTE_TOO_LONG);
     const label = `→ ${target}`;
     const retired = composed.filter((pg) => pg.supersedes !== undefined).map((pg) => pg.supersedes!);
     // A page never retires itself or a page this same call writes: the
@@ -539,9 +610,11 @@ export const brainHandlers = {
       if (pg.supersedes !== undefined && writing.has(pg.supersedes)) return err(SAME_CALL_SUPERSEDE_REFUSAL);
     }
     const trail = retired.length > 0 ? ` (and tags ${retired.join(", ")} as ${SUPERSEDED_TAG})` : "";
-    const describe = pages.length === 1
-      ? `Memory write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}${trail}`
-      : `Memory write ${label}: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}${trail}`;
+    const describe = promoteFrom !== undefined
+      ? promoteCard(composed, pages.map((pg) => pg.summary), trail)
+      : pages.length === 1
+        ? `Memory write ${label}: ${pages[0]!.slug} — ${pages[0]!.summary}${trail}`
+        : `Memory write ${label}: ${pages.length} pages — ${pages.map((pg) => pg.slug).join(", ")}${trail}`;
     try {
       const call = d.call ?? brainCall;
       // Supersede check, before any write: the older page must exist in the
@@ -561,15 +634,23 @@ export const brainHandlers = {
       const r = await gatedBrainCall("put_page", {
         scope,
         gate,
-        managers: await d.managers(),
+        // A promotion is approved by the manager or backup only (decision 4), never by a stored approver or manager grant.
+        managers: promoteFrom !== undefined && d.promoteApprovers ? await d.promoteApprovers() : await d.managers(),
         requestApproval: d.requestApproval,
         // A turn with no user may only create a shared page: tell the gate what this write touches.
         write: {
           slugs: composed.map((pg) => pg.slug),
           exists: async (slug) => (await getPageOrNull(call, slug, inWriteSource)) !== null,
           modifies: retired.length > 0,
+          ...(promoteFrom !== undefined ? { promote: true } : {}),
         },
-        call: async () => {
+        call: async (approvedBy) => {
+          // The approver is known only now: a promoted copy records who approved it, as an internal reference.
+          if (promoteFrom !== undefined) {
+            const ref = await (d.internalUserRef ?? internalUserRef)(gate.teamId, approvedBy ?? "").catch(() => null);
+            const by = ref ?? (approvedBy ? `slack:user:${approvedBy}` : "unknown");
+            for (const pg of composed) pg.content = withFrontmatter(pg.content, { promoted_by: by });
+          }
           // A page written again is current: drop a superseded tag it carries
           // (in this source), so readers that filter on the tag see it again.
           // Read after the approval, before the first write.
@@ -673,8 +754,33 @@ export const brainHandlers = {
       return err(humanizeBrainError("memory_thread_history", e));
     }
   },
-  kb_delete_page: (p: { slug: string; reason: string }, d: BrainToolDeps) =>
-    runGated("delete_page", { slug: p.slug }, `Memory delete: ${p.slug} — ${p.reason}`, d),
+  kb_delete_page: async (p: { slug: string; reason: string; target?: "here" | "persona" }, d: BrainToolDeps): Promise<ToolResult> => {
+    if (p.target !== "persona") return runGated("delete_page", { slug: p.slug }, `Memory delete: ${p.slug} — ${p.reason}`, d);
+    // Demote: an explicit source (the persona tier), because a delete otherwise runs in the turn's own write source.
+    try {
+      const gate = await d.gate();
+      if (gate.placesOn !== true || noPerson(gate) || underLock(gate)) return err(DEMOTE_REFUSAL);
+      const slug = p.slug.toLowerCase();
+      const persona = agentSourceId(gate.agentId);
+      const base = await d.scope();
+      const scope: BrainScope = { ...base, sourceId: persona };
+      const call = d.call ?? brainCall;
+      const rec = readPageRecord(await getPageOrNull(call, slug, { ...scope, allowedSources: [persona] }));
+      if (!rec || rec.meta.promoted_from === undefined) return err(DEMOTE_NOT_PROMOTED);
+      const r = await gatedBrainCall("delete_page", {
+        scope,
+        gate,
+        managers: d.promoteApprovers ? await d.promoteApprovers() : await d.managers(),
+        requestApproval: d.requestApproval,
+        write: { slugs: [slug], exists: async () => true, promote: true },
+        call: async () => call("delete_page", { slug }, scope),
+        describe: `Demote: remove the promoted persona-wide copy ${slug} (the original in its place stays) — ${p.reason}`,
+      });
+      return r.ok ? asJson(r.result) : err(r.reason);
+    } catch (e) {
+      return err(humanizeBrainError("delete_page", e));
+    }
+  },
 };
 
 /** `kbs`: the session persona's readable KBs, resolved per call (personaKbs);
@@ -706,7 +812,7 @@ export function createKbMcp(deps?: BrainToolDeps, opts: { kbs?: () => KbEntry[] 
         ...[c.memory_thread_history, c.kb_thread_history].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
           (a: { limit?: number; before?: string }) => brainHandlers.kb_thread_history(a, deps))),
         ...[c.memory_delete, c.kb_delete_page].filter(mounted).map((t) => tool(t.name, t.description, t.schema,
-          (a: { slug: string; reason: string }) => brainHandlers.kb_delete_page(a, deps))),
+          (a: { slug: string; reason: string; target?: "here" | "persona" }) => brainHandlers.kb_delete_page(a, deps))),
       ]
     : [];
 

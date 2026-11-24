@@ -2,7 +2,8 @@ import { sameAt, someSameAt } from "../access/wired";
 import type { BrainScope, ChannelTrust } from "./scope";
 import type { PersonSlices } from "./scope";
 import type { PlaceRef } from "../memory/place";
-import { agentSourceId, isProfileSourceId, resolveBrainScope, SHARED_SOURCE, speakerProfileSource, userSourceId } from "./scope";
+import { hasPlacePrefix } from "../memory/place-id";
+import { agentSourceId, isProfileSourceId, noPerson, resolveBrainScope, SHARED_SOURCE, speakerProfileSource, userSourceId } from "./scope";
 
 export type GateTier = "auto" | "approval" | "manager" | "deny";
 
@@ -60,6 +61,10 @@ export interface GateInput {
   person?: PersonSlices;
   /** The turn's memory place, or why there is none. Required; shadow only in rc.45 (nothing decides on it). */
   place: PlaceRef;
+  /** Memory places are active for this turn's persona (mode `on`, persona in the canary list). Absent = false: rc.45 behaviour. */
+  placesOn?: boolean;
+  /** The speaker's DM place, read in a /1on1 a manager holds. Only set under `placesOn`. */
+  dmPlace?: PlaceRef;
 }
 
 const READ_OPS = new Set([
@@ -109,6 +114,8 @@ export interface WriteIntent {
   exists: (slug: string) => Promise<boolean>;
   /** The write also retires (supersedes) another page: a change to an existing page by definition. */
   modifies?: boolean;
+  /** The write is a promotion: a copy from the turn's place into the persona-wide tier (rc.46). Manager tier, never from a wake. */
+  promote?: boolean;
 }
 
 /** Said to a wake when it asks to change a shared page: nobody is there to answer a card. */
@@ -133,6 +140,8 @@ export async function classifyBrainOp(op: string, scope: BrainScope, g: GateInpu
   if (READ_OPS.has(op)) return "auto";
   if (MANAGER_OPS.has(op)) return "manager";
   if (DESTRUCTIVE_OPS.has(op)) {
+    // Demoting a promoted copy (rc.46): the same tier as the promotion, never from a wake.
+    if (w?.promote) return noPerson(g) ? "deny" : "manager";
     // A wake cannot answer a card, and a delete changes an existing shared page by definition.
     if (isUserlessSharedWrite(scope, g)) return "deny";
     return g.channelTrust === "public" && !g.isManager ? "deny" : "approval";
@@ -149,6 +158,11 @@ export async function classifyBrainOp(op: string, scope: BrainScope, g: GateInpu
     if (g.lockedUser !== null) {
       return g.userId !== null && (await sameAt({ site: "brain_gate.lock_owner", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) && scope.sourceId === userSourceId(g.userId) ? "auto" : "deny";
     }
+    // A promotion (place to persona-wide, rc.46): only a manager's approval, never a wake's and never
+    // covered by a standing grant (only the approval tier is). Checked before the background branch.
+    if (w?.promote) return noPerson(g) ? "deny" : "manager";
+    // A write to a place source: automatic in the turn's own place, nothing else (rc.46).
+    if (hasPlacePrefix(scope.sourceId)) return g.placesOn === true && g.place.kind === "place" && scope.sourceId === g.place.source ? "auto" : "deny";
     // A turn with no user in the shared KB (rc.45): a new page is automatic; a change to an
     // existing page has nobody to approve it, so it is refused (WAKE_SHARED_REFUSAL).
     if (isUserlessSharedWrite(scope, g)) return (await createsOnly(w)) ? "auto" : "deny";
@@ -220,7 +234,8 @@ export interface GatedCallDeps {
    *  hard backstop on WHO clicked, independent of routing. */
   managers: string[];
   requestApproval: (r: ApprovalReq) => Promise<ApprovalRes>;
-  call: () => Promise<unknown>;
+  /** Runs the call; `approvedBy` is who approved it when a card was answered. */
+  call: (approvedBy?: string) => Promise<unknown>;
   describe: string;
   /** What the write does to its pages; needed for a turn with no user writing to shared. */
   write?: WriteIntent;
@@ -287,6 +302,7 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
   if (grantable && liveGrant(gkey, now)) {
     return { ok: true, result: await d.call() };
   }
+  let approvedBy: string | undefined;
   if (tier === "approval" || tier === "manager") {
     const r = await d.requestApproval({
       summary: d.describe,
@@ -294,6 +310,7 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
       category: tier === "manager" ? "kb-admin" : "kb",
     });
     if (!r.approved) return { ok: false, reason: `denied by ${r.by}${r.note ? `: ${r.note}` : ""}` };
+    approvedBy = r.by;
     if (tier === "manager" && !(await someSameAt(d.managers, (mgr) => ({ site: "brain_gate.manager_approver", persona: d.gate.agentId, teamId: d.gate.teamId, userId: r.by, otherUserId: mgr })))) {
       return { ok: false, reason: `kb operation "${op}" needs manager approval — approved by ${r.by}, who is not the manager` };
     }
@@ -303,5 +320,5 @@ export async function gatedBrainCall(op: string, d: GatedCallDeps): Promise<Gate
       standingGrants.set(gkey, { by: r.by, expiresAt: now + grantTtlMs() });
     }
   }
-  return { ok: true, result: await d.call() };
+  return { ok: true, result: await d.call(approvedBy) };
 }

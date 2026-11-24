@@ -17,6 +17,7 @@ import * as CronJobs from "../db/cron-jobs";
 import * as Domain from "../db/domain";
 import * as Sessions from "../db/sessions";
 import { boundaryFor, boundaryLookupFailed, boundarySurfaceKnown } from "../domain/boundary-for";
+import { anyPlaceBound } from "./place-binding";
 import { placeSourceId } from "./place-id";
 
 export { hasPlacePrefix, isPlaceSourceId, placeShortId, placeSourceId } from "./place-id";
@@ -156,7 +157,12 @@ export function createPlaceResolver(deps: PlaceDeps = {}): (i: PlaceInput) => Pr
 let shared: ((i: PlaceInput) => Promise<PlaceRef>) | undefined;
 
 /** The turn's place, or why there is none. Never throws; bounded by SLAUDE_BOUNDARY_TIMEOUT_MS per read. */
-export const placeFor = (i: PlaceInput): Promise<PlaceRef> => (env.memory.boundaries() === "off" ? Promise.resolve(NO_PLACE) : (shared ??= createPlaceResolver())(i));
+export const placeFor = async (i: PlaceInput): Promise<PlaceRef> => {
+  // Mode `off` computes nothing, unless a place was bound while the mode was `on`: then the turn's place is
+  // still worked out, so a rollback keeps reading what was written there (owner decision 7).
+  if (env.memory.boundaries() === "off" && !(await anyPlaceBound())) return NO_PLACE;
+  return (shared ??= createPlaceResolver())(i);
+};
 
 /** The answer where there is no turn to ask about (an approval card, a test) or the flag is `off`: none, unknown surface. */
 export const NO_PLACE: PlaceRef = { kind: "none", reason: "unknown-surface" };

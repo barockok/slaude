@@ -17,6 +17,7 @@ import { minLevel, type Level } from "./levels";
 import { nextLocal } from "./promises";
 import { isSelfEvidence, textHash, UNCHANGED_WINDOW_MS, type Audience, type RestraintRule } from "./restraint";
 import { mdToMrkdwn } from "../gateway/slack/format";
+import { placeHome } from "./place-home";
 import { loadRules, resolveLevel } from "./rules";
 import { clampNextCheck, type WakeGateConfig } from "./wake-gate";
 
@@ -101,7 +102,8 @@ export async function proactivePostTool(c: WakeToolContext, a: ProactivePostTool
   const cfg = proactiveFor(personaId, audience === "channel" ? recipient : undefined);
   // A rule and the ceiling can only lower what the agent asks for. Unlike the
   // round, no rule does not mean `inform`: the mandate is the authority here.
-  const rules = await loadRules(agentId, deps.call);
+  const home = await placeHome({ agentId, personaId, teamId: c.teamId, channel: own });
+  const rules = await loadRules(agentId, deps.call, home.scope);
   const { rule } = resolveLevel({ rules, kind, destination: recipient, proposed: asked, highest: cfg.highest });
   const level: Level = minLevel(minLevel(rule ? rule.level : asked, asked), cfg.highest);
   if (level === "ignore") {

@@ -1,6 +1,8 @@
 import { db } from "./schema";
 import { randomUUID } from "node:crypto";
 import { cronLocator, pairFor } from "./boundary-columns";
+import { env } from "../config/env";
+import { boundaryFor, locatorOf } from "../domain/boundary-for";
 
 export type CronJob = {
   id: string;
@@ -51,7 +53,20 @@ export async function create(args: {
   personaId?: string;
 }): Promise<CronJob> {
   const id = randomUUID();
-  const pair = pairFor(args.slackTeamId, args.slackChannelId, cronLocator({ id, target: args.target ?? "thread", slackThreadTs: args.slackThreadTs }));
+  const locator = cronLocator({ id, target: args.target ?? "thread", slackThreadTs: args.slackThreadTs });
+  let pair = pairFor(args.slackTeamId, args.slackChannelId, locator);
+  // A job made in a place stores that place's boundary now (memory places, rc.46): the cached answer is
+  // tried first, and a miss is resolved once (bounded, never throws) rather than left for the periodic fill,
+  // so the first run of a job never has to guess its place. A failure leaves the pair as it was.
+  if (!pair.boundaryId && args.slackTeamId && args.slackChannelId && env.memory.boundaries() !== "off") {
+    try {
+      const b = await boundaryFor(args.slackTeamId, args.slackChannelId);
+      const loc = locatorOf(locator);
+      if (b && loc) pair = { boundaryId: b.id, locator: loc };
+    } catch {
+      /* the fill repairs the row later */
+    }
+  }
   await db.run(
     `INSERT INTO cron_jobs (id, slack_team_id, slack_app_id, slack_channel_id, slack_thread_ts, channel_id, thread_ts, created_by, cron_expr, prompt, next_run_at, target, when_active, oauth_user, persona_id, active, boundary_id, locator)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,

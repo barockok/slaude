@@ -1,4 +1,5 @@
 import { sameAt } from "../access/wired";
+import { hasPlacePrefix } from "./place-id";
 import type { GateInput } from "../knowledge/gated-dispatch";
 import { AGENT_SOURCE, PUBLIC_SOURCE, agentSourceId, extraPersonReads, resolveBrainScope, userSourceId, type BrainScope, type PersonSlices } from "../knowledge/scope";
 
@@ -62,6 +63,9 @@ export async function memoryScopeFor(g: GateInput, opts: { channel?: string; run
   }
   const r = await resolveBrainScope({ ...g, kbSources: [] });
   const agentSrc = agentSourceId(g.agentId);
+  // Conversation pages stay in the persona's slice until the transcripts move (a later release):
+  // a place source the KB scope writes is the persona slice here, and the place is never read for a transcript.
+  if (hasPlacePrefix(r.sourceId)) return both(r.clientId, agentSrc, [agentSrc, AGENT_SOURCE]);
   if (r.sourceId !== PUBLIC_SOURCE) {
     return both(r.clientId, r.sourceId, r.sourceId === agentSrc ? [agentSrc, AGENT_SOURCE] : [r.sourceId]);
   }

@@ -166,10 +166,15 @@ export const agentScope = (agentId: string): BrainScope => {
   return { clientId: agentId, sourceId: source, allowedSources: [source] };
 };
 
+/** A live page's body in one scope, or "". */
+export async function scopePageBody(scope: BrainScope, call: BrainOpCall, slug: string): Promise<string> {
+  const rec = readPageRecord(await getPageOrNull(call, slug, scope));
+  return rec && !rec.superseded ? rec.body.trim() : "";
+}
+
 /** A live page's body in the agent's slice, or "". */
 export async function agentPageBody(agentId: string, call: BrainOpCall, slug: string): Promise<string> {
-  const rec = readPageRecord(await getPageOrNull(call, slug, agentScope(agentId)));
-  return rec && !rec.superseded ? rec.body.trim() : "";
+  return scopePageBody(agentScope(agentId), call, slug);
 }
 
 const FIELD_MAX = 200;

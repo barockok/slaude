@@ -11,6 +11,7 @@ import * as Posts from "../db/proactive-posts";
 import { brainCallIfOpen } from "../knowledge/brain";
 import { proactiveFor } from "../soul/proactive";
 import { DATA_LINE, ruleLine, safe, sourceLine } from "./reply-lines";
+import { placeHome } from "./place-home";
 import { loadRules, type ProactiveRule } from "./rules";
 import { proactiveWorkspaceDir } from "../agent/workspace-claim";
 
@@ -46,7 +47,9 @@ export async function proactiveReplyBlock(
   lines.push(DATA_LINE);
   if (c) {
     if (c.ruleSlug) {
-      const rules = await (deps.rules ?? ((agentId: string) => loadRules(agentId, brainCallIfOpen)))(post.agentId);
+      // Rules stored in the post's place are read beside the persona-wide ones (memory places, rc.46).
+      const home = deps.rules ? null : await placeHome({ agentId: post.agentId, personaId: m.personaId ?? "default", teamId: post.teamId, channel: post.channelId });
+      const rules = await (deps.rules ?? ((agentId: string) => loadRules(agentId, brainCallIfOpen, home?.scope)))(post.agentId);
       const rule = rules.find((r) => r.slug === c.ruleSlug);
       lines.push(rule ? ruleLine(rule) : `Rule: ${safe(c.ruleSlug)} (no longer in force).`);
     } else {

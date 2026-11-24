@@ -10,6 +10,7 @@ import { NodeDbAccessError } from "../db/client";
 import { BrainNotOpenError, brainClosing, settleBrainWork, trackBrainWork, whileClosing } from "./brain-work";
 import { keepingExitCode } from "../db/wasm-exit-code";
 import { hasPlacePrefix } from "../memory/place-id";
+import { assertPlacesBound } from "../memory/place-binding";
 import {
   EMBED_REFUSAL_HINT,
   classifyEmbeddingRecord,
@@ -948,6 +949,7 @@ export async function runAdminOp(name: string, params: Record<string, unknown>, 
 
 /** User-scoped call: dispatched through the configured backend (local/remote). */
 export async function brainCall(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
+  await assertPlacesBound(scope);
   return getBackend().call(name, params, scope);
 }
 
@@ -972,6 +974,7 @@ export function brainReady(): boolean {
 export async function brainCallIfOpen(name: string, params: Record<string, unknown>, scope: BrainScope): Promise<unknown> {
   if (isScopeWriteOp(name)) throw new Error(`brainCallIfOpen is for reads: ${name}`);
   if (!brainReady()) throw new BrainNotOpenError();
+  await assertPlacesBound(scope);
   return getBackend().call(name, params, scope, { ifOpen: true });
 }
 

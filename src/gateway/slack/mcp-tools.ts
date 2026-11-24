@@ -108,6 +108,8 @@ export type SlackContext = {
    *  A synthetic turn the runtime injects afterwards (auto-evolve, a
    *  continuation prompt) keeps this value: see AgentManager.isSyntheticTurn. */
   origin?: TurnOrigin;
+  /** The cron job this turn runs for (mono: set when the job fires): its stored boundary is the turn's place (memory places, rc.46). */
+  cronJobId?: string;
   /** Who sent the messages the running turn holds (mono: delivered since the
    *  turn began; a node: the job's recorded senders). Null or absent =
    *  unknown, which refuses a profile write. */
