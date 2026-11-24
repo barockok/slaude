@@ -59,7 +59,9 @@ export class ScratchDirs {
     const dir = join(this.#rootDir(), segment(sessionId));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const st = lstatSync(dir);
-    if (st.isSymbolicLink() || !st.isDirectory() || (process.getuid && st.uid !== process.getuid() && !this.#owners.includes(st.uid))) {
+    // A file owner (a number from lstat), not a person: this worker's own, or one it was told to accept.
+    const fileOwner = st.uid;
+    if (st.isSymbolicLink() || !st.isDirectory() || (process.getuid && fileOwner !== process.getuid() && !this.#owners.includes(fileOwner))) {
       throw new Error("scratch path is not a directory this worker owns");
     }
     chmodSync(dir, 0o700); // the umask may have narrowed the mode, never widened it

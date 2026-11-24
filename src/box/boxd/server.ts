@@ -31,7 +31,7 @@
  */
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, chownSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statfsSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, closeSync, existsSync, lchownSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, rmdirSync, statfsSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { makeImageStore, cliImageRunner, type ImageStore } from "../image";
@@ -339,7 +339,7 @@ export function bwrapBackend(config: BoxdConfig): SandboxBackend {
     for (let i = 0; i < 50 && existsSync(dir); i++) {
       try {
         // rmdir of a cgroup works only once it holds no process.
-        require("node:fs").rmdirSync(dir);
+        rmdirSync(dir);
         return;
       } catch {
         await new Promise((r) => setTimeout(r, 100));
@@ -374,7 +374,7 @@ export function bwrapBackend(config: BoxdConfig): SandboxBackend {
       for (const n of names) {
         killCgroup(join(cgroupRoot, n));
         try {
-          require("node:fs").rmdirSync(join(cgroupRoot, n));
+          rmdirSync(join(cgroupRoot, n));
         } catch {
           /* still has processes dying; the next start of that sandbox removes it */
         }
@@ -569,7 +569,8 @@ export function createBoxd(config: BoxdConfig, deps: BoxdDeps = {}): Boxd {
 
   /** One operation on a sandbox at a time. */
   const serial = <T>(id: string, fn: () => Promise<T>): Promise<T> => {
-    const p = (chains.get(id) ?? Promise.resolve()).then(fn, fn);
+    const prev: Promise<unknown> = chains.has(id) ? chains.get(id)! : Promise.resolve();
+    const p = prev.then(fn, fn);
     chains.set(id, p.catch(() => {}));
     return p;
   };

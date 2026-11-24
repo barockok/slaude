@@ -69,6 +69,6 @@ async function main(): Promise<void> {
   }
 }
 
-main()
+void main()
   .catch((e) => say(failure(e)))
   .finally(() => process.exit(0));

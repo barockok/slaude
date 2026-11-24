@@ -12,6 +12,7 @@
  * worker decided: paths, limits, an environment already built for a box.
  */
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
 import { Socket } from "node:net";
 import { PassThrough, Writable } from "node:stream";
 import { PackQuotaError, type AppliedLayer, type PackPort, type PackRequest, type PackUnitRef, type PackedLayer } from "../../storage/pack-sync";
@@ -43,7 +44,9 @@ interface Pending {
 export class BoxdClient {
   readonly #opts: BoxdClientOpts;
   #sock: Socket | null = null;
-  #connecting: Promise<Socket> | null = null;
+  /** The connect in flight; meaningful only while `#dialing` is true (a promise is never read as a condition). */
+  #connecting: Promise<Socket> | undefined;
+  #dialing = false;
   #pending = new Map<number, Pending>();
   #nextId = 1;
   #closed = false;
@@ -58,7 +61,8 @@ export class BoxdClient {
 
   #connect(): Promise<Socket> {
     if (this.#sock && !this.#sock.destroyed) return Promise.resolve(this.#sock);
-    if (this.#connecting) return this.#connecting;
+    if (this.#dialing) return this.#connecting as Promise<Socket>;
+    this.#dialing = true;
     this.#connecting = new Promise<Socket>((resolve, reject) => {
       // Listeners first, then connect: under Bun a refused or missing Unix socket reports its error before a listener
       // attached after `connect()` can hear it, and an unheard error event takes the process down.
@@ -67,7 +71,7 @@ export class BoxdClient {
       s.setEncoding("utf8");
       s.once("connect", () => {
         this.#sock = s;
-        this.#connecting = null;
+        this.#dialing = false;
         resolve(s);
       });
       // One way down for an error, an end and a close: under Bun a write to a connection the supervisor already dropped
@@ -82,8 +86,8 @@ export class BoxdClient {
         }
       };
       s.on("error", (e) => {
-        if (this.#connecting) {
-          this.#connecting = null;
+        if (this.#dialing) {
+          this.#dialing = false;
           reject(new BoxdError("unavailable", `the box supervisor is not reachable: ${e.message}`));
           return;
         }
@@ -111,6 +115,21 @@ export class BoxdClient {
         }
       });
       s.once("close", lost);
+      // No socket file: no supervisor. Said at once, without leaving it to how a runtime reports a failed connect.
+      if (!existsSync(this.#opts.socketPath)) {
+        this.#dialing = false;
+        reject(new BoxdError("unavailable", "the box supervisor is not reachable: its socket does not exist"));
+        return;
+      }
+      // A connect that neither succeeds nor fails (a socket file nobody listens on, seen to hang) is a failure too.
+      const giveUp = setTimeout(() => {
+        if (!this.#dialing) return;
+        this.#dialing = false;
+        s.destroy();
+        reject(new BoxdError("unavailable", "the box supervisor is not reachable: it did not accept the connection"));
+      }, 5_000);
+      s.once("connect", () => clearTimeout(giveUp));
+      s.once("error", () => clearTimeout(giveUp));
       s.connect(this.#opts.socketPath);
     });
     return this.#connecting;

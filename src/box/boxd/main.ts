@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => stop("SIGINT"));
 }
 
-main().catch((e) => {
+void main().catch((e) => {
   console.error("[boxd] fatal", e);
   process.exit(1);
 });

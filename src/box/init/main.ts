@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   child.on("exit", (code, signal) => process.exit(code ?? (signal ? 128 + 15 : 1)));
 }
 
-main().catch((e) => {
+void main().catch((e) => {
   process.stderr.write(`box-init: ${e instanceof Error ? e.message : String(e)}\n`);
   process.exit(70);
 });
