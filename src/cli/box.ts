@@ -259,6 +259,7 @@ export function checkBoxes(dir: string): BoxCheckResult {
 const USAGE = [
   "usage: slaude box check <deploy repository or boxes directory>",
   "       slaude box from-manifest <node.json> <persona> [--workspace <server,...>]",
+  "       slaude box import <oci layout directory> [--box-dir <directory>]",
   "       slaude box preflight <persona> --repo <deploy repository> [--box <name>] [--manifest <node.json>]",
   "                            [--private-code | --no-private-code] [--code-host <mcp server>]",
 ].join("\n");
@@ -279,7 +280,7 @@ async function askYesNo(question: string): Promise<boolean | undefined> {
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   const [cmd, dir] = argv;
-  const valued = new Set(["--workspace", "--repo", "--box", "--manifest", "--code-host"]);
+  const valued = new Set(["--workspace", "--repo", "--box", "--manifest", "--code-host", "--box-dir"]);
   const flags = new Map<string, string>();
   const pos: string[] = [];
   for (let i = 1; i < argv.length; i++) {
@@ -295,6 +296,13 @@ if (import.meta.main) {
       const text = readFileSync(pos[0]!, "utf8");
       const workspace = (flags.get("--workspace") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
       process.stdout.write(renderFromManifest(classifyManifest(readDeclaredNodeManifest(text, pos[0]!), pos[1]!, { workspace })));
+    } else if (cmd === "import" && pos.length === 1) {
+      // Offline: load an image into this node's cache from an OCI layout on disk. Run on the node, as the user that owns SLAUDE_BOX_DIR.
+      const { makeImageStore, cliImageRunner } = await import("../box/image");
+      const boxDir = flags.get("--box-dir") || process.env.SLAUDE_BOX_DIR || "/var/lib/slaude-box";
+      const store = makeImageStore({ dir: boxDir, runner: cliImageRunner(), budgetMb: 0, log: (l) => console.error(l) });
+      const m = await store.importLayout(pos[0]!);
+      console.log(`imported ${m.digest} (${Math.round(m.bytes / (1024 * 1024))} MB unpacked) into ${boxDir}`);
     } else if (cmd === "preflight" && pos.length === 1) {
       const { preflight, renderPreflight } = await import("./box-migrate");
       const repo = flags.get("--repo") || ".";

@@ -14,6 +14,8 @@
  *   - SLAUDE_REDIS_URL, every session's queue, locks and event stream (the
  *     node process uses it; the child never does);
  *   - SLAUDE_ENCRYPTION_KEY, the connect broker's key;
+ *   - SLAUDE_BOX_REGISTRY_AUTH, the node's registry pull credential for box
+ *     images (the node process fetches images; no child does);
  *   - the brain's embedding provider keys (src/knowledge/embedding-keys.ts:
  *     OPENAI_API_KEY, VOYAGE_API_KEY, ...). The brain runs in the gateway
  *     process; in mono the child shared its environment and could read them.
@@ -30,6 +32,8 @@ const ALSO_STRIPPED = new Set([
   "SLAUDE_ENCRYPTION_KEY",
   "SLAUDE_NODE_TOKEN",
   "SLAUDE_REDIS_URL",
+  // The node's optional registry pull credential for box images: read by the node process only.
+  "SLAUDE_BOX_REGISTRY_AUTH",
   ...Object.values(EMBEDDING_PROVIDER_KEY_ENV).filter((k): k is string => !!k),
 ]);
 

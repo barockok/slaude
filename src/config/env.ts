@@ -24,6 +24,14 @@ export function boxUnboxedFallbackValue(raw: string | undefined): boolean {
   throw new Error("SLAUDE_BOX_UNBOXED must be allow or refuse");
 }
 
+/** A whole number of at least 0 from the environment; anything else is the default. */
+function nonNegativeInt(name: string, dflt: number): number {
+  const raw = (process.env[name] ?? "").trim();
+  if (!raw) return dflt;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : dflt;
+}
+
 /** The SLAUDE_BOX switch's value rule (`on` or `off`, default off), shared by `env.box.enabled()` and the sync. */
 export function boxFlagValue(raw: string | undefined): boolean {
   const v = (raw ?? "off").trim().toLowerCase();
@@ -953,6 +961,32 @@ export const env = {
      * to boxed agents.
      */
     unboxedFallback: (): boolean => boxUnboxedFallbackValue(opt("SLAUDE_BOX_UNBOXED", "allow")),
+    /** `SLAUDE_BOX_DIR` (node, default `/var/lib/slaude-box`): images, live sessions, parked sessions, spool. */
+    dir: (): string => opt("SLAUDE_BOX_DIR", "").trim() || "/var/lib/slaude-box",
+    /**
+     * `SLAUDE_BOX_IMAGE_BUDGET_MB` (node, default 15360): unpacked box images
+     * kept on the node's disk. Above it the least recently used image that no
+     * session needs is removed. 0: nothing is ever removed.
+     */
+    imageBudgetMb: (): number => nonNegativeInt("SLAUDE_BOX_IMAGE_BUDGET_MB", 15360),
+    /**
+     * `SLAUDE_BOX_REGISTRY_AUTH` (node, optional): `user:password` for the
+     * registry box images are pulled from. A node secret: read by the node
+     * process only, never passed to a box or to the agent's child.
+     */
+    registryAuth: (): string | undefined => opt("SLAUDE_BOX_REGISTRY_AUTH", "").trim() || undefined,
+    /**
+     * `SLAUDE_BOX_PREWARM_TIMEOUT_SEC` (node, default 120): how long a starting
+     * node waits for its labels' current images before it reports ready and
+     * pulls the rest on demand.
+     */
+    prewarmTimeoutSec: (): number => nonNegativeInt("SLAUDE_BOX_PREWARM_TIMEOUT_SEC", 120),
+    /**
+     * `SLAUDE_BOX_PULL_TIMEOUT_SEC` (node, default 180): how long a turn waits
+     * for an image its node does not hold. Past it the turn fails with
+     * BOX_IMAGE_UNAVAILABLE; it never runs unboxed.
+     */
+    pullTimeoutSec: (): number => Math.max(1, nonNegativeInt("SLAUDE_BOX_PULL_TIMEOUT_SEC", 180)),
     /**
      * `SLAUDE_BOX_TIER` (node, default `none`): the sandbox tier this node offers.
      * An unknown value is refused rather than read as `none`: a node meant to
