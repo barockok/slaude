@@ -76,6 +76,7 @@
   "src/knowledge/brain.ts [not] enginePromise",
   "src/knowledge/remote/brain-client.ts [cond] this.#clientPromise",
   "src/knowledge/server/brain-server-entry.ts [floating] startBrainServer(cfg, undefined, { boot: true }) .then((s) => { console.log(`[brain-server] listening on ${cfg.host}:${s.port} (mcp /mcp)`);",
+  "src/memory/place.ts [floating] p.catch(() => {})",
   "src/memory/turn-context.ts [not] s",
   "src/node/client.ts [floating] exchange.catch(() => {})",
   "src/node/credentials.ts [cond] running",

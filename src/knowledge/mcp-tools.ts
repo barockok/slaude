@@ -563,6 +563,12 @@ export const brainHandlers = {
         gate,
         managers: await d.managers(),
         requestApproval: d.requestApproval,
+        // A turn with no user may only create a shared page: tell the gate what this write touches.
+        write: {
+          slugs: composed.map((pg) => pg.slug),
+          exists: async (slug) => (await getPageOrNull(call, slug, inWriteSource)) !== null,
+          modifies: retired.length > 0,
+        },
         call: async () => {
           // A page written again is current: drop a superseded tag it carries
           // (in this source), so readers that filter on the tag see it again.
