@@ -1,5 +1,5 @@
 /**
- * Box storage (migrations 0054 to 0057). Postgres only, like personas: a box
+ * Box storage (migrations 0055 to 0058). Postgres only, like personas: a box
  * is declared by a persona sync, which sqlite does not run. On sqlite every
  * read here answers "no boxes" without touching a table.
  *
@@ -88,7 +88,7 @@ export async function boxSetVersion(tenant = "default", client: DbClient = db): 
   return m ? Number(m.version) : 0;
 }
 
-/** Whether migrations 0054 to 0056 are applied (a sync that carries boxes refuses by name when they are not). */
+/** Whether migrations 0055 to 0057 are applied (a sync that carries boxes refuses by name when they are not). */
 export async function boxTablesPresent(client: DbClient = db): Promise<boolean> {
   if (client.dialect !== "pg") return false;
   try {

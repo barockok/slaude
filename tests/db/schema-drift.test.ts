@@ -20,7 +20,7 @@ const PG_ONLY_TABLES = new Set([
   "persona_sync_state",
   "schema_migrations",
   "node_revocations", // gateway-side node credential revocation; sqlite skips revocation
-  "boxes", // boxes + box_versions + boxes_manifest (0054 to 0056): declared by a persona sync, Postgres-only like personas
+  "boxes", // boxes + box_versions + boxes_manifest (0055 to 0057): declared by a persona sync, Postgres-only like personas
   "box_versions",
   "boxes_manifest",
 ]);

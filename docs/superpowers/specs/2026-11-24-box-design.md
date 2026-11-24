@@ -1181,7 +1181,7 @@ within the 20 s budget for a heavy session.
 
 **Gateway**
 
-- Migrations (next free number, 0054 onward, one table per migration as the
+- Migrations (next free number, 0055 onward, one table per migration as the
   recent ones do): `boxes`, `box_versions`, a `boxes_manifest` row for the
   signed set, two nullable columns on `sessions` (`box_name`, `box_digest`).
 - `src/persona/sync/payload.ts`, `run.ts`: payload version 8 with `boxes`;

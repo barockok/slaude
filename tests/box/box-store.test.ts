@@ -1,5 +1,5 @@
 /**
- * Box storage and its signed set (migrations 0054 to 0057), on a PGLite
+ * Box storage and its signed set (migrations 0055 to 0058), on a PGLite
  * database of its own: versions, the manifest, the integrity checks (a deleted
  * row, a replayed row, an edited row), the registry's fail-closed read, and
  * the session pin.
@@ -48,11 +48,11 @@ beforeEach(async () => {
 
 const sync = (list: ReturnType<typeof box>[], now = 1000, tenant = T) => db.transaction((tx) => applyBoxes(tx, tenant, list, { by: "ci", now }));
 
-describe("migration files 0054 to 0057", () => {
+describe("migration files 0055 to 0058", () => {
   test("one table per file, and the session columns follow the 0050 pattern", () => {
-    const files = readdirSync(MIGRATIONS_DIR).filter((n) => /^005[4-7]_/.test(n)).sort();
-    expect(files).toEqual(["0054_boxes.sql", "0055_box_versions.sql", "0056_boxes_manifest.sql", "0057_session_box.sql"]);
-    const sql = readFileSync(join(MIGRATIONS_DIR, "0057_session_box.sql"), "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("--"));
+    const files = readdirSync(MIGRATIONS_DIR).filter((n) => /^005[5-8]_/.test(n)).sort();
+    expect(files).toEqual(["0055_boxes.sql", "0056_box_versions.sql", "0057_boxes_manifest.sql", "0058_session_box.sql"]);
+    const sql = readFileSync(join(MIGRATIONS_DIR, "0058_session_box.sql"), "utf8").split("\n").filter((l) => l.trim() && !l.startsWith("--"));
     expect(sql).toEqual([
       "SET LOCAL lock_timeout = '2s';",
       "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS box_name TEXT;",
@@ -63,14 +63,14 @@ describe("migration files 0054 to 0057", () => {
     }
   });
 
-  test("they apply on top of 0053 and rerun as a no-op", async () => {
+  test("they apply on top of 0054 and rerun as a no-op", async () => {
     const fresh = await openDb({ dialect: "pg", driver: "pglite" });
     try {
       const all = loadMigrations();
-      await runMigrations(fresh, { log: () => {}, migrations: all.filter((m) => m.version < "0054") });
+      await runMigrations(fresh, { log: () => {}, migrations: all.filter((m) => m.version < "0055") });
       expect(await boxTablesPresent(fresh)).toBe(false);
       const r = await runMigrations(fresh, { log: () => {} });
-      expect(r.applied).toEqual(expect.arrayContaining(["0054", "0055", "0056", "0057"]));
+      expect(r.applied).toEqual(expect.arrayContaining(["0055", "0056", "0057", "0058"]));
       expect(await boxTablesPresent(fresh)).toBe(true);
       expect((await runMigrations(fresh, { log: () => {} })).applied).toEqual([]);
     } finally {

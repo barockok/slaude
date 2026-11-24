@@ -801,8 +801,8 @@ export function bootstrapSqliteSchema(db: Database): void {
     if (!sessCols.includes("thread_head_at")) db.run(`ALTER TABLE sessions ADD COLUMN thread_head_at INTEGER`);
   }
 
-  // Migration: the box a session is pinned to (pg 0057). Both nullable, no default, no index.
-  // The box tables themselves (pg 0054 to 0056) are Postgres only, like personas: a box is
+  // Migration: the box a session is pinned to (pg 0058). Both nullable, no default, no index.
+  // The box tables themselves (pg 0055 to 0057) are Postgres only, like personas: a box is
   // declared by a persona sync, which sqlite does not run.
   {
     const sessCols = (db.query(`PRAGMA table_info(sessions)`).all() as Array<{ name: string }>).map((c) => c.name);

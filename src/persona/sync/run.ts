@@ -481,7 +481,7 @@ async function planBoxSync(
     warnings.push(`box ${names}: the image digest is a stand-in for an image that is not pushed yet; a real sync refuses this payload`);
   }
   if (!(await boxTablesPresent())) {
-    throw new SyncFailure(503, "the database schema predates this gateway (the boxes tables are missing): apply migrations 0054 to 0057 before syncing boxes");
+    throw new SyncFailure(503, "the database schema predates this gateway (the boxes tables are missing): apply migrations 0055 to 0058 before syncing boxes");
   }
   let stored: StoredBoxes;
   try {
