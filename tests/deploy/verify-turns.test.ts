@@ -225,3 +225,47 @@ test("a failed container kill reports the reason instead of discarding it", () =
   expect(r.out).toContain("No such container: abc123");
   expect(r.log).toContain("No such container: abc123");
 });
+
+// The boxed section (VERIFY_BOX=1). Only its guarded paths are exercised here, against the stubs: its assertions
+// about a real boxed turn have never run anywhere.
+test("without VERIFY_BOX the boxed section does not exist: no box probe, no pod deleted", () => {
+  const r = run();
+  expect(r.out).not.toContain("boxes:");
+  expect(r.calls).not.toContain("box-turn");
+  expect(r.calls).not.toContain("box-check");
+  expect(r.calls).not.toContain("-c boxd");
+  expect(r.calls.split("\n").filter((l) => /\bdelete\b/.test(l))).toEqual([]);
+});
+
+test("VERIFY_BOX=1 with no persona named fails by saying so, and touches nothing", () => {
+  const r = run({ VERIFY_BOX: "1" });
+  expect(r.code).not.toBe(0);
+  expect(r.out).toContain("boxes: a boxed turn, the thread on another node, more sessions than slots (WRITTEN, NOT RUN)");
+  expect(r.out).toMatch(/FAIL\s+boxes: VERIFY_BOX_PERSONA is not set/);
+  expect(r.calls).not.toContain("box-turn");
+  expect(r.calls).not.toContain("box-check");
+  expect(r.calls.split("\n").filter((l) => /\bdelete\b/.test(l))).toEqual([]);
+});
+
+test("VERIFY_BOX=1 on a cluster whose node pods have no supervisor stops before any boxed turn", () => {
+  const r = run({ VERIFY_BOX: "1", VERIFY_BOX_PERSONA: "boxed" });
+  expect(r.code).not.toBe(0);
+  for (const pod of ["node-1", "node-2"]) {
+    expect(r.out).toMatch(new RegExp(`FAIL\\s+boxes: ${pod} has no ready boxd container \\(was the cluster brought up with SLAUDE_LOCAL_BOX`));
+  }
+  expect(r.calls).not.toContain("box-turn");
+  expect(r.calls.split("\n").filter((l) => /\bdelete\b/.test(l))).toEqual([]);
+  // The rest of the run is what it was: the summary still comes last.
+  expect(r.out.trimEnd().split("\n").at(-2)).toMatch(/\d+ passed, \d+ failed/);
+});
+
+test("the boxed section says in the script itself that it was never run, and gives every turn of a thread its own tool call id", () => {
+  const text = readFileSync(script, "utf8");
+  expect(text).toContain("THAT SECTION WAS\n# WRITTEN AND NEVER RUN");
+  expect(text).toContain("# WRITTEN, NOT RUN. Nothing below has been executed against a cluster");
+  const ids = [...text.matchAll(/probe box-turn .*--id ([a-z0-9]+)/g)].map((m) => m[1]);
+  expect(ids.length).toBe(3);
+  expect(new Set(ids).size).toBe(3);
+  // The home's survival is asserted only where the design says a home moves.
+  expect(text).toContain('if [[ "$storage" == s3 ]]; then');
+});

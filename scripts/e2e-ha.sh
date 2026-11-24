@@ -28,6 +28,21 @@
 #                         Both profile variables the two scripts read (SLAUDE_LOCAL_PROFILE and
 #                         MINIKUBE_PROFILE) are set to the e2e profile; the run is refused if a
 #                         script selects a cluster through any other *PROFILE* variable.
+#   E2E_BOX=gvisor|bwrap  the BOXED variant (unset: off, and nothing below changes). WRITTEN, NOT
+#                         RUN: no cluster has been brought up with it. It brings the stack up with
+#                         SLAUDE_LOCAL_BOX set to this tier (deploy/k8s-local/up.sh lays the box
+#                         component over the e2e overlay: a privileged supervisor in every node
+#                         pod), on a node sized up by LOCAL_BOX_EXTRA_* (sizing.env) unless
+#                         SLAUDE_LOCAL_CPUS or SLAUDE_LOCAL_MEMORY is set. A Ready cluster whose
+#                         node pods have no supervisor is brought up again. The cases then run as
+#                         always (their personas name no box, so they prove a box node still serves
+#                         unboxed sessions). The boxed assertions themselves (a turn in a box, the
+#                         thread on another node, more sessions than slots) are verify-turns.sh's
+#                         VERIFY_BOX section, run with E2E_SANITY=1 and E2E_BOX_PERSONA.
+#   E2E_BOX_PERSONA       with E2E_BOX and E2E_SANITY=1: a persona on label `default`, already
+#                         synced, that names a box whose image the node pods can pull. Nothing here
+#                         builds or pushes a box image or syncs such a persona: that step is yours,
+#                         and without it the boxed section reports that it could not measure.
 #   E2E_DRY_RUN=1         after the guards, print what would run (with the profile variables) and
 #                         exit without running the bring-up, the sanity scripts or the tests.
 #   E2E_TEARDOWN=1       afterwards run deploy/k8s-local/down.sh for this profile. Refused unless
@@ -68,6 +83,37 @@ for tool in minikube kubectl bun curl jq; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool not found on PATH"
 done
 
+# --- the boxed variant (E2E_BOX) -----------------------------------------------------------------
+# Validates E2E_BOX and exports what the bring-up and the sanity scripts read. Unset: exports
+# nothing. Returns non-zero (and says why) on a value it does not know.
+box_setup() {
+  local tier="${E2E_BOX:-}"
+  [[ -n "$tier" ]] || return 0
+  case "$tier" in
+    gvisor | bwrap) ;;
+    *) printf 'e2e-ha: E2E_BOX must be gvisor or bwrap (got %s)\n' "$tier" >&2; return 1 ;;
+  esac
+  # shellcheck source=/dev/null
+  . "$ROOT/deploy/k8s-local/sizing.env"
+  export SLAUDE_LOCAL_BOX="$tier"
+  export SLAUDE_LOCAL_CPUS="${SLAUDE_LOCAL_CPUS:-$((LOCAL_NODE_CPUS + LOCAL_BOX_EXTRA_CPUS))}"
+  export SLAUDE_LOCAL_MEMORY="${SLAUDE_LOCAL_MEMORY:-$((LOCAL_NODE_MEMORY_MB + LOCAL_BOX_EXTRA_MEMORY_MB))}"
+  export VERIFY_BOX=1
+  export VERIFY_BOX_PERSONA="${E2E_BOX_PERSONA:-}"
+  printf 'e2e-ha: boxed variant (tier %s; written, never run): node size %s CPU, %s MB; boxed persona for the sanity section: %s\n' \
+    "$tier" "$SLAUDE_LOCAL_CPUS" "$SLAUDE_LOCAL_MEMORY" "${VERIFY_BOX_PERSONA:-none given}"
+}
+# Whether every node Deployment's pod template has the supervisor container on the wanted tier.
+cluster_boxed() { # <tier>
+  local dep out
+  for dep in slaude-node slaude-node-finance; do
+    out="$(k get deploy "$dep" -o jsonpath='{.spec.template.spec.containers[?(@.name=="boxd")].env[?(@.name=="SLAUDE_BOX_TIER")].value}' 2>/dev/null)" || return 1
+    [[ "$out" == "$1" ]] || return 1
+  done
+  return 0
+}
+box_setup || exit 2
+
 # --- guard: no other minikube profile may be Running ---------------------------------------------
 running_others="$(minikube profile list -o json 2>/dev/null | bun -e '
   const raw = await Bun.stdin.text();
@@ -103,10 +149,17 @@ cluster_ready() {
 
 status=0
 
-if [[ "${E2E_FORCE_UP:-}" == "1" ]] || ! cluster_ready; then
+need_up=0
+if [[ "${E2E_FORCE_UP:-}" == "1" ]] || ! cluster_ready; then need_up=1; fi
+# A Ready cluster that was brought up without boxes (or on the other tier) is not the boxed variant.
+if ((need_up == 0)) && [[ -n "${E2E_BOX:-}" ]] && ! cluster_boxed "$E2E_BOX"; then
+  echo "e2e-ha: the cluster is Ready but its node pods have no box supervisor on tier $E2E_BOX; bringing it up again"
+  need_up=1
+fi
+if ((need_up == 1)); then
   echo "e2e-ha: bringing the stack up (e2e/up.sh)"
   if [[ "${E2E_DRY_RUN:-}" == "1" ]]; then
-    echo "e2e-ha: dry run, would run: SLAUDE_LOCAL_PROFILE=$PROFILE $ROOT/e2e/up.sh"
+    echo "e2e-ha: dry run, would run: SLAUDE_LOCAL_PROFILE=$PROFILE${E2E_BOX:+ SLAUDE_LOCAL_BOX=$SLAUDE_LOCAL_BOX SLAUDE_LOCAL_CPUS=$SLAUDE_LOCAL_CPUS SLAUDE_LOCAL_MEMORY=$SLAUDE_LOCAL_MEMORY} $ROOT/e2e/up.sh"
   else
     "$ROOT/e2e/up.sh"
     status=$?
@@ -192,7 +245,7 @@ if ((status == 0)) && [[ "${E2E_SANITY:-}" == "1" ]]; then
   echo "e2e-ha: cluster sanity (verify-ha.sh, verify-turns.sh)"
   if [[ "${E2E_DRY_RUN:-}" == "1" ]]; then
     for s in "${SANITY_SCRIPTS[@]}"; do
-      echo "e2e-ha: dry run, would run: MINIKUBE_PROFILE=$MINIKUBE_PROFILE SLAUDE_LOCAL_PROFILE=$SLAUDE_LOCAL_PROFILE $s"
+      echo "e2e-ha: dry run, would run: MINIKUBE_PROFILE=$MINIKUBE_PROFILE SLAUDE_LOCAL_PROFILE=$SLAUDE_LOCAL_PROFILE${E2E_BOX:+ VERIFY_BOX=1 VERIFY_BOX_PERSONA=${VERIFY_BOX_PERSONA:-}} $s"
     done
   else
     "${SANITY_SCRIPTS[0]}" || status=$?
