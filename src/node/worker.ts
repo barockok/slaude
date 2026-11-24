@@ -64,7 +64,9 @@ import { decodeClaims, makeRemoteFactory, makeRemoteResolver } from "./remote";
 import { lockFromClaims } from "./session-lock";
 import { type NodeManifest, loadNodeManifest, makeNodeLocalMcpResolver } from "./manifest";
 import { makeNodeSessionBoxes, type NodeSessionBoxes } from "./session-boxes";
-import { noDriverRefusal, setupNodeBoxes, type NodeBoxOpts, type NodeBoxes } from "./box-node";
+import { setupNodeBoxes, type NodeBoxOpts, type NodeBoxes } from "./box-node";
+import { makeSupervisedBoxes, type SupervisedBoxes } from "./box-supervised";
+import { BOX_AGENT_UID } from "../box/image";
 import { makeClaimPause, type ClaimPause } from "./claim-pause";
 import { ChildEnvPatch } from "../agent/child-env";
 import { VoiceCalls } from "../voice/call";
@@ -528,9 +530,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const labelSet: ReadonlySet<string> = new Set(labels);
   // Before any connection: an invalid manifest stops the node here.
   const manifest = opts.manifest !== undefined ? opts.manifest : env.role() === "node" ? loadNodeManifest() : null;
-  // The sandbox tier this node offers. A tier with no driver is refused below, before anything is announced.
+  // The sandbox tier this node offers. Without a driver of its own (tests pass one) the node runs its boxes through
+  // the box supervisor: its probe, below, stops the node before anything is announced when the tier cannot run here.
   const boxTier: BoxTier = opts.box?.tier ?? env.box.tier();
-  if (boxTier !== "none" && !opts.box?.driver) throw new Error(noDriverRefusal(boxTier));
   const keys = opts.keys ?? makeKeys();
   const url = opts.redisUrl ?? redisUrl();
   const client = opts.client ?? new NodeClient({ baseUrl: env.gatewayUrl(), token: env.nodeToken() });
@@ -561,7 +563,11 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   const store = new RestSessionStore(client);
   /** Per-session scratch directories (the agent's TMPDIR); removed with the session, all at stop. */
   sweepStaleScratchRoots();
-  const scratch = new ScratchDirs();
+  // On a node that runs boxes through the supervisor the scratch directories live on the box volume, which the
+  // supervisor also mounts, and a boxed session's directory belongs to the sandbox's user once it was given to a box.
+  const supervisedBoxes = boxTier !== "none" && !opts.box?.driver;
+  if (supervisedBoxes) sweepStaleScratchRoots(join(env.box.dir(), "scratch"));
+  const scratch = supervisedBoxes ? new ScratchDirs({ parent: join(env.box.dir(), "scratch"), owners: [BOX_AGENT_UID] }) : new ScratchDirs();
   /** sessionId → tenant, for runtime-bundle lookups + reload busting. */
   const tenants = new Map<string, string>();
   /** sessionId → persona. The runtime bundle is per (tenant, persona), so the
@@ -711,9 +717,14 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     tenantFor: (id) => tenants.get(id),
     tokenFor: (id) => store.tokenFor(id),
   });
+  /**
+   * Whether a session runs in a box. A boxed session's config directory never gets a credential file: no secret enters
+   * a box, and its sandbox refuses to start on one. A box that cannot be decided fails the boot here (never "seed it").
+   */
+  const isBoxed = async (sessionId: string): Promise<boolean> => (sessionBoxes ? (await sessionBoxes.boxOf(sessionId)) !== null : false);
   agent.setSessionConfigDirResolver(async (sessionId, persona) => {
     const dir = sessionConfigDir(sessionId, persona, configRoot);
-    await seeder.atBoot(sessionId, dir);
+    if (!(await isBoxed(sessionId))) await seeder.atBoot(sessionId, dir);
     return dir;
   });
   // Branch R: when a tool call fails, refresh any needs-auth server this
@@ -722,7 +733,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     status: (sid) => agent.mcpServerStatus(sid),
     reconnect: (sid, server) => agent.reconnectMcpServer(sid, server),
     refresh: (tenant, token, key, failedHash) => client.refreshMcpCredential(tenant, token, key, failedHash),
-    dirFor: (sid) => existingSessionConfigDir(sid, configRoot),
+    // A session with a sandbox has no credential file to refresh: its tools that need one go through the bridge.
+    dirFor: (sid) => (boxes?.runtime.has(sid) ? null : existingSessionConfigDir(sid, configRoot)),
     tenantFor: (id) => tenants.get(id),
     tokenFor: (id) => store.tokenFor(id),
   });
@@ -749,18 +761,14 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
   // unreachable) fails the boot with PROVIDER_CREDENTIALS_UNAVAILABLE.
   // The agent's TMPDIR and SLAUDE_SCRATCH are the session's scratch directory: the one
   // place it can always write and upload from (the working directory may not be writable).
-  agent.setChildEnvResolver(
-    withScratchEnv(
-      makeNodeChildEnvResolver({
-        client,
-        tenantFor: (id) => tenants.get(id),
-        tokenFor: (id) => store.tokenFor(id),
-        personaFor: (id) => personas.get(id),
-        fallback: opts.providerEnvFallback,
-      }),
-      scratch,
-    ),
-  );
+  const nodeChildEnvOf = makeNodeChildEnvResolver({
+    client,
+    tenantFor: (id) => tenants.get(id),
+    tokenFor: (id) => store.tokenFor(id),
+    personaFor: (id) => personas.get(id),
+    fallback: opts.providerEnvFallback,
+  });
+  agent.setChildEnvResolver(withScratchEnv(nodeChildEnvOf, scratch));
   // Remote mode (spec §4.5): target from the job token's signed claims; key
   // fetched per handle from the gateway (see ./remote).
   agent.setRemote(makeRemoteResolver(store), makeRemoteFactory({ client, store, tenants }));
@@ -864,6 +872,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
         onReload(tenantId);
         // A deploy may have brought a new box version: fetch its image before a session needs it.
         void boxes?.prewarm?.refresh(tenantId);
+        // And new egress rules: they apply to the next connection by themselves; open ones they refuse are ended.
+        void supervised?.reloaded(tenantId);
       });
       reloadUnsubs.set(tenantId, unsub);
     } catch (e) {
@@ -890,8 +900,31 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
 
   // Boxes: null on tier `none`. On a sandbox tier this probes the driver and checks the pod's sizing,
   // and a failure of either stops the node here, before it announces itself or claims anything.
+  // Without a driver of its own the node runs boxes through the supervisor: the driver, a session's mounts, the
+  // packer and the supervisor's limits come from there. Credentials stay in this process (the two proxies).
+  const supervised: SupervisedBoxes | null =
+    supervisedBoxes && sessionBoxes
+      ? makeSupervisedBoxes({
+          tier: boxTier,
+          ...(opts.box ? { base: opts.box } : {}),
+          tenantFor: (id) => tenants.get(id),
+          personaFor: (id) => personas.get(id),
+          workingDirOf: async (id) => (await store.findById(id))?.working_dir,
+          configDirOf: (id, persona) => sessionConfigDir(id, persona, configRoot),
+          scratchDirOf: (id) => {
+            try {
+              return scratch.ensure(id);
+            } catch {
+              return undefined;
+            }
+          },
+          egressOf: (id) => sessionBoxes.egressOf(id),
+          childEnvOf: nodeChildEnvOf,
+          sessionsOf: (tenantId) => [...tenants].filter(([, t]) => t === tenantId).map(([sid]) => sid),
+        })
+      : null;
   const boxes: NodeBoxes | null = sessionBoxes
-    ? await setupNodeBoxes(opts.box, {
+    ? await setupNodeBoxes(supervised?.opts ?? opts.box, {
         nodeId,
         turnConcurrency: (labels.length + 1) * concurrency,
         sessionBoxes,
@@ -931,6 +964,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
             ? {
                 boxOf: (id: string) => boxes.syncFacts(id),
                 packer: boxes.packer,
+                // The supervisor writes the indexes: they live where both it and this process reach.
+                ...(supervised ? { packIndexDir: supervised.packIndexDir } : {}),
                 parkBudgetMb: boxes.parkBudgetMb,
                 freeDiskMb: async () => (await boxes.freeDiskMb()) ?? Number.POSITIVE_INFINITY,
                 // Another node owns the unit now: the sandbox must stop touching it, and the local copy is not trusted.
@@ -998,7 +1033,8 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       // the agent reads the file on every call. A session that is not booted
       // yet is seeded by the config-dir resolver instead.
       const warmDir = existingSessionConfigDir(sessionId, configRoot);
-      if (warmDir) await seeder.atTurn(sessionId, warmDir);
+      // Never for a boxed session; one whose box cannot be decided here is not seeded either (its boot reports it).
+      if (warmDir && !(await isBoxed(sessionId).catch(() => true))) await seeder.atTurn(sessionId, warmDir);
       recovery.resetTurn(sessionId);
       // This job's turn: a wake or not, and whether the Stop guard may send it
       // back. Read from the token bound for this job (runLockedTurn binds it
@@ -1453,6 +1489,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
                   { status: 503 },
                 );
               }
+              // A node that runs boxes is not ready without its supervisor: it could start no sandbox.
+              if (supervised && !(await supervised.alive())) {
+                return Response.json({ status: "unready", box_supervisor: "unreachable", ...healthBody() }, { status: 503 });
+              }
               return Response.json({ status: "ready", ...healthBody() });
             }
             if (path === "/metrics") {
@@ -1501,6 +1541,7 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
     }
     await registry.nodeDown(nodeId).catch(() => {});
     scratch.removeAll();
+    supervised?.close();
     for (const unsub of reloadUnsubs.values()) await unsub().catch(() => {});
     reloadUnsubs.clear();
     await pubsub.close().catch(() => {});

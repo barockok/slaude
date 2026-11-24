@@ -33,14 +33,24 @@ function segment(sessionId: string): string {
 export class ScratchDirs {
   #root: string | undefined;
   #parent: string | undefined;
+  #owners: readonly number[];
 
-  constructor(opts: { parent?: string } = {}) {
+  /**
+   * `parent`: where the root is made (default the temp area). `owners`: uids
+   * besides this worker's that may own a session's directory. A box's files
+   * belong to the sandbox's user, so on a node that runs boxes the supervisor
+   * hands a boxed session's scratch directory to that user.
+   */
+  constructor(opts: { parent?: string; owners?: readonly number[] } = {}) {
     this.#parent = opts.parent;
+    this.#owners = opts.owners ?? [];
   }
 
   /** The root, created on first use (mkdtemp makes it 0700). */
   #rootDir(): string {
-    return (this.#root ??= mkdtempSync(join(this.#parent ?? tmpdir(), "slaude-scratch-")));
+    if (this.#root) return this.#root;
+    if (this.#parent) mkdirSync(this.#parent, { recursive: true });
+    return (this.#root = mkdtempSync(join(this.#parent ?? tmpdir(), "slaude-scratch-")));
   }
 
   /** The session's directory, created (0700) if it does not exist. A symlink or a
@@ -49,7 +59,7 @@ export class ScratchDirs {
     const dir = join(this.#rootDir(), segment(sessionId));
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const st = lstatSync(dir);
-    if (st.isSymbolicLink() || !st.isDirectory() || (process.getuid && st.uid !== process.getuid())) {
+    if (st.isSymbolicLink() || !st.isDirectory() || (process.getuid && st.uid !== process.getuid() && !this.#owners.includes(st.uid))) {
       throw new Error("scratch path is not a directory this worker owns");
     }
     chmodSync(dir, 0o700); // the umask may have narrowed the mode, never widened it

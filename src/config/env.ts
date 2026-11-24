@@ -964,6 +964,12 @@ export const env = {
     /** `SLAUDE_BOX_DIR` (node, default `/var/lib/slaude-box`): images, live sessions, parked sessions, spool. */
     dir: (): string => opt("SLAUDE_BOX_DIR", "").trim() || "/var/lib/slaude-box",
     /**
+     * `SLAUDE_BOXD_SOCKET` (node and supervisor, default `/run/slaude-box/boxd.sock`):
+     * the box supervisor's control socket. Read only on a node whose
+     * `SLAUDE_BOX_TIER` is not `none`.
+     */
+    boxdSocket: (): string => opt("SLAUDE_BOXD_SOCKET", "").trim() || "/run/slaude-box/boxd.sock",
+    /**
      * `SLAUDE_BOX_IMAGE_BUDGET_MB` (node, default 15360): unpacked box images
      * kept on the node's disk. Above it the least recently used image that no
      * session needs is removed. 0: nothing is ever removed.
