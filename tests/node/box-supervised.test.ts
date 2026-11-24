@@ -76,6 +76,48 @@ describe("the CLI a box may run", () => {
   });
 });
 
+describe("a node whose supervisor does not answer", () => {
+  test("the driver's probe says so, so the node refuses to start rather than advertise a sandbox it cannot run", async () => {
+    const { makeSupervisedBoxes } = await import("../../src/node/box-supervised");
+    const { setupNodeBoxes } = await import("../../src/node/box-node");
+    const dir = mkdtempSync(join(tmpdir(), "slaude-nosup-"));
+    try {
+      const sup = makeSupervisedBoxes({
+        tier: "gvisor",
+        tenantFor: () => "default",
+        personaFor: () => "default",
+        workingDirOf: async () => undefined,
+        configDirOf: () => join(dir, "config"),
+        scratchDirOf: () => undefined,
+        egressOf: async () => ({ allow: [], deny: [] }),
+        childEnvOf: async () => undefined,
+        sessionsOf: () => [],
+        socketPath: join(dir, "nobody-listens.sock"),
+        boxDir: join(dir, "box"),
+        log: () => {},
+      });
+      expect(await sup.alive()).toBe(false);
+      const probe = await sup.driver.probe();
+      expect(probe.ok).toBe(false);
+      expect(probe.ok === false && probe.reason).toContain("not reachable");
+      await expect(
+        setupNodeBoxes(sup.opts, {
+          nodeId: "n1",
+          turnConcurrency: 2,
+          sessionBoxes: { boxOf: async () => null, egressOf: async () => ({ allow: [], deny: [] }) },
+          listBoxes: async () => null,
+          park: async () => {},
+          turnRunning: () => false,
+          setClaiming: () => {},
+        }),
+      ).rejects.toThrow(/refusing to start: this node cannot run sandbox tier gvisor/);
+      sup.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("scratch directories on a node that runs boxes", () => {
   test("live under the given parent, which is created", () => {
     const parent = join(mkdtempSync(join(tmpdir(), "slaude-scratch-parent-")), "box", "scratch");
