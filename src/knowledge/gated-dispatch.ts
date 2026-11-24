@@ -2,6 +2,7 @@ import { sameAt, someSameAt } from "../access/wired";
 import type { BrainScope, ChannelTrust } from "./scope";
 import type { PersonSlices } from "./scope";
 import type { PlaceRef } from "../memory/place";
+import { hasPlacePrefix } from "../memory/place-id";
 import { agentSourceId, isProfileSourceId, resolveBrainScope, SHARED_SOURCE, speakerProfileSource, userSourceId } from "./scope";
 
 export type GateTier = "auto" | "approval" | "manager" | "deny";
@@ -60,6 +61,10 @@ export interface GateInput {
   person?: PersonSlices;
   /** The turn's memory place, or why there is none. Required; shadow only in rc.45 (nothing decides on it). */
   place: PlaceRef;
+  /** Memory places are active for this turn's persona (mode `on`, persona in the canary list). Absent = false: rc.45 behaviour. */
+  placesOn?: boolean;
+  /** The speaker's DM place, read in a /1on1 a manager holds. Only set under `placesOn`. */
+  dmPlace?: PlaceRef;
 }
 
 const READ_OPS = new Set([
@@ -109,6 +114,8 @@ export interface WriteIntent {
   exists: (slug: string) => Promise<boolean>;
   /** The write also retires (supersedes) another page: a change to an existing page by definition. */
   modifies?: boolean;
+  /** The write is a promotion: a copy from the turn's place into the persona-wide tier (rc.46). Manager tier, never from a wake. */
+  promote?: boolean;
 }
 
 /** Said to a wake when it asks to change a shared page: nobody is there to answer a card. */
@@ -149,6 +156,11 @@ export async function classifyBrainOp(op: string, scope: BrainScope, g: GateInpu
     if (g.lockedUser !== null) {
       return g.userId !== null && (await sameAt({ site: "brain_gate.lock_owner", persona: g.agentId, teamId: g.teamId, userId: g.userId, otherUserId: g.lockedUser, otherTeamId: g.lockedTeamId })) && scope.sourceId === userSourceId(g.userId) ? "auto" : "deny";
     }
+    // A promotion (place to persona-wide, rc.46): only a manager's approval, never a wake's and never
+    // covered by a standing grant (only the approval tier is). Checked before the background branch.
+    if (w?.promote) return g.userId === null ? "deny" : "manager";
+    // A write to a place source: automatic in the turn's own place, nothing else (rc.46).
+    if (hasPlacePrefix(scope.sourceId)) return g.placesOn === true && g.place.kind === "place" && scope.sourceId === g.place.source ? "auto" : "deny";
     // A turn with no user in the shared KB (rc.45): a new page is automatic; a change to an
     // existing page has nobody to approve it, so it is refused (WAKE_SHARED_REFUSAL).
     if (isUserlessSharedWrite(scope, g)) return (await createsOnly(w)) ? "auto" : "deny";

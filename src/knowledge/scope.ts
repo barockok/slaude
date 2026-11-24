@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { sameAt } from "../access/wired";
 import { env } from "../config/env";
 import { hasPlacePrefix } from "../memory/place-id";
+import { bindPlace, placeBound } from "../memory/place-binding";
 import type { PlaceRef } from "../memory/place";
 import type { SoulData } from "../soul/data";
 
@@ -21,6 +22,9 @@ export interface BrainScope {
    *  exactly when it is in `allowedSources`. Never the write target here:
    *  profile writes are an explicit, speaker-only target (phase C §8.6). */
   profileSource?: string;
+  /** The agent that owns the place source this scope names, set exactly when it names one (rc.46).
+   *  The registry check (src/memory/place-binding.ts) refuses a place source not bound to it. */
+  placeAgent?: string;
 }
 
 /**
@@ -74,6 +78,11 @@ export interface ScopeInput {
    *  cannot forget it, and `{ kind: "none" }` is always a valid answer. In rc.45 (shadow) no
    *  read or write decision uses it. */
   place: PlaceRef;
+  /** True when the memory places are active for this turn's persona (mode `on` and the persona in the canary list).
+   *  Absent reads as false: the scope is rc.45's, plus the rollback read of a place already bound. */
+  placesOn?: boolean;
+  /** The speaker's own DM place, read in a /1on1 the speaker (a manager) holds (owner decision 1). Only under `placesOn`. */
+  dmPlace?: PlaceRef;
 }
 
 /** Legacy single-agent source. Kept in the agent read union for continuity with
@@ -167,7 +176,7 @@ export function channelTrustFor(channel: string, soul: SoulData): ChannelTrust {
  * never the rest of their `user-` slice. The write target is unchanged.
  */
 export async function resolveBrainScope(i: ScopeInput): Promise<BrainScope> {
-  const base = await baseScope(i);
+  const base = await withPlaces(i, await baseScope(i));
   const profile = speakerProfileSource(i.teamId, i.userId);
   if (profile === null) return base;
   return { ...base, allowedSources: [...base.allowedSources, profile], profileSource: profile };
@@ -218,4 +227,38 @@ async function baseScope(i: ScopeInput): Promise<BrainScope> {
     };
   }
   return { clientId: i.userId, sourceId: PUBLIC_SOURCE, allowedSources: [PUBLIC_SOURCE] };
+}
+
+/**
+ * Memory places (rc.46) over the legacy scope, never replacing it:
+ *  - `placesOn`, a turn that wrote the persona's own `agent-<id>` slice (a trusted or manager turn,
+ *    a wake): the write goes to the turn's place and the place is read first, after it is bound in
+ *    the registry. A place that cannot be worked out, or cannot be bound, leaves the legacy scope
+ *    (persona-wide, owner decision 3);
+ *  - `placesOn`, a /1on1 the speaker holds as a manager: the speaker's own DM place is read too
+ *    (decision 1), when it is bound. Nobody else's, and never the thread's place;
+ *  - not `placesOn` (mode off or shadow, or a persona outside the canary): writes are the legacy
+ *    ones, and the turn's place is read only when it is already bound, so a page saved while the
+ *    flag was on stays visible where it was written (decision 7).
+ * A scope with no place source is returned untouched.
+ */
+async function withPlaces(i: ScopeInput, base: BrainScope): Promise<BrainScope> {
+  const agentSrc = agentSourceId(i.agentId);
+  if (base.sourceId === agentSrc && i.place.kind === "place") {
+    const place = i.place;
+    if (i.placesOn === true) {
+      if (!(await bindPlace(i.agentId, place))) return base;
+      return { ...base, sourceId: place.source, allowedSources: [place.source, ...base.allowedSources], placeAgent: i.agentId };
+    }
+    if (!(await placeBound(i.agentId, place.source))) return base;
+    return { ...base, allowedSources: [place.source, ...base.allowedSources], placeAgent: i.agentId };
+  }
+  if (i.placesOn === true && i.isManager && i.lockedUser !== null && i.userId !== null && i.dmPlace?.kind === "place" && base.sourceId === userSourceId(i.userId)) {
+    const dm = i.dmPlace;
+    if (await placeBound(i.agentId, dm.source)) {
+      const [own, ...rest] = base.allowedSources;
+      return { ...base, allowedSources: [own!, dm.source, ...rest], placeAgent: i.agentId };
+    }
+  }
+  return base;
 }
