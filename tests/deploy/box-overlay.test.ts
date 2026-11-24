@@ -118,7 +118,7 @@ for (const [overlay, under] of overlays) {
     test("every node Deployment has exactly the containers node and boxd, and the node container is the base's but for its box settings", () => {
       expect(nodeDeployments(docs).length).toBeGreaterThanOrEqual(2);
       for (const dep of nodeDeployments(docs)) {
-        expect(dep.spec.template.spec.containers.map((c: any) => c.name), dep.metadata.name).toEqual(["node", "boxd"]);
+        expect(dep.spec.template.spec.containers.map((c: any) => c.name) as string[]).toEqual(["node", "boxd"]);
         expect(dep.spec.template.spec.initContainers ?? []).toEqual([]);
         const node = containerOf(dep, "node");
         const before = containerOf(base.find((x) => x.kind === "Deployment" && x.metadata.name === dep.metadata.name), "node");
