@@ -37,9 +37,13 @@ const multiTool: Scenario = {
     const n = paramInt(tag, "n", 2);
     const done = view.toolResults.length;
     if (done >= n) return { kind: "text", content: `done after ${n} tools` };
+    // `id=<word>` makes this turn's call ids its own. A session that is RESUMED from its transcript drops a tool call
+    // whose id an earlier turn already used (the CLI reads it as a duplicate), so a second multi-tool turn of a resumed
+    // thread never sees its results and loops. Ids stay a pure function of the request either way.
+    const own = /^[a-z0-9-]{1,24}$/.test(tag.params["id"] ?? "") ? `${tag.params["id"]}_` : "";
     return {
       kind: "tools",
-      calls: [{ id: `toolu_mock_${done + 1}`, name: tag.params["tool"] ?? "Bash", args: toolArgs(tag.params["args"], done + 1) }],
+      calls: [{ id: `toolu_mock_${own}${done + 1}`, name: tag.params["tool"] ?? "Bash", args: toolArgs(tag.params["args"], done + 1) }],
     };
   },
 };
