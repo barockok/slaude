@@ -2,7 +2,9 @@
  * boxd entry (box spec, "Kubernetes deployment"). Run directly, as root, in
  * the privileged container of a node pod or as a root service on a plain host:
  *
- *   bun --no-env-file src/box/boxd/main.ts --mount-root /data --mount-root /config-home --ro-root /app
+ *   tini -- bun --no-env-file src/box/boxd/main.ts --mount-root /data --mount-root /config-home --ro-root /app
+ *
+ * Under an init (tini is in the image), never as pid 1 itself: see the warning below.
  *
  *   SLAUDE_BOX_DIR            images, sessions, spool (default /var/lib/slaude-box)
  *   SLAUDE_BOXD_SOCKET        the control socket (default /run/slaude-box/boxd.sock)
@@ -45,6 +47,11 @@ async function main(): Promise<void> {
   if (refused.length) fail(`its environment holds ${refused.length} credential or provider variable(s): ${refused.join(", ")}. The supervisor is privileged and must hold none: give it no envFrom and no Secret.`);
   if (process.platform !== "linux") fail("the box supervisor runs on Linux only");
   if (process.getuid?.() !== 0) fail("it must run as root (it creates cgroups and sandboxes)");
+  // runsc and bwrap both leave ended processes for pid 1 to reap, and this process does not reap what it did not start.
+  // Measured: as pid 1 of a container it keeps one zombie per process a box ran. The image ships tini for this.
+  if (process.pid === 1) {
+    console.warn("[boxd] running as pid 1: ended sandbox processes will stay as zombies. Start the supervisor under an init: tini -- bun --no-env-file src/box/boxd/main.ts ...");
+  }
 
   const tierRaw = (process.env.SLAUDE_BOX_TIER ?? "gvisor").trim().toLowerCase();
   if (tierRaw !== "gvisor" && tierRaw !== "bwrap") fail("SLAUDE_BOX_TIER must be gvisor or bwrap for the supervisor");

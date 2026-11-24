@@ -38,6 +38,14 @@ ENV SLAUDE_HOME=/app/.slaude
 RUN mkdir -p $SLAUDE_HOME/skills $SLAUDE_HOME/knowledge $SLAUDE_HOME/.claude
 RUN bun run install-deps --frozen
 
+# box-init: the first process of every box (two loopback relays), as one binary that is
+# bind mounted read-only into each sandbox. It imports nothing else from this repository.
+FROM oven/bun:1.3-debian AS boxinit
+WORKDIR /app
+COPY src/box/init ./src/box/init
+RUN bun build --compile src/box/init/main.ts --outfile /out/box-init \
+ && test -x /out/box-init
+
 FROM oven/bun:1.3-debian
 WORKDIR /app
 
@@ -72,6 +80,42 @@ RUN set -eux; \
     tar -xzf /tmp/tailcat.tgz -C /usr/local/bin tailcat; \
     rm -f /tmp/tailcat.tgz; \
     test -x /usr/local/bin/tailcat
+
+# Boxes (docs: deploy/boxes). None of this runs unless a node sets SLAUDE_BOX_TIER, whose default is `none`.
+# The same image serves as the node container and as the privileged box supervisor container
+# (`bun --no-env-file src/box/boxd/main.ts`), so both carry the sandbox runtimes:
+#   - runsc (gVisor), with the helper binaries its releases keep in gvisor-bin/ beside it (a copy of runsc alone
+#     fails with `sidecar "gvisor_sentry" not usable`). Pinned by version and by the SHA-256 of the release archive;
+#     bumping RUNSC_VERSION requires updating both hashes;
+#   - bubblewrap for the bwrap tier; skopeo and umoci for the node's image cache; zstd for the release archive;
+#   - box-init, compiled above, alone in its directory (the supervisor mounts the directory, not the file);
+#   - tini, as pid 1 of the supervisor container: runsc and bwrap both leave processes for pid 1 to reap, and
+#     the supervisor is not an init (`tini -- bun --no-env-file src/box/boxd/main.ts ...`).
+ARG RUNSC_VERSION=20261116.0
+ARG RUNSC_SHA256_AMD64=4eb0475337f119ae7411c1d99d3acd727f1278a0286a244dee8dac91c6db5355
+ARG RUNSC_SHA256_ARM64=399835d261b2b08fa82fef9c907f44e9563a5bfec8a692a1704085b041bdc06d
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends bubblewrap skopeo umoci zstd util-linux tini; \
+    rm -rf /var/lib/apt/lists/*; \
+    arch="${TARGETARCH:-amd64}"; \
+    case "$arch" in \
+      amd64) garch=x86_64; sha="$RUNSC_SHA256_AMD64" ;; \
+      arm64) garch=aarch64; sha="$RUNSC_SHA256_ARM64" ;; \
+      *) echo "unsupported architecture for runsc: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors -o /tmp/gvisor.tar.zstd "https://storage.googleapis.com/gvisor/releases/release/${RUNSC_VERSION}/${garch}/gvisor.tar.zstd"; \
+    echo "${sha}  /tmp/gvisor.tar.zstd" | sha256sum -c -; \
+    mkdir /tmp/gv; \
+    tar --zstd -xf /tmp/gvisor.tar.zstd -C /tmp/gv; \
+    runsc="$(find /tmp/gv -name runsc -type f | head -1)"; \
+    install -m 0755 "$runsc" /usr/local/bin/runsc; \
+    cp -r "$(dirname "$runsc")/gvisor-bin" /usr/local/bin/gvisor-bin; \
+    rm -rf /tmp/gv /tmp/gvisor.tar.zstd; \
+    runsc --version; \
+    bwrap --version; \
+    tini --version
+COPY --from=boxinit /out/box-init /usr/local/lib/slaude-box/box-init
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json bun.lock tsconfig.json ./
