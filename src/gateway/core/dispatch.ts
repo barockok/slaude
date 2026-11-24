@@ -667,9 +667,15 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
       // This is a hint. The node's own admission check is the authority, and a
       // full node hands the job back to the label queue.
       if (boxPin && !warmOk) {
-        const holders = await (registry as Partial<Registry>).liveNodesWithBox?.(label, requiredCaps, boxPin.digest).catch(() => []);
-        const ready = (holders ?? []).filter((n) => n.hasDigest && n.free !== null && n.free > 0);
-        if (ready.length) target = { node: ready[Math.min(ready.length - 1, Math.floor((opts.random ?? Math.random)() * ready.length))]!.node };
+        const holders = (await (registry as Partial<Registry>).liveNodesWithBox?.(label, requiredCaps, boxPin.digest).catch(() => [])) ?? [];
+        const ready = holders.filter((n) => n.hasDigest && n.free !== null && n.free > 0);
+        // A parked session first: the node that holds its flushed local copies
+        // resumes it with no download at all. Only while that node is live,
+        // still serves the label and the box's tier, and reported a free slot.
+        const parkedOn = await (registry as Partial<Registry>).parkedNode?.(session.id).catch(() => null);
+        const parked = parkedOn ? holders.find((n) => n.node === parkedOn && n.free !== null && n.free > 0) : undefined;
+        if (parked) target = { node: parked.node };
+        else if (ready.length) target = { node: ready[Math.min(ready.length - 1, Math.floor((opts.random ?? Math.random)() * ready.length))]!.node };
       }
       // Capture the follower's cursor BEFORE the job becomes claimable. Once it
       // is enqueued a node can claim it and append the whole turn before the

@@ -69,6 +69,43 @@ export async function sweepUnits(
   return result;
 }
 
+/** A home unit whose id is the session id itself (src/storage/units.ts, hmUnitId). A hashed id cannot be traced back and is left to the age rule. */
+const HOME_UNIT_RE = /^hm-([A-Za-z0-9][A-Za-z0-9_.-]{0,127})$/;
+
+/**
+ * Remove the stored home of every session that is closed (box spec, "Node and
+ * gateway changes": session close and `/new` remove the session's `hm` unit).
+ *
+ * A home belongs to one session, unlike a workspace, so closing the session
+ * decides its fate and it need not wait out the age rule. `closed` answers
+ * for a session id; anything it does not positively call closed is kept. A
+ * unit a node still holds open, or owes a flush for (`skip`), is kept too.
+ */
+export async function sweepClosedHomes(
+  store: ObjectStore,
+  o: { closed: (sessionId: string) => Promise<boolean>; skip?: (unitId: string) => Promise<boolean>; dryRun?: boolean },
+): Promise<{ unitsDeleted: string[]; objectsDeleted: number }> {
+  const units = new Map<string, string[]>();
+  for await (const obj of store.list(`${SESSIONS}hm-`)) {
+    const unit = obj.key.slice(SESSIONS.length).split("/")[0];
+    if (!unit) continue;
+    const keys = units.get(unit) ?? [];
+    keys.push(obj.key);
+    units.set(unit, keys);
+  }
+  const result = { unitsDeleted: [] as string[], objectsDeleted: 0 };
+  for (const [unit, keys] of units) {
+    const m = HOME_UNIT_RE.exec(unit);
+    if (!m || m[1]!.includes("..")) continue;
+    if (!(await o.closed(m[1]!))) continue;
+    if (o.skip && (await o.skip(unit))) continue;
+    if (!o.dryRun) await deleteAll(store, keys);
+    result.unitsDeleted.push(unit);
+    result.objectsDeleted += keys.length;
+  }
+  return result;
+}
+
 /**
  * Delete attachments the gateway staged in `inbox/` that no node collected within `ttlMs`. An object with no
  * `modified` time is kept. An object exactly `ttlMs` old is kept.

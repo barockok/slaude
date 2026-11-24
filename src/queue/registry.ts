@@ -23,6 +23,9 @@ else
   return 0
 end`;
 
+/** How long a parked hint lives without being renewed: a parked copy older than this is found by its marker, not routed to. */
+export const PARKED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** How long a refresh mark waits for the session's next turn: a thread can sit idle for weeks. */
 export const BOX_REFRESH_NOTE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -401,6 +404,26 @@ export function makeRegistry(opts: RegistryOpts) {
     /** Reaper bookkeeping: forget a dead node after cleaning it up. */
     async forgetNode(node: string): Promise<void> {
       await redis.srem(keys.nodeSet(), node);
+    },
+
+    /**
+     * A boxed session's local copies are parked on `node`: remember it, so its
+     * next turn can go back there and resume without a download. A TTL covers
+     * a node that dies with its disk.
+     */
+    async setParked(sessionId: string, node: string): Promise<void> {
+      await redis.set(keys.parked(sessionId), node, "PX", PARKED_TTL_MS);
+    },
+
+    /** The session resumed, was dropped, or its node drains. With `node`, only that node's own hint is removed. */
+    async clearParked(sessionId: string, node?: string): Promise<void> {
+      if (node !== undefined && (await redis.get(keys.parked(sessionId))) !== node) return;
+      await redis.del(keys.parked(sessionId));
+    },
+
+    /** The node that holds the session's parked copies, or null. */
+    async parkedNode(sessionId: string): Promise<string | null> {
+      return await redis.get(keys.parked(sessionId));
     },
 
     /**

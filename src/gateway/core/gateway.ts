@@ -1095,7 +1095,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const sweepCfg = storageSweepConfig();
     if (sweepCfg.mode !== "off") {
       console.log(`[storage-sweep] ${sweepCfg.mode}: units idle over ${sweepCfg.retainMs / 86_400_000} days, inbox objects over ${sweepCfg.inboxTtlMs / 3_600_000} hours`);
-      stopStorageSweeper = startStorageSweeper({ store: objectStore()!, redis: getRedis(), keys: makeKeys(), cfg: sweepCfg });
+      stopStorageSweeper = startStorageSweeper({
+        store: objectStore()!,
+        redis: getRedis(),
+        keys: makeKeys(),
+        cfg: sweepCfg,
+        // A session started over with /new is closed: its home goes in this tick. A row that is missing is NOT called
+        // closed (a restored database must not delete homes); such a home ages out with the other units.
+        ...(env.box.enabled()
+          ? { sessionClosed: async (id: string) => ((await Sessions.findById(id).catch(() => null))?.slack_thread_ts ?? "").startsWith("channel-archived:") }
+          : {}),
+      });
     }
   }
   // Domain sessions, slice D: the periodic boundary fill, started once Slack auth knows the workspaces.
