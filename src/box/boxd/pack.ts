@@ -23,7 +23,6 @@ import {
   chmodSync,
   closeSync,
   constants,
-  createReadStream,
   existsSync,
   fchmodSync,
   fstatSync,
@@ -49,8 +48,7 @@ import {
 } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
-import { Readable, Writable, type Transform } from "node:stream";
-import { pipeline } from "node:stream/promises";
+import type { Transform } from "node:stream";
 import * as zlib from "node:zlib";
 import { isIgnored } from "../../storage/ignore";
 import { PackQuotaError, type AppliedLayer, type PackFilter, type PackPort, type PackRequest, type PackUnitRef, type PackedLayer } from "../../storage/pack-sync";
@@ -442,29 +440,92 @@ export async function create(root: string, paths: readonly string[], removed: re
   const fd = openSync(path, "wx", 0o600);
   const hasher = new Bun.CryptoHasher("sha256");
   let bytes = 0;
-  const sink = new Writable({
-    write(chunk: Uint8Array, _enc, cb) {
-      try {
-        hasher.update(chunk);
-        bytes += chunk.byteLength;
-        for (let off = 0; off < chunk.byteLength; ) off += writeSync(fd, chunk, off, chunk.byteLength - off);
-        cb();
-      } catch (e) {
-        cb(e as Error);
-      }
-    },
-  });
+  const store = (chunk: Uint8Array): void => {
+    hasher.update(chunk);
+    bytes += chunk.byteLength;
+    for (let off = 0; off < chunk.byteLength; ) off += writeSync(fd, chunk, off, chunk.byteLength - off);
+  };
+  const z = opts.compress === false || !zstdAvailable() ? null : zstd.createZstdCompress!();
   try {
-    const source = Readable.from(blocks(), { objectMode: false });
-    if (opts.compress === false || !zstdAvailable()) await pipeline(source, sink);
-    else await pipeline(source, zstd.createZstdCompress!(), sink);
+    if (z === null) {
+      for await (const block of blocks()) store(block);
+    } else {
+      let failure: Error | null = null;
+      z.on("data", (chunk: Uint8Array) => {
+        try {
+          store(chunk);
+        } catch (e) {
+          failure = e as Error;
+        }
+      });
+      z.on("error", (e: Error) => {
+        failure ??= e;
+      });
+      // One write at a time, each awaited (see `pump`), in pieces large enough that the codec is not called per tar block.
+      const batch = new Batcher(READ_CHUNK);
+      for await (const block of blocks()) {
+        const full = batch.add(block);
+        if (full) await pump(z, full);
+        if (failure) throw failure;
+      }
+      const rest = batch.take();
+      if (rest) await pump(z, rest);
+      await finish(z);
+      if (failure) throw failure;
+    }
   } catch (e) {
+    z?.destroy();
     closeSync(fd);
     rmSync(path, { force: true });
     throw e;
   }
   closeSync(fd);
   return { path, hash: hasher.digest("hex"), bytes, entries, rawBytes, removed: [...removed], unsettled };
+}
+
+/**
+ * The codec streams are driven by hand: one `write` at a time, the next only after the
+ * stream called back, output taken from `data` events. Piping a file through the codec
+ * and reading the result with an async iterator stalled on this runtime (Bun 1.3.11)
+ * once an archive passed about 100 MB and the reader awaited between reads: the pipe's
+ * pause and resume lost a wake-up. Explicit turns cannot.
+ */
+function pump(z: Transform, chunk: Uint8Array): Promise<void> {
+  return new Promise((done) => {
+    z.write(chunk, () => done());
+  });
+}
+
+function finish(z: Transform): Promise<void> {
+  return new Promise((done) => {
+    if (z.destroyed || z.readableEnded) return done();
+    z.once("end", () => done());
+    z.once("error", () => done());
+    z.once("close", () => done());
+    z.end();
+  });
+}
+
+/** Collects small chunks into pieces of at least `min` bytes. */
+class Batcher {
+  #parts: Uint8Array[] = [];
+  #size = 0;
+  readonly #min: number;
+  constructor(min: number) {
+    this.#min = min;
+  }
+  add(chunk: Uint8Array): Uint8Array | null {
+    this.#parts.push(chunk);
+    this.#size += chunk.byteLength;
+    return this.#size >= this.#min ? this.take() : null;
+  }
+  take(): Uint8Array | null {
+    if (this.#size === 0) return null;
+    const out = this.#parts.length === 1 ? this.#parts[0]! : Buffer.concat(this.#parts, this.#size);
+    this.#parts = [];
+    this.#size = 0;
+    return out;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -561,31 +622,53 @@ const TYPE_NAME: Record<string, string> = { "3": "a character device", "4": "a b
 const MAX_PAX_BYTES = 1024 * 1024;
 
 function openArchive(path: string): { chunks: AsyncIterable<Uint8Array>; close: () => void } {
-  const head = Buffer.alloc(4);
   const fd = openSync(path, "r");
-  let n = 0;
-  try {
-    n = readSync(fd, head, 0, 4, 0);
-  } finally {
+  const head = Buffer.alloc(4);
+  const n = readSync(fd, head, 0, 4, 0);
+  const compressed = n === 4 && ZSTD_MAGIC.every((b, i) => head[i] === b);
+  if (compressed && !zstd.createZstdDecompress) {
     closeSync(fd);
+    throw new PackError("archive is zstd-compressed and this runtime has no zstd codec");
   }
-  const file = createReadStream(path, { highWaterMark: READ_CHUNK });
-  if (n === 4 && ZSTD_MAGIC.every((b, i) => head[i] === b)) {
-    if (!zstd.createZstdDecompress) {
-      file.destroy();
-      throw new PackError("archive is zstd-compressed and this runtime has no zstd codec");
+  const z = compressed ? zstd.createZstdDecompress!() : null;
+  let closed = false;
+  const close = (): void => {
+    if (closed) return;
+    closed = true;
+    closeSync(fd);
+    z?.destroy();
+  };
+  async function* raw(): AsyncGenerator<Uint8Array> {
+    for (let pos = 0; ; ) {
+      const buf = Buffer.allocUnsafe(READ_CHUNK);
+      const got = readSync(fd, buf, 0, READ_CHUNK, pos);
+      if (got === 0) return;
+      pos += got;
+      yield got === READ_CHUNK ? buf : buf.subarray(0, got);
     }
-    const z = zstd.createZstdDecompress();
-    file.on("error", (e) => z.destroy(e));
-    return {
-      chunks: file.pipe(z) as unknown as AsyncIterable<Uint8Array>,
-      close: () => {
-        file.destroy();
-        z.destroy();
-      },
-    };
   }
-  return { chunks: file as unknown as AsyncIterable<Uint8Array>, close: () => file.destroy() };
+  if (z === null) return { chunks: raw(), close };
+
+  const out: Uint8Array[] = [];
+  let failure: Error | null = null;
+  z.on("data", (chunk: Uint8Array) => out.push(chunk));
+  z.on("error", (e: Error) => {
+    failure ??= e;
+  });
+  const check = (): void => {
+    if (failure) throw new PackError(`archive does not decompress: ${failure.message}`);
+  };
+  async function* inflated(): AsyncGenerator<Uint8Array> {
+    for await (const chunk of raw()) {
+      await pump(z!, chunk);
+      check();
+      while (out.length > 0) yield out.shift()!;
+    }
+    await finish(z!);
+    check();
+    while (out.length > 0) yield out.shift()!;
+  }
+  return { chunks: inflated(), close };
 }
 
 /**
