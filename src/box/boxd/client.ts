@@ -12,7 +12,7 @@
  * worker decided: paths, limits, an environment already built for a box.
  */
 import { EventEmitter } from "node:events";
-import { connect, type Socket } from "node:net";
+import { Socket } from "node:net";
 import { PassThrough, Writable } from "node:stream";
 import { PackQuotaError, type AppliedLayer, type PackPort, type PackRequest, type PackUnitRef, type PackedLayer } from "../../storage/pack-sync";
 import { RootMissingError } from "../../storage/tree-sync";
@@ -60,7 +60,9 @@ export class BoxdClient {
     if (this.#sock && !this.#sock.destroyed) return Promise.resolve(this.#sock);
     if (this.#connecting) return this.#connecting;
     this.#connecting = new Promise<Socket>((resolve, reject) => {
-      const s = connect(this.#opts.socketPath);
+      // Listeners first, then connect: under Bun a refused or missing Unix socket reports its error before a listener
+      // attached after `connect()` can hear it, and an unheard error event takes the process down.
+      const s = new Socket();
       let buf = "";
       s.setEncoding("utf8");
       s.once("connect", () => {
@@ -68,12 +70,26 @@ export class BoxdClient {
         this.#connecting = null;
         resolve(s);
       });
-      s.once("error", (e) => {
+      // One way down for an error, an end and a close: under Bun a write to a connection the supervisor already dropped
+      // can report an error and never a close, and a request waiting on that would wait out its whole timeout.
+      const lost = (): void => {
+        if (this.#sock === s) this.#sock = null;
+        if (!s.destroyed) s.destroy();
+        for (const [id, p] of this.#pending) {
+          clearTimeout(p.timer);
+          p.reject(new BoxdError("unavailable", "the connection to the box supervisor was lost"));
+          this.#pending.delete(id);
+        }
+      };
+      s.on("error", (e) => {
         if (this.#connecting) {
           this.#connecting = null;
           reject(new BoxdError("unavailable", `the box supervisor is not reachable: ${e.message}`));
+          return;
         }
+        lost();
       });
+      s.once("end", lost);
       s.on("data", (chunk: string) => {
         buf += chunk;
         for (let nl = buf.indexOf("\n"); nl >= 0; nl = buf.indexOf("\n")) {
@@ -94,14 +110,8 @@ export class BoxdClient {
           else p.reject(new BoxdError(res.error.code as BoxdErrorCode, res.error.message));
         }
       });
-      s.once("close", () => {
-        if (this.#sock === s) this.#sock = null;
-        for (const [id, p] of this.#pending) {
-          clearTimeout(p.timer);
-          p.reject(new BoxdError("unavailable", "the connection to the box supervisor was lost"));
-          this.#pending.delete(id);
-        }
-      });
+      s.once("close", lost);
+      s.connect(this.#opts.socketPath);
     });
     return this.#connecting;
   }
@@ -199,7 +209,7 @@ export class BoxdClient {
       } catch (e) {
         return fail(e instanceof Error ? e : new Error(String(e)));
       }
-      const s = connect(path);
+      const s = new Socket();
       const decoder = frameDecoder();
       s.once("connect", () => {
         sock = s;
@@ -233,6 +243,7 @@ export class BoxdClient {
       s.once("error", (e) => fail(new BoxdError("unavailable", `the stdio connection of a box process failed: ${e.message}`)));
       // The supervisor went away without an exit frame: the process is gone or unreachable.
       s.once("close", () => finish(exitCode ?? null, done ? null : "SIGKILL"));
+      s.connect(path);
     })();
     return proc;
   }

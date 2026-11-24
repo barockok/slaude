@@ -500,6 +500,19 @@ describe("the supervisor over its socket, with a fake backend", () => {
     expect(existsSync(join(other.root, "a.txt"))).toBe(false);
   }, 30_000);
 
+  test("closing ends the sandboxes and the connected worker's connection, and starts nothing afterwards", async () => {
+    await create();
+    await boxd.close();
+    await expect(client.request("sandbox.list", {})).rejects.toThrow(/stopping|lost|not reachable/);
+    expect(stopped).toEqual(["s1"]);
+    expect(boxd.sandboxes()).toEqual([]);
+    const late = await boxd.request(1, "sandbox.create", {}).then(
+      () => "started",
+      (e: Error) => e.message,
+    );
+    expect(late).toContain("stopping");
+  });
+
   test("a pack request for a path outside the roots is refused before any work", async () => {
     const packer = client.packer(join(dir, "box", "pack-spool"));
     await expect(packer.pack({ root: "/etc", filter: { kind: "all", exclude: [] }, indexPath: join(dir, "box", "i.json") }, { base: null, compact: false })).rejects.toThrow(/outside/);

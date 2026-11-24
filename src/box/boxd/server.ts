@@ -510,6 +510,9 @@ export function createBoxd(config: BoxdConfig, deps: BoxdDeps = {}): Boxd {
   const chains = new Map<string, Promise<unknown>>();
   let server: Server | null = null;
   let nextConn = 1;
+  let closing = false;
+  /** Open control connections: ended when the supervisor closes, or it would never finish closing. */
+  const control = new Set<Socket>();
 
   /** One operation on a sandbox at a time. */
   const serial = <T>(id: string, fn: () => Promise<T>): Promise<T> => {
@@ -822,6 +825,7 @@ export function createBoxd(config: BoxdConfig, deps: BoxdDeps = {}): Boxd {
   const packOwner = () => backends[config.tier].hostOwner;
 
   async function request(conn: number, op: string, params: unknown): Promise<unknown> {
+    if (closing) throw new BoxdError("unavailable", "the supervisor is stopping");
     const p = (params && typeof params === "object" ? params : {}) as Record<string, unknown>;
     switch (op) {
       case "probe":
@@ -895,8 +899,11 @@ export function createBoxd(config: BoxdConfig, deps: BoxdDeps = {}): Boxd {
   }
 
   function onConnection(c: Socket): void {
+    if (closing) return void c.destroy();
     const conn = nextConn++;
     let buf = "";
+    control.add(c);
+    c.once("close", () => control.delete(c));
     c.setEncoding("utf8");
     c.on("error", () => {});
     c.on("data", (chunk: string) => {
@@ -954,8 +961,12 @@ export function createBoxd(config: BoxdConfig, deps: BoxdDeps = {}): Boxd {
       giveToClient(config.socketPath);
     },
     async close() {
+      // From here nothing new is started: a worker still connected must not get a sandbox from a supervisor that is leaving.
+      closing = true;
       for (const t of graceTimers.values()) clearTimeout(t);
       graceTimers.clear();
+      for (const c of control) c.destroy();
+      control.clear();
       await Promise.all([...live.keys()].map((id) => serial(id, () => stopSandbox(id)).catch(() => {})));
       pack.close();
       for (const b of Object.values(backends)) {
@@ -965,7 +976,10 @@ export function createBoxd(config: BoxdConfig, deps: BoxdDeps = {}): Boxd {
           /* nothing to release */
         }
       }
-      await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+      // Once: closing a server that is already closed never calls back.
+      const listening = server;
+      server = null;
+      await new Promise<void>((resolve) => (listening ? listening.close(() => resolve()) : resolve()));
       try {
         unlinkSync(config.socketPath);
       } catch {

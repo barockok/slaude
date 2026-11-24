@@ -24,7 +24,7 @@
  * and never sees one: with no TLS inspection it knows the CONNECT host only.
  */
 import { chmodSync, existsSync, mkdirSync, unlinkSync } from "node:fs";
-import { connect as netConnect, createServer, isIP, type Server, type Socket } from "node:net";
+import { Socket, createServer, isIP, type Server } from "node:net";
 import { lookup as dnsLookup } from "node:dns/promises";
 import { dirname } from "node:path";
 import { classifyAddress, type ResolvedAddress, type Resolver } from "../../net/outbound-policy";
@@ -165,7 +165,8 @@ export async function startEgressProxy(opts: EgressProxyOpts): Promise<EgressPro
     if (typeof dest === "string") return refuse(client, host, port, dest);
     if (client.destroyed) return;
 
-    const upstream = netConnect({ host: dest.host, port: dest.port });
+    // Connected last, after its listeners are on: an error event with no listener would take the worker down.
+    const upstream = new Socket();
     const tunnel: Tunnel = { host, port, client, upstream };
     const timer = setTimeout(() => upstream.destroy(new Error("connect timeout")), opts.connectTimeoutMs ?? 15_000);
     let opened = false;
@@ -202,6 +203,8 @@ export async function startEgressProxy(opts: EgressProxyOpts): Promise<EgressPro
     });
     upstream.once("close", done);
     client.once("close", done);
+    upstream.on("error", () => {});
+    upstream.connect({ host: dest.host, port: dest.port });
   }
 
   const server: Server = createServer((client) => {

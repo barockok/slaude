@@ -29,7 +29,7 @@
  * reach.
  */
 import { spawn } from "node:child_process";
-import { connect, createServer, type Server } from "node:net";
+import { Socket, createServer, type Server } from "node:net";
 
 const EGRESS_PORT = 3128;
 const PROVIDER_PORT = 3129;
@@ -37,7 +37,8 @@ const RUN_DIR = process.env.SLAUDE_BOX_RUN_DIR || "/run/slaude";
 
 function relay(port: number, socketPath: string): Promise<Server> {
   const server = createServer((client) => {
-    const upstream = connect(socketPath);
+    // Listeners before the connect: an error nobody hears would end this process, and with it the box.
+    const upstream = new Socket();
     const end = () => {
       client.destroy();
       upstream.destroy();
@@ -46,6 +47,7 @@ function relay(port: number, socketPath: string): Promise<Server> {
     upstream.on("error", end);
     client.on("close", end);
     upstream.on("close", end);
+    upstream.connect(socketPath);
     client.pipe(upstream);
     upstream.pipe(client);
   });

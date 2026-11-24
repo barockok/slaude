@@ -217,8 +217,16 @@ describe("a supervised sandbox driver", () => {
     const sb = driver.create(spec());
     await sb.start();
     const sock = join(dir, "box", "sessions", "sess-1", "run", "llm.sock");
-    const call = () => fetch("http://box.invalid/v1/messages", { method: "POST", headers: { "x-api-key": BOX_CREDENTIAL_PLACEHOLDER }, body: "{}", unix: sock } as RequestInit);
-    expect(await (await call()).text()).toBe("model says hi");
+    // A request the proxy could not pass on is a 502 the CLI retries; so does this (seen once under load, on a reused
+    // loopback connection to the test's upstream).
+    const call = async (): Promise<string> => {
+      for (let attempt = 0; ; attempt++) {
+        const r = await fetch("http://box.invalid/v1/messages", { method: "POST", headers: { "x-api-key": BOX_CREDENTIAL_PLACEHOLDER }, body: "{}", unix: sock } as RequestInit);
+        const text = await r.text();
+        if (r.status !== 502 || attempt >= 2) return text;
+      }
+    };
+    expect(await call()).toBe("model says hi");
     expect(seen.at(-1)!["x-api-key"]).toBe(REAL);
     route = { ...route, form: "auth-token", credential: "rotated-credential-9876543210" };
     await call();
