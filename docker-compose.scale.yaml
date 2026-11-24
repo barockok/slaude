@@ -33,6 +33,26 @@
 # SOUL.md lives on the shared volume: copy it in with
 #   docker compose -f docker-compose.scale.yaml cp ./data/SOUL.md gateway:/data/SOUL.md
 #
+# Boxes (optional, off by default; docs: deploy/boxes). Each node gets a
+# privileged supervisor container (`boxd-1`, `boxd-2`) under the compose
+# profile `boxes`, and runs every boxed session in its own sandbox there:
+#   SLAUDE_BOX=on SLAUDE_BOX_TIER=gvisor \
+#     docker compose -f docker-compose.scale.yaml --profile boxes up --build
+# Without the profile and the two variables nothing changes: no privileged
+# container is started, the gateway reads no box and the nodes offer tier
+# `none`. Setting SLAUDE_BOX_TIER without the profile makes the nodes refuse to
+# start (no supervisor answers), which is the intended failure.
+#   SLAUDE_BOX              on | off (default off): the gateway reads boxes
+#   SLAUDE_BOX_TIER         none (default) | gvisor | bwrap, for nodes AND supervisors
+#   SLAUDE_NODE_MAX_BOXES   sandboxes per node (default 4 here)
+#   SLAUDE_BOXD_MEMORY      memory limit of each supervisor (default 6g); the
+#                           node refuses to start when it cannot hold
+#                           SLAUDE_NODE_MAX_BOXES boxes
+# NOT RUN as a compose stack: the supervisor, the node worker and the image's
+# box layers ran together in one privileged container on a development VM (the
+# 2026-11-25 box smoke field note); these services put the same pieces in two
+# containers that share volumes, and that arrangement has not been started.
+#
 # The single-process deployment stays in docker-compose.yaml — this file is
 # the multi-node topology only.
 
@@ -89,6 +109,8 @@ services:
       SLAUDE_JOB_SECRET: ${SLAUDE_JOB_SECRET:?set SLAUDE_JOB_SECRET in .env}
       SLAUDE_MASTER_KEY: ${SLAUDE_MASTER_KEY:?set SLAUDE_MASTER_KEY in .env (openssl rand -base64 32)}
       SLAUDE_MODEL: ${SLAUDE_MODEL:-claude-sonnet-4-6}
+      # Boxes are stored by a sync either way; `on` makes the gateway read them.
+      SLAUDE_BOX: ${SLAUDE_BOX:-off}
     ports:
       - "8080:8080"
     volumes:
@@ -120,8 +142,22 @@ services:
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
       ANTHROPIC_AUTH_TOKEN: ${ANTHROPIC_AUTH_TOKEN:-}
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      # Boxes: `none` runs every session on the node itself, as before. The
+      # other variables are read only on a sandbox tier.
+      SLAUDE_BOX_TIER: ${SLAUDE_BOX_TIER:-none}
+      SLAUDE_NODE_MAX_BOXES: ${SLAUDE_NODE_MAX_BOXES:-4}
+      SLAUDE_BOX_DIR: /var/lib/slaude-box
+      SLAUDE_BOXD_SOCKET: /run/slaude-box/boxd.sock
     volumes:
       - slaude-home:/data
+      # Shared with this node's supervisor (boxd-1). The box volumes are empty
+      # and unused on tier `none`. /config-home (each session's config
+      # directory) was the container's own filesystem before; it is a volume of
+      # this node alone now, never shared between nodes, so that the supervisor
+      # can bind mount a session's directory into its box.
+      - box-run-1:/run/slaude-box
+      - box-data-1:/var/lib/slaude-box
+      - config-home-1:/config-home
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8081/healthz"]
       interval: 10s
@@ -139,6 +175,9 @@ services:
     environment: *node-env
     volumes:
       - slaude-home:/data
+      - box-run-2:/run/slaude-box
+      - box-data-2:/var/lib/slaude-box
+      - config-home-2:/config-home
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8081/healthz"]
       interval: 10s
@@ -146,7 +185,49 @@ services:
       retries: 12
       start_period: 20s
 
+  # The box supervisor of node-1. Started only with `--profile boxes`.
+  # Privileged, and for that reason given nothing: no env_file, no credential,
+  # no network (it makes no network call). It refuses to start with a
+  # credential or provider variable in its environment. Under tini, never as
+  # pid 1: ended sandbox processes are left for pid 1 to reap.
+  boxd-1: &boxd
+    profiles: ["boxes"]
+    image: slaude:latest
+    restart: unless-stopped
+    command: ["tini", "--", "bun", "--no-env-file", "src/box/boxd/main.ts", "--mount-root", "/data", "--mount-root", "/config-home", "--ro-root", "/app"]
+    privileged: true
+    # Its own cgroup namespace: the supervisor gives each sandbox a cgroup
+    # under its own, and reads its memory limit from it.
+    cgroup: private
+    network_mode: none
+    mem_limit: ${SLAUDE_BOXD_MEMORY:-6g}
+    environment: &boxd-env
+      SLAUDE_BOX_TIER: ${SLAUDE_BOX_TIER:-gvisor}
+      SLAUDE_BOX_DIR: /var/lib/slaude-box
+      SLAUDE_BOXD_SOCKET: /run/slaude-box/boxd.sock
+    volumes:
+      - slaude-home:/data
+      - box-run-1:/run/slaude-box
+      - box-data-1:/var/lib/slaude-box
+      - config-home-1:/config-home
+
+  # The box supervisor of node-2.
+  boxd-2:
+    <<: *boxd
+    volumes:
+      - slaude-home:/data
+      - box-run-2:/run/slaude-box
+      - box-data-2:/var/lib/slaude-box
+      - config-home-2:/config-home
+
 volumes:
   pg-data:
   redis-data:
   slaude-home:
+  # One pair per node: a supervisor serves exactly one node worker.
+  box-run-1:
+  box-data-1:
+  box-run-2:
+  box-data-2:
+  config-home-1:
+  config-home-2:
