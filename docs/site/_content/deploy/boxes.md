@@ -8,12 +8,15 @@ description: One sandbox per session, built from a reviewed image, with no secre
 > **Status: in development, off by default.** The gateway side is in place
 > behind `SLAUDE_BOX`: box definitions in the deploy repository, the sync, the
 > signed box set, pinning a session to an image, refresh, the inventory of
-> which node holds which image, and the capacity rules. **The sandbox itself is
-> not shipped yet**: the node supervisor, the sandbox driver and the two
-> proxies described below do not exist in this release, so no session runs in
-> a box today, and a node cannot be set to a sandbox tier that works. This page
-> describes the design so a deployment can prepare its personas. Every section
-> says which parts exist.
+> which node holds which image, and the capacity rules. The node side now
+> exists too: the box supervisor, the gVisor and bwrap drivers and the two
+> proxies described below. **It has run on a development VM and in a
+> privileged container there, never on a cluster**, and the Kubernetes and
+> compose manifests that add the supervisor container are not written yet. So
+> a deployment cannot switch it on from the shipped manifests today. This page
+> describes the design so a deployment can prepare its personas. What was
+> measured, and what was not, is in the
+> [smoke test field note](../field-notes/2026-11-25-box-smoke.md).
 
 A **box** is a reviewed image plus a policy. A persona that names a box has
 each of its sessions run in its own sandbox built from that image, inside the
