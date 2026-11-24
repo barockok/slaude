@@ -17,6 +17,7 @@
  *
  *   GET   /v1/node/whoami             the caller's verified identity      (node)
  *   PUT   /v1/node/plugins            the node's plugin report, once per process (node)
+ *   GET   /v1/node/boxes              the box images this node's labels need (node)
  *   GET   /v1/sessions/:id            session row                         (node+job, label)
  *   PATCH /v1/sessions/:id            update started/model/mode           (same)
  *   GET   /v1/tenants/:id/runtime     runtime bundle (legacy route)       (node+job, label)
@@ -58,6 +59,7 @@ import { handleJobEvent, handleTokenRefresh, handleTokenReissue, REFRESH_GRACE_S
 import { executeToolCall } from "./tools";
 import { handleMcpx } from "./tools/mcpx";
 import { handleNodePlugins, type NodePluginsDeps } from "./node-plugins";
+import { handleNodeBoxes, type NodeBoxesDeps } from "./node-boxes";
 import type { ToolPlaneDeps } from "./tools/deps";
 import { defaultPendingSource, type PendingSource } from "./pending-source";
 import { json, methodNotAllowed, notFound, readBodyCapped, readJson } from "./http";
@@ -89,6 +91,8 @@ export interface V1Options {
   jobMovedTo?: JobMovedTo;
   /** The plugin report route's seams (tests). */
   nodePlugins?: NodePluginsDeps;
+  /** The box list route's seams (tests). */
+  nodeBoxes?: NodeBoxesDeps;
 }
 
 export type RouteAuth = "node" | "node+job";
@@ -155,6 +159,16 @@ export function v1Routes(opts: V1Options, pendingSource: PendingSource): RouteDe
       gate: "none",
       reason: "the report is stored under the caller's own verified node id and labels; no persona data",
       handle: async ({ req, node }) => handleNodePlugins(req, node, opts.nodePlugins),
+    },
+    {
+      name: "node.boxes",
+      methods: ["GET"],
+      pattern: ["node", "boxes"],
+      auth: "node",
+      gate: "none",
+      reason:
+        "there is no job token at node start; the handler lists only boxes of personas that run on a label the caller's own verified credential carries, and returns image references and digests only",
+      handle: async ({ req, node }) => handleNodeBoxes(req, node, opts.nodeBoxes),
     },
     {
       name: "sessions",

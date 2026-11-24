@@ -311,6 +311,26 @@ export class NodeClient {
     return "ok";
   }
 
+  /**
+   * The box images this node's labels need: the current version of each box a
+   * persona of those labels names, and the older digests recent sessions are
+   * pinned to. Node-authenticated. Null: a gateway that predates the route
+   * (404). Transient failures throw after the usual retries.
+   */
+  async getBoxes(tenantId = "default"): Promise<Array<{ name: string; image: string; digest: string; current: boolean }> | null> {
+    const res = await this.request(`/v1/node/boxes?tenant=${encodeURIComponent(tenantId)}`, { signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS) });
+    if (res.status === 404) return null;
+    const body = await this.#json<{ boxes?: unknown }>(res);
+    if (!Array.isArray(body.boxes)) return [];
+    // What the gateway sends is checked before it names anything on disk.
+    return body.boxes.flatMap((b) => {
+      const x = b as { name?: unknown; image?: unknown; digest?: unknown; current?: unknown };
+      return typeof x.name === "string" && typeof x.image === "string" && typeof x.digest === "string" && /^sha256:[a-f0-9]{64}$/.test(x.digest) && x.image.endsWith(`@${x.digest}`)
+        ? [{ name: x.name, image: x.image, digest: x.digest, current: x.current === true }]
+        : [];
+    });
+  }
+
   async getSession(id: string, jobToken: string): Promise<SessionView | null> {
     const res = await this.request(`/v1/sessions/${id}`, { jobToken });
     if (res.status === 404) return null;

@@ -664,6 +664,21 @@ export interface BoxVersionView {
   digest: string;
   forced: boolean;
   tier: "none" | "bwrap" | "gvisor";
+  /** The live nodes that hold this version's image unpacked, sorted. Empty when none does, or when no node reports. */
+  heldBy: string[];
+}
+
+/** A live node that offers a sandbox, as it last reported. */
+export interface BoxNodeView {
+  node: string;
+  labels: string[];
+  /** How many images it holds, and how many of them are a version of a box in this set. */
+  images: number;
+  knownImages: number;
+  /** Sandboxes running, the most it runs at once, its free slots. Null until the node admits boxes. */
+  running: number | null;
+  capacity: number | null;
+  free: number | null;
 }
 
 export interface BoxView {
@@ -688,6 +703,8 @@ export interface BoxesResponse {
   problem?: string;
   setVersion: number | null;
   boxes: BoxView[];
+  /** The nodes that report box images, from the gateway's derived snapshot. Empty when none reports. */
+  nodes: BoxNodeView[];
 }
 
 // --- Resources: skills (read-only, plus retire and restore) -------------------

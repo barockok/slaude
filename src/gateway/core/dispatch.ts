@@ -161,6 +161,8 @@ export interface QueueDispatchOpts {
   /** Forced refresh and the first-turn note, for a boxed session. Default: the signed
    *  box set and the registry. With an injected `box` and none given here: off. */
   boxRefresh?: BoxRefreshHooks | null;
+  /** The pick among nodes that hold a cold boxed session's image, in [0, 1). Default Math.random. */
+  random?: () => number;
 }
 
 export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts = {}): QueueDispatch {
@@ -656,6 +658,18 @@ export function makeQueueDispatch(agent: AgentManager, opts: QueueDispatchOpts =
           const pool = capable.filter((n) => n.has);
           target = { node: pool[hashPick(session.id, pool.length)]!.node };
         }
+      }
+      // Boxes, a cold session (box spec, "Image build, pull and prewarm"): a node
+      // that already holds the session's image starts it with one sandbox start
+      // and no download, so the turn goes to one of those, at random, when it
+      // also reported a free slot. Otherwise the label queue (or the capable
+      // node chosen above): whichever node claims it pulls the image first.
+      // This is a hint. The node's own admission check is the authority, and a
+      // full node hands the job back to the label queue.
+      if (boxPin && !warmOk) {
+        const holders = await (registry as Partial<Registry>).liveNodesWithBox?.(label, requiredCaps, boxPin.digest).catch(() => []);
+        const ready = (holders ?? []).filter((n) => n.hasDigest && n.free !== null && n.free > 0);
+        if (ready.length) target = { node: ready[Math.min(ready.length - 1, Math.floor((opts.random ?? Math.random)() * ready.length))]!.node };
       }
       // Capture the follower's cursor BEFORE the job becomes claimable. Once it
       // is enqueued a node can claim it and append the whole turn before the

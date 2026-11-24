@@ -26,6 +26,46 @@ end`;
 /** How long a refresh mark waits for the session's next turn: a thread can sit idle for weeks. */
 export const BOX_REFRESH_NOTE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * What a node that offers a sandbox reports about boxes on its heartbeat: the
+ * image digests it holds unpacked and, once it admits boxes, its occupancy.
+ * `free` is a hint for routing. The node's own admission check is the authority.
+ */
+export interface NodeBoxReport {
+  digests: string[];
+  running?: number;
+  capacity?: number;
+  free?: number;
+}
+
+const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
+const count = (v: unknown): number | undefined => (typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 100_000 ? v : undefined);
+
+const encodeBoxes = (r: NodeBoxReport): string =>
+  JSON.stringify({
+    digests: [...new Set(r.digests.filter((d) => DIGEST_RE.test(d)))].sort().slice(0, 500),
+    ...(count(r.running) !== undefined ? { running: r.running } : {}),
+    ...(count(r.capacity) !== undefined ? { capacity: r.capacity } : {}),
+    ...(count(r.free) !== undefined ? { free: r.free } : {}),
+  });
+
+/** A stored report, or null when absent or unreadable. Anything that is not a digest is dropped: a node's report is data, not trusted text. */
+function decodeBoxes(v: string | null | undefined): NodeBoxReport | null {
+  if (!v) return null;
+  try {
+    const o = JSON.parse(v) as { digests?: unknown; running?: unknown; capacity?: unknown; free?: unknown };
+    if (!Array.isArray(o.digests)) return null;
+    const out: NodeBoxReport = { digests: o.digests.filter((d): d is string => typeof d === "string" && DIGEST_RE.test(d)).sort() };
+    for (const k of ["running", "capacity", "free"] as const) {
+      const n = count(o[k]);
+      if (n !== undefined) out[k] = n;
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 export interface SessionLocation {
   node: string;
   since: number;
@@ -151,24 +191,74 @@ export function makeRegistry(opts: RegistryOpts) {
     /** Node boot: announce liveness and join the reaper's work list. The
      *  node's labels (from its verified credential) ride in the same
      *  transaction; omitted = an unlabelled node, i.e. `{default}`. */
-    async nodeUp(node: string, labels?: readonly string[], caps?: readonly string[]): Promise<void> {
+    async nodeUp(node: string, labels?: readonly string[], caps?: readonly string[], boxes?: NodeBoxReport): Promise<void> {
       const tx = redis.multi().set(keys.node(node), Date.now(), "PX", nodeTtlMs);
       if (labels) tx.set(keys.nodeLabels(node), encodeLabels(labels), "PX", nodeLabelsTtlMs);
       if (caps) tx.set(keys.nodeCaps(node), [...new Set(caps)].sort().join(","), "PX", nodeLabelsTtlMs);
+      if (boxes) tx.set(keys.nodeBoxes(node), encodeBoxes(boxes), "PX", nodeLabelsTtlMs);
       await tx.sadd(keys.nodeSet(), node).exec();
     },
 
     /** Periodic node heartbeat — refreshes the 30s liveness key, and the
      *  labels key beside it in the same transaction. */
-    async beatNode(node: string, labels?: readonly string[], caps?: readonly string[]): Promise<void> {
-      if (!labels && !caps) {
+    async beatNode(node: string, labels?: readonly string[], caps?: readonly string[], boxes?: NodeBoxReport): Promise<void> {
+      if (!labels && !caps && !boxes) {
         await redis.set(keys.node(node), Date.now(), "PX", nodeTtlMs);
         return;
       }
       const tx = redis.multi().set(keys.node(node), Date.now(), "PX", nodeTtlMs);
       if (labels) tx.set(keys.nodeLabels(node), encodeLabels(labels), "PX", nodeLabelsTtlMs);
       if (caps) tx.set(keys.nodeCaps(node), [...new Set(caps)].sort().join(","), "PX", nodeLabelsTtlMs);
+      // Written with the node TTL beside its capabilities: a dead node's images and free slots expire with it.
+      if (boxes) tx.set(keys.nodeBoxes(node), encodeBoxes(boxes), "PX", nodeLabelsTtlMs);
       await tx.exec();
+    },
+
+    /** What a node last reported about boxes, or null (it offers no sandbox, or it is gone). */
+    async nodeBoxes(node: string): Promise<NodeBoxReport | null> {
+      return decodeBoxes(await redis.get(keys.nodeBoxes(node)));
+    },
+
+    /**
+     * Live nodes that carry `label` and advertise every capability in `caps`,
+     * each with whether it holds `digest` unpacked and the free slots it last
+     * reported (null: it reports none yet). Sorted by node. One listing and
+     * three MGETs, so a node's facts never come from a later read than the one
+     * that selected it.
+     */
+    async liveNodesWithBox(label: string, caps: readonly string[], digest: string): Promise<Array<{ node: string; hasDigest: boolean; free: number | null }>> {
+      const live = await listLive();
+      if (live.length === 0) return [];
+      const [labels, capVals, boxVals] = await Promise.all([
+        redis.mget(...live.map((n) => keys.nodeLabels(n))),
+        redis.mget(...live.map((n) => keys.nodeCaps(n))),
+        redis.mget(...live.map((n) => keys.nodeBoxes(n))),
+      ]);
+      const out: Array<{ node: string; hasDigest: boolean; free: number | null }> = [];
+      live.forEach((node, i) => {
+        if (!decodeLabels(labels[i] ?? null).has(label)) return;
+        const have = new Set((capVals[i] ?? "").split(",").filter(Boolean));
+        if (!caps.every((c) => have.has(c))) return;
+        const report = decodeBoxes(boxVals[i]);
+        out.push({ node, hasDigest: !!report && report.digests.includes(digest), free: report?.free ?? null });
+      });
+      return out.sort((a, b) => a.node.localeCompare(b.node));
+    },
+
+    /**
+     * Every live node that reports boxes, with its labels and its report,
+     * sorted by node: the console's "which node holds which image".
+     */
+    async liveBoxInventory(): Promise<Array<{ node: string; labels: string[]; boxes: NodeBoxReport }>> {
+      const live = await listLive();
+      if (live.length === 0) return [];
+      const [labels, boxVals] = await Promise.all([redis.mget(...live.map((n) => keys.nodeLabels(n))), redis.mget(...live.map((n) => keys.nodeBoxes(n)))]);
+      const out: Array<{ node: string; labels: string[]; boxes: NodeBoxReport }> = [];
+      live.forEach((node, i) => {
+        const boxes = decodeBoxes(boxVals[i]);
+        if (boxes) out.push({ node, labels: [...decodeLabels(labels[i] ?? null)].sort(), boxes });
+      });
+      return out.sort((a, b) => a.node.localeCompare(b.node));
     },
 
     /** Of the given node process ids, those with a live heartbeat. */
@@ -305,7 +395,7 @@ export function makeRegistry(opts: RegistryOpts) {
 
     /** Graceful shutdown: leave both liveness key and reaper work list. */
     async nodeDown(node: string): Promise<void> {
-      await redis.multi().del(keys.node(node), keys.nodeLabels(node), keys.nodeCaps(node)).srem(keys.nodeSet(), node).exec();
+      await redis.multi().del(keys.node(node), keys.nodeLabels(node), keys.nodeCaps(node), keys.nodeBoxes(node)).srem(keys.nodeSet(), node).exec();
     },
 
     /** Reaper bookkeeping: forget a dead node after cleaning it up. */

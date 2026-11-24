@@ -167,6 +167,12 @@ export interface Keys {
    *  image, taken (GETDEL) by the dispatch of its next turn, which then carries
    *  the `<box-refreshed>` note once. JSON `{box, from, to, at}`, with a TTL. */
   boxRefreshNote(sessionId: string): string;
+  /** `nodeboxes:<nodeId>`: what a live node reports about boxes on its
+   *  heartbeat, beside its capabilities and with the same TTL. JSON
+   *  `{digests, running, capacity, free}`: the image digests it holds unpacked
+   *  and, once it admits boxes, how many it runs and has room for. Absent for
+   *  a node that offers no sandbox. */
+  nodeBoxes(nodeId: string): string;
 }
 
 export function makeKeys(prefix: string = redisPrefix()): Keys {
@@ -207,5 +213,6 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     redispatch: (jobId) => `${prefix}:redispatch:${jobId}`,
     labelUnservedSince: () => `${prefix}:label-unserved-since`,
     boxRefreshNote: (sessionId) => `${prefix}:box-refresh-note:${sessionId}`,
+    nodeBoxes: (nodeId) => `${prefix}:nodeboxes:${nodeId}`,
   };
 }

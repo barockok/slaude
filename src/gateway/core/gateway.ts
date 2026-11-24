@@ -116,6 +116,7 @@ import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
 import { dbInventorySources, startPluginInventory } from "./plugin-inventory";
+import { startBoxInventory } from "./box-inventory";
 import { createPortalApi } from "../portal/api";
 import { createDeployApi } from "../deploy/api";
 import { createBrainImportApi } from "../brain-import/api";
@@ -5642,6 +5643,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // bridge and the portal read synchronously. Nodes exist only with a queue;
   // started in start() so it is loaded before this gateway serves.
   let pluginInventory: { stop(): void } | null = null;
+  let boxInventory: { stop(): void } | null = null;
   const v1 = createV1Api({
     tools: {
       mcpBridge,
@@ -5813,6 +5815,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     start: async () => {
       if (queueDispatch) {
         pluginInventory = await startPluginInventory(dbInventorySources((ids) => queueDispatch.registry.liveNodeIds(ids)));
+        // Which node holds which box image, for the console. Only where boxes are on; nothing routes on it.
+        if (env.box.enabled()) boxInventory = await startBoxInventory(() => queueDispatch.registry.liveBoxInventory());
       }
       await t.start();
     },
@@ -5833,6 +5837,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await stopBoundaryFill().catch(() => {});
       stopOwnerGuardrails();
       pluginInventory?.stop();
+      boxInventory?.stop();
       unsetMergeNoticeSender();
       if (panelSweeper) clearInterval(panelSweeper);
       await panelResumeUnsub?.().catch(() => {});

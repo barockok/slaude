@@ -34,6 +34,7 @@ const stubTools = {
 const EXPECTED_GATES: Record<string, "label" | "none"> = {
   "node.whoami": "none",
   "node.plugins": "none",
+  "node.boxes": "none",
   sessions: "label",
   "tenants.runtime": "label",
   "tenants.mcp-credentials": "label",

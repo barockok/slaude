@@ -11,7 +11,8 @@
  */
 import type { BoxPolicy } from "../../box/policy";
 import { BoxIntegrityError, loadBoxes, type BoxSnapshot, type BoxVersion } from "../core/box-registry";
-import type { BoxPolicyView, BoxVersionView, BoxesResponse } from "./api-types";
+import { currentBoxInventory, type BoxInventorySnapshot } from "../core/box-inventory";
+import type { BoxNodeView, BoxPolicyView, BoxVersionView, BoxesResponse } from "./api-types";
 
 function policyView(p: BoxPolicy): BoxPolicyView {
   return {
@@ -38,22 +39,39 @@ function policyView(p: BoxPolicy): BoxPolicyView {
 /** The repository of an image reference, without its digest. */
 const repositoryOf = (image: string) => image.slice(0, image.indexOf("@"));
 
-function versionView(v: BoxVersion, current: number): BoxVersionView {
-  return { version: v.version, current: v.version === current, repository: repositoryOf(v.image), digest: v.digest, forced: v.forced, tier: v.policy.tier };
+function versionView(v: BoxVersion, current: number, inv: BoxInventorySnapshot): BoxVersionView {
+  return {
+    version: v.version, current: v.version === current, repository: repositoryOf(v.image), digest: v.digest, forced: v.forced, tier: v.policy.tier,
+    heldBy: [...(inv.holders.get(v.digest) ?? [])],
+  };
+}
+
+/** A node row: counts only. A digest the set does not know is counted, not listed. */
+function nodeViews(inv: BoxInventorySnapshot, known: ReadonlySet<string>): BoxNodeView[] {
+  return inv.nodes.map((n) => ({
+    node: n.node,
+    labels: [...n.labels],
+    images: n.digests.length,
+    knownImages: n.digests.filter((d) => known.has(d)).length,
+    running: n.running,
+    capacity: n.capacity,
+    free: n.free,
+  }));
 }
 
 /** `enabled` is the gateway's SLAUDE_BOX switch: off, boxes are stored and nothing applies them. */
 export async function boxesView(
   tenant: string,
-  o: { enabled: boolean; load?: (tenant: string) => Promise<BoxSnapshot> },
+  o: { enabled: boolean; load?: (tenant: string) => Promise<BoxSnapshot>; inventory?: () => BoxInventorySnapshot },
 ): Promise<BoxesResponse> {
+  const inv = (o.inventory ?? currentBoxInventory)();
   let snap: BoxSnapshot;
   try {
     snap = await (o.load ?? loadBoxes)(tenant);
   } catch (e) {
     if (!(e instanceof BoxIntegrityError)) throw e;
     // The reason names boxes, never content. Nothing of an unverified set is shown.
-    return { enabled: o.enabled, verified: false, problem: e.reason, setVersion: null, boxes: [] };
+    return { enabled: o.enabled, verified: false, problem: e.reason, setVersion: null, boxes: [], nodes: [] };
   }
   const boxes = [...snap.boxes.values()]
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -65,7 +83,8 @@ export async function boxesView(
       digest: b.current.digest,
       policy: policyView(b.current.policy),
       // Newest first.
-      versions: [...b.versions].reverse().map((v) => versionView(v, b.current.version)),
+      versions: [...b.versions].reverse().map((v) => versionView(v, b.current.version, inv)),
     }));
-  return { enabled: o.enabled, verified: true, setVersion: snap.setVersion, boxes };
+  const known = new Set([...snap.boxes.values()].flatMap((b) => b.versions.map((v) => v.digest)));
+  return { enabled: o.enabled, verified: true, setVersion: snap.setVersion, boxes, nodes: nodeViews(inv, known) };
 }

@@ -47,8 +47,8 @@ describe("boxesView", () => {
     const b = out.boxes[1]!;
     expect(b).toMatchObject({ name: "ruby-dev", description: "Ruby toolchain", version: 2, repository: "ghcr.io/example/boxes/ruby-dev", digest: digest("b") });
     expect(b.versions).toEqual([
-      { version: 2, current: true, repository: "ghcr.io/example/boxes/ruby-dev", digest: digest("b"), forced: true, tier: "bwrap" },
-      { version: 1, current: false, repository: "ghcr.io/example/boxes/ruby-dev", digest: digest("a"), forced: false, tier: "gvisor" },
+      { version: 2, current: true, repository: "ghcr.io/example/boxes/ruby-dev", digest: digest("b"), forced: true, tier: "bwrap", heldBy: [] },
+      { version: 1, current: false, repository: "ghcr.io/example/boxes/ruby-dev", digest: digest("a"), forced: false, tier: "gvisor", heldBy: [] },
     ]);
     expect(b.policy).toEqual({
       tier: "bwrap",
@@ -83,12 +83,12 @@ describe("boxesView", () => {
         throw new BoxIntegrityError("box 'ruby-dev' version 1 signature does not verify");
       },
     });
-    expect(out).toEqual({ enabled: false, verified: false, problem: "box 'ruby-dev' version 1 signature does not verify", setVersion: null, boxes: [] });
+    expect(out).toEqual({ enabled: false, verified: false, problem: "box 'ruby-dev' version 1 signature does not verify", setVersion: null, boxes: [], nodes: [] });
     await expect(boxesView("default", { enabled: true, load: async () => { throw new Error("db down"); } })).rejects.toThrow("db down");
   });
 
   test("no boxes: an empty list, and the switch as it is", async () => {
-    expect(await boxesView("default", { enabled: false, load: async () => snapshot([], 0) })).toEqual({ enabled: false, verified: true, setVersion: 0, boxes: [] });
+    expect(await boxesView("default", { enabled: false, load: async () => snapshot([], 0) })).toEqual({ enabled: false, verified: true, setVersion: 0, boxes: [], nodes: [] });
   });
 });
 
