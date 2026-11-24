@@ -17,7 +17,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BoxdClient, type BoxProcess } from "../../src/box/boxd/client";
-import { createBoxd, type Boxd } from "../../src/box/boxd/server";
+import { createBoxd, delegateCgroup, type Boxd } from "../../src/box/boxd/server";
 import { makeSupervisedDriver, type SupervisedDriver } from "../../src/box/drivers/supervised";
 import { BOX_CREDENTIAL_PLACEHOLDER } from "../../src/box/env";
 import { BOX_AGENT_UID, cliImageRunner, makeImageStore } from "../../src/box/image";
@@ -57,8 +57,13 @@ d(`the sandbox contract on tier ${tier}`, () => {
     const initDir = process.env.SLAUDE_BOX_TEST_INIT_DIR;
     if (!layout || !initDir) throw new Error("SLAUDE_BOX_TEST_LAYOUT and SLAUDE_BOX_TEST_INIT_DIR must be set (see scripts/smoke/box-smoke.sh)");
     if (process.getuid?.() !== 0) throw new Error("the tier-gated suite needs root");
-    // On the VM's own disk, and short: a Unix socket path has about 100 bytes.
-    root = mkdtempSync("/var/tmp/sbt-");
+    // What the supervisor's entry point does first: in a container with its own cgroup namespace no sandbox can be
+    // given a limited cgroup until the container's processes are moved aside. A no-op on a plain host.
+    const cg = delegateCgroup();
+    if (cg) throw new Error(`cgroup delegation failed: ${cg}`);
+    // On the machine's own disk (never a container's overlay: the bwrap tier mounts an overlay on it), and short: a
+    // Unix socket path has about 100 bytes.
+    root = mkdtempSync(join(process.env.SLAUDE_BOX_TEST_WORKDIR || "/var/tmp", "sbt-"));
     chmodSync(root, 0o755);
     boxDir = join(root, "box");
     for (const p of [boxDir, join(root, "data"), join(root, "run")]) mkdirSync(p, { recursive: true });
@@ -147,7 +152,7 @@ d(`the sandbox contract on tier ${tier}`, () => {
     a = driver.create(aSpec);
     await a.start();
     expect(a.tier).toBe(tier);
-    const r = await sh(a, aSpec, "id -u; id -g; pwd; echo $HOME; cat /etc/os-release | head -1; cat /home/agent/.box-seed");
+    const r = await sh(a, aSpec, "id -u; id -g; pwd; echo $HOME; cat /etc/os-release | head -1; cat /home/agent/.box-seed; echo $PATH");
     expect(r.code).toBe(0);
     const lines = r.out.trim().split("\n");
     expect(lines[0]).toBe(String(BOX_AGENT_UID));
@@ -156,6 +161,8 @@ d(`the sandbox contract on tier ${tier}`, () => {
     expect(lines[3]).toBe("/home/agent");
     expect(lines[4]).toContain("Debian");
     expect(lines[5]).toBe("seeded from the image");
+    // The image's own search path, not the node's and not a default.
+    expect(lines[6]).toBe("/opt/box-smoke/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
     const st = await a.stats();
     expect(st.memoryBytes).toBeGreaterThan(0);
   }, 120_000);
@@ -170,6 +177,14 @@ d(`the sandbox contract on tier ${tier}`, () => {
     // bwrap: the image's files belong to the supervisor's uid, which IS the agent's inside the box's user namespace, so
     // the agent may write them (into the throwaway overlay, never into the image: see the stop and start test).
     expect(r.out).toContain(tier === "gvisor" ? "system-dir-refused" : "WROTE-SYSTEM");
+  }, 60_000);
+
+  test.skipIf(tier !== "bwrap")("bwrap: the seccomp filter is loaded (a call that needs no privilege is still refused)", async () => {
+    // keyctl(KEYCTL_GET_KEYRING_ID, ...) needs no capability: without the filter it answers with a key error, with
+    // it EPERM. gVisor has no such filter: its sandbox does not hand system calls to the host kernel at all.
+    const r = await sh(a, aSpec, `nr=$( [ "$(uname -m)" = x86_64 ] && echo 250 || echo 219 ); perl -e '$r = syscall($ARGV[0], 0, -3, 0, 0, 0); print "keyctl=$r errno=", $!+0, "\\n"' $nr; grep Seccomp: /proc/self/status`);
+    expect(r.out).toContain("keyctl=-1 errno=1\n");
+    expect(r.out).toMatch(/Seccomp:\s+2/);
   }, 60_000);
 
   test("the environment and every process's environ hold no credential of the node", async () => {
@@ -272,12 +287,18 @@ d(`the sandbox contract on tier ${tier}`, () => {
   }, 60_000);
 
   test("abort ends the process and everything it started, within seconds", async () => {
-    const baseline = (await a.stats()).pids;
+    // Counted by the supervisor, not from inside: a process of a box sees only its own pid namespace. The count of a
+    // process that just ended lingers for a moment (it is the cgroup's), so the idle count is the lowest of a few reads.
+    const pids = async (): Promise<number> => (await a.stats()).pids;
+    let baseline = await pids();
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 200));
+      baseline = Math.min(baseline, await pids());
+    }
     const ac = new AbortController();
     const running = sh(a, aSpec, "sleep 300 & sleep 300 & echo started; wait", { signal: ac.signal, timeoutMs: 120_000 });
     await new Promise((r) => setTimeout(r, 2_500));
-    // Counted by the supervisor, not from inside: a process of a box sees only its own pid namespace.
-    const before = (await a.stats()).pids;
+    const before = await pids();
     expect(before).toBeGreaterThanOrEqual(baseline + 3);
     const t0 = Date.now();
     ac.abort();
@@ -286,8 +307,15 @@ d(`the sandbox contract on tier ${tier}`, () => {
     expect(r.out).toContain("started");
     expect(r.code === 0).toBe(false);
     expect(took).toBeLessThan(8_000);
-    await new Promise((res) => setTimeout(res, 1_500));
-    expect((await a.stats()).pids).toBe(baseline);
+    // Nothing of it is left: the count is back to idle within a few seconds.
+    let after = await pids();
+    for (let i = 0; i < 40 && after > baseline; i++) {
+      await new Promise((res) => setTimeout(res, 250));
+      after = await pids();
+    }
+    // A count that stays up with no process to show for it is a zombie nobody reaped: the supervisor is running as
+    // pid 1 of a container without an init (bwrap and runsc both leave processes for pid 1 to reap). See boxd/main.ts.
+    expect(after).toBeLessThanOrEqual(baseline);
   }, 120_000);
 
   test("the process limit holds: a fork loop is refused, and the box still answers", async () => {

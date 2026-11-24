@@ -10,5 +10,7 @@ RUN apt-get update \
  && useradd -u 10001 -g 10001 -m -d /home/agent -s /bin/bash agent \
  && echo "seeded from the image" > /home/agent/.box-seed \
  && chown agent:agent /home/agent/.box-seed
+# A search path of the image's own: a box must get it (the tests look for the first entry).
+ENV PATH=/opt/box-smoke/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 USER agent
 WORKDIR /home/agent

@@ -103,7 +103,7 @@ d(`a boxed session end to end on tier ${tier}`, () => {
   beforeAll(async () => {
     if (process.getuid?.() !== 0) throw new Error("the boxed worker suite needs root");
     const home = process.env.SLAUDE_HOME!;
-    work = mkdtempSync("/var/tmp/sbw-");
+    work = mkdtempSync(join(process.env.SLAUDE_BOX_TEST_WORKDIR || "/var/tmp", "sbw-"));
     boxDir = join(work, "box");
     configRoot = join(work, "config-home");
     for (const p of [boxDir, configRoot, join(work, "run")]) mkdirSync(p, { recursive: true });
@@ -256,7 +256,7 @@ d(`a boxed session end to end on tier ${tier}`, () => {
         configRoot,
         manifest: null,
         // No driver: the worker runs its boxes through the supervisor, as a deployment does.
-        box: { capacity: { maxBoxes: 4, memoryBudgetMb: 6144, parkBudgetMb: 0, smallestReserveMb: 512 }, prewarmTimeoutMs: 500 },
+        box: { capacity: { maxBoxes: 4, memoryBudgetMb: 3072, parkBudgetMb: 0, smallestReserveMb: 512 }, prewarmTimeoutMs: 500 },
       });
     };
     worker = await startWorker("box-node-a");

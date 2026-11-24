@@ -403,12 +403,14 @@ export function cliImageRunner(exec: typeof run = run): ImageRunner {
       if (typeof tag !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/.test(tag)) {
         throw new BoxImageError("the layout's image has no tag (org.opencontainers.image.ref.name), which umoci needs to unpack it", false);
       }
-      // umoci writes a bundle (config.json plus rootfs); only the rootfs is kept.
+      // umoci writes a bundle (config.json plus rootfs). The rootfs is kept, and the config beside it: the box
+      // supervisor reads the image's own PATH from it (nothing else of it is used, and never as a sandbox's config).
       const bundle = `${rootfsDir}.bundle`;
       const r = await exec(["umoci", "unpack", "--rootless", "--image", `${layoutDir}:${tag}`, bundle], signal);
       try {
         if (r.code !== 0) throw new BoxImageError(`umoci unpack failed (exit ${r.code}): ${lastLine(r.stderr)}`, false);
         renameSync(join(bundle, "rootfs"), rootfsDir);
+        if (existsSync(join(bundle, "config.json"))) renameSync(join(bundle, "config.json"), join(rootfsDir, "..", "config.json"));
       } finally {
         rmSync(bundle, { recursive: true, force: true });
       }
