@@ -288,6 +288,12 @@ describe("the mounts of a session's box", () => {
     for (const x of m) if (x.target !== "/home/agent") expect(x.source).toBe(x.target);
   });
 
+  test("a home that does not exist yet is still mounted: the supervisor creates a session's first home", () => {
+    const i = { ...input(), homeDir: join(dir, "box", "sessions", "brand-new", "home") };
+    expect(existsSync(i.homeDir)).toBe(false);
+    expect(boxMounts(i)[0]).toEqual({ source: i.homeDir, target: "/home/agent", mode: "rw" });
+  });
+
   test("the slaude home is never mounted whole: its skills are, another session's workspace and its files are not", () => {
     const targets = boxMounts(input()).map((x) => x.target);
     expect(targets).not.toContain(join(dir, "home"));

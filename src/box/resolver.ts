@@ -96,7 +96,10 @@ export function boxMounts(i: BoxSpecInput): BoxMount[] {
   const same = (p: string, mode: "ro" | "rw") => add(p, p, mode);
 
   const cwd = real(i.cwd);
-  add(i.homeDir, BOX_HOME, "rw");
+  // The home is the one mount that need not exist yet: a session's first home is created by the supervisor, under
+  // the box directory. Leaving it out would let the agent write "home" into the throwaway overlay instead.
+  seen.add(BOX_HOME);
+  mounts.push({ source: i.homeDir, target: BOX_HOME, mode: "rw" });
   same(i.cwd, "rw");
   if (cwd !== i.cwd) same(cwd, "rw");
   same(i.configDir, "rw");
