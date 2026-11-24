@@ -35,6 +35,10 @@ export interface BoxSpec {
   /** Home, workspace, config directory, scratch, plugins, the CLI. */
   mounts: BoxMount[];
   cwd: string;
+  /** The session's CLAUDE_CONFIG_DIR (one of the mounts). A sandbox start refuses one that holds a credentials file. */
+  configDir?: string;
+  /** The session's scratch directory (one of the mounts): TMPDIR inside the box. */
+  scratchDir?: string;
 }
 
 export type SandboxStopReason = "idle" | "pressure" | "evict" | "fenced" | "refresh" | "drain" | "error";
