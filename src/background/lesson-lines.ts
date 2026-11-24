@@ -17,7 +17,7 @@ const CHECKS: Array<[string, RegExp]> = [
   ["a URL", /\b[a-z][a-z0-9+.-]*:\/\/\S+|\bwww\.\S+|\bmailto:/i],
   ["a host name", /\b[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|net|org|io|dev|app|ai|co|sh|cloud|edu|gov|me|xyz|local|internal|slack)\b/i],
   ["an IP address", /\b\d{1,3}(\.\d{1,3}){3}\b/],
-  ["a platform id", /\b[A-Z][0-9A-Z]{8,}\b/],
+  ["a platform id", /\b[A-Z](?=[0-9A-Z]*\d)[0-9A-Z]{6,}\b/],
   ["a typed reference", /\b[a-z][a-z0-9-]*:[a-z][a-z0-9-]*:[^\s,;)]+/i],
   ["a source id", /\b(mb|user|agent|profile|kb)-[a-z0-9]{3,}/i],
   ["a page slug", /\b(conversations|people|self|shared|commitments|investigations)\/[^\s,;)]+/i],
