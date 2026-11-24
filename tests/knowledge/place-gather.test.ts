@@ -48,6 +48,21 @@ describe("gather in a scope that writes a place", () => {
     expect(hits.map((h) => h.source_kind)).toEqual(["place", "person", "persona", "shared", "public", "library"]);
     expect(hits.map((h) => h.source_id)).toEqual([PL, "user-u1", "agent-agent1", "shared", "public", "kb-wiki"]);
   });
+  test("a conversation page from the persona slice (a transcript written before the switch) never surfaces; the place's own does", async () => {
+    const hits = await gather("q", scope, {
+      call: brain({
+        [PL]: [hit("conversations/own-session", 0.4), hit("notes/own", 0.3)],
+        "agent-agent1": [hit("conversations/other-place-session", 0.9), hit("notes/persona", 0.2)],
+        shared: [hit("/Conversations/x", 0.8)],
+      }).call,
+    });
+    expect(hits.map((h) => h.slug)).toEqual(["conversations/own-session", "notes/own", "notes/persona"]);
+  });
+  test("under the old scope a conversation page from the persona slice is still returned", async () => {
+    const old: BrainScope = { clientId: AGENT, sourceId: "agent-agent1", allowedSources: ["agent-agent1"] };
+    const hits = await gather("q", old, { call: brain({ "agent-agent1": [hit("conversations/s1", 0.9)] }).call });
+    expect(hits.map((h) => h.slug)).toEqual(["conversations/s1"]);
+  });
   test("a higher score still wins over locality", async () => {
     const hits = await gather("q", scope, { call: brain({ [PL]: [hit("a", 0.2)], "kb-wiki": [hit("b", 0.9)] }).call });
     expect(hits.map((h) => h.slug)).toEqual(["b", "a"]);

@@ -66,6 +66,13 @@ export function sourceKindOf(source: string): SourceKind {
       return "library";
   }
 }
+/**
+ * A conversation page is a log of one place's thread, not knowledge. Pages written before a persona's switch to
+ * places sit in the persona slice, which every place reads, so a search from another place would return what was
+ * said in this one. Under places a conversation page is returned only from the turn's own place source.
+ */
+const CONVERSATION_SLUG = /^[/.]*conversations(\/|$)/i;
+
 const localityOf = (h: GatherHit): number => KIND_ORDER.indexOf((h.source_kind as SourceKind | undefined) ?? "library");
 
 /** Effective rank: gbrain's reranker output when present, else the base score. */
@@ -122,7 +129,10 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
       try {
         const hits = await call("search", { query: targetQuery, limit: perSourceK }, sub);
         if (!Array.isArray(hits)) return [];
-        return local ? (hits as GatherHit[]).map((h) => ({ ...h, source_id: h.source_id ?? s, source_kind: sourceKindOf(s) })) : (hits as GatherHit[]);
+        if (!local) return hits as GatherHit[];
+        return (hits as GatherHit[])
+          .filter((h) => s === scope.sourceId || typeof h.slug !== "string" || !CONVERSATION_SLUG.test(h.slug.trim()))
+          .map((h) => ({ ...h, source_id: h.source_id ?? s, source_kind: sourceKindOf(s) }));
       } catch (e) {
         failures++;
         lastErr = e;
