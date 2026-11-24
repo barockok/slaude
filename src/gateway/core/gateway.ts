@@ -166,6 +166,7 @@ import { scrubChildEnv, withoutKeys } from "../../agent/child-env";
 import { providerSelectingNames } from "../../agent/provider-env";
 import { memoryScopeFor, withClaimLock } from "../../memory/scope";
 import { placeFor } from "../../memory/place";
+import { managerDmPlace } from "../../memory/dm-place";
 import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled, skillsAllowedFor } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
 import { isInteractiveOrigin, turnBrainScope, type GateInput } from "../../knowledge/gated-dispatch";
@@ -1658,6 +1659,22 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       // Shadow (rc.45): measured, never read for a decision. placeFor never throws and is bounded.
       place: await placeFor({ agentId: personaAgentId, teamId: ctx.teamId || null, channel: ctx.channel, threadTs: ctx.threadTs, personaId: ctx.personaId ?? null }),
     };
+    // Memory places (rc.46): active only in mode `on` for the personas the canary list names.
+    // A manager's own /1on1 also reads that manager's DM place (decision 1).
+    const placesOn = env.memory.placesOn(ctx.personaId ?? "default");
+    if (placesOn) {
+      gate.placesOn = true;
+      if (gate.lockedUser !== null && gate.isManager && gate.userId && ctx.teamId) {
+        const dmPlace = await managerDmPlace({
+          agentId: personaAgentId, teamId: ctx.teamId, userId: gate.userId, personaId: ctx.personaId ?? null, place: placeFor,
+          open: async (u) => {
+            const r = await outClientForPersona(ctx.personaId, { teamId: ctx.teamId }).conversations.open({ users: u }); // runtime-ui: finds the DM channel of the person asking, posts nothing
+            return typeof r?.channel?.id === "string" ? r.channel.id : null;
+          },
+        });
+        if (dmPlace) gate.dmPlace = dmPlace;
+      }
+    }
     // Slice F shadow: compare the speaker's verified-only union with the legacy own slice, in the
     // background and counts only. A no-op unless SLAUDE_PERSON_SLICES=shadow; the gate is unchanged.
     // Under union the speaker's verified-only slices ride on the gate (reads only, Rule S: never the lock owner's).

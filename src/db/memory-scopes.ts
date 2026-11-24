@@ -56,3 +56,8 @@ export async function lookupBySource(sourceId: string, c: DbClient = db): Promis
   const row = await c.one<Raw>("SELECT source_id, agent_id, boundary_id, kind, created_at FROM memory_scopes WHERE source_id = ?", [sourceId]);
   return row ? toRow(row) : null;
 }
+
+/** True when the registry holds any row. */
+export async function anyBound(c: DbClient = db): Promise<boolean> {
+  return (await c.one<{ x: number }>("SELECT 1 AS x FROM memory_scopes LIMIT 1")) !== null;
+}

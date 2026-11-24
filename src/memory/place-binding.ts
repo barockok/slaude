@@ -85,3 +85,30 @@ export async function assertPlacesBound(scope: BrainScope): Promise<void> {
   if (!scope.placeAgent) throw new Error(PLACE_UNBOUND_ERROR);
   for (const s of sources) if (!(await placeBound(scope.placeAgent, s))) throw new Error(PLACE_UNBOUND_ERROR);
 }
+
+const ANY_TTL_MS = 30_000;
+let anyAt = 0;
+let anyAnswer = false;
+
+/** Tests: forget the answer of anyPlaceBound. */
+export const __resetAnyPlaceBoundForTests = (): void => {
+  anyAt = 0;
+  anyAnswer = false;
+};
+
+/**
+ * True when the registry holds at least one place. With the mode `off` this is how a rollback
+ * keeps reading the places written while it was `on`, while a deployment that never ran `on`
+ * pays one cached read per 30 seconds and nothing else. A failed read is false.
+ */
+export async function anyPlaceBound(now: () => number = Date.now): Promise<boolean> {
+  if (anyAnswer) return true; // a place is never unbound
+  if (now() - anyAt < ANY_TTL_MS) return false;
+  try {
+    anyAnswer = (await MemoryScopes.anyBound()) === true;
+  } catch {
+    anyAnswer = false;
+  }
+  anyAt = now();
+  return anyAnswer;
+}

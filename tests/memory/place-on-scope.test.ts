@@ -169,3 +169,22 @@ describe("off, shadow and a persona outside the canary", () => {
     expect((await scopeOf({ placesOn: false, channelTrust: "public" })).allowedSources).not.toContain(src(P1));
   });
 });
+
+describe("placeFor with the mode off", () => {
+  test("computes nothing until a place was bound while on, then keeps resolving (rollback)", async () => {
+    const { placeFor } = await import("../../src/memory/place");
+    const { __resetAnyPlaceBoundForTests } = await import("../../src/memory/place-binding");
+    process.env.SLAUDE_MEMORY_BOUNDARIES = "off";
+    try {
+      __resetAnyPlaceBoundForTests();
+      expect(await placeFor({ agentId: AGENT, teamId: "T1", channel: "C1" })).toEqual(NO_PLACE);
+      await db.run("INSERT INTO memory_scopes (source_id, agent_id, boundary_id, kind, created_at) VALUES (?, ?, ?, ?, ?)", ["mb-x", AGENT, "b9", "channel", 1]);
+      __resetAnyPlaceBoundForTests();
+      // the resolver now runs (the channel has no boundary row here, so the reason is not the off one)
+      expect(await placeFor({ agentId: AGENT, teamId: "T1", channel: "C1" })).not.toEqual(NO_PLACE);
+    } finally {
+      delete process.env.SLAUDE_MEMORY_BOUNDARIES;
+      __resetAnyPlaceBoundForTests();
+    }
+  });
+});
