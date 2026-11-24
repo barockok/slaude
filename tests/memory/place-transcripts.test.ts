@@ -92,6 +92,13 @@ describe("history is read place first, then the persona slice", () => {
     expect(rows?.map((r) => r.id)).toEqual([1, 2, 3]);
     expect(b.calls.every((c) => c.scope.allowedSources.length === 1)).toBe(true);
   });
+  test("a turn the move job copied into the place shows once", async () => {
+    const b = fakeBrain();
+    b.seedTimeline(A, slug, [row(1, "one"), row(2, "two")]);
+    b.seedTimeline(P1S, slug, [row(1, "one"), row(2, "two"), row(3, "three")]);
+    const rows = await readTimeline(b.call, slug, (await memoryScopeFor(gate())).read!);
+    expect(rows?.map((r) => r.summary)).toEqual(["one", "two", "three"]);
+  });
   test("a place-only session is one read and no legacy rows", async () => {
     const b = fakeBrain();
     b.seedTimeline(P1S, slug, [row(1, "only")]);

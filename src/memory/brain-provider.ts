@@ -46,7 +46,10 @@ export async function readTimeline(call: BrainOpCall, slug: string, scope: Brain
     // The first slice that holds the page is the session's earlier home; the persona's legacy source follows it.
     if (rows.length > 0) break;
   }
-  const merged = [...older, ...orderTimeline(here)].map((r, i) => ({ ...r, id: i + 1 }));
+  // A turn the move job copied into the place is held by both slices: it shows once, from the place.
+  const key = (r: TimelineRow): string => `${r.date}\u0000${r.summary}\u0000${r.detail ?? ""}`;
+  const held = new Set(here.map(key));
+  const merged = [...older.filter((r) => !held.has(key(r))), ...orderTimeline(here)].map((r, i) => ({ ...r, id: i + 1 }));
   return merged.length > 0 ? merged : null;
 }
 
