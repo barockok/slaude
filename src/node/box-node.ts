@@ -159,7 +159,13 @@ export async function setupNodeBoxes(opts: NodeBoxOpts | undefined, ctx: NodeBox
   const freeDiskMb = async (): Promise<number | null> => (opts?.freeDiskMb ? await opts.freeDiskMb() : statfsFreeMb(boxDir));
   const homeDirOf = opts?.homeDirOf ?? ((sessionId: string) => join(boxDir, "sessions", safeSegment(sessionId), "home"));
 
-  const images = opts?.images !== undefined ? opts.images : makeImageStore({ dir: boxDir, runner: cliImageRunner(), budgetMb: imageBudgetMb, ...(env.box.registryAuth() ? { auth: env.box.registryAuth()! } : {}) });
+  const images = opts?.images !== undefined ? opts.images : makeImageStore({
+          dir: boxDir,
+          runner: cliImageRunner(),
+          budgetMb: imageBudgetMb,
+          onPull: (result, seconds) => metric.boxImagePullSeconds.observe(seconds, { result }),
+          ...(env.box.registryAuth() ? { auth: env.box.registryAuth()! } : {}),
+        });
   // Declared before the runtime that it reads, used only after both exist.
   let runtime: BoxRuntime | null = null;
   const prewarm = images
@@ -195,6 +201,7 @@ export async function setupNodeBoxes(opts: NodeBoxOpts | undefined, ctx: NodeBox
       reservedBytes: (n) => metric.boxMemoryReservedBytes.set(n),
       admission: (result) => metric.boxAdmissionTotal.inc({ result }),
       pressureEviction: () => metric.boxPressureEvictionsTotal.inc(),
+      startPhase: (phase, result, seconds) => metric.boxStartSeconds.observe(seconds, { tier, phase, result }),
     },
   });
   metric.nodeBoxesCapacity.set(maxBoxes);
@@ -216,7 +223,11 @@ export async function setupNodeBoxes(opts: NodeBoxOpts | undefined, ctx: NodeBox
       const r = box.policy.resources;
       return { digest: box.digest, homeDir: homeDirOf(sessionId), exclude: box.policy.durable.exclude, homeMb: r.homeMb, extrasMb: r.workspaceExtrasMb };
     },
-    report: () => rt.report(),
+    async report() {
+      const r = await rt.report();
+      metric.boxImagesCached.set(r.digests.length);
+      return r;
+    },
     async ready() {
       if (!prewarm) return;
       void prewarm.refresh("default");

@@ -565,8 +565,14 @@ export class FsSync {
 
   async #hydratePack(unit: Unit, pack: PackInfo): Promise<{ mode: "warm" | "cold" | "empty"; downloadedBytes: number }> {
     const packer = this.#d.packer!;
+    const t0 = this.#now();
     const h = await hydratePack(this.#d.store, unit.id, { markerPath: unit.markerPath, spoolDir: packer.spoolDir, apply: (req) => packer.apply(pack.ref, req) });
     if (h.liveBytes !== undefined) unit.bytes = h.liveBytes;
+    // A warm hydrate (the marker is current, nothing is read) is not a measurement of the store.
+    if (h.mode === "cold") {
+      metric.boxPackSeconds.observe((this.#now() - t0) / 1000, { unit: pack.label, op: "hydrate" });
+      metric.boxPackBytesTotal.inc({ unit: pack.label, op: "hydrate" }, h.downloadedBytes);
+    }
     return h;
   }
 
@@ -605,13 +611,17 @@ export class FsSync {
 
   async #flushPack(unit: Unit, pack: PackInfo, isCurrent: () => Promise<boolean>) {
     const packer = this.#d.packer!;
+    const t0 = this.#now();
     const r = await flushPack(this.#d.store, unit.id, {
       epoch: unit.epoch,
       isCurrent,
       pack: (req) => packer.pack(pack.ref, req),
       ...(pack.limitBytes !== undefined ? { maxLiveBytes: 2 * pack.limitBytes } : {}),
     });
+    metric.boxPackSeconds.observe((this.#now() - t0) / 1000, { unit: pack.label, op: "flush" });
+    metric.boxPackBytesTotal.inc({ unit: pack.label, op: "flush" }, r.uploadedBytes);
     if (r.liveBytes !== undefined) {
+      if (pack.label === "hm") metric.boxHomeBytes.observe(r.liveBytes);
       unit.bytes = r.liveBytes;
       if (pack.limitBytes !== undefined && r.liveBytes > pack.limitBytes) this.#quota(unit, pack, "over", r.liveBytes);
     }
@@ -619,6 +629,7 @@ export class FsSync {
   }
 
   #quota(unit: Unit, pack: PackInfo, state: QuotaEvent["state"], bytes: number): void {
+    metric.boxQuotaExceededTotal.inc({ kind: pack.label === "hm" ? "home" : "extras", state });
     try {
       this.#d.onQuota?.({ unitId: unit.id, sessionIds: this.#sessionsOf(unit.id), unit: pack.label, state, bytes, limitBytes: pack.limitBytes ?? 0 });
     } catch {

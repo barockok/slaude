@@ -1260,10 +1260,21 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
           lostLock.addEventListener("abort", onLost, { once: true });
           try {
             if (skillMirror) await skillMirror.refresh();
+            // Boxes: how long a claimed turn waits for its files and its sandbox, by what was already here.
+            const resumeFrom = Date.now();
+            const wasParked = boxes && fsSync ? fsSync.parked().includes(data.sessionId) : false;
             if (fsSync) {
               // Hydrate under the lock. "wait": another live node holds unflushed edits
               // for this session's files, so requeue like a held lock.
-              if ((await fsSync.beforeTurn(data.sessionId, data.personaId ?? "default")) === "wait") return HELD_BY_OTHER;
+              let hydrated: "ok" | "wait" | "error" = "error";
+              try {
+                hydrated = await fsSync.beforeTurn(data.sessionId, data.personaId ?? "default");
+              } finally {
+                if (boxes && !boxes.runtime.has(data.sessionId) && hydrated !== "wait" && (await isBoxed(data.sessionId).catch(() => false))) {
+                  metric.boxStartSeconds.observe((Date.now() - resumeFrom) / 1000, { tier: boxTier, phase: "hydrate", result: hydrated === "ok" ? "ok" : "error" });
+                }
+              }
+              if (hydrated === "wait") return HELD_BY_OTHER;
             }
             // Boxes: the sandbox starts here, after the files are in place and before the session can boot.
             // A session that already has its sandbox is always served. No room: the job is handed back.
@@ -1272,6 +1283,9 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
                 onStatus: (text: string) => console.log(`[node] session=${data.sessionId}: ${text}`),
               });
               if (prepared === "full") return BOX_FULL;
+              if (prepared !== "unboxed") {
+                metric.boxResumeSeconds.observe((Date.now() - resumeFrom) / 1000, { kind: prepared === "warm" ? "warm" : wasParked ? "parked" : "cold" });
+              }
             }
             try {
               return await runTurn(job, data);

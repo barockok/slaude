@@ -59,6 +59,8 @@ export interface BoxRuntimeMetrics {
   reservedBytes(n: number): void;
   admission(result: "admit" | "make-room" | "full"): void;
   pressureEviction(): void;
+  /** One phase of a sandbox start that this module runs: making the image present, then the sandbox itself. */
+  startPhase(phase: "pull" | "start", result: "ok" | "error", seconds: number): void;
 }
 
 export interface BoxRuntimeDeps {
@@ -232,10 +234,21 @@ export function makeBoxRuntime(deps: BoxRuntimeDeps) {
             await stop(victim, "pressure");
           }
         }
-        await deps.ensureImage?.(box, { onStatus: o.onStatus });
+        const timed = async <T>(phase: "pull" | "start", fn: () => Promise<T>): Promise<T> => {
+          const t0 = now();
+          try {
+            const r = await fn();
+            deps.metrics?.startPhase?.(phase, "ok", (now() - t0) / 1000);
+            return r;
+          } catch (e) {
+            deps.metrics?.startPhase?.(phase, "error", (now() - t0) / 1000);
+            throw e;
+          }
+        };
+        await timed("pull", async () => deps.ensureImage?.(box, { onStatus: o.onStatus }));
         const sandbox = deps.driver.create(await deps.specFor(sessionId, box));
         try {
-          await sandbox.start();
+          await timed("start", () => sandbox.start());
         } catch (e) {
           throw e instanceof BootFailure ? e : new BootFailure("BOX_UNAVAILABLE", `the sandbox did not start: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
         }

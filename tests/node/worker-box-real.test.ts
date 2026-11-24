@@ -377,6 +377,11 @@ d(`a boxed session end to end on tier ${tier}`, () => {
     expect(read(ws, "blocked-tls")).toMatch(/403/);
     expect(read(ws, "blocked-tls")).not.toContain("rc=0");
     expect(read(ws, "loopback")).toContain("http=403");
+    // Counted on the node, with no host and no session in the labels.
+    const { metrics } = await import("../../src/metrics");
+    const refused = metrics.render().split("\n").find((l) => l.startsWith("slaude_box_egress_total") && l.includes('decision="refused"'));
+    expect(Number(refused?.split(" ").pop() ?? 0)).toBeGreaterThanOrEqual(3);
+    expect(refused).not.toContain("example.com");
   }, 60_000);
 
   test("a reply goes out through the node's shims from a boxed session", async () => {

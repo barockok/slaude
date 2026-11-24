@@ -712,6 +712,13 @@ describe("FsSync, boxed sessions", () => {
     const redis = memRedis();
     const m = boxMachine();
     const a = boxNode({ id: "node-a", store, redis, m });
+    const seen = {
+      flushHm: counter("slaude_box_pack_seconds_count", { unit: "hm", op: "flush" }),
+      flushWx: counter("slaude_box_pack_seconds_count", { unit: "wx", op: "flush" }),
+      bytesUp: counter("slaude_box_pack_bytes_total", { unit: "hm", op: "flush" }),
+      bytesDown: counter("slaude_box_pack_bytes_total", { unit: "hm", op: "hydrate" }),
+      home: counter("slaude_box_home_bytes_count"),
+    };
     expect(await a.beforeTurn("s1", "default")).toBe("ok");
     expect(existsSync(homeOf(m, "s1"))).toBe(true);
     writeFileSync(join(m.cwd, "app.ts"), "export {}");
@@ -719,6 +726,11 @@ describe("FsSync, boxed sessions", () => {
     mkdirSync(txDirOf(m), { recursive: true });
     writeFileSync(txFile(m), '{"turn":1}\n');
     await a.afterTurn("s1", false);
+    // The pack metrics: one flush of each packed unit, the bytes it stored, and the home's size at that flush.
+    expect(counter("slaude_box_pack_seconds_count", { unit: "hm", op: "flush" })).toBe(seen.flushHm + 1);
+    expect(counter("slaude_box_pack_seconds_count", { unit: "wx", op: "flush" })).toBe(seen.flushWx + 1);
+    expect(counter("slaude_box_pack_bytes_total", { unit: "hm", op: "flush" })).toBeGreaterThan(seen.bytesUp);
+    expect(counter("slaude_box_home_bytes_count")).toBe(seen.home + 1);
 
     const ws = wsUnitId(m.cwd);
     const wx = wxUnitId(m.cwd, D1);
@@ -743,7 +755,11 @@ describe("FsSync, boxed sessions", () => {
 
     swapOut(m, "a");
     const b = boxNode({ id: "node-b", store, redis, m });
+    const hydrates = counter("slaude_box_pack_seconds_count", { unit: "hm", op: "hydrate" });
     expect(await b.beforeTurn("s1", "default")).toBe("ok");
+    // A cold hydrate of the home on node B is timed and its downloaded bytes counted.
+    expect(counter("slaude_box_pack_seconds_count", { unit: "hm", op: "hydrate" })).toBe(hydrates + 1);
+    expect(counter("slaude_box_pack_bytes_total", { unit: "hm", op: "hydrate" })).toBeGreaterThan(seen.bytesDown);
     expect(readFileSync(join(m.cwd, "app.ts"), "utf8")).toBe("export {}");
     expect(readFileSync(join(m.cwd, "node_modules", "left-pad", "index.js"), "utf8")).toContain("left-pad");
     const tool = join(homeOf(m, "s1"), ".npm-global", "bin", "left-pad");
@@ -1206,6 +1222,7 @@ describe("FsSync, boxed sessions", () => {
     const redis = memRedis();
     const m = boxMachine();
     const events: QuotaEvent[] = [];
+    const quota = { over: counter("slaude_box_quota_exceeded_total", { kind: "home", state: "over" }), refused: counter("slaude_box_quota_exceeded_total", { kind: "home", state: "refused" }) };
     const a = boxNode({ id: "node-a", store, redis, m, facts: { homeMb: 1000 / (1024 * 1024) }, deps: { onQuota: (e) => events.push(e) } });
     await a.beforeTurn("s1", "default");
     writeFileSync(join(homeOf(m, "s1"), "a"), "x".repeat(500));
@@ -1223,6 +1240,8 @@ describe("FsSync, boxed sessions", () => {
     const errors = counter("slaude_storage_flush_total", { result: "error" });
     await a.afterTurn("s1", false);
     expect(events[1]).toMatchObject({ unit: "hm", state: "refused", bytes: 2500 });
+    expect(counter("slaude_box_quota_exceeded_total", { kind: "home", state: "over" })).toBe(quota.over + 1);
+    expect(counter("slaude_box_quota_exceeded_total", { kind: "home", state: "refused" })).toBe(quota.refused + 1);
     expect((await latestManifest(store, hmUnitId("s1")))!.id).toBe(stored);
     expect(await redis.get(`test:fsflush:${hmUnitId("s1")}`)).toBeNull(); // no retry: it cannot help
     expect(counter("slaude_storage_flush_total", { result: "error" })).toBe(errors);

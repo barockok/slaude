@@ -161,6 +161,8 @@ export interface ImageStoreOpts {
   /** TEST SEAM: the image checks (default {@link rootfsProblems}). */
   problems?: (rootfs: string) => string[];
   log?: (line: string) => void;
+  /** Called once per fetch (pull, checks, unpack) with its result and how long it took. Not called for an image already present. */
+  onPull?: (result: "ok" | "error", seconds: number) => void;
 }
 
 export type ImageStore = ReturnType<typeof makeImageStore>;
@@ -234,6 +236,18 @@ export function makeImageStore(o: ImageStoreOpts) {
   }
 
   async function fetch(image: string, digest: string, deadlineMs: number | undefined): Promise<CachedImage> {
+    const t0 = now();
+    try {
+      const meta = await fetchNow(image, digest, deadlineMs);
+      o.onPull?.("ok", (now() - t0) / 1000);
+      return meta;
+    } catch (e) {
+      o.onPull?.("error", (now() - t0) / 1000);
+      throw e;
+    }
+  }
+
+  async function fetchNow(image: string, digest: string, deadlineMs: number | undefined): Promise<CachedImage> {
     mkdirSync(spoolDir, { recursive: true });
     const layout = join(spoolDir, `${hexOf(digest).slice(0, 16)}.${randomBytes(4).toString("hex")}`);
     const ac = new AbortController();

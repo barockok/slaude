@@ -53,6 +53,8 @@ export interface SupervisedDriverDeps {
   /** The commands a spawn may name: the CLI binary the SDK starts. Anything else is refused. */
   allowedCommands: () => readonly string[];
   onEgressRefuse?: (sessionId: string, e: { host: string; port: number; reason: EgressRefusal }) => void;
+  /** Called for every connection a box's egress proxy allowed and opened. */
+  onEgressAllow?: (sessionId: string, e: { host: string; port: number }) => void;
   log?: (line: string) => void;
 }
 
@@ -114,6 +116,7 @@ export function makeSupervisedDriver(tier: SandboxTier, deps: SupervisedDriverDe
             rules: () => deps.egressRules(spec.sessionId),
             ...(deps.refuseHosts ? { refuseHosts: deps.refuseHosts } : {}),
             onRefuse: (e) => deps.onEgressRefuse?.(spec.sessionId, e),
+            onAllow: (e) => deps.onEgressAllow?.(spec.sessionId, e),
           });
           egressOf.set(spec.sessionId, egress);
           llm = await startProviderProxy({

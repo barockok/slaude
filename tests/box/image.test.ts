@@ -42,8 +42,17 @@ function setup(o: { images?: Array<Record<string, string>>; budgetMb?: number; d
   const clock = { now: 1_000 };
   const runner = fakeRunner(registry, { delayMs: o.delayMs });
   const logs: string[] = [];
-  const store = makeImageStore({ dir: tmp("boxdir"), runner, budgetMb: o.budgetMb ?? 0, now: () => clock.now, log: (l) => void logs.push(l), ...(o.problems ? { problems: o.problems } : {}) });
-  return { store, runner, refs, clock, logs, registry };
+  const pulls: string[] = [];
+  const store = makeImageStore({
+    dir: tmp("boxdir"),
+    runner,
+    budgetMb: o.budgetMb ?? 0,
+    now: () => clock.now,
+    log: (l) => void logs.push(l),
+    onPull: (result, seconds) => void pulls.push(`${result} ${seconds >= 0 ? "timed" : "untimed"}`),
+    ...(o.problems ? { problems: o.problems } : {}),
+  });
+  return { store, runner, refs, clock, logs, registry, pulls };
 }
 const fails = async (p: Promise<unknown>): Promise<BoxImageError> => {
   const e = await p.catch((x) => x);
@@ -135,6 +144,17 @@ describe("ensure: fetch by digest", () => {
     // The spool is empty afterwards, and nothing unfinished is left beside the image.
     expect(existsSync(join(store.dir, "spool")) ? readdirSync(join(store.dir, "spool")) : []).toEqual([]);
     expect(readdirSync(join(store.dir, "images"))).toEqual([digest.slice(7)]);
+  });
+
+  test("every fetch is reported once with its result and its time; an image already present reports nothing", async () => {
+    const s = setup();
+    const { image, digest } = s.refs[0]!;
+    await s.store.ensure(image, digest);
+    await s.store.ensure(image, digest);
+    expect(s.pulls).toEqual(["ok timed"]);
+    const bad = setup({ problems: () => ["no agent user"] });
+    await fails(bad.store.ensure(bad.refs[0]!.image, bad.refs[0]!.digest));
+    expect(bad.pulls).toEqual(["error timed"]);
   });
 
   test("two asks at once make one fetch", async () => {

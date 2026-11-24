@@ -88,6 +88,8 @@ let boxdClient: any;
 let units: { hm: (sid: string) => string; wx: (ws: string) => string; ws: (ws: string) => string };
 let latest: (unit: string) => Promise<{ id: string; manifest: any } | null>;
 let lossCount: () => number;
+/** Sum of a metric's series whose labels include every given pair. */
+let series: (name: string, labels?: Record<string, string>) => number;
 const reacts: any[] = [];
 const nodeIds: string[] = [];
 let disks = 0;
@@ -217,7 +219,16 @@ d(`a boxed session resumes on another node from the object store, tier ${tier}`,
     store = Storage.objectStore()!;
     latest = (unit) => Storage.latestManifest(store, unit);
     const { metrics } = await import("../../src/metrics");
-    lossCount = () => Number(/^slaude_storage_unflushed_loss_total(?:\{[^}]*\})? (\d+)/m.exec(metrics.render())?.[1] ?? 0);
+    series = (name, labels = {}) => {
+      let total = 0;
+      for (const l of metrics.render().split("\n")) {
+        if (l.startsWith("#") || !(l.startsWith(`${name}{`) || l.startsWith(`${name} `))) continue;
+        if (!Object.entries(labels).every(([k, v]) => l.includes(`${k}="${v}"`))) continue;
+        total += Number(l.split(" ").pop());
+      }
+      return total;
+    };
+    lossCount = () => series("slaude_storage_unflushed_loss_total");
 
     const { makeImageStore, cliImageRunner } = await import("../../src/box/image");
     digest = (await makeImageStore({ dir: boxDir, runner: cliImageRunner(), budgetMb: 0, log: () => {} }).importLayout(LAYOUT)).digest;
@@ -386,7 +397,9 @@ d(`a boxed session resumes on another node from the object store, tier ${tier}`,
     expect(read(ws, "done-a").trim()).toBe("done");
     expect(read(ws, "tool-a").trim()).toBe("mytool-1.0");
     expect(read(ws, "sys-a").trim()).toBe("system-level");
-    expect(worker.warmSessions()).toContain(await sessionIdOf(T));
+    // The node registers the session as warm once the turn has ended, a moment after the reaction.
+    const sidA = await sessionIdOf(T);
+    await until(async () => (await registry.lookup(sidA))?.node === "res-node-a", 15_000);
   }, 240_000);
 
   test("idle on node A: the session is parked, its sandbox stopped, and all four units are in the store", async () => {
@@ -434,7 +447,7 @@ d(`a boxed session resumes on another node from the object store, tier ${tier}`,
     ].join("; ");
     await turn(T, "8100.2", bashTurn(script));
     expect(read(ws, "done-b").trim()).toBe("done");
-    expect(worker.warmSessions()).toContain(sid);
+    await until(async () => (await registry.lookup(sid))?.node === "res-node-b", 15_000);
     expect(read(ws, "tool-b").trim()).toBe("mytool-1.0");
     expect(read(ws, "dep-b").trim()).toBe("module.exports = 1");
     expect(read(ws, "plain-b").trim()).toBe("plain-workspace-file");
@@ -488,7 +501,7 @@ d(`a boxed session resumes on another node from the object store, tier ${tier}`,
     ].join("; ");
     await turn(T, "8100.4", bashTurn(check));
     expect(read(ws, "done-c").trim()).toBe("done");
-    expect(worker.warmSessions()).toContain(sid);
+    await until(async () => (await registry.lookup(sid))?.node === "res-node-c", 15_000);
     // From the last flush: everything up to it is there.
     expect(read(ws, "tool-c").trim()).toBe("mytool-1.0");
     expect(read(ws, "second-c").trim()).toBe("second");
@@ -501,6 +514,18 @@ d(`a boxed session resumes on another node from the object store, tier ${tier}`,
     // And the session is whole again: node C's own flush lands.
     await until(async () => (await latest(units.hm(sid)))!.id !== flushed || (await registry.parkedNode(sid)) === "res-node-c", 60_000);
   }, 420_000);
+
+  test("the node's box metrics saw it: a parked resume, two cold ones, the hydrate phase, the packed units' flushes", () => {
+    // Node B's and node C's first turn came from the store; node B's third turn found its parked copies.
+    expect(series("slaude_box_resume_seconds_count", { kind: "cold" })).toBeGreaterThanOrEqual(2);
+    expect(series("slaude_box_resume_seconds_count", { kind: "parked" })).toBeGreaterThanOrEqual(1);
+    expect(series("slaude_box_start_seconds_count", { tier, phase: "hydrate", result: "ok" })).toBeGreaterThanOrEqual(3);
+    expect(series("slaude_box_start_seconds_count", { tier, phase: "start", result: "ok" })).toBeGreaterThanOrEqual(3);
+    expect(series("slaude_box_pack_seconds_count", { unit: "hm", op: "flush" })).toBeGreaterThanOrEqual(2);
+    expect(series("slaude_box_pack_seconds_count", { unit: "hm", op: "hydrate" })).toBeGreaterThanOrEqual(2);
+    expect(series("slaude_box_pack_bytes_total", { unit: "wx", op: "hydrate" })).toBeGreaterThan(0);
+    expect(series("slaude_box_home_bytes_count")).toBeGreaterThanOrEqual(2);
+  });
 
   test("the supervisor's log holds no credential", () => {
     expect(boxdLog).not.toContain(REAL_CREDENTIAL);

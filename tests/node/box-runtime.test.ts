@@ -26,7 +26,7 @@ function setup(o: { capacity?: Partial<BoxCapacityConfig>; boxes?: Record<string
     freeDiskMb: o.freeDiskMb === undefined ? 50_000 : o.freeDiskMb,
     ensured: [] as string[],
     status: [] as string[],
-    metrics: { admission: [] as string[], evictions: 0, full: [] as number[] },
+    metrics: { admission: [] as string[], evictions: 0, full: [] as number[], phases: [] as string[] },
     logs: [] as string[],
   };
   const runtime = makeBoxRuntime({
@@ -44,7 +44,7 @@ function setup(o: { capacity?: Partial<BoxCapacityConfig>; boxes?: Record<string
     freeDiskMb: () => state.freeDiskMb,
     memoryUsedMb: () => state.memoryUsedMb,
     digests: () => ["sha256:" + "a".repeat(64)],
-    metrics: { admission: (r) => void state.metrics.admission.push(r), pressureEviction: () => void state.metrics.evictions++, full: (v) => void state.metrics.full.push(v) },
+    metrics: { admission: (r) => void state.metrics.admission.push(r), pressureEviction: () => void state.metrics.evictions++, full: (v) => void state.metrics.full.push(v), startPhase: (phase, result, seconds) => void state.metrics.phases.push(`${phase} ${result} ${seconds >= 0 ? "timed" : "untimed"}`) },
     now: () => clock.now,
     log: (l) => void state.logs.push(l),
   });
@@ -152,10 +152,20 @@ describe("admission before a sandbox starts", () => {
     expect(s.state.logs.join("\n")).toContain("(disk)");
   });
 
+  test("a start is timed by phase: the image, then the sandbox; a warm session times nothing", async () => {
+    const s = setup();
+    expect(await s.runtime.prepare("a")).toBe("started");
+    expect(s.state.metrics.phases).toEqual(["pull ok timed", "start ok timed"]);
+    s.runtime.turnEnded("a");
+    expect(await s.runtime.prepare("a")).toBe("warm");
+    expect(s.state.metrics.phases).toHaveLength(2);
+  });
+
   test("a sandbox that does not start is a boot failure, and its slot is given back", async () => {
     const s = setup({ capacity: { maxBoxes: 1, memoryBudgetMb: 1174 } });
     s.driver.failStart.add("a");
     const e = await s.runtime.prepare("a").catch((x) => x);
+    expect(s.state.metrics.phases).toEqual(["pull ok timed", "start error timed"]);
     expect(e).toBeInstanceOf(BootFailure);
     expect((e as BootFailure).code).toBe("BOX_UNAVAILABLE");
     expect(s.runtime.has("a")).toBe(false);

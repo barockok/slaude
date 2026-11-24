@@ -27,6 +27,7 @@ import { BOX_SUPPORTED_PROVIDER_FORMS } from "../box/provider-forms";
 import type { BoxEgress } from "../box/policy";
 import { buildBoxSpec } from "../box/resolver";
 import { env } from "../config/env";
+import { m as metric } from "../metrics";
 import { paths } from "../config/home";
 import { loadInstalledPluginPaths } from "../config/plugins";
 import { BootFailure } from "../gateway/core/failure-codes";
@@ -136,6 +137,7 @@ export function makeSupervisedBoxes(deps: SupervisedBoxDeps): SupervisedBoxes {
   /** One line per host and reason, per session, per minute: a tool that retries must not fill the log. */
   const lastLogged = new Map<string, number>();
   const onEgressRefuse = (sessionId: string, e: { host: string; port: number; reason: EgressRefusal }): void => {
+    metric.boxEgressTotal.inc({ decision: "refused" });
     const key = `${sessionId}\u0000${e.host}\u0000${e.reason}`;
     const now = Date.now();
     if (now - (lastLogged.get(key) ?? 0) < 60_000) return;
@@ -152,6 +154,7 @@ export function makeSupervisedBoxes(deps: SupervisedBoxDeps): SupervisedBoxes {
     refuseHosts: nodeServiceHosts(),
     allowedCommands: () => clis.map((d) => join(d, "claude")),
     onEgressRefuse,
+    onEgressAllow: () => metric.boxEgressTotal.inc({ decision: "allowed" }),
     log,
   });
 
