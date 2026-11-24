@@ -1,5 +1,6 @@
+import { hasPlacePrefix } from "../memory/place-id";
 import { brainCall } from "./brain";
-import type { BrainScope } from "./scope";
+import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, type BrainScope } from "./scope";
 
 /**
  * Per-source candidate gather — the slaude-side fix for the bulk-corpus
@@ -43,6 +44,21 @@ export interface GatherOpts {
   call?: (name: string, params: Record<string, unknown>, scope: BrainScope) => Promise<unknown>;
 }
 
+/** Where a hit's source sits relative to the turn, most local first (memory places, rc.47). */
+export type SourceKind = "place" | "person" | "persona" | "shared" | "public" | "library";
+const KIND_ORDER: readonly SourceKind[] = ["place", "person", "persona", "shared", "public", "library"];
+
+/** The kind of a source id: a place, a person's slice or profile, the persona's own mind, shared, public, or a library wiki. */
+export function sourceKindOf(source: string): SourceKind {
+  if (hasPlacePrefix(source)) return "place";
+  if (source.startsWith("user-") || source.startsWith("profile-")) return "person";
+  if (source === AGENT_SOURCE || source.startsWith("agent-")) return "persona";
+  if (source === SHARED_SOURCE) return "shared";
+  if (source === PUBLIC_SOURCE) return "public";
+  return "library";
+}
+const localityOf = (h: GatherHit): number => KIND_ORDER.indexOf((h.source_kind as SourceKind | undefined) ?? "library");
+
 /** Effective rank: gbrain's reranker output when present, else the base score. */
 export function rankScore(h: GatherHit): number {
   if (typeof h.rerank_score === "number") return h.rerank_score;
@@ -67,7 +83,9 @@ export function normalizeQuery(raw: string): string {
 
 /**
  * Gather ranked candidates for `query` within `scope`, with each allowed source
- * guaranteed its own top-K slots. Returns hits sorted by effective rank, deduped
+ * guaranteed its own top-K slots. When the scope writes a memory place (memory places on), the place source is
+ * searched first, equal scores are broken by locality (place, person, persona-wide, shared, public, library) and every
+ * hit carries `source_kind`; any other scope is merged exactly as before. Returns hits sorted by effective rank, deduped
  * by slug (best-ranked chunk per page wins), capped at finalLimit.
  */
 export async function gather(query: string, scope: BrainScope, opts: GatherOpts = {}): Promise<GatherHit[]> {
@@ -76,7 +94,11 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
   const call = opts.call ?? brainCall;
   const targetQuery = normalizeQuery(query);
 
-  const sources = scope.allowedSources.length > 0 ? scope.allowedSources : [scope.sourceId];
+  const base = scope.allowedSources.length > 0 ? scope.allowedSources : [scope.sourceId];
+  // Locality applies only to a scope that writes a place: with the mode off or shadow the scope writes the persona
+  // slice, so the order, the merge and the hits are unchanged.
+  const local = hasPlacePrefix(scope.sourceId);
+  const sources = local ? [...base].sort((a, b) => KIND_ORDER.indexOf(sourceKindOf(a)) - KIND_ORDER.indexOf(sourceKindOf(b))) : base;
 
   // One search per source, scoped to that source alone, in parallel. A single
   // source failing (e.g. transient) drops to [] rather than sinking the gather
@@ -90,7 +112,8 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
       const sub: BrainScope = { clientId: scope.clientId, sourceId: s, allowedSources: [s], ...(scope.placeAgent ? { placeAgent: scope.placeAgent } : {}) };
       try {
         const hits = await call("search", { query: targetQuery, limit: perSourceK }, sub);
-        return Array.isArray(hits) ? (hits as GatherHit[]) : [];
+        if (!Array.isArray(hits)) return [];
+        return local ? (hits as GatherHit[]).map((h) => ({ ...h, source_id: h.source_id ?? s, source_kind: sourceKindOf(s) })) : (hits as GatherHit[]);
       } catch (e) {
         failures++;
         lastErr = e;
@@ -106,9 +129,9 @@ export async function gather(query: string, scope: BrainScope, opts: GatherOpts 
     for (const h of hits) {
       const key = hitKey(h);
       const prev = best.get(key);
-      if (!prev || rankScore(h) > rankScore(prev)) best.set(key, h);
+      if (!prev || rankScore(h) > rankScore(prev) || (local && rankScore(h) === rankScore(prev) && localityOf(h) < localityOf(prev))) best.set(key, h);
     }
   }
 
-  return [...best.values()].sort((a, b) => rankScore(b) - rankScore(a)).slice(0, finalLimit);
+  return [...best.values()].sort((a, b) => rankScore(b) - rankScore(a) || (local ? localityOf(a) - localityOf(b) : 0)).slice(0, finalLimit);
 }
