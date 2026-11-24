@@ -1,106 +1,65 @@
-# Boxes on the scale topology: the autoscaling and drain half.
+# Boxes on the scale topology: every node pod gains the box supervisor
+# (`boxd`), and each agent session of a boxed persona runs in its own sandbox
+# inside that container. Docs: docs/site/_content/deploy/boxes.md.
 #
-# INCOMPLETE ON PURPOSE. DO NOT APPLY YET. This overlay does not add the
-# supervisor container (`boxd`) or its volumes: those arrive with the sandbox
-# driver. What is here is everything about capacity that does not depend on
-# it, so it is reviewed and tested ahead of time:
+#   kubectl apply -k deploy/k8s-scale-box          # the base plus boxes
+#   kubectl apply -k deploy/k8s-scale-box/with-s3  # the same on deploy/k8s-scale-s3
 #
-#   - each node Deployment's ScaledObject gains KEDA `memory` and `cpu`
-#     triggers on the `boxd` container, beside the existing wait-list trigger.
-#     KEDA scales to the largest replica count any trigger asks for, so any
-#     one of the three scales up;
-#   - terminationGracePeriodSeconds becomes 300 on every node Deployment: the
-#     drain window (SLAUDE_NODE_DRAIN_SEC, default 120) plus the flush of the
-#     warm boxes, several at a time. The rule is in
-#     docs/site/_content/deploy/scale-operations.md ("Drain arithmetic");
-#   - optional/node-box-fallback-hpa.yaml is the HPA for clusters without
-#     KEDA, with ContainerResource metrics for `boxd`. Like the base's CPU
-#     fallback it is NOT in this kustomization: never two autoscalers on one
-#     Deployment.
+# once every REPLACE value in the base is filled in. The base keeps working
+# unboxed: nothing here is in deploy/k8s-scale.
 #
-# Applied before `boxd` exists, the memory and cpu triggers name a container
-# no pod has: KEDA reports the ScaledObject as failing and the wait-list
-# trigger alone keeps scaling. Nothing breaks, and nothing is gained.
+# NOT PROVEN ON A CLUSTER. Read this before applying it anywhere that matters:
 #
-# Composable with ../k8s-scale-s3 (list both as resources in your own
-# kustomization); boxes keep a session's home across nodes only with
-# SLAUDE_STORAGE=s3.
+#   - This overlay renders (`kubectl kustomize`) and its shape is tested
+#     (tests/deploy/box-overlay.test.ts). It has never been applied to a
+#     cluster. Whether runsc starts nested in a privileged container of a pod
+#     on YOUR cluster is the open question the design calls K1; the steps that
+#     answer it are in the 2026-11-25 box smoke field note ("What the owner
+#     must run on a real cluster"). What has run: the same supervisor, node
+#     worker and image layers in a privileged Docker container on a
+#     development VM.
+#   - The pod sizes in component/kustomization.yaml (the memory and CPU of
+#     `boxd`, the 80Gi box volume, SLAUDE_NODE_MAX_BOXES=10) are the design's
+#     worked example, not measurements. They satisfy the node's own boot check
+#     (a test asserts it), which is all that is claimed for them.
+#   - It needs a cluster that admits a privileged container. Pod Security
+#     `restricted` and `baseline` namespaces refuse it.
 #
-# Why memory and CPU of `boxd`, not of the pod: the `node` container is small
-# and roughly constant; the boxes are in `boxd`. Heavy boxes fill a pod before
-# its slot count does, and a warm sandbox holds memory while no turn runs and
-# the queue is empty, which the wait-list trigger cannot see.
+# What is in component/ (a kustomize Component, so it can be laid over the
+# base, over deploy/k8s-scale-s3, or over your own overlay):
 #
-# A second node Deployment (the base ships `finance` as the pattern) needs the
-# same patches; both are below.
+#   - the `boxd` container on every node Deployment: the same image, started
+#     as `tini -- bun --no-env-file src/box/boxd/main.ts ...`, privileged, with
+#     no envFrom, no Secret and no credential (it refuses to start with one);
+#   - two volumes, box-run (the control socket) and box-data (images, session
+#     homes, root overlays, parked sessions), mounted in both containers;
+#   - SLAUDE_BOX_TIER and the capacity variables on the `node` container, and
+#     the resource split: `node` small, the boxes charged to `boxd`;
+#   - SLAUDE_BOX=on on the gateway;
+#   - the autoscaling half: KEDA `memory` and `cpu` triggers on the `boxd`
+#     container beside the wait-list trigger (KEDA scales to the largest
+#     replica count any trigger asks for), and a 300 s grace period: the drain
+#     window (SLAUDE_NODE_DRAIN_SEC, default 120) plus the flush of the warm
+#     boxes. The rule is in docs/site/_content/deploy/scale-operations.md
+#     ("Drain arithmetic").
+#
+# optional/node-box-fallback-hpa.yaml is the HPA for clusters without KEDA,
+# with ContainerResource metrics for `boxd`. Like the base's CPU fallback it is
+# NOT in this kustomization: never two autoscalers on one Deployment.
+#
+# With deploy/k8s-scale-s3: do not list both overlays as resources (each
+# brings the base, and kustomize refuses the same object twice). Use with-s3/,
+# or in your own kustomization:
+#
+#   resources:  [../k8s-scale-s3]
+#   components: [../k8s-scale-box/component]
+#
+# Boxes keep a session's home across nodes only with SLAUDE_STORAGE=s3.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
   - ../k8s-scale
 
-patches:
-  - target: { kind: Deployment, name: slaude-node }
-    patch: |-
-      - op: replace
-        path: /spec/template/spec/terminationGracePeriodSeconds
-        value: 300
-  - target: { kind: Deployment, name: slaude-node-finance }
-    patch: |-
-      - op: replace
-        path: /spec/template/spec/terminationGracePeriodSeconds
-        value: 300
-
-  # The targets are percentages of the container's REQUESTS, so `boxd` must
-  # set memory and cpu requests. 75 and 70 leave room for a burst of new
-  # sessions while a new pod starts and pulls its images.
-  - target: { kind: ScaledObject, name: slaude-node }
-    patch: |-
-      - op: add
-        path: /spec/triggers/-
-        value:
-          type: memory
-          metricType: Utilization
-          metadata: { value: "75", containerName: boxd }
-      - op: add
-        path: /spec/triggers/-
-        value:
-          type: cpu
-          metricType: Utilization
-          metadata: { value: "70", containerName: boxd }
-  - target: { kind: ScaledObject, name: slaude-node-finance }
-    patch: |-
-      - op: add
-        path: /spec/triggers/-
-        value:
-          type: memory
-          metricType: Utilization
-          metadata: { value: "75", containerName: boxd }
-      - op: add
-        path: /spec/triggers/-
-        value:
-          type: cpu
-          metricType: Utilization
-          metadata: { value: "70", containerName: boxd }
-
-# --- Optional third trigger, for clusters that run Prometheus: box occupancy.
-# It scales BEFORE a backlog forms and holds replicas while sessions are warm
-# though the queue is empty. Add to each ScaledObject's triggers (one patch per
-# label, with the label's own Deployment in the selector):
-#
-#   - op: add
-#     path: /spec/triggers/-
-#     value:
-#       type: prometheus
-#       metadata:
-#         serverAddress: http://REPLACE-prometheus:9090
-#         # Running boxes over capacity, for this label's node pods only.
-#         query: >-
-#           sum(slaude_node_boxes_running{namespace="slaude-scale",pod=~"slaude-node-[a-z0-9]+-[a-z0-9]+"})
-#           / sum(slaude_node_boxes_capacity{namespace="slaude-scale",pod=~"slaude-node-[a-z0-9]+-[a-z0-9]+"})
-#         # KEDA divides the query's value by this to get the wanted replica
-#         # ratio: 0.7 means "add nodes above 70 percent occupied".
-#         threshold: "0.7"
-#
-# cooldownPeriod stays 300 s (the base): a removed pod's sessions resume
-# elsewhere from the bucket, which is cheap but not free.
+components:
+  - component

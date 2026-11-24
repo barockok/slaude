@@ -1,0 +1,18 @@
+# Boxes on the scale topology with no PersistentVolume: deploy/k8s-scale-s3
+# with the box component laid over it. See ../kustomization.yaml for what the
+# component adds and for what has NOT been proven (never applied to a cluster).
+#
+#   kubectl apply -k deploy/k8s-scale-box/with-s3
+#
+# This is the combination boxes are designed for: a session's home and
+# workspace extras are flushed to the bucket and follow it to another node.
+# /data is a pod-local emptyDir here, shared by the `node` and `boxd`
+# containers of one pod, which is what the supervisor needs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../k8s-scale-s3
+
+components:
+  - ../component

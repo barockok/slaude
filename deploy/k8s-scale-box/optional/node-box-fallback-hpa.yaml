@@ -8,9 +8,8 @@
 #   kubectl delete -f deploy/k8s-scale/70-autoscale.yaml     # if it was applied
 #   kubectl apply -f deploy/k8s-scale-box/optional/node-box-fallback-hpa.yaml
 #
-# Needs the `boxd` container in the node pods (it arrives with the sandbox
-# driver) and memory and cpu REQUESTS on it: the targets below are percentages
-# of requests. ContainerResource metrics are stable from Kubernetes 1.30 and
+# Needs the `boxd` container in the node pods (../component adds it) and memory
+# and cpu REQUESTS on it: the targets below are percentages of requests. ContainerResource metrics are stable from Kubernetes 1.30 and
 # on by default (beta) from 1.27; check your cluster's version before relying
 # on them.
 #

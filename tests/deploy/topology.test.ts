@@ -13,6 +13,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseAllDocuments } from "yaml";
+import { checkSizing } from "../../src/box/capacity";
+import { DEFAULT_BOX_RESOURCES, defaultMemoryReserveMb } from "../../src/box/policy";
 import { isGatewayOnlyEnv } from "../../src/config/gateway-only-env";
 import { parseNodeManifest } from "../../src/node/manifest";
 import { labelTurnsQueue } from "../../src/queue/keys";
@@ -66,6 +68,9 @@ const builds: [string, () => any[]][] = [
   ["deploy/k8s-scale", () => kustomize(join(root, "deploy/k8s-scale"))],
   ["deploy/k8s-local", () => kustomize(join(stage(), "deploy/k8s-local"))],
   ["e2e/k8s", () => kustomize(join(stage(), "e2e/k8s"))],
+  // The box overlay and its composition with the bucket overlay: every rule above holds with `boxd` in the pod.
+  ["deploy/k8s-scale-box", () => kustomize(join(root, "deploy/k8s-scale-box"))],
+  ["deploy/k8s-scale-box/with-s3", () => kustomize(join(root, "deploy/k8s-scale-box/with-s3"))],
 ];
 
 for (const [name, build] of builds) {
@@ -266,3 +271,77 @@ describe.skipIf(!hasKubectl)("built deploy/k8s-local: the full local topology", 
     expect(hpas.map((h) => h.spec.scaleTargetRef.name)).toEqual(["slaude-node"]);
   });
 });
+
+// The box overlay (box plan, Phases 6 and 9): what it adds to each label's node pod, as built.
+for (const dir of ["deploy/k8s-scale-box", "deploy/k8s-scale-box/with-s3"]) {
+  describe.skipIf(!hasKubectl)(`built ${dir}: boxes in every node pod`, () => {
+    const docs = hasKubectl ? kustomize(join(root, dir)) : [];
+    const nodes = nodeDeployments(docs);
+    const mb = (q: string) => Number(/^(\d+)/.exec(q)![1]) * (q.endsWith("Gi") ? 1024 : 1);
+
+    test("each label's ScaledObject scales on its wait list and on boxd's memory and CPU", () => {
+      for (const n of nodes) {
+        const so = docs.find((d) => d.kind === "ScaledObject" && d.spec.scaleTargetRef.name === n.dep.metadata.name);
+        expect(so, n.dep.metadata.name).toBeDefined();
+        expect(so.spec.triggers.map((t: any) => `${t.type}:${t.metadata.containerName ?? t.metadata.listName}`)).toEqual([
+          `redis:slaude:bull:${labelTurnsQueue(n.label)}:wait`,
+          "memory:boxd",
+          "cpu:boxd",
+        ]);
+      }
+    });
+
+    test("the grace period exceeds the drain window on every label", () => {
+      const drain = Number(cmData(docs, "slaude-scale-config").SLAUDE_NODE_DRAIN_SEC);
+      for (const n of nodes) expect(n.dep.spec.template.spec.terminationGracePeriodSeconds).toBeGreaterThan(drain);
+    });
+
+    test("each label's pod is node plus boxd: the node entry is unchanged, boxd alone is privileged and has no envFrom", () => {
+      expect(nodes.length).toBe(2);
+      for (const n of nodes) {
+        const cs = n.dep.spec.template.spec.containers;
+        expect(cs.map((c: any) => c.name)).toEqual(["node", "boxd"]);
+        expect(n.c.command).toEqual(["bun", "--no-env-file", "src/node/main.ts"]);
+        expect(n.c.securityContext?.privileged ?? false).toBe(false);
+        const boxd = cs.find((c: any) => c.name === "boxd");
+        expect(boxd.securityContext).toEqual({ privileged: true });
+        expect(boxd.envFrom).toBeUndefined();
+        expect(boxd.command.slice(0, 5)).toEqual(["tini", "--", "bun", "--no-env-file", "src/box/boxd/main.ts"]);
+      }
+    });
+
+    test("boxd's memory limit satisfies the sizing rule for the label's SLAUDE_NODE_MAX_BOXES", () => {
+      for (const n of nodes) {
+        const boxd = n.dep.spec.template.spec.containers.find((c: any) => c.name === "boxd");
+        const maxBoxes = Number(valueSeen(docs, n.c, "SLAUDE_NODE_MAX_BOXES"));
+        const reserve = defaultMemoryReserveMb(DEFAULT_BOX_RESOURCES.memoryMb);
+        const r = checkSizing({
+          maxBoxes,
+          memoryBudgetMb: null,
+          memoryLimitMb: mb(boxd.resources.limits.memory),
+          overheadMb: 150,
+          smallestReserveMb: reserve,
+          diskMb: null,
+          imageBudgetMb: 0,
+          parkBudgetMb: 0,
+          turnConcurrency: 1,
+        });
+        expect(r.errors, n.dep.metadata.name).toEqual([]);
+        expect(r.memoryBudgetMb).toBeGreaterThanOrEqual(maxBoxes * (reserve + 150));
+        // Requests are set: the memory and CPU triggers are percentages of them.
+        expect(boxd.resources.requests.memory).toBeDefined();
+        expect(boxd.resources.requests.cpu).toBeDefined();
+      }
+    });
+
+    test("the tier is a sandbox tier on node and boxd alike; the base offers none", () => {
+      for (const n of nodes) {
+        const boxd = n.dep.spec.template.spec.containers.find((c: any) => c.name === "boxd");
+        expect(["gvisor", "bwrap"]).toContain(valueSeen(docs, n.c, "SLAUDE_BOX_TIER")!);
+        expect(envOf(boxd, "SLAUDE_BOX_TIER").value).toBe(valueSeen(docs, n.c, "SLAUDE_BOX_TIER")!);
+      }
+      const base = kustomize(join(root, "deploy/k8s-scale"));
+      for (const n of nodeDeployments(base)) expect(valueSeen(base, n.c, "SLAUDE_BOX_TIER")).toBeUndefined();
+    });
+  });
+}
