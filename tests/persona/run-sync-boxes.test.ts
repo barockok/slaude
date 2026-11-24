@@ -11,6 +11,7 @@ import { __resetGuardrailKeyForTests } from "../../src/guardrails/integrity";
 import { __clearBoxesForTests, boxSetVersion, readBoxes } from "../../src/db/boxes";
 import { __resetBoxRegistryForTests, loadBoxes } from "../../src/gateway/core/box-registry";
 import { boxHighWater } from "../../src/box/high-water";
+import { standInDigestFor } from "../../src/box/definition";
 import { BOX_SUPPORTED_PROVIDER_FORMS, declaredProviderForms, unboxableProviderForms } from "../../src/box/provider-forms";
 
 const isPg = process.env.SLAUDE_DB === "pg";
@@ -240,5 +241,32 @@ describe.skipIf(!isPg)("box sync", () => {
     expect(e.message).toMatch(/older than version 2 seen before \(rolled back\)/);
     expect((await refusal(payload({ boxes: [box({ image: image("d") })] }), { dryRun: true })).status).toBe(503);
     expect(await boxSetVersion(T)).toBe(1);
+  });
+
+  test("a stand-in digest (render --no-push): the dry run prints the diff with a warning, a real sync refuses and stores nothing", async () => {
+    await run(payload({ boxes: [box()] }));
+    const standIn = `ghcr.io/example/boxes/ruby-dev@${standInDigestFor("c".repeat(64))}`;
+    const dry = await run(payload({ boxes: [box({ image: standIn })] }), { dryRun: true });
+    expect(dry.boxes!.updated).toEqual([{ name: "ruby-dev", version: 2, diff: ["image: new digest"] }]);
+    expect(dry.warnings.join("\n")).toContain("box 'ruby-dev': the image digest is a stand-in for an image that is not pushed yet; a real sync refuses this payload");
+
+    const e = await refusal(payload({ boxes: [box({ image: standIn })] }));
+    expect(e.status).toBe(422);
+    expect(e.message).toContain("box 'ruby-dev': the image digest is a stand-in for an image that was never pushed");
+    expect(e.message).not.toContain(standIn.slice(standIn.indexOf("@") + 1));
+    expect(await boxSetVersion(T)).toBe(1);
+    expect((await loadBoxes(T)).boxes.get("ruby-dev")!.current.digest).toBe(digest("a"));
+    // The static stand-in registry of `render --check` is refused the same way.
+    const invalid = await refusal(payload({ boxes: [box({ image: `registry.invalid/boxes/ruby-dev@${digest("d")}` })] }));
+    expect(invalid.status).toBe(422);
+    // Nothing else of the refused sync was applied either: the personas are as the first sync left them.
+    expect((await db.query(`SELECT name FROM personas WHERE name = 'ana'`)).length).toBe(1);
+  });
+
+  test("a first sync that carries only a stand-in creates no box", async () => {
+    const standIn = `ghcr.io/example/boxes/ruby-dev@${standInDigestFor("e".repeat(64))}`;
+    expect((await refusal(payload({ ana: "box: ruby-dev\n", boxes: [box({ image: standIn })] }))).status).toBe(422);
+    expect(await boxSetVersion(T)).toBe(0);
+    expect((await db.query(`SELECT name FROM personas`)).length).toBe(0);
   });
 });

@@ -20,7 +20,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
-import { BOX_IMAGE_REF_RE, BOX_NAME_RE, parseBoxYaml, toBoxPayload, type BoxPayloadEntry, type ParsedBoxFile } from "../box/definition";
+import { BOX_IMAGE_REF_RE, BOX_NAME_RE, BOX_STAND_IN_REGISTRY, parseBoxYaml, standInDigestFor, toBoxPayload, type BoxPayloadEntry, type ParsedBoxFile } from "../box/definition";
 import { PayloadError } from "../persona/sync/errors";
 
 export const BOX_YAML = "box.yaml";
@@ -29,7 +29,7 @@ export const BOX_REGISTRY_ENV = "SLAUDE_BOX_REGISTRY";
 const REGISTRY_RE = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?(?:\/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)*$/;
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
 /** The repository prefix of a stand-in image when no registry is configured. `.invalid` never resolves. */
-const STATIC_REGISTRY = "registry.invalid/boxes";
+const STATIC_REGISTRY = `${BOX_STAND_IN_REGISTRY}/boxes`;
 
 export interface BoxDirEntry {
   /** The absolute box directory. */
@@ -130,11 +130,12 @@ export interface CompileBoxOpts {
  * The digest a `check` run reports for an image that is not in the registry
  * yet. It is derived from the context hash, names no real image, and exists so
  * the gateway's dry run can print "image: new digest" on a pull request. A
- * payload that carries one must never be deployed: no registry holds it, so a
- * session pinned to it could not start.
+ * payload that carries one must never be deployed: no registry holds it. The
+ * digest is marked (src/box/definition.ts, isStandInImage), so the gateway
+ * refuses a real sync that carries one and a node refuses to boot on one.
  */
 export function standInDigest(hash: string): string {
-  return `sha256:${createHash("sha256").update(`slaude-box-unpushed\0${hash}`).digest("hex")}`;
+  return standInDigestFor(hash);
 }
 
 export interface CompiledBoxes {

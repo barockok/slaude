@@ -15,6 +15,7 @@
  * the sandbox driver. It holds no credential and reads none.
  */
 import { BootFailure } from "../gateway/core/failure-codes";
+import { isStandInImage } from "./definition";
 import type { BoxEgress, BoxPolicy } from "./policy";
 
 /** The box as a runtime bundle carries it. */
@@ -62,6 +63,8 @@ export function makeSessionBoxSource(src: SessionBoxSources): {
     if (pinned.name !== box.name) throw unavailable("the session is pinned to a different box than its persona now names");
     const at = box.image.indexOf("@");
     if (at <= 0) throw unavailable("the bundle's box image is not a digest reference");
+    // The gateway refuses to store one; a node does not start a session on one either.
+    if (isStandInImage(pinned.digest) || isStandInImage(box.image)) throw unavailable("the box's image digest is a stand-in for an image that was never pushed");
     return { name: box.name, image: `${box.image.slice(0, at)}@${pinned.digest}`, digest: pinned.digest, policy: box.policy };
   }
   return {

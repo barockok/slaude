@@ -458,6 +458,31 @@ export function parseBoxPayload(raw: unknown): ParsedBox {
   return { name: f.name, description: f.description ?? "", image: f.image, digest: digestOf(f.image), policy: policyOf(who, f) };
 }
 
+/**
+ * A stand-in digest: what `personas render --no-push` and `--check` report for
+ * an image that no registry holds. It starts with 24 zero hex digits (96 zero
+ * bits, which no real sha256 of an image manifest has in practice), so the
+ * gateway and a node can tell one from a real digest without a registry. A
+ * payload that carries one is for a dry run only: a real sync refuses it, and
+ * a node refuses to boot a session pinned to one.
+ */
+export const BOX_STAND_IN_DIGEST_PREFIX = `sha256:${"0".repeat(24)}`;
+/** The registry of a stand-in image when no registry is configured. `.invalid` never resolves. */
+export const BOX_STAND_IN_REGISTRY = "registry.invalid";
+
+/** Build the stand-in digest for a build context hash (64 hex digits). */
+export function standInDigestFor(contextHash: string): string {
+  return `${BOX_STAND_IN_DIGEST_PREFIX}${createHash("sha256").update(`slaude-box-unpushed\0${contextHash}`).digest("hex").slice(0, 40)}`;
+}
+
+/** Whether a digest (`sha256:<hex>`) or an image reference names no real image. */
+export function isStandInImage(imageOrDigest: string): boolean {
+  const at = imageOrDigest.indexOf("@");
+  const digest = at >= 0 ? imageOrDigest.slice(at + 1) : imageOrDigest;
+  if (digest.startsWith(BOX_STAND_IN_DIGEST_PREFIX)) return true;
+  return at >= 0 && (imageOrDigest.startsWith(`${BOX_STAND_IN_REGISTRY}/`) || imageOrDigest.startsWith(`${BOX_STAND_IN_REGISTRY}:`));
+}
+
 /** `sha256:<hex>` of an image reference. */
 export function digestOf(image: string): string {
   return image.slice(image.indexOf("@") + 1);

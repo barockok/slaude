@@ -40,6 +40,7 @@ import { applyBoxes, boxSetVersion, boxTablesPresent, boxesChanged, planBoxes, r
 import { BoxIntegrityError, verifyBoxSet } from "../../box/integrity";
 import { checkBoxHighWater, raiseBoxHighWater } from "../../box/high-water";
 import { unboxableProviderForms } from "../../box/provider-forms";
+import { isStandInImage } from "../../box/definition";
 import { boxFlagValue } from "../../config/env";
 
 function masterKeySet(): boolean {
@@ -275,7 +276,7 @@ export async function runSync(
       }
     }
   }
-  const boxPlan = await planBoxSync(tenant, payload, opts.env, warnings);
+  const boxPlan = await planBoxSync(tenant, payload, opts.env, warnings, opts.dryRun);
   const envPlan = payload.environments !== undefined ? await planDefinitions(db, tenant, definitions) : undefined;
   // A new, changed or revived definition may need its key pair stored (encrypted): refuse up front, never a 500 mid-sync.
   if (envPlan && envPlan.create.length + envPlan.update.length > 0 && !masterKeySet()) {
@@ -462,9 +463,22 @@ async function planBoxSync(
   payload: SyncPayload,
   env: Record<string, string | undefined>,
   warnings: string[],
+  dryRun: boolean,
 ): Promise<BoxSyncReport | undefined> {
   const naming = payload.personas.filter((p) => p.definition?.box !== undefined);
   if (payload.boxes === undefined && naming.length === 0) return undefined;
+  // A stand-in digest names an image that was never pushed (`personas render
+  // --no-push` or `--check`). A dry run may carry one, to print the diff on a
+  // pull request. A real sync never stores one: a session pinned to it could
+  // not start, and every session of the box would be pinned to it.
+  const standIns = (payload.boxes ?? []).filter((b) => isStandInImage(b.image)).map((b) => b.name);
+  if (standIns.length) {
+    const names = standIns.map((n) => `'${n}'`).join(", ");
+    if (!dryRun) {
+      throw new SyncFailure(422, `box ${names}: the image digest is a stand-in for an image that was never pushed (personas render --no-push); this payload is for a dry run only. Render it again without --no-push and deploy that`);
+    }
+    warnings.push(`box ${names}: the image digest is a stand-in for an image that is not pushed yet; a real sync refuses this payload`);
+  }
   if (!(await boxTablesPresent())) {
     throw new SyncFailure(503, "the database schema predates this gateway (the boxes tables are missing): apply migrations 0054 to 0057 before syncing boxes");
   }
