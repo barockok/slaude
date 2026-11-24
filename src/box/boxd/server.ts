@@ -149,8 +149,15 @@ interface Live {
   execs: Map<string, Exec>;
 }
 
+/**
+ * The environment of every program the supervisor starts (runsc, bwrap, mount, cp): a search path and nothing else.
+ * Not this process's own: the supervisor holds no credential, but a stray variable still changes what those programs
+ * do. Measured: with TMPDIR set, a runsc sandbox exits before its container starts.
+ */
+const childEnv = (): Record<string, string> => ({ PATH: process.env.PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" });
+
 const sh = (argv: string[], opts: { timeoutMs?: number; input?: string } = {}): { code: number; out: string; err: string } => {
-  const r = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", timeout: opts.timeoutMs ?? 60_000, ...(opts.input !== undefined ? { input: opts.input } : {}) });
+  const r = spawnSync(argv[0]!, argv.slice(1), { encoding: "utf8", env: childEnv(), timeout: opts.timeoutMs ?? 60_000, ...(opts.input !== undefined ? { input: opts.input } : {}) });
   return { code: r.status ?? 1, out: r.stdout ?? "", err: (r.stderr ?? "") + (r.error ? String(r.error.message) : "") };
 };
 
@@ -164,6 +171,15 @@ const readNumber = (path: string): number | null => {
     return null;
   }
 };
+
+/** The child processes of a process, from /proc. Empty when it has none or the kernel does not say. */
+export function childrenOf(pid: number): number[] {
+  try {
+    return readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").split(/\s+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n) && n > 1);
+  } catch {
+    return [];
+  }
+}
 
 /** Give a tree to a uid and gid, entry by entry, never through a link. Entries that already match are left. */
 export function adoptTree(root: string, uid: number, gid: number): number {
@@ -242,7 +258,7 @@ export function gvisorBackend(config: BoxdConfig): SandboxBackend {
       const logFd = openSync(join(sb.dir, "init.log"), "a");
       try {
         const args = runscRunArgs({ stateDir, overlayDir: sb.overlayDir, rootOverlayMb: sb.resources.rootOverlayMb, bundleDir: bundle, container: container(sb) });
-        const r = spawnSync(runsc, args, { stdio: ["ignore", logFd, logFd], timeout: 60_000 });
+        const r = spawnSync(runsc, args, { stdio: ["ignore", logFd, logFd], env: childEnv(), timeout: 60_000 });
         if (r.status !== 0) {
           let log = "";
           try {
@@ -258,7 +274,7 @@ export function gvisorBackend(config: BoxdConfig): SandboxBackend {
     },
     exec(sb, req) {
       const args = runscExecArgs({ stateDir, container: container(sb), uid: sb.uid, gid: sb.gid, cwd: req.cwd, pidFile: join(req.scratch, "pid"), env: req.env, argv: req.argv });
-      return spawn(runsc, args, { stdio: ["pipe", "pipe", "pipe"] });
+      return spawn(runsc, args, { stdio: ["pipe", "pipe", "pipe"], env: childEnv() });
     },
     signal(sb, req, child, signal) {
       let pid = "";
@@ -399,14 +415,51 @@ export function bwrapBackend(config: BoxdConfig): SandboxBackend {
       const args = bwrapArgs({ root: rootOf(sb), initDir: config.initDir, runDir: sb.runDir, mounts: sb.mounts, uid: sb.uid, gid: sb.gid, cwd: req.cwd, env: req.env, argv: req.argv, seccompFd: 9 });
       // The shell joins the sandbox's cgroup before it becomes bwrap, so nothing bwrap starts is ever outside it; fd 9 is the seccomp filter.
       const script = 'echo $$ > "$1/cgroup.procs" || exit 70; shift; exec 9< "$1"; shift; exec "$@"';
-      return spawn("/bin/sh", ["-c", script, "sh", cg(sb), seccompPath, bwrap, ...args], { stdio: ["pipe", "pipe", "pipe"] });
+      return spawn("/bin/sh", ["-c", script, "sh", cg(sb), seccompPath, bwrap, ...args], { stdio: ["pipe", "pipe", "pipe"], env: childEnv() });
     },
     signal(_sb, _req, child, signal) {
-      // Ending bwrap ends its pid namespace (--die-with-parent), whatever the signal.
-      child.kill(signal as NodeJS.Signals);
+      // bwrap (our child) holds one child: the first process of the box's pid namespace, which holds box-init.
+      // A hard end goes to that first process: the kernel then ends its whole namespace, bwrap reaps it and exits, and
+      // nothing is orphaned. Ending bwrap itself would leave its child to die as an orphan, and an orphan is reaped
+      // by pid 1, which in the supervisor's container is the supervisor: it would keep a zombie per ended process.
+      // A soft end goes to box-init, which passes it to the command (the namespace's first process ignores it).
+      const inner = child.pid ? childrenOf(child.pid) : [];
+      const targets = signal === "SIGKILL" ? inner : inner.flatMap(childrenOf);
+      if (targets.length === 0) return void child.kill(signal as NodeJS.Signals);
+      for (const pid of targets) {
+        try {
+          process.kill(pid, signal as NodeJS.Signals);
+        } catch {
+          /* already gone */
+        }
+      }
     },
     async stop(sb) {
       const dir = cg(sb);
+      // First the namespaces' first processes (see `signal`), then whatever is left.
+      try {
+        const procs = new Set(readFileSync(join(dir, "cgroup.procs"), "utf8").split("\n").filter(Boolean).map(Number));
+        for (const pid of procs) {
+          const comm = (() => {
+            try {
+              return readFileSync(`/proc/${pid}/comm`, "utf8").trim();
+            } catch {
+              return "";
+            }
+          })();
+          if (comm !== "bwrap") continue;
+          for (const c of childrenOf(pid)) {
+            try {
+              process.kill(c, "SIGKILL");
+            } catch {
+              /* already gone */
+            }
+          }
+        }
+        for (let i = 0; i < 20 && readFileSync(join(dir, "cgroup.procs"), "utf8").trim() !== ""; i++) await new Promise((r) => setTimeout(r, 50));
+      } catch {
+        /* no cgroup, or nothing in it */
+      }
       killCgroup(dir);
       await removeCgroup(dir);
       unmount(rootOf(sb));

@@ -101,6 +101,10 @@ export function makeSupervisedDriver(tier: SandboxTier, deps: SupervisedDriverDe
             if (existsSync(join(spec.configDir, name))) throw unavailable(`the session's config directory holds ${name}: a box is never given a credential store`);
           }
         }
+        // A Unix socket path holds about 107 bytes; past that the proxies could not listen, with an error that says little.
+        if (Buffer.byteLength(join(runDir, "egress.sock")) > 104) {
+          throw unavailable("SLAUDE_BOX_DIR is too long: a session's proxy sockets under it would not fit a Unix socket path (about 100 bytes)");
+        }
         try {
           const route = await deps.provider(spec.sessionId);
           form = route.form;
