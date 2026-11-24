@@ -801,9 +801,9 @@ except Exception:
     box_sid="$(json_first sessions "$out1")"
     box_dir="$(json_first workdirs "$out1")"
     if [[ -z "$box_sid" || -z "$box_dir" ]]; then
-      bad "boxed turn — COULD NOT MEASURE (no boxed turn was enqueued)"
+      bad "boxed turn: COULD NOT MEASURE (no boxed turn was enqueued)"
     elif [[ "$box_label" != default ]]; then
-      bad "boxed turn — COULD NOT MEASURE (persona '$BOX_PERSONA' runs on label '$box_label'; this section reads the default label's nodes)"
+      bad "boxed turn: COULD NOT MEASURE (persona '$BOX_PERSONA' runs on label '$box_label'; this section reads the default label's nodes)"
     else
       done1="$(wait_done 1 "$BOX_TURN_TIMEOUT" 0 --persona "$BOX_PERSONA" --label live)"
       expect_value "the boxed turn completed" "$done1" "1" "turns carrying a completion marker"
@@ -823,7 +823,7 @@ except Exception:
         cmd2='"$HOME/.local/bin/verify-box-tool" > turn2.txt 2>&1; printf "rc=%s home=%s\n" "$?" "$HOME" >> turn2.txt'
         out2="$(probe box-turn 1 --persona "$BOX_PERSONA" --label live --cmd "$(b64url "$cmd2")" --id b --again || true)"
         if [[ -z "$(json_first sessions "$out2")" ]]; then
-          bad "the thread's next turn — COULD NOT MEASURE (it was not enqueued)"
+          bad "the thread's next turn: COULD NOT MEASURE (it was not enqueued)"
         else
           done2="$(wait_done 1 "$((BOX_TURN_TIMEOUT + RECOVER_TIMEOUT))" 0 --persona "$BOX_PERSONA" --label live)"
           expect_value "the thread's next turn completed after its node was removed" "$done2" "1" "turns carrying a completion marker"
@@ -850,12 +850,12 @@ except Exception:
     pods_now="$(nodes | wc -l | tr -d ' ')"
     max_boxes="$(k get deploy slaude-node -o jsonpath='{.spec.template.spec.containers[?(@.name=="node")].env[?(@.name=="SLAUDE_NODE_MAX_BOXES")].value}' 2>/dev/null || true)"
     if [[ ! "$max_boxes" =~ ^[0-9]+$ || ! "$pods_now" =~ ^[1-9][0-9]*$ ]]; then
-      bad "burst — COULD NOT MEASURE (SLAUDE_NODE_MAX_BOXES='${max_boxes}' on slaude-node, $pods_now running node pods)"
+      bad "burst: COULD NOT MEASURE (SLAUDE_NODE_MAX_BOXES='${max_boxes}' on slaude-node, $pods_now running node pods)"
     else
       burst=$((pods_now * max_boxes + 2))
       out3="$(probe box-turn "$burst" --persona "$BOX_PERSONA" --label live --cmd "$(b64url 'echo burst-done > burst.txt')" --id c || true)"
       if [[ "$(field enqueued <<<"$out3" || true)" != "$burst" ]]; then
-        bad "burst — COULD NOT MEASURE ($burst boxed turns were not enqueued)"
+        bad "burst: COULD NOT MEASURE ($burst boxed turns were not enqueued)"
       else
         done3="$(wait_done "$burst" "$((BOX_TURN_TIMEOUT * 2))" 0 --persona "$BOX_PERSONA" --label live)"
         expect_value "all $burst sessions completed on $pods_now nodes of $max_boxes slots each (none failed for capacity)" "$done3" "$burst" "turns carrying a completion marker"
