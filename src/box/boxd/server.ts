@@ -654,16 +654,17 @@ export function createBoxd(config: BoxdConfig, deps: BoxdDeps = {}): Boxd {
     }
   }
 
-  function need(conn: number, v: unknown): Live {
+  /** A live sandbox. `own`: the asking connection becomes its owner (it starts processes in it); reading it does not. */
+  function need(conn: number, v: unknown, own = false): Live {
     const id = checkSandboxId(v);
     const sb = live.get(id);
     if (!sb) throw new BoxdError("not-found", "no sandbox of this id is running");
-    sb.owner = conn;
+    if (own) sb.owner = conn;
     return sb;
   }
 
   async function exec(conn: number, p: Record<string, unknown>): Promise<{ execId: string; stdio: string }> {
-    const sb = need(conn, p.sandboxId);
+    const sb = need(conn, p.sandboxId, true);
     const argv = checkArgv(p.argv);
     const env = checkEnv(p.env);
     const cwd = checkAbsolute(p.cwd, "cwd");

@@ -451,8 +451,9 @@ describe("the supervisor over its socket, with a fake backend", () => {
     await create({ sandboxId: "s2", runDir: join(dir, "box", "sessions", "s1", "run"), mounts: [] });
     client.close();
     const second = new BoxdClient({ socketPath: join(dir, "run", "boxd.sock") });
-    // The new worker connection uses s2 inside the grace period: it now owns it.
-    await second.request("sandbox.stats", { sandboxId: "s2" });
+    // Reading a sandbox does not take it over; starting it again (a worker that reconnected) does.
+    await second.request("sandbox.stats", { sandboxId: "s1" });
+    await second.request("sandbox.create", { sandboxId: "s2", tier: "gvisor", digest: DIGEST, mounts: [], runDir: join(dir, "box", "sessions", "s1", "run"), cwd: join(dir, "data", "ws"), resources: { cpu: 1, memoryMb: 512, pids: 64, rootOverlayMb: 64 } });
     await new Promise((r) => setTimeout(r, 400));
     expect(boxd.sandboxes()).toEqual(["s2"]);
     expect(stopped).toEqual(["s1"]);
