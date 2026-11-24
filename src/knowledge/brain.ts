@@ -9,6 +9,7 @@ import { getBackend } from "./backend";
 import { NodeDbAccessError } from "../db/client";
 import { BrainNotOpenError, brainClosing, settleBrainWork, trackBrainWork, whileClosing } from "./brain-work";
 import { keepingExitCode } from "../db/wasm-exit-code";
+import { hasPlacePrefix } from "../memory/place-id";
 import {
   EMBED_REFUSAL_HINT,
   classifyEmbeddingRecord,
@@ -899,6 +900,11 @@ export async function ensureSource(id: string): Promise<void> {
  * brain server both construct from a resolved BrainScope.
  */
 export function buildScopedCtxAuth(scope: BrainScope): Record<string, unknown> {
+  // A turn has one place or none: a scope naming two place sources would read across places.
+  // (The registry-binding check, that the source belongs to this agent, arrives with the
+  // release that writes places.)
+  const places = new Set([scope.sourceId, ...scope.allowedSources].filter(hasPlacePrefix));
+  if (places.size > 1) throw new Error("scope names more than one memory place");
   return {
     token: "in-process",
     clientId: scope.clientId,

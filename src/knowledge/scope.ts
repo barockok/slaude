@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { sameAt } from "../access/wired";
 import { env } from "../config/env";
+import { hasPlacePrefix } from "../memory/place-id";
 import type { PlaceRef } from "../memory/place";
 import type { SoulData } from "../soul/data";
 
@@ -147,7 +148,7 @@ export function storeKind(sourceId: string): StoreKind {
   if (sourceId === PUBLIC_SOURCE) return "public";
   if (sourceId.startsWith("user-")) return "personal";
   if (sourceId.startsWith(PROFILE_PREFIX)) return "profile";
-  if (sourceId.startsWith("mb-")) return "place";
+  if (hasPlacePrefix(sourceId)) return "place";
   if (sourceId.startsWith("kb-")) return "library";
   return "other";
 }

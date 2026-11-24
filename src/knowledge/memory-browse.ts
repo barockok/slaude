@@ -14,6 +14,7 @@
  */
 import { brainEnabled, getBrain, runAdminOp } from "./brain";
 import { brainMode } from "./brain-config";
+import { placeShortId } from "../memory/place-id";
 import { agentSourceId, AGENT_SOURCE, storeKind, type StoreKind } from "./scope";
 
 export interface MemoryStore {
@@ -146,7 +147,7 @@ export function storeLabel(id: string, agents: ReadonlyMap<string, string> = new
     case "profile":
       return "Profile";
     case "place":
-      return `Place: ${id.slice("mb-".length, "mb-".length + 8)}`;
+      return `Place: ${placeShortId(id)}`;
     case "library":
       return `Library: ${id.slice("kb-".length)}`;
     default:

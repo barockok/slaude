@@ -1,26 +1,25 @@
 /**
- * Memory places: the one module that may build an `mb-` source id or decide which
- * place a turn belongs to (design: docs/superpowers/specs/2026-11-24-memory-architecture.md).
+ * Memory places: decides which place a turn belongs to (design:
+ * docs/superpowers/specs/2026-11-24-memory-architecture.md). The `mb-` naming itself is in
+ * ./place-id.ts, re-exported here; those two are the only files that may name the prefix.
  *
  * A place is one (agent, boundary) pair. Its gbrain source id is `mb-` plus the first 28 hex
  * characters of sha256(agentId, NUL, boundaryId): 31 characters, inside gbrain's
- * `[a-z0-9-]{1,32}`, deterministic so replicas agree without coordination. A guard test fails
- * when any other file builds or prefixes an `mb-` id.
+ * `[a-z0-9-]{1,32}`, deterministic so replicas agree without coordination.
  *
  * `placeFor` answers a place or a typed reason there is none. In rc.45 it only MEASURES: no
  * read or write decision uses the answer. So it never throws, is bounded in time, and a
  * failure is an answer (`lookup-failed`), never an error. It never inserts a boundary: first
  * sight creates them.
  */
-import { createHash } from "node:crypto";
 import { env } from "../config/env";
 import * as CronJobs from "../db/cron-jobs";
 import * as Domain from "../db/domain";
 import * as Sessions from "../db/sessions";
 import { boundaryFor, boundaryLookupFailed, CHANNEL_RE } from "../domain/boundary-for";
+import { placeSourceId } from "./place-id";
 
-/** The prefix of every place source. Only this module builds one. */
-const PLACE_PREFIX = "mb-";
+export { hasPlacePrefix, isPlaceSourceId, placeShortId, placeSourceId } from "./place-id";
 
 export type NoPlaceReason = "no-boundary" | "no-team" | "lookup-failed" | "unknown-surface" | "node-no-db";
 export const NO_PLACE_REASONS: readonly NoPlaceReason[] = ["no-boundary", "no-team", "lookup-failed", "unknown-surface", "node-no-db"];
@@ -28,14 +27,6 @@ export const NO_PLACE_REASONS: readonly NoPlaceReason[] = ["no-boundary", "no-te
 export type PlaceRef =
   | { kind: "place"; source: string; boundaryId: string; boundaryKind: string }
   | { kind: "none"; reason: NoPlaceReason };
-
-/** `mb-` + first 28 hex chars of sha256(agentId + NUL + boundaryId). */
-export function placeSourceId(agentId: string, boundaryId: string): string {
-  return PLACE_PREFIX + createHash("sha256").update(agentId + "\0" + boundaryId).digest("hex").slice(0, 28);
-}
-
-/** True for a name `placeSourceId` could have produced. */
-export const isPlaceSourceId = (s: string): boolean => /^mb-[0-9a-f]{28}$/.test(s);
 
 /** What the turn knows. All of it is data the gateway already holds; nothing comes from the model. */
 export interface PlaceInput {
