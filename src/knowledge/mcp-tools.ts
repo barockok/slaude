@@ -1,3 +1,4 @@
+import { measureWrite } from "../memory/place-shadow";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
@@ -182,6 +183,9 @@ export const SUPERSEDE_REFUSAL = "refused: supersedes must name a page in the sa
 export const SELF_SUPERSEDE_REFUSAL = "refused: a page cannot supersede itself";
 export const SAME_CALL_SUPERSEDE_REFUSAL = "refused: a page cannot supersede a page written in the same call";
 export const LOCK_REFUSAL = "refused: in a /1on1, memory stays with this person; ask them before sharing it";
+
+/** A channel wake's checklist page lives under this slug prefix (`self/heartbeat/<channel>`). */
+const CHECKLIST_SLUG_PREFIX = "self/heartbeat/";
 
 export type MemoizeTarget = "mine" | "shared" | "profile";
 export interface KbMemoizeArgs {
@@ -521,6 +525,10 @@ export const brainHandlers = {
       if ("error" in c) return err(c.error);
       composed.push({ slug: pg.slug, content: c.content, ...(pg.supersedes !== undefined ? { supersedes: pg.supersedes } : {}) });
     }
+    // Shadow (rc.45): count where each page would go under the places design. Changes nothing.
+    pages.forEach((pg) => {
+      measureWrite({ surface: pg.type === "commitment" ? "commitment" : pg.slug.startsWith(CHECKLIST_SLUG_PREFIX) ? "checklist" : "memory_save", place: gate.place, todaySource: scope.sourceId, agentId: gate.agentId });
+    });
     const label = `→ ${target}`;
     const retired = composed.filter((pg) => pg.supersedes !== undefined).map((pg) => pg.supersedes!);
     // A page never retires itself or a page this same call writes: the

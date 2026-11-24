@@ -1682,7 +1682,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const runAsPerson = await runAsPersonFor(gate, runAsUser);
         const scope = await memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null, ...(runAsPerson ? { runAsPerson } : {}) });
         // Only an interactive turn counts toward the quiet-moment pass's thread activity.
-        return gate.interactive ? { ...scope, activityAgentId: gate.agentId } : scope;
+        const shadow = { place: gate.place, agentId: gate.agentId };
+        return gate.interactive ? { ...scope, ...shadow, activityAgentId: gate.agentId } : { ...scope, ...shadow };
       },
     }),
   );
