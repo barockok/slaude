@@ -5,6 +5,7 @@ import {
   profileSourceId, PROFILE_PREFIX, isProfileSourceId, speakerProfileSource, type ScopeInput,
 } from "../src/knowledge/scope";
 import type { SoulData } from "../src/soul/data";
+import { NO_PLACE } from "../src/memory/place";
 
 const soul = { trustedChannels: ["C_TRUST"], allowedChannels: ["C_PUB"] } as unknown as SoulData;
 const AGENT = "AGENT1";
@@ -31,41 +32,41 @@ describe("channelTrustFor", () => {
 describe("resolveBrainScope", () => {
   const kb = ["kb-runbook"];
   test("agent turn (no user): writes own agent slice, reads own+legacy+shared+public+kb", async () => {
-    const s = (await resolveBrainScope({ userId: null, lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: kb, agentId: AGENT, teamId: null }));
+    const s = (await resolveBrainScope({ userId: null, lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: kb, place: NO_PLACE, agentId: AGENT, teamId: null }));
     expect(s.sourceId).toBe(A);
     expect(s.allowedSources).toEqual([A, AGENT_SOURCE, SHARED_SOURCE, PUBLIC_SOURCE, "kb-runbook"]);
     expect(s.clientId).toBe(AGENT);
   });
   test("locked 1on1: writes own user slice, also reads the agent's own mind", async () => {
-    const s = (await resolveBrainScope({ userId: "U1", lockedUser: "U1", channelTrust: "trusted", isManager: false, kbSources: kb, agentId: AGENT, teamId: null }));
+    const s = (await resolveBrainScope({ userId: "U1", lockedUser: "U1", channelTrust: "trusted", isManager: false, kbSources: kb, place: NO_PLACE, agentId: AGENT, teamId: null }));
     expect(s.sourceId).toBe("user-u1");
     expect(s.allowedSources).toEqual(["user-u1", A, AGENT_SOURCE, SHARED_SOURCE, PUBLIC_SOURCE, "kb-runbook"]);
   });
   test("trusted channel (unlocked): default write is the agent's OWN private slice, not shared", async () => {
-    const s = (await resolveBrainScope({ userId: "U2", lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: kb, agentId: AGENT, teamId: null }));
+    const s = (await resolveBrainScope({ userId: "U2", lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: kb, place: NO_PLACE, agentId: AGENT, teamId: null }));
     expect(s.sourceId).toBe(A);
     // shared is READABLE but not the default write target — escalation is explicit.
     expect(s.allowedSources).toEqual([A, AGENT_SOURCE, SHARED_SOURCE, PUBLIC_SOURCE, "kb-runbook"]);
   });
   test("manager in unknown channel: default write is the agent slice, shared readable", async () => {
-    const s = (await resolveBrainScope({ userId: "UMGR", lockedUser: null, channelTrust: "unknown", isManager: true, kbSources: [], agentId: AGENT, teamId: null }));
+    const s = (await resolveBrainScope({ userId: "UMGR", lockedUser: null, channelTrust: "unknown", isManager: true, kbSources: [], place: NO_PLACE, agentId: AGENT, teamId: null }));
     expect(s.sourceId).toBe(A);
     expect(s.allowedSources).toContain(SHARED_SOURCE);
   });
   test("public/unknown channel: public reads only", async () => {
     for (const trust of ["public", "unknown"] as const) {
-      const s = (await resolveBrainScope({ userId: "U3", lockedUser: null, channelTrust: trust, isManager: false, kbSources: kb, agentId: AGENT, teamId: null }));
+      const s = (await resolveBrainScope({ userId: "U3", lockedUser: null, channelTrust: trust, isManager: false, kbSources: kb, place: NO_PLACE, agentId: AGENT, teamId: null }));
       expect(s.sourceId).toBe(PUBLIC_SOURCE);
       expect(s.allowedSources).toEqual([PUBLIC_SOURCE]);
     }
   });
   test("other user in someone else's locked thread gets public scope", async () => {
-    const s = (await resolveBrainScope({ userId: "U9", lockedUser: "U1", channelTrust: "trusted", isManager: false, kbSources: [], agentId: AGENT, teamId: null }));
+    const s = (await resolveBrainScope({ userId: "U9", lockedUser: "U1", channelTrust: "trusted", isManager: false, kbSources: [], place: NO_PLACE, agentId: AGENT, teamId: null }));
     expect(s.sourceId).toBe(PUBLIC_SOURCE);
     expect(s.allowedSources).toEqual([PUBLIC_SOURCE]);
   });
   test("cross-agent isolation: an agent never reads or writes another agent's slice", async () => {
-    const a = (await resolveBrainScope({ userId: "U2", lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: [], agentId: "AGENT_A", teamId: null }));
+    const a = (await resolveBrainScope({ userId: "U2", lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: [], place: NO_PLACE, agentId: "AGENT_A", teamId: null }));
     const bSlice = agentSourceId("AGENT_B");
     expect(a.sourceId).toBe(agentSourceId("AGENT_A"));
     expect(a.allowedSources).not.toContain(bSlice);
@@ -121,7 +122,7 @@ describe("resolveBrainScope profile rows", () => {
   const kb = ["kb-runbook"];
   const MGR = "U0MGR";
   const base = (o: Partial<ScopeInput>): ScopeInput => ({
-    userId: "U0ALICE", teamId: TEAM, lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: kb, agentId: AGENT, ...o,
+    userId: "U0ALICE", teamId: TEAM, lockedUser: null, channelTrust: "trusted", isManager: false, kbSources: kb, place: NO_PLACE, agentId: AGENT, ...o,
   });
   /** Same input without a team: the row as it was before profiles. */
   const withoutProfile = async (o: Partial<ScopeInput>) => (await resolveBrainScope(base({ ...o, teamId: null })));

@@ -10,6 +10,7 @@
  */
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from "bun:test";
 import { env } from "../../src/config/env";
+import { NO_PLACE } from "../../src/memory/place";
 
 // Must be set before src/memory/index.ts is first imported in this process.
 process.env.SLAUDE_MEMORY = "sqlite";
@@ -2194,7 +2195,7 @@ describe("turnSenders: who sent the inputs the CLI is processing (phase C, invar
     const senders = mgr.turnSenders(id);
     const gate = {
       userId: ctxUser, teamId: "T", interactive: true, origin: "slack" as const, lockedUser: null,
-      channelTrust: "trusted" as const, isManager: false, agentId: "AGENT1",
+      channelTrust: "trusted" as const, isManager: false, place: NO_PLACE, agentId: "AGENT1",
       ...(senders ? { turnSenders: senders } : {}),
     };
     const written: string[] = [];

@@ -367,10 +367,10 @@ const historyQuerySchema = z
   .strict();
 
 const STORE_ID_RE = /^[a-z0-9-]{1,32}$/;
-/** Stores that hold one person's memory: superadmin only. */
+/** Stores that hold one person's memory, or one place's (a place can be a private DM): superadmin only. */
 const isPrivateStore = (id: string) => {
   const k = storeKind(id);
-  return k === "personal" || k === "profile";
+  return k === "personal" || k === "profile" || k === "place";
 };
 const MEMORY_PAGE_MAX = 100;
 const memoryPagesQuerySchema = z

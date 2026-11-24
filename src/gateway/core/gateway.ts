@@ -165,6 +165,7 @@ import { recordSkillUse } from "../../skills/usage";
 import { scrubChildEnv, withoutKeys } from "../../agent/child-env";
 import { providerSelectingNames } from "../../agent/provider-env";
 import { memoryScopeFor, withClaimLock } from "../../memory/scope";
+import { placeFor } from "../../memory/place";
 import { getPersonaRegistry, labelsInUse, livePersona, managedPersonaProvider, onPersonaRegistryInstalled, skillsAllowedFor } from "../../persona/registry";
 import { makeLabelMonitor } from "../../queue/label-status";
 import { isInteractiveOrigin, turnBrainScope, type GateInput } from "../../knowledge/gated-dispatch";
@@ -1654,6 +1655,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       isManager: await managerAt("gateway.brain_gate.role", ctx.personaId, ctx.userId, ctx.teamId),
       agentId: personaAgentId,
       threadKey: `${ctx.channel}:${ctx.threadTs}`,
+      // Shadow (rc.45): measured, never read for a decision. placeFor never throws and is bounded.
+      place: await placeFor({ agentId: personaAgentId, teamId: ctx.teamId || null, channel: ctx.channel, threadTs: ctx.threadTs, personaId: ctx.personaId ?? null }),
     };
     // Slice F shadow: compare the speaker's verified-only union with the legacy own slice, in the
     // background and counts only. A no-op unless SLAUDE_PERSON_SLICES=shadow; the gate is unchanged.
@@ -1679,7 +1682,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         const runAsPerson = await runAsPersonFor(gate, runAsUser);
         const scope = await memoryScopeFor(gate, { channel: ctx.channel, runAsUser: runAsUser ?? null, ...(runAsPerson ? { runAsPerson } : {}) });
         // Only an interactive turn counts toward the quiet-moment pass's thread activity.
-        return gate.interactive ? { ...scope, activityAgentId: gate.agentId } : scope;
+        const shadow = { place: gate.place, agentId: gate.agentId };
+        return gate.interactive ? { ...scope, ...shadow, activityAgentId: gate.agentId } : { ...scope, ...shadow };
       },
     }),
   );

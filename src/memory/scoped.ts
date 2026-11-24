@@ -4,6 +4,8 @@ import type { MemoryScope } from "./scope";
 import { agentIdReady } from "../knowledge/agent-identity";
 import type { BrainScope } from "../knowledge/scope";
 import { noteThreadTurn } from "../db/thread-activity";
+import type { PlaceRef } from "./place";
+import { measureWrite } from "./place-shadow";
 
 /**
  * The in-process (mono) memory provider: the brain provider read and written
@@ -28,7 +30,7 @@ export function makeScopedMemory(deps: {
   /** The provider, read on every call (the process provider's live binding). */
   provider: () => MemoryProvider;
   /** `activityAgentId`: set on an interactive turn, the persona's agent id (thread activity is keyed on it). */
-  scopeFor(sessionId: string): Promise<(MemoryScope & { activityAgentId?: string }) | null>;
+  scopeFor(sessionId: string): Promise<(MemoryScope & { activityAgentId?: string; place?: PlaceRef; agentId?: string }) | null>;
   /** Settles the process agent identity before a scope is computed. */
   ready?: () => Promise<unknown>;
   warn?: (msg: string) => void;
@@ -37,7 +39,7 @@ export function makeScopedMemory(deps: {
   const ready = deps.ready ?? agentIdReady;
   const warn = deps.warn ?? ((m: string) => console.error(m));
   const onSynced = deps.onSynced ?? noteThreadTurn;
-  const scope = async (sessionId: string): Promise<(MemoryScope & { activityAgentId?: string }) | null> => {
+  const scope = async (sessionId: string): Promise<(MemoryScope & { activityAgentId?: string; place?: PlaceRef; agentId?: string }) | null> => {
     try {
       await ready();
       return await deps.scopeFor(sessionId);
@@ -58,6 +60,8 @@ export function makeScopedMemory(deps: {
       if (!(p instanceof BrainMemoryProvider)) return p.syncTurn(t);
       const s = await scope(t.sessionId);
       if (!s?.write) return;
+      // Shadow (rc.45): where this transcript would go under the places design. Changes nothing.
+      if (s.place && s.agentId) measureWrite({ surface: "turn_sync", place: s.place, todaySource: s.write.sourceId, agentId: s.agentId });
       await p.syncTurnIn(t, s.write);
       if (s.activityAgentId) await onSynced(t.sessionId, s.activityAgentId, s.write).catch(() => {});
     },

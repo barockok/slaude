@@ -58,6 +58,7 @@ import { mutateOverride } from "../../src/soul/overrides";
 import { __setProactiveSoulSource, parseProactive } from "../../src/soul/proactive";
 import { NO_PREFS } from "../../src/proactive/prefs";
 import { fakeBrain } from "../memory/fake-brain";
+import { NO_PLACE } from "../../src/memory/place";
 
 const TEAM = "T";
 const MGR = WORLD.manager;
@@ -109,7 +110,7 @@ const dm = (client: any, user: string, text: string, o: { thread?: string; chann
 
 const slackGrant = (id: string, role: Grant["role"]): Grant => ({ subjectKind: "user", subjectId: id, role, deny: false, dmOnly: false, source: "console", subject: { service: "slack" } });
 const gateOf = (o: Partial<GateInput> = {}): GateInput => ({
-  userId: "U0ONE", teamId: TEAM, interactive: true, origin: "slack", lockedUser: null, lockedTeamId: TEAM, channelTrust: "trusted", isManager: false, agentId: "U0AGENT", threadKey: "C0EXAMPLE:1.1", ...o,
+  userId: "U0ONE", teamId: TEAM, interactive: true, origin: "slack", lockedUser: null, lockedTeamId: TEAM, channelTrust: "trusted", isManager: false, place: NO_PLACE, agentId: "U0AGENT", threadKey: "C0EXAMPLE:1.1", ...o,
 });
 
 /** Each exerciser runs real code; an exerciser that throws fails the smoke, so a site is never "covered" by a swallowed error. */

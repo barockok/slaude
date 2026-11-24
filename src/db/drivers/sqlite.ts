@@ -464,6 +464,16 @@ CREATE TABLE IF NOT EXISTS slice_tombstones (
   PRIMARY KEY (user_id, source_id)
 );
 
+-- Memory places registry (see 0054_memory_scopes.sql).
+CREATE TABLE IF NOT EXISTS memory_scopes (
+  source_id   TEXT    PRIMARY KEY,
+  agent_id    TEXT    NOT NULL,
+  boundary_id TEXT    NOT NULL,
+  kind        TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL,
+  UNIQUE (agent_id, boundary_id)
+);
+
 -- A parked paste-back /mcp connect (see 0010_slack_oauth_flows.sql).
 CREATE TABLE IF NOT EXISTS slack_oauth_flows (
   flow_key   TEXT    PRIMARY KEY,

@@ -42,6 +42,24 @@ export async function findByThread(k: ThreadKey): Promise<SessionRow | null> {
 /** Find the most-recently-updated session for a thread regardless of persona.
  *  Used for "is there any session to populate?" checks (engagement restore,
  *  mention-only recording) where the caller doesn't know which persona to ask for. */
+/**
+ * The boundary a session row belongs to, or null (no row, or the row has none yet). The only
+ * public read of `sessions.boundary_id`: the memory place resolver's first source.
+ */
+export async function boundaryIdOfSession(id: string): Promise<string | null> {
+  const row = await db.one<{ boundary_id: string | null }>("SELECT boundary_id FROM sessions WHERE id = ?", [id]);
+  return row?.boundary_id ?? null;
+}
+
+/** The boundary of the session at a thread key (the same key `findByThread` uses), or null. */
+export async function boundaryIdOfThread(k: ThreadKey): Promise<string | null> {
+  const row = await db.one<{ boundary_id: string | null }>(
+    "SELECT boundary_id FROM sessions WHERE slack_team_id = ? AND slack_channel_id = ? AND slack_thread_ts = ? AND persona_id = ?",
+    [k.team_id, k.channel_id, k.thread_ts, k.persona_id ?? "default"],
+  );
+  return row?.boundary_id ?? null;
+}
+
 export async function findAnyByThread(k: Omit<ThreadKey, "persona_id">): Promise<SessionRow | null> {
   const row = await db.one<RawRow>(
     `SELECT * FROM sessions

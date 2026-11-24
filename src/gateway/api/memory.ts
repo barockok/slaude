@@ -23,6 +23,7 @@
  * thread_activity (the quiet-moment pass's selection), a database write only,
  * never a brain call; its failure is logged and never fails the sync.
  */
+import { measureWrite } from "../../memory/place-shadow";
 import { runAsPersonFor } from "../../slices/decide";
 import { z } from "zod";
 import type { GateInput } from "../../knowledge/gated-dispatch";
@@ -105,13 +106,13 @@ export function makeMemoryPlane(deps: {
   }
 
   /** The turn's memory scope and the persona's agent id, or null when the brain gives it none. */
-  async function scope(claims: JobClaims): Promise<(MemoryScope & { agentId: string; interactive: boolean }) | null> {
+  async function scope(claims: JobClaims): Promise<(MemoryScope & { agentId: string; interactive: boolean; place: GateInput["place"] }) | null> {
     await ready();
     const gate = await deps.gateFor(claims);
     if (!gate) return null;
     // runAs is signed at dispatch: a cron created inside a /1on1 runs as its
     // owner although its synthetic thread holds no lock.
-    return { ...(await memoryScopeForClaims(gate, claims)), agentId: gate.agentId, interactive: gate.interactive };
+    return { ...(await memoryScopeForClaims(gate, claims)), agentId: gate.agentId, interactive: gate.interactive, place: gate.place };
   }
 
   return {
@@ -131,6 +132,8 @@ export function makeMemoryPlane(deps: {
       if (!(provider instanceof BrainMemoryProvider)) return bounded("sync", provider.syncTurn(t), undefined);
       const s = await scope(claims);
       if (!s?.write) return;
+      // Shadow (rc.45): where this transcript would go under the places design. Changes nothing.
+      measureWrite({ surface: "turn_sync", place: s.place, todaySource: s.write.sourceId, agentId: s.agentId });
       await bounded("sync", provider.syncTurnIn(t, s.write), undefined);
       // A cron or runtime turn does not make a thread busy.
       if (s.interactive) await onSynced(claims.session, s.agentId, s.write).catch(() => {});

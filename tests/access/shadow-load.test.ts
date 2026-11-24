@@ -13,6 +13,7 @@ import { brainHandlers, type BrainToolDeps } from "../../src/knowledge/mcp-tools
 import { agentSourceId, resolveBrainScope } from "../../src/knowledge/scope";
 import { fakeBrain } from "../memory/fake-brain";
 import { count, decisions, useShadowEnv } from "../helpers/shadow-modes";
+import { NO_PLACE } from "../../src/memory/place";
 
 const TEAM = "T0EXAMPLE";
 useShadowEnv();
@@ -84,7 +85,7 @@ describe("shadow load", () => {
       await brain.call("put_page", { slug: `people/n${i}`, content: "---\ntype: person-note\nas_of: 2026-10-20\nconfidence: told\nsubject: U0ONE\n---\nnote" }, { clientId: "s", sourceId: src, allowedSources: [src] });
     }
     const sender = { userId: "U0ONE", teamId: TEAM, origin: "slack" as const };
-    const g = { userId: "U0ONE", teamId: TEAM, interactive: true, origin: "slack" as const, lockedUser: null, channelTrust: "trusted" as const, isManager: false, agentId: agent, threadKey: "C0EXAMPLE:1.1", turnSenders: [sender] };
+    const g = { userId: "U0ONE", teamId: TEAM, interactive: true, origin: "slack" as const, lockedUser: null, channelTrust: "trusted" as const, isManager: false, place: NO_PLACE, agentId: agent, threadKey: "C0EXAMPLE:1.1", turnSenders: [sender] };
     const deps: BrainToolDeps = { scope: async () => (await resolveBrainScope({ ...g, kbSources: [] })), gate: () => g, managers: () => [], requestApproval: async () => ({ approved: true, by: "U0ONE" }), call: (n, p, s) => brain.call(n, p, s) };
     const r = await brainHandlers.memory_about({ userId: "U0ONE" }, deps);
     expect(r.isError).toBeUndefined();

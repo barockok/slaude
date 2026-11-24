@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { sameAt } from "../access/wired";
 import { env } from "../config/env";
+import { hasPlacePrefix } from "../memory/place-id";
+import type { PlaceRef } from "../memory/place";
 import type { SoulData } from "../soul/data";
 
 export type ChannelTrust = "trusted" | "public" | "unknown";
@@ -68,6 +70,10 @@ export interface ScopeInput {
   agentId: string;
   /** The speaker's verified-only person slices (`union` mode, reads only); absent = legacy. */
   person?: PersonSlices;
+  /** The turn's memory place, or why there is none (src/memory/place.ts). Required so a caller
+   *  cannot forget it, and `{ kind: "none" }` is always a valid answer. In rc.45 (shadow) no
+   *  read or write decision uses it. */
+  place: PlaceRef;
 }
 
 /** Legacy single-agent source. Kept in the agent read union for continuity with
@@ -130,10 +136,11 @@ export function kbSourceId(label: string): string {
 /**
  * Memory store kinds (the user-facing name for brain sources), read off the
  * source naming above: `agent` and `agent-<id>` private minds, `shared`,
- * `public`, `user-<id>` personal slices, `profile-*` person profiles and
- * `kb-<label>` libraries. Anything else (gbrain's own `default`) is `other`.
+ * `public`, `user-<id>` personal slices, `profile-*` person profiles,
+ * `mb-<28 hex>` memory places (one per agent and boundary, named only by
+ * src/memory/place.ts) and `kb-<label>` libraries. Anything else (gbrain's own `default`) is `other`.
  */
-export type StoreKind = "agent" | "shared" | "public" | "personal" | "profile" | "library" | "other";
+export type StoreKind = "agent" | "shared" | "public" | "personal" | "profile" | "place" | "library" | "other";
 
 export function storeKind(sourceId: string): StoreKind {
   if (sourceId === AGENT_SOURCE || sourceId.startsWith("agent-")) return "agent";
@@ -141,6 +148,7 @@ export function storeKind(sourceId: string): StoreKind {
   if (sourceId === PUBLIC_SOURCE) return "public";
   if (sourceId.startsWith("user-")) return "personal";
   if (sourceId.startsWith(PROFILE_PREFIX)) return "profile";
+  if (hasPlacePrefix(sourceId)) return "place";
   if (sourceId.startsWith("kb-")) return "library";
   return "other";
 }

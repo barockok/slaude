@@ -774,7 +774,8 @@
     "file": "src/knowledge/gated-dispatch.ts",
     "pattern": "locked-user-cmp",
     "lines": [
-      "if (g.lockedUser !== null) {"
+      "if (g.lockedUser !== null) {",
+      "export const isUserlessSharedWrite = (scope: BrainScope, g: GateInput): boolean => g.userId === null && g.lockedUser === null && scope.sourceId === SHARED_SOURCE;"
     ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"
   },
@@ -792,6 +793,7 @@
     "pattern": "user-id-dot-eq",
     "lines": [
       "if (g.userId === null) return \"auto\"; // background turn — agent's own mind",
+      "export const isUserlessSharedWrite = (scope: BrainScope, g: GateInput): boolean => g.userId === null && g.lockedUser === null && scope.sourceId === SHARED_SOURCE;",
       "if (!g.interactive || g.origin !== \"slack\" || g.userId === null) return false;"
     ],
     "reason": "presence check (a turn with no person, no lock), not a comparison of two people"

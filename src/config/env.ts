@@ -878,6 +878,19 @@ export const env = {
     /** Most rows one fill tick updates across tables (default 2000). */
     fillMaxRows: (): number => intAtLeastOne("SLAUDE_BOUNDARY_FILL_MAX_ROWS", 2000),
   },
+  memory: {
+    /**
+     * `SLAUDE_MEMORY_BOUNDARIES` (default `shadow`): the memory places design. `off`: no
+     * place is computed and nothing is counted. `shadow`: where each write WOULD go is
+     * computed and counted beside the write, which is unchanged. `on` is accepted and, until
+     * the release that implements it, behaves as `shadow`. Read on every call. Anything else
+     * reads as `shadow`.
+     */
+    boundaries: (): "off" | "shadow" | "on" => {
+      const raw = opt("SLAUDE_MEMORY_BOUNDARIES", "shadow").trim().toLowerCase();
+      return raw === "off" || raw === "on" ? raw : "shadow";
+    },
+  },
   slices: {
     /**
      * `SLAUDE_PERSON_SLICES` (default `off`, slice F). `off`: no resolver call, every
