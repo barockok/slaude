@@ -227,7 +227,7 @@ export async function listActive(): Promise<CronJob[]> {
 
 /** Active jobs stored with this boundary (memory places on: list_cron_jobs shows only the current boundary's). */
 export async function listActiveInBoundary(boundaryId: string): Promise<CronJob[]> {
-  const rows = await db.query<any>("SELECT * FROM cron_jobs WHERE active = 1 AND boundary_id = ? ORDER BY paused, next_run_at", [boundaryId]);
+  const rows = await db.query<any>("SELECT * FROM cron_jobs WHERE active = 1 AND boundary_id IN (?) ORDER BY paused, next_run_at", [boundaryId]);
   return rows.map(mapRow);
 }
 

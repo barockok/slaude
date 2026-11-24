@@ -1,6 +1,6 @@
 import { hasPlacePrefix } from "../memory/place-id";
 import { brainCall } from "./brain";
-import { AGENT_SOURCE, PUBLIC_SOURCE, SHARED_SOURCE, type BrainScope } from "./scope";
+import { storeKind, type BrainScope } from "./scope";
 
 /**
  * Per-source candidate gather — the slaude-side fix for the bulk-corpus
@@ -50,12 +50,21 @@ const KIND_ORDER: readonly SourceKind[] = ["place", "person", "persona", "shared
 
 /** The kind of a source id: a place, a person's slice or profile, the persona's own mind, shared, public, or a library wiki. */
 export function sourceKindOf(source: string): SourceKind {
-  if (hasPlacePrefix(source)) return "place";
-  if (source.startsWith("user-") || source.startsWith("profile-")) return "person";
-  if (source === AGENT_SOURCE || source.startsWith("agent-")) return "persona";
-  if (source === SHARED_SOURCE) return "shared";
-  if (source === PUBLIC_SOURCE) return "public";
-  return "library";
+  switch (storeKind(source)) {
+    case "place":
+      return "place";
+    case "personal":
+    case "profile":
+      return "person";
+    case "agent":
+      return "persona";
+    case "shared":
+      return "shared";
+    case "public":
+      return "public";
+    default:
+      return "library";
+  }
 }
 const localityOf = (h: GatherHit): number => KIND_ORDER.indexOf((h.source_kind as SourceKind | undefined) ?? "library");
 
