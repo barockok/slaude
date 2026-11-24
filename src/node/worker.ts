@@ -65,6 +65,7 @@ import { lockFromClaims } from "./session-lock";
 import { type NodeManifest, loadNodeManifest, makeNodeLocalMcpResolver } from "./manifest";
 import { makeNodeSessionBoxes, type NodeSessionBoxes } from "./session-boxes";
 import { setupNodeBoxes, type NodeBoxOpts, type NodeBoxes } from "./box-node";
+import { redactSecrets } from "../redact";
 import { makeSupervisedBoxes, type SupervisedBoxes } from "./box-supervised";
 import { BOX_AGENT_UID } from "../box/image";
 import { makeClaimPause, type ClaimPause } from "./claim-pause";
@@ -1300,7 +1301,10 @@ export async function startNodeWorker(opts: NodeWorkerOpts = {}): Promise<NodeWo
       const attemptsLeft = job.attemptsMade + 1 < (job.opts.attempts ?? 1);
       console.error(
         `[node] session boot failed session=${data.sessionId} job=${job.id} code=${e.code} ` +
-          `transient=${e.transient}${e.transient && attemptsLeft ? " (will retry)" : ""}`,
+          `transient=${e.transient}${e.transient && attemptsLeft ? " (will retry)" : ""}` +
+          // A box that could not be started: the reason names paths, digests and steps (the supervisor holds no
+          // credential), and without it an operator cannot tell a missing image from a refused mount.
+          (e.code.startsWith("BOX_") ? ` reason=${redactSecrets(e.message)}` : ""),
       );
       if (e.transient && attemptsLeft) {
         metric.nodeTurnsTotal.inc({ result: "retried" });

@@ -134,9 +134,11 @@ export function makeSupervisedDriver(tier: SandboxTier, deps: SupervisedDriverDe
           started = true;
         } catch (e) {
           await closeProxies();
-          if (e instanceof BootFailure) throw e;
           // The supervisor's messages name paths and steps, never a credential (it holds none).
-          throw unavailable(`the sandbox did not start: ${e instanceof Error ? e.message : String(e)}`, e);
+          const why = e instanceof Error ? e.message : String(e);
+          log(`[box] the sandbox of session=${spec.sessionId} did not start: ${why}`);
+          if (e instanceof BootFailure) throw e;
+          throw unavailable(`the sandbox did not start: ${why}`, e);
         }
       },
 
