@@ -83,7 +83,7 @@ export interface CompiledAgent {
     mcp?: unknown;
     kbSources?: unknown;
     background?: unknown;
-    definition: { description?: string; skills?: string[]; guardrails?: string[]; environment?: { allow: string[]; default?: string }; soulData: SoulData };
+    definition: { description?: string; skills?: string[]; guardrails?: string[]; environment?: { allow: string[]; default?: string }; box?: string; soulData: SoulData };
   };
   warnings: string[];
 }
@@ -158,6 +158,9 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
   const mcp = file.mcp ?? undefined;
   const skills = noRepeats("skills", file.skills ?? undefined);
   const guardrails = noRepeats("guardrails", file.guardrails ?? undefined);
+
+  // The box this agent's sessions run in, by name. Whether it exists is the sync's check.
+  const box = file.box ?? undefined;
 
   const memory = file.memory ?? {};
 
@@ -364,6 +367,7 @@ export function parseAgentYaml(name: string, text: string): CompiledAgent {
         ...(skills !== undefined ? { skills } : {}),
         ...(guardrails !== undefined ? { guardrails } : {}),
         ...(environment ? { environment } : {}),
+        ...(box !== undefined ? { box } : {}),
         soulData,
       },
     },

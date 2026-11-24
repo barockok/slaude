@@ -422,6 +422,18 @@
       ],
       "description": "Knowledge bases and background learning."
     },
+    "box": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,40}$"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The box (boxes/<name>/box.yaml) this agent's sessions run in: a reviewed image plus a policy, one sandbox per session. A plain name. Leave the key out to run unboxed. It takes effect only where the deployment has boxes switched on. Example: ruby-dev"
+    },
     "environment": {
       "anyOf": [
         {
