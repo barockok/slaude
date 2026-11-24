@@ -36,6 +36,10 @@ import { skillRootsFor } from "../../skills/loader";
 import { json, notFound } from "./http";
 import { bridgedServerNames } from "../core/external-mcp";
 import { voiceBundleFromEnv, type VoiceBundle } from "../../voice/config";
+import type { BoxPolicy } from "../../box/policy";
+import { requiredBoxCapabilities } from "../../box/capability";
+import { unboxableProviderForms } from "../../box/provider-forms";
+import { boxSnapshot } from "../core/box-registry";
 import { AGENT_DEFINITION_CAPABILITY, bundleGuardrailsFor, CAPABILITIES_HEADER, CHANNEL_SESSION_CAPABILITY, definitionNeedsNode, definitionNeedsSharedEnv, GUARDRAILS_CAPABILITY, hasCapability, SHARED_ENV_CAPABILITY, type BundleGuardrails } from "../../guardrails/node";
 import { emitAudit } from "../../audit/emit";
 
@@ -87,7 +91,24 @@ export interface RuntimeBundle {
    *  and `soulJson` is compiled. `skills` limits the skills a session may
    *  load (absent: every skill). A node without the agent-definition/1
    *  capability is refused such a bundle. */
-  definition?: { skills?: string[]; guardrails?: string[]; environment?: { allow: string[]; default?: string } };
+  definition?: { skills?: string[]; guardrails?: string[]; environment?: { allow: string[]; default?: string }; box?: string };
+  /** The persona's box (src/box/): its name, the image and digest of its
+   *  CURRENT version, and its current policy. Present only when SLAUDE_BOX is
+   *  on and the persona names a box, so every other bundle and its ETag are
+   *  exactly as before. It holds no secret. The digest a session actually
+   *  runs is the one pinned on its session row (the session view), never
+   *  chosen by the node; the policy here applies to every session of the box. */
+  box?: BundleBox;
+}
+
+export interface BundleBox {
+  name: string;
+  version: number;
+  /** `<repository>@sha256:<digest>`. */
+  image: string;
+  /** `sha256:<digest>`. */
+  digest: string;
+  policy: BoxPolicy;
 }
 
 type PersonaRow = {
@@ -311,7 +332,13 @@ async function buildManagedBundle(tenantId: string, personaId: string, label?: s
 }
 
 function bundleDefinition(d: NonNullable<EffectivePersona["definition"]>): NonNullable<RuntimeBundle["definition"]> {
-  return { ...(d.skills ? { skills: d.skills } : {}), ...(d.guardrails ? { guardrails: d.guardrails } : {}), ...(d.environment ? { environment: d.environment } : {}) };
+  return {
+    ...(d.skills ? { skills: d.skills } : {}),
+    ...(d.guardrails ? { guardrails: d.guardrails } : {}),
+    ...(d.environment ? { environment: d.environment } : {}),
+    // Only with SLAUDE_BOX on: off, a persona that names a box has the bundle it had before.
+    ...(d.box && env.box.enabled() ? { box: d.box } : {}),
+  };
 }
 
 /**
@@ -622,6 +649,55 @@ export async function handleTenantRuntime(
       headers: { "content-type": "application/json" },
     });
   }
+  // Boxes: with SLAUDE_BOX on, a persona that names a box gets it in the
+  // bundle, from the verified set. A box that cannot be read or verified
+  // refuses the bundle (the node's boot fails closed): shipping the bundle
+  // without it would run a boxed persona unboxed.
+  let boxSet: number | null = null;
+  if (env.box.enabled()) {
+    const boxName = bundle.definition?.box ?? env.box.defaultBox();
+    // A credential form the provider proxy cannot serve: the persona is not boxable and runs unboxed (dispatch decided the same).
+    if (boxName && unboxableProviderForms(bundle.providerCreds).length === 0) {
+      let box: BundleBox | null = null;
+      try {
+        const snap = await boxSnapshot(tenantId);
+        const cur = snap.boxes.get(boxName)?.current;
+        if (cur) box = { name: cur.name, version: cur.version, image: cur.image, digest: cur.digest, policy: cur.policy };
+        boxSet = snap.setVersion;
+      } catch (e) {
+        console.error(`[runtime] box unavailable tenant=${tenantId} persona=${bundle.personaId}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      if (!box) {
+        return new Response(JSON.stringify({ error: "box unavailable", code: "BOX_UNAVAILABLE", transient: false }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      // An older node would ignore the box and run the persona on itself. The
+      // code is the one an older node already reads as not retryable.
+      const needed = requiredBoxCapabilities(box.policy.tier);
+      if (needed.some((c) => !hasCapability(req.headers.get(CAPABILITIES_HEADER), c))) {
+        emitAudit({
+          tenantId,
+          persona: bundle.personaId,
+          actorKind: "system",
+          actorId: ctx.nodeId ?? "node",
+          action: "box.node.unsupported",
+          targetKind: "node",
+          targetId: ctx.nodeId ?? "unknown",
+          decision: "refused",
+          sessionId: ctx.sessionId ?? null,
+          summary: `a node that does not offer the sandbox tier of box ${box.name} asked for an agent that runs in it; refused`,
+          details: { agent: bundle.personaId, box: box.name, capabilities: needed },
+        });
+        return new Response(JSON.stringify({ error: "this node does not offer this agent's sandbox", code: "GUARDRAILS_UNSUPPORTED", transient: false }), {
+          status: 409,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      bundle = { ...bundle, box };
+    }
+  }
   let voiceBundle: VoiceBundle | null = null;
   // Tenant isolation (PF49): only ship voice config to authorized tenants.
   const allowedTenants = env.voice.tenants();
@@ -638,7 +714,10 @@ export async function handleTenantRuntime(
   // The guardrail version is an explicit ETag input (beside the body that
   // already carries it): any guardrail change, an override alone included,
   // busts every node's cached bundle.
-  const etag = `"${bundleEtag(guardrails ? `${body}\nguardrails:${guardrails.version}` : body)}"`;
+  // The box set version is one too, for a bundle that carries a box: a
+  // policy-only change busts the cache of every node that holds it.
+  const etagInput = `${guardrails ? `${body}\nguardrails:${guardrails.version}` : body}${bundle.box && boxSet !== null ? `\nboxes:${boxSet}` : ""}`;
+  const etag = `"${bundleEtag(etagInput)}"`;
   const inm = req.headers.get("if-none-match");
   // RFC 7232 §3.2: "*" matches any current representation; otherwise compare
   // against each listed entity-tag.

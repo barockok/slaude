@@ -31,6 +31,10 @@ const view = (row: SessionRow) => ({
   // Postgres rows carry tenant_id (P1 migration); sqlite rows don't. Pass it
   // through when present so the REST row mirrors the db row byte-for-byte.
   ...((row as any).tenant_id !== undefined ? { tenant_id: (row as any).tenant_id } : {}),
+  // The box the session is pinned to. Present only for a boxed session, so
+  // every other session's view is exactly as before. The node reads the
+  // digest from here; it never chooses one.
+  ...(row.box_name && row.box_digest ? { box_name: row.box_name, box_digest: row.box_digest } : {}),
 });
 
 const PERMISSION_MODES = ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"] as const;

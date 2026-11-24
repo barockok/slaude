@@ -28,4 +28,8 @@ export type SessionRow = {
    *  inbound event recorded it (D1.2). Optional so row literals predating it
    *  still type-check. */
   slack_app_id?: string | null;
+  /** The box the session is pinned to and its image digest (migration 0057);
+   *  null or absent for a session that is not boxed. */
+  box_name?: string | null;
+  box_digest?: string | null;
 };
