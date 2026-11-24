@@ -256,16 +256,83 @@ export function checkBoxes(dir: string): BoxCheckResult {
   };
 }
 
+const USAGE = [
+  "usage: slaude box check <deploy repository or boxes directory>",
+  "       slaude box from-manifest <node.json> <persona> [--workspace <server,...>]",
+  "       slaude box preflight <persona> --repo <deploy repository> [--box <name>] [--manifest <node.json>]",
+  "                            [--private-code | --no-private-code] [--code-host <mcp server>]",
+].join("\n");
+
+/** Ask one yes/no question on a terminal. Undefined when there is no terminal to ask. */
+async function askYesNo(question: string): Promise<boolean | undefined> {
+  if (!process.stdin.isTTY || !process.stderr.isTTY) return undefined;
+  process.stderr.write(`${question} [y/n] `);
+  for await (const chunk of process.stdin) {
+    const a = String(chunk).trim().toLowerCase();
+    if (a === "y" || a === "yes") return true;
+    if (a === "n" || a === "no") return false;
+    process.stderr.write("y or n: ");
+  }
+  return undefined;
+}
+
 if (import.meta.main) {
-  const [cmd, dir] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  const [cmd, dir] = argv;
+  const valued = new Set(["--workspace", "--repo", "--box", "--manifest", "--code-host"]);
+  const flags = new Map<string, string>();
+  const pos: string[] = [];
+  for (let i = 1; i < argv.length; i++) {
+    if (valued.has(argv[i]!)) flags.set(argv[i]!, argv[++i] ?? "");
+    else if (argv[i]!.startsWith("--")) flags.set(argv[i]!, "");
+    else pos.push(argv[i]!);
+  }
   try {
-    if (cmd === "check" && dir) {
+    if (cmd === "from-manifest" && pos.length === 2) {
+      // Loaded here: the module imports this file's box reader.
+      const { classifyManifest, renderFromManifest } = await import("./box-migrate");
+      const { readDeclaredNodeManifest } = await import("../node/manifest");
+      const text = readFileSync(pos[0]!, "utf8");
+      const workspace = (flags.get("--workspace") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+      process.stdout.write(renderFromManifest(classifyManifest(readDeclaredNodeManifest(text, pos[0]!), pos[1]!, { workspace })));
+    } else if (cmd === "preflight" && pos.length === 1) {
+      const { preflight, renderPreflight } = await import("./box-migrate");
+      const repo = flags.get("--repo") || ".";
+      let privateCode = flags.has("--private-code") ? true : flags.has("--no-private-code") ? false : undefined;
+      if (flags.has("--private-code") && flags.has("--no-private-code")) throw new PayloadError("--private-code and --no-private-code cannot both be given");
+      if (privateCode === undefined) privateCode = await askYesNo("Does this persona need private repositories or package registries from its shell?");
+      // A live node is asked for only where this environment names a Redis; otherwise the check says it was not made.
+      let close: (() => Promise<void>) | undefined;
+      let liveNodes: ((label: string, cap: string) => Promise<Array<{ node: string; has: boolean }>>) | undefined;
+      if (process.env.SLAUDE_REDIS_URL) {
+        const { getRedis, closeRedis } = await import("../queue/redis");
+        const { makeRegistry } = await import("../queue/registry");
+        const registry = makeRegistry({ redis: getRedis() });
+        liveNodes = (label, cap) => registry.liveNodesWithCap(label, cap);
+        close = closeRedis;
+      }
+      try {
+        const r = await preflight(pos[0]!, {
+          repo,
+          ...(flags.get("--manifest") ? { manifest: flags.get("--manifest")! } : {}),
+          ...(flags.get("--box") ? { box: flags.get("--box")! } : {}),
+          ...(flags.get("--code-host") ? { codeHost: flags.get("--code-host")! } : {}),
+          ...(privateCode !== undefined ? { privateCode } : {}),
+          ...(liveNodes ? { liveNodes } : {}),
+        });
+        process.stdout.write(renderPreflight(r));
+        // Reporting only: a failed item is an answer, not an error. Exit 1 so a pipeline can gate on it.
+        if (r.verdict !== "boxable") process.exitCode = 1;
+      } finally {
+        await close?.();
+      }
+    } else if (cmd === "check" && dir) {
       const r = checkBoxes(dir);
       for (const b of r.boxes) console.log(`ok  ${b.name}  (${b.image === "build" ? `build, context ${b.contextHash!.slice(0, 12)}` : "ref"})`);
       console.log(`${r.boxes.length} box${r.boxes.length === 1 ? "" : "es"} checked`);
       for (const n of r.notChecked) console.error(`[box] not checked here: ${n}`);
     } else {
-      console.error("usage: slaude box check <deploy repository or boxes directory>");
+      console.error(USAGE);
       process.exit(2);
     }
   } catch (e) {

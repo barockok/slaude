@@ -178,8 +178,19 @@ function refuseCliRef(where: string, value: string): void {
   }
 }
 
-/** Parse and validate manifest text; `source` names it in errors. Throws NodeManifestError. */
-export function parseNodeManifest(text: string, nodeEnv: Record<string, string | undefined>, source: string): NodeManifest {
+/** A manifest as written: shapes and names checked, no `${VAR}` expanded and no environment read. */
+export interface DeclaredNodeManifest {
+  mcpServers: Record<string, { command: string; args?: string[]; env?: Record<string, string> }>;
+  allow: Record<string, "*" | string[]>;
+}
+
+/**
+ * The schema half of {@link parseNodeManifest}: what the file declares, before
+ * anything is expanded. It needs no node environment, so a tool that only
+ * reads a manifest (`slaude box from-manifest`) can use it anywhere. Throws
+ * NodeManifestError.
+ */
+export function readDeclaredNodeManifest(text: string, source: string): DeclaredNodeManifest {
   const fail = (msg: string): never => {
     throw new NodeManifestError(`node manifest ${source}: ${msg}`);
   };
@@ -195,7 +206,15 @@ export function parseNodeManifest(text: string, nodeEnv: Record<string, string |
   if (dup !== null) fail(`duplicate key '${dup}'`);
   const parsed = ManifestSchema.safeParse(raw);
   if (!parsed.success) return fail(parsed.error.issues.map(describeIssue).join("; "));
-  const m = parsed.data;
+  return { mcpServers: parsed.data.mcpServers, allow: parsed.data.allow };
+}
+
+/** Parse and validate manifest text; `source` names it in errors. Throws NodeManifestError. */
+export function parseNodeManifest(text: string, nodeEnv: Record<string, string | undefined>, source: string): NodeManifest {
+  const fail = (msg: string): never => {
+    throw new NodeManifestError(`node manifest ${source}: ${msg}`);
+  };
+  const m = readDeclaredNodeManifest(text, source);
 
   const servers: Record<string, NodeStdioServer> = {};
   try {
