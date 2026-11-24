@@ -1,0 +1,222 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://barockok.github.io/slaude/schemas/box.schema.json",
+  "title": "slaude box definition",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "number",
+      "const": 1,
+      "description": "The format version. Required. Always 1."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,40}$",
+      "description": "The box's name. Must equal the directory name (boxes/<name>/) and is what an agent.yaml writes under box. Required. Example: ruby-dev"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 500,
+      "description": "What the box is for, shown to operators. At most 500 characters. Example: Ruby 3.3 and Node 22 for the storefront repositories"
+    },
+    "image": {
+      "type": "object",
+      "properties": {
+        "build": {
+          "type": "object",
+          "properties": {
+            "dockerfile": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^(?!\\/)(?!.*(?:^|\\/)\\.\\.(?:\\/|$))[^\\\\\\0]+$",
+              "description": "The Dockerfile, relative to the box directory. Default Dockerfile."
+            },
+            "context": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^(?!\\/)(?!.*(?:^|\\/)\\.\\.(?:\\/|$))[^\\\\\\0]+$",
+              "description": "The build context, relative to the box directory. Default: the box directory."
+            }
+          },
+          "additionalProperties": false,
+          "description": "Build the image in CI from a Dockerfile in the box directory. Rebuilt only when a file of the context changes."
+        },
+        "ref": {
+          "type": "string",
+          "pattern": "^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::[0-9]{1,5})?(?:\\/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)+@sha256:[a-f0-9]{64}$",
+          "description": "An image that already exists, by digest. Example: ghcr.io/example/boxes/ruby-dev@sha256:<64 hex characters>"
+        }
+      },
+      "additionalProperties": false,
+      "description": "The box's image: exactly one of build or ref. Required."
+    },
+    "tier": {
+      "type": "string",
+      "enum": [
+        "none",
+        "bwrap",
+        "gvisor"
+      ],
+      "description": "The weakest sandbox tier this box may run on: gvisor, bwrap or none. Default gvisor. Example: gvisor"
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "cpu": {
+          "type": "number",
+          "minimum": 0.25,
+          "maximum": 64,
+          "description": "Cores the sandbox may use, a ceiling. Default 2. Example: 2"
+        },
+        "memoryMb": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 262144,
+          "description": "Memory ceiling in MB; the sandbox is killed above it. Default 3072. Example: 3072"
+        },
+        "memoryReserveMb": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 262144,
+          "description": "Memory in MB a node sets aside to admit this box. At most memoryMb. Default: a third of memoryMb. Example: 1024"
+        },
+        "pids": {
+          "type": "integer",
+          "minimum": 16,
+          "maximum": 32768,
+          "description": "Most processes in the sandbox. Default 512. Example: 512"
+        },
+        "homeMb": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 1048576,
+          "description": "Size limit of the durable home in MB. Default 4096. Example: 4096"
+        },
+        "workspaceExtrasMb": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 1048576,
+          "description": "Size limit in MB of the workspace trees the sync ignore list skips (node_modules, .venv and the like). Default 4096. Example: 4096"
+        },
+        "rootOverlayMb": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 1048576,
+          "description": "Size limit in MB of system-level writes, which are thrown away when the sandbox stops. Default 2048. Example: 2048"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Limits of one sandbox of this box."
+    },
+    "egress": {
+      "type": "object",
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?:\\*\\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?::[0-9]{1,5})?$"
+          },
+          "maxItems": 256,
+          "description": "Hosts the box may reach, port 443 unless stated. Everything else is refused. A leading *. matches every subdomain. Example: [registry.npmjs.org, \"*.githubusercontent.com\"]"
+        },
+        "deny": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?:\\*\\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?::[0-9]{1,5})?$"
+          },
+          "maxItems": 256,
+          "description": "Hosts refused even when allow matches them. Example: [uploads.github.com]"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Where the box may connect. Refuse by default; changed only through the deploy repo."
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "maxLength": 4096
+      },
+      "description": "Environment variables for the box. Not secret: a value that looks like a credential fails the sync. Example: { BUNDLE_JOBS: \"4\" }"
+    },
+    "mcp": {
+      "type": "object",
+      "properties": {
+        "stdio": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "pattern": "^\\/[^\\0]{0,1023}$",
+                "description": "The program to run, as an absolute path inside the image. Required. Example: /usr/local/bin/ruby-lsp-mcp"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 1024
+                },
+                "maxItems": 64,
+                "description": "Arguments for the program. No credential: the server runs inside the box. Example: [--stdio]"
+              }
+            },
+            "required": [
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          "description": "Stdio MCP servers that are programs in the image. They get no credential. Example: { ruby-lsp: { command: /usr/local/bin/ruby-lsp-mcp, args: [--stdio] } }"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Tool servers that run inside the box."
+    },
+    "durable": {
+      "type": "object",
+      "properties": {
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^(?!\\/)(?!.*(?:^|\\/)\\.\\.(?:\\/|$))[^\\\\\\0]+$"
+          },
+          "maxItems": 64,
+          "description": "Home paths that are never kept between sessions' nodes. Example: [.cache/huggingface]"
+        }
+      },
+      "additionalProperties": false,
+      "description": "What is kept of the home."
+    },
+    "refresh": {
+      "type": "object",
+      "properties": {
+        "force": {
+          "type": "boolean",
+          "description": "true: sessions on an older image of this box move to this one at their next turn. Default false."
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Shown to users when force is true. At most 500 characters. Example: Ruby moved to 3.4; reinstall gems."
+        }
+      },
+      "additionalProperties": false,
+      "description": "Whether sessions on an older image are moved."
+    }
+  },
+  "required": [
+    "version",
+    "name",
+    "image"
+  ],
+  "additionalProperties": false,
+  "description": "A slaude box: one reviewed image plus a policy, at boxes/<name>/box.yaml. Unknown keys are refused at every level, and so is ${ anywhere in the file."
+}

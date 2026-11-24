@@ -1,7 +1,8 @@
 /**
  * Writes docs/site/schemas/agent.schema.json from the Zod schema in
  * src/persona/agent-schema.ts, and environment.schema.json from the one in
- * src/remote/definitions/schema.ts: `bun run schema:agent`. A test regenerates it in
+ * src/remote/definitions/schema.ts, and box.schema.json from the one in
+ * src/box/definition.ts: `bun run schema:agent`. A test regenerates each in
  * memory and fails when the committed file differs, so the two cannot drift.
  */
 import { writeFileSync } from "node:fs";
@@ -9,6 +10,7 @@ import { join } from "node:path";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { AGENT_SCHEMA_URL, AgentSchema } from "../src/persona/agent-schema";
 import { ENVIRONMENT_SCHEMA_URL, EnvironmentDefinitionSchema } from "../src/remote/definitions/schema";
+import { BOX_SCHEMA_URL, BoxFileSchema } from "../src/box/definition";
 
 export { AGENT_SCHEMA_URL };
 export const AGENT_SCHEMA_FILE = join(import.meta.dir, "..", "docs", "site", "schemas", "agent.schema.json");
@@ -65,9 +67,25 @@ export function environmentSchemaText(): string {
   return JSON.stringify(buildEnvironmentJsonSchema(), null, 2) + "\n";
 }
 
+export const BOX_SCHEMA_FILE = join(import.meta.dir, "..", "docs", "site", "schemas", "box.schema.json");
+
+export function buildBoxJsonSchema(): Record<string, unknown> {
+  const generated = zodToJsonSchema(BoxFileSchema, { target: "jsonSchema7", $refStrategy: "none" }) as Record<string, unknown>;
+  const { $schema, ...rest } = generated;
+  const schema = { $schema, $id: BOX_SCHEMA_URL, title: "slaude box definition", ...rest } as Record<string, unknown>;
+  dedupeDescriptions(schema);
+  return schema;
+}
+
+export function boxSchemaText(): string {
+  return JSON.stringify(buildBoxJsonSchema(), null, 2) + "\n";
+}
+
 if (import.meta.main) {
   writeFileSync(AGENT_SCHEMA_FILE, agentSchemaText());
   console.log(`wrote ${AGENT_SCHEMA_FILE}`);
   writeFileSync(ENVIRONMENT_SCHEMA_FILE, environmentSchemaText());
   console.log(`wrote ${ENVIRONMENT_SCHEMA_FILE}`);
+  writeFileSync(BOX_SCHEMA_FILE, boxSchemaText());
+  console.log(`wrote ${BOX_SCHEMA_FILE}`);
 }
