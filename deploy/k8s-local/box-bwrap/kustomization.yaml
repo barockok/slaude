@@ -1,0 +1,30 @@
+# The local box component on the bwrap tier (SLAUDE_LOCAL_BOX=bwrap): the same
+# as ../box with the tier changed on both containers of every node pod. The
+# node and its supervisor must name the same tier. NOT RUN, like ../box. A
+# sibling of it and not a subdirectory: kustomize refuses a component inside
+# one it builds on.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+components:
+  - ../box
+
+patches:
+  - target: { kind: Deployment, name: "slaude-node(-[a-z0-9-]+)?" }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: slaude-node
+      spec:
+        template:
+          spec:
+            containers:
+              - name: node
+                env:
+                  - name: SLAUDE_BOX_TIER
+                    value: bwrap
+              - name: boxd
+                env:
+                  - name: SLAUDE_BOX_TIER
+                    value: bwrap

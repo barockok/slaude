@@ -1,0 +1,59 @@
+# Boxes on the local cluster: deploy/k8s-scale-box's component, trimmed for a
+# laptop. Applied by up.sh when SLAUDE_LOCAL_BOX=gvisor (or bwrap, see ../box-bwrap);
+# never by default. up.sh lays it over the overlay it would have applied anyway
+# (this directory's parent, or SLAUDE_LOCAL_OVERLAY) through a generated
+# wrapper, so it also composes with the e2e overlay.
+#
+# NOT RUN. This renders and its numbers pass the node's own sizing check (the
+# tests assert both); no cluster was brought up with it. Whether runsc starts
+# in a privileged container of a pod inside a minikube node, itself a container
+# of the Docker VM, is not known: that is two levels of nesting, one more than
+# the development VM run in the 2026-11-25 box smoke field note.
+#
+# What differs from deploy/k8s-scale-box/component, and why:
+#   - the supervisor uses the image built into minikube, never pulled;
+#   - one box per node pod, in a 1536 Mi supervisor: 1 x (1024 reserve + 150
+#     overhead) fits 85 percent of it. A box's own ceiling (3072 MB by default)
+#     is above that, so a box that fills its memory takes the supervisor's
+#     limit first. Enough to see a boxed turn, not to measure anything;
+#   - small disk budgets: the minikube node's disk is 20 GB by default;
+#   - the node container keeps the local overlay's requests and limits.
+# sizing.env carries the extra memory and CPU the three supervisors need, and
+# up.sh adds them to the minikube node's size when the switch is on.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+components:
+  - ../../k8s-scale-box/component
+
+patches:
+  - target: { kind: Deployment, name: "slaude-node(-[a-z0-9-]+)?" }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: slaude-node
+      spec:
+        template:
+          spec:
+            containers:
+              - name: node
+                env:
+                  - name: SLAUDE_NODE_MAX_BOXES
+                    value: "1"
+                  - name: SLAUDE_BOX_IMAGE_BUDGET_MB
+                    value: "4096"
+                  - name: SLAUDE_BOX_PARK_BUDGET_MB
+                    value: "2048"
+                resources:
+                  requests: { cpu: 250m, memory: 384Mi }
+                  limits: { cpu: 700m, memory: 896Mi }
+              - name: boxd
+                image: slaude:local
+                imagePullPolicy: Never
+                resources:
+                  requests: { cpu: 100m, memory: 512Mi }
+                  limits: { cpu: 500m, memory: 1536Mi }
+            volumes:
+              - name: box-data
+                emptyDir: { sizeLimit: 10Gi }
