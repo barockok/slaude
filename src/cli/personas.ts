@@ -46,7 +46,7 @@ import { extractSoulData } from "./legacy-soul-extract";
 import { parseEnvironmentYaml } from "../remote/definitions/parse";
 import { ENV_DEF_NAME_RE } from "../remote/definitions/name";
 import { migratePersona } from "../persona/migrate";
-import type { BoxPayloadEntry } from "../box/definition";
+import { BOX_NAME_RE, type BoxPayloadEntry } from "../box/definition";
 import { BOX_REGISTRY_ENV, BOX_YAML, compileBoxes, dockerResolver } from "./box";
 import type { SoulData } from "../soul/data";
 
@@ -323,6 +323,20 @@ function refuseEnvironmentKey(name: string, dir: string, cfg: object): void {
   }
 }
 
+/**
+ * The box a persona on disk names: `box` in its config.json, or a top-level
+ * `box:` line of an agent.yaml beside it. A name is not a secret, so it is
+ * carried; a value that is not a box name is refused, never copied.
+ */
+function boxKeyOf(name: string, dir: string, cfg: object): string | undefined {
+  const fromCfg = (cfg as { box?: unknown }).box;
+  const m = /^box\s*:\s*["']?([^"'\s#]+)["']?\s*(?:#.*)?$/m.exec(read(join(dir, AGENT_YAML)) ?? "");
+  const raw = fromCfg !== undefined && fromCfg !== null ? fromCfg : m?.[1];
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || !BOX_NAME_RE.test(raw)) throw new PayloadError(`persona '${name}': its box key is not a valid box name`);
+  return raw;
+}
+
 export function exportHome(home: string, out: string): { variables: string[] } {
   const reg = new Map<string, string>();
   const argsServers: string[] = [];
@@ -350,6 +364,10 @@ export function exportHome(home: string, out: string): { variables: string[] } {
         throw new PayloadError(`persona '${name}': config.json is malformed`);
       }
       refuseEnvironmentKey(name, d, cfg);
+      // persona.yaml has no box key. Exporting without it would turn a boxed agent into an unboxed one at the next deploy.
+      if (boxKeyOf(name, d, cfg) !== undefined) {
+        throw new PayloadError(`persona '${name}': has a box key, which persona.yaml cannot carry; export it with --format agent-yaml`);
+      }
       const lines = [`slackUserId: ${JSON.stringify(cfg.slackUserId ?? "")}`];
       // Carried only when the persona already names a node label; render
       // validates it against the label pattern like any other field.
@@ -392,7 +410,7 @@ export async function exportAgentYaml(
   const argsServers: string[] = [];
   const extract = opts.extract ?? ((soulMd: string) => extractSoulData(soulMd, { strict: true }));
   const write = async (args: {
-    name: string; soulMd: string; mcpFile?: string; mcpRaw?: string; slackUserId?: string; userToken?: string; runsOn?: string;
+    name: string; soulMd: string; mcpFile?: string; mcpRaw?: string; slackUserId?: string; userToken?: string; runsOn?: string; box?: string;
   }) => {
     if (opts.only && opts.only !== args.name) return;
     const data = await extract(args.soulMd);
@@ -412,6 +430,7 @@ export async function exportAgentYaml(
       soul: prose.trim() ? prose : args.soulMd,
       ...documentPartsFromSoul(data),
       mcp,
+      box: args.box,
       channels: exported.channels,
     });
     const dir = join(out, "personas", args.name);
@@ -446,7 +465,7 @@ export async function exportAgentYaml(
         claim(reg, v, `${name}/userToken`);
         userToken = `\${${v}}`; // the value never leaves $SLAUDE_HOME
       }
-      await write({ name, soulMd, mcpRaw: read(join(d, "mcp.json")), slackUserId: cfg.slackUserId, userToken, runsOn: cfg.runsOn as string | undefined });
+      await write({ name, soulMd, mcpRaw: read(join(d, "mcp.json")), slackUserId: cfg.slackUserId, userToken, runsOn: cfg.runsOn as string | undefined, box: boxKeyOf(name, d, cfg) });
     }
   }
   if (argsServers.length) {

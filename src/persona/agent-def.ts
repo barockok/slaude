@@ -556,6 +556,8 @@ export interface AgentDocumentInput {
   mcp?: unknown;
   skills?: string[] | null;
   guardrails?: string[] | null;
+  /** The box this agent's sessions run in, by name (boxes/<name>/box.yaml). */
+  box?: string | null;
   kbSources?: string[] | null;
   background?: unknown;
   channels?: Record<string, ChannelSetting> | null;
@@ -615,6 +617,7 @@ export function agentDocument(i: AgentDocumentInput): Record<string, unknown> {
     ...(i.mcp != null ? { mcp: i.mcp } : {}),
     ...(i.skills != null ? { skills: i.skills } : {}),
     ...(i.guardrails?.length ? { guardrails: i.guardrails } : {}),
+    ...(i.box ? { box: i.box } : {}),
     ...(nonEmpty(memory) ? { memory } : {}),
     ...(i.proactive && nonEmpty(i.proactive) ? { proactive: i.proactive } : {}),
     ...(i.channels && nonEmpty(i.channels) ? { channels: Object.fromEntries(Object.entries(i.channels).map(([k, v]) => [slackChannelRef(k), v])) } : {}),
