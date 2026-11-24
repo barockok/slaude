@@ -1080,7 +1080,9 @@ export function childPackRunner(o: { spoolDir: string; log?: (line: string) => v
         }
       });
       child.once("error", (e) => !settled && ((settled = true), reject(new BoxdError("failed", `the pack process could not be started: ${e.message}`))));
-      child.once("exit", (code) => !settled && ((settled = true), reject(new BoxdError("failed", `the pack process ended early (exit ${code}): ${lastLine(err)}`))));
+      // `close`, not `exit`: a child that answers and exits at once can be reported as exited before its last output
+      // is read, and its answer would be taken for an early end. `close` comes after both streams have ended.
+      child.once("close", (code) => !settled && ((settled = true), reject(new BoxdError("failed", `the pack process ended early (exit ${code}): ${lastLine(err)}`))));
       child.stdin?.on("error", () => {});
       child.stdin?.write(`${JSON.stringify({ ...message, spoolDir: o.spoolDir })}\n`);
     });
@@ -1102,7 +1104,8 @@ export function childPackRunner(o: { spoolDir: string; log?: (line: string) => v
       clearTimeout(p.timer);
       let out = "";
       p.child.stdout?.on("data", (d: Buffer) => (out += d.toString()));
-      p.child.once("exit", () => {
+      // `close` for the same reason as in `run`: the answer is read to its end before it is judged.
+      p.child.once("close", () => {
         try {
           check(JSON.parse(out.trim().split("\n").at(-1) ?? "{}") as Record<string, unknown>);
           resolve();

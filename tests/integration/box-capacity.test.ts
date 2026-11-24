@@ -25,6 +25,10 @@ let keys: any;
 let turns: any;
 let registry: any;
 let handedBack: () => number = () => 0;
+/** 1 while a node in this process has its label queues paused for capacity. */
+let pausedForRoom: () => number = () => 0;
+/** How many label-queue workers of this suite are blocked in Redis waiting for a job. */
+let labelWorkersWaiting: () => Promise<number> = async () => 0;
 let nodeQueue: (id: string) => string;
 /** sessionId to the node ids that ran a turn for it, in order. */
 const ran = new Map<string, string[]>();
@@ -58,6 +62,14 @@ beforeAll(async () => {
   turns = new TurnQueues({ connection: redis, keys });
   registry = makeRegistry({ redis, keys });
   handedBack = () => Number(/slaude_node_turns_total\{result="handed_back"\} (\d+)/.exec(metrics.render())?.[1] ?? 0);
+  pausedForRoom = () => Number(/^slaude_node_boxes_full (\d+)/m.exec(metrics.render())?.[1] ?? 0);
+  // BullMQ names a worker's blocking connection `<prefix>:<base64 queue name>`, and Redis flags a client `b`
+  // while it sits in a blocking command. The prefix is this suite's own, so no other suite's worker is counted.
+  const labelClient = `name=${keys.bullPrefix}:${Buffer.from("turns").toString("base64")} `;
+  labelWorkersWaiting = async () =>
+    String(await redis.client("LIST"))
+      .split("\n")
+      .filter((l) => l.includes(labelClient) && /\bflags=\S*b/.test(l)).length;
 
   /** A stub agent that keeps a session "live" after its turn, and can hold a turn in flight. */
   const stub = (nodeId: string) =>
@@ -181,6 +193,11 @@ d("box capacity on node workers (real Redis, fake driver)", () => {
   }, 20_000);
 
   test("with none idle the node hands the job back and pauses its label queue; a second node claims it and it runs once", async () => {
+    // The periodic check may have paused the label queue while an earlier turn was in flight (it does on a slow
+    // machine), and a paused worker claims nothing until room has held for 5 s. A hand-back needs a claim, so
+    // start from a label worker that is waiting for a job: that wait is not cancelled by a pause, it takes the
+    // next job and only then stops.
+    await until(async () => pausedForRoom() === 0 && (await labelWorkersWaiting()) >= 1, 20_000);
     const before = handedBack();
     // s2's next turn stays in flight: the node is full and has nothing it may park.
     hold("s2");
@@ -188,7 +205,10 @@ d("box capacity on node workers (real Redis, fake driver)", () => {
     await until(() => nodes["cap-A"]!.agent.inTurn.has("s2"), 10_000);
     await turns.enqueueTurn(job("s3"), { label: "default" });
     // cap-A is the only node: it claims s3, finds no room, puts it back and stops claiming from the label queue.
-    await until(() => handedBack() > before, 10_000);
+    // One other order is correct and rare: the check pauses the label queue first and the worker's wait ends
+    // on its own before s3 arrives, so s3 is never claimed here. Either way the queue is paused and s3 waits.
+    await until(() => handedBack() > before || pausedForRoom() === 1, 10_000);
+    await until(() => pausedForRoom() === 1, 5_000);
     await until(async () => (await registry.nodeBoxes("cap-A"))?.free === 0, 5_000);
     expect(ran.get("s3")).toBeUndefined();
     expect(created(nodes["cap-A"]!.driver, "s3")).toBe(0);

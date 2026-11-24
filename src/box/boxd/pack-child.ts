@@ -20,7 +20,11 @@ import { createInterface } from "node:readline";
 import { PackQuotaError, type PackRequest, type PackUnitRef, type PackedLayer, type AppliedLayer } from "../../storage/pack-sync";
 import { localPacker } from "./pack";
 
-const say = (v: unknown): void => void process.stdout.write(`${JSON.stringify(v)}\n`);
+/** The last answer's write: the process leaves only once it has been handed to the pipe. */
+let written: Promise<void> = Promise.resolve();
+const say = (v: unknown): void => {
+  written = new Promise<void>((resolve) => void process.stdout.write(`${JSON.stringify(v)}\n`, () => resolve()));
+};
 
 function failure(e: unknown): { ok: false; error: { name: string; message: string; data?: unknown } } {
   const err = e instanceof Error ? e : new Error(String(e));
@@ -71,4 +75,4 @@ async function main(): Promise<void> {
 
 void main()
   .catch((e) => say(failure(e)))
-  .finally(() => process.exit(0));
+  .finally(() => written.then(() => process.exit(0)));
