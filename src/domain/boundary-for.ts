@@ -217,6 +217,9 @@ export const boundaryFor = (team: string | null | undefined, channel: string | n
 /** First sight calls this after it creates or finds a boundary. */
 export const primeBoundary = (team: string, channel: string, id: string): void => resolver().prime(team, channel, id);
 
+/** True when first sight could ever have recorded a boundary for this channel id (the only shape test, kept here with the resolver). */
+export const boundarySurfaceKnown = (channel: string | null | undefined): boolean => !!channel && CHANNEL_RE.test(channel);
+
 /** True when the shared resolver's last read for the channel failed (the answer is unknown, not absent). */
 export const boundaryLookupFailed = (team: string | null | undefined, channel: string | null | undefined): boolean => resolver().failed(team, channel);
 

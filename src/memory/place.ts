@@ -16,7 +16,7 @@ import { env } from "../config/env";
 import * as CronJobs from "../db/cron-jobs";
 import * as Domain from "../db/domain";
 import * as Sessions from "../db/sessions";
-import { boundaryFor, boundaryLookupFailed, CHANNEL_RE } from "../domain/boundary-for";
+import { boundaryFor, boundaryLookupFailed, boundarySurfaceKnown } from "../domain/boundary-for";
 import { placeSourceId } from "./place-id";
 
 export { hasPlacePrefix, isPlaceSourceId, placeShortId, placeSourceId } from "./place-id";
@@ -139,9 +139,10 @@ export function createPlaceResolver(deps: PlaceDeps = {}): (i: PlaceInput) => Pr
       if (!boundaryId && i.cronJobId) boundaryId = await bounded(jobBoundary(i.cronJobId));
       if (!boundaryId) {
         if (!i.teamId) return none("no-team");
-        if (!i.channel || !CHANNEL_RE.test(i.channel)) return none("unknown-surface");
-        boundaryId = await bounded(channelBoundary(i.teamId, i.channel));
-        if (!boundaryId) return none(channelLookupFailed(i.teamId, i.channel) ? "lookup-failed" : "no-boundary");
+        if (!i.channel || !boundarySurfaceKnown(i.channel)) return none("unknown-surface");
+        const [team, channel] = [i.teamId, i.channel];
+        boundaryId = await bounded(channelBoundary(team, channel));
+        if (!boundaryId) return none(channelLookupFailed(team, channel) ? "lookup-failed" : "no-boundary");
       }
       const boundaryKind = await bounded(kindOf(boundaryId));
       if (!boundaryKind) return none("lookup-failed");
