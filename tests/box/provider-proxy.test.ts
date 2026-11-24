@@ -170,6 +170,43 @@ describe("provider proxy", () => {
     expect(await b.text()).not.toContain(REAL);
   });
 
+  test("a request that gets no answer on its first connection is sent once more, and only once", async () => {
+    let calls = 0;
+    const bodies: string[] = [];
+    proxy = await startProviderProxy({
+      socketPath: sock(),
+      upstream: `http://127.0.0.1:${upstream.port}`,
+      credential: () => ({ form: "api-key", value: REAL }),
+      fetch: (async (url: string, init: RequestInit) => {
+        calls++;
+        bodies.push(new TextDecoder().decode(init.body as Uint8Array));
+        if (calls === 1) throw new Error("socket closed before a response");
+        return fetch(url, init);
+      }) as unknown as typeof fetch,
+    });
+    const r = await via(proxy, "/v1/messages", { method: "POST", headers: { "x-api-key": BOX_CREDENTIAL_PLACEHOLDER }, body: '{"model":"m"}' });
+    expect(r.status).toBe(200);
+    expect(calls).toBe(2);
+    expect(bodies).toEqual(['{"model":"m"}', '{"model":"m"}']);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.headers["x-api-key"]).toBe(REAL);
+    // A second failure is a 502, not a third try.
+    calls = -10;
+    await proxy.close();
+    let tries = 0;
+    proxy = await startProviderProxy({
+      socketPath: sock(),
+      upstream: `http://127.0.0.1:${upstream.port}`,
+      credential: () => ({ form: "api-key", value: REAL }),
+      fetch: (async () => {
+        tries++;
+        throw new Error("down");
+      }) as unknown as typeof fetch,
+    });
+    expect((await via(proxy, "/v1/messages", { method: "POST", body: "{}" })).status).toBe(502);
+    expect(tries).toBe(2);
+  });
+
   test("a streamed tool loop of the fake Messages API passes through", async () => {
     const api: FakeApi = startFakeApi({ name: "Bash", input: { command: "echo hi" } });
     try {

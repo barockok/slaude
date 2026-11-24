@@ -120,7 +120,9 @@ d(`a boxed session end to end on tier ${tier}`, () => {
         const h = new Headers(req.headers);
         h.delete("host");
         h.delete("content-length");
-        return fetch(`${MOCK}${u.pathname}${u.search}`, { method: req.method, headers: h, body: req.method === "GET" ? undefined : req.body, duplex: "half" } as RequestInit);
+        // Each request on its own connection: a kept connection the mock closed meanwhile fails the request (and the turn).
+        const body = req.method === "GET" ? undefined : new Uint8Array(await req.arrayBuffer());
+        return fetch(`${MOCK}${u.pathname}${u.search}`, { method: req.method, headers: h, ...(body ? { body } : {}), keepalive: false } as RequestInit);
       },
     });
 

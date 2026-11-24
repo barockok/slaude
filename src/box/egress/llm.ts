@@ -146,8 +146,19 @@ export async function startProviderProxy(opts: ProviderProxyOpts): Promise<Provi
     count++;
     let res: Response;
     try {
-      const body = req.method === "GET" || req.method === "HEAD" ? undefined : req.body;
-      res = await doFetch(target, { method: req.method, headers, body, redirect: "manual", duplex: "half" } as RequestInit);
+      // The request body is read whole (a model request is JSON, not a stream of unknown length), so the request
+      // can be sent a second time. A connection kept from an earlier request may have been closed by the provider
+      // since: the first write on it fails before any answer, and that is not the box's failure to pay for. Seen as
+      // a turn that failed once in several runs against a local upstream. One retry, on a fresh connection.
+      const hasBody = req.method !== "GET" && req.method !== "HEAD";
+      const body = hasBody ? new Uint8Array(await req.arrayBuffer()) : undefined;
+      const init = { method: req.method, headers, ...(body ? { body } : {}), redirect: "manual" } as RequestInit;
+      try {
+        res = await doFetch(target, init);
+      } catch {
+        opts.log?.(`${req.method} ${pathForLog} retry (no answer on the first connection)`);
+        res = await doFetch(target, { ...init, keepalive: false } as RequestInit);
+      }
     } catch {
       opts.log?.(`${req.method} ${pathForLog} 502 (upstream unreachable)`);
       return plain(502, "provider proxy: the provider could not be reached");
