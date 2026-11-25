@@ -88,10 +88,40 @@ trip. The KVM platform ran (`/dev/kvm` is present) and was not faster on file wo
 systrap; I trust the script's `PLATFORM` variable for that and did not confirm the platform from inside), as expected
 for work bound by the gofer.
 
+## K2c with a real model (development VM, not the cluster)
+
+`scripts/spike/box/05-k2c.ts`: one real agent task, five runs each on plain runc (Docker, host network, the real
+credential in the container) and in the design's gVisor box (`--network none`, a placeholder credential, box-init
+relaying to the provider proxy, which adds the real one). The model is an Anthropic-compatible provider reached with
+an auth token (credential form B), from a dotenv profile the script reads into its own process; nothing it writes
+holds the token (it scans its output before finishing). The task: a small Python project (30 modules, 2,000 small
+files) with three bugs, "run the tests, fix the bugs, run them again". Success is judged afterwards by running the
+tests on the host.
+
+| | runs ok | wall, median | model time | everything else | turns, median |
+|---|---|---|---|---|---|
+| runc | 5 of 5 | 11.7 s | 10.8 s | 872 ms | 12 |
+| gVisor box | 5 of 5 | 10.4 s | 9.7 s | 831 ms | 13 |
+
+Wall time in the box was 0.89 of runc's (K2c kills above 1.25). The difference between them is the model's own spread
+(9 to 14 s of model time from run to run), not the sandbox: what is not the model's time is the same, 0.83 s against
+0.87 s. For a turn like this the sandbox's file overhead (2x to 5x on git and small files above) is lost in the
+model's latency, which is 93 percent of the wall time. It would show on a turn that does heavy file work (a large
+clone or install) or with a much faster model, which this does not measure. K2c passes for this task.
+Credential form B is now proven against a real provider, not only a fake one: the box held a placeholder for every
+turn and the provider accepted the real token the proxy added. Form C (an OAuth token) is still not run.
+
+Two harness bugs cost the first two trials and are worth knowing: the script replaced the workspace and home
+directories between runs, but the sandbox had them bind mounted, so after the first replacement the box saw deleted
+directories (every write failed with `EACCES`, and the agent spent 138 turns probing a "broken" shell: empty the
+directories in place); and a test command that was not valid in either configuration (`unittest discover -s tests`
+needs `tests/__init__.py`), which the model worked around on runc and not in the box. A single run of a model task is
+not a measurement: the first valid pair looked like 1.45x.
+
 ## Still open
 
-- K2c: a real-model turn on runc and on gVisor, three runs each. Needs a model credential; none was used.
-- The OAuth-token form behind the provider proxy against a real token.
+- The OAuth-token form (form C) behind the provider proxy against a real token.
+- K2c on a file-heavy task (a large clone and install) and on the cluster's own nodes; this one ran in the development VM.
 - The release workflows and the tier-gated CI job have not run on a runner.
 - The gated suites on the cluster itself (they need Docker for Redis, the mock model and the image build), and amd64 beyond Spike 1 (the runsc amd64 download matched its published
   checksum and ran here; the box image, box-init and the seccomp table on amd64 are still table-tested only).
