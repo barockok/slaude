@@ -19,6 +19,15 @@ coverage:
         target: auto
         threshold: 1%
 
+# The box tier workflow (.github/workflows/box-tiers.yml) runs the real sandboxes (gVisor and bwrap), which the unit
+# suite cannot. Its report counts only for the code that exercises them: it loads the whole module graph and would
+# otherwise mark code it never calls (capacity tables, schemas) as missed next to the unit report's hits.
+flags:
+  box-tiers:
+    paths:
+      - src/box/boxd/
+      - src/box/drivers/
+
 # Process-entrypoint files: thin `read config → boot → serve` bootstraps that can
 # only run against a live engine/network, so they're smoke-tested, not unit-tested
 # (mirrors the project-level integration-only rationale above). Logic lives in the
