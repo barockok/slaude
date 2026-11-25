@@ -272,6 +272,15 @@ export function gvisorBackend(config: BoxdConfig): SandboxBackend {
       } finally {
         closeSync(logFd);
       }
+      // A box that swaps instead of being stopped would hide its memory limit (the bwrap backend does the same
+      // for its own cgroup): on a host with swap the sandbox grew past the limit and was never ended (seen on a
+      // hosted CI runner; a Kubernetes node has none). runsc made the cgroup from the spec, whose memory limit
+      // leaves swap unbounded.
+      try {
+        writeFileSync(join(cgroupRoot, cgroupName(sb.id), "memory.swap.max"), "0");
+      } catch {
+        /* no swap controller, or no cgroup */
+      }
     },
     exec(sb, req) {
       const args = runscExecArgs({ stateDir, container: container(sb), uid: sb.uid, gid: sb.gid, cwd: req.cwd, pidFile: join(req.scratch, "pid"), env: req.env, argv: req.argv });

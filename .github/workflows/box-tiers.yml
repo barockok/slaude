@@ -58,7 +58,7 @@ jobs:
           # The container stage takes minutes more and adds nothing to the question a pull request asks.
           SLAUDE_SMOKE_NESTED: ${{ github.event_name == 'pull_request' && '0' || '1' }}
         # Through the environment, never spliced into the command line.
-        run: sudo scripts/smoke/box-smoke.sh $TIERS
+        run: sudo env SLAUDE_SMOKE_NESTED="$SLAUDE_SMOKE_NESTED" scripts/smoke/box-smoke.sh $TIERS
 
       - name: Keep the logs
         if: always()

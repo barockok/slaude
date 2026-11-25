@@ -14,10 +14,10 @@
  * talks to a model.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { BoxdClient, type BoxProcess } from "../../src/box/boxd/client";
-import { createBoxd, delegateCgroup, type Boxd } from "../../src/box/boxd/server";
+import { createBoxd, defaultCgroupRoot, delegateCgroup, type Boxd } from "../../src/box/boxd/server";
 import { makeSupervisedDriver, type SupervisedDriver } from "../../src/box/drivers/supervised";
 import { BOX_CREDENTIAL_PLACEHOLDER } from "../../src/box/env";
 import { BOX_AGENT_UID, cliImageRunner, makeImageStore } from "../../src/box/image";
@@ -28,6 +28,29 @@ import { BootFailure } from "../../src/gateway/core/failure-codes";
 const TIER = process.env.SLAUDE_BOX_TEST_TIER;
 const armed = (TIER === "gvisor" || TIER === "bwrap") && process.platform === "linux";
 const tier = (TIER === "bwrap" ? "bwrap" : "gvisor") as "gvisor" | "bwrap";
+/** What the host says about the sandboxes' cgroups, printed when the memory limit did not hold (a hosted runner failed it once). */
+function memoryDiagnostic(): void {
+  const read = (f: string) => {
+    try {
+      return readFileSync(f, "utf8").trim().replace(/\s+/g, " ").slice(0, 200);
+    } catch (e) {
+      return `(${e instanceof Error ? e.message.slice(0, 60) : "unreadable"})`;
+    }
+  };
+  const root = defaultCgroupRoot();
+  const lines = [`[diag] cgroup root ${root}; controllers ${read(join(root, "cgroup.controllers"))}; subtree ${read(join(root, "cgroup.subtree_control"))}`];
+  lines.push(`[diag] ${read("/proc/version").slice(0, 90)}; swaps ${read("/proc/swaps")}; ${read("/proc/meminfo").slice(0, 120)}`);
+  try {
+    for (const dir of readdirSync(root).filter((n) => n.startsWith("slaude-box-"))) {
+      const c = join(root, dir);
+      lines.push(`[diag] ${dir}: memory.max=${read(join(c, "memory.max"))} swap.max=${read(join(c, "memory.swap.max"))} current=${read(join(c, "memory.current"))} peak=${read(join(c, "memory.peak"))} events=${read(join(c, "memory.events"))} procs=${read(join(c, "cgroup.procs")).split(" ").length}`);
+    }
+  } catch (e) {
+    lines.push(`[diag] no box cgroups listed: ${e instanceof Error ? e.message.slice(0, 80) : ""}`);
+  }
+  console.log(lines.join("\n"));
+}
+
 const d = describe.skipIf(!armed);
 
 const REAL = "real-provider-credential-for-the-tier-contract";
@@ -340,6 +363,7 @@ d(`the sandbox contract on tier ${tier}`, () => {
     await sb.start();
     try {
       const r = await sh(sb, s, "perl -e '$x = \"a\" x 600000000; print \"allocated=\", length($x), \"\\n\"'; echo rc=$?", { timeoutMs: 90_000 });
+      if (r.out.includes("rc=0")) memoryDiagnostic(); // the limit did not hold: say what the host's cgroups looked like
       expect(r.out).not.toContain("allocated=600000000");
       expect(r.out).not.toContain("rc=0");
     } finally {
