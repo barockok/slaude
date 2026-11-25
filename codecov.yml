@@ -20,12 +20,13 @@ coverage:
         threshold: 1%
 
 # The box tier workflow (.github/workflows/box-tiers.yml) runs the real sandboxes (gVisor and bwrap), which the unit
-# suite cannot. Its report counts only for the code that exercises them: it loads the whole module graph and would
-# otherwise mark code it never calls (capacity tables, schemas) as missed next to the unit report's hits.
+# suite cannot. Its report counts only for the code that needs it: the sandbox backends. Elsewhere it lists lines the
+# unit report does not (functions the tier run never calls, at zero hits), and the union of the two reports then marks
+# them missed in files the unit suite already covers (measured on boxd/spec.ts, seccomp.ts and client.ts).
 flags:
   box-tiers:
     paths:
-      - src/box/boxd/
+      - src/box/boxd/server.ts
       - src/box/drivers/
 
 # Process-entrypoint files: thin `read config → boot → serve` bootstraps that can
