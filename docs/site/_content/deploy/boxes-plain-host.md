@@ -117,6 +117,8 @@ After=local-fs.target
 [Service]
 User=root
 WorkingDirectory=/opt/slaude
+# The supervisor makes its sandboxes' cgroups inside this unit's cgroup: the unit must delegate it.
+Delegate=yes
 # A clean environment, stated here and nowhere else. NO EnvironmentFile: the
 # supervisor is privileged and must hold no credential. It refuses to start
 # when its environment carries a provider key, the node token, the Redis URL
@@ -155,15 +157,18 @@ page least covered by what was run.
 
 Things that differ from a pod, by how the supervisor works:
 
-- **Sandbox cgroups are created at the top of the host's cgroup tree**
-  (`/sys/fs/cgroup/slaude-box-*`), not inside the unit's own cgroup. A
-  `MemoryMax=` on this unit therefore does not bound the boxes. Each box still
-  has its own memory, CPU and process limits.
-- **The supervisor has no memory limit to read**, because the top of the tree
-  has none. So the node cannot derive its memory budget: set
-  `SLAUDE_BOX_MEMORY_BUDGET_MB` on the node worker (below). The node says so at
-  start, and the pressure rule (park idle sessions above 90 percent of the
-  limit) does not run on a plain host. Size the budget for the machine
+- **Sandbox cgroups are created inside the unit's own cgroup**, as in a pod (the
+  supervisor reads its own cgroup from `/proc/self/cgroup`). The unit therefore
+  needs `Delegate=yes`, which lets the supervisor enable the memory, pids and
+  cpu controllers for its children, and a `MemoryMax=` on the unit bounds every
+  box together. The supervisor moves whatever else runs in its cgroup into an
+  `init` child first, so run it as its own unit, never in a login session's
+  scope (it would move that session's processes).
+- **The supervisor's memory limit is the unit's `MemoryMax=`**, when it has one.
+  Without one there is no limit to read, so the node cannot derive its memory
+  budget: set `SLAUDE_BOX_MEMORY_BUDGET_MB` on the node worker (below). The node
+  says so at start, and the pressure rule (park idle sessions above 90 percent
+  of the limit) does not run without a limit. Size the budget for the machine
   yourself, leaving room for everything else it runs.
 
 ## The node worker unit

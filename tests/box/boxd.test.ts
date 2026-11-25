@@ -9,6 +9,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROVIDER_ENV_KEYS } from "../../src/agent/provider-env";
 import { GATEWAY_ONLY_ENV_NAMES } from "../../src/config/gateway-only-env";
@@ -29,7 +30,7 @@ import {
   resolveExisting,
 } from "../../src/box/boxd/protocol";
 import { DENIED_SYSCALLS, SECCOMP_AUDIT_ARCH, seccompProgram, seccompVerdict } from "../../src/box/boxd/seccomp";
-import { adoptTree, createBoxd, type Boxd, type SandboxBackend, type SandboxRecord } from "../../src/box/boxd/server";
+import { adoptTree, createBoxd, defaultCgroupRoot, ownCgroupPath, type Boxd, type SandboxBackend, type SandboxRecord } from "../../src/box/boxd/server";
 import { bwrapArgs, gvisorPidsLimit, ociConfig, runscExecArgs, runscRunArgs } from "../../src/box/boxd/spec";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
@@ -199,6 +200,12 @@ describe("what a sandbox is made of", () => {
         namespaces: [{ type: "pid" }, { type: "ipc" }, { type: "uts" }, { type: "mount" }, { type: "network" }],
       },
     });
+  });
+
+  test("a sandbox's cgroup is a child of the supervisor's own cgroup when it is given one (a pod sees the node's cgroup root)", () => {
+    const parent = "/kubepods.slice/kubepods-pod1.slice/cri-containerd-abc.scope";
+    expect((ociConfig({ ...input, cgroupParent: parent }).linux as { cgroupsPath: string }).cgroupsPath).toBe(`${parent}/slaude-box-s1`);
+    expect((ociConfig(input).linux as { cgroupsPath: string }).cgroupsPath).toBe("/slaude-box-s1");
   });
 
   test("the root is never marked read-only (the overlay protects the image; the flag would make every write fail)", () => {
@@ -524,4 +531,38 @@ describe("the supervisor over its socket, with a fake backend", () => {
     const packer = client.packer(join(dir, "box", "pack-spool"));
     await expect(packer.pack({ root: join(dir, "data", "never-made"), filter: { kind: "all", exclude: [] }, indexPath: join(dir, "box", "i.json") }, { base: null, compact: false })).rejects.toBeInstanceOf(RootMissingError);
   }, 20_000);
+});
+
+describe("where boxd makes its sandboxes' cgroups", () => {
+  const dir = mkdtempSync(join(tmpdir(), "boxd-cg-"));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  const self = (line: string) => {
+    const f = join(dir, `self-${Math.random().toString(36).slice(2)}`);
+    writeFileSync(f, line);
+    return f;
+  };
+
+  test("in a container with its own cgroup namespace the root is the root", () => {
+    expect(ownCgroupPath(self("0::/\n"))).toBe("");
+    expect(defaultCgroupRoot("/sys/fs/cgroup", self("0::/\n"))).toBe("/sys/fs/cgroup");
+  });
+
+  test("in a pod, whose cgroup namespace is the host's, the root is the container's own cgroup", () => {
+    const scope = "/kubepods.slice/kubepods-pod9f6b.slice/cri-containerd-2b60.scope";
+    expect(ownCgroupPath(self(`0::${scope}\n`))).toBe(scope);
+    expect(defaultCgroupRoot("/sys/fs/cgroup", self(`0::${scope}\n`))).toBe(`/sys/fs/cgroup${scope}`);
+  });
+
+  test("the cgroup boxd made for itself (an `init` child, once or after restarts) is not the root of its sandboxes", () => {
+    const scope = "/kubepods.slice/kubepods-pod9f6b.slice/cri-containerd-2b60.scope";
+    expect(ownCgroupPath(self(`0::${scope}/init\n`))).toBe(scope);
+    expect(ownCgroupPath(self(`0::${scope}/init/init/init\n`))).toBe(scope);
+    expect(ownCgroupPath(self("0::/init\n"))).toBe("");
+  });
+
+  test("a cgroup v1 file, a missing file or an empty one is the root (boxd then refuses to start without v2)", () => {
+    expect(ownCgroupPath(self("12:memory:/docker/x\n"))).toBe("");
+    expect(ownCgroupPath(join(dir, "nope"))).toBe("");
+    expect(ownCgroupPath(self(""))).toBe("");
+  });
 });

@@ -40,6 +40,13 @@ export interface SandboxSpecInput {
   resources: { cpu: number; memoryMb: number; pids: number; rootOverlayMb: number };
   /** The environment of box-init. Nothing of the node's. */
   env: Record<string, string>;
+  /**
+   * The cgroup, relative to the host's cgroup root, that the sandbox's cgroup is a child of: the supervisor's own
+   * (`/kubepods.slice/.../cri-containerd-<id>.scope` in a pod, whose cgroup namespace is the host's). Empty when
+   * the supervisor's cgroup root is the one it sees. Without it a sandbox's cgroup is created at the node's root,
+   * outside the pod's memory limit and accounting.
+   */
+  cgroupParent?: string;
 }
 
 export const BOX_HOSTNAME = "box";
@@ -107,7 +114,7 @@ export function ociConfig(i: SandboxSpecInput): Record<string, unknown> {
       bind(i.initDir, BOX_INIT_TARGET, "ro"),
     ],
     linux: {
-      cgroupsPath: `/${cgroupName(i.name)}`,
+      cgroupsPath: `${i.cgroupParent ?? ""}/${cgroupName(i.name)}`,
       resources: {
         memory: { limit: i.resources.memoryMb * 1024 * 1024 },
         pids: { limit: gvisorPidsLimit(i.resources.pids) },

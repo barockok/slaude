@@ -228,7 +228,7 @@ function duBytes(path: string): number {
 export function gvisorBackend(config: BoxdConfig): SandboxBackend {
   const runsc = config.runsc ?? "runsc";
   const stateDir = join(config.boxDir, "runsc");
-  const cgroupRoot = config.cgroupRoot ?? "/sys/fs/cgroup";
+  const cgroupRoot = config.cgroupRoot ?? defaultCgroupRoot();
   const container = (sb: { id: string }) => `slaude-${sb.id}`;
   const global = () => runscGlobalArgs(stateDir);
   return {
@@ -252,7 +252,7 @@ export function gvisorBackend(config: BoxdConfig): SandboxBackend {
       const bundle = join(sb.dir, "bundle");
       mkdirSync(bundle, { recursive: true });
       mkdirSync(stateDir, { recursive: true });
-      const spec = ociConfig({ name: sb.id, rootfs: sb.rootfs, overlayDir: sb.overlayDir, initDir: config.initDir, runDir: sb.runDir, mounts: sb.mounts, uid: sb.uid, gid: sb.gid, resources: sb.resources, env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", HOME: "/home/agent" } });
+      const spec = ociConfig({ name: sb.id, rootfs: sb.rootfs, overlayDir: sb.overlayDir, initDir: config.initDir, runDir: sb.runDir, mounts: sb.mounts, uid: sb.uid, gid: sb.gid, resources: sb.resources, ...(config.cgroupRoot ? {} : { cgroupParent: ownCgroupPath() }), env: { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", HOME: "/home/agent" } });
       writeFileSync(join(bundle, "config.json"), JSON.stringify(spec, null, 1));
       // A container of this name left by a failed start would refuse the next one.
       sh([runsc, ...global(), "delete", "--force", container(sb)], { timeoutMs: 20_000 });
@@ -313,7 +313,7 @@ export function gvisorBackend(config: BoxdConfig): SandboxBackend {
 
 export function bwrapBackend(config: BoxdConfig): SandboxBackend {
   const bwrap = config.bwrap ?? "bwrap";
-  const cgroupRoot = config.cgroupRoot ?? "/sys/fs/cgroup";
+  const cgroupRoot = config.cgroupRoot ?? defaultCgroupRoot();
   const cg = (sb: { id: string }) => join(cgroupRoot, cgroupName(sb.id));
   const rootOf = (sb: SandboxRecord) => join(sb.dir, "root");
   const seccompPath = join(config.boxDir, "seccomp.bpf");
@@ -474,6 +474,38 @@ export function bwrapBackend(config: BoxdConfig): SandboxBackend {
 // ---------------------------------------------------------------------------
 
 /**
+ * The cgroup this process is in, relative to the hierarchy's root, or "" when that is the root. In a container with
+ * its own cgroup namespace the path is "/" and /sys/fs/cgroup is the container's. In a Kubernetes pod the cgroup
+ * namespace is the host's: the path names the container's scope, and /sys/fs/cgroup is the node's root (measured on a
+ * GKE node: a sandbox's cgroup made there is outside the pod's memory limit and accounting).
+ */
+export function ownCgroupPath(procSelf?: string): string {
+  // The default is read once. delegateCgroup moves this process into an `init` child of its cgroup; a later read would
+  // name that child, and a sandbox's cgroup made under a cgroup that holds processes cannot get its controllers.
+  if (procSelf === undefined && ownCgroupAtStart !== undefined) return ownCgroupAtStart;
+  let own = "";
+  try {
+    const line = (readFileSync(procSelf ?? "/proc/self/cgroup", "utf8").trim().split("\n").find((l) => l.startsWith("0::")) ?? "").slice(3);
+    // `/init` segments are the ones delegateCgroup made in an earlier run in this same cgroup (a restarted supervisor
+    // under the same init): the cgroup that was delegated is the one above them.
+    own = line.replace(/(\/init)+$/, "").replace(/\/+$/, "");
+  } catch {
+    own = "";
+  }
+  if (own === "/") own = "";
+  if (procSelf === undefined) ownCgroupAtStart = own;
+  return own;
+}
+
+let ownCgroupAtStart: string | undefined;
+
+/** The directory boxd creates its sandboxes' cgroups under: its own cgroup. */
+export function defaultCgroupRoot(base = "/sys/fs/cgroup", procSelf = "/proc/self/cgroup"): string {
+  const own = ownCgroupPath(procSelf);
+  return own ? join(base, own) : base;
+}
+
+/**
  * Make it possible to create limited child cgroups (measured in the phase 0
  * spike). In a container with its own cgroup namespace the container's cgroup
  * holds boxd itself, and cgroup v2 refuses to enable controllers for children
@@ -481,30 +513,25 @@ export function bwrapBackend(config: BoxdConfig): SandboxBackend {
  * and enable the controllers. On a plain host the root already delegates.
  * Returns a sentence when it cannot be done; boxd then refuses to start.
  */
-export function delegateCgroup(cgroupRoot = "/sys/fs/cgroup"): string | null {
+export function delegateCgroup(cgroupRoot = defaultCgroupRoot()): string | null {
   const control = join(cgroupRoot, "cgroup.subtree_control");
-  if (!existsSync(control)) return "this host does not have a cgroup v2 hierarchy at /sys/fs/cgroup";
+  if (!existsSync(control)) return `this host does not have a cgroup v2 hierarchy at ${cgroupRoot}`;
   const has = () => {
     const c = readFileSync(control, "utf8").split(/\s+/);
     return c.includes("memory") && c.includes("pids") && c.includes("cpu");
   };
-  let self = "";
   try {
-    self = (readFileSync("/proc/self/cgroup", "utf8").trim().split("\n").at(-1) ?? "").split(":")[2] ?? "";
-  } catch {
-    self = "";
-  }
-  try {
-    if (self === "/") {
-      const procs = readFileSync(join(cgroupRoot, "cgroup.procs"), "utf8").split("\n").filter(Boolean);
-      if (procs.length) {
-        mkdirSync(join(cgroupRoot, "init"), { recursive: true });
-        for (const pid of procs) {
-          try {
-            writeFileSync(join(cgroupRoot, "init", "cgroup.procs"), pid);
-          } catch {
-            /* a process that ended meanwhile */
-          }
+    // The cgroup boxd lives in: the whole hierarchy's root in a container with its own cgroup namespace, the
+    // container's own cgroup in a pod (whose namespace is the host's). Either way it holds only boxd and what it
+    // started, so they all move to a child and the controllers are enabled for the cgroup's children.
+    const procs = readFileSync(join(cgroupRoot, "cgroup.procs"), "utf8").split("\n").filter(Boolean);
+    if (procs.length) {
+      mkdirSync(join(cgroupRoot, "init"), { recursive: true });
+      for (const pid of procs) {
+        try {
+          writeFileSync(join(cgroupRoot, "init", "cgroup.procs"), pid);
+        } catch {
+          /* a process that ended meanwhile */
         }
       }
     }
@@ -853,7 +880,7 @@ export function createBoxd(config: BoxdConfig, deps: BoxdDeps = {}): Boxd {
   }
 
   function probe(): ProbeResult {
-    const cgroupRoot = config.cgroupRoot ?? "/sys/fs/cgroup";
+    const cgroupRoot = config.cgroupRoot ?? defaultCgroupRoot();
     let disk: { total: number; free: number } | null = null;
     try {
       const s = statfsSync(boxDir);

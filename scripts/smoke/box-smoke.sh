@@ -37,6 +37,12 @@ fi
 
 [ "$(id -u)" = "0" ] || exec sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" SLAUDE_SMOKE_NESTED="${SLAUDE_SMOKE_NESTED:-1}" SLAUDE_SMOKE_KEEP_IMAGES="${SLAUDE_SMOKE_KEEP_IMAGES:-0}" SLAUDE_SMOKE_SUITES="${SLAUDE_SMOKE_SUITES:-}" bash "$0" "${TIER_LIST[@]}"
 
+# boxd makes its sandboxes' cgroups inside its own cgroup, which must be delegated: a fresh systemd scope is, a login
+# session's is not (and boxd moves every process in its cgroup into a child). Not needed in a container (the nested stage).
+if [ -z "${SLAUDE_SMOKE_SCOPED:-}" ] && [ -d /run/systemd/system ] && command -v systemd-run >/dev/null 2>&1; then
+  exec systemd-run --scope --quiet --collect -p Delegate=yes env SLAUDE_SMOKE_SCOPED=1 bash "$0" "${TIER_LIST[@]}"
+fi
+
 SMOKE="${SLAUDE_SMOKE_DIR:-/var/lib/slaude-smoke}"
 BUN_VERSION="1.3.11"
 SUITES="${SLAUDE_SMOKE_SUITES:-tests/box/tier-contract.test.ts tests/node/worker-box-real.test.ts tests/integration/box-resume.test.ts}"
