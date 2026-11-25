@@ -4,20 +4,15 @@ name: box-tiers
 # tests/node/worker-box-real.test.ts) through scripts/smoke/box-smoke.sh: real
 # sandboxes under gVisor and bwrap, a real node worker, the mock model.
 #
-# By hand, and on a pull request that touches the box code (only to find out
-# whether a hosted runner can run runsc at all: the script passes on a
-# development VM, see the 2026-11-25 box smoke field note). It is not a required
-# check. Once it has been seen to pass here it moves into ci.yml, with coverage.
+# On every pull request and every push to main: the real sandboxes (gVisor and
+# bwrap) on a hosted runner, which the unit suite cannot run. It has passed on a
+# hosted runner (33 of 33 on each tier) since the swap fix. Make it a required
+# check in the repository's branch protection to gate merges; that is a
+# repository setting, not a file. By hand too, for either tier.
 on:
   pull_request:
-    paths:
-      - "src/box/**"
-      - "src/node/box-*.ts"
-      - "tests/box/**"
-      - "tests/node/worker-box-real.test.ts"
-      - "tests/integration/box-*.test.ts"
-      - "scripts/smoke/**"
-      - ".github/workflows/box-tiers.yml"
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       tiers:
