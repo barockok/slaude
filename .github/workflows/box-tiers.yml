@@ -4,11 +4,20 @@ name: box-tiers
 # tests/node/worker-box-real.test.ts) through scripts/smoke/box-smoke.sh: real
 # sandboxes under gVisor and bwrap, a real node worker, the mock model.
 #
-# Started by hand only. NOT RUN on a hosted runner yet: the script passes on a
-# development VM (see the 2026-11-25 box smoke field note), and whether a
-# hosted runner can run runsc at all is not known. Move it into ci.yml once it
-# has been seen to pass here; until then it must not gate a pull request.
+# By hand, and on a pull request that touches the box code (only to find out
+# whether a hosted runner can run runsc at all: the script passes on a
+# development VM, see the 2026-11-25 box smoke field note). It is not a required
+# check. Once it has been seen to pass here it moves into ci.yml, with coverage.
 on:
+  pull_request:
+    paths:
+      - "src/box/**"
+      - "src/node/box-*.ts"
+      - "tests/box/**"
+      - "tests/node/worker-box-real.test.ts"
+      - "tests/integration/box-*.test.ts"
+      - "scripts/smoke/**"
+      - ".github/workflows/box-tiers.yml"
   workflow_dispatch:
     inputs:
       tiers:
@@ -46,6 +55,8 @@ jobs:
       - name: Run the box smoke test
         env:
           TIERS: ${{ inputs.tiers }}
+          # The container stage takes minutes more and adds nothing to the question a pull request asks.
+          SLAUDE_SMOKE_NESTED: ${{ github.event_name == 'pull_request' && '0' || '1' }}
         # Through the environment, never spliced into the command line.
         run: sudo scripts/smoke/box-smoke.sh $TIERS
 
