@@ -76,6 +76,14 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
+      - name: Keep the coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: box-tiers-lcov
+          path: /var/lib/slaude-smoke/coverage
+          if-no-files-found: ignore
+
       - name: Keep the logs
         if: always()
         uses: actions/upload-artifact@v4
