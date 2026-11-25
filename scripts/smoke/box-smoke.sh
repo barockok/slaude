@@ -17,6 +17,7 @@
 #                                          dependencies follow it to an empty disk, and a node that dies with a
 #                                          flush owed costs the edits since its last flush, counted
 #
+# SLAUDE_SMOKE_COVERAGE=1 keeps the lcov report of each tier at $SLAUDE_SMOKE_DIR/coverage/<tier>/lcov.info.
 # SLAUDE_SMOKE_SUITES="<test files>" runs only those files (one suite while working on it).
 #
 # Then both suites again in a privileged container built from the Dockerfile's box layers (SLAUDE_SMOKE_NESTED=0 skips it).
@@ -32,10 +33,10 @@ read -r -a TIER_LIST <<<"$TIERS"
 
 if [ "$(uname -s)" = "Darwin" ]; then
   command -v colima >/dev/null || { echo "box-smoke: on macOS this needs a running Colima VM (colima ssh)"; exit 2; }
-  exec colima ssh -- sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" SLAUDE_SMOKE_NESTED="${SLAUDE_SMOKE_NESTED:-1}" SLAUDE_SMOKE_KEEP_IMAGES="${SLAUDE_SMOKE_KEEP_IMAGES:-0}" SLAUDE_SMOKE_SUITES="${SLAUDE_SMOKE_SUITES:-}" bash "$SRC/scripts/smoke/box-smoke.sh" "${TIER_LIST[@]}"
+  exec colima ssh -- sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" SLAUDE_SMOKE_NESTED="${SLAUDE_SMOKE_NESTED:-1}" SLAUDE_SMOKE_KEEP_IMAGES="${SLAUDE_SMOKE_KEEP_IMAGES:-0}" SLAUDE_SMOKE_SUITES="${SLAUDE_SMOKE_SUITES:-}" SLAUDE_SMOKE_COVERAGE="${SLAUDE_SMOKE_COVERAGE:-0}" bash "$SRC/scripts/smoke/box-smoke.sh" "${TIER_LIST[@]}"
 fi
 
-[ "$(id -u)" = "0" ] || exec sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" SLAUDE_SMOKE_NESTED="${SLAUDE_SMOKE_NESTED:-1}" SLAUDE_SMOKE_KEEP_IMAGES="${SLAUDE_SMOKE_KEEP_IMAGES:-0}" SLAUDE_SMOKE_SUITES="${SLAUDE_SMOKE_SUITES:-}" bash "$0" "${TIER_LIST[@]}"
+[ "$(id -u)" = "0" ] || exec sudo env SLAUDE_SMOKE_DIR="${SLAUDE_SMOKE_DIR:-}" SLAUDE_SMOKE_NESTED="${SLAUDE_SMOKE_NESTED:-1}" SLAUDE_SMOKE_KEEP_IMAGES="${SLAUDE_SMOKE_KEEP_IMAGES:-0}" SLAUDE_SMOKE_SUITES="${SLAUDE_SMOKE_SUITES:-}" SLAUDE_SMOKE_COVERAGE="${SLAUDE_SMOKE_COVERAGE:-0}" bash "$0" "${TIER_LIST[@]}"
 
 # boxd makes its sandboxes' cgroups inside its own cgroup, which must be delegated: a fresh systemd scope is, a login
 # session's is not (and boxd moves every process in its cgroup into a child). Not needed in a container (the nested stage).
@@ -145,6 +146,10 @@ for tier in $TIERS; do
     bun test "${SUITE_LIST[@]}" --timeout 120000 >"$log" 2>&1
   code=$?
   set -e
+  # bunfig.toml writes the lcov report to coverage/ in the repository copy: keep one per tier for a coverage service.
+  if [ "${SLAUDE_SMOKE_COVERAGE:-0}" = "1" ] && [ -f "$SMOKE/repo/coverage/lcov.info" ]; then
+    mkdir -p "$SMOKE/coverage/$tier" && cp "$SMOKE/repo/coverage/lcov.info" "$SMOKE/coverage/$tier/lcov.info"
+  fi
   grep -E '^\((pass|fail|skip)\)|^\[tier ' "$log" || true
   counts="$(grep -E '^ +[0-9]+ (pass|fail|skip)$' "$log" | tr -s ' ' | tr '\n' ',' | sed 's/,$//')"
   summary="$summary\n  $tier:$counts (exit $code, log $log)"

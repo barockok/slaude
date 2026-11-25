@@ -57,8 +57,24 @@ jobs:
           TIERS: ${{ inputs.tiers }}
           # The container stage takes minutes more and adds nothing to the question a pull request asks.
           SLAUDE_SMOKE_NESTED: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+          # An lcov report per tier, uploaded below: these suites are the only ones that run the supervisor and the drivers.
+          SLAUDE_SMOKE_COVERAGE: "1"
         # Through the environment, never spliced into the command line.
-        run: sudo env SLAUDE_SMOKE_NESTED="$SLAUDE_SMOKE_NESTED" scripts/smoke/box-smoke.sh $TIERS
+        run: sudo env SLAUDE_SMOKE_NESTED="$SLAUDE_SMOKE_NESTED" SLAUDE_SMOKE_COVERAGE="$SLAUDE_SMOKE_COVERAGE" scripts/smoke/box-smoke.sh $TIERS
+
+      - name: Make the coverage reports readable
+        if: always()
+        run: sudo chmod -R a+rX /var/lib/slaude-smoke/coverage 2>/dev/null || true
+
+      - name: Upload coverage to Codecov
+        if: always()
+        continue-on-error: true
+        uses: codecov/codecov-action@v5
+        with:
+          files: /var/lib/slaude-smoke/coverage/gvisor/lcov.info,/var/lib/slaude-smoke/coverage/bwrap/lcov.info
+          flags: box-tiers
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Keep the logs
         if: always()
