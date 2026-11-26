@@ -118,9 +118,27 @@ directories in place); and a test command that was not valid in either configura
 needs `tests/__init__.py`), which the model worked around on runc and not in the box. A single run of a model task is
 not a measurement: the first valid pair looked like 1.45x.
 
+## Credential form C (OAuth-token mode), client behaviour against a real provider
+
+The same script with `FORM=C`: the CLI starts in its OAuth-token mode (`CLAUDE_CODE_OAUTH_TOKEN` holds a placeholder,
+none of the other credential variables are set), the box has no network, and the provider proxy adds the profile's real
+credential as a bearer token. Three runs of the K2c task, all three completed with the tests passing. What the CLI did
+outside the model's answers, from the proxy's and the egress proxy's records: 19 requests in all, every one `POST
+/v1/messages`, each carrying only a placeholder bearer in (the proxy replaced it; the real value never entered the
+box), no redirect, and **no attempt to reach any other host** (the egress list is empty and its log is empty). So the
+OAuth mode does not need the profile, usage or token-refresh endpoints to run a turn, and does not reject a placeholder
+by its shape.
+
+What this is not: a test against Anthropic's own OAuth service. The credential and the upstream were a third
+party's, which accepts a bearer token, so a server that validates the token, a token refresh, or a behaviour that
+depends on the subscription would not show. Non-model time per run was 2.6 s (median) against 0.8 s for form B in the
+earlier runs; the extra is unexplained (an OAuth-mode start that tried to connect directly and failed at once is
+possible, and would not appear in the egress log because it does not use the proxy). Raw numbers:
+`scripts/spike/box/results/05-k2c.vm-form-c.json`.
+
 ## Still open
 
-- The OAuth-token form (form C) behind the provider proxy against a real token.
+- The OAuth-token form (form C) against Anthropic's own service with a real subscription token: the client behaviour above is known, the service side is not.
 - K2c on a file-heavy task (a large clone and install) and on the cluster's own nodes; this one ran in the development VM.
 - The release workflows and the tier-gated CI job have not run on a runner.
 - The gated suites on the cluster itself (they need Docker for Redis, the mock model and the image build), and amd64 beyond Spike 1 (the runsc amd64 download matched its published

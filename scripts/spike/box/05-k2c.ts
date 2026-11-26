@@ -13,6 +13,9 @@
  * own output before it finishes. Each run gets a fresh workspace (a small Python project with three bugs and a tree
  * of small files) and a fresh agent home; success is judged by running the project's tests on the host afterwards.
  * RUNS (default 3 per configuration), TASK_TIMEOUT_MS (default 360000).
+ * FORM=C runs the box leg with the CLI in its OAuth-token mode (CLAUDE_CODE_OAUTH_TOKEN holds a placeholder, the proxy adds
+ * the real credential as a bearer token) and records every request the CLI made to the provider proxy and every host it tried
+ * to reach outside it. It tests the client's behaviour, not an OAuth service: the credential and the upstream are the profile's.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -27,7 +30,9 @@ const LABEL = process.argv[2] ?? "vm";
 const RUNS = Number(process.env.RUNS ?? 3);
 const TIMEOUT = Number(process.env.TASK_TIMEOUT_MS ?? 360_000);
 const OUT = join(HERE, "results", `05-k2c.${LABEL}.json`);
-const PLACEHOLDER = "PLACEHOLDER-auth-token-PLACEHOLDER";
+const FORM = (process.env.FORM ?? "B") as "B" | "C";
+const PLACEHOLDER = FORM === "C" ? "sk-ant-oat01-PLACEHOLDERPLACEHOLDERPLACEHOLDERPLACEHOLDERPLACEHOLDER-AAAAAA" : "PLACEHOLDER-auth-token-PLACEHOLDER";
+const CRED_VAR = FORM === "C" ? "CLAUDE_CODE_OAUTH_TOKEN" : "ANTHROPIC_AUTH_TOKEN";
 
 const profilePath = process.env.PROFILE ?? "";
 if (!profilePath) throw new Error("PROFILE is not set (a dotenv file with the provider's base URL and token)");
@@ -193,7 +198,7 @@ async function c1(n: number): Promise<Run> {
   const env = [
     "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/agent", "CLAUDE_CONFIG_DIR=/home/agent/.claude",
     "ANTHROPIC_BASE_URL=http://127.0.0.1:3129", "HTTPS_PROXY=http://127.0.0.1:3128", "HTTP_PROXY=http://127.0.0.1:3128", "NO_PROXY=127.0.0.1,localhost",
-    "DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", `ANTHROPIC_AUTH_TOKEN=${PLACEHOLDER}`,
+    "DISABLE_AUTOUPDATER=1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", `${CRED_VAR}=${PLACEHOLDER}`,
     ...SETTINGS.map(([k, v]) => `${k}=${v}`),
   ];
   const r = await runProcess("runsc", ["--root", RS, "exec", "--user", "1000:1000", "--cwd", "/work", "k2c", "/usr/bin/env", "-i", ...env, "claude", ...ARGS], process.env as Record<string, string>, () => spawnSync("runsc", ["--root", RS, "exec", "k2c", "/usr/bin/pkill", "-KILL", "-u", "1000"]));
@@ -206,7 +211,7 @@ rmSync(BASE, { recursive: true, force: true });
 for (const d of ["ws", "home", "run", "ov"]) mkdirSync(`${BASE}/${d}`, { recursive: true });
 chmodSync(RUN, 0o755);
 sh(`runsc --root ${RS} delete -force k2c 2>/dev/null; true`);
-const proxy = startProviderProxy(`${RUN}/llm.sock`, UPSTREAM, "B", () => TOKEN);
+const proxy = startProviderProxy(`${RUN}/llm.sock`, UPSTREAM, FORM, () => TOKEN);
 const egress = startEgressProxy(`${RUN}/egress.sock`);
 const mk = sh(`ROOTFS=${ROOTFS} BOX_INIT=1 mkspec k2c ${HOME} ${WS} ${RUN} && runsc --root ${RS} --platform systrap --network none --host-uds open --overlay2 "root:dir=${OV},size=2g" run --detach --bundle ${SPIKE}/specs/k2c k2c </dev/null >${BASE}/run.log 2>&1`);
 if (mk.code !== 0) {
@@ -250,7 +255,19 @@ const c1m = (summary["C1 gvisor box"] as { medianWallMs: number }).medianWallMs;
 console.log(`RESULT k2c | INFO | median wall: runc ${c0m} ms, gvisor box ${c1m} ms, ratio ${(c1m / c0m).toFixed(2)}x (K2c kills above 1.25x); detail ${JSON.stringify(summary)}`);
 for (const [c, v] of Object.entries(summary)) console.log(`RESULT k2c-nonmodel | INFO | ${c}: ${JSON.stringify(v)}`);
 
-const body = JSON.stringify({ label: LABEL, finished: new Date().toISOString(), runsPerConfig: RUNS, summary, results }, null, 1);
+// What the CLI did outside the model's answer: the provider proxy's requests (paths, statuses, header names: never a
+// value) and the hosts it tried to reach past it (the egress list is empty, so each is a refusal).
+const byPath = new Map<string, number>();
+for (const r of proxy.stats.requests) byPath.set(`${r.method} ${r.path} ${r.status} cred-in:${r.credHeaderIn}`, (byPath.get(`${r.method} ${r.path} ${r.status} cred-in:${r.credHeaderIn}`) ?? 0) + 1);
+const evidence = {
+  form: FORM,
+  providerRequests: [...byPath].map(([k, n]) => `${n}x ${k}`).sort(),
+  headerNamesSeen: [...new Set(proxy.stats.requests.flatMap((r) => r.headerNamesIn))].sort(),
+  redirectsRefused: proxy.stats.redirectsRefused,
+  egressAttempts: [...new Set(egress.log.lines.map((l) => redact(l)))].sort(),
+};
+console.log(`RESULT k2c-evidence | INFO | form ${FORM}: provider requests ${JSON.stringify(evidence.providerRequests)}; egress attempts ${JSON.stringify(evidence.egressAttempts)}`);
+const body = JSON.stringify({ label: LABEL, finished: new Date().toISOString(), runsPerConfig: RUNS, summary, evidence, results }, null, 1);
 if (body.includes(TOKEN)) throw new Error("the results hold the token: not written");
 mkdirSync(join(HERE, "results"), { recursive: true });
 writeFileSync(OUT, body);
