@@ -87,6 +87,9 @@ const builds: [string, () => any[]][] = [
   ["deploy/k8s-scale", () => kustomize(join(root, "deploy/k8s-scale"))],
   ["deploy/k8s-local", buildLocal],
   ["e2e/k8s", buildE2e],
+  // With the box supervisor in every node pod (visiblePod reads every container, `boxd` included).
+  ["deploy/k8s-scale-box", () => kustomize(join(root, "deploy/k8s-scale-box"))],
+  ["deploy/k8s-scale-box/with-s3", () => kustomize(join(root, "deploy/k8s-scale-box/with-s3"))],
 ];
 
 for (const [label, build] of builds) {
@@ -148,6 +151,52 @@ for (const [label, build] of builds) {
 
     test("the optional NetworkPolicy is not part of the default build", () => {
       expect(docs.filter((d) => d.kind === "NetworkPolicy")).toEqual([]);
+    });
+  });
+}
+
+// The box supervisor is privileged, so it is given nothing (box plan, Phase 9). Asked of the BUILT overlays.
+for (const dir of ["deploy/k8s-scale-box", "deploy/k8s-scale-box/with-s3"]) {
+  describe.skipIf(!hasKubectl)(`built ${dir}: the box supervisor holds no secret`, () => {
+    const docs = hasKubectl ? kustomize(join(root, dir)) : [];
+    const nodes: any[] = docs.filter((d) => d.kind === "Deployment" && d.spec.template.spec.containers.some((c: any) => c.name === "node"));
+
+    test("every node pod has a boxd container, and it is the only privileged container in the build", () => {
+      expect(nodes.length).toBeGreaterThanOrEqual(2);
+      const privileged: string[] = [];
+      for (const d of docs) {
+        const spec = d.spec?.template?.spec;
+        for (const c of [...(spec?.initContainers ?? []), ...(spec?.containers ?? [])]) {
+          if (c.securityContext?.privileged) privileged.push(`${d.metadata.name}/${c.name}`);
+        }
+      }
+      expect(privileged.sort()).toEqual(nodes.map((n) => `${n.metadata.name}/boxd`).sort());
+    });
+
+    test("boxd has no envFrom, no key reference and no Secret volume, and sees no Secret key at all", () => {
+      const secretKeys = new Set<string>();
+      for (const s of docs.filter((d) => d.kind === "Secret")) for (const k of Object.keys({ ...(s.data ?? {}), ...(s.stringData ?? {}) })) secretKeys.add(k);
+      expect(secretKeys.size).toBeGreaterThan(0);
+      for (const n of nodes) {
+        const boxd = container(n, "boxd");
+        expect(boxd.envFrom, n.metadata.name).toBeUndefined();
+        const seen = visibleEnv(docs, boxd);
+        expect(seen.filter((v) => v.via !== "env"), n.metadata.name).toEqual([]);
+        expect(seen.filter((v) => secretKeys.has(v.name) || isGatewayOnlyEnv(v.name)), n.metadata.name).toEqual([]);
+        for (const e of boxd.env ?? []) expect(e.valueFrom, `${n.metadata.name} ${e.name}`).toBeUndefined();
+        const byName = new Map<string, any>((n.spec.template.spec.volumes ?? []).map((v: any) => [v.name, v]));
+        for (const m of boxd.volumeMounts ?? []) {
+          const v = byName.get(m.name);
+          expect(v?.secret ?? v?.projected ?? v?.configMap, `${n.metadata.name} ${m.name}`).toBeUndefined();
+        }
+      }
+    });
+
+    test("the node container still loads the node Secret: the split did not move", () => {
+      for (const n of nodes) {
+        const refs = (container(n, "node").envFrom ?? []).map((s: any) => s.secretRef?.name).filter(Boolean);
+        expect(refs as string[]).toContain("slaude-scale-node-secrets");
+      }
     });
   });
 }

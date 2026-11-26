@@ -46,6 +46,9 @@ import { extractSoulData } from "./legacy-soul-extract";
 import { parseEnvironmentYaml } from "../remote/definitions/parse";
 import { ENV_DEF_NAME_RE } from "../remote/definitions/name";
 import { migratePersona } from "../persona/migrate";
+import { BOX_NAME_RE, type BoxPayloadEntry } from "../box/definition";
+import { BUILTIN_BOX_NAME } from "../box/builtin";
+import { BOX_REGISTRY_ENV, BOX_YAML, compileBoxes, dockerResolver } from "./box";
 import type { SoulData } from "../soul/data";
 
 const read = (f: string) => (existsSync(f) ? readFileSync(f, "utf8") : undefined);
@@ -67,6 +70,9 @@ export function readEnvironmentDir(dir: string): Array<{ name: string; yaml: str
   return out;
 }
 
+/** A rendered payload: what is POSTed. Its boxes are payload entries, which the gateway parses itself. */
+export type RenderedPayload = Omit<SyncPayload, "boxes"> & { boxes?: BoxPayloadEntry[] };
+
 const YAML_KEYS = new Set(["slackUserId", "userToken", "model", "provider", "runsOn", "kbSources", "background"]);
 
 /** `onUnknown` receives `persona.<name>.<key>` for each persona.yaml key the payload has no field for (names only).
@@ -76,7 +82,9 @@ export function renderDir(
   meta: { revision: string; committedAt: string },
   onUnknown?: (paths: string[]) => void,
   onWarnings?: (warnings: string[]) => void,
-): SyncPayload {
+  /** The compiled boxes of the repository's boxes/ folder (src/cli/box.ts, compileBoxes). Absent: the payload carries no boxes list. */
+  boxes?: BoxPayloadEntry[],
+): RenderedPayload {
   const unknown: string[] = [];
   const root = join(dir, "personas");
   if (!existsSync(root)) throw new PayloadError(`no personas/ directory in ${dir}`);
@@ -172,7 +180,30 @@ export function renderDir(
   } else if (refs.length) {
     definitionWarnings.push(`persona '${refs[0]!.persona}' allows environments, but this repository has no environments/ folder: the references are checked against the deployed definitions at sync, not here`);
   }
-  const payload = parsePayload({ version: payloadVersionFor(personas, guardrails, environments), ...meta, personas, ...(guardrails ? { guardrails } : {}), ...(environments ? { environments } : {}) });
+  // boxes/<name>/box.yaml: a folder that exists (even empty) is the whole set. A persona may name
+  // only a box the deploy will have; with no folder the name is checked against the deployed boxes at sync.
+  const boxRefs = personas.flatMap((p) => {
+    const b = (p as { definition?: { box?: string } }).definition?.box;
+    return b ? [{ persona: p.name, name: b }] : [];
+  });
+  if (boxes) {
+    const have = new Set(boxes.map((b) => b.name));
+    for (const r of boxRefs) {
+      if (have.has(r.name)) continue;
+      // The gateway's image may carry a box of this one name. Whether it does is known only there, so the sync decides.
+      if (r.name === BUILTIN_BOX_NAME) {
+        definitionWarnings.push(`persona '${r.persona}' names box '${r.name}', which this repository does not define: it is the box built into the gateway's image, if that image carries one (the sync refuses it otherwise)`);
+        continue;
+      }
+      throw new PayloadError(`persona '${r.persona}': box names '${r.name}', but this repository has no boxes/${r.name}/${BOX_YAML}`);
+    }
+  } else if (boxRefs.length) {
+    definitionWarnings.push(`persona '${boxRefs[0]!.persona}' names a box, but this repository has no boxes/ folder: the name is checked against the deployed boxes at sync, not here`);
+  }
+  const parsed = parsePayload({ version: payloadVersionFor(personas, guardrails, environments, boxes), ...meta, personas, ...(guardrails ? { guardrails } : {}), ...(environments ? { environments } : {}), ...(boxes ? { boxes } : {}) });
+  // The payload that is sent carries each box as its entry (what the gateway's own check reads), not as the parsed form.
+  const { boxes: _parsedBoxes, ...withoutBoxes } = parsed;
+  const payload: RenderedPayload = { ...withoutBoxes, ...(boxes ? { boxes } : {}) };
   if (unknown.length) onUnknown?.(capPaths(unknown));
   const warnings = [
     ...providerWarnings(payload),
@@ -301,6 +332,20 @@ function refuseEnvironmentKey(name: string, dir: string, cfg: object): void {
   }
 }
 
+/**
+ * The box a persona on disk names: `box` in its config.json, or a top-level
+ * `box:` line of an agent.yaml beside it. A name is not a secret, so it is
+ * carried; a value that is not a box name is refused, never copied.
+ */
+function boxKeyOf(name: string, dir: string, cfg: object): string | undefined {
+  const fromCfg = (cfg as { box?: unknown }).box;
+  const m = /^box\s*:\s*["']?([^"'\s#]+)["']?\s*(?:#.*)?$/m.exec(read(join(dir, AGENT_YAML)) ?? "");
+  const raw = fromCfg !== undefined && fromCfg !== null ? fromCfg : m?.[1];
+  if (raw === undefined) return undefined;
+  if (typeof raw !== "string" || !BOX_NAME_RE.test(raw)) throw new PayloadError(`persona '${name}': its box key is not a valid box name`);
+  return raw;
+}
+
 export function exportHome(home: string, out: string): { variables: string[] } {
   const reg = new Map<string, string>();
   const argsServers: string[] = [];
@@ -328,6 +373,10 @@ export function exportHome(home: string, out: string): { variables: string[] } {
         throw new PayloadError(`persona '${name}': config.json is malformed`);
       }
       refuseEnvironmentKey(name, d, cfg);
+      // persona.yaml has no box key. Exporting without it would turn a boxed agent into an unboxed one at the next deploy.
+      if (boxKeyOf(name, d, cfg) !== undefined) {
+        throw new PayloadError(`persona '${name}': has a box key, which persona.yaml cannot carry; export it with --format agent-yaml`);
+      }
       const lines = [`slackUserId: ${JSON.stringify(cfg.slackUserId ?? "")}`];
       // Carried only when the persona already names a node label; render
       // validates it against the label pattern like any other field.
@@ -370,7 +419,7 @@ export async function exportAgentYaml(
   const argsServers: string[] = [];
   const extract = opts.extract ?? ((soulMd: string) => extractSoulData(soulMd, { strict: true }));
   const write = async (args: {
-    name: string; soulMd: string; mcpFile?: string; mcpRaw?: string; slackUserId?: string; userToken?: string; runsOn?: string;
+    name: string; soulMd: string; mcpFile?: string; mcpRaw?: string; slackUserId?: string; userToken?: string; runsOn?: string; box?: string;
   }) => {
     if (opts.only && opts.only !== args.name) return;
     const data = await extract(args.soulMd);
@@ -390,6 +439,7 @@ export async function exportAgentYaml(
       soul: prose.trim() ? prose : args.soulMd,
       ...documentPartsFromSoul(data),
       mcp,
+      box: args.box,
       channels: exported.channels,
     });
     const dir = join(out, "personas", args.name);
@@ -424,7 +474,7 @@ export async function exportAgentYaml(
         claim(reg, v, `${name}/userToken`);
         userToken = `\${${v}}`; // the value never leaves $SLAUDE_HOME
       }
-      await write({ name, soulMd, mcpRaw: read(join(d, "mcp.json")), slackUserId: cfg.slackUserId, userToken, runsOn: cfg.runsOn as string | undefined });
+      await write({ name, soulMd, mcpRaw: read(join(d, "mcp.json")), slackUserId: cfg.slackUserId, userToken, runsOn: cfg.runsOn as string | undefined, box: boxKeyOf(name, d, cfg) });
     }
   }
   if (argsServers.length) {
@@ -446,6 +496,22 @@ if (import.meta.main) {
   const flag = (n: string) => flags.get(n);
   try {
     if (cmd === "render" && rest[0]) {
+      // boxes/: resolved to digests before the payload is built. --check reads files only (no registry,
+      // no build); --no-push builds what the registry lacks without pushing, for a pull request's dry run.
+      let boxes: BoxPayloadEntry[] | undefined;
+      if (existsSync(join(rest[0], "boxes"))) {
+        const mode = flags.has("--check") ? "static" : flags.has("--no-push") ? "check" : "push";
+        const compiled = await compileBoxes(join(rest[0], "boxes"), {
+          mode,
+          registry: process.env[BOX_REGISTRY_ENV],
+          ...(mode === "static" ? {} : { resolver: dockerResolver() }),
+          log: (line) => console.error(`[personas] ${line}`),
+        });
+        boxes = compiled.boxes;
+        if (compiled.unpushed.length && mode !== "static") {
+          console.error(`[personas] warning: not pushed, so this payload is for a dry run only and must not be deployed (its image digests are stand-ins): ${compiled.unpushed.join(", ")}`);
+        }
+      }
       const p = renderDir(rest[0], {
         revision: flag("--revision") ?? process.env.GITHUB_SHA ?? "local",
         committedAt: flag("--committed-at") ?? new Date().toISOString(),
@@ -453,7 +519,7 @@ if (import.meta.main) {
         if (flags.has("--check")) console.error(`[personas] unknown persona.yaml keys, left out of the payload (the gateway never sees them): ${paths.join(", ")}`);
       }, (warnings) => {
         for (const w of warnings) console.error(`[personas] warning: ${w}`);
-      });
+      }, boxes);
       if (!flags.has("--check")) console.log(JSON.stringify(p, null, 2));
     } else if (cmd === "export") {
       const out = flag("--out") ?? "./persona-repo";

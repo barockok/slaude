@@ -129,14 +129,14 @@ describe("upgrade from 0052", () => {
       await oldSession(db, "s1");
       await oldSession(db, "s2");
       await db.run(`UPDATE sessions SET claude_started = 1 WHERE id = 's2'`);
-      const r = await runMigrations(db, { log: () => {}, migrations: all });
+      const r = await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version <= "0053") });
       expect(r.applied).toEqual(["0053"]);
       const rows = (await db.query<{ id: string; model: string; thread_head_at: number | string | null }>("SELECT id, model, thread_head_at FROM sessions ORDER BY id")).map((r) => ({ ...r, thread_head_at: r.thread_head_at === null ? null : Number(r.thread_head_at) }));
       expect(rows).toEqual([
         { id: "s1", model: "m", thread_head_at: null },
         { id: "s2", model: "m", thread_head_at: null },
       ]);
-      expect((await runMigrations(db, { log: () => {}, migrations: all })).applied).toEqual([]);
+      expect((await runMigrations(db, { log: () => {}, migrations: all.filter((m) => m.version <= "0053") })).applied).toEqual([]);
     } finally {
       await db.close();
     }

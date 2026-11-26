@@ -12,6 +12,7 @@ import { guardedProjection } from "./account-projection";
 import { ensureRefs, type RecordEntry, type RefUse } from "../domain/sync-refs";
 import type { DomainEvent } from "./domain";
 import type { EnvironmentsReport } from "../remote/definitions/sync";
+import type { BoxSyncReport } from "./boxes";
 import type { DbClient } from "./client";
 import { db, dbDialect } from "./schema";
 import { GLOBAL_SCOPE, versionScope } from "./skill-versions";
@@ -52,6 +53,8 @@ export interface ApplyResult {
   recordsFailed?: boolean;
   /** Environment definitions this sync wrote (names only); absent when the payload carried no `environments` list. */
   environments?: EnvironmentsReport;
+  /** Boxes this sync wrote (names, versions and a diff summary); absent when the payload carried no `boxes` list. */
+  boxes?: BoxSyncReport;
 }
 
 type Row = {
@@ -200,6 +203,8 @@ export async function applySync(
   refs?: { uses: RefUse[]; workspaces: string[] },
   /** Written in the same transaction (environment definitions); a throw rolls the personas back too. */
   alsoApply?: (tx: DbClient) => Promise<EnvironmentsReport>,
+  /** Written in the same transaction (the box set); a throw rolls the personas back too. */
+  applyBoxSet?: (tx: DbClient) => Promise<BoxSyncReport>,
 ): Promise<ApplyResult> {
   return db.transaction(async (tx) => {
     const now = Date.now();
@@ -263,6 +268,7 @@ export async function applySync(
     const wiped = await tx.run(`DELETE FROM persona_overrides WHERE tenant_id = ?`, [tenant]);
     result.overridesWiped = wiped.changes ?? 0;
     if (alsoApply) result.environments = await alsoApply(tx);
+    if (applyBoxSet) result.boxes = await applyBoxSet(tx);
     if (refs) {
       // Savepoint: a CHECK, FK, unique or deadlock failure here must not roll back the persona sync.
       const made = await guardedProjection(tx, "sync records", null, () => ensureRefs(refs.uses, refs.workspaces, tx));

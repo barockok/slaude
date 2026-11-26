@@ -15,6 +15,14 @@ Labels separate trust between nodes. Put personas that must not see each
 other's secrets on nodes with different labels (see
 [Multi-node scale-out](multi-node.md)).
 
+**That statement is about sessions that run on the node itself** (sandbox tier
+`none`, which is every session today). A session that runs in a
+[box](boxes.md) is a different case: it holds no secret, it cannot see the
+node's environment or another session's files, and it does not read this
+manifest at all. See [Boxed sessions](#boxed-sessions) below. Boxes are in
+development and off by default; until a node offers a sandbox tier, everything
+on this page applies to every session.
+
 A stdio MCP server is a program installed on the machine, so the node, not the
 gateway, chooses it. The node reads a manifest file at start; the gateway never
 reads it.
@@ -158,6 +166,34 @@ The node starts every agent child with `strictMcpConfig`: the CLI uses only the
 servers slaude passes and reads no project `.mcp.json`, user settings or plugin
 MCP configuration. The `<mcp-servers>` block in the system prompt lists exactly
 the servers the session mounts.
+
+## Boxed sessions
+
+A session that runs in a [box](boxes.md) **ignores this manifest**. Its stdio
+servers are the ones its box declares under `mcp.stdio`: programs in the box
+image, started inside the sandbox, with no credential. The manifest keeps
+working exactly as described above for every session that is not boxed, and
+it stays in the product for as long as tier `none` does.
+
+If the manifest allows servers to a persona that is boxed, the node logs one
+warning naming the persona. Nothing is mounted from the manifest for it.
+
+Each server in a manifest falls into one of three cases when its persona
+moves to a box:
+
+| Server today | In a box |
+|---|---|
+| No `env`, or only literal values that are not secret (a linter, a language server, a local search tool) | Moves to the box's `mcp.stdio` unchanged. The image must contain the program, and `command` becomes its absolute path. Literal `env` values move to the box's `env`. |
+| `env` references a node secret (`"TF_TOKEN": "${NODE_TF_TOKEN}"`, a code-host token) | **Cannot move into a box.** Run it as an HTTP MCP service the gateway can reach, declare it in the persona's `mcp` with its credential as a `${PERSONA_*}` placeholder, and it reaches the agent through the [bridge](mcp-bridge.md). |
+| Needs both a secret and the session's files (it reads the workspace and calls an API) | Fits neither side: a gateway-side server cannot see the workspace, and a boxed one cannot hold the secret. The persona stays unboxed, or the server is split. |
+
+`slaude box from-manifest <node.json> <persona>` prints which case each of a
+persona's servers is, with a block to paste for the first case and what to
+deploy instead for the others. It names env entries, never their values.
+
+The name pattern, the env key pattern and the `${` rules are the same code
+for this manifest and for a box's `mcp.stdio`. A box is stricter: no `${`
+anywhere, and no `env` on a server.
 
 ## Shipping the manifest
 

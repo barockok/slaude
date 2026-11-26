@@ -10,6 +10,34 @@ import { flag } from "./security-switches";
 const DOTENV_REFUSED = new Set(["SLAUDE_PLUGIN_ROOT"]);
 
 // Load a .env file if present (does not override existing process.env)
+/**
+ * The SLAUDE_BOX_UNBOXED value rule (`allow`, the default, or `refuse`),
+ * shared by `env.box.unboxedFallback()` and the sync. It says what happens to
+ * an agent that names a box and cannot be boxed (its provider credential is of
+ * a form no box can use): `allow` runs it unboxed, `refuse` does not run it.
+ * An unknown value is an error, never read as `allow`.
+ */
+export function boxUnboxedFallbackValue(raw: string | undefined): boolean {
+  const v = (raw ?? "").trim().toLowerCase();
+  if (v === "" || v === "allow") return true;
+  if (v === "refuse") return false;
+  throw new Error("SLAUDE_BOX_UNBOXED must be allow or refuse");
+}
+
+/** A whole number of at least 0 from the environment; anything else is the default. */
+function nonNegativeInt(name: string, dflt: number): number {
+  const raw = (process.env[name] ?? "").trim();
+  if (!raw) return dflt;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : dflt;
+}
+
+/** The SLAUDE_BOX switch's value rule (`on` or `off`, default off), shared by `env.box.enabled()` and the sync. */
+export function boxFlagValue(raw: string | undefined): boolean {
+  const v = (raw ?? "off").trim().toLowerCase();
+  return v === "on" || v === "1" || v === "true" || v === "yes";
+}
+
 /** The SLAUDE_REMOTE switch's value rule, shared by `env.remote.enabled()` and the sync (which reads the deployment's variables from a record). */
 export function remoteFlagValue(raw: string | undefined): boolean {
   const v = (raw ?? "0").toLowerCase();
@@ -938,6 +966,113 @@ export const env = {
     credentialPointers: (): boolean => {
       const raw = opt("SLAUDE_CREDENTIAL_POINTERS", "off").trim().toLowerCase();
       return raw === "on" || raw === "1" || raw === "true" || raw === "yes";
+    },
+  },
+  box: {
+    /**
+     * `SLAUDE_BOX` (gateway, default `off`). `on`: a persona that names a box is
+     * pinned to it and dispatched only to a node that offers a sandbox. `off`:
+     * boxes are validated and stored by a sync, and nothing reads them.
+     */
+    enabled: (): boolean => boxFlagValue(opt("SLAUDE_BOX", "off")),
+    /** `SLAUDE_BOX_DEFAULT` (gateway): the box of a persona that names none. Unset: such a persona stays unboxed. */
+    defaultBox: (): string | null => {
+      const v = opt("SLAUDE_BOX_DEFAULT", "").trim();
+      return v ? v : null;
+    },
+    /**
+     * `SLAUDE_BOX_UNBOXED` (gateway, default `allow`): whether an agent that
+     * names a box but cannot be boxed runs unboxed (`allow`) or is refused
+     * (`refuse`). Refuse is for a deployment that no longer offers tier `none`
+     * to boxed agents.
+     */
+    unboxedFallback: (): boolean => boxUnboxedFallbackValue(opt("SLAUDE_BOX_UNBOXED", "allow")),
+    /** `SLAUDE_BOX_DIR` (node, default `/var/lib/slaude-box`): images, live sessions, parked sessions, spool. */
+    dir: (): string => opt("SLAUDE_BOX_DIR", "").trim() || "/var/lib/slaude-box",
+    /**
+     * `SLAUDE_BOXD_SOCKET` (node and supervisor, default `/run/slaude-box/boxd.sock`):
+     * the box supervisor's control socket. Read only on a node whose
+     * `SLAUDE_BOX_TIER` is not `none`.
+     */
+    boxdSocket: (): string => opt("SLAUDE_BOXD_SOCKET", "").trim() || "/run/slaude-box/boxd.sock",
+    /**
+     * `SLAUDE_BOX_IMAGE_BUDGET_MB` (node, default 15360): unpacked box images
+     * kept on the node's disk. Above it the least recently used image that no
+     * session needs is removed. 0: nothing is ever removed.
+     */
+    imageBudgetMb: (): number => nonNegativeInt("SLAUDE_BOX_IMAGE_BUDGET_MB", 15360),
+    /**
+     * `SLAUDE_BOX_REGISTRY_AUTH` (node, optional): `user:password` for the
+     * registry box images are pulled from. A node secret: read by the node
+     * process only, never passed to a box or to the agent's child.
+     */
+    registryAuth: (): string | undefined => opt("SLAUDE_BOX_REGISTRY_AUTH", "").trim() || undefined,
+    /**
+     * `SLAUDE_BOX_PREWARM_TIMEOUT_SEC` (node, default 120): how long a starting
+     * node waits for its labels' current images before it reports ready and
+     * pulls the rest on demand.
+     */
+    prewarmTimeoutSec: (): number => nonNegativeInt("SLAUDE_BOX_PREWARM_TIMEOUT_SEC", 120),
+    /**
+     * `SLAUDE_BOX_PULL_TIMEOUT_SEC` (node, default 180): how long a turn waits
+     * for an image its node does not hold. Past it the turn fails with
+     * BOX_IMAGE_UNAVAILABLE; it never runs unboxed.
+     */
+    pullTimeoutSec: (): number => Math.max(1, nonNegativeInt("SLAUDE_BOX_PULL_TIMEOUT_SEC", 180)),
+    /**
+     * `SLAUDE_NODE_MAX_BOXES` (node, default 8): the most sandboxes this pod runs
+     * at once. A default until the density spike measures one. Checked at boot
+     * against the supervisor's memory limit and the box data volume.
+     */
+    maxBoxes: (): number => {
+      const raw = opt("SLAUDE_NODE_MAX_BOXES", "8").trim();
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) throw new Error(`SLAUDE_NODE_MAX_BOXES must be a positive integer (got '${raw}')`);
+      return n;
+    },
+    /**
+     * `SLAUDE_BOX_MEMORY_BUDGET_MB` (node, optional): memory the boxes may
+     * reserve in total. Unset: 85 percent of the supervisor container's memory
+     * limit, read at boot.
+     */
+    memoryBudgetMb: (): number | null => {
+      const raw = opt("SLAUDE_BOX_MEMORY_BUDGET_MB", "").trim();
+      if (!raw) return null;
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < 1) throw new Error(`SLAUDE_BOX_MEMORY_BUDGET_MB must be a positive integer (got '${raw}')`);
+      return n;
+    },
+    /**
+     * `SLAUDE_BOX_SANDBOX_OVERHEAD_MB` (node, default 150): added to each box's
+     * reserve for the sandbox's own processes. A guess until the density spike
+     * measures it.
+     */
+    sandboxOverheadMb: (): number => nonNegativeInt("SLAUDE_BOX_SANDBOX_OVERHEAD_MB", 150),
+    /**
+     * `SLAUDE_BOX_PRESSURE_IDLE_SEC` (node, default 60): how long a warm session
+     * must be idle before it may be parked early to make room for another.
+     */
+    pressureIdleSec: (): number => nonNegativeInt("SLAUDE_BOX_PRESSURE_IDLE_SEC", 60),
+    /**
+     * `SLAUDE_BOX_PARK_BUDGET_MB` (node, optional): disk the parked sessions'
+     * local copies may hold. Unset: half of the box data volume, and never more
+     * than the volume has left after the image budget and the live sessions.
+     */
+    parkBudgetMb: (): number | null => {
+      const raw = opt("SLAUDE_BOX_PARK_BUDGET_MB", "").trim();
+      if (!raw) return null;
+      const n = Number(raw);
+      return Number.isInteger(n) && n >= 0 ? n : null;
+    },
+    /**
+     * `SLAUDE_BOX_TIER` (node, default `none`): the sandbox tier this node offers.
+     * An unknown value is refused rather than read as `none`: a node meant to
+     * sandbox must not quietly run without one.
+     */
+    tier: (): "none" | "bwrap" | "gvisor" => {
+      const v = opt("SLAUDE_BOX_TIER", "none").trim().toLowerCase();
+      if (v === "none" || v === "bwrap" || v === "gvisor") return v;
+      throw new Error("SLAUDE_BOX_TIER must be one of none, bwrap, gvisor");
     },
   },
   remote: {

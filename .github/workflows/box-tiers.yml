@@ -1,0 +1,88 @@
+name: box-tiers
+
+# The tier-gated box suites (tests/box/tier-contract.test.ts and
+# tests/node/worker-box-real.test.ts) through scripts/smoke/box-smoke.sh: real
+# sandboxes under gVisor and bwrap, a real node worker, the mock model.
+#
+# On every pull request and every push to main: the real sandboxes (gVisor and
+# bwrap) on a hosted runner, which the unit suite cannot run. It has passed on a
+# hosted runner (33 of 33 on each tier) since the swap fix. Make it a required
+# check in the repository's branch protection to gate merges; that is a
+# repository setting, not a file. By hand too, for either tier.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tiers:
+        description: "Tiers to run, space separated"
+        default: "gvisor bwrap"
+        required: false
+
+jobs:
+  smoke:
+    name: box smoke (gvisor, bwrap)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      # The same pin as the Dockerfile (RUNSC_VERSION and RUNSC_SHA256_AMD64).
+      RUNSC_VERSION: "20261116.0"
+      RUNSC_SHA256_AMD64: 4eb0475337f119ae7411c1d99d3acd727f1278a0286a244dee8dac91c6db5355
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install runsc (pinned), bubblewrap, skopeo, umoci
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap skopeo umoci zstd unzip curl
+          curl -fsSL --retry 5 -o /tmp/gvisor.tar.zstd "https://storage.googleapis.com/gvisor/releases/release/${RUNSC_VERSION}/x86_64/gvisor.tar.zstd"
+          echo "${RUNSC_SHA256_AMD64}  /tmp/gvisor.tar.zstd" | sha256sum -c -
+          mkdir /tmp/gv && tar --zstd -xf /tmp/gvisor.tar.zstd -C /tmp/gv
+          runsc="$(find /tmp/gv -name runsc -type f | head -1)"
+          sudo install -m 0755 "$runsc" /usr/local/bin/runsc
+          sudo cp -r "$(dirname "$runsc")/gvisor-bin" /usr/local/bin/gvisor-bin
+          runsc --version
+
+      - name: Run the box smoke test
+        env:
+          TIERS: ${{ inputs.tiers }}
+          # The container stage takes minutes more and adds nothing to the question a pull request asks.
+          SLAUDE_SMOKE_NESTED: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+          # An lcov report per tier, uploaded below: these suites are the only ones that run the supervisor and the drivers.
+          SLAUDE_SMOKE_COVERAGE: "1"
+        # Through the environment, never spliced into the command line.
+        run: sudo env SLAUDE_SMOKE_NESTED="$SLAUDE_SMOKE_NESTED" SLAUDE_SMOKE_COVERAGE="$SLAUDE_SMOKE_COVERAGE" scripts/smoke/box-smoke.sh $TIERS
+
+      - name: Make the coverage reports readable
+        if: always()
+        run: sudo chmod -R a+rX /var/lib/slaude-smoke/coverage 2>/dev/null || true
+
+      - name: Upload coverage to Codecov
+        if: always()
+        continue-on-error: true
+        uses: codecov/codecov-action@v5
+        with:
+          files: /var/lib/slaude-smoke/coverage/gvisor/lcov.info,/var/lib/slaude-smoke/coverage/bwrap/lcov.info
+          flags: box-tiers
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Keep the coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: box-tiers-lcov
+          path: /var/lib/slaude-smoke/coverage
+          if-no-files-found: ignore
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: box-smoke-logs
+          path: /var/lib/slaude-smoke/logs
+          if-no-files-found: ignore

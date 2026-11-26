@@ -264,7 +264,7 @@ describe("kbSources (WS-C §4.1)", () => {
 
   test("one version table: the payload needs the highest version of any field a persona sets", () => {
     expect(PERSONA_FIELD_VERSION).toEqual({ provider: 2, runsOn: 2, kbSources: 3, background: 4, definition: 6 });
-    expect(SUPPORTED_PAYLOAD_VERSION).toBe(7);
+    expect(SUPPORTED_PAYLOAD_VERSION).toBe(8);
     const key = { apiKey: "env://PERSONA_ANA_KEY" };
     expect(payloadVersionFor([])).toBe(1);
     expect(payloadVersionFor([ana])).toBe(1);

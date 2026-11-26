@@ -1,0 +1,119 @@
+self cgroup: /sys/fs/cgroup/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+--- processes and their cgroups
+4487  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+4586  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+4640  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+4736  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+4833  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+4909  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+4973  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5040  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5138  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5239  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5301  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5367  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5437  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5497  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5557  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5618  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5679  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5741  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5802  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5863  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5924  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+5985  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6046  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6106  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6166  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6226  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6286  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6346  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6406  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6466  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6527  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6588  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6781  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+6978  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+7019  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+7060  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+7101  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+7142  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+7183  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+7223  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+7264  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+7305  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+7344  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+7754 runsc-gofer --root=/var/lib/slaude-spike/rs --overlay2=root:dir=/var/l cg=/a
+7758 runsc-sandbox --root=/var/lib/slaude-spike/rs --overlay2=root:dir=/var cg=/a
+7759 /usr/local/bin/gvisor-bin/runsc-fd-parking  cg=/kubepods.slice/kubepods-pod9f6bd55b_cb80_4263_a60a_b6891f6ad0fe.slice/cri-containerd-2b60852e0e3d6b5a7a3df372244fddcd2bedb8607b0b9f76257ad8671d61481f.scope
+--- spec cgroupsPath: None
+sandbox cgroup dir: /sys/fs/cgroup/a
+memory.max=536870912
+pids.max=64
+cpu.max=100000 100000
+memory.current=8253440
+pids.current=24
+--- memory charged: alloc 300MB held 6s in sandbox
+RESULT charge | INFO | surrounding scope delta MB=1; sandbox cgroup (/sys/fs/cgroup/a) delta MB=303; sandbox cgroup memory.current=311 MB
+--- RSS per runsc process during alloc
+4487  rss_kb=
+4586  rss_kb=
+4640  rss_kb=
+4736  rss_kb=
+4833  rss_kb=
+4909  rss_kb=
+4973  rss_kb=
+5040  rss_kb=
+5138  rss_kb=
+5239  rss_kb=
+5301  rss_kb=
+5367  rss_kb=
+5437  rss_kb=
+5497  rss_kb=
+5557  rss_kb=
+5618  rss_kb=
+5679  rss_kb=
+5741  rss_kb=
+5802  rss_kb=
+5863  rss_kb=
+5924  rss_kb=
+5985  rss_kb=
+6046  rss_kb=
+6106  rss_kb=
+6166  rss_kb=
+6226  rss_kb=
+6286  rss_kb=
+6346  rss_kb=
+6406  rss_kb=
+6466  rss_kb=
+6527  rss_kb=
+6588  rss_kb=
+6781  rss_kb=
+6978  rss_kb=
+7019  rss_kb=
+7060  rss_kb=
+7101  rss_kb=
+7142  rss_kb=
+7183  rss_kb=
+7223  rss_kb=
+7264  rss_kb=
+7305  rss_kb=
+7344  rss_kb=
+7754 runsc-gofer --root=/var/lib/slaude-spike rss_kb=11448
+7758 runsc-sandbox --root=/var/lib/slaude-spi rss_kb=31864
+7759 runsc-fd-parking  rss_kb=8
+7985 runsc --root /var/lib/slaude-spike/rs ex rss_kb=11488
+--- cpu limit measured on the host: 4 busy threads for 6s
+BUSY wall=6.19 cpu=7.68 cores=1.24 gomaxprocs=2
+RESULT cpu-host-measured | INFO | sandbox cgroup cpu usage over 6 s wall: 6263 ms => 1.04 cores (limit 1.0); throttled: nr_throttled 64 throttled_usec 8139965 
+--- pids: host threads of the sandbox cgroup at idle: 30
+--- exec client kill: does the in-sandbox process die?
+UID       PID       PPID      PGID      C         TTY       STIME     TIME      CMD
+1000      1         0         1         0         ?         03:05     0s        sleep
+1000      11        0         11        0         ?         03:05     0s        sleep
+ps 1 s after TERM to the exec client:
+UID       PID       PPID      PGID      C         TTY       STIME     TIME      CMD
+1000      1         0         1         0         ?         03:05     0s        sleep
+1000      11        0         11        0         ?         03:05     0s        sleep
+RESULT kill-exec-client | INFO | client TERM -> exit in 3 ms; 'sleep' rows in ps after 1 s: 2
+RESULT kill-sandbox | INFO | runsc kill KILL -> state stopped in 16 ms, exec client gone in 17 ms; state=  "status": "stopped",

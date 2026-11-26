@@ -68,6 +68,8 @@
             { "path": "deploy/multi-node", "label": "Multi-node scale-out" },
             { "path": "deploy/remote-storage", "label": "Remote storage (S3)" },
             { "path": "deploy/node-manifest", "label": "Node MCP manifest" },
+            { "path": "deploy/boxes", "label": "Boxes" },
+            { "path": "deploy/boxes-plain-host", "label": "Boxes on a plain host" },
             { "path": "deploy/plugins", "label": "Plugins on nodes" },
             { "path": "deploy/scale-operations", "label": "Scale operations" },
             { "path": "deploy/personas-as-code", "label": "Personas as code" },

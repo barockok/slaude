@@ -197,3 +197,122 @@ scrape_configs:
 - **Draining**: node SIGTERM stops claiming, finishes in-flight turns within
   `SLAUDE_NODE_DRAIN_SEC` (120s), deregisters. `terminationGracePeriodSeconds`
   (150) must stay above the drain window.
+
+## Boxes: sizing, admission and drain
+
+> **Status: in development.** These rules are implemented and tested with a
+> stand-in for the sandbox, and end to end with a real one on a development
+> VM. The manifests that add the supervisor container (`boxd`) to a node pod
+> exist (`deploy/k8s-scale-box`) and render, and **have never been applied to
+> a cluster**: nothing here has run on one. The numbers marked as guesses are
+> replaced when the sandbox is measured.
+
+Boxes run inside the node pod, so a node pod is the unit of capacity and the
+Deployment's replica count is the only thing that scales.
+
+### The sizing model
+
+A pod has two containers: `node` (the worker; small and roughly constant) and
+`boxd` (every sandbox; sized for the sum of the boxes).
+
+Per box, from `box.yaml`: `memoryMb` is a hard ceiling its own cgroup
+enforces. `memoryReserveMb` (a third of the ceiling by default) is what the
+node sets aside to admit it. **Memory is overcommitted on purpose**: most
+sessions sit far below their ceiling most of the time.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `SLAUDE_NODE_MAX_BOXES` | Most sandboxes running at once on this pod | 8 (a guess) |
+| `SLAUDE_BOX_MEMORY_BUDGET_MB` | Memory the boxes may reserve in total | 85 percent of `boxd`'s memory limit |
+| `SLAUDE_BOX_SANDBOX_OVERHEAD_MB` | Added to each reserve for the sandbox's own processes | 150 (a guess) |
+| `SLAUDE_BOX_PRESSURE_IDLE_SEC` | How long a warm session must be idle before it may be parked for room | 60 |
+| `SLAUDE_BOX_IMAGE_BUDGET_MB` | Disk for unpacked box images | 15360 |
+| `SLAUDE_BOX_PARK_BUDGET_MB` | Disk for parked sessions' files | half the volume, or what is left after images and live sessions, whichever is smaller |
+
+A node checks this at start and **refuses to start** on a violation, naming
+the numbers:
+
+```
+boxd memory limit  >=  MAX_BOXES x (smallest reserve + overhead) / 0.85
+box data volume    >=  image budget + MAX_BOXES x 3072 MB + park budget
+MAX_BOXES          >=  1
+```
+
+A worked example:
+
+```
+boxd:  memory limit 16 Gi                 node: about 1 Gi
+SLAUDE_NODE_MAX_BOXES = 10
+default box: memoryMb 3072, memoryReserveMb 1024
+  reserve per box 1024 + 150 = 1174 MB;  10 boxes = 11740 MB  <=  13926 MB budget
+  if every box reached its ceiling: 30 GB on a 16 GB limit, overcommitted about
+  2.2 times. The pressure rule below is what keeps that safe.
+box data volume 80 Gi: images 15, live 10 x 3 = 30, parked 35 (what is left)
+```
+
+`SLAUDE_NODE_CONCURRENCY` (turns running at once) is a different number: a
+warm session between turns holds a sandbox and no turn. Keep
+`SLAUDE_NODE_MAX_BOXES` at or above the node's total turn concurrency; the
+node warns at start when it is lower.
+
+### Admission when a node is full
+
+A warm session's next turn is always served: it already has its sandbox.
+Admission applies to starting one (a new session, or a resume).
+
+1. **Make room first.** When a slot or the reserve is missing and the node
+   holds a session that has been idle for `SLAUDE_BOX_PRESSURE_IDLE_SEC`, it
+   flushes and parks the longest-idle one and takes its place. A session in a
+   turn is never parked.
+2. **Otherwise stop claiming.** The node pauses its label-queue workers and
+   sets `slaude_node_boxes_full` to 1. Its own queue keeps running, so warm
+   sessions continue. New work stays on the label's wait list, where other
+   nodes claim it and the autoscaler sees it.
+3. **A job already claimed** when there is no room is handed back to its
+   label's queue. It is never failed and never run without its sandbox.
+4. **Resume** once room has held for 5 seconds. Room is a free slot, or an
+   idle session that may be parked for one.
+5. **Memory pressure.** When `boxd` uses 90 percent of its memory limit the
+   node admits nothing and parks idle sessions, longest idle first, until it
+   is under 80 percent (`slaude_box_pressure_evictions_total`).
+6. `/readyz` stays 200 on a full node: it is healthy, and marking it unready
+   would not help a queue consumer.
+
+A node paused because it is full and a node paused because its credential was
+refused are two different pauses. Getting room back does not resume a node
+whose credential is still refused, and the reverse.
+
+### Autoscale signals
+
+Three signals, any one of which scales up (`deploy/k8s-scale-box`):
+
+| Signal | Why |
+|---|---|
+| The label's wait list (existing KEDA `redis` trigger) | Work exists and no node took it. A full fleet shows up here within seconds. |
+| Memory and CPU of the `boxd` container, 75 and 70 percent of requests | Heavy boxes fill a pod before the slot count does, and warm sandboxes hold memory with an empty queue. |
+| Box occupancy, `sum(slaude_node_boxes_running) / sum(slaude_node_boxes_capacity)` per label above 0.7 (optional, needs Prometheus) | Scales before a backlog forms. |
+
+Without KEDA, `deploy/k8s-scale-box/optional/node-box-fallback-hpa.yaml` uses
+the `boxd` container's memory and CPU. It cannot see the wait list.
+
+A new pod has no box image. It fetches its labels' current images before it
+reports ready, up to `SLAUDE_BOX_PREWARM_TIMEOUT_SEC` (default 120), then goes
+ready and fetches on demand.
+
+### Drain arithmetic
+
+On SIGTERM a node stops claiming, lets running turns finish inside
+`SLAUDE_NODE_DRAIN_SEC` (default 120), then flushes every warm box's files
+(several sessions at a time), stops every sandbox and removes its routing
+hints. `terminationGracePeriodSeconds` must cover all of it:
+
+```
+grace  >=  SLAUDE_NODE_DRAIN_SEC  +  warm boxes x 15 s / 4
+```
+
+15 seconds per box is the estimate for a home and workspace at their size
+limits, and 4 is how many sessions flush at once. For 10 boxes that is 158
+seconds; the overlay sets 300. A pod killed before its flushes finish loses
+the turns since each session's last flush, the same window
+[remote storage](remote-storage.md) documents. The next turn of a drained
+session lands on another node as a cold resume.

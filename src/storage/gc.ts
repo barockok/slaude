@@ -1,4 +1,5 @@
-import { blobPrefix, listManifestKeys, manifestPrefix, type FileEntry, type Manifest } from "./manifest";
+import { blobPrefix, listManifestKeys, manifestPrefix, type FileEntry } from "./manifest";
+import { isPackManifest, parseManifest } from "./pack-manifest";
 import { getText, type ObjectStore } from "./object-store";
 
 export interface GcOpts {
@@ -27,8 +28,10 @@ export async function gcSession(store: ObjectStore, sessionId: string, opts: GcO
   for (const k of retained) {
     const text = await getText(store, k);
     if (text === null) continue;
-    const m = JSON.parse(text) as Manifest;
-    for (const e of Object.values(m.files)) if (e.type === "file") live.add((e as FileEntry).hash);
+    const m = parseManifest(text);
+    // A pack manifest references archives, one per layer; a per-file manifest references one blob per file.
+    if (isPackManifest(m)) for (const l of m.layers) live.add(l.hash);
+    else for (const e of Object.values(m.files)) if (e.type === "file") live.add((e as FileEntry).hash);
   }
   if (dropped.length > 0) await store.delete(dropped);
 
@@ -43,7 +46,7 @@ export async function gcSession(store: ObjectStore, sessionId: string, opts: GcO
   return { manifestsDeleted: dropped.length, blobsDeleted: stale.length };
 }
 
-/** Delete everything stored for one unit (a synced directory, `ws-…` or `tx-…`; not a session id: units are directories). */
+/** Delete everything stored for one unit (`ws-…`, `tx-…`, `wx-…` or `hm-…`; a unit id, never a bare session id). */
 export async function removeUnit(store: ObjectStore, unitId: string): Promise<number> {
   const keys: string[] = [];
   for await (const o of store.list(`sessions/${unitId}/`)) keys.push(o.key);

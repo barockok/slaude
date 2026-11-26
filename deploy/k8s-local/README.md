@@ -339,6 +339,35 @@ that fails or returns something that is not JSON says which probe and what it
 received, and a check it could not measure says so instead of reporting a wrong
 value.
 
+## Boxes (optional, never run here)
+
+`SLAUDE_LOCAL_BOX=gvisor ./up.sh` (or `bwrap`) lays `box/` over the overlay:
+every node pod gains the privileged box supervisor (`boxd`) and offers that
+sandbox tier, and the gateways run with `SLAUDE_BOX=on`. The default is `off`,
+and nothing changes without it. The node is sized up by `LOCAL_BOX_EXTRA_*`
+(`sizing.env`: 2 CPUs and 4608 MB more) unless you set `SLAUDE_LOCAL_CPUS` or
+`SLAUDE_LOCAL_MEMORY`; an existing profile is not resized, so delete it first.
+
+**This path was written and tested as text only. No cluster has been brought
+up with it.** The overlay renders, and its numbers pass the node's own sizing
+check (`tests/deploy/local-box.test.ts`). Whether runsc starts in a privileged
+container of a pod inside a minikube node, itself a container of the Docker VM,
+is not known. The sizes are guesses.
+
+The switch syncs no boxed persona and pushes no box image. A persona runs in a
+box once it names one (`box: <name>` in its `agent.yaml`) whose image the node
+pods can pull.
+
+`VERIFY_BOX=1 VERIFY_BOX_PERSONA=<name> ./verify-turns.sh` adds a last section
+that drives real turns of that persona against the mock model (so it needs the
+e2e stack, `scripts/e2e-ha.sh` with `E2E_BOX=gvisor E2E_SANITY=1
+E2E_BOX_PERSONA=<name>`): a turn in a box, the same thread on another node
+after its node is deleted, and two more sessions than the nodes have slots.
+The home (and a tool installed in it) follows a session to another node only
+with `SLAUDE_STORAGE=s3`; this overlay uses the shared volume, so there the
+section reports the lost tool as a note. That section has never been run
+either.
+
 ## Real-Slack smoke runbook
 
 Run on a release candidate (the release plan's gate, item 4), after both verify

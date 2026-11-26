@@ -85,6 +85,13 @@ describe("resolveReply", () => {
       expect(r.kind === "tools" && r.calls[0]!.id).toBe("toolu_mock_2");
     });
 
+    test("id=<word> gives the turn its own call ids, and an id that is not a plain word is ignored", () => {
+      const own = resolveReply(withResults(1, "[[mock:multi-tool n=2 id=turn7]] go"));
+      expect(own.kind === "tools" && own.calls[0]!.id).toBe("toolu_mock_turn7_2");
+      const bad = resolveReply(withResults(0, "[[mock:multi-tool n=2 id=Not_A/Word]] go"));
+      expect(bad.kind === "tools" && bad.calls[0]!.id).toBe("toolu_mock_1");
+    });
+
     test("summarises once all n results are in", () => {
       expect(resolveReply(withResults(2))).toEqual({ kind: "text", content: "done after 2 tools" });
     });

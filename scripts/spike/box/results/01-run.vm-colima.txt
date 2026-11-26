@@ -1,0 +1,94 @@
+[23:58:56] host: Linux 6.8.0-64-generic aarch64 cpus=4 mem_kb=8113304
+[23:58:56] runsc: runsc version release-20261116.0 sha256=5234a347ba40766077cc65aa3883b88a3b1d589043447661acb9d713074aa04b platform=systrap kvm=no
+[23:58:56] cgroup: cgroup2fs self=/user.slice/user-501.slice/session-4.scope
+[23:58:56] == 1 run/exec
+RESULT run-detach | PASS | ok
+uid=1000 gid=1000 groups=1000
+none            2.0G     0  2.0G   0% /
+Linux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016
+/bin/sh: 1: ip: not found
+Inter-|   Receive                                                |  Transmit
+ face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+drwxr-xr-x 2 1000 1000 4096 Nov 24 16:58 /home/agent
+drwxr-xr-x 2 root root 4096 Nov 24 16:58 /run/slaude
+drwxr-xr-x 2 1000 1000 4096 Nov 24 16:58 /work
+none on / type overlay (rw,size=2097152k)
+none on /dev type dev (rw,nosuid,mode=0755)
+none on /sys type sysfs (ro,nosuid,noexec,dentry_cache_limit=1000)
+none on /tmp type tmpfs (rw,nosuid,size=524288k)
+none on /proc type proc (rw,dentry_cache_limit=1000)
+none on /work type 9p (rw,trans=fd,rfdno=6,wfdno=6,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=1000,cache=remote_revalidating,disable_fifo_open,directfs)
+none on /dev/pts type devpts (rw,nosuid,noexec)
+none on /dev/shm type tmpfs (rw,nosuid,noexec,size=65536k,mode=1777)
+none on /home/agent type 9p (rw,trans=fd,rfdno=5,wfdno=5,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=1000,cache=remote_revalidating,disable_fifo_open,directfs)
+none on /run/slaude type 9p (rw,trans=fd,rfdno=7,wfdno=7,aname=/,dfltuid=4294967294,dfltgid=4294967294,dcache=1000,cache=remote_revalidating,disable_fifo_open,directfs)
+RESULT bind-mount-rw | PASS | host sees sandbox writes
+RESULT host-write-visible-shared-mode | PASS | sandbox sees host write (shared mode)
+[23:58:56] == 2 overlay
+WROTE-MB 1024
+total 8
+drwxr-xr-x 2 root root 4096 Nov 24 23:58 .
+drwxr-xr-x 6 root root 4096 Nov 24 23:58 ..
+1	/var/lib/slaude-spike/w/s1/ov
+-rw-r--r-- 1 root root 1073741824 Nov 24 16:59 /usr/local/big1
+RESULT overlay-1GB-write | INFO | host disk used delta MB=1024; backing dir listing above; rootfs untouched: 3MB
+RESULT overlay-root-untouched | PASS | image dir has no big1
+WRITE-ERR-AT-MB 256 write /usr/local/big2: no space left on device
+RESULT overlay-size-limit | PASS | WRITE-ERR-AT-MB 256 write /usr/local/big2: no space left on device
+RESULT overlay-isolation | PASS | s3 does not see s1 writes
+RESULT overlay-isolation-root | PASS | root clean
+RESULT overlay-after-stop | INFO | backing dir after stop: 1MB 0 entries
+[23:59:04] == 3 stdio
+RESULT stdio-roundtrip | PASS | hello
+RESULT stdio-100MB | PASS | sha256 equal, 445 ms
+RESULT stdin-close | INFO | cat with closed stdin returned in 20 ms
+[23:59:05] == 4 uds and loopback
+host-uds=none -> DIAL-ERR dial unix /run/slaude/egress.sock: connect: connection refused
+RESULT host-uds-none | FAIL | DIAL-ERR dial unix /run/slaude/egress.sock: connect: connection refused
+host-uds=open -> REPLY pong:ping
+RESULT host-uds-open | PASS | REPLY pong:ping
+LOOPBACK-ECHO hello
+EXTERNAL-DIAL dial tcp 93.184.216.34:80: connect: network is unreachable
+RESULT loopback-network-none | PASS | LOOPBACK-ECHO hello EXTERNAL-DIAL dial tcp 93.184.216.34:80: connect: network is unreachable 
+[23:59:07] == 5 limits
+RESULT limits-start | PASS | spec with memory 512MB pids 64 cpu 1 core accepted
+  "status": "running",
+  "pid": 67449,
+7:pids:/
+6:memory:/
+5:job:/
+4:devices:/
+3:cpuset:/
+cat: /sys/fs/cgroup/pids.max: No such file or directory
+cat: /sys/fs/cgroup/memory.max: No such file or directory
+cat: /sys/fs/cgroup/cpu.max: No such file or directory
+-- alloc 900MB under 512MB limit
+ALLOC 200
+ALLOC 300
+ALLOC 400
+waiting on pid 5: waiting on PID 5 in sandbox "l1": urpc method "containerManager.WaitPID" failed: EOF
+rc=128
+RESULT limit-memory | PASS | alloc killed/refused rc=128 last='waiting on pid 5: waiting on PID 5 in sandbox "l1": urpc method "containerManager.WaitPID" failed: EOF'
+sandbox state after:   "status": "stopped",
+FORK-FAIL-AT 17 fork/exec /bin/sleep: cannot allocate memory
+FORKED 17
+RESULT limit-pids | PASS | FORK-FAIL-AT 17 fork/exec /bin/sleep: cannot allocate memory FORKED 17 
+BUSY wall=6.02 cpu=7.40 cores=1.23 gomaxprocs=2
+RESULT limit-cpu | INFO | BUSY wall=6.02 cpu=7.40 cores=1.23 gomaxprocs=2 (cores near 1.0 means held to one core; 4.0 means not held)
+BUSY wall=6.03 cpu=21.73 cores=3.61 gomaxprocs=4
+RESULT limit-cpu-unlimited-control | INFO | BUSY wall=6.03 cpu=21.73 cores=3.61 gomaxprocs=4
+[23:59:20] == 6 cgroup charge
+RESULT memory-charged-to-surrounding-cgroup | INFO | memory.current of /sys/fs/cgroup/user.slice/user-501.slice/session-4.scope before=220536832 during=222707712 (alloc 400MB held in sandbox); delta MB=2
+[23:59:28] == 7 start time (20 runs: run --detach + first exec returning)
+RESULT start-time | INFO | run --detach: n=20 median=28.5 ms p95=44 ms min=22 max=44 all=[22, 22, 23, 24, 25, 26, 26, 27, 27, 28, 29, 30, 32, 34, 38, 38, 39, 40, 42, 44]
+RESULT start-time | INFO | run + first exec: n=20 median=36.5 ms p95=59 ms min=30 max=59 all=[30, 30, 31, 32, 33, 34, 34, 35, 36, 36, 37, 39, 41, 41, 47, 47, 49, 52, 56, 59]
+[23:59:30] == 8 density
+baseline: 0 0
+procs:
+69061 runsc-gofer --overlay2=root:dir=/var/lib/slaude-spike/w/d1/ov,size=2g --host-uds=open --network=none --platform=systrap --root=/var/lib/slaude-spike/rs go
+69066 runsc-sandbox --overlay2=root:dir=/var/lib/slaude-spike/w/d1/ov,size=2g --host-uds=open --network=none --platform=systrap --root=/var/lib/slaude-spike/rs 
+69067 runsc-fd-parking
+RESULT density-idle-1 | INFO | idle sandbox: PSS sum 38 MB over 2 runsc processes
+RESULT density-idle-10 | INFO | 10 idle sandboxes: PSS sum 100 MB over 20 processes, 10 MB each; free: used=477MB
+[23:59:38] done; log: results/01-run.vm-colima.txt

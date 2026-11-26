@@ -23,8 +23,10 @@ export type ThreadKey = {
 type RawRow = SessionRow & { boundary_id?: string | null; locator?: string | null; thread_head_at?: number | string | null };
 function publicRow<T extends RawRow | null>(row: T): T {
   if (!row) return row;
-  const { boundary_id: _b, locator: _l, thread_head_at: _h, ...rest } = row as RawRow;
-  return rest as unknown as T;
+  const { boundary_id: _b, locator: _l, thread_head_at: _h, box_name, box_digest, ...rest } = row as RawRow;
+  // The box pin (0058) is part of the row only for a pinned session: an
+  // unboxed session's row is the shape it always was.
+  return (box_name && box_digest ? { ...rest, box_name, box_digest } : rest) as unknown as T;
 }
 
 export async function findByThread(k: ThreadKey): Promise<SessionRow | null> {

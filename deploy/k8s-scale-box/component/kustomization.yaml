@@ -1,0 +1,172 @@
+# The box component: what a node pod needs to run boxes. Laid over the base by
+# ../kustomization.yaml and over deploy/k8s-scale-s3 by ../with-s3. Read the
+# header of ../kustomization.yaml first: this has not been applied to a cluster.
+#
+# The Deployment patches are strategic merges that match containers, volumes
+# and variables by NAME, never by position, so they compose with an overlay
+# that patched the same lists by index (deploy/k8s-scale-s3 does). The target
+# is a name pattern: it covers `slaude-node` and every `slaude-node-<label>`
+# Deployment, including one you add.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+patches:
+  - target: { kind: Deployment, name: "slaude-node(-[a-z0-9-]+)?" }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: slaude-node
+      spec:
+        template:
+          spec:
+            # The drain window plus the flush of the warm boxes, several at a
+            # time. kubelet must not SIGKILL a pod that is still flushing homes.
+            terminationGracePeriodSeconds: 300
+            containers:
+              - name: node
+                env:
+                  # The tier this pod offers. `bwrap` is the other value (a
+                  # shared kernel; see the docs before choosing it). The
+                  # supervisor below must be given the same value.
+                  - name: SLAUDE_BOX_TIER
+                    value: gvisor
+                  # The most sandboxes this pod runs at once. The node refuses
+                  # to start when the supervisor's memory limit or the box
+                  # volume cannot hold this many (the sizing rule, in
+                  # docs/site/_content/deploy/scale-operations.md).
+                  - name: SLAUDE_NODE_MAX_BOXES
+                    value: "10"
+                  # The disk budgets, stated and not left to their defaults: an
+                  # emptyDir's sizeLimit is not visible from inside the pod
+                  # (the volume reports the host's disk), so the node cannot
+                  # derive them from the 80Gi below. Images 15 GB, parked
+                  # sessions 30 GB, and 10 live sessions at about 3 GB each.
+                  - name: SLAUDE_BOX_IMAGE_BUDGET_MB
+                    value: "15360"
+                  - name: SLAUDE_BOX_PARK_BUDGET_MB
+                    value: "30720"
+                  - name: SLAUDE_BOX_DIR
+                    value: /var/lib/slaude-box
+                  - name: SLAUDE_BOXD_SOCKET
+                    value: /run/slaude-box/boxd.sock
+                # The node worker no longer holds the agent processes of boxed
+                # sessions: they are charged to `boxd`. It still runs the
+                # proxies, the sync and any UNBOXED session of this label, so
+                # it is not shrunk to nothing. A guess until measured; a label
+                # that serves many unboxed personas should keep the base's 4Gi.
+                resources:
+                  requests: { cpu: 500m, memory: 1Gi }
+                  limits: { cpu: "2", memory: 2Gi }
+                volumeMounts:
+                  - { name: box-run, mountPath: /run/slaude-box }
+                  - { name: box-data, mountPath: /var/lib/slaude-box }
+              - name: boxd
+                # The same image as `node`: it carries runsc, bubblewrap, tini
+                # and the compiled box-init.
+                image: ghcr.io/REPLACE/slaude:latest
+                imagePullPolicy: Always
+                # Under tini, never as pid 1 itself: ended sandbox processes
+                # are left for pid 1 to reap, and the supervisor is not an
+                # init. --no-env-file: no dotenv file is read. The mount roots
+                # are what a box may be given read-write (workspaces under
+                # /data, session config directories); /app (the CLI and the
+                # built-in plugins of this image) read-only only.
+                command: ["tini", "--", "bun", "--no-env-file", "src/box/boxd/main.ts", "--mount-root", "/data", "--mount-root", "/config-home", "--ro-root", "/app"]
+                # Privileged, and for that reason given NOTHING: no envFrom, no
+                # Secret, no key reference, no ServiceAccount token (the pod
+                # mounts none). It makes no network call. It refuses to start
+                # when its environment holds a credential or provider variable.
+                securityContext:
+                  privileged: true
+                env:
+                  - name: SLAUDE_BOX_TIER
+                    value: gvisor
+                  - name: SLAUDE_BOX_DIR
+                    value: /var/lib/slaude-box
+                  - name: SLAUDE_BOXD_SOCKET
+                    value: /run/slaude-box/boxd.sock
+                # The boxes are charged here. Requests MUST be set: the
+                # autoscaling triggers below are percentages of them. The limit
+                # is what the sizing rule reads: 10 boxes need 10 x (1024
+                # reserve + 150 overhead) / 0.85 = 13812 MB, under 16Gi. The
+                # design's worked example, not a measurement.
+                resources:
+                  requests: { cpu: "2", memory: 12Gi }
+                  limits: { cpu: "8", memory: 16Gi }
+                volumeMounts:
+                  - { name: box-run, mountPath: /run/slaude-box }
+                  - { name: box-data, mountPath: /var/lib/slaude-box }
+                  # Workspaces and session config directories, bind mounted
+                  # into boxes at the same paths the node worker uses.
+                  - { name: slaude-home, mountPath: /data }
+                  - { name: config-home, mountPath: /config-home }
+            volumes:
+              # The supervisor's control socket (mode 0600) and nothing else.
+              - name: box-run
+                emptyDir: { medium: Memory, sizeLimit: 16Mi }
+              # Unpacked images, session homes, root overlays, scratch and
+              # parked sessions. Pod-local: what must survive the pod is
+              # flushed to the bucket (SLAUDE_STORAGE=s3).
+              - name: box-data
+                emptyDir: { sizeLimit: 80Gi }
+
+  # Boxes are read by the gateway only when this is on. A persona that names no
+  # box is not affected.
+  - target: { kind: Deployment, name: slaude-gateway }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: slaude-gateway
+      spec:
+        template:
+          spec:
+            containers:
+              - name: gateway
+                env:
+                  - name: SLAUDE_BOX
+                    value: "on"
+
+  # Autoscaling. The targets are percentages of the container's REQUESTS. 75
+  # and 70 leave room for a burst of new sessions while a new pod starts and
+  # pulls its images. Why `boxd` and not the pod: the `node` container is small
+  # and roughly constant; the boxes are in `boxd`. Heavy boxes fill a pod
+  # before its slot count does, and a warm sandbox holds memory while no turn
+  # runs and the queue is empty, which the wait-list trigger cannot see.
+  - target: { kind: ScaledObject, name: "slaude-node(-[a-z0-9-]+)?" }
+    patch: |-
+      - op: add
+        path: /spec/triggers/-
+        value:
+          type: memory
+          metricType: Utilization
+          metadata: { value: "75", containerName: boxd }
+      - op: add
+        path: /spec/triggers/-
+        value:
+          type: cpu
+          metricType: Utilization
+          metadata: { value: "70", containerName: boxd }
+
+# --- Optional third trigger, for clusters that run Prometheus: box occupancy.
+# It scales BEFORE a backlog forms and holds replicas while sessions are warm
+# though the queue is empty. Add to each ScaledObject's triggers (one patch per
+# label, with the label's own Deployment in the selector):
+#
+#   - op: add
+#     path: /spec/triggers/-
+#     value:
+#       type: prometheus
+#       metadata:
+#         serverAddress: http://REPLACE-prometheus:9090
+#         # Running boxes over capacity, for this label's node pods only.
+#         query: >-
+#           sum(slaude_node_boxes_running{namespace="slaude-scale",pod=~"slaude-node-[a-z0-9]+-[a-z0-9]+"})
+#           / sum(slaude_node_boxes_capacity{namespace="slaude-scale",pod=~"slaude-node-[a-z0-9]+-[a-z0-9]+"})
+#         # KEDA divides the query's value by this to get the wanted replica
+#         # ratio: 0.7 means "add nodes above 70 percent occupied".
+#         threshold: "0.7"
+#
+# cooldownPeriod stays 300 s (the base): a removed pod's sessions resume
+# elsewhere from the bucket, which is cheap but not free.

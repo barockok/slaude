@@ -1,0 +1,81 @@
+{
+ "label": "egress",
+ "finished": "2026-11-24T17:14:26.858Z",
+ "results": [
+  {
+   "name": "egress/deny-all/curl",
+   "status": "PASS",
+   "detail": "output: curl: (56) CONNECT tunnel failed, response 403 / http=000 | proxy log hosts so far: example.com:443",
+   "ms": 51
+  },
+  {
+   "name": "egress/deny-all/git-clone-https",
+   "status": "PASS",
+   "detail": "output: Cloning into '/tmp/hw'... / fatal: unable to access 'https://github.com/octocat/Hello-World.git/': CONNECT tunnel failed, response 403 | proxy log hosts so far: example.com:443,github.com:443",
+   "ms": 41
+  },
+  {
+   "name": "egress/deny-all/npm-view",
+   "status": "PASS",
+   "detail": "output: npm ERR! 403 on a server you do not have access to. /  / npm ERR! A complete log of this run can be found in: / npm ERR!     /tmp/npmc/_logs/2026-11-24T17_14_21_924Z-debug-0.log | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443",
+   "ms": 525
+  },
+  {
+   "name": "egress/deny-all/pip-download",
+   "status": "FAIL",
+   "detail": "output: ERROR: Could not find a version that satisfies the requirement six (from versions: none) / ERROR: No matching distribution found for six | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443,pypi.org:443",
+   "ms": 403
+  },
+  {
+   "name": "egress/deny-all/go-mod-download",
+   "status": "FAIL",
+   "detail": "output: go: golang.org/x/text@v0.14.0: Get \"https://proxy.golang.org/golang.org/x/text/@v/v0.14.0.info\": Forbidden | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443,pypi.org:443,proxy.golang.org:443",
+   "ms": 22
+  },
+  {
+   "name": "egress/deny-all/proxy-log",
+   "status": "INFO",
+   "detail": "DENY CONNECT example.com:443 HTTP/1.1 | DENY CONNECT github.com:443 HTTP/1.1 | DENY CONNECT registry.npmjs.org:443 HTTP/1.1 | DENY CONNECT pypi.org:443 HTTP/1.1 | DENY CONNECT proxy.golang.org:443 HTTP/1.1"
+  },
+  {
+   "name": "egress/allowlisted/curl",
+   "status": "PASS",
+   "detail": "output: http=200 | proxy log hosts so far: example.com:443",
+   "ms": 116
+  },
+  {
+   "name": "egress/allowlisted/git-clone-https",
+   "status": "PASS",
+   "detail": "output: Cloning into '/tmp/hw'... / cloned | proxy log hosts so far: example.com:443,github.com:443",
+   "ms": 919
+  },
+  {
+   "name": "egress/allowlisted/npm-view",
+   "status": "PASS",
+   "detail": "output: 1.3.0 | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443",
+   "ms": 630
+  },
+  {
+   "name": "egress/allowlisted/pip-download",
+   "status": "PASS",
+   "detail": "output: Downloading six-1.17.0-py2.py3-none-any.whl (11 kB) / Saved ./pp/six-1.17.0-py2.py3-none-any.whl / Successfully downloaded six / six-1.17.0-py2.py3-none-any.whl | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443,pypi.org:443,files.pythonhosted.org:443",
+   "ms": 621
+  },
+  {
+   "name": "egress/allowlisted/go-mod-download",
+   "status": "PASS",
+   "detail": "output: downloaded | proxy log hosts so far: example.com:443,github.com:443,registry.npmjs.org:443,pypi.org:443,files.pythonhosted.org:443,proxy.golang.org:443,sum.golang.org:443",
+   "ms": 2154
+  },
+  {
+   "name": "egress/allowlisted/proxy-log",
+   "status": "INFO",
+   "detail": "ALLOW CONNECT example.com:443 HTTP/1.1 | ALLOW CONNECT github.com:443 HTTP/1.1 | ALLOW CONNECT registry.npmjs.org:443 HTTP/1.1 | ALLOW CONNECT pypi.org:443 HTTP/1.1 | ALLOW CONNECT files.pythonhosted.org:443 HTTP/1.1 | ALLOW CONNECT proxy.golang.org:443 HTTP/1.1 | ALLOW CONNECT sum.golang.org:443 HTTP/1.1"
+  },
+  {
+   "name": "proxy/placeholder-never-upstream",
+   "status": "PASS",
+   "detail": "0 upstream requests, 0 carried the placeholder"
+  }
+ ]
+}

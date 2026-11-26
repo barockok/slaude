@@ -1,0 +1,54 @@
+== image
+sha256:869608182e39f4b00a80f2b0d4cb7b203efbdbcc8ed8461551bdd0c51df234e9
+1737	/var/lib/slaude-spike/bench-root
+Filesystem total inodes: 62310
+Filesystem total metadata blocks: 11474
+Filesystem total deduplicated bytes (of source files): 0
+-rw-r--r-- 1 root root 804683776 Nov 24 22:49 /var/lib/slaude-spike/bench.erofs
+== synthetic git mirror: 20,000 files, 120 commits, branches main and feature
+count: 0
+size: 0 bytes
+in-pack: 34163
+packs: 1
+== JS project (about 1,000 packages): bun and npm caches
++ zod@3.23.8 (v4.6.7 available)
+
+663 packages installed [14.05s]
+
+up to date in 20s
+
+added 687 packages in 16s
++ zod@3.23.8
+
+663 packages installed [525.00ms]
+packages in node_modules (bun): 0
+lock entries: 741
+448	/var/lib/slaude-spike/seed/home/.bun
+311	/var/lib/slaude-spike/seed/home/.npm
+== pip wheels
+numpy-2.5.5-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
+== go module and mirror
+Note: switching to 'cc29c91ba3acb47c1793da56d919cc40def4ea41'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by using -c with the switch command. Example:
+
+  git switch -c <new-branch-name>
+
+Or undo this operation with:
+
+  git switch -
+
+Turn off this advice by setting config variable advice.detachedHead to false
+
+
+real	0m22.035s
+user	0m58.801s
+sys	0m16.521s
+820	/var/lib/slaude-spike/seed
+107	/var/lib/slaude-spike/mirror
+setup-done

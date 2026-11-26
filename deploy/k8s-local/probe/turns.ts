@@ -29,12 +29,27 @@
 //                 JSON: { value } of slaude_label_unserved{label} on THIS gateway
 //                 replica's /metrics (only the reaper leader exports it; null
 //                 when this replica has no such series)
+//   box-check 1 --persona <name>
+//                 JSON: { enabled, box, digest, tier } for the box the persona's
+//                 next new session would be pinned to (nothing is pinned);
+//                 `box` is null when the persona names none
+//   box-turn <n> --persona <name> [--label <label>|live] --cmd <base64url> --id <word> [--again]
+//                 n NEW sessions (or, with --again, one more turn in the first
+//                 session of the last box-turn), each pinned to the persona's
+//                 box the way dispatch pins it, each with ONE REAL turn: the
+//                 mock model (`[[mock:multi-tool ...]]`) asks for one Bash call
+//                 running the decoded command. NOT suppressed: the CLI runs, in
+//                 a box when the session is pinned. Needs the mock model as
+//                 the provider; against a real provider the tag is just text.
+//                 Prints { enqueued, sessions, label, box, digest, workdirs }.
+//                 WRITTEN, NOT RUN: no cluster has run a boxed turn.
 //
-// The probe's turns are SUPPRESSED: the node runs the full turn lifecycle and
+// The probe's turns are SUPPRESSED (all but box-turn's): the node runs the full turn lifecycle and
 // writes its completion marker, but the prompt hook stops the model, so the probe
 // costs no provider tokens. What is under test is DELIVERY — every enqueued turn
 // reaching a node exactly once, even when a node dies mid-flight.
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { getRedis } from "/app/src/queue/redis.ts";
 import { labelTurnsQueue, LABEL_RE, makeKeys } from "/app/src/queue/keys.ts";
@@ -45,6 +60,8 @@ import * as Sessions from "/app/src/db/sessions.ts";
 import * as CronJobs from "/app/src/db/cron-jobs.ts";
 import { env } from "/app/src/config/env.ts";
 import { buildPersonaRegistry, runsOnFor } from "/app/src/persona/registry.ts";
+// The box commands load what they need themselves (below), so that an image
+// older than boxes still runs every other command of this probe.
 
 const TEAM = "TVERIFY";
 const CHANNEL = "CVERIFY";
@@ -133,6 +150,106 @@ async function enqueue(n: number) {
   writeFileSync(SESSIONS, JSON.stringify(sessions));
   console.log(
     JSON.stringify({ enqueued: ids.length, session: sessions[0]?.id ?? null, sessions: sessions.map((s) => s.id), label: LABEL }),
+  );
+}
+
+// --- boxes ---------------------------------------------------------------------
+const flag = (name: string): string | undefined => {
+  const i = rest.indexOf(name);
+  return i >= 0 ? rest[i + 1] : undefined;
+};
+
+/** The persona's box as dispatch reads it, with the persona registry this process built. */
+async function boxModules() {
+  const registry = await import("/app/src/persona/registry.ts");
+  registry.setPersonaRegistry(await buildPersonaRegistry("default"));
+  const pin = await import("/app/src/gateway/core/box-pin.ts");
+  const boxes = await import("/app/src/gateway/core/box-registry.ts");
+  return { registry, pin, boxes };
+}
+
+async function boxCheck() {
+  const { registry, boxes } = await boxModules();
+  const name = registry.managedPersonaDefinition(PERSONA === "default" ? undefined : PERSONA)?.box ?? env.box.defaultBox();
+  const cur = name ? await boxes.currentBox("default", name) : null;
+  console.log(JSON.stringify({ enabled: env.box.enabled(), box: name ?? null, digest: cur?.digest ?? null, tier: cur?.policy.tier ?? null }));
+}
+
+async function boxTurn(n: number) {
+  const cmdB64 = flag("--cmd") ?? "";
+  const id = flag("--id") ?? "";
+  // The mock numbers its tool calls from 1 every turn, and the CLI drops a call
+  // whose id an earlier turn of a resumed transcript used: every turn of a
+  // thread needs its own id word (the 2026-11-25 box smoke note, item 12).
+  if (!/^[A-Za-z0-9_-]+$/.test(cmdB64) || !/^[a-z0-9]{1,16}$/.test(id)) {
+    console.error("box-turn needs --cmd <base64url of a shell command> and --id <word>");
+    process.exit(2);
+  }
+  const command = Buffer.from(cmdB64, "base64url").toString("utf8");
+  const args = Buffer.from(JSON.stringify({ command, description: "verify-turns box probe" })).toString("base64url");
+  const { pin } = await boxModules();
+  let sessions: Array<{ id: string; thread: string; workdir: string }> = [];
+  if (rest.includes("--again")) {
+    try {
+      sessions = (JSON.parse(readFileSync(SESSIONS, "utf8")) as typeof sessions).slice(0, 1);
+    } catch {
+      /* no earlier box-turn */
+    }
+    if (!sessions.length || !sessions[0]!.workdir) {
+      console.error("box-turn --again: no session from an earlier box-turn");
+      process.exit(2);
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      const thread = `${MARK}-box-${Date.now()}-${i}`;
+      // Under the slaude home: a box is only ever given directories under the
+      // supervisor's mount roots, and /tmp is not one.
+      const workdir = join(process.env.SLAUDE_HOME ?? "/data", "workspaces", thread);
+      mkdirSync(workdir, { recursive: true });
+      const session = await Sessions.createForThread({
+        thread: { team_id: TEAM, channel_id: CHANNEL, thread_ts: thread, persona_id: PERSONA },
+        model: env.model(),
+        working_dir: workdir,
+        title: MARK,
+      });
+      sessions.push({ id: session.id, thread, workdir });
+    }
+  }
+  const ids: string[] = [];
+  let box: { name: string; digest: string } | null = null;
+  for (const [i, s] of sessions.entries()) {
+    // The pin dispatch would have made. It throws when the box cannot be served; a turn is never sent unboxed instead.
+    const pinned = await pin.sessionBoxPin({ tenant: "default", persona: PERSONA, sessionId: s.id });
+    if (!pinned) {
+      console.error(`box-turn: persona '${PERSONA}' is not boxed here (SLAUDE_BOX off, or it names no box)`);
+      process.exit(3);
+    }
+    box = { name: pinned.name, digest: pinned.digest };
+    const jobId = randomUUID();
+    const jobToken = mintJobToken({
+      label: LABEL, tenant: "default", persona: PERSONA, session: s.id,
+      team: TEAM, channel: CHANNEL, thread: s.thread, initiator: "UVERIFY",
+      scope: "turn", runAs: "agent", job: jobId, lock: null,
+    });
+    const r = await turns.enqueueTurn(
+      {
+        sessionId: s.id,
+        tenantId: "default",
+        personaId: PERSONA,
+        label: LABEL,
+        messages: [{ ts: `${Date.now()}.${i}`, user: "UVERIFY", text: `${MARK}: [[mock:multi-tool n=1 id=${id}${i} args=${args}]] run it` }],
+        jobToken,
+        enqueuedAt: Date.now(),
+      },
+      { label: LABEL },
+      jobId,
+    );
+    ids.push(r.jobId);
+  }
+  writeFileSync(STATE, JSON.stringify(ids));
+  if (!rest.includes("--again")) writeFileSync(SESSIONS, JSON.stringify(sessions));
+  console.log(
+    JSON.stringify({ enqueued: ids.length, sessions: sessions.map((x) => x.id), workdirs: sessions.map((x) => x.workdir), label: LABEL, box: box?.name ?? null, digest: box?.digest ?? null }),
   );
 }
 
@@ -280,12 +397,15 @@ const commands: Record<string, () => Promise<void>> = {
   token,
   "legacy-whoami": legacyWhoami,
   unserved,
+  "box-check": boxCheck,
+  "box-turn": () => boxTurn(Math.max(1, Number(arg ?? 1))),
 };
 const run = commands[cmd ?? ""];
 if (!run) {
   console.error(
     "usage: turns.ts enqueue <n> [--persona <name>] [--label <label>|live] | again 1 --persona <name> | status | cron | " +
-      "cron-status | cleanup | token 1 [--persona <name>] [--label <label>|live] | legacy-whoami | unserved <label>",
+      "cron-status | cleanup | token 1 [--persona <name>] [--label <label>|live] | legacy-whoami | unserved <label> | " +
+      "box-check 1 --persona <name> | box-turn <n> --persona <name> --cmd <base64url> --id <word> [--again]",
   );
   process.exit(2);
 }

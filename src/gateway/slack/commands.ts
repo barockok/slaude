@@ -60,6 +60,7 @@ export type SlashHit =
   | { kind: "bash"; command: string }
   | { kind: "compact" }
   | { kind: "new" }
+  | { kind: "box"; action: "status" | "refresh" }
   | { kind: "link" };
 
 /** One descriptor per agent slash command — the single source of truth for every help
@@ -95,6 +96,16 @@ export const AGENT_COMMANDS: SlashSpec[] = [
   { usage: "/compact", summary: "summarize and compact the conversation context" },
   { usage: "/new", summary: "start this channel's session over; the old one stays in the console (manager or this channel's approvers)" },
   { usage: "/help", summary: "show this help" },
+];
+
+/**
+ * The box commands. Kept out of AGENT_COMMANDS: they are commands only where
+ * the deployment has boxes switched on (elsewhere `/box ...` is plain text, as
+ * it always was), and help lists them only there.
+ */
+export const BOX_COMMANDS: SlashSpec[] = [
+  { usage: "/box [status]", summary: "show the sandbox image this thread runs on and whether a newer one exists" },
+  { usage: "/box refresh", summary: "move this thread to its box's current image; home, workspace and conversation are kept (manager or this channel's approvers)" },
 ];
 
 const HELP_NAMES = new Set(["help", "h", "?"]);
@@ -288,20 +299,29 @@ export function parseSlashCommand(text: string): SlashHit | null {
   if (cmd === "new") {
     return { kind: "new" };
   }
+  if (cmd === "box") {
+    // Anything else after /box is not a command: it reaches the model as text.
+    if (rest.length > 1) return null;
+    if (arg === "" || arg === "status") return { kind: "box", action: "status" };
+    if (arg === "refresh") return { kind: "box", action: "refresh" };
+    return null;
+  }
   if (HELP_NAMES.has(cmd)) {
     return { kind: "help" };
   }
   return null;
 }
 
-export function helpText(o: { channelSessionRoot?: boolean } = {}): string {
+export function helpText(o: { channelSessionRoot?: boolean; boxes?: boolean } = {}): string {
   // Render the command table inside a code fence with the summary column aligned
   // to a single gutter (longest usage + 2). Slack renders fences monospace, so
   // space-padding lines up cleanly; tabs render at inconsistent widths and are
   // avoided. Usages are NOT backtick-wrapped — backticks show literally inside a
   // fence.
   // `/new` is a command only at a channel session's root; elsewhere it is plain text.
-  const commands = o.channelSessionRoot === false ? AGENT_COMMANDS.filter((c) => c.usage !== "/new") : AGENT_COMMANDS;
+  const listed = o.channelSessionRoot === false ? AGENT_COMMANDS.filter((c) => c.usage !== "/new") : AGENT_COMMANDS;
+  // The box commands sit just before /help, and only where boxes are switched on.
+  const commands = o.boxes ? [...listed.slice(0, -1), ...BOX_COMMANDS, ...listed.slice(-1)] : listed;
   const gutter = Math.max(...commands.map((c) => c.usage.length)) + 2;
   const cmds = commands.map((c) => c.usage.padEnd(gutter) + c.summary).join("\n");
   const modes = Object.values(MODE_ALIASES)

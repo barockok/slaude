@@ -163,6 +163,21 @@ export interface Keys {
   /** `label-unserved-since` hash: label → ms since which it has had waiting
    *  jobs and no live node (spec §4.7), written by the reaper leader. */
   labelUnservedSince(): string;
+  /** `box-refresh-note:<sessionId>`: set when a session is moved to a new box
+   *  image, taken (GETDEL) by the dispatch of its next turn, which then carries
+   *  the `<box-refreshed>` note once. JSON `{box, from, to, at}`, with a TTL. */
+  boxRefreshNote(sessionId: string): string;
+  /** `nodeboxes:<nodeId>`: what a live node reports about boxes on its
+   *  heartbeat, beside its capabilities and with the same TTL. JSON
+   *  `{digests, running, capacity, free}`: the image digests it holds unpacked
+   *  and, once it admits boxes, how many it runs and has room for. Absent for
+   *  a node that offers no sandbox. */
+  nodeBoxes(nodeId: string): string;
+  /** `parked:<sessionId>`: the node that holds a boxed session's parked local
+   *  copies (flushed, no sandbox). Set when the session is parked, deleted
+   *  when it resumes, is dropped or its node drains; a TTL covers a node that
+   *  dies. Dispatch prefers that node for the session's next turn. */
+  parked(sessionId: string): string;
 }
 
 export function makeKeys(prefix: string = redisPrefix()): Keys {
@@ -202,5 +217,8 @@ export function makeKeys(prefix: string = redisPrefix()): Keys {
     jobMoved: (jobId) => `${prefix}:job-moved:${jobId}`,
     redispatch: (jobId) => `${prefix}:redispatch:${jobId}`,
     labelUnservedSince: () => `${prefix}:label-unserved-since`,
+    boxRefreshNote: (sessionId) => `${prefix}:box-refresh-note:${sessionId}`,
+    nodeBoxes: (nodeId) => `${prefix}:nodeboxes:${nodeId}`,
+    parked: (sessionId) => `${prefix}:parked:${sessionId}`,
   };
 }

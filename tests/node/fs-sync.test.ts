@@ -1,12 +1,13 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { paths } from "../../src/config/home";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FsSync, encodeProjectDir, type RedisLike } from "../../src/node/fs-sync";
+import { FsSync, encodeProjectDir, type BoxFacts, type FsSyncDeps, type QuotaEvent, type RedisLike } from "../../src/node/fs-sync";
+import { localPacker } from "../../src/box/boxd/pack";
 import { metrics } from "../../src/metrics";
 import { makeKeys } from "../../src/queue/keys";
-import { LocalObjectStore, latestManifest, wsUnitId, type ObjectInfo, type ObjectStore, type PutBody } from "../../src/storage";
+import { LocalObjectStore, hmUnitId, isPackManifest, latestManifest, latestTreeManifest, listAll, wsUnitId, wxUnitId, type ObjectInfo, type ObjectStore, type PutBody } from "../../src/storage";
 
 const dirs: string[] = [];
 const tmp = (n: string): string => {
@@ -623,5 +624,700 @@ describe("FsSync", () => {
     writeFileSync(join(m.cwd, "f.txt"), "v1");
     await Promise.all([a.afterTurn("s1", false), a.drain()]);
     expect(maxInFlight).toBeLessThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Boxed sessions: the packed units (wx, hm) and parking
+// ---------------------------------------------------------------------------
+
+const D1 = `sha256:${"1".repeat(64)}`;
+const D2 = `sha256:${"2".repeat(64)}`;
+
+interface BoxMachine extends Machine {
+  root: string;
+  homes: string;
+  spool: string;
+}
+
+function boxMachine(): BoxMachine {
+  const root = tmp("boxmachine");
+  return { root, cwd: join(root, "workspaces", `t-${++n}`), claude: join(root, "claude"), state: join(root, "state"), homes: join(root, "homes"), spool: join(root, "spool") };
+}
+
+const DISK_PARTS = ["workspaces", "claude", "state", "homes", "spool"];
+/** Take a machine's disk away (another node's disk takes its place at the same paths), and bring it back. */
+function swapOut(m: BoxMachine, tag: string): void {
+  for (const part of DISK_PARTS) if (existsSync(join(m.root, part))) renameSync(join(m.root, part), join(m.root, `${part}.${tag}`));
+}
+function swapIn(m: BoxMachine, tag: string): void {
+  for (const part of DISK_PARTS) if (existsSync(join(m.root, `${part}.${tag}`))) renameSync(join(m.root, `${part}.${tag}`), join(m.root, part));
+}
+
+const homeOf = (m: BoxMachine, sessionId: string): string => join(m.homes, sessionId);
+
+function boxNode(opts: {
+  id: string;
+  store: ObjectStore;
+  redis: RedisLike;
+  m: BoxMachine;
+  flush?: "turn" | "idle";
+  alive?: (id: string) => boolean;
+  digestOf?: (sessionId: string) => string | undefined;
+  cwdOf?: (sessionId: string) => string;
+  facts?: Partial<BoxFacts>;
+  deps?: Partial<FsSyncDeps>;
+}): FsSync {
+  process.env.CLAUDE_CONFIG_DIR = opts.m.claude;
+  return new FsSync({
+    store: opts.store,
+    redis: opts.redis,
+    keys: makeKeys("test"),
+    nodeId: opts.id,
+    flush: () => opts.flush ?? "turn",
+    workingDirOf: async (sid) => opts.cwdOf?.(sid) ?? opts.m.cwd,
+    nodeAlive: async (id) => opts.alive?.(id) ?? false,
+    stateDir: opts.m.state,
+    packer: localPacker({ spoolDir: opts.m.spool }),
+    boxOf: (sid) => {
+      const digest = opts.digestOf ? opts.digestOf(sid) : D1;
+      return digest === undefined ? undefined : { digest, homeDir: homeOf(opts.m, sid), ...opts.facts };
+    },
+    ...opts.deps,
+  });
+}
+
+/** A store that counts blob downloads and can fail every write. */
+class CountingStore extends FlakyStore {
+  blobGets = 0;
+  override get(key: string, opts?: { range?: [number, number] }) {
+    if (key.includes("/blobs/")) this.blobGets++;
+    return super.get(key, opts);
+  }
+}
+
+const unitsIn = async (store: ObjectStore): Promise<string[]> => [...new Set((await listAll(store, "sessions/")).map((o) => o.key.split("/")[1]!))].sort();
+
+function writeInstalls(m: BoxMachine, sessionId: string, tag: string): void {
+  mkdirSync(join(m.cwd, "node_modules", tag), { recursive: true });
+  writeFileSync(join(m.cwd, "node_modules", tag, "index.js"), `module.exports = "${tag}";`);
+  mkdirSync(join(homeOf(m, sessionId), ".npm-global", "bin"), { recursive: true });
+  writeFileSync(join(homeOf(m, sessionId), ".npm-global", "bin", tag), `#!/bin/sh\necho ${tag}\n`);
+  chmodSync(join(homeOf(m, sessionId), ".npm-global", "bin", tag), 0o755);
+}
+
+describe("FsSync, boxed sessions", () => {
+  test("a boxed turn syncs four units, and node B gets the workspace, the transcript, the installs and the home", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = boxMachine();
+    const a = boxNode({ id: "node-a", store, redis, m });
+    const seen = {
+      flushHm: counter("slaude_box_pack_seconds_count", { unit: "hm", op: "flush" }),
+      flushWx: counter("slaude_box_pack_seconds_count", { unit: "wx", op: "flush" }),
+      bytesUp: counter("slaude_box_pack_bytes_total", { unit: "hm", op: "flush" }),
+      bytesDown: counter("slaude_box_pack_bytes_total", { unit: "hm", op: "hydrate" }),
+      home: counter("slaude_box_home_bytes_count"),
+    };
+    expect(await a.beforeTurn("s1", "default")).toBe("ok");
+    expect(existsSync(homeOf(m, "s1"))).toBe(true);
+    writeFileSync(join(m.cwd, "app.ts"), "export {}");
+    writeInstalls(m, "s1", "left-pad");
+    mkdirSync(txDirOf(m), { recursive: true });
+    writeFileSync(txFile(m), '{"turn":1}\n');
+    await a.afterTurn("s1", false);
+    // The pack metrics: one flush of each packed unit, the bytes it stored, and the home's size at that flush.
+    expect(counter("slaude_box_pack_seconds_count", { unit: "hm", op: "flush" })).toBe(seen.flushHm + 1);
+    expect(counter("slaude_box_pack_seconds_count", { unit: "wx", op: "flush" })).toBe(seen.flushWx + 1);
+    expect(counter("slaude_box_pack_bytes_total", { unit: "hm", op: "flush" })).toBeGreaterThan(seen.bytesUp);
+    expect(counter("slaude_box_home_bytes_count")).toBe(seen.home + 1);
+
+    const ws = wsUnitId(m.cwd);
+    const wx = wxUnitId(m.cwd, D1);
+    const hm = hmUnitId("s1");
+    const all = await unitsIn(store);
+    expect(all).toContain(ws);
+    expect(all).toContain(wx);
+    expect(all).toContain(hm);
+    expect(all.length).toBe(4);
+    // The two workspace units split the directory: nothing is stored twice, nothing is left out.
+    const wsKeys = Object.keys((await latestTreeManifest(store, ws))!.manifest.files);
+    expect(wsKeys).toEqual(["ws/app.ts"]);
+    expect(isPackManifest((await latestManifest(store, wx))!.manifest)).toBe(true);
+    expect(isPackManifest((await latestManifest(store, hm))!.manifest)).toBe(true);
+    for (const u of [wx, hm]) expect(redis.keys()).toContain(`test:fsinuse:${u}`);
+
+    // A second flush of the same state writes nothing for any unit.
+    const before = (await listAll(store, "sessions/")).length;
+    await a.beforeTurn("s1", "default");
+    await a.afterTurn("s1", false);
+    expect((await listAll(store, "sessions/")).length).toBe(before);
+
+    swapOut(m, "a");
+    const b = boxNode({ id: "node-b", store, redis, m });
+    const hydrates = counter("slaude_box_pack_seconds_count", { unit: "hm", op: "hydrate" });
+    expect(await b.beforeTurn("s1", "default")).toBe("ok");
+    // A cold hydrate of the home on node B is timed and its downloaded bytes counted.
+    expect(counter("slaude_box_pack_seconds_count", { unit: "hm", op: "hydrate" })).toBe(hydrates + 1);
+    expect(counter("slaude_box_pack_bytes_total", { unit: "hm", op: "hydrate" })).toBeGreaterThan(seen.bytesDown);
+    expect(readFileSync(join(m.cwd, "app.ts"), "utf8")).toBe("export {}");
+    expect(readFileSync(join(m.cwd, "node_modules", "left-pad", "index.js"), "utf8")).toContain("left-pad");
+    const tool = join(homeOf(m, "s1"), ".npm-global", "bin", "left-pad");
+    expect(readFileSync(tool, "utf8")).toContain("echo left-pad");
+    expect(lstatSync(tool).mode & 0o777).toBe(0o755);
+    expect(readFileSync(txFile(m), "utf8")).toBe('{"turn":1}\n');
+    a.stop();
+    b.stop();
+  });
+
+  test("a session with no box keeps two units and is evicted as before, on the same node that runs boxes", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = boxMachine();
+    const a = boxNode({ id: "node-a", store, redis, m, digestOf: () => undefined });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(m.cwd, "f.txt"), "x");
+    mkdirSync(join(m.cwd, "node_modules"), { recursive: true });
+    await a.afterTurn("s1", false);
+    expect((await unitsIn(store)).length).toBe(2);
+    await a.evict("s1");
+    expect(existsSync(m.cwd)).toBe(false);
+    expect(a.parked()).toEqual([]);
+    expect(existsSync(homeOf(m, "s1"))).toBe(false);
+  });
+
+  test("with the idle cadence the packed units wait for eviction, like the workspace", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = boxMachine();
+    const a = boxNode({ id: "node-a", store, redis, m, flush: "idle" });
+    await a.beforeTurn("s1", "default");
+    writeInstalls(m, "s1", "tool");
+    await a.afterTurn("s1", false);
+    expect(await latestManifest(store, hmUnitId("s1"))).toBeNull();
+    expect(await latestManifest(store, wxUnitId(m.cwd, D1))).toBeNull();
+    await a.evict("s1");
+    expect(await latestManifest(store, hmUnitId("s1"))).not.toBeNull();
+    expect(await latestManifest(store, wxUnitId(m.cwd, D1))).not.toBeNull();
+  });
+
+  test("a failed home flush marks needs-flush, a live owner makes another node wait, and the owner's next turn flushes first", async () => {
+    const flaky = new FlakyStore(new LocalObjectStore(tmp("store")));
+    const redis = memRedis();
+    const m = boxMachine();
+    const a = boxNode({ id: "node-a", store: flaky, redis, m, alive: (id) => id === "node-a" });
+    await a.beforeTurn("s1", "default");
+    writeInstalls(m, "s1", "first");
+    await a.afterTurn("s1", false);
+
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(homeOf(m, "s1"), ".bash_history"), "npm i -g precious\n");
+    flaky.failing = true;
+    await a.afterTurn("s1", false);
+    const mark = JSON.parse((await redis.get(`test:fsflush:${hmUnitId("s1")}`))!) as { node: string; disk: string };
+    expect(mark.node).toBe("node-a");
+    expect(mark.disk).toBe(readFileSync(join(m.state, "disk-id"), "utf8"));
+    expect(readFileSync(join(homeOf(m, "s1"), ".bash_history"), "utf8")).toContain("precious");
+
+    const mb = { ...m, claude: `${m.claude}-b`, state: `${m.state}-b`, homes: `${m.homes}-b`, spool: `${m.spool}-b` };
+    const b = boxNode({ id: "node-b", store: flaky, redis, m: mb, alive: (id) => id === "node-a" });
+    expect(await b.beforeTurn("s1", "default")).toBe("wait");
+    expect(b.tracked()).toEqual([]);
+
+    flaky.failing = false;
+    process.env.CLAUDE_CONFIG_DIR = m.claude;
+    expect(await a.beforeTurn("s1", "default")).toBe("ok");
+    await a.afterTurn("s1", false);
+    expect(await redis.get(`test:fsflush:${hmUnitId("s1")}`)).toBeNull();
+    swapOut(m, "a");
+    const c = boxNode({ id: "node-c", store: flaky, redis, m });
+    await c.beforeTurn("s1", "default");
+    expect(readFileSync(join(homeOf(m, "s1"), ".bash_history"), "utf8")).toContain("precious");
+    a.stop();
+    b.stop();
+    c.stop();
+  });
+
+  test("when the owner of unflushed home edits is gone, another node continues from the last flush and counts the loss", async () => {
+    const flaky = new FlakyStore(new LocalObjectStore(tmp("store")));
+    const redis = memRedis();
+    const m = boxMachine();
+    const a = boxNode({ id: "node-a", store: flaky, redis, m });
+    await a.beforeTurn("s1", "default");
+    writeInstalls(m, "s1", "flushed");
+    await a.afterTurn("s1", false);
+    await a.beforeTurn("s1", "default");
+    writeInstalls(m, "s1", "unflushed");
+    flaky.failing = true;
+    await a.afterTurn("s1", false);
+    a.stop(); // the node dies with the edits on its disk
+    flaky.failing = false;
+
+    swapOut(m, "a");
+    const lossBefore = counter("slaude_storage_unflushed_loss_total");
+    const b = boxNode({ id: "node-b", store: flaky, redis, m, alive: () => false });
+    expect(await b.beforeTurn("s1", "default")).toBe("ok");
+    // One loss per unit that had unflushed edits: the extras and the home.
+    expect(counter("slaude_storage_unflushed_loss_total") - lossBefore).toBe(2);
+    const bin = join(homeOf(m, "s1"), ".npm-global", "bin");
+    expect(readdirSync(bin)).toEqual(["flushed"]);
+    expect(readdirSync(join(m.cwd, "node_modules"))).toEqual(["flushed"]);
+    b.stop();
+  });
+
+  test("a recreated process on the same disk recovers a home it had not flushed", async () => {
+    const flaky = new FlakyStore(new LocalObjectStore(tmp("store")));
+    const redis = memRedis();
+    const m = boxMachine();
+    const a = boxNode({ id: "node-a", store: flaky, redis, m });
+    await a.beforeTurn("s1", "default");
+    writeInstalls(m, "s1", "flushed");
+    await a.afterTurn("s1", false);
+    await a.beforeTurn("s1", "default");
+    writeInstalls(m, "s1", "kept");
+    flaky.failing = true;
+    await a.afterTurn("s1", false);
+    a.stop();
+    flaky.failing = false;
+
+    const lossBefore = counter("slaude_storage_unflushed_loss_total");
+    const a2 = boxNode({ id: "node-a2", store: flaky, redis, m, alive: () => false });
+    expect(await a2.beforeTurn("s1", "default")).toBe("ok");
+    expect(counter("slaude_storage_unflushed_loss_total")).toBe(lossBefore);
+    expect(readdirSync(join(homeOf(m, "s1"), ".npm-global", "bin")).sort()).toEqual(["flushed", "kept"]);
+    await a2.afterTurn("s1", false);
+    // The recovered edits went up as a delta on the stored layers, not as a second full copy.
+    const hm = (await latestManifest(flaky, hmUnitId("s1")))!.manifest;
+    expect(isPackManifest(hm) && hm.layers.length).toBe(2);
+
+    swapOut(m, "a");
+    const b = boxNode({ id: "node-b", store: flaky, redis, m });
+    await b.beforeTurn("s1", "default");
+    expect(readdirSync(join(homeOf(m, "s1"), ".npm-global", "bin")).sort()).toEqual(["flushed", "kept"]);
+    expect(readdirSync(join(m.cwd, "node_modules")).sort()).toEqual(["flushed", "kept"]);
+    a2.stop();
+    b.stop();
+  });
+
+  test("two sessions in one folder on the same image share the extras unit and keep separate homes", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = boxMachine();
+    const a = boxNode({ id: "node-a", store, redis, m });
+    await a.beforeTurn("s1", "default");
+    writeInstalls(m, "s1", "one");
+    await a.afterTurn("s1", false);
+    await a.beforeTurn("s2", "default");
+    expect(existsSync(join(m.cwd, "node_modules", "one"))).toBe(true);
+    writeInstalls(m, "s2", "two");
+    await a.afterTurn("s2", false);
+
+    const all = await unitsIn(store);
+    expect(all.filter((u) => u.startsWith("wx-"))).toEqual([wxUnitId(m.cwd, D1)]);
+    expect(all.filter((u) => u.startsWith("hm-")).sort()).toEqual([hmUnitId("s1"), hmUnitId("s2")]);
+
+    // One session leaving does not take the folder from the other.
+    await a.evict("s1");
+    expect(readdirSync(join(m.cwd, "node_modules")).sort()).toEqual(["one", "two"]);
+
+    swapOut(m, "a");
+    const b = boxNode({ id: "node-b", store, redis, m });
+    await b.beforeTurn("s2", "default");
+    expect(readdirSync(join(m.cwd, "node_modules")).sort()).toEqual(["one", "two"]);
+    expect(readdirSync(join(homeOf(m, "s2"), ".npm-global", "bin"))).toEqual(["two"]);
+    a.stop();
+    b.stop();
+  });
+
+  test("two sessions in one folder on different images get different extras units, and neither sees the other's installs", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = boxMachine();
+    const digestOf = (sid: string) => (sid === "s1" ? D1 : D2);
+    const a = boxNode({ id: "node-a", store, redis, m, digestOf });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(m.cwd, "shared.ts"), "both see this");
+    writeInstalls(m, "s1", "built-for-one");
+    await a.afterTurn("s1", false);
+
+    // The refreshed session starts clean in the same folder: the old image's installs are not carried over.
+    await a.beforeTurn("s2", "default");
+    expect(existsSync(join(m.cwd, "node_modules"))).toBe(false);
+    expect(readFileSync(join(m.cwd, "shared.ts"), "utf8")).toBe("both see this");
+    writeInstalls(m, "s2", "built-for-two");
+    await a.afterTurn("s2", false);
+
+    const wx1 = wxUnitId(m.cwd, D1);
+    const wx2 = wxUnitId(m.cwd, D2);
+    expect(wx1).not.toBe(wx2);
+    expect((await unitsIn(store)).filter((u) => u.startsWith("wx-")).sort()).toEqual([wx1, wx2].sort());
+
+    // Back to the first session on the same node: its own installs return, the other's are gone from the folder.
+    await a.beforeTurn("s1", "default");
+    expect(readdirSync(join(m.cwd, "node_modules"))).toEqual(["built-for-one"]);
+    await a.afterTurn("s1", false);
+    expect(readdirSync(join(m.cwd, "node_modules"))).toEqual(["built-for-one"]);
+
+    swapOut(m, "a");
+    const b = boxNode({ id: "node-b", store, redis, m, digestOf });
+    await b.beforeTurn("s2", "default");
+    expect(readdirSync(join(m.cwd, "node_modules"))).toEqual(["built-for-two"]);
+    await b.afterTurn("s2", false);
+    await b.beforeTurn("s1", "default");
+    expect(readdirSync(join(m.cwd, "node_modules"))).toEqual(["built-for-one"]);
+    a.stop();
+    b.stop();
+  });
+
+  test("an idle boxed session is parked: its copies stay, and its return downloads nothing", async () => {
+    const store = new CountingStore(new LocalObjectStore(tmp("store")));
+    const redis = memRedis();
+    const m = boxMachine();
+    const hints: [string, boolean][] = [];
+    const a = boxNode({ id: "node-a", store, redis, m, deps: { onPark: (sid, parked) => hints.push([sid, parked]) } });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(m.cwd, "app.ts"), "export {}");
+    writeInstalls(m, "s1", "tool");
+    mkdirSync(txDirOf(m), { recursive: true });
+    writeFileSync(txFile(m), '{"turn":1}\n');
+    await a.afterTurn("s1", false);
+    await a.evict("s1");
+
+    expect(a.tracked()).toEqual([]);
+    expect(a.parked()).toEqual(["s1"]);
+    expect(hints).toEqual([["s1", true]]);
+    expect(a.parkedBytes()).toBeGreaterThan(0);
+    expect(existsSync(join(m.cwd, "app.ts"))).toBe(true);
+    expect(existsSync(join(m.cwd, "node_modules", "tool", "index.js"))).toBe(true);
+    expect(existsSync(join(homeOf(m, "s1"), ".npm-global", "bin", "tool"))).toBe(true);
+    expect(existsSync(txFile(m))).toBe(true);
+
+    store.blobGets = 0;
+    const cold = counter("slaude_storage_hydrate_total", { mode: "cold" });
+    const objects = (await listAll(store, "sessions/")).length;
+    expect(await a.beforeTurn("s1", "default")).toBe("ok");
+    expect(store.blobGets).toBe(0);
+    expect(counter("slaude_storage_hydrate_total", { mode: "cold" })).toBe(cold);
+    expect(a.parked()).toEqual([]);
+    expect(a.tracked()).toEqual(["s1"]);
+    expect(hints).toEqual([
+      ["s1", true],
+      ["s1", false],
+    ]);
+    await a.afterTurn("s1", false);
+    expect((await listAll(store, "sessions/")).length).toBe(objects); // and the unchanged copies flush nothing
+    a.stop();
+  });
+
+  test("the park table survives a restart of the process on the same disk", async () => {
+    const store = new CountingStore(new LocalObjectStore(tmp("store")));
+    const redis = memRedis();
+    const m = boxMachine();
+    const a = boxNode({ id: "node-a", store, redis, m });
+    await a.beforeTurn("s1", "default");
+    writeInstalls(m, "s1", "tool");
+    await a.afterTurn("s1", false);
+    await a.evict("s1");
+    a.stop();
+
+    const a2 = boxNode({ id: "node-a", store, redis, m });
+    expect(a2.parked()).toEqual(["s1"]);
+    store.blobGets = 0;
+    await a2.beforeTurn("s1", "default");
+    expect(store.blobGets).toBe(0);
+    expect(a2.parked()).toEqual([]);
+    await a2.afterTurn("s1", false);
+    await a2.evict("s1");
+    await a2.dropParked("s1");
+    expect(existsSync(homeOf(m, "s1"))).toBe(false);
+    expect(existsSync(m.cwd)).toBe(false);
+    a2.stop();
+  });
+
+  test("a parked copy that another node superseded is replaced on return", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = boxMachine();
+    const a = boxNode({ id: "node-a", store, redis, m });
+    await a.beforeTurn("s1", "default");
+    writeInstalls(m, "s1", "old");
+    writeFileSync(join(homeOf(m, "s1"), "notes"), "from A");
+    await a.afterTurn("s1", false);
+    await a.evict("s1");
+    expect(a.parked()).toEqual(["s1"]);
+
+    swapOut(m, "a");
+    const b = boxNode({ id: "node-b", store, redis, m });
+    await b.beforeTurn("s1", "default");
+    writeFileSync(join(homeOf(m, "s1"), "notes"), "from B, later");
+    rmSync(join(homeOf(m, "s1"), ".npm-global"), { recursive: true });
+    rmSync(join(m.cwd, "node_modules", "old"), { recursive: true });
+    writeInstalls(m, "s1", "new");
+    await b.afterTurn("s1", false);
+    await b.evict("s1");
+    swapOut(m, "b");
+    swapIn(m, "a");
+
+    // A's disk still holds its parked copy, with markers that no longer name the latest manifests.
+    expect(readFileSync(join(homeOf(m, "s1"), "notes"), "utf8")).toBe("from A");
+    process.env.CLAUDE_CONFIG_DIR = m.claude;
+    expect(await a.beforeTurn("s1", "default")).toBe("ok");
+    expect(readFileSync(join(homeOf(m, "s1"), "notes"), "utf8")).toBe("from B, later");
+    expect(readdirSync(join(homeOf(m, "s1"), ".npm-global", "bin"))).toEqual(["new"]);
+    expect(readdirSync(join(m.cwd, "node_modules"))).toEqual(["new"]);
+    a.stop();
+    b.stop();
+  });
+
+  test("the pruner drops the least recently used parked session above the budget", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = boxMachine();
+    let clock = 1000;
+    const hints: [string, boolean][] = [];
+    const a = boxNode({
+      id: "node-a",
+      store,
+      redis,
+      m,
+      cwdOf: (sid) => join(m.root, "workspaces", sid),
+      deps: { now: () => clock, parkBudgetMb: 1.5, onPark: (sid, parked) => hints.push([sid, parked]) },
+    });
+    for (const sid of ["s1", "s2", "s3"]) {
+      clock += 1000;
+      await a.beforeTurn(sid, "default");
+      writeFileSync(join(homeOf(m, sid), "cache.bin"), Buffer.alloc(600_000, 1));
+      await a.afterTurn(sid, false);
+      await a.evict(sid);
+    }
+    // Two homes fit the budget, three do not: the oldest goes. It was flushed, so nothing is lost.
+    expect(a.parked()).toEqual(["s2", "s3"]);
+    expect(existsSync(homeOf(m, "s1"))).toBe(false);
+    expect(existsSync(join(m.root, "workspaces", "s1"))).toBe(false);
+    expect(existsSync(join(m.state, `${hmUnitId("s1")}.json`))).toBe(false);
+    expect(existsSync(join(homeOf(m, "s2"), "cache.bin"))).toBe(true);
+    expect(hints.filter(([, parked]) => !parked)).toEqual([["s1", false]]);
+    expect(a.parkedBytes()).toBeLessThanOrEqual(1.5 * 1024 * 1024);
+
+    // Using a parked session makes it the most recent: the next one to go is s3.
+    clock += 1000;
+    await a.beforeTurn("s2", "default");
+    await a.afterTurn("s2", false);
+    await a.evict("s2");
+    clock += 1000;
+    await a.beforeTurn("s4", "default");
+    writeFileSync(join(homeOf(m, "s4"), "cache.bin"), Buffer.alloc(600_000, 1));
+    await a.afterTurn("s4", false);
+    await a.evict("s4");
+    expect(a.parked().sort()).toEqual(["s2", "s4"]);
+
+    swapOut(m, "a");
+    const b = boxNode({ id: "node-b", store, redis, m, cwdOf: (sid) => join(m.root, "workspaces", sid) });
+    await b.beforeTurn("s1", "default");
+    expect(lstatSync(join(homeOf(m, "s1"), "cache.bin")).size).toBe(600_000);
+    a.stop();
+    b.stop();
+  });
+
+  test("the pruner never drops a parked session with an unflushed unit, and drops on short disk", async () => {
+    const flaky = new FlakyStore(new LocalObjectStore(tmp("store")));
+    const redis = memRedis();
+    const m = boxMachine();
+    let clock = 1000;
+    let freeMb = 10_000;
+    const a = boxNode({
+      id: "node-a",
+      store: flaky,
+      redis,
+      m,
+      cwdOf: (sid) => join(m.root, "workspaces", sid),
+      deps: { now: () => clock, parkBudgetMb: 1.5, freeDiskMb: () => freeMb, minFreeDiskMb: 500 },
+    });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(homeOf(m, "s1"), "cache.bin"), Buffer.alloc(600_000, 1));
+    await a.afterTurn("s1", false);
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(homeOf(m, "s1"), "unflushed.txt"), "only on this disk");
+    flaky.failing = true;
+    await a.afterTurn("s1", false);
+    await a.evict("s1"); // parked, with a flush still owed
+    flaky.failing = false;
+    expect(a.parked()).toEqual(["s1"]);
+
+    for (const sid of ["s2", "s3"]) {
+      clock += 1000;
+      await a.beforeTurn(sid, "default");
+      writeFileSync(join(homeOf(m, sid), "cache.bin"), Buffer.alloc(600_000, 1));
+      await a.afterTurn(sid, false);
+      await a.evict(sid);
+    }
+    // s1 is the oldest, but its edits exist nowhere else: s2 goes instead.
+    expect(a.parked().sort()).toEqual(["s1", "s3"]);
+    expect(readFileSync(join(homeOf(m, "s1"), "unflushed.txt"), "utf8")).toBe("only on this disk");
+    expect(existsSync(homeOf(m, "s2"))).toBe(false);
+
+    // Free disk runs short: everything that is safe to drop goes, the unflushed one stays.
+    freeMb = 100;
+    expect(await a.prune()).toEqual(["s3"]);
+    expect(a.parked()).toEqual(["s1"]);
+    expect(existsSync(join(homeOf(m, "s1"), "unflushed.txt"))).toBe(true);
+    a.stop();
+  });
+
+  test("a fenced home flush commits nothing, tells the caller, and the copy is discarded instead of parked", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = boxMachine();
+    const fenced: [string, string[]][] = [];
+    const a = boxNode({ id: "node-a", store, redis, m, deps: { onFenced: (unit, sessions) => fenced.push([unit, sessions]) } });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(homeOf(m, "s1"), "notes"), "v1");
+    await a.afterTurn("s1", false);
+
+    // Node B takes the session (A lost its lock and does not know yet). B has its own disk for the home.
+    const mb = { ...m, state: `${m.state}-b`, homes: `${m.homes}-b`, spool: `${m.spool}-b` };
+    const b = boxNode({ id: "node-b", store, redis, m: mb });
+    await b.beforeTurn("s1", "default");
+    writeFileSync(join(homeOf(mb, "s1"), "notes"), "v2 from B");
+    await b.afterTurn("s1", false);
+    const latest = (await latestManifest(store, hmUnitId("s1")))!.id;
+
+    writeFileSync(join(homeOf(m, "s1"), "notes"), "zombie write");
+    const fencedBefore = counter("slaude_storage_flush_total", { result: "fenced" });
+    await a.afterTurn("s1", false);
+    expect(counter("slaude_storage_flush_total", { result: "fenced" })).toBeGreaterThan(fencedBefore);
+    expect((await latestManifest(store, hmUnitId("s1")))!.id).toBe(latest);
+    expect(fenced.map(([unit]) => unit)).toContain(hmUnitId("s1"));
+    expect(fenced.find(([unit]) => unit === hmUnitId("s1"))![1]).toEqual(["s1"]);
+    expect(await redis.get(`test:fsflush:${hmUnitId("s1")}`)).toBeNull();
+    // The marker and the index are gone: this copy can never pass for the stored state.
+    expect(existsSync(join(m.state, `${hmUnitId("s1")}.json`))).toBe(false);
+    expect(existsSync(join(m.state, `${hmUnitId("s1")}.index.json`))).toBe(false);
+
+    await a.evict("s1");
+    expect(a.parked()).toEqual([]);
+    expect(existsSync(homeOf(m, "s1"))).toBe(false);
+    expect((await latestManifest(store, hmUnitId("s1")))!.id).toBe(latest);
+    a.stop();
+    b.stop();
+  });
+
+  test("a session whose lock was lost is not parked", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = boxMachine();
+    const a = boxNode({ id: "node-a", store, redis, m });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(homeOf(m, "s1"), "notes"), "v1");
+    await a.afterTurn("s1", true);
+    expect(await latestManifest(store, hmUnitId("s1"))).toBeNull(); // a lost lock flushes nothing
+    await a.evict("s1");
+    expect(a.parked()).toEqual([]);
+    expect(existsSync(homeOf(m, "s1"))).toBe(false);
+    a.stop();
+  });
+
+  test("a home over its soft limit is reported and stored; over twice the limit it is refused and stays local", async () => {
+    const store = new LocalObjectStore(tmp("store"));
+    const redis = memRedis();
+    const m = boxMachine();
+    const events: QuotaEvent[] = [];
+    const quota = { over: counter("slaude_box_quota_exceeded_total", { kind: "home", state: "over" }), refused: counter("slaude_box_quota_exceeded_total", { kind: "home", state: "refused" }) };
+    const a = boxNode({ id: "node-a", store, redis, m, facts: { homeMb: 1000 / (1024 * 1024) }, deps: { onQuota: (e) => events.push(e) } });
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(homeOf(m, "s1"), "a"), "x".repeat(500));
+    await a.afterTurn("s1", false);
+    expect(events).toEqual([]);
+
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(homeOf(m, "s1"), "b"), "x".repeat(1000));
+    await a.afterTurn("s1", false);
+    expect(events.map((e) => [e.unit, e.state, e.bytes, e.sessionIds])).toEqual([["hm", "over", 1500, ["s1"]]]);
+    const stored = (await latestManifest(store, hmUnitId("s1")))!.id;
+
+    await a.beforeTurn("s1", "default");
+    writeFileSync(join(homeOf(m, "s1"), "c"), "x".repeat(1000));
+    const errors = counter("slaude_storage_flush_total", { result: "error" });
+    await a.afterTurn("s1", false);
+    expect(events[1]).toMatchObject({ unit: "hm", state: "refused", bytes: 2500 });
+    expect(counter("slaude_box_quota_exceeded_total", { kind: "home", state: "over" })).toBe(quota.over + 1);
+    expect(counter("slaude_box_quota_exceeded_total", { kind: "home", state: "refused" })).toBe(quota.refused + 1);
+    expect((await latestManifest(store, hmUnitId("s1")))!.id).toBe(stored);
+    expect(await redis.get(`test:fsflush:${hmUnitId("s1")}`)).toBeNull(); // no retry: it cannot help
+    expect(counter("slaude_storage_flush_total", { result: "error" })).toBe(errors);
+    expect(existsSync(join(homeOf(m, "s1"), "c"))).toBe(true);
+
+    // Space is freed: the next flush goes through.
+    await a.beforeTurn("s1", "default");
+    rmSync(join(homeOf(m, "s1"), "b"));
+    await a.afterTurn("s1", false);
+    expect((await latestManifest(store, hmUnitId("s1")))!.id).not.toBe(stored);
+    a.stop();
+  });
+
+  test("a hydrate that fails on the home drops the session, clears its markers, and parks it again if it was parked", async () => {
+    const flaky = new FlakyStore(new LocalObjectStore(tmp("store")));
+    const redis = memRedis();
+    const m = boxMachine();
+    const a = boxNode({ id: "node-a", store: flaky, redis, m });
+    await a.beforeTurn("s1", "default");
+    writeInstalls(m, "s1", "tool");
+    await a.afterTurn("s1", false);
+    await a.evict("s1");
+    expect(a.parked()).toEqual(["s1"]);
+
+    flaky.failNextList = `sessions/${hmUnitId("s1")}/`;
+    await expect(a.beforeTurn("s1", "default")).rejects.toThrow("list unavailable");
+    expect(a.tracked()).toEqual([]);
+    expect(a.parked()).toEqual(["s1"]); // the copies are still on this disk and still accounted for
+    expect(existsSync(join(m.state, `${hmUnitId("s1")}.json`))).toBe(false);
+    expect(await a.beforeTurn("s1", "default")).toBe("ok");
+    expect(existsSync(join(homeOf(m, "s1"), ".npm-global", "bin", "tool"))).toBe(true);
+    a.stop();
+  });
+
+  test("drain flushes several boxed sessions at a time, and each one's units in order", async () => {
+    const inner = new LocalObjectStore(tmp("store"));
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const order: string[] = [];
+    const slow: ObjectStore = {
+      get: (k, o) => inner.get(k, o),
+      head: (k) => inner.head(k),
+      list: (p, o) => inner.list(p, o),
+      delete: (k) => inner.delete(k),
+      put: async (k, b) => {
+        if (k.includes("/manifest/")) {
+          order.push(k.split("/")[1]!);
+          inFlight++;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await Bun.sleep(25);
+          inFlight--;
+        }
+        return inner.put(k, b);
+      },
+    };
+    const redis = memRedis();
+    const m = boxMachine();
+    const cwdOf = (sid: string) => join(m.root, "workspaces", sid);
+    const a = boxNode({ id: "node-a", store: slow, redis, m, flush: "idle", cwdOf });
+    const sessions = ["s1", "s2", "s3", "s4"];
+    for (const sid of sessions) {
+      await a.beforeTurn(sid, "default");
+      writeFileSync(join(cwdOf(sid), "f.txt"), sid);
+      mkdirSync(join(cwdOf(sid), "node_modules"), { recursive: true });
+      writeFileSync(join(homeOf(m, sid), "h"), sid);
+      await a.afterTurn(sid, false); // idle cadence: only the transcript flushed
+    }
+    order.length = 0;
+    maxInFlight = 0;
+    await a.drain();
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(maxInFlight).toBeLessThanOrEqual(4);
+    for (const sid of sessions) {
+      expect(await latestManifest(inner, hmUnitId(sid))).not.toBeNull();
+      const mine = [wsUnitId(cwdOf(sid)), wxUnitId(cwdOf(sid), D1), hmUnitId(sid)];
+      expect(order.filter((u) => mine.includes(u))).toEqual(mine); // ws, wx, hm (the transcript had nothing new)
+    }
   });
 });

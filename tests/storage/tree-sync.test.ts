@@ -12,6 +12,7 @@ import {
   gcSession,
   hydrateTree,
   latestManifest,
+  latestTreeManifest,
   listAll,
   manifestKey,
   putInbox,
@@ -190,7 +191,7 @@ function suite(name: string, makeStore: () => ObjectStore) {
       writeFileSync(join(a.ws, "node_modules", "pkg", "i.js"), "x");
       writeFileSync(join(a.ws, "real.txt"), "r");
       await flushTree(store, id, a.roots, { epoch: 1, isCurrent: yes });
-      const keys = Object.keys((await latestManifest(store, id))!.manifest.files);
+      const keys = Object.keys((await latestTreeManifest(store, id))!.manifest.files);
       expect(keys).toEqual(["ws/real.txt"]);
     });
 
@@ -268,7 +269,7 @@ function suite(name: string, makeStore: () => ObjectStore) {
       writeFileSync(join(a.ws, "two.txt"), "2");
       const f2 = await flushTree(store, id, a.roots, { epoch: 2, isCurrent: yes });
       // Break the new blob so the next hydrate throws part way.
-      const m = (await latestManifest(store, id))!.manifest;
+      const m = (await latestTreeManifest(store, id))!.manifest;
       await store.delete([`sessions/${id}/blobs/${(m.files["ws/two.txt"] as { hash: string }).hash}`]);
       await expect(hydrateTree(store, id, b.roots, { markerPath: b.marker })).rejects.toThrow(/missing from the store/);
       expect(existsSync(b.marker)).toBe(false);

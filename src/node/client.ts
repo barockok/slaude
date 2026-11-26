@@ -15,6 +15,8 @@ import type { RuntimeBundle } from "../gateway/api/tenants";
 import type { ConnectInfo } from "../remote/transport";
 import { BootFailure } from "../gateway/core/failure-codes";
 import { AGENT_DEFINITION_CAPABILITY, CAPABILITIES_HEADER, CHANNEL_SESSION_CAPABILITY, GUARDRAILS_CAPABILITY } from "../guardrails/capability";
+import { nodeBoxCapabilities } from "../box/capability";
+import { env } from "../config/env";
 import type { PluginReport } from "../config/plugin-inventory";
 
 export interface NodeClientOpts {
@@ -107,7 +109,7 @@ export function bundleFetchFailure(e: unknown): BootFailure {
         return undefined;
       }
     })();
-    if (code === "GUARDRAILS_UNAVAILABLE" || code === "GUARDRAILS_UNSUPPORTED" || code === "SHARED_ENV_UNSUPPORTED") {
+    if (code === "GUARDRAILS_UNAVAILABLE" || code === "GUARDRAILS_UNSUPPORTED" || code === "SHARED_ENV_UNSUPPORTED" || code === "BOX_UNAVAILABLE" || code === "BOX_NOT_BOXABLE") {
       return new BootFailure(code, `the gateway refused the runtime bundle: ${code}`, { cause: e, transient: false });
     }
     if (e.status === 503) {
@@ -309,6 +311,26 @@ export class NodeClient {
     return "ok";
   }
 
+  /**
+   * The box images this node's labels need: the current version of each box a
+   * persona of those labels names, and the older digests recent sessions are
+   * pinned to. Node-authenticated. Null: a gateway that predates the route
+   * (404). Transient failures throw after the usual retries.
+   */
+  async getBoxes(tenantId = "default"): Promise<Array<{ name: string; image: string; digest: string; current: boolean }> | null> {
+    const res = await this.request(`/v1/node/boxes?tenant=${encodeURIComponent(tenantId)}`, { signal: AbortSignal.timeout(BACKGROUND_TIMEOUT_MS) });
+    if (res.status === 404) return null;
+    const body = await this.#json<{ boxes?: unknown }>(res);
+    if (!Array.isArray(body.boxes)) return [];
+    // What the gateway sends is checked before it names anything on disk.
+    return body.boxes.flatMap((b) => {
+      const x = b as { name?: unknown; image?: unknown; digest?: unknown; current?: unknown };
+      return typeof x.name === "string" && typeof x.image === "string" && typeof x.digest === "string" && /^sha256:[a-f0-9]{64}$/.test(x.digest) && x.image.endsWith(`@${x.digest}`)
+        ? [{ name: x.name, image: x.image, digest: x.digest, current: x.current === true }]
+        : [];
+    });
+  }
+
   async getSession(id: string, jobToken: string): Promise<SessionView | null> {
     const res = await this.request(`/v1/sessions/${id}`, { jobToken });
     if (res.status === 404) return null;
@@ -336,7 +358,7 @@ export class NodeClient {
       `/v1/tenants/${encodeURIComponent(tenantId)}/personas/${encodeURIComponent(personaId)}/runtime`,
       // The capability header: the gateway refuses an agent with enforced
       // owner guardrails to a node that does not send it.
-      { jobToken, headers: { [CAPABILITIES_HEADER]: `${GUARDRAILS_CAPABILITY},${AGENT_DEFINITION_CAPABILITY},${CHANNEL_SESSION_CAPABILITY}`, ...(cached ? { "if-none-match": cached.etag } : {}) } },
+      { jobToken, headers: { [CAPABILITIES_HEADER]: [GUARDRAILS_CAPABILITY, AGENT_DEFINITION_CAPABILITY, CHANNEL_SESSION_CAPABILITY, ...nodeBoxCapabilities(env.box.tier())].join(","), ...(cached ? { "if-none-match": cached.etag } : {}) } },
     );
     if (res.status === 304 && cached) return cached.bundle;
     const bundle = await this.#json<RuntimeBundle>(res);

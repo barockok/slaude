@@ -18,6 +18,7 @@
 import { z } from "zod";
 import { GUARDRAIL_SLUG_RE } from "../guardrails/format";
 import { SKILL_SLUG_RE } from "../skills/loader";
+import { BOX_NAME_RE } from "../box/definition";
 import { CHANNEL_ID_RE, USER_ID_RE } from "../refs/ids";
 import { anchored, CHANNEL_REF_SRC, parseRef, SRC, USER_REF_SRC } from "../refs/parse";
 import type { RefRole } from "../refs/types";
@@ -280,6 +281,7 @@ const proactiveSchema = z
   )
   .strict();
 
+const BOX_REF_MSG = "must be a box name (lower case letters, digits and hyphens, at most 41 characters), the directory name under boxes/";
 const ENV_REF_MSG = "must be an environment reference such as env:team-sandbox (lower case letters, digits and hyphens, at most 41 characters after env:)";
 const ENV_REF_RE = new RegExp(ENV_DEF_NAME_RE.source.replace(/^\^/, "^env:"));
 /** `env:<name>` and nothing else: an internal env reference whose name is also a valid definition name. */
@@ -403,6 +405,12 @@ export const AgentSchema = z
           )
           .strict()
           .describe("Knowledge bases and background learning."),
+      ),
+      box: optional(
+        z
+          .string(typeMessage({ other: BOX_REF_MSG }))
+          .regex(BOX_NAME_RE, BOX_REF_MSG)
+          .describe("The box (boxes/<name>/box.yaml) this agent's sessions run in: a reviewed image plus a policy, one sandbox per session. A plain name. Leave the key out to run unboxed. It takes effect only where the deployment has boxes switched on. Example: ruby-dev"),
       ),
       environment: optional(environmentSchema.describe("Which shared environments (environments/<name>.yaml) this agent may run threads on. Leave the key out for none. Only references go here: the machine itself is defined in its own file.")),
       proactive: optional(proactiveSchema.describe("What is not about one channel: further channels to read, sources to watch, quiet hours and the post cap. Waking is set per channel under channels.")),

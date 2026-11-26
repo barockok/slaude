@@ -116,6 +116,7 @@ import { makePubSub, type PubSub } from "../../queue/pubsub";
 import { makePanelLock, type PanelLock } from "../../queue/panel-lock";
 import { createPanelApi } from "../panel/api";
 import { dbInventorySources, startPluginInventory } from "./plugin-inventory";
+import { startBoxInventory } from "./box-inventory";
 import { createPortalApi } from "../portal/api";
 import { createDeployApi } from "../deploy/api";
 import { createBrainImportApi } from "../brain-import/api";
@@ -143,6 +144,9 @@ import { parseRef } from "../../secrets";
 import { channelWorkspaceDir, proactiveWorkspaceDir } from "../../agent/workspace-claim";
 import { channelSessionKey, isChannelSessionKey, isRootChannelEvent, neutraliseEnvelopeTags, refusalAtRoot } from "./channel-session";
 import { routeReload } from "./reload-route";
+import { runBoxCommand } from "./box-command";
+import { forcedRefreshNotice, storedBoxRefreshDeps } from "./box-refresh";
+import { defaultBoxPinDeps } from "./box-pin";
 import { makeAuthorFilter } from "./author-filter";
 import { buildThreadHead, fetchThreadSlice, type ThreadMsg } from "./thread-head";
 import { isSyntheticThread } from "../../web/shared/surfaces";
@@ -872,6 +876,28 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     if (!personaId || personaId === "default") return defaultOutClient(app);
     return livePersona(personaId)?.outClient ?? defaultOutClient(app);
   };
+  // A dispatch moved a session to a new box image because the box's newest
+  // version is forced: the person whose message met it is told, privately.
+  // A turn nobody sent (cron, a wake, the panel) has no one to tell.
+  queueDispatch?.onBoxRefreshed?.((n) => {
+    if (n.meta.origin !== "slack" || !n.meta.userId) return;
+    void (async () => {
+      try {
+        const res = await privateSender.send(outClientForPersona(n.meta.personaId, n.meta.apiAppId ? { apiAppId: n.meta.apiAppId, teamId: n.meta.teamId } : undefined), {
+          cls: "info",
+          kind: "box_refreshed",
+          userId: n.meta.userId,
+          channel: n.meta.channelId,
+          // A channel session's turn is answered at root; a thread's notice goes in the thread.
+          ...(n.meta.channelSession || n.meta.threadTs === n.meta.eventTs ? {} : { thread: n.meta.threadTs }),
+          text: forcedRefreshNotice({ box: n.box, note: n.note }),
+        });
+        if (res === "dropped") console.warn(`[box] session=${n.sessionId}: the refresh notice reached no one`);
+      } catch (e) {
+        console.error(`[box] session=${n.sessionId}: the refresh notice failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+  });
   // The persona an app is registered for (`slack-app add --persona`, `slack_apps.persona_id`). What is addressed to the
   // app's own bot (a DM, an @mention of it, a reply in a thread it is engaged in) runs as that persona, so a second
   // Slack app is a second persona on the same gateway and nodes, posting through its own bot. 'default' (what a
@@ -1071,7 +1097,17 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const sweepCfg = storageSweepConfig();
     if (sweepCfg.mode !== "off") {
       console.log(`[storage-sweep] ${sweepCfg.mode}: units idle over ${sweepCfg.retainMs / 86_400_000} days, inbox objects over ${sweepCfg.inboxTtlMs / 3_600_000} hours`);
-      stopStorageSweeper = startStorageSweeper({ store: objectStore()!, redis: getRedis(), keys: makeKeys(), cfg: sweepCfg });
+      stopStorageSweeper = startStorageSweeper({
+        store: objectStore()!,
+        redis: getRedis(),
+        keys: makeKeys(),
+        cfg: sweepCfg,
+        // A session started over with /new is closed: its home goes in this tick. A row that is missing is NOT called
+        // closed (a restored database must not delete homes); such a home ages out with the other units.
+        ...(env.box.enabled()
+          ? { sessionClosed: async (id: string) => ((await Sessions.findById(id).catch(() => null))?.slack_thread_ts ?? "").startsWith("channel-archived:") }
+          : {}),
+      });
     }
   }
   // Domain sessions, slice D: the periodic boundary fill, started once Slack auth knows the workspaces.
@@ -3213,7 +3249,9 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     const parsed = recordingOnly ? null : parseSlashCommand(stripped);
     // `/new` is a command only at a channel session's root. Anywhere else it is
     // text: it reaches the model, or a skill named `new`, as it did before.
-    const slash = parsed?.kind === "new" && !dispatch?.channelSession ? null : parsed;
+    // `/box` is a command only where boxes are switched on and turns go to nodes.
+    const boxCommandsOn = env.box.enabled() && !!queueDispatch;
+    const slash = (parsed?.kind === "new" && !dispatch?.channelSession) || (parsed?.kind === "box" && !boxCommandsOn) ? null : parsed;
     // A command at a channel session's root is answered at root, like its turns.
     const slashThread = dispatch?.channelSession ? {} : { thread_ts: threadTs };
     /**
@@ -3355,7 +3393,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
 
     if (slash) {
       if (slash.kind === "help") {
-        await reply(helpText({ channelSessionRoot: !!dispatch?.channelSession }));
+        await reply(helpText({ channelSessionRoot: !!dispatch?.channelSession, boxes: boxCommandsOn }));
         return;
       }
       if (slash.kind === "heartbeat-status") {
@@ -3965,6 +4003,26 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
         }
       }
 
+      if (slash.kind === "box" && queueDispatch) {
+        const persona = dispatch?.personaId ?? "default";
+        try {
+          const r = await runBoxCommand(slash.action, { tenant: (session as { tenant_id?: string }).tenant_id ?? "default", persona, sessionId: session.id, userId, channelId, threadTs }, {
+            ...storedBoxRefreshDeps,
+            enabled: () => boxCommandsOn,
+            boxNameFor: (p) => defaultBoxPinDeps.boxNameFor(p),
+            mayRefresh: () => isManagerOrApprover(dispatch?.personaId, userId, channelId, teamId),
+            // Queued, running on a node, or (a session this process runs itself) in flight here.
+            turnInFlight: async (id) => agent.isTurnInFlight(id) || (await queueDispatch.turns.hasPending(id)) || (await queueDispatch.registry.turnRunning(id)),
+            reload: (id) => void reloadSession(id),
+            mark: (id, m) => queueDispatch.registry.markBoxRefresh(id, m),
+          });
+          await reply(r.text);
+        } catch (e) {
+          console.error(`[box] /box ${slash.action} session=${session.id}: ${e instanceof Error ? e.message : String(e)}`);
+          await reply(":warning: The box could not be read, so nothing was changed. The details are in the server log.", { cls: "failure" });
+        }
+        return;
+      }
       if (slash.kind === "model") {
         const soul = effectiveSoulForChannelFor(dispatch?.personaId, channelId);
         if (!(await isManagerOrApprover(dispatch?.personaId, userId, channelId, teamId)) && !(await canChangeModel(userId, { ...soul, approvers: [] }, { persona: dispatch?.personaId, teamId }))) {
@@ -5625,6 +5683,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
   // bridge and the portal read synchronously. Nodes exist only with a queue;
   // started in start() so it is loaded before this gateway serves.
   let pluginInventory: { stop(): void } | null = null;
+  let boxInventory: { stop(): void } | null = null;
   const v1 = createV1Api({
     tools: {
       mcpBridge,
@@ -5796,6 +5855,8 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
     start: async () => {
       if (queueDispatch) {
         pluginInventory = await startPluginInventory(dbInventorySources((ids) => queueDispatch.registry.liveNodeIds(ids)));
+        // Which node holds which box image, for the console. Only where boxes are on; nothing routes on it.
+        if (env.box.enabled()) boxInventory = await startBoxInventory(() => queueDispatch.registry.liveBoxInventory());
       }
       await t.start();
     },
@@ -5816,6 +5877,7 @@ export function createGateway(agent: AgentManager, t: Transport, opts: GatewayOp
       await stopBoundaryFill().catch(() => {});
       stopOwnerGuardrails();
       pluginInventory?.stop();
+      boxInventory?.stop();
       unsetMergeNoticeSender();
       if (panelSweeper) clearInterval(panelSweeper);
       await panelResumeUnsub?.().catch(() => {});

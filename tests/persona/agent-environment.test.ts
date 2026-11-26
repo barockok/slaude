@@ -66,7 +66,7 @@ describe("agent.yaml environment key", () => {
   test("payload version: 6 when unused, 7 when used, and a version 6 payload still parses", () => {
     const plain = compile("").spec;
     const used = compile("environment:\n  allow: [env:a]\n").spec;
-    expect(SUPPORTED_PAYLOAD_VERSION).toBe(7);
+    expect(SUPPORTED_PAYLOAD_VERSION).toBe(8);
     expect(payloadVersionFor([plain])).toBe(6);
     expect(payloadVersionFor([used])).toBe(7);
     expect(payloadVersionFor([plain], [], [])).toBe(7);
@@ -74,6 +74,6 @@ describe("agent.yaml environment key", () => {
     expect(parsePayload(body(6, plain)).version).toBe(6);
     const p7 = parsePayload(body(7, used));
     expect(p7.personas[0]!.definition?.environment).toEqual({ allow: ["a"] });
-    expect(() => parsePayload(body(8, used))).toThrow(/newer/);
+    expect(() => parsePayload(body(SUPPORTED_PAYLOAD_VERSION + 1, used))).toThrow(/newer/);
   });
 });

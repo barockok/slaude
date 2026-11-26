@@ -26,6 +26,15 @@
 # has to fire as well. Nothing is lost or duplicated — it is a latency bound, and
 # the run reports how long it actually took.
 #
+# With VERIFY_BOX=1 (off by default) a last section drives REAL turns of a boxed
+# persona against the mock model: a turn in a box, the same thread on another
+# node after its node is drained, and more sessions than the nodes have slots.
+# It needs a cluster brought up with SLAUDE_LOCAL_BOX (up.sh), the mock model as
+# the provider (the e2e stack), and VERIFY_BOX_PERSONA naming a synced persona
+# on label `default` whose box image the nodes can pull. THAT SECTION WAS
+# WRITTEN AND NEVER RUN: no cluster has run a boxed turn. Its stubbed paths are
+# tested (tests/deploy/verify-turns.test.ts); its assertions are not.
+#
 # The probe's turns are suppressed, so the full lifecycle runs (claim, session
 # lock, completion marker, ack) without a model call. Costs no provider tokens.
 #
@@ -692,6 +701,179 @@ else
     probe cleanup >/dev/null || true
   else
     bad "could not sync the persona set back; beta still runs on default"
+  fi
+fi
+
+# --- boxes (VERIFY_BOX=1) ----------------------------------------------------
+# WRITTEN, NOT RUN. Nothing below has been executed against a cluster; read a
+# failure here as "this section or the cluster", not yet as a product defect.
+#
+# Real turns, not suppressed ones: the mock model asks for one Bash call per
+# turn and the CLI runs it, in a box when the session is pinned. Three things:
+#   1. a turn: its command sees HOME=/home/agent (true only in a box), writes
+#      into the workspace, and installs a small tool into the home; a node's
+#      supervisor then holds that session's home;
+#   2. a move: that node pod is deleted (SIGTERM: it drains, flushing what the
+#      deployment's storage keeps), and the thread's next turn runs on another
+#      node. The tool survives the move ONLY with SLAUDE_STORAGE=s3 (the home
+#      is synced through the bucket); on the shared-volume local overlay the
+#      home is node-local by design, so there the turn must still complete in a
+#      box and the lost tool is reported as a note, not a failure;
+#   3. a burst: two more new sessions than the nodes have slots, each one turn.
+#      Every turn must complete: a full node parks an idle session or hands the
+#      job back, it never fails it. This is the capacity path, NOT autoscaling:
+#      the local overlay scales on the node container's CPU and this script
+#      pins that HPA; a scale-up on box occupancy needs KEDA or
+#      deploy/k8s-scale-box/optional/node-box-fallback-hpa.yaml on a cluster
+#      that has them. The replica count before and after is printed.
+# The second turn of a thread carries its own tool call id word: the mock
+# numbers its calls from 1 every turn, and the CLI drops a call whose id an
+# earlier turn of a resumed transcript used (the 2026-11-25 box smoke note).
+if [[ "${VERIFY_BOX:-0}" == 1 ]]; then
+  section "boxes: a boxed turn, the thread on another node, more sessions than slots (WRITTEN, NOT RUN)"
+  BOX_PERSONA="${VERIFY_BOX_PERSONA:-}"
+  BOX_TURN_TIMEOUT="${BOX_TURN_TIMEOUT:-300}"
+  BOX_DIR="${VERIFY_BOX_DIR:-/var/lib/slaude-box}"
+  b64url() { python3 -c 'import base64,sys; print(base64.urlsafe_b64encode(sys.argv[1].encode()).decode().rstrip("="))' "$1"; }
+  json_first() { # <key> <json>: the first element of a list field, or nothing
+    python3 -c 'import json,sys
+try:
+    v = json.loads(sys.argv[2]).get(sys.argv[1]) or []
+    print(v[0] if v else "")
+except Exception:
+    pass' "$1" "$2" 2>/dev/null
+  }
+  # The node pod whose supervisor holds this session's box directory, or nothing.
+  box_holder() { # <session id>
+    local pod
+    for pod in $(nodes); do
+      if k exec "$pod" -c boxd -- test -d "$BOX_DIR/sessions/$1/home" >/dev/null 2>&1; then
+        printf '%s' "$pod"
+        return 0
+      fi
+    done
+    return 1
+  }
+  # A file of the session's workspace, read through a gateway pod (the workspace is on the shared volume).
+  workspace_file() { # <workdir> <name>
+    local pod
+    pod="$(gateway)"
+    [[ -n "$pod" ]] || return 1
+    k exec "$pod" -- cat "$1/$2" 2>/dev/null
+  }
+
+  box_ready=1
+  if [[ -z "$BOX_PERSONA" ]]; then
+    bad "boxes: VERIFY_BOX_PERSONA is not set (a synced persona on label default that names a box whose image the nodes can pull)"
+    box_ready=0
+  fi
+  if ((box_ready)); then
+    for pod in $(nodes); do
+      statuses="$(k get pod "${pod#pod/}" -o jsonpath='{range .status.containerStatuses[*]}{.name}={.ready} {end}' 2>/dev/null || true)"
+      case " $statuses" in
+        *" boxd=true "*) ;;
+        *)
+          bad "boxes: ${pod#pod/} has no ready boxd container (was the cluster brought up with SLAUDE_LOCAL_BOX=gvisor or bwrap?)"
+          box_ready=0
+          ;;
+      esac
+    done
+  fi
+  if ((box_ready)); then
+    check="$(probe box-check 1 --persona "$BOX_PERSONA" || true)"
+    box_enabled="$(field enabled <<<"$check" || true)"
+    box_digest="$(field digest <<<"$check" || true)"
+    if [[ "$box_enabled" != "True" && "$box_enabled" != "true" ]] || [[ -z "$box_digest" || "$box_digest" == "None" ]]; then
+      bad "boxes: COULD NOT MEASURE (persona '$BOX_PERSONA' has no box the gateway can serve: SLAUDE_BOX on? the box synced? probe said: ${check:-nothing})"
+      box_ready=0
+    fi
+  fi
+
+  if ((box_ready)); then
+    probe cleanup >/dev/null || true
+    replicas_before="$(k get deploy slaude-node -o jsonpath='{.status.readyReplicas}' 2>/dev/null || true)"
+
+    # 1. a turn in a box
+    # shellcheck disable=SC2016 # expanded by the shell inside the box
+    cmd1='mkdir -p "$HOME/.local/bin" && printf "#!/bin/sh\necho verify-box-tool\n" > "$HOME/.local/bin/verify-box-tool" && chmod +x "$HOME/.local/bin/verify-box-tool" && printf "%s\n" "$HOME" > home.txt'
+    out1="$(probe box-turn 1 --persona "$BOX_PERSONA" --label live --cmd "$(b64url "$cmd1")" --id a || true)"
+    box_label="$(field label <<<"$out1" || true)"
+    box_sid="$(json_first sessions "$out1")"
+    box_dir="$(json_first workdirs "$out1")"
+    if [[ -z "$box_sid" || -z "$box_dir" ]]; then
+      bad "boxed turn: COULD NOT MEASURE (no boxed turn was enqueued)"
+    elif [[ "$box_label" != default ]]; then
+      bad "boxed turn: COULD NOT MEASURE (persona '$BOX_PERSONA' runs on label '$box_label'; this section reads the default label's nodes)"
+    else
+      done1="$(wait_done 1 "$BOX_TURN_TIMEOUT" 0 --persona "$BOX_PERSONA" --label live)"
+      expect_value "the boxed turn completed" "$done1" "1" "turns carrying a completion marker"
+      expect_value "its command ran in a box (HOME is the box's home)" "$(workspace_file "$box_dir" home.txt || true)" "/home/agent" "HOME seen by the command"
+      holder1="$(box_holder "$box_sid" || true)"
+      expect "a node's supervisor holds the session's home" "no node pod has $BOX_DIR/sessions/$box_sid/home" [ -n "$holder1" ]
+      if [[ -n "$holder1" ]]; then
+        expect "the tool was installed into that home" "no verify-box-tool in the session's home on ${holder1#pod/}" \
+          k exec "$holder1" -c boxd -- test -x "$BOX_DIR/sessions/$box_sid/home/.local/bin/verify-box-tool"
+
+        # 2. the thread on another node
+        storage="$(k get configmap slaude-scale-config -o jsonpath='{.data.SLAUDE_STORAGE}' 2>/dev/null || true)"
+        say "  note  deleting ${holder1#pod/} (SIGTERM: it drains first); storage mode: ${storage:-local}"
+        k delete "$holder1" --wait=false >/dev/null 2>&1 || diag "  !! could not delete ${holder1#pod/}"
+        wait_deploy_ready slaude-node 2 "$SETTLE_TIMEOUT" || diag "  note  slaude-node did not return to two ready replicas within ${SETTLE_TIMEOUT}s"
+        # shellcheck disable=SC2016
+        cmd2='"$HOME/.local/bin/verify-box-tool" > turn2.txt 2>&1; printf "rc=%s home=%s\n" "$?" "$HOME" >> turn2.txt'
+        out2="$(probe box-turn 1 --persona "$BOX_PERSONA" --label live --cmd "$(b64url "$cmd2")" --id b --again || true)"
+        if [[ -z "$(json_first sessions "$out2")" ]]; then
+          bad "the thread's next turn: COULD NOT MEASURE (it was not enqueued)"
+        else
+          done2="$(wait_done 1 "$((BOX_TURN_TIMEOUT + RECOVER_TIMEOUT))" 0 --persona "$BOX_PERSONA" --label live)"
+          expect_value "the thread's next turn completed after its node was removed" "$done2" "1" "turns carrying a completion marker"
+          turn2="$(workspace_file "$box_dir" turn2.txt || true)"
+          holder2="$(box_holder "$box_sid" || true)"
+          moved=no
+          if [[ -n "$holder2" && "$holder2" != "$holder1" && "$turn2" == *"home=/home/agent"* ]]; then moved=yes; fi
+          expect "it ran on another node, in a box" "holder now: ${holder2:-none}; output: ${turn2:-none}" [ "$moved" = yes ]
+          if [[ "$storage" == s3 ]]; then
+            kept=no
+            if [[ "$turn2" == *"verify-box-tool"*"rc=0 "* ]]; then kept=yes; fi
+            expect "the tool installed in the home survived the move" "turn2.txt: ${turn2:-none}" [ "$kept" = yes ]
+          elif [[ "$turn2" == *"rc=0 "* ]]; then
+            say "  note  the tool survived the move without SLAUDE_STORAGE=s3 (the same node, or a shared box volume)"
+          else
+            say "  note  the tool did not survive the move: a home follows its session to another node only with SLAUDE_STORAGE=s3 (this cluster: ${storage:-local}). Not a failure here."
+          fi
+        fi
+      fi
+    fi
+
+    # 3. more sessions than slots
+    probe cleanup >/dev/null || true
+    pods_now="$(nodes | wc -l | tr -d ' ')"
+    max_boxes="$(k get deploy slaude-node -o jsonpath='{.spec.template.spec.containers[?(@.name=="node")].env[?(@.name=="SLAUDE_NODE_MAX_BOXES")].value}' 2>/dev/null || true)"
+    if [[ ! "$max_boxes" =~ ^[0-9]+$ || ! "$pods_now" =~ ^[1-9][0-9]*$ ]]; then
+      bad "burst: COULD NOT MEASURE (SLAUDE_NODE_MAX_BOXES='${max_boxes}' on slaude-node, $pods_now running node pods)"
+    else
+      burst=$((pods_now * max_boxes + 2))
+      out3="$(probe box-turn "$burst" --persona "$BOX_PERSONA" --label live --cmd "$(b64url 'echo burst-done > burst.txt')" --id c || true)"
+      if [[ "$(field enqueued <<<"$out3" || true)" != "$burst" ]]; then
+        bad "burst: COULD NOT MEASURE ($burst boxed turns were not enqueued)"
+      else
+        done3="$(wait_done "$burst" "$((BOX_TURN_TIMEOUT * 2))" 0 --persona "$BOX_PERSONA" --label live)"
+        expect_value "all $burst sessions completed on $pods_now nodes of $max_boxes slots each (none failed for capacity)" "$done3" "$burst" "turns carrying a completion marker"
+        ran=0
+        for d in $(python3 -c 'import json,sys; print(" ".join(json.loads(sys.argv[1]).get("workdirs", [])))' "$out3" 2>/dev/null); do
+          [[ "$(workspace_file "$d" burst.txt || true)" == burst-done ]] && ran=$((ran + 1))
+        done
+        expect_value "each of them ran its command exactly where it should" "$ran" "$burst" "workspaces holding burst.txt"
+      fi
+      say "  note  ready node replicas before the box section: ${replicas_before:-?}, now: $(k get deploy slaude-node -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo '?') (the HPA is pinned for this run; see the comment above)"
+    fi
+
+    probe cleanup >/dev/null || true
+    gw_pod="$(gateway)"
+    # The probe's workspaces: named by its own mark, under the shared volume.
+    # shellcheck disable=SC2016  # the gateway pod's shell expands SLAUDE_HOME, not this one
+    [[ -z "$gw_pod" ]] || k exec "$gw_pod" -- sh -c 'rm -rf "${SLAUDE_HOME:-/data}"/workspaces/verify-turns-box-*' >/dev/null 2>&1 ||
+      diag "  !! could not remove the box probe's workspaces under workspaces/verify-turns-box-*"
   fi
 fi
 

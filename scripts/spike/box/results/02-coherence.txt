@@ -1,0 +1,4 @@
+[C0] host-write coherence: new-file immediately='new' after-3s='new'; rewritten-file (v1 read earlier, host wrote v2) immediately='v2' after-3s='v2'
+[C1] host-write coherence: new-file immediately='new' after-3s='new'; rewritten-file (v1 read earlier, host wrote v2) immediately='v2' after-3s='v2'
+[C2] host-write coherence: new-file immediately='new' after-3s='new'; rewritten-file (v1 read earlier, host wrote v2) immediately='v2' after-3s='v2'
+[C5] host-write coherence: new-file immediately='new' after-3s='new'; rewritten-file (v1 read earlier, host wrote v2) immediately='v2' after-3s='v2'

@@ -1,0 +1,11 @@
+# Toolchain image for the Spike 2 and 4 benchmarks. Built once, exported to a rootfs directory for runsc,
+# used as-is by docker/runc for C0. Context directory must hold `bun` and `claude` (see 02-setup-bench.sh).
+FROM ubuntu:24.04
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+      git nodejs npm golang-go ripgrep python3 python3-venv python3-pip ca-certificates curl procps coreutils findutils \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1001 spare 2>/dev/null; mkdir -p /home/agent /work /run/slaude /mirror && chown 1000:1000 /home/agent /work
+COPY bun /usr/local/bin/bun
+COPY claude /usr/local/bin/claude
+COPY box-probe /usr/local/bin/box-probe
+ENV PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin HOME=/home/agent

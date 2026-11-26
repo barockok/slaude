@@ -1,0 +1,14 @@
+files=22973
+On branch main
+Your branch is up to date with 'origin/main'.
+
+status rc=0
+0
+untracked-test
+ M pkg000/sub0/file0.ts
+?? newfile
+branch=feature head=27f7f1b7
+branch=main
+9225
+/bin/sh: 1: time: not found
+0

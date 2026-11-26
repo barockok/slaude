@@ -12,6 +12,8 @@ export { LocalObjectStore } from "./local";
 export { S3ObjectStore } from "./s3";
 export { storageSelfCheck } from "./selfcheck";
 export * from "./manifest";
+export * from "./pack-manifest";
+export * from "./pack-sync";
 export * from "./tree-sync";
 export * from "./units";
 export { putInbox, drainInbox } from "./inbox";

@@ -1,4 +1,5 @@
-import { getText, putText, type ObjectStore } from "./object-store";
+import { StorageError, getText, putText, type ObjectStore } from "./object-store";
+import { parseManifest, type AnyManifest } from "./pack-manifest";
 
 /**
  * A committed snapshot of one session's files. The manifest is written last in
@@ -66,18 +67,25 @@ export async function latestEpoch(store: ObjectStore, sessionId: string): Promis
   return key ? parseManifestKey(key)!.epoch : 0;
 }
 
-/** The newest manifest by (epoch, seq), or null before the first flush. */
-export async function latestManifest(store: ObjectStore, sessionId: string): Promise<{ id: string; manifest: Manifest } | null> {
+/** The newest manifest by (epoch, seq), of either kind (per file, or pack), or null before the first flush. */
+export async function latestManifest(store: ObjectStore, sessionId: string): Promise<{ id: string; manifest: AnyManifest } | null> {
   const keys = await listManifestKeys(store, sessionId);
   const key = keys[keys.length - 1];
   if (!key) return null;
   const text = await getText(store, key);
   if (text === null) return null;
-  const manifest = JSON.parse(text) as Manifest;
-  return { id: parseManifestKey(key)!.id, manifest };
+  return { id: parseManifestKey(key)!.id, manifest: parseManifest(text) };
 }
 
-export async function writeManifest(store: ObjectStore, m: Manifest): Promise<string> {
+/** The newest manifest of a per-file unit. A pack manifest under that name is refused: the two formats never share a unit. */
+export async function latestTreeManifest(store: ObjectStore, sessionId: string): Promise<{ id: string; manifest: Manifest } | null> {
+  const latest = await latestManifest(store, sessionId);
+  if (latest === null) return null;
+  if (latest.manifest.version !== 1) throw new StorageError("get", `unit '${sessionId}' holds a pack manifest where a per-file one was expected`);
+  return { id: latest.id, manifest: latest.manifest };
+}
+
+export async function writeManifest(store: ObjectStore, m: AnyManifest): Promise<string> {
   await putText(store, manifestKey(m.sessionId, m.epoch, m.seq), JSON.stringify(m));
   return manifestId(m.epoch, m.seq);
 }

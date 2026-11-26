@@ -130,6 +130,60 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The default box image (boxes/default): what `box: default` runs on. It
+      # is built first because the slaude image records where it was pushed
+      # (BOX_DEFAULT_IMAGES below). One platform, the one the slaude image of
+      # this workflow is built for. The build gets no secret and no build
+      # argument: a box image holds no credential.
+      #
+      # A builder of its own, not made the default (`use: false`): the slaude
+      # image build below keeps the builder it always had.
+      #
+      # NOT RUN YET as written: these steps have never executed on a runner,
+      # and no node has pulled the image they push. See
+      # docs/site/_content/deploy/boxes.md.
+      - name: Set up a builder for the default box
+        id: boxbuilder
+        uses: docker/setup-buildx-action@v3
+        with:
+          use: false
+
+      - name: Docker meta (default box)
+        id: boxmeta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}-box-default
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      # OCI media types and no attestation manifest: a node copies the image
+      # by digest without converting it.
+      - name: Build and push the default box
+        id: box
+        uses: docker/build-push-action@v6
+        with:
+          builder: ${{ steps.boxbuilder.outputs.name }}
+          context: boxes/default
+          platforms: linux/amd64
+          outputs: type=image,oci-mediatypes=true,push=true
+          provenance: false
+          sbom: false
+          tags: ${{ steps.boxmeta.outputs.tags }}
+          labels: ${{ steps.boxmeta.outputs.labels }}
+
+      - name: Resolve the default box digest
+        id: boxrefs
+        env:
+          BOX_REPOSITORY: ghcr.io/${{ github.repository }}-box-default
+          BOX_DIGEST: ${{ steps.box.outputs.digest }}
+        run: |
+          set -euo pipefail
+          repo="$(printf '%s' "$BOX_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          images="$(scripts/box-default-refs.sh "$repo" "$BOX_DIGEST" amd64)"
+          echo "images=${images}" >> "$GITHUB_OUTPUT"
+          echo "default box: ${images}"
+
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
@@ -146,3 +200,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Where the default box was pushed (a location, not a secret).
+          build-args: |
+            BOX_DEFAULT_IMAGES=${{ steps.boxrefs.outputs.images }}

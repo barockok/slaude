@@ -1,0 +1,21 @@
+{
+ "label": "vm-colima-density",
+ "finished": "2026-11-24T17:22:10.286Z",
+ "results": [
+  {
+   "name": "density/1-sandbox",
+   "status": "INFO",
+   "detail": "[cli produced 2788 bytes stdout, stderr: ] sandbox cgroup memory.current: idle sandbox 9 MB; with CLI started (before any message) 140 MB; CLI idle after one turn 151 MB; sentry+gofer RSS sum 53 MB"
+  },
+  {
+   "name": "density/10-sandboxes-with-idle-cli",
+   "status": "INFO",
+   "detail": "sum of sandbox cgroup memory.current = 1505 MB (151 MB each); VM used memory delta = 1508 MB (151 MB each; includes page cache of the shared image)"
+  },
+  {
+   "name": "proxy/placeholder-never-upstream",
+   "status": "PASS",
+   "detail": "11 upstream requests, 0 carried the placeholder"
+  }
+ ]
+}

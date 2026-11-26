@@ -1,0 +1,24 @@
+# A privileged pod standing in for the node pod's boxd container. Use the node pool, memory limit and
+# storage class of the real node Deployment, or the numbers do not describe the cluster. The memory limit
+# below is what Spike 1 checks the sandbox memory is charged to.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: box-spike
+spec:
+  restartPolicy: Never
+  # nodeSelector / tolerations: copy from the node Deployment
+  containers:
+    - name: boxd
+      image: ubuntu:24.04
+      command: ["sleep", "infinity"]
+      securityContext:
+        privileged: true
+      resources:
+        requests: { cpu: "3", memory: 8Gi }
+        limits: { cpu: "3", memory: 8Gi }
+      volumeMounts:
+        - { name: data, mountPath: /var/lib/slaude-spike }
+  volumes:
+    - name: data
+      emptyDir: {}   # use the same volume type as SLAUDE_BOX_DIR will use (emptyDir, or a PVC with the real storage class)

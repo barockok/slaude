@@ -30,7 +30,7 @@ export const NULL_PROVIDER: MemoryProvider = {
 };
 
 /**
- * The user text without the per-turn `<memory-context>` and `<thread-head>` blocks the gateway
+ * The user text without the per-turn `<memory-context>`, `<thread-head>` and `<box-refreshed>` blocks the gateway
  * puts in the envelope (the speaker's profile, commitments, channel notes).
  * The block is read for the turn only: synced into a conversation page it
  * would be readable outside the speaker's turns and survive a profile
@@ -44,4 +44,6 @@ export const stripTurnMemoryContext = (text: string): string =>
     // The thread head holds other people's earlier messages, shown for this turn's orientation only: it is
     // not stored, and it would otherwise fill the stored summary ahead of the real message. Its text is
     // tag-neutralised when built, so it cannot close the block early.
-    .replace(/<thread-head>\n[\s\S]*?\n<\/thread-head>\n*/g, "");
+    .replace(/<thread-head>\n[\s\S]*?\n<\/thread-head>\n*/g, "")
+    // The note a turn carries after its sandbox moved to a new image: about this turn's tools, not something said.
+    .replace(/<box-refreshed>\n[\s\S]*?\n<\/box-refreshed>\n*/g, "");

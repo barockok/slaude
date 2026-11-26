@@ -27,6 +27,7 @@ import { assertNoProviderRefsInMono } from "../../gateway/core/provider-secrets"
 import { internalHostsFrom } from "../provider-base-url";
 import { dbDialect } from "../../db/client";
 import { masterKey, MasterKeyError } from "../../db/crypto";
+import { GuardrailKeyError } from "../../guardrails/integrity";
 import { collectRefs, planRefs, RefRefusal, tenantWorkspaces, type RecordEntry, type RefUse } from "../../domain/sync-refs";
 import { emitDomainEvents } from "../../audit/domain";
 import { audit } from "../../audit/index";
@@ -35,6 +36,13 @@ import { applyDefinitions, changed as environmentsChanged, planDefinitions } fro
 import { definitionRows } from "../../remote/definitions/resolve";
 import type { RemoteKeyPair } from "../../db/remote";
 import { db } from "../../db/schema";
+import { applyBoxes, boxSetVersion, boxTablesPresent, boxesChanged, planBoxes, readBoxes, type BoxSyncReport, type StoredBoxes } from "../../db/boxes";
+import { BoxIntegrityError, verifyBoxSet } from "../../box/integrity";
+import { checkBoxHighWater, raiseBoxHighWater } from "../../box/high-water";
+import { unboxableProviderForms } from "../../box/provider-forms";
+import { isStandInImage } from "../../box/definition";
+import { builtinBox } from "../../box/builtin";
+import { boxFlagValue, boxUnboxedFallbackValue } from "../../config/env";
 
 function masterKeySet(): boolean {
   try {
@@ -80,6 +88,8 @@ export type SyncReport = Omit<ApplyResult, "records" | "domainEvents"> & {
   records: RecordsReport;
   revision: string; dryRun: boolean; ignoredFields: string[]; ignoredFieldsTotal: number;
   guardrails?: GuardrailSyncReport;
+  /** What the sync did (or, in a dry run, would do) to the deploy repo's boxes; absent when the payload carried no `boxes` list. */
+  boxes?: BoxSyncReport;
   /** Applied anyway, reported by persona name: provider/model pairing (WS-A
    *  §4) and a runsOn label no live node carries (node labels spec §4.5). */
   warnings: string[];
@@ -267,6 +277,7 @@ export async function runSync(
       }
     }
   }
+  const boxPlan = await planBoxSync(tenant, payload, opts.env, warnings, opts.dryRun);
   const envPlan = payload.environments !== undefined ? await planDefinitions(db, tenant, definitions) : undefined;
   // A new, changed or revived definition may need its key pair stored (encrypted): refuse up front, never a 500 mid-sync.
   if (envPlan && envPlan.create.length + envPlan.update.length > 0 && !masterKeySet()) {
@@ -399,6 +410,7 @@ export async function runSync(
     report.overridesWiped = [...effective.values()].reduce((n, p) => n + p.overridden.length, 0);
     if (guardrailPlan) report.guardrails = guardrailPlan.report;
     if (envPlan) report.environments = envPlan.report;
+    if (boxPlan) report.boxes = boxPlan;
     return report;
   }
 
@@ -406,10 +418,16 @@ export async function runSync(
     const { records: createdRecords = [], domainEvents = [], recordsFailed = false, ...applied } = await applySync(
       tenant, rows, meta, { uses: refUses, workspaces },
       payload.environments !== undefined ? (tx) => applyDefinitions(tx, tenant, definitions, { revision: meta.revision }, opts.generateKey) : undefined,
+      payload.boxes !== undefined ? (tx) => applyBoxes(tx, tenant, payload.boxes!, { by: opts.by }) : undefined,
     );
     if (recordsFailed) warnings.push("records could not be created for this sync (the persona sync was applied); run `slaude domain reconcile` or sync again");
     auditPersonaSync(tenant, opts.by, meta.revision, applied);
     if (applied.environments && environmentsChanged(applied.environments)) auditEnvironmentSync(tenant, opts.by, meta.revision, applied.environments);
+    if (applied.boxes && boxesChanged(applied.boxes)) {
+      // Committed: from here an older signed set is a rollback.
+      await raiseBoxHighWater(tenant, await boxSetVersion(tenant));
+      auditBoxSync(tenant, opts.by, meta.revision, applied.boxes);
+    }
     await auditRecords(tenant, opts.by, meta.revision, createdRecords, domainEvents);
     let guardrails: GuardrailSyncReport | undefined;
     if (guardrailPlan) {
@@ -424,8 +442,118 @@ export async function runSync(
   } catch (e) {
     if (e instanceof StaleRevisionError) throw new SyncFailure(409, e.message);
     if (e instanceof RefRefusal) throw new SyncFailure(422, e.message);
+    // The stored box set changed under the plan and no longer verifies: nothing was written.
+    if (e instanceof BoxIntegrityError) throw new SyncFailure(503, boxIntegrityMessage(e));
     throw e;
   }
+}
+
+const boxIntegrityMessage = (e: BoxIntegrityError) =>
+  `the stored box set does not verify (${e.reason}), so it was not changed; an operator must inspect the box tables`;
+
+/**
+ * The box half of a sync, planned before anything is written (so a refusal
+ * applies nothing and a dry run reports the same thing a real sync would do).
+ * The payload's list is the deploy repo's whole set. A persona that names a
+ * box this deploy will not have is refused, which is also what refuses
+ * deleting a box a persona still names. Returns the plan when the payload
+ * carries a list.
+ */
+async function planBoxSync(
+  tenant: string,
+  payload: SyncPayload,
+  env: Record<string, string | undefined>,
+  warnings: string[],
+  dryRun: boolean,
+): Promise<BoxSyncReport | undefined> {
+  const naming = payload.personas.filter((p) => p.definition?.box !== undefined);
+  if (payload.boxes === undefined && naming.length === 0) return undefined;
+  // A stand-in digest names an image that was never pushed (`personas render
+  // --no-push` or `--check`). A dry run may carry one, to print the diff on a
+  // pull request. A real sync never stores one: a session pinned to it could
+  // not start, and every session of the box would be pinned to it.
+  const standIns = (payload.boxes ?? []).filter((b) => isStandInImage(b.image)).map((b) => b.name);
+  if (standIns.length) {
+    const names = standIns.map((n) => `'${n}'`).join(", ");
+    if (!dryRun) {
+      throw new SyncFailure(422, `box ${names}: the image digest is a stand-in for an image that was never pushed (personas render --no-push); this payload is for a dry run only. Render it again without --no-push and deploy that`);
+    }
+    warnings.push(`box ${names}: the image digest is a stand-in for an image that is not pushed yet; a real sync refuses this payload`);
+  }
+  if (!(await boxTablesPresent())) {
+    throw new SyncFailure(503, "the database schema predates this gateway (the boxes tables are missing): apply migrations 0055 to 0058 before syncing boxes");
+  }
+  let stored: StoredBoxes;
+  try {
+    stored = await readBoxes(tenant);
+    await checkBoxHighWater(tenant, verifyBoxSet(tenant, stored));
+  } catch (e) {
+    if (e instanceof BoxIntegrityError) throw new SyncFailure(503, boxIntegrityMessage(e));
+    if (e instanceof GuardrailKeyError) throw new SyncFailure(422, "boxes need SLAUDE_MASTER_KEY (the stored set is signed with it)");
+    throw e;
+  }
+  const storedNames = new Set(stored.boxes.map((b) => b.name));
+  const known = payload.boxes !== undefined ? new Set(payload.boxes.map((b) => b.name)) : storedNames;
+  for (const p of naming) {
+    const name = p.definition!.box!;
+    if (known.has(name)) continue;
+    // The box that ships in the gateway's image needs no entry in the deploy
+    // repository. Only for a name the stored set never held: a deploy that
+    // removes its own box of that name is still refused, since its sessions
+    // are pinned to digests of another repository.
+    if (!storedNames.has(name) && builtinBox()?.name === name) continue;
+    throw new SyncFailure(422, storedNames.has(name)
+      ? `persona '${p.name}': box names '${name}', which this deploy removes; keep boxes/${name} or remove the box key from the agent first`
+      : `persona '${p.name}': box names '${name}', which this deploy does not define`);
+  }
+  // A boxed persona must use a credential form the provider proxy can serve:
+  // no secret enters a box. Where the deployment runs such a persona unboxed
+  // the sync warns; where it does not (SLAUDE_BOX_UNBOXED=refuse, with boxes
+  // on) the deploy is refused here, dry run included, so the pull request
+  // sees it and no thread finds out at its next message.
+  let unboxedAllowed: boolean;
+  try {
+    unboxedAllowed = boxUnboxedFallbackValue(env.SLAUDE_BOX_UNBOXED);
+  } catch (e) {
+    throw new SyncFailure(503, `this gateway is misconfigured: ${(e as Error).message}`);
+  }
+  for (const p of naming) {
+    const bad = unboxableProviderForms(p.provider);
+    if (!bad.length) continue;
+    if (!unboxedAllowed && boxFlagValue(env.SLAUDE_BOX)) {
+      throw new SyncFailure(422, `persona '${p.name}': names a box, but its provider credential form (${bad.join(", ")}) cannot be used from a box, and this gateway does not run such an agent unboxed (SLAUDE_BOX_UNBOXED=refuse); give it an API key or an auth token, or remove the box key`);
+    }
+    warnings.push(`persona '${p.name}' names a box, but its provider credential form (${bad.join(", ")}) cannot be used from a box; it stays unboxed until it uses an API key or an auth token`);
+  }
+  if (naming.length && !boxFlagValue(env.SLAUDE_BOX)) {
+    warnings.push(`${naming.length === 1 ? `persona '${naming[0]!.name}' names a box` : `${naming.length} personas name a box`}, but SLAUDE_BOX is off on this gateway: the box is stored and not applied`);
+  }
+  if (payload.boxes === undefined) return undefined;
+  const plan = planBoxes(stored, payload.boxes);
+  // The set is signed with a subkey of the master key. Refuse here, before the personas are applied.
+  if (boxesChanged(plan) && !masterKeySet()) {
+    throw new SyncFailure(422, "boxes need SLAUDE_MASTER_KEY (the stored set is signed with it)");
+  }
+  return plan;
+}
+
+/** box.synced: one row per box a sync changed, with its version and a diff summary (names and numbers, never a value). */
+export function auditBoxSync(tenant: string, by: string, revision: string, r: BoxSyncReport): void {
+  const row = (name: string, change: "created" | "updated" | "removed", version: number | null, diff: string[]) =>
+    emitAudit({
+      tenantId: tenant,
+      persona: "default",
+      actorKind: "system",
+      actorId: by,
+      action: "box.synced",
+      targetKind: "box",
+      targetId: name,
+      summary: `box ${name} ${change}${version !== null ? ` (version ${version})` : ""}: ${diff.slice(0, 6).join("; ") || "removed"}${diff.length > 6 ? ` and ${diff.length - 6} more` : ""}`,
+      details: { revision, change, ...(version !== null ? { version } : {}), diff: diff.slice(0, 50) },
+    });
+  for (const c of r.created) row(c.name, "created", c.version, c.diff);
+  for (const c of r.updated) row(c.name, "updated", c.version, c.diff);
+  for (const name of r.removed) row(name, "removed", null, []);
 }
 
 /** After commit: the domain events, and one summary event when a sync created many records. Never fails the sync. */

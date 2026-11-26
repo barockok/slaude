@@ -41,6 +41,9 @@ function toRow(v: SessionView): SessionRow {
     persona_id: v.persona_id,
     // Mirror the gateway's dialect: Postgres rows include tenant_id.
     ...((v as any).tenant_id !== undefined ? { tenant_id: (v as any).tenant_id } : {}),
+    // The box the gateway pinned the session to. The node reads the digest from here and nowhere else: dropping the
+    // two keys made every boxed session fail its boot as "not pinned" (found by the first run with a real sandbox).
+    ...((v as any).box_name && (v as any).box_digest ? { box_name: (v as any).box_name as string, box_digest: (v as any).box_digest as string } : {}),
   };
 }
 

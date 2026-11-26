@@ -642,6 +642,71 @@ export interface PluginsResponse {
   labels: PluginLabelView[];
 }
 
+// --- Resources: boxes (read-only) ----------------------------------------------
+
+/** A box's policy as the console shows it: names and numbers. An env value and a stdio server's arguments are never sent. */
+export interface BoxPolicyView {
+  tier: "none" | "bwrap" | "gvisor";
+  resources: { cpu: number; memoryMb: number; memoryReserveMb: number; pids: number; homeMb: number; workspaceExtrasMb: number; rootOverlayMb: number };
+  egress: { allow: string[]; deny: string[] };
+  /** Variable names only. */
+  env: string[];
+  /** `args` is how many arguments the server gets, not what they are. */
+  stdio: Array<{ name: string; command: string; args: number }>;
+  durableExclude: string[];
+  refresh: { force: boolean; note: string };
+}
+
+export interface BoxVersionView {
+  version: number;
+  current: boolean;
+  repository: string;
+  digest: string;
+  forced: boolean;
+  tier: "none" | "bwrap" | "gvisor";
+  /** The live nodes that hold this version's image unpacked, sorted. Empty when none does, or when no node reports. */
+  heldBy: string[];
+}
+
+/** A live node that offers a sandbox, as it last reported. */
+export interface BoxNodeView {
+  node: string;
+  labels: string[];
+  /** How many images it holds, and how many of them are a version of a box in this set. */
+  images: number;
+  knownImages: number;
+  /** Sandboxes running, the most it runs at once, its free slots. Null until the node admits boxes. */
+  running: number | null;
+  capacity: number | null;
+  free: number | null;
+}
+
+export interface BoxView {
+  name: string;
+  description: string;
+  /** The current version number. */
+  version: number;
+  repository: string;
+  digest: string;
+  policy: BoxPolicyView;
+  /** Every version, newest first. */
+  versions: BoxVersionView[];
+}
+
+/** GET /panel/api/boxes */
+export interface BoxesResponse {
+  /** The gateway's SLAUDE_BOX switch. Off: boxes are stored and nothing applies them. */
+  enabled: boolean;
+  /** False when the stored set does not verify: nothing of it is shown. */
+  verified: boolean;
+  /** Why it does not verify (names boxes, never content). */
+  problem?: string;
+  setVersion: number | null;
+  boxes: BoxView[];
+  /** The nodes that report box images, from the gateway's derived snapshot. Empty when none reports. */
+  nodes: BoxNodeView[];
+}
+
 // --- Resources: skills (read-only, plus retire and restore) -------------------
 
 /**

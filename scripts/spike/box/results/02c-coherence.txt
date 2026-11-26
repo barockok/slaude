@@ -1,0 +1,2 @@
+RESULT coherence/shared | INFO | immediately: list=new, newfile=visible removed=gone big=bf08f13f expect=bf08f13f grow_size=11 expect=11  | after 5 s: list=new, newfile=visible removed=gone big=bf08f13f grow_size=11 
+RESULT coherence/exclusive | INFO | immediately: list=a, newfile=INVISIBLE removed=STILL-THERE big=bf08f13f expect=bf08f13f grow_size=5 expect=11  | after 5 s: list=a, newfile=INVISIBLE removed=STILL-THERE big=bf08f13f grow_size=5 

@@ -22,6 +22,7 @@ import { MAX_GUARDRAILS } from "../../guardrails/files";
 import { SKILL_SLUG_RE } from "../../skills/loader";
 import { SoulDataStrictSchema } from "../../soul/data";
 import { ENV_ALLOW_MAX, ENV_DEF_NAME_RE } from "../../remote/definitions/name";
+import { BOX_LIMITS, BOX_NAME_RE, parseBoxPayload, type ParsedBox } from "../../box/definition";
 
 export { PayloadError };
 
@@ -47,6 +48,8 @@ export class UnresolvedVarError extends PayloadError {
  *   7  adds `definition.environment` (the shared environments an agent allows,
  *      by name) and a top-level `environments` list. Used only when a payload
  *      carries one of them, so a payload without stays at its old version.
+ *   8  adds `definition.box` (the box an agent's sessions run in, by name) and
+ *      a top-level `boxes` list. Used only when a payload carries one of them.
  *
  * Each persona field newer than version 1 is one entry in PERSONA_FIELD_VERSION.
  * `render` writes the highest version any field a persona sets needs, so a
@@ -55,7 +58,9 @@ export class UnresolvedVarError extends PayloadError {
  * to every KB); a payload that sets none stays 1 and deploys to any gateway.
  */
 export const PERSONA_FIELD_VERSION = { provider: 2, runsOn: 2, kbSources: 3, background: 4, definition: 6 } as const;
-export const SUPPORTED_PAYLOAD_VERSION = 7;
+export const SUPPORTED_PAYLOAD_VERSION = 8;
+/** The payload version `definition.box` (and a top-level `boxes` list) needs. */
+export const BOX_PAYLOAD_VERSION = 8;
 /** The payload version `definition.environment` (and a top-level `environments` list) needs. */
 export const ENVIRONMENT_PAYLOAD_VERSION = 7;
 /** The payload version a non-empty top-level `guardrails` list needs. */
@@ -66,12 +71,15 @@ export const GUARDRAILS_PAYLOAD_VERSION = 5;
  * when it carries any guardrail; 1 when none. An empty `guardrails` list
  * needs no newer gateway (an older one has no guardrails to remove).
  */
-export function payloadVersionFor(personas: ReadonlyArray<object>, guardrails: ReadonlyArray<unknown> = [], environments?: ReadonlyArray<unknown>): number {
+export function payloadVersionFor(personas: ReadonlyArray<object>, guardrails: ReadonlyArray<unknown> = [], environments?: ReadonlyArray<unknown>, boxes?: ReadonlyArray<unknown>): number {
   let v = guardrails.length > 0 ? GUARDRAILS_PAYLOAD_VERSION : 1;
+  // Present, even empty: an empty list removes every box, which an older gateway would silently ignore.
+  if (boxes !== undefined) v = Math.max(v, BOX_PAYLOAD_VERSION);
   // Present, even empty: an empty list retires every definition, which an older gateway would silently ignore.
   if (environments !== undefined) v = Math.max(v, ENVIRONMENT_PAYLOAD_VERSION);
   for (const p of personas) {
     if ((p as { definition?: { environment?: unknown } }).definition?.environment !== undefined) v = Math.max(v, ENVIRONMENT_PAYLOAD_VERSION);
+    if ((p as { definition?: { box?: unknown } }).definition?.box !== undefined) v = Math.max(v, BOX_PAYLOAD_VERSION);
     for (const [field, need] of Object.entries(PERSONA_FIELD_VERSION)) {
       if ((p as Record<string, unknown>)[field] !== undefined) v = Math.max(v, need);
     }
@@ -125,6 +133,8 @@ const definitionSpec = z
       })
       .strict()
       .optional(),
+    // The box the agent's sessions run in, by name. Read only where SLAUDE_BOX is on.
+    box: z.string().regex(BOX_NAME_RE, "box must be a box name").optional(),
     soulData: SoulDataStrictSchema,
   })
   .strict();
@@ -248,8 +258,12 @@ const payloadSchema = z.object({
   // Absent: the stored environment definitions are left as they are. Present
   // (even empty): the deploy repo's whole set; a definition it no longer lists is retired.
   environments: z.array(environmentSpec).max(ENVIRONMENTS_MAX, `at most ${ENVIRONMENTS_MAX} environments`).optional(),
+  // Absent: the stored boxes are left as they are. Present (even empty): the
+  // deploy repo's whole set. Shape only here; each entry is checked by
+  // parseBoxPayload below, whose messages never echo a value.
+  boxes: z.array(z.unknown()).max(BOX_LIMITS.boxes, `at most ${BOX_LIMITS.boxes} boxes`).optional(),
 });
-export type SyncPayload = Omit<z.infer<typeof payloadSchema>, "personas"> & { personas: PersonaSpec[] };
+export type SyncPayload = Omit<z.infer<typeof payloadSchema>, "personas" | "boxes"> & { personas: PersonaSpec[]; boxes?: ParsedBox[] };
 
 const isRefShaped = (v: string) => v.startsWith("vault://") || v.startsWith("env://");
 
@@ -367,8 +381,9 @@ export function parsePayload(
   }
   const r = payloadSchema.safeParse(raw);
   if (!r.success) throw new PayloadError(r.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "));
+  const { boxes: rawBoxes, ...data } = r.data;
   const p: SyncPayload = {
-    ...r.data,
+    ...data,
     personas: r.data.personas.map(({ provider, kbSources, ...rest }) => {
       const parsed = parseProvider(rest.name, provider, opts.internalHosts ?? internalHostsFrom(process.env));
       const kb = parseKbSources(rest.name, kbSources);
@@ -394,6 +409,18 @@ export function parsePayload(
     for (const e of p.environments) {
       if (seen.has(e.name)) throw new PayloadError(`duplicate environment '${e.name}'`);
       seen.add(e.name);
+    }
+  }
+  const needsBox = rawBoxes !== undefined || p.personas.some((x) => x.definition?.box !== undefined);
+  if (needsBox && (p.version ?? 1) < BOX_PAYLOAD_VERSION) {
+    throw new PayloadError(`boxes need payload version ${BOX_PAYLOAD_VERSION} (this payload says ${p.version})`);
+  }
+  if (rawBoxes) {
+    p.boxes = rawBoxes.map((b) => parseBoxPayload(b));
+    const seen = new Set<string>();
+    for (const b of p.boxes) {
+      if (seen.has(b.name)) throw new PayloadError(`duplicate box '${b.name}'`);
+      seen.add(b.name);
     }
   }
   const names = new Set<string>();

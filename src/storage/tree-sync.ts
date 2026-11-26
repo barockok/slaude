@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { blobKey, latestManifest, manifestId, writeManifest, type FileEntry, type LinkEntry, type Manifest } from "./manifest";
+import { blobKey, latestTreeManifest, manifestId, writeManifest, type FileEntry, type LinkEntry, type Manifest } from "./manifest";
 import { DEFAULT_IGNORE, isIgnored } from "./ignore";
 import { StorageError, type ObjectStore } from "./object-store";
 
@@ -133,7 +133,7 @@ export async function flushTree(store: ObjectStore, sessionId: string, roots: re
   checkRoots(roots);
   const ignore = opts.ignore ?? DEFAULT_IGNORE;
   for (const r of roots) if (!existsSync(r.dir)) throw new RootMissingError(r.name, r.dir);
-  const prev = await latestManifest(store, sessionId);
+  const prev = await latestTreeManifest(store, sessionId);
   if (prev && prev.manifest.epoch > opts.epoch) throw new FencedError(`flush fenced: manifest epoch ${prev.manifest.epoch} is newer than ${opts.epoch}`);
 
   const scanned: Scanned = { dirs: [], files: new Map() };
@@ -259,7 +259,7 @@ export async function hydrateTree(store: ObjectStore, sessionId: string, roots: 
   checkRoots(roots);
   const ignore = opts.ignore ?? DEFAULT_IGNORE;
   for (const r of roots) mkdirSync(r.dir, { recursive: true });
-  const latest = await latestManifest(store, sessionId);
+  const latest = await latestTreeManifest(store, sessionId);
   if (!latest) return { mode: "empty", id: null, downloadedBytes: 0 };
   if (readMarker(opts.markerPath) === latest.id) return { mode: "warm", id: latest.id, downloadedBytes: 0 };
   // From here the local tree is being rewritten. If this dies half way, a marker naming the

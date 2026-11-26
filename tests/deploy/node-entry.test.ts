@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseAllDocuments } from "yaml";
 
 const repo = join(import.meta.dir, "..", "..");
 const read = (f: string) => readFileSync(join(repo, f), "utf8");
@@ -29,6 +30,47 @@ describe("how a node is started", () => {
       expect(read(f)).toContain('["bun", "--no-env-file", "src/node/main.ts"]');
     });
   }
+
+  // The box overlay adds a second container to every node pod. The node container must keep its entry, and the
+  // supervisor has an entry rule of its own: under an init, with no dotenv file (box plan, Phase 9).
+  const hasKubectl = Bun.spawnSync(["sh", "-c", "command -v kubectl"]).exitCode === 0;
+  for (const dir of ["deploy/k8s-scale-box", "deploy/k8s-scale-box/with-s3"]) {
+    test.skipIf(!hasKubectl)(`${dir}, rendered: the node entry is executed directly and boxd starts under tini with --no-env-file`, () => {
+      const r = Bun.spawnSync(["kubectl", "kustomize", join(repo, dir)]);
+      expect(r.exitCode).toBe(0);
+      const out = r.stdout.toString();
+      expect(out).not.toMatch(VIA_RUN);
+      const pods = parseAllDocuments(out)
+        .map((d) => d.toJSON())
+        .filter((d) => d?.kind === "Deployment" && d.spec.template.spec.containers.some((c: any) => c.name === "node"));
+      expect(pods.length).toBeGreaterThanOrEqual(2);
+      for (const d of pods) {
+        const byName = Object.fromEntries(d.spec.template.spec.containers.map((c: any) => [c.name, c]));
+        expect(byName.node.command).toEqual(["bun", "--no-env-file", "src/node/main.ts"]);
+        expect(byName.node.args).toBeUndefined();
+        expect(byName.boxd.command.slice(0, 5)).toEqual(["tini", "--", "bun", "--no-env-file", "src/box/boxd/main.ts"]);
+        // Nothing after the entry but the roots it may hand to a box.
+        const rest = byName.boxd.command.slice(5) as string[];
+        expect(rest.length % 2).toBe(0);
+        for (let i = 0; i < rest.length; i += 2) {
+          expect(["--mount-root", "--ro-root"]).toContain(rest[i]!);
+          expect(rest[i + 1]).toMatch(/^\/[a-z-]+$/);
+        }
+      }
+    });
+  }
+
+  test("a manifest that names the supervisor's entry starts it under tini, never through bun run", () => {
+    const component = read("deploy/k8s-scale-box/component/kustomization.yaml");
+    expect(component).toMatch(/^\s*command:.*boxd\/main\.ts/m);
+    for (const f of ["deploy/k8s-scale-box/component/kustomization.yaml", "docker-compose.scale.yaml"]) {
+      const text = read(f);
+      expect(text).not.toMatch(/\bbun\b["',\s]+run\b["',\s]+[^"'\s]*boxd/);
+      for (const line of text.split("\n").filter((l) => /^\s*command:.*boxd\/main\.ts/.test(l))) {
+        expect(line).toContain('["tini", "--", "bun", "--no-env-file", "src/box/boxd/main.ts"');
+      }
+    }
+  });
 
   test("hardening is the node entry's first import, and imports no configuration", () => {
     const main = read("src/node/main.ts");

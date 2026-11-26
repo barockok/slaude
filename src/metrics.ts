@@ -245,7 +245,51 @@ export const m = {
     "slaude_node_gateway_secrets_present",
     "Gateway-only variables found in this node's environment at boot (0 = the Secret split is done).",
   ),
-  nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued|moved|deduped)."),
+  nodeTurnsTotal: metrics.counter("slaude_node_turns_total", "Turn jobs processed by this node, labeled by result (done|error|skipped|requeued|moved|deduped|handed_back)."),
+  // Boxes on a node (box spec, "Capacity, admission and autoscaling"). All 0 on a node that offers no sandbox.
+  nodeBoxesRunning: metrics.gauge("slaude_node_boxes_running", "Sandboxes running on this node (warm sessions that hold one, a turn running or not)."),
+  nodeBoxesCapacity: metrics.gauge("slaude_node_boxes_capacity", "The most sandboxes this node runs at once (SLAUDE_NODE_MAX_BOXES). Occupancy is running divided by capacity."),
+  nodeBoxesFull: metrics.gauge(
+    "slaude_node_boxes_full",
+    "1 while this node has paused its label queues because it has no room for another sandbox, else 0. /readyz stays 200 meanwhile; every node of a label at 1 means the label needs more nodes.",
+  ),
+  nodeBoxesParked: metrics.gauge("slaude_node_boxes_parked", "Sessions whose files are parked on this node's disk: flushed, no sandbox, no memory, no capacity slot."),
+  boxMemoryReservedBytes: metrics.gauge("slaude_box_memory_reserved_bytes", "Memory the running sandboxes on this node have set aside: each box's reserve plus the sandbox overhead."),
+  boxAdmissionTotal: metrics.counter("slaude_box_admission_total", "Sandbox starts decided by this node's admission, labeled by result (admit|make-room|full)."),
+  boxPressureEvictionsTotal: metrics.counter("slaude_box_pressure_evictions_total", "Idle sessions parked early because the supervisor's memory passed 90 percent of its limit."),
+  // No session, persona or host label on any box metric (box spec, "Observability").
+  boxStartSeconds: metrics.histogram(
+    "slaude_box_start_seconds",
+    "Time one phase of a sandbox start took on this node, labeled by tier, phase (pull: making the image present; hydrate: the session's files from the store; start: the sandbox itself) and result (ok|error).",
+    [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 80, 160],
+  ),
+  boxResumeSeconds: metrics.histogram(
+    "slaude_box_resume_seconds",
+    "Time from a claimed turn to its sandbox being ready, labeled by kind (warm: the sandbox was running; parked: the files were on this node; cold: they came from the store). The first-turn budget is the cold p95.",
+    [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 80, 160],
+  ),
+  boxPackSeconds: metrics.histogram(
+    "slaude_box_pack_seconds",
+    "Time one flush or hydrate of a packed unit took, labeled by unit (hm: home; wx: workspace extras) and op (flush|hydrate). A flush that found nothing changed is counted too.",
+    [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 20, 40, 80],
+  ),
+  boxPackBytesTotal: metrics.counter("slaude_box_pack_bytes_total", "Bytes of packed units stored (op=flush) or downloaded (op=hydrate), labeled by unit (hm|wx) and op."),
+  boxHomeBytes: metrics.histogram(
+    "slaude_box_home_bytes",
+    "Size of a session's home at each flush, before compression.",
+    [1048576, 10485760, 52428800, 104857600, 262144000, 524288000, 1073741824, 2147483648, 5368709120],
+  ),
+  boxEgressTotal: metrics.counter("slaude_box_egress_total", "Connections boxes asked this node's egress proxies for, labeled by decision (allowed|refused)."),
+  boxImagePullSeconds: metrics.histogram(
+    "slaude_box_image_pull_seconds",
+    "Time one fetch and unpack of a box image took on this node, labeled by result (ok|error).",
+    [1, 2.5, 5, 10, 20, 40, 80, 160, 320],
+  ),
+  boxImagesCached: metrics.gauge("slaude_box_images_cached", "Box images unpacked on this node's disk."),
+  boxQuotaExceededTotal: metrics.counter(
+    "slaude_box_quota_exceeded_total",
+    "Flushes that found a packed unit over its limit, labeled by kind (home|extras) and state (over: stored, the agent is told; refused: over twice the limit, not stored).",
+  ),
   nodeTurnDuration: metrics.histogram(
     "slaude_node_turn_duration_seconds",
     "Wall-clock duration of turn jobs run on this node (lock wait included).",

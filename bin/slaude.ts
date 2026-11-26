@@ -69,6 +69,10 @@ switch (sub) {
     entry = "src/cli/guardrails.ts";
     rest = argv.slice(1);
     break;
+  case "box":
+    entry = "src/cli/box.ts";
+    rest = argv.slice(1);
+    break;
   case "domain":
     entry = "src/cli/domain.ts";
     rest = argv.slice(1);
@@ -95,6 +99,7 @@ switch (sub) {
         "  slaude brain connect  OAuth-bootstrap the remote brain link (SLAUDE_BRAIN_URL)",
         "  slaude brain reembed --model-mismatch|--adopt [--apply]  repair embedding labels or the brain record (dry run by default)",
         "  slaude guardrails import <dir> [--prune] [--dry-run] [--repair]  store GUARDRAIL.md folders as owner guardrails",
+        "  slaude box check <dir>  validate every boxes/<name>/box.yaml of a deploy repository",
         "  slaude domain reconcile [--dry-run] [--json]  backfill and repair users, bindings and boundaries",
         "  slaude env list [--tenant <id>] | unbind-shared (--tenant <id> | --all-tenants) (--dry-run | --apply)  shared environments: bound threads, and the rollback step to rc.21",
         "  slaude memory-places move [--apply] [--persona <name>]  copy the pages that belong to one memory place out of the persona's slice (dry run by default; originals are kept)",

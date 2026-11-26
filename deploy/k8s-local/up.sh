@@ -27,6 +27,16 @@
 #                          taken from your shell when set, overriding the file.
 #   SLAUDE_LOCAL_OVERLAY   a kustomize directory to apply instead of this one;
 #                          it should build on this directory (used by e2e/up.sh).
+#   SLAUDE_LOCAL_BOX       off (default) | gvisor | bwrap: lay the box component
+#                          (deploy/k8s-local/box) over the overlay, so every node
+#                          pod gains the privileged box supervisor and offers that
+#                          sandbox tier, and the gateways read boxes. The node is
+#                          sized up by LOCAL_BOX_EXTRA_* (sizing.env) unless you
+#                          set SLAUDE_LOCAL_CPUS or SLAUDE_LOCAL_MEMORY; an
+#                          existing profile is NOT resized (delete it first).
+#                          NOT RUN: this path renders and is tested as text only.
+#                          A persona runs boxed only once it names a box whose
+#                          image the nodes can pull; this switch syncs none.
 #   SLAUDE_LOCAL_NODE_AUTH signed (default) | legacy: what the `default` node
 #                          deployment presents. legacy = the shared legacy token
 #                          (label default only); `finance` is always signed.
@@ -52,6 +62,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILE="${SLAUDE_LOCAL_PROFILE:-slaude-local}"
 CPUS="${SLAUDE_LOCAL_CPUS:-$LOCAL_NODE_CPUS}"
 MEMORY="${SLAUDE_LOCAL_MEMORY:-$LOCAL_NODE_MEMORY_MB}"
+# Boxes (off by default): three supervisor containers more. A size you gave is kept as given.
+BOX="${SLAUDE_LOCAL_BOX:-off}"
+case "$BOX" in off | gvisor | bwrap) ;; *) printf '\nERROR: SLAUDE_LOCAL_BOX must be off, gvisor or bwrap\n' >&2; exit 1 ;; esac
+if [[ "$BOX" != off ]]; then
+  [[ -n "${SLAUDE_LOCAL_CPUS:-}" ]] || CPUS=$((LOCAL_NODE_CPUS + LOCAL_BOX_EXTRA_CPUS))
+  [[ -n "${SLAUDE_LOCAL_MEMORY:-}" ]] || MEMORY=$((LOCAL_NODE_MEMORY_MB + LOCAL_BOX_EXTRA_MEMORY_MB))
+fi
 IMAGE="slaude:local"
 NS="slaude-scale"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -296,8 +313,17 @@ minikube -p "$PROFILE" image build -t "$IMAGE" "$ROOT"
 existed=false
 kubectl --context "$PROFILE" -n "$NS" get deploy slaude-gateway >/dev/null 2>&1 && existed=true
 
-log "applying overlay"
-kubectl kustomize --load-restrictor LoadRestrictionsNone "${SLAUDE_LOCAL_OVERLAY:-$HERE}" | kubectl --context "$PROFILE" apply -f -
+# With SLAUDE_LOCAL_BOX the box component is laid over the same overlay
+# (lib.sh, box_overlay); `off` builds the overlay itself, as before.
+OVERLAY="$(box_overlay "$HERE" "${SLAUDE_LOCAL_OVERLAY:-$HERE}" "$BOX")"
+if [[ "$BOX" != off ]]; then
+  log "applying overlay with boxes (tier $BOX; this path has not been run on a cluster)"
+else
+  log "applying overlay"
+fi
+kubectl kustomize --load-restrictor LoadRestrictionsNone "$OVERLAY" | kubectl --context "$PROFILE" apply -f -
+# The wrapper box_overlay generated (a temp directory holding one file).
+if [[ "$BOX" != off ]]; then rm -rf "$OVERLAY"; fi
 
 # Same tag, new build: the Deployment spec is unchanged, so roll it explicitly.
 if $existed; then

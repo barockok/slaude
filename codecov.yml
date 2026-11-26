@@ -19,6 +19,16 @@ coverage:
         target: auto
         threshold: 1%
 
+# The box tier workflow (.github/workflows/box-tiers.yml) runs the real sandboxes (gVisor and bwrap), which the unit
+# suite cannot. Its report counts only for the code that needs it: the sandbox backends. Elsewhere it lists lines the
+# unit report does not (functions the tier run never calls, at zero hits), and the union of the two reports then marks
+# them missed in files the unit suite already covers (measured on boxd/spec.ts, seccomp.ts and client.ts).
+flags:
+  box-tiers:
+    paths:
+      - src/box/boxd/server.ts
+      - src/box/drivers/
+
 # Process-entrypoint files: thin `read config → boot → serve` bootstraps that can
 # only run against a live engine/network, so they're smoke-tested, not unit-tested
 # (mirrors the project-level integration-only rationale above). Logic lives in the

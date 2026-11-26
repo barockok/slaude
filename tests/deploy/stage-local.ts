@@ -38,6 +38,8 @@ export function stageLocal(tmp: string, overrides: Partial<Record<string, string
   cpSync(join(root, "deploy/k8s-scale"), join(tmp, "deploy/k8s-scale"), { recursive: true });
   cpSync(join(root, "deploy/k8s-local"), join(tmp, "deploy/k8s-local"), { recursive: true });
   cpSync(join(root, "e2e/k8s"), join(tmp, "e2e/k8s"), { recursive: true });
+  // The local box component (deploy/k8s-local/box) builds on this one.
+  cpSync(join(root, "deploy/k8s-scale-box"), join(tmp, "deploy/k8s-scale-box"), { recursive: true });
   for (const [f, text] of Object.entries({ ...LOCAL_GENERATED, ...overrides })) {
     writeFileSync(join(tmp, "deploy/k8s-local", f), text ?? "");
   }
